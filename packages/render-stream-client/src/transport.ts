@@ -6,6 +6,8 @@
 import { type RenderStreamEndpoint, webSocketUrl } from "./endpoint";
 
 export interface RenderStreamTransport {
+  /** Which carrier this transport is (CAR8); absent on a custom transport. */
+  readonly carrier?: "websocket" | "webtransport";
   /** One control message (JSON text: the hello, an ack, a resync). */
   send(text: string): void;
   close(code: number, reason: string): void;
@@ -51,6 +53,7 @@ export const webSocketTransport: RenderStreamTransportFactory = (
   };
   ws.onerror = () => {};
   return {
+    carrier: "websocket",
     send(text) {
       if (ws.readyState === WebSocket.OPEN) ws.send(text);
     },
@@ -199,6 +202,9 @@ export function carrierTransport(
         if (!opened && !userClosed && !abandoned) failed(1006, "open timeout");
       }, deps.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS);
     return {
+      get carrier() {
+        return current?.carrier;
+      },
       send: (t) => current?.send(t),
       close(code, reason) {
         userClosed = true;

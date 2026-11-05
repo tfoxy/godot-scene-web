@@ -87,6 +87,7 @@ describe("createRenderStreamClient", () => {
       appliesPerSec: 0,
       creditRttMsP50: null,
       heapBytes: 0,
+      carrier: null,
     });
 
     const b = createRenderStreamClient({

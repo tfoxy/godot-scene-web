@@ -69,8 +69,9 @@
 // and taps are unchanged. GRC_LIVE_CARRIERS (comma list, default `ws`) names the carriers to
 // start (`carriers-invalid` for a malformed list, `carrier-unregistered` for a name neither
 // built in nor registered). GRC_LIVE_MAX_CONNECTIONS is a total across carriers (D6).
-// evidence/live-carriers.json (render-stream-live-carriers/1) records each carrier at listen and
-// again at stop.
+// evidence/live-carriers.json (render-stream-live-carriers/1) records each carrier at listen, rewrites
+// atomically on every connection open or close (CAR8), and again at stop. The per-connection
+// `carrier` is a field of each `open` line in the live log, live.jsonl (rs_live.cpp).
 //
 // WebTransport (CAR3, carrier-design.md D8, D9, D11, Q4): `wt` in GRC_LIVE_CARRIERS loads the net
 // module (rs_net_module.h: GRC_LIVE_NET_MODULE, else librender_stream_net.so beside this .so;
@@ -1766,6 +1767,18 @@ void emit_live_carriers() {
   }
 }
 
+// CAR8: the same file, rewritten atomically (temp file, then rename) so a reader never sees a
+// torn document. live_drain calls it from the frame callback after any connection open or close,
+// so a seat that dies keeps the counts as of its last connection change.
+void refresh_live_carriers() {
+  if (!g_state.evidence_ready || g_live.carriers == nullptr) return;
+  const std::string path = path_join(g_state.evidence_dir, "live-carriers.json");
+  const std::string tmp = path + ".tmp";
+  if (!write_file(tmp, g_live.carriers->carriers_json()) || std::rename(tmp.c_str(), path.c_str()) != 0) {
+    log_line("could not refresh " + path);
+  }
+}
+
 // HC4a test knob: GRC_HC_SHADOW=1, read at stream start (the shadow oracle).
 bool g_hc_shadow = false;
 // HC4b: the first budget or serving shadow-oracle difference (GRC_HC_SHADOW=1).
@@ -3091,7 +3104,9 @@ void live_drain(uint64_t frame) {
     return;
   }
   g_live.hub->sync();  // HC5: the previous callback's formation jobs, completed first
+  bool connections_changed = false;
   for (const live::Event &event : g_live.carriers->take_events()) {
+    if (event.kind == live::Event::Opened || event.kind == live::Event::Closed) connections_changed = true;
     if (event.kind == live::Event::HttpGet && event.method == "OPTIONS") {
       // G7n: a CORS preflight the server answered (204), counted per host (and, with one
       // connection open, per connection) apart from GETs, and logged as an http-get hook-log line
@@ -3150,6 +3165,7 @@ void live_drain(uint64_t frame) {
     }
     g_live.hub->on_event(rs2::to_live_event(event), frame);
   }
+  if (connections_changed) refresh_live_carriers();
 }
 
 // The end of the linger: close whatever is still open with 1000, stop the

@@ -245,9 +245,9 @@ struct ServerConfig {
 bool constant_time_equals(std::string_view a, std::string_view b);
 
 // G7n (gate7-design.md Q3): parses GRC_LIVE_ALLOWED_ORIGINS, a comma list (spaces around an entry
-// are ignored; empty text is the empty list). Every entry must be exactly `scheme://host:port` as
-// a browser serializes an Origin: a lowercase scheme ([a-z][a-z0-9+.-]*), a lowercase host
-// ([a-z0-9.-]+, or a bracketed IPv6 literal of [0-9a-f:.]) and a decimal port 1..65535 without a
+// are ignored; empty text is the empty list). Every entry must be exactly `scheme://host[:port]` as
+// a browser serializes an Origin (the port is absent for a scheme's default port, CAR8): a lowercase scheme ([a-z][a-z0-9+.-]*), a lowercase host
+// ([a-z0-9.-]+, or a bracketed IPv6 literal of [0-9a-f:.]) and, when present, a decimal port 1..65535 without a
 // leading zero -- no path, query, fragment, userinfo or trailing slash. Returns false with
 // *error naming the first bad entry (and leaves *out empty) on anything else.
 bool parse_allowed_origins(std::string_view text, std::vector<std::string> *out, std::string *error);

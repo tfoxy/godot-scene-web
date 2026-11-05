@@ -125,6 +125,7 @@ export class FakeTransport implements RenderStreamTransport {
   readonly sent: Record<string, unknown>[] = [];
   closed: { code: number; reason: string } | null = null;
   closes = 0;
+  carrier: "websocket" | "webtransport" | undefined;
   readonly gets: {
     path: string;
     resolve: (s: number) => void;

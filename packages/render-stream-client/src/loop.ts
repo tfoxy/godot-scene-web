@@ -69,6 +69,9 @@ export interface RenderStreamStats {
   creditRttMsP50: number | null;
   /** The wasm instance's memory (0 after dispose). */
   heapBytes: number;
+  /** The open connection's carrier, or null while not connected (or on a custom transport
+   * that does not name one). */
+  carrier: "websocket" | "webtransport" | null;
 }
 
 /** The frame and timer functions the loop runs on (the page's, or a test's). */
@@ -282,6 +285,10 @@ export class StreamLoop {
       appliesPerSec: perSec,
       creditRttMsP50: p50,
       heapBytes: this.o.core.heapBytes(),
+      carrier:
+        this.conn?.opened && this.conn.closeInfo === null
+          ? (this.conn.transport?.carrier ?? null)
+          : null,
     };
   }
 

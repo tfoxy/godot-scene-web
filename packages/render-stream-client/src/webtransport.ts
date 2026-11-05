@@ -286,6 +286,7 @@ export function createWebTransportTransport(
     );
 
     return {
+      carrier: "webtransport",
       send(text) {
         if (writer === null || clientClosing) return;
         const body = new TextEncoder().encode(text);

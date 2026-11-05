@@ -54,6 +54,15 @@ describe("render-stream client loop", () => {
     expect(h.loop.stats().applied).toBe(1);
   });
 
+  it("stats().carrier names the open connection's carrier, else null", () => {
+    const h = streaming(2);
+    expect(h.loop.stats().carrier).toBeNull();
+    h.last().carrier = "webtransport";
+    expect(h.loop.stats().carrier).toBe("webtransport");
+    h.last().on.close(1006, "gone");
+    expect(h.loop.stats().carrier).toBeNull();
+  });
+
   it("window 2: queued transactions apply in one callback, each acked in order", () => {
     const h = streaming(2);
     const t = h.last();

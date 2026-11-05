@@ -162,6 +162,7 @@ const EMPTY_STATS: RenderStreamStats = Object.freeze({
   appliesPerSec: 0,
   creditRttMsP50: null,
   heapBytes: 0,
+  carrier: null,
 });
 
 class Client implements RenderStreamClient {

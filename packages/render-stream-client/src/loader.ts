@@ -18,6 +18,7 @@
 // client calls (abi.ts `CLIENT_CORE_METHODS`).
 
 import { CLIENT_CORE_METHODS, type GswRsModule } from "./abi";
+import { sha256 } from "./sha256";
 
 /** Where the core is served: build-web.sh's three files, at two (or three) static URLs. */
 export interface RenderStreamCore {
@@ -58,7 +59,7 @@ interface GlueFactoryModule {
 const compiled = new Map<string, Promise<WebAssembly.Module>>();
 const factories = new Map<string, Promise<() => GswRsModule>>();
 
-const hex = (bytes: ArrayBuffer): string =>
+const hex = (bytes: ArrayBuffer | Uint8Array): string =>
   Array.from(new Uint8Array(bytes), (b) =>
     b.toString(16).padStart(2, "0"),
   ).join("");
@@ -100,7 +101,12 @@ function compileOnce(
       if (!res.ok)
         throw new CoreLoadError(`GET ${wasmUrl}: HTTP ${res.status}`);
       const bytes = await res.arrayBuffer();
-      const sha = hex(await crypto.subtle.digest("SHA-256", bytes));
+      const sha = hex(
+        // `crypto.subtle` exists only in secure contexts; a plain-http LAN page uses the fallback.
+        globalThis.crypto?.subtle
+          ? await crypto.subtle.digest("SHA-256", bytes)
+          : sha256(bytes),
+      );
       if (sha !== build.wasm_sha256)
         throw new CoreLoadError(
           `stale core: ${wasmUrl} has sha256 ${sha}, its build.json names ${build.wasm_sha256}`,

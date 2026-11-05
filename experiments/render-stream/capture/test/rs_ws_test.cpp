@@ -1582,7 +1582,15 @@ void test_g7n_parse_allowed_origins() {
                                          &error) &&
             out.size() == 3 && out[1] == "https://localhost:8443" && out[2] == "http://[::1]:80",
         "a comma list, spaces trimmed, an IPv6 literal");
-  for (const char *bad : {"http://127.0.0.1", "http://127.0.0.1:5173/", "http://127.0.0.1:5173/x",
+  // CAR8: portless origins, as a browser serializes a default-port Origin.
+  check(grc::live::parse_allowed_origins("https://example.com, http://[::1],http://127.0.0.1", &out, &error) &&
+            out.size() == 3 && out[0] == "https://example.com" && out[1] == "http://[::1]" &&
+            out[2] == "http://127.0.0.1",
+        "portless origins accepted");
+  for (const char *bad : {"https://example.com/", "https://example.com/x", "HTTPS://example.com",
+                          "https://Example.com", "https://example.com:0", "http://", "http://:", "http://host:",
+                          "http://[::1]x", "http://[::1]/", "http://a@b", "https://example.com?q", "https://exa mple.com",
+                          "http://127.0.0.1:5173/", "http://127.0.0.1:5173/x",
                           "127.0.0.1:5173", "http://:5173", "HTTP://127.0.0.1:5173", "http://Host:1",
                           "http://127.0.0.1:0", "http://127.0.0.1:65536", "http://127.0.0.1:05173",
                           "http://a@b:1", "http://127.0.0.1:5173,", "http://[::1:80", "*", "null",

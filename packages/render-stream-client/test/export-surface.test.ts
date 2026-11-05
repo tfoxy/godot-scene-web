@@ -34,3 +34,15 @@ describe("@godot-scene-web/render-stream-client export surface", () => {
     expect(parsed.types.sort()).toEqual([...TYPE_EXPORTS].sort());
   });
 });
+
+describe("RenderStreamStats", () => {
+  it("names the connection's carrier (CAR8)", () => {
+    const carrier: client.RenderStreamStats["carrier"] = null;
+    const named: client.RenderStreamStats["carrier"][] = [
+      "websocket",
+      "webtransport",
+      carrier,
+    ];
+    expect(named).toHaveLength(3);
+  });
+});

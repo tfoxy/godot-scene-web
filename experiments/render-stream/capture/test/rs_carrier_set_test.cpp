@@ -388,7 +388,10 @@ void test_resources_and_services() {
   CarrierServices s;
   s.resources = &source;
   s.auth_token = "secret";
-  s.allowed_origins = {"http://127.0.0.1:8080"};
+  // CAR8: a portless entry parses and is matched exactly -- the same check rs-net's wt calls.
+  std::string origin_error;
+  check(grc::live::parse_allowed_origins("http://127.0.0.1:8080,https://example.com", &s.allowed_origins, &origin_error),
+        "portless origin parses");
   s.config["listen"] = "127.0.0.1:0";
   auto p = make_fakes(4, CarrierSet::Sabotage::None, s);
   const grc_carrier_host_v1 *host = p->b.host;
@@ -404,6 +407,8 @@ void test_resources_and_services() {
   check(host->origin_ok(host->host, "", 0) == 1, "host: no origin");
   check(host->origin_ok(host->host, "http://127.0.0.1:8080", 21) == 1, "host: allowed origin");
   check(host->origin_ok(host->host, "http://evil:1", 13) == 0, "host: foreign origin");
+  check(host->origin_ok(host->host, "https://example.com", 19) == 1, "host: portless allowed origin");
+  check(host->origin_ok(host->host, "https://example.com:443", 23) == 0, "host: portless entry is exact");
   grc_buf buf{};
   check(host->lookup(host->host, h.data(), GRC_CODING_IDENTITY, &buf) == 1 && buf.len == 3 &&
             buf.data[0] == 5,

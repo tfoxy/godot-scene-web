@@ -352,7 +352,7 @@ bool constant_time_equals(std::string_view a, std::string_view b) {
 
 namespace {
 
-// One `scheme://host:port` origin, exactly as parse_allowed_origins documents (rs_ws.h).
+// One `scheme://host[:port]` origin, exactly as parse_allowed_origins documents (rs_ws.h).
 bool valid_origin(const std::string &entry) {
   const std::size_t sep = entry.find("://");
   if (sep == std::string::npos || sep == 0) return false;
@@ -370,16 +370,19 @@ bool valid_origin(const std::string &entry) {
       const char ch = rest[i];
       if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || ch == ':' || ch == '.')) return false;
     }
-    if (close + 1 >= rest.size() || rest[close + 1] != ':') return false;
+    if (close + 1 == rest.size()) return true;  // CAR8: portless, a default-port Origin
+    if (rest[close + 1] != ':') return false;
     port_colon = close + 1;
   } else {
     port_colon = rest.find(':');
-    if (port_colon == std::string::npos || port_colon == 0) return false;
-    for (std::size_t i = 0; i < port_colon; ++i) {
+    if (port_colon == 0 || rest.empty()) return false;
+    const std::size_t host_end = port_colon == std::string::npos ? rest.size() : port_colon;
+    for (std::size_t i = 0; i < host_end; ++i) {
       const char ch = rest[i];
       if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '.' || ch == '-')) return false;
     }
   }
+  if (port_colon == std::string::npos) return true;  // CAR8: portless, a default-port Origin
   const std::string port = rest.substr(port_colon + 1);
   if (port.empty() || port.size() > 5 || port[0] == '0') return false;
   for (char ch : port) {
@@ -403,7 +406,7 @@ bool parse_allowed_origins(std::string_view text, std::vector<std::string> *out,
         trim(all.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
     if (!valid_origin(entry)) {
       if (error != nullptr) {
-        *error = "\"" + entry + "\" is not an exact scheme://host:port origin";
+        *error = "\"" + entry + "\" is not an exact scheme://host[:port] origin";
       }
       return false;
     }
