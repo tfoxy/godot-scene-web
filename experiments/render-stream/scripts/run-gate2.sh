@@ -683,7 +683,7 @@ run_g2e() {
 	if [ -n "$GATE7_LIVE_KIND" ]; then
 		echo "run-gate2: origin-refused (the page from a non-allowed origin)"
 		start_live_host "$OUT/origin-refused/host"
-		GATE7_PAGE_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+		GATE7_PAGE_PORT="$(legs_free_port)"
 		echo "run-gate2: origin-refused page origin http://127.0.0.1:$GATE7_PAGE_PORT (allowed: http://127.0.0.1:$GATE7_HARNESS_PORT)"
 		g2c_receiver "$OUT/origin-refused" headless
 		finish_bg "$OUT/origin-refused/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"

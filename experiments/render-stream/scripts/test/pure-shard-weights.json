@@ -14,6 +14,7 @@
     "self-test-device-harness": 13.6,
     "self-test-fast-frames": 0.4,
     "self-test-fast-frames-checks": 0.9,
+    "self-test-free-port": 2.2,
     "self-test-gate0": 54.5,
     "self-test-gate1": 573,
     "self-test-gate2": 707,

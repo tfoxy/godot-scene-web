@@ -2064,7 +2064,7 @@ run_g8tag2_leg() {
 	shift 5
 	local host="$dir/host"
 	mkdir -p "$host/evidence" "$host/tap"
-	page="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+	page="$(legs_free_port)"
 	LEG_ENV=(
 		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
 		GRC_EVIDENCE_DIR="$host/evidence" GRC_STREAM_VERSION=13 GRC_ROOT_SIZE="presentation:${PRES:-640x360}"
@@ -2146,7 +2146,7 @@ run_g8rec1_leg() {
 	local dir="$OUT/g8rec1/$1" waited=0 port="" page pid rc
 	local host="$dir/host"
 	mkdir -p "$host/evidence" "$host/tap"
-	page="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+	page="$(legs_free_port)"
 	LEG_ENV=(
 		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
 		GRC_EVIDENCE_DIR="$host/evidence" GRC_STREAM_VERSION=13 GRC_ROOT_SIZE="presentation:${PRES:-640x360}"

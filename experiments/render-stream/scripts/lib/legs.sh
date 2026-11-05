@@ -150,6 +150,36 @@ gate0_tool() {
 	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/gate0-tool.ts" "$@")
 }
 
+# legs_free_port: prints a free loopback TCP port for a server whose port must be named before it
+# binds (a page origin in a host's GRC_LIVE_ALLOWED_ORIGINS, say). It is picked BELOW the kernel's
+# ephemeral range (net.ipv4.ip_local_port_range): a bind(0) pick is released at once and comes from
+# the pool every later bind(0) and connect() draws from, so the host's own GRC_LIVE_LISTEN=127.0.0.1:0 or an
+# outgoing connection could take it before the page server binds (g8tag2's EADDRINUSE). Below the
+# range only another explicit pick can collide; a random port plus a bind probe makes that rare. A
+# range with no room below it falls back to bind(0). LEGS_PORT_RANGE_FILE replaces the /proc file
+# (test/self-test-free-port.sh).
+legs_free_port() {
+	python3 -c '
+import random, socket, sys
+try:
+    low = int(open(sys.argv[1]).read().split()[0])
+except (OSError, ValueError, IndexError):
+    low = 32768
+for port in [random.randrange(10000, low) for _ in range(64)] if low > 10000 else []:
+    with socket.socket() as s:
+        try:
+            s.bind(("127.0.0.1", port))
+        except OSError:
+            continue
+    print(port)
+    break
+else:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        print(s.getsockname()[1])
+' "${LEGS_PORT_RANGE_FILE:-/proc/sys/net/ipv4/ip_local_port_range}"
+}
+
 # --------------------------------------------------------------------------------------------
 # G7l (gate7-design.md Q4 "Live client", Q8): browser receivers inside the gate's own runner.
 # With GATE7_LIVE_KIND=web|gsw in the runner's environment (never an RS_/GRC_ name: those are
@@ -193,10 +223,10 @@ if [ -n "$GATE7_LIVE_KIND" ]; then
 	fi
 	GATE7_BUNDLE_DIR="$(realpath "$GATE7_BUNDLE_DIR")"
 	if [ -z "${GATE7_HARNESS_PORT:-}" ]; then
-		GATE7_HARNESS_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+		GATE7_HARNESS_PORT="$(legs_free_port)"
 	fi
 	if [ -z "${GATE7_HOST_PORT:-}" ]; then
-		GATE7_HOST_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+		GATE7_HOST_PORT="$(legs_free_port)"
 	fi
 	LIVE_RECEIVED_NAME="received.rs7"
 	echo "$LEGS_LOG: GATE7_LIVE_KIND=$GATE7_LIVE_KIND: live receivers run in a browser (bundle $GATE7_BUNDLE_DIR, web fetch ${GATE7_WEB_FETCH:-fetch}, page origin http://127.0.0.1:$GATE7_HARNESS_PORT)"
