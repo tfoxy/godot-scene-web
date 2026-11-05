@@ -1,0 +1,105 @@
+{
+  "description": "magnify_gesture, pan_gesture and action records (host-gated kinds).",
+  "vectors": [
+    {
+      "name": "magnify",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"magnify_gesture\",\"position\":[10,10],\"factor\":1.1,\"ctrl_pressed\":true}]}",
+      "ok": true
+    },
+    {
+      "name": "magnify factor 1 is a default",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"magnify_gesture\",\"position\":[10,10],\"factor\":1}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"magnify_gesture\",\"position\":[10,10]}]}"
+    },
+    {
+      "name": "pan",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"pan_gesture\",\"position\":[10,10],\"delta\":[0,-2.5]}]}",
+      "ok": true
+    },
+    {
+      "name": "magnify factor negative",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"magnify_gesture\",\"position\":[10,10],\"factor\":-1}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].factor"
+    },
+    {
+      "name": "pan position missing",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"pan_gesture\",\"delta\":[1,1]}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].position"
+    },
+    {
+      "name": "action press, strength 1 is a default",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"action\",\"action\":\"ui_accept\",\"pressed\":true,\"strength\":1}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"action\",\"action\":\"ui_accept\",\"pressed\":true}]}"
+    },
+    {
+      "name": "analog action",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"action\",\"action\":\"move_right\",\"pressed\":true,\"strength\":0.5}]}",
+      "ok": true
+    },
+    {
+      "name": "action names may be any text",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"action\",\"action\":\"Ação / ジャンプ\",\"pressed\":false}]}",
+      "ok": true
+    },
+    {
+      "name": "action name empty",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"action\",\"action\":\"\",\"pressed\":true}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].action"
+    },
+    {
+      "name": "action name with a newline",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"action\",\"action\":\"a\\nb\",\"pressed\":true}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].action"
+    },
+    {
+      "name": "action name of 129 bytes",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"action\",\"action\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"pressed\":true}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].action"
+    },
+    {
+      "name": "action name of 128 bytes",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"action\",\"action\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"pressed\":true}]}",
+      "ok": true
+    },
+    {
+      "name": "action name of 65 three-byte characters (195 bytes)",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"action\",\"action\":\"あああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああ\",\"pressed\":true}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].action"
+    },
+    {
+      "name": "action missing",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"action\",\"pressed\":true}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].action"
+    },
+    {
+      "name": "action pressed missing",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"action\",\"action\":\"ui_accept\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].pressed"
+    },
+    {
+      "name": "strength above 1",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"action\",\"action\":\"a\",\"pressed\":true,\"strength\":2}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].strength"
+    }
+  ]
+}

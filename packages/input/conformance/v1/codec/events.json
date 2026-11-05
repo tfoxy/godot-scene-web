@@ -1,0 +1,145 @@
+{
+  "description": "events: header, batch bounds, atomic reject, unknown kinds.",
+  "vectors": [
+    {
+      "name": "one key press",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"}]}"
+    },
+    {
+      "name": "64 records",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":false}]}",
+      "ok": true
+    },
+    {
+      "name": "65 records",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true},{\"event\":\"joypad_button\",\"pressed\":true}]}",
+      "ok": false,
+      "code": "too-many-events",
+      "path": "events"
+    },
+    {
+      "name": "empty events",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events"
+    },
+    {
+      "name": "events missing",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events"
+    },
+    {
+      "name": "events not an array",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"}}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events"
+    },
+    {
+      "name": "epoch missing",
+      "text": "{\"type\":\"events\",\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "epoch"
+    },
+    {
+      "name": "seq missing",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "seq"
+    },
+    {
+      "name": "seq 2^53 is out of range",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":9007199254740992,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "seq"
+    },
+    {
+      "name": "seq 2^53-1 is in range",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":9007199254740991,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"}]}",
+      "ok": true
+    },
+    {
+      "name": "seq checked before events",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":-1,\"events\":[]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "seq"
+    },
+    {
+      "name": "atomic reject: a valid record then an invalid one",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"},{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":false,\"code\":\"KeyW\",\"location\":3}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[1].location"
+    },
+    {
+      "name": "the first invalid record wins",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"},{\"event\":\"joypad_button\",\"device\":99,\"pressed\":true},{\"event\":\"mouse_button\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[1].device"
+    },
+    {
+      "name": "an unknown record kind is skipped and counted",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"},{\"event\":\"midi\",\"channel\":1},{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":false,\"code\":\"KeyW\"}]}",
+      "ok": true,
+      "skipped": 1,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"},{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":false,\"code\":\"KeyW\"}]}"
+    },
+    {
+      "name": "records of unknown kinds are not validated",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"future\",\"position\":\"nowhere\"},{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"}]}",
+      "ok": true,
+      "skipped": 1,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"}]}"
+    },
+    {
+      "name": "only unknown kinds leaves an empty batch",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"midi\"},{\"event\":\"shortcut\"}]}",
+      "ok": true,
+      "skipped": 2
+    },
+    {
+      "name": "an invalid known record after an unknown one still rejects",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"midi\"},{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":\"yes\",\"code\":\"KeyW\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[1].pressed"
+    },
+    {
+      "name": "a record that is not an object",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"},5]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[1]"
+    },
+    {
+      "name": "a record without event",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"pressed\":true}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].event"
+    },
+    {
+      "name": "event not a string",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":0,\"pressed\":true}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].event"
+    },
+    {
+      "name": "unknown record members are ignored",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\",\"x_future\":1}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"}]}"
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "description": "reset, bye and heartbeat.",
+  "vectors": [
+    {
+      "name": "reset with a reason",
+      "text": "{\"type\":\"reset\",\"epoch\":7,\"seq\":10,\"reason\":\"hidden\"}",
+      "ok": true,
+      "canonical": "{\"type\":\"reset\",\"epoch\":7,\"seq\":10,\"reason\":\"hidden\"}"
+    },
+    {
+      "name": "reset without a reason",
+      "text": "{\"type\":\"reset\",\"epoch\":7,\"seq\":10}",
+      "ok": true
+    },
+    {
+      "name": "bye",
+      "text": "{\"type\":\"bye\",\"epoch\":7,\"seq\":11,\"reason\":\"dispose\"}",
+      "ok": true
+    },
+    {
+      "name": "heartbeat",
+      "text": "{\"type\":\"heartbeat\",\"epoch\":7,\"seq\":12}",
+      "ok": true
+    },
+    {
+      "name": "reason with a space",
+      "text": "{\"type\":\"reset\",\"epoch\":7,\"seq\":10,\"reason\":\"tab hidden\"}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "reason"
+    },
+    {
+      "name": "reason empty",
+      "text": "{\"type\":\"bye\",\"epoch\":7,\"seq\":10,\"reason\":\"\"}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "reason"
+    },
+    {
+      "name": "reset seq missing",
+      "text": "{\"type\":\"reset\",\"epoch\":7}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "seq"
+    },
+    {
+      "name": "bye epoch missing",
+      "text": "{\"type\":\"bye\",\"seq\":1}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "epoch"
+    },
+    {
+      "name": "heartbeat epoch fractional",
+      "text": "{\"type\":\"heartbeat\",\"epoch\":0.5,\"seq\":1}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "epoch"
+    }
+  ]
+}

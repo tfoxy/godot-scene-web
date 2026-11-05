@@ -1,0 +1,103 @@
+{
+  "description": "joypad_button and joypad_motion records.",
+  "vectors": [
+    {
+      "name": "button A on slot 1: button_index 0 is a default",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_button\",\"device\":1,\"button_index\":0,\"pressed\":true}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_button\",\"device\":1,\"pressed\":true}]}"
+    },
+    {
+      "name": "button release, slot 0",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_button\",\"device\":0,\"button_index\":6,\"pressed\":false}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_button\",\"button_index\":6,\"pressed\":false}]}"
+    },
+    {
+      "name": "button 127 on slot 15",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_button\",\"device\":15,\"button_index\":127,\"pressed\":true}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_button\",\"device\":15,\"button_index\":127,\"pressed\":true}]}"
+    },
+    {
+      "name": "left stick x",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_motion\",\"device\":0,\"axis\":0,\"axis_value\":-0.7344}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_motion\",\"axis_value\":-0.7344}]}"
+    },
+    {
+      "name": "right trigger fully pressed",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_motion\",\"axis\":5,\"axis_value\":1}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_motion\",\"axis\":5,\"axis_value\":1}]}"
+    },
+    {
+      "name": "an axis back at rest has every field default",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_motion\",\"axis\":0,\"axis_value\":0}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_motion\"}]}"
+    },
+    {
+      "name": "axis 9 and value -1",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_motion\",\"axis\":9,\"axis_value\":-1}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_motion\",\"axis\":9,\"axis_value\":-1}]}"
+    },
+    {
+      "name": "device 16",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_button\",\"device\":16,\"button_index\":0,\"pressed\":true}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].device"
+    },
+    {
+      "name": "button_index 128",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_button\",\"device\":1,\"button_index\":128,\"pressed\":true}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].button_index"
+    },
+    {
+      "name": "button_index -1 (JoyButton.INVALID)",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_button\",\"device\":1,\"button_index\":-1,\"pressed\":true}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].button_index"
+    },
+    {
+      "name": "button pressed missing",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_button\",\"button_index\":0}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].pressed"
+    },
+    {
+      "name": "axis 10",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_motion\",\"device\":0,\"axis\":10,\"axis_value\":-0.7344}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].axis"
+    },
+    {
+      "name": "axis_value above 1",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_motion\",\"device\":0,\"axis\":0,\"axis_value\":1.0001}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].axis_value"
+    },
+    {
+      "name": "axis_value not a number",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_motion\",\"device\":0,\"axis\":0,\"axis_value\":\"0.5\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].axis_value"
+    },
+    {
+      "name": "axis_value overflowing to infinity",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"joypad_motion\",\"axis_value\":1e400}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].axis_value"
+    }
+  ]
+}

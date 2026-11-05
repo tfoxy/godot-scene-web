@@ -1,0 +1,186 @@
+{
+  "description": "hello: format, source, epoch, seq, kinds.",
+  "vectors": [
+    {
+      "name": "minimal hello",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193}",
+      "ok": true,
+      "canonical": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193}"
+    },
+    {
+      "name": "hello with seq and kinds",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193,\"seq\":0,\"kinds\":[\"key\",\"joypad_button\",\"joypad_motion\"]}",
+      "ok": true,
+      "canonical": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193,\"kinds\":[\"key\",\"joypad_button\",\"joypad_motion\"]}"
+    },
+    {
+      "name": "a nonzero hello seq is kept",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193,\"seq\":5}",
+      "ok": true,
+      "canonical": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193,\"seq\":5}"
+    },
+    {
+      "name": "an empty kinds list is omitted",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193,\"kinds\":[]}",
+      "ok": true,
+      "canonical": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193}"
+    },
+    {
+      "name": "unknown kind names are allowed in kinds",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193,\"kinds\":[\"key\",\"future_kind\"]}",
+      "ok": true,
+      "canonical": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193,\"kinds\":[\"key\",\"future_kind\"]}"
+    },
+    {
+      "name": "epoch 0 and 4294967295 are u32",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":4294967295}",
+      "ok": true,
+      "canonical": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":4294967295}"
+    },
+    {
+      "name": "source uses the whole charset",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"a-Z_0.9:x\",\"epoch\":2840193}",
+      "ok": true,
+      "canonical": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"a-Z_0.9:x\",\"epoch\":2840193}"
+    },
+    {
+      "name": "format gsw-input/2",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/2\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193}",
+      "ok": false,
+      "code": "unsupported-format",
+      "path": "format"
+    },
+    {
+      "name": "format missing",
+      "text": "{\"type\":\"hello\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "format"
+    },
+    {
+      "name": "format not a string",
+      "text": "{\"type\":\"hello\",\"format\":1,\"source\":\"k3P9xQ2m\",\"epoch\":2840193}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "format"
+    },
+    {
+      "name": "format is checked before source",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/2\",\"source\":\"\",\"epoch\":2840193}",
+      "ok": false,
+      "code": "unsupported-format",
+      "path": "format"
+    },
+    {
+      "name": "source missing",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"epoch\":2840193}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "source"
+    },
+    {
+      "name": "source empty",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"\",\"epoch\":2840193}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "source"
+    },
+    {
+      "name": "source of 65 characters",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"epoch\":2840193}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "source"
+    },
+    {
+      "name": "source of 64 characters",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"epoch\":2840193}",
+      "ok": true,
+      "canonical": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"epoch\":2840193}"
+    },
+    {
+      "name": "source with a space",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"a b\",\"epoch\":2840193}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "source"
+    },
+    {
+      "name": "source with a slash",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"a/b\",\"epoch\":2840193}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "source"
+    },
+    {
+      "name": "epoch missing",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\"}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "epoch"
+    },
+    {
+      "name": "epoch negative",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":-1}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "epoch"
+    },
+    {
+      "name": "epoch 2^32",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":4294967296}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "epoch"
+    },
+    {
+      "name": "epoch not an integer",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":1.5}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "epoch"
+    },
+    {
+      "name": "epoch as a string",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":\"1\"}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "epoch"
+    },
+    {
+      "name": "seq negative",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193,\"seq\":-1}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "seq"
+    },
+    {
+      "name": "kinds not an array",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193,\"kinds\":\"key\"}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "kinds"
+    },
+    {
+      "name": "kinds with 33 entries",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193,\"kinds\":[\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\",\"key\"]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "kinds"
+    },
+    {
+      "name": "kinds entry not a kind name",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193,\"kinds\":[\"key\",\"Key\"]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "kinds[1]"
+    },
+    {
+      "name": "kinds entry not a string",
+      "text": "{\"type\":\"hello\",\"format\":\"gsw-input/1\",\"source\":\"k3P9xQ2m\",\"epoch\":2840193,\"kinds\":[1]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "kinds[0]"
+    }
+  ]
+}

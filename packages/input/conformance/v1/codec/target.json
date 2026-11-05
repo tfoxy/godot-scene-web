@@ -1,0 +1,194 @@
+{
+  "description": "Pointer target declarations and targeted pointer records.",
+  "vectors": [
+    {
+      "name": "full declaration",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":3,\"path\":\"Hand/Card2\",\"scene\":\"res://scenes/combat.tscn\",\"class\":\"Control\",\"item\":812}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":3,\"path\":\"Hand/Card2\",\"scene\":\"res://scenes/combat.tscn\",\"class\":\"Control\",\"item\":812}]}"
+    },
+    {
+      "name": "declaration with only an item",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"item\":0}]}",
+      "ok": true
+    },
+    {
+      "name": "declaration with only an absolute path",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1023,\"path\":\"/root/Main/Button\"}]}",
+      "ok": true
+    },
+    {
+      "name": "re-declaring a handle in one batch is legal",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"item\":5},{\"event\":\"target\",\"handle\":1,\"item\":6}]}",
+      "ok": true
+    },
+    {
+      "name": "declaration then a targeted press",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":3,\"path\":\"Hand/Card2\",\"scene\":\"res://scenes/combat.tscn\",\"class\":\"Control\",\"item\":812},{\"event\":\"mouse_button\",\"button_index\":1,\"pressed\":true,\"position\":[512.5,300],\"button_mask\":1,\"target\":3,\"local\":[12,40.5],\"frame\":1907}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":3,\"path\":\"Hand/Card2\",\"scene\":\"res://scenes/combat.tscn\",\"class\":\"Control\",\"item\":812},{\"event\":\"mouse_button\",\"button_index\":1,\"pressed\":true,\"position\":[512.5,300],\"button_mask\":1,\"target\":3,\"local\":[12,40.5],\"frame\":1907}]}"
+    },
+    {
+      "name": "targeted motion without frame",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"mouse_motion\",\"position\":[512.5,300],\"relative\":[3,-1.5],\"button_mask\":1,\"target\":3,\"local\":[1,2]}]}",
+      "ok": true
+    },
+    {
+      "name": "motion over no node: target 0 without local",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"mouse_motion\",\"position\":[512.5,300],\"relative\":[3,-1.5],\"button_mask\":1,\"target\":0}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"mouse_motion\",\"position\":[512.5,300],\"relative\":[3,-1.5],\"button_mask\":1,\"target\":0}]}"
+    },
+    {
+      "name": "target 0 with a frame",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"mouse_motion\",\"position\":[512.5,300],\"relative\":[3,-1.5],\"button_mask\":1,\"target\":0,\"frame\":0}]}",
+      "ok": true
+    },
+    {
+      "name": "targeted touch",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_touch\",\"index\":0,\"pressed\":true,\"position\":[100,200],\"target\":3,\"local\":[0,0]}]}",
+      "ok": true
+    },
+    {
+      "name": "targeted drag",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_drag\",\"index\":1,\"position\":[104,190],\"relative\":[4,-10],\"target\":3,\"local\":[-4,2]}]}",
+      "ok": true
+    },
+    {
+      "name": "an undeclared handle is a session concern, not a codec error",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"mouse_motion\",\"position\":[512.5,300],\"relative\":[3,-1.5],\"button_mask\":1,\"target\":9,\"local\":[0,0]}]}",
+      "ok": true
+    },
+    {
+      "name": "target members on a key record are unknown members, ignored",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\",\"target\":3,\"local\":[1,1]}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":87,\"key_label\":87,\"unicode\":119,\"pressed\":true,\"code\":\"KeyW\"}]}"
+    },
+    {
+      "name": "target members on a gesture are ignored",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"pan_gesture\",\"position\":[1,1],\"target\":3}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"pan_gesture\",\"position\":[1,1]}]}"
+    },
+    {
+      "name": "handle 0",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":0,\"path\":\"Hand/Card2\",\"scene\":\"res://scenes/combat.tscn\",\"class\":\"Control\",\"item\":812}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].handle"
+    },
+    {
+      "name": "handle 1024",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1024,\"path\":\"Hand/Card2\",\"scene\":\"res://scenes/combat.tscn\",\"class\":\"Control\",\"item\":812}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].handle"
+    },
+    {
+      "name": "handle missing",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"item\":1}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].handle"
+    },
+    {
+      "name": "scene without path",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"scene\":\"res://a.tscn\",\"item\":2}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].scene"
+    },
+    {
+      "name": "neither path nor item",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"class\":\"Button\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].path"
+    },
+    {
+      "name": "class not an identifier",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":3,\"path\":\"Hand/Card2\",\"scene\":\"res://scenes/combat.tscn\",\"class\":\"3D\",\"item\":812}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].class"
+    },
+    {
+      "name": "path with a newline",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":3,\"path\":\"A\\nB\",\"scene\":\"res://scenes/combat.tscn\",\"class\":\"Control\",\"item\":812}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].path"
+    },
+    {
+      "name": "path of 1025 bytes",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":3,\"path\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"scene\":\"res://scenes/combat.tscn\",\"class\":\"Control\",\"item\":812}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].path"
+    },
+    {
+      "name": "path empty",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":3,\"path\":\"\",\"scene\":\"res://scenes/combat.tscn\",\"class\":\"Control\",\"item\":812}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].path"
+    },
+    {
+      "name": "item negative",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":3,\"path\":\"Hand/Card2\",\"scene\":\"res://scenes/combat.tscn\",\"class\":\"Control\",\"item\":-1}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].item"
+    },
+    {
+      "name": "target 1024",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"mouse_button\",\"button_index\":1,\"pressed\":true,\"position\":[512.5,300],\"button_mask\":1,\"target\":1024,\"local\":[12,40.5],\"frame\":1907}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].target"
+    },
+    {
+      "name": "nonzero target without local",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"mouse_button\",\"button_index\":1,\"pressed\":true,\"position\":[512.5,300],\"target\":3}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].local"
+    },
+    {
+      "name": "target 0 with local",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"mouse_button\",\"button_index\":1,\"pressed\":true,\"position\":[512.5,300],\"target\":0,\"local\":[1,1]}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].local"
+    },
+    {
+      "name": "local without target",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"mouse_button\",\"button_index\":1,\"pressed\":true,\"position\":[512.5,300],\"local\":[1,1]}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].local"
+    },
+    {
+      "name": "frame without target",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"mouse_button\",\"button_index\":1,\"pressed\":true,\"position\":[512.5,300],\"frame\":4}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].frame"
+    },
+    {
+      "name": "local beyond 1e6",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"mouse_button\",\"button_index\":1,\"pressed\":true,\"position\":[512.5,300],\"target\":3,\"local\":[0,2000000]}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].local"
+    },
+    {
+      "name": "frame fractional",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"mouse_button\",\"button_index\":1,\"pressed\":true,\"position\":[512.5,300],\"target\":3,\"local\":[0,0],\"frame\":1.5}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].frame"
+    }
+  ]
+}

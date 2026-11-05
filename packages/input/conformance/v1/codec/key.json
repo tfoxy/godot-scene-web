@@ -1,0 +1,184 @@
+{
+  "description": "key records (InputEventKey).",
+  "vectors": [
+    {
+      "name": "left shift: default flags are omitted",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":4194325,\"keycode\":4194325,\"key_label\":4194325,\"location\":1,\"pressed\":true,\"echo\":false,\"shift_pressed\":false,\"ctrl_pressed\":false,\"alt_pressed\":false,\"meta_pressed\":false,\"code\":\"ShiftLeft\"}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":4194325,\"keycode\":4194325,\"key_label\":4194325,\"location\":1,\"pressed\":true,\"code\":\"ShiftLeft\"}]}"
+    },
+    {
+      "name": "Shift+1: keycode is the unshifted label, key_label and unicode the shifted one",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":49,\"keycode\":49,\"key_label\":33,\"unicode\":33,\"pressed\":true,\"shift_pressed\":true,\"code\":\"Digit1\"}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":49,\"keycode\":49,\"key_label\":33,\"unicode\":33,\"pressed\":true,\"shift_pressed\":true,\"code\":\"Digit1\"}]}"
+    },
+    {
+      "name": "its release replays the press record",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":49,\"keycode\":49,\"key_label\":33,\"unicode\":33,\"pressed\":false,\"shift_pressed\":true,\"code\":\"Digit1\"}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":49,\"keycode\":49,\"key_label\":33,\"unicode\":33,\"pressed\":false,\"shift_pressed\":true,\"code\":\"Digit1\"}]}"
+    },
+    {
+      "name": "echo press",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true,\"echo\":true}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true,\"echo\":true}]}"
+    },
+    {
+      "name": "only physical_keycode",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true}]}"
+    },
+    {
+      "name": "only key_label",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"pressed\":true,\"key_label\":65}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"key_label\":65,\"pressed\":true}]}"
+    },
+    {
+      "name": "all modifiers",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true,\"shift_pressed\":true,\"ctrl_pressed\":true,\"alt_pressed\":true,\"meta_pressed\":true}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true,\"shift_pressed\":true,\"ctrl_pressed\":true,\"alt_pressed\":true,\"meta_pressed\":true}]}"
+    },
+    {
+      "name": "keycode Key.UNKNOWN (0x7FFFFF) is in range",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true,\"keycode\":8388607}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"keycode\":8388607,\"pressed\":true}]}"
+    },
+    {
+      "name": "unicode U+10FFFF is in range",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true,\"unicode\":1114111}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"unicode\":1114111,\"pressed\":true}]}"
+    },
+    {
+      "name": "integral floats are integers",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87.0,\"pressed\":true}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true}]}"
+    },
+    {
+      "name": "echo on a release",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":false,\"echo\":true}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].echo"
+    },
+    {
+      "name": "all three keycodes zero",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":0,\"pressed\":true,\"unicode\":97}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].keycode"
+    },
+    {
+      "name": "no keycode at all",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"pressed\":true}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].keycode"
+    },
+    {
+      "name": "pressed missing",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].pressed"
+    },
+    {
+      "name": "pressed as a string",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":\"true\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].pressed"
+    },
+    {
+      "name": "pressed as 1",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":1}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].pressed"
+    },
+    {
+      "name": "keycode with a modifier mask bit",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true,\"keycode\":33554519}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].keycode"
+    },
+    {
+      "name": "physical_keycode negative",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":-1,\"pressed\":true}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].physical_keycode"
+    },
+    {
+      "name": "physical_keycode fractional",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87.5,\"pressed\":true}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].physical_keycode"
+    },
+    {
+      "name": "unicode above U+10FFFF",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true,\"unicode\":1114112}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].unicode"
+    },
+    {
+      "name": "location 3",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true,\"location\":3}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].location"
+    },
+    {
+      "name": "modifier flag not a boolean",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true,\"ctrl_pressed\":0}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].ctrl_pressed"
+    },
+    {
+      "name": "code with punctuation",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true,\"code\":\"Key-W\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].code"
+    },
+    {
+      "name": "code of 33 characters",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true,\"code\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].code"
+    },
+    {
+      "name": "code empty",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":87,\"pressed\":true,\"code\":\"\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].code"
+    },
+    {
+      "name": "fields are checked in table order",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":-1,\"pressed\":true,\"location\":9}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].physical_keycode"
+    },
+    {
+      "name": "field checks run before cross-field rules",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"key\",\"physical_keycode\":0,\"pressed\":true,\"location\":9}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].location"
+    }
+  ]
+}

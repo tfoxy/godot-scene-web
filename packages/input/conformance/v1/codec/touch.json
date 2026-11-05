@@ -1,0 +1,85 @@
+{
+  "description": "screen_touch and screen_drag records.",
+  "vectors": [
+    {
+      "name": "first finger down: index 0 is a default",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_touch\",\"index\":0,\"pressed\":true,\"position\":[100,200]}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_touch\",\"pressed\":true,\"position\":[100,200]}]}"
+    },
+    {
+      "name": "second finger drag",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_drag\",\"index\":1,\"position\":[104,190],\"relative\":[4,-10]}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_drag\",\"index\":1,\"position\":[104,190],\"relative\":[4,-10]}]}"
+    },
+    {
+      "name": "finger up",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_touch\",\"index\":0,\"pressed\":false,\"position\":[100,200]}]}",
+      "ok": true
+    },
+    {
+      "name": "double tap",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_touch\",\"index\":2,\"pressed\":true,\"position\":[100,200],\"double_tap\":true}]}",
+      "ok": true
+    },
+    {
+      "name": "canceled by pointercancel",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_touch\",\"index\":0,\"pressed\":false,\"position\":[100,200],\"canceled\":true}]}",
+      "ok": true
+    },
+    {
+      "name": "stylus drag with pressure and tilt",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_drag\",\"index\":1,\"position\":[104,190],\"relative\":[4,-10],\"pressure\":0.8,\"tilt\":[0.1,-0.1],\"pen_inverted\":false}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_drag\",\"index\":1,\"position\":[104,190],\"relative\":[4,-10],\"pressure\":0.8,\"tilt\":[0.1,-0.1]}]}"
+    },
+    {
+      "name": "index 31",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_touch\",\"index\":31,\"pressed\":true,\"position\":[100,200]}]}",
+      "ok": true
+    },
+    {
+      "name": "index 32",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_touch\",\"index\":32,\"pressed\":true,\"position\":[100,200]}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].index"
+    },
+    {
+      "name": "touch pressed missing",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_touch\",\"position\":[1,1]}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].pressed"
+    },
+    {
+      "name": "touch position missing",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_touch\",\"pressed\":true}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].position"
+    },
+    {
+      "name": "drag position missing",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_drag\",\"relative\":[1,1]}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].position"
+    },
+    {
+      "name": "drag pressure negative",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_drag\",\"index\":1,\"position\":[104,190],\"relative\":[4,-10],\"pressure\":-0.1}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].pressure"
+    },
+    {
+      "name": "double_tap not a boolean",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"screen_touch\",\"index\":0,\"pressed\":true,\"position\":[100,200],\"double_tap\":\"yes\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].double_tap"
+    }
+  ]
+}
