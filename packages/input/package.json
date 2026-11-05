@@ -1,0 +1,35 @@
+{
+  "name": "@godot-scene-web/input",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "description": "gsw-input/1: Godot-vocabulary keyboard, gamepad and pointer input records, codec and captures.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tfoxy/godot-scene-web.git"
+  },
+  "homepage": "https://github.com/tfoxy/godot-scene-web#readme",
+  "bugs": {
+    "url": "https://github.com/tfoxy/godot-scene-web/issues"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --root ../.. --config ../../vitest.config.ts packages/input/test"
+  }
+}

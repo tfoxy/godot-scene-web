@@ -159,6 +159,8 @@ importers:
         specifier: workspace:*
         version: link:../tscn-parser
 
+  packages/input: {}
+
   packages/layout:
     dependencies:
       '@godot-scene-web/core':

@@ -37,13 +37,14 @@ flowchart TD
 | `html`           | HTML/CSS projection, text, resources, DOM placement, observers, fallback paint and presentation lifecycle                     | root, `/runtime`                    |
 | `canvas`         | Draw lists, batching, clipping, damage/replay, stage presentation and draw execution                                          | root, `/glyphs`                     |
 | `hb-gpu`         | HarfBuzz Slug glyph outlines in a borrowed GL context                                                                         | root                                |
+| `input`          | `gsw-input/1` keyboard, gamepad and pointer records, codec and Godot enum values (DOM-free root; captures to follow)          | root                                |
 | `vue`            | Reactive components and slots over shared HTML presentation and runtime binding                                               | root                                |
 | `test-harness`   | Pure comparisons, browser fact collection and Node parity orchestration                                                       | root, `/browser`, `/parity`         |
 | `perf-harness`   | The shared report contract and separate Node orchestration                                                                    | root or `/report`, `/node`          |
 
 The parser imports core types only, with no workspace runtime dependency. `hb-gpu` has no
-workspace dependencies. Canvas loads it only through the optional glyph adapter. Core and effects
-are typechecked without DOM libraries. Test image metrics live in repository test support;
+workspace dependencies. Canvas loads it only through the optional glyph adapter. Core, effects
+and input are typechecked without DOM libraries. Test image metrics live in repository test support;
 production correctness tools do not import performance probes.
 
 `scene-graph/provenance` centralizes the existing provenance keys. Loaders annotate resources before

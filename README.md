@@ -16,6 +16,7 @@ The parser is deliberately small: it converts `.tscn` and `.tres` text into a Go
 - `@godot-scene-web/hb-gpu`: HarfBuzz Slug glyph-outline renderer.
 - `@godot-scene-web/html`: DOM model and base CSS renderer.
 - `@godot-scene-web/vue`: Vue 3 components over the HTML model.
+- `@godot-scene-web/input` (private for now): `gsw-input/1` keyboard, gamepad and pointer input in Godot's own vocabulary, with its wire codec ([docs/input.md](docs/input.md)).
 - `@godot-scene-web/project`: conditional resolver: fetch-backed in browsers and filesystem-backed in Node. Explicit `/fetch` and `/node` subpaths are also available.
 - `@godot-scene-web/test-harness`: Godot live-tree and browser DOM-tree comparison helpers.
 - `@godot-scene-web/perf-harness`: A/B rendering-mechanism instrument driven by headless Chrome over raw CDP.

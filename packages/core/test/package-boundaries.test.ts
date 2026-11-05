@@ -41,6 +41,7 @@ const allowed: Record<string, string[]> = {
   vue: ["core", "scene-graph", "layout", "html"],
   "hb-gpu": [],
   "render-stream-client": ["effects"],
+  input: [],
 };
 function files(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -180,6 +181,7 @@ describe("package architecture", () => {
   it.each([
     "core/src/index.ts",
     "effects/src/index.ts",
+    "input/src/index.ts",
     "test-harness/src/index.ts",
     "test-harness/src/browser.ts",
     "perf-harness/src/index.ts",
@@ -201,6 +203,27 @@ describe("package architecture", () => {
           file,
         ),
       ),
+    ).toEqual([]);
+  });
+
+  it("bundles the input root entry from its own DOM-free files only", async () => {
+    const result = await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: [join(packagesDir, "input/src/index.ts")],
+      bundle: true,
+      platform: "browser",
+      format: "esm",
+      conditions: ["development"],
+      write: false,
+      metafile: true,
+    });
+    const inputs = Object.keys(result.metafile!.inputs);
+    expect(
+      inputs.filter((file) => !file.startsWith("packages/input/src/")),
+    ).toEqual([]);
+    // The browser captures are subpaths; the root entry must never pull them in.
+    expect(
+      inputs.filter((file) => /\/(keyboard|gamepad|pointer)/.test(file)),
     ).toEqual([]);
   });
 });

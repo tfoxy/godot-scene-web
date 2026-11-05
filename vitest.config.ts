@@ -60,6 +60,11 @@ export default defineConfig({
         "./packages/hb-gpu/src/index.ts",
         import.meta.url,
       ).pathname,
+      // Subpaths (`/keyboard`, `/gamepad`, `/pointer`) go ABOVE this entry when they land: prefix match.
+      "@godot-scene-web/input": new URL(
+        "./packages/input/src/index.ts",
+        import.meta.url,
+      ).pathname,
       "@godot-scene-web/vue": new URL(
         "./packages/vue/src/index.ts",
         import.meta.url,
