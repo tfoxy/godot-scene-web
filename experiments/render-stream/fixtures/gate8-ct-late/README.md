@@ -79,7 +79,9 @@ private 640x360 gamescope.
 - `sabotage-registry-off` (`deferred`, LAR1): under `GRC_ADOPT_FAULT=registry-off` the registry
   records nothing, and both `ctl-registry-source` and `ct-late-adopt` fail.
 - `ct-late-diffuse-uploaded` (GAP2-RX, `deferred`'s receivers): each receiver uploads every
-  adopted canvas texture's diffuse as an image, although no command names the diffuse itself.
+  adopted canvas texture's diffuse as an image, although no command names the diffuse itself. Since
+  LAR8 the receivers have no adopted shortcut: the diffuse is resident because a command names the
+  canvas texture (`ct-adopt-named`).
 - `ct-late-free` (`deferred`): after the free at frame 22 the capture's table drops SPRITE's
   canvas texture and its diffuse and each receiver's transactions at or after the free release a
   texture.

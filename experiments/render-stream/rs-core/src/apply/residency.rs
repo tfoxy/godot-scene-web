@@ -15,9 +15,7 @@
 //! incrementally (per item, from the transaction's delta), so a transaction that names nothing new
 //! costs nothing here.
 
-use crate::state::{
-    EntryStatus, Hash, Id, Origin, ResolvedState, ShaderSource, TextureKind, TxDelta,
-};
+use crate::state::{EntryStatus, Hash, Id, ResolvedState, ShaderSource, TextureKind, TxDelta};
 use std::collections::BTreeSet;
 
 /// The engine's placeholder texture (drivers/gles3/storage/texture_storage.cpp
@@ -168,9 +166,10 @@ impl Names {
     /// P3-CT: bring the canvas-texture closure in line: the named `ok` canvas textures among
     /// `check` (ids whose named-ness or entry may have changed), then, when that set or one of its
     /// entries changed, their diffuses (`upserted`: the transaction's upserted texture ids).
-    /// GAP2-RX: an adopted `ok` canvas texture also names its diffuse even when nothing names the
-    /// canvas texture itself (a late-arm adoption can land before its item's draw is re-linked, or
-    /// the draw was recorded `unknown-texture` before the adoption), so its diffuse is fetched.
+    /// LAR8 (late-arm-registry F2) retired GAP2-RX's "an adopted canvas texture names its diffuse"
+    /// shortcut: an adopted canvas texture is named like any other, by a command, instance
+    /// parameter or material (the capture adopts before the draw's mirror tap, so the adopting draw
+    /// names it: `ct-adopt-named`).
     fn update_canvas(
         &mut self,
         state: &ResolvedState,
@@ -179,14 +178,11 @@ impl Names {
         all: bool,
     ) {
         let mut dirty = all;
-        // A fresh applier (`all`) has an empty `check`, so the first transaction's adopted canvas
-        // textures enter through `upserted` (the whole state, upserted).
-        for id in check.iter().chain(upserted.iter()) {
-            let id = *id;
-            let entry = state.textures.get(&id);
-            let canvas = (self.is_named_directly(id)
-                || entry.is_some_and(|t| t.origin == Origin::Adopted))
-                && entry
+        for id in check {
+            let canvas = self.is_named_directly(id)
+                && state
+                    .textures
+                    .get(&id)
                     .is_some_and(|t| t.kind == TextureKind::Canvas && t.status == EntryStatus::Ok);
             if canvas {
                 dirty |= self.canvas_named.insert(id);

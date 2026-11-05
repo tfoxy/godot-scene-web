@@ -212,7 +212,7 @@ export async function runG8ctsp(
     checks.push(
       check(
         "ct-spine-diffuse-uploaded",
-        "each receiver makes the adopted canvas texture's diffuse resident (an image upload) although no command names it",
+        "each receiver makes the adopted canvas texture's diffuse resident (an image upload) although no command names it: the named canvas texture names it (P3-CT; LAR8 retired GAP2-RX's adopted shortcut)",
         problems,
         `${diffuses.length} diffuses`,
       ),

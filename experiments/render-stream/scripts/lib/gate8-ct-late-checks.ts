@@ -296,7 +296,7 @@ function commandTexture(c: unknown): number | undefined {
 
 /** ct-adopt-named (LAR1, for F2): every adopted canvas texture is named by a command (`tex`) in the
  * transaction that first carries it, so a receiver needs no "adopted names its diffuse" shortcut
- * (GAP2-RX) to make its diffuse resident. At least `minAdopted` must be adopted. */
+ * (GAP2-RX, retired in LAR8) to make its diffuse resident. At least `minAdopted` must be adopted. */
 export function adoptNamedProblems(
   rec: ResolvedRecording | undefined,
   minAdopted: number,
@@ -825,7 +825,7 @@ export async function runG8ctl(
     checks.push(
       check(
         "ct-late-diffuse-uploaded",
-        "each receiver makes every adopted canvas texture's diffuse resident (an image upload), although no command names the diffuse itself: an adopted canvas texture names its diffuse",
+        "each receiver makes every adopted canvas texture's diffuse resident (an image upload), although no command names the diffuse itself: the named canvas texture names it (P3-CT; LAR8 retired GAP2-RX's adopted shortcut)",
         problems,
         `${diffuses.length} diffuses`,
       ),

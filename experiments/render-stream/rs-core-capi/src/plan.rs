@@ -1125,9 +1125,7 @@ impl Planner {
     /// P3-CT: the diffuses of the named `ok` canvas textures (named by an item, or through
     /// `named_now`, the named materials' textures). A canvas texture draws its diffuse, so the
     /// diffuse is named through it although no command names it (render-stream-2.md "Texture").
-    /// GAP2-RX: an adopted `ok` canvas texture also names its diffuse even when nothing names the
-    /// canvas texture itself (a late-arm adoption whose item's draw was recorded before the
-    /// adoption), so its diffuse is fetched.
+    /// LAR8 retired GAP2-RX's adopted shortcut: an adopted canvas texture is named like any other.
     fn canvas_diffuses(
         &self,
         st: &ResolvedState,
@@ -1144,7 +1142,7 @@ impl Planner {
             if e.kind != TextureKind::Canvas || e.status != EntryStatus::Ok {
                 continue;
             }
-            if !named(c) && e.origin != Origin::Adopted {
+            if !named(c) {
                 continue;
             }
             if let Some(d) = e.canvas.as_ref().and_then(|ct| ct.diffuse) {
