@@ -188,6 +188,8 @@
 #include "rs_texture_basis.h"
 #include "rs_texture_delivery.h"
 #include "rs_histogram.h"
+#include "rs_carrier_ext.h"
+#include "rs_carrier_gd.h"
 #include "rs_carrier_set.h"
 #include "rs_net_module.h"
 #include "rs_expose.h"
@@ -360,6 +362,11 @@ struct Live {
   live::WsCarrier *ws = nullptr;
   // CAR3: carrier `wt` (index 1) when GRC_LIVE_CARRIERS lists it, from the net module.
   bool wt_enabled = false;
+  // CAR6: `ws` runs only when GRC_LIVE_CARRIERS lists it (the default list is `ws`).
+  bool ws_enabled = true;
+  // CAR6 (rs_carrier_ext.h): the consumer carriers registered before the arm, handed over when the
+  // registry closed at the arm; the listed ones are moved into the set, the rest destroyed.
+  std::vector<live::RegisteredCarrier> registered;
   const grc_net_module_table_v1 *net_module = nullptr;
   std::string wt_listen;  // GRC_LIVE_WT_LISTEN as given ("" = GRC_LIVE_LISTEN's host and port)
   std::string wt_cert = "self";
@@ -1658,25 +1665,34 @@ void live_decided(const std::string &status, const std::string &reason) {
            (reason.empty() ? std::string() : " (" + reason + ")"));
 }
 
-// CAR1/CAR3 (carrier-design.md D7-D9, D11, Q3): GRC_LIVE_CARRIERS, default `ws`; `wt` loads the
-// net module and reads GRC_LIVE_WT_LISTEN, GRC_LIVE_WT_CERT and GRC_LIVE_TLS_CERT/KEY. Until CAR6
-// (registered carriers) every other name is `carrier-unregistered`; *why is the refusal.
+// CAR1/CAR3/CAR6 (carrier-design.md D7-D9, D11, Q3): GRC_LIVE_CARRIERS, default `ws`; `wt` loads
+// the net module and reads GRC_LIVE_WT_LISTEN, GRC_LIVE_WT_CERT and GRC_LIVE_TLS_CERT/KEY; any
+// other name must be a consumer carrier registered before the arm (g_live.registered), else it is
+// `carrier-unregistered`; *why is the refusal. `ws` starts only when listed (CAR6).
 bool live_carriers_ok(std::string *why) {
   std::vector<std::string> names;
   if (!live::parse_carrier_list(std::getenv("GRC_LIVE_CARRIERS"), &names, why)) {
     return false;
   }
   g_live.wt_enabled = false;
+  g_live.ws_enabled = false;
   for (const std::string &name : names) {
     if (name == "ws") {
+      g_live.ws_enabled = true;
       continue;
     }
     if (name == "wt") {
       g_live.wt_enabled = true;
       continue;
     }
+    // CAR6: a consumer carrier registered before the arm (rs_carrier_ext.h).
+    bool registered = false;
+    for (const live::RegisteredCarrier &r : g_live.registered) registered |= r.name == name;
+    if (registered) {
+      continue;
+    }
     *why = "carrier-unregistered: GRC_LIVE_CARRIERS lists " + name +
-           ", which is neither built in nor registered";
+           ", which is neither built in nor registered before the capture armed";
     return false;
   }
   // D11: the consumer's pair, both or neither. Until CAR4 (wss) it can only serve `wt`.
@@ -1740,7 +1756,24 @@ std::string g_hc_shadow_budget;
 // root-size policy, and writes the session records. A refusal or an open
 // failure leaves the mirror off and publishes nothing; arming itself is
 // unaffected.
+// CAR6 (rs_carrier_ext.h): destroys every registered consumer carrier the set did not take.
+void ext_carriers_drop_unstarted() {
+  for (live::RegisteredCarrier &r : g_live.registered) {
+    log_line("live: carrier " + r.name + " (index " + std::to_string(r.index) +
+             ") registered but not started (GRC_LIVE_CARRIERS does not list it, or live is off)");
+    r.vtable.destroy(r.vtable.self);
+  }
+  g_live.registered.clear();
+}
+
 void stream_start() {
+  // CAR6 (carrier-design.md "Registration timing"): registration closes at the arm, whatever the
+  // stream and live do next; a later grc_carrier_register returns -1 (`carrier-late`). Whatever
+  // the set does not take is destroyed when this returns.
+  g_live.registered = live::carrier_registry().close();
+  struct DropUnstarted {
+    ~DropUnstarted() { ext_carriers_drop_unstarted(); }
+  } drop_unstarted;
   const bool files = !g_stream.path.empty() || !g_stream.patch_path.empty();
   if (!files && g_live.listen.empty()) {
     return;
@@ -2910,22 +2943,60 @@ void stream_start() {
       }
       g_live.carriers = std::make_unique<live::CarrierSet>(
           static_cast<std::size_t>(live_max_connections), std::move(services));
-      auto ws = std::make_unique<live::WsCarrier>(server_config, g_live.served.get(), 2000);
-      g_live.ws = ws.get();
-      if (!g_live.carriers->add(live::kCarrierWs, std::move(ws), &error)) {
-        g_live.ws = nullptr;
+      bool added = false;
+      if (g_live.ws_enabled) {
+        auto ws = std::make_unique<live::WsCarrier>(server_config, g_live.served.get(), 2000);
+        g_live.ws = ws.get();
+        if (g_live.carriers->add(live::kCarrierWs, std::move(ws), &error)) {
+          added = true;
+        } else {
+          g_live.ws = nullptr;
+        }
       }
       // CAR3 (carrier-design.md D8, D9, Q4): carrier `wt`, index 1, from the net module. A
-      // failure to make it is recorded like a failed start; `ws` still serves.
-      if (g_live.ws != nullptr && g_live.wt_enabled) {
+      // failure to make it is recorded like a failed start; the others still serve.
+      if (g_live.wt_enabled) {
         std::string wt_error;
         std::unique_ptr<live::NetWtCarrier> wt = live::NetWtCarrier::create(g_live.net_module, &wt_error);
         if (wt == nullptr || !g_live.carriers->add(live::kCarrierWt, std::move(wt), &wt_error)) {
           log_line("live: wt not added (" + wt_error + ")");
+        } else {
+          added = true;
         }
       }
+      // CAR6 (carrier-design.md D5, D7): every listed consumer carrier at its registered index
+      // (2..255, registration order). Unlisted ones are destroyed when stream_start returns.
+      {
+        std::vector<std::string> listed;
+        std::string ignored;
+        live::parse_carrier_list(std::getenv("GRC_LIVE_CARRIERS"), &listed, &ignored);
+        for (auto it = g_live.registered.begin(); it != g_live.registered.end();) {
+          if (std::find(listed.begin(), listed.end(), it->name) == listed.end()) {
+            ++it;
+            continue;
+          }
+          std::string ext_error;
+          const grc_carrier_v1 vtable = it->vtable;
+          const std::string name = it->name;
+          const std::uint8_t index = it->index;
+          it = g_live.registered.erase(it);  // the AbiCarrier owns it from here
+          std::unique_ptr<live::AbiCarrier> ext = live::AbiCarrier::adopt(&vtable, &ext_error);
+          if (ext == nullptr) {
+            log_line("live: carrier " + name + " not added (" + ext_error + ")");
+            vtable.destroy(vtable.self);  // registered, so destroy is non-null
+            continue;
+          }
+          if (!g_live.carriers->add(index, std::move(ext), &ext_error)) {
+            log_line("live: carrier " + name + " not added (" + ext_error + ")");  // destroyed
+            continue;
+          }
+          added = true;
+        }
+      }
+      if (!added && error.empty()) error = "no carrier could be added";
+      if (!added) g_live.ws = nullptr;
     }
-    if (g_live.ws == nullptr || !g_live.carriers->start(&error)) {
+    if (g_live.carriers == nullptr || !g_live.carriers->start(&error)) {
       emit_live_carriers();
       g_live.carriers.reset();
       g_live.ws = nullptr;
@@ -2937,7 +3008,12 @@ void stream_start() {
         return;
       }
     } else {
-      g_live.port = g_live.ws->port();
+      // live.json's address and port stay the `ws` listener's (D13), null without `ws` (CAR6).
+      if (g_live.ws != nullptr && g_live.carriers->started(live::kCarrierWs)) {
+        g_live.port = g_live.ws->port();
+      } else {
+        g_live.address.clear();
+      }
       rs2::Session tmpl = session;
       tmpl.stream = rs2::StreamInfo();
       // G2c2: every live connection follows the configured policy; out-of-band payloads come
@@ -3125,6 +3201,9 @@ void live_linger(bool blocking) {
     return;
   }
   for (;;) {
+    // CAR6: script carriers get the end records (and the hub's closes) while the linger waits,
+    // with no frame callback in between when blocking.
+    live::gd_carriers_flush();
     live_drain(g_state.frames_total);
     if (g_live.hub->open_connections() == 0 || monotonic_ns() >= g_live.linger_deadline_ns) {
       live_close_and_stop();
@@ -4058,6 +4137,9 @@ void on_frame() {
     g_perf.frame_callback_us.add((now_ns - frame_start_ns) / 1000);  // Q3d frame_callback_us
     perf_timeline_tick(now_ns);
   }
+  // CAR6 (rs_carrier_gd.h): the hub's calls to script carriers this iteration, delivered as
+  // signals now, outside every hub call. One relaxed load when no RenderStreamCarrier registered.
+  live::gd_carriers_flush();
 }
 
 void on_shutdown() {
@@ -4125,6 +4207,15 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   g_stream.patch_path = env_string("GRC_STREAM_PATCH_OUT");
   g_live.listen = env_string("GRC_LIVE_LISTEN");
   hooks_set_main_thread();
+  // CAR6: consumer carriers (rs_carrier_ext.h) and the RenderStreamCarrier class (rs_carrier_gd.h)
+  // for engine-language consumers; neither changes anything until a consumer uses it.
+  live::carrier_registry().set_log([](const std::string &line) { log_line(line); });
+  {
+    std::string why;
+    if (!live::gd_carrier_class_register(&why)) {
+      log_line("carrier class: " + why);
+    }
+  }
   if (!g_state.evidence_dir.empty()) {
     g_state.evidence_ready = make_directories(g_state.evidence_dir);
     if (!g_state.evidence_ready) {
@@ -4151,6 +4242,11 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   rs::texture_worker_pool().stop();  // G8kw: no worker (or engine Image) outlives the extension
   live_linger(true);
   do_disarm("deinitialize");
+  // CAR6: a capture that never armed still owns its registrations; each gets its one destroy().
+  for (live::RegisteredCarrier &r : live::carrier_registry().close()) {
+    r.vtable.destroy(r.vtable.self);
+  }
+  live::gd_carrier_class_unregister();
 }
 
 }  // namespace

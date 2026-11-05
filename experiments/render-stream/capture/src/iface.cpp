@@ -27,6 +27,7 @@ bool iface_load(GDExtensionInterfaceGetProcAddress get_proc_address,
                 GDExtensionClassLibraryPtr library) {
   g_iface = Iface();
   g_iface.library = library;
+  g_iface.get_proc_address = get_proc_address;
   bool ok = true;
   ok &= bind_one(get_proc_address, "get_godot_version2", &g_iface.get_godot_version2);
   ok &= bind_one(get_proc_address, "global_get_singleton", &g_iface.global_get_singleton);

@@ -16,6 +16,9 @@ class StringName;
 
 struct Iface {
   GDExtensionClassLibraryPtr library = nullptr;
+  // CAR6: kept so optional modules (rs_carrier_gd's class registration) resolve their own
+  // interface functions; never part of `complete`.
+  GDExtensionInterfaceGetProcAddress get_proc_address = nullptr;
   GDExtensionInterfaceGetGodotVersion2 get_godot_version2 = nullptr;
   GDExtensionInterfaceGlobalGetSingleton global_get_singleton = nullptr;
   GDExtensionInterfaceClassdbGetMethodBind classdb_get_method_bind = nullptr;

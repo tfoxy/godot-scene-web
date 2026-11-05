@@ -386,6 +386,21 @@
       "exclusive": true
     },
     {
+      "why": "CAR6 consumer carriers (carrier-design.md, CAR6 row): the in-memory carrier test double and the pure self-test that drives the extension carrier through it. The extension and GDScript adapters (rs_carrier_ext.*, rs_carrier_gd.*) and their ctest are under the CAR1 rule",
+      "paths": [
+        "experiments/render-stream/capture/test/rs_mem_carrier.*",
+        "experiments/render-stream/scripts/test/self-test-carrier-ext.ts"
+      ],
+      "reach": ["capture-build", "pure"],
+      "exclusive": true
+    },
+    {
+      "why": "CAR6 fixtures/carrier-ext: the GDScript consumer carrier and its peer, run by gate 8's g8l/ext legs (native only: no browser group replays them; the checker is under the gate 8 rule)",
+      "paths": ["experiments/render-stream/fixtures/carrier-ext/**"],
+      "reach": ["native:gate8@*"],
+      "exclusive": true
+    },
+    {
       "why": "CAR3 net module (carrier-design.md D8, Q4): the rs-net crate (the wt carrier, its vendored wtransport), the capture's loader and its ctest, build-rs-net.sh and the two wt tests. Nothing here runs unless GRC_LIVE_CARRIERS lists wt, which no gate leg does, so it reaches the crate's tests, the build (rs_net_module ctest) and the pure self-tests (self-test-wt-interop.ts). Its call sites in entry.cpp and rs_live_host.cpp are shared capture files and still reach '*'",
       "paths": [
         "experiments/render-stream/rs-net/**",

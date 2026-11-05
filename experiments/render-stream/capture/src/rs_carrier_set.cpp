@@ -438,18 +438,22 @@ struct AbiCarrier::Thunks {
     }
     if (body == nullptr) return 0;
     auto *owner = new SharedOwner(body);
-    c->outstanding_.fetch_add(1, std::memory_order_acq_rel);
     out->data = owner->bytes->data();
     out->len = owner->bytes->size();
-    out->owner = static_cast<BufOwner *>(owner);
+    out->owner = c->ledger_add(static_cast<BufOwner *>(owner));
     return 1;
   }
 
   static void release(void *host, void *owner) {
     AbiCarrier *c = self(host);
     if (owner == nullptr) return;
-    delete static_cast<BufOwner *>(owner);
-    c->outstanding_.fetch_sub(1, std::memory_order_acq_rel);
+    void *buffer = c->ledger_take(owner);
+    if (buffer == nullptr) {
+      // CAR6: a second release (or a value never handed out) frees nothing.
+      if (c->ctx_ != nullptr) c->ctx_->fault("release-unknown");
+      return;
+    }
+    delete static_cast<BufOwner *>(buffer);
   }
 
   static void log(void *host, int level, const char *msg, std::size_t len) {
@@ -508,6 +512,11 @@ AbiCarrier::~AbiCarrier() {
     destroyed_ = true;
     vt_.destroy(vt_.self);
   }
+  // A buffer the carrier never released (a fault already counted at stop) dies with the set; the
+  // carrier is gone, so nothing can release it later.
+  std::lock_guard<std::mutex> lock(ledger_mu_);
+  for (auto &entry : ledger_) delete static_cast<BufOwner *>(entry.second);
+  ledger_.clear();
 }
 
 bool AbiCarrier::start(CarrierContext &ctx, std::string *error) {
@@ -536,7 +545,7 @@ void AbiCarrier::stop() {
   }
   locals_.clear();
   pending_close_.clear();
-  if (outstanding_.load(std::memory_order_acquire) != 0) ctx_->fault("buffer-held-after-stop");
+  if (outstanding_buffers() != 0) ctx_->fault("buffer-held-after-stop");
 }
 
 void AbiCarrier::push_locked(Event e) {
@@ -576,17 +585,15 @@ std::vector<Event> AbiCarrier::take_events() {
 bool AbiCarrier::send_binary(std::uint32_t local, std::vector<std::uint8_t> message) {
   if (!started_) return false;
   auto *owner = new VectorOwner(std::move(message));
-  outstanding_.fetch_add(1, std::memory_order_acq_rel);
-  grc_buf buf{owner->bytes.data(), owner->bytes.size(), static_cast<BufOwner *>(owner)};
+  grc_buf buf{owner->bytes.data(), owner->bytes.size(), ledger_add(static_cast<BufOwner *>(owner))};
   return vt_.send_binary(vt_.self, local, buf) != 0;
 }
 
 bool AbiCarrier::send_text(std::uint32_t local, std::string message) {
   if (!started_) return false;
   auto *owner = new StringOwner(std::move(message));
-  outstanding_.fetch_add(1, std::memory_order_acq_rel);
   grc_buf buf{reinterpret_cast<const std::uint8_t *>(owner->text.data()), owner->text.size(),
-              static_cast<BufOwner *>(owner)};
+              ledger_add(static_cast<BufOwner *>(owner))};
   return vt_.send_text(vt_.self, local, buf) != 0;
 }
 
@@ -603,9 +610,32 @@ std::uint64_t AbiCarrier::max_queued_bytes(std::uint32_t local) const {
   return started_ ? vt_.max_queued_bytes(vt_.self, local) : 0;
 }
 
+void *AbiCarrier::ledger_add(void *buffer) {
+  std::lock_guard<std::mutex> lock(ledger_mu_);
+  const std::uint64_t id = ledger_next_++;
+  ledger_.emplace(id, buffer);
+  return reinterpret_cast<void *>(static_cast<std::uintptr_t>(id));
+}
+
+void *AbiCarrier::ledger_take(void *owner) {
+  const std::uint64_t id = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(owner));
+  std::lock_guard<std::mutex> lock(ledger_mu_);
+  const auto it = ledger_.find(id);
+  if (it == ledger_.end()) return nullptr;
+  void *buffer = it->second;
+  ledger_.erase(it);
+  return buffer;
+}
+
+std::int64_t AbiCarrier::outstanding_buffers() const {
+  std::lock_guard<std::mutex> lock(ledger_mu_);
+  return static_cast<std::int64_t>(ledger_.size());
+}
+
 CarrierInfo AbiCarrier::info() const {
   CarrierInfo info;
   info.abi_version = GRC_CARRIER_ABI_VERSION;
+  info.transport.clear();  // unknown behind the ABI (null); NetWtCarrier sets "udp"
   return info;
 }
 
@@ -842,7 +872,11 @@ std::string CarrierSet::carriers_json() const {
     out.append(",\"port\":");
     out.append(info.port >= 0 ? std::to_string(info.port) : std::string("null"));
     out.append(",\"transport\":");
-    json_string(&out, info.transport);
+    if (info.transport.empty()) {
+      out.append("null");  // CAR6: a consumer carrier's transport is its own business
+    } else {
+      json_string(&out, info.transport);
+    }
     out.append(",\"tls\":");
     json_string(&out, info.tls);
     out.append(",\"cert_sha256\":");

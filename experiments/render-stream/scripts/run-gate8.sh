@@ -3030,6 +3030,7 @@ run_g8l() {
 		RECORDING_NAME="$recording_name"
 	done
 	run_g8l_lan
+	run_g8l_ext
 	gs_teardown "$OUT/gamescope-g8l"
 	GS_RUN_DIR=""
 }
@@ -3080,6 +3081,45 @@ run_g8l_lan() {
 	G8L_HOST_EXTRA_ENV=()
 	G8L_RECEIVER_HOST=""
 	G8L_RECEIVER_EXTRA_ENV=()
+}
+
+# CAR6 (protocol/carrier-design.md, CAR6 row): fixtures/carrier-ext registers a GDScript carrier
+# through the capture's RenderStreamCarrier class (GRC_LIVE_CARRIERS=ws,gdpeer) and carries one
+# live session over it: its peer opens connection 1, keeps the bytes the hub sends and writes
+# peer/peer.json and peer/received.bin, which the checker compares with the hub's tap of that
+# connection. `ext/host` is the honest leg; `ext/sabotage-drop-one` has the peer drop its second
+# binary message (RS_CARRIER_PEER_SABOTAGE), which the byte comparison must catch (a sabotage leg:
+# RS_SABOTAGE_TIER=skip skips it). Headless only, no receiver and no gamescope. Native only: a
+# browser receiver (GATE7_LIVE_KIND) runs the fixtures above and no ext leg.
+G8L_EXT_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/carrier-ext"
+
+run_g8l_ext_leg() {
+	local dir="$1"
+	shift
+	mkdir -p "$dir/evidence" "$dir/tap" "$dir/peer"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_VERSION=8 GRC_LIVE_LISTEN=127.0.0.1:0
+		GRC_LIVE_TAP_DIR="$dir/tap" GRC_LIVE_CARRIERS=ws,gdpeer GRC_ARM_DEFER_FRAMES=2
+		GRC_DISARM_AFTER_FRAMES=60 RS_FIXTURE_QUIT_FRAME=300 RS_CARRIER_PEER_OUT="$dir/peer" "$@"
+	)
+	run_headless "$dir" none -- "$BINARY" --headless --max-fps 60 --path "$G8L_EXT_FIXTURE_DIR"
+}
+
+run_g8l_ext() {
+	[ -z "${GATE7_LIVE_KIND:-}" ] || return 0
+	local leg="$OUT/g8l/ext"
+	echo "run-gate8: g8l ext (fixture import)"
+	LEG_ENV=()
+	run_headless "$leg/import/fixture" none -- mise exec -- godot --headless --path "$G8L_EXT_FIXTURE_DIR" --import
+	if [ "$(cat "$leg/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate8: g8l ext import failed, see $leg/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+	echo "run-gate8: g8l ext (a GDScript carrier gdpeer beside ws)"
+	run_g8l_ext_leg "$leg/host"
+	echo "run-gate8: g8l ext sabotage-drop-one (the peer drops its second binary message)"
+	run_g8l_ext_leg "$leg/sabotage-drop-one" RS_CARRIER_PEER_SABOTAGE=drop-one
 }
 
 # ------------------------------------------------------------------------------------ g8ku

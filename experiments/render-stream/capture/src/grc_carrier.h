@@ -75,7 +75,9 @@ extern "C" {
 #define GRC_CARRIER_LOCAL_MAX 0xFFFFFFu
 
 /* An owned message. Whoever receives one calls the host's release(host, owner) exactly once,
- * from any thread, when done with `data`. */
+ * from any thread, when done with `data`. `owner` is opaque (CAR6: the capture's ledger id, never
+ * NULL, not a pointer); a second release, or one of a value never handed out, frees nothing and
+ * is counted as the carrier fault `release-unknown`. */
 typedef struct grc_buf {
   const uint8_t *data;
   size_t len;
@@ -171,11 +173,32 @@ typedef struct grc_carrier_v1 {
   void (*destroy)(void *self);
 } grc_carrier_v1;
 
-/* CAR6 (not yet exported): registers a consumer carrier before live starts. The capture copies
- * *carrier. Returns its index (2..255), or -1 when live has already started (`carrier-late`), the
- * name is malformed, reserved or taken, or the struct's version or size is not accepted. Look it
- * up with dlsym(RTLD_DEFAULT, "grc_carrier_register"). */
+/* CAR6: the capture's exported registration entry point (protocol/carrier-design.md "Writing a
+ * carrier"). Registers a consumer carrier before live starts. The capture copies *carrier (its
+ * v1 fields) and returns its index (2..255, in registration order), or -1 -- the carrier then
+ * stays its caller's, untouched -- when the struct's abi_version is not GRC_CARRIER_ABI_VERSION
+ * or its size is below sizeof(grc_carrier_v1) (`carrier-abi`), an entry point is NULL
+ * (`carrier-abi`), the name is malformed (`carrier-name`), "ws" or "wt" (`carrier-reserved`) or
+ * registered already (`carrier-taken`), every index is used (`carrier-full`), or live has
+ * already started (`carrier-late`). The capture logs the reason. Any thread.
+ *
+ * An accepted carrier starts at live start only when GRC_LIVE_CARRIERS lists its name; the capture
+ * calls destroy() exactly once, after stop(), or at live start for a carrier it does not start.
+ *
+ * Live starts when the capture arms: at its startup callback for a capture loaded at engine
+ * startup (after every autoload's _init), inside GDExtensionManager.load_extension for one loaded
+ * at run time, unless GRC_ARM_DEFER_FRAMES defers the arm to a later frame.
+ *
+ * Lookup: Godot opens an extension library without RTLD_GLOBAL, so dlsym(RTLD_DEFAULT, ...) does
+ * not see it. Open the already loaded capture by its path with dlopen(path, RTLD_NOW | RTLD_NOLOAD)
+ * (C#: NativeLibrary.Load(path) or TryLoad) and dlsym that handle; the path is the .gdextension's
+ * library entry (GDScript and C#: RenderStreamCarrier.library_path()). */
 typedef int (*grc_carrier_register_fn)(const grc_carrier_v1 *carrier);
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((visibility("default")))
+#endif
+int grc_carrier_register(const grc_carrier_v1 *carrier);
 
 #ifdef __cplusplus
 }

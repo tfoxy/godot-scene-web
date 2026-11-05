@@ -224,6 +224,58 @@ function failuresOf(a: Applied): string[] {
   return out;
 }
 
+/**
+ * CAR6: the bytes the hub sent on the connection that opened on carrier `carrier`, found by the
+ * `open` event's `carrier` in the tap's live-<n>.jsonl (never by the carrier's index), against the
+ * bytes the GDScript peer kept (peer/received.bin). `problems` is empty when they are identical.
+ */
+export async function extCarrierBytes(
+  host: string,
+  carrier: string,
+): Promise<{ problems: string[]; tapBytes: number; peerBytes: number }> {
+  const problems: string[] = [];
+  const tapDir = join(host, "tap");
+  let n: string | null = null;
+  const names = existsSync(tapDir) ? readdirSync(tapDir) : [];
+  for (const f of names) {
+    const m = /^live-(\d+)\.jsonl$/.exec(f);
+    if (!m) continue;
+    const first = (await readText(join(tapDir, f)))?.split("\n")[0] ?? "";
+    try {
+      const o = JSON.parse(first) as { event?: string; carrier?: string };
+      if (o.event === "open" && o.carrier === carrier) n = m[1];
+    } catch {
+      // not an event line
+    }
+  }
+  if (n === null)
+    return {
+      problems: [`no tap connection opened on carrier ${carrier}`],
+      tapBytes: 0,
+      peerBytes: 0,
+    };
+  let tap: Buffer | null = null;
+  let peer: Buffer | null = null;
+  try {
+    tap = await readFile(join(tapDir, `stream-${n}.rs2`));
+  } catch {
+    problems.push(`tap stream-${n}.rs2 missing`);
+  }
+  try {
+    peer = await readFile(join(host, "peer", "received.bin"));
+  } catch {
+    problems.push("peer/received.bin missing");
+  }
+  if (tap && peer) {
+    if (tap.length === 0) problems.push(`tap stream-${n}.rs2 is empty`);
+    if (!tap.equals(peer))
+      problems.push(
+        `the peer kept ${peer.length} bytes, the hub's tap of connection ${n} holds ${tap.length} (not identical)`,
+      );
+  }
+  return { problems, tapBytes: tap?.length ?? 0, peerBytes: peer?.length ?? 0 };
+}
+
 export async function runG8l(
   out: string,
 ): Promise<{ checks: G8aCheck[]; report: G8lReport }> {
@@ -679,6 +731,117 @@ export async function runG8l(
           ),
         );
       }
+    }
+  }
+  // CAR6 (carrier-design.md, CAR6 row): fixtures/carrier-ext registers a GDScript carrier through
+  // the capture's RenderStreamCarrier class and carries one live session over it. Native only
+  // (run-gate8.sh run_g8l_ext); no g8l/ext directory, no check. The honest leg's peer kept exactly
+  // the bytes the hub's tap holds for the connection that opened on that carrier; the sabotage
+  // leg's peer drops its second binary message, which the same comparison must catch.
+  {
+    const honest = join(out, "g8l", "ext", "host");
+    if (existsSync(join(out, "g8l", "ext"))) {
+      const problems: string[] = [];
+      const peer = await readJson<Record<string, unknown>>(
+        join(honest, "peer", "peer.json"),
+      );
+      const carriers = await readJson<{
+        carriers?: Array<{
+          name?: string;
+          index?: number;
+          status?: string;
+          sessions?: number;
+          abi_version?: number | null;
+          transport?: string | null;
+          faults?: Record<string, unknown>;
+        }>;
+      }>(join(honest, "evidence", "live-carriers.json"));
+      const want = (k: string, v: unknown) => {
+        if (peer?.[k] !== v)
+          problems.push(
+            `peer.${k} ${JSON.stringify(peer?.[k])}, expected ${JSON.stringify(v)}`,
+          );
+      };
+      if (!peer) problems.push("peer/peer.json missing");
+      else {
+        want("class", true);
+        want("index", 2);
+        want("duplicate", -1);
+        want("unlisted_index", 3);
+        want("unlisted_status", "destroyed");
+        want("late", -1);
+        if (!String(peer.late_error ?? "").startsWith("carrier-late"))
+          problems.push(
+            `peer.late_error ${JSON.stringify(peer.late_error)} does not start with carrier-late`,
+          );
+        want("opened", true);
+        want("second_open", false);
+        want("lookup_missing_bytes", 0);
+        want("close_code", 1000);
+        want("close_reason", "disarm");
+        want("stopped", true);
+        want("status_stopped", "stopped");
+        if (!/librender_stream_capture\.so$/.test(String(peer.library_path ?? "")))
+          problems.push(
+            `peer.library_path ${JSON.stringify(peer.library_path)} does not end in librender_stream_capture.so`,
+          );
+        want("messages", 3);
+      }
+      const names = (carriers?.carriers ?? []).map((c) => c.name);
+      const ws = carriers?.carriers?.find((c) => c.name === "ws");
+      const gd = carriers?.carriers?.find((c) => c.name === "gdpeer");
+      if (!carriers) problems.push("evidence/live-carriers.json missing");
+      else {
+        if (ws?.index !== 0)
+          problems.push(`ws carrier index ${JSON.stringify(ws?.index)}, expected 0`);
+        if (!gd) problems.push("no gdpeer entry in live-carriers.json");
+        else {
+          if (gd.index !== 2)
+            problems.push(`gdpeer index ${gd.index}, expected 2`);
+          if (gd.abi_version !== 1)
+            problems.push(`gdpeer abi_version ${gd.abi_version}, expected 1`);
+          if (gd.status !== "stopped")
+            problems.push(`gdpeer status ${gd.status}, expected stopped`);
+          if (gd.sessions !== 1)
+            problems.push(`gdpeer sessions ${gd.sessions}, expected 1`);
+          if (gd.transport !== null)
+            problems.push(`gdpeer transport ${JSON.stringify(gd.transport)}, expected null`);
+          if (Object.keys(gd.faults ?? {}).length > 0)
+            problems.push(`gdpeer faults ${JSON.stringify(gd.faults)}`);
+        }
+        if (names.includes("gdunlisted"))
+          problems.push("gdunlisted (registered, not in GRC_LIVE_CARRIERS) is listed");
+      }
+      const bytes = await extCarrierBytes(honest, "gdpeer");
+      problems.push(...bytes.problems);
+      checks.push(
+        check(
+          "g8l-ext-carried",
+          "CAR6: a GDScript carrier registered through RenderStreamCarrier carries one live session: the registration contract (index 2, duplicate and late refused, an unlisted carrier destroyed), the lifecycle (opened once, a second connection refused, close 1000 disarm, stopped), live-carriers.json (gdpeer abi 1, one session, no faults, no gdunlisted), and the bytes the peer kept equal the hub's tap of the connection that opened on gdpeer",
+          absent(honest) ? null : problems,
+          `${bytes.peerBytes} bytes identical to the tap, ${peer?.messages ?? "?"} messages, gdpeer at index ${gd?.index}`,
+        ),
+      );
+      const sab = join(out, "g8l", "ext", "sabotage-drop-one");
+      const sabBytes = await extCarrierBytes(sab, "gdpeer");
+      const identical = sabBytes.problems.length === 0;
+      const sabProblems: string[] = [];
+      if (identical)
+        sabProblems.push(
+          "the byte comparison passed on a peer that dropped a message (the check is blind)",
+        );
+      else if (
+        sabBytes.problems.some((x) => /missing|no tap connection/.test(x))
+      )
+        sabProblems.push(...sabBytes.problems);
+      checks.push(
+        check(
+          "g8l-ext-sabotage-drop-one",
+          "CAR6 sabotage: the same peer-to-tap byte comparison fails when the peer drops its second binary message",
+          absent(sab) ? null : sabProblems,
+          `the comparison failed as it must: ${sabBytes.problems[0] ?? ""}`,
+        ),
+      );
     }
   }
   return { checks, report };

@@ -29,6 +29,20 @@
 //                     binds UDP --wt-port=N (default 0, ephemeral) with a self-signed certificate
 //   --tap-dir=DIR     the hub's tap (rs_live.h LiveConfig::tap_dir; absolute)
 //   --evidence-dir=DIR where wt writes live-cert-sha256, and live-carriers.json at stop
+//   CAR6 (carrier-design.md "Writing a carrier"): every other name in --carriers is an in-memory
+//   consumer carrier (rs_mem_carrier.h) registered through grc_carrier_register, found with
+//   dlsym(RTLD_DEFAULT) (this binary exports it, as the capture library does), before the set is
+//   built; `ws` starts only when listed. Also registered: `idle`, never listed, which must never
+//   start and be destroyed once.
+//   --mem-connections=N connections each in-memory carrier opens (default 1)
+//   --mem-fault=F       double-release: the third binary buffer is released twice (sabotage)
+//   --mem-out=DIR       where each in-memory carrier writes mem-<name>.json and its bytes
+//   --skip-register=NAME a listed name left unregistered (carrier-unregistered; exit 2)
+//   --register-checks   first registers the refused cases (bad version, short size, a null entry
+//                       point, a bad name, ws, wt, a duplicate) and prints each result
+//   stdout, CAR6: "RS_LIVE_HOST_REGISTER <case> <result>" per registration, including `late`
+//   (one attempt after live started), and at the end "RS_LIVE_HOST_EXT <name> starts=<n>
+//   destroys=<n>" per registered carrier.
 // stdout: "RS_LIVE_HOST_PORT <port>" first (with wt, then "RS_LIVE_HOST_WT_PORT <port>" and
 // "RS_LIVE_HOST_CERT_SHA256 <hex>"), then one line per transport event, in the formats
 // entry.cpp logs to stdout.log where it has one (`live: 403 origin <origin> <method> <route>`).
@@ -49,7 +63,11 @@
 #include "report.h"
 #include "rs2_golden_states.h"
 #include "rs2_snapshot.h"
+#include <dlfcn.h>
+
+#include "rs_carrier_ext.h"
 #include "rs_carrier_set.h"
+#include "rs_mem_carrier.h"
 #include "rs_expose.h"
 #include "rs_net_module.h"
 #include "rs_live.h"
@@ -126,6 +144,11 @@ int main(int argc, char **argv) {
   std::string tap_dir;
   std::string evidence_dir;
   unsigned wt_port = 0;
+  int mem_connections = 1;
+  std::string mem_fault;
+  std::string mem_out;
+  std::string skip_register;
+  bool register_checks = false;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     const auto value_of = [&](const char *flag) -> const char * {
@@ -150,6 +173,16 @@ int main(int argc, char **argv) {
       evidence_dir = v;
     } else if (const char *v = value_of("--wt-port")) {
       wt_port = static_cast<unsigned>(std::strtoul(v, nullptr, 10));
+    } else if (const char *v = value_of("--mem-connections")) {
+      mem_connections = static_cast<int>(std::strtol(v, nullptr, 10));
+    } else if (const char *v = value_of("--mem-fault")) {
+      mem_fault = v;
+    } else if (const char *v = value_of("--mem-out")) {
+      mem_out = v;
+    } else if (const char *v = value_of("--skip-register")) {
+      skip_register = v;
+    } else if (arg == "--register-checks") {
+      register_checks = true;
     }
   }
 
@@ -245,10 +278,110 @@ int main(int argc, char **argv) {
   services.config["expose"] = expose == grc::live::Expose::Lan ? "lan" : "loopback";
   services.config["wt_cert"] = "self";
   if (!evidence_dir.empty()) services.config["evidence_dir"] = evidence_dir;
+  // CAR6: declared before the set, so its report runs after the set destroyed every carrier.
+  struct ExtStats {
+    std::string name;
+    int starts = 0;
+    int destroys = 0;
+  };
+  struct ExtReport {
+    std::vector<std::unique_ptr<ExtStats>> stats;
+    bool armed = false;  // set once the host reaches its normal end
+    ~ExtReport() {
+      if (!armed) return;
+      for (const auto &st : stats) {
+        print("RS_LIVE_HOST_EXT " + st->name + " starts=" + std::to_string(st->starts) +
+              " destroys=" + std::to_string(st->destroys));
+      }
+      print("live: stopped");
+    }
+  } ext_report;
+  std::vector<std::unique_ptr<ExtStats>> &ext_stats = ext_report.stats;
   grc::live::CarrierSet transport(server_config.max_clients, services);
   auto ws_carrier = std::make_unique<grc::live::WsCarrier>(server_config, &source, 2000);
   grc::live::WsCarrier *ws = ws_carrier.get();
   grc::live::NetWtCarrier *wt = nullptr;
+  // CAR6: consumer carriers, registered through the exported entry point before the set exists.
+  grc_carrier_register_fn register_fn = nullptr;
+  const auto ensure_register_fn = [&]() {
+    if (register_fn == nullptr) {
+      register_fn = reinterpret_cast<grc_carrier_register_fn>(dlsym(RTLD_DEFAULT, "grc_carrier_register"));
+      print(std::string("RS_LIVE_HOST_REGISTER dlsym ") + (register_fn != nullptr ? "found" : "missing"));
+      if (register_fn == nullptr) std::exit(1);
+    }
+  };
+  const auto mem_options = [&](const std::string &name) {
+    grc::test::MemCarrierOptions o;
+    o.name = name;
+    o.connections = mem_connections;
+    o.fault = mem_fault;
+    o.out_dir = mem_out;
+    o.hello = std::string("{\"type\":\"hello\",\"protocol\":\"render-stream/7\",\"receiver\":\"mem-") + name +
+              "\",\"receiver_kind\":\"gsw-canvas\",\"credit_stage\":\"submitted\",\"credit_window\":1,"
+              "\"inbound_buffer_bytes\":16777216,\"token\":" +
+              (token.empty() ? std::string("null") : "\"" + token + "\"") +
+              ",\"manifest_sha256\":null,\"presentation_backing_w\":640,\"presentation_backing_h\":360,"
+              "\"presentation_css_w\":640,\"presentation_css_h\":360,\"dpr_milli\":1000}";
+    return o;
+  };
+  const auto register_mem = [&](const std::string &label, const std::string &name) {
+    ensure_register_fn();
+    ext_stats.push_back(std::make_unique<ExtStats>());
+    ExtStats *st = ext_stats.back().get();
+    st->name = name;
+    grc_carrier_v1 vt = grc::test::make_mem_carrier(mem_options(name), &st->starts, &st->destroys);
+    const int rc = register_fn(&vt);
+    print("RS_LIVE_HOST_REGISTER " + label + " " + std::to_string(rc));
+    if (rc < 0) {
+      vt.destroy(vt.self);  // refused: still ours
+      ext_stats.pop_back();
+    }
+    return rc;
+  };
+  bool any_ext = false;
+  for (const std::string &name : carrier_names) any_ext |= name != "ws" && name != "wt";
+  if (any_ext || register_checks) {
+    ensure_register_fn();
+    grc::live::carrier_registry().set_log([](const std::string &line) { std::fprintf(stderr, "%s\n", line.c_str()); });
+  }
+  if (register_checks) {
+    // The refused cases (grc_carrier.h): each returns -1 and leaves the struct with its caller.
+    int starts = 0;
+    int destroys = 0;
+    const auto refused_case = [&](const char *label, void (*mutate)(grc_carrier_v1 *), const char *name) {
+      grc::test::MemCarrierOptions o = mem_options(name);
+      grc_carrier_v1 vt = grc::test::make_mem_carrier(o, &starts, &destroys);
+      mutate(&vt);
+      print(std::string("RS_LIVE_HOST_REGISTER ") + label + " " + std::to_string(register_fn(&vt)));
+      vt.destroy(vt.self);
+    };
+    refused_case("bad-version", [](grc_carrier_v1 *v) { v->abi_version = 2; }, "badver");
+    refused_case("short-size", [](grc_carrier_v1 *v) { v->size = sizeof(grc_carrier_v1) - 8; }, "short");
+    refused_case("null-entry", [](grc_carrier_v1 *v) { v->queued_bytes = nullptr; }, "nullentry");
+    refused_case("bad-name", [](grc_carrier_v1 *) {}, "Bad_Name");
+    refused_case("reserved-ws", [](grc_carrier_v1 *) {}, "ws");
+    refused_case("reserved-wt", [](grc_carrier_v1 *) {}, "wt");
+    print("RS_LIVE_HOST_REGISTER refused-touched starts=" + std::to_string(starts) +
+          " destroys=" + std::to_string(destroys));
+  }
+  for (const std::string &name : carrier_names) {
+    if (name == "ws" || name == "wt" || name == skip_register) continue;
+    register_mem(name, name);
+  }
+  if (any_ext) register_mem("idle", "idle");  // registered, never listed: never started
+  if (register_checks && !carrier_names.empty()) {
+    for (const std::string &name : carrier_names) {
+      if (name != "ws" && name != "wt" && name != skip_register) {
+        // A duplicate of a registered name.
+        grc_carrier_v1 vt = grc::test::make_mem_carrier(mem_options(name), nullptr, nullptr);
+        print("RS_LIVE_HOST_REGISTER duplicate " + std::to_string(register_fn(&vt)));
+        vt.destroy(vt.self);
+        break;
+      }
+    }
+  }
+  // entry.cpp's arm: registration closes, the listed carriers join the set, the rest are destroyed.
+  std::vector<grc::live::RegisteredCarrier> registered = grc::live::carrier_registry().close();
   for (const std::string &name : carrier_names) {
     if (name == "ws") {
       if (!transport.add(grc::live::kCarrierWs, std::move(ws_carrier), &error)) {
@@ -269,16 +402,35 @@ int main(int argc, char **argv) {
         return 1;
       }
     } else {
-      std::fprintf(stderr, "rs_live_host: carrier-unregistered: %s\n", name.c_str());
-      return 2;
+      bool found = false;
+      for (auto it = registered.begin(); it != registered.end(); ++it) {
+        if (it->name != name) continue;
+        std::unique_ptr<grc::live::AbiCarrier> c = grc::live::AbiCarrier::adopt(&it->vtable, &error);
+        const std::uint8_t index = it->index;
+        registered.erase(it);
+        if (c == nullptr || !transport.add(index, std::move(c), &error)) {
+          std::fprintf(stderr, "rs_live_host: %s\n", error.c_str());
+          return 1;
+        }
+        found = true;
+        break;
+      }
+      if (!found) {
+        std::fprintf(stderr, "rs_live_host: carrier-unregistered: %s\n", name.c_str());
+        for (grc::live::RegisteredCarrier &r : registered) r.vtable.destroy(r.vtable.self);
+        return 2;
+      }
     }
   }
+  for (grc::live::RegisteredCarrier &r : registered) r.vtable.destroy(r.vtable.self);  // unlisted
+  registered.clear();
   if (!transport.start(&error) || (wt != nullptr && !transport.started(grc::live::kCarrierWt))) {
     std::fprintf(stderr, "rs_live_host: start failed: %s\n%s\n", error.c_str(),
                  transport.carriers_json().c_str());
     return 1;
   }
   const bool has_ws = transport.started(grc::live::kCarrierWs);
+  if (any_ext) register_mem("late", "late");  // after live started: carrier-late, -1
   Session tmpl = golden::golden_session_v6(Encoding::Patch, std::string(), generate_id(), Delivery::OutOfBand);
   tmpl.stream = StreamInfo();
   ResourcePolicy policy;
@@ -366,6 +518,6 @@ int main(int argc, char **argv) {
       return 1;
     }
   }
-  print("live: stopped");
+  ext_report.armed = true;  // "live: stopped" is printed once every carrier is destroyed
   return 0;
 }

@@ -87,6 +87,8 @@ add_library(render_stream_capture SHARED
   src/rs_basis_encode.cpp
   src/rs_texture_basis.cpp
   src/rs_canvas_texture_shim.cpp
+  src/rs_carrier_ext.cpp
+  src/rs_carrier_gd.cpp
   src/rs_carrier_set.cpp
   src/rs_expose.cpp
   src/rs_net_module.cpp
@@ -203,6 +205,16 @@ target_include_directories(rs_carrier_set_test PRIVATE src)
 target_link_libraries(rs_carrier_set_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_carrier_set COMMAND rs_carrier_set_test)
 
+# CAR6 (carrier-design.md "Writing a carrier"): the consumer-carrier registry's rules, the owner
+# ledger's double-release fault, and grc_carrier_register as the built capture library exports it
+# (dlopen as Godot does, then RTLD_NOLOAD + dlsym).
+add_executable(rs_carrier_ext_test test/rs_carrier_ext_test.cpp src/rs_carrier_ext.cpp
+  src/rs_carrier_set.cpp src/rs_ws.cpp src/rs_sha1.cpp)
+target_include_directories(rs_carrier_ext_test PRIVATE src)
+target_link_libraries(rs_carrier_ext_test PRIVATE grc_warnings grc_codecs Threads::Threads ${CMAKE_DL_LIBS})
+add_dependencies(rs_carrier_ext_test render_stream_capture)
+add_test(NAME rs_carrier_ext COMMAND rs_carrier_ext_test $<TARGET_FILE:render_stream_capture>)
+
 # CAR2 (carrier-design.md D10, Q3): the LAN exposure policy's refusal matrix.
 add_executable(rs_expose_test test/rs_expose_test.cpp src/rs_expose.cpp)
 target_include_directories(rs_expose_test PRIVATE src)
@@ -315,11 +327,16 @@ add_executable(rs_live_host
   src/rs_sha1.cpp
   src/rs_ws.cpp
   src/rs_carrier_set.cpp
+  src/rs_carrier_ext.cpp
   src/rs_expose.cpp
   src/rs_net_module.cpp
+  test/rs_mem_carrier.cpp
 )
 target_include_directories(rs_live_host PRIVATE src test)
 target_link_libraries(rs_live_host PRIVATE grc_warnings grc_codecs Threads::Threads ${CMAKE_DL_LIBS})
+# CAR6: export grc_carrier_register from the executable, so the host registers its in-memory
+# carriers through dlsym(RTLD_DEFAULT) exactly as a consumer reaches the capture library's.
+set_target_properties(rs_live_host PROPERTIES ENABLE_EXPORTS ON)
 
 # W11t: the /11 live coding (rs_live_coding.h): unit checks, and the coding tool whose output for
 # golden-11's recordings is pinned byte for byte (protocol/golden-11/coding/).

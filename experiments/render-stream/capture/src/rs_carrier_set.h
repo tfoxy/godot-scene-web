@@ -102,7 +102,7 @@ struct CarrierServices {
 struct CarrierInfo {
   std::string address;           // the bound host, "" when not listening
   std::int64_t port = -1;        // the bound port, -1 when not listening
-  std::string transport = "tcp";  // tcp | udp
+  std::string transport = "tcp";  // tcp | udp | "" (null: a consumer carrier, CAR6)
   std::string tls = "none";       // none | consumer | self-signed
   std::string cert_sha256;        // "" -> null
   std::uint32_t abi_version = 0;  // 0 -> null: built in, not behind the C ABI
@@ -184,8 +184,8 @@ class AbiCarrier final : public Carrier {
   std::uint64_t queued_bytes(std::uint32_t local) const override;
   std::uint64_t max_queued_bytes(std::uint32_t local) const override;
   CarrierInfo info() const override;
-  // Host grc_bufs handed out and not yet released (sends and lookups), for the owner ledger.
-  std::int64_t outstanding_buffers() const { return outstanding_.load(std::memory_order_acquire); }
+  // Host grc_bufs handed out and not yet released (sends and lookups): the owner ledger's size.
+  std::int64_t outstanding_buffers() const;
   // Callbacks that arrived after stop() returned (ignored; each is also a `callback-after-stop`
   // fault).
   std::uint64_t late_callbacks() const { return late_.load(std::memory_order_acquire); }
@@ -216,7 +216,16 @@ class AbiCarrier final : public Carrier {
   std::vector<Event> events_;
   // Doomed locals the main thread closes (1011, the fault code as the reason).
   std::vector<std::pair<std::uint32_t, std::string>> pending_close_;
-  std::atomic<std::int64_t> outstanding_{0};
+  // CAR6: the owner ledger. Every grc_buf the host hands out (a send's message, a lookup's body)
+  // carries a fresh id as its `owner`, never a pointer; release() frees the buffer whose id it is
+  // given. An id that is not outstanding -- a second release, or a value the host never handed
+  // out -- is the fault `release-unknown` and frees nothing, so a carrier that releases twice
+  // cannot double-free the hub's buffer. Thread-safe (release() comes from any thread).
+  void *ledger_add(void *buffer);
+  void *ledger_take(void *owner);
+  mutable std::mutex ledger_mu_;
+  std::uint64_t ledger_next_ = 1;
+  std::map<std::uint64_t, void *> ledger_;
   std::atomic<std::uint64_t> late_{0};
 };
 
