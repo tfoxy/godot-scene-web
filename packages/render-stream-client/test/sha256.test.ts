@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sha256 } from "../src/sha256";
+import { Sha256, sha256 } from "../src/sha256";
 
 const hex = (b: Uint8Array) =>
   Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
@@ -35,6 +35,26 @@ describe("sha256 fallback", () => {
       for (let i = 0; i < n; i++) buf[i] = rnd();
       const want = new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
       expect(hex(sha256(buf.buffer))).toBe(hex(want));
+    }
+  });
+
+  it("agrees with the one-shot hash when fed in pieces cut at random points", () => {
+    let seed = 987654321;
+    const rnd = (n: number) => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed % n;
+    };
+    for (let round = 0; round < 200; round++) {
+      const buf = new Uint8Array(rnd(5000));
+      for (let i = 0; i < buf.length; i++) buf[i] = rnd(256);
+      const h = new Sha256();
+      // Pieces of 0..200 bytes: empty ones, ones inside a block, ones that straddle several.
+      for (let off = 0; off < buf.length; ) {
+        const n = Math.min(rnd(201), buf.length - off);
+        h.update(buf.subarray(off, off + n));
+        off += n;
+      }
+      expect(hex(h.digest())).toBe(hex(sha256(buf)));
     }
   });
 });
