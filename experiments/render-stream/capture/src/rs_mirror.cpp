@@ -57,6 +57,9 @@ Mirror::Mirror() {
 void Mirror::reset() {
   std::lock_guard<std::mutex> lock(mutex_);
   ++epoch_;
+  material_refs_queue_on_ = false;  // LAR3: adoption's arm turns the pending queue on again
+  material_refs_queue_.clear();
+  material_refs_queued_.store(false, std::memory_order_release);
   drop_frame_ = 0;
   omit_op_.clear();
   omit_armed_.store(false, std::memory_order_release);
@@ -4020,35 +4023,95 @@ bool Mirror::knows_material(std::uint64_t rid) const {
   return material_by_rid_.count(rid) != 0;
 }
 
-std::uint64_t Mirror::material_refs_epoch() const {
+void Mirror::set_material_refs_queue(bool on) {
   std::lock_guard<std::mutex> lock(mutex_);
-  return material_refs_epoch_;
+  material_refs_queue_on_ = on;
+  if (!on) {
+    material_refs_queue_.clear();
+    material_refs_queued_.store(false, std::memory_order_release);
+  }
 }
 
-Mirror::PendingMaterialRefs Mirror::pending_material_refs() const {
+void Mirror::queue_material_ref(std::uint64_t item, std::uint64_t material, std::uint64_t shader) {
+  if (!material_refs_queue_on_) {
+    return;
+  }
+  material_refs_queue_.push_back(QueuedMaterialRef{item, material, shader});
+  material_refs_queued_.store(true, std::memory_order_release);
+}
+
+std::uint64_t Mirror::material_refs_scans() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return material_refs_scans_;
+}
+
+Mirror::PendingMaterialRefs Mirror::take_pending_material_refs() {
   std::lock_guard<std::mutex> lock(mutex_);
   PendingMaterialRefs out;
-  std::map<std::uint32_t, std::size_t> by_material;  // material id -> index in out.materials
-  for (const auto &entry : materials_) {
-    if (entry.second.shader_unknown && entry.second.unknown_shader_rid != 0) {
-      by_material[entry.first] = out.materials.size();
-      PendingMaterialRefs::MaterialRef ref;
-      ref.material = entry.second.rid;
-      ref.shader = entry.second.unknown_shader_rid;
-      out.materials.push_back(std::move(ref));
-    }
+  if (material_refs_queue_.empty()) {
+    material_refs_queued_.store(false, std::memory_order_release);
+    return out;
   }
-  for (const auto &entry : items_.all()) {
-    const Item &item = entry.second;
-    if (item.rid == 0) {
+  std::vector<QueuedMaterialRef> queue;
+  queue.swap(material_refs_queue_);
+  material_refs_queued_.store(false, std::memory_order_release);
+  std::set<std::pair<std::uint64_t, std::uint64_t>> seen_items;  // (item, material)
+  std::map<std::uint32_t, std::size_t> by_material;  // material id -> index in out.materials
+  std::set<std::pair<std::uint32_t, std::uint64_t>> seen_holders;  // (material id, item)
+  for (const QueuedMaterialRef &q : queue) {
+    if (q.shader == 0) {
+      // An item's own material was unknown: still pending only while the item names it.
+      const Item *item = peek_item(q.item);
+      if (item != nullptr && item->unknown_material && item->unknown_material_rid == q.material &&
+          seen_items.insert({q.item, q.material}).second) {
+        out.items.push_back({q.item, q.material});
+      }
       continue;
     }
-    if (item.unknown_material && item.unknown_material_rid != 0) {
-      out.items.push_back({item.rid, item.unknown_material_rid});
-    } else if (item.state.has_material) {
-      const auto it = by_material.find(item.state.material);
-      if (it != by_material.end()) {
-        out.materials[it->second].items.push_back(item.rid);
+    // A material's shader was unknown: still pending only while it names that shader.
+    const auto mid = material_by_rid_.find(q.material);
+    if (mid == material_by_rid_.end()) {
+      continue;
+    }
+    const Material *material = materials_.find(mid->second);
+    if (material == nullptr || !material->shader_unknown ||
+        material->unknown_shader_rid != q.shader) {
+      continue;
+    }
+    auto at = by_material.find(mid->second);
+    if (at == by_material.end()) {
+      at = by_material.emplace(mid->second, out.materials.size()).first;
+      PendingMaterialRefs::MaterialRef ref;
+      ref.material = q.material;
+      ref.shader = q.shader;
+      out.materials.push_back(std::move(ref));
+    }
+    if (q.item != 0) {
+      const Item *item = peek_item(q.item);
+      if (item != nullptr && item->state.has_material && item->state.material == mid->second &&
+          seen_holders.insert({mid->second, q.item}).second) {
+        out.materials[at->second].items.push_back(q.item);
+      }
+    }
+  }
+  // A material whose queued entries named no item that still holds it (its shader was set after
+  // its items took it): its holders, from one pass over the items. Residual references only.
+  std::map<std::uint32_t, std::size_t> unheld;  // material id -> index in out.materials
+  for (const auto &entry : by_material) {
+    if (out.materials[entry.second].items.empty()) {
+      unheld.insert(entry);
+    }
+  }
+  if (!unheld.empty()) {
+    ++material_refs_scans_;
+    for (const auto &entry : items_.all()) {
+      const Item &item = entry.second;
+      if (item.rid == 0 || !item.state.has_material) {
+        continue;
+      }
+      const auto at = unheld.find(item.state.material);
+      if (at != unheld.end()) {
+        out.materials[at->second].items.push_back(item.rid);
       }
     }
   }
@@ -5029,7 +5092,7 @@ void Mirror::material_create_from_shader(std::uint64_t rid, std::uint64_t shader
     } else {
       material.shader_unknown = true;
       material.unknown_shader_rid = shader;
-      ++material_refs_epoch_;
+      queue_material_ref(0, rid, shader);  // LAR3
     }
   }
   material_by_rid_[rid] = material.id;
@@ -5058,7 +5121,7 @@ void Mirror::material_set_shader(std::uint64_t rid, std::uint64_t shader, std::u
     } else {
       material->shader_unknown = true;
       material->unknown_shader_rid = shader;
-      ++material_refs_epoch_;
+      queue_material_ref(0, rid, shader);  // LAR3
     }
   }
   ++material->version;
@@ -5102,14 +5165,14 @@ void Mirror::material_set_param(std::uint64_t rid, const std::string &name,
   ++material->version;
 }
 
-void Mirror::set_material(std::uint64_t rid, std::uint64_t material, std::uint64_t frame) {
+bool Mirror::set_material(std::uint64_t rid, std::uint64_t material, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (dropped("canvas_item_set_material", frame)) {
-    return;
+    return false;
   }
   Item *item = item_for(rid, "canvas_item_set_material", frame);
   if (item == nullptr) {
-    return;
+    return false;
   }
   // HC1: setting the material the item already holds gives the adoption pass nothing new, so it
   // leaves the epoch (and everything else) alone. A set that changes nothing is also what the
@@ -5121,7 +5184,7 @@ void Mirror::set_material(std::uint64_t rid, std::uint64_t material, std::uint64
                !item->unknown_material)
             : (item->unknown_material && item->unknown_material_rid == material &&
                !item->state.has_material)) {
-      return;
+      return item->unknown_material;
     }
   }
   // D9: item state, never content_version (ci.cpp:1169-1177).
@@ -5130,17 +5193,25 @@ void Mirror::set_material(std::uint64_t rid, std::uint64_t material, std::uint64
   item->unknown_material = false;
   item->unknown_material_rid = 0;
   if (material != 0) {
-    // G8m: any assignment may give a material with an unknown shader its first item.
-    ++material_refs_epoch_;
     const auto it = material_by_rid_.find(material);
     if (it != material_by_rid_.end()) {
       item->state.has_material = true;
       item->state.material = it->second;
+      // G8m: an assignment may give a material with an unknown shader its first item (LAR3: queued).
+      if (material_refs_queue_on_) {
+        const Material *held = materials_.find(it->second);
+        if (held != nullptr && held->shader_unknown && held->unknown_shader_rid != 0) {
+          queue_material_ref(rid, material, held->unknown_shader_rid);
+        }
+      }
     } else {
       item->unknown_material = true;
       item->unknown_material_rid = material;
+      queue_material_ref(rid, material, 0);  // LAR3
+      return true;
     }
   }
+  return false;
 }
 
 void Mirror::set_use_parent_material(std::uint64_t rid, bool enable, std::uint64_t frame) {

@@ -297,7 +297,9 @@ class Mirror {
   // gate1-design.md G1e: canvas_item_set_z_as_relative_to_parent / _draw_behind_parent.
   void set_z_relative(std::uint64_t item, bool relative, std::uint64_t frame);
   void set_behind(std::uint64_t item, bool behind, std::uint64_t frame);
-  void set_material(std::uint64_t item, std::uint64_t material, std::uint64_t frame);
+  // LAR3: true when the call left the item naming a material RID the table does not know (the
+  // hooks then adopt a registered one and repeat the call).
+  bool set_material(std::uint64_t item, std::uint64_t material, std::uint64_t frame);
   // canvas_item_attach_skeleton (gate5-design.md D2, D16, calibrator 7): a non-null skeleton is
   // reported in Snapshot::unsupported only, as a non-null material is -- its own op name,
   // {"op":"canvas_item_attach_skeleton","reason":"unsupported-state"} -- never content_version.
@@ -892,8 +894,16 @@ class Mirror {
   // The references the mirror could not resolve (rs_adopt.cpp resolves them at the next frame
   // boundary): items whose last canvas_item_set_material named an unknown material, and
   // materials whose last shader named an unknown shader, each with the items that draw with it
-  // as their own material. `epoch` advances whenever such a reference may have appeared or
-  // gained an item, so a caller can skip an unchanged set.
+  // as their own material.
+  //
+  // LAR3 (late-arm-registry-design.md Q4 M14): a pending queue replaces G8m's epoch and its scan of
+  // every material and item. While it is on (adoption's arm turns it on), the three calls that can
+  // leave such a reference -- set_material naming an unknown material or giving an item a material
+  // whose shader is unknown, material_create_from_shader and material_set_shader naming an unknown
+  // shader -- append it. take_pending_material_refs() drains the queue, dropping duplicates and
+  // entries a later call made stale, and finds the holders of a material whose queued entries named
+  // no item (one pass over the items, only then). Off (the default, and after reset()) it records
+  // nothing.
   struct PendingMaterialRefs {
     std::vector<std::pair<std::uint64_t, std::uint64_t>> items;  // (item RID, material RID)
     struct MaterialRef {
@@ -903,7 +913,14 @@ class Mirror {
     };
     std::vector<MaterialRef> materials;
   };
-  std::uint64_t material_refs_epoch() const;
+  void set_material_refs_queue(bool on);
+  // Lock-free: whether anything was queued since the last take.
+  bool has_pending_material_refs() const {
+    return material_refs_queued_.load(std::memory_order_acquire);
+  }
+  PendingMaterialRefs take_pending_material_refs();
+  // The scans take_pending_material_refs() made over the items (LAR6's resolve-queue-only reads it).
+  std::uint64_t material_refs_scans() const;
   // TAG1 (client-extensions-design.md §2.2): item ids are dense and never reused, so the ids
   // from a watermark to next_item_id() - 1 are the items created since; item_info() reads one
   // (false once it is gone: freed, or re-keyed away) without marking it.
@@ -917,7 +934,6 @@ class Mirror {
     *published = item->published;
     return true;
   }
-  PendingMaterialRefs pending_material_refs() const;
   // texture_2d_placeholder_create: a new id, kind placeholder, version 1.
   void texture_2d_placeholder_create(std::uint64_t rid, std::uint64_t frame);
   // texture_2d_update: a known id gets version + 1 and, when the layer is 0 and
@@ -1855,7 +1871,17 @@ class Mirror {
   RidMap<std::uint32_t> material_by_rid_;
   std::uint32_t next_material_id_ = 1;
   rs2::ShaderPolicy shader_policy_ = rs2::ShaderPolicy::Source;
-  std::uint64_t material_refs_epoch_ = 0;  // G8m: see pending_material_refs()
+  // LAR3: the pending queue (see take_pending_material_refs()).
+  struct QueuedMaterialRef {
+    std::uint64_t item = 0;      // the item (0: a material's shader reference with no item)
+    std::uint64_t material = 0;
+    std::uint64_t shader = 0;    // 0: the item's own material is unknown
+  };
+  bool material_refs_queue_on_ = false;
+  std::vector<QueuedMaterialRef> material_refs_queue_;
+  std::atomic<bool> material_refs_queued_{false};
+  std::uint64_t material_refs_scans_ = 0;
+  void queue_material_ref(std::uint64_t item, std::uint64_t material, std::uint64_t shader);
   std::uint64_t perturb_shader_frame_ = 0;
   rs2::Filter default_filter_ = rs2::Filter::Linear;   // the server's initial values
   rs2::Repeat default_repeat_ = rs2::Repeat::Disabled;  // (renderer_viewport.h:114-115)

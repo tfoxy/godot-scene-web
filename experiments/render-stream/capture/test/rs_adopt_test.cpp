@@ -697,10 +697,10 @@ void test_materials_born_equals_adopted() {
   start(&late, grc::rs2::UnknownItemPolicy::Strict);
   late.adopt_item(kItem, 1);
   late.set_parent(kItem, kRootCanvas, 1);
-  const uint64_t e0 = late.material_refs_epoch();
+  late.set_material_refs_queue(true);  // LAR3: adoption's arm turns the pending queue on
   late.set_material(kItem, kMaterial, 1);
-  check(late.material_refs_epoch() != e0, "m: an unknown material reference moves the epoch");
-  auto pending = late.pending_material_refs();
+  check(late.has_pending_material_refs(), "m: an unknown material reference is queued");
+  auto pending = late.take_pending_material_refs();
   check(pending.items.size() == 1 && pending.items[0].first == kItem &&
             pending.items[0].second == kMaterial && pending.materials.empty(),
         "m: the item's unknown material is pending");
@@ -714,7 +714,7 @@ void test_materials_born_equals_adopted() {
   late.material_set_param(kMaterial, "gain", float_param(0.5), 2);
   late.set_material(kItem, kMaterial, 2);
   check(late.knows_shader(kShader) && late.knows_material(kMaterial), "m: known after adoption");
-  check(late.pending_material_refs().items.empty(), "m: nothing pending after resolution");
+  check(late.take_pending_material_refs().items.empty(), "m: nothing pending after resolution");
   std::string got;
   check(late.shader_code_of(kShader, &got) && got == code, "m: the adopted shader's code");
   const Snapshot b = born.snapshot(2, 2).state;
@@ -742,7 +742,7 @@ void test_materials_born_equals_adopted() {
   // A post-arm material on an unknown (pre-arm) shader is pending through its items.
   late.material_create_from_shader(0x81, kShader2, 3);
   late.set_material(kItem, 0x81, 3);
-  pending = late.pending_material_refs();
+  pending = late.take_pending_material_refs();
   check(pending.materials.size() == 1 && pending.materials[0].shader == kShader2 &&
             pending.materials[0].items.size() == 1 && pending.materials[0].items[0] == kItem,
         "m: a material's unknown shader is pending with its item");
@@ -752,7 +752,7 @@ void test_materials_born_equals_adopted() {
   late.shader_rebind(kSynthetic, kShader2);
   check(late.knows_shader(kShader2) && !late.knows_shader(kSynthetic), "m: rebind re-keys");
   late.material_set_shader(0x81, kShader2, 3);
-  check(late.pending_material_refs().materials.empty(), "m: resolved after the rebind");
+  check(late.take_pending_material_refs().materials.empty(), "m: resolved after the rebind");
   // Q5: an unrecoverable shader keeps the no-code shape, unsupported, shader-adopt-include.
   late.shader_adopt_refused(0x72, grc::rs2::ShaderReason::ShaderAdoptInclude, 3);
   const Snapshot r = late.snapshot(3, 3).state;

@@ -1610,10 +1610,13 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
     *out = AdoptFault::RegistryMmStride;
   } else if (text == "registry-keep-freed") {
     *out = AdoptFault::RegistryKeepFreed;
+  } else if (text == "registry-skip-params") {
+    *out = AdoptFault::RegistrySkipParams;
   } else {
     *error = "invalid GRC_ADOPT_FAULT=" + text +
              " (expected no-resources, atlas-from-dummy, claim-current, no-include-path, "
-             "no-particles, ppm-no-shader, registry-off, registry-keep-freed or registry-mm-stride)";
+             "no-particles, ppm-no-shader, registry-off, registry-keep-freed, registry-mm-stride or "
+             "registry-skip-params)";
     return false;
   }
   if (!adopt) {
@@ -1635,6 +1638,7 @@ const char *adopt_fault_name(AdoptFault f) {
   case AdoptFault::RegistryOff: return "registry-off";
   case AdoptFault::RegistryKeepFreed: return "registry-keep-freed";
   case AdoptFault::RegistryMmStride: return "registry-mm-stride";
+  case AdoptFault::RegistrySkipParams: return "registry-skip-params";
   }
   return "none";
 }
@@ -2045,8 +2049,6 @@ namespace {
 std::atomic<int> g_mat_sabotage{0};
 std::mutex g_mat_mutex;  // the stats
 AdoptMaterialStats g_mat_stats;
-bool g_mat_epoch_valid = false;
-std::uint64_t g_mat_epoch_seen = 0;
 std::set<std::pair<std::uint64_t, std::uint64_t>> g_mat_refused_items;    // (item, material)
 std::set<std::pair<std::uint64_t, std::uint64_t>> g_mat_refused_shaders;  // (material, shader)
 // D12: a CanvasItemMaterial template shader adopted before its engine RID was named (no getter
@@ -2523,12 +2525,105 @@ bool adopt_material_object(void *material, std::uint64_t rid, bool at_arm) {
   return m.knows_material(rid);
 }
 
-// One pass over the mirror's unresolved references (rs_mirror.h pending_material_refs).
-void resolve_pending(bool at_arm) {
+// LAR3 (late-arm-registry-design.md R2, R4): a shader the registry holds, adopted from the code
+// the server was given (the preprocessed code a born capture carries: no temporary Shader, no
+// include to resolve) and its recorded default textures. No getter is read, so the dummy
+// renderer's empty shader_get_code does not matter. True when the mirror knows the shader.
+bool adopt_shader_registered(std::uint64_t rid, const rs::RegistryShader &reg) {
   Mirror &m = mirror_instance();
-  const Mirror::PendingMaterialRefs pending = m.pending_material_refs();
+  if (m.knows_shader(rid)) {
+    return true;
+  }
+  const std::string code = reg.code != nullptr ? rs::decode_string(reg.code.get()) : std::string();
+  if (hooks_adopt_shader(rid, code)) {
+    mat_stat([](AdoptMaterialStats &s) {
+      ++s.shaders;
+      ++s.shaders_registry;
+    });
+    for (const rs::RegistryDefaultTexture &d : reg.defaults) {
+      hooks_adopt_default_texture(rid, d.name, d.texture, d.index);
+      mat_stat([](AdoptMaterialStats &s) { ++s.default_textures; });
+    }
+  }
+  return m.knows_shader(rid);
+}
+
+// The shader `rid` from the registry, when it holds one (false: unregistered or unadoptable).
+bool materialize_shader(std::uint64_t rid) {
+  if (rid == 0) {
+    return false;
+  }
+  if (mirror_instance().knows_shader(rid)) {
+    return true;
+  }
+  rs::RegistryShader reg;
+  return rs::registry_on() && rs::registry_shader(rid, &reg) && adopt_shader_registered(rid, reg);
+}
+
+// LAR3: a material the registry holds, adopted from its recorded shader binding (the shader
+// adopted first, from the registry when registered; a pre-load shader stays the mirror's pending
+// reference, for the residual) and its recorded parameters (texture values adopted by
+// hooks_adopt_material). No getter is read, so the dummy's NIL material_get_param does not matter.
+bool adopt_material_registered(std::uint64_t rid, const rs::RegistryMaterial &reg, bool at_arm) {
+  Mirror &m = mirror_instance();
+  if (m.knows_material(rid)) {
+    return true;
+  }
+  if (reg.shader != 0) {
+    materialize_shader(reg.shader);
+  }
+  std::vector<AdoptParam> params;
+  if (mat_sabotage() != AdoptMaterialSabotage::SkipParams) {
+    params.reserve(reg.params.size());
+    for (const rs::RegistryParam &p : reg.params) {
+      params.push_back({p.name, p.value.get()});
+    }
+  }
+  if (hooks_adopt_material(rid, reg.shader, params)) {
+    const std::uint32_t count = static_cast<std::uint32_t>(params.size());
+    mat_stat([&](AdoptMaterialStats &s) {
+      ++s.materials;
+      ++s.materials_registry;
+      if (at_arm) ++s.at_arm;
+      s.params += count;
+    });
+  }
+  return m.knows_material(rid);
+}
+
+bool materialize_material(std::uint64_t rid, bool at_arm) {
+  if (rid == 0) {
+    return false;
+  }
+  if (mirror_instance().knows_material(rid)) {
+    return true;
+  }
+  rs::RegistryMaterial reg;
+  return rs::registry_on() && rs::registry_material(rid, &reg) &&
+         adopt_material_registered(rid, reg, at_arm);
+}
+
+// One drain of the mirror's pending queue (rs_mirror.h take_pending_material_refs; LAR3 replaced
+// G8m's epoch-gated scan). A RID the registry holds is adopted from it; anything else goes to the
+// residual reader (M12-M14: the drawing item's node, its Material's and Shader's getters).
+void resolve_pending_once(bool at_arm) {
+  Mirror &m = mirror_instance();
+  const Mirror::PendingMaterialRefs pending = m.take_pending_material_refs();
+  const std::uint32_t taken =
+      static_cast<std::uint32_t>(pending.items.size() + pending.materials.size());
+  mat_stat([taken](AdoptMaterialStats &s) { s.pending_refs += taken; });
   for (const auto &ref : pending.items) {
     if (g_mat_refused_items.count(ref) != 0) continue;
+    rs::RegistryMaterial reg;
+    if (rs::registry_on() && rs::registry_material(ref.second, &reg)) {
+      if (adopt_material_registered(ref.second, reg, at_arm)) {
+        hooks_adopt_item_material(ref.first, ref.second);
+      } else {
+        g_mat_refused_items.insert(ref);
+        mat_stat([](AdoptMaterialStats &s) { ++s.materials_refused; });
+      }
+      continue;
+    }
     void *node = node_of(ref.first);
     RefSlot slot;
     void *material = node != nullptr ? node_material(node, &slot) : nullptr;
@@ -2542,7 +2637,13 @@ void resolve_pending(bool at_arm) {
   }
   for (const auto &ref : pending.materials) {
     const auto key = std::make_pair(ref.material, ref.shader);
-    if (ref.items.empty() || g_mat_refused_shaders.count(key) != 0) continue;
+    if (g_mat_refused_shaders.count(key) != 0) continue;
+    if (materialize_shader(ref.shader)) {  // LAR3: a registered shader needs no item
+      hooks_adopt_material_shader(ref.material, ref.shader);
+      mat_stat([](AdoptMaterialStats &s) { ++s.shaders_lazy; });
+      continue;
+    }
+    if (ref.items.empty()) continue;  // no holder yet: its first item queues it again
     bool done = false;
     for (std::uint64_t item : ref.items) {
       void *node = node_of(item);
@@ -2572,6 +2673,16 @@ void resolve_pending(bool at_arm) {
       g_mat_refused_shaders.insert(key);
       mat_stat([](AdoptMaterialStats &s) { ++s.shaders_refused; });
     }
+  }
+}
+
+// Drains until nothing is queued: adopting a registered material whose shader predates the load
+// (the process-global CanvasItemMaterial cache) queues that shader reference, resolved in the same
+// frame. Bounded: a reference is refused or resolved once, and the refused sets keep it so.
+void resolve_pending(bool at_arm) {
+  Mirror &m = mirror_instance();
+  for (int round = 0; round < 4 && m.has_pending_material_refs(); ++round) {
+    resolve_pending_once(at_arm);
   }
 }
 
@@ -2658,12 +2769,30 @@ void adopt_materials_configure(AdoptMaterialSabotage sabotage) {
     g_mat_stats = AdoptMaterialStats();
   }
   g_mat_sabotage.store(static_cast<int>(sabotage), std::memory_order_release);
-  g_mat_epoch_valid = false;
-  g_mat_epoch_seen = 0;
   g_mat_refused_items.clear();
   g_mat_refused_shaders.clear();
   g_cim_synthetic.clear();
   g_node_prune_at = 4096;
+  // LAR3: the mirror queues unresolved material and shader references from the walk on (the
+  // mirror was enabled, and reset, just before; entry.cpp calls this before adopt_at_arm).
+  mirror_instance().set_material_refs_queue(g_res_active.load(std::memory_order_acquire) &&
+                                            fault() != AdoptFault::NoResources);
+}
+
+bool adopt_material_ref(std::uint64_t rid) {
+  if (rid == 0 || !g_res_active.load(std::memory_order_acquire) ||
+      fault() == AdoptFault::NoResources || !mirror_enabled()) {
+    return false;
+  }
+  return materialize_material(rid, false);
+}
+
+bool adopt_shader_ref(std::uint64_t rid) {
+  if (rid == 0 || !g_res_active.load(std::memory_order_acquire) ||
+      fault() == AdoptFault::NoResources || !mirror_enabled()) {
+    return false;
+  }
+  return materialize_shader(rid);
 }
 
 AdoptMaterialStats adopt_material_stats() {
@@ -2686,8 +2815,6 @@ void adopt_materials_at_arm() {
       adopt_instance_params(item);
     }
   }
-  g_mat_epoch_seen = mirror_instance().material_refs_epoch();
-  g_mat_epoch_valid = true;
   const std::uint64_t t1 = now_ns();
   mat_stat([&](AdoptMaterialStats &s) { s.arm_ns += t1 - t0; });
 }
@@ -2698,15 +2825,12 @@ void adopt_materials_resolve() {
       std::this_thread::get_id() != g_res_main) {
     return;
   }
-  Mirror &m = mirror_instance();
-  if (g_mat_epoch_valid && m.material_refs_epoch() == g_mat_epoch_seen) {
-    return;
+  if (!mirror_instance().has_pending_material_refs()) {
+    return;  // LAR3: nothing queued since the last drain
   }
   const std::uint64_t t0 = now_ns();
   node_map_prune();
   resolve_pending(false);
-  g_mat_epoch_seen = m.material_refs_epoch();
-  g_mat_epoch_valid = true;
   const std::uint64_t t1 = now_ns();
   mat_stat([&](AdoptMaterialStats &s) {
     ++s.resolve_passes;

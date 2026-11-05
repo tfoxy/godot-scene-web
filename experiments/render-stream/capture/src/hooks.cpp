@@ -521,6 +521,90 @@ void registry_create(uint64_t rid, rs::RegistryKind kind) {
   }
 }
 
+// LAR3 (rs_registry.h RegistryValue): the engine values the shader and material taps record, held
+// by reference. A String copy is a reference-count increment (constructor 1, "from String"); a
+// Variant copy is variant_new_copy (a reference-count increment for an array or a String). One
+// allocation each: the holder is the shared_ptr's own block (aliasing constructor).
+struct HeldString {
+  alignas(8) unsigned char data[8] = {};
+  bool made = false;
+  HeldString() = default;
+  HeldString(const HeldString &) = delete;
+  HeldString &operator=(const HeldString &) = delete;
+  ~HeldString() {
+    if (made) {
+      const GDExtensionPtrDestructor dtor =
+          g_iface.variant_get_ptr_destructor(GDEXTENSION_VARIANT_TYPE_STRING);
+      if (dtor != nullptr) dtor(data);
+    }
+  }
+};
+
+struct HeldVariant {
+  alignas(8) unsigned char data[40] = {};  // a Variant (24 B; 40 B on a double-precision build)
+  bool made = false;
+  HeldVariant() = default;
+  HeldVariant(const HeldVariant &) = delete;
+  HeldVariant &operator=(const HeldVariant &) = delete;
+  ~HeldVariant() {
+    if (made && g_iface.variant_destroy != nullptr) g_iface.variant_destroy(data);
+  }
+};
+
+rs::RegistryValue registry_held_string(const void *string) {
+  if (string == nullptr || g_iface.variant_get_ptr_constructor == nullptr) {
+    return nullptr;
+  }
+  const GDExtensionPtrConstructor copy =
+      g_iface.variant_get_ptr_constructor(GDEXTENSION_VARIANT_TYPE_STRING, 1);
+  if (copy == nullptr) {
+    return nullptr;
+  }
+  auto held = std::make_shared<HeldString>();
+  const GDExtensionConstTypePtr args[1] = {string};
+  copy(held->data, args);
+  held->made = true;
+  return rs::RegistryValue(held, held->data);
+}
+
+rs::RegistryValue registry_held_variant(const void *variant) {
+  if (variant == nullptr || g_iface.variant_new_copy == nullptr) {
+    return nullptr;
+  }
+  auto held = std::make_shared<HeldVariant>();
+  g_iface.variant_new_copy(held->data, variant);
+  held->made = true;
+  return rs::RegistryValue(held, held->data);
+}
+
+// LAR3: material_set_param into the registry as the server keeps it (material_storage.cpp): NIL
+// and RID() erase the parameter, an Object is refused (no change), anything else is the value.
+void registry_param(uint64_t material, const std::string &name, const void *value) {
+  if (value == nullptr || g_iface.variant_get_type == nullptr) {
+    return;
+  }
+  const GDExtensionVariantType type =
+      g_iface.variant_get_type(const_cast<GDExtensionVariantPtr>(value));
+  if (type == GDEXTENSION_VARIANT_TYPE_OBJECT) {
+    return;
+  }
+  bool erase = type == GDEXTENSION_VARIANT_TYPE_NIL;
+  if (type == GDEXTENSION_VARIANT_TYPE_RID && g_iface.get_variant_to_type_constructor != nullptr) {
+    uint64_t id = 0;
+    g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_RID)(
+        &id, const_cast<GDExtensionVariantPtr>(value));
+    erase = id == 0;
+  }
+  if (erase) {
+    rs::registry_note_material_param(material, name, nullptr);
+    return;
+  }
+  rs::RegistryValue held = registry_held_variant(value);
+  if (held != nullptr) {
+    rs::registry_note_material_param(material, name, std::move(held));
+  }
+}
+
 uint64_t current_frame() { return g_frame.load(std::memory_order_relaxed); }
 
 // P3-TM: the session carries the host's shader time (render-stream/10), so the D11 scan does not
@@ -2550,7 +2634,9 @@ void hook_canvas_item_clear(void *self, RID item) {
 void hook_set_material(void *self, RID item, RID material) {
   bump(kSetMaterial);
   log_entry(&g_set_materials, rids(item.id, material.id));
-  if (streaming()) {
+  if (streaming() && mirror().set_material(item.id, material.id, current_frame()) &&
+      rs::registry_on() && rs::adopt_material_ref(material.id)) {
+    // LAR3 (R4): a registered material, adopted here; the item now names a known one.
     mirror().set_material(item.id, material.id, current_frame());
   }
   // Logged for the material census (gate5_5-design.md Q3d) alongside calibrator 8's own taps;
@@ -2990,6 +3076,9 @@ RID hook_shader_create_from_code(void *self, const void *code, const void *path_
   const RID result =
       original<FnShaderCreateFromCode>(kShaderCreateFromCode)(self, code, path_hint);
   registry_create(result.id, rs::RegistryKind::Shader);
+  if (rs::registry_on() && result.id != 0) {  // LAR3: the code the server was given, by reference
+    rs::registry_note_shader_code(result.id, registry_held_string(code));
+  }
   log_entry(&g_shader_creates, rids(result.id));
   if (resources().active()) {
     rs::ShaderCodeInput input;
@@ -3023,6 +3112,9 @@ void hook_shader_set_code(void *self, RID shader, const void *code) {
     resources().shader_set_code(tap_context(), shader.id, input.copy, omit);
   }
   original<FnShaderSetCode>(kShaderSetCode)(self, shader, code);
+  if (rs::registry_on()) {  // LAR3: the last code wins (R5)
+    rs::registry_note_shader_code(shader.id, registry_held_string(code));
+  }
 }
 
 void hook_material_set_param(void *self, RID material, const void *name, const void *value) {
@@ -3035,8 +3127,9 @@ void hook_material_set_param(void *self, RID material, const void *name, const v
   }
   bump(kMaterialSetParam);
   log_entry(&g_material_params, rids(material.id));
+  std::string param_name;
   if (resources().active()) {
-    const std::string param_name = rs::decode_string_name(name);
+    param_name = rs::decode_string_name(name);
     rs::DecodedParam decoded;
     const rs::MaterialParamCopy copy = decode_material_param(value, &decoded);
     if (decoded.type == "rid" && decoded.status == "ok") {
@@ -3053,6 +3146,10 @@ void hook_material_set_param(void *self, RID material, const void *name, const v
     resources().material_set_param(tap_context(), material.id, param_name, copy, omit);
   }
   original<FnMaterialSetParam>(kMaterialSetParam)(self, material, name, value);
+  if (rs::registry_on()) {  // LAR3
+    registry_param(material.id, resources().active() ? param_name : rs::decode_string_name(name),
+                   value);
+  }
 }
 
 // --- calibrator 8 hooks (gate5_5-design.md Q2) --------------------------------
@@ -3096,6 +3193,10 @@ void hook_shader_set_default_texture_parameter(void *self, RID shader, const voi
   }
   original<FnShaderSetDefaultTextureParameter>(kShaderSetDefaultTextureParameter)(
       self, shader, name, texture, index);
+  if (rs::registry_on()) {  // LAR3
+    rs::registry_note_shader_default_texture(shader.id, rs::decode_string_name(name), texture.id,
+                                             index);
+  }
 }
 
 RID hook_material_create(void *self) {
@@ -3129,6 +3230,12 @@ RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority
   const RID result = original<FnMaterialCreateFromShader>(kMaterialCreateFromShader)(
       self, next_pass, priority, shader);
   registry_create(result.id, rs::RegistryKind::Material);
+  if (rs::registry_on()) {
+    if (shader.id != 0) {
+      rs::registry_note_material_shader(result.id, shader.id);  // LAR3
+    }
+    rs::adopt_shader_ref(shader.id);  // LAR3 (R4): a registered shader the mirror does not know
+  }
   MaterialShaderKey key;
   zero(&key);
   key.material = result.id;
@@ -3157,6 +3264,10 @@ void hook_material_set_shader(void *self, RID material, RID shader) {
   }
   bump(kMaterialSetShader);
   log_entry(&g_material_set_shaders, rids(material.id, shader.id));
+  if (rs::registry_on()) {
+    rs::registry_note_material_shader(material.id, shader.id);  // LAR3
+    rs::adopt_shader_ref(shader.id);  // LAR3 (R4): a registered shader the mirror does not know
+  }
   if (resources().active()) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("material_set_shader");

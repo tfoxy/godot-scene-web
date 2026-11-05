@@ -926,11 +926,13 @@ std::string result_json() {
       const rs::AdoptMaterialStats ms = rs::adopt_material_stats();
       json.key("material_adoption").object_begin();
       json.field("materials", static_cast<int64_t>(ms.materials));
+      json.field("materials_registry", static_cast<int64_t>(ms.materials_registry));  // LAR3
       json.field("shader_materials", static_cast<int64_t>(ms.shader_materials));
       json.field("canvas_item_materials", static_cast<int64_t>(ms.canvas_item_materials));
       json.field("at_arm", static_cast<int64_t>(ms.at_arm));
       json.field("materials_refused", static_cast<int64_t>(ms.materials_refused));
       json.field("shaders", static_cast<int64_t>(ms.shaders));
+      json.field("shaders_registry", static_cast<int64_t>(ms.shaders_registry));  // LAR3
       json.field("shaders_builtin", static_cast<int64_t>(ms.shaders_builtin));
       json.field("shaders_include_refused", static_cast<int64_t>(ms.shaders_include_refused));
       json.field("shaders_lazy", static_cast<int64_t>(ms.shaders_lazy));
@@ -939,6 +941,7 @@ std::string result_json() {
       json.field("default_textures", static_cast<int64_t>(ms.default_textures));
       json.field("instance_params", static_cast<int64_t>(ms.instance_params));
       json.field("resolve_passes", static_cast<int64_t>(ms.resolve_passes));
+      json.field("pending_refs", static_cast<int64_t>(ms.pending_refs));  // LAR3
       json.field("nodes_added", static_cast<int64_t>(ms.nodes_added));
       json.field("items_adopted", static_cast<int64_t>(ms.items_adopted));
       json.field("node_map_connected", ms.node_map_connected);
@@ -3989,6 +3992,8 @@ bool attempt(const char *phase) {
           registry_fault = rs::RegistryFault::Off;
         } else if (fault == rs::AdoptFault::RegistryKeepFreed) {
           registry_fault = rs::RegistryFault::KeepFreed;
+        } else if (fault == rs::AdoptFault::RegistrySkipParams) {
+          registry_fault = rs::RegistryFault::SkipParams;  // LAR3
         }
       }
       rs::registry_configure(adopt, registry_fault);

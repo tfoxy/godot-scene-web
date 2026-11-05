@@ -58,6 +58,9 @@ struct Iface {
   // them refuses GRC_ADOPT=arm at arm (`adopt-unavailable`).
   GDExtensionInterfaceGetVariantFromTypeConstructor get_variant_from_type_constructor = nullptr;
   GDExtensionInterfaceVariantDestroy variant_destroy = nullptr;
+  // LAR3 (rs_registry.h RegistryValue): the registry keeps a material parameter's Variant by copy.
+  // Optional: without it the registry records no parameter values (they fall to the residual).
+  GDExtensionInterfaceVariantNewCopy variant_new_copy = nullptr;
   GDExtensionInterfaceVariantGetPtrBuiltinMethod variant_get_ptr_builtin_method = nullptr;
   GDExtensionInterfaceArrayOperatorIndexConst array_operator_index_const = nullptr;
   // G8m (rs_adopt.cpp, pre-arm materials and shaders): the temporary Shader (D11), the

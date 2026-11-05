@@ -5,7 +5,10 @@ Pre-arm materials and shaders (G8m,
 shaders", D11, D12). One scene, `mat.tscn`, run two ways by gate8-adopt's loader autoload (copied
 unchanged): `late` (the default main scene, built before the capture arms at fixture frame K) and
 `born` (`res://born.tscn` instantiates the same scene in `_ready`, after the loader armed the
-capture in `_enter_tree`). Every shader is synthetic and written for this fixture. Like the other
+capture in `_enter_tree`). LAR3 adds `deferred`: the loader loads the capture in `_enter_tree`
+(`RS_FIXTURE_ARM=deferred`, main scene `mat.tscn`) and the runner defers the arm to frame K with
+`GRC_ARM_DEFER_FRAMES=K-1`, so every shader and material is created under the hooks and adopted
+from the registry; the step timeline is the `late` one. Every shader is synthetic and written for this fixture. Like the other
 gate fixtures, the project does not know about the capture library and runs the same whether
 `GRC_EXTENSION` is set or not.
 

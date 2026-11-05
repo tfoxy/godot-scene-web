@@ -2,9 +2,11 @@
 // kinds and families, erase on free and texture_replace, recreate, null creates, the per-family
 // cap and overflow, the accounting identity registry-live-bound judges (entries == creates - frees
 // - replaced - recreated, on every timeline row), the timeline, both fault knobs, the evidence
-// shape, concurrent creates and frees from several threads, and (LAR1) the CanvasTexture payload.
+// shape, concurrent creates and frees from several threads, and the payloads: (LAR1) CanvasTexture,
+// (LAR2) multimesh, (LAR3) shader and material.
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -387,6 +389,117 @@ int main() {
            "mm: the payload map is in bytes_estimate");
     expect(contains(registry_json(), "\"multimesh\": {"), "mm: evidence has the payload block");
     expect(identity_holds(), "mm: identity holds");
+  }
+
+  // LAR3: the shader payload (code, default textures) and the material payload (shader, params).
+  {
+    using grc::rs::RegistryMaterial;
+    using grc::rs::RegistryShader;
+    using grc::rs::RegistryStats;
+    using grc::rs::RegistryValue;
+    using namespace grc::rs;
+    registry_configure(true, RegistryFault::None);
+    constexpr std::uint64_t kSh = 0x500000001, kSh2 = 0x500000002, kMat = 0x500000010;
+    constexpr std::uint64_t kMat2 = 0x500000011, kTex = 0x500000020, kPre = 0x500000030;
+    constexpr std::uint64_t kReentry = 0x500000040;
+    auto text = [](const char *t) -> RegistryValue { return std::make_shared<std::string>(t); };
+    auto str = [](const RegistryValue &v) {
+      return v != nullptr ? *static_cast<const std::string *>(v.get()) : std::string("<null>");
+    };
+    registry_note_create(kSh, RegistryKind::Shader);
+    RegistryShader sh;
+    expect(registry_shader(kSh, &sh) && sh.code == nullptr && sh.defaults.empty(),
+           "sh: a fresh shader_create has no code");
+    registry_note_shader_code(kSh, text("shader_type canvas_item; // a"));
+    registry_note_shader_code(kSh, text("shader_type canvas_item; // b"));
+    expect(registry_shader(kSh, &sh) && str(sh.code) == "shader_type canvas_item; // b",
+           "sh: the last code wins");
+    registry_note_shader_default_texture(kSh, "pal", kTex, 0);
+    registry_note_shader_default_texture(kSh, "pal", kTex + 1, 0);
+    registry_note_shader_default_texture(kSh, "pal", kTex, 1);
+    registry_note_shader_default_texture(kSh, "noise", kTex, 0);
+    registry_note_shader_default_texture(kSh, "noise", 0, 0);  // RID(): erased
+    expect(registry_shader(kSh, &sh) && sh.defaults.size() == 2 && sh.defaults[0].name == "pal" &&
+               sh.defaults[0].index == 0 && sh.defaults[0].texture == kTex + 1 &&
+               sh.defaults[1].index == 1 && sh.defaults[1].texture == kTex,
+           "sh: default textures by (name, index), last wins, RID() erases");
+    registry_note_shader_code(kPre, text("x"));
+    registry_note_shader_default_texture(kPre, "pal", kTex, 0);
+    expect(!registry_shader(kPre, &sh) && !registry_shader(kTex, &sh),
+           "sh: no payload for an unregistered RID");
+
+    registry_note_create(kMat, RegistryKind::Material);
+    RegistryMaterial mat;
+    expect(registry_material(kMat, &mat) && mat.shader == 0 && mat.params.empty(),
+           "mat: a fresh material has no shader and no parameters");
+    registry_note_material_shader(kMat, kSh);
+    registry_note_material_param(kMat, "tint", text("red"));
+    registry_note_material_param(kMat, "gain", text("0.5"));
+    registry_note_material_param(kMat, "tint", text("blue"));
+    expect(registry_material(kMat, &mat) && mat.shader == kSh && mat.params.size() == 2 &&
+               mat.params[0].name == "tint" && str(mat.params[0].value) == "blue" &&
+               mat.params[1].name == "gain",
+           "mat: shader and parameters, last value per name, first-set order");
+    registry_note_material_param(kMat, "gain", nullptr);  // NIL or RID(): erased
+    expect(registry_material(kMat, &mat) && mat.params.size() == 1 &&
+               registry_stats().material_params == 1,
+           "mat: a null value erases the parameter");
+    registry_note_material_shader(kMat, 0);
+    expect(registry_material(kMat, &mat) && mat.shader == 0, "mat: material_set_shader(RID())");
+    registry_note_material_param(kPre, "tint", text("x"));
+    registry_note_material_shader(kPre, kSh);
+    expect(!registry_material(kPre, &mat), "mat: no payload for an unregistered RID");
+
+    // A held value outlives its entry for whoever copied it, and the registry releases values
+    // outside its lock: a release that re-enters the registry (a Variant whose Object's free
+    // reaches the free hook) must not deadlock.
+    registry_note_create(kReentry, RegistryKind::Texture2d);
+    bool released = false;
+    RegistryValue reentrant(new std::string("v"), [&released, kReentry](const std::string *p) {
+      grc::rs::registry_note_free(kReentry);
+      released = true;
+      delete p;
+    });
+    registry_note_create(kMat2, RegistryKind::Material);
+    registry_note_material_param(kMat2, "obj", std::move(reentrant));
+    RegistryMaterial copy;
+    expect(registry_material(kMat2, &copy) && copy.params.size() == 1, "mat: a copy shares values");
+    registry_note_free(kMat2);
+    expect(!released && !registry_material(kMat2, &mat), "mat: the copy keeps the value alive");
+    copy = RegistryMaterial();
+    expect(released && !registry_lookup(kReentry, nullptr),
+           "mat: released outside the lock (its re-entrant free ran)");
+
+    // Recreated as another kind, or freed: the payload goes.
+    registry_note_create(kSh2, RegistryKind::Shader);
+    registry_note_shader_code(kSh2, text("y"));
+    registry_note_create(kSh2, RegistryKind::Mesh);
+    expect(!registry_shader(kSh2, &sh), "sh: recreated as a mesh, no payload");
+    registry_note_free(kSh);
+    expect(!registry_shader(kSh, &sh) && registry_stats().shader_payloads == 0,
+           "sh: a free erases the payload");
+    const RegistryStats st = registry_stats();
+    expect(st.material_payloads == 1 && st.material_payload_sets == 7 && st.shader_payload_sets == 8,
+           "mat/sh: payload counts and recorded calls");
+    expect(st.shader_payload_bytes > 0 && st.material_payload_bytes > 0 &&
+               st.bytes_estimate >= st.shader_payload_bytes + st.material_payload_bytes,
+           "mat/sh: the payload maps are in bytes_estimate");
+    const std::string json = registry_json();
+    expect(contains(json, "\"shader\": {") && contains(json, "\"material\": {") &&
+               contains(json, "\"params\": 1"),
+           "mat/sh: evidence has both payload blocks");
+    expect(identity_holds(), "mat/sh: identity holds");
+
+    // registry-skip-params (LAR3's sabotage): records the shader binding but no parameter.
+    registry_configure(true, RegistryFault::SkipParams);
+    expect(registry_on() && std::string(registry_fault_name(RegistryFault::SkipParams)) ==
+                                "registry-skip-params",
+           "skip-params: the registry still records");
+    registry_note_create(kMat, RegistryKind::Material);
+    registry_note_material_shader(kMat, kSh);
+    registry_note_material_param(kMat, "tint", text("red"));
+    expect(registry_material(kMat, &mat) && mat.shader == kSh && mat.params.empty(),
+           "skip-params: no parameter recorded");
   }
 
   // Reconfigure resets everything (a test-only path: the capture configures once).

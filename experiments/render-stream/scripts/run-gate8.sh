@@ -67,6 +67,14 @@
 #       the GRC_ADOPT_FAULT=no-include-path capture (the typed shader-adopt-include); then, rendered,
 #       the unarmed `reference` with gate 5.5's material oracle (RS_FIXTURE_MATERIAL_LOG) and the
 #       native receiver on born, late (full and patch sinks) and the no-include-path capture.
+#       LAR3 (late-arm-registry-design.md, the shader/material row): `deferred/capture` (mat.tscn,
+#       the extension loaded in the loader's _enter_tree and armed at K=12 with
+#       GRC_ARM_DEFER_FRAMES=11: every shader and material adopted from the registry, no getter),
+#       the `sabotage-registry-off/capture` (GRC_ADOPT_FAULT=registry-off: nothing recorded, the
+#       deferred arm behaves load-late; fails mat-registry-source) and
+#       `sabotage-registry-skip-params/capture` (registry-skip-params: material_set_param not
+#       recorded; fails param-parity), and the native `deferred/receiver` and
+#       `deferred/receiver-patch` beside the late ones.
 #   g8kp (G8kp, texture-delivery-design.md D1 `passthrough`, D3; fixtures/gate8-tex; every leg
 #       under g8kp/): the import and oracle (shared with g8t when both run; the oracle also writes
 #       each .ctex's block bytes as <name>.<family>.block.grt1), then headless /9 captures under
@@ -2515,6 +2523,9 @@ G8M_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-mat"
 # The fixture's arm frame K (gate8-adopt's loader, expected.json arm_frame).
 G8M_ARM_FRAME=12
 G8M_ENV=(GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip)
+# LAR3: the deferred arm loads the capture in the loader's _enter_tree and defers the arm to frame K.
+G8M_DEFERRED_ENV=(GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip GRC_ADOPT=arm
+	GRC_ARM_DEFER_FRAMES=$((G8M_ARM_FRAME - 1)))
 
 run_import_g8m() {
 	echo "run-gate8: g8m import (fixture, receiver)"
@@ -2531,8 +2542,9 @@ run_import_g8m() {
 	done
 }
 
-# run_capture_g8m <dir> <born|late> <env word...>: a headless capture of the fixture, armed at birth
-# (main scene res://born.tscn) or late (mat.tscn at frame K).
+# run_capture_g8m <dir> <born|late|deferred> <env word...>: a headless capture of the fixture, armed
+# at birth (main scene res://born.tscn), late (mat.tscn at frame K) or deferred (mat.tscn, loaded at
+# birth, armed at frame K).
 run_capture_g8m() {
 	local dir="$1" arm="$2" scene=""
 	shift 2
@@ -2555,6 +2567,13 @@ run_g8m() {
 		run_capture_g8m "$OUT/g8m/sabotage-$s/capture" late "${G8M_ENV[@]}" GRC_ADOPT=arm \
 			GRC_SABOTAGE="$s" GRC_SABOTAGE_FRAME="$G8M_ARM_FRAME"
 	done
+	echo "run-gate8: g8m deferred (loaded at birth, armed at frame $G8M_ARM_FRAME: adopted from the registry)"
+	run_capture_g8m "$OUT/g8m/deferred/capture" deferred "${G8M_DEFERRED_ENV[@]}"
+	for s in registry-off registry-skip-params; do
+		echo "run-gate8: g8m sabotage-$s (deferred capture, GRC_ADOPT_FAULT=$s)"
+		run_capture_g8m "$OUT/g8m/sabotage-$s/capture" deferred "${G8M_DEFERRED_ENV[@]}" \
+			GRC_ADOPT_FAULT="$s"
+	done
 	echo "run-gate8: g8m fault-no-include-path (capture, GRC_ADOPT_FAULT: the typed shader-adopt-include)"
 	run_capture_g8m "$OUT/g8m/fault-no-include-path/capture" late "${G8M_ENV[@]}" GRC_ADOPT=arm \
 		GRC_ADOPT_FAULT=no-include-path
@@ -2567,11 +2586,13 @@ run_g8m() {
 	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8m/reference/shots" RS_FIXTURE_STEP_LOG="$OUT/g8m/reference/steps.jsonl"
 		RS_FIXTURE_MATERIAL_LOG="$OUT/g8m/reference/materials.jsonl" RS_FIXTURE_ARM_FRAME="$G8M_ARM_FRAME")
 	run_rendered "$OUT/g8m/reference" "$G8M_FIXTURE_DIR"
-	echo "run-gate8: g8m receivers (born, late, late patch sink, fault-no-include-path)"
+	echo "run-gate8: g8m receivers (born, late, late patch sink, deferred, deferred patch sink, fault-no-include-path)"
 	run_rendered_receiver "$OUT/g8m/born/capture" "$OUT/g8m/born/receiver"
 	run_rendered_receiver "$OUT/g8m/late/capture" "$OUT/g8m/late/receiver"
+	run_rendered_receiver "$OUT/g8m/deferred/capture" "$OUT/g8m/deferred/receiver"
 	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
 	run_rendered_receiver "$OUT/g8m/late/capture" "$OUT/g8m/late/receiver-patch"
+	run_rendered_receiver "$OUT/g8m/deferred/capture" "$OUT/g8m/deferred/receiver-patch"
 	run_rendered_receiver "$OUT/g8m/fault-no-include-path/capture" "$OUT/g8m/fault-no-include-path/receiver"
 	legs_par_end
 	gs_teardown "$OUT/gamescope-g8m"

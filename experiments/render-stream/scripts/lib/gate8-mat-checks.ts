@@ -379,9 +379,80 @@ export function includeRefused(
   return { problems };
 }
 
+/** LAR3 `mat-registry-source`: every shader and material the deferred capture adopted came from
+ * the registry -- `ma` is stream.gate8.adopt_stats.material_adoption, `registry` the capture's
+ * evidence/registry.json, `account` expected.json `account` -- with nothing left to the residual
+ * (node-map) path and none refused, and the registry shows the shader and material families
+ * recorded (creates, payload calls and params). */
+export function matRegistrySourceProblems(
+  ma: Record<string, unknown> | null | undefined,
+  registry: Record<string, unknown> | null | undefined,
+  account: Record<string, unknown>,
+): string[] {
+  const problems: string[] = [];
+  if (!ma) problems.push("no stream.gate8.adopt_stats.material_adoption");
+  else {
+    const num = (k: string) =>
+      typeof ma[k] === "number" ? (ma[k] as number) : NaN;
+    for (const [total, reg] of [
+      ["materials", "materials_registry"],
+      ["shaders", "shaders_registry"],
+    ] as const) {
+      if (ma[total] !== account[total])
+        problems.push(
+          `${total} ${JSON.stringify(ma[total])}, expected ${JSON.stringify(account[total])}`,
+        );
+      if (ma[reg] !== ma[total] || !(num(reg) >= 0))
+        problems.push(
+          `${reg} ${JSON.stringify(ma[reg])}, expected every one of the ${JSON.stringify(ma[total])} ${total} from the registry`,
+        );
+    }
+    for (const k of [
+      "shader_materials",
+      "canvas_item_materials",
+      "shaders_builtin",
+      "shaders_include_refused",
+      "materials_refused",
+      "shaders_refused",
+    ])
+      if (ma[k] !== 0)
+        problems.push(
+          `${k} ${JSON.stringify(ma[k])}, expected 0 (no residual adoption)`,
+        );
+  }
+  if (!registry) problems.push("no evidence/registry.json");
+  else {
+    if (registry.configured !== true || registry.enabled !== true)
+      problems.push(
+        `registry configured ${String(registry.configured)}, enabled ${String(registry.enabled)}`,
+      );
+    type Counts = Record<string, number>;
+    const fam = registry.families as Record<string, Counts> | undefined;
+    const pay = registry.payloads as Record<string, Counts> | undefined;
+    const atLeast = (v: number | undefined, n: number | undefined) =>
+      typeof v === "number" && typeof n === "number" && v >= n;
+    if (!atLeast(fam?.shader?.creates, ma ? (ma.shaders as number) : 1))
+      problems.push(
+        `registry shader creates ${fam?.shader?.creates ?? "none"}, at least ${ma?.shaders} expected`,
+      );
+    if (!atLeast(fam?.material?.creates, ma ? (ma.materials as number) : 1))
+      problems.push(
+        `registry material creates ${fam?.material?.creates ?? "none"}, at least ${ma?.materials} expected`,
+      );
+    if (!((pay?.shader?.sets ?? 0) > 0))
+      problems.push("registry shader payload recorded no set");
+    if (!((pay?.material?.sets ?? 0) > 0))
+      problems.push("registry material payload recorded no set");
+  }
+  return problems;
+}
+
 // ------------------------------------------------------------------------------- the group
 
 const SABOTAGES = ["adopt-raw-shader-code", "adopt-skip-params"] as const;
+/** LAR3: GRC_ADOPT_FAULT on the deferred arm (registry-off fails mat-registry-source,
+ * registry-skip-params fails param-parity). */
+const REGISTRY_SABOTAGES = ["registry-off", "registry-skip-params"] as const;
 
 export interface G8mReport {
   legs: Record<string, { exit_code: string | null; skipped: string | null }>;
@@ -389,6 +460,8 @@ export interface G8mReport {
   account: unknown;
   pixels: Record<string, unknown>;
   sabotages: Record<string, unknown>;
+  /** LAR3: the deferred capture's material_adoption block and registry payloads. */
+  deferred?: unknown;
 }
 
 export async function runG8m(
@@ -404,10 +477,15 @@ export async function runG8m(
     "late/capture",
     ...SABOTAGES.map((s) => `sabotage-${s}/capture`),
     "fault-no-include-path/capture",
+    // LAR3: the deferred arm (registry adoption) and its two sabotages.
+    "deferred/capture",
+    ...REGISTRY_SABOTAGES.map((s) => `sabotage-${s}/capture`),
     "reference",
     "born/receiver",
     "late/receiver",
     "late/receiver-patch",
+    "deferred/receiver",
+    "deferred/receiver-patch",
     "fault-no-include-path/receiver",
   ];
   const legs: G8mReport["legs"] = {};
@@ -436,7 +514,7 @@ export async function runG8m(
     checks.push(
       check(
         "g8m-legs",
-        "every g8m leg that ran (imports, the born/late/sabotage/fault captures, the rendered reference with its material oracle and every receiver) exits 0",
+        "every g8m leg that ran (imports, the born/late/deferred/sabotage/fault captures, the rendered reference with its material oracle and every receiver) exits 0",
         problems,
         `${legDirs.filter((l) => legs[l].exit_code !== null && legs[l].skipped === null).length} legs`,
       ),
@@ -446,6 +524,13 @@ export async function runG8m(
   const load = async (leg: string) => loadRecording(join(root, leg, "capture"));
   const born = await load("born");
   const late = await load("late");
+  const deferred = await load("deferred");
+  // LAR3: the deferred leg is judged when it ran (an older output dir has none).
+  const hasDeferred = !!(deferred.rec || deferred.bytes);
+  const adopted = [
+    ["late", late],
+    ...(hasDeferred ? [["deferred", deferred] as const] : []),
+  ] as const;
   const at = (r: Awaited<ReturnType<typeof load>>) => (step: number) =>
     r.rec ? stateAt(r.rec, settle(step))?.state : undefined;
   const oracleText = await readText(join(root, "reference/materials.jsonl"));
@@ -453,6 +538,10 @@ export async function runG8m(
     oracleText === undefined ? undefined : jsonl<OracleLine>(oracleText);
   const hashNames = await textureHashNames(
     join(root, "late/capture/store"),
+    expected.textures,
+  );
+  const deferredHashNames = await textureHashNames(
+    join(root, "deferred/capture/store"),
     expected.textures,
   );
   const bornHashNames = await textureHashNames(
@@ -468,10 +557,7 @@ export async function runG8m(
   // --- g8m-wire: both recordings validate at /8, late declares adoption --------------------
   {
     const problems: string[] = [];
-    for (const [name, r] of [
-      ["born", born],
-      ["late", late],
-    ] as const) {
+    for (const [name, r] of [["born", born], ...adopted] as const) {
       if (r.error || !r.bytes) {
         problems.push(r.error ?? `${name}: no recording`);
         continue;
@@ -487,10 +573,11 @@ export async function runG8m(
           (t.state.materials ?? []).some((x) => x.origin === "adopted")
         )
           problems.push(`born: adopted shader or material at frame ${t.frame}`);
-    if (late.rec) {
+    for (const [name, r] of adopted) {
+      if (!r.rec) continue;
       // Every reference resolves before its transaction: no frame carries an unknown material or
       // a material with an unknown shader.
-      for (const t of late.rec.transactions) {
+      for (const t of r.rec.transactions) {
         const unknown = t.state.unsupported.filter(
           (u) =>
             u.reason === "unknown-material" ||
@@ -498,19 +585,19 @@ export async function runG8m(
         );
         if (unknown.length > 0)
           problems.push(
-            `late frame ${t.frame}: ${unknown.map((u) => u.reason).join(",")}`,
+            `${name} frame ${t.frame}: ${unknown.map((u) => u.reason).join(",")}`,
           );
         for (const m of t.state.materials ?? [])
           if (m.status !== "ok")
             problems.push(
-              `late frame ${t.frame}: material ${m.id} ${m.reason}`,
+              `${name} frame ${t.frame}: material ${m.id} ${m.reason}`,
             );
       }
     }
     checks.push(
       check(
         "g8m-wire",
-        "the born and late /8 recordings validate; born publishes no adopted shader or material; in the late capture no transaction carries an unknown-material or unsupported-material entry or a material that is not ok (every pre-arm reference resolved before its transaction)",
+        "the born, late and (LAR3) deferred /8 recordings validate; born publishes no adopted shader or material; in the late and deferred captures no transaction carries an unknown-material or unsupported-material entry or a material that is not ok (every pre-arm reference resolved before its transaction)",
         born.bytes || late.bytes ? problems : null,
       ),
     );
@@ -525,6 +612,7 @@ export async function runG8m(
       for (const [name, r, isLate] of [
         ["born", born, false],
         ["late", late, true],
+        ...(hasDeferred ? [["deferred", deferred, true] as const] : []),
       ] as const) {
         const e = shaderHashParity(expected, oracle, at(r), originOf(isLate));
         problems.push(...e.problems.map((p) => `${name} ${p}`));
@@ -548,6 +636,9 @@ export async function runG8m(
       for (const [name, r, names] of [
         ["born", born, bornHashNames],
         ["late", late, hashNames],
+        ...(hasDeferred
+          ? [["deferred", deferred, deferredHashNames] as const]
+          : []),
       ] as const) {
         const e = paramParity(expected, oracle, at(r), names);
         problems.push(...e.problems.map((p) => `${name} ${p}`));
@@ -569,14 +660,17 @@ export async function runG8m(
     let problems: string[] | null = null;
     let compared = 0;
     if (born.rec && late.rec) {
-      const e = cimBuiltin(expected, at(born), at(late));
-      problems = e.problems;
-      compared = e.compared;
+      problems = [];
+      for (const [name, r] of adopted) {
+        const e = cimBuiltin(expected, at(born), at(r));
+        problems.push(...e.problems.map((p) => `${name} ${p}`));
+        compared += e.compared;
+      }
     }
     checks.push(
       check(
         "adopt-cim-builtin",
-        "every CanvasItemMaterial (the pre-arm add mode adopted at arm; post-arm mul and add on modes first used before arm) names, in the late capture, an adopted ok shader with its mode's builtin object and the hash of the code the born capture's hook copied from the engine; C and N4 (one mode) share one shader entry",
+        "every CanvasItemMaterial (the pre-arm add mode adopted at arm; post-arm mul and add on modes first used before arm) names, in the late capture and in the deferred one (LAR3: the engine's real code from the registry), an adopted ok shader with its mode's builtin object and the hash of the code the born capture's hook copied from the engine; C and N4 (one mode) share one shader entry",
         problems,
         `${compared} comparisons`,
       ),
@@ -588,16 +682,24 @@ export async function runG8m(
     let problems: string[] | null = null;
     if (born.rec && late.rec) {
       const e = equivalence(born.rec, late.rec, K, 0);
-      problems = e.problems;
+      problems = [...e.problems];
       report.equivalence = {
         frames_compared: e.frames,
         first_problems: e.problems.slice(0, 20),
       };
+      if (deferred.rec) {
+        const d = equivalence(born.rec, deferred.rec, K, 0);
+        problems.push(...d.problems.map((p) => `deferred ${p}`));
+        report.equivalence.frames_compared += d.frames;
+        report.equivalence.first_problems.push(
+          ...d.problems.slice(0, 20).map((p) => `deferred ${p}`),
+        );
+      }
     }
     checks.push(
       check(
         "adopt-equivalence",
-        `at every frame from the arm (${K}) on, the late capture's resolved state equals the born capture's under gate8-adopt's id bijection and Q2's exceptions, every item's material compared by content (status, shader status, reason, hash, builtin and default textures, parameters with textures by payload hash) and its instance parameters likewise`,
+        `at every frame from the arm (${K}) on, the late capture's and (LAR3) the deferred capture's resolved state equals the born capture's under gate8-adopt's id bijection and Q2's exceptions, every item's material compared by content (status, shader status, reason, hash, builtin and default textures, parameters with textures by payload hash) and its instance parameters likewise`,
         problems,
         `${report.equivalence?.frames_compared} frames equal`,
       ),
@@ -651,7 +753,10 @@ export async function runG8m(
       "born/receiver",
       "late/receiver",
       "late/receiver-patch",
+      "deferred/receiver",
+      "deferred/receiver-patch",
     ]) {
+      if (leg.startsWith("deferred") && !hasDeferred) continue;
       const diffs = [];
       for (const cp of expected.checkpoints) {
         const d = await shotDiff(
@@ -673,7 +778,7 @@ export async function runG8m(
       check(
         // G8g: g8a has its own `adopt-reference`; check ids are unique per gate report.
         "mat-adopt-reference",
-        "the native receiver's shots of the born capture and of the late capture (full and patch sinks) equal the unarmed rendered reference at every checkpoint, pixel for pixel",
+        "the native receiver's shots of the born capture and of the late and deferred captures (full and patch sinks) equal the unarmed rendered reference at every checkpoint, pixel for pixel",
         any ? problems : null,
       ),
     );
@@ -766,6 +871,127 @@ export async function runG8m(
           : "the adopt-skip-params capture (adopted materials and items publish no parameters) fails param-parity",
         problems,
         `detected: ${JSON.stringify(report.sabotages[s])}`,
+      ),
+    );
+  }
+
+  // --- LAR3: the registry is the source (deferred), and its two sabotages -------------------
+  type Evidence = {
+    stream?: {
+      gate8?: { adopt_stats?: { material_adoption?: Record<string, unknown> } };
+    };
+  };
+  const evidence = async (leg: string) => ({
+    ma: (
+      await readJson<Evidence>(join(root, leg, "capture/evidence/result.json"))
+    )?.stream?.gate8?.adopt_stats?.material_adoption,
+    registry: await readJson<Record<string, unknown>>(
+      join(root, leg, "capture/evidence/registry.json"),
+    ),
+  });
+  const payloadOf = (
+    registry: Record<string, unknown> | null | undefined,
+    family: string,
+  ) =>
+    (
+      registry?.payloads as Record<string, Record<string, number>> | undefined
+    )?.[family];
+  {
+    const ev = await evidence("deferred");
+    report.deferred = {
+      material_adoption: ev.ma ?? null,
+      payloads: ev.registry?.payloads ?? null,
+    };
+    checks.push(
+      check(
+        "mat-registry-source",
+        "LAR3: on the deferred arm (loaded at birth, armed at frame K) every material and shader of expected.json account was adopted from the registry (materials_registry = materials, shaders_registry = shaders), none through the residual node-map path (shader_materials, canvas_item_materials, shaders_builtin, shaders_include_refused 0) or refused, and registry.json records the shader and material families (creates and payload sets; payloads.material.params is a live gauge, 0 once the fixture frees every material, so the cumulative sets stand for the params)",
+        ev.ma || ev.registry
+          ? matRegistrySourceProblems(ev.ma, ev.registry, expected.account)
+          : null,
+        `materials ${ev.ma?.materials_registry}/${ev.ma?.materials}, shaders ${ev.ma?.shaders_registry}/${ev.ma?.shaders}`,
+      ),
+    );
+  }
+  {
+    const ev = await evidence("sabotage-registry-off");
+    let problems: string[] | null = null;
+    if (ev.ma || ev.registry) {
+      problems = [];
+      const found = matRegistrySourceProblems(
+        ev.ma,
+        ev.registry,
+        expected.account,
+      );
+      if (found.length === 0)
+        problems.push("mat-registry-source passed on the registry-off capture");
+      if (ev.ma?.materials_registry !== 0 || ev.ma?.shaders_registry !== 0)
+        problems.push(
+          `materials_registry ${JSON.stringify(ev.ma?.materials_registry)}, shaders_registry ${JSON.stringify(ev.ma?.shaders_registry)}, expected 0 and 0`,
+        );
+      report.sabotages["registry-off"] = {
+        detected: found.length,
+        first: found.slice(0, 4),
+      };
+    }
+    checks.push(
+      check(
+        "mat-registry-source-catches-registry-off",
+        "the registry-off capture (GRC_ADOPT_FAULT=registry-off: the registry records nothing, so the deferred arm behaves load-late) fails mat-registry-source, with materials_registry and shaders_registry 0",
+        problems,
+        `detected: ${JSON.stringify(report.sabotages["registry-off"])}`,
+      ),
+    );
+  }
+  {
+    const leg = "sabotage-registry-skip-params";
+    const r = await load(leg);
+    const ev = await evidence(leg);
+    const honest = await evidence("deferred");
+    let problems: string[] | null = null;
+    if (r.rec && oracle) {
+      problems = [];
+      const e = paramParity(
+        expected,
+        oracle,
+        at(r),
+        await textureHashNames(
+          join(root, leg, "capture/store"),
+          expected.textures,
+        ),
+      );
+      report.sabotages["registry-skip-params"] = {
+        detected: e.problems.length,
+        first: e.problems.slice(0, 4),
+      };
+      if (e.problems.length === 0)
+        problems.push(
+          "param-parity passed on the registry-skip-params capture",
+        );
+      const params = payloadOf(ev.registry, "material")?.params;
+      if (params !== 0)
+        problems.push(
+          `registry payloads.material.params ${JSON.stringify(params)}, expected 0`,
+        );
+      // params is a live gauge (0 at the end of every run: the fixture frees its materials), so
+      // the cumulative sets show the missing parameter records: fewer than the honest deferred leg.
+      const sets = payloadOf(ev.registry, "material")?.sets;
+      const honestSets = payloadOf(honest.registry, "material")?.sets;
+      if (
+        typeof sets !== "number" ||
+        typeof honestSets !== "number" ||
+        !(sets < honestSets)
+      )
+        problems.push(
+          `registry payloads.material.sets ${JSON.stringify(sets)}, expected fewer than the deferred leg's ${JSON.stringify(honestSets)}`,
+        );
+    }
+    checks.push(
+      check(
+        "param-parity-catches-registry-skip-params",
+        "the registry-skip-params capture (GRC_ADOPT_FAULT=registry-skip-params: material_set_param is not recorded, so registry-adopted materials carry no parameters; registry.json payloads.material.params 0 and fewer material sets than the deferred leg) fails param-parity",
+        problems,
+        `detected: ${JSON.stringify(report.sabotages["registry-skip-params"])}`,
       ),
     );
   }

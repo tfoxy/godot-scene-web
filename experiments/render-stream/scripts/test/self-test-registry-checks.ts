@@ -286,6 +286,47 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1)] }).problems.includes("
   );
 }
 
+// LAR3 (K1 for the shader/material payload): the shader and material hooks record into the registry
+// and note the references an adoption resolves; the adoption takes the recorded code, defaults,
+// binding and params from the registry, with no epoch scan of the node map.
+{
+  const here = dirname(fileURLToPath(import.meta.url));
+  const src = readFileSync(join(here, "../../capture/src/hooks.cpp"), "utf8");
+  const body = (name: string): string => {
+    const m = new RegExp(`\\n(?:RID|void) hook_${name}\\(`).exec(src);
+    if (!m) return "";
+    const end = src.indexOf("\n}\n", m.index);
+    return end < 0 ? "" : src.slice(m.index, end);
+  };
+  const has = (hook: string, needle: string) =>
+    expect(body(hook).includes(needle), `LAR3: hook_${hook} contains ${needle}`);
+  has("shader_create_from_code", "registry_note_shader_code(result.id");
+  has("shader_set_code", "registry_note_shader_code(shader.id");
+  has("shader_set_default_texture_parameter", "registry_note_shader_default_texture(shader.id");
+  has("material_create_from_shader", "registry_note_material_shader(result.id");
+  has("material_create_from_shader", "adopt_shader_ref(shader.id)");
+  has("material_set_shader", "registry_note_material_shader(material.id");
+  has("material_set_shader", "adopt_shader_ref(shader.id)");
+  has("material_set_param", "registry_param(material.id");
+  has("set_material", "adopt_material_ref(material.id)");
+  const adopt = readFileSync(join(here, "../../capture/src/rs_adopt.cpp"), "utf8");
+  expect(adopt.includes("take_pending_material_refs()"), "LAR3: the adoption drains take_pending_material_refs()");
+  expect(adopt.includes("hooks_adopt_shader(rid, code)"), "LAR3: a registered shader is adopted with its recorded code");
+  expect(
+    !adopt.includes("material_refs_epoch") && !/\bpending_material_refs\(\)/.test(adopt),
+    "LAR3: no epoch scan of the node map in rs_adopt.cpp",
+  );
+  const mirrorHeader = readFileSync(join(here, "../../capture/src/rs_mirror.h"), "utf8");
+  expect(!mirrorHeader.includes("material_refs_epoch"), "LAR3: rs_mirror.h has no material_refs_epoch");
+  const header = readFileSync(join(here, "../../capture/src/rs_registry.h"), "utf8");
+  const shaderStruct = /struct RegistryShader \{([^}]*)\}/.exec(header)?.[1] ?? "";
+  const materialStruct = /struct RegistryMaterial \{([^}]*)\}/.exec(header)?.[1] ?? "";
+  for (const f of ["code", "defaults"])
+    expect(new RegExp(`\\b${f}\\b`).test(shaderStruct), `LAR3: RegistryShader records ${f}`);
+  for (const f of ["shader", "params"])
+    expect(new RegExp(`\\b${f}\\b`).test(materialStruct), `LAR3: RegistryMaterial records ${f}`);
+}
+
 if (failures > 0) {
   console.error(`self-test-registry-checks: ${failures} of ${assertions} assertion(s) failed`);
   process.exit(1);

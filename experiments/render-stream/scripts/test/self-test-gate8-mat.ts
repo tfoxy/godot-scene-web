@@ -19,6 +19,9 @@
 // 6. canonicalState (gate8-adopt-checks, G8m's material content): two states with other material
 //    and shader ids but the same content are equal; another parameter value differs.
 //
+// 7. matRegistrySourceProblems (LAR3): an honest deferred block passes; each violated condition is
+//    reported and a registry-off shape fails.
+//
 // Exits non-zero if any assertion fails.
 
 import { readFile } from "node:fs/promises";
@@ -30,6 +33,7 @@ import {
   cimBuiltin,
   type G8mExpected,
   includeRefused,
+  matRegistrySourceProblems,
   type OracleLine,
   paramParity,
   shaderHashParity,
@@ -437,6 +441,138 @@ async function main(): Promise<void> {
     ).problems.length === 1,
     "canon: another shader hash differs",
   );
+
+  // 7. LAR3: matRegistrySourceProblems.
+  {
+    const account = { materials: 4, shaders: 5 };
+    const honestMa = (): Record<string, unknown> => ({
+      materials: 4,
+      materials_registry: 4,
+      shaders: 5,
+      shaders_registry: 5,
+      shader_materials: 0,
+      canvas_item_materials: 0,
+      shaders_builtin: 0,
+      shaders_include_refused: 0,
+      materials_refused: 0,
+      shaders_refused: 0,
+    });
+    type FakeRegistry = {
+      configured: boolean;
+      enabled: boolean;
+      families: Record<string, Record<string, number>>;
+      payloads: Record<string, Record<string, number>>;
+    };
+    const honestReg = (): FakeRegistry => ({
+      configured: true,
+      enabled: true,
+      families: { shader: { creates: 6 }, material: { creates: 5 } },
+      payloads: {
+        shader: { sets: 6 },
+        material: { sets: 4, params: 8 },
+      },
+    });
+    const p = (
+      ma: Record<string, unknown> | null,
+      reg: Record<string, unknown> | null,
+    ) => matRegistrySourceProblems(ma, reg, account);
+    assert(
+      p(honestMa(), honestReg()).length === 0,
+      "registry-source: honest passes",
+    );
+    assert(
+      p(null, honestReg()).length === 1,
+      "registry-source: no material_adoption",
+    );
+    assert(
+      p(honestMa(), null).length === 1,
+      "registry-source: no registry.json",
+    );
+    const reg = (f: (r: FakeRegistry) => void) => {
+      const r = honestReg();
+      f(r);
+      return p(honestMa(), r);
+    };
+    const ma = (f: (m: Record<string, unknown>) => void) => {
+      const m = honestMa();
+      f(m);
+      return p(m, honestReg());
+    };
+    assert(
+      reg((r) => (r.enabled = false)).length === 1,
+      "registry-source: registry disabled",
+    );
+    assert(
+      reg((r) => (r.configured = false)).length === 1,
+      "registry-source: registry unconfigured",
+    );
+    assert(
+      ma((m) => (m.materials = 3)).length === 2,
+      "registry-source: materials total != account (and != registry)",
+    );
+    assert(
+      ma((m) => (m.materials_registry = 3)).length === 1,
+      "registry-source: a material not from the registry",
+    );
+    assert(
+      ma((m) => (m.shaders = 4)).length === 2,
+      "registry-source: shaders total != account",
+    );
+    assert(
+      ma((m) => (m.shaders_registry = 4)).length === 1,
+      "registry-source: a shader not from the registry",
+    );
+    for (const k of [
+      "shader_materials",
+      "canvas_item_materials",
+      "shaders_builtin",
+      "shaders_include_refused",
+      "materials_refused",
+      "shaders_refused",
+    ])
+      assert(
+        ma((m) => (m[k] = 1)).length === 1,
+        `registry-source: ${k} 1 reported`,
+      );
+    assert(
+      reg((r) => (r.families.shader.creates = 4)).length === 1,
+      "registry-source: too few shader creates",
+    );
+    assert(
+      reg((r) => (r.families.material.creates = 3)).length === 1,
+      "registry-source: too few material creates",
+    );
+    assert(
+      reg((r) => (r.payloads.shader.sets = 0)).length === 1,
+      "registry-source: no shader sets",
+    );
+    assert(
+      reg((r) => (r.payloads.material.sets = 0)).length === 1,
+      "registry-source: no material sets",
+    );
+    // A registry-off shape: nothing recorded, the residual adopts everything.
+    const off = matRegistrySourceProblems(
+      {
+        ...honestMa(),
+        materials_registry: 0,
+        shaders_registry: 0,
+        shader_materials: 3,
+        canvas_item_materials: 1,
+        shaders_builtin: 2,
+      },
+      {
+        configured: true,
+        enabled: true,
+        families: { shader: { creates: 0 }, material: { creates: 0 } },
+        payloads: { shader: { sets: 0 }, material: { sets: 0, params: 0 } },
+      },
+      account,
+    );
+    assert(
+      off.length >= 6,
+      `registry-source: a registry-off shape fails (${off.length} problems)`,
+    );
+  }
 
   console.log(
     `\nself-test-gate8-mat: ${assertions - failures}/${assertions} assertions passed`,

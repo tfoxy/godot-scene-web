@@ -262,6 +262,9 @@ enum class AdoptFault : std::uint8_t {
   // and guesses them from the buffer's per-instance stride, as PM9 did (the 12-float stride reads
   // as 2d + colors: 2d + custom and 3d are misread; fails mm-registry-exact).
   RegistryMmStride,
+  // LAR3: registry-skip-params: material_set_param is not recorded, so a material adopted from the
+  // registry publishes no parameters (fails param-parity on a deferred leg).
+  RegistrySkipParams,
 };
 
 // Parses GRC_ADOPT_FAULT (null or "" -> None). False with `error` set for any other value, or
@@ -391,12 +394,14 @@ bool has_include_directive(const std::string &code);
 
 // What material adoption did (result.json stream.gate8.adopt_stats.material_adoption).
 struct AdoptMaterialStats {
-  std::uint32_t materials = 0;             // adopted materials, every class
-  std::uint32_t shader_materials = 0;      // ... ShaderMaterial
-  std::uint32_t canvas_item_materials = 0; // ... CanvasItemMaterial
+  std::uint32_t materials = 0;             // adopted materials, every source
+  std::uint32_t materials_registry = 0;    // ... from the registry's recorded shader and params
+  std::uint32_t shader_materials = 0;      // ... ShaderMaterial (residual: the node's getters)
+  std::uint32_t canvas_item_materials = 0; // ... CanvasItemMaterial (residual)
   std::uint32_t at_arm = 0;                // ... adopted by the walk (the rest lazily)
   std::uint32_t materials_refused = 0;     // material refs nothing could resolve (counted once)
-  std::uint32_t shaders = 0;               // adopted shaders
+  std::uint32_t shaders = 0;               // adopted shaders, every source
+  std::uint32_t shaders_registry = 0;      // ... from the registry's recorded code (LAR3)
   std::uint32_t shaders_builtin = 0;       // ... CanvasItemMaterial templates (D12)
   std::uint32_t shaders_include_refused = 0;  // ... shader-adopt-include
   std::uint32_t shaders_lazy = 0;          // material shaders resolved at a frame boundary
@@ -405,6 +410,7 @@ struct AdoptMaterialStats {
   std::uint32_t default_textures = 0;      // shader default textures published
   std::uint32_t instance_params = 0;       // item instance parameters published
   std::uint32_t resolve_passes = 0;        // frame boundaries with pending references
+  std::uint32_t pending_refs = 0;          // LAR3: references taken from the mirror's queue
   std::uint32_t nodes_added = 0;           // CanvasItems node_added mapped after arm
   // LATE-RES (gap #5): a pre-arm CanvasItem that was not in the tree at arm, adopted at its first
   // node_added after the arm (a pooled node re-entering the tree), instead of staying unknown.
@@ -448,9 +454,19 @@ void tag_set_query(const IdentityQuery &query, bool before_ready);
 bool item_identity(std::uint64_t rid, Identity *out);
 void tag_prune_map();
 // The frame boundary (entry.cpp's frame callback, main thread, before the transaction is
-// formed): resolves the mirror's pending material and shader references through the node map.
-// Cheap when nothing changed since the last call (one epoch read).
+// formed): drains the mirror's pending material and shader references (LAR3: its queue, which
+// replaces G8m's epoch scan), from the registry when it holds the RID, otherwise through the node
+// map. Cheap when nothing was queued (one atomic load).
 void adopt_materials_resolve();
+
+// LAR3 (late-arm-registry-design.md R4): the hooks' references to a material (canvas_item_set_
+// material) or a shader (material_create_from_shader, material_set_shader) the mirror does not
+// know. A RID the registry holds is adopted there, on the calling thread (registry-only kinds need
+// no getter): a shader from its recorded code and default textures, a material from its recorded
+// shader (adopted first) and parameters. True when the mirror knows the RID afterwards. Anything
+// else stays the mirror's pending reference, for the residual (G8m's node-map reader, M12-M14).
+bool adopt_material_ref(std::uint64_t rid);
+bool adopt_shader_ref(std::uint64_t rid);
 
 // PM5 (render-stream-12.md "The `particle_process_material` builtin"): at the frame boundary
 // (after adopt_materials_resolve), keys every `particles`-mode shader the mirror lists

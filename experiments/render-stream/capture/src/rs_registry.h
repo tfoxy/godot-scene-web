@@ -8,7 +8,10 @@
 // CanvasTexture payload (channels, filter, repeat; RegistryCanvasTexture), which rs_adopt.cpp
 // adopts a registered CanvasTexture from, whatever the arm state was when it was recorded. LAR2
 // adds the multimesh payload (allocation, mesh, visible count, custom AABB, the `edited` bit;
-// RegistryMultimesh): the format RenderingServer has no getter for.
+// RegistryMultimesh): the format RenderingServer has no getter for. LAR3 adds the shader payload
+// (the code the server was given, default textures; RegistryShader) and the material payload (its
+// shader binding and parameters; RegistryMaterial): the dummy renderer answers shader_get_code
+// with "" and material_get_param with NIL, and the registry needs neither.
 //
 // Rules (design R1, R3, R5, R6):
 //   - Gating: registry_configure() runs once, before the vptr store, from GRC_ADOPT. With
@@ -38,6 +41,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -76,7 +80,8 @@ const char *registry_kind_name(RegistryKind kind);
 // The registry's own fault knobs, parsed from GRC_ADOPT_FAULT (rs_adopt.h AdoptFault):
 //   registry-off        record nothing (a deferred leg becomes a load-late one; LAR1+ sabotages)
 //   registry-keep-freed the free hook keeps the entry (LAR0's sabotage: fails registry-live-bound)
-enum class RegistryFault : std::uint8_t { None, Off, KeepFreed };
+//   registry-skip-params material_set_param records nothing (LAR3's sabotage: fails param-parity)
+enum class RegistryFault : std::uint8_t { None, Off, KeepFreed, SkipParams };
 const char *registry_fault_name(RegistryFault fault);
 
 constexpr std::size_t kRegistryDefaultCap = std::size_t{1} << 20;  // entries per family
@@ -113,6 +118,16 @@ struct RegistryStats {
   std::uint64_t multimesh_payloads = 0;      // live RegistryMultimesh entries
   std::uint64_t multimesh_payload_sets = 0;  // allocate/mesh/visible/aabb/buffer/instance calls recorded
   std::uint64_t multimesh_payload_bytes = 0; // its slot array (in bytes_estimate)
+  // LAR3: the shader and material payload maps (likewise their own flat maps; bytes_estimate counts
+  // their slot arrays and the parameter vectors' elements, not the engine's own String and Variant
+  // storage, which the registry only references).
+  std::uint64_t shader_payloads = 0;        // live RegistryShader entries
+  std::uint64_t shader_payload_sets = 0;    // code and default-texture calls recorded
+  std::uint64_t shader_payload_bytes = 0;   // its slot array (in bytes_estimate)
+  std::uint64_t material_payloads = 0;      // live RegistryMaterial entries
+  std::uint64_t material_payload_sets = 0;  // shader and parameter calls recorded
+  std::uint64_t material_params = 0;        // live recorded parameters, all materials
+  std::uint64_t material_payload_bytes = 0; // its slot array plus the parameter elements
 };
 
 // One timeline row: the per-family counts after a frame in which the registry changed. `frame` is
@@ -207,6 +222,59 @@ void registry_note_multimesh_instance_edit(std::uint64_t rid);
 
 // The recorded multimesh of a live RID (false: `rid` is not a registered multimesh).
 bool registry_multimesh(std::uint64_t rid, RegistryMultimesh *out);
+
+// LAR3 (design R2, R5): an engine value the hooks keep alive for the registry -- a copy of the
+// String the server was given as a shader's code, or of a material parameter's Variant (a String
+// copy is a reference-count increment; so is a Variant holding an array). Opaque here: the hooks
+// make it (hooks.cpp registry_held_string/registry_held_variant) and rs_adopt.cpp reads it; get()
+// is the engine object's address. The registry never destroys one under its lock (a Variant's
+// destructor may free an Object, whose free re-enters the hooks): a displaced or erased value is
+// moved out and released after the lock is dropped.
+using RegistryValue = std::shared_ptr<const void>;
+
+// One shader_set_default_texture_parameter (Shader::set_default_texture_parameter's server call).
+struct RegistryDefaultTexture {
+  std::string name;
+  std::int32_t index = 0;
+  std::uint64_t texture = 0;
+};
+
+// A shader's payload: the code the server was given (shader_create_from_code's or the last
+// shader_set_code's String; the preprocessed code, the same string a born capture carries, so no
+// #include is ever left to resolve) and its default textures, by (name, index) as the engine keys
+// them (a RID() texture erases one). A fresh shader_create has no code (`code` null).
+struct RegistryShader {
+  RegistryValue code;
+  std::vector<RegistryDefaultTexture> defaults;
+};
+
+// One material_set_param, as the server keeps it (material_storage.cpp material_set_param): the
+// last value per name; NIL and RID() erase it (the hooks pass a null value), an Object is refused
+// (the hooks record nothing).
+struct RegistryParam {
+  std::string name;
+  RegistryValue value;  // a Variant
+};
+
+// A material's payload: the shader material_create_from_shader or the last material_set_shader
+// named (0: none), and its parameters in first-set order. next_pass and render_priority are not
+// recorded: no hook taps them, and a canvas material uses neither.
+struct RegistryMaterial {
+  std::uint64_t shader = 0;
+  std::vector<RegistryParam> params;
+};
+
+// The shader_* and material_* hooks (only when registry_on()), after the engine call.
+void registry_note_shader_code(std::uint64_t rid, RegistryValue code);
+void registry_note_shader_default_texture(std::uint64_t rid, const std::string &name,
+                                          std::uint64_t texture, std::int32_t index);
+void registry_note_material_shader(std::uint64_t rid, std::uint64_t shader);
+// `value` null: the call erased the parameter (NIL or RID()). Nothing under registry-skip-params.
+void registry_note_material_param(std::uint64_t rid, const std::string &name, RegistryValue value);
+
+// The recorded shader or material of a live RID (false: not registered as one).
+bool registry_shader(std::uint64_t rid, RegistryShader *out);
+bool registry_material(std::uint64_t rid, RegistryMaterial *out);
 
 // The frame callback (entry.cpp on_frame): appends a timeline row when anything changed since the
 // last row. Cheap when nothing did (one relaxed load).

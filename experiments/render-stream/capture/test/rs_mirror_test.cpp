@@ -4012,8 +4012,11 @@ void test_multimesh_lowered_below_v11() {
         "and so is a /10 patch");
 }
 
-// HC1: a set_material that sets the item's current material is no assignment at all: the
-// adoption epoch stays, a different material (or a cleared one coming back) moves it.
+// HC1, LAR3: the pending queue (Mirror::take_pending_material_refs, which replaced G8m's epoch).
+// A known material whose shader is known queues nothing; an unknown material is queued once (the
+// same unknown RID again is no assignment); a material's unknown shader is queued with the item
+// that takes it, or found through one item pass when it was set after its items took it; a later
+// call makes an entry stale; with the queue off (the default) nothing is queued.
 void test_same_value_set_material_keeps_epoch() {
   Mirror m;
   bind_root(&m);
@@ -4021,29 +4024,45 @@ void test_same_value_set_material_keeps_epoch() {
   m.canvas_item_create(101, 1);
   m.material_create(0x700, 1);
   m.material_create(0x701, 1);
-  m.set_material(100, 0x700, 1);
-  std::uint64_t epoch = m.material_refs_epoch();
-  m.set_material(100, 0x700, 2);
-  m.set_material(100, 0x700, 3);
-  check(m.material_refs_epoch() == epoch, "the same known material again leaves the epoch");
-  m.set_material(101, 0x700, 3);
-  check(m.material_refs_epoch() == epoch + 1, "another item taking it is an assignment");
-  epoch = m.material_refs_epoch();
-  m.set_material(100, 0x701, 4);
-  check(m.material_refs_epoch() == epoch + 1, "a different material moves the epoch");
-  epoch = m.material_refs_epoch();
-  m.set_material(100, 0, 5);
-  m.set_material(100, 0x701, 6);
-  check(m.material_refs_epoch() == epoch + 1, "null then the old material is a new assignment");
-  epoch = m.material_refs_epoch();
-  m.set_material(100, 0x999, 7);  // unknown RID
-  check(m.material_refs_epoch() == epoch + 1, "an unknown material is an assignment");
-  epoch = m.material_refs_epoch();
-  m.set_material(100, 0x999, 8);
-  check(m.material_refs_epoch() == epoch, "the same unknown RID again leaves the epoch");
+  m.set_material(100, 0x999, 1);
+  check(!m.has_pending_material_refs(), "queue off: nothing queued");
+  m.set_material(100, 0, 1);
+  m.set_material_refs_queue(true);
+  check(!m.set_material(100, 0x700, 1) && !m.set_material(100, 0x700, 2) &&
+            !m.set_material(101, 0x700, 3) && !m.has_pending_material_refs(),
+        "a known material with a known shader queues nothing");
+  check(m.set_material(100, 0x999, 7), "an unknown material is reported to the hook");
+  check(m.has_pending_material_refs(), "and queued");
+  check(m.set_material(100, 0x999, 8), "the same unknown RID again: still unknown");
+  auto pending = m.take_pending_material_refs();
+  check(pending.items.size() == 1 && pending.items[0].first == 100 &&
+            pending.items[0].second == 0x999 && pending.materials.empty() &&
+            !m.has_pending_material_refs(),
+        "queued once, drained");
+  m.material_create_from_shader(0x702, 0x555, 9);
+  m.set_material(101, 0x702, 9);
+  pending = m.take_pending_material_refs();
+  check(pending.materials.size() == 1 && pending.materials[0].material == 0x702 &&
+            pending.materials[0].shader == 0x555 && pending.materials[0].items.size() == 1 &&
+            pending.materials[0].items[0] == 101 && m.material_refs_scans() == 0,
+        "an unknown shader is queued with the item that takes its material, no item pass");
+  m.set_material(100, 0x701, 10);
+  m.material_set_shader(0x701, 0x556, 10);
+  pending = m.take_pending_material_refs();
+  check(pending.materials.size() == 1 && pending.materials[0].items.size() == 1 &&
+            pending.materials[0].items[0] == 100 && m.material_refs_scans() == 1,
+        "a shader set after its items took the material: one item pass finds them");
+  m.set_material(100, 0x998, 11);
+  m.material_create(0x998, 11);
+  m.set_material(100, 0x998, 12);
+  pending = m.take_pending_material_refs();
+  check(pending.items.empty() && pending.materials.empty(), "a stale entry is dropped");
+  m.set_material(100, 0x999, 13);
   Snapshot s = m.snapshot(1, 1).state;
   check(has_material_entry(s, 1) && !item(s, 1)->has_material,
         "and the item still names an unknown material");
+  m.set_material_refs_queue(false);
+  check(!m.has_pending_material_refs(), "turning the queue off clears it");
 }
 
 // --- PM5: particles (render-stream-12.md "Particles table", "The emit list", builtin) ---------

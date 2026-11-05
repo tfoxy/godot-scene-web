@@ -9,6 +9,10 @@ extends Node
 ##                              (default 12), after adopt.tscn has drawn, moved, raised top-level
 ##                              items, hidden a subtree and changed a filter (the `late` leg: the
 ##                              capture adopts the scene, GRC_ADOPT=arm)
+##   RS_FIXTURE_ARM=deferred    (LAR3) in `_enter_tree`, as `born` loads, but the main scene is mat.tscn
+##                              and the runner defers the arm to frame K (GRC_ARM_DEFER_FRAMES=K-1):
+##                              every shader and material is created under the hooks and recorded
+##                              by the registry before the arm, then adopted from it
 ##   RS_FIXTURE_ARM=thread      at frame K too, but from a worker Thread (the `late-thread` leg:
 ##                              adoption refuses `adopt-thread`, gate8-design.md D4)
 ##
@@ -34,11 +38,11 @@ func _enter_tree() -> void:
 			arm_frame = text.to_int()
 		else:
 			printerr("[fixture] error: RS_FIXTURE_ARM_FRAME must be an integer >= 8 (got %s)" % JSON.stringify(text))
-	if arm_mode != "born" and arm_mode != "late" and arm_mode != "thread":
-		printerr("[fixture] error: RS_FIXTURE_ARM must be born, late or thread (got %s)" % JSON.stringify(arm_mode))
+	if arm_mode != "born" and arm_mode != "late" and arm_mode != "thread" and arm_mode != "deferred":
+		printerr("[fixture] error: RS_FIXTURE_ARM must be born, late, deferred or thread (got %s)" % JSON.stringify(arm_mode))
 		arm_mode = "late"
-	if arm_mode == "born":
-		_load("born")
+	if arm_mode == "born" or arm_mode == "deferred":
+		_load(arm_mode)
 
 
 func _process(_delta: float) -> void:

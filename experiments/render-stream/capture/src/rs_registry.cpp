@@ -41,6 +41,15 @@ struct State {
   RidMap<RegistryMultimesh> multimesh;
   std::uint64_t multimesh_capacity = 0;
   std::uint64_t multimesh_sets = 0;
+  // LAR3: the shader and material payloads (subsets of `map`'s keys, created and erased with the
+  // kind entry). Their values hold engine references (RegistryValue), released outside the lock.
+  RidMap<RegistryShader> shader;
+  std::uint64_t shader_capacity = 0;
+  std::uint64_t shader_sets = 0;
+  RidMap<RegistryMaterial> material;
+  std::uint64_t material_capacity = 0;
+  std::uint64_t material_sets = 0;
+  std::uint64_t material_params = 0;  // live recorded parameters, all materials
   RegistryFamilyStats family[kRegistryFamilies];
   std::uint64_t entries = 0;
   std::uint64_t peak = 0;
@@ -53,9 +62,25 @@ struct State {
 };
 
 State &state() {
-  static State s;  // never destroyed before the hooks stop: function-local, process lifetime
-  return s;
+  // Never destroyed: LAR3's payloads hold engine Strings and Variants, whose destructors must not
+  // run from a static destructor after the engine (or this library) is gone.
+  static State *s = new State();
+  return *s;
 }
+
+// LAR3: engine values a mutation displaced, released once the registry's lock is dropped (declare
+// one before the lock_guard, so it is destroyed after it).
+struct Dropped {
+  std::vector<RegistryValue> values;
+  void shader(RegistryShader &&p) {
+    if (p.code != nullptr) values.push_back(std::move(p.code));
+  }
+  void material(RegistryMaterial &&p) {
+    for (RegistryParam &param : p.params) {
+      if (param.value != nullptr) values.push_back(std::move(param.value));
+    }
+  }
+};
 
 std::size_t index(RegistryFamily family) { return static_cast<std::size_t>(family); }
 
@@ -65,6 +90,11 @@ constexpr std::uint64_t kNodeBytes = sizeof(RidMap<Entry>::value_type);
 constexpr std::uint64_t kCanvasNodeBytes = sizeof(RidMap<RegistryCanvasTexture>::value_type);
 // One slot of the multimesh payload map (key and RegistryMultimesh).
 constexpr std::uint64_t kMultimeshNodeBytes = sizeof(RidMap<RegistryMultimesh>::value_type);
+// LAR3: one slot of the shader and material payload maps, and one recorded parameter (its name's
+// heap bytes beyond the small-string buffer are not counted; the Variant itself is the engine's).
+constexpr std::uint64_t kShaderNodeBytes = sizeof(RidMap<RegistryShader>::value_type);
+constexpr std::uint64_t kMaterialNodeBytes = sizeof(RidMap<RegistryMaterial>::value_type);
+constexpr std::uint64_t kParamBytes = sizeof(RegistryParam);
 
 // Follows RidMap's growth rule (it doubles from 64 when an insertion would make it more than half
 // full, and never shrinks) for bytes_estimate. Call before inserting a new key into a map of `size`.
@@ -90,20 +120,61 @@ void multimesh_create_locked(State &s, std::uint64_t rid) {
   s.multimesh[rid] = RegistryMultimesh();
 }
 
+// LAR3: a shader or material create: a fresh payload (a recycled value's old one is dropped).
+void shader_create_locked(State &s, std::uint64_t rid, Dropped *dropped) {
+  const auto it = s.shader.find(rid);
+  if (it == s.shader.end()) {
+    track_growth(s.shader.size(), &s.shader_capacity);
+    s.shader[rid] = RegistryShader();
+    return;
+  }
+  dropped->shader(std::move(it->second));
+  it->second = RegistryShader();
+}
+
+void material_create_locked(State &s, std::uint64_t rid, Dropped *dropped) {
+  const auto it = s.material.find(rid);
+  if (it == s.material.end()) {
+    track_growth(s.material.size(), &s.material_capacity);
+    s.material[rid] = RegistryMaterial();
+    return;
+  }
+  s.material_params -= it->second.params.size();
+  dropped->material(std::move(it->second));
+  it->second = RegistryMaterial();
+}
+
 // A create of `kind` on `rid` (fresh or recreated): the payload maps follow the kind entry.
-void payload_create_locked(State &s, std::uint64_t rid, RegistryKind kind) {
+void payload_create_locked(State &s, std::uint64_t rid, RegistryKind kind, Dropped *dropped) {
   if (kind == RegistryKind::CanvasTexture) {
     canvas_create_locked(s, rid);
   } else if (kind == RegistryKind::Multimesh) {
     multimesh_create_locked(s, rid);
+  } else if (kind == RegistryKind::Shader) {
+    shader_create_locked(s, rid, dropped);
+  } else if (kind == RegistryKind::Material) {
+    material_create_locked(s, rid, dropped);
   }
 }
 
-void payload_erase_locked(State &s, std::uint64_t rid, RegistryFamily family) {
+void payload_erase_locked(State &s, std::uint64_t rid, RegistryFamily family, Dropped *dropped) {
   if (family == RegistryFamily::CanvasTexture) {
     s.canvas.erase(rid);
   } else if (family == RegistryFamily::Multimesh) {
     s.multimesh.erase(rid);
+  } else if (family == RegistryFamily::Shader) {
+    const auto it = s.shader.find(rid);
+    if (it != s.shader.end()) {
+      dropped->shader(std::move(it->second));
+      s.shader.erase(rid);
+    }
+  } else if (family == RegistryFamily::Material) {
+    const auto it = s.material.find(rid);
+    if (it != s.material.end()) {
+      s.material_params -= it->second.params.size();
+      dropped->material(std::move(it->second));
+      s.material.erase(rid);
+    }
   }
 }
 
@@ -180,13 +251,23 @@ const char *registry_fault_name(RegistryFault fault) {
   case RegistryFault::None: return "none";
   case RegistryFault::Off: return "registry-off";
   case RegistryFault::KeepFreed: return "registry-keep-freed";
+  case RegistryFault::SkipParams: return "registry-skip-params";
   }
   return "?";
 }
 
 void registry_configure(bool adopt, RegistryFault fault, std::size_t cap) {
   State &s = state();
+  RidMap<RegistryShader> old_shaders;      // released after the lock (RegistryValue)
+  RidMap<RegistryMaterial> old_materials;
   std::lock_guard<std::mutex> lock(s.mutex);
+  std::swap(old_shaders, s.shader);
+  std::swap(old_materials, s.material);
+  s.shader_capacity = 0;
+  s.shader_sets = 0;
+  s.material_capacity = 0;
+  s.material_sets = 0;
+  s.material_params = 0;
   s.configured = adopt;
   s.fault = adopt ? fault : RegistryFault::None;
   s.cap = cap;
@@ -213,6 +294,7 @@ void registry_configure(bool adopt, RegistryFault fault, std::size_t cap) {
 void registry_note_create(std::uint64_t rid, RegistryKind kind) {
   State &s = state();
   const RegistryFamily family = registry_family(kind);
+  Dropped dropped;  // released after the lock
   std::lock_guard<std::mutex> lock(s.mutex);
   RegistryFamilyStats &f = s.family[index(family)];
   if (rid == 0) {
@@ -229,9 +311,9 @@ void registry_note_create(std::uint64_t rid, RegistryKind kind) {
     ++f.creates;
     add_entry_locked(s, family);
     if (old != family) {
-      payload_erase_locked(s, rid, old);
+      payload_erase_locked(s, rid, old, &dropped);
     }
-    payload_create_locked(s, rid, kind);
+    payload_create_locked(s, rid, kind, &dropped);
     changed_locked(s);
     return;
   }
@@ -241,7 +323,7 @@ void registry_note_create(std::uint64_t rid, RegistryKind kind) {
   }
   track_growth(s.map.size(), &s.capacity);
   s.map[rid] = Entry{kind};
-  payload_create_locked(s, rid, kind);
+  payload_create_locked(s, rid, kind, &dropped);
   ++f.creates;
   add_entry_locked(s, family);
   changed_locked(s);
@@ -249,6 +331,7 @@ void registry_note_create(std::uint64_t rid, RegistryKind kind) {
 
 void registry_note_free(std::uint64_t rid) {
   State &s = state();
+  Dropped dropped;  // released after the lock
   std::lock_guard<std::mutex> lock(s.mutex);
   const auto it = s.map.find(rid);
   if (it == s.map.end()) {
@@ -258,7 +341,7 @@ void registry_note_free(std::uint64_t rid) {
   ++s.family[index(family)].frees;
   if (s.fault != RegistryFault::KeepFreed) {
     s.map.erase(rid);
-    payload_erase_locked(s, rid, family);
+    payload_erase_locked(s, rid, family, &dropped);
     remove_entry_locked(s, family);
   }
   changed_locked(s);
@@ -490,6 +573,119 @@ bool registry_multimesh(std::uint64_t rid, RegistryMultimesh *out) {
   return true;
 }
 
+// --- LAR3: the shader and material payloads ------------------------------------------------------
+
+void registry_note_shader_code(std::uint64_t rid, RegistryValue code) {
+  State &s = state();
+  RegistryValue old;  // released after the lock
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.shader.find(rid);
+  if (it == s.shader.end()) {
+    old = std::move(code);  // not a registered shader: nothing recorded
+    return;
+  }
+  old = std::move(it->second.code);
+  it->second.code = std::move(code);
+  ++s.shader_sets;
+}
+
+void registry_note_shader_default_texture(std::uint64_t rid, const std::string &name,
+                                          std::uint64_t texture, std::int32_t index) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.shader.find(rid);
+  if (it == s.shader.end()) {
+    return;
+  }
+  std::vector<RegistryDefaultTexture> &defaults = it->second.defaults;
+  auto d = defaults.begin();
+  while (d != defaults.end() && !(d->name == name && d->index == index)) {
+    ++d;
+  }
+  if (texture == 0) {
+    if (d != defaults.end()) {
+      defaults.erase(d);  // the engine erases a RID() default (material_storage.cpp)
+    }
+  } else if (d != defaults.end()) {
+    d->texture = texture;
+  } else {
+    defaults.push_back(RegistryDefaultTexture{name, index, texture});
+  }
+  ++s.shader_sets;
+}
+
+void registry_note_material_shader(std::uint64_t rid, std::uint64_t shader) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.material.find(rid);
+  if (it == s.material.end()) {
+    return;
+  }
+  it->second.shader = shader;
+  ++s.material_sets;
+}
+
+void registry_note_material_param(std::uint64_t rid, const std::string &name,
+                                  RegistryValue value) {
+  State &s = state();
+  RegistryValue old;  // released after the lock
+  std::lock_guard<std::mutex> lock(s.mutex);
+  if (s.fault == RegistryFault::SkipParams) {
+    old = std::move(value);
+    return;
+  }
+  const auto it = s.material.find(rid);
+  if (it == s.material.end()) {
+    old = std::move(value);
+    return;
+  }
+  std::vector<RegistryParam> &params = it->second.params;
+  auto p = params.begin();
+  while (p != params.end() && p->name != name) {
+    ++p;
+  }
+  if (value == nullptr) {
+    if (p != params.end()) {
+      old = std::move(p->value);
+      params.erase(p);
+      --s.material_params;
+    }
+  } else if (p != params.end()) {
+    old = std::move(p->value);
+    p->value = std::move(value);
+  } else {
+    params.push_back(RegistryParam{name, std::move(value)});
+    ++s.material_params;
+  }
+  ++s.material_sets;
+}
+
+bool registry_shader(std::uint64_t rid, RegistryShader *out) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.shader.find(rid);
+  if (it == s.shader.end()) {
+    return false;
+  }
+  if (out != nullptr) {
+    *out = it->second;  // the copy shares the engine values (reference counts, no engine call)
+  }
+  return true;
+}
+
+bool registry_material(std::uint64_t rid, RegistryMaterial *out) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.material.find(rid);
+  if (it == s.material.end()) {
+    return false;
+  }
+  if (out != nullptr) {
+    *out = it->second;
+  }
+  return true;
+}
+
 void registry_frame(std::uint64_t frame) {
   State &s = state();
   const std::uint64_t generation = s.generation.load(std::memory_order_relaxed);
@@ -528,7 +724,17 @@ RegistryStats registry_stats() {
   out.peak = s.peak;
   out.entry_bytes = static_cast<std::uint64_t>(s.map.size()) * kNodeBytes +
                     static_cast<std::uint64_t>(s.canvas.size()) * kCanvasNodeBytes +
-                    static_cast<std::uint64_t>(s.multimesh.size()) * kMultimeshNodeBytes;
+                    static_cast<std::uint64_t>(s.multimesh.size()) * kMultimeshNodeBytes +
+                    static_cast<std::uint64_t>(s.shader.size()) * kShaderNodeBytes +
+                    static_cast<std::uint64_t>(s.material.size()) * kMaterialNodeBytes +
+                    s.material_params * kParamBytes;
+  out.shader_payloads = s.shader.size();
+  out.shader_payload_sets = s.shader_sets;
+  out.shader_payload_bytes = s.shader_capacity * kShaderNodeBytes;
+  out.material_payloads = s.material.size();
+  out.material_payload_sets = s.material_sets;
+  out.material_params = s.material_params;
+  out.material_payload_bytes = s.material_capacity * kMaterialNodeBytes + s.material_params * kParamBytes;
   out.canvas_payloads = s.canvas.size();
   out.canvas_payload_sets = s.canvas_sets;
   out.canvas_payload_bytes = s.canvas_capacity * kCanvasNodeBytes;
@@ -537,8 +743,9 @@ RegistryStats registry_stats() {
   out.multimesh_payload_bytes = s.multimesh_capacity * kMultimeshNodeBytes;
   // The slot arrays, empty slots included (at most half full, never shrinking: bounded by the
   // peak, not by the current entries).
-  out.bytes_estimate =
-      s.capacity * kNodeBytes + out.canvas_payload_bytes + out.multimesh_payload_bytes;
+  out.bytes_estimate = s.capacity * kNodeBytes + out.canvas_payload_bytes +
+                       out.multimesh_payload_bytes + out.shader_payload_bytes +
+                       out.material_payload_bytes;
   return out;
 }
 
@@ -585,6 +792,11 @@ std::string registry_json() {
                                ? stats.canvas_payloads * kCanvasNodeBytes
                            : static_cast<RegistryFamily>(i) == RegistryFamily::Multimesh
                                ? stats.multimesh_payloads * kMultimeshNodeBytes
+                           : static_cast<RegistryFamily>(i) == RegistryFamily::Shader
+                               ? stats.shader_payloads * kShaderNodeBytes
+                           : static_cast<RegistryFamily>(i) == RegistryFamily::Material
+                               ? stats.material_payloads * kMaterialNodeBytes +
+                                     stats.material_params * kParamBytes
                                : 0));
     json.object_end();
   }
@@ -603,6 +815,22 @@ std::string registry_json() {
   json.key("sets").unsigned_integer(stats.multimesh_payload_sets);
   json.key("node_bytes").unsigned_integer(kMultimeshNodeBytes);
   json.key("bytes_estimate").unsigned_integer(stats.multimesh_payload_bytes);
+  json.object_end();
+  // LAR3: the shader payload (code reference, default textures) and the material payload (shader
+  // binding, parameters).
+  json.key("shader").object_begin();
+  json.key("entries").unsigned_integer(stats.shader_payloads);
+  json.key("sets").unsigned_integer(stats.shader_payload_sets);
+  json.key("node_bytes").unsigned_integer(kShaderNodeBytes);
+  json.key("bytes_estimate").unsigned_integer(stats.shader_payload_bytes);
+  json.object_end();
+  json.key("material").object_begin();
+  json.key("entries").unsigned_integer(stats.material_payloads);
+  json.key("sets").unsigned_integer(stats.material_payload_sets);
+  json.key("params").unsigned_integer(stats.material_params);
+  json.key("node_bytes").unsigned_integer(kMaterialNodeBytes);
+  json.key("param_bytes").unsigned_integer(kParamBytes);
+  json.key("bytes_estimate").unsigned_integer(stats.material_payload_bytes);
   json.object_end();
   json.object_end();
   // The change timeline: one row per frame callback after which the registry had changed. Columns
