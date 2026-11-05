@@ -36,6 +36,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -105,6 +106,8 @@ struct CarrierInfo {
   std::string transport = "tcp";  // tcp | udp | "" (null: a consumer carrier, CAR6)
   std::string tls = "none";       // none | consumer | self-signed
   std::string cert_sha256;        // "" -> null
+  // D12: ws's ServerConfig::lan_plaintext (GRC_LIVE_LAN_PLAINTEXT=allow); null for other carriers.
+  std::optional<bool> lan_plaintext;
   std::uint32_t abi_version = 0;  // 0 -> null: built in, not behind the C ABI
   std::string module_version;     // "" -> null
 };

@@ -88,6 +88,10 @@
 // every resource GET then are wss/https); plaintext is served only to loopback peers and refused
 // from any other (`tls-required`: 403, closed). A pair the module refuses is `tls-config-invalid`.
 // evidence/live-carriers.json records `ws` as tls `consumer` with the leaf's cert_sha256.
+// GRC_LIVE_LAN_PLAINTEXT=allow (D12, needs GRC_LIVE_EXPOSE=lan; any other non-empty value, or
+// `allow` without lan, is `lan-plaintext-invalid`) serves plaintext from LAN peers too, for a
+// consumer's plain-http LAN pages beside its https ones; live-carriers.json records `ws`'s
+// `lan_plaintext`. Without a pair it changes nothing (nothing is sniffed).
 //
 // Textures (G2a, gate2-design.md D3, Q3): whenever a stream is enabled,
 // texture_2d_create and texture_2d_update copy the Image bytes into a GRT1
@@ -368,6 +372,7 @@ struct Live {
   // CAR4 (carrier-design.md D12): wss on `ws`, from the net module, when GRC_LIVE_TLS_CERT/KEY are
   // set. Declared before `carriers`, whose `ws` server holds a pointer to it.
   std::unique_ptr<live::NetTlsContext> tls;
+  bool lan_plaintext = false;  // D12: GRC_LIVE_LAN_PLAINTEXT=allow (plaintext from LAN peers too)
   rs2::ServingSummary serving;  // every GET the server answered, for the summary
   // CAR1: the hub's transport; carrier `ws` (index 0) is the rs_ws server, `ws` points at it.
   std::unique_ptr<live::CarrierSet> carriers;
@@ -1706,9 +1711,10 @@ void live_decided(const std::string &status, const std::string &reason) {
 }
 
 // CAR1/CAR3/CAR6 (carrier-design.md D7-D9, D11, Q3): GRC_LIVE_CARRIERS, default `ws`; `wt` loads
-// the net module and reads GRC_LIVE_WT_LISTEN, GRC_LIVE_WT_CERT and GRC_LIVE_TLS_CERT/KEY; any
-// other name must be a consumer carrier registered before the arm (g_live.registered), else it is
-// `carrier-unregistered`; *why is the refusal. `ws` starts only when listed (CAR6).
+// the net module and reads GRC_LIVE_WT_LISTEN, GRC_LIVE_WT_CERT and GRC_LIVE_TLS_CERT/KEY (and,
+// for ws, GRC_LIVE_LAN_PLAINTEXT); any other name must be a consumer carrier registered before
+// the arm (g_live.registered), else it is `carrier-unregistered`; *why is the refusal. `ws` starts
+// only when listed (CAR6).
 bool live_carriers_ok(std::string *why) {
   std::vector<std::string> names;
   if (!live::parse_carrier_list(std::getenv("GRC_LIVE_CARRIERS"), &names, why)) {
@@ -1741,6 +1747,11 @@ bool live_carriers_ok(std::string *why) {
   g_live.tls_key = env_string("GRC_LIVE_TLS_KEY");
   if (g_live.tls_cert.empty() != g_live.tls_key.empty()) {
     *why = "tls-config-invalid: GRC_LIVE_TLS_CERT and GRC_LIVE_TLS_KEY go together";
+    return false;
+  }
+  // D12: whether `ws` also serves plaintext to LAN peers beside wss (rs_expose.h).
+  if (!live::parse_lan_plaintext(std::getenv("GRC_LIVE_LAN_PLAINTEXT"), g_live.expose,
+                                 &g_live.lan_plaintext, why)) {
     return false;
   }
   const std::string wt_cert = env_string("GRC_LIVE_WT_CERT");
@@ -2926,6 +2937,7 @@ void stream_start() {
     // G6r) raises it up to 4.
     server_config.max_clients = static_cast<std::size_t>(live_max_connections);
     server_config.tls = g_live.tls.get();  // CAR4 (D12): wss beside ws when a pair is set
+    server_config.lan_plaintext = g_live.lan_plaintext;  // D12: plain ws for LAN pages too
     // G7n (gate7-design.md D2, Q3): /7 preferred when both are offered; the /7 token travels in
     // the hello (rs_live.h), so its upgrade is not bearer-checked.
     // G8w (gate8-design.md D2): render-stream.8 is offered last by default (the default stays /7),

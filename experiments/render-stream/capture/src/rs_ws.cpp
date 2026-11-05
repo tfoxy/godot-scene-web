@@ -1231,6 +1231,10 @@ struct Server::Impl {
       tls_stats.plaintext_loopback++;
       return true;
     }
+    if (config.lan_plaintext) {  // GRC_LIVE_LAN_PLAINTEXT=allow: plain ws/http for LAN pages too
+      tls_stats.plaintext_lan++;
+      return true;
+    }
     // Plaintext off loopback while a certificate is configured: refused, typed, then closed.
     tls_stats.tls_required++;
     static const std::string kRefusal =

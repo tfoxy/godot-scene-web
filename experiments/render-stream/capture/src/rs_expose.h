@@ -7,6 +7,10 @@
 //   lan                  also 0.0.0.0, `::` or a host IP literal; needs GRC_LIVE_AUTH=token
 //                        (`lan-needs-token`) and a non-empty GRC_LIVE_ALLOWED_ORIGINS
 //                        (`lan-needs-origins`)
+//   GRC_LIVE_LAN_PLAINTEXT unset or empty (default) | allow; anything else, or `allow` without
+//                        GRC_LIVE_EXPOSE=lan, is `lan-plaintext-invalid` (D12: with a TLS pair
+//                        set, `allow` serves plaintext from LAN peers too instead of answering
+//                        `tls-required`; without a pair nothing is sniffed and it changes nothing)
 //
 // Every refusal string starts with its code, as the other live refusals do.
 #pragma once
@@ -27,6 +31,11 @@ bool parse_expose(const char *text, Expose *out, std::string *why);
 // D10: `lan` needs the token and an origin allow-list. Sets *why to "lan-needs-token: ..." or
 // "lan-needs-origins: ..."; always true for loopback.
 bool check_expose(Expose expose, bool token_auth, std::size_t origin_count, std::string *why);
+
+// D12: `text` is the raw GRC_LIVE_LAN_PLAINTEXT (null or empty: off). `allow` sets *out; it needs
+// `lan`, since a loopback-only listener has no LAN peer to serve. False sets *why to
+// "lan-plaintext-invalid: ...".
+bool parse_lan_plaintext(const char *text, Expose expose, bool *out, std::string *why);
 
 // "127.0.0.1" or "::1".
 bool is_loopback_literal(const std::string &host);

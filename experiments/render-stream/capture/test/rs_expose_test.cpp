@@ -52,6 +52,27 @@ int main() {
         "lan, token but no origins -> lan-needs-origins");
   check(grc::live::check_expose(Expose::Lan, true, 1, &why), "lan, token and origins -> allowed");
 
+  // GRC_LIVE_LAN_PLAINTEXT (D12): off unless `allow`, and `allow` only under lan.
+  for (const Expose e : {Expose::Loopback, Expose::Lan}) {
+    for (const char *off : {static_cast<const char *>(nullptr), ""}) {
+      bool on = true;
+      check(grc::live::parse_lan_plaintext(off, e, &on, &why) && !on, "lan-plaintext unset or empty -> off");
+    }
+  }
+  {
+    bool on = false;
+    check(grc::live::parse_lan_plaintext("allow", Expose::Lan, &on, &why) && on, "lan-plaintext allow under lan -> on");
+    check(!grc::live::parse_lan_plaintext("allow", Expose::Loopback, &on, &why) &&
+              why.rfind("lan-plaintext-invalid", 0) == 0,
+          "lan-plaintext allow without lan -> lan-plaintext-invalid, got " + why);
+  }
+  for (const char *bad : {"Allow", "ALLOW", "1", "true", "on", "yes", "deny", "allow ", " allow"}) {
+    bool on = false;
+    check(!grc::live::parse_lan_plaintext(bad, Expose::Lan, &on, &why) && !on &&
+              why.rfind("lan-plaintext-invalid", 0) == 0,
+          std::string("lan-plaintext '") + bad + "' -> lan-plaintext-invalid, got " + why);
+  }
+
   // Listen addresses: (text, loopback result, lan result).
   struct Row {
     const char *text;

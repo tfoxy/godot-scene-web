@@ -34,6 +34,24 @@ bool check_expose(Expose expose, bool token_auth, std::size_t origin_count, std:
   return true;
 }
 
+bool parse_lan_plaintext(const char *text, Expose expose, bool *out, std::string *why) {
+  const std::string v = text != nullptr ? text : "";
+  if (v.empty()) {
+    *out = false;
+    return true;
+  }
+  if (v != "allow") {
+    *why = "lan-plaintext-invalid: GRC_LIVE_LAN_PLAINTEXT must be allow or unset (got " + v + ")";
+    return false;
+  }
+  if (expose != Expose::Lan) {
+    *why = "lan-plaintext-invalid: GRC_LIVE_LAN_PLAINTEXT=allow needs GRC_LIVE_EXPOSE=lan";
+    return false;
+  }
+  *out = true;
+  return true;
+}
+
 bool is_loopback_literal(const std::string &host) { return host == "127.0.0.1" || host == "::1"; }
 
 bool is_ip_literal(const std::string &host) {

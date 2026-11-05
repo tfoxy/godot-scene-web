@@ -17,7 +17,12 @@
 //      the leaf's SHA-256; the TLS stats line counts the sniff's decisions;
 //   4. with a non-loopback IPv4 (else `unavailable`), rs_live_host on 0.0.0.0 under
 //      GRC_LIVE_EXPOSE=lan: plaintext through the LAN address is 403 `tls-required` and closed
-//      (the CAR4 sabotage row), wss through it equals its tap.
+//      (the CAR4 sabotage row), wss through it equals its tap; then again with
+//      GRC_LIVE_LAN_PLAINTEXT=allow (D12): plaintext GET and a ws session through the LAN address
+//      are served (the session equals its tap), wss still is, the stats count `plaintext_lan` and
+//      live-carriers.json says ws `lan_plaintext: true` (false in the first run). Refusal rows:
+//      a value other than `allow`, and `allow` without GRC_LIVE_EXPOSE=lan, are
+//      `lan-plaintext-invalid`.
 //
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-wss.ts [--keep]
@@ -446,11 +451,20 @@ function tlsStats(host: Host): Record<string, number> {
   return out;
 }
 
-function wsCarrier(dir: string): { tls?: string; cert_sha256?: string | null } {
+function wsCarrier(dir: string): {
+  tls?: string;
+  cert_sha256?: string | null;
+  lan_plaintext?: boolean | null;
+} {
   const p = join(dir, "live-carriers.json");
   if (!existsSync(p)) return {};
   const j = JSON.parse(readFileSync(p, "utf8")) as {
-    carriers: { name: string; tls: string; cert_sha256: string | null }[];
+    carriers: {
+      name: string;
+      tls: string;
+      cert_sha256: string | null;
+      lan_plaintext: boolean | null;
+    }[];
   };
   return j.carriers.find((c) => c.name === "ws") ?? {};
 }
@@ -488,6 +502,23 @@ async function refusals(pki: TestPki): Promise<void> {
       env: { GRC_LIVE_TLS_CERT: pki.cert, GRC_LIVE_TLS_KEY: pki.key },
       args: ["--net-module=/nonexistent/librender_stream_net.so"],
       reason: "net-module-missing",
+    },
+    {
+      what: "GRC_LIVE_LAN_PLAINTEXT other than allow",
+      env: {
+        GRC_LIVE_EXPOSE: "lan",
+        GRC_LIVE_LISTEN: "0.0.0.0:0",
+        GRC_LIVE_ALLOWED_ORIGINS: ORIGIN,
+        GRC_LIVE_LAN_PLAINTEXT: "yes",
+      },
+      args: [`--token=${TOKEN}`],
+      reason: "lan-plaintext-invalid",
+    },
+    {
+      what: "GRC_LIVE_LAN_PLAINTEXT=allow without GRC_LIVE_EXPOSE=lan",
+      env: { GRC_LIVE_LAN_PLAINTEXT: "allow" },
+      args: [],
+      reason: "lan-plaintext-invalid",
     },
   ];
   for (const r of rows) {
@@ -693,8 +724,90 @@ async function lan(pki: TestPki, addr: string): Promise<void> {
     );
     const st = tlsStats(host);
     ok(
-      st.tls_required === 2 && st.connections === 2,
+      st.tls_required === 2 && st.connections === 2 && st.plaintext_lan === 0,
       `TLS stats: ${JSON.stringify(st)}`,
+    );
+    const ws = wsCarrier(dir);
+    ok(
+      ws.lan_plaintext === false,
+      `live-carriers.json: ws lan_plaintext ${ws.lan_plaintext} without GRC_LIVE_LAN_PLAINTEXT`,
+    );
+  } finally {
+    if (!keep) rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** D12: GRC_LIVE_LAN_PLAINTEXT=allow serves a plain-http LAN page's ws and GETs beside wss. */
+async function lanPlaintext(pki: TestPki, addr: string): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), "wss-lan-plain-"));
+  try {
+    const host = await startHost(
+      dir,
+      {
+        GRC_LIVE_TLS_CERT: pki.cert,
+        GRC_LIVE_TLS_KEY: pki.key,
+        GRC_LIVE_EXPOSE: "lan",
+        GRC_LIVE_LISTEN: "0.0.0.0:0",
+        GRC_LIVE_ALLOWED_ORIGINS: ORIGIN,
+        GRC_LIVE_LAN_PLAINTEXT: "allow",
+      },
+      [`--token=${TOKEN}`],
+    );
+    const get = await rawPlain(
+      addr,
+      host.port,
+      `GET /resources/sha256/${HASH} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${TOKEN}\r\nConnection: close\r\n\r\n`,
+    );
+    ok(
+      get.text.startsWith("HTTP/1.1 200 ") && get.closed,
+      `lan-plaintext: plaintext GET through ${addr} -> 200 (${JSON.stringify(get.text.split("\r\n")[0])})`,
+    );
+    const plain = wsSession(addr, host.port, TOKEN);
+    await plain.opened;
+    const secure = wssSession(addr, host.port, pki, TOKEN);
+    await secure.opened;
+    const g = await httpsGet(
+      addr,
+      host.port,
+      `/resources/sha256/${HASH}`,
+      pki,
+      { Authorization: `Bearer ${TOKEN}` },
+    );
+    ok(
+      g.status === 200,
+      `lan-plaintext: https GET through ${addr} -> 200 (${g.status} ${g.error ?? ""})`,
+    );
+    await sleep(1200);
+    host.proc.kill("SIGTERM");
+    const [a, b, code] = await Promise.all([
+      secure.done,
+      plain.done,
+      host.exited,
+    ]);
+    ok(code === 0, `rs_live_host exited 0 (got ${code})`);
+    const t = taps(dir);
+    const ra = Buffer.concat(a.messages);
+    const rb = Buffer.concat(b.messages);
+    ok(
+      b.status === 101 && rb.length > 0 && t.some((x) => x.equals(rb)),
+      `lan-plaintext: ws through ${addr}: bytes equal its tap (${b.status}, ${b.messages.length} messages)`,
+    );
+    ok(
+      a.status === 101 && ra.length > 0 && t.some((x) => x.equals(ra)),
+      `lan-plaintext: wss through ${addr}: bytes equal its tap (${a.messages.length} messages)`,
+    );
+    const st = tlsStats(host);
+    ok(
+      st.plaintext_lan === 2 &&
+        st.tls_required === 0 &&
+        st.connections === 2 &&
+        st.plaintext_loopback === 0,
+      `lan-plaintext: TLS stats: ${JSON.stringify(st)}`,
+    );
+    const ws = wsCarrier(dir);
+    ok(
+      ws.lan_plaintext === true && ws.tls === "consumer",
+      `live-carriers.json: ws lan_plaintext ${ws.lan_plaintext}, tls ${ws.tls}`,
     );
   } finally {
     if (!keep) rmSync(dir, { recursive: true, force: true });
@@ -726,8 +839,10 @@ async function main(): Promise<void> {
     );
     await refusals(pki);
     await loopback(pki);
-    if (addr) await lan(pki, addr);
-    else
+    if (addr) {
+      await lan(pki, addr);
+      await lanPlaintext(pki, addr);
+    } else
       console.log(
         "unavailable: no non-loopback IPv4 address on this machine; the LAN parts are skipped",
       );

@@ -2258,8 +2258,72 @@ void test_wss_tls_required_off_loopback(const TestPki &pki, grc::live::TlsContex
   const HttpResponse lo = one_request(server.port(), "GET", "/resources/sha256/" + b, {});
   check(lo.ok && lo.status == 200, "plaintext from loopback on the 0.0.0.0 listener: 200");
   const grc::live::Server::TlsStats ts = server.tls_stats();
-  check(ts.tls_required == 2 && ts.tls_connections == 1 && ts.plaintext_loopback == 1,
-        "tls_stats: 2 tls-required, 1 TLS, 1 plaintext loopback");
+  check(ts.tls_required == 2 && ts.tls_connections == 1 && ts.plaintext_loopback == 1 && ts.plaintext_lan == 0,
+        "tls_stats: 2 tls-required, 1 TLS, 1 plaintext loopback, 0 plaintext LAN");
+  server.stop(1000);
+}
+
+// D12, GRC_LIVE_LAN_PLAINTEXT=allow: with ServerConfig::lan_plaintext the same listener serves
+// plaintext through the LAN address too (a plain-http LAN page's ws and GETs), TLS unchanged.
+void test_wss_lan_plaintext(const TestPki &pki, grc::live::TlsContext *ctx) {
+  const std::string lan = first_lan_ipv4();
+  if (lan.empty()) {
+    std::printf("rs_ws_test: unavailable: no non-loopback IPv4 address; the lan-plaintext case is skipped\n");
+    return;
+  }
+  FakeResourceSource source;
+  const std::string b = make_hash('b');
+  source.set(b, pattern_bytes(4096, 9));
+  grc::live::ServerConfig config = wss_config(ctx);
+  config.host = "0.0.0.0";
+  config.allow_non_loopback = true;
+  config.lan_plaintext = true;
+  grc::live::Server server;
+  std::string error;
+  check(server.start(config, &source, &error), "wss with lan_plaintext on 0.0.0.0 starts: " + error);
+  // Plaintext GET through the LAN address: 200, byte-exact.
+  {
+    const int fd = connect_ipv4(lan, server.port());
+    const std::string req = plain_http_request("GET", "/resources/sha256/" + b);
+    ::send(fd, req.data(), req.size(), 0);
+    const HttpResponse r = read_http_response(fd);
+    check(r.ok && r.status == 200 && r.body == *source.lookup(b),
+          "lan_plaintext: plaintext GET from " + lan + " is 200 (got " + std::to_string(r.status) + ")");
+    ::close(fd);
+  }
+  // Plaintext upgrade through the LAN address: 101, an Opened event, text in.
+  {
+    const int fd = connect_ipv4(lan, server.port());
+    const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7", kOriginHeader);
+    check(hs.status == 101, "lan_plaintext: plaintext upgrade from " + lan + " is 101 (got " +
+                                std::to_string(hs.status) + ")");
+    const auto frame = client_text("hello");
+    ::send(fd, frame.data(), frame.size(), 0);
+    const auto events = wait_events(server, 3, 2000);  // the GET's HttpGet, Opened, Text
+    bool opened = false;
+    bool text = false;
+    for (const auto &e : events) {
+      opened |= e.kind == grc::live::Event::Opened;
+      text |= e.kind == grc::live::Event::Text && e.text == "hello";
+    }
+    check(opened && text, "lan_plaintext: the plaintext LAN session opens and its text arrives");
+    ::close(fd);
+  }
+  // TLS through the LAN address: still served.
+  auto c = tls_connect(connect_ipv4(lan, server.port()), pki);
+  check(c->ok, "lan_plaintext: TLS through " + lan + " handshakes");
+  if (c->ok) {
+    c->send(plain_http_request("GET", "/resources/sha256/" + b));
+    const HttpResponse r = tls_read_http_response(*c);
+    check(r.ok && r.status == 200 && r.body == *source.lookup(b), "lan_plaintext: https GET through the LAN address: 200");
+  }
+  const HttpResponse lo = one_request(server.port(), "GET", "/resources/sha256/" + b, {});
+  check(lo.ok && lo.status == 200, "lan_plaintext: plaintext from loopback: 200");
+  const grc::live::Server::TlsStats ts = server.tls_stats();
+  check(ts.plaintext_lan == 2 && ts.tls_required == 0 && ts.tls_connections == 1 && ts.plaintext_loopback == 1,
+        "lan_plaintext tls_stats: 2 plaintext LAN, 0 tls-required, 1 TLS, 1 plaintext loopback (" +
+            std::to_string(ts.plaintext_lan) + ", " + std::to_string(ts.tls_required) + ", " +
+            std::to_string(ts.tls_connections) + ", " + std::to_string(ts.plaintext_loopback) + ")");
   server.stop(1000);
 }
 
@@ -2383,6 +2447,7 @@ void test_wss(bool bench) {
   test_wss_upgrade_frames_and_stop(pki, ctx.get());
   test_wss_resources(pki, ctx.get());
   test_wss_tls_required_off_loopback(pki, ctx.get());
+  test_wss_lan_plaintext(pki, ctx.get());
   test_wss_bad_records(pki, ctx.get());
 #else
   (void)bench;

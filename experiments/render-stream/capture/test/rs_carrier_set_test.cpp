@@ -571,7 +571,7 @@ void test_ws_shares_admission() {
   check(set.carriers_json().find("\"name\":\"ws\",\"index\":0,\"status\":\"listening\",\"error\":null,"
                                  "\"address\":\"127.0.0.1\",\"port\":" +
                                  std::to_string(wsp->port()) +
-                                 ",\"transport\":\"tcp\",\"tls\":\"none\",\"cert_sha256\":null,"
+                                 ",\"transport\":\"tcp\",\"tls\":\"none\",\"cert_sha256\":null,\"lan_plaintext\":false,"
                                  "\"abi_version\":null") != std::string::npos,
         "ws: live-carriers.json entry");
   set.stop();

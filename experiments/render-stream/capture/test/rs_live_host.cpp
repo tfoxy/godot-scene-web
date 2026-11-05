@@ -47,7 +47,9 @@
 // net module's TLS session (--net-module, as for wt); a pair the module refuses exits 2 with
 // `tls-config-invalid`. Then stdout adds "RS_LIVE_HOST_TLS_SHA256 <hex>" after the port lines and
 // "RS_LIVE_HOST_TLS_STATS connections=N handshakes=N failed=N plaintext_loopback=N
-// tls_required=N" at stop.
+// tls_required=N plaintext_lan=N" at stop. GRC_LIVE_LAN_PLAINTEXT=allow (D12, as entry.cpp, through
+// rs_expose.h: needs GRC_LIVE_EXPOSE=lan, else `lan-plaintext-invalid`, exit 2) serves plaintext
+// from LAN peers too, and live-carriers.json records it as `ws`'s lan_plaintext.
 // stdout: "RS_LIVE_HOST_PORT <port>" first (with wt, then "RS_LIVE_HOST_WT_PORT <port>" and
 // "RS_LIVE_HOST_CERT_SHA256 <hex>"), then one line per transport event, in the formats
 // entry.cpp logs to stdout.log where it has one (`live: 403 origin <origin> <method> <route>`).
@@ -233,6 +235,11 @@ int main(int argc, char **argv) {
     return 2;
   }
   server_config.allow_non_loopback = expose == grc::live::Expose::Lan;
+  if (!grc::live::parse_lan_plaintext(std::getenv("GRC_LIVE_LAN_PLAINTEXT"), expose, &server_config.lan_plaintext,
+                                      &error)) {
+    std::fprintf(stderr, "rs_live_host: %s\n", error.c_str());
+    return 2;
+  }
   // CAR4 (carrier-design.md D11, D12): the consumer's pair, both or neither, through the module.
   std::unique_ptr<grc::live::NetTlsContext> tls;
   {
@@ -541,7 +548,8 @@ int main(int argc, char **argv) {
     print("RS_LIVE_HOST_TLS_STATS connections=" + std::to_string(t.tls_connections) +
           " handshakes=" + std::to_string(t.handshakes) + " failed=" + std::to_string(t.tls_failed) +
           " plaintext_loopback=" + std::to_string(t.plaintext_loopback) +
-          " tls_required=" + std::to_string(t.tls_required));
+          " tls_required=" + std::to_string(t.tls_required) +
+          " plaintext_lan=" + std::to_string(t.plaintext_lan));
   }
   if (!evidence_dir.empty()) {
     grc::write_file(evidence_dir + "/live-carriers.json", transport.carriers_json());

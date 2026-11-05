@@ -246,6 +246,7 @@ CarrierInfo WsCarrier::info() const {
     info.tls = "consumer";
     info.cert_sha256 = config_.tls->cert_sha256();
   }
+  info.lan_plaintext = config_.lan_plaintext;  // D12: LAN plaintext served beside wss
   return info;
 }
 
@@ -886,6 +887,8 @@ std::string CarrierSet::carriers_json() const {
     json_string(&out, info.tls);
     out.append(",\"cert_sha256\":");
     json_string_or_null(&out, info.cert_sha256);
+    out.append(",\"lan_plaintext\":");
+    out.append(!info.lan_plaintext.has_value() ? "null" : *info.lan_plaintext ? "true" : "false");
     out.append(",\"abi_version\":");
     out.append(info.abi_version != 0 ? std::to_string(info.abi_version) : std::string("null"));
     out.append(",\"module_version\":");

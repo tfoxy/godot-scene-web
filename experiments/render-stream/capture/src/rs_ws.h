@@ -63,9 +63,12 @@
 // the WebSocket upgrade and every HTTP GET on it are wss/https, with every rule above unchanged.
 // Anything else is plaintext, served exactly as without TLS when the peer is a loopback address
 // and otherwise refused: `HTTP/1.1 403 Forbidden` with the body "tls-required\n", then the TCP
-// connection closes (no event; counted in TlsStats::tls_required). Without ServerConfig::tls no
-// byte is sniffed and nothing changes. The session is sans-IO and memory-speed (the TLS bytes
-// live in the net module, rs_net_module.h), so the I/O thread still never blocks.
+// connection closes (no event; counted in TlsStats::tls_required). With
+// ServerConfig::lan_plaintext set, plaintext from any other peer is served too, as from loopback
+// (counted in TlsStats::plaintext_lan): wss for https pages and ws for plain-http LAN pages on one
+// port. Without ServerConfig::tls no byte is sniffed and nothing changes. The session is sans-IO
+// and memory-speed (the TLS bytes live in the net module, rs_net_module.h), so the I/O thread
+// still never blocks.
 //
 // HTTP GET subset implemented (gate2-design.md G2c1, render-stream-2.md
 // "HTTP (live)"):
@@ -236,6 +239,9 @@ struct ServerConfig {
   // CAR4 (D12): wss and https on this port (header comment, "wss"). Never owned; must outlive
   // the server. Null (default): plaintext only, nothing sniffed.
   TlsContext *tls = nullptr;
+  // D12, with `tls`: serve plaintext from a non-loopback peer instead of answering tls-required.
+  // The caller decides it from GRC_LIVE_LAN_PLAINTEXT=allow (rs_expose.h). Default false.
+  bool lan_plaintext = false;
 };
 
 // True iff `a` and `b` hold the same bytes, compared in time that depends only on
@@ -376,6 +382,7 @@ class Server {
     std::uint64_t tls_failed = 0;            // sessions that failed (bad record, handshake, ...)
     std::uint64_t plaintext_loopback = 0;    // plaintext from a loopback peer, served
     std::uint64_t tls_required = 0;          // plaintext from any other peer, refused (403)
+    std::uint64_t plaintext_lan = 0;         // the same with lan_plaintext, served instead
   };
   TlsStats tls_stats() const;
 
