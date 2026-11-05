@@ -12,4 +12,7 @@ fn layouts_match_the_c_headers() {
     assert_eq!(offset_of!(GrcNetWtInfoV1, port), 72);
     assert_eq!(offset_of!(GrcNetWtInfoV1, sessions_refused), 160);
     assert_eq!(size_of::<GrcNetModuleV1>(), 40);
+    assert_eq!(size_of::<GrcNetTlsV1>(), 112);
+    assert_eq!(offset_of!(GrcNetTlsV1, feed), 56);
+    assert_eq!(offset_of!(GrcNetTlsV1, close_notify), 104);
 }

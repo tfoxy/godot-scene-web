@@ -591,7 +591,42 @@ struct Conn {
   std::uint64_t sent_bytes = 0;
   std::uint64_t sent_messages = 0;
   std::uint64_t received_text = 0;
+  // CAR4 (D12). peer_loopback: the peer's address is 127/8, ::1 or ::ffff:127/104. sniffed: the
+  // first byte was judged (only with ServerConfig::tls). With `tls`, send_buf still holds the
+  // plaintext queue and tls_out the ciphertext taken from the session but not yet sent.
+  bool peer_loopback = false;
+  bool sniffed = false;
+  std::unique_ptr<TlsSession> tls;
+  std::vector<std::uint8_t> tls_out;
+  std::size_t tls_out_off = 0;
+  bool tls_handshake_counted = false;
+  bool tls_failed = false;
+  bool tls_close_sent = false;
 };
+
+// CAR4: plaintext handed to TlsSession::write per step while the socket drains. A new chunk is
+// encrypted only once tls_out is on the socket, so at most this much (plus record overhead) is
+// ciphertext waiting; queued_bytes counts it too (pending_bytes).
+constexpr std::size_t kTlsChunk = 64u << 10;
+
+bool peer_is_loopback(const sockaddr_storage &addr) {
+  if (addr.ss_family == AF_INET) {
+    const auto *in = reinterpret_cast<const sockaddr_in *>(&addr);
+    return (ntohl(in->sin_addr.s_addr) >> 24) == 127;
+  }
+  if (addr.ss_family == AF_INET6) {
+    const auto *in6 = reinterpret_cast<const sockaddr_in6 *>(&addr);
+    if (IN6_IS_ADDR_LOOPBACK(&in6->sin6_addr)) return true;
+    return IN6_IS_ADDR_V4MAPPED(&in6->sin6_addr) && in6->sin6_addr.s6_addr[12] == 127;
+  }
+  return false;
+}
+
+// Bytes queued for the peer and not yet on the socket: plaintext not yet encrypted plus, with
+// TLS, ciphertext not yet sent. Without TLS exactly send_buf's unflushed bytes, as before CAR4.
+std::uint64_t pending_bytes(const Conn &c) {
+  return (c.send_buf.size() - c.send_off) + (c.tls_out.size() - c.tls_out_off);
+}
 
 struct Server::Impl {
   ServerConfig config;
@@ -609,6 +644,7 @@ struct Server::Impl {
   std::map<std::uint32_t, Conn> conns;
   std::uint32_t next_id = 1;
   std::vector<Event> events;
+  Server::TlsStats tls_stats;
 
   // P3-SP: one wake byte per drain, not one per message. The I/O thread drains the pipe, then
   // clears the flag, and only then rebuilds its poll set under `mu`: a message enqueued before
@@ -638,7 +674,7 @@ struct Server::Impl {
   // frames the protocol itself requires (pong, close) -- never refused by
   // the queued-bytes safety net.
   bool enqueue_raw(Conn &c, std::vector<std::uint8_t> bytes, bool bypass_limit) {
-    const std::uint64_t current = c.send_buf.size() - c.send_off;
+    const std::uint64_t current = pending_bytes(c);
     const std::uint64_t add = bytes.size();
     if (!bypass_limit && current + add > config.max_queued_bytes) return false;
     c.send_buf.insert(c.send_buf.end(), bytes.begin(), bytes.end());
@@ -680,10 +716,99 @@ struct Server::Impl {
   void maybe_finalize(Conn &c) {
     if (!c.shutdown_after_flush) return;
     if (c.send_off < c.send_buf.size()) return;
+    if (c.tls) {
+      // CAR4: everything encrypted and sent, then close_notify, sent too, before the TCP close.
+      if (c.tls_out_off < c.tls_out.size()) return;
+      if (!c.tls_close_sent && !c.tls_failed) {
+        c.tls_close_sent = true;
+        c.tls->close_notify();
+        take_ciphertext(c);
+        try_flush(c);
+        if (c.phase == Conn::Phase::Closed || c.tls_out_off < c.tls_out.size()) return;
+      }
+    }
     finalize_now(c, c.pending_close_code, c.pending_close_reason);
   }
 
+  // CAR4: moves every ciphertext byte the session has into tls_out.
+  void take_ciphertext(Conn &c) {
+    if (c.tls_out_off == c.tls_out.size()) {
+      c.tls_out.clear();
+      c.tls_out_off = 0;
+    }
+    for (;;) {
+      const std::size_t at = c.tls_out.size();
+      c.tls_out.resize(at + kTlsChunk + 1024);
+      const std::int64_t n = c.tls->take(c.tls_out.data() + at, kTlsChunk + 1024);
+      c.tls_out.resize(at + static_cast<std::size_t>(n > 0 ? n : 0));
+      if (n <= 0) return;
+    }
+  }
+
+  // CAR4: a session that failed (bad record, failed handshake): its alert goes out, the queued
+  // plaintext never will, and the connection closes once the alert is flushed.
+  void tls_fail(Conn &c) {
+    if (c.tls_failed) return;
+    c.tls_failed = true;
+    tls_stats.tls_failed++;
+    c.send_buf.clear();
+    c.send_off = 0;
+    take_ciphertext(c);
+    c.shutdown_after_flush = true;
+    if (c.opened) {
+      c.pending_close_code = 1006;
+      c.pending_close_reason = "tls error";
+    }
+  }
+
+  // CAR4: the TLS half of try_flush. Sends pending ciphertext; when it is all on the socket,
+  // encrypts the next kTlsChunk of plaintext and goes on, until the socket would block or both
+  // queues are empty. No plaintext is written while the handshake runs (the queue is empty then:
+  // nothing is parsed before the handshake completes).
+  void try_flush_tls(Conn &c) {
+    for (;;) {
+      while (c.tls_out_off < c.tls_out.size()) {
+        const ssize_t n = ::send(c.fd, c.tls_out.data() + c.tls_out_off, c.tls_out.size() - c.tls_out_off,
+                                 MSG_NOSIGNAL);
+        if (n > 0) {
+          c.tls_out_off += static_cast<std::size_t>(n);
+          continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        finalize_now(c, 1006, "send error");
+        return;
+      }
+      c.tls_out.clear();
+      c.tls_out_off = 0;
+      if (c.tls_failed || c.send_off >= c.send_buf.size() ||
+          (c.tls->state() & TlsSession::Handshaking) != 0) {
+        break;
+      }
+      const std::size_t len = std::min(kTlsChunk, c.send_buf.size() - c.send_off);
+      if (c.tls->write(c.send_buf.data() + c.send_off, len) < 0) {
+        tls_fail(c);
+        continue;  // send the alert
+      }
+      c.send_off += len;
+      c.sent_bytes += len;
+      take_ciphertext(c);
+    }
+    if (c.send_off > 0 && c.send_off == c.send_buf.size()) {
+      c.send_buf.clear();
+      c.send_off = 0;
+    }
+  }
+
   void try_flush(Conn &c) {
+    if (c.tls) {
+      try_flush_tls(c);
+      if (c.phase == Conn::Phase::Closed) return;
+      if (c.send_off > (1u << 16)) {
+        c.send_buf.erase(c.send_buf.begin(), c.send_buf.begin() + static_cast<std::ptrdiff_t>(c.send_off));
+        c.send_off = 0;
+      }
+      return;
+    }
     while (c.send_off < c.send_buf.size()) {
       const ssize_t n = ::send(c.fd, c.send_buf.data() + c.send_off, c.send_buf.size() - c.send_off, MSG_NOSIGNAL);
       if (n > 0) {
@@ -1085,6 +1210,78 @@ struct Server::Impl {
     }
   }
 
+  // CAR4 (D12): the first byte decides a connection when TLS is configured. False when the
+  // connection was refused (tls-required) or could not get a session.
+  bool sniff(Conn &c, std::uint8_t first) {
+    c.sniffed = true;
+    if (first == 0x16) {  // a TLS handshake record (ClientHello)
+      std::string error;
+      c.tls = config.tls->new_session(&error);
+      if (!c.tls) {
+        finalize_now(c, 1006, "tls session: " + error);
+        return false;
+      }
+      tls_stats.tls_connections++;
+      return true;
+    }
+    if (c.peer_loopback) {
+      tls_stats.plaintext_loopback++;
+      return true;
+    }
+    // Plaintext off loopback while a certificate is configured: refused, typed, then closed.
+    tls_stats.tls_required++;
+    static const std::string kRefusal =
+        "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Type: text/plain\r\n"
+        "Content-Length: 13\r\n\r\ntls-required\n";
+    c.send_buf.insert(c.send_buf.end(), kRefusal.begin(), kRefusal.end());
+    c.shutdown_after_flush = true;
+    c.pending_close_code = 0;  // never opened: no Closed event
+    return false;
+  }
+
+  // CAR4: ciphertext in, plaintext appended to recv_buf. False when the session failed.
+  bool tls_ingest(Conn &c, const std::uint8_t *data, std::size_t len) {
+    std::uint8_t plain[16384];
+    std::size_t off = 0;
+    for (;;) {
+      bool moved = false;
+      if (off < len) {
+        const std::int64_t k = c.tls->feed(data + off, len - off);
+        if (k < 0) {
+          tls_fail(c);
+          return false;
+        }
+        off += static_cast<std::size_t>(k);
+        moved = k > 0;
+      }
+      for (;;) {
+        const std::int64_t r = c.tls->read(plain, sizeof plain);
+        if (r < 0) {
+          tls_fail(c);
+          return false;
+        }
+        if (r == 0) break;
+        c.recv_buf.insert(c.recv_buf.end(), plain, plain + r);
+        moved = true;
+      }
+      if (off >= len) break;
+      if (!moved) {  // the session took nothing and gave nothing: cannot progress
+        c.tls->close_notify();
+        tls_fail(c);
+        return false;
+      }
+    }
+    if ((c.tls->state() & TlsSession::Failed) != 0) {
+      tls_fail(c);
+      return false;
+    }
+    if (!c.tls_handshake_counted && (c.tls->state() & TlsSession::Handshaking) == 0) {
+      c.tls_handshake_counted = true;
+      tls_stats.handshakes++;
+    }
+    return true;
+  }
+
   void handle_readable(Conn &c) {
     if (c.shutdown_after_flush) return;
     std::uint8_t buf[65536];
@@ -1096,6 +1293,26 @@ struct Server::Impl {
     if (n < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) return;
       finalize_now(c, 1006, "recv error");
+      return;
+    }
+    if (config.tls != nullptr && !c.sniffed && !sniff(c, buf[0])) return;
+    if (c.tls) {
+      const bool ok = tls_ingest(c, buf, static_cast<std::size_t>(n));
+      if (ok) {
+        if (c.phase == Conn::Phase::Handshaking && !c.recv_buf.empty()) {
+          try_request(c);
+        } else if (c.phase == Conn::Phase::Open) {
+          process_frames(c);
+        }
+        if (c.phase != Conn::Phase::Closed && !c.shutdown_after_flush &&
+            (c.tls->state() & TlsSession::PeerClosed) != 0) {
+          finalize_now(c, 1006, "peer closed");  // close_notify: as a TCP FIN without TLS
+          return;
+        }
+      }
+      // Handshake replies, responses and the alert of a failed session go out now.
+      if (c.phase != Conn::Phase::Closed) take_ciphertext(c);
+      if (c.phase != Conn::Phase::Closed) try_flush(c);
       return;
     }
     c.recv_buf.insert(c.recv_buf.end(), buf, buf + n);
@@ -1124,6 +1341,7 @@ struct Server::Impl {
       Conn c;
       c.fd = fd;
       c.id = next_id++;
+      c.peer_loopback = peer_is_loopback(addr);
       conns.emplace(c.id, std::move(c));
     }
   }
@@ -1168,7 +1386,7 @@ struct Server::Impl {
         entries.push_back({wake_r, 0, false, true});
         for (auto &entry : conns) {
           short want = POLLIN;
-          if (entry.second.send_off < entry.second.send_buf.size()) want |= POLLOUT;
+          if (pending_bytes(entry.second) > 0) want |= POLLOUT;
           fds.push_back({entry.second.fd, want, 0});
           entries.push_back({entry.second.fd, entry.first, false, false});
         }
@@ -1373,12 +1591,17 @@ Server::ConnStats Server::stats(std::uint32_t conn) const {
   auto it = impl_->conns.find(conn);
   if (it == impl_->conns.end()) return out;
   const Conn &c = it->second;
-  out.queued_bytes = c.send_buf.size() - c.send_off;
+  out.queued_bytes = pending_bytes(c);
   out.max_queued_bytes = c.max_queued_bytes_seen;
   out.sent_bytes = c.sent_bytes;
   out.sent_messages = c.sent_messages;
   out.received_text = c.received_text;
   return out;
+}
+
+Server::TlsStats Server::tls_stats() const {
+  std::lock_guard<std::mutex> lock(impl_->mu);
+  return impl_->tls_stats;
 }
 
 void Server::stop(int flush_timeout_ms) {

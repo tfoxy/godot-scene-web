@@ -13,6 +13,10 @@ crate-type = ["cdylib", "rlib"]
 wtransport = { version = "0.7.2", default-features = false, features = ["ring", "quinn"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 time = "0.3"
+# CAR4 (wss on ws, carrier-design.md D12): the sans-IO server session. Both are already in the tree
+# through wtransport (same versions, Cargo.lock); naming them adds no crate.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+ring = "0.17"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net"] }
 
 [dev-dependencies]

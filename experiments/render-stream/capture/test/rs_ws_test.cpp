@@ -62,8 +62,18 @@
 #include <vector>
 
 #include "rs_http_coding.h"
+#include "rs_net_module.h"
 #include "rs_sha1.h"
 #include "rs_ws.h"
+
+#ifdef GRC_TEST_OPENSSL
+#include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
+#endif
 
 namespace {
 
@@ -1812,7 +1822,588 @@ void test_malformed_inputs_on_lan_listener() {
   server.stop(1000);
 }
 
-int main() {
+// ---------------------------------------------------------------------------
+// CAR4 (carrier-design.md D11, D12): wss and https on the same port, through the real net
+// module's TLS session (librender_stream_net.so beside this binary, or GRC_LIVE_NET_MODULE),
+// with an OpenSSL client and a P-256 certificate generated here at test time (never committed).
+// Without OpenSSL at build time or the module at run time these cases print `skip`; with
+// --require-tls a skip is a failure (scripts/test/self-test-wss.ts).
+// ---------------------------------------------------------------------------
+
+bool g_require_tls = false;
+
+void tls_skip(const std::string &why) {
+  if (g_require_tls) {
+    check(false, "wss cases required but skipped: " + why);
+  } else {
+    std::printf("rs_ws_test: skip the wss cases: %s\n", why.c_str());
+  }
+}
+
+#ifdef GRC_TEST_OPENSSL
+
+struct TestPki {
+  std::string dir;
+  std::string cert;       // self-signed leaf: CN and SAN localhost, SAN 127.0.0.1
+  std::string key;        // its key (PKCS#8)
+  std::string other_key;  // a key that is not the certificate's
+  std::string empty;      // an empty file
+  bool ok = false;
+  ~TestPki() {
+    for (const std::string &f : {cert, key, other_key, empty}) {
+      if (!f.empty()) ::unlink(f.c_str());
+    }
+    if (!dir.empty()) ::rmdir(dir.c_str());
+  }
+};
+
+bool write_pem_key(const std::string &path, EVP_PKEY *key) {
+  FILE *f = std::fopen(path.c_str(), "w");
+  if (f == nullptr) return false;
+  const bool ok = PEM_write_PrivateKey(f, key, nullptr, nullptr, 0, nullptr, nullptr) == 1;
+  std::fclose(f);
+  return ok;
+}
+
+void make_pki(TestPki *p) {
+  const char *tmp = std::getenv("TMPDIR");
+  std::string templ = std::string(tmp != nullptr && *tmp != '\0' ? tmp : "/tmp") + "/rs-ws-test-tls-XXXXXX";
+  std::vector<char> buf(templ.begin(), templ.end());
+  buf.push_back('\0');
+  if (::mkdtemp(buf.data()) == nullptr) return;
+  p->dir = buf.data();
+  p->cert = p->dir + "/cert.pem";
+  p->key = p->dir + "/key.pem";
+  p->other_key = p->dir + "/other-key.pem";
+  p->empty = p->dir + "/empty.pem";
+  EVP_PKEY *key = EVP_EC_gen("P-256");
+  EVP_PKEY *other = EVP_EC_gen("P-256");
+  X509 *x = X509_new();
+  bool ok = key != nullptr && other != nullptr && x != nullptr;
+  if (ok) {
+    X509_set_version(x, 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(x), static_cast<long>(::getpid()) + 1);
+    X509_gmtime_adj(X509_getm_notBefore(x), -3600);
+    X509_gmtime_adj(X509_getm_notAfter(x), 2L * 24 * 3600);
+    X509_set_pubkey(x, key);
+    X509_NAME *name = X509_get_subject_name(x);
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char *>("localhost"), -1,
+                               -1, 0);
+    X509_set_issuer_name(x, name);
+    X509V3_CTX ctx;
+    X509V3_set_ctx_nodb(&ctx);
+    X509V3_set_ctx(&ctx, x, x, nullptr, nullptr, 0);
+    X509_EXTENSION *san = X509V3_EXT_conf_nid(nullptr, &ctx, NID_subject_alt_name, "DNS:localhost,IP:127.0.0.1");
+    ok = san != nullptr && X509_add_ext(x, san, -1) == 1;
+    X509_EXTENSION_free(san);
+    ok = ok && X509_sign(x, key, EVP_sha256()) > 0;
+  }
+  if (ok) {
+    FILE *f = std::fopen(p->cert.c_str(), "w");
+    ok = f != nullptr && PEM_write_X509(f, x) == 1;
+    if (f != nullptr) std::fclose(f);
+    ok = ok && write_pem_key(p->key, key) && write_pem_key(p->other_key, other);
+    FILE *e = std::fopen(p->empty.c_str(), "w");
+    ok = ok && e != nullptr;
+    if (e != nullptr) std::fclose(e);
+  }
+  X509_free(x);
+  EVP_PKEY_free(key);
+  EVP_PKEY_free(other);
+  p->ok = ok;
+}
+
+// A blocking OpenSSL client over an already-connected socket (the socket's 5 s timeouts apply).
+struct TlsClient {
+  int fd = -1;
+  SSL_CTX *ctx = nullptr;
+  SSL *ssl = nullptr;
+  bool ok = false;
+  std::string alpn;
+  int version = 0;
+  TlsClient() = default;
+  TlsClient(const TlsClient &) = delete;
+  TlsClient &operator=(const TlsClient &) = delete;
+  ~TlsClient() {
+    if (ssl != nullptr) SSL_free(ssl);
+    if (ctx != nullptr) SSL_CTX_free(ctx);
+    if (fd >= 0) ::close(fd);
+  }
+  bool send(const std::string &s) { return send(reinterpret_cast<const std::uint8_t *>(s.data()), s.size()); }
+  bool send(const std::uint8_t *data, std::size_t len) {
+    std::size_t off = 0;
+    while (off < len) {
+      const int n = SSL_write(ssl, data + off, static_cast<int>(std::min<std::size_t>(len - off, 1u << 20)));
+      if (n <= 0) return false;
+      off += static_cast<std::size_t>(n);
+    }
+    return true;
+  }
+  // >0 bytes; 0 on close_notify; -1 on any other end (error, EOF without close_notify, timeout).
+  int recv(std::uint8_t *out, std::size_t cap) {
+    const int n = SSL_read(ssl, out, static_cast<int>(cap));
+    if (n > 0) return n;
+    return SSL_get_error(ssl, n) == SSL_ERROR_ZERO_RETURN ? 0 : -1;
+  }
+  bool recv_exact(std::uint8_t *out, std::size_t len) {
+    std::size_t have = 0;
+    while (have < len) {
+      const int n = recv(out + have, len - have);
+      if (n <= 0) return false;
+      have += static_cast<std::size_t>(n);
+    }
+    return true;
+  }
+};
+
+std::unique_ptr<TlsClient> tls_connect(int fd, const TestPki &pki) {
+  auto c = std::make_unique<TlsClient>();
+  c->fd = fd;
+  if (fd < 0) return c;
+  c->ctx = SSL_CTX_new(TLS_client_method());
+  SSL_CTX_load_verify_locations(c->ctx, pki.cert.c_str(), nullptr);
+  SSL_CTX_set_verify(c->ctx, SSL_VERIFY_PEER, nullptr);
+  static const unsigned char kAlpn[] = "\x02h2\x08http/1.1";
+  SSL_CTX_set_alpn_protos(c->ctx, kAlpn, sizeof(kAlpn) - 1);
+  c->ssl = SSL_new(c->ctx);
+  SSL_set_fd(c->ssl, fd);
+  SSL_set_tlsext_host_name(c->ssl, "localhost");
+  SSL_set1_host(c->ssl, "localhost");
+  c->ok = SSL_connect(c->ssl) == 1 && SSL_get_verify_result(c->ssl) == X509_V_OK;
+  if (c->ok) {
+    const unsigned char *proto = nullptr;
+    unsigned int len = 0;
+    SSL_get0_alpn_selected(c->ssl, &proto, &len);
+    if (proto != nullptr) c->alpn.assign(reinterpret_cast<const char *>(proto), len);
+    c->version = SSL_version(c->ssl);
+  }
+  return c;
+}
+
+HttpResponse tls_read_http_response(TlsClient &c) {
+  HttpResponse out;
+  std::vector<std::uint8_t> buf;
+  std::uint8_t chunk[65536];
+  std::size_t header_end = std::string::npos;
+  while (header_end == std::string::npos) {
+    const int n = c.recv(chunk, sizeof chunk);
+    if (n <= 0) return out;
+    buf.insert(buf.end(), chunk, chunk + n);
+    for (std::size_t i = 0; i + 4 <= buf.size(); ++i) {
+      if (std::memcmp(&buf[i], "\r\n\r\n", 4) == 0) {
+        header_end = i;
+        break;
+      }
+    }
+  }
+  const std::string head(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(header_end));
+  out.body.assign(buf.begin() + static_cast<std::ptrdiff_t>(header_end + 4), buf.end());
+  std::size_t pos = head.find("\r\n");
+  if (head.rfind("HTTP/1.1 ", 0) == 0 && head.size() >= 12) out.status = std::atoi(head.substr(9, 3).c_str());
+  while (pos != std::string::npos) {
+    const std::size_t start = pos + 2;
+    const std::size_t end = head.find("\r\n", start);
+    const std::string line = head.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    const std::size_t colon = line.find(':');
+    if (colon != std::string::npos) {
+      std::string name = line.substr(0, colon);
+      for (char &ch : name) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+      std::string value = line.substr(colon + 1);
+      while (!value.empty() && value[0] == ' ') value.erase(0, 1);
+      out.headers.emplace(name, value);
+    }
+    pos = end;
+  }
+  const auto cl = out.headers.find("content-length");
+  const std::size_t want = cl == out.headers.end() ? 0 : static_cast<std::size_t>(std::strtoull(cl->second.c_str(), nullptr, 10));
+  while (out.body.size() < want) {
+    const int n = c.recv(chunk, sizeof chunk);
+    if (n <= 0) return out;
+    out.body.insert(out.body.end(), chunk, chunk + n);
+  }
+  out.ok = out.body.size() == want;
+  return out;
+}
+
+ServerFrame tls_read_server_frame(TlsClient &c) {
+  ServerFrame out;
+  std::uint8_t head[2];
+  if (!c.recv_exact(head, 2)) return out;
+  out.fin = (head[0] & 0x80) != 0;
+  out.opcode = head[0] & 0x0F;
+  if ((head[1] & 0x80) != 0) return out;
+  std::uint64_t len = head[1] & 0x7F;
+  std::size_t header_len = 2;
+  if (len == 126 || len == 127) {
+    const std::size_t ext_len = len == 126 ? 2 : 8;
+    std::uint8_t ext[8];
+    if (!c.recv_exact(ext, ext_len)) return out;
+    len = 0;
+    for (std::size_t i = 0; i < ext_len; ++i) len = (len << 8) | ext[i];
+    header_len += ext_len;
+  }
+  out.payload.resize(static_cast<std::size_t>(len));
+  if (len > 0 && !c.recv_exact(out.payload.data(), out.payload.size())) return out;
+  out.header_len = header_len;
+  out.ok = true;
+  return out;
+}
+
+const std::vector<std::pair<std::string, std::string>> kOriginHeader = {{"Origin", "http://127.0.0.1:5173"}};
+
+// The module's TLS table and a context over the test pair, or null (the cases skip).
+std::unique_ptr<grc::live::NetTlsContext> tls_context(const TestPki &pki) {
+  std::string error;
+  const grc_net_tls_table_v1 *t = grc::live::load_net_tls(std::getenv("GRC_LIVE_NET_MODULE"), &error);
+  if (t == nullptr) {
+    tls_skip(error);
+    return nullptr;
+  }
+  auto ctx = grc::live::NetTlsContext::create(t, pki.cert, pki.key, &error);
+  check(ctx != nullptr, "the test pair loads: " + error);
+  if (ctx != nullptr) check(ctx->cert_sha256().size() == 64, "the context reports the leaf's SHA-256");
+  return ctx;
+}
+
+void test_wss_bad_pair(const TestPki &pki) {
+  std::string error;
+  const grc_net_tls_table_v1 *t = grc::live::load_net_tls(std::getenv("GRC_LIVE_NET_MODULE"), &error);
+  if (t == nullptr) return;
+  const std::pair<std::string, std::string> cases[] = {
+      {pki.cert, pki.other_key},           // the CAR4 sabotage row: key not matching cert
+      {pki.cert, pki.dir + "/missing.pem"},
+      {pki.dir + "/missing.pem", pki.key},
+      {pki.empty, pki.key},
+      {pki.cert, pki.empty},
+      {pki.key, pki.cert},  // swapped
+  };
+  for (const auto &c : cases) {
+    error.clear();
+    auto ctx = grc::live::NetTlsContext::create(t, c.first, c.second, &error);
+    check(ctx == nullptr, "a bad pair is refused: " + c.first + " / " + c.second);
+    check(error.rfind("tls-config-invalid: ", 0) == 0, "a bad pair is tls-config-invalid (got " + error + ")");
+  }
+}
+
+grc::live::ServerConfig wss_config(grc::live::TlsContext *ctx) {
+  grc::live::ServerConfig config = g7n_config();
+  config.tls = ctx;
+  config.codings = {grc::live::Coding::Zstd, grc::live::Coding::Gzip};
+  return config;
+}
+
+void test_wss_upgrade_frames_and_stop(const TestPki &pki, grc::live::TlsContext *ctx) {
+  grc::live::Server server;
+  std::string error;
+  check(server.start(wss_config(ctx), nullptr, &error), "wss server starts: " + error);
+  auto c = tls_connect(connect_loopback(server.port()), pki);
+  check(c->ok, "the TLS handshake completes and the leaf verifies");
+  if (!c->ok) {
+    server.stop(0);
+    return;
+  }
+  check(c->alpn == "http/1.1", "ALPN picks http/1.1 (got '" + c->alpn + "')");
+  check(c->version == TLS1_3_VERSION, "TLS 1.3");
+  check(c->send(http_request("dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7", kOriginHeader)),
+        "upgrade request over TLS");
+  const HttpResponse up = tls_read_http_response(*c);
+  check(up.status == 101, "the upgrade over TLS gets 101 (got " + std::to_string(up.status) + ")");
+  check(header_or(up, "sec-websocket-accept") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "the accept key over TLS");
+  const auto opened = wait_events(server, 1, 2000);
+  check(!opened.empty() && opened[0].kind == grc::live::Event::Opened && opened[0].subprotocol == "render-stream.7",
+        "Opened, render-stream.7");
+  const std::uint32_t conn = opened.empty() ? 0 : opened[0].conn;
+  const auto text = client_frame(0x1, std::vector<std::uint8_t>{'h', 'i', ' ', 't', 'l', 's'});
+  check(c->send(text.data(), text.size()), "a masked text frame over TLS");
+  const auto got = wait_events(server, 1, 2000);
+  check(got.size() == 1 && got[0].kind == grc::live::Event::Text && got[0].text == "hi tls", "Text event over TLS");
+  // 8 MiB, several times kTlsChunk: the chunked encrypt-as-the-socket-drains path.
+  const std::vector<std::uint8_t> big = pattern_bytes(8u << 20, 7);
+  check(server.send_binary(conn, big), "8 MiB send_binary");
+  check(server.send_text(conn, "after"), "a text after it");
+  const ServerFrame f1 = tls_read_server_frame(*c);
+  check(f1.ok && f1.opcode == 0x2 && f1.header_len == 10 && f1.payload == big, "8 MiB arrives byte-exact over TLS");
+  const ServerFrame f2 = tls_read_server_frame(*c);
+  check(f2.ok && f2.opcode == 0x1 && std::string(f2.payload.begin(), f2.payload.end()) == "after", "then the text");
+  const auto drained = wait_stats_until(
+      server, conn, [](const grc::live::Server::ConnStats &s) { return s.queued_bytes == 0; }, 2000);
+  check(drained.queued_bytes == 0 && drained.sent_messages == 2, "queued_bytes returns to 0 (ciphertext included)");
+  const grc::live::Server::TlsStats ts = server.tls_stats();
+  check(ts.tls_connections == 1 && ts.handshakes == 1 && ts.tls_failed == 0 && ts.plaintext_loopback == 0,
+        "tls_stats: one TLS connection, one handshake");
+  // stop(): close 1000 "shutdown", then close_notify, then the TCP close.
+  std::thread stopper([&] { server.stop(2000); });
+  const ServerFrame close = tls_read_server_frame(*c);
+  check(close_code_of(close) == 1000, "stop() sends close 1000 over TLS");
+  std::uint8_t tail[16];
+  check(c->recv(tail, sizeof tail) == 0, "then close_notify (a clean TLS end, not a bare EOF)");
+  stopper.join();
+}
+
+void test_wss_resources(const TestPki &pki, grc::live::TlsContext *ctx) {
+  CodedResourceSource source;
+  const std::string a = make_hash('a');
+  const std::string b = make_hash('b');
+  source.set(a, compressible_bytes(300000));
+  source.set(b, pattern_bytes(1u << 20, 3));
+  grc::live::Server server;
+  std::string error;
+  check(server.start(wss_config(ctx), &source, &error), "wss resource server starts: " + error);
+  auto c = tls_connect(connect_loopback(server.port()), pki);
+  check(c->ok, "https handshake");
+  if (!c->ok) {
+    server.stop(0);
+    return;
+  }
+  // Five requests on one keep-alive TLS connection.
+  const std::string path_a = "/resources/sha256/" + a;
+  const std::string path_b = "/resources/sha256/" + b;
+  c->send(plain_http_request("GET", path_b));
+  const HttpResponse r1 = tls_read_http_response(*c);
+  check(r1.ok && r1.status == 200 && r1.body == *source.lookup(b), "https GET 200, 1 MiB byte-exact");
+  check(header_or(r1, "etag") == "\"" + b + "\"", "https ETag");
+  check(header_or(r1, "cache-control") == "private, max-age=31536000, immutable", "https Cache-Control");
+  c->send(plain_http_request("GET", path_b, {{"If-None-Match", "\"" + b + "\""}}));
+  const HttpResponse r2 = tls_read_http_response(*c);
+  check(r2.ok && r2.status == 304 && r2.body.empty() && header_or(r2, "etag") == "\"" + b + "\"",
+        "https If-None-Match -> 304, same ETag");
+  c->send(plain_http_request("GET", path_a, {{"Accept-Encoding", "gzip, zstd"}}));
+  const HttpResponse r3 = tls_read_http_response(*c);
+  std::vector<std::uint8_t> plain;
+  check(r3.ok && r3.status == 200 && header_or(r3, "content-encoding") == "zstd" &&
+            grc::rs::http_coding::zstd_decompress(r3.body.data(), r3.body.size(), &plain) &&
+            plain == *source.lookup(a),
+        "https zstd body decodes to the identity bytes");
+  check(header_or(r3, "etag") == "\"" + a + "-zstd\"", "https coded ETag");
+  check(header_or(r3, "vary").find("Accept-Encoding") != std::string::npos, "https Vary: Accept-Encoding");
+  c->send(plain_http_request("GET", path_a, {{"Accept-Encoding", "gzip"}}));
+  const HttpResponse r4 = tls_read_http_response(*c);
+  plain.clear();
+  check(r4.ok && r4.status == 200 && header_or(r4, "content-encoding") == "gzip" &&
+            grc::rs::http_coding::gzip_decompress(r4.body.data(), r4.body.size(), &plain) &&
+            plain == *source.lookup(a),
+        "https gzip body decodes to the identity bytes");
+  c->send(plain_http_request("GET", path_a, {{"Accept-Encoding", "zstd"}, {"If-None-Match", "\"" + a + "-zstd\""}}));
+  const HttpResponse r5 = tls_read_http_response(*c);
+  check(r5.ok && r5.status == 304 && r5.body.empty(), "https coded If-None-Match -> 304");
+  const auto events = wait_events(server, 5, 2000);
+  std::string statuses;
+  for (const auto &e : events) {
+    if (e.kind == grc::live::Event::HttpGet) statuses += std::to_string(e.http_status) + " ";
+  }
+  check(statuses == "200 304 200 200 304 ", "HttpGet events over https: " + statuses);
+  check(events.size() >= 3 && events[2].coding == "zstd" && events[2].coded_bytes == r3.body.size(),
+        "the coded GET reports its coding and wire bytes");
+  // Plaintext from loopback, same port: still served (D12).
+  const HttpResponse plain_get = one_request(server.port(), "GET", path_b, {});
+  check(plain_get.ok && plain_get.status == 200 && plain_get.body == *source.lookup(b),
+        "plaintext GET from loopback on the TLS port: 200");
+  const int fd = connect_loopback(server.port());
+  const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7", kOriginHeader);
+  check(hs.status == 101, "plaintext upgrade from loopback on the TLS port: 101");
+  ::close(fd);
+  const grc::live::Server::TlsStats ts = server.tls_stats();
+  check(ts.tls_connections == 1 && ts.plaintext_loopback == 2 && ts.tls_required == 0,
+        "tls_stats: 1 TLS, 2 plaintext loopback (" + std::to_string(ts.tls_connections) + ", " +
+            std::to_string(ts.plaintext_loopback) + ")");
+  server.stop(1000);
+}
+
+void test_wss_tls_required_off_loopback(const TestPki &pki, grc::live::TlsContext *ctx) {
+  const std::string lan = first_lan_ipv4();
+  if (lan.empty()) {
+    std::printf("rs_ws_test: unavailable: no non-loopback IPv4 address; the tls-required case is skipped\n");
+    return;
+  }
+  FakeResourceSource source;
+  const std::string b = make_hash('b');
+  source.set(b, pattern_bytes(4096, 9));
+  grc::live::ServerConfig config = wss_config(ctx);
+  config.host = "0.0.0.0";
+  config.allow_non_loopback = true;
+  grc::live::Server server;
+  std::string error;
+  check(server.start(config, &source, &error), "wss on 0.0.0.0 starts: " + error);
+  // Plaintext GET and upgrade through the LAN address: 403 "tls-required", then the TCP close.
+  for (const std::string &req :
+       {plain_http_request("GET", "/resources/sha256/" + b),
+        http_request("dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7", kOriginHeader)}) {
+    const int fd = connect_ipv4(lan, server.port());
+    ::send(fd, req.data(), req.size(), 0);
+    const HttpResponse r = read_http_response(fd);
+    check(r.ok && r.status == 403 && std::string(r.body.begin(), r.body.end()) == "tls-required\n",
+          "plaintext from " + lan + " is 403 tls-required (got " + std::to_string(r.status) + ")");
+    std::uint8_t tail[8];
+    check(::recv(fd, tail, sizeof tail, 0) == 0, "and the TCP connection closes");
+    ::close(fd);
+  }
+  check(wait_events(server, 1, 200).empty(), "a tls-required refusal raises no event");
+  // TLS through the LAN address: served.
+  auto c = tls_connect(connect_ipv4(lan, server.port()), pki);
+  check(c->ok, "TLS through " + lan + " handshakes");
+  if (c->ok) {
+    c->send(plain_http_request("GET", "/resources/sha256/" + b));
+    const HttpResponse r = tls_read_http_response(*c);
+    check(r.ok && r.status == 200 && r.body == *source.lookup(b), "https GET through the LAN address: 200");
+  }
+  // Plaintext from loopback on the same 0.0.0.0 listener: still served.
+  const HttpResponse lo = one_request(server.port(), "GET", "/resources/sha256/" + b, {});
+  check(lo.ok && lo.status == 200, "plaintext from loopback on the 0.0.0.0 listener: 200");
+  const grc::live::Server::TlsStats ts = server.tls_stats();
+  check(ts.tls_required == 2 && ts.tls_connections == 1 && ts.plaintext_loopback == 1,
+        "tls_stats: 2 tls-required, 1 TLS, 1 plaintext loopback");
+  server.stop(1000);
+}
+
+void test_wss_bad_records(const TestPki &pki, grc::live::TlsContext *ctx) {
+  grc::live::Server server;
+  std::string error;
+  check(server.start(wss_config(ctx), nullptr, &error), "wss server starts: " + error);
+  {
+    // A handshake record that is not a ClientHello: an alert, then the close.
+    const int fd = connect_loopback(server.port());
+    // One record holding a ClientHello whose body is one byte: a decode error, not a wait.
+    const std::uint8_t junk[] = {0x16, 0x03, 0x01, 0x00, 0x05, 0x01, 0x00, 0x00, 0x01, 0xff};
+    ::send(fd, junk, sizeof junk, 0);
+    std::vector<std::uint8_t> got;
+    std::uint8_t buf[256];
+    for (;;) {
+      const ssize_t n = ::recv(fd, buf, sizeof buf, 0);
+      if (n <= 0) break;
+      got.insert(got.end(), buf, buf + n);
+    }
+    check(!got.empty() && got[0] == 0x15, "a bad ClientHello gets a TLS alert record, then the close");
+    ::close(fd);
+  }
+  {
+    // A session that opened a WebSocket, then sends a forged application-data record: the
+    // session fails, the hub sees Closed 1006 "tls error".
+    auto c = tls_connect(connect_loopback(server.port()), pki);
+    check(c->ok, "handshake");
+    c->send(http_request("dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7", kOriginHeader));
+    check(tls_read_http_response(*c).status == 101, "upgrade");
+    const std::uint32_t conn = expect_opened(server);
+    check(conn != 0, "opened");
+    std::uint8_t forged[5 + 32] = {0x17, 0x03, 0x03, 0x00, 0x20};
+    for (std::size_t i = 5; i < sizeof forged; ++i) forged[i] = static_cast<std::uint8_t>(i);
+    ::send(c->fd, forged, sizeof forged, MSG_NOSIGNAL);
+    const auto events = wait_events(server, 1, 2000);
+    check(events.size() == 1 && events[0].kind == grc::live::Event::Closed && events[0].code == 1006 &&
+              events[0].reason == "tls error",
+          "a forged record closes the session: Closed 1006 tls error");
+  }
+  const grc::live::Server::TlsStats ts = server.tls_stats();
+  check(ts.tls_connections == 2 && ts.tls_failed == 2, "tls_stats: both sessions failed");
+  // The server goes on serving.
+  auto c = tls_connect(connect_loopback(server.port()), pki);
+  check(c->ok, "a fresh handshake after the failures");
+  server.stop(1000);
+}
+
+// Not a check: handshake time and send throughput, TLS against plaintext on one server
+// (--tls-bench; the numbers in carrier-design.md "As built (CAR4)" came from it).
+void tls_bench(const TestPki &pki, grc::live::TlsContext *ctx) {
+  grc::live::Server server;
+  std::string error;
+  if (!server.start(wss_config(ctx), nullptr, &error)) return;
+  const auto now = [] { return std::chrono::steady_clock::now(); };
+  const int handshakes = 200;
+  auto t0 = now();
+  for (int i = 0; i < handshakes; ++i) {
+    auto c = tls_connect(connect_loopback(server.port()), pki);
+    if (!c->ok) {
+      std::printf("tls-bench: handshake %d failed\n", i);
+      return;
+    }
+  }
+  const double hs_ms = std::chrono::duration<double, std::milli>(now() - t0).count() / handshakes;
+  std::printf("tls-bench: connect+handshake %.3f ms (mean of %d, client and server on one machine)\n", hs_ms,
+              handshakes);
+  for (const std::size_t size : {std::size_t{1024}, std::size_t{64u << 10}, std::size_t{1u << 20}}) {
+    const int count = static_cast<int>(std::max<std::size_t>(64, (256u << 20) / size / 4));
+    double secs[2] = {1e30, 1e30};  // the best of 5 alternating rounds each
+    for (int round = 0; round < 10; ++round) {
+      const int tls = round % 2;
+      std::unique_ptr<TlsClient> c;
+      int fd = connect_loopback(server.port());
+      if (tls == 1) {
+        c = tls_connect(fd, pki);
+        c->send(http_request("dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7", kOriginHeader));
+        tls_read_http_response(*c);
+      } else {
+        do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7", kOriginHeader);
+      }
+      const std::uint32_t conn = expect_opened(server);
+      const std::vector<std::uint8_t> msg = pattern_bytes(size, 1);
+      t0 = now();
+      for (int i = 0; i < count; ++i) {
+        server.send_binary(conn, msg);
+        const ServerFrame f = tls == 1 ? tls_read_server_frame(*c) : read_server_frame(fd);
+        if (!f.ok) {
+          std::printf("tls-bench: frame %d failed\n", i);
+          return;
+        }
+      }
+      secs[tls] = std::min(secs[tls], std::chrono::duration<double>(now() - t0).count());
+      if (tls == 0) ::close(fd);
+      server.close(conn, 1000, "");
+      wait_events(server, 1, 1000);
+    }
+    std::printf("tls-bench: %zu-byte messages x %d, send->received round: plain %.2f us, tls %.2f us (+%.2f us, "
+                "x%.2f)\n",
+                size, count, secs[0] / count * 1e6, secs[1] / count * 1e6, (secs[1] - secs[0]) / count * 1e6,
+                secs[1] / secs[0]);
+  }
+  server.stop(0);
+}
+
+#endif  // GRC_TEST_OPENSSL
+
+void test_wss(bool bench) {
+#ifdef GRC_TEST_OPENSSL
+  TestPki pki;
+  make_pki(&pki);
+  check(pki.ok, "the test certificate is generated");
+  if (!pki.ok) return;
+  std::unique_ptr<grc::live::NetTlsContext> ctx = tls_context(pki);
+  if (ctx == nullptr) return;
+  if (bench) {
+    tls_bench(pki, ctx.get());
+    return;
+  }
+  test_wss_bad_pair(pki);
+  test_wss_upgrade_frames_and_stop(pki, ctx.get());
+  test_wss_resources(pki, ctx.get());
+  test_wss_tls_required_off_loopback(pki, ctx.get());
+  test_wss_bad_records(pki, ctx.get());
+#else
+  (void)bench;
+  tls_skip("built without OpenSSL (the test client)");
+#endif
+}
+
+int main(int argc, char **argv) {
+  bool tls_only = false;
+  bool tls_bench_only = false;
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--require-tls") g_require_tls = true;
+    if (arg == "--tls-only") tls_only = true;
+    if (arg == "--tls-bench") tls_bench_only = true;
+  }
+  if (tls_bench_only) {
+    test_wss(true);
+    return g_failures == 0 ? 0 : 1;
+  }
+  if (tls_only) {
+    test_wss(false);
+    if (g_failures != 0) {
+      std::fprintf(stderr, "rs_ws_test: %d of %d checks failed\n", g_failures, g_checks);
+      return 1;
+    }
+    std::printf("rs_ws_test: all %d wss checks passed\n", g_checks);
+    return 0;
+  }
   test_sha1_vectors();
   test_handshake_accept_key_rfc_vector();
   test_masked_text_roundtrip();
@@ -1860,6 +2451,7 @@ int main() {
   test_g7n_parse_allowed_origins();
   test_lan_bind();
   test_malformed_inputs_on_lan_listener();
+  test_wss(false);
 
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_ws_test: %d of %d checks failed\n", g_failures, g_checks);

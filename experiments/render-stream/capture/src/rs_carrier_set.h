@@ -153,6 +153,7 @@ class WsCarrier final : public Carrier {
   std::uint64_t max_queued_bytes(std::uint32_t local) const override;
   CarrierInfo info() const override;
   std::uint16_t port() const;  // the bound port once started
+  Server::TlsStats tls_stats() const { return server_.tls_stats(); }  // CAR4
 
  private:
   ServerConfig config_;

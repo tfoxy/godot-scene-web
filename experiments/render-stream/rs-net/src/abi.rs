@@ -7,6 +7,7 @@ use std::ffi::{c_char, c_int, c_void};
 pub const GRC_CARRIER_ABI_VERSION: u32 = 1;
 pub const GRC_CARRIER_LOCAL_MAX: u32 = 0x00FF_FFFF;
 pub const GRC_NET_MODULE_ABI_VERSION: u32 = 1;
+pub const GRC_NET_TLS_ABI_VERSION: u32 = 1;
 
 pub const GRC_CODING_IDENTITY: c_int = 0;
 pub const GRC_CODING_GZIP: c_int = 1;
@@ -114,6 +115,28 @@ pub struct GrcNetModuleV1 {
 
 // The table is immutable static data.
 unsafe impl Sync for GrcNetModuleV1 {}
+
+/// grc_net_tls_table_v1 (CAR4, grc_net_module.h). `config` and `session` are opaque pointers.
+#[repr(C)]
+pub struct GrcNetTlsV1 {
+    pub abi_version: u32,
+    pub size: u32,
+    pub module_version: *const c_char,
+    pub config_create: unsafe extern "C" fn(*const c_char, *const c_char, *mut c_char, usize) -> *mut c_void,
+    pub config_cert_sha256: unsafe extern "C" fn(*const c_void, *mut c_char, usize) -> c_int,
+    pub config_destroy: unsafe extern "C" fn(*mut c_void),
+    pub session_create: unsafe extern "C" fn(*const c_void, *mut c_char, usize) -> *mut c_void,
+    pub session_destroy: unsafe extern "C" fn(*mut c_void),
+    pub feed: unsafe extern "C" fn(*mut c_void, *const u8, usize) -> i64,
+    pub read: unsafe extern "C" fn(*mut c_void, *mut u8, usize) -> i64,
+    pub write: unsafe extern "C" fn(*mut c_void, *const u8, usize) -> i64,
+    pub take: unsafe extern "C" fn(*mut c_void, *mut u8, usize) -> i64,
+    pub state: unsafe extern "C" fn(*const c_void) -> u32,
+    pub error: unsafe extern "C" fn(*const c_void, *mut c_char, usize) -> usize,
+    pub close_notify: unsafe extern "C" fn(*mut c_void),
+}
+
+unsafe impl Sync for GrcNetTlsV1 {}
 
 /// Copies `s` into a fixed C char array, NUL-terminated, truncating at a UTF-8 boundary.
 pub fn fill_c_array(dst: &mut [c_char], s: &str) {

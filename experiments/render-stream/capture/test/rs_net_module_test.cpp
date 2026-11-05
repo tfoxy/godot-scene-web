@@ -5,6 +5,7 @@
 //
 // Usage: rs_net_module_test <no-entry fake .so> <bad-abi fake .so>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <string>
 #include <sys/stat.h>
@@ -44,6 +45,19 @@ int main(int argc, char **argv) {
   refused = load_net_module_at(argv[2], &error) == nullptr;
   check(refused && starts_with(error, "net-module-abi: "),
         "a module with another table version is net-module-abi (" + error + ")");
+  // CAR4: the TLS entry is looked up on its own; the bad-ABI fake (a CAR3-shaped module) has none.
+  {
+    void *handle = nullptr;
+    error.clear();
+    load_net_module_at(argv[2], &error, &handle);
+    check(handle != nullptr, "the bad-ABI fake still dlopen()s (its handle is reported)");
+    error.clear();
+    check(net_tls_table(handle, argv[2], &error) == nullptr && starts_with(error, "net-module-abi: "),
+          "a module without grc_net_tls_v1 is net-module-abi for wss (" + error + ")");
+    error.clear();
+    check(net_tls_table(nullptr, "x", &error) == nullptr && starts_with(error, "net-module-missing: "),
+          "no handle is net-module-missing (" + error + ")");
+  }
   const std::string beside = default_net_module_path();
   check(beside.size() > 24 && beside.substr(beside.size() - 24) == "/librender_stream_net.so",
         "the default path is beside this binary (" + beside + ")");
@@ -61,6 +75,17 @@ int main(int argc, char **argv) {
             starts_with(m->module_version, "render-stream-net "),
         std::string("its table: carrier ABI 1, version ") + (m->module_version ? m->module_version : "?"));
   check(load_net_module(nullptr, &error) == m, "loaded once (cached)");
+  error.clear();
+  const grc_net_tls_table_v1 *tls = load_net_tls(nullptr, &error);
+  check(tls != nullptr && tls->abi_version == GRC_NET_TLS_ABI_VERSION && tls->module_version != nullptr &&
+            std::strcmp(tls->module_version, m->module_version) == 0,
+        "CAR4: the real module's grc_net_tls_v1, version 1, same module version (" + error + ")");
+  if (tls != nullptr) {
+    error.clear();
+    check(NetTlsContext::create(tls, "/nonexistent/cert.pem", "/nonexistent/key.pem", &error) == nullptr &&
+              starts_with(error, "tls-config-invalid: "),
+          "an unreadable pair is tls-config-invalid (" + error + ")");
+  }
 
   char dir_template[] = "/tmp/rs-net-module-test-XXXXXX";
   const char *dir = mkdtemp(dir_template);

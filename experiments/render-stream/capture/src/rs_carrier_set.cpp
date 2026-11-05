@@ -241,6 +241,11 @@ CarrierInfo WsCarrier::info() const {
     info.address = config_.host;
     info.port = server_.port();
   }
+  // CAR4 (D12, D13): wss beside ws on the same port, with the consumer's certificate.
+  if (config_.tls != nullptr) {
+    info.tls = "consumer";
+    info.cert_sha256 = config_.tls->cert_sha256();
+  }
   return info;
 }
 

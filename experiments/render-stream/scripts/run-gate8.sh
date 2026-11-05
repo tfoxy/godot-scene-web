@@ -3052,6 +3052,7 @@ run_g8l() {
 	done
 	run_g8l_lan
 	run_g8l_ext
+	run_g8l_wss
 	gs_teardown "$OUT/gamescope-g8l"
 	GS_RUN_DIR=""
 }
@@ -3141,6 +3142,45 @@ run_g8l_ext() {
 	run_g8l_ext_leg "$leg/host"
 	echo "run-gate8: g8l ext sabotage-drop-one (the peer drops its second binary message)"
 	run_g8l_ext_leg "$leg/sabotage-drop-one" RS_CARRIER_PEER_SABOTAGE=drop-one
+}
+
+# CAR4 (protocol/carrier-design.md D11, D12): tex once more with a certificate pair, so the real
+# host's `ws` serves ws+wss on its one port through the net module (entry.cpp loads it for the pair,
+# without `wt`). The receiver connects over plain ws from loopback, which D12 still serves (the
+# Godot receiver has no wss client of its own here); while the host runs, `openssl s_client`
+# checks that the same port speaks TLS 1.3 with that certificate and answers HTTP over it. The
+# pair is generated here with the openssl CLI and its key deleted after the leg; nothing is
+# committed. Native only. Without openssl the leg leaves g8l/wss/unavailable.txt.
+run_g8l_wss() {
+	[ -z "${GATE7_LIVE_KIND:-}" ] || return 0
+	local leg="$OUT/g8l/wss" pki="$OUT/g8l/wss/pki"
+	mkdir -p "$pki"
+	if ! command -v openssl >/dev/null 2>&1; then
+		echo "unavailable: no openssl CLI to make the test certificate" >"$leg/unavailable.txt"
+		echo "run-gate8: g8l wss unavailable: no openssl"
+		return 0
+	fi
+	echo "run-gate8: g8l wss (tex with GRC_LIVE_TLS_CERT/KEY; plaintext receiver from loopback; s_client over TLS)"
+	if ! bash "$SCRIPT_DIR/build-rs-net.sh" --no-test >"$leg/build-rs-net.log" 2>&1; then
+		echo "run-gate8: g8l wss: build-rs-net.sh failed, see $leg/build-rs-net.log" >&2
+		exit 1
+	fi
+	openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$pki/key.pem" \
+		-out "$pki/cert.pem" -days 2 -subj /CN=localhost -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+		>"$pki/openssl.log" 2>&1
+	openssl x509 -in "$pki/cert.pem" -outform der | sha256sum | cut -d' ' -f1 >"$leg/cert-sha256.txt"
+	G8L_HOST_EXTRA_ENV=(GRC_LIVE_TLS_CERT="$pki/cert.pem" GRC_LIVE_TLS_KEY="$pki/key.pem")
+	start_g8l_host "$leg/host" tex
+	if [ -n "$LIVE_PORT" ]; then
+		printf 'GET /render-stream-wss-probe HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' |
+			timeout 10 openssl s_client -connect "127.0.0.1:$LIVE_PORT" -servername localhost -CAfile "$pki/cert.pem" \
+				-verify_return_error -alpn http/1.1 -ign_eof >"$leg/s_client.txt" 2>&1 || true
+	fi
+	g8l_receiver "$leg" "$LIVE_PORT"
+	finish_bg "$leg/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+	LIVE_HOST_PID=""
+	G8L_HOST_EXTRA_ENV=()
+	rm -f "$pki/key.pem"
 }
 
 # ------------------------------------------------------------------------------------ g8ku

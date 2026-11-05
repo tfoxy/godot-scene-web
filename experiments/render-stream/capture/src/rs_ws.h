@@ -58,6 +58,15 @@
 //     IPv6 literal ("0.0.0.0", "::", a host address). The caller decides that flag from
 //     GRC_LIVE_EXPOSE=lan plus the token and origin checks (rs_expose.h); this file never does.
 //
+// wss (CAR4, carrier-design.md D11, D12): with ServerConfig::tls set, the first byte a connection
+// sends decides it. 0x16 (a TLS handshake record) runs the connection through a TlsSession, so
+// the WebSocket upgrade and every HTTP GET on it are wss/https, with every rule above unchanged.
+// Anything else is plaintext, served exactly as without TLS when the peer is a loopback address
+// and otherwise refused: `HTTP/1.1 403 Forbidden` with the body "tls-required\n", then the TCP
+// connection closes (no event; counted in TlsStats::tls_required). Without ServerConfig::tls no
+// byte is sniffed and nothing changes. The session is sans-IO and memory-speed (the TLS bytes
+// live in the net module, rs_net_module.h), so the I/O thread still never blocks.
+//
 // HTTP GET subset implemented (gate2-design.md G2c1, render-stream-2.md
 // "HTTP (live)"):
 //   - `GET <resource_prefix><hash> HTTP/1.1` where <hash> is exactly 64
@@ -159,6 +168,37 @@ class Admission {
   virtual void release() = 0;
 };
 
+// CAR4 (carrier-design.md D12): one connection's TLS server session, sans-IO. The I/O thread
+// feeds it the ciphertext it read and writes the ciphertext it takes; every call returns at
+// memory speed (the handshake's one key exchange and signature are bounded CPU work) and never
+// blocks. rs_net_module.h implements it over the net module's grc_net_tls_v1.
+class TlsSession {
+ public:
+  enum State : std::uint32_t { Handshaking = 1, WantsWrite = 2, PeerClosed = 4, Failed = 8 };
+  virtual ~TlsSession() = default;
+  // Ciphertext in: bytes consumed (may be fewer than len while unread plaintext is buffered:
+  // read() it, then feed the rest), or -1 once the session failed.
+  virtual std::int64_t feed(const std::uint8_t *data, std::size_t len) = 0;
+  // Plaintext out: bytes copied, 0 when none now (PeerClosed marks the end), -1 when failed.
+  virtual std::int64_t read(std::uint8_t *out, std::size_t cap) = 0;
+  // Plaintext in for encryption: all of it, or -1 when failed.
+  virtual std::int64_t write(const std::uint8_t *data, std::size_t len) = 0;
+  // Ciphertext out: bytes copied, 0 when none (a failed session still yields its alert).
+  virtual std::int64_t take(std::uint8_t *out, std::size_t cap) = 0;
+  virtual std::uint32_t state() const = 0;
+  virtual std::string error() const = 0;
+  virtual void close_notify() = 0;
+};
+
+// The consumer's certificate pair, loaded once; makes one TlsSession per TLS connection.
+// new_session() is called on the I/O thread and must be thread-safe and memory-speed.
+class TlsContext {
+ public:
+  virtual ~TlsContext() = default;
+  virtual std::unique_ptr<TlsSession> new_session(std::string *error) = 0;
+  virtual std::string cert_sha256() const = 0;  // the leaf's SHA-256, 64 lowercase hex
+};
+
 struct ServerConfig {
   std::string host = "127.0.0.1";
   std::uint16_t port = 0;  // 0 = ephemeral; Server::port() reports the bound one.
@@ -193,6 +233,9 @@ struct ServerConfig {
   // flipped (the identity bytes and the ETag stay right); a receiver that decodes and verifies
   // must refuse it.
   bool corrupt_coded_body = false;
+  // CAR4 (D12): wss and https on this port (header comment, "wss"). Never owned; must outlive
+  // the server. Null (default): plaintext only, nothing sniffed.
+  TlsContext *tls = nullptr;
 };
 
 // True iff `a` and `b` hold the same bytes, compared in time that depends only on
@@ -325,6 +368,16 @@ class Server {
   };
   // All-zero if conn is unknown (never opened, or already closed and forgotten).
   ConnStats stats(std::uint32_t conn) const;
+
+  // CAR4: what the first-byte sniff decided, over the server's lifetime (all zero without tls).
+  struct TlsStats {
+    std::uint64_t tls_connections = 0;       // first byte 0x16: a session was made
+    std::uint64_t handshakes = 0;            // sessions whose handshake completed
+    std::uint64_t tls_failed = 0;            // sessions that failed (bad record, handshake, ...)
+    std::uint64_t plaintext_loopback = 0;    // plaintext from a loopback peer, served
+    std::uint64_t tls_required = 0;          // plaintext from any other peer, refused (403)
+  };
+  TlsStats tls_stats() const;
 
   // Sends close(1000) to every open connection, gives flush_timeout_ms for
   // queued bytes to drain and close handshakes to complete, then force-closes

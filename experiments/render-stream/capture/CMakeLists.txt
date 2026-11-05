@@ -191,9 +191,20 @@ add_test(NAME rs_publish COMMAND rs_publish_test)
 # G1c1: rs_ws, a dependency-free RFC 6455 server on its own I/O thread
 # (protocol/gate1-design.md D3, Q3, Q4). Pure transport: no mirror, no engine.
 # Linked into render_stream_capture since G1c2 (GRC_LIVE_LISTEN, src/rs1_live.*).
-add_executable(rs_ws_test test/rs_ws_test.cpp src/rs_ws.cpp src/rs_sha1.cpp)
+# CAR4 (carrier-design.md D12): rs_ws_test's wss cases drive the real net module's TLS session
+# (librender_stream_net.so beside the test, from build-rs-net.sh) with an OpenSSL client and a
+# certificate generated at test time. OpenSSL is a test-only dependency (the capture never links
+# it); without it, or without the module, those cases print `skip` (scripts/test/self-test-wss.ts
+# runs them with --require-tls).
+add_executable(rs_ws_test test/rs_ws_test.cpp src/rs_ws.cpp src/rs_sha1.cpp src/rs_net_module.cpp
+  src/rs_carrier_set.cpp)
 target_include_directories(rs_ws_test PRIVATE src)
-target_link_libraries(rs_ws_test PRIVATE grc_warnings grc_codecs Threads::Threads)
+target_link_libraries(rs_ws_test PRIVATE grc_warnings grc_codecs Threads::Threads ${CMAKE_DL_LIBS})
+find_package(OpenSSL QUIET)
+if(OPENSSL_FOUND)
+  target_compile_definitions(rs_ws_test PRIVATE GRC_TEST_OPENSSL=1)
+  target_link_libraries(rs_ws_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
 add_test(NAME rs_ws COMMAND rs_ws_test)
 
 # CAR1 (carrier-design.md Q1, Q2, D5, D6): the CarrierSet and the grc_carrier_v1 adapter with two

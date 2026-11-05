@@ -79,7 +79,14 @@
 // GRC_LIVE_LISTEN, `wt-listen-invalid` when malformed; default GRC_LIVE_LISTEN's host and port).
 // GRC_LIVE_WT_CERT=self (default: a generated ECDSA P-256 certificate, 14 days, its SHA-256 in
 // evidence/live-cert-sha256) or tls (GRC_LIVE_TLS_CERT/GRC_LIVE_TLS_KEY, PEM paths, both or
-// neither; `tls-config-invalid` otherwise). Without `wt` nothing new is loaded.
+// neither; `tls-config-invalid` otherwise). Without `wt` or a pair nothing new is loaded.
+//
+// wss (CAR4, carrier-design.md D11, D12): GRC_LIVE_TLS_CERT/GRC_LIVE_TLS_KEY also load the net
+// module (with or without `wt`) and turn `ws` into ws+wss on its one port: a connection whose
+// first byte is a TLS handshake record runs through the module's TLS session (the upgrade and
+// every resource GET then are wss/https); plaintext is served only to loopback peers and refused
+// from any other (`tls-required`: 403, closed). A pair the module refuses is `tls-config-invalid`.
+// evidence/live-carriers.json records `ws` as tls `consumer` with the leaf's cert_sha256.
 //
 // Textures (G2a, gate2-design.md D3, Q3): whenever a stream is enabled,
 // texture_2d_create and texture_2d_update copy the Image bytes into a GRT1
@@ -356,6 +363,9 @@ struct Live {
   // G2c2: what the server serves over HTTP. Declared before `server`, which holds a pointer to
   // it, so it outlives the server.
   std::unique_ptr<rs::ServedResources> served;
+  // CAR4 (carrier-design.md D12): wss on `ws`, from the net module, when GRC_LIVE_TLS_CERT/KEY are
+  // set. Declared before `carriers`, whose `ws` server holds a pointer to it.
+  std::unique_ptr<live::NetTlsContext> tls;
   rs2::ServingSummary serving;  // every GET the server answered, for the summary
   // CAR1: the hub's transport; carrier `ws` (index 0) is the rs_ws server, `ws` points at it.
   std::unique_ptr<live::CarrierSet> carriers;
@@ -1698,7 +1708,8 @@ bool live_carriers_ok(std::string *why) {
            ", which is neither built in nor registered before the capture armed";
     return false;
   }
-  // D11: the consumer's pair, both or neither. Until CAR4 (wss) it can only serve `wt`.
+  // D11: the consumer's pair, both or neither. It makes `ws` serve wss too (CAR4, D12) and, with
+  // GRC_LIVE_WT_CERT=tls, is `wt`'s certificate.
   g_live.tls_cert = env_string("GRC_LIVE_TLS_CERT");
   g_live.tls_key = env_string("GRC_LIVE_TLS_KEY");
   if (g_live.tls_cert.empty() != g_live.tls_key.empty()) {
@@ -1715,10 +1726,16 @@ bool live_carriers_ok(std::string *why) {
     *why = "tls-config-invalid: GRC_LIVE_WT_CERT=tls needs GRC_LIVE_TLS_CERT and GRC_LIVE_TLS_KEY";
     return false;
   }
-  if (!g_live.tls_cert.empty() && !(g_live.wt_enabled && g_live.wt_cert == "tls")) {
-    *why = "tls-config-invalid: GRC_LIVE_TLS_CERT serves only wt with GRC_LIVE_WT_CERT=tls "
-           "until wss on ws (CAR4)";
-    return false;
+  if (!g_live.tls_cert.empty()) {
+    // D8, D12: a pair loads the net module even without `wt`; its TLS session serves wss on ws.
+    const grc_net_tls_table_v1 *tls = live::load_net_tls(std::getenv("GRC_LIVE_NET_MODULE"), why);
+    if (tls == nullptr) {
+      return false;
+    }
+    g_live.tls = live::NetTlsContext::create(tls, g_live.tls_cert, g_live.tls_key, why);
+    if (g_live.tls == nullptr) {
+      return false;
+    }
   }
   if (!g_live.wt_enabled) {
     return true;
@@ -2869,6 +2886,7 @@ void stream_start() {
     // D5 default 1 (one receiver at a time, a second gets 503); GRC_LIVE_MAX_CONNECTIONS (D13,
     // G6r) raises it up to 4.
     server_config.max_clients = static_cast<std::size_t>(live_max_connections);
+    server_config.tls = g_live.tls.get();  // CAR4 (D12): wss beside ws when a pair is set
     // G7n (gate7-design.md D2, Q3): /7 preferred when both are offered; the /7 token travels in
     // the hello (rs_live.h), so its upgrade is not bearer-checked.
     // G8w (gate8-design.md D2): render-stream.8 is offered last by default (the default stays /7),

@@ -111,6 +111,13 @@ export interface G8lReport {
   not_applicable?: Partial<Record<G8lFixture, string>>;
   /** CAR2: the lan leg (native only), or why this machine could not run it. */
   lan?: { status: "ran" | "unavailable"; address?: string; reason?: string };
+  /** CAR4: the wss leg (native only), or why this machine could not run it. */
+  wss?: {
+    status: "ran" | "unavailable";
+    port?: number | null;
+    cert_sha256?: string;
+    reason?: string;
+  };
 }
 
 interface LiveSummary {
@@ -842,6 +849,108 @@ export async function runG8l(
           `the comparison failed as it must: ${sabBytes.problems[0] ?? ""}`,
         ),
       );
+    }
+  }
+  // CAR4 (carrier-design.md D11, D12): the wss leg is tex with a certificate pair, its receiver
+  // on plain ws from loopback (still served under a pair), and `openssl s_client` over TLS on the
+  // same port while the host ran (run-gate8.sh run_g8l_wss). Native only; no directory, no check.
+  {
+    const leg = join(out, "g8l", "wss");
+    if (existsSync(leg)) {
+      const unavailable = await readText(join(leg, "unavailable.txt"));
+      if (unavailable !== undefined) {
+        report.wss = { status: "unavailable", reason: unavailable.trim() };
+      } else {
+        const host = join(leg, "host");
+        const receiver = join(leg, "receiver");
+        const problems: string[] = [];
+        const want = (
+          (await readText(join(leg, "cert-sha256.txt"))) ?? ""
+        ).trim();
+        const live = await readJson<Record<string, unknown>>(
+          join(host, "evidence", "live.json"),
+        );
+        const carriers = await readJson<{
+          carriers?: Array<{
+            name?: string;
+            tls?: string;
+            cert_sha256?: string | null;
+            address?: string | null;
+          }>;
+        }>(join(host, "evidence", "live-carriers.json"));
+        const hostPort = typeof live?.port === "number" ? live.port : null;
+        if (live?.status !== "listening")
+          problems.push(`live.json status ${JSON.stringify(live?.status)}`);
+        const ws = carriers?.carriers?.find((c) => c.name === "ws");
+        if (ws?.tls !== "consumer")
+          problems.push(
+            `ws carrier tls ${JSON.stringify(ws?.tls)}, expected "consumer" (a pair is set)`,
+          );
+        if (!/^[0-9a-f]{64}$/.test(want) || ws?.cert_sha256 !== want)
+          problems.push(
+            `ws carrier cert_sha256 ${JSON.stringify(ws?.cert_sha256)}, the leg's certificate is ${want}`,
+          );
+        if (carriers?.carriers?.some((c) => c.name === "wt"))
+          problems.push(
+            "a wt carrier started (the pair alone must load the module for ws, not wt)",
+          );
+        const sc = (await readText(join(leg, "s_client.txt"))) ?? "";
+        if (!/TLSv1\.3/.test(sc))
+          problems.push("s_client did not negotiate TLS 1.3 on the live port");
+        if (!/Verify return code: 0 \(ok\)/.test(sc))
+          problems.push("s_client did not verify the leg's certificate");
+        if (!/ALPN protocol: http\/1\.1/.test(sc))
+          problems.push("s_client got no ALPN http/1.1");
+        if (!/HTTP\/1\.1 404 /.test(sc))
+          problems.push(
+            "no HTTP response over TLS (expected 404 for the probe path)",
+          );
+        const envTxt = (await readText(join(receiver, "env.txt"))) ?? "";
+        const url = /^RS_RECEIVER_URL=(.*)$/m.exec(envTxt)?.[1] ?? "";
+        if (
+          hostPort === null ||
+          url !== `ws://127.0.0.1:${hostPort}/render-stream`
+        )
+          problems.push(
+            `receiver URL ${JSON.stringify(url)}, expected plain ws to 127.0.0.1:${hostPort}`,
+          );
+        const applied = await readJson<Applied>(join(receiver, "applied.json"));
+        if (!applied) problems.push("receiver applied.json missing");
+        else problems.push(...failuresOf(applied));
+        const code = await exitCode(receiver);
+        if (code !== "0") problems.push(`receiver exit ${code ?? "missing"}`);
+        const wssTap = await loadTap(receiver, 8);
+        const texTap = await loadTap(join(out, "g8l", "tex", "receiver"), 8);
+        if (wssTap.error) problems.push(`wss tap: ${wssTap.error}`);
+        if (texTap.error) problems.push(`tex tap: ${texTap.error}`);
+        if (wssTap.rec && wssTap.rec.transactions.length === 0)
+          problems.push("the wss leg's tap holds no transaction");
+        if (wssTap.rec && texTap.rec) {
+          const last = (r: { transactions: Array<{ frame: number }> }) =>
+            r.transactions[r.transactions.length - 1]?.frame;
+          if (last(wssTap.rec) !== last(texTap.rec))
+            problems.push(
+              `the last transaction is frame ${last(wssTap.rec)} here, ${last(texTap.rec)} on the tex leg`,
+            );
+        }
+        const d = await pixelDiff(
+          join(receiver, "shots", "final.png"),
+          join(out, "g8l", "tex", "receiver", "shots", "final.png"),
+        );
+        if (d === null)
+          problems.push("the wss leg's or the tex leg's final shot is missing");
+        else if (d > 0)
+          problems.push(`${d} px differ from the tex leg's final shot`);
+        report.wss = { status: "ran", port: hostPort, cert_sha256: want };
+        checks.push(
+          check(
+            "g8l-wss-served",
+            "CAR4, D11, D12: tex with GRC_LIVE_TLS_CERT/KEY loads the net module for ws alone (live-carriers.json ws tls consumer, the certificate's SHA-256), the same port speaks TLS 1.3 with that certificate and HTTP over it (openssl s_client), and a plaintext receiver from loopback still gets the tex leg's last frame and final pixels",
+            absent(receiver) || absent(host) ? null : problems,
+            `${wssTap.rec?.transactions.length ?? 0} transactions over ws on a ws+wss port ${hostPort}; s_client TLS 1.3 verified`,
+          ),
+        );
+      }
     }
   }
   return { checks, report };

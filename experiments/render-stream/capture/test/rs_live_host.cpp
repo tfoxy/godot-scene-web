@@ -43,6 +43,11 @@
 //   stdout, CAR6: "RS_LIVE_HOST_REGISTER <case> <result>" per registration, including `late`
 //   (one attempt after live started), and at the end "RS_LIVE_HOST_EXT <name> starts=<n>
 //   destroys=<n>" per registered carrier.
+// CAR4: GRC_LIVE_TLS_CERT/GRC_LIVE_TLS_KEY (as entry.cpp) make `ws` serve wss beside ws through the
+// net module's TLS session (--net-module, as for wt); a pair the module refuses exits 2 with
+// `tls-config-invalid`. Then stdout adds "RS_LIVE_HOST_TLS_SHA256 <hex>" after the port lines and
+// "RS_LIVE_HOST_TLS_STATS connections=N handshakes=N failed=N plaintext_loopback=N
+// tls_required=N" at stop.
 // stdout: "RS_LIVE_HOST_PORT <port>" first (with wt, then "RS_LIVE_HOST_WT_PORT <port>" and
 // "RS_LIVE_HOST_CERT_SHA256 <hex>"), then one line per transport event, in the formats
 // entry.cpp logs to stdout.log where it has one (`live: 403 origin <origin> <method> <route>`).
@@ -228,6 +233,27 @@ int main(int argc, char **argv) {
     return 2;
   }
   server_config.allow_non_loopback = expose == grc::live::Expose::Lan;
+  // CAR4 (carrier-design.md D11, D12): the consumer's pair, both or neither, through the module.
+  std::unique_ptr<grc::live::NetTlsContext> tls;
+  {
+    const char *cert = std::getenv("GRC_LIVE_TLS_CERT");
+    const char *key = std::getenv("GRC_LIVE_TLS_KEY");
+    const bool has_cert = cert != nullptr && *cert != '\0';
+    const bool has_key = key != nullptr && *key != '\0';
+    if (has_cert != has_key) {
+      std::fprintf(stderr, "rs_live_host: tls-config-invalid: GRC_LIVE_TLS_CERT and GRC_LIVE_TLS_KEY go together\n");
+      return 2;
+    }
+    if (has_cert) {
+      const grc_net_tls_table_v1 *t = grc::live::load_net_tls(net_module.c_str(), &error);
+      if (t != nullptr) tls = grc::live::NetTlsContext::create(t, cert, key, &error);
+      if (tls == nullptr) {
+        std::fprintf(stderr, "rs_live_host: %s\n", error.c_str());
+        return 2;
+      }
+      server_config.tls = tls.get();
+    }
+  }
   const char *window = std::getenv("GRC_LIVE_CREDIT_WINDOW_MAX");
   if (window != nullptr && *window != '\0') {
     const std::string w(window);
@@ -447,6 +473,7 @@ int main(int argc, char **argv) {
     print("RS_LIVE_HOST_WT_PORT " + std::to_string(info.port));
     print("RS_LIVE_HOST_CERT_SHA256 " + info.cert_sha256);
   }
+  if (tls != nullptr) print("RS_LIVE_HOST_TLS_SHA256 " + tls->cert_sha256());
 
   std::uint64_t frame = 0;
   const auto drain = [&]() {
@@ -509,6 +536,13 @@ int main(int argc, char **argv) {
   drain();
   hub.close_open(frame);
   transport.stop();
+  if (tls != nullptr && has_ws) {
+    const grc::live::Server::TlsStats t = ws->tls_stats();
+    print("RS_LIVE_HOST_TLS_STATS connections=" + std::to_string(t.tls_connections) +
+          " handshakes=" + std::to_string(t.handshakes) + " failed=" + std::to_string(t.tls_failed) +
+          " plaintext_loopback=" + std::to_string(t.plaintext_loopback) +
+          " tls_required=" + std::to_string(t.tls_required));
+  }
   if (!evidence_dir.empty()) {
     grc::write_file(evidence_dir + "/live-carriers.json", transport.carriers_json());
   }

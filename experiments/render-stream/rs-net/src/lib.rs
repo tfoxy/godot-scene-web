@@ -6,6 +6,10 @@
 //! makes the `wt` carrier: WebTransport (render-stream-wt/1) behind the public carrier ABI
 //! grc_carrier_v1 (capture/src/grc_carrier.h). The module holds every QUIC and TLS byte.
 //!
+//! CAR4 adds a second entry, `grc_net_tls_v1()`: a sans-IO TLS server session (src/tls.rs) the
+//! capture's `ws` carrier runs its connections through when GRC_LIVE_TLS_CERT/KEY are set (wss,
+//! D12). The capture loads the module for that too, with or without `wt`.
+//!
 //! Containment (D17): every `extern "C"` entry runs under `catch_unwind`. A panic stops the
 //! carrier (`faulted`, every connection closed 1011), and the capture, its other carriers and the
 //! game go on. The cdylib exports only `grc_net_*` symbols (rustc's own version script for a
@@ -14,6 +18,7 @@
 pub mod abi;
 pub mod cert;
 pub mod host;
+pub mod tls;
 pub mod wt;
 
 use std::ffi::{c_char, c_int, c_void};
@@ -250,4 +255,159 @@ static MODULE: GrcNetModuleV1 = GrcNetModuleV1 {
 #[no_mangle]
 pub extern "C" fn grc_net_module_v1() -> *const GrcNetModuleV1 {
     &MODULE
+}
+
+// ------------------------------------------------------------------------------ grc_net_tls_v1
+
+unsafe fn c_str<'a>(p: *const c_char) -> Option<&'a str> {
+    if p.is_null() {
+        return None;
+    }
+    std::ffi::CStr::from_ptr(p).to_str().ok()
+}
+
+unsafe extern "C" fn tls_config_create(cert: *const c_char, key: *const c_char, error: *mut c_char, cap: usize) -> *mut c_void {
+    catch_unwind(AssertUnwindSafe(|| {
+        let (Some(cert), Some(key)) = (c_str(cert), c_str(key)) else {
+            write_error(error, cap, "tls-config-invalid: the certificate and key paths must be UTF-8 and non-null");
+            return std::ptr::null_mut();
+        };
+        match tls::TlsConfig::from_pem_files(cert, key) {
+            Ok(c) => Box::into_raw(Box::new(c)) as *mut c_void,
+            Err(e) => {
+                write_error(error, cap, &e);
+                std::ptr::null_mut()
+            }
+        }
+    }))
+    .unwrap_or_else(|_| {
+        write_error(error, cap, "tls-config-invalid: panic while loading the pair");
+        std::ptr::null_mut()
+    })
+}
+
+unsafe extern "C" fn tls_config_cert_sha256(config: *const c_void, out: *mut c_char, cap: usize) -> c_int {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Some(c) = (config as *const tls::TlsConfig).as_ref() else { return 0 };
+        if out.is_null() || cap < 65 {
+            return 0;
+        }
+        write_error(out, cap, &c.sha256);
+        1
+    }))
+    .unwrap_or(0)
+}
+
+unsafe extern "C" fn tls_config_destroy(config: *mut c_void) {
+    if !config.is_null() {
+        let _ = catch_unwind(AssertUnwindSafe(|| drop(Box::from_raw(config as *mut tls::TlsConfig))));
+    }
+}
+
+unsafe extern "C" fn tls_session_create(config: *const c_void, error: *mut c_char, cap: usize) -> *mut c_void {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Some(c) = (config as *const tls::TlsConfig).as_ref() else {
+            write_error(error, cap, "tls-session: no config");
+            return std::ptr::null_mut();
+        };
+        match tls::TlsSession::new(c) {
+            Ok(s) => Box::into_raw(Box::new(s)) as *mut c_void,
+            Err(e) => {
+                write_error(error, cap, &e);
+                std::ptr::null_mut()
+            }
+        }
+    }))
+    .unwrap_or(std::ptr::null_mut())
+}
+
+unsafe extern "C" fn tls_session_destroy(session: *mut c_void) {
+    if !session.is_null() {
+        let _ = catch_unwind(AssertUnwindSafe(|| drop(Box::from_raw(session as *mut tls::TlsSession))));
+    }
+}
+
+/// D17 for a session: a panic fails that session alone (GRC_TLS_FAILED, error "panic in ..."),
+/// and the capture closes that one connection.
+unsafe fn session_call<R>(session: *mut c_void, fallback: R, what: &str, f: impl FnOnce(&mut tls::TlsSession) -> R) -> R {
+    let Some(s) = (session as *mut tls::TlsSession).as_mut() else { return fallback };
+    let s_ptr = s as *mut tls::TlsSession;
+    match catch_unwind(AssertUnwindSafe(|| f(&mut *s_ptr))) {
+        Ok(r) => r,
+        Err(_) => {
+            (*s_ptr).fail(&format!("panic in tls {what}"));
+            fallback
+        }
+    }
+}
+
+unsafe fn bytes<'a>(p: *const u8, len: usize) -> &'a [u8] {
+    if p.is_null() || len == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(p, len)
+    }
+}
+
+unsafe fn bytes_mut<'a>(p: *mut u8, len: usize) -> &'a mut [u8] {
+    if p.is_null() || len == 0 {
+        &mut []
+    } else {
+        std::slice::from_raw_parts_mut(p, len)
+    }
+}
+
+unsafe extern "C" fn tls_feed(session: *mut c_void, data: *const u8, len: usize) -> i64 {
+    session_call(session, -1, "feed", |s| s.feed(bytes(data, len)))
+}
+
+unsafe extern "C" fn tls_read(session: *mut c_void, out: *mut u8, cap: usize) -> i64 {
+    session_call(session, -1, "read", |s| s.read(bytes_mut(out, cap)))
+}
+
+unsafe extern "C" fn tls_write(session: *mut c_void, data: *const u8, len: usize) -> i64 {
+    session_call(session, -1, "write", |s| s.write(bytes(data, len)))
+}
+
+unsafe extern "C" fn tls_take(session: *mut c_void, out: *mut u8, cap: usize) -> i64 {
+    session_call(session, 0, "take", |s| s.take(bytes_mut(out, cap)))
+}
+
+unsafe extern "C" fn tls_state(session: *const c_void) -> u32 {
+    session_call(session as *mut c_void, tls::GRC_TLS_FAILED, "state", |s| s.state())
+}
+
+unsafe extern "C" fn tls_error(session: *const c_void, out: *mut c_char, cap: usize) -> usize {
+    session_call(session as *mut c_void, 0, "error", |s| {
+        write_error(out, cap, s.error());
+        s.error().len()
+    })
+}
+
+unsafe extern "C" fn tls_close_notify(session: *mut c_void) {
+    session_call(session, (), "close_notify", |s| s.close_notify())
+}
+
+static TLS: GrcNetTlsV1 = GrcNetTlsV1 {
+    abi_version: GRC_NET_TLS_ABI_VERSION,
+    size: std::mem::size_of::<GrcNetTlsV1>() as u32,
+    module_version: MODULE_VERSION.as_ptr() as *const c_char,
+    config_create: tls_config_create,
+    config_cert_sha256: tls_config_cert_sha256,
+    config_destroy: tls_config_destroy,
+    session_create: tls_session_create,
+    session_destroy: tls_session_destroy,
+    feed: tls_feed,
+    read: tls_read,
+    write: tls_write,
+    take: tls_take,
+    state: tls_state,
+    error: tls_error,
+    close_notify: tls_close_notify,
+};
+
+/// CAR4's entry (grc_net_module.h, struct grc_net_tls_table_v1): the sans-IO TLS server session.
+#[no_mangle]
+pub extern "C" fn grc_net_tls_v1() -> *const GrcNetTlsV1 {
+    &TLS
 }

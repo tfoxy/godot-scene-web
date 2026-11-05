@@ -3,14 +3,15 @@
 # the stable toolchain (every crate from the local registry, pinned by rs-net/Cargo.lock; the
 # patched wtransport is vendored in rs-net/vendor/), installed as
 # capture/build/librender_stream_net.so -- beside librender_stream_capture.so, where the capture
-# looks for it when GRC_LIVE_CARRIERS lists `wt` (else GRC_LIVE_NET_MODULE). Also builds the
+# looks for it when GRC_LIVE_CARRIERS lists `wt` or GRC_LIVE_TLS_CERT is set (wss, CAR4; else
+# GRC_LIVE_NET_MODULE). It exports grc_net_module_v1 and grc_net_tls_v1, nothing else. Also builds the
 # wtransport probe client rs-net/target/release/rs-net-probe (scripts/test/self-test-wt-interop.ts)
 # and, unless --no-test, runs the crate's tests (a wtransport client against an in-crate fake host).
 #
 # Usage: experiments/render-stream/scripts/build-rs-net.sh [--no-test]
 # Honors CARGO_BUILD_JOBS. Writes capture/build/rs-net-build.json (toolchain, sha256, exports).
 # Run it after build-capture.sh (which creates capture/build/); the capture does not need it unless
-# a run lists `wt`.
+# a run lists `wt` or sets a TLS pair. Then rs_ws_test's wss cases run too (ctest skips them before).
 set -euo pipefail
 
 # Measurement isolation: the build holds the machine-wide quiet lock SHARED (lib/quiet.sh), so it
@@ -47,7 +48,7 @@ for sym in ${exported}; do
     *) echo "build-rs-net: the module exports ${sym} (only grc_net_* allowed): ${exported}" >&2; exit 1 ;;
   esac
 done
-if [ "${exported}" != "grc_net_module_v1 " ]; then
+if [ "${exported}" != "grc_net_module_v1 grc_net_tls_v1 " ]; then
   echo "build-rs-net: unexpected export list: ${exported}" >&2
   exit 1
 fi

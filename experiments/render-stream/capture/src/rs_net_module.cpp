@@ -21,6 +21,7 @@ std::string dir_of(const std::string &path) {
 
 struct Loaded {
   bool tried = false;
+  void *handle = nullptr;
   const grc_net_module_table_v1 *module = nullptr;
   std::string error;
   std::string path;
@@ -47,9 +48,11 @@ std::string default_net_module_path() {
   return dir_of(info.dli_fname) + "/" + kModuleFile;
 }
 
-const grc_net_module_table_v1 *load_net_module_at(const std::string &path, std::string *error) {
+const grc_net_module_table_v1 *load_net_module_at(const std::string &path, std::string *error,
+                                            void **handle_out) {
   // D8: never dlclose()d, so a carrier thread can never outlive its code.
   void *handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+  if (handle_out != nullptr) *handle_out = handle;
   if (handle == nullptr) {
     const char *why = dlerror();
     *error = "net-module-missing: cannot load " + path + " (" +
@@ -88,11 +91,105 @@ const grc_net_module_table_v1 *load_net_module(const char *explicit_path, std::s
     l.tried = true;
     l.path = explicit_path != nullptr && explicit_path[0] != '\0' ? std::string(explicit_path)
                                                                   : default_net_module_path();
-    l.module = load_net_module_at(l.path, &l.error);
+    l.module = load_net_module_at(l.path, &l.error, &l.handle);
   }
   if (path_out != nullptr) *path_out = l.path;
   if (l.module == nullptr && error != nullptr) *error = l.error;
   return l.module;
+}
+
+const grc_net_tls_table_v1 *net_tls_table(void *handle, const std::string &path, std::string *error) {
+  if (handle == nullptr) {
+    *error = "net-module-missing: " + path + " is not loaded";
+    return nullptr;
+  }
+  dlerror();
+  void *entry = dlsym(handle, GRC_NET_TLS_ENTRY);
+  if (entry == nullptr) {
+    *error = "net-module-abi: " + path + " has no " + GRC_NET_TLS_ENTRY + " (wss needs a CAR4 module)";
+    return nullptr;
+  }
+  const grc_net_tls_table_v1 *t = reinterpret_cast<grc_net_tls_table_v1_fn>(entry)();
+  if (t == nullptr || t->abi_version != GRC_NET_TLS_ABI_VERSION || t->size < sizeof(grc_net_tls_table_v1) ||
+      t->config_create == nullptr || t->config_cert_sha256 == nullptr || t->config_destroy == nullptr ||
+      t->session_create == nullptr || t->session_destroy == nullptr || t->feed == nullptr ||
+      t->read == nullptr || t->write == nullptr || t->take == nullptr || t->state == nullptr ||
+      t->error == nullptr || t->close_notify == nullptr) {
+    *error = "net-module-abi: " + path + "'s TLS table is not version " + std::to_string(GRC_NET_TLS_ABI_VERSION);
+    return nullptr;
+  }
+  return t;
+}
+
+const grc_net_tls_table_v1 *load_net_tls(const char *explicit_path, std::string *error) {
+  std::string path;
+  if (load_net_module(explicit_path, error, &path) == nullptr) return nullptr;
+  void *handle = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(load_mu());
+    handle = loaded().handle;
+  }
+  return net_tls_table(handle, path, error);
+}
+
+namespace {
+
+class NetTlsSession final : public TlsSession {
+ public:
+  NetTlsSession(const grc_net_tls_table_v1 *t, grc_net_tls_session *s) : t_(t), s_(s) {}
+  ~NetTlsSession() override { t_->session_destroy(s_); }
+  NetTlsSession(const NetTlsSession &) = delete;
+  NetTlsSession &operator=(const NetTlsSession &) = delete;
+  std::int64_t feed(const std::uint8_t *data, std::size_t len) override { return t_->feed(s_, data, len); }
+  std::int64_t read(std::uint8_t *out, std::size_t cap) override { return t_->read(s_, out, cap); }
+  std::int64_t write(const std::uint8_t *data, std::size_t len) override { return t_->write(s_, data, len); }
+  std::int64_t take(std::uint8_t *out, std::size_t cap) override { return t_->take(s_, out, cap); }
+  std::uint32_t state() const override { return t_->state(s_); }
+  std::string error() const override {
+    char buf[256] = {0};
+    t_->error(s_, buf, sizeof buf);
+    return std::string(buf, strnlen(buf, sizeof buf));
+  }
+  void close_notify() override { t_->close_notify(s_); }
+
+ private:
+  const grc_net_tls_table_v1 *t_;
+  grc_net_tls_session *s_;
+};
+
+static_assert(TlsSession::Handshaking == GRC_TLS_HANDSHAKING && TlsSession::WantsWrite == GRC_TLS_WANTS_WRITE &&
+                  TlsSession::PeerClosed == GRC_TLS_PEER_CLOSED && TlsSession::Failed == GRC_TLS_FAILED,
+              "rs_ws.h TlsSession::State mirrors grc_net_module.h GRC_TLS_*");
+
+}  // namespace
+
+std::unique_ptr<NetTlsContext> NetTlsContext::create(const grc_net_tls_table_v1 *table, const std::string &cert_path,
+                                                     const std::string &key_path, std::string *error) {
+  if (table == nullptr) {
+    *error = "net-module-missing: no TLS table";
+    return nullptr;
+  }
+  char why[512] = {0};
+  grc_net_tls_config *config = table->config_create(cert_path.c_str(), key_path.c_str(), why, sizeof why);
+  if (config == nullptr) {
+    *error = why[0] != '\0' ? std::string(why) : std::string("tls-config-invalid: the module refused the pair");
+    return nullptr;
+  }
+  char sha[65] = {0};
+  if (table->config_cert_sha256(config, sha, sizeof sha) != 1) sha[0] = '\0';
+  return std::unique_ptr<NetTlsContext>(new NetTlsContext(table, config, std::string(sha, strnlen(sha, sizeof sha))));
+}
+
+NetTlsContext::~NetTlsContext() { table_->config_destroy(config_); }
+
+std::unique_ptr<TlsSession> NetTlsContext::new_session(std::string *error) {
+  char why[256] = {0};
+  grc_net_tls_session *s = table_->session_create(config_, why, sizeof why);
+  if (s == nullptr) {
+    *error = why;
+    return nullptr;
+  }
+  return std::make_unique<NetTlsSession>(table_, s);
 }
 
 std::unique_ptr<NetWtCarrier> NetWtCarrier::create(const grc_net_module_table_v1 *module,
@@ -179,3 +276,6 @@ static_assert(sizeof(grc_net_wt_info_v1) == 184, "grc_net_wt_info_v1 layout");
 static_assert(offsetof(grc_net_wt_info_v1, port) == 72, "grc_net_wt_info_v1 layout");
 static_assert(offsetof(grc_net_wt_info_v1, sessions_refused) == 160, "grc_net_wt_info_v1 layout");
 static_assert(sizeof(grc_net_module_table_v1) == 40, "grc_net_module_table_v1 layout");
+static_assert(sizeof(grc_net_tls_table_v1) == 112, "grc_net_tls_table_v1 layout");
+static_assert(offsetof(grc_net_tls_table_v1, feed) == 56, "grc_net_tls_table_v1 layout");
+static_assert(offsetof(grc_net_tls_table_v1, close_notify) == 104, "grc_net_tls_table_v1 layout");

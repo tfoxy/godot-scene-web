@@ -722,6 +722,8 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "rcgen",
+ "ring",
+ "rustls",
  "time",
  "tokio",
  "wtransport",
