@@ -28,6 +28,17 @@
 // its fetch is aborted, its hash stops at the next chunk and the entry is dropped (the next load
 // starts afresh); a compile or import already started cannot be cancelled, and its late result is
 // dropped with the entry.
+//
+// Hash. With `crypto.subtle` (a secure page) the body is read whole (`arrayBuffer()`) and digested
+// in one call: step `wasm hash`. Without it (a plain-http LAN page) the body is read with a reader
+// and each chunk goes into one incremental `Sha256` as it arrives, copied into the output buffer
+// (`readHashed`), so the hash overlaps the download. The buffer is sized from build.json's
+// `wasm_bytes`, not Content-Length (the compressed size under gzip): a body that overruns it, or
+// ends short of it, is `stale core` at once, naming both sizes, and its reader is cancelled. A chunk
+// is hashed in pieces of at most 256 KiB with a task between them (a fast link or a cached response
+// can deliver a large one), checking the abort between pieces. While streaming, the hash is part of
+// `wasm fetch`: a timeout there names `wasm fetch`, never `wasm hash`. A response with no body, or
+// a build.json with no usable `wasm_bytes`, takes the whole-body path.
 
 import { CLIENT_CORE_METHODS, type GswRsModule } from "./abi";
 import { Sha256 } from "./sha256";
@@ -77,6 +88,8 @@ export type CoreLoadStep =
 /** What the loader calls on the page (tests substitute it). */
 export interface LoaderEnv {
   fetch(url: string, init: RequestInit): Promise<Response>;
+  /** Whether the page has `crypto.subtle`; when it has not, the wasm is hashed while it downloads. */
+  hasSubtle(): boolean;
   digest(
     bytes: ArrayBuffer,
     signal: AbortSignal,
@@ -95,6 +108,8 @@ export interface LoadCoreOptions {
 /** The pure-JS hash's chunk: ~30 ms each on a g31 (~70 ms at 4x throttle). */
 const HASH_CHUNK = 256 * 1024;
 
+const nextTask = () => new Promise<void>((r) => setTimeout(r, 0));
+
 /** The fallback hash, a chunk per task, stopping at the first chunk after `signal` aborts. */
 export async function sha256Chunked(
   bytes: ArrayBuffer,
@@ -103,16 +118,69 @@ export async function sha256Chunked(
   const src = new Uint8Array(bytes);
   const h = new Sha256();
   for (let off = 0; off < src.length; off += HASH_CHUNK) {
-    if (off > 0) await new Promise((r) => setTimeout(r, 0));
+    if (off > 0) await nextTask();
     signal.throwIfAborted();
     h.update(src.subarray(off, off + HASH_CHUNK));
   }
   return h.digest();
 }
 
+/**
+ * Reads `body` into a buffer of `expected` bytes (build.json's `wasm_bytes`; Content-Length is the
+ * compressed size under gzip) and hashes each chunk as it arrives, so the hash overlaps the download.
+ * A body longer or shorter than `expected` is `stale core` as soon as it is known. Anything over
+ * `HASH_CHUNK` hashed since the last task is split, and a task passes between the pieces, so the
+ * main thread stays free and an abort is seen. Whatever ends the read cancels the reader.
+ */
+export async function readHashed(
+  body: ReadableStream<Uint8Array>,
+  expected: number,
+  signal: AbortSignal,
+  url: string,
+): Promise<{ bytes: ArrayBuffer; sha: Uint8Array }> {
+  const out = new Uint8Array(expected);
+  const h = new Sha256();
+  const reader = body.getReader();
+  let off = 0;
+  let sinceTask = 0;
+  try {
+    for (;;) {
+      const { done, value } = await raced(reader.read(), signal);
+      if (done) break;
+      if (off + value.length > expected)
+        throw new CoreLoadError(
+          `stale core: ${url} sent more than the ${expected} bytes its build.json names (wasm_bytes), at least ${off + value.length}`,
+        );
+      out.set(value, off);
+      for (let p = 0; p < value.length; ) {
+        const n = Math.min(value.length - p, HASH_CHUNK - sinceTask);
+        h.update(out.subarray(off + p, off + p + n));
+        p += n;
+        sinceTask += n;
+        if (sinceTask >= HASH_CHUNK) {
+          sinceTask = 0;
+          await nextTask();
+          signal.throwIfAborted();
+        }
+      }
+      off += value.length;
+    }
+    if (off < expected)
+      throw new CoreLoadError(
+        `stale core: ${url} ended after ${off} of the ${expected} bytes its build.json names (wasm_bytes)`,
+      );
+    return { bytes: out.buffer, sha: h.digest() };
+  } catch (e) {
+    // The fetch's signal cancels the body on a timeout or abandon; a size mismatch has no signal.
+    reader.cancel().catch(() => {});
+    throw e;
+  }
+}
+
 const pageEnv: LoaderEnv = {
   fetch: (url, init) => fetch(url, init),
-  // `crypto.subtle` exists only in secure contexts; a plain-http LAN page uses the fallback.
+  // `crypto.subtle` exists only in secure contexts; a plain-http LAN page hashes in JS.
+  hasSubtle: () => globalThis.crypto?.subtle !== undefined,
   digest: (bytes, signal) =>
     globalThis.crypto?.subtle
       ? crypto.subtle.digest("SHA-256", bytes)
@@ -243,9 +311,24 @@ async function compileWasm(
   const signal = e.controller.signal;
   const res = await env.fetch(wasmUrl, { signal });
   if (!res.ok) throw new CoreLoadError(`GET ${wasmUrl}: HTTP ${res.status}`);
-  const bytes = await res.arrayBuffer();
-  e.step = "wasm hash";
-  const sha = hex(await env.digest(bytes, signal));
+  let bytes: ArrayBuffer;
+  let sha: string;
+  const expected = build.wasm_bytes;
+  if (
+    !env.hasSubtle() &&
+    res.body &&
+    Number.isSafeInteger(expected) &&
+    expected > 0
+  ) {
+    // No `crypto.subtle`: the hash is part of the fetch, and stays `wasm fetch` in a timeout.
+    const r = await readHashed(res.body, expected, signal, wasmUrl);
+    bytes = r.bytes;
+    sha = hex(r.sha);
+  } else {
+    bytes = await res.arrayBuffer();
+    e.step = "wasm hash";
+    sha = hex(await env.digest(bytes, signal));
+  }
   if (sha !== build.wasm_sha256)
     throw new CoreLoadError(
       `stale core: ${wasmUrl} has sha256 ${sha}, its build.json names ${build.wasm_sha256}`,

@@ -6,7 +6,7 @@ import {
 import type { LoaderEnv } from "../src/loader";
 import type { RenderStreamStatus } from "../src/loop";
 import type { RenderStreamTransportFactory } from "../src/transport";
-import { after, freshCore, scriptedEnv, stall } from "./loader-env";
+import { after, freshCore, scriptedEnv, stall, streamOf } from "./loader-env";
 
 // The client's loader, on a scripted env when a test sets one (else the page's: jsdom refuses it).
 const loader = vi.hoisted(() => ({
@@ -212,6 +212,21 @@ describe("createRenderStreamClient", () => {
       ]);
       expect(s.counts.cores).toBe(0);
       expect(connects).toEqual([]);
+      c.dispose();
+    });
+
+    it("a body that stalls part-way, hashed as it arrives, is a stalled wasm fetch", async () => {
+      const { c, statuses } = mount({
+        subtle: false,
+        body: () => streamOf([new Uint8Array(4)], "stall").stream,
+      });
+      c.connect();
+      await vi.advanceTimersByTimeAsync(MS);
+      expect(statuses.at(-1)).toEqual({
+        kind: "failed",
+        reason: "core-load-failed",
+        detail: `timeout after ${MS} ms in wasm fetch`,
+      });
       c.dispose();
     });
 
