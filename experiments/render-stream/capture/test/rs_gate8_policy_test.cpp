@@ -302,16 +302,16 @@ void test_v11_policy() {
 void test_delivery_seam() {
   grc::rs::DeliveryPolicy d;
   std::string error;
-  check(grc::rs::parse_delivery_policy(nullptr, &d, &error) && d.mode == "rgba" && !d.set,
-        "GRC_TEXTURE_DELIVERY unset is rgba");
-  check(grc::rs::parse_delivery_policy("", &d, &error) && d.mode == "rgba" && !d.set,
+  check(grc::rs::parse_delivery_policy(nullptr, &d, &error) && d.mode == "passthrough" && !d.set,
+        "GRC_TEXTURE_DELIVERY unset is passthrough (live-swap-design.md Q5 TDP)");
+  check(grc::rs::parse_delivery_policy("", &d, &error) && d.mode == "passthrough" && !d.set,
         "GRC_TEXTURE_DELIVERY empty is unset");
   for (const char *mode : {"rgba", "passthrough", "basis-uastc", "basis-etc1s"}) {
     check(grc::rs::parse_delivery_policy(mode, &d, &error) && d.mode == mode && d.set,
           "each delivery mode parses");
   }
   check(!grc::rs::parse_delivery_policy("zstd", &d, &error) &&
-            error.find("invalid GRC_TEXTURE_DELIVERY=zstd") == 0 && d.mode == "rgba",
+            error.find("invalid GRC_TEXTURE_DELIVERY=zstd") == 0 && d.mode == "passthrough",
         "an invalid delivery mode is refused naming the variable");
   grc::rs::parse_delivery_policy("basis-uastc", &d, &error);
   const grc::rs2::TextureDeliveryDeclaration declared = grc::rs::declare_texture_delivery(d);

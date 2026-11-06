@@ -33,8 +33,10 @@ namespace grc {
 namespace rs {
 
 struct DeliveryPolicy {
-  std::string mode = "rgba";  // rgba | passthrough | basis-uastc | basis-etc1s (D1)
-  bool set = false;           // GRC_TEXTURE_DELIVERY was present and non-empty
+  // rgba | passthrough | basis-uastc | basis-etc1s (D1). Unset is `passthrough` (live-swap-design.md
+  // Q5 "TDP"); a leg that must offer `decoded` only sets GRC_TEXTURE_DELIVERY=rgba explicitly.
+  std::string mode = "passthrough";
+  bool set = false;  // GRC_TEXTURE_DELIVERY was present and non-empty
 };
 
 // Parses GRC_TEXTURE_DELIVERY (may be null). On a bad value returns false with *error naming the

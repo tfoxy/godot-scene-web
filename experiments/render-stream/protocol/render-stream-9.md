@@ -222,7 +222,7 @@ under `RS_RECEIVER_PROTOCOL=9` ("As built (G8kp)"). Since G8kb GSW's /9 hello li
 | variable | values | effect |
 | -------- | ------ | ------ |
 | `GRC_STREAM_VERSION` | `6` (default), `8`, `9` | the wire version of **file** sinks |
-| `GRC_TEXTURE_DELIVERY` | `rgba` (default), `passthrough`, `basis-uastc`, `basis-etc1s` | declared by a /9 session as `resources.texture_delivery.mode` |
+| `GRC_TEXTURE_DELIVERY` | `passthrough` (default since TDP; was `rgba`), `rgba`, `basis-uastc`, `basis-etc1s` | declared by a /9 session as `resources.texture_delivery.mode` |
 
 `GRC_TEXTURE_DELIVERY` has no effect below /9, where the `decoded` payload is all there is (D4), so
 it is not a gate 8 policy and needs no /9 sink. An invalid value refuses with

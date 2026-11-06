@@ -551,6 +551,7 @@ export async function runG8t(
     "workers/capture",
     "workers/sabotage-publish-before-ready/capture",
     "delivery9/capture",
+    "delivery9/default/capture",
     "decode-cost/capture-workers",
   ];
   const legs: G8tReport["legs"] = {};
@@ -1165,10 +1166,89 @@ export async function runG8t(
     checks.push(
       check(
         "delivery-v9-wire",
-        "G8k9: a /9 file sink (GRC_STREAM_VERSION=9, GRC_TEXTURE_DELIVERY=rgba since G8kp refuses the Basis modes) writes full and patch recordings that start GRS9, validate at /9 with the independent TypeScript decoder, declare resources.texture_delivery {rgba, encoder null}, and carry `variants: []` on every texture entry, because rgba offers none; stripped of that key every transaction equals the /8 capture of the same frame state for state",
+        "G8k9: a /9 file sink (GRC_STREAM_VERSION=9, GRC_TEXTURE_DELIVERY=rgba set explicitly since TDP: unset is passthrough, and G8kp refuses the Basis modes) writes full and patch recordings that start GRS9, validate at /9 with the independent TypeScript decoder, declare resources.texture_delivery {rgba, encoder null}, and carry `variants: []` on every texture entry, because rgba offers none; stripped of that key every transaction equals the /8 capture of the same frame state for state",
         ran("delivery9/capture") && ran("capture") ? problems : null,
         `${texturesSeen} texture entries, none with a variant`,
         "delivery9/capture",
+      ),
+    );
+  }
+
+  // --- TDP: GRC_TEXTURE_DELIVERY unset is passthrough at /9+ and declares nothing below -------
+  // (live-swap-design.md Q5 "TDP"; the pin test is capture/test/rs_gate8_policy_test.cpp)
+  {
+    const dir = join(out, "delivery9", "default", "capture");
+    const problems: string[] = [];
+    const exit = legs["delivery9/default/capture"].exit_code;
+    if (exit !== "0") problems.push(`delivery9/default/capture exit ${exit}`);
+    let blocks = 0;
+    for (const name of ["recording.rs9", "recording-patch.rs9"]) {
+      const path = join(dir, name);
+      if (!existsSync(path)) {
+        problems.push(`${name} missing`);
+        continue;
+      }
+      const bytes = new Uint8Array(await readFile(path));
+      if (wireVersionOf(bytes) !== 9) {
+        problems.push(`${name} does not start with GRS9`);
+        continue;
+      }
+      const errors = validateRecording(bytes, 9);
+      if (errors.length > 0) {
+        problems.push(`${name} invalid at /9: ${errors[0]}`);
+        continue;
+      }
+      const decoded = decodeRecording(bytes, 9);
+      const session = decoded.records[0].meta as unknown as {
+        resources: {
+          texture_delivery?: { mode: string; encoder: string | null };
+        };
+      };
+      const declared = session.resources.texture_delivery;
+      if (declared?.mode !== "passthrough" || declared.encoder !== null)
+        problems.push(
+          `${name} declares ${JSON.stringify(declared)}, not {"mode":"passthrough","encoder":null}`,
+        );
+      for (const t of resolveRecording(bytes, 9).transactions)
+        for (const tex of t.state.textures)
+          for (const v of tex.variants ?? []) {
+            if (v.encoding === "block") blocks++;
+            else problems.push(`${name}: texture ${tex.id} offers ${v.encoding}`);
+          }
+    }
+    if (blocks === 0)
+      problems.push(
+        "no block variant: the unset default did not reach the hooks as passthrough",
+      );
+    const r = await readJson<{
+      stream?: { gate8?: { texture_delivery?: string } };
+    }>(join(dir, "evidence", "result.json"));
+    if (r?.stream?.gate8?.texture_delivery !== "passthrough")
+      problems.push(
+        `result.json texture_delivery ${r?.stream?.gate8?.texture_delivery}`,
+      );
+    // Below /9 nothing is declared and nothing is offered: the /8 capture of the same fixture.
+    const low = join(out, "capture", "recording.rs8");
+    if (!existsSync(low)) problems.push("capture/recording.rs8 missing");
+    else {
+      const bytes = new Uint8Array(await readFile(low));
+      const meta = decodeRecording(bytes, 8).records[0].meta as unknown as {
+        resources: Record<string, unknown>;
+      };
+      if ("texture_delivery" in meta.resources)
+        problems.push("the /8 session declares texture_delivery");
+      for (const t of resolveRecording(bytes, 8).transactions)
+        for (const tex of t.state.textures)
+          if (tex.variants !== undefined)
+            problems.push(`/8 texture ${tex.id} carries variants`);
+    }
+    checks.push(
+      check(
+        "tex-delivery-default",
+        "TDP: GRC_TEXTURE_DELIVERY unset declares passthrough at /9 (session, result.json, and a block variant offered for the block-compressed fixture textures) and nothing below /9 (the /8 session names no texture_delivery and no texture entry carries variants)",
+        ran("delivery9/default/capture") && ran("capture") ? problems : null,
+        `${blocks} block variants under the unset default; /8 declares nothing`,
+        "delivery9/default/capture",
       ),
     );
   }

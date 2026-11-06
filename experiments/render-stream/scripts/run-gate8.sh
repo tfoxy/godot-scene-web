@@ -586,12 +586,20 @@ run_g8t() {
 	# mode declared. Mode rgba offers no variant (basis-uastc is group g8ku's since G8ku, and
 	# basis-etc1s is refused, g8kp/refused-basis), so the result must be the /8 capture's, state for state,
 	# with `variants: []` on every ok image and the session naming the mode.
-	echo "run-gate8: delivery9/capture (GRC_STREAM_VERSION=9, GRC_TEXTURE_DELIVERY=rgba: no variant)"
+	echo "run-gate8: delivery9/capture (GRC_STREAM_VERSION=9, GRC_TEXTURE_DELIVERY=rgba, set explicitly: no variant)"
 	RECORDING_NAME=recording.rs9
 	PATCH_RECORDING_NAME=recording-patch.rs9
 	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=rgba
 		RS_FIXTURE_TEXTURE_LOG="$OUT/delivery9/capture/textures.jsonl")
 	run_capture "$OUT/delivery9/capture" "" none
+
+	# TDP (live-swap-design.md Q5): GRC_TEXTURE_DELIVERY unset is `passthrough`, so the same /9 sink
+	# declares it and offers a `block` variant for each block-compressed source. The /8 `capture` above
+	# is the "nothing below /9" half of tex-delivery-default.
+	echo "run-gate8: delivery9/default (GRC_STREAM_VERSION=9, GRC_TEXTURE_DELIVERY unset: passthrough)"
+	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine
+		RS_FIXTURE_TEXTURE_LOG="$OUT/delivery9/default/capture/textures.jsonl")
+	run_capture "$OUT/delivery9/default/capture" "" none
 	RECORDING_NAME=recording.rs8
 	PATCH_RECORDING_NAME=recording-patch.rs8
 
