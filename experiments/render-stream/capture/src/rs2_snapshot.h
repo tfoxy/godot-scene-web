@@ -163,7 +163,15 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV13 = {0x47, 0x52, 0x53, 0x44
                                                            0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV13 = "render-stream/13";
 
-enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13 };
+// render-stream/14 (ID3, render-stream-14.md): /13 plus item_meta v2 (the `instance_id` and
+// `mouse_filter` columns, re-stamped rows). Every record but `item_meta` is /13's byte for byte,
+// apart from the magic "GRSE" and the protocol strings, so every "/13 or later" cascade includes
+// V14. Offered only to a viewer that asks for a v2 field (or a GRC_STREAM_VERSION=14 file sink).
+inline constexpr std::array<std::uint8_t, 8> kMagicV14 = {0x47, 0x52, 0x53, 0x45,
+                                                           0x0D, 0x0A, 0x1A, 0x0A};
+inline constexpr const char *kProtocolV14 = "render-stream/14";
+
+enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14 };
 
 // True for /7 to /11, the versions whose live transport is the /7 one (token hello, credit
 // window, CORS). /8 is /7 plus render-stream-8.md's list, /9 is /8 plus render-stream-9.md's and
@@ -171,36 +179,48 @@ enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7, V8, V9, V10,
 inline constexpr bool is_v7_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V7 || v == ProtocolVersion::V8 || v == ProtocolVersion::V9 ||
          v == ProtocolVersion::V10 || v == ProtocolVersion::V11 || v == ProtocolVersion::V12 ||
-         v == ProtocolVersion::V13;
+         v == ProtocolVersion::V13 ||
+         v == ProtocolVersion::V14;
 }
 
 // True for /8 to /11: the versions that carry render-stream-8.md's keys.
 inline constexpr bool is_v8_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V8 || v == ProtocolVersion::V9 || v == ProtocolVersion::V10 ||
-         v == ProtocolVersion::V11 || v == ProtocolVersion::V12 || v == ProtocolVersion::V13;
+         v == ProtocolVersion::V11 || v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
+         v == ProtocolVersion::V14;
 }
 
 // True for /9 to /11: the versions that carry render-stream-9.md's keys.
 inline constexpr bool is_v9_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V9 || v == ProtocolVersion::V10 || v == ProtocolVersion::V11 ||
-         v == ProtocolVersion::V12 || v == ProtocolVersion::V13;
+         v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
+         v == ProtocolVersion::V14;
 }
 
 // True for /10 and /11: the versions that carry render-stream-10.md's keys.
 inline constexpr bool is_v10_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V10 || v == ProtocolVersion::V11 || v == ProtocolVersion::V12 ||
-         v == ProtocolVersion::V13;
+         v == ProtocolVersion::V13 ||
+         v == ProtocolVersion::V14;
 }
 
 // True for /11 and /12: the versions that carry render-stream-11.md's keys (PM5: every "/11"
 // cascade means "/11 or later").
 inline constexpr bool is_v11_or_later(ProtocolVersion v) {
-  return v == ProtocolVersion::V11 || v == ProtocolVersion::V12 || v == ProtocolVersion::V13;
+  return v == ProtocolVersion::V11 || v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
+         v == ProtocolVersion::V14;
 }
 
 // True for /12: the versions that carry render-stream-12.md's keys.
 inline constexpr bool is_v12_or_later(ProtocolVersion v) {
-  return v == ProtocolVersion::V12 || v == ProtocolVersion::V13;
+  return v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
+         v == ProtocolVersion::V14;
+}
+
+// ID3: /13 and /14, the versions whose transactions are predicted (rs13_predict.h) and whose
+// hello may carry `item_meta`.
+inline constexpr bool is_v13_or_later(ProtocolVersion v) {
+  return v == ProtocolVersion::V13 || v == ProtocolVersion::V14;
 }
 
 // Floats per entry in the transaction blocks (render-stream-2.md "Transaction record"). Item and

@@ -147,8 +147,10 @@ bool parse_gate8_policy(const char *stream_version, const char *adopt, const cha
       parsed.file_version = rs2::ProtocolVersion::V12;
     } else if (text == "13") {
       parsed.file_version = rs2::ProtocolVersion::V13;  // W13b (render-stream-13.md)
+    } else if (text == "14") {
+      parsed.file_version = rs2::ProtocolVersion::V14;  // ID3 (render-stream-14.md)
     } else {
-      *error = "invalid GRC_STREAM_VERSION=" + text + " (expected 6, 8, 9, 10, 11, 12 or 13)";
+      *error = "invalid GRC_STREAM_VERSION=" + text + " (expected 6, 8, 9, 10, 11, 12, 13 or 14)";
       return false;
     }
     parsed.stream_version_set = true;
@@ -211,6 +213,16 @@ std::vector<std::string> gate8_live_subprotocols(const Gate8Policy &policy) {
   // `source_format` below /8 and R8/RG8 are legal payload formats at /6, so an older client reads a
   // default-decoded texture as a plain one.
   const bool narrow = policy.any();
+  if (policy.file_version == rs2::ProtocolVersion::V14) {
+    // ID3 (render-stream-14.md): a /14 file sink's listener offers .14 first, then /13's list.
+    std::vector<std::string> out = {rs2::kSubprotocolV14};
+    Gate8Policy v13 = policy;
+    v13.file_version = rs2::ProtocolVersion::V13;
+    for (std::string &name : gate8_live_subprotocols(v13)) {
+      out.push_back(std::move(name));
+    }
+    return out;
+  }
   if (policy.file_version == rs2::ProtocolVersion::V13) {
     // W13b (render-stream-13.md "As built (W13b)"): .13 first, then /12's list.
     if (narrow) {

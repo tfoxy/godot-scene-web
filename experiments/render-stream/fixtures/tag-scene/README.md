@@ -23,18 +23,18 @@ the capture, and writes its own identity table as the oracle the rows are checke
 
 ## What it exercises
 
-| case | where |
-| ---- | ----- |
-| instance scene and scene-relative path | Card1..Card4: `res://card.tscn`, `.`, `CardContainer/DescriptionLabel`, `Art` |
-| a reparented instance (identity unchanged) | Card2: Hand to Table at step 20 |
-| scripts | `res://card.gd` on each card root |
-| groups and meta set in `_ready` | card.gd |
-| String, StringName and int meta | `rs_tag`, the container's `rs_tag`, `rs_slot`; Early's int `-3` |
-| no owner: scene and path null | Loose (made in `_ready`), Mover, Early |
-| no node | Board's TileMapLayer rendering quadrant (step 5) |
-| an item a frame before its node enters the tree | Early: made at step 30, added at 31 |
-| frees and re-adds | Card3 freed and Card4 instanced at 40; Plain removed at 40, re-added at 45 |
-| a re-key | Mover moved under a SubViewport (never adopted: unknown) at 50, back at 60 |
+| case                                            | where                                                                         |
+| ----------------------------------------------- | ----------------------------------------------------------------------------- |
+| instance scene and scene-relative path          | Card1..Card4: `res://card.tscn`, `.`, `CardContainer/DescriptionLabel`, `Art` |
+| a reparented instance (identity unchanged)      | Card2: Hand to Table at step 20                                               |
+| scripts                                         | `res://card.gd` on each card root                                             |
+| groups and meta set in `_ready`                 | card.gd                                                                       |
+| String, StringName and int meta                 | `rs_tag`, the container's `rs_tag`, `rs_slot`; Early's int `-3`               |
+| no owner: scene and path null                   | Loose (made in `_ready`), Mover, Early                                        |
+| no node                                         | Board's TileMapLayer rendering quadrant (step 5)                              |
+| an item a frame before its node enters the tree | Early: made at step 30, added at 31                                           |
+| frees and re-adds                               | Card3 freed and Card4 instanced at 40; Plain removed at 40, re-added at 45    |
+| a re-key                                        | Mover moved under a SubViewport (never adopted: unknown) at 50, back at 60    |
 
 ## Environment
 
@@ -96,3 +96,34 @@ At step 20 the fixture pushes a mouse motion (`Viewport.push_input`) at the cent
 `RS_FIXTURE_TAG_PICK_LOG`, `{"frame", "size", "grid", "filters", "points"}` (points row by row, top
 first, null for no Control). `RS_FIXTURE_QUIT_FRAME` defaults to start + 60 in this mode. The no-node
 item is freed in `_exit_tree`, after the last frame, so the client's last frame still holds it.
+
+## Variant V2 (ID3)
+
+`RS_FIXTURE_TAG_V2` (any value; unset: TAG1's scene exactly; no effect under `RS_FIXTURE_TAG_PICK`) is the fixture of ID3's item_meta
+v2 (`instance_id`, `mouse_filter`, re-stamped rows; [`../../protocol/render-stream-14.md`](../../protocol/render-stream-14.md),
+results in [`../../results/p3/id3.md`](../../results/p3/id3.md)). In `_ready` it adds, owned by
+the scene:
+
+| node                                                                                                                    | what it is for                                                 |
+| ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `Flipper` (ColorRect)                                                                                                   | flipped with Card1 (an instance root) by `set_mouse_filter`    |
+| `Nest` (Control) > `NestA` (Panel) > `NestB` (ColorRect) > `NestC` (ColorRect, PASS), and `NestD` (Label) under `NestA` | the recursive disable, which emits no signal: the sweep's case |
+| `Pointy` (ColorRect, `haspoint.gd`)                                                                                     | a script `_has_point`: `mouse_filter` + 4                      |
+| `Hitbox` (Control)                                                                                                      | a STOP Control that draws nothing                              |
+
+The steps (shifted by `RS_FIXTURE_TAG_START`, after TAG1's work of that step):
+
+- **40:** Card1 and Flipper `set_mouse_filter(IGNORE)` (from STOP).
+- **50:** Card1 and Flipper `set_mouse_filter(PASS)`.
+- **60:** `Nest.mouse_behavior_recursive = DISABLED`: Nest and every Control below it read IGNORE.
+
+The oracle gains dumps at steps 40, 50 and 60 (after the change) and at the quit frame. Each line
+also has `process_frames` (`Engine.get_process_frames()` in that `_process`; the capture stamps
+that iteration's frame `process_frames + 1`) and, on a step's frame, `flips`:
+`[{"step", "node", "rid", "mouse_filter"}]`, each Control changed, by its path from the scene
+root, its canvas-item RID and its value after. Each node gains `instance_id` (`get_instance_id()`
+in decimal), `mouse_filter` (`get_mouse_filter_with_override()`, plus 4 when the script's
+`get_script_method_list()` has `_has_point`; null for a non-Control) and `plc_custom` (the custom
+Callables connected to the Control's `property_list_changed`, from `get_signal_connection_list`;
+null for a non-Control). The fixture knows nothing about the capture: those are Godot's own
+answers. The `g8id14` legs (`run-gate8.sh`) run it.

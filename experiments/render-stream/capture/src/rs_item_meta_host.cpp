@@ -67,6 +67,7 @@ void Host::set_union(const Request &want, std::uint64_t frame) {
   (void)frame;
   if (want.empty()) {
     if (on_) {
+      filter_off();  // ID3 (ID-D9): before the map goes; nothing of it survives the union
       node_map_release_tag();
       on_ = false;
       work_.clear();
@@ -84,7 +85,7 @@ void Host::set_union(const Request &want, std::uint64_t frame) {
   }
   Request next;
   for (int i = 0; i < kFieldCount; ++i) {
-    if ((fields & (1u << i)) != 0) {
+    if ((fields & field_bit(i)) != 0) {
       next.fields.push_back(kFieldNames[i]);
     }
   }
@@ -111,6 +112,12 @@ void Host::set_union(const Request &want, std::uint64_t frame) {
   meta_names_ = next.meta_keys;
   IdentityQuery query;
   query.fields = fields;
+  query.instance_of_root = v2_options_.instance_of_root;
+  query.raw_filter = v2_options_.raw_filter;
+  // ID3: the watch starts with the union's mouse_filter. The union only grows while on, so it ends
+  // only when the union drops to nothing (filter_off).
+  v2_filter_ = (fields & kMouseFilter) != 0;
+  stats_.v2_ever = stats_.v2_ever || v2_filter_;
   query.groups = group_names_;
   query.meta_keys = meta_names_;
   tag_set_query(query, before_ready_);
@@ -146,7 +153,11 @@ std::shared_ptr<const Batch> Host::pass(const Mirror &mirror, std::uint64_t fram
     ++watermark_;
     work_.push_back({watermark_, frame, frame});
   }
-  if (work_.empty() && batch->group_names.empty() && batch->meta_names.empty()) {
+  if (v2_filter_) {
+    filter_pass(mirror, frame, batch.get());  // ID3: re-stamps before the new items' rows
+  }
+  if (work_.empty() && batch->group_names.empty() && batch->meta_names.empty() &&
+      batch->entries.empty()) {
     return nullptr;
   }
   const std::uint64_t t0 = now_ns();
@@ -204,10 +215,15 @@ std::shared_ptr<const Batch> Host::pass(const Mirror &mirror, std::uint64_t fram
         ++stats_.no_node;  // §2.2: `node: null`
       } else {
         entry.node = true;
-        for (int i = 0; i < kFieldCount; ++i) {
+        for (int i = 0; i < kStringFields; ++i) {
           if (identity.has[i]) {
             entry.field[i] = intern(identity.field[i], batch.get());
           }
+        }
+        entry.instance_id = identity.instance_id;
+        entry.mouse_filter = identity.mouse_filter;
+        if (v2_filter_ && identity.mouse_filter >= 0) {
+          watch(rid, identity.node_id, identity.mouse_filter);
         }
         for (std::size_t g = 0; g < identity.in_group.size(); ++g) {
           if (identity.in_group[g]) {
@@ -267,6 +283,130 @@ std::shared_ptr<const Batch> Host::pass(const Mirror &mirror, std::uint64_t fram
   return batch;
 }
 
+void Host::watch(std::uint64_t rid, std::uint64_t instance_id, std::int32_t filter) {
+  if (watched_slot_.find(rid) != watched_slot_.end()) {
+    return;  // a union reset re-resolved it: still watched
+  }
+  const std::uint64_t t0 = now_ns();
+  const bool connected = filter_watch(instance_id, rid);
+  stats_.watch_ns += now_ns() - t0;
+  stats_.watches += connected ? 1 : 0;
+  watched_slot_.emplace(rid, watched_.size());
+  watched_.push_back({rid, instance_id, (filter & kHasPointBit) != 0});
+  stats_.watched_max = std::max<std::uint64_t>(stats_.watched_max, watched_.size());
+}
+
+void Host::unwatch_slot(std::size_t slot) {
+  filter_forget(watched_[slot].instance_id);
+  watched_slot_.erase(watched_[slot].rid);
+  if (slot + 1 != watched_.size()) {
+    watched_[slot] = watched_.back();
+    watched_slot_[watched_[slot].rid] = slot;
+  }
+  watched_.pop_back();
+  ++stats_.gone;
+}
+
+bool Host::restamp(const Mirror &mirror, std::uint64_t rid, std::int32_t value,
+                   std::uint64_t frame, Batch *batch) {
+  const auto it = by_rid_.find(rid);
+  if (it == by_rid_.end() || it->second.mouse_filter == value) {
+    return false;  // unchanged, or not resolved yet (its first row carries the current value)
+  }
+  std::uint64_t now_rid = 0;
+  bool published = false;
+  if (!mirror.item_info(it->second.id, &now_rid, &published) || now_rid != rid) {
+    return false;
+  }
+  if (v2_options_.restamp_skip) {
+    ++stats_.restamp_skipped;
+    return false;
+  }
+  // ID-D5: the whole row again, stamped at the frame it was re-read; it replaces the old one.
+  Entry entry = it->second;
+  entry.mouse_filter = value;
+  entry.stamp = frame;
+  it->second = entry;
+  if (log_ != nullptr) {
+    std::fprintf(log_,
+                 "{\"id\":%u,\"rid\":\"%llu\",\"stamp\":%llu,\"node\":true,\"copy\":false,"
+                 "\"restamp\":%d}\n",
+                 static_cast<unsigned>(entry.id), static_cast<unsigned long long>(rid),
+                 static_cast<unsigned long long>(frame), static_cast<int>(value));
+  }
+  batch->entries.push_back(std::move(entry));
+  ++stats_.restamps;
+  return true;
+}
+
+// ID-D4: the Controls whose property_list_changed fired, then GRC_ITEM_META_SWEEP Controls round
+// robin (mouse_behavior_recursive emits nothing).
+void Host::filter_pass(const Mirror &mirror, std::uint64_t frame, Batch *batch) {
+  const bool raw = v2_options_.raw_filter;
+  const std::uint64_t t0 = now_ns();
+  filter_take_changed(&changed_);
+  for (const std::uint64_t rid : changed_) {
+    const auto slot = watched_slot_.find(rid);
+    if (slot == watched_slot_.end()) {
+      continue;
+    }
+    Watched &w = watched_[slot->second];
+    std::int32_t value = -1;
+    if (!filter_read(w.instance_id, true, raw, &value, &w.has_point)) {
+      unwatch_slot(slot->second);
+      continue;
+    }
+    stats_.restamps_signal += restamp(mirror, rid, value, frame, batch) ? 1 : 0;
+  }
+  stats_.changed += changed_.size();
+  const std::uint64_t t1 = now_ns();
+  if (!changed_.empty()) {
+    stats_.changed_ns += t1 - t0;
+  }
+  const std::size_t n = std::min<std::size_t>(v2_options_.sweep, watched_.size());
+  if (n == 0) {
+    return;
+  }
+  std::size_t read = 0;
+  while (read < n && !watched_.empty()) {
+    if (cursor_ >= watched_.size()) {
+      cursor_ = 0;
+    }
+    Watched &w = watched_[cursor_];
+    std::int32_t value = -1;
+    ++read;
+    if (!filter_read(w.instance_id, false, raw, &value, &w.has_point)) {
+      unwatch_slot(cursor_);  // the back moved into this slot: read it next
+      continue;
+    }
+    stats_.restamps_sweep += restamp(mirror, w.rid, value, frame, batch) ? 1 : 0;
+    ++cursor_;
+  }
+  const std::uint64_t ns = now_ns() - t1;
+  ++stats_.sweep_frames;
+  stats_.sweep_reads += read;
+  stats_.sweep_ns += ns;
+  stats_.sweep_max_ns = std::max(stats_.sweep_max_ns, ns);
+  if (stats_.sweep_frame_ns.size() < 65536) {
+    stats_.sweep_frame_ns.push_back(static_cast<std::uint32_t>(std::min<std::uint64_t>(ns, ~0u)));
+  }
+}
+
+// ID-D9: the union dropped to nothing (live_close_and_stop, or the last asker left): every
+// connection undone, the queue, the sweep and its cursor cleared.
+void Host::filter_off() {
+  const std::uint64_t t0 = now_ns();
+  stats_.unwatched += filter_unwatch_all(v2_options_.leak_connections);
+  stats_.unwatch_ns += now_ns() - t0;
+  ++stats_.unwatch_calls;
+  stats_.watched_after_off = filter_watch_count();
+  watched_.clear();
+  watched_slot_.clear();
+  changed_.clear();
+  cursor_ = 0;
+  v2_filter_ = false;
+}
+
 std::string Host::stats_json() const {
   const HostStats &s = stats_;
   std::string out = "{\n";
@@ -293,6 +433,35 @@ std::string Host::stats_json() const {
   num("max_pass_ns", s.max_pass_ns);
   num("max_pass_items", s.max_pass_items);
   num("strings", s.strings);
+  if (s.v2_ever) {
+    // ID3: the mouse_filter watch's cost (results/p3/id3.md).
+    std::vector<std::uint32_t> sorted = s.sweep_frame_ns;
+    std::sort(sorted.begin(), sorted.end());
+    const auto pct = [&sorted](double q) -> std::uint64_t {
+      return sorted.empty() ? 0 : sorted[static_cast<std::size_t>(q * (sorted.size() - 1))];
+    };
+    num("v2_sweep_per_frame", v2_options_.sweep);
+    num("v2_watches", s.watches);
+    num("v2_watch_ns", s.watch_ns);
+    num("v2_watched_max", s.watched_max);
+    num("v2_changed", s.changed);
+    num("v2_changed_ns", s.changed_ns);
+    num("v2_sweep_frames", s.sweep_frames);
+    num("v2_sweep_reads", s.sweep_reads);
+    num("v2_sweep_ns", s.sweep_ns);
+    num("v2_sweep_max_ns", s.sweep_max_ns);
+    num("v2_sweep_p50_ns", pct(0.5));
+    num("v2_sweep_p95_ns", pct(0.95));
+    num("v2_restamps", s.restamps);
+    num("v2_restamps_signal", s.restamps_signal);
+    num("v2_restamps_sweep", s.restamps_sweep);
+    num("v2_restamp_skipped", s.restamp_skipped);
+    num("v2_gone", s.gone);
+    num("v2_unwatched", s.unwatched);
+    num("v2_unwatch_calls", s.unwatch_calls);
+    num("v2_unwatch_ns", s.unwatch_ns);
+    num("v2_watched_after_off", s.watched_after_off);
+  }
   out += "  \"bursts\": [";
   for (std::size_t i = 0; i < s.bursts.size(); ++i) {
     out += i == 0 ? "" : ", ";

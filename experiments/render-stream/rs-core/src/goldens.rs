@@ -29,9 +29,16 @@
 //! encoder sabotage `predict-stale` writes its vector; the decoder sabotage `no-predict-reset`
 //! fails each listed file at its seq; each invalid vector fails at its listed seq and each corrupt
 //! one at its record.
+//!
+//! golden-14 (render-stream-14.md, ID3) is golden-13 re-stamped /14 plus the item_meta v2 lanes,
+//! and runs golden-13's checks: each /14 lane and sabotage vector goes through the /13 chain
+//! re-stamped ([`item_meta::restamp`]; so it is its golden-13 twin re-stamped), and an item_meta
+//! lane's `rs13` twin validates at /13 and transcodes to its `rs12`. (The transcode of a v2 lane
+//! to its twin, [`item_meta::to13_from14`], is a native tool: rs-core's unit tests check it, so
+//! the wasm golden runner does not link it.)
 
 use crate::canon;
-use crate::item_meta::{ItemMetaAsk, ItemMetaDump, ItemMetaRequest};
+use crate::item_meta::{self, ItemMetaAsk, ItemMetaDump, ItemMetaRequest};
 use crate::payload;
 use crate::validate::{validate_recording, Accepted, DigestPolicy, Options, Validator};
 use crate::wire::{self, Error};
@@ -734,6 +741,33 @@ impl Suite<'_> {
 }
 
 impl Suite<'_> {
+    /// ID3: a golden lane (no v2 grant) at the suite's version as its /13 stream (golden-14:
+    /// re-stamped; golden-13: itself).
+    fn down13(&self, data: &[u8]) -> Result<Vec<u8>, Error> {
+        if self.version >= 14 {
+            item_meta::restamp(data, self.version, 13)
+        } else {
+            Ok(data.to_vec())
+        }
+    }
+
+    /// ID3: golden-14's `rs13` twin of an item_meta lane, which validates at /13.
+    fn rs13_twin(&mut self, entry: &J) -> Option<Vec<u8>> {
+        let twin = entry.get("rs13").and_then(|x| x.as_str())?;
+        let want = self.bytes(twin);
+        let got = want.as_ref().map(|w| validate_recording(w, Options::new(13)));
+        self.ok(
+            matches!(got, Some(Ok(()))),
+            format!("validateRecording({twin}, 13) is []"),
+            match got {
+                None => "file missing".to_string(),
+                Some(Ok(())) => String::new(),
+                Some(Err(e)) => e.to_string(),
+            },
+        );
+        want
+    }
+
     /// golden-13's own checks (render-stream-13.md "Validators and golden vectors", "As built
     /// (W13a)"): transcodes both ways against the /12 twins, the predict lane, the encoder's unit
     /// trace, both sabotages, and the failing seq of each invalid and corrupt vector.
@@ -777,7 +811,16 @@ impl Suite<'_> {
                 self.ok(false, format!("{f13} and {f12} are readable"), "file missing");
                 continue;
             };
-            match crate::predict::to12(&d13, false) {
+            // ID3: golden-14's lanes go through the /13 chain (golden-13: unchanged).
+            let d13 = match self.down13(&d13) {
+                Ok(d) => d,
+                Err(e) => {
+                    self.ok(false, format!("transcode {f13} to /13"), e.to_string());
+                    continue;
+                }
+            };
+            let d13 = d13.as_slice();
+            match crate::predict::to12(d13, false) {
                 Ok(got) => self.ok(
                     got == d12,
                     format!("transcode {f13} to /12 equals {f12} byte for byte"),
@@ -817,7 +860,7 @@ impl Suite<'_> {
         if let Some(st) = sab.get("predict-stale") {
             let vector = s(st, "vector");
             let p12 = self.bytes(&s(&predict, "rs12"));
-            let want = self.bytes(&vector);
+            let want = self.bytes(&vector).and_then(|w| self.down13(&w).ok());
             let got = p12.as_deref().map(|d| crate::predict::to13(d, true, None));
             self.ok(
                 matches!((&got, &want), (Some(Ok(g)), Some(w)) if g == w),
@@ -838,11 +881,12 @@ impl Suite<'_> {
             let vector = s(st, "vector");
             let p12 = self.bytes(&s(&predict, "rs12"));
             let want = self.bytes(&vector);
+            let want13 = want.as_deref().and_then(|w| self.down13(w).ok());
             let got = p12
                 .as_deref()
                 .map(|d| crate::predict::to13_with(d, false, zr, None));
             self.ok(
-                matches!((&got, &want), (Some(Ok(g)), Some(w)) if g == w),
+                matches!((&got, &want13), (Some(Ok(g)), Some(w)) if g == w),
                 format!("sabotage {name}: the encoder over {} writes {vector} byte for byte", s(&predict, "rs12")),
                 "",
             );
@@ -894,7 +938,7 @@ impl Suite<'_> {
                     bad.join(", "),
                 );
             }
-            None => self.ok(false, "golden-13 has zero-runs.json", "missing"),
+            None => self.ok(false, "the suite has zero-runs.json", "missing"),
         }
         // Sabotage no-predict-reset (decoder): each listed file fails predict-check at its seq.
         if !self.opts.no_predict_reset {
@@ -923,6 +967,11 @@ impl Suite<'_> {
             };
             let file = s(&entry, "file");
             let opts = Options {
+                // ID3: golden-14's /13 vector is read at its own version.
+                version: entry
+                    .get("version")
+                    .and_then(|v| v.as_u64())
+                    .map_or(self.version, |v| v as u8),
                 item_meta: ask_of(&entry),
                 ..self.opts()
             };
@@ -940,6 +989,11 @@ impl Suite<'_> {
             };
             let file = s(&entry, "file");
             let opts = Options {
+                // ID3: golden-14's /13 vector is read at its own version.
+                version: entry
+                    .get("version")
+                    .and_then(|v| v.as_u64())
+                    .map_or(self.version, |v| v as u8),
                 item_meta: ask_of(&entry),
                 ..self.opts()
             };
@@ -1045,10 +1099,13 @@ impl Suite<'_> {
                     Err(e) => self.ok(false, format!("{name}: item_meta dump of {file}"), e.to_string()),
                 }
             }
+            // ID3: a golden-14 lane reaches /12 through its /13 twin (which may drop v2 columns).
+            let twin = self.rs13_twin(&entry);
             let rs12 = s(&entry, "rs12");
             if !rs12.is_empty() {
                 let want = self.bytes(&rs12);
-                match crate::predict::to12(&data, false) {
+                let d13 = if self.version >= 14 { twin.unwrap_or_default() } else { data };
+                match crate::predict::to12(&d13, false) {
                     Ok(got) => self.ok(
                         want.as_deref() == Some(&got[..]),
                         format!("{name}: transcode {file} to /12 drops its item_meta records: {rs12} byte for byte"),
@@ -1153,7 +1210,7 @@ pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> 
     suite.checks
 }
 
-/// golden-2 to golden-13 (or one of them), plus the cross-version `bad-magic` checks.
+/// golden-2 to golden-14 (or one of them), plus the cross-version `bad-magic` checks.
 pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check> {
     let mut checks = Vec::new();
     for v in 2..=wire::LATEST {
@@ -1183,6 +1240,8 @@ pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check
         (12, 11),
         (12, 13),
         (13, 12),
+        (13, 14),
+        (14, 13),
     ] {
         if only.is_some_and(|o| o != file_v && o != as_v) {
             continue;

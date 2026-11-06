@@ -257,8 +257,9 @@ struct ControlMessage {
 // At ProtocolVersion::V7 (and V8, whose live transport is /7's) the hello has nine more keys (render-stream-7.md "Hello", gate7-design.md
 // Q2): `receiver_kind`, `credit_window`, `token`, `manifest_sha256` and five presentation
 // integers; `token`/`manifest_sha256` may be JSON `null`, the only place this parser accepts it.
+// ID3: `v2_at_13` is the sabotage that accepts item_meta v2's fields below /14.
 bool parse_control(const std::string &text, ControlMessage *out, std::string *error,
-                   ProtocolVersion version = ProtocolVersion::V2);
+                   ProtocolVersion version = ProtocolVersion::V2, bool v2_at_13 = false);
 
 // {"type":"error","reason":<reason>,"detail":<detail>}, compact, keys in that order.
 std::string encode_error(const std::string &reason, const std::string &detail);
@@ -321,6 +322,8 @@ inline constexpr const char *kSubprotocolV12 = "render-stream.12";
 // predicted blocks coded per connection (FormState's rs13::Predictor). Opt-in
 // (GRC_STREAM_VERSION=13).
 inline constexpr const char *kSubprotocolV13 = "render-stream.13";
+// ID3 (render-stream-14.md): /13's live transport under render-stream/14 (item_meta v2).
+inline constexpr const char *kSubprotocolV14 = "render-stream.14";
 
 // HC5: where a frame callback's formation jobs run (rs_live.h header, "Formation").
 enum class Formation : std::uint8_t { Inline, Thread };

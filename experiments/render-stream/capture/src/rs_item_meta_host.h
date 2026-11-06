@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "rs_adopt.h"
 #include "rs_item_meta.h"
 
 namespace grc {
@@ -45,6 +46,27 @@ struct HostStats {
     std::uint64_t frame, items, ns;
   };
   std::vector<Burst> bursts;  // passes resolving >= 16 entries (the first 256)
+  // ID3 (client-extensions-design.md ID-D4, ID-D5): the mouse_filter watch, sweep and re-stamps.
+  bool v2_ever = false;            // mouse_filter was asked at some point
+  std::uint64_t watches = 0;       // property_list_changed connections made
+  std::uint64_t watch_ns = 0;      // in filter_watch (the connects)
+  std::uint64_t watched_max = 0;   // the most Controls watched at once
+  std::uint64_t changed = 0;       // queued RIDs drained (one per Control per frame)
+  std::uint64_t changed_ns = 0;
+  std::uint64_t sweep_frames = 0;  // passes that swept
+  std::uint64_t sweep_reads = 0;
+  std::uint64_t sweep_ns = 0;
+  std::uint64_t sweep_max_ns = 0;
+  std::vector<std::uint32_t> sweep_frame_ns;  // per sweeping pass (the first 65536), for p50/p95
+  std::uint64_t restamps = 0;           // rows re-stamped (a changed filter)
+  std::uint64_t restamps_signal = 0;    // ... found through property_list_changed
+  std::uint64_t restamps_sweep = 0;     // ... found by the sweep
+  std::uint64_t restamp_skipped = 0;    // sabotage restamp-skip: changes found, not re-stamped
+  std::uint64_t gone = 0;               // watched Controls found freed
+  std::uint64_t unwatched = 0;          // connections undone when the union dropped
+  std::uint64_t unwatch_calls = 0;
+  std::uint64_t unwatch_ns = 0;
+  std::uint64_t watched_after_off = 0;  // watches left once off (0 unless something leaked)
 };
 
 class Host {
@@ -53,10 +75,26 @@ class Host {
     budget_ns_ = budget_us * 1000;
     before_ready_ = before_ready;
   }
+  // ID3: GRC_ITEM_META_SWEEP (Controls re-read a frame; 0: no sweep) and the v2 sabotages.
+  struct V2Options {
+    std::uint64_t sweep = 64;
+    bool restamp_skip = false;      // a queued change is drained but never re-stamped
+    bool raw_filter = false;        // get_mouse_filter instead of ..._with_override
+    bool instance_of_root = false;  // the instance root's ObjectID
+    bool leak_connections = false;  // no disconnect when the union drops
+  };
+  void configure_v2(const V2Options &options) { v2_options_ = options; }
   // The union of what the granted viewers ask (empty: off). Turning on acquires the node map and
   // resolves every live item again; a grown union does too, so every entry answers it.
   void set_union(const Request &want, std::uint64_t frame);
   bool on() const { return on_; }
+  // ID3 (ID-D9): undoes the mouse_filter watch (every connection, the queue, the sweep) and keeps
+  // the rest of the union; set_union(empty) does it too. Idempotent.
+  void v2_off() {
+    if (v2_filter_ || !watched_.empty() || filter_watch_count() != 0) {
+      filter_off();
+    }
+  }
   // GRC_ITEM_META_LOG (a test knob): one JSON line per entry made, {"id","rid","stamp","node",
   // "copy"} -- the capture's own RID-to-id map, which the meta-oracle check joins the fixture's
   // RID-keyed dump through. Flushed at each pass that made entries.
@@ -74,6 +112,18 @@ class Host {
     std::uint64_t next_frame;  // a node wait backs off: retried at +1, +2, +4, ... frames
   };
   std::int32_t intern(const std::string &raw, Batch *batch);
+  // ID3: the watched Controls, in sweep order (swap-removed when freed), indexed by RID.
+  struct Watched {
+    std::uint64_t rid;
+    std::uint64_t instance_id;
+    bool has_point;
+  };
+  void watch(std::uint64_t rid, std::uint64_t instance_id, std::int32_t filter);
+  void unwatch_slot(std::size_t slot);
+  void filter_pass(const Mirror &mirror, std::uint64_t frame, Batch *batch);
+  bool restamp(const Mirror &mirror, std::uint64_t rid, std::int32_t value, std::uint64_t frame,
+               Batch *batch);
+  void filter_off();
 
   bool on_ = false;
   bool before_ready_ = false;
@@ -91,6 +141,12 @@ class Host {
   std::size_t by_rid_prune_at_ = 4096;
   HostStats stats_;
   std::FILE *log_ = nullptr;
+  V2Options v2_options_;
+  bool v2_filter_ = false;  // the union has mouse_filter: watch, sweep and re-stamp
+  std::vector<Watched> watched_;
+  std::unordered_map<std::uint64_t, std::size_t> watched_slot_;  // RID -> watched_ index
+  std::size_t cursor_ = 0;
+  std::vector<std::uint64_t> changed_;
 };
 
 }  // namespace item_meta

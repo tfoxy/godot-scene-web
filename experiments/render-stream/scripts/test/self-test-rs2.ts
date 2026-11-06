@@ -53,6 +53,12 @@
 //     predict lane against predict.decoded.json and predict-resolved.json, the predict-stale
 //     encoder sabotage (= invalid/predict-stale.rs13) and the noPredictReset validator sabotage
 //     (predict-check at predict.rs13 seq 7, patch.rs13 seq 16).
+//   - golden-14 (ID3, render-stream-14.md): runSuite at version 14, then version14Cases(): every
+//     lane and sabotage vector is its golden-13 twin re-stamped /14, the predict lane decodes and
+//     resolves at /14, no-predict-reset at /14, the item_meta lanes (golden-13's v1 grant and the
+//     v2 lane with instance_id / mouse_filter and re-stamps) validate, dump to their `dump` and
+//     reach /12 through their /13 twin, a v2 grant below /14 is item-meta-schema, and a re-stamp
+//     replaces the held row at receipt.
 //
 // Exits non-zero if any assertion fails.
 
@@ -76,6 +82,7 @@ import {
   type ItemMetaRecordMeta,
   type ItemMetaRequest,
   isPartialUnknownItems,
+  itemMetaRequestProblem,
   itemMetaRowJson,
   multimeshBufferSha256,
   PARTICLE_EMIT_FLOAT_COUNT,
@@ -120,6 +127,7 @@ const GOLDEN10_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-10");
 const GOLDEN11_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-11");
 const GOLDEN12_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-12");
 const GOLDEN13_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-13");
+const GOLDEN14_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-14");
 
 interface GoldenIndex {
   valid: Array<{ file: string; hex: string; decoded: string; sha256: string }>;
@@ -143,7 +151,7 @@ interface GoldenIndex {
     file: string;
     code: string;
     description: string;
-    version?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
+    version?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
     /** golden-13 on: the seq of the transaction the vector fails at (null when not one). */
     seq?: number | null;
     /** TAG1 (golden-13): the record the vector fails at. */
@@ -261,37 +269,39 @@ function stripExcepted(resolved: ReturnType<typeof resolveRecording>): unknown {
 // threaded into decodeRecording()/validateRecording()/resolveRecording() differ.
 async function runSuite(
   goldenDir: string,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
 ): Promise<void> {
-  const label = goldenDir.endsWith("golden-13")
-    ? "golden-13"
-    : goldenDir.endsWith("golden-12")
-      ? "golden-12"
-      : goldenDir.endsWith("golden-11")
-        ? "golden-11"
-        : goldenDir.endsWith("golden-10")
-          ? "golden-10"
-          : goldenDir.endsWith("golden-9")
-            ? "golden-9"
-            : goldenDir.endsWith("golden-8")
-              ? "golden-8"
-              : goldenDir.endsWith("golden-7")
-                ? "golden-7"
-                : goldenDir.endsWith("golden-6")
-                  ? "golden-6"
-                  : goldenDir.endsWith("golden-5")
-                    ? "golden-5"
-                    : goldenDir.endsWith("golden-4")
-                      ? "golden-4"
-                      : goldenDir.endsWith("golden-3")
-                        ? "golden-3"
-                        : "golden-2";
+  const label = goldenDir.endsWith("golden-14")
+    ? "golden-14"
+    : goldenDir.endsWith("golden-13")
+      ? "golden-13"
+      : goldenDir.endsWith("golden-12")
+        ? "golden-12"
+        : goldenDir.endsWith("golden-11")
+          ? "golden-11"
+          : goldenDir.endsWith("golden-10")
+            ? "golden-10"
+            : goldenDir.endsWith("golden-9")
+              ? "golden-9"
+              : goldenDir.endsWith("golden-8")
+                ? "golden-8"
+                : goldenDir.endsWith("golden-7")
+                  ? "golden-7"
+                  : goldenDir.endsWith("golden-6")
+                    ? "golden-6"
+                    : goldenDir.endsWith("golden-5")
+                      ? "golden-5"
+                      : goldenDir.endsWith("golden-4")
+                        ? "golden-4"
+                        : goldenDir.endsWith("golden-3")
+                          ? "golden-3"
+                          : "golden-2";
   const index = JSON.parse(
     await readFile(join(goldenDir, "index.json"), "utf8"),
   ) as GoldenIndex;
   // render-stream-13.md "Forms and transcode": resource records are unchanged at /13, record for
-  // record, so golden-13's inline lane carries golden-12's inline_resources.
-  if (version === 13 && index.inline_resources === undefined) {
+  // record, so golden-13's inline lane carries golden-12's inline_resources (and golden-14's, ID3).
+  if (version >= 13 && index.inline_resources === undefined) {
     index.inline_resources = (
       JSON.parse(
         await readFile(join(GOLDEN12_DIR, "index.json"), "utf8"),
@@ -778,6 +788,24 @@ async function main(): Promise<void> {
     "golden-13/full.rs13 starts with GRSD, and wireVersionOf() reads it as 13 (W13d)",
   );
   await version13Cases();
+
+  // ID3 (render-stream-14.md): golden-14, and a /14 decode refuses /13 and a /13 decode /14 (GRSE).
+  await runSuite(GOLDEN14_DIR, 14);
+  const full14 = await readBytes(GOLDEN14_DIR, "full.rs14");
+  ok(
+    validateRecording(full13, 14)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-13/full.rs13 decoded as version 14 is rejected with bad-magic",
+  );
+  ok(
+    validateRecording(full14, 13)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-14/full.rs14 decoded as version 13 is rejected with bad-magic",
+  );
+  ok(
+    Buffer.from(full14.subarray(0, 4)).toString("latin1") === "GRSE" &&
+      wireVersionOf(full14) === 14,
+    "golden-14/full.rs14 starts with GRSE, and wireVersionOf() reads it as 14",
+  );
+  await version14Cases();
 
   unknownItemCases();
   await helloCases();
@@ -1715,7 +1743,7 @@ async function version12Cases(): Promise<void> {
 // the error names no transaction record.
 function errorSeq(
   bytes: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
   error: string,
 ): number | null {
   const m = /record at offset (\d+)/.exec(error);
@@ -1786,6 +1814,8 @@ interface Golden13Index {
     item_meta: ItemMetaRequest;
     sha256?: string;
     rs12?: string;
+    /** ID3 (golden-14): the lane's /13 stream (its transcode --to 13). */
+    rs13?: string;
     dump?: unknown;
   }>;
 }
@@ -1794,9 +1824,12 @@ interface Golden13Index {
 function itemMetaDumpOf(
   data: Uint8Array,
   ask: ItemMetaRequest | null | undefined,
+  version: 13 | 14 = 13,
 ): unknown {
-  const split = splitRecords(data, 13);
-  const v = createRecordingValidator(split.records, 13, { itemMeta: ask });
+  const split = splitRecords(data, version);
+  const v = createRecordingValidator(split.records, version, {
+    itemMeta: ask,
+  });
   if (v.errors) throw new Error(v.errors[0]);
   const seen = new Map<number, unknown>();
   let held: ItemMetaRecordMeta | null = null;
@@ -2174,6 +2207,220 @@ async function version13Cases(): Promise<void> {
     ok(
       threw === `${noReset.code}: seq ${fail.seq}`,
       `golden-13: decodeRs13(${fail.file}, { noPredictReset }) throws "${noReset.code}: seq ${fail.seq}" (got ${JSON.stringify(threw)})`,
+    );
+  }
+}
+
+/** ID3: a /13 file re-stamped /14 (or back): the magic and the session's protocol, every record
+ * keeping its length (render-stream-14.md). */
+function restamp(data: Uint8Array, from: 13 | 14, to: 13 | 14): Uint8Array {
+  const out = Uint8Array.from(data);
+  out[3] = to === 14 ? 0x45 : 0x44;
+  const enc = (v: number) =>
+    new TextEncoder().encode(`"protocol":"render-stream/${v}"`);
+  const old = Buffer.from(enc(from));
+  const at = Buffer.from(out).indexOf(old);
+  if (at < 0) throw new Error("no session protocol to re-stamp");
+  out.set(enc(to), at);
+  return out;
+}
+
+interface Golden14Index extends Golden13Index {
+  valid: Array<{ file: string; rs12: string; rs13: string }>;
+  predict: Golden13Index["predict"] & { rs13: string };
+  invalid: Array<{ file: string; code: string; version: number }>;
+}
+
+// ID3 (render-stream-14.md): golden-14 against golden-13 (re-stamped twins), the predict lane at
+// /14, no-predict-reset at /14, the item_meta lanes (v1 and v2), a v2 grant below /14 and a
+// re-stamp.
+async function version14Cases(): Promise<void> {
+  const index = JSON.parse(
+    await readFile(join(GOLDEN14_DIR, "index.json"), "utf8"),
+  ) as Golden14Index;
+  const i13 = JSON.parse(
+    await readFile(join(GOLDEN13_DIR, "index.json"), "utf8"),
+  ) as Golden13Index & { invalid: Array<{ file: string }> };
+  // --- every golden-13 vector re-stamped is its golden-14 vector ---------------------------------
+  const pairs: Array<[string, string]> = [
+    ...index.valid.map((l): [string, string] => [l.file, l.rs13]),
+    [index.predict.file, index.predict.rs13],
+    ...i13.invalid
+      .filter((e) => !e.file.endsWith("bad-magic.rs13"))
+      .map((e): [string, string] => [
+        e.file.replace(/\.rs13$/, ".rs14"),
+        `../golden-13/${e.file}`,
+      ]),
+  ];
+  let restamped = 0;
+  for (const [f14, f13] of pairs) {
+    const a = await readBytes(GOLDEN14_DIR, f14);
+    const b = await readBytes(GOLDEN14_DIR, f13);
+    if (sameBytes(a, restamp(b, 13, 14))) restamped++;
+    else ok(false, `golden-14: ${f14} is ${f13} re-stamped /14`);
+  }
+  ok(
+    restamped === pairs.length && restamped > 50,
+    `golden-14: ${restamped}/${pairs.length} vectors are their golden-13 twins re-stamped /14`,
+  );
+  // --- the predict lane decodes, validates and resolves at /14 ------------------------------------
+  const p14 = await readBytes(GOLDEN14_DIR, index.predict.file);
+  ok(
+    sha256Hex(p14) === index.predict.sha256 &&
+      isDeepStrictEqual(
+        decodeRecording(p14, 14),
+        JSON.parse(
+          await readFile(join(GOLDEN14_DIR, index.predict.decoded), "utf8"),
+        ),
+      ) &&
+      validateRecording(p14, 14).length === 0,
+    `golden-14: ${index.predict.file} hashes to its sha256, decodes to ${index.predict.decoded} and validates`,
+  );
+  const presolved = resolveRecording(p14, 14);
+  ok(
+    presolved.schema === "render-stream-14-resolved/1" &&
+      statesEqual(
+        stripExcepted(presolved),
+        JSON.parse(
+          await readFile(join(GOLDEN14_DIR, index.predict.resolved), "utf8"),
+        ),
+      ),
+    `golden-14: resolveRecording(${index.predict.file}) deep-equals ${index.predict.resolved}`,
+  );
+  // --- sabotages at /14 ------------------------------------------------------------------------
+  for (const name of ["predict-stale", "zr-overrun", "zr-short-run"] as const) {
+    const entry = index.sabotage[name];
+    const bytes = await readBytes(GOLDEN14_DIR, entry.vector);
+    const errors = validateRecording(bytes, 14);
+    ok(
+      errors.length === 1 &&
+        errors[0].startsWith(`${entry.code}: `) &&
+        errorSeq(bytes, 14, errors[0]) === entry.seq,
+      `golden-14: ${entry.vector} fails ${entry.code} at seq ${entry.seq} (got ${JSON.stringify(errors)})`,
+    );
+  }
+  const noReset = index.sabotage["no-predict-reset"];
+  for (const fail of noReset.fails) {
+    const bytes = await readBytes(GOLDEN14_DIR, fail.file);
+    const sabotaged = validateRecording(bytes, 14, { noPredictReset: true });
+    ok(
+      sabotaged.length === 1 &&
+        sabotaged[0].startsWith(`${noReset.code}: `) &&
+        errorSeq(bytes, 14, sabotaged[0]) === fail.seq,
+      `golden-14: validateRecording(${fail.file}, { noPredictReset }) fails ${noReset.code} at seq ${fail.seq} (got ${JSON.stringify(sabotaged)})`,
+    );
+  }
+  // --- the item_meta lanes -----------------------------------------------------------------------
+  for (const lane of index.item_meta_valid) {
+    const bytes = await readBytes(GOLDEN14_DIR, lane.file);
+    const asked = validateRecording(bytes, 14, { itemMeta: lane.item_meta });
+    const recording = validateRecording(bytes, 14);
+    ok(
+      asked.length === 0 && recording.length === 0,
+      `golden-14: ${lane.name}: validateRecording(${lane.file}) is [] asked and as a recording (got ${JSON.stringify([asked, recording])})`,
+    );
+    if (lane.sha256 !== undefined)
+      ok(
+        sha256Hex(bytes) === lane.sha256,
+        `golden-14: ${lane.name}: ${lane.file} hashes to its sha256`,
+      );
+    if (lane.dump !== undefined) {
+      let dump: unknown = null;
+      try {
+        dump = itemMetaDumpOf(bytes, lane.item_meta, 14);
+      } catch (error) {
+        dump = String(error);
+      }
+      ok(
+        isDeepStrictEqual(dump, lane.dump),
+        `golden-14: ${lane.name}: the item_meta table of ${lane.file} is index.json's dump (got ${JSON.stringify(dump).slice(0, 200)})`,
+      );
+    }
+    if (lane.rs13 !== undefined && lane.rs12 !== undefined) {
+      const rs13 = await readBytes(GOLDEN14_DIR, lane.rs13);
+      const rs12 = await readBytes(GOLDEN14_DIR, lane.rs12);
+      let down: Uint8Array | null = null;
+      try {
+        down = decodeRs13(rs13);
+      } catch (error) {
+        ok(
+          false,
+          `golden-14: ${lane.name}: decodeRs13(${lane.rs13}) threw ${String(error)}`,
+        );
+      }
+      ok(
+        validateRecording(rs13, 13).length === 0 &&
+          down !== null &&
+          sameBytes(down, rs12) &&
+          statesEqual(
+            resolveRecording(bytes, 14).transactions.map((t) => t.state),
+            resolveRecording(rs12, 12).transactions.map((t) => t.state),
+          ),
+        `golden-14: ${lane.name}: ${lane.rs13} validates at /13 and transcodes to ${lane.rs12}, and ${lane.file} resolves to its states`,
+      );
+    }
+  }
+  // --- targeted: a v2 grant below /14; a re-stamp replaces the held row --------------------------
+  const v2 = await readBytes(GOLDEN14_DIR, "item-meta-v2.rs14");
+  const at13 = validateRecording(restamp(v2, 14, 13), 13);
+  ok(
+    at13.length === 1 &&
+      at13[0].startsWith("item-meta-schema: ") &&
+      at13[0].includes("grant: "),
+    `golden-14: item-meta-v2.rs14 stamped /13 is item-meta-schema at its v2 grant (got ${JSON.stringify(at13)})`,
+  );
+  const v2req: ItemMetaRequest = {
+    fields: ["class", "instance_id", "mouse_filter"],
+    groups: [],
+    meta_keys: [],
+  };
+  ok(
+    itemMetaRequestProblem(v2req, 14) === null &&
+      itemMetaRequestProblem(v2req, 13) !== null &&
+      itemMetaRequestProblem(
+        { ...v2req, fields: ["mouse_filter", "instance_id"] },
+        14,
+      ) !== null,
+    "golden-14: the v2 fields are grantable at /14 only, after class, script, scene, path in order",
+  );
+  {
+    const split = splitRecords(v2, 14);
+    const v = createRecordingValidator(split.records, 14);
+    const filter = new Map<number, unknown>();
+    const restamps: string[] = [];
+    for (let i = 1; i < split.records.length && !v.errors; i++) {
+      const errors = v.accept(i);
+      if (errors) {
+        restamps.push(`error ${errors[0]}`);
+        break;
+      }
+      const pending = v.itemMetaPending?.() ?? null;
+      const t = v.itemMeta?.();
+      if (pending !== null && pending.form === "delta" && t !== undefined)
+        for (const row of pending.items)
+          if (t.rows.has(row[0] as number)) restamps.push(String(row[0]));
+      const raw = split.records[i].bytes;
+      const metaLen = new DataView(raw.buffer, raw.byteOffset).getUint32(
+        4,
+        true,
+      );
+      const meta = JSON.parse(
+        Buffer.from(raw.subarray(8, 8 + metaLen)).toString("latin1"),
+      ) as { type: string; seq?: number };
+      if (meta.type === "transaction" && t !== undefined) {
+        const row = t.rows.get(7);
+        filter.set(
+          meta.seq ?? -1,
+          row === undefined ? undefined : itemMetaRowJson(t, row),
+        );
+      }
+    }
+    const after = (seq: number) =>
+      (filter.get(seq) as { mouse_filter?: unknown } | null | undefined)
+        ?.mouse_filter;
+    ok(
+      restamps.join(",") === "7,1" && after(11) === 5 && after(12) === 4,
+      `golden-14: the deltas before seqs 12 and 17 re-stamp items 7 and 1, and item 7's mouse_filter is 5 after seq 11 and 4 after seq 12 (got ${JSON.stringify([restamps, after(11), after(12)])})`,
     );
   }
 }

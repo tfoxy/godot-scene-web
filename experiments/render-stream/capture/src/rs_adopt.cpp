@@ -14,6 +14,7 @@
 #include "abi.h"
 #include "hooks.h"
 #include "iface.h"
+#include "rs_item_meta.h"
 #include "rs_mirror.h"
 #include "rs_registry.h"
 #include "rs_rid_map.h"
@@ -272,6 +273,10 @@ enum BindId : int {
   kNodeGetOwner,
   kNodeGetPathTo,
   kNodeIsInGroup,
+  // ID3 (client-extensions-design.md ID-D3): item_meta v2's mouse_filter.
+  kControlGetMouseFilter,
+  kControlGetMouseFilterWithOverride,
+  kObjectHasMethod,
   kBindCount,
 };
 
@@ -387,6 +392,9 @@ const BindSpec kBinds[kBindCount] = {
     {"Node", "get_owner", 3160264692LL},                // -> Node
     {"Node", "get_path_to", 498846349LL},               // (Node, bool) -> NodePath
     {"Node", "is_in_group", 2619796661LL},              // (StringName) -> bool
+    {"Control", "get_mouse_filter", 1572545674LL},                // -> Control.MouseFilter
+    {"Control", "get_mouse_filter_with_override", 1572545674LL},  // -> Control.MouseFilter
+    {"Object", "has_method", 2619796661LL},                       // (StringName) -> bool
 };
 
 GDExtensionMethodBindPtr g_bind[kBindCount] = {};
@@ -2115,8 +2123,10 @@ constexpr std::uint64_t kSyntheticShader = 1ull << 63;
 std::size_t g_node_prune_at = 4096;
 
 struct MatTags {
-  void *canvas_item = nullptr, *shader_material = nullptr, *cim = nullptr, *resource = nullptr;
+  void *canvas_item = nullptr, *shader_material = nullptr, *cim = nullptr, *resource = nullptr,
+       *control = nullptr;  // ID3
   void resolve() {
+    control = Tags::tag("Control");
     canvas_item = Tags::tag("CanvasItem");
     shader_material = Tags::tag("ShaderMaterial");
     cim = Tags::tag("CanvasItemMaterial");
@@ -3794,6 +3804,27 @@ std::vector<std::unique_ptr<StringName>> g_tag_group_names;
 std::vector<std::unique_ptr<StringName>> g_tag_meta_names;
 std::unordered_map<std::uint64_t, Identity> g_tag_early;  // meta-before-ready
 
+// ID3 (ID-D3): a CanvasItem node's mouse_filter value -- get_mouse_filter_with_override() (raw
+// get_mouse_filter() under the sabotage raw-filter), plus kHasPointBit when `read_has_point` and
+// the node's script implements _has_point (else `*has_point` as given) -- or -1 when the node is
+// not a Control.
+std::int32_t control_filter(void *node, bool read_has_point, bool raw, bool *has_point) {
+  void *control = as(node, g_mat_tags.control);
+  if (control == nullptr) {
+    return -1;
+  }
+  const std::int32_t filter = static_cast<std::int32_t>(
+      get_int(raw ? kControlGetMouseFilter : kControlGetMouseFilterWithOverride, control));
+  if (read_has_point) {
+    static StringName *const has_point_name = new StringName("_has_point");  // never destroyed
+    const GDExtensionConstTypePtr args[1] = {has_point_name->ptr()};
+    std::uint8_t has = 0;
+    ptrcall(kObjectHasMethod, control, args, &has);
+    *has_point = has != 0;
+  }
+  return filter + (*has_point ? item_meta::kHasPointBit : 0);
+}
+
 void fill_map(void *node, void *canvas_item_tag) {
   void *item = as(node, canvas_item_tag);
   if (item != nullptr) {
@@ -3894,6 +3925,23 @@ void resolve_node(void *node, Identity *out) {
       out->field[3] = string_from(GDEXTENSION_VARIANT_TYPE_NODE_PATH, 3, path.ptr());
       out->has[3] = true;
     }
+  }
+  if ((q.fields & item_meta::kV2Fields) != 0) {
+    out->node_id = static_cast<std::uint64_t>(get_int(kObjectGetInstanceId, node));
+  }
+  if ((q.fields & item_meta::kInstanceId) != 0) {
+    // ID3 (ID-D6): the node's own ObjectID. Sabotage instance-of-root: the instance root's.
+    out->instance_id = out->node_id;
+    if (q.instance_of_root && string_of(kNodeGetSceneFilePath, node).empty()) {
+      void *owner = get_object(kNodeGetOwner, node);
+      if (owner != nullptr) {
+        out->instance_id = static_cast<std::uint64_t>(get_int(kObjectGetInstanceId, owner));
+      }
+    }
+  }
+  if ((q.fields & item_meta::kMouseFilter) != 0) {
+    bool has_point = false;
+    out->mouse_filter = control_filter(node, true, q.raw_filter, &has_point);
   }
   out->in_group.assign(g_tag_group_names.size(), false);
   for (std::size_t i = 0; i < g_tag_group_names.size(); ++i) {
@@ -4000,6 +4048,130 @@ bool item_identity(std::uint64_t rid, Identity *out) {
 }
 
 void tag_prune_map() { node_map_prune(); }
+
+// ===================================================================== ID3: the mouse_filter watch
+
+namespace {
+
+struct FilterWatch {
+  std::uint64_t rid = 0;
+  alignas(8) unsigned char callable[16] = {};  // a Callable (CallableCustom, userdata = the RID)
+};
+std::unordered_map<std::uint64_t, FilterWatch> g_filter_watches;  // by instance id
+std::mutex g_filter_mutex;                                          // guards the two below
+std::vector<std::uint64_t> g_filter_changed;
+std::unordered_set<std::uint64_t> g_filter_queued;
+std::atomic<bool> g_filter_on{false};
+std::atomic<std::uint64_t> g_filter_calls_off{0};
+
+void filter_changed_call(void *userdata, const GDExtensionConstVariantPtr * /*args*/,
+                         GDExtensionInt /*count*/, GDExtensionVariantPtr /*ret*/,
+                         GDExtensionCallError *error) {
+  if (error != nullptr) {
+    error->error = GDEXTENSION_CALL_OK;
+  }
+  if (!g_filter_on.load(std::memory_order_acquire)) {
+    g_filter_calls_off.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  const std::uint64_t rid = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(userdata));
+  std::lock_guard<std::mutex> lock(g_filter_mutex);
+  if (g_filter_queued.insert(rid).second) {
+    g_filter_changed.push_back(rid);
+  }
+}
+
+void destroy_callable(unsigned char *callable) {
+  g_iface.variant_get_ptr_destructor(GDEXTENSION_VARIANT_TYPE_CALLABLE)(callable);
+}
+
+StringName &property_list_changed_name() {
+  static StringName *const name = new StringName("property_list_changed");  // never destroyed
+  return *name;
+}
+
+}  // namespace
+
+bool filter_watch(std::uint64_t instance_id, std::uint64_t rid) {
+  if (g_filter_watches.find(instance_id) != g_filter_watches.end()) {
+    return true;
+  }
+  void *node = as(g_iface.object_get_instance_from_id(instance_id), g_mat_tags.control);
+  if (node == nullptr) {
+    return false;
+  }
+  FilterWatch watch;
+  watch.rid = rid;
+  GDExtensionCallableCustomInfo2 info;
+  std::memset(&info, 0, sizeof(info));
+  info.callable_userdata = reinterpret_cast<void *>(static_cast<std::uintptr_t>(rid));
+  info.token = g_iface.library;
+  info.call_func = &filter_changed_call;
+  g_iface.callable_custom_create2(watch.callable, &info);
+  const std::int64_t flags = 0;
+  const GDExtensionConstTypePtr args[3] = {property_list_changed_name().ptr(), watch.callable,
+                                           &flags};
+  std::int64_t result = -1;
+  ptrcall(kObjectConnect, node, args, &result);
+  if (result != 0) {
+    destroy_callable(watch.callable);
+    return false;
+  }
+  g_filter_on.store(true, std::memory_order_release);
+  g_filter_watches.emplace(instance_id, watch);
+  return true;
+}
+
+void filter_forget(std::uint64_t instance_id) {
+  const auto it = g_filter_watches.find(instance_id);
+  if (it != g_filter_watches.end()) {
+    destroy_callable(it->second.callable);
+    g_filter_watches.erase(it);
+  }
+}
+
+void filter_take_changed(std::vector<std::uint64_t> *out) {
+  out->clear();
+  std::lock_guard<std::mutex> lock(g_filter_mutex);
+  out->swap(g_filter_changed);
+  g_filter_queued.clear();
+}
+
+bool filter_read(std::uint64_t instance_id, bool read_has_point, bool raw, std::int32_t *value,
+                 bool *has_point) {
+  void *node = g_iface.object_get_instance_from_id(instance_id);
+  if (node == nullptr) {
+    return false;
+  }
+  *value = control_filter(node, read_has_point, raw, has_point);
+  return *value >= 0;
+}
+
+std::size_t filter_unwatch_all(bool leak) {
+  g_filter_on.store(false, std::memory_order_release);
+  std::size_t undone = 0;
+  for (auto &entry : g_filter_watches) {
+    void *node = leak ? nullptr : g_iface.object_get_instance_from_id(entry.first);
+    if (node != nullptr) {
+      const GDExtensionConstTypePtr args[2] = {property_list_changed_name().ptr(),
+                                               entry.second.callable};
+      ptrcall(kObjectDisconnect, node, args, nullptr);
+      ++undone;
+    }
+    destroy_callable(entry.second.callable);
+  }
+  g_filter_watches.clear();
+  std::lock_guard<std::mutex> lock(g_filter_mutex);
+  g_filter_changed.clear();
+  g_filter_queued.clear();
+  return undone;
+}
+
+std::size_t filter_watch_count() { return g_filter_watches.size(); }
+
+std::uint64_t filter_calls_while_off() {
+  return g_filter_calls_off.load(std::memory_order_relaxed);
+}
 
 }  // namespace rs
 }  // namespace grc

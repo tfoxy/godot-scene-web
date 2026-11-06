@@ -921,6 +921,8 @@ export const GROUP_COVERAGE_8: Record<string, readonly string[] | string> = {
     "none: HTR's opt-in headless texture release changes only what the host's dummy rasterizer keeps; the wire is byte-identical (htr-stream-identical), so the /8 manifest has no row for it",
   g8tdr:
     "none: TDR's zstd-at-rest bodies change what the host holds and which bytes a GET serves; the wire and the files are byte-identical (at-rest-wire-identical), so the /8 manifest has no row for it",
+  g8id14:
+    "none: ID3's item_meta v2 (render-stream/14: the instance_id and mouse_filter columns, re-stamped rows) is an opt-in client-extension layer over /13 that no receiver applies, and the /8 manifest does not describe it",
   g8tag:
     "none: TAG1's item identity (the /13 hello key and item_meta record) is an opt-in client-extension layer of render-stream/13, no receiver applies it yet, and the /8 manifest does not describe it",
   g55b: "none: gate 7's carried CanvasItemMaterial entries (material.*)",

@@ -604,7 +604,7 @@
       "reach": ["pure"]
     },
     {
-      "why": "gate 8 runs fixtures/capture-scale too (g8w11's scale legs; LAR0's g8a registry-cost timing group and its RS_SCALE_RESOURCE_CHURN knob)",
+      "why": "gate 8 runs fixtures/capture-scale too (g8w11's scale legs; LAR0's g8a registry-cost timing group and its RS_SCALE_RESOURCE_CHURN knob; ID3's g8id14 pure legs and its id-cost timing group with the RS_SCALE_FILTER_FLIPS knob)",
       "paths": ["experiments/render-stream/fixtures/capture-scale/**"],
       "reach": ["native:gate8@*"]
     },
@@ -793,7 +793,7 @@
       "reach": ["pure", "native:gate8@*"]
     },
     {
-      "why": "TAG1's gate 8 group g8tag (client-extensions-design.md \"As built (TAG1)\"): fixtures/tag-scene (its checks, lib/gate8-tag-checks.ts, are under the gate 8 rule above) runs in native gate 8 only; no browser group replays it",
+      "why": "TAG1's gate 8 group g8tag (client-extensions-design.md \"As built (TAG1)\") and ID3's g8id14 (render-stream-14.md; RS_FIXTURE_TAG_V2, haspoint.gd): fixtures/tag-scene (their checks, lib/gate8-tag-checks.ts and lib/gate8-id14-checks.ts, are under the gate 8 rule above) runs in native gate 8 only; no browser group replays it",
       "paths": ["experiments/render-stream/fixtures/tag-scene/**"],
       "reach": ["native:gate8@*"]
     },

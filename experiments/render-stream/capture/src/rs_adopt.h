@@ -472,7 +472,9 @@ void adopt_materials_at_arm();
 // (unless adoption already has) and fills the map with one tree walk; node_map_release_tag()
 // disconnects and clears it unless adoption still holds it. Main thread only.
 struct IdentityQuery {
-  std::uint32_t fields = 0;  // item_meta::kClass..kPath bits
+  std::uint32_t fields = 0;  // item_meta::kClass..kPath, kInstanceId, kMouseFilter bits
+  bool instance_of_root = false;  // ID3 sabotage instance-of-root
+  bool raw_filter = false;        // ID3 sabotage raw-filter (get_mouse_filter)
   std::vector<std::string> groups;
   std::vector<std::string> meta_keys;
 };
@@ -482,6 +484,9 @@ struct Identity {
   bool has[4] = {false, false, false, false};
   std::vector<bool> in_group;                          // per query group
   std::vector<std::pair<bool, std::string>> meta;      // per query meta key: (has value, value)
+  std::uint64_t instance_id = 0;  // ID3: with kInstanceId (the root's under instance-of-root)
+  std::uint64_t node_id = 0;      // ID3: the node's own ObjectID, with either v2 field
+  std::int32_t mouse_filter = -1;  // ID3: with kMouseFilter; -1 when the node is not a Control
 };
 bool node_map_acquire_tag(std::string *error);
 void node_map_release_tag();
@@ -491,6 +496,29 @@ void tag_set_query(const IdentityQuery &query, bool before_ready);
 // False when the map has no live node for `rid` (not in the tree yet, or none at all).
 bool item_identity(std::uint64_t rid, Identity *out);
 void tag_prune_map();
+
+// ID3 (client-extensions-design.md ID-D4, ID-D9): the mouse_filter watch. Per resolved Control,
+// one capture callable bound to the item's RID is connected to its `property_list_changed`
+// (set_mouse_filter emits it on an actual change, control.cpp:1888-1903); the callback, on any
+// thread, only queues the RID. Connected only while a granted viewer (or file sink) asks for
+// mouse_filter, and every connection is undone by filter_unwatch_all(), which the host calls when
+// the union drops to nothing (live_close_and_stop). Main thread only, but the callback.
+// Connects `instance_id`'s property_list_changed once (true when watched, already or now).
+bool filter_watch(std::uint64_t instance_id, std::uint64_t rid);
+// Forgets a node that is gone (its connections went with it).
+void filter_forget(std::uint64_t instance_id);
+// The RIDs queued since the last call, each once.
+void filter_take_changed(std::vector<std::uint64_t> *out);
+// A watched node's mouse_filter value now: false when it is gone. `read_has_point` re-reads the
+// script's _has_point (a property_list_changed may be a set_script); else `*has_point` is used.
+bool filter_read(std::uint64_t instance_id, bool read_has_point, bool raw, std::int32_t *value,
+                 bool *has_point);
+// Disconnects every watch and destroys the callables (sabotage leak-connections: the map and the
+// callables go, the connections stay); clears the queue. Returns the connections undone.
+std::size_t filter_unwatch_all(bool leak);
+std::size_t filter_watch_count();
+// Callback calls that arrived while no watch was active (after filter_unwatch_all).
+std::uint64_t filter_calls_while_off();
 // The frame boundary (entry.cpp's frame callback, main thread, before the transaction is
 // formed): drains the mirror's pending material and shader references (LAR3: its queue, which
 // replaces G8m's epoch scan), from the registry when it holds the RID, otherwise through the node

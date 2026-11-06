@@ -12,10 +12,15 @@
 // the patches that arrive before the full are dropped unacked, the history unchanged.
 //
 //   tsx --conditions=development coding-receiver.ts --url ws://127.0.0.1:<port>/render-stream
-//     --out <dir> [--offer zstd-base,zstd|zstd|""] [--window 1|2] [--version 11|12|13]
+//     --out <dir> [--offer zstd-base,zstd|zstd|""] [--window 1|2] [--version 11|12|13|14]
 //     [--build <rs-core build dir>] [--timeout-s S]
 //
-// TAG1 (client-extensions-design.md §2.1, §2.4): --item-meta '<json request>' (/13 only) adds the
+// ID3 (render-stream-14.md): --version 14 offers the subprotocol render-stream.14 (alone) and a
+// render-stream/14 hello, decoding as at /13; pair it with an --item-meta request naming
+// instance_id and/or mouse_filter (a client offers /14 only to ask for a v2 field). It writes
+// decoded.rs14.
+//
+// TAG1 (client-extensions-design.md §2.1, §2.4): --item-meta '<json request>' (/13 on) adds the
 // hello's optional `item_meta` key. An item_meta record is held until the transaction after it is
 // accepted, and dropped with it (a predict-check failure, a patch dropped awaiting the full), so
 // decoded.rs13 stays a stream rs-core-check validates with --item-meta-asked. --connect-delay-ms D
@@ -53,12 +58,13 @@ const offer = arg("--offer", "zstd-base,zstd");
 const window = Number(arg("--window", "2"));
 const timeoutS = Number(arg("--timeout-s", "120"));
 const version = Number(arg("--version", "11"));
-if (version !== 11 && version !== 12 && version !== 13)
-  throw new Error(`coding-receiver: --version ${version} (11, 12 or 13)`);
-const unpredictor = version === 13 ? createRs13Unpredictor() : null;
+if (version !== 11 && version !== 12 && version !== 13 && version !== 14)
+  throw new Error(`coding-receiver: --version ${version} (11, 12, 13 or 14)`);
+// ID3: /14's transactions are /13's (predicted blocks included).
+const unpredictor = version >= 13 ? createRs13Unpredictor() : null;
 const itemMeta = arg("--item-meta", "");
-if (itemMeta !== "" && version !== 13)
-  throw new Error("coding-receiver: --item-meta needs --version 13");
+if (itemMeta !== "" && version < 13)
+  throw new Error("coding-receiver: --item-meta needs --version 13 or 14");
 const connectDelayMs = Number(arg("--connect-delay-ms", "0"));
 const closeAfterTx = Number(arg("--close-after-tx", "0"));
 const sha = (b: Uint8Array): string =>
@@ -300,7 +306,9 @@ ws.addEventListener("message", (event: MessageEvent) => {
       return;
     }
     const raw = { offset: 0, byte_length: bytes.byteLength, bytes };
-    const rec = decodeRecord(raw, 13, { recordDigest: "deferred" });
+    const rec = decodeRecord(raw, version === 14 ? 14 : 13, {
+      recordDigest: "deferred",
+    });
     const result =
       rec.errors.length > 0 || rec.record === undefined
         ? { error: rec.errors[0] ?? "no record" }

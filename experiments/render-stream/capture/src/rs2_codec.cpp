@@ -921,6 +921,9 @@ std::vector<std::uint8_t> magic() {
 }
 
 std::vector<std::uint8_t> magic(ProtocolVersion version) {
+  if (version == ProtocolVersion::V14) {
+    return std::vector<std::uint8_t>(kMagicV14.begin(), kMagicV14.end());
+  }
   if (version == ProtocolVersion::V13) {
     return std::vector<std::uint8_t>(kMagicV13.begin(), kMagicV13.end());
   }
@@ -960,7 +963,9 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   std::string m;
   m += "{\"type\":\"session\",\"protocol\":";
   const char *protocol =
-      session.version == ProtocolVersion::V13
+      session.version == ProtocolVersion::V14
+          ? kProtocolV14
+          : session.version == ProtocolVersion::V13
           ? kProtocolV13
           : session.version == ProtocolVersion::V12
           ? kProtocolV12

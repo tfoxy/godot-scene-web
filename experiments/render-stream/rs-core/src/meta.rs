@@ -4380,7 +4380,7 @@ fn check_meta(
         Some(b"resource") => Decoded::Resource(check_resource(&mut ck, meta, descs)?),
         Some(b"end") => Decoded::End(check_end(&mut ck, meta, descs)?),
         Some(b"item_meta") if version >= 13 => Decoded::ItemMeta(Box::new(
-            crate::item_meta::check_record(&mut ck, meta, descs)?,
+            crate::item_meta::check_record(&mut ck, meta, version, descs)?,
         )),
         _ => {
             let shown = doc

@@ -40,7 +40,7 @@ namespace grc {
 namespace rs {
 
 struct Gate8Policy {
-  // GRC_STREAM_VERSION: the wire version of file sinks. V6 (the default), V8 to V13.
+  // GRC_STREAM_VERSION: the wire version of file sinks. V6 (the default), V8 to V14.
   rs2::ProtocolVersion file_version = rs2::ProtocolVersion::V6;
   bool stream_version_set = false;  // GRC_STREAM_VERSION was present and non-empty
   bool adopt = false;               // GRC_ADOPT=arm
@@ -79,7 +79,10 @@ struct Gate8Policy {
   // W13b: also true at /13, which is /12 with predicted blocks.
   bool speaks_v12() const { return rs2::is_v12_or_later(file_version); }
   // Whether the stream speaks /13: GRC_STREAM_VERSION=13 (W13b).
-  bool speaks_v13() const { return file_version == rs2::ProtocolVersion::V13; }
+  // ID3: also true at /14, which is /13 plus item_meta v2.
+  bool speaks_v13() const { return rs2::is_v13_or_later(file_version); }
+  // Whether the file sinks speak /14: GRC_STREAM_VERSION=14 (ID3, render-stream-14.md).
+  bool speaks_v14() const { return file_version == rs2::ProtocolVersion::V14; }
 };
 
 // Parses the four variables (each may be null). On a bad value returns false with *error naming

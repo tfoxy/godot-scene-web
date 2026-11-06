@@ -7,7 +7,8 @@ namespace grc {
 namespace rs {
 namespace item_meta {
 
-const char *const kFieldNames[kFieldCount] = {"class", "script", "scene", "path"};
+const char *const kFieldNames[kFieldCount] = {"class", "script",      "scene",
+                                              "path",  "instance_id", "mouse_filter"};
 
 namespace {
 
@@ -104,7 +105,7 @@ std::uint32_t Request::field_bits() const {
   for (const std::string &f : fields) {
     const int i = field_index(f);
     if (i >= 0) {
-      bits |= 1u << i;
+      bits |= field_bit(i);
     }
   }
   return bits;
@@ -128,11 +129,12 @@ bool parse_grant_env(const std::string &text, std::uint32_t *bits, std::string *
     } else if (name == "meta") {
       bit = kMeta;
     } else if (field_index(name) >= 0) {
-      bit = 1u << field_index(name);
+      bit = field_bit(field_index(name));
     }
     if (bit == 0 || (*bits & bit) != 0) {
       *error = "GRC_ITEM_META: \"" + name +
-               "\" is not class, script, scene, path, groups or meta (or repeats)";
+               "\" is not class, script, scene, path, instance_id, mouse_filter, groups or meta "
+               "(or repeats)";
       *bits = 0;
       return false;
     }
@@ -144,8 +146,9 @@ bool parse_grant_env(const std::string &text, std::uint32_t *bits, std::string *
 
 std::string grant_env_string(std::uint32_t bits) {
   std::string out;
-  const char *names[6] = {"class", "script", "scene", "path", "groups", "meta"};
-  for (int i = 0; i < 6; ++i) {
+  const char *names[8] = {"class", "script", "scene",        "path",
+                          "groups", "meta",  "instance_id", "mouse_filter"};
+  for (int i = 0; i < 8; ++i) {
     if ((bits & (1u << i)) != 0) {
       out += out.empty() ? "" : ",";
       out += names[i];
@@ -154,15 +157,20 @@ std::string grant_env_string(std::uint32_t bits) {
   return out;
 }
 
-std::string request_problem(const Request &request) {
+std::string request_problem(const Request &request, bool v2) {
   int last = -1;
   for (const std::string &f : request.fields) {
     const int i = field_index(f);
-    if (i < 0) {
-      return "item_meta.fields: \"" + f + "\" is not class, script, scene or path";
+    if (i < 0 || (!v2 && i >= kStringFields)) {
+      return v2 ? "item_meta.fields: \"" + f +
+                      "\" is not class, script, scene, path, instance_id or mouse_filter"
+                : "item_meta.fields: \"" + f + "\" is not class, script, scene or path";
     }
     if (i <= last) {
-      return "item_meta.fields must be in class, script, scene, path order, without duplicates";
+      return v2 ? "item_meta.fields must be in class, script, scene, path, instance_id, "
+                  "mouse_filter order, without duplicates"
+                : "item_meta.fields must be in class, script, scene, path order, without "
+                  "duplicates";
     }
     last = i;
   }
@@ -179,7 +187,7 @@ std::string request_problem(const Request &request) {
 Request grant_for(std::uint32_t host_bits, const Request &request) {
   Request grant;
   for (const std::string &f : request.fields) {
-    if ((host_bits & (1u << field_index(f))) != 0) {
+    if ((host_bits & field_bit(field_index(f))) != 0) {
       grant.fields.push_back(f);
     }
   }
@@ -291,8 +299,22 @@ bool form(const Store &store, GrantTable *table, bool full, std::uint64_t from, 
     items += std::to_string(e.id + id_offset);
     if (e.node) {
       for (int k = 0; k < nfields; ++k) {
-        const std::int32_t s = e.field[fields[k]];
         items += ",";
+        if (fields[k] == 4) {  // ID3: instance_id, an inline decimal string
+          if (e.instance_id == 0) {
+            items += "null";
+          } else {
+            items += "\"";
+            items += std::to_string(e.instance_id);
+            items += "\"";
+          }
+          continue;
+        }
+        if (fields[k] == 5) {  // ID3: mouse_filter, an int
+          items += e.mouse_filter < 0 ? "null" : std::to_string(e.mouse_filter);
+          continue;
+        }
+        const std::int32_t s = e.field[fields[k]];
         items += s < 0 ? "null" : std::to_string(local_string(store, table, s));
       }
       if (!grant.groups.empty()) {

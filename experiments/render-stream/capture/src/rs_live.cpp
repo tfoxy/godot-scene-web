@@ -439,7 +439,8 @@ std::size_t stage_index(AckStage stage) { return static_cast<std::size_t>(stage)
 
 // The hello `protocol` string of a version (render-stream-N.md "Live transport").
 const char *protocol_string(ProtocolVersion version) {
-  return version == ProtocolVersion::V13   ? kProtocolV13
+  return version == ProtocolVersion::V14   ? kProtocolV14
+         : version == ProtocolVersion::V13 ? kProtocolV13
          : version == ProtocolVersion::V12 ? kProtocolV12
          : version == ProtocolVersion::V11 ? kProtocolV11
          : version == ProtocolVersion::V10 ? kProtocolV10
@@ -485,7 +486,7 @@ const char *to_wire(AckStage stage) {
 }
 
 bool parse_control(const std::string &text, ControlMessage *out, std::string *error,
-                   ProtocolVersion version) {
+                   ProtocolVersion version, bool v2_at_13) {
   const char *const protocol = protocol_string(version);
   std::vector<std::pair<std::string, Value>> fields;
   Parser parser(text);
@@ -559,7 +560,7 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
   // TAG1 (client-extensions-design.md §2.1): a /13 hello may also carry `item_meta`; below /13
   // the key is unknown (a hello error), as every other key is.
   const bool optional_item_meta =
-      message.type == ControlType::Hello && version == ProtocolVersion::V13;
+      message.type == ControlType::Hello && is_v13_or_later(version);
   for (const auto &field : fields) {
     if (optional_live_coding && field.first == "live_coding") {
       continue;
@@ -695,7 +696,10 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
               return fail(std::string("\"item_meta\" has no \"") + names[k] + "\"");
             }
           }
-          const std::string problem = rs::item_meta::request_problem(request);
+          // ID3 (render-stream-14.md): instance_id and mouse_filter are fields at /14 only (the
+          // sabotage v2-at-13 accepts them at /13 too).
+          const std::string problem = rs::item_meta::request_problem(
+              request, version == ProtocolVersion::V14 || v2_at_13);
           if (!problem.empty()) {
             return fail(problem);
           }
@@ -1579,7 +1583,9 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       // W11b: render-stream.11 -> /11 (render-stream-11.md "Live transport").
       // PM5: render-stream.12 -> /12 (render-stream-12.md).
       // W13b: render-stream.13 -> /13 (render-stream-13.md "As built (W13b)").
-      c.version = event.subprotocol == kSubprotocolV13   ? ProtocolVersion::V13
+      // ID3: render-stream.14 -> /14 (render-stream-14.md), listed only under a v2 grant.
+      c.version = event.subprotocol == kSubprotocolV14   ? ProtocolVersion::V14
+                  : event.subprotocol == kSubprotocolV13 ? ProtocolVersion::V13
                   : event.subprotocol == kSubprotocolV12 ? ProtocolVersion::V12
                   : event.subprotocol == kSubprotocolV11 ? ProtocolVersion::V11
                   : event.subprotocol == kSubprotocolV10 ? ProtocolVersion::V10
@@ -1663,7 +1669,8 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
 void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
   ControlMessage message;
   std::string error;
-  if (!parse_control(event.text, &message, &error, c.version)) {
+  if (!parse_control(event.text, &message, &error, c.version,
+                     config_.item_meta_sabotage == "v2-at-13")) {
     protocol_error(c, "bad control message: " + error, frame, event.t_ns);
     return;
   }
@@ -1969,7 +1976,7 @@ rs::item_meta::Request Hub::item_meta_union() const {
     }
   }
   for (int i = 0; i < rs::item_meta::kFieldCount; ++i) {
-    if ((fields & (1u << i)) != 0) {
+    if ((fields & rs::item_meta::field_bit(i)) != 0) {
       out.fields.push_back(rs::item_meta::kFieldNames[i]);
     }
   }
@@ -2553,7 +2560,7 @@ void Hub::run_job(Job &job) {
                                          : make_patch(job.tx_base->state, snapshot.state, meta);
     t1 = monotonic_ns();
     encoded = std::make_shared<const std::vector<std::uint8_t>>(encode_transaction(transaction));
-    if (meta.version == ProtocolVersion::V13) {
+    if (is_v13_or_later(meta.version)) {
       std::shared_ptr<rs13::PredictMeta> typed = reuse_or_make(&f.spare_meta);  // W13f
       rs13::predict_meta(transaction, typed.get());
       f.spare_meta = typed;
@@ -2570,7 +2577,7 @@ void Hub::run_job(Job &job) {
       memo_->txs.push_back(std::move(tx));
     }
   }
-  if (meta.version == ProtocolVersion::V13) {
+  if (is_v13_or_later(meta.version)) {
     // W13b: the /12 transaction just formed (encode_transaction writes /12's form at V13) coded
     // against this connection's history; the coding prefix, the tap and the end stats are the
     // /13 message's.
@@ -2604,7 +2611,7 @@ void Hub::run_job(Job &job) {
   }
   std::shared_ptr<const std::vector<std::uint8_t>> previous = std::move(f.last_tx);
   f.last_tx = encoded;
-  if (meta.version == ProtocolVersion::V13) {
+  if (is_v13_or_later(meta.version)) {
     f.spare_out = std::move(previous);  // W13f: the next /13 coding's buffer, once it is ours alone
   }
   if (meta_in_shared) {

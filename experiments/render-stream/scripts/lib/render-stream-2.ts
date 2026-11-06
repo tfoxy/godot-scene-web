@@ -24,7 +24,7 @@
 //
 // render-stream/3 (../../protocol/render-stream-3.md, G4e1), render-stream/4
 // (../../protocol/render-stream-4.md, G5w) and render-stream/5 (../../protocol/render-stream-5.md,
-// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13` parameter
+// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14` parameter
 // on every exported entry point (splitRecords/decodeRecording/validateRecording/
 // resolveRecording), rather than forked render-stream-3.ts/-4.ts/-5.ts modules -- /3 is /2 plus
 // one draw command (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), /4 is /3
@@ -1089,14 +1089,17 @@ export interface ItemMetaRequest {
 /** TAG1: the /13 `item_meta` record (a JSON meta, no blocks). A `full` (grant set, strings_from 0)
  * replaces the receiver's table; a `delta` (grant null) appends strings and upserts rows. A row is
  * `[id]` (an item with no node) or `[id, col...]`: per granted field a string index or null, the
- * groups bitmask when groups are granted, then per meta key a string index or null. */
+ * groups bitmask when groups are granted, then per meta key a string index or null. ID3 (/14,
+ * render-stream-14.md): the `instance_id` column is an inline decimal string or null and the
+ * `mouse_filter` column an int in 0..6 or null; a delta row for a held id replaces it (a
+ * re-stamp). */
 export interface ItemMetaRecordMeta {
   type: "item_meta";
   form: "full" | "delta";
   grant: ItemMetaRequest | null;
   strings_from: number;
   strings: string[];
-  items: Array<Array<number | null>>;
+  items: Array<Array<number | string | null>>;
   blocks: BlockDescriptor[];
 }
 
@@ -1105,7 +1108,7 @@ export interface ItemMetaRecordMeta {
 export interface ItemMetaTable {
   grant: ItemMetaRequest | null;
   strings: string[];
-  rows: Map<number, Array<number | null> | null>;
+  rows: Map<number, Array<number | string | null> | null>;
 }
 
 export type Rs2Meta =
@@ -1173,13 +1176,19 @@ export const MAGIC_V12: Uint8Array = new Uint8Array([
 export const MAGIC_V13: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x44, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
+// render-stream-14.md (ID3): the GRSE magic (byte 3 'E' is 14), selected by `version: 14`
+// (golden-14/; opt-in, never the default: /14 is /13 plus item_meta v2).
+export const MAGIC_V14: Uint8Array = new Uint8Array([
+  0x47, 0x52, 0x53, 0x45, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 /** G7l: the wire version of a live stream's bytes: 7 when they start with GRS7 (a /7 receiver's
  * received.rs7, or a /7 connection's host tap), 8 when they start with GRS8 (G8w), 9 for GRS9
- * (G8k9), 10 for GRSA (CG1), 11 for GRSB (W11a), 12 for GRSC (PM5), 13 for GRSD (W13d), else 6 -- so every other
+ * (G8k9), 10 for GRSA (CG1), 11 for GRSB (W11a), 12 for GRSC (PM5), 13 for GRSD (W13d), 14 for GRSE
+ * (ID3: a /14 file sink or a v2 viewer's tap), else 6 -- so every other
  * magic still meets the /6 decoder's own refusal, exactly as before. */
 export function wireVersionOf(
   data: Uint8Array | undefined,
-): 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 {
+): 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 {
   if (!data || data.length < MAGIC_V7.length) return 6;
   const startsWith = (magic: Uint8Array) => {
     for (let i = 0; i < magic.length; i++)
@@ -1194,6 +1203,7 @@ export function wireVersionOf(
   if (startsWith(MAGIC_V12)) return 12;
   // W13d: every receiver accepts /13 now (GSW W13c, native and web W13d).
   if (startsWith(MAGIC_V13)) return 13;
+  if (startsWith(MAGIC_V14)) return 14;
   return 6;
 }
 /** render-stream-9.md "KTX2 payload": the 12-byte KTX2 file identifier (KTX 2.0 section 2.1). */
@@ -2433,7 +2443,7 @@ function intPair(value: unknown): value is [number, number] {
 function checkResourcesSchema(
   resources: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: resources ${detail}`,
@@ -2448,7 +2458,7 @@ function checkResourcesSchema(
     version === 10 ||
     version === 11 ||
     version === 12 ||
-    version === 13;
+    version >= 13;
   const keys =
     version >= 11
       ? RESOURCES_KEYS_V11
@@ -2565,7 +2575,7 @@ function checkResourcesSchema(
 function checkSessionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
@@ -2575,7 +2585,7 @@ function checkSessionSchema(
   // key either (render-stream-12.md "Session record": only the protocol and the features).
   // render-stream-13.md "As built (W13a)": /13 is /12 plus the predicted blocks (isV12 means
   // "V12 or later").
-  const isV13 = version === 13;
+  const isV13 = version >= 13;
   const isV12 = version === 12 || isV13;
   // isV11 means "V11 or later".
   const isV11 = version === 11 || isV12;
@@ -2622,7 +2632,7 @@ function checkSessionSchema(
   if (skipDeclared && meta.unknown_item_policy !== "skip")
     return err('"unknown_item_policy" must be "skip" when present');
   const expectedProtocol = isV13
-    ? "render-stream/13"
+    ? `render-stream/${version}`
     : isV12
       ? "render-stream/12"
       : isV11
@@ -3456,7 +3466,7 @@ function checkParticlesEntrySchema(p: unknown): string | null {
 function checkTransactionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
@@ -3470,12 +3480,12 @@ function checkTransactionSchema(
     version === 10 ||
     version === 11 ||
     version === 12 ||
-    version === 13;
+    version >= 13;
   // render-stream-12.md: the particles table, the emit list, add_particles and the optional
   // tenth block pt_f32.
   // render-stream-13.md "As built (W13a)": /13 is /12 plus the predicted blocks (isV12 means
   // "V12 or later").
-  const isV13 = version === 13;
+  const isV13 = version >= 13;
   const isV12 = version === 12 || isV13;
   // render-stream-11.md: dynamic mesh surfaces (mesh entry key u8, a null surface hash), the
   // eighth and ninth blocks mesh_u8 (u8) and mm_f32, and a patch's null "unsupported" (isV11
@@ -4218,7 +4228,8 @@ function checkEndSchema(
 // --------------------------------------------------------------------------------------- item_meta (TAG1)
 //
 // client-extensions-design.md §2.4; rs-core's item_meta.rs is the same code, rule for rule, and
-// protocol/golden-13/make_golden.py (`item_meta_check`) the reference.
+// protocol/golden-13/make_golden.py (`item_meta_check`) the reference. ID3 (render-stream-14.md):
+// /14's item_meta v2 columns, with protocol/golden-14/make_golden.py the reference.
 
 const ITEM_META_KEYS = [
   "type",
@@ -4230,18 +4241,39 @@ const ITEM_META_KEYS = [
   "blocks",
 ];
 const ITEM_META_GRANT_KEYS = ["fields", "groups", "meta_keys"];
-export const ITEM_META_FIELDS = ["class", "script", "scene", "path"] as const;
+export const ITEM_META_FIELDS = [
+  "class",
+  "script",
+  "scene",
+  "path",
+  "instance_id",
+  "mouse_filter",
+] as const;
+/** ID3: the item_meta v2 fields, grantable from render-stream/14 on (the last two of
+ * ITEM_META_FIELDS). */
+export const ITEM_META_V2_FIELDS = ["instance_id", "mouse_filter"] as const;
+/** ID3: an `instance_id` column's string (a Godot ObjectID in decimal). */
+const ITEM_META_INSTANCE_ID = /^[1-9][0-9]{0,19}$/;
 /** The canonical meta's first bytes (`type` is the first key): the validator judges the ask and
  * an orphan from them before the record's own schema. */
 const ITEM_META_PREFIX = new TextEncoder().encode('{"type":"item_meta",');
 
-/** The hello / grant list rules: null when `r` is valid, else what is wrong. */
-export function itemMetaRequestProblem(r: ItemMetaRequest): string | null {
+/** The hello / grant list rules at `version` (default the newest): null when `r` is valid, else
+ * what is wrong. Below /14 the v2 names are unknown fields. */
+export function itemMetaRequestProblem(
+  r: ItemMetaRequest,
+  version = 14,
+): string | null {
+  const known = version >= 14 ? ITEM_META_FIELDS.length : 4;
   let last = -1;
   for (const f of r.fields) {
-    const i = (ITEM_META_FIELDS as readonly string[]).indexOf(f);
+    const i = (ITEM_META_FIELDS.slice(0, known) as readonly string[]).indexOf(
+      f,
+    );
     if (i <= last)
-      return '"fields" is not a subset of class, script, scene, path in that order without duplicates';
+      return known === 4
+        ? '"fields" is not a subset of class, script, scene, path in that order without duplicates'
+        : '"fields" is not a subset of class, script, scene, path, instance_id, mouse_filter in that order without duplicates';
     last = i;
   }
   if (r.groups.length > 31) return '"groups" holds more than 31 names';
@@ -4268,21 +4300,39 @@ function itemMetaColumns(g: ItemMetaRequest): number {
   return g.fields.length + (g.groups.length > 0 ? 1 : 0) + g.meta_keys.length;
 }
 
-/** Row shape against a grant (`item-meta-schema` detail, or null). */
+/** Row shape against a grant (`item-meta-schema` detail, or null): the column count, the groups
+ * bitmask, (/14) the `instance_id` column a decimal string or null and the `mouse_filter` column
+ * an int in 0..6 or null, and no inline string in any other column. */
 function itemMetaRowsProblem(
-  items: ReadonlyArray<ReadonlyArray<number | null>>,
+  items: ReadonlyArray<ReadonlyArray<number | string | null>>,
   g: ItemMetaRequest,
 ): string | null {
   const n = itemMetaColumns(g);
   const gc = g.groups.length > 0 ? g.fields.length : -1;
+  const ic = g.fields.indexOf("instance_id");
+  const mc = g.fields.indexOf("mouse_filter");
   for (const row of items) {
     if (row.length === 1) continue;
+    const id = row[0];
     if (row.length - 1 !== n)
-      return `item ${row[0]}'s row has ${row.length - 1} columns, the grant ${n}`;
-    if (gc >= 0) {
-      const m = row[1 + gc];
-      if (m === null || m >= 2 ** g.groups.length)
-        return `item ${row[0]}'s groups column is not a bitmask below 2^${g.groups.length}`;
+      return `item ${id}'s row has ${row.length - 1} columns, the grant ${n}`;
+    for (let k = 0; k < n; k++) {
+      const c = row[1 + k];
+      if (k === gc) {
+        if (typeof c !== "number" || c >= 2 ** g.groups.length)
+          return `item ${id}'s groups column is not a bitmask below 2^${g.groups.length}`;
+      } else if (k === ic) {
+        if (
+          c !== null &&
+          !(typeof c === "string" && ITEM_META_INSTANCE_ID.test(c))
+        )
+          return `item ${id}'s instance_id column is neither null nor a decimal string matching ^[1-9][0-9]{0,19}$`;
+      } else if (k === mc) {
+        if (c !== null && !(typeof c === "number" && c <= 6))
+          return `item ${id}'s mouse_filter column is neither null nor an integer in 0..6`;
+      } else if (typeof c === "string") {
+        return `item ${id}'s string-index column holds an inline string`;
+      }
     }
   }
   return null;
@@ -4290,16 +4340,18 @@ function itemMetaRowsProblem(
 
 /** Every string column below `size` (`item-meta-string` detail, or null). */
 function itemMetaIndicesProblem(
-  items: ReadonlyArray<ReadonlyArray<number | null>>,
+  items: ReadonlyArray<ReadonlyArray<number | string | null>>,
   g: ItemMetaRequest,
   size: number,
 ): string | null {
   const gc = g.groups.length > 0 ? g.fields.length : -1;
+  const ic = g.fields.indexOf("instance_id");
+  const mc = g.fields.indexOf("mouse_filter");
   for (const row of items) {
     for (let k = 0; k < row.length - 1; k++) {
-      if (k === gc) continue;
+      if (k === gc || k === ic || k === mc) continue;
       const i = row[1 + k];
-      if (i !== null && i >= size)
+      if (typeof i === "number" && i >= size)
         return `item ${row[0]}'s column ${k} names string ${i}, the table holds ${size}`;
     }
   }
@@ -4318,13 +4370,15 @@ function itemMetaWithin(g: ItemMetaRequest, r: ItemMetaRequest): boolean {
   );
 }
 
-/** decodeRecord's item_meta checks (/13 only): the shape (`item-meta-schema`) and, for a full
+/** decodeRecord's item_meta checks (from /13 on): the shape (`item-meta-schema`) and, for a full
  * (whose grant is in the record), its rows against the grant, strings_from 0 and every string
  * index in range (`item-meta-string`). A delta's rows are read against the stream's grant by the
- * validator. */
+ * validator. ID3: at /14 a grant may name the v2 fields and a column may be a string (the grant
+ * decides which may); below /14 neither. */
 function checkItemMetaSchema(
   meta: Record<string, unknown>,
   offset: number,
+  version: number,
 ): string[] {
   const err = (code: string, detail: string) => [
     `${code}: record at offset ${offset}: ${detail}`,
@@ -4347,7 +4401,7 @@ function checkItemMetaSchema(
       if (!isStringArray(g[k])) return schema(`grant.${k} holds a non-string`);
     }
     grant = g as unknown as ItemMetaRequest;
-    const problem = itemMetaRequestProblem(grant);
+    const problem = itemMetaRequestProblem(grant, version);
     if (problem !== null) return schema(`grant: ${problem}`);
   } else if (meta.grant !== null) {
     return schema('a delta\'s "grant" is not null');
@@ -4370,16 +4424,19 @@ function checkItemMetaSchema(
     prev = id;
     for (let k = 1; k < row.length; k++) {
       const c = row[k];
-      if (c !== null && !(isInt(c) && c >= 0))
-        return schema(
-          `item ${id}'s row holds a column that is neither null nor a non-negative integer`,
-        );
+      if (c === null || (isInt(c) && c >= 0)) continue;
+      if (version >= 14 && typeof c === "string") continue;
+      return schema(
+        version >= 14
+          ? `item ${id}'s row holds a column that is neither null, a non-negative integer nor a string`
+          : `item ${id}'s row holds a column that is neither null nor a non-negative integer`,
+      );
     }
   }
   if (!Array.isArray(meta.blocks) || meta.blocks.length !== 0)
     return schema('"blocks" must be an empty array for an item_meta record');
   if (grant !== null) {
-    const items = meta.items as Array<Array<number | null>>;
+    const items = meta.items as Array<Array<number | string | null>>;
     const rows = itemMetaRowsProblem(items, grant);
     if (rows !== null) return schema(rows);
     if (meta.strings_from !== 0)
@@ -4399,20 +4456,22 @@ function checkItemMetaSchema(
 
 /** TAG1: a row in `rs-core-check --item-meta-dump`'s form against `table`'s grant and strings:
  * null for an item with no node, else {<field>: string|null.., "groups": mask, "meta":
- * {<key>: string|null}} (groups and meta only when granted). */
+ * {<key>: string|null}} (groups and meta only when granted). ID3: `instance_id` is its inline
+ * string or null and `mouse_filter` its int or null. */
 export function itemMetaRowJson(
   table: ItemMetaTable,
-  row: ReadonlyArray<number | null> | null,
+  row: ReadonlyArray<number | string | null> | null,
 ): Record<string, unknown> | null {
   const g = table.grant;
   if (row === null || g === null) return null;
   const s = (k: number) => {
     const i = row[k];
-    return i === null || i === undefined ? null : (table.strings[i] ?? null);
+    return typeof i !== "number" ? null : (table.strings[i] ?? null);
   };
   const out: Record<string, unknown> = {};
   g.fields.forEach((f, k) => {
-    out[f] = s(k);
+    out[f] =
+      f === "instance_id" || f === "mouse_filter" ? (row[k] ?? null) : s(k);
   });
   let k = g.fields.length;
   if (g.groups.length > 0) out.groups = row[k++] ?? null;
@@ -4429,7 +4488,7 @@ export function itemMetaRowJson(
 function checkMetaSchema(
   meta: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
 ): string[] {
   if (!isPlainObject(meta))
     return [
@@ -4440,8 +4499,8 @@ function checkMetaSchema(
     return checkTransactionSchema(meta, offset, version);
   if (meta.type === "resource") return checkResourceSchema(meta, offset);
   if (meta.type === "end") return checkEndSchema(meta, offset);
-  if (meta.type === "item_meta" && version === 13)
-    return checkItemMetaSchema(meta, offset);
+  if (meta.type === "item_meta" && version >= 13)
+    return checkItemMetaSchema(meta, offset, version);
   return [
     `meta-schema: record at offset ${offset}: unknown "type" ${JSON.stringify(meta.type)}`,
   ];
@@ -4457,35 +4516,37 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 = 6,
 ): {
   records: RawRecord[];
   errors: string[];
 } {
   const expectedMagic =
-    version === 13
-      ? MAGIC_V13
-      : version === 12
-        ? MAGIC_V12
-        : version === 11
-          ? MAGIC_V11
-          : version === 10
-            ? MAGIC_V10
-            : version === 9
-              ? MAGIC_V9
-              : version === 8
-                ? MAGIC_V8
-                : version === 7
-                  ? MAGIC_V7
-                  : version === 6
-                    ? MAGIC_V6
-                    : version === 5
-                      ? MAGIC_V5
-                      : version === 4
-                        ? MAGIC_V4
-                        : version === 3
-                          ? MAGIC_V3
-                          : MAGIC;
+    version === 14
+      ? MAGIC_V14
+      : version === 13
+        ? MAGIC_V13
+        : version === 12
+          ? MAGIC_V12
+          : version === 11
+            ? MAGIC_V11
+            : version === 10
+              ? MAGIC_V10
+              : version === 9
+                ? MAGIC_V9
+                : version === 8
+                  ? MAGIC_V8
+                  : version === 7
+                    ? MAGIC_V7
+                    : version === 6
+                      ? MAGIC_V6
+                      : version === 5
+                        ? MAGIC_V5
+                        : version === 4
+                          ? MAGIC_V4
+                          : version === 3
+                            ? MAGIC_V3
+                            : MAGIC;
   if (
     data.length < expectedMagic.length ||
     !bytesEqual(data.subarray(0, expectedMagic.length), expectedMagic)
@@ -4586,7 +4647,7 @@ export function withRecordMemo<T>(
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 = 6,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const memo = recordMemo;
@@ -4605,7 +4666,7 @@ export function decodeRecord(
 
 function decodeRecordOnce(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const view = new DataView(
@@ -4701,7 +4762,7 @@ function decodeRecordOnce(
     // W13r (render-stream-13.md "As built (W13r)"): a /13 transaction's three predicted blocks
     // carry zero-run token streams, whose length zr-length checks after the meta.
     const zeroRuns =
-      version === 13 &&
+      version >= 13 &&
       (meta as { type?: unknown }).type === "transaction" &&
       isRs13PredictedBlock(descriptor.name);
     if (blockLen !== expectedLen && !zeroRuns) {
@@ -4777,7 +4838,7 @@ function decodeRecordOnce(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 = 6,
 ): {
   schema:
     | "render-stream-2-decoded/1"
@@ -4791,7 +4852,8 @@ export function decodeRecording(
     | "render-stream-10-decoded/1"
     | "render-stream-11-decoded/1"
     | "render-stream-12-decoded/1"
-    | "render-stream-13-decoded/1";
+    | "render-stream-13-decoded/1"
+    | "render-stream-14-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
@@ -4800,7 +4862,9 @@ export function decodeRecording(
   // render-stream-13.md "Forms and transcode": /13's decoded form is /12's over the reconstructed
   // blocks, each record's sha256 still the /13 record's own.
   const plain =
-    version === 13 ? rs13PlainRecords(split.records) : split.records;
+    version === 13 || version === 14
+      ? rs13PlainRecords(split.records, version)
+      : split.records;
   const records: DecodedRecord[] = [];
   for (let r = 0; r < split.records.length; r++) {
     const raw = split.records[r];
@@ -4822,54 +4886,58 @@ export function decodeRecording(
     );
   }
   const magic =
-    version === 13
-      ? MAGIC_V13
-      : version === 12
-        ? MAGIC_V12
-        : version === 11
-          ? MAGIC_V11
-          : version === 10
-            ? MAGIC_V10
-            : version === 9
-              ? MAGIC_V9
-              : version === 8
-                ? MAGIC_V8
-                : version === 7
-                  ? MAGIC_V7
-                  : version === 6
-                    ? MAGIC_V6
-                    : version === 5
-                      ? MAGIC_V5
-                      : version === 4
-                        ? MAGIC_V4
-                        : version === 3
-                          ? MAGIC_V3
-                          : MAGIC;
+    version === 14
+      ? MAGIC_V14
+      : version === 13
+        ? MAGIC_V13
+        : version === 12
+          ? MAGIC_V12
+          : version === 11
+            ? MAGIC_V11
+            : version === 10
+              ? MAGIC_V10
+              : version === 9
+                ? MAGIC_V9
+                : version === 8
+                  ? MAGIC_V8
+                  : version === 7
+                    ? MAGIC_V7
+                    : version === 6
+                      ? MAGIC_V6
+                      : version === 5
+                        ? MAGIC_V5
+                        : version === 4
+                          ? MAGIC_V4
+                          : version === 3
+                            ? MAGIC_V3
+                            : MAGIC;
   return {
     schema:
-      version === 13
-        ? "render-stream-13-decoded/1"
-        : version === 12
-          ? "render-stream-12-decoded/1"
-          : version === 11
-            ? "render-stream-11-decoded/1"
-            : version === 10
-              ? "render-stream-10-decoded/1"
-              : version === 9
-                ? "render-stream-9-decoded/1"
-                : version === 8
-                  ? "render-stream-8-decoded/1"
-                  : version === 7
-                    ? "render-stream-7-decoded/1"
-                    : version === 6
-                      ? "render-stream-6-decoded/1"
-                      : version === 5
-                        ? "render-stream-5-decoded/1"
-                        : version === 4
-                          ? "render-stream-4-decoded/1"
-                          : version === 3
-                            ? "render-stream-3-decoded/1"
-                            : "render-stream-2-decoded/1",
+      version === 14
+        ? "render-stream-14-decoded/1"
+        : version === 13
+          ? "render-stream-13-decoded/1"
+          : version === 12
+            ? "render-stream-12-decoded/1"
+            : version === 11
+              ? "render-stream-11-decoded/1"
+              : version === 10
+                ? "render-stream-10-decoded/1"
+                : version === 9
+                  ? "render-stream-9-decoded/1"
+                  : version === 8
+                    ? "render-stream-8-decoded/1"
+                    : version === 7
+                      ? "render-stream-7-decoded/1"
+                      : version === 6
+                        ? "render-stream-6-decoded/1"
+                        : version === 5
+                          ? "render-stream-5-decoded/1"
+                          : version === 4
+                            ? "render-stream-4-decoded/1"
+                            : version === 3
+                              ? "render-stream-3-decoded/1"
+                              : "render-stream-2-decoded/1",
     magic: toHex(magic),
     records,
   };
@@ -6220,12 +6288,15 @@ export function createRs13Unpredictor(
   };
 }
 
-/** Every record of a /13 recording with its transactions' blocks un-predicted (the /12 blocks in
- * the /13 framing); throws the first decode, meta or predict-check error. */
-function rs13PlainRecords(records: RawRecord[]): RawRecord[] {
+/** Every record of a /13 (or /14) recording with its transactions' blocks un-predicted (the /12
+ * blocks in the /13 framing); throws the first decode, meta or predict-check error. */
+function rs13PlainRecords(
+  records: RawRecord[],
+  version: 13 | 14 = 13,
+): RawRecord[] {
   const unpredictor = createRs13Unpredictor();
   return records.map((raw) => {
-    const decoded = decodeRecord(raw, 13, { recordDigest: "deferred" });
+    const decoded = decodeRecord(raw, version, { recordDigest: "deferred" });
     if (decoded.errors.length > 0 || decoded.record === undefined)
       throw new Error(
         decoded.errors[0] ??
@@ -9612,7 +9683,7 @@ export function setValidatorPhaseTimer(
 
 export function createRecordingValidator(
   records: RawRecord[],
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 = 6,
   options?: RecordingValidatorOptions,
 ): RecordingValidator {
   const recordDigest = options?.recordDigest ?? "inline";
@@ -9630,7 +9701,7 @@ export function createRecordingValidator(
   // render-stream-12.md: the particles rules (isV11 means "V11 or later").
   // render-stream-13.md "As built (W13a)": /13 is /12 plus the predicted blocks (isV12 means
   // "V12 or later").
-  const isV13 = version === 13;
+  const isV13 = version >= 13;
   const isV12 = version === 12 || isV13;
   const isV11 = version === 11 || isV12;
   const earlyPrune = isV11 && options?.sabotage === "early-prune";
@@ -10806,7 +10877,7 @@ export function createRecordingValidator(
 /** Whole-file validation: `createRecordingValidator` over every record of `data`, in order. */
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 = 6,
   options?: RecordingValidatorOptions,
 ): string[] {
   const split = splitRecords(data, version);
@@ -11109,7 +11180,8 @@ export interface ResolvedRecording {
     | "render-stream-10-resolved/1"
     | "render-stream-11-resolved/1"
     | "render-stream-12-resolved/1"
-    | "render-stream-13-resolved/1";
+    | "render-stream-13-resolved/1"
+    | "render-stream-14-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
@@ -11118,18 +11190,19 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 = 6,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
   if (sessionRecord.meta.type !== "session")
     throw new Error("missing-session: the first record is not a session");
   const sessionMeta = sessionRecord.meta;
-  const isV11 = version === 11 || version === 12 || version === 13;
+  const isV11 = version === 11 || version === 12 || version >= 13;
   // /11 reads each transaction's raw mesh_u8 block (body_sha256), which the decoded form drops;
   // /13 its reconstructed /12 block.
   const raws = isV11 ? splitRecords(data, version).records : [];
-  const plainRaws = version === 13 ? rs13PlainRecords(raws) : raws;
+  const plainRaws =
+    version === 13 || version === 14 ? rs13PlainRecords(raws, version) : raws;
 
   let state = emptyResolvedState();
   const transactions: ResolvedTransaction[] = [];
@@ -11196,29 +11269,31 @@ export function resolveRecording(
   }
   return {
     schema:
-      version === 13
-        ? "render-stream-13-resolved/1"
-        : version === 12
-          ? "render-stream-12-resolved/1"
-          : version === 11
-            ? "render-stream-11-resolved/1"
-            : version === 10
-              ? "render-stream-10-resolved/1"
-              : version === 9
-                ? "render-stream-9-resolved/1"
-                : version === 8
-                  ? "render-stream-8-resolved/1"
-                  : version === 7
-                    ? "render-stream-7-resolved/1"
-                    : version === 6
-                      ? "render-stream-6-resolved/1"
-                      : version === 5
-                        ? "render-stream-5-resolved/1"
-                        : version === 4
-                          ? "render-stream-4-resolved/1"
-                          : version === 3
-                            ? "render-stream-3-resolved/1"
-                            : "render-stream-2-resolved/1",
+      version === 14
+        ? "render-stream-14-resolved/1"
+        : version === 13
+          ? "render-stream-13-resolved/1"
+          : version === 12
+            ? "render-stream-12-resolved/1"
+            : version === 11
+              ? "render-stream-11-resolved/1"
+              : version === 10
+                ? "render-stream-10-resolved/1"
+                : version === 9
+                  ? "render-stream-9-resolved/1"
+                  : version === 8
+                    ? "render-stream-8-resolved/1"
+                    : version === 7
+                      ? "render-stream-7-resolved/1"
+                      : version === 6
+                        ? "render-stream-6-resolved/1"
+                        : version === 5
+                          ? "render-stream-5-resolved/1"
+                          : version === 4
+                            ? "render-stream-4-resolved/1"
+                            : version === 3
+                              ? "render-stream-3-resolved/1"
+                              : "render-stream-2-resolved/1",
     session_id: sessionMeta.session_id,
     stream_id: sessionMeta.stream.stream_id,
     transactions,

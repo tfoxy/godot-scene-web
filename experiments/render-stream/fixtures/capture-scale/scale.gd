@@ -38,6 +38,9 @@ extends Node2D
 ##   RS_SCALE_NODE_BURST [0] at RS_SCALE_NODE_BURST_FRAME [warmup + 30]  that many more such nodes
 ##                                added in one frame (a screen load)
 ##   RS_SCALE_NODE_CHURN [0]      such nodes added, and as many of the oldest freed, every frame
+##   RS_SCALE_FILTER_FLIPS [0] from RS_SCALE_FILTER_FLIP_FRAME [warmup + 60]  ID3: that many of
+##                                those nodes a frame, round robin, toggle set_mouse_filter between
+##                                STOP and IGNORE (each a real change: one property_list_changed)
 ##   RS_SCALE_RESOURCE_CHURN [0]  LAR0 (registry-cost): that many resource triples (a mesh_create,
 ##                                a shader_create and a material_create; no texture, whose payload
 ##                                copy, hash and store write would drown the registry in I/O noise
@@ -90,6 +93,9 @@ var _node_serial: int = 0
 var _node_burst: int = 0
 var _node_burst_frame: int = 0
 var _node_churn: int = 0
+var _filter_flips: int = 0
+var _filter_flip_frame: int = 0
+var _flip_cursor: int = 0
 var _warmup: int = 120
 var _window_start_us: int = 0
 var _last_us: int = 0
@@ -140,6 +146,8 @@ func _ready() -> void:
 	_node_burst = _env_int("RS_SCALE_NODE_BURST", 0)
 	_node_burst_frame = _env_int("RS_SCALE_NODE_BURST_FRAME", _warmup + 30)
 	_node_churn = _env_int("RS_SCALE_NODE_CHURN", 0)
+	_filter_flips = _env_int("RS_SCALE_FILTER_FLIPS", 0)
+	_filter_flip_frame = _env_int("RS_SCALE_FILTER_FLIP_FRAME", _warmup + 60)
 	_churn = _env_int("RS_SCALE_RESOURCE_CHURN", 0)
 	_cpu_report = _env_int("RS_SCALE_CPU_REPORT", 0) != 0
 	if _cpu_report and not FileAccess.file_exists("/proc/thread-self/schedstat"):
@@ -350,6 +358,15 @@ func _process(_delta: float) -> void:
 			for c: int in mini(_node_churn, _node_root.get_child_count()):
 				_node_root.get_child(c).queue_free()
 			_add_nodes(_node_churn)
+		if _filter_flips > 0 and _frame >= _filter_flip_frame:
+			var count: int = _node_root.get_child_count()
+			for k: int in mini(_filter_flips, count):
+				var rect := _node_root.get_child(_flip_cursor % count) as Control
+				_flip_cursor += 1
+				if rect.mouse_filter == Control.MOUSE_FILTER_STOP:
+					rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+				else:
+					rect.mouse_filter = Control.MOUSE_FILTER_STOP
 	if _frame >= _quit_frame:
 		_report()
 		get_tree().quit()

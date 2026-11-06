@@ -1306,7 +1306,7 @@ mod tests {
     fn fast_path_matches_the_general_path() {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut hits = 0;
-        for v in 2..=13u8 {
+        for v in 2..=wire::LATEST {
             let dir = base.join(format!("../protocol/golden-{v}"));
             for f in [
                 "predict",

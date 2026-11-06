@@ -2459,7 +2459,7 @@ fn blocks_mark(meta: &[u8]) -> Option<usize> {
 }
 
 /// A record with meta `meta` and the body (block count and blocks) `body`.
-fn make_record(out: &mut Vec<u8>, meta_parts: &[&[u8]], body: &[u8]) {
+pub(crate) fn make_record(out: &mut Vec<u8>, meta_parts: &[&[u8]], body: &[u8]) {
     let meta_len: usize = meta_parts.iter().map(|p| p.len()).sum();
     out.extend_from_slice(&((4 + meta_len + body.len()) as u32).to_le_bytes());
     out.extend_from_slice(&(meta_len as u32).to_le_bytes());
@@ -2655,7 +2655,7 @@ pub fn predict_record(
 // --------------------------------------------------------------------------- transcode
 
 /// A session record with its `protocol` swapped (`from` → `to`, first occurrence).
-fn swap_protocol(record: &[u8], from: &[u8], to: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
+pub(crate) fn swap_protocol(record: &[u8], from: &[u8], to: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
     let meta_len = wire::le_u32(record, 4) as usize;
     let meta = &record[8..8 + meta_len];
     let Some(i) = meta.windows(from.len()).position(|w| w == from) else {
@@ -2702,7 +2702,7 @@ fn edit_int(meta: &[u8], key: &[u8], f: impl FnOnce(i64) -> Option<i64>) -> Vec<
 
 /// `_fix_end`: `stats.bytes_total` moves by the size change; `stats.max_record_bytes` becomes
 /// the output's own maximum when the input's was its own.
-fn fix_end(record: &[u8], out_lens: &[usize], in_lens: &[usize], out: &mut Vec<u8>) {
+pub(crate) fn fix_end(record: &[u8], out_lens: &[usize], in_lens: &[usize], out: &mut Vec<u8>) {
     let meta_len = wire::le_u32(record, 4) as usize;
     let meta = &record[8..8 + meta_len];
     let delta = out_lens.iter().sum::<usize>() as i64 - in_lens.iter().sum::<usize>() as i64;

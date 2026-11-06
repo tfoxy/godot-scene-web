@@ -475,6 +475,7 @@ struct ItemMetaState {
   std::string config_error;
   uint32_t grant = 0;
   uint64_t budget_us = 2000;
+  uint64_t sweep = 64;  // ID3: GRC_ITEM_META_SWEEP
   std::string sabotage;
   rs::item_meta::Request file;  // the file sinks' grant (empty: no records in recordings)
   uint64_t hub_version = ~uint64_t{0};
@@ -862,7 +863,8 @@ std::string result_json() {
   if (g_stream.gate8.speaks_v8()) {
     json.key("gate8").object_begin();
     json.field("file_stream_version", static_cast<int64_t>(
-                   g_stream.gate8.speaks_v13()   ? 13
+                   g_stream.gate8.speaks_v14()   ? 14
+                   : g_stream.gate8.speaks_v13() ? 13
                    : g_stream.gate8.speaks_v12() ? 12
                    : g_stream.gate8.speaks_v11() ? 11
                    : g_stream.gate8.speaks_v10()
@@ -1720,18 +1722,27 @@ void item_meta_configure() {
   } else if (!env_positive("GRC_ITEM_META_BUDGET_US", 2000, &g_meta.budget_us)) {
     g_meta.config_ok = false;
     why = "GRC_ITEM_META_BUDGET_US is not a positive number of microseconds";
+  } else if (!env_non_negative("GRC_ITEM_META_SWEEP", 64, &g_meta.sweep)) {
+    // ID3 (client-extensions-design.md ID-D4): Controls whose mouse_filter is re-read a frame.
+    g_meta.config_ok = false;
+    why = "GRC_ITEM_META_SWEEP is not a non-negative number of Controls";
   } else if (!sabotage.empty() && sabotage != "in-shared" && sabotage != "skip-full" &&
-             sabotage != "id-off-by-one" && sabotage != "before-ready") {
+             sabotage != "id-off-by-one" && sabotage != "before-ready" &&
+             sabotage != "restamp-skip" && sabotage != "raw-filter" &&
+             sabotage != "instance-of-root" && sabotage != "leak-connections" &&
+             sabotage != "v2-at-13") {
     g_meta.config_ok = false;
     why = "GRC_ITEM_META_SABOTAGE \"" + sabotage +
-          "\" is not in-shared, skip-full, id-off-by-one or before-ready";
+          "\" is not in-shared, skip-full, id-off-by-one, before-ready, restamp-skip, raw-filter, "
+          "instance-of-root, leak-connections or v2-at-13";
   }
   rs::item_meta::Request file;
   file.fields = comma_names(env_string("GRC_ITEM_META_FILE"));
   file.groups = comma_names(env_string("GRC_ITEM_META_FILE_GROUPS"));
   file.meta_keys = comma_names(env_string("GRC_ITEM_META_FILE_KEYS"));
   if (g_meta.config_ok && !file.empty()) {
-    const std::string problem = rs::item_meta::request_problem(file);
+    // ID3: a /14 file sink may record the v2 fields (render-stream-14.md); a /13 one may not.
+    const std::string problem = rs::item_meta::request_problem(file, g_stream.gate8.speaks_v14());
     if (!problem.empty()) {
       g_meta.config_ok = false;
       why = "GRC_ITEM_META_FILE: " + problem;
@@ -1748,6 +1759,13 @@ void item_meta_configure() {
   }
   g_meta.sabotage = sabotage;
   g_meta.host.configure(g_meta.budget_us, sabotage == "before-ready");
+  rs::item_meta::Host::V2Options v2;
+  v2.sweep = g_meta.sweep;
+  v2.restamp_skip = sabotage == "restamp-skip";
+  v2.raw_filter = sabotage == "raw-filter";
+  v2.instance_of_root = sabotage == "instance-of-root";
+  v2.leak_connections = sabotage == "leak-connections";
+  g_meta.host.configure_v2(v2);
   const std::string log_path = env_string("GRC_ITEM_META_LOG");
   if (g_meta.grant != 0 && !log_path.empty()) {
     std::FILE *log = std::fopen(log_path.c_str(), "w");  // closed at exit (a test knob)
@@ -1759,6 +1777,9 @@ void item_meta_configure() {
   if (g_meta.grant != 0) {
     log_line("item_meta: grant " + rs::item_meta::grant_env_string(g_meta.grant) +
              " budget_us " + std::to_string(g_meta.budget_us) +
+             ((g_meta.grant & rs::item_meta::kMouseFilter) != 0
+                  ? " sweep " + std::to_string(g_meta.sweep)
+                  : std::string()) +
              (g_meta.file.empty() ? std::string()
                                   : " file " + rs::item_meta::grant_json(g_meta.file)) +
              (sabotage.empty() ? std::string() : " (sabotage " + sabotage + ")"));
@@ -2820,7 +2841,9 @@ void stream_start() {
   // PM5: GRC_STREAM_VERSION=12 selects /12 (render-stream-12.md).
   // W13b: GRC_STREAM_VERSION=13 selects /13 (render-stream-13.md "As built (W13b)"): /12's
   // snapshots, each sink and connection predicting its own blocks.
-  session.version = g_stream.gate8.speaks_v13()   ? rs2::ProtocolVersion::V13
+  // ID3: GRC_STREAM_VERSION=14 selects /14 (render-stream-14.md): /13 plus item_meta v2.
+  session.version = g_stream.gate8.speaks_v14()   ? rs2::ProtocolVersion::V14
+                    : g_stream.gate8.speaks_v13() ? rs2::ProtocolVersion::V13
                     : g_stream.gate8.speaks_v12() ? rs2::ProtocolVersion::V12
                     : g_stream.gate8.speaks_v11() ? rs2::ProtocolVersion::V11
                     : g_stream.gate8.speaks_v10() ? rs2::ProtocolVersion::V10
@@ -3287,10 +3310,29 @@ void stream_start() {
     // first under GRC_STREAM_VERSION=8, and alone under a gate 8 policy. A /8 upgrade carries the
     // token in the hello like /7's.
     server_config.subprotocols = rs::gate8_live_subprotocols(g_stream.gate8);
+    // ID3 (render-stream-14.md "Who speaks /14"): render-stream.14 is listed first only when the
+    // grant names a v2 field and the listener speaks /13; otherwise the list is unchanged.
+    item_meta_configure();
+    if ((g_meta.grant & rs::item_meta::kV2Fields) != 0 &&
+        std::find(server_config.subprotocols.begin(), server_config.subprotocols.end(),
+                  rs2::kSubprotocolV13) != server_config.subprotocols.end() &&
+        std::find(server_config.subprotocols.begin(), server_config.subprotocols.end(),
+                  rs2::kSubprotocolV14) == server_config.subprotocols.end()) {
+      server_config.subprotocols.insert(server_config.subprotocols.begin(),
+                                        rs2::kSubprotocolV14);
+    }
     server_config.hello_token_subprotocols = {rs2::kSubprotocolV7, rs2::kSubprotocolV8,
                                                    rs2::kSubprotocolV9, rs2::kSubprotocolV10,
                                                    rs2::kSubprotocolV11, rs2::kSubprotocolV12,
-                                                   rs2::kSubprotocolV13};
+                                                   rs2::kSubprotocolV13, rs2::kSubprotocolV14};
+    {
+      // ID3: the list itself, for the pure-path check (identical without a v2 grant).
+      std::string names;
+      for (const std::string &name : server_config.subprotocols) {
+        names += (names.empty() ? "" : ",") + name;
+      }
+      log_line("live: subprotocols " + names);
+    }
     server_config.auth_token = live_auth_token;  // G2e: empty unless GRC_LIVE_AUTH=token.
     server_config.allowed_origins = g_live.allowed_origins;  // G7n
     server_config.allow_non_loopback = g_live.expose == live::Expose::Lan;  // CAR2 (checked above)
@@ -3857,6 +3899,10 @@ void stream_finish(rs2::EndReason reason) {
   rs::adopt_resources_end();  // G8r
   live_drain(g_state.frames_total);  // G2c2: GETs answered so far reach the hook log first
   resources_finish();
+  // ID3 (client-extensions-design.md ID-D9): the disarm undoes every property_list_changed
+  // connection and clears the change queue and the sweep (no frame forms a record after this);
+  // live_close_and_stop then clears the rest of the union with g_meta, as TAG1 does.
+  g_meta.host.v2_off();
   live_finish(reason, reason == rs2::EndReason::Shutdown);
   if (g_stream.publisher == nullptr) {
     g_stream.status = "closed";
@@ -4228,7 +4274,7 @@ void item_meta_frame(uint64_t frame) {
       const std::uint32_t fields = want.field_bits() | g_meta.file.field_bits();
       want.fields.clear();
       for (int i = 0; i < rs::item_meta::kFieldCount; ++i) {
-        if ((fields & (1u << i)) != 0) {
+        if ((fields & rs::item_meta::field_bit(i)) != 0) {
           want.fields.push_back(rs::item_meta::kFieldNames[i]);
         }
       }

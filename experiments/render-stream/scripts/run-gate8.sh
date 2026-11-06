@@ -195,6 +195,22 @@
 #       grant set, nobody asks: the host resolves nothing) and the GRC_ITEM_META_SABOTAGE legs
 #       `sabotage-{in-shared,before-ready,skip-full,id-off-by-one}`. Judged by
 #       lib/gate8-tag-checks.ts.
+#   g8id14 (ID3, render-stream-14.md, client-extensions-design.md "Identity v2": item_meta v2, the
+#       `instance_id` and `mouse_filter` columns and re-stamped rows; every leg under g8id14/): the
+#       imports (tag-scene, gate6-scene); then fixtures/tag-scene hosts under RS_FIXTURE_TAG_V2 (filter
+#       flips at steps 40 and 50, a recursive disable at 60), armed late as g8tag at /13 with the
+#       full v2 grant and disarmed after 450 armed frames (GRC_DISARM_AFTER_FRAMES; the fixture dumps
+#       again at its quit), with lib/coding-receiver.ts viewers at /14 (and /13): `live` (A, B ask v2,
+#       C at /13 asks nothing, D joins after step 60), `reconnect` (E closes after 60 transactions, F
+#       connects after it), `one` (A), `sweep0` and `sweep4` (GRC_ITEM_META_SWEEP), `file` (both /14
+#       file sinks with the v2 fields, no viewer); the pure path at /13 on capture-scale and
+#       gate6-scene (`pure/<fx>-{off,grant}/capture`: run_capture's file sinks with no grant and with
+#       the v2 grant; `pure/<fx>-live-{off,grant}`: live, a /13 viewer asking nothing, one asking /13
+#       fields and one asking v2 names at /13, refused); and the GRC_ITEM_META_SABOTAGE legs
+#       `sabotage-{restamp-skip (SWEEP=0),raw-filter (SWEEP=4),instance-of-root,leak-connections}`
+#       and `sabotage-v2-at-13` (pure/scale-live-grant's config). G8ID14_ONLY_PURE=1 runs the imports
+#       and the pure legs only (the merge-base regression), G8ID14_ONLY_COST=1 the `id-cost` timing
+#       group only. Judged by lib/gate8-id14-checks.ts.
 #   g8tag2 (TAG2, client-extensions-design.md "As built (TAG2)": the GSW client's extension API and
 #       override table; every leg under g8tag2/): the fixture import and the client core
 #       (packages/render-stream-client/scripts/build-web.sh into g8tag2/core); then per leg one headless
@@ -332,11 +348,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8tag2 g8id g8rec1 g8htr g8tdr)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8rec1 g8htr g8tdr)
 # GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
 # is not in the default run: g8w11 already runs the native half of those legs.
-DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8tag2 g8id g8rec1 g8htr g8tdr)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8tag2 g8id g8rec1 g8htr g8tdr)
+DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8rec1 g8htr g8tdr)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8rec1 g8htr g8tdr)
 
 EXTENSION=""
 CALIBRATION=""
@@ -2190,6 +2206,244 @@ run_g8tag() {
 	run_g8tag_leg sabotage-skip-full GRC_ITEM_META_SABOTAGE=skip-full GRC_SABOTAGE=drop-message \
 		GRC_SABOTAGE_FRAME=150 -- "a|$z|1|$r|"
 	run_g8tag_leg sabotage-id-off-by-one GRC_ITEM_META_SABOTAGE=id-off-by-one -- "a|$z|2|$r|"
+}
+
+# ID3 (client-extensions-design.md "Identity v2", render-stream-14.md): item_meta v2 (instance_id,
+# mouse_filter, re-stamped rows) on fixtures/tag-scene's RS_FIXTURE_TAG_V2 variant, the /14 file
+# sinks, the pure path on capture-scale and gate6-scene, and (G8ID14_ONLY_COST=1) the cost legs.
+# A viewer spec is name|offer|window|version|item_meta request ("" asks nothing)|extra
+# coding-receiver args.
+ID_REQUEST='{"fields":["class","script","scene","path","instance_id","mouse_filter"],"groups":["rs_hand","rs_text","rs_none"],"meta_keys":["rs_tag","rs_slot","rs_missing"]}'
+ID_REQUEST_13='{"fields":["class","script","scene","path"],"groups":[],"meta_keys":[]}'
+ID_REQUEST_V2_AT_13='{"fields":["class","instance_id","mouse_filter"],"groups":[],"meta_keys":[]}'
+ID_GRANT=class,script,scene,path,instance_id,mouse_filter,groups,meta
+ID_QUIT=600
+ID_DISARM=450
+# G8ID14_ONLY_PURE=1 runs only the imports and the pure legs (the merge-base regression: run it with
+# the base build's --extension and G8ID14_PURE_GRANT=class,script,scene,path,groups,meta, a grant the
+# base parses, then cmp-rec.ts --tree the two g8id14/pure trees). G8ID14_ONLY_COST=1 runs only the
+# id-cost timing group (capture-scale, real time, exclusive quiet lock): read only id-cost from it.
+G8ID14_ONLY_PURE="${G8ID14_ONLY_PURE:-0}"
+G8ID14_ONLY_COST="${G8ID14_ONLY_COST:-0}"
+G8ID14_PURE_GRANT="${G8ID14_PURE_GRANT:-$ID_GRANT}"
+
+# run_g8id14_viewers <dir> <port> <spec...>: the viewers, started together, waited for.
+run_g8id14_viewers() {
+	local dir="$1" port="$2" spec name offer win version request extra
+	shift 2
+	local -a pids=()
+	for spec in "$@"; do
+		IFS='|' read -r name offer win version request extra <<<"$spec"
+		mkdir -p "$dir/$name"
+		local -a vargs=(--url "ws://127.0.0.1:$port/render-stream" --out "$dir/$name"
+			--offer "$offer" --window "$win" --version "$version" --timeout-s 90)
+		[ -n "$request" ] && vargs+=(--item-meta "$request")
+		# shellcheck disable=SC2206 # extra: whitespace-separated coding-receiver flags
+		[ -n "$extra" ] && vargs+=($extra)
+		(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
+			"$SCRIPT_DIR/lib/coding-receiver.ts" "${vargs[@]}") >"$dir/$name/stdout.log" 2>&1 &
+		pids+=("$!")
+	done
+	for spec in "${pids[@]}"; do
+		wait "$spec" || true
+	done
+}
+
+# run_g8id14_host <dir> <fixture dir> [env word...] -- [viewer spec...]: one headless host at
+# <dir>/host (--max-fps 60, /13 unless the words say otherwise; later words win). With viewer
+# specs: a listener, a tap and the viewers, the frame held until those started without a delay say
+# hello (GRC_LIVE_AWAIT_HELLOS), so lockstep viewers share bytes from their first transaction.
+run_g8id14_host() {
+	local dir="$1" fixture="$2" waited=0 port="" pid spec
+	shift 2
+	local -a henv=()
+	while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+		henv+=("$1")
+		shift
+	done
+	shift
+	local host="$dir/host"
+	mkdir -p "$host/evidence" "$host/tap"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$host/evidence" GRC_STREAM_VERSION=13
+	)
+	if [ $# -gt 0 ]; then
+		local together=0
+		for spec in "$@"; do
+			[[ "$spec" == *connect-delay* ]] || together=$((together + 1))
+		done
+		LEG_ENV+=(GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_TAP_DIR="$host/tap" GRC_LIVE_MAX_CONNECTIONS="$#"
+			GRC_LIVE_AWAIT_HELLO_MS=30000 GRC_LIVE_AWAIT_HELLOS="$together")
+	fi
+	LEG_ENV+=("${henv[@]}")
+	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$fixture"
+	pid="$BG_PID"
+	[ -z "$pid" ] && return 0
+	if [ $# -gt 0 ]; then
+		while [ "$waited" -lt 400 ] && [ ! -s "$host/evidence/live.json" ] && kill -0 "$pid" 2>/dev/null; do
+			sleep 0.05
+			waited=$((waited + 1))
+		done
+		if grep -q '"status": "listening"' "$host/evidence/live.json" 2>/dev/null; then
+			port="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$host/evidence/live.json")"
+		fi
+		if [ -z "$port" ]; then
+			echo "the live host is not listening (see $host/evidence/live.json)" >"$dir/skipped.txt"
+		else
+			run_g8id14_viewers "$dir" "$port" "$@"
+		fi
+	fi
+	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
+}
+
+# run_g8id14_leg <leg> [env word...] -- [viewer spec...]: a tag-scene V2 host under g8id14/<leg>, armed
+# late (frame 12) with GRC_ADOPT=arm and GRC_UNKNOWN_ITEM=skip, the full v2 grant, the fixture's
+# oracle and the capture's id log, disarmed after ID_DISARM armed frames (the fixture dumps again
+# at its quit frame, after the disarm). The steps start 90 frames after the first hello with
+# viewers, 20 frames in without.
+run_g8id14_leg() {
+	local leg="$1"
+	shift
+	local -a henv=()
+	while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+		henv+=("$1")
+		shift
+	done
+	shift
+	local host="$OUT/g8id14/$leg/host" start=20
+	[ $# -gt 0 ] && start=90
+	run_g8id14_host "$OUT/g8id14/$leg" "$TAG_DIR" GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip \
+		GRC_ROOT_SIZE=presentation:640x360 RS_FIXTURE_ARM=late RS_FIXTURE_QUIT_FRAME="$ID_QUIT" \
+		RS_FIXTURE_TAG_V2=1 RS_FIXTURE_TAG_START="$start" GRC_ITEM_META="$ID_GRANT" \
+		RS_FIXTURE_TAG_LOG="$host/oracle.jsonl" GRC_ITEM_META_LOG="$host/ids.jsonl" \
+		GRC_DISARM_AFTER_FRAMES="$ID_DISARM" "${henv[@]}" -- "$@"
+}
+
+# The pure path (client-extensions-design.md "Identity v2": the pure-path check), at /13 on
+# capture-scale (g8w11's scale shape) and gate6-scene (animate): file sinks with no grant and with
+# the v2 grant and nobody asking (run_capture, as g8w11), and live with a /13 viewer asking nothing
+# (no grant; the v2 grant), one asking /13 fields and one asking v2 fields at /13 (refused).
+run_g8id14_pure() {
+	local fx dir env_name quit
+	RECORDING_NAME=recording.rs13
+	PATCH_RECORDING_NAME=recording-patch.rs13
+	for fx in scale scene; do
+		if [ "$fx" = scale ]; then
+			dir="$G8W11_SCALE_DIR" quit="$G8W11_SCALE_QUIT"
+			local -a fenv=("${G8W11_SCALE_ENV[@]}")
+		else
+			dir="$G8W11_SCENE_DIR" quit="$G8W11_SCENE_QUIT"
+			local -a fenv=(GRC_ROOT_SIZE=enforce-min-size RS_FIXTURE_VARIANT=animate)
+		fi
+		echo "run-gate8: g8id14 pure/$fx-off (/13 file sinks, no grant)"
+		CAPTURE_FIXTURE_DIR="$dir"
+		CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=13 "${fenv[@]}")
+		run_capture "$OUT/g8id14/pure/$fx-off/capture" "$quit" none
+		echo "run-gate8: g8id14 pure/$fx-grant (/13 file sinks, GRC_ITEM_META=$G8ID14_PURE_GRANT, nobody asks)"
+		CAPTURE_FIXTURE_DIR="$dir"
+		CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=13 "${fenv[@]}" GRC_ITEM_META="$G8ID14_PURE_GRANT")
+		run_capture "$OUT/g8id14/pure/$fx-grant/capture" "$quit" none
+		local h="$OUT/g8id14/pure/$fx-live-off/host" z="zstd-base,zstd"
+		echo "run-gate8: g8id14 pure/$fx-live-off (live, no grant, a /13 viewer asking nothing)"
+		run_g8id14_host "$OUT/g8id14/pure/$fx-live-off" "$dir" "${fenv[@]}" RS_FIXTURE_QUIT_FRAME=240 \
+			GRC_STREAM_OUT="$h/recording.rs13" GRC_STREAM_PATCH_OUT="$h/recording-patch.rs13" \
+			GRC_RESOURCE_STORE_DIR="$h/store" -- "c|$z|2|13||"
+		h="$OUT/g8id14/pure/$fx-live-grant/host"
+		echo "run-gate8: g8id14 pure/$fx-live-grant (live, the v2 grant: /13 viewers asking nothing, /13 fields, v2 fields)"
+		run_g8id14_host "$OUT/g8id14/pure/$fx-live-grant" "$dir" "${fenv[@]}" RS_FIXTURE_QUIT_FRAME=240 \
+			GRC_ITEM_META="$G8ID14_PURE_GRANT" GRC_STREAM_OUT="$h/recording.rs13" \
+			GRC_STREAM_PATCH_OUT="$h/recording-patch.rs13" GRC_RESOURCE_STORE_DIR="$h/store" -- \
+			"c|$z|2|13||" "t|$z|2|13|$ID_REQUEST_13|" "r|$z|2|13|$ID_REQUEST_V2_AT_13|--connect-delay-ms 1500"
+		if [ "$fx" = scale ] && [ "$G8ID14_ONLY_PURE" != 1 ]; then
+			h="$OUT/g8id14/sabotage-v2-at-13/host"
+			echo "run-gate8: g8id14 sabotage-v2-at-13 (pure/scale-live-grant, the v2 names accepted at /13)"
+			run_g8id14_host "$OUT/g8id14/sabotage-v2-at-13" "$dir" "${fenv[@]}" RS_FIXTURE_QUIT_FRAME=240 \
+				GRC_ITEM_META="$G8ID14_PURE_GRANT" GRC_ITEM_META_SABOTAGE=v2-at-13 GRC_STREAM_OUT="$h/recording.rs13" \
+				GRC_STREAM_PATCH_OUT="$h/recording-patch.rs13" GRC_RESOURCE_STORE_DIR="$h/store" -- \
+				"c|$z|2|13||" "t|$z|2|13|$ID_REQUEST_13|" "r|$z|2|13|$ID_REQUEST_V2_AT_13|--connect-delay-ms 1500"
+		fi
+	done
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+}
+
+# id-cost (G8ID14_ONLY_COST=1): capture-scale at its default scale, /13, live, one coded viewer at
+# window 2 and a late joiner, real time under the exclusive quiet lock: 2,000 ColorRect nodes, a
+# 1,700-node burst at frame 500, 4 filter flips a frame from frame 700, 900 frames. Configs: the v2
+# grant with the viewers asking TAG1's fields (`fields13`) or those plus the v2 fields (`v2`), the
+# grant with a viewer asking nothing (`grant-off`), and no grant (`no-grant`).
+ID_COST_ENV=(RS_FIXTURE_ARM=born GRC_ROOT_SIZE=presentation:1920x1080 RS_FIXTURE_QUIT_FRAME=900
+	RS_SCALE_NODES=2000 RS_SCALE_NODE_BURST=1700 RS_SCALE_NODE_BURST_FRAME=500 RS_SCALE_FILTER_FLIPS=4
+	RS_SCALE_FILTER_FLIP_FRAME=700 GRC_VALIDATION_LOG=off)
+ID_COST_REQ13='{"fields":["class","script","scene","path"],"groups":["scale_tagged"],"meta_keys":["scale_tag","scale_slot"]}'
+ID_COST_REQV2='{"fields":["class","script","scene","path","instance_id","mouse_filter"],"groups":["scale_tagged"],"meta_keys":["scale_tag","scale_slot"]}'
+run_g8id14_cost() {
+	local -a dirs=()
+	local c z="zstd-base,zstd"
+	for c in fields13 v2 grant-off no-grant; do
+		dirs+=("$OUT/g8id14/id-cost/$c")
+	done
+	legs_skip_group id-cost "${dirs[@]}" && return 0
+	LEGS_TIMING_GROUP=id-cost
+	echo "run-gate8: g8id14 id-cost/fields13 (the v2 grant, TAG1's fields asked)"
+	run_g8id14_host "$OUT/g8id14/id-cost/fields13" "$G8W11_SCALE_DIR" "${ID_COST_ENV[@]}" GRC_ITEM_META="$ID_GRANT" -- \
+		"a|$z|2|13|$ID_COST_REQ13|" "d|$z|2|13|$ID_COST_REQ13|--connect-delay-ms 11500"
+	echo "run-gate8: g8id14 id-cost/v2 (the v2 grant, the v2 fields asked)"
+	run_g8id14_host "$OUT/g8id14/id-cost/v2" "$G8W11_SCALE_DIR" "${ID_COST_ENV[@]}" GRC_ITEM_META="$ID_GRANT" -- \
+		"a|$z|2|14|$ID_COST_REQV2|" "d|$z|2|14|$ID_COST_REQV2|--connect-delay-ms 11500"
+	echo "run-gate8: g8id14 id-cost/grant-off (the v2 grant, a viewer asking nothing)"
+	run_g8id14_host "$OUT/g8id14/id-cost/grant-off" "$G8W11_SCALE_DIR" "${ID_COST_ENV[@]}" GRC_ITEM_META="$ID_GRANT" -- \
+		"a|$z|2|13||"
+	echo "run-gate8: g8id14 id-cost/no-grant (no grant, a viewer asking nothing)"
+	run_g8id14_host "$OUT/g8id14/id-cost/no-grant" "$G8W11_SCALE_DIR" "${ID_COST_ENV[@]}" -- "a|$z|2|13||"
+	LEGS_TIMING_GROUP=""
+}
+
+run_g8id14() {
+	echo "run-gate8: g8id14 imports (fixtures/tag-scene, fixtures/gate6-scene)"
+	LEG_ENV=()
+	run_headless "$OUT/g8id14/import" none -- mise exec -- godot --headless --path "$TAG_DIR" --import
+	LEG_ENV=()
+	run_headless "$OUT/g8id14/import-scene" none -- mise exec -- godot --headless --path "$G8W11_SCENE_DIR" --import
+	# The checks validate through rs-core-check and the viewers decode in rs-gsw-wasm (as g8tag).
+	mkdir -p "$OUT/g8id14"
+	echo "run-gate8: g8id14 build-rs-core.sh (rs-core-check, rs-gsw-wasm)"
+	bash "$SCRIPT_DIR/build-rs-core.sh" >"$OUT/g8id14/build-rs-core.log" 2>&1 || {
+		echo "run-gate8: build-rs-core.sh failed, see $OUT/g8id14/build-rs-core.log" >&2
+		exit 1
+	}
+	if [ "$G8ID14_ONLY_COST" = 1 ]; then
+		run_g8id14_cost
+		return
+	fi
+	if [ "$G8ID14_ONLY_PURE" = 1 ]; then
+		run_g8id14_pure
+		return
+	fi
+	local z="zstd-base,zstd" r="$ID_REQUEST"
+	echo "run-gate8: g8id14 live (A, B ask v2 at /14; C at /13 asks nothing; D joins late at /14)"
+	run_g8id14_leg live -- "a|$z|2|14|$r|" "b|$z|2|14|$r|" "c|$z|2|13||" "d|$z|2|14|$r|--connect-delay-ms 6500"
+	echo "run-gate8: g8id14 reconnect (A; E closes after 60 transactions, F connects after it)"
+	run_g8id14_leg reconnect -- "a|$z|2|14|$r|" "e|$z|1|14|$r|--close-after-tx 60" "f|$z|2|14|$r|--connect-delay-ms 5000"
+	echo "run-gate8: g8id14 one (A alone: the twin of instance-of-root and leak-connections)"
+	run_g8id14_leg one -- "a|$z|2|14|$r|"
+	echo "run-gate8: g8id14 sweep0 (GRC_ITEM_META_SWEEP=0: the signal alone; the twin of restamp-skip)"
+	run_g8id14_leg sweep0 GRC_ITEM_META_SWEEP=0 -- "a|$z|2|14|$r|"
+	echo "run-gate8: g8id14 sweep4 (GRC_ITEM_META_SWEEP=4; the twin of raw-filter)"
+	run_g8id14_leg sweep4 GRC_ITEM_META_SWEEP=4 -- "a|$z|2|14|$r|"
+	echo "run-gate8: g8id14 file (both /14 file sinks with the v2 fields, no viewer)"
+	local fh="$OUT/g8id14/file/host"
+	run_g8id14_leg file GRC_STREAM_VERSION=14 GRC_STREAM_OUT="$fh/recording.rs14" \
+		GRC_STREAM_PATCH_OUT="$fh/recording-patch.rs14" GRC_RESOURCE_STORE_DIR="$fh/store" \
+		GRC_ITEM_META_FILE=class,script,scene,path,instance_id,mouse_filter \
+		GRC_ITEM_META_FILE_GROUPS=rs_hand,rs_text,rs_none GRC_ITEM_META_FILE_KEYS=rs_tag,rs_slot,rs_missing --
+	run_g8id14_pure
+	echo "run-gate8: g8id14 sabotages (restamp-skip, raw-filter, instance-of-root, leak-connections)"
+	run_g8id14_leg sabotage-restamp-skip GRC_ITEM_META_SWEEP=0 GRC_ITEM_META_SABOTAGE=restamp-skip -- "a|$z|2|14|$r|"
+	run_g8id14_leg sabotage-raw-filter GRC_ITEM_META_SWEEP=4 GRC_ITEM_META_SABOTAGE=raw-filter -- "a|$z|2|14|$r|"
+	run_g8id14_leg sabotage-instance-of-root GRC_ITEM_META_SABOTAGE=instance-of-root -- "a|$z|2|14|$r|"
+	run_g8id14_leg sabotage-leak-connections GRC_ITEM_META_SABOTAGE=leak-connections -- "a|$z|2|14|$r|"
 }
 
 # TAG2: one headless tag-scene host (RS_FIXTURE_TAG_VARIANT <variant>, quitting at <quit>) and
@@ -4132,6 +4386,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g8m) run_g8m ;;
 	g8l) run_g8l ;;
 	g8tag) run_g8tag ;;
+	g8id14) run_g8id14 ;;
 	g8tag2) run_g8tag2 ;;
 	g8id) run_g8id ;;
 	g8rec1) run_g8rec1 ;;

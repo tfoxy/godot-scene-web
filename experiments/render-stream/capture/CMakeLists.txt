@@ -564,6 +564,13 @@ target_include_directories(rs_gate8_policy_test PRIVATE src vendor)
 target_link_libraries(rs_gate8_policy_test PRIVATE grc_warnings)
 add_test(NAME rs_gate8_policy COMMAND rs_gate8_policy_test)
 
+# ID3 (render-stream-14.md): item_meta v2's pure half -- the v2 names, grant bits, columns and
+# re-stamped rows -- beside TAG1's /13 rows.
+add_executable(rs_item_meta_test test/rs_item_meta_test.cpp src/rs_item_meta.cpp)
+target_include_directories(rs_item_meta_test PRIVATE src)
+target_link_libraries(rs_item_meta_test PRIVATE grc_warnings)
+add_test(NAME rs_item_meta COMMAND rs_item_meta_test)
+
 # G8kw: the texture worker pool, the publication hold-back and the held hook-log lines
 # (texture-delivery-design.md D11, Q7): async predictions plus jobs resolve to the synchronous
 # snapshots (full-transaction bytes) and log lines; stop/drain/refusal, mispredict, the fault knob.

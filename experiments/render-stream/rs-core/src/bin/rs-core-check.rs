@@ -2,7 +2,7 @@
 //!
 //!   rs-core-check goldens [--dir experiments/render-stream/protocol] [--only 6]
 //!                         [--sabotage skip-payload-hash|early-prune|no-predict-reset]
-//!   rs-core-check transcode --to 12|13 [--stale] [--zr-sabotage overrun|short-run] <in> <out>
+//!   rs-core-check transcode --to 12|13|14 [--stale] [--zr-sabotage overrun|short-run] <in> <out>
 //!   rs-core-check transcode --roundtrip <recording.rs12>...
 //!   rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]
 //!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]
@@ -17,9 +17,12 @@
 //!   rs-core-check lowered <recording> --seqs 8,18,... [--store <dir>]
 //!   rs-core-check state-dump <recording> --seqs 8,18,... --out <dir>
 //!
-//! `goldens` runs golden-2 ... golden-13 (exits non-zero on any failing check). `transcode` (W13a,
+//! `goldens` runs golden-2 ... golden-14 (exits non-zero on any failing check). `transcode` (W13a,
 //! render-stream-13.md "Forms and transcode") converts a /12 recording to /13 or back, refusing an
-//! invalid input with the decoder's error code; `--stale` is the encoder sabotage
+//! invalid input with the decoder's error code. ID3 (render-stream-14.md "Tools"): `--to 13` of a
+//! /14 recording drops its item_meta v2 columns and grant names (and the records and re-stamped
+//! rows left with nothing to say), `--to 12` of a /14 recording goes through that /13 stream, and
+//! `--to 14` re-stamps a /13 recording (magic and protocol). `--stale` is the encoder sabotage
 //! `predict-stale`, `--zr-sabotage` W13r's `zr-overrun` / `zr-short-run`; `--roundtrip` checks /12 → /13 → /12 byte for byte and reports the sizes and
 //! the predicted units by order. `diff` feeds every
 //! record of every input through the validator and writes one JSONL line per record (record sha256,
@@ -37,7 +40,8 @@
 //! `--item-meta-dump <path>` (one recording) writes, after validation (also a failed one, as far as
 //! it got), `{"grant", "strings", "rows": {"<id>": row}, "seen": {"<id>": row}, "full_records",
 //! "delta_records"}`: rows the live table's, seen the last row each id ever had; a row is `null`
-//! (no node) or `{<field>: string|null.., "groups": mask, "meta": {<key>: string|null}}`.
+//! (no node) or `{<field>: string|null.., "groups": mask, "meta": {<key>: string|null}}`, the /14
+//! fields `instance_id` a decimal string or null and `mouse_filter` an int or null.
 
 use render_stream_core::canon;
 use render_stream_core::coding::{self, LiveDecoder, Outcome};
@@ -76,8 +80,8 @@ static GLOBAL: Counting = Counting;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..13>] [--sabotage skip-payload-hash|early-prune|no-predict-reset]\n  \
-         rs-core-check transcode --to 12|13 [--stale] [--zr-sabotage overrun|short-run] <in> <out>\n  \
+        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..14>] [--sabotage skip-payload-hash|early-prune|no-predict-reset]\n  \
+         rs-core-check transcode --to 12|13|14 [--stale] [--zr-sabotage overrun|short-run] <in> <out>\n  \
          rs-core-check transcode --roundtrip <recording.rs12>...\n  \
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
          rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]\n  \
@@ -564,7 +568,8 @@ fn cmd_bench(args: &Args) -> ExitCode {
     }
 }
 
-/// `transcode` (W13a): /12 <-> /13, or `--roundtrip` over /12 recordings.
+/// `transcode` (W13a): /12 <-> /13, or `--roundtrip` over /12 recordings; ID3: /14 -> /13 (and
+/// through it /12), /13 -> /14.
 fn cmd_transcode(args: &Args) -> ExitCode {
     use render_stream_core::predict;
     if args.get("roundtrip").is_some() {
@@ -606,6 +611,7 @@ fn cmd_transcode(args: &Args) -> ExitCode {
     let to = match args.get("to") {
         Some("12") => 12u8,
         Some("13") => 13u8,
+        Some("14") => 14u8,
         _ => return usage(),
     };
     let [input, output] = args.positional.as_slice() else {
@@ -624,10 +630,15 @@ fn cmd_transcode(args: &Args) -> ExitCode {
         Some("short-run") => predict::ZrSabotage::ShortRun,
         Some(_) => return usage(),
     };
-    let got = if to == 13 {
-        predict::to13_with(&data, args.get("stale").is_some(), zr, None)
-    } else {
-        predict::to12(&data, false)
+    use render_stream_core::item_meta;
+    let from14 = wire::version_of_magic(&data) == Some(14);
+    let got = match to {
+        14 => render_stream_core::validate::validate_recording(&data, Options::new(13))
+            .and_then(|()| item_meta::to14_from13(&data)),
+        13 if from14 => item_meta::to13_from14(&data),
+        13 => predict::to13_with(&data, args.get("stale").is_some(), zr, None),
+        _ if from14 => item_meta::to13_from14(&data).and_then(|d| predict::to12(&d, false)),
+        _ => predict::to12(&data, false),
     };
     match got {
         Ok(out) => {

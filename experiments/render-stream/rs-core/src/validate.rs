@@ -1696,7 +1696,8 @@ impl Validator {
     pub fn new(session_record: &[u8], offset: usize, opts: Options) -> Result<Validator, Error> {
         assert!(
             (2..=wire::LATEST).contains(&opts.version),
-            "render-stream version 2..=13"
+            "render-stream version 2..={}",
+            wire::LATEST
         );
         let mut bufs = DecodeBufs::default();
         let mut tx = TxMeta::default();

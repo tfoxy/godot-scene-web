@@ -541,7 +541,7 @@ bool Publisher::write_transaction(Lane *lane, const Transaction &transaction,
   const std::uint64_t t0 = monotonic_ns();
   // W13b: a /13 sink codes the /12 transaction (encode_transaction writes /12's form at V13)
   // against its own history.
-  const std::vector<std::uint8_t> bytes = transaction.version == ProtocolVersion::V13
+  const std::vector<std::uint8_t> bytes = is_v13_or_later(transaction.version)
                                               ? rs13::encode_transaction(transaction,
                                                                          &lane->predictor)
                                               : encode_transaction(transaction);

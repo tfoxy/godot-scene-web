@@ -32,8 +32,20 @@ constexpr std::uint32_t kScene = 4;
 constexpr std::uint32_t kPath = 8;
 constexpr std::uint32_t kGroups = 16;
 constexpr std::uint32_t kMeta = 32;
-constexpr int kFieldCount = 4;  // class, script, scene, path: the row's field columns, in order
+// ID3 (render-stream-14.md, client-extensions-design.md ID-D3, ID-D6): item_meta v2, /14 only.
+constexpr std::uint32_t kInstanceId = 64;
+constexpr std::uint32_t kMouseFilter = 128;
+constexpr std::uint32_t kV2Fields = kInstanceId | kMouseFilter;
+constexpr int kStringFields = 4;  // class, script, scene, path: interned string columns
+// The row's field columns, in order: the four string fields, then instance_id (an inline decimal
+// string) and mouse_filter (an int), the last two only at /14.
+constexpr int kFieldCount = 6;
 extern const char *const kFieldNames[kFieldCount];
+// The GRC_ITEM_META bit of field column `i` (kClass .. kPath, kInstanceId, kMouseFilter).
+constexpr std::uint32_t field_bit(int i) { return i < kStringFields ? 1u << i : 64u << (i - 4); }
+// mouse_filter's value: get_mouse_filter_with_override() (0 STOP, 1 PASS, 2 IGNORE), plus 4 when
+// the node's script implements _has_point.
+constexpr std::int32_t kHasPointBit = 4;
 
 constexpr std::size_t kMaxGroups = 31;
 constexpr std::size_t kMaxMetaKeys = 8;
@@ -52,12 +64,13 @@ struct Request {
   std::uint32_t field_bits() const;
 };
 
-// GRC_ITEM_META: a comma list over class, script, scene, path, groups, meta (empty: no grant).
-// False (with `error`) on an unknown or repeated name.
+// GRC_ITEM_META: a comma list over class, script, scene, path, instance_id, mouse_filter, groups,
+// meta (empty: no grant). False (with `error`) on an unknown or repeated name.
 bool parse_grant_env(const std::string &text, std::uint32_t *bits, std::string *error);
 std::string grant_env_string(std::uint32_t bits);
-// §2.1's hello rules: "" when valid, else what is wrong (the hello error's detail).
-std::string request_problem(const Request &request);
+// §2.1's hello rules: "" when valid, else what is wrong (the hello error's detail). `v2`: the
+// stream is /14, where `instance_id` and `mouse_filter` are fields; below it they are unknown.
+std::string request_problem(const Request &request, bool v2);
 // The intersection with the operator's grant: the fields both name; the groups and meta keys
 // whole, when the grant has `groups` / `meta`. An empty result is a refusal (no records).
 Request grant_for(std::uint32_t host_bits, const Request &request);
@@ -70,7 +83,9 @@ struct Entry {
   std::uint32_t id = 0;
   std::uint64_t stamp = 0;  // the frame of the snapshot it was resolved after
   bool node = false;        // false: no node (TileMapLayer quadrants, viewport internals, ...)
-  std::int32_t field[kFieldCount] = {-1, -1, -1, -1};
+  std::int32_t field[kStringFields] = {-1, -1, -1, -1};
+  std::uint64_t instance_id = 0;  // ID3: the node's ObjectID (0: not resolved)
+  std::int32_t mouse_filter = -1;  // ID3: 0..6, or -1 (not a Control, or not resolved)
   std::vector<std::uint32_t> groups;  // host group-name indices the node is in, ascending
   std::vector<std::int32_t> meta;     // per host meta-key index: the value's string, or -1
 };
