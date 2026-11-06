@@ -75,6 +75,12 @@ bool utf8_valid(std::string_view text);
 // leading zero.
 bool format_ok(std::string_view format);
 
+// TRK2: the grammar checks the hub applies at bind(), for a registry that refuses before any hub
+// exists. A kind is [a-z][a-z0-9-]{0,31}; a format list is 1..8 distinct formats (0..8 with
+// `allow_empty`), each format_ok.
+bool kind_name_ok(std::string_view kind);
+bool format_list_ok(const std::vector<std::string> &formats, bool allow_empty);
+
 // 32 getrandom bytes as 64 lowercase hex (the view token's generator, entry.cpp).
 std::string generate_credential();
 
@@ -112,7 +118,7 @@ struct TrackInfo {
   std::optional<TrackView> view;  // advisory, never checked (F4)
 };
 
-// RenderStreamTrack (TRK2), the built-in injector (TRK6) and tests implement it.
+// RenderStreamTrack (TRK2, rs_tracks_gd.h), the built-in injector (TRK6) and tests implement it.
 class TrackReceiver {
  public:
   virtual ~TrackReceiver() = default;

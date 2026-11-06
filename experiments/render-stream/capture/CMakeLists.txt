@@ -98,6 +98,7 @@ add_library(render_stream_capture SHARED
   src/rs_histogram.cpp
   src/rs_live.cpp
   src/rs_tracks.cpp
+  src/rs_tracks_gd.cpp
   src/rs_item_meta.cpp
   src/rs_item_meta_host.cpp
   src/rs_mirror.cpp

@@ -1,0 +1,41 @@
+; TRK2 track-input fixture (../../protocol/tracks-design.md Q6, TRK2 row): a GDScript receiver of the
+; `input` track kind, through the capture's RenderStreamTrack class, wired to the gsw-input/1
+; reference injector (addons/gsw_input, a link to packages/input/godot/addons/gsw_input). Gate 8's
+; g8l/trk legs drive it with a Node track client. See README.md.
+
+config_version=5
+
+[application]
+
+config/name="render-stream-track-input-fixture"
+config/features=PackedStringArray("4.5")
+run/main_scene="res://track_input.tscn"
+
+[autoload]
+
+GrcLoader="*res://loader.gd"
+TrackInput="*res://track_input.gd"
+
+[debug]
+
+; Typed-GDScript discipline, as every gate fixture (fixtures/gate2/project.godot).
+gdscript/warnings/untyped_declaration=2
+gdscript/warnings/unsafe_property_access=2
+gdscript/warnings/unsafe_method_access=2
+gdscript/warnings/unsafe_cast=2
+gdscript/warnings/unsafe_call_argument=2
+
+[display]
+
+window/size/viewport_width=640
+window/size/viewport_height=360
+window/stretch/mode="disabled"
+window/vsync/vsync_mode=0
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+anti_aliasing/quality/msaa_2d=0
+viewport/hdr_2d=false
+environment/defaults/default_clear_color=Color(0.2, 0.2, 0.4, 1)

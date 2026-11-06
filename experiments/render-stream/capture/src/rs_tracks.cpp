@@ -458,6 +458,12 @@ void write_counts(JsonWriter &json, const std::string &name, const std::map<std:
 
 // ----------------------------------------------------------------------------- free functions
 
+bool kind_name_ok(std::string_view kind) { return kind_ok(kind); }
+
+bool format_list_ok(const std::vector<std::string> &formats, bool allow_empty) {
+  return formats_valid(formats, allow_empty);
+}
+
 bool kind_reserved(std::string_view kind) {
   return kind == "audio" || kind == "clipboard" || kind == "metadata" || kind == "data";
 }

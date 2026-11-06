@@ -109,6 +109,9 @@
 #       receiver replaying the host's file sink; plus `proxy` (tex through lib/reverse-proxy.ts, an
 #       HTTP/1.1 reverse proxy: the WebSocket and every GET through a server in front of the
 #       listener, D14). run-gate7.sh --live --legs g7-8 runs this group with a browser receiver.
+#       Native only, headless: lan, ext (CAR6), trk (TRK2: fixtures/track-input, a RenderStreamTrack
+#       receiver and the gsw-input injector under lib/track-input-client.ts, four sabotage legs) and
+#       wss.
 #   g8ku (G8ku, texture-delivery-design.md D6, D12, D14, D16 `basis-uastc`; fixtures/gate8-basis;
 #       every leg under g8ku/): the fixture import; headless /9 captures under
 #       GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=basis-uastc GRC_TEXTURE_ENCODE_WAIT_FRAME=12
@@ -3158,6 +3161,7 @@ run_g8l() {
 	done
 	run_g8l_lan
 	run_g8l_ext
+	run_g8l_trk
 	run_g8l_wss
 	gs_teardown "$OUT/gamescope-g8l"
 	GS_RUN_DIR=""
@@ -3248,6 +3252,77 @@ run_g8l_ext() {
 	run_g8l_ext_leg "$leg/host"
 	echo "run-gate8: g8l ext sabotage-drop-one (the peer drops its second binary message)"
 	run_g8l_ext_leg "$leg/sabotage-drop-one" RS_CARRIER_PEER_SABOTAGE=drop-one
+}
+
+# TRK2 (protocol/tracks-design.md, TRK2 row): fixtures/track-input binds the `input` track kind
+# through the capture's RenderStreamTrack class (GRC_LIVE_TRACKS=input) and wires it to the
+# gsw-input/1 reference injector. scripts/lib/track-input-client.ts (a raw-socket track client)
+# runs four phases against the live listener while the host runs: delivered (a key and a left
+# click reach Input and the test Control), release-on-kill (a socket destroyed mid-hold), release-
+# on-idle (a client that goes silent: track-idle after 3 x keepalive) and no-receiver (the fixture
+# unbinds: 1013). It writes client.json; the fixture writes events.jsonl; the checker judges both
+# (g8l-trk-*). Four sabotage legs, each caught by one check: the capture's track-no-release
+# (release-on-kill) and the fixture's drop-messages (delivered), keep-held (release-on-idle) and
+# stay-bound (no-receiver), RS_TRACK_INPUT_SABOTAGE. Headless, no receiver, real time (the idle
+# phase is wall-clock; no fast frames). Native only, as the ext legs.
+G8L_TRK_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/track-input"
+G8L_TRK_KEEPALIVE_MS=250
+G8L_TRK_SABOTAGES=(no-release drop-messages keep-held stay-bound)
+
+# run_g8l_trk_leg <dir> [env word...]: the fixture's live host in the background and the track
+# client against it; the host quits when the client writes control/quit (frame 3600 at the latest).
+run_g8l_trk_leg() {
+	local dir="$1" waited=0 port=""
+	shift
+	mkdir -p "$dir/evidence" "$dir/tap" "$dir/control"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_VERSION=8 GRC_LIVE_LISTEN=127.0.0.1:0
+		GRC_LIVE_TAP_DIR="$dir/tap" GRC_LIVE_TRACKS=input GRC_LIVE_TRACK_KEEPALIVE_MS="$G8L_TRK_KEEPALIVE_MS"
+		GRC_ARM_DEFER_FRAMES=2 RS_FIXTURE_QUIT_FRAME=3600 RS_TRACK_INPUT_LOG="$dir/events.jsonl"
+		RS_TRACK_INPUT_CONTROL="$dir/control" "$@"
+	)
+	start_headless_bg "$dir" -- "$BINARY" --headless --max-fps 60 --path "$G8L_TRK_FIXTURE_DIR"
+	[ -n "$BG_PID" ] || return 0 # skipped by tier
+	while [ "$waited" -lt 600 ] && [ ! -s "$dir/evidence/live.json" ] && kill -0 "$BG_PID" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	if grep -q '"status": "listening"' "$dir/evidence/live.json" 2>/dev/null; then
+		port="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$dir/evidence/live.json")"
+	fi
+	if [ -n "$port" ] && [ -s "$dir/evidence/live-track-input-token" ]; then
+		(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/lib/track-input-client.ts" \
+			--port "$port" --credential-file "$dir/evidence/live-track-input-token" --events "$dir/events.jsonl" \
+			--control "$dir/control" --out "$dir/client.json" --keepalive-ms "$G8L_TRK_KEEPALIVE_MS") \
+			>"$dir/client.log" 2>&1 || echo "run-gate8: ${dir#"$OUT"/} track client failed, see client.log" >&2
+	else
+		echo "run-gate8: ${dir#"$OUT"/} is not listening with a track credential" >&2
+	fi
+	: >"$dir/control/quit"
+	finish_bg "$dir" "$BG_PID" "$HEADLESS_TIMEOUT_S"
+}
+
+run_g8l_trk() {
+	[ -z "${GATE7_LIVE_KIND:-}" ] || return 0
+	local leg="$OUT/g8l/trk" s
+	echo "run-gate8: g8l trk (fixture import)"
+	LEG_ENV=()
+	run_headless "$leg/import/fixture" none -- mise exec -- godot --headless --path "$G8L_TRK_FIXTURE_DIR" --import
+	if [ "$(cat "$leg/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate8: g8l trk import failed, see $leg/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+	echo "run-gate8: g8l trk (a RenderStreamTrack receiver and the gsw-input injector, four client phases)"
+	run_g8l_trk_leg "$leg/host"
+	for s in "${G8L_TRK_SABOTAGES[@]}"; do
+		echo "run-gate8: g8l trk sabotage-$s"
+		if [ "$s" = no-release ]; then
+			run_g8l_trk_leg "$leg/sabotage-$s" GRC_SABOTAGE=track-no-release
+		else
+			run_g8l_trk_leg "$leg/sabotage-$s" RS_TRACK_INPUT_SABOTAGE="$s"
+		fi
+	done
 }
 
 # CAR4 (protocol/carrier-design.md D11, D12): tex once more with a certificate pair, so the real

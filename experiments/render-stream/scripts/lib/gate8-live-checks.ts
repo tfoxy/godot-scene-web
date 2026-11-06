@@ -47,6 +47,7 @@ import {
   skipped,
   stateAt,
 } from "./gate8-adopt-checks";
+import { runTrkChecks } from "./gate8-track-checks";
 import {
   type ResolvedRecording,
   resolveRecording,
@@ -851,6 +852,10 @@ export async function runG8l(
       );
     }
   }
+  // TRK2 (tracks-design.md, TRK2 row): fixtures/track-input's RenderStreamTrack receiver and the
+  // reference injector under the track client, plus four sabotage legs (lib/gate8-track-checks.ts).
+  // Native only (run-gate8.sh run_g8l_trk); no g8l/trk directory, no check.
+  checks.push(...(await runTrkChecks(out)));
   // CAR4 (carrier-design.md D11, D12): the wss leg is tex with a certificate pair, its receiver
   // on plain ws from loopback (still served under a pair), and `openssl s_client` over TLS on the
   // same port while the host ran (run-gate8.sh run_g8l_wss). Native only; no directory, no check.

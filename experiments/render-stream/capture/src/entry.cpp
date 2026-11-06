@@ -85,7 +85,10 @@
 // at listen, after any frame that opened or closed a track, and at stop. Unset: nothing changes
 // (T3) -- no track subprotocol, no config key, no token file, no live-tracks.json. Sabotages
 // (GRC_SABOTAGE, need GRC_LIVE_TRACKS): track-view-token-accepted, track-rate-off,
-// track-grant-ignored, track-no-release.
+// track-grant-ignored, track-no-release. TRK2: a script receives a kind through the
+// RenderStreamTrack class (rs_tracks_gd.h), whose registry may be bound before the arm and whose
+// signals are delivered at the end of each frame callback; with nothing bound every track is
+// refused track-no-receiver.
 //
 // WebTransport (CAR3, carrier-design.md D8, D9, D11, Q4): `wt` in GRC_LIVE_CARRIERS loads the net
 // module (rs_net_module.h: GRC_LIVE_NET_MODULE, else librender_stream_net.so beside this .so;
@@ -234,6 +237,7 @@
 #include "rs_texture_release.h"
 #include "rs_item_meta_host.h"
 #include "rs_tracks.h"
+#include "rs_tracks_gd.h"
 #include "rs_ws.h"
 #include "vtable.h"
 
@@ -3325,6 +3329,9 @@ void stream_start() {
       live_decided("listening", std::string());
       emit_live_carriers();
       refresh_live_tracks();
+      // TRK2 (rs_tracks_gd.h): RenderStreamTrack receivers bound before the arm join the hub now
+      // (null with tracks off: they report `not-granted`).
+      live::gd_tracks_attach(g_live.tracks.get());
     }
   }
   g_stream.status = "open";
@@ -3462,6 +3469,7 @@ void live_close_and_stop() {
     emit_live_carriers();
   }
   refresh_live_tracks();
+  live::gd_tracks_detach();  // TRK2: the hub is never called again; queued closes still flush
   g_live.stopped = true;
   g_live.ending = false;
   if (g_live.served != nullptr) {
@@ -3523,6 +3531,7 @@ void live_linger(bool blocking) {
     // CAR6: script carriers get the end records (and the hub's closes) while the linger waits,
     // with no frame callback in between when blocking.
     live::gd_carriers_flush();
+    live::gd_tracks_flush();  // TRK2: and track receivers their closed signals
     live_drain(g_state.frames_total);
     if (g_live.hub->open_connections() == 0 || monotonic_ns() >= g_live.linger_deadline_ns) {
       live_close_and_stop();
@@ -4686,6 +4695,10 @@ void on_frame() {
   // CAR6 (rs_carrier_gd.h): the hub's calls to script carriers this iteration, delivered as
   // signals now, outside every hub call. One relaxed load when no RenderStreamCarrier registered.
   live::gd_carriers_flush();
+  // TRK2 (rs_tracks_gd.h): the track hub's calls to RenderStreamTrack receivers, the same way. An
+  // input receiver's parse_input_event() here is applied at the next iteration's flush, before
+  // its process step. One relaxed load when no receiver was ever bound.
+  live::gd_tracks_flush();
 }
 
 void on_shutdown() {
@@ -4762,6 +4775,10 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
     if (!live::gd_carrier_class_register(&why)) {
       log_line("carrier class: " + why);
     }
+    // TRK2: RenderStreamTrack, a script receiver of one track kind (tracks-design.md Q6).
+    if (!live::gd_track_class_register(&why)) {
+      log_line("track class: " + why);
+    }
   }
   if (!g_state.evidence_dir.empty()) {
     g_state.evidence_ready = make_directories(g_state.evidence_dir);
@@ -4795,6 +4812,7 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
     r.vtable.destroy(r.vtable.self);
   }
   live::gd_carrier_class_unregister();
+  live::gd_track_class_unregister();
 }
 
 }  // namespace

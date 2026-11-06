@@ -395,13 +395,26 @@
       "exclusive": true
     },
     {
-      "why": "TRK1 tracks host core (tracks-design.md Q1-Q5, Q9): rs_tracks.{h,cpp} (TrackHub), its ctest and the pure self-test that drives rs_live_host --tracks with a Node track client. Nothing here runs unless GRC_LIVE_TRACKS grants a kind, which no gate leg does, so it reaches the build (rs_track ctest) and the pure self-tests. The routing in entry.cpp, the admission pools in rs_ws.* and rs_carrier_set.*, and rs_live_host.cpp are shared capture files and keep their own reach",
+      "why": "TRK1 tracks host core (tracks-design.md Q1-Q5, Q9): rs_tracks.{h,cpp} (TrackHub), its ctest and the pure self-test that drives rs_live_host --tracks with a Node track client. It runs only where GRC_LIVE_TRACKS grants a kind: the rs_track ctest, the pure self-tests and gate 8's g8l/trk legs (TRK2). The routing in entry.cpp, the admission pools in rs_ws.* and rs_carrier_set.*, and rs_live_host.cpp are shared capture files and keep their own reach",
       "paths": [
-        "experiments/render-stream/capture/src/rs_tracks*",
+        "experiments/render-stream/capture/src/rs_tracks.h",
+        "experiments/render-stream/capture/src/rs_tracks.cpp",
         "experiments/render-stream/capture/test/rs_track_test.cpp",
         "experiments/render-stream/scripts/test/self-test-tracks.ts"
       ],
-      "reach": ["capture-build", "pure"],
+      "reach": ["capture-build", "pure", "native:gate8@*"],
+      "exclusive": true
+    },
+    {
+      "why": "TRK2 RenderStreamTrack (tracks-design.md Q6, As built (TRK2)): the class (rs_tracks_gd.*), fixtures/track-input (a GDScript receiver wired to the gsw-input reference injector, whose addon is a link to packages/input/godot/addons/gsw_input), its Node track client and the g8l-trk checks. Nothing binds a kind outside gate 8's g8l/trk legs (native only: no browser group replays them). The raw track client is shared with self-test-tracks.ts, hence pure",
+      "paths": [
+        "experiments/render-stream/capture/src/rs_tracks_gd.*",
+        "experiments/render-stream/fixtures/track-input/**",
+        "experiments/render-stream/scripts/lib/track-input-client.ts",
+        "experiments/render-stream/scripts/lib/gate8-track-checks.ts",
+        "experiments/render-stream/scripts/lib/raw-track-client.ts"
+      ],
+      "reach": ["capture-build", "pure", "native:gate8@*"],
       "exclusive": true
     },
     {
