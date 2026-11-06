@@ -4,7 +4,7 @@
 //
 //   tex-default, tex-off, tex-on       gate8-tex at /8 with GRC_TEXTURE_DECODE=engine: unset, off, on
 //   tex-workers-on                     on, GRC_TEXTURE_WORKERS=2 (held-back workers)
-//   tex-refused-on                     on, no host decode (the block formats refused)
+//   tex-refused-on                     on, GRC_TEXTURE_DECODE=off set explicitly since TDE (the block formats refused)
 //   tex-budget-on                      on, a resource budget that ends the stream before step 1
 //   invalid                            GRC_HEADLESS_TEXTURE_RELEASE=maybe
 //   tex-passthrough-{off,on}           /9 GRC_TEXTURE_DELIVERY=passthrough
@@ -690,7 +690,7 @@ export async function runG8htr(
     checks.push(
       check(
         "htr-refused",
-        "a texture the format policy refuses (BC without GRC_TEXTURE_DECODE) is not released: released 0, skipped.refused = the refused VRAM creates, the fixture reads every image back full size",
+        "a texture the format policy refuses (BC with GRC_TEXTURE_DECODE=off) is not released: released 0, skipped.refused = the refused VRAM creates, the fixture reads every image back full size",
         problems,
         detail,
       ),

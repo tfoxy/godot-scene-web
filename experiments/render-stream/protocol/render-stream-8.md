@@ -166,7 +166,7 @@ No receiver's hello offers `render-stream.8` in G8w.
 | -------- | ------ | ------ |
 | `GRC_STREAM_VERSION` | `6` (default), `8` | the wire version of **file** sinks (`7` is a live-only version and refused) |
 | `GRC_ADOPT` | `off` (default), `arm` | arm-time late-join adoption; declares `adoption` |
-| `GRC_TEXTURE_DECODE` | `off` (default), `engine` | declares `resources.decode` |
+| `GRC_TEXTURE_DECODE` | unset = `engine` on a stream that speaks /8 or later by any other means (TDE), `off` on a plain /6 stream; `off`, `engine` | declares `resources.decode`. An explicit `engine` is a policy (it needs /8); the unset default is not, and an explicit `off` keeps the refusals |
 | `GRC_RESOURCE_FORMATS` | a float format name | legal at /8 only |
 | `GRC_SABOTAGE` | a /8 kind | legal at /8 only |
 

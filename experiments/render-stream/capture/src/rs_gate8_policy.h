@@ -16,7 +16,12 @@
 //                         and /11's conditional hooks plus the 33 particles hooks, and is the only way
 //                         `render-stream.12` is offered (first, then /11's list).
 //   GRC_ADOPT             off | arm, default off. Late-join adoption at arm (D3-D7).
-//   GRC_TEXTURE_DECODE    off | engine, default off. Host decode of block-compressed textures (D8).
+//   GRC_TEXTURE_DECODE    off | engine. Host decode of block-compressed textures (D8). TDE (F3):
+//                         unset means engine on a stream that speaks /8 or later by any other
+//                         means (a /8+ file sink, GRC_ADOPT=arm, a float format), and off on a
+//                         plain /6 stream, which cannot carry a decoded texture's fields. An
+//                         explicit `engine` is a policy (it forces /8); an explicit `off` pins the
+//                         refusals.
 //   GRC_RESOURCE_FORMATS  a float payload format (RF RGF RGBF RGBAF RH RGH RGBH RGBAH) counts as a
 //                         gate 8 policy, because float payloads are legal at /8 only (D9).
 //
@@ -39,14 +44,27 @@ struct Gate8Policy {
   rs2::ProtocolVersion file_version = rs2::ProtocolVersion::V6;
   bool stream_version_set = false;  // GRC_STREAM_VERSION was present and non-empty
   bool adopt = false;               // GRC_ADOPT=arm
-  bool decode_engine = false;       // GRC_TEXTURE_DECODE=engine
+  bool decode_engine = false;       // host decode is on: GRC_TEXTURE_DECODE=engine, or the TDE default
+  bool decode_set = false;          // GRC_TEXTURE_DECODE was present and non-empty
+  bool decode_default = false;      // decode_engine came from the TDE default (the variable was unset)
   bool float_formats = false;       // GRC_RESOURCE_FORMATS names a float payload format
   bool v8_sabotage = false;         // GRC_SABOTAGE names a kind only a /8 session may declare
 
   // Whether any variable that needs /8 is set.
-  bool any() const { return adopt || decode_engine || float_formats || v8_sabotage; }
+  // The TDE default is not one: it applies only where the stream already speaks /8.
+  bool any() const {
+    return adopt || (decode_engine && !decode_default) || float_formats || v8_sabotage;
+  }
   // Whether the stream as a whole speaks /8 anywhere: a /8 file sink or a policy that forces it.
   bool speaks_v8() const { return rs2::is_v8_or_later(file_version) || any(); }
+  // TDE (F3): resolves the unset GRC_TEXTURE_DECODE default. Run after every other field is final
+  // (the caller sets v8_sabotage after parsing); idempotent.
+  void apply_decode_default() {
+    if (!decode_set && !decode_engine && speaks_v8()) {
+      decode_engine = true;
+      decode_default = true;
+    }
+  }
   // Whether the stream speaks /9 or later: GRC_STREAM_VERSION=9 or 10, and only that (G8k9; /10
   // carries /9's texture delivery, render-stream-10.md "Capture policy").
   bool speaks_v9() const { return rs2::is_v9_or_later(file_version); }

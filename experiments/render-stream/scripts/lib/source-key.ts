@@ -20,7 +20,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 
 export const SOURCE_KEY_SCHEMA = "render-stream-source-key/1";
@@ -112,7 +112,16 @@ export function sourceKey(
   for (const p of files) {
     h.update(p);
     h.update("\0");
-    h.update(sha256(readFileSync(join(repoRoot, p))));
+    // A tracked symlink (fixtures/track-input/addons/gsw_input points at a directory outside the
+    // roots) is keyed by its target text: reading it as a file fails with EISDIR.
+    const full = join(repoRoot, p);
+    h.update(
+      sha256(
+        lstatSync(full).isSymbolicLink()
+          ? `symlink:${readlinkSync(full)}`
+          : readFileSync(full),
+      ),
+    );
     h.update("\n");
   }
   const parts = {

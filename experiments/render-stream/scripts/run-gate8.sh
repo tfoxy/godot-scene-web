@@ -280,7 +280,7 @@
 #   g8htr (HTR, results/gate8/htr.md: GRC_HEADLESS_TEXTURE_RELEASE=on, the dummy rasterizer gets a
 #       1x1 L8 placeholder for every captured VRAM-tier create; every leg under g8htr/): the
 #       gate8-tex and gate8-adopt imports; headless gate8-tex captures `tex-default` (unset),
-#       `tex-off`, `tex-on`, `tex-workers-on`, `tex-refused-on` (no host decode), `tex-budget-on`
+#       `tex-off`, `tex-on`, `tex-workers-on`, `tex-refused-on` (GRC_TEXTURE_DECODE=off), `tex-budget-on`
 #       (the budget ends the stream before step 1), `invalid` (=maybe), the /9 passthrough pair
 #       `tex-passthrough-{off,on}`; gate8-adopt `adopt-{born,late,deferred}-{off,on}`; the gate8-tex
 #       deferred arm (GRC_ARM_DEFER_FRAMES=5, GRC_ADOPT=arm) `tex-deferred-{off,on}` and its fault
@@ -557,11 +557,21 @@ run_g8t() {
 	CAPTURE_EXTRA_ENV=("${G8T_DECODE_ENV[@]}" RS_FIXTURE_TEXTURE_LOG="$OUT/capture/textures.jsonl")
 	run_capture "$OUT/capture" "" none
 
-	echo "run-gate8: decode-off (GRC_TEXTURE_DECODE unset, default /6: today's refusals)"
+	# TDE (live-swap-design.md Q5, F3): the same /8 sink with GRC_TEXTURE_DECODE unset decodes like
+	# `capture` above (tex-decode-default). Below /8 the unset variable stays off: decode-off.
+	echo "run-gate8: decode-default (GRC_STREAM_VERSION=8, GRC_TEXTURE_DECODE unset: engine)"
+	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=8 RS_FIXTURE_TEXTURE_LOG="$OUT/decode-default/capture/textures.jsonl")
+	run_capture "$OUT/decode-default/capture" "" none
+
+	echo "run-gate8: decode-off (GRC_TEXTURE_DECODE=off, set explicitly since TDE; default /6: today's refusals)"
 	RECORDING_NAME=recording.rs2
 	PATCH_RECORDING_NAME=recording-patch.rs2
-	CAPTURE_EXTRA_ENV=(RS_FIXTURE_TEXTURE_LOG="$OUT/decode-off/capture/textures.jsonl")
+	CAPTURE_EXTRA_ENV=(GRC_TEXTURE_DECODE=off RS_FIXTURE_TEXTURE_LOG="$OUT/decode-off/capture/textures.jsonl")
 	run_capture "$OUT/decode-off/capture" "" none
+	# TDE: below /8 the unset variable stays off (the default /6 sink carries no decode fields).
+	echo "run-gate8: decode-default/plain-v6 (GRC_TEXTURE_DECODE unset, default /6: still refused)"
+	CAPTURE_EXTRA_ENV=(RS_FIXTURE_TEXTURE_LOG="$OUT/decode-default/plain-v6/capture/textures.jsonl")
+	run_capture "$OUT/decode-default/plain-v6/capture" "" none
 	RECORDING_NAME=recording.rs8
 	PATCH_RECORDING_NAME=recording-patch.rs8
 
@@ -596,8 +606,10 @@ run_g8t() {
 	# TDP (live-swap-design.md Q5): GRC_TEXTURE_DELIVERY unset is `passthrough`, so the same /9 sink
 	# declares it and offers a `block` variant for each block-compressed source. The /8 `capture` above
 	# is the "nothing below /9" half of tex-delivery-default.
-	echo "run-gate8: delivery9/default (GRC_STREAM_VERSION=9, GRC_TEXTURE_DELIVERY unset: passthrough)"
-	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine
+	# TDE (F3): GRC_TEXTURE_DECODE is unset here too, so the host decode and the block variant both
+	# come from the defaults.
+	echo "run-gate8: delivery9/default (GRC_STREAM_VERSION=9, GRC_TEXTURE_DELIVERY and GRC_TEXTURE_DECODE unset: engine + passthrough)"
+	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=9
 		RS_FIXTURE_TEXTURE_LOG="$OUT/delivery9/default/capture/textures.jsonl")
 	run_capture "$OUT/delivery9/default/capture" "" none
 	RECORDING_NAME=recording.rs8
@@ -3641,8 +3653,8 @@ run_g8htr() {
 	run_capture_g8htr_tex "$g/tex-on/capture" "${G8T_DECODE_ENV[@]}" "${G8HTR_ARM[@]}"
 	echo "run-gate8: g8htr tex-workers-on (GRC_TEXTURE_WORKERS=2, every copy on a held-back worker)"
 	run_capture_g8htr_tex "$g/tex-workers-on/capture" "${G8T_DECODE_ENV[@]}" "${G8T_WORKERS_ENV[@]}" "${G8HTR_ARM[@]}"
-	echo "run-gate8: g8htr tex-refused-on (/8, no GRC_TEXTURE_DECODE: the block formats are refused)"
-	run_capture_g8htr_tex "$g/tex-refused-on/capture" GRC_STREAM_VERSION=8 "${G8HTR_ARM[@]}"
+	echo "run-gate8: g8htr tex-refused-on (/8, GRC_TEXTURE_DECODE=off, set explicitly since TDE: the block formats are refused)"
+	run_capture_g8htr_tex "$g/tex-refused-on/capture" GRC_STREAM_VERSION=8 GRC_TEXTURE_DECODE=off "${G8HTR_ARM[@]}"
 	echo "run-gate8: g8htr tex-budget-on (GRC_RESOURCE_BUDGET_BYTES=$G8HTR_BUDGET_BYTES: the stream ends before step 1)"
 	run_capture_g8htr_tex "$g/tex-budget-on/capture" "${G8T_DECODE_ENV[@]}" "${G8HTR_ARM[@]}" \
 		GRC_RESOURCE_BUDGET_BYTES="$G8HTR_BUDGET_BYTES"

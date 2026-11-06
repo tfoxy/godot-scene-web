@@ -163,6 +163,7 @@ bool parse_gate8_policy(const char *stream_version, const char *adopt, const cha
     }
   }
   if (present(texture_decode)) {
+    parsed.decode_set = true;
     const std::string text(texture_decode);
     if (text == "engine") {
       parsed.decode_engine = true;
@@ -172,6 +173,9 @@ bool parse_gate8_policy(const char *stream_version, const char *adopt, const cha
     }
   }
   parsed.float_formats = formats_name_float(resource_formats);
+  // TDE (F3): an unset GRC_TEXTURE_DECODE is `engine` wherever the stream speaks /8 already, so
+  // the passthrough default (TDP) acts. A plain /6 stream carries no decode fields, so it stays off.
+  parsed.apply_decode_default();
   *out = parsed;
   return true;
 }
@@ -203,9 +207,13 @@ bool gate8_policy_allows(const Gate8Policy &policy, bool files, std::string *err
 }
 
 std::vector<std::string> gate8_live_subprotocols(const Gate8Policy &policy) {
+  // TDE: the decode default is not a policy (`any()`), so it leaves the offer alone. The codec drops
+  // `source_format` below /8 and R8/RG8 are legal payload formats at /6, so an older client reads a
+  // default-decoded texture as a plain one.
+  const bool narrow = policy.any();
   if (policy.file_version == rs2::ProtocolVersion::V13) {
     // W13b (render-stream-13.md "As built (W13b)"): .13 first, then /12's list.
-    if (policy.any()) {
+    if (narrow) {
       return {rs2::kSubprotocolV13, rs2::kSubprotocolV12, rs2::kSubprotocolV11,
               rs2::kSubprotocolV10, rs2::kSubprotocolV9,  rs2::kSubprotocolV8};
     }
@@ -215,7 +223,7 @@ std::vector<std::string> gate8_live_subprotocols(const Gate8Policy &policy) {
   }
   if (policy.file_version == rs2::ProtocolVersion::V12) {
     // render-stream-12.md "Opt-in and version policy": .12 first, then /11's list.
-    if (policy.any()) {
+    if (narrow) {
       return {rs2::kSubprotocolV12, rs2::kSubprotocolV11, rs2::kSubprotocolV10,
               rs2::kSubprotocolV9, rs2::kSubprotocolV8};
     }
@@ -224,7 +232,7 @@ std::vector<std::string> gate8_live_subprotocols(const Gate8Policy &policy) {
   }
   if (policy.file_version == rs2::ProtocolVersion::V11) {
     // render-stream-11.md "Opt-in and version policy": .11 first, then /10's list.
-    if (policy.any()) {
+    if (narrow) {
       return {rs2::kSubprotocolV11, rs2::kSubprotocolV10, rs2::kSubprotocolV9,
               rs2::kSubprotocolV8};
     }
@@ -233,19 +241,19 @@ std::vector<std::string> gate8_live_subprotocols(const Gate8Policy &policy) {
   }
   if (policy.file_version == rs2::ProtocolVersion::V10) {
     // render-stream-10.md "Live transport".
-    if (policy.any()) {
+    if (narrow) {
       return {rs2::kSubprotocolV10, rs2::kSubprotocolV9, rs2::kSubprotocolV8};
     }
     return {rs2::kSubprotocolV10, rs2::kSubprotocolV9, rs2::kSubprotocolV8, rs2::kSubprotocolV7,
             "render-stream.6"};
   }
   if (policy.file_version == rs2::ProtocolVersion::V9) {
-    if (policy.any()) {
+    if (narrow) {
       return {rs2::kSubprotocolV9, rs2::kSubprotocolV8};
     }
     return {rs2::kSubprotocolV9, rs2::kSubprotocolV8, rs2::kSubprotocolV7, "render-stream.6"};
   }
-  if (policy.any()) {
+  if (narrow) {
     return {rs2::kSubprotocolV8};
   }
   if (policy.file_version == rs2::ProtocolVersion::V8) {

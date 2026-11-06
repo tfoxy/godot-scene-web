@@ -12,7 +12,8 @@
 // too, so an engine whose decoder is missing or failed (bcdec/etcpak/astcenc ERR_FAIL leaves the
 // image as it was) can never publish a payload under the wrong name.
 //
-// GRC_TEXTURE_DECODE=off (the default) never reaches the seam, so no other gate changes.
+// GRC_TEXTURE_DECODE=off never reaches the seam. Unset it is off on a plain /6 stream and engine on a
+// /8+ stream (TDE, rs_gate8_policy.h), so a /6 gate changes nothing.
 #ifndef GRC_RS_TEXTURE_DECODE_H
 #define GRC_RS_TEXTURE_DECODE_H
 

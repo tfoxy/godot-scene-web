@@ -23,6 +23,8 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -139,6 +141,32 @@ expectRefused("a changed fixture is refused", "files_digest", () =>
 put("experiments/render-stream/fixtures/gate0/extra.tscn", "[gd_scene]\n");
 expectRefused("a new untracked fixture file is refused", "files_digest", () =>
   rmSync(join(rs, "fixtures/gate0/extra.tscn")),
+);
+// A tracked symlink to a directory (fixtures/track-input/addons/gsw_input) is keyed by its target
+// text; reading it as a file used to fail with EISDIR and stop every gate 7 run.
+mkdirSync(join(root, "packages/input"), { recursive: true });
+symlinkSync(
+  "../../../../packages/input",
+  join(rs, "fixtures/gate0/linked_addon"),
+);
+git("add", "experiments/render-stream/fixtures/gate0/linked_addon");
+check(
+  "a tracked symlink to a directory is keyed, not read as a file",
+  (() => {
+    try {
+      return prov().source_key !== undefined;
+    } catch (e) {
+      console.log(String(e));
+      return false;
+    }
+  })(),
+);
+unlinkSync(join(rs, "fixtures/gate0/linked_addon"));
+git(
+  "rm",
+  "-q",
+  "--cached",
+  "experiments/render-stream/fixtures/gate0/linked_addon",
 );
 put("experiments/render-stream/scripts/run-gate0.sh", "echo gate0 v2\n");
 expectRefused("a changed gate runner is refused", "files_digest", () =>

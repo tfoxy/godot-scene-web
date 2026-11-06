@@ -6,7 +6,9 @@
 //   oracle/                              oracle.gd: oracle.json + <name>.<family>.grt1
 //   capture/                             /8, GRC_TEXTURE_DECODE=engine: recording.rs8, store,
 //                                        evidence/resources.jsonl, steps.jsonl, textures.jsonl
-//   decode-off/capture/                  default /6, no decode: today's refusals
+//   decode-off/capture/                  default /6, GRC_TEXTURE_DECODE=off (explicit): today's refusals
+//   decode-default/capture/              TDE: /8, GRC_TEXTURE_DECODE unset: decodes like capture/
+//   decode-default/plain-v6/capture/     TDE: default /6, GRC_TEXTURE_DECODE unset: still refuses
 //   sabotage-perturb-decode/{capture,receiver}/
 //   reference/ reference-hw/             rendered: shots/step-<k>.png
 //   receiver/ receiver-patch/            native receiver on capture/'s full and patch sinks
@@ -540,6 +542,8 @@ export async function runG8t(
     "oracle",
     "capture",
     "decode-off/capture",
+    "decode-default/capture",
+    "decode-default/plain-v6/capture",
     "sabotage-perturb-decode/capture",
     "reference",
     "reference-hw",
@@ -755,18 +759,21 @@ export async function runG8t(
   }
 
   // --- the decode-off control: today's refusals, exactly ----------------------------------
-  {
-    const dir = join(out, "decode-off", "capture");
+  // The refusal half of the TDE default: a /6 sink refuses every block-compressed texture. The leg
+  // `decode-off` sets GRC_TEXTURE_DECODE=off explicitly (the pin must not depend on the default);
+  // `decode-default/plain-v6` leaves it unset, because a stream below /8 stays off.
+  const v6Refusals = async (leg: string, what: string) => {
+    const dir = join(out, ...leg.split("/"));
     const hook = await hookTextureCreates(dir);
     const pairs = pairTextures(await fixtureTextures(dir), hook);
     const problems: string[] = [];
-    if (legs["decode-off/capture"].exit_code !== "0")
-      problems.push(`decode-off exit ${legs["decode-off/capture"].exit_code}`);
+    if (legs[leg].exit_code !== "0")
+      problems.push(`${what} exit ${legs[leg].exit_code}`);
     const bytes = existsSync(join(dir, "recording.rs2"))
       ? new Uint8Array(await readFile(join(dir, "recording.rs2")))
       : undefined;
     if (!bytes || wireVersionOf(bytes) !== 6)
-      problems.push("decode-off/capture/recording.rs2 is not GRS6");
+      problems.push(`${leg}/recording.rs2 is not GRS6`);
     for (const p of pairs) {
       const ex = expectedFor(expected, p.fixture.name, p.fixture.family);
       if (!ex) continue;
@@ -794,12 +801,16 @@ export async function runG8t(
       problems.push(
         `${pairs.length} creates with decode off, ${capPairs.length} with decode on`,
       );
+    return { problems, creates: pairs.length };
+  };
+  {
+    const r = await v6Refusals("decode-off/capture", "decode-off");
     checks.push(
       check(
         "decode-off",
-        "with GRC_TEXTURE_DECODE unset (the default /6 file sink) every block-compressed fixture texture is refused unsupported-format with its own format, no source_format and no decode time, exactly as before G8t",
-        ran("decode-off/capture") ? problems : null,
-        `${pairs.length} creates`,
+        "with GRC_TEXTURE_DECODE=off (set explicitly since TDE, on the default /6 file sink) every block-compressed fixture texture is refused unsupported-format with its own format, no source_format and no decode time, exactly as before G8t",
+        ran("decode-off/capture") ? r.problems : null,
+        `${r.creates} creates`,
       ),
     );
   }
@@ -1174,6 +1185,86 @@ export async function runG8t(
     );
   }
 
+  // --- TDE: GRC_TEXTURE_DECODE unset is engine on a /8+ stream, off below it ------------------
+  // (live-swap-design.md Q5 "TDE", fork F3; the pin test is capture/test/rs_gate8_policy_test.cpp)
+  {
+    const dir = join(out, "decode-default", "capture");
+    const problems: string[] = [];
+    const exit = legs["decode-default/capture"].exit_code;
+    if (exit !== "0") problems.push(`decode-default/capture exit ${exit}`);
+    const d = await resolved(dir, "recording.rs8");
+    const c = await resolved(capDir, "recording.rs8");
+    if (d.error || !d.rec) problems.push(`decode-default/${d.error}`);
+    if (c.error || !c.rec) problems.push(`capture/${c.error}`);
+    let decodedOk = 0;
+    if (d.rec && c.rec) {
+      // the unset default decodes exactly as the explicit engine leg does, state for state
+      problems.push(...compareWorkerRecordings(c.rec, d.rec).problems);
+      for (const t of d.rec.transactions)
+        for (const tex of t.state.textures)
+          if (tex.status === "ok" && tex.source_format) decodedOk++;
+    }
+    if (decodedOk === 0)
+      problems.push(
+        "no decoded texture entry (ok with a source_format): the unset default did not decode",
+      );
+    const path = join(dir, "recording.rs8");
+    if (existsSync(path)) {
+      const meta = decodeRecording(new Uint8Array(await readFile(path)), 8)
+        .records[0].meta as unknown as { resources?: { decode?: string } };
+      if (meta.resources?.decode !== "engine")
+        problems.push(`session resources.decode ${meta.resources?.decode}`);
+    }
+    const r = await readJson<{
+      stream?: { gate8?: { texture_decode?: string } };
+    }>(join(dir, "evidence", "result.json"));
+    if (r?.stream?.gate8?.texture_decode !== "engine")
+      problems.push(
+        `result.json texture_decode ${r?.stream?.gate8?.texture_decode}`,
+      );
+    // /9 with both defaults unset: the host decodes, so the block variant appears
+    const nine = join(out, "delivery9", "default", "capture", "recording.rs9");
+    let blocks = 0;
+    if (!existsSync(nine))
+      problems.push("delivery9/default/capture/recording.rs9 missing");
+    else {
+      const bytes = new Uint8Array(await readFile(nine));
+      const meta = decodeRecording(bytes, 9).records[0].meta as unknown as {
+        resources?: { decode?: string };
+      };
+      if (meta.resources?.decode !== "engine")
+        problems.push(`/9 session resources.decode ${meta.resources?.decode}`);
+      for (const t of resolveRecording(bytes, 9).transactions)
+        for (const tex of t.state.textures)
+          for (const v of tex.variants ?? [])
+            if (v.encoding === "block") blocks++;
+      if (blocks === 0)
+        problems.push(
+          "no block variant under the unset decode and delivery defaults",
+        );
+    }
+    // below /8 the unset variable stays off: the refusals are today's
+    const plain = await v6Refusals(
+      "decode-default/plain-v6/capture",
+      "plain-v6",
+    );
+    problems.push(...plain.problems.map((p) => `plain-v6: ${p}`));
+    checks.push(
+      check(
+        "tex-decode-default",
+        "TDE: GRC_TEXTURE_DECODE unset on a /8 sink decodes the block-compressed fixture textures on the host (session resources.decode engine, result.json texture_decode engine, every transaction equal to the explicit-engine capture, ok entries with a source_format); on a /9 sink with GRC_TEXTURE_DELIVERY unset too the block variant appears; on the default /6 sink it stays off and every block texture is refused unsupported-format",
+        ran("decode-default/capture") &&
+          ran("decode-default/plain-v6/capture") &&
+          ran("delivery9/default/capture") &&
+          ran("capture")
+          ? problems
+          : null,
+        `${decodedOk} decoded entries, ${blocks} block variants; plain /6 refuses ${plain.creates} creates`,
+        "decode-default/capture",
+      ),
+    );
+  }
+
   // --- TDP: GRC_TEXTURE_DELIVERY unset is passthrough at /9+ and declares nothing below -------
   // (live-swap-design.md Q5 "TDP"; the pin test is capture/test/rs_gate8_policy_test.cpp)
   {
@@ -1213,7 +1304,8 @@ export async function runG8t(
         for (const tex of t.state.textures)
           for (const v of tex.variants ?? []) {
             if (v.encoding === "block") blocks++;
-            else problems.push(`${name}: texture ${tex.id} offers ${v.encoding}`);
+            else
+              problems.push(`${name}: texture ${tex.id} offers ${v.encoding}`);
           }
     }
     if (blocks === 0)

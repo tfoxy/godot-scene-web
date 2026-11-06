@@ -59,6 +59,52 @@ void test_values() {
   }
 }
 
+// TDE (live-swap-design.md Q5, fork F3): an unset GRC_TEXTURE_DECODE is engine on a stream that
+// speaks /8 or later by other means, and off on a plain /6 stream. This is the pin.
+void test_decode_default() {
+  Gate8Policy p;
+  std::string error;
+  check(parse(nullptr, nullptr, nullptr, nullptr, &p, &error) && !p.decode_engine,
+        "a plain /6 stream with decode unset stays off (it cannot carry decode fields)");
+  check(parse("6", nullptr, nullptr, nullptr, &p, &error) && !p.decode_engine,
+        "an explicit /6 with decode unset stays off");
+  for (const char *version : {"8", "9", "10", "11", "12", "13"}) {
+    check(parse(version, nullptr, nullptr, nullptr, &p, &error) && p.decode_engine &&
+              p.decode_default && !p.any() && p.speaks_v8(),
+          "a /8+ stream with decode unset is engine by default, and not itself a policy");
+    check(parse(version, nullptr, "", nullptr, &p, &error) && p.decode_engine,
+          "an empty GRC_TEXTURE_DECODE is unset");
+    check(parse(version, nullptr, "off", nullptr, &p, &error) && !p.decode_engine &&
+              !p.decode_default,
+          "an explicit off stays off at /8+ (a leg pinning a refusal)");
+    check(parse(version, nullptr, "engine", nullptr, &p, &error) && p.decode_engine &&
+              !p.decode_default && p.any(),
+          "an explicit engine is a policy, not the default");
+  }
+  check(parse(nullptr, "arm", nullptr, nullptr, &p, &error) && p.decode_engine && p.decode_default,
+        "GRC_ADOPT=arm speaks /8, so decode defaults to engine");
+  check(parse(nullptr, "arm", "off", nullptr, &p, &error) && !p.decode_engine,
+        "GRC_ADOPT=arm with an explicit off stays off");
+  check(parse(nullptr, nullptr, nullptr, "RGBAF", &p, &error) && p.decode_engine,
+        "a float format speaks /8, so decode defaults to engine");
+  // The default is not a policy: a /6 file sink is not refused by it alone.
+  check(parse(nullptr, nullptr, nullptr, nullptr, &p, &error) &&
+            grc::rs::gate8_policy_allows(p, true, &error),
+        "a plain /6 file sink is allowed");
+  // The sabotage flag is set after parsing, so the default is applied again by the caller.
+  parse(nullptr, nullptr, nullptr, nullptr, &p, &error);
+  p.v8_sabotage = true;
+  p.apply_decode_default();
+  check(p.decode_engine && p.decode_default, "a /8-only sabotage makes the stream speak /8");
+  // The default is not a policy, so the live offer is the unpoliced one; an explicit engine narrows it.
+  parse("13", nullptr, nullptr, nullptr, &p, &error);
+  check(grc::rs::gate8_live_subprotocols(p).size() == 8,
+        "a /13 stream with the default decode keeps /7 and /6 in the offer");
+  parse("13", nullptr, "engine", nullptr, &p, &error);
+  check(grc::rs::gate8_live_subprotocols(p).size() == 6,
+        "a /13 stream with an explicit engine offers .13 to .8 only");
+}
+
 void test_invalid() {
   Gate8Policy p;
   std::string error;
@@ -482,6 +528,7 @@ int main() {
   test_defaults();
   test_values();
   test_invalid();
+  test_decode_default();
   test_refusal();
   test_v9_policy();
   test_v10_policy();

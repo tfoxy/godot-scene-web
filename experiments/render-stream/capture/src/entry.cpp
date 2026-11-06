@@ -2105,6 +2105,7 @@ void stream_start() {
         std::getenv("GRC_STREAM_VERSION"), std::getenv("GRC_ADOPT"),
         std::getenv("GRC_TEXTURE_DECODE"), std::getenv("GRC_RESOURCE_FORMATS"), &gate8, &error);
     gate8.v8_sabotage = parsed && sabotage.ok && rs::sabotage_needs_v8(sabotage.config.kind);
+    gate8.apply_decode_default();  // TDE (F3): after every field that makes the stream speak /8
     if (!parsed || !rs::gate8_policy_allows(gate8, files, &error)) {
       log_line("stream: refused gate 8 policy (" + error + ")");
       g_stream.status = "refused";
