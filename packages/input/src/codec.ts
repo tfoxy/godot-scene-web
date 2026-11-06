@@ -212,7 +212,7 @@ function has(object: Json, key: string): boolean {
 }
 
 /** UTF-8 length of a JS string; a lone surrogate counts as U+FFFD (3 bytes), as TextEncoder does. */
-function utf8Length(text: string): number {
+export function utf8Length(text: string): number {
   let bytes = 0;
   for (let i = 0; i < text.length; i++) {
     const unit = text.charCodeAt(i);

@@ -22,4 +22,24 @@ describe("@godot-scene-web/input root entry", () => {
     });
     expect(input.parseInputMessage(text).ok).toBe(true);
   });
+
+  it("runs a session (timers, microtasks, randomness) without DOM globals", async () => {
+    const input = await import("../src/index");
+    const texts: string[] = [];
+    const session = input.createInputSession({
+      send: (t) => texts.push(t),
+      heartbeatMs: 5,
+    });
+    session.open();
+    session.push({ event: "key", keycode: input.Key.ESCAPE, pressed: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    session.dispose();
+    const types = texts.map((t) => {
+      const result = input.parseInputMessage(t);
+      return result.ok ? result.message.type : result.code;
+    });
+    expect(types.slice(0, 2)).toEqual(["hello", "events"]);
+    expect(types).toContain("heartbeat");
+    expect(types.at(-1)).toBe("bye");
+  });
 });

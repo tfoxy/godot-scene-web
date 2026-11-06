@@ -12,6 +12,7 @@ encodeInputMessage parseInputMessage validateInputMessage InputEncodeError
 INPUT_FORMAT INPUT_MAX_EVENTS INPUT_MAX_MESSAGE_BYTES INPUT_MAX_TARGET_HANDLE
 INPUT_RECORD_KINDS POINTER_TARGET_KINDS
 Key KeyLocation JoyAxis JoyButton MouseButton MouseButtonMask mouseButtonToMask
+createInputSession
 `
   .trim()
   .split(/\s+/);
@@ -24,6 +25,8 @@ InputRecord InputRecordKind ModifierFields PointerTargetFields InputVec2
 InputByeMessage InputEventsMessage InputHeartbeatMessage InputHelloMessage InputMessage
 InputMessageType InputResetMessage InputSyncMessage InputSyncScope
 InputErrorCode InputParseError InputParseOk InputParseResult
+InputHeldState InputSession InputSessionOptions InputSessionState InputSessionStats InputSink
+InputSyncSource
 `
   .trim()
   .split(/\s+/);

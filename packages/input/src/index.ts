@@ -1,4 +1,5 @@
-// @godot-scene-web/input root entry: DOM-free gsw-input/1 types, codec and Godot enum values.
+// @godot-scene-web/input root entry: DOM-free gsw-input/1 types, codec, sender session and Godot
+// enum values.
 // Browser captures arrive as their own subpaths (`./keyboard`, `./gamepad`, `./pointer`) so this
 // entry never pulls DOM code. Spec: docs/input.md.
 
@@ -56,3 +57,13 @@ export {
   MouseButtonMask,
   mouseButtonToMask,
 } from "./godot-enums";
+export {
+  createInputSession,
+  type InputHeldState,
+  type InputSession,
+  type InputSessionOptions,
+  type InputSessionState,
+  type InputSessionStats,
+  type InputSink,
+  type InputSyncSource,
+} from "./session";
