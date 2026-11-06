@@ -100,6 +100,13 @@ export interface MouseModeHost {
   map(clientX: number, clientY: number): Vec | null;
   /** Host px per client px around a client point, [x, y]. */
   scaleAt(clientX: number, clientY: number): Vec;
+  /**
+   * A drag sample was buffered: call `settle()` when the next motion record is due (the capture's
+   * frame, or at once without coalescing). Never called from inside `settle()`.
+   */
+  schedule(): void;
+  /** A drag sample is about to be buffered: motion buffered before it must go first. */
+  beforeDrag(): void;
   active(): boolean;
   drop(
     reason: "inactive" | "off-picture" | "extra-touch" | "intercepted",
@@ -137,6 +144,13 @@ export interface MouseMode {
   move(pointerId: number, clientX: number, clientY: number): void;
   up(pointerId: number, clientX: number, clientY: number): void;
   cancel(pointerId: number): void;
+  /**
+   * Map and report the dragging finger's newest buffered sample (one `map`, one `drag-move`),
+   * called by the capture at the start of a motion flush.
+   */
+  settle(): void;
+  /** Is a drag sample waiting for `settle()`? */
+  buffered(): boolean;
   /** Release / cancel the running gesture; fingers still down stay ignored until they lift. */
   cancelAll(): void;
   /** Is this finger down on the stage (so a missed pointerup must still reach `up`)? */
@@ -144,6 +158,8 @@ export interface MouseMode {
   dispose(): void;
 }
 
+/** Most unmapped drag samples one frame keeps to look back through. */
+const MAX_RAW = 64;
 const DEFAULT_TOUCH_SLOP = 8;
 const DEFAULT_SCROLL_SLOP = 16;
 const DEFAULT_WHEEL_STEP = 56;
@@ -173,6 +189,8 @@ interface Drag {
   last: Vec;
   lastX: number;
   lastY: number;
+  /** The samples not yet mapped (client px), oldest first. */
+  raw: [number, number][];
 }
 
 interface ScrollFinger {
@@ -332,14 +350,36 @@ export function createMouseMode(
           last: p.down,
           lastX: p.startX,
           lastY: p.startY,
+          raw: [],
         });
     }
     tell(gesture, decision);
     if (s.phase.type === "drag") dragMove(s, s.phase, x, y);
   }
 
-  function dragMove(s: Session, d: Drag, x: number, y: number): void {
-    const at = host.map(x, y);
+  /** Buffer a drag sample; the flush maps it (the newest of a frame that maps wins). */
+  function dragMove(_s: Session, d: Drag, x: number, y: number): void {
+    host.beforeDrag();
+    if (d.raw.length >= MAX_RAW) d.raw.shift();
+    d.raw.push([x, y]);
+    host.schedule();
+  }
+
+  /**
+   * Map the newest buffered drag sample (one `map` call; older ones only while the newest is off
+   * the picture) and report it as the frame's `drag-move`.
+   */
+  function settleDrag(s: Session, d: Drag): void {
+    if (d.raw.length === 0) return;
+    const samples = d.raw;
+    d.raw = [];
+    let x = 0;
+    let y = 0;
+    let at: Vec | null = null;
+    for (let i = samples.length - 1; i >= 0 && !at; i--) {
+      [x, y] = samples[i] as Vec;
+      at = host.map(x, y);
+    }
     // Off the picture: still a drag, released at the last mapped point.
     if (!at || (at[0] === d.last[0] && at[1] === d.last[1])) return;
     const gesture: PointerGesture = {
@@ -368,6 +408,8 @@ export function createMouseMode(
     y: number,
     canceled: boolean,
   ) {
+    // The sample still buffered is this frame's drag motion: it goes out before the release.
+    settleDrag(s, d);
     setPhase(s, { type: "inert" });
     const lifted = canceled ? null : host.map(x, y);
     const point = lifted ?? d.last;
@@ -617,6 +659,7 @@ export function createMouseMode(
       const s = session;
       if (!s?.own.has(id)) return;
       const phase = s.phase;
+      if (phase.type === "drag") settleDrag(s, phase);
       const finger = phase.type === "scroll" ? phase.fingers.get(id) : null;
       const point: Vec =
         phase.type === "pending"
@@ -635,12 +678,23 @@ export function createMouseMode(
       let point: Vec = [0, 0];
       const phase = s.phase;
       if (phase.type === "drag") {
+        settleDrag(s, phase);
         point = [phase.lastX, phase.lastY];
         endDrag(s, phase, point[0], point[1], true);
       } else if (phase.type === "pending") point = [phase.x, phase.y];
       // Every finger still down is ignored until it lifts.
       s.own = new Set();
       end(s, true, point[0], point[1]);
+    },
+
+    settle(): void {
+      const s = session;
+      if (s?.phase.type === "drag") settleDrag(s, s.phase);
+    },
+
+    buffered(): boolean {
+      const phase = session?.phase;
+      return phase?.type === "drag" && phase.raw.length > 0;
     },
 
     tracks(id): boolean {

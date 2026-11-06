@@ -18,7 +18,10 @@
 //
 // MOTION IS COALESCED to one `mouse_motion` (and one `screen_drag` per touch) per animation frame
 // with `relative` summed, and is flushed before any edge so a fast move-then-press presses at the
-// right place.
+// right place. MOTION IS MAPPED AT THE FLUSH: a move sample is buffered as its raw client point and
+// `map` runs once per emitted motion record, on the newest sample (an affine or hit-test `map` is
+// not asked about points whose record never exists). Edges (press, release, wheel, a touch's
+// down/up) still map at event time, so their positions are exact.
 //
 // TARGETS (`targets: "press" | "all"` with `resolveTarget`, docs/input.md "Pointer targets")
 // live in pointer-targets.ts; this file only calls `stampTarget` where a record goes out, and
@@ -350,19 +353,76 @@ function modifiers(event: {
   return out;
 }
 
+/** Most unmapped samples one flush keeps to look back through (the newest wins when it maps). */
+const MAX_RAW = 64;
+
+/** Append `p` to a flush's unmapped client samples, forgetting the oldest past `MAX_RAW`. */
+function pushRaw(points: Vec[], p: Vec): void {
+  if (points.length >= MAX_RAW) points.shift();
+  points.push(p);
+}
+
+/**
+ * Map a flush's buffered client samples with one `map` call on the newest; only when that lands
+ * off the picture (a letterbox bar) walk back to the newest one that maps, which is where the
+ * sample-by-sample capture would have ended up.
+ */
+function newestMapped(
+  points: readonly Vec[],
+  mapPoint: (x: number, y: number) => Vec | null,
+): { client: Vec; at: Vec } | null {
+  for (let i = points.length - 1; i >= 0; i--) {
+    const client = points[i] as Vec;
+    const at = mapPoint(client[0], client[1]);
+    if (at) return { client, at };
+  }
+  return null;
+}
+
+/** The unmapped samples of a pending mouse motion. */
+interface RawSample {
+  /** Client points, oldest first. Empty while `locked`. */
+  points: Vec[];
+  /** Pointer-locked: `mx`/`my` (summed `movementX/Y`) are scaled by `map` at the flush. */
+  locked: boolean;
+  /** The newest client point (the lock point while locked). */
+  x: number;
+  y: number;
+  mx: number;
+  my: number;
+  /** Some sample's client point differed from the one before it (so not a button-only move). */
+  moved: boolean;
+}
+
 interface PendingMotion {
   relative: Vec;
   mods: Modifiers;
   pressure: number;
   tilt: Vec;
   inverted: boolean;
+  /** The newest unmapped sample (null once settled, or for a drag the gesture module fed). */
+  raw: RawSample | null;
+  /** Send even when the net motion is zero (a pen, a lock, the first position, a drag). */
+  always: boolean;
 }
+
+const newPending = (): PendingMotion => ({
+  relative: [0, 0],
+  mods: {},
+  pressure: 0,
+  tilt: [0, 0],
+  inverted: false,
+  raw: null,
+  always: false,
+});
 
 interface Touch {
   index: number;
   last: Vec;
-  /** Summed relative of a pending drag, or null when none is pending. */
+  /** Summed relative of a settled pending drag, or null when none is pending. */
   pending: Vec | null;
+  /** The unmapped drag samples (client px), oldest first. */
+  raw: Vec[];
   /** The last client point (a target resolve's input). */
   client: Vec;
   /** The target stamped on this touch's last record and where (targets on only). */
@@ -523,6 +583,10 @@ export function createPointerCapture(
       : null;
   }
 
+  function mapPoint(x: number, y: number): Vec | null {
+    return mapEvent({ clientX: x, clientY: y });
+  }
+
   function mapEvent(event: { clientX: number; clientY: number }): Vec | null {
     const p = map(event.clientX, event.clientY);
     return p && Number.isFinite(p.x) && Number.isFinite(p.y) ? point(p) : null;
@@ -530,7 +594,11 @@ export function createPointerCapture(
 
   // ---- motion coalescing ----
 
+  /** A flush is settling buffered samples: motion primitives it calls must not schedule again. */
+  let settling = false;
+
   function schedule(): void {
+    if (settling) return;
     if (everySample || !raf) {
       flushMotion();
       return;
@@ -542,31 +610,99 @@ export function createPointerCapture(
       });
   }
 
+  /** Map the pending mouse sample (one `map` call; three more in a pointer lock) into the motion. */
+  function settleMouse(): void {
+    const m = pending;
+    const raw = m?.raw;
+    if (!m || !raw) return;
+    m.raw = null;
+    if (raw.locked) {
+      const [sx, sy] = movementScale(raw.x, raw.y);
+      m.relative[0] += raw.mx * sx;
+      m.relative[1] += raw.my * sy;
+      return;
+    }
+    const found = newestMapped(raw.points, mapPoint);
+    // Every sample off picture: the position stays where it was.
+    if (!found) return;
+    // A there-and-back is still a motion; a chord's button-only move (same point) is not.
+    if (raw.moved) m.always = true;
+    const p = found.at;
+    mouseClient[0] = found.client[0];
+    mouseClient[1] = found.client[1];
+    if (mousePos) {
+      m.relative[0] += p[0] - mousePos[0];
+      m.relative[1] += p[1] - mousePos[1];
+    } else {
+      // The very first position has no previous one: motion counts from the batch's first sample
+      // (the only batch that maps more than its newest sample while on picture).
+      m.always = true;
+      for (const client of raw.points) {
+        const first = mapPoint(client[0], client[1]);
+        if (!first) continue;
+        m.relative[0] += p[0] - first[0];
+        m.relative[1] += p[1] - first[1];
+        break;
+      }
+    }
+    mousePos = p;
+  }
+
+  /** Map a touch's newest drag sample (one `map` call) into its pending drag. */
+  function settleTouch(touch: Touch): void {
+    if (touch.raw.length === 0) return;
+    const found = newestMapped(touch.raw, mapPoint);
+    touch.raw = [];
+    if (!found) return;
+    const at = found.at;
+    touch.client = found.client;
+    const rel = touch.pending ?? [0, 0];
+    rel[0] += at[0] - touch.last[0];
+    rel[1] += at[1] - touch.last[1];
+    touch.pending = rel;
+    touch.last = at;
+  }
+
   function flushMotion(): void {
+    if (mouseMode) {
+      const was = settling;
+      settling = true;
+      try {
+        mouseMode.settle();
+      } finally {
+        settling = was;
+      }
+    }
+    settleMouse();
     if (pending && mousePos) {
       const m = pending;
       pending = null;
-      const record: MouseMotionRecord = {
-        event: "mouse_motion",
-        position: [...mousePos],
-      };
       const relative: Vec = [q2(m.relative[0]), q2(m.relative[1])];
-      if (relative[0] !== 0 || relative[1] !== 0) record.relative = relative;
-      const mask = heldMask();
-      if (mask !== 0) record.button_mask = mask;
-      if (m.pressure > 0) record.pressure = m.pressure;
-      if (m.tilt[0] !== 0 || m.tilt[1] !== 0) record.tilt = m.tilt;
-      if (m.inverted) record.pen_inverted = true;
-      Object.assign(record, m.mods);
-      if (motionTargets) {
-        const stamp = stampTarget(record, mouseClient, mousePos);
-        mouseTarget = stamp ? { stamp, at: [...mousePos] } : null;
+      const still = relative[0] === 0 && relative[1] === 0;
+      // Net zero motion from samples that never left their point (a chord's button-only move).
+      if (m.always || !still) {
+        const record: MouseMotionRecord = {
+          event: "mouse_motion",
+          position: [...mousePos],
+        };
+        if (!still) record.relative = relative;
+        const mask = heldMask();
+        if (mask !== 0) record.button_mask = mask;
+        if (m.pressure > 0) record.pressure = m.pressure;
+        if (m.tilt[0] !== 0 || m.tilt[1] !== 0) record.tilt = m.tilt;
+        if (m.inverted) record.pen_inverted = true;
+        Object.assign(record, m.mods);
+        if (motionTargets) {
+          const stamp = stampTarget(record, mouseClient, mousePos);
+          mouseTarget = stamp ? { stamp, at: [...mousePos] } : null;
+        }
+        stats.motions++;
+        sink.push(record);
       }
-      stats.motions++;
-      sink.push(record);
     }
     pending = null;
     for (const touch of touches.values()) {
+      settleTouch(touch);
       if (!touch.pending) continue;
       const relative: Vec = [q2(touch.pending[0]), q2(touch.pending[1])];
       touch.pending = null;
@@ -598,33 +734,40 @@ export function createPointerCapture(
     return [Number.isFinite(sx) ? sx : 1, Number.isFinite(sy) ? sy : 1];
   }
 
+  /**
+   * Buffer a mouse/pen move sample: its raw client point (the newest wins) and, in a pointer lock,
+   * its summed movement. Nothing is mapped until the flush.
+   */
   function addMouseSample(sample: PointerEventLike, pen: boolean): void {
-    let delta: Vec;
-    if (locked() && mousePos) {
-      const [sx, sy] = movementScale(sample.clientX, sample.clientY);
-      delta = [(sample.movementX ?? 0) * sx, (sample.movementY ?? 0) * sy];
-    } else {
-      const p = mapEvent(sample);
-      if (!p) return;
-      mouseClient[0] = sample.clientX;
-      mouseClient[1] = sample.clientY;
-      const before = mousePos;
-      delta = before ? [p[0] - before[0], p[1] - before[1]] : [0, 0];
-      // A move that changes only `buttons` (a chord) is an edge, not a motion; a pen's pressure
-      // or tilt change still is one.
-      if (before && !pending && !pen && delta[0] === 0 && delta[1] === 0)
-        return;
-      mousePos = p;
-    }
-    const m: PendingMotion = pending ?? {
-      relative: [0, 0],
-      mods: {},
-      pressure: 0,
-      tilt: [0, 0],
-      inverted: false,
+    const lock = locked() && mousePos !== null;
+    // Samples keep their order across the two buffers (a mouse and a touch drag together).
+    if (mouseMode?.buffered()) flushMotion();
+    // A lock taken or dropped mid-frame: the earlier samples were another kind of motion.
+    if (pending?.raw && pending.raw.locked !== lock) flushMotion();
+    const m = pending ?? newPending();
+    const raw: RawSample = m.raw ?? {
+      points: [],
+      locked: lock,
+      x: 0,
+      y: 0,
+      mx: 0,
+      my: 0,
+      moved: false,
     };
-    m.relative[0] += delta[0];
-    m.relative[1] += delta[1];
+    raw.x = sample.clientX;
+    raw.y = sample.clientY;
+    if (lock) {
+      raw.mx += sample.movementX ?? 0;
+      raw.my += sample.movementY ?? 0;
+      m.always = true;
+    } else {
+      const before = raw.points[raw.points.length - 1] ?? mouseClient;
+      if (before[0] !== sample.clientX || before[1] !== sample.clientY)
+        raw.moved = true;
+      pushRaw(raw.points, [sample.clientX, sample.clientY]);
+      if (pen) m.always = true;
+    }
+    m.raw = raw;
     m.mods = modifiers(sample);
     if (pen) {
       m.pressure = q4(Math.max(0, Math.min(1, sample.pressure ?? 0)));
@@ -826,16 +969,13 @@ export function createPointerCapture(
 
   /** Coalesced motion to `at`, as a mouse drag's. */
   function dragTo(at: Vec, client?: Vec): void {
+    // A mouse sample buffered before this drag point comes first.
+    settleMouse();
     const before = mousePos;
     mousePos = at;
     setMouseClient(client);
-    const m: PendingMotion = pending ?? {
-      relative: [0, 0],
-      mods: {},
-      pressure: 0,
-      tilt: [0, 0],
-      inverted: false,
-    };
+    const m = pending ?? newPending();
+    m.always = true;
     if (before) {
       m.relative[0] += at[0] - before[0];
       m.relative[1] += at[1] - before[1];
@@ -920,6 +1060,10 @@ export function createPointerCapture(
           {
             map: (x, y) => mapEvent({ clientX: x, clientY: y }),
             scaleAt: movementScale,
+            schedule,
+            beforeDrag: () => {
+              if (pending?.raw) flushMotion();
+            },
             active,
             drop,
             capturePointer,
@@ -979,6 +1123,7 @@ export function createPointerCapture(
         index,
         last: at,
         pending: null,
+        raw: [],
         client: [event.clientX, event.clientY],
         target: null,
       };
@@ -1021,14 +1166,7 @@ export function createPointerCapture(
       const touch = touches.get(event.pointerId);
       if (!touch) return;
       for (const sample of list) {
-        const at = mapEvent(sample);
-        if (!at) continue;
-        touch.client = [sample.clientX, sample.clientY];
-        const rel = touch.pending ?? [0, 0];
-        rel[0] += at[0] - touch.last[0];
-        rel[1] += at[1] - touch.last[1];
-        touch.pending = rel;
-        touch.last = at;
+        pushRaw(touch.raw, [sample.clientX, sample.clientY]);
         if (everySample) flushMotion();
       }
       schedule();

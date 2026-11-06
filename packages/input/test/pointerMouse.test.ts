@@ -544,16 +544,19 @@ describe("mouse mode: hooks", () => {
     h.take();
     h.touch("down", 6, 60, 50);
     h.touch("move", 6, 80, 50);
+    h.frame(); // drag-move is per coalesced motion (one per frame), not per sample
     h.touch("move", 6, 80, 50); // same point: no drag-move
-    h.touch("move", 6, 90, 50);
+    h.touch("move", 6, 85, 50);
+    h.touch("move", 6, 90, 50); // 85 and 90 share a frame: one drag-move, at 90
+    h.frame();
     h.touch("up", 6, 90, 50);
     expect(seen).toEqual([
       ["touch-down", 0],
       ["drag-start", 2],
-      ["drag-move", 2],
-      ["drag-move", 2],
-      ["drag-end", 4],
-      ["touch-end", 4],
+      ["drag-move", 2], // told while its frame's motion is being built
+      ["drag-move", 3],
+      ["drag-end", 5],
+      ["touch-end", 5],
     ]);
   });
 
