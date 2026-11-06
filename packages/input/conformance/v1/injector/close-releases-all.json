@@ -130,7 +130,9 @@
         "joy_button 65 2 down",
         "joy_motion 64 1 -1.0000",
         "joy_motion 65 4 0.5000"
-      ]
+      ],
+      "joypads": [64, 65],
+      "joypad_signals": ["attached 64 a 0", "attached 65 a 1"]
     },
     {
       "after": 2,
@@ -141,14 +143,16 @@
         "joy_button 65 2 up",
         "joy_motion 64 1 0.0000",
         "joy_motion 65 4 0.0000"
-      ]
+      ],
+      "joypads": [64, 65]
     },
     {
       "after": 3,
       "dispatched": [],
       "stats": {
         "no-hello": 1
-      }
+      },
+      "joypads": [64, 65]
     },
     {
       "after": 5,
@@ -159,14 +163,16 @@
       "dispatched": ["key 87/87/87 down"],
       "stats": {
         "no-hello": 1
-      }
+      },
+      "joypads": [64, 65]
     },
     {
       "after": 6,
       "dispatched": ["key 87/87/87 up"],
       "stats": {
         "no-hello": 1
-      }
+      },
+      "joypads": [64, 65]
     }
   ]
 }

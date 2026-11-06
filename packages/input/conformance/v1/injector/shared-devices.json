@@ -178,60 +178,72 @@
       "after": 2,
       "joy_buttons": [[64, 0]],
       "actions": ["gsw_test_jump"],
-      "dispatched": ["joy_button 64 0 down"]
+      "dispatched": ["joy_button 64 0 down"],
+      "joypads": [64],
+      "joypad_signals": ["attached 64 a 0"]
     },
     {
       "after": 3,
       "joy_buttons": [[64, 0]],
       "actions": ["gsw_test_jump"],
-      "dispatched": []
+      "dispatched": [],
+      "joypads": [64]
     },
     {
       "after": 4,
       "joy_buttons": [[64, 0]],
       "actions": ["gsw_test_jump"],
-      "dispatched": []
+      "dispatched": [],
+      "joypads": [64]
     },
     {
       "after": 5,
-      "dispatched": ["joy_button 64 0 up"]
+      "dispatched": ["joy_button 64 0 up"],
+      "joypads": [64]
     },
     {
       "after": 6,
       "joy_axes": [[64, 0, 0.8]],
       "actions": ["gsw_test_right"],
-      "dispatched": ["joy_motion 64 0 0.8000"]
+      "dispatched": ["joy_motion 64 0 0.8000"],
+      "joypads": [64]
     },
     {
       "after": 7,
       "joy_axes": [[64, 0, -0.6]],
-      "dispatched": ["joy_motion 64 0 -0.6000"]
+      "dispatched": ["joy_motion 64 0 -0.6000"],
+      "joypads": [64]
     },
     {
       "after": 8,
       "joy_axes": [[64, 0, -0.6]],
-      "dispatched": []
+      "dispatched": [],
+      "joypads": [64]
     },
     {
       "after": 9,
       "joy_axes": [[64, 0, 0.9]],
       "actions": ["gsw_test_right"],
-      "dispatched": ["joy_motion 64 0 0.9000"]
+      "dispatched": ["joy_motion 64 0 0.9000"],
+      "joypads": [64]
     },
     {
       "after": 10,
       "joy_axes": [[64, 0, 0.3]],
-      "dispatched": ["joy_motion 64 0 0.3000"]
+      "dispatched": ["joy_motion 64 0 0.3000"],
+      "joypads": [64]
     },
     {
       "after": 11,
       "joy_axes": [[64, 0, 0.9]],
       "actions": ["gsw_test_right"],
-      "dispatched": ["joy_motion 64 0 0.9000"]
+      "dispatched": ["joy_motion 64 0 0.9000"],
+      "joypads": [64]
     },
     {
       "after": 12,
-      "dispatched": ["joy_motion 64 0 0.0000"]
+      "dispatched": ["joy_motion 64 0 0.0000"],
+      "joypads": [64]
     }
   ]
 }

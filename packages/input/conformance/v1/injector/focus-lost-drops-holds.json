@@ -1,0 +1,241 @@
+{
+  "name": "focus-lost-drops-holds",
+  "description": "Focus loss (Godot's release_pressed_events, then on_focus_lost) drops held keys, buttons and axes without events; a later release of a dropped control sends nothing, a fresh press presses, an echo of a dropped key is unheld, and a keyboard sync presses the dropped keys it lists.",
+  "config": {},
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "pressed": true
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.75
+          },
+          {
+            "event": "key",
+            "physical_keycode": 83,
+            "keycode": 83,
+            "key_label": 83,
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "focus_lost": true
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "pressed": false
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 3,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "pressed": true
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 4,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 83,
+            "keycode": 83,
+            "key_label": 83,
+            "pressed": true,
+            "echo": true
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "sync",
+        "epoch": 1,
+        "seq": 5,
+        "scope": "keyboard",
+        "held": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "pressed": true
+          },
+          {
+            "event": "key",
+            "physical_keycode": 83,
+            "keycode": 83,
+            "key_label": 83,
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "reassert": true
+    },
+    {
+      "recv": {
+        "type": "bye",
+        "epoch": 1,
+        "seq": 6,
+        "reason": "dispose"
+      }
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "physical_keys": [83, 87],
+      "keys": [83, 87],
+      "labels": [83, 87],
+      "joy_buttons": [[64, 0]],
+      "joy_axes": [[64, 0, 0.75]],
+      "actions": ["gsw_test_jump", "gsw_test_right"],
+      "dispatched": [
+        "key 87/87/87 down",
+        "joy_button 64 0 down",
+        "joy_motion 64 0 0.7500",
+        "key 83/83/83 down"
+      ],
+      "joypads": [64],
+      "joypad_signals": ["attached 64 a 0"]
+    },
+    {
+      "after": 2,
+      "joypads": [64]
+    },
+    {
+      "after": 3,
+      "joypads": [64]
+    },
+    {
+      "after": 4,
+      "physical_keys": [87],
+      "keys": [87],
+      "labels": [87],
+      "joy_buttons": [[64, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["key 87/87/87 down", "joy_button 64 0 down"],
+      "joypads": [64]
+    },
+    {
+      "after": 5,
+      "physical_keys": [87],
+      "keys": [87],
+      "labels": [87],
+      "joy_buttons": [[64, 0]],
+      "actions": ["gsw_test_jump"],
+      "joypads": [64],
+      "stats": {
+        "unheld": 1
+      }
+    },
+    {
+      "after": 6,
+      "physical_keys": [83, 87],
+      "keys": [83, 87],
+      "labels": [83, 87],
+      "joy_buttons": [[64, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["key 83/83/83 down"],
+      "joypads": [64],
+      "stats": {
+        "unheld": 1
+      }
+    },
+    {
+      "after": 7,
+      "physical_keys": [83, 87],
+      "keys": [83, 87],
+      "labels": [83, 87],
+      "joy_buttons": [[64, 0]],
+      "actions": ["gsw_test_jump"],
+      "joypads": [64],
+      "stats": {
+        "unheld": 1
+      }
+    },
+    {
+      "after": 8,
+      "dispatched": [
+        "key 87/87/87 up",
+        "key 83/83/83 up",
+        "joy_button 64 0 up"
+      ],
+      "joypads": [64],
+      "stats": {
+        "unheld": 1
+      }
+    }
+  ]
+}

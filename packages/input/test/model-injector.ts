@@ -4,9 +4,10 @@
 // (packages/input/godot/tests/injector_selftest.gd) checks the same vectors against real Input.
 //
 // It mirrors the injector rule for rule, in the same order (dispatch order is asserted): the
-// session table, the two-level ledger, release-all and the gates. Input is modelled as the three
-// key sets, the joypad button set and axis map (axes stored as float32, as Godot does), and the
-// test project's two actions (packages/input/godot/project.godot).
+// session table, the two-level ledger, release-all, the gates, device leases (gsw_input_devices.gd)
+// and focus loss. Input is modelled as the three key sets, the joypad button set and axis map (axes
+// stored as float32, as Godot does), and the test project's two actions
+// (packages/input/godot/project.godot), whose joypad bindings GswJoypadIsolation can narrow.
 import { parseInputMessage } from "../src/index";
 
 type Json = Record<string, unknown>;
@@ -18,7 +19,9 @@ export interface InjectorConfig {
   devices_per_source?: number;
   share_devices?: boolean;
   key_device?: number;
+  lease_ms?: number;
   stale_timeout_ms?: number;
+  reassert_on_focus_in?: boolean;
   max_events_per_second?: number;
 }
 
@@ -26,7 +29,12 @@ export type InjectorStep =
   | { recv: Json | string; channel?: string; at?: number; result?: string }
   | { close: string; at?: number }
   | { tick: number }
-  | { release_all: true };
+  | { release_all: true }
+  /** Godot's `Input.release_pressed_events()` (window focus-out), then `on_focus_lost()`. */
+  | { focus_lost: true }
+  | { reassert: true }
+  /** `GswJoypadIsolation.isolate(devices)`; the runner restores the bindings after the vector. */
+  | { isolate: number[] };
 
 export interface InjectorExpect {
   after: number;
@@ -37,6 +45,10 @@ export interface InjectorExpect {
   joy_axes?: [number, number, number][];
   actions?: string[];
   dispatched?: string[];
+  /** `remote_joypads()`. */
+  joypads?: number[];
+  /** `joypad_attached`/`joypad_detached` since the previous entry: `attached D source slot`. */
+  joypad_signals?: string[];
   stats?: Record<string, number>;
 }
 
@@ -84,6 +96,17 @@ class ModelInput {
   buttons = new Set<string>();
   axes = new Map<string, number>();
   dispatched: string[] = [];
+  /** The devices GswJoypadIsolation narrowed the joypad bindings to; null = all devices. */
+  isolated: number[] | null = null;
+
+  /** `Input.release_pressed_events()`: state cleared, no events dispatched. */
+  releasePressed() {
+    this.physical.clear();
+    this.keycodes.clear();
+    this.labels.clear();
+    this.buttons.clear();
+    this.axes.clear();
+  }
 
   key(
     physical: number,
@@ -124,7 +147,7 @@ class ModelInput {
     this.dispatched.push(`joy_motion ${device} ${axis} ${stored.toFixed(4)}`);
   }
 
-  state(): Omit<InjectorState, "stats"> {
+  state(): Omit<InjectorState, "stats" | "joypads" | "joypad_signals"> {
     const numeric = (a: number, b: number) => a - b;
     const pair = (id: string) => id.split(":").map(Number);
     const buttons = [...this.buttons]
@@ -134,9 +157,19 @@ class ModelInput {
       .map(([id, value]) => [...pair(id), value])
       .sort((a, b) => a[0] - b[0] || a[1] - b[1]) as [number, number, number][];
     const actions: string[] = [];
-    if (this.physical.has(KEY_W) || buttons.some(([, button]) => button === 0))
+    const bound = (device: number) =>
+      this.isolated === null || this.isolated.includes(device);
+    if (
+      this.physical.has(KEY_W) ||
+      buttons.some(([device, button]) => button === 0 && bound(device))
+    )
       actions.push("gsw_test_jump");
-    if (axes.some(([, axis, value]) => axis === 0 && value >= DEADZONE))
+    if (
+      axes.some(
+        ([device, axis, value]) =>
+          axis === 0 && value >= DEADZONE && bound(device),
+      )
+    )
       actions.push("gsw_test_right");
     const dispatched = this.dispatched;
     this.dispatched = [];
@@ -154,7 +187,6 @@ class ModelInput {
 
 interface Source {
   id: string;
-  index: number;
   channel: string | null;
   open: boolean;
   epoch: number;
@@ -167,6 +199,82 @@ interface Source {
   handles: Map<number, Json>;
   rateStart: number;
   rateCount: number;
+  leaseUntil: number;
+  lostKeys: Map<number, Json>;
+  lostButtons: Set<number>;
+  lostAxes: Map<number, number>;
+}
+
+/** gsw_input_devices.gd: lease blocks and attached virtual devices. */
+class ModelDevices {
+  deviceBase = 64;
+  devicesPerSource = 4;
+  shareDevices = false;
+  signals: string[] = [];
+  private readonly blocks = new Map<number, string>();
+  private readonly blockOf = new Map<string, number>();
+  private readonly slots = new Map<string, Map<number, number>>();
+  private readonly users = new Map<number, string[]>();
+
+  acquire(source: string, slot: number): number {
+    if (slot < 0 || slot >= this.devicesPerSource) return -1;
+    const slots = this.slots.get(source) ?? new Map<number, number>();
+    const known = slots.get(slot);
+    if (known !== undefined) return known;
+    let device = this.deviceBase + slot;
+    if (!this.shareDevices) {
+      let block = this.blockOf.get(source) ?? -1;
+      if (block < 0) {
+        block = this.freeBlock();
+        if (block < 0) return -1;
+        this.blocks.set(block, source);
+        this.blockOf.set(source, block);
+      }
+      device += block * this.devicesPerSource;
+    }
+    if (device < 0 || device > MAX_DEVICE) return -1;
+    slots.set(slot, device);
+    this.slots.set(source, slots);
+    const users = this.users.get(device) ?? [];
+    users.push(source);
+    this.users.set(device, users);
+    if (users.length === 1)
+      this.signals.push(`attached ${device} ${source} ${slot}`);
+    return device;
+  }
+
+  release(source: string) {
+    const slots = this.slots.get(source) ?? new Map<number, number>();
+    for (const slot of [...slots.keys()].sort((a, b) => a - b)) {
+      const device = slots.get(slot) as number;
+      const users = (this.users.get(device) ?? []).filter((u) => u !== source);
+      if (users.length === 0) {
+        this.users.delete(device);
+        this.signals.push(`detached ${device} ${source} ${slot}`);
+      } else this.users.set(device, users);
+    }
+    this.slots.delete(source);
+    const block = this.blockOf.get(source);
+    if (block !== undefined) {
+      this.blocks.delete(block);
+      this.blockOf.delete(source);
+    }
+  }
+
+  attached(): number[] {
+    return [...this.users.keys()].sort((a, b) => a - b);
+  }
+
+  private freeBlock(): number {
+    const per = this.devicesPerSource;
+    for (
+      let block = 0;
+      this.deviceBase + block * per + per - 1 <= MAX_DEVICE;
+      block++
+    )
+      if (!this.blocks.has(block)) return block;
+    return -1;
+  }
 }
 
 const num = (record: Json, field: string, fallback = 0): number =>
@@ -175,17 +283,15 @@ const num = (record: Json, field: string, fallback = 0): number =>
 /** The injector, rule for rule as gsw_input_injector.gd. */
 export class ModelInjector {
   readonly input = new ModelInput();
+  readonly devices = new ModelDevices();
   acceptKinds = DEFAULT_ACCEPT_KINDS;
   allowedActions: string[] = [];
-  deviceBase = 64;
-  devicesPerSource = 4;
-  shareDevices = false;
+  leaseMs = 30000;
   staleTimeoutMs = 0;
   maxEventsPerSecond = 2000;
 
   private readonly sources = new Map<string, Source>();
   private readonly byChannel = new Map<string, Source>();
-  private nextIndex = 0;
   private readonly keyRefs = new Map<string, number>();
   private readonly buttonRefs = new Map<number, number>();
   private readonly axisHolders = new Map<number, Map<string, number>>();
@@ -195,9 +301,12 @@ export class ModelInjector {
   constructor(config: InjectorConfig = {}) {
     if (config.accept_kinds) this.acceptKinds = config.accept_kinds;
     if (config.allowed_actions) this.allowedActions = config.allowed_actions;
-    this.deviceBase = config.device_base ?? this.deviceBase;
-    this.devicesPerSource = config.devices_per_source ?? this.devicesPerSource;
-    this.shareDevices = config.share_devices ?? this.shareDevices;
+    const devices = this.devices;
+    devices.deviceBase = config.device_base ?? devices.deviceBase;
+    devices.devicesPerSource =
+      config.devices_per_source ?? devices.devicesPerSource;
+    devices.shareDevices = config.share_devices ?? devices.shareDevices;
+    this.leaseMs = config.lease_ms ?? this.leaseMs;
     this.staleTimeoutMs = config.stale_timeout_ms ?? this.staleTimeoutMs;
     this.maxEventsPerSecond =
       config.max_events_per_second ?? this.maxEventsPerSecond;
@@ -207,12 +316,8 @@ export class ModelInjector {
     return Object.fromEntries(this.counters);
   }
 
-  deviceFor(source: string, slot: number): number {
-    const state = this.sources.get(source);
-    if (!state || slot < 0 || slot >= this.devicesPerSource) return -1;
-    let device = this.deviceBase + slot;
-    if (!this.shareDevices) device += state.index * this.devicesPerSource;
-    return device <= MAX_DEVICE ? device : -1;
+  remoteJoypads(): number[] {
+    return this.devices.attached();
   }
 
   receive(channel: string, text: string, now: number): string {
@@ -243,15 +348,15 @@ export class ModelInjector {
         this.releaseSource(source);
         break;
       case "bye":
-        this.closeSource(source);
+        this.closeSource(source, now);
         break;
     }
     return "";
   }
 
-  closeChannel(channel: string) {
+  closeChannel(channel: string, now: number) {
     const source = this.byChannel.get(channel);
-    if (source) this.closeSource(source);
+    if (source) this.closeSource(source, now);
   }
 
   releaseAll() {
@@ -259,6 +364,7 @@ export class ModelInjector {
   }
 
   tick(now: number) {
+    this.expireLeases(now);
     if (this.staleTimeoutMs <= 0) return;
     for (const source of this.sources.values())
       if (
@@ -284,11 +390,11 @@ export class ModelInjector {
   private hello(channel: string, message: Json, now: number): string {
     const id = message.source as string;
     const epoch = message.epoch as number;
+    this.expireLeases(now);
     let source = this.sources.get(id);
     if (!source) {
       source = {
         id,
-        index: this.nextIndex++,
         channel: null,
         open: false,
         epoch: -1,
@@ -301,18 +407,23 @@ export class ModelInjector {
         handles: new Map(),
         rateStart: 0,
         rateCount: 0,
+        leaseUntil: -1,
+        lostKeys: new Map(),
+        lostButtons: new Set(),
+        lostAxes: new Map(),
       };
       this.sources.set(id, source);
     } else if (source.open && source.epoch === epoch)
       return this.drop("duplicate");
     const bound = this.byChannel.get(channel);
-    if (bound && bound !== source) this.closeSource(bound);
+    if (bound && bound !== source) this.closeSource(bound, now);
     if (source.open) {
       this.releaseSource(source);
       source.handles.clear();
       if (source.channel !== null) this.byChannel.delete(source.channel);
     }
     source.open = true;
+    source.leaseUntil = -1;
     source.epoch = epoch;
     source.lastSeq = num(message, "seq");
     source.lastMsec = now;
@@ -324,13 +435,60 @@ export class ModelInjector {
     return "";
   }
 
-  private closeSource(source: Source) {
+  private closeSource(source: Source, now: number) {
     this.releaseSource(source);
     source.open = false;
     source.epoch = -1;
     source.handles.clear();
     if (source.channel !== null) this.byChannel.delete(source.channel);
     source.channel = null;
+    source.leaseUntil = now + this.leaseMs;
+    if (this.leaseMs <= 0) this.forget(source);
+  }
+
+  private expireLeases(now: number) {
+    const ended = [...this.sources.values()].filter(
+      (source) =>
+        !source.open && source.leaseUntil >= 0 && now >= source.leaseUntil,
+    );
+    for (const source of ended) this.forget(source);
+  }
+
+  private forget(source: Source) {
+    this.sources.delete(source.id);
+    this.devices.release(source.id);
+  }
+
+  onFocusLost() {
+    for (const source of this.sources.values()) {
+      for (const [id, record] of source.keys) source.lostKeys.set(id, record);
+      for (const key of source.buttons) source.lostButtons.add(key);
+      for (const [key, value] of source.axes) source.lostAxes.set(key, value);
+      source.keys.clear();
+      source.buttons.clear();
+      source.axes.clear();
+    }
+    this.keyRefs.clear();
+    this.buttonRefs.clear();
+    this.axisHolders.clear();
+    this.axisEmitted.clear();
+  }
+
+  reassert() {
+    for (const source of this.sources.values()) {
+      for (const [id, record] of source.lostKeys)
+        if (!source.keys.has(id)) {
+          source.keys.set(id, record);
+          this.pressKey(record);
+        }
+      for (const key of source.lostButtons)
+        if (!source.buttons.has(key)) this.pressButton(source, key);
+      for (const [key, value] of source.lostAxes)
+        this.setAxis(source, key, value);
+      source.lostKeys.clear();
+      source.lostButtons.clear();
+      source.lostAxes.clear();
+    }
   }
 
   private applyEvents(source: Source, records: Json[], now: number): string {
@@ -392,7 +550,9 @@ export class ModelInjector {
 
   private key(source: Source, record: Json) {
     const id = keyIdentity(record);
-    if (record.pressed === true && record.echo === true) {
+    const echo = record.pressed === true && record.echo === true;
+    if (!echo && takeLost(source.lostKeys, id, record.pressed === true)) return;
+    if (echo) {
       if (!source.keys.has(id)) {
         this.count("unheld");
         return;
@@ -461,12 +621,13 @@ export class ModelInjector {
   }
 
   private joypadButton(source: Source, record: Json) {
-    const device = this.deviceFor(source.id, num(record, "device"));
+    const device = this.devices.acquire(source.id, num(record, "device"));
     if (device < 0) {
       this.count("device-refused");
       return;
     }
     const key = (device << BUTTON_BITS) | num(record, "button_index");
+    if (takeLost(source.lostButtons, key, record.pressed === true)) return;
     if (record.pressed === true) {
       if (source.buttons.has(key)) this.count("repeat");
       else this.pressButton(source, key);
@@ -501,12 +662,13 @@ export class ModelInjector {
   }
 
   private joypadMotion(source: Source, record: Json) {
-    const device = this.deviceFor(source.id, num(record, "device"));
+    const device = this.devices.acquire(source.id, num(record, "device"));
     if (device < 0) {
       this.count("device-refused");
       return;
     }
     const key = (device << AXIS_BITS) | num(record, "axis");
+    source.lostAxes.delete(key);
     this.setAxis(source, key, num(record, "axis_value") + 0);
   }
 
@@ -534,6 +696,7 @@ export class ModelInjector {
   private applySync(source: Source, message: Json) {
     const held = message.held as Json[];
     if (message.scope === "keyboard") {
+      source.lostKeys.clear();
       const listed = new Map<number, Json>();
       for (const record of held)
         if (this.admit(source, record)) listed.set(keyIdentity(record), record);
@@ -548,11 +711,15 @@ export class ModelInjector {
           this.pressKey(record);
         }
     } else if (message.scope === "joypad") {
-      const device = this.deviceFor(source.id, message.device as number);
+      const device = this.devices.acquire(source.id, message.device as number);
       if (device < 0) {
         this.count("device-refused");
         return;
       }
+      for (const key of [...source.lostButtons])
+        if (key >> BUTTON_BITS === device) source.lostButtons.delete(key);
+      for (const key of [...source.lostAxes.keys()])
+        if (key >> AXIS_BITS === device) source.lostAxes.delete(key);
       const buttons = new Set<number>();
       const axes = new Map<number, number>();
       for (const record of held) {
@@ -579,6 +746,9 @@ export class ModelInjector {
   }
 
   private releaseSource(source: Source) {
+    source.lostKeys.clear();
+    source.lostButtons.clear();
+    source.lostAxes.clear();
     for (const press of [...source.keys.values()]) this.releaseKey(press);
     source.keys.clear();
     for (const key of [...source.buttons]) this.releaseButton(source, key);
@@ -592,6 +762,15 @@ function keyIdentity(record: Json): number {
   const keycode = num(record, "keycode");
   if (keycode !== 0) return ID_KEYCODE | keycode;
   return ID_LABEL | num(record, "key_label");
+}
+
+/** A record for a control focus loss dropped leaves the lost set; true when it is done (a release). */
+function takeLost(
+  lost: Map<number, unknown> | Set<number>,
+  id: number,
+  pressed: boolean,
+): boolean {
+  return lost.delete(id) && !pressed;
 }
 
 function isRelease(record: Json): boolean {
@@ -618,14 +797,25 @@ export function runInjectorVector(vector: InjectorVector): InjectorState[] {
         throw new Error(
           `${vector.name} step ${index}: receive returned '${got}', expected '${want}'`,
         );
-    } else if ("close" in step) injector.closeChannel(step.close);
+    } else if ("close" in step) injector.closeChannel(step.close, now);
     else if ("tick" in step) {
       now = step.tick;
       injector.tick(now);
     } else if ("release_all" in step) injector.releaseAll();
+    else if ("focus_lost" in step) {
+      injector.input.releasePressed();
+      injector.onFocusLost();
+    } else if ("reassert" in step) injector.reassert();
+    else if ("isolate" in step) injector.input.isolated = step.isolate;
     else throw new Error(`${vector.name} step ${index}: unknown step`);
     while (next < vector.expect.length && vector.expect[next].after === index) {
-      states.push({ ...injector.input.state(), stats: injector.stats() });
+      states.push({
+        ...injector.input.state(),
+        joypads: injector.remoteJoypads(),
+        joypad_signals: injector.devices.signals,
+        stats: injector.stats(),
+      });
+      injector.devices.signals = [];
       next++;
     }
   });
@@ -649,6 +839,8 @@ export function normalizeExpect(expect: InjectorExpect): InjectorState {
       .sort((a, b) => a[0] - b[0] || a[1] - b[1]),
     actions: [...(expect.actions ?? [])].sort(),
     dispatched: expect.dispatched ?? [],
+    joypads: [...(expect.joypads ?? [])].sort((a, b) => a - b),
+    joypad_signals: expect.joypad_signals ?? [],
     stats: expect.stats ?? {},
   };
 }

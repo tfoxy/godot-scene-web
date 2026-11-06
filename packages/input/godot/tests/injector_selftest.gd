@@ -1,12 +1,18 @@
 extends SceneTree
-## IN7: GswInputInjector against every packages/input/conformance/v1/injector vector, asserting
-## real `Input` state in headless Godot: the three key sets, joypad buttons and axes, the test
-## project's actions, the events `_input` actually received, and the injector's stats.
+## IN7/IN8: GswInputInjector against every packages/input/conformance/v1/injector vector,
+## asserting real `Input` state in headless Godot: the three key sets, joypad buttons and axes,
+## the test project's actions, the events `_input` actually received, `remote_joypads()`, the
+## joypad attach/detach signals and the injector's stats.
 ##
 ##   scripts/test-godot.sh            (runs the --import pass, then every tests/*_selftest.gd)
 ##
 ## Steps: {recv: object | text, channel?: "a", at?: msec, result?: code}, {close: channel},
-## {tick: msec}, {release_all: true}. After each step the runner flushes Input; an `expect` entry
+## {tick: msec}, {release_all: true}, {focus_lost: true}, {reassert: true}, {isolate: [device]}.
+## `focus_lost` stands in for a window focus-out: Input.release_pressed_events() is not bound for
+## scripts, so the runner releases every pressed key, virtual button and axis with the probe muted
+## (no `_input` delivery, as the engine call dispatches nothing), then calls on_focus_lost().
+## `isolate` runs GswJoypadIsolation.isolate(); the bindings are restored after the vector.
+## After each step the runner flushes Input; an `expect` entry
 ## {after: step index, ...} compares the state then. Absent state fields mean empty and absent
 ## `stats` means no counter; `dispatched` lists the events `_input` received since the previous
 ## entry. Events run from the first `_process` frame: `_input` delivery is not wired during
@@ -26,8 +32,11 @@ const AXIS_TOLERANCE: float = 1e-6
 class Probe:
 	extends Node
 	var got: Array[String] = []
+	var muted: bool = false
 
 	func _input(event: InputEvent) -> void:
+		if muted:
+			return
 		var line: String = describe(event)
 		if line != "":
 			got.append(line)
@@ -54,6 +63,8 @@ class Probe:
 var _probe: Probe
 var _ran: bool = false
 var _failures: int = 0
+## Joypad attach/detach signals since the previous expect entry.
+var _signals: Array[String] = []
 
 
 func _initialize() -> void:
@@ -102,11 +113,24 @@ func _run(file: String, vector: Dictionary) -> void:
 	# Input.release_pressed_events() is not bound for scripts in 4.5.1: every vector instead ends
 	# with release_all(), checked to leave Input clean, so the next one starts clean.
 	_probe.got.clear()
+	_signals.clear()
 	var injector := GswInputInjector.new()
+	injector.joypad_attached.connect(_on_joypad.bind("attached"))
+	injector.joypad_detached.connect(_on_joypad.bind("detached"))
 	var config: Dictionary = vector.get("config", {})
 	if not injector.configure(config):
 		_fail(file, "bad config")
 		return
+	var isolation: Dictionary = {}
+	_steps(file, vector, injector, isolation)
+	GswJoypadIsolation.restore(isolation)
+
+
+func _on_joypad(device: int, source: String, slot: int, what: String) -> void:
+	_signals.append("%s %d %s %d" % [what, device, source, slot])
+
+
+func _steps(file: String, vector: Dictionary, injector: GswInputInjector, isolation: Dictionary) -> void:
 	var steps: Array = vector["steps"]
 	var expects: Array = vector["expect"]
 	var universe: Dictionary = _universe(vector)
@@ -128,13 +152,21 @@ func _run(file: String, vector: Dictionary) -> void:
 				_fail(where, "receive returned '%s', expected '%s'" % [got, want])
 		elif step.has("close"):
 			var channel: String = step["close"]
-			injector.close_channel(channel)
+			injector.close_channel(channel, now)
 		elif step.has("tick"):
 			var tick: float = step["tick"]
 			now = int(tick)
 			injector.tick(now)
 		elif step.has("release_all"):
 			injector.release_all()
+		elif step.has("focus_lost"):
+			_release_pressed_events(universe)
+			injector.on_focus_lost()
+		elif step.has("reassert"):
+			injector.reassert()
+		elif step.has("isolate"):
+			var devices: Array[int] = _ints(step["isolate"])
+			isolation.merge(GswJoypadIsolation.isolate(devices))
 		else:
 			_fail(where, "unknown step %s" % JSON.stringify(step))
 			return
@@ -150,8 +182,48 @@ func _run(file: String, vector: Dictionary) -> void:
 		_fail(file, "expect entry %d names no step" % next_expect)
 	injector.release_all()
 	Input.flush_buffered_events()
-	var clean: Dictionary = {"dispatched": _probe.got.duplicate(), "stats": injector.stats()}
+	var clean: Dictionary = {
+		"dispatched": _probe.got.duplicate(),
+		"joypads": injector.remote_joypads(),
+		"joypad_signals": _signals.duplicate(),
+		"stats": injector.stats(),
+	}
 	_compare("%s after release_all()" % file, clean, injector, universe)
+
+
+## What Input.release_pressed_events() does to the state the vectors observe: clear the key sets,
+## joypad buttons and axes and release their actions, dispatching nothing.
+func _release_pressed_events(universe: Dictionary) -> void:
+	_probe.muted = true
+	var keys: Array = universe["keys"]
+	for item: Variant in keys:
+		var code: int = item
+		var event := InputEventKey.new()
+		if Input.is_physical_key_pressed(code as Key):
+			event.physical_keycode = code as Key
+		if Input.is_key_pressed(code as Key):
+			event.keycode = code as Key
+		if Input.is_key_label_pressed(code as Key):
+			event.key_label = code as Key
+		if event.physical_keycode != KEY_NONE or event.keycode != KEY_NONE or event.key_label != KEY_NONE:
+			Input.parse_input_event(event)
+	var buttons: Array = universe["buttons"]
+	for device: int in range(FIRST_VIRTUAL, GswInputInjector.MAX_DEVICE + 1):
+		for item: Variant in buttons:
+			var button: int = item
+			if Input.is_joy_button_pressed(device, button as JoyButton):
+				var release := InputEventJoypadButton.new()
+				release.device = device
+				release.button_index = button as JoyButton
+				Input.parse_input_event(release)
+		for axis: int in AXIS_COUNT:
+			if Input.get_joy_axis(device, axis as JoyAxis) != 0.0:
+				var rest := InputEventJoypadMotion.new()
+				rest.device = device
+				rest.axis = axis as JoyAxis
+				Input.parse_input_event(rest)
+	Input.flush_buffered_events()
+	_probe.muted = false
 
 
 ## Every key code and joypad button a vector can touch, so "nothing else is pressed" is checkable
@@ -286,6 +358,13 @@ func _compare(where: String, expect: Dictionary, injector: GswInputInjector, uni
 	want_dispatched.assign(listed_dispatched)
 	_same(where, "dispatched", _probe.got, want_dispatched)
 	_probe.got.clear()
+
+	_same(where, "joypads", injector.remote_joypads(), _ints(expect.get("joypads", [])))
+	var want_signals: Array[String] = []
+	var listed_signals: Array = expect.get("joypad_signals", [])
+	want_signals.assign(listed_signals)
+	_same(where, "joypad_signals", _signals, want_signals)
+	_signals.clear()
 
 	var stats: Dictionary = injector.stats()
 	var want_stats: Dictionary = expect.get("stats", {})

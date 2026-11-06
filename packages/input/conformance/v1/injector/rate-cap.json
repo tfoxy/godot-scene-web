@@ -163,7 +163,9 @@
       ],
       "stats": {
         "rate": 1
-      }
+      },
+      "joypads": [64],
+      "joypad_signals": ["attached 64 a 0"]
     },
     {
       "after": 3,
@@ -172,7 +174,8 @@
       "dispatched": ["key 83/83/83 up"],
       "stats": {
         "rate": 1
-      }
+      },
+      "joypads": [64]
     },
     {
       "after": 4,
@@ -180,7 +183,8 @@
       "stats": {
         "rate": 2,
         "unheld": 1
-      }
+      },
+      "joypads": [64]
     },
     {
       "after": 5,
@@ -188,7 +192,8 @@
       "stats": {
         "rate": 2,
         "unheld": 1
-      }
+      },
+      "joypads": [64]
     }
   ]
 }

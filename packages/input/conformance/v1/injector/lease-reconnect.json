@@ -1,0 +1,229 @@
+{
+  "name": "lease-reconnect",
+  "description": "A closed source keeps its device block for lease_ms: a reconnect on another channel gets the same devices back; tick() detaches them once the lease ends, the block goes to the next source's first pad, and leases expire in hello order.",
+  "config": {
+    "lease_ms": 5000
+  },
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "b",
+        "epoch": 2
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 2,
+        "seq": 1,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "close": "a",
+      "at": 1000
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 3
+      },
+      "channel": "c",
+      "at": 3000
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 3,
+        "seq": 1,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 1,
+            "pressed": true
+          },
+          {
+            "event": "joypad_button",
+            "device": 1,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      },
+      "channel": "c"
+    },
+    {
+      "close": "c",
+      "at": 4000
+    },
+    {
+      "tick": 8999
+    },
+    {
+      "tick": 9000
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "c",
+        "epoch": 4
+      },
+      "channel": "d",
+      "at": 9500
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 4,
+        "seq": 1,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      },
+      "channel": "d"
+    },
+    {
+      "recv": {
+        "type": "bye",
+        "epoch": 2,
+        "seq": 2,
+        "reason": "dispose"
+      },
+      "channel": "b",
+      "at": 9600
+    },
+    {
+      "close": "d",
+      "at": 9700
+    },
+    {
+      "tick": 20000
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "joy_buttons": [[64, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["joy_button 64 0 down"],
+      "joypads": [64],
+      "joypad_signals": ["attached 64 a 0"]
+    },
+    {
+      "after": 3,
+      "joy_buttons": [[64, 0], [68, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["joy_button 68 0 down"],
+      "joypads": [64, 68],
+      "joypad_signals": ["attached 68 b 0"]
+    },
+    {
+      "after": 4,
+      "joy_buttons": [[68, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["joy_button 64 0 up"],
+      "joypads": [64, 68]
+    },
+    {
+      "after": 5,
+      "joy_buttons": [[68, 0]],
+      "actions": ["gsw_test_jump"],
+      "joypads": [64, 68]
+    },
+    {
+      "after": 6,
+      "joy_buttons": [[64, 1], [65, 0], [68, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["joy_button 64 1 down", "joy_button 65 0 down"],
+      "joypads": [64, 65, 68],
+      "joypad_signals": ["attached 65 a 1"]
+    },
+    {
+      "after": 7,
+      "joy_buttons": [[68, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["joy_button 64 1 up", "joy_button 65 0 up"],
+      "joypads": [64, 65, 68]
+    },
+    {
+      "after": 8,
+      "joy_buttons": [[68, 0]],
+      "actions": ["gsw_test_jump"],
+      "joypads": [64, 65, 68]
+    },
+    {
+      "after": 9,
+      "joy_buttons": [[68, 0]],
+      "actions": ["gsw_test_jump"],
+      "joypads": [68],
+      "joypad_signals": ["detached 64 a 0", "detached 65 a 1"]
+    },
+    {
+      "after": 11,
+      "joy_buttons": [[64, 0], [68, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["joy_button 64 0 down"],
+      "joypads": [64, 68],
+      "joypad_signals": ["attached 64 c 0"]
+    },
+    {
+      "after": 12,
+      "joy_buttons": [[64, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["joy_button 68 0 up"],
+      "joypads": [64, 68]
+    },
+    {
+      "after": 13,
+      "dispatched": ["joy_button 64 0 up"],
+      "joypads": [64, 68]
+    },
+    {
+      "after": 14,
+      "joypad_signals": ["detached 68 b 0", "detached 64 c 0"]
+    }
+  ]
+}

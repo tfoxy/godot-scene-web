@@ -1,6 +1,6 @@
 {
   "name": "joypad-buttons-axes",
-  "description": "Pad slots map to virtual devices device_base + source_index * devices_per_source + slot (64, 65; a second source starts at 68); axes dispatch only on change.",
+  "description": "Pad slots map to virtual devices device_base + block * devices_per_source + slot, the block leased on first pad use (64, 65; a second source gets block 1, 68), and each device attaches once; axes dispatch only on change.",
   "config": {},
   "steps": [
     {
@@ -147,14 +147,17 @@
         "joy_motion 64 0 0.7344",
         "joy_button 65 1 down",
         "joy_motion 65 5 1.0000"
-      ]
+      ],
+      "joypads": [64, 65],
+      "joypad_signals": ["attached 64 a 0", "attached 65 a 1"]
     },
     {
       "after": 2,
       "joy_buttons": [[64, 0], [65, 1]],
       "joy_axes": [[64, 0, -0.25], [65, 5, 1]],
       "actions": ["gsw_test_jump"],
-      "dispatched": ["joy_motion 64 0 -0.2500"]
+      "dispatched": ["joy_motion 64 0 -0.2500"],
+      "joypads": [64, 65]
     },
     {
       "after": 3,
@@ -163,21 +166,26 @@
         "joy_motion 64 0 0.0000",
         "joy_button 65 1 up",
         "joy_motion 65 5 0.0000"
-      ]
+      ],
+      "joypads": [64, 65]
     },
     {
       "after": 4,
-      "dispatched": []
+      "dispatched": [],
+      "joypads": [64, 65]
     },
     {
       "after": 6,
       "joy_buttons": [[68, 0]],
       "actions": ["gsw_test_jump"],
-      "dispatched": ["joy_button 68 0 down"]
+      "dispatched": ["joy_button 68 0 down"],
+      "joypads": [64, 65, 68],
+      "joypad_signals": ["attached 68 b 0"]
     },
     {
       "after": 7,
-      "dispatched": ["joy_button 68 0 up"]
+      "dispatched": ["joy_button 68 0 up"],
+      "joypads": [64, 65, 68]
     }
   ]
 }

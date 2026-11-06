@@ -1,0 +1,201 @@
+{
+  "name": "lease-zero-and-exhaustion",
+  "description": "With lease_ms 0 devices detach on close; blocks must fit below device 2048 (device_base 2040 leaves two), so a third source is device-refused until a block frees, and a slot past devices_per_source is refused.",
+  "config": {
+    "lease_ms": 0,
+    "device_base": 2040
+  },
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "b",
+        "epoch": 2
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "c",
+        "epoch": 3
+      },
+      "channel": "c"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 2,
+        "seq": 1,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 3,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 3,
+        "seq": 1,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      },
+      "channel": "c"
+    },
+    {
+      "close": "a"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 3,
+        "seq": 2,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      },
+      "channel": "c"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 3,
+        "seq": 3,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 4,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      },
+      "channel": "c"
+    },
+    {
+      "close": "b"
+    },
+    {
+      "close": "c"
+    }
+  ],
+  "expect": [
+    {
+      "after": 3,
+      "joy_buttons": [[2040, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["joy_button 2040 0 down"],
+      "joypads": [2040],
+      "joypad_signals": ["attached 2040 a 0"]
+    },
+    {
+      "after": 4,
+      "joy_buttons": [[2040, 0], [2047, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["joy_button 2047 0 down"],
+      "joypads": [2040, 2047],
+      "joypad_signals": ["attached 2047 b 3"]
+    },
+    {
+      "after": 5,
+      "joy_buttons": [[2040, 0], [2047, 0]],
+      "actions": ["gsw_test_jump"],
+      "joypads": [2040, 2047],
+      "stats": {
+        "device-refused": 1
+      }
+    },
+    {
+      "after": 6,
+      "joy_buttons": [[2047, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["joy_button 2040 0 up"],
+      "joypads": [2047],
+      "joypad_signals": ["detached 2040 a 0"],
+      "stats": {
+        "device-refused": 1
+      }
+    },
+    {
+      "after": 7,
+      "joy_buttons": [[2040, 0], [2047, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["joy_button 2040 0 down"],
+      "joypads": [2040, 2047],
+      "joypad_signals": ["attached 2040 c 0"],
+      "stats": {
+        "device-refused": 1
+      }
+    },
+    {
+      "after": 8,
+      "joy_buttons": [[2040, 0], [2047, 0]],
+      "actions": ["gsw_test_jump"],
+      "joypads": [2040, 2047],
+      "stats": {
+        "device-refused": 2
+      }
+    },
+    {
+      "after": 9,
+      "joy_buttons": [[2040, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["joy_button 2047 0 up"],
+      "joypads": [2040],
+      "joypad_signals": ["detached 2047 b 3"],
+      "stats": {
+        "device-refused": 2
+      }
+    },
+    {
+      "after": 10,
+      "dispatched": ["joy_button 2040 0 up"],
+      "joypad_signals": ["detached 2040 c 0"],
+      "stats": {
+        "device-refused": 2
+      }
+    }
+  ]
+}

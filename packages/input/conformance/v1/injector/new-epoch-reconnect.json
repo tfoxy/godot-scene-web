@@ -124,11 +124,14 @@
       "labels": [87],
       "actions": ["gsw_test_jump"],
       "joy_buttons": [[64, 0]],
-      "dispatched": ["key 87/87/87 down", "joy_button 64 0 down"]
+      "dispatched": ["key 87/87/87 down", "joy_button 64 0 down"],
+      "joypads": [64],
+      "joypad_signals": ["attached 64 a 0"]
     },
     {
       "after": 2,
-      "dispatched": ["key 87/87/87 up", "joy_button 64 0 up"]
+      "dispatched": ["key 87/87/87 up", "joy_button 64 0 up"],
+      "joypads": [64]
     },
     {
       "after": 5,
@@ -137,7 +140,8 @@
         "no-hello": 1,
         "stale-epoch": 1,
         "duplicate": 1
-      }
+      },
+      "joypads": [64]
     },
     {
       "after": 6,
@@ -148,7 +152,8 @@
         "no-hello": 1,
         "stale-epoch": 1,
         "duplicate": 1
-      }
+      },
+      "joypads": [64]
     },
     {
       "after": 7,
@@ -159,7 +164,8 @@
         "no-hello": 1,
         "stale-epoch": 1,
         "duplicate": 1
-      }
+      },
+      "joypads": [64]
     },
     {
       "after": 8,
@@ -168,7 +174,8 @@
         "no-hello": 1,
         "stale-epoch": 1,
         "duplicate": 1
-      }
+      },
+      "joypads": [64]
     }
   ]
 }

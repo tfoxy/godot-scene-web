@@ -1,0 +1,180 @@
+{
+  "name": "isolate-virtual-devices",
+  "description": "GswJoypadIsolation.isolate([64]) narrows the all-devices joypad bindings: a second source's pad (68) still updates Input but no longer drives actions, device 64 does, and key bindings are unaffected.",
+  "config": {},
+  "steps": [
+    {
+      "isolate": [64]
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "b",
+        "epoch": 2
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.25
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 2,
+        "seq": 1,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 1
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.8
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 3,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 4,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "close": "a"
+    },
+    {
+      "close": "b"
+    }
+  ],
+  "expect": [
+    {
+      "after": 3,
+      "joy_axes": [[64, 0, 0.25]],
+      "dispatched": ["joy_motion 64 0 0.2500"],
+      "joypads": [64],
+      "joypad_signals": ["attached 64 a 0"]
+    },
+    {
+      "after": 4,
+      "joy_buttons": [[68, 0]],
+      "joy_axes": [[64, 0, 0.25], [68, 0, 1]],
+      "dispatched": ["joy_button 68 0 down", "joy_motion 68 0 1.0000"],
+      "joypads": [64, 68],
+      "joypad_signals": ["attached 68 b 0"]
+    },
+    {
+      "after": 5,
+      "joy_buttons": [[64, 0], [68, 0]],
+      "joy_axes": [[64, 0, 0.8], [68, 0, 1]],
+      "actions": ["gsw_test_jump", "gsw_test_right"],
+      "dispatched": ["joy_button 64 0 down", "joy_motion 64 0 0.8000"],
+      "joypads": [64, 68]
+    },
+    {
+      "after": 6,
+      "joy_buttons": [[68, 0]],
+      "joy_axes": [[68, 0, 1]],
+      "dispatched": ["joy_button 64 0 up", "joy_motion 64 0 0.0000"],
+      "joypads": [64, 68]
+    },
+    {
+      "after": 7,
+      "physical_keys": [87],
+      "keys": [87],
+      "labels": [87],
+      "joy_buttons": [[68, 0]],
+      "joy_axes": [[68, 0, 1]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["key 87/87/87 down"],
+      "joypads": [64, 68]
+    },
+    {
+      "after": 9,
+      "dispatched": [
+        "key 87/87/87 up",
+        "joy_button 68 0 up",
+        "joy_motion 68 0 0.0000"
+      ],
+      "joypads": [64, 68]
+    }
+  ]
+}

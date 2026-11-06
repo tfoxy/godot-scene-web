@@ -18,10 +18,16 @@ extends RefCounted
 ## `bye`, a new epoch for the source, `close_channel`, `stale_timeout_ms` (from `tick`) and
 ## `release_all()`.
 ##
-## Scope (IN7): key, joypad_button and joypad_motion are injected. Pointer records (IN9), `action`
-## and gestures pass the gates (`accept_kinds`, `allowed_actions`) and are then counted
-## `kind-unsupported`. Joypad devices come from the fixed `device_for()` mapping; IN8 replaces it
-## with leased allocation, `GswJoypadIsolation` and the focus-handling `GswInputInjectorNode`.
+## Scope: key, joypad_button and joypad_motion are injected. Pointer records (IN9), `action` and
+## gestures pass the gates (`accept_kinds`, `allowed_actions`) and are then counted
+## `kind-unsupported`.
+##
+## Joypads (IN8): a source's pad slots get virtual device ids from GswInputDevices on first use,
+## leased to the source until `lease_ms` after it closes, so a reconnect keeps its devices.
+## Godot never lists injected pads, so `joypad_attached`/`joypad_detached` and `remote_joypads()`
+## stand in for `joy_connection_changed`/`get_connected_joypads()`. GswJoypadIsolation keeps
+## physical pads out of the InputMap. Focus loss (`on_focus_lost`, `reassert`) is handled by
+## GswInputInjectorNode, which also calls `tick()` every frame.
 ##
 ## Typical use, one call per carrier text:
 ##   var injector := GswInputInjector.new()
@@ -32,13 +38,17 @@ signal source_opened(source: String, epoch: int)
 signal source_closed(source: String)
 ## A dropped message: a codec code (not `unknown-type`, which is ignored) or a session code.
 signal rejected(channel: Variant, code: String, detail: String)
+## A virtual pad device came into use: its first holder used pad `slot` (Godot sends no
+## `joy_connection_changed` for injected devices).
+signal joypad_attached(device: int, source: String, slot: int)
+## A virtual pad device's last holder's lease expired.
+signal joypad_detached(device: int, source: String, slot: int)
 
 const DEFAULT_ACCEPT_KINDS: Array[String] = [
 	"key", "joypad_button", "joypad_motion", "mouse_button", "mouse_motion", "screen_touch", "screen_drag",
 ]
-## Godot packs `device << 20` into joypad button and axis keys (`_combine_device`,
-## core/input/input.cpp:357-363), so every device id stays below 2048.
-const MAX_DEVICE: int = 2047
+## Every virtual device id stays below 2048 (GswInputDevices.MAX_DEVICE).
+const MAX_DEVICE: int = GswInputDevices.MAX_DEVICE
 const _POINTER_KINDS: Array[String] = ["mouse_button", "mouse_motion", "screen_touch", "screen_drag"]
 const _RATE_WINDOW_MS: int = 1000
 # Key identity namespaces (a key record is identified by its first nonzero keycode).
@@ -52,11 +62,30 @@ const _AXIS_BITS: int = 4
 var accept_kinds: Array[String] = DEFAULT_ACCEPT_KINDS.duplicate()
 ## `action` records additionally need their name here (`action-refused` otherwise).
 var allowed_actions: Array[String] = []
-## First virtual joypad device id (>= Input::JOYPADS_MAX 16, so physical pads never collide).
-var device_base: int = 64
-var devices_per_source: int = 4
+## Virtual pad ids (GswInputDevices): a source's pad slots get `device_base + block *
+## devices_per_source + slot`, `block` the lowest free when it first uses a pad. Set before the
+## first hello.
+var device_base: int:
+	get:
+		return _devices.device_base
+	set(value):
+		_devices.device_base = value
+var devices_per_source: int:
+	get:
+		return _devices.devices_per_source
+	set(value):
+		_devices.devices_per_source = value
 ## All sources share devices `device_base + slot` instead of one block each.
-var share_devices: bool = false
+var share_devices: bool:
+	get:
+		return _devices.share_devices
+	set(value):
+		_devices.share_devices = value
+## A closed source keeps its devices (and its block) this long, so a reconnect gets them back;
+## then they detach. 0 = detach on close.
+var lease_ms: int = 30000
+## GswInputInjectorNode calls `reassert()` when the root window regains focus.
+var reassert_on_focus_in: bool = false
 ## The `device` of injected key events.
 var key_device: int = 0
 ## Release a source's state after this long without a message (0 = off). Pair it with the
@@ -70,8 +99,6 @@ var event_sink: Callable = Callable()
 
 class _Source:
 	var id: String = ""
-	## Allocation order, for the fixed device mapping.
-	var index: int = 0
 	var channel: Variant = null
 	var open: bool = false
 	var epoch: int = -1
@@ -88,11 +115,19 @@ class _Source:
 	var handles: Dictionary = {}
 	var rate_start: int = 0
 	var rate_count: int = 0
+	## While closed: when its device lease ends (-1 while open).
+	var lease_until: int = -1
+	## Held state Godot dropped on focus loss (`on_focus_lost`), same shapes as keys/buttons/axes:
+	## not in Input or the emitted refcounts, given back by `reassert()`.
+	var lost_keys: Dictionary = {}
+	var lost_buttons: Dictionary = {}
+	var lost_axes: Dictionary = {}
 
 
+var _devices: GswInputDevices = GswInputDevices.new()
+## Hello order (a source forgotten at lease end goes to the back on its next hello).
 var _sources: Dictionary = {}
 var _by_channel: Dictionary = {}
-var _next_index: int = 0
 ## "p87" / "k87" / "l87" -> sources holding that Input key set entry.
 var _key_refs: Dictionary = {}
 ## device << 7 | button -> sources holding it.
@@ -102,6 +137,11 @@ var _axis_holders: Dictionary = {}
 ## device << 4 | axis -> the nonzero value last sent to Input.
 var _axis_emitted: Dictionary = {}
 var _stats: Dictionary = {}
+
+
+func _init() -> void:
+	_devices.attached.connect(joypad_attached.emit)
+	_devices.detached.connect(joypad_detached.emit)
 
 
 ## Apply settings from a Dictionary (JSON numbers welcome). Returns false on an unknown key or a
@@ -124,12 +164,13 @@ func configure(config: Dictionary) -> bool:
 					accept_kinds = names
 				else:
 					allowed_actions = names
-			"share_devices":
+			"share_devices", "reassert_on_focus_in":
 				if typeof(value) != TYPE_BOOL:
 					ok = false
 					continue
-				share_devices = value
-			"device_base", "devices_per_source", "key_device", "stale_timeout_ms", "max_events_per_second":
+				var flag: String = key
+				set(flag, value)
+			"device_base", "devices_per_source", "key_device", "lease_ms", "stale_timeout_ms", "max_events_per_second":
 				if not is_number:
 					ok = false
 					continue
@@ -142,19 +183,21 @@ func configure(config: Dictionary) -> bool:
 	return ok
 
 
-## The virtual joypad device for a source's pad `slot`, or -1 when it has none.
-##
-## IN8 seam: this fixed mapping (one block of `devices_per_source` ids per source, in hello order,
-## never reused) is what leased allocation replaces; override it in a subclass meanwhile. Keep
-## every id in `device_base..MAX_DEVICE`.
+## The virtual joypad device a source's pad `slot` is on, or -1 when the source has not used
+## that slot (or its lease ended).
 func device_for(source: String, slot: int) -> int:
-	var state: _Source = _sources.get(source)
-	if state == null or slot < 0 or slot >= devices_per_source:
-		return -1
-	var device: int = device_base + slot
-	if not share_devices:
-		device += state.index * devices_per_source
-	return device if device <= MAX_DEVICE else -1
+	return _devices.device_for(source, slot)
+
+
+## Attached virtual pad device ids, ascending: what a game reads instead of
+## `Input.get_connected_joypads()`, which never lists injected devices.
+func remote_joypads() -> Array[int]:
+	return _devices.attached_devices()
+
+
+## Every id the first `sources` sources can be handed (for `GswJoypadIsolation.isolate()`).
+func virtual_devices(sources: int = 1) -> Array[int]:
+	return _devices.virtual_devices(sources)
 
 
 ## Handle one carrier text from `channel` (any Variant that names the connection). Returns "" when
@@ -201,15 +244,18 @@ func receive(channel: Variant, text: String, now_msec: int = -1) -> String:
 		"reset":
 			_release_source(source)
 		"bye":
-			_close_source(source)
+			_close_source(source, now_msec)
 	return ""
 
 
-## The carrier connection closed: release what its source held and end the session.
-func close_channel(channel: Variant) -> void:
+## The carrier connection closed: release what its source held and end the session. The
+## source's devices stay leased for `lease_ms`.
+func close_channel(channel: Variant, now_msec: int = -1) -> void:
 	var source: _Source = _by_channel.get(channel)
 	if source != null:
-		_close_source(source)
+		if now_msec < 0:
+			now_msec = Time.get_ticks_msec()
+		_close_source(source, now_msec)
 
 
 ## Release everything every source holds; sessions stay open (their next `sync` restores state).
@@ -219,12 +265,13 @@ func release_all() -> void:
 		_release_source(source)
 
 
-## Drive time-based rules: `stale_timeout_ms`.
+## Drive time-based rules: device leases of closed sources (`lease_ms`) and `stale_timeout_ms`.
 func tick(now_msec: int = -1) -> void:
-	if stale_timeout_ms <= 0:
-		return
 	if now_msec < 0:
 		now_msec = Time.get_ticks_msec()
+	_expire_leases(now_msec)
+	if stale_timeout_ms <= 0:
+		return
 	for state: Variant in _sources.values():
 		var source: _Source = state
 		if source.open and not source.stale and now_msec - source.last_msec >= stale_timeout_ms:
@@ -253,24 +300,24 @@ func _drop(channel: Variant, code: String, detail: String) -> String:
 func _hello(channel: Variant, message: Dictionary, now_msec: int) -> String:
 	var id: String = message["source"]
 	var epoch: int = message["epoch"]
+	_expire_leases(now_msec)
 	var source: _Source = _sources.get(id)
 	if source == null:
 		source = _Source.new()
 		source.id = id
-		source.index = _next_index
-		_next_index += 1
 		_sources[id] = source
 	elif source.open and source.epoch == epoch:
 		return _drop(channel, "duplicate", "hello repeats epoch %d" % epoch)
 	var bound: _Source = _by_channel.get(channel)
 	if bound != null and bound != source:
-		_close_source(bound)
+		_close_source(bound, now_msec)
 	if source.open:
 		# A new epoch: the old one's state goes, the source (and its devices) stays.
 		_release_source(source)
 		source.handles.clear()
 		_by_channel.erase(source.channel)
 	source.open = true
+	source.lease_until = -1
 	source.epoch = epoch
 	source.last_seq = message.get("seq", 0)
 	source.last_msec = now_msec
@@ -283,7 +330,7 @@ func _hello(channel: Variant, message: Dictionary, now_msec: int) -> String:
 	return ""
 
 
-func _close_source(source: _Source) -> void:
+func _close_source(source: _Source, now_msec: int) -> void:
 	_release_source(source)
 	source.open = false
 	source.epoch = -1
@@ -291,6 +338,26 @@ func _close_source(source: _Source) -> void:
 	_by_channel.erase(source.channel)
 	source.channel = null
 	source_closed.emit(source.id)
+	source.lease_until = now_msec + lease_ms
+	if lease_ms <= 0:
+		_forget(source)
+
+
+## Closed sources whose lease ended: their devices detach and the source is forgotten (a later
+## hello starts it afresh).
+func _expire_leases(now_msec: int) -> void:
+	var ended: Array[_Source] = []
+	for state: Variant in _sources.values():
+		var source: _Source = state
+		if not source.open and source.lease_until >= 0 and now_msec >= source.lease_until:
+			ended.append(source)
+	for source: _Source in ended:
+		_forget(source)
+
+
+func _forget(source: _Source) -> void:
+	_sources.erase(source.id)
+	_devices.release(source.id)
 
 
 static func _is_release(record: Dictionary) -> bool:
@@ -376,7 +443,10 @@ static func _key_identity(record: Dictionary) -> int:
 func _key(source: _Source, record: Dictionary) -> void:
 	var id: int = _key_identity(record)
 	var pressed: bool = record["pressed"]
-	if pressed and record.get("echo", false) == true:
+	var echo: bool = pressed and record.get("echo", false) == true
+	if not echo and _take_lost(source.lost_keys, id, pressed):
+		return
+	if echo:
 		if not source.keys.has(id):
 			_count("unheld")
 			return
@@ -464,13 +534,16 @@ func _emit_key(record: Dictionary, physical: int, keycode: int, label: int, pres
 # --- joypads -----------------------------------------------------------------------------------
 
 func _joypad_button(source: _Source, record: Dictionary) -> void:
-	var device: int = device_for(source.id, record.get("device", 0))
+	var device: int = _devices.acquire(source.id, record.get("device", 0))
 	if device < 0:
 		_count("device-refused")
 		return
 	var button: int = record.get("button_index", 0)
 	var key: int = (device << _BUTTON_BITS) | button
-	if record["pressed"]:
+	var pressed: bool = record["pressed"]
+	if _take_lost(source.lost_buttons, key, pressed):
+		return
+	if pressed:
 		if source.buttons.has(key):
 			_count("repeat")
 			return
@@ -511,13 +584,15 @@ func _emit_button(key: int, pressed: bool) -> void:
 
 
 func _joypad_motion(source: _Source, record: Dictionary) -> void:
-	var device: int = device_for(source.id, record.get("device", 0))
+	var device: int = _devices.acquire(source.id, record.get("device", 0))
 	if device < 0:
 		_count("device-refused")
 		return
 	var axis: int = record.get("axis", 0)
 	var value: float = record.get("axis_value", 0.0)
-	_set_axis(source, (device << _AXIS_BITS) | axis, value + 0.0)
+	var key: int = (device << _AXIS_BITS) | axis
+	source.lost_axes.erase(key)
+	_set_axis(source, key, value + 0.0)
 
 
 func _set_axis(source: _Source, key: int, value: float) -> void:
@@ -552,12 +627,81 @@ func _set_axis(source: _Source, key: int, value: float) -> void:
 	_emit(event)
 
 
+# --- focus loss --------------------------------------------------------------------------------
+
+## The window lost OS focus and Godot already ran `Input.release_pressed_events()` (every desktop
+## display server does on focus-out, core/input/input.cpp:1281): keys, joypad buttons and axes are
+## gone from Input without any release event. Forget that they were emitted, without emitting
+## anything; each source's holds move aside, so its later release of one sends nothing, a fresh
+## press presses again, a `sync` replaces them and `reassert()` presses them again. Pointer state
+## is untouched (release_pressed_events keeps the mouse button mask).
+func on_focus_lost() -> void:
+	for state: Variant in _sources.values():
+		var source: _Source = state
+		source.lost_keys.merge(source.keys)
+		source.lost_buttons.merge(source.buttons)
+		source.lost_axes.merge(source.axes, true)
+		source.keys.clear()
+		source.buttons.clear()
+		source.axes.clear()
+	_key_refs.clear()
+	_button_refs.clear()
+	_axis_holders.clear()
+	_axis_emitted.clear()
+
+
+## Press again what focus loss dropped and the sources still hold: keys (press order), buttons,
+## axes, source by source in hello order. GswInputInjectorNode calls it on focus-in when
+## `reassert_on_focus_in` is set.
+func reassert() -> void:
+	for state: Variant in _sources.values():
+		var source: _Source = state
+		for id: Variant in source.lost_keys:
+			if not source.keys.has(id):
+				var record: Dictionary = source.lost_keys[id]
+				source.keys[id] = record
+				_press_key(record)
+		for key: Variant in source.lost_buttons:
+			var button_key: int = key
+			if not source.buttons.has(button_key):
+				_press_button(source, button_key)
+		for key: Variant in source.lost_axes:
+			var axis_key: int = key
+			var value: float = source.lost_axes[key]
+			_set_axis(source, axis_key, value)
+		source.lost_keys.clear()
+		source.lost_buttons.clear()
+		source.lost_axes.clear()
+
+
+## A record for a control focus loss dropped: it leaves the lost set. True when the record is
+## done (a release: Godot already released it); a press goes on as a fresh press.
+static func _take_lost(lost: Dictionary, id: int, pressed: bool) -> bool:
+	if not lost.erase(id):
+		return false
+	return not pressed
+
+
+## A joypad sync for `device` supersedes what focus loss dropped on it.
+static func _drop_lost_device(source: _Source, device: int) -> void:
+	for key: Variant in source.lost_buttons.keys():
+		var button_key: int = key
+		if button_key >> _BUTTON_BITS == device:
+			source.lost_buttons.erase(button_key)
+	for key: Variant in source.lost_axes.keys():
+		var axis_key: int = key
+		if axis_key >> _AXIS_BITS == device:
+			source.lost_axes.erase(axis_key)
+
+
 # --- sync and release ----------------------------------------------------------------------------
 
 func _apply_sync(source: _Source, message: Dictionary) -> void:
 	var held: Array = message["held"]
 	match message["scope"]:
 		"keyboard":
+			# A sync is the sender's whole held state: it supersedes what focus loss dropped.
+			source.lost_keys.clear()
 			var listed: Dictionary = {}
 			for item: Variant in held:
 				var record: Dictionary = item
@@ -575,10 +719,11 @@ func _apply_sync(source: _Source, message: Dictionary) -> void:
 					_press_key(record)
 		"joypad":
 			var slot: int = message["device"]
-			var device: int = device_for(source.id, slot)
+			var device: int = _devices.acquire(source.id, slot)
 			if device < 0:
 				_count("device-refused")
 				return
+			_drop_lost_device(source, device)
 			var buttons: Dictionary = {}
 			var axes: Dictionary = {}
 			for item: Variant in held:
@@ -619,6 +764,9 @@ func _apply_sync(source: _Source, message: Dictionary) -> void:
 
 
 func _release_source(source: _Source) -> void:
+	source.lost_keys.clear()
+	source.lost_buttons.clear()
+	source.lost_axes.clear()
 	for id: Variant in source.keys.keys():
 		var press: Dictionary = source.keys[id]
 		_release_key(press)

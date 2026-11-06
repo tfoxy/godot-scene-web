@@ -1,6 +1,6 @@
 {
   "name": "sync-and-release-all",
-  "description": "A sync presses what it lists and releases what it does not, per scope; release_all() releases every source and keeps sessions open.",
+  "description": "A sync presses what it lists and releases what it does not, per scope; release_all() releases every source and keeps sessions open. A keyboard-only source takes no device block, so b's pad 0 is device 64.",
   "config": {},
   "steps": [
     {
@@ -166,43 +166,48 @@
       "physical_keys": [83, 87],
       "keys": [83, 87],
       "labels": [83, 87],
-      "joy_buttons": [[68, 0]],
-      "joy_axes": [[68, 0, 0.75]],
+      "joy_buttons": [[64, 0]],
+      "joy_axes": [[64, 0, 0.75]],
       "actions": ["gsw_test_jump", "gsw_test_right"],
-      "dispatched": ["joy_button 68 0 down", "joy_motion 68 0 0.7500"]
+      "dispatched": ["joy_button 64 0 down", "joy_motion 64 0 0.7500"],
+      "joypads": [64],
+      "joypad_signals": ["attached 64 b 0"]
     },
     {
       "after": 4,
       "physical_keys": [68, 83],
       "keys": [68, 83],
       "labels": [68, 83],
-      "joy_buttons": [[68, 0]],
-      "joy_axes": [[68, 0, 0.75]],
+      "joy_buttons": [[64, 0]],
+      "joy_axes": [[64, 0, 0.75]],
       "actions": ["gsw_test_jump", "gsw_test_right"],
-      "dispatched": ["key 87/87/87 up", "key 68/68/68 down"]
+      "dispatched": ["key 87/87/87 up", "key 68/68/68 down"],
+      "joypads": [64]
     },
     {
       "after": 5,
       "physical_keys": [68, 83],
       "keys": [68, 83],
       "labels": [68, 83],
-      "joy_buttons": [[68, 1]],
-      "joy_axes": [[68, 1, -0.5]],
+      "joy_buttons": [[64, 1]],
+      "joy_axes": [[64, 1, -0.5]],
       "dispatched": [
-        "joy_button 68 0 up",
-        "joy_motion 68 0 0.0000",
-        "joy_button 68 1 down",
-        "joy_motion 68 1 -0.5000"
-      ]
+        "joy_button 64 0 up",
+        "joy_motion 64 0 0.0000",
+        "joy_button 64 1 down",
+        "joy_motion 64 1 -0.5000"
+      ],
+      "joypads": [64]
     },
     {
       "after": 6,
       "dispatched": [
         "key 83/83/83 up",
         "key 68/68/68 up",
-        "joy_button 68 1 up",
-        "joy_motion 68 1 0.0000"
-      ]
+        "joy_button 64 1 up",
+        "joy_motion 64 1 0.0000"
+      ],
+      "joypads": [64]
     },
     {
       "after": 7,
@@ -210,11 +215,13 @@
       "keys": [87],
       "labels": [87],
       "actions": ["gsw_test_jump"],
-      "dispatched": ["key 87/87/87 down"]
+      "dispatched": ["key 87/87/87 down"],
+      "joypads": [64]
     },
     {
       "after": 9,
-      "dispatched": ["key 87/87/87 up"]
+      "dispatched": ["key 87/87/87 up"],
+      "joypads": [64]
     }
   ]
 }
