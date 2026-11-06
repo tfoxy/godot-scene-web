@@ -234,10 +234,10 @@ export interface DomKeyEvent {
   type: string;
   code: string;
   key: string;
-  shiftKey?: boolean;
-  ctrlKey?: boolean;
-  altKey?: boolean;
-  metaKey?: boolean;
+  shiftKey?: boolean | undefined;
+  ctrlKey?: boolean | undefined;
+  altKey?: boolean | undefined;
+  metaKey?: boolean | undefined;
   /** `getModifierState("AltGraph")`. */
   altGraph?: boolean;
   repeat?: boolean;

@@ -18,9 +18,27 @@ import {
 import * as esbuild from "esbuild";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-let browser: Browser;
+let browser: Browser | undefined;
 let server: Server;
 let origin = "";
+
+// The pinned Chromium may be missing (another repo's `playwright install` garbage-collects the
+// shared cache, or a fresh machine never had it). Launch once while collecting: a missing
+// executable skips this file with the reason printed; any other launch failure still fails it.
+// `PLAYWRIGHT_BROWSERS_PATH=<empty dir>` hides the browsers to see the skip.
+async function launchOrSkip(): Promise<Browser | undefined> {
+  try {
+    return await chromium.launch({ headless: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/Executable doesn't exist/i.test(message)) throw error;
+    console.warn(
+      `pointerBrowser.test.ts skipped: no Chromium for playwright (${message.split("\n")[0]})`,
+    );
+    return undefined;
+  }
+}
+const launched = await launchOrSkip();
 
 const PAGE = `<!doctype html><html><head><style>
 html,body{margin:0;height:3000px}#stage{width:400px;height:300px;background:#888}
@@ -42,6 +60,7 @@ window.capture = GswPointer.createPointerCapture({
 </script></body></html>`;
 
 beforeAll(async () => {
+  if (!launched) return;
   const bundle = await esbuild.build({
     entryPoints: [fileURLToPath(new URL("../src/pointer.ts", import.meta.url))],
     bundle: true,
@@ -64,7 +83,7 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
-  browser = await chromium.launch({ headless: true });
+  browser = launched;
 }, 60_000);
 
 afterAll(async () => {
@@ -76,6 +95,7 @@ async function open(
   touch = false,
   mode: "native" | "mouse" = "native",
 ): Promise<{ page: Page; cdp: CDPSession }> {
+  if (!browser) throw new Error("no Chromium launched");
   const context = await browser.newContext({
     viewport: { width: 800, height: 600 },
     hasTouch: touch,
@@ -119,177 +139,194 @@ async function mouse(
   });
 }
 
-describe("pointer capture in headless Chromium", () => {
-  it("turns real emulated touches into screen_touch / screen_drag with lowest-free indices", async () => {
-    const { page, cdp } = await open(true);
-    const touch = (
-      type: "touchStart" | "touchMove" | "touchEnd",
-      points: { x: number; y: number; id: number }[],
-    ) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
-    await touch("touchStart", [{ x: 50, y: 50, id: 1 }]);
-    await touch("touchStart", [
-      { x: 50, y: 50, id: 1 },
-      { x: 150, y: 100, id: 2 },
-    ]);
-    await touch("touchMove", [
-      { x: 60, y: 50, id: 1 },
-      { x: 150, y: 120, id: 2 },
-    ]);
-    await frames(page);
-    await touch("touchEnd", [{ x: 150, y: 120, id: 2 }]);
-    await touch("touchEnd", []);
-    await frames(page);
-    const got = await records(page);
-    expect(got.filter((r) => r.event === "screen_touch")).toEqual([
-      { event: "screen_touch", pressed: true, position: [100, 100] },
-      { event: "screen_touch", index: 1, pressed: true, position: [300, 200] },
-      { event: "screen_touch", index: 1, pressed: false, position: [300, 240] },
-      { event: "screen_touch", pressed: false, position: [120, 100] },
-    ]);
-    const drags = got.filter((r) => r.event === "screen_drag");
-    expect(drags).toContainEqual({
-      event: "screen_drag",
-      position: [120, 100],
-      relative: [20, 0],
-    });
-    expect(drags).toContainEqual({
-      event: "screen_drag",
-      index: 1,
-      position: [300, 240],
-      relative: [0, 40],
-    });
-    expect(got.some((r) => String(r.event).startsWith("mouse_"))).toBe(false);
-    expect(
-      await page.evaluate(
-        () => document.getElementById("stage")?.style.touchAction,
-      ),
-    ).toBe("none");
-    await page.context().close();
-  });
-
-  it("mouse mode: a real tap is a motion and a LEFT click, with no touch records", async () => {
-    const { page, cdp } = await open(true, "mouse");
-    const touch = (type: "touchStart" | "touchEnd", points: Rec[]) =>
-      cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
-    await touch("touchStart", [{ x: 50, y: 60, id: 1 }]);
-    await touch("touchEnd", []);
-    await frames(page);
-    expect(await records(page)).toEqual([
-      { event: "mouse_motion", position: [100, 120] },
-      {
-        event: "mouse_button",
-        button_index: 1,
-        pressed: true,
-        position: [100, 120],
-        button_mask: 1,
-      },
-      {
-        event: "mouse_button",
-        button_index: 1,
-        pressed: false,
-        position: [100, 120],
-      },
-    ]);
-    expect(
-      await page.evaluate(
-        () => (window as unknown as { gestures: string[] }).gestures,
-      ),
-    ).toEqual(["touch-down", "tap", "touch-end"]);
-    await page.context().close();
-  });
-
-  it("mouse mode: a real two-finger scroll becomes natural-direction wheel ticks", async () => {
-    const { page, cdp } = await open(true, "mouse");
-    const touch = (
-      type: "touchStart" | "touchMove" | "touchEnd",
-      points: Rec[],
-    ) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
-    await touch("touchStart", [{ x: 100, y: 100, id: 1 }]);
-    await touch("touchStart", [
-      { x: 100, y: 100, id: 1 },
-      { x: 200, y: 100, id: 2 },
-    ]);
-    // Fingers DOWN 60 CSS px = 120 host px of centroid drift: two WHEEL_UP ticks (56 px each).
-    for (const y of [120, 140, 160])
-      await touch("touchMove", [
-        { x: 100, y, id: 1 },
-        { x: 200, y, id: 2 },
+describe.skipIf(launched === undefined)(
+  "pointer capture in headless Chromium",
+  () => {
+    it("turns real emulated touches into screen_touch / screen_drag with lowest-free indices", async () => {
+      const { page, cdp } = await open(true);
+      const touch = (
+        type: "touchStart" | "touchMove" | "touchEnd",
+        points: { x: number; y: number; id: number }[],
+      ) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
+      await touch("touchStart", [{ x: 50, y: 50, id: 1 }]);
+      await touch("touchStart", [
+        { x: 50, y: 50, id: 1 },
+        { x: 150, y: 100, id: 2 },
       ]);
-    await touch("touchEnd", []);
-    await frames(page);
-    const got = await records(page);
-    // Latch: the centroid (150, 100) CSS -> host (300, 200).
-    const tick = {
-      event: "mouse_button",
-      button_index: 4,
-      position: [300, 200],
-    };
-    expect(got).toEqual([
-      { ...tick, pressed: true, button_mask: 8 },
-      { ...tick, pressed: false },
-      { ...tick, pressed: true, button_mask: 8 },
-      { ...tick, pressed: false },
-    ]);
-    await page.context().close();
-  });
+      await touch("touchMove", [
+        { x: 60, y: 50, id: 1 },
+        { x: 150, y: 120, id: 2 },
+      ]);
+      await frames(page);
+      await touch("touchEnd", [{ x: 150, y: 120, id: 2 }]);
+      await touch("touchEnd", []);
+      await frames(page);
+      const got = await records(page);
+      expect(got.filter((r) => r.event === "screen_touch")).toEqual([
+        { event: "screen_touch", pressed: true, position: [100, 100] },
+        {
+          event: "screen_touch",
+          index: 1,
+          pressed: true,
+          position: [300, 200],
+        },
+        {
+          event: "screen_touch",
+          index: 1,
+          pressed: false,
+          position: [300, 240],
+        },
+        { event: "screen_touch", pressed: false, position: [120, 100] },
+      ]);
+      const drags = got.filter((r) => r.event === "screen_drag");
+      expect(drags).toContainEqual({
+        event: "screen_drag",
+        position: [120, 100],
+        relative: [20, 0],
+      });
+      expect(drags).toContainEqual({
+        event: "screen_drag",
+        index: 1,
+        position: [300, 240],
+        relative: [0, 40],
+      });
+      expect(got.some((r) => String(r.event).startsWith("mouse_"))).toBe(false);
+      expect(
+        await page.evaluate(
+          () => document.getElementById("stage")?.style.touchAction,
+        ),
+      ).toBe("none");
+      await page.context().close();
+    });
 
-  it("keeps X1/X2 from navigating history and still sends their edges", async () => {
-    const { page, cdp } = await open();
-    await mouse(cdp, "mouseMoved", "none", 0);
-    await mouse(cdp, "mousePressed", "back", 8);
-    await mouse(cdp, "mouseReleased", "back", 0);
-    await mouse(cdp, "mousePressed", "forward", 16);
-    await mouse(cdp, "mouseReleased", "forward", 0);
-    await page.waitForTimeout(300);
-    expect(new URL(page.url()).pathname).toBe("/stage");
-    const edges = (await records(page))
-      .filter((r) => r.event === "mouse_button")
-      .map((r) => [r.button_index, r.pressed, r.button_mask ?? 0]);
-    expect(edges).toEqual([
-      [8, true, 128],
-      [8, false, 0],
-      [9, true, 256],
-      [9, false, 0],
-    ]);
-    // Control: the same back press off the stage navigates.
-    await mouse(cdp, "mouseMoved", "none", 0, 600, 500);
-    await mouse(cdp, "mousePressed", "back", 8, 600, 500);
-    await mouse(cdp, "mouseReleased", "back", 0, 600, 500);
-    await page.waitForURL(`${origin}/first`);
-    await page.context().close();
-  });
+    it("mouse mode: a real tap is a motion and a LEFT click, with no touch records", async () => {
+      const { page, cdp } = await open(true, "mouse");
+      const touch = (type: "touchStart" | "touchEnd", points: Rec[]) =>
+        cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
+      await touch("touchStart", [{ x: 50, y: 60, id: 1 }]);
+      await touch("touchEnd", []);
+      await frames(page);
+      expect(await records(page)).toEqual([
+        { event: "mouse_motion", position: [100, 120] },
+        {
+          event: "mouse_button",
+          button_index: 1,
+          pressed: true,
+          position: [100, 120],
+          button_mask: 1,
+        },
+        {
+          event: "mouse_button",
+          button_index: 1,
+          pressed: false,
+          position: [100, 120],
+        },
+      ]);
+      expect(
+        await page.evaluate(
+          () => (window as unknown as { gestures: string[] }).gestures,
+        ),
+      ).toEqual(["touch-down", "tap", "touch-end"]);
+      await page.context().close();
+    });
 
-  it("prevents the middle press and the right-button menu, and diffs a chord's second button", async () => {
-    const { page, cdp } = await open();
-    await mouse(cdp, "mouseMoved", "none", 0);
-    await mouse(cdp, "mousePressed", "middle", 4);
-    await mouse(cdp, "mouseMoved", "middle", 4, 100, 250);
-    await mouse(cdp, "mouseReleased", "middle", 0, 100, 250);
-    await mouse(cdp, "mousePressed", "left", 1);
-    await mouse(cdp, "mousePressed", "right", 3); // a pointermove in DOM
-    await mouse(cdp, "mouseReleased", "right", 1);
-    await mouse(cdp, "mouseReleased", "left", 0);
-    await frames(page);
-    const seen = await page.evaluate(
-      () => (window as unknown as { seen: unknown[] }).seen,
-    );
-    // pointerdown prevented: no compat mousedown, so no autoscroll and no focus steal.
-    expect(seen).toContainEqual(["pointerdown", 1, true]);
-    expect(seen.filter((s) => (s as unknown[])[0] === "mousedown")).toEqual([]);
-    expect(seen).toContainEqual(["contextmenu", 2, true]);
-    expect(await page.evaluate(() => window.scrollY)).toBe(0);
-    expect(await page.evaluate(() => document.activeElement?.id)).toBe("stage");
-    const edges = (await records(page))
-      .filter((r) => r.event === "mouse_button")
-      .map((r) => [r.button_index, r.pressed, r.button_mask ?? 0]);
-    expect(edges).toEqual([
-      [3, true, 4],
-      [3, false, 0],
-      [1, true, 1],
-      [2, true, 3],
-      [2, false, 1],
-      [1, false, 0],
-    ]);
-    await page.context().close();
-  });
-});
+    it("mouse mode: a real two-finger scroll becomes natural-direction wheel ticks", async () => {
+      const { page, cdp } = await open(true, "mouse");
+      const touch = (
+        type: "touchStart" | "touchMove" | "touchEnd",
+        points: Rec[],
+      ) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
+      await touch("touchStart", [{ x: 100, y: 100, id: 1 }]);
+      await touch("touchStart", [
+        { x: 100, y: 100, id: 1 },
+        { x: 200, y: 100, id: 2 },
+      ]);
+      // Fingers DOWN 60 CSS px = 120 host px of centroid drift: two WHEEL_UP ticks (56 px each).
+      for (const y of [120, 140, 160])
+        await touch("touchMove", [
+          { x: 100, y, id: 1 },
+          { x: 200, y, id: 2 },
+        ]);
+      await touch("touchEnd", []);
+      await frames(page);
+      const got = await records(page);
+      // Latch: the centroid (150, 100) CSS -> host (300, 200).
+      const tick = {
+        event: "mouse_button",
+        button_index: 4,
+        position: [300, 200],
+      };
+      expect(got).toEqual([
+        { ...tick, pressed: true, button_mask: 8 },
+        { ...tick, pressed: false },
+        { ...tick, pressed: true, button_mask: 8 },
+        { ...tick, pressed: false },
+      ]);
+      await page.context().close();
+    });
+
+    it("keeps X1/X2 from navigating history and still sends their edges", async () => {
+      const { page, cdp } = await open();
+      await mouse(cdp, "mouseMoved", "none", 0);
+      await mouse(cdp, "mousePressed", "back", 8);
+      await mouse(cdp, "mouseReleased", "back", 0);
+      await mouse(cdp, "mousePressed", "forward", 16);
+      await mouse(cdp, "mouseReleased", "forward", 0);
+      await page.waitForTimeout(300);
+      expect(new URL(page.url()).pathname).toBe("/stage");
+      const edges = (await records(page))
+        .filter((r) => r.event === "mouse_button")
+        .map((r) => [r.button_index, r.pressed, r.button_mask ?? 0]);
+      expect(edges).toEqual([
+        [8, true, 128],
+        [8, false, 0],
+        [9, true, 256],
+        [9, false, 0],
+      ]);
+      // Control: the same back press off the stage navigates.
+      await mouse(cdp, "mouseMoved", "none", 0, 600, 500);
+      await mouse(cdp, "mousePressed", "back", 8, 600, 500);
+      await mouse(cdp, "mouseReleased", "back", 0, 600, 500);
+      await page.waitForURL(`${origin}/first`);
+      await page.context().close();
+    });
+
+    it("prevents the middle press and the right-button menu, and diffs a chord's second button", async () => {
+      const { page, cdp } = await open();
+      await mouse(cdp, "mouseMoved", "none", 0);
+      await mouse(cdp, "mousePressed", "middle", 4);
+      await mouse(cdp, "mouseMoved", "middle", 4, 100, 250);
+      await mouse(cdp, "mouseReleased", "middle", 0, 100, 250);
+      await mouse(cdp, "mousePressed", "left", 1);
+      await mouse(cdp, "mousePressed", "right", 3); // a pointermove in DOM
+      await mouse(cdp, "mouseReleased", "right", 1);
+      await mouse(cdp, "mouseReleased", "left", 0);
+      await frames(page);
+      const seen = await page.evaluate(
+        () => (window as unknown as { seen: unknown[] }).seen,
+      );
+      // pointerdown prevented: no compat mousedown, so no autoscroll and no focus steal.
+      expect(seen).toContainEqual(["pointerdown", 1, true]);
+      expect(seen.filter((s) => (s as unknown[])[0] === "mousedown")).toEqual(
+        [],
+      );
+      expect(seen).toContainEqual(["contextmenu", 2, true]);
+      expect(await page.evaluate(() => window.scrollY)).toBe(0);
+      expect(await page.evaluate(() => document.activeElement?.id)).toBe(
+        "stage",
+      );
+      const edges = (await records(page))
+        .filter((r) => r.event === "mouse_button")
+        .map((r) => [r.button_index, r.pressed, r.button_mask ?? 0]);
+      expect(edges).toEqual([
+        [3, true, 4],
+        [3, false, 0],
+        [1, true, 1],
+        [2, true, 3],
+        [2, false, 1],
+        [1, false, 0],
+      ]);
+      await page.context().close();
+    });
+  },
+);

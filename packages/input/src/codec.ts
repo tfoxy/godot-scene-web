@@ -57,7 +57,11 @@ const COORD: FieldType = { t: "vec2", min: -MAX_COORD, max: MAX_COORD };
 const UNIT_VEC: FieldType = { t: "vec2", min: -1, max: 1 };
 const ZERO2 = [0, 0] as const;
 
-const opt = (name: string, type: FieldType, def: Field["def"]): Field => ({
+const opt = (
+  name: string,
+  type: FieldType,
+  def: NonNullable<Field["def"]>,
+): Field => ({
   name,
   type,
   def,
@@ -535,7 +539,7 @@ export class InputEncodeError extends Error {
 
 export interface InputEncodeOptions {
   /** Byte budget per message, 64..INPUT_MAX_MESSAGE_BYTES (default the maximum). */
-  maxBytes?: number;
+  maxBytes?: number | undefined;
 }
 
 function isDefault(value: unknown, def: Field["def"]): boolean {

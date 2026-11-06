@@ -322,8 +322,7 @@ describe("M1: touch maps once per record at the flush", () => {
     const up = h.take();
     expect(up.calls).toEqual([
       [34, 5], // the pending drag motion
-      [35, 5], // the release point
-      [35, 5], // the `touch-end` gesture's position
+      [35, 5], // the release point, which the `touch-end` gesture's position reuses
     ]);
     expect(up.records.map((r) => r.event)).toEqual([
       "mouse_motion",
@@ -338,15 +337,79 @@ describe("M1: touch maps once per record at the flush", () => {
     expect(h.take().calls).toEqual([[20, 5]]);
     h.fire("pointerup", touch(7, 20, 5, 0));
     const tap = h.take();
-    // The tap's point and the `touch-end` gesture's position: one gesture, two edge maps.
-    expect(tap.calls).toEqual([
-      [20, 5],
-      [20, 5],
-    ]);
+    // The tap's point and the `touch-end` gesture's position are one lift: one map.
+    expect(tap.calls).toEqual([[20, 5]]);
     expect(tap.records.map((r) => r.event)).toEqual([
       "mouse_motion",
       "mouse_button",
       "mouse_button",
     ]);
+  });
+});
+
+describe("touch-end reuses the lift's map", () => {
+  const withEnds = () => {
+    const ends: { position: unknown; canceled?: boolean }[] = [];
+    const h = harness({
+      mode: "mouse",
+      gestures: {
+        onGesture: (g) => {
+          if (g.kind === "touch-end")
+            ends.push({
+              position: g.position,
+              ...(g.canceled ? { canceled: true } : {}),
+            });
+        },
+      },
+    });
+    return { h, ends };
+  };
+
+  it("a tap lift maps once and touch-end carries that position", () => {
+    const { h, ends } = withEnds();
+    h.fire("pointerdown", touch(7, 20, 5));
+    h.take();
+    h.fire("pointerup", touch(7, 20, 5, 0));
+    expect(h.take().calls).toEqual([[20, 5]]);
+    expect(ends).toEqual([{ position: [20, 10] }]);
+  });
+
+  it("a drag lift maps its release point once, and the next lift is not memoized", () => {
+    const { h, ends } = withEnds();
+    h.fire("pointerdown", touch(7, 20, 5));
+    for (let i = 0; i < 4; i++) h.fire("pointermove", touch(7, 21 + i, 5));
+    h.frame();
+    h.take();
+    h.fire("pointerup", touch(7, 30, 5, 0));
+    expect(h.take().calls.filter(([x, y]) => x === 30 && y === 5)).toHaveLength(
+      1,
+    );
+    expect(ends).toEqual([{ position: [40, 10] }]);
+    // A later lift at the very same client point maps afresh.
+    h.fire("pointerdown", touch(7, 20, 5));
+    h.take();
+    h.fire("pointerup", touch(7, 30, 5, 0));
+    expect(h.take().calls).toEqual([[30, 5]]);
+  });
+
+  it("a canceled drag maps its touch-end position once", () => {
+    const { h, ends } = withEnds();
+    h.fire("pointerdown", touch(7, 20, 5));
+    for (let i = 0; i < 4; i++) h.fire("pointermove", touch(7, 21 + i, 5));
+    h.frame();
+    h.take();
+    h.fire("pointercancel", touch(7, 24, 5, 0));
+    const { calls } = h.take();
+    expect(calls.filter(([x, y]) => x === 24 && y === 5)).toHaveLength(1);
+    expect(ends).toEqual([{ position: [28, 10], canceled: true }]);
+  });
+
+  it("a lift off the picture maps once and reports a null touch-end position", () => {
+    const { h, ends } = withEnds();
+    h.fire("pointerdown", touch(7, 20, 5));
+    h.take();
+    h.fire("pointerup", touch(7, 4, 5, 0));
+    expect(h.take().calls).toEqual([[4, 5]]);
+    expect(ends).toEqual([{ position: null }]);
   });
 });

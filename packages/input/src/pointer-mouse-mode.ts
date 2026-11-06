@@ -263,6 +263,24 @@ export function createMouseMode(
   const tell = (gesture: PointerGesture, decision: PointerGestureDecision) =>
     onGesture?.(gesture, decision);
 
+  // A lift ends a gesture twice over (the tap or release, then `touch-end`) at one point: the
+  // point maps once per lift, however many of them ask. Only the calls inside `lifting` share it.
+  let lifted: { x: number; y: number; at: Vec | null } | null = null;
+  function mapLift(x: number, y: number): Vec | null {
+    if (lifted === null || lifted.x !== x || lifted.y !== y)
+      lifted = { x, y, at: host.map(x, y) };
+    return lifted.at ? [...lifted.at] : null;
+  }
+  /** Runs one lift's calls with `mapLift`'s memo, which never outlives them. */
+  function lifting(run: () => void): void {
+    lifted = null;
+    try {
+      run();
+    } finally {
+      lifted = null;
+    }
+  }
+
   function setPhase(s: Session, phase: Session["phase"]): void {
     if (s.phase.type === "pending" && s.phase.timer !== null) {
       timers.clearTimeout?.(s.phase.timer);
@@ -292,7 +310,7 @@ export function createMouseMode(
           pointerId: s.id,
           clientX: x,
           clientY: y,
-          position: host.map(x, y),
+          position: mapLift(x, y),
           ...(canceled ? { canceled: true } : {}),
         },
         "send",
@@ -411,11 +429,11 @@ export function createMouseMode(
     // The sample still buffered is this frame's drag motion: it goes out before the release.
     settleDrag(s, d);
     setPhase(s, { type: "inert" });
-    const lifted = canceled ? null : host.map(x, y);
-    const point = lifted ?? d.last;
+    const liftAt = canceled ? null : mapLift(x, y);
+    const point = liftAt ?? d.last;
     const client: Vec | undefined = canceled
       ? undefined
-      : lifted
+      : liftAt
         ? [x, y]
         : [d.lastX, d.lastY];
     host.release(MouseButton.LEFT, point, s.id, canceled, client);
@@ -435,7 +453,7 @@ export function createMouseMode(
 
   function tap(s: Session, x: number, y: number): void {
     setPhase(s, { type: "inert" });
-    const at = host.map(x, y);
+    const at = mapLift(x, y);
     if (!at) {
       // Lifted off the picture under the slop: nothing was pressed, nothing is owed.
       host.drop("off-picture");
@@ -561,19 +579,21 @@ export function createMouseMode(
     y: number,
     canceled: boolean,
   ) {
-    const phase = s.phase;
-    if (id === s.id && phase.type === "pending") {
-      if (canceled) setPhase(s, { type: "inert" });
-      else tap(s, x, y);
-    } else if (id === s.id && phase.type === "drag") {
-      if (canceled) endDrag(s, phase, phase.lastX, phase.lastY, true);
-      else endDrag(s, phase, x, y, false);
-    } else if (phase.type === "scroll") {
-      phase.fingers.delete(id);
-      phase.lifted = true;
-    }
-    s.own.delete(id);
-    if (s.own.size === 0) end(s, canceled, x, y);
+    lifting(() => {
+      const phase = s.phase;
+      if (id === s.id && phase.type === "pending") {
+        if (canceled) setPhase(s, { type: "inert" });
+        else tap(s, x, y);
+      } else if (id === s.id && phase.type === "drag") {
+        if (canceled) endDrag(s, phase, phase.lastX, phase.lastY, true);
+        else endDrag(s, phase, x, y, false);
+      } else if (phase.type === "scroll") {
+        phase.fingers.delete(id);
+        phase.lifted = true;
+      }
+      s.own.delete(id);
+      if (s.own.size === 0) end(s, canceled, x, y);
+    });
   }
 
   return {
@@ -675,16 +695,18 @@ export function createMouseMode(
     cancelAll(): void {
       const s = session;
       if (!s) return;
-      let point: Vec = [0, 0];
       const phase = s.phase;
-      if (phase.type === "drag") {
-        settleDrag(s, phase);
-        point = [phase.lastX, phase.lastY];
-        endDrag(s, phase, point[0], point[1], true);
-      } else if (phase.type === "pending") point = [phase.x, phase.y];
-      // Every finger still down is ignored until it lifts.
-      s.own = new Set();
-      end(s, true, point[0], point[1]);
+      lifting(() => {
+        let point: Vec = [0, 0];
+        if (phase.type === "drag") {
+          settleDrag(s, phase);
+          point = [phase.lastX, phase.lastY];
+          endDrag(s, phase, point[0], point[1], true);
+        } else if (phase.type === "pending") point = [phase.x, phase.y];
+        // Every finger still down is ignored until it lifts.
+        s.own = new Set();
+        end(s, true, point[0], point[1]);
+      });
     },
 
     settle(): void {
