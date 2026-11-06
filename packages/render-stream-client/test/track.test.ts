@@ -840,3 +840,482 @@ describe("openTrack: options", () => {
     r.sink.close();
   });
 });
+
+// CRED1 (tracks-design.md "As built (CRED1)"): `credential` may be a provider called before every
+// connect attempt.
+const flush = async (): Promise<void> => {
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+};
+
+/** A provider whose answers the test settles by hand. */
+function manual() {
+  const calls: {
+    ctx: Parameters<
+      NonNullable<
+        Extract<OpenTrackOptions["credential"], (...a: never[]) => unknown>
+      >
+    >[0];
+    resolve(v: unknown): void;
+    reject(e: unknown): void;
+  }[] = [];
+  const provider = (ctx: (typeof calls)[number]["ctx"]) =>
+    new Promise<string>((resolve, reject) => {
+      calls.push({
+        ctx,
+        resolve: resolve as (v: unknown) => void,
+        reject,
+      });
+    });
+  return { calls, provider };
+}
+
+const helloOf = (l: FakeLink): { credential: unknown } =>
+  JSON.parse(l.sent[0]) as { credential: unknown };
+
+describe("openTrack: credential provider (CRED1)", () => {
+  it("is called before each attempt, and each hello carries that call's value", async () => {
+    let n = 0;
+    const seen: unknown[] = [];
+    const r = await rig({
+      credential: (ctx) => {
+        seen.push({ ...ctx, lastClose: ctx.lastClose?.reason ?? null });
+        return `cred-${++n}`;
+      },
+    });
+    expect(r.links).toHaveLength(1);
+    r.link().open();
+    expect(helloOf(r.link()).credential).toBe("cred-1");
+    r.link().readyWith();
+    r.clock.advance(3000); // idle: the track drops
+    expect(r.sink.state).toBe("reconnecting");
+    r.clock.advance(1000);
+    expect(r.links).toHaveLength(2);
+    r.link().open();
+    expect(helloOf(r.link()).credential).toBe("cred-2");
+    expect(seen).toEqual([
+      { attempt: 1, lastClose: null },
+      { attempt: 2, lastClose: "track-idle" },
+    ]);
+    r.sink.close();
+  });
+
+  it("an async provider delays the transport until it answers; nothing connects before", async () => {
+    const m = manual();
+    const r = await rig({ credential: m.provider });
+    await flush();
+    expect(r.links).toHaveLength(0);
+    expect(r.sink.state).toBe("connecting");
+    expect(m.calls).toHaveLength(1);
+    m.calls[0].resolve("late-cred");
+    await flush();
+    expect(r.links).toHaveLength(1);
+    r.link().open();
+    expect(helloOf(r.link()).credential).toBe("late-cred");
+    r.sink.close();
+  });
+
+  it("provider time does not count towards the ready timeout", async () => {
+    const m = manual();
+    const r = await rig({
+      credential: m.provider,
+      readyTimeoutMs: 1000,
+      credentialTimeoutMs: 60_000,
+    });
+    r.clock.advance(30_000); // far past readyTimeoutMs, with the provider still working
+    expect(r.closes).toHaveLength(0);
+    m.calls[0].resolve(CRED);
+    await flush();
+    r.link().open();
+    r.clock.advance(900);
+    r.link().readyWith();
+    r.clock.advance(1000);
+    expect(r.closes).toHaveLength(0);
+    expect(r.sink.state).toBe("open");
+    r.sink.close();
+  });
+
+  it("the ready timeout still runs from the transport opening", async () => {
+    const m = manual();
+    const r = await rig({ credential: m.provider, readyTimeoutMs: 1000 });
+    m.calls[0].resolve(CRED);
+    await flush();
+    r.link().open();
+    r.clock.advance(1000);
+    expect(r.closes[0]).toMatchObject({
+      reason: "track-ready-timeout",
+      by: "client",
+      willReconnect: true,
+    });
+  });
+
+  it("a provider that throws is a typed, retried close; the next call can succeed", async () => {
+    let n = 0;
+    const r = await rig({
+      credential: () => {
+        if (++n === 1) throw new Error("mint server down");
+        return CRED;
+      },
+    });
+    expect(r.links).toHaveLength(0);
+    expect(r.closes).toHaveLength(1);
+    expect(r.closes[0]).toMatchObject({
+      code: 1011,
+      reason: "track-credential-failed",
+      detail: "threw: mint server down",
+      by: "client",
+      opened: false,
+      willReconnect: true,
+      reconnectInMs: 250,
+    });
+    expect(r.sink.state).toBe("reconnecting");
+    r.clock.advance(250);
+    expect(r.links).toHaveLength(1);
+    r.link().open();
+    r.link().readyWith();
+    expect(r.sink.state).toBe("open");
+    expect(r.sink.stats().connections).toBe(2);
+    r.sink.close();
+  });
+
+  it("a provider that rejects is the same close, with its message, and backs off", async () => {
+    const r = await rig({ credential: () => Promise.reject(new Error("503")) });
+    await flush();
+    expect(r.closes[0]).toMatchObject({
+      reason: "track-credential-failed",
+      detail: "rejected: 503",
+      willReconnect: true,
+      reconnectInMs: 250,
+    });
+    r.clock.advance(250);
+    await flush();
+    expect(r.closes[1].reconnectInMs).toBe(500);
+    r.clock.advance(500);
+    await flush();
+    expect(r.closes[2].reconnectInMs).toBe(1000);
+    expect(r.links).toHaveLength(0);
+    r.sink.close();
+  });
+
+  it("a non-Error rejection is reported too", async () => {
+    const r = await rig({ credential: () => Promise.reject("nope") });
+    await flush();
+    expect(r.closes[0].detail).toBe("rejected: nope");
+    r.sink.close();
+  });
+
+  it("a provider that never answers times out; its late answer is ignored", async () => {
+    const m = manual();
+    const r = await rig({ credential: m.provider, credentialTimeoutMs: 2000 });
+    r.clock.advance(1999);
+    expect(r.closes).toHaveLength(0);
+    r.clock.advance(1);
+    expect(r.closes[0]).toMatchObject({
+      reason: "track-credential-failed",
+      detail: "timeout",
+      willReconnect: true,
+    });
+    m.calls[0].resolve(CRED); // too late
+    await flush();
+    expect(r.links).toHaveLength(0);
+    r.clock.advance(250);
+    await flush();
+    expect(m.calls).toHaveLength(2); // the next attempt asked again
+    m.calls[1].resolve(CRED);
+    await flush();
+    expect(r.links).toHaveLength(1);
+    r.sink.close();
+  });
+
+  const invalid: [string, unknown, string][] = [
+    ["an empty string", "", "empty"],
+    ["a number", 42, "not-a-string"],
+    ["undefined", undefined, "not-a-string"],
+    ["the view token", VIEW_TOKEN, "view-token"],
+    ["a credential that overflows the hello", "x".repeat(5000), "too-long"],
+  ];
+  for (const [name, value, detail] of invalid) {
+    for (const mode of ["sync", "async"] as const) {
+      it(`${name} (${mode}) is a final typed close and never connects`, async () => {
+        const provide = () => value as string;
+        const r = await rig(
+          {
+            credential:
+              mode === "sync" ? provide : () => Promise.resolve(provide()),
+          },
+          { url: "ws://127.0.0.1:1/render-stream", token: VIEW_TOKEN },
+        );
+        await flush();
+        expect(r.closes).toHaveLength(1);
+        expect(r.closes[0]).toMatchObject({
+          code: 1008,
+          reason: "track-credential-invalid",
+          detail,
+          by: "client",
+          opened: false,
+          willReconnect: false,
+        });
+        r.clock.advance(600_000);
+        await flush();
+        expect(r.links).toHaveLength(0);
+        expect(r.sink.stats().connections).toBe(1);
+        expect(r.clock.pending()).toBe(0);
+        expect(r.sink.state).toBe("closed");
+        await expect(r.sink.finished).resolves.toMatchObject({
+          reason: "track-credential-invalid",
+        });
+      });
+    }
+  }
+
+  it("a failing provider with reconnect:false ends the track", async () => {
+    const r = await rig({
+      credential: () => {
+        throw new Error("x");
+      },
+      reconnect: false,
+    });
+    expect(r.closes[0]).toMatchObject({ willReconnect: false });
+    expect(r.sink.state).toBe("closed");
+  });
+
+  it("close() while the provider works is clean: one close, no transport, answer dropped", async () => {
+    const m = manual();
+    const r = await rig({ credential: m.provider });
+    await flush();
+    r.sink.close();
+    expect(r.sink.state).toBe("closed");
+    expect(r.closes).toHaveLength(1);
+    expect(r.closes[0]).toMatchObject({
+      reason: "client-close",
+      by: "client",
+      opened: false,
+      willReconnect: false,
+    });
+    expect(r.clock.pending()).toBe(0);
+    m.calls[0].resolve(CRED);
+    await flush();
+    r.clock.advance(600_000);
+    expect(r.links).toHaveLength(0);
+    expect(r.closes).toHaveLength(1);
+    expect(r.states.at(-1)).toBe("closed");
+    await expect(r.sink.finished).resolves.toMatchObject({
+      reason: "client-close",
+    });
+  });
+
+  it("a rejection that arrives after close() is swallowed, not reported", async () => {
+    const m = manual();
+    const r = await rig({ credential: m.provider });
+    await flush();
+    r.sink.close();
+    m.calls[0].reject(new Error("late"));
+    await flush();
+    expect(r.closes).toHaveLength(1);
+    expect(r.links).toHaveLength(0);
+  });
+
+  it("close() during a retry's provider call (after a drop) is clean too", async () => {
+    const calls: ((v: string) => void)[] = [];
+    let first = true;
+    const r = await rig({
+      credential: () => {
+        if (!first) return new Promise<string>((res) => calls.push(res));
+        first = false;
+        return CRED;
+      },
+    });
+    r.link().open();
+    r.link().readyWith();
+    r.link().hostClose(1001, "stream-ended");
+    r.clock.advance(300);
+    expect(calls).toHaveLength(1);
+    expect(r.sink.state).toBe("connecting");
+    r.sink.close();
+    calls[0](CRED);
+    await flush();
+    expect(r.links).toHaveLength(1);
+    expect(r.closes).toHaveLength(2);
+    expect(r.closes[1].reason).toBe("client-close");
+  });
+
+  describe("expired", () => {
+    it("is retried when a provider is given, which is called again and sees it", async () => {
+      let n = 0;
+      const lastClose: unknown[] = [];
+      const r = await rig({
+        credential: (ctx) => {
+          lastClose.push(
+            ctx.lastClose && [ctx.lastClose.reason, ctx.lastClose.detail],
+          );
+          return `cap-${++n}`;
+        },
+      });
+      r.link().open();
+      r.link().refuse(1008, "track-unauthorized", "expired");
+      expect(r.closes[0]).toMatchObject({
+        reason: "track-unauthorized",
+        detail: "expired",
+        willReconnect: true,
+        reconnectInMs: 250,
+      });
+      expect(r.sink.state).toBe("reconnecting");
+      r.clock.advance(250);
+      await flush();
+      r.link().open();
+      expect(helloOf(r.link()).credential).toBe("cap-2");
+      r.link().readyWith();
+      expect(r.sink.state).toBe("open");
+      expect(lastClose).toEqual([null, ["track-unauthorized", "expired"]]);
+      r.sink.close();
+    });
+
+    it("stays final for a string credential", async () => {
+      const r = await rig();
+      r.link().open();
+      r.link().refuse(1008, "track-unauthorized", "expired");
+      expect(r.closes[0].willReconnect).toBe(false);
+      expect(r.sink.state).toBe("closed");
+    });
+
+    it("gives up after 3 retries in a row: a provider that cannot mint a fresh capability", async () => {
+      const r = await rig({ credential: () => CRED });
+      for (let i = 0; i < 3; i++) {
+        r.link().open();
+        r.link().refuse(1008, "track-unauthorized", "expired");
+        expect(r.closes[i].willReconnect).toBe(true);
+        r.clock.advance(10_000);
+        await flush();
+      }
+      r.link().open();
+      r.link().refuse(1008, "track-unauthorized", "expired");
+      expect(r.closes[3]).toMatchObject({
+        detail: "expired",
+        willReconnect: false,
+      });
+      expect(r.sink.state).toBe("closed");
+      expect(r.sink.stats().connections).toBe(4);
+    });
+
+    it("the count restarts after a track that opened, or any other end", async () => {
+      const r = await rig({ credential: () => CRED });
+      for (let round = 0; round < 3; round++) {
+        for (let i = 0; i < 3; i++) {
+          r.link().open();
+          r.link().refuse(1008, "track-unauthorized", "expired");
+          r.clock.advance(10_000);
+          await flush();
+        }
+        r.link().open();
+        r.link().readyWith();
+        r.link().hostClose(1001, "stream-ended");
+        r.clock.advance(10_000);
+        await flush();
+      }
+      expect(r.sink.state).toBe("connecting");
+      r.sink.close();
+    });
+
+    for (const detail of [
+      "wrong",
+      "bad-mac",
+      "malformed",
+      "missing",
+      "view-token",
+      "wrong-kind",
+      "exp-too-far",
+      "cap-invalid",
+    ]) {
+      it(`${detail} stays final even with a provider`, async () => {
+        const r = await rig({ credential: () => CRED });
+        r.link().open();
+        r.link().refuse(1008, "track-unauthorized", detail);
+        expect(r.closes[0]).toMatchObject({ detail, willReconnect: false });
+        r.clock.advance(600_000);
+        await flush();
+        expect(r.links).toHaveLength(1);
+        expect(r.sink.state).toBe("closed");
+      });
+    }
+  });
+
+  it("trackDisposition: expired is retried only for a refreshable credential", () => {
+    expect(trackDisposition(1008, "track-unauthorized", "expired")).toEqual({
+      retry: false,
+      minDelayMs: 0,
+    });
+    expect(
+      trackDisposition(1008, "track-unauthorized", "expired", true).retry,
+    ).toBe(true);
+    expect(
+      trackDisposition(1008, "track-unauthorized", "wrong", true).retry,
+    ).toBe(false);
+    expect(trackDisposition(1008, "track-unauthorized", null, true).retry).toBe(
+      false,
+    );
+    expect(trackDisposition(1011, "track-credential-failed").retry).toBe(true);
+    expect(trackDisposition(1008, "track-credential-invalid").retry).toBe(
+      false,
+    );
+  });
+
+  describe("options", () => {
+    const ep = { url: "ws://127.0.0.1:1/render-stream" };
+    const base = { kind: "input", formats: ["gsw-input/1"] };
+    const code = (f: () => unknown): string | null => {
+      try {
+        f();
+        return null;
+      } catch (e) {
+        return e instanceof RenderStreamTrackError ? e.code : "other";
+      }
+    };
+    it("accepts a function without calling it at open", async () => {
+      let called = 0;
+      const sink = openTrack(ep, {
+        ...base,
+        credential: () => {
+          called++;
+          return CRED;
+        },
+        transport: (e, s, on) => new FakeLink(e, s, on),
+      });
+      expect(called).toBe(0);
+      sink.close();
+      await flush();
+      expect(called).toBe(0);
+    });
+    it("a provider is not checked against the view token at open", () => {
+      expect(
+        code(() =>
+          openTrack(
+            { ...ep, token: VIEW_TOKEN },
+            {
+              ...base,
+              credential: () => CRED,
+              transport: (e, s, on) => new FakeLink(e, s, on),
+            },
+          ).close(),
+        ),
+      ).toBe(null);
+    });
+    it("rejects a credential that is neither string nor function, a bad timeout, an oversized base hello", () => {
+      const t = (x: Partial<OpenTrackOptions>) =>
+        code(() => openTrack(ep, { ...base, credential: CRED, ...x }));
+      expect(t({ credential: 5 as never })).toBe("track-options-invalid");
+      expect(t({ credential: "" })).toBe("track-options-invalid");
+      expect(t({ credentialTimeoutMs: 0, credential: () => CRED })).toBe(
+        "track-options-invalid",
+      );
+      expect(
+        t({
+          credential: () => CRED,
+          client: "a".repeat(64),
+          formats: Array.from(
+            { length: 8 },
+            (_, i) => `gsw-input-${"x".repeat(40)}/${i + 1}`,
+          ),
+        }),
+      ).toBe("track-options-invalid");
+    });
+  });
+});

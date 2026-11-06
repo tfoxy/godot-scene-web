@@ -20,6 +20,24 @@
 //                   reconnecting with backoff, then close() stops it
 //   stream-ended    SIGTERM of the host: the open track closes `stream-ended` 1001 and the client
 //                   plans a reconnect
+//   cred-*          CRED1, against a third host under GRC_LIVE_TRACK_CAPS=hmac (`--track-caps=hmac`)
+//                   whose capabilities the driver mints (scripts/lib/track-cap.ts) and the page's
+//                   credential provider asks for through `window.__mintCap`:
+//                   cred-static-expired   a string capability already past exp + 30 s: `expired`,
+//                                         final, one connection (the pre-CRED1 behaviour, kept)
+//                   cred-expired-retried  a provider whose first value is expired and second fresh:
+//                                         `expired` is not final, the retry opens with the new value
+//                   cred-refresh-after-drop  a capability with exp 2 s ahead, held past its exp, the
+//                                         transport dropped: the reconnect's hello carries a freshly
+//                                         minted capability (a different one), the receiver sees
+//                                         two opens with the viewer's subject
+//                   cred-provider-failure  a provider that throws once, then answers: the typed
+//                                         `track-credential-failed` close, a retry, then open
+//                   cred-close-while-pending  a provider that never answers and close(): closed, no
+//                                         connection reaches the host
+//                   cred-host-counts      (after the host stops) the host counted one `expired`
+//                                         refusal per expired value, opened the right number of
+//                                         tracks and counted no other refusal
 //   carrier-is-ws / carrier-is-wt  (after the last leg, per pass) every track the host's receiver
 //                   saw opened carries `carrier` = the pass's carrier, live-tracks.json says that
 //                   carrier serves tracks, and the page constructed only that transport's class
@@ -58,6 +76,7 @@ import {
   launchHarnessBrowser,
   resolvePinnedChromium,
 } from "./lib/browser-harness";
+import { mintTrackCap, readCapKeyFile } from "./lib/track-cap";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RS = resolve(HERE, "..");
@@ -84,6 +103,8 @@ interface Host {
   port: number;
   dir: string;
   credential: string;
+  /** The capability key file (GRC_LIVE_TRACK_CAPS=hmac), or "". */
+  capKeyFile: string;
   /** UDP port and certificate hash (hex SHA-256) of the `wt` carrier; 0 and "" when it is off. */
   wtPort: number;
   cert: string;
@@ -132,7 +153,8 @@ async function startHost(
         if (m) got[m[1]] = m[2];
         if (
           got.RS_LIVE_HOST_PORT &&
-          got.RS_LIVE_HOST_TRACK_TOKEN_FILE &&
+          (got.RS_LIVE_HOST_TRACK_TOKEN_FILE ||
+            got.RS_LIVE_HOST_TRACK_CAP_KEY_FILE) &&
           (!wt || (got.RS_LIVE_HOST_WT_PORT && got.RS_LIVE_HOST_CERT_SHA256))
         ) {
           clearTimeout(t);
@@ -148,7 +170,10 @@ async function startHost(
     proc,
     port: Number(got.RS_LIVE_HOST_PORT),
     dir,
-    credential: readFileSync(got.RS_LIVE_HOST_TRACK_TOKEN_FILE, "utf8").trim(),
+    credential: got.RS_LIVE_HOST_TRACK_TOKEN_FILE
+      ? readFileSync(got.RS_LIVE_HOST_TRACK_TOKEN_FILE, "utf8").trim()
+      : "",
+    capKeyFile: got.RS_LIVE_HOST_TRACK_CAP_KEY_FILE ?? "",
     wtPort: Number(got.RS_LIVE_HOST_WT_PORT ?? 0),
     cert: got.RS_LIVE_HOST_CERT_SHA256 ?? "",
     out,
@@ -171,6 +196,7 @@ interface Rec {
   text?: string;
   code?: number;
   reason?: string;
+  subject?: string;
 }
 const records = (h: Host): Rec[] =>
   existsSync(h.out)
@@ -214,6 +240,8 @@ interface PageState {
     reconnectInMs: number | null;
   }[];
   states: string[];
+  mints: string[];
+  mintCalls: number;
   stats: {
     sent: number;
     received: number;
@@ -255,6 +283,13 @@ async function runPass(
     "--track-keepalive-ms=250",
     ...more,
   ]);
+  const hostC = await startHost(join(dir, `${sub}host-c`), origin, [
+    "--track-caps=hmac",
+    "--track-keepalive-ms=250",
+    ...more,
+  ]);
+  type MintStep = "expired" | "short" | "fresh" | "throw" | "hang";
+  const plans = new Map<string, MintStep[]>();
   const checks: Check[] = [];
   const check = (id: string, passed: boolean, detail: string) => {
     checks.push({ id: carrier === "wt" ? `wt:${id}` : id, passed, detail });
@@ -264,6 +299,23 @@ async function runPass(
   };
   try {
     const page: Page = await launched.browser.newPage();
+    // CRED1: the page's credential provider asks the driver, which holds the key, per call. The
+    // plan for a track is consumed one entry per call; the last entry repeats.
+    await page.exposeFunction("__mintCap", (name: string) => {
+      const plan = plans.get(name) ?? ["fresh"];
+      const step = plan.length > 1 ? (plan.shift() as MintStep) : plan[0];
+      if (step === "throw") throw new Error("mint server down");
+      if (step === "hang") return new Promise<string>(() => {});
+      const now = Math.floor(Date.now() / 1000);
+      const exp = { expired: now - 40, short: now + 2, fresh: now + 300 }[step];
+      return Promise.resolve(
+        mintTrackCap(readCapKeyFile(hostC.capKeyFile), {
+          kind: "input",
+          sub: "viewer-1",
+          exp,
+        }),
+      );
+    });
     page.on("console", (m) => {
       if (m.type() === "error") console.log(`[page] ${m.text()}`);
     });
@@ -637,12 +689,191 @@ async function runPass(
       const s2 = await get("ended");
       check("closed-after-host-gone", s2.state === "closed", s2.state);
     }
+
+    // CRED1 legs (hostC mints capabilities; the page's provider asks `__mintCap`).
+    {
+      const nowS = () => Math.floor(Date.now() / 1000);
+      const capOpen = (name: string, o: Record<string, unknown>) =>
+        open(name, hostC, { credential: undefined, ...o });
+      const capStatic = (exp: number) =>
+        mintTrackCap(readCapKeyFile(hostC.capKeyFile), {
+          kind: "input",
+          sub: "viewer-1",
+          exp,
+        });
+
+      // A string capability already past exp + 30 s: final, one connection.
+      await capOpen("cred-static", { credential: capStatic(nowS() - 40) });
+      await until("cred-static", (x) => x.state === "closed", 3000);
+      await sleep(1500);
+      {
+        const s = await get("cred-static");
+        const c = s.closes[0];
+        check(
+          "cred-static-expired",
+          s.state === "closed" &&
+            s.closes.length === 1 &&
+            s.stats.connections === 1 &&
+            c.reason === "track-unauthorized" &&
+            c.detail === "expired" &&
+            !c.willReconnect,
+          JSON.stringify({
+            state: s.state,
+            connections: s.stats.connections,
+            closes: s.closes,
+          }),
+        );
+      }
+
+      // A provider whose first value is expired and whose second is fresh.
+      plans.set("cred-exp", ["expired", "fresh"]);
+      await capOpen("cred-exp", { provider: true });
+      {
+        const s = await until("cred-exp", (x) => x.state === "open", 6000);
+        const c = s.closes[0];
+        check(
+          "cred-expired-retried",
+          s.state === "open" &&
+            s.mintCalls === 2 &&
+            s.mints.length === 2 &&
+            s.mints[0] !== s.mints[1] &&
+            c?.reason === "track-unauthorized" &&
+            c.detail === "expired" &&
+            c.willReconnect === true &&
+            s.stats.connections === 2 &&
+            s.opens.length === 1,
+          JSON.stringify({
+            state: s.state,
+            mintCalls: s.mintCalls,
+            closes: s.closes,
+            connections: s.stats.connections,
+          }),
+        );
+        await close("cred-exp");
+      }
+
+      // exp 2 s ahead, held past its exp, transport dropped: the reconnect carries a new capability.
+      plans.set("cred-refresh", ["short", "fresh"]);
+      await capOpen("cred-refresh", { provider: true });
+      {
+        let s = await until("cred-refresh", (x) => x.state === "open");
+        await sleep(2600); // past the first capability's exp (the host's 30 s skew still admits it)
+        const dropped = await page.evaluate(() =>
+          (window as unknown as { __trk: { drop(): string } }).__trk.drop(),
+        );
+        s = await until(
+          "cred-refresh",
+          (x) => x.opens.length >= 2 && x.state === "open",
+          8000,
+        );
+        const cap = (t: string) =>
+          JSON.parse(
+            Buffer.from(t.split(".")[1], "base64url").toString("utf8"),
+          ) as { exp: number; nonce: string };
+        const [m1, m2] = s.mints.map(cap);
+        await close("cred-refresh");
+        await sleep(200);
+        const subjects = records(hostC)
+          .filter((r) => r.event === "opened")
+          .map((r) => r.subject);
+        check(
+          "cred-refresh-after-drop",
+          dropped === (carrier === "wt" ? "webtransport" : "websocket") &&
+            s.mints.length === 2 &&
+            m1 !== undefined &&
+            m2 !== undefined &&
+            m1.nonce !== m2.nonce &&
+            m2.exp > m1.exp + 100 &&
+            m1.exp < nowS() &&
+            s.opens.length === 2 &&
+            s.stats.connections === 2 &&
+            s.closes.length === 1 &&
+            s.closes[0].willReconnect === true &&
+            subjects.filter((x) => x === "viewer-1").length >= 2,
+          JSON.stringify({
+            dropped,
+            exps: [m1?.exp, m2?.exp],
+            opens: s.opens.length,
+            closes: s.closes,
+            subjects,
+          }),
+        );
+      }
+
+      // A provider that fails once (the page sees the driver's throw as a rejection).
+      plans.set("cred-fail", ["throw", "fresh"]);
+      await capOpen("cred-fail", {
+        provider: true,
+        reconnect: { initialMs: 100, maxMs: 400 },
+      });
+      {
+        const s = await until("cred-fail", (x) => x.state === "open", 6000);
+        const c = s.closes[0];
+        check(
+          "cred-provider-failure",
+          s.state === "open" &&
+            c?.reason === "track-credential-failed" &&
+            c.by === "client" &&
+            (c.detail ?? "").startsWith("rejected") &&
+            c.willReconnect === true &&
+            s.stats.connections === 2,
+          JSON.stringify({
+            state: s.state,
+            closes: s.closes,
+            connections: s.stats.connections,
+          }),
+        );
+        await close("cred-fail");
+      }
+
+      // A provider that never answers, then close().
+      plans.set("cred-hang", ["hang"]);
+      await capOpen("cred-hang", { provider: true });
+      await sleep(300);
+      {
+        const before = await get("cred-hang");
+        await close("cred-hang");
+        await sleep(300);
+        const s = await get("cred-hang");
+        check(
+          "cred-close-while-pending",
+          before.state === "connecting" &&
+            before.mintCalls === 1 &&
+            s.state === "closed" &&
+            s.closes.length === 1 &&
+            s.closes[0].reason === "client-close" &&
+            s.stats.connections === 1 &&
+            s.opens.length === 0,
+          JSON.stringify({
+            before: before.state,
+            state: s.state,
+            closes: s.closes,
+          }),
+        );
+      }
+
+      // After the host stops: counts. cred-static and cred-exp's first value were each refused
+      // `expired` once; opened = cred-exp, cred-refresh x2, cred-fail.
+      await stopHost(hostC);
+      {
+        const k = evidence(hostC).tracks?.input ?? {};
+        const refused = k.refused ?? {};
+        check(
+          "cred-host-counts",
+          refused["track-unauthorized:expired"] === 2 &&
+            Object.keys(refused).length === 1 &&
+            k.opened === 4,
+          JSON.stringify({ opened: k.opened, refused }),
+        );
+      }
+    }
     await page.close();
   } catch (e) {
     check("leg-completed", false, String((e as Error).stack ?? e));
   } finally {
     await stopHost(hostA);
     await stopHost(hostB);
+    await stopHost(hostC);
   }
   return checks;
 }

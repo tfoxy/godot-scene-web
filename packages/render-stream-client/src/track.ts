@@ -3,7 +3,9 @@
 // connection (transport.ts), says `track-hello`, waits for `track-ready` or `track-error`, then
 // carries payload texts both ways with keepalives, an idle watchdog and a reconnect policy that
 // follows Q1.4's last column. A refusal is a typed close, never a throw; only a mistake in the
-// options (including the view token passed as a credential) throws.
+// options (including the view token passed as a static credential) throws. CRED1: the credential
+// may be a provider called before every connect attempt, so a reconnect after a capability's `exp`
+// carries a fresh one; what it throws or returns is a typed close too (never a throw out of here).
 //
 // This module imports `endpoint.ts` and `transport.ts` only: never the view loop, the wasm core or
 // the extension host, so the pure client's bundle is unchanged by it and a page that only sends
@@ -29,6 +31,12 @@ const RATE_RETRY_MIN_MS = 1000;
 /** Q1.3: nothing received for this many keepalive periods is `track-idle`. */
 const IDLE_PERIODS = 3;
 const DEFAULT_READY_TIMEOUT_MS = 10_000;
+const DEFAULT_CREDENTIAL_TIMEOUT_MS = 10_000;
+/** CRED1: with a provider, `track-unauthorized`/`expired` is retried this many times in a row (each
+ * time with a fresh call of the provider); one more ends the track. A provider whose capabilities
+ * are always expired on arrival (clocks more than the host's 30 s skew apart) cannot be helped by
+ * retrying, and an unbounded loop would hide that. */
+const EXPIRED_RETRIES = 3;
 const DEFAULT_RECONNECT = { initialMs: 250, maxMs: 5000 } as const;
 
 const KIND = /^[a-z][a-z0-9-]{0,31}$/;
@@ -69,11 +77,16 @@ export type TrackState = "connecting" | "open" | "reconnecting" | "closed";
 
 /** Why a connection ended, typed. `reason` is the host's close reason (Q1.4) when `by` is `host`,
  * the client's own token when `by` is `client` (`client-close`, `track-idle`, `track-protocol`,
- * `track-binary`, `track-ready-timeout`) and the transport's text (or "") when `by` is `transport`. */
+ * `track-binary`, `track-ready-timeout`, and CRED1's `track-credential-failed` and
+ * `track-credential-invalid`, which end an attempt that never connected) and the transport's text
+ * (or "") when `by` is `transport`. */
 export interface TrackCloseInfo {
   code: number;
   reason: string;
-  /** `track-error`'s `detail` (for example `view-token`, `wrong`), when the host sent one. */
+  /** `track-error`'s `detail` (for example `view-token`, `wrong`), when the host sent one; for the
+   * two credential reasons, why: `threw`, `rejected` or `timeout` (failed; the error's message
+   * follows `threw` and `rejected` after a colon), `not-a-string`, `empty`, `too-long` or
+   * `view-token` (invalid). */
   detail: string | null;
   by: "host" | "client" | "transport";
   /** Whether `track-ready` had been received on this connection (false: a handshake refusal or a
@@ -92,12 +105,31 @@ export interface TrackClock {
   random(): number;
 }
 
+/** What a credential provider is told about the attempt it serves. */
+export interface TrackCredentialContext {
+  /** 1 for the first connection attempt, then 2, 3 ... (`TrackStats.connections` after it starts). */
+  attempt: number;
+  /** How the previous connection ended (null on the first attempt): lets a caching provider see
+   * `track-unauthorized`/`expired` and mint instead of returning its cached value again. */
+  lastClose: TrackCloseInfo | null;
+}
+
+/** A per-connect credential (CRED1). Called before each attempt's transport is created, so no host
+ * timer (hello, ready) runs while it works. It returns the credential, or a promise of it, and may
+ * be slow (a fetch to the app's server): `credentialTimeoutMs` bounds it. */
+export type TrackCredentialProvider = (
+  context: TrackCredentialContext,
+) => string | Promise<string>;
+
 export interface OpenTrackOptions {
   kind: string;
   formats: readonly string[];
   downFormats?: readonly string[];
-  /** The kind's credential. Never the view token: that throws `track-credential-is-view-token`. */
-  credential: string;
+  /** The kind's credential: a string fixed for the track's life, or a provider called before every
+   * connect attempt (the first included). Never the view token: a string equal to it throws
+   * `track-credential-is-view-token` at `openTrack`; a provided value equal to it is the typed
+   * close `track-credential-invalid` (detail `view-token`), without connecting. */
+  credential: string | TrackCredentialProvider;
   /** A label for the host's logs and the receiver (`[A-Za-z0-9._:-]{0,64}`). */
   client?: string;
   /** The view connection's session record, advisory (the host never checks it). */
@@ -112,6 +144,11 @@ export interface OpenTrackOptions {
   /** Local limit on waiting for `track-ready` after the hello (default 10 s), then close
    * `track-ready-timeout`. */
   readyTimeoutMs?: number;
+  /** Local limit on one call of a credential provider (default 10 s; unused for a string). The
+   * clock starts when the provider is called, before any connection exists, and the ready timeout
+   * does not include it. On expiry the attempt ends `track-credential-failed` (detail `timeout`)
+   * and the provider's late answer is ignored. */
+  credentialTimeoutMs?: number;
   onOpen?(ready: TrackReady): void;
   /** One down payload, verbatim. Keepalives and `track-error` never arrive here. */
   onMessage?(text: string): void;
@@ -133,7 +170,8 @@ export interface TrackStats {
     /** Over the host's advertised rate: dropping beats a `track-rate` close and a reconnect. */
     rate: number;
   };
-  /** Connections started, the first included. */
+  /** Connection attempts started, the first included. An attempt whose credential provider failed
+   * counts: it is what the reconnect backoff paces. */
   connections: number;
 }
 
@@ -189,17 +227,28 @@ const BY_REASON: Record<string, TrackDisposition> = {
   "track-rate": { retry: true, minDelayMs: RATE_RETRY_MIN_MS },
   "track-idle": RETRY,
   "track-receiver-gone": RETRY,
+  // CRED1: the provider's own failure (a fetch to the app's server, most likely) may pass; a value
+  // it returned that no host would accept (empty, the view token) will not.
+  "track-credential-failed": RETRY,
+  "track-credential-invalid": NO_RETRY,
   "stream-ended": RETRY,
   // The carrier's own inbound rules (Q1.4 last rows) are the client's fault.
   "message-too-large": NO_RETRY,
 };
 
 /** Q1.4's "Client reconnects" column. A reason this client does not know (the `/1` wire may add
- * one) falls back to its close code: a client-fault code is final, anything else is retried. */
+ * one) falls back to its close code: a client-fault code is final, anything else is retried.
+ * `refreshable` (CRED1) says the track has a credential provider that has not yet been retried too
+ * often after `expired`: only then is `track-unauthorized` with detail `expired` retried, because
+ * only a new call of the provider can produce what the host will accept. */
 export function trackDisposition(
   code: number,
   reason: string,
+  detail: string | null = null,
+  refreshable = false,
 ): TrackDisposition {
+  if (reason === "track-unauthorized")
+    return refreshable && detail === "expired" ? RETRY : NO_RETRY;
   if (reason === "track-closed") return code === 1000 ? RETRY : NO_RETRY;
   // A WebTransport session whose uplink stalled (CAR10) writes a reason with a detail suffix.
   if (reason.startsWith("uplink-stalled")) return RETRY;
@@ -257,7 +306,12 @@ function checkFormats(
 
 interface Resolved {
   endpoint: RenderStreamEndpoint;
-  hello: string;
+  /** The hello text for a credential; throws nothing (the caller has checked the value). */
+  hello(credential: string): string;
+  /** Why `v` cannot be a credential, or null. */
+  badCredential(v: unknown): string | null;
+  /** The static credential's hello, or null when the credential is a provider. */
+  staticHello: string | null;
 }
 
 function resolve(endpoint: TrackEndpoint, o: OpenTrackOptions): Resolved {
@@ -266,13 +320,19 @@ function resolve(endpoint: TrackEndpoint, o: OpenTrackOptions): Resolved {
   checkFormats("formats", o.formats, 1);
   const down = o.downFormats ?? [];
   checkFormats("downFormats", down, 0);
-  if (typeof o.credential !== "string" || o.credential === "")
-    invalid("credential must be a non-empty string");
-  if (endpoint.token != null && endpoint.token === o.credential)
+  const provider = typeof o.credential === "function";
+  if (!provider && (typeof o.credential !== "string" || o.credential === ""))
+    invalid("credential must be a non-empty string or a function");
+  if (!provider && endpoint.token != null && endpoint.token === o.credential)
     throw new RenderStreamTrackError(
       "track-credential-is-view-token",
       "the credential equals the view token (a track has its own credential per kind)",
     );
+  if (
+    o.credentialTimeoutMs !== undefined &&
+    !(Number.isFinite(o.credentialTimeoutMs) && o.credentialTimeoutMs > 0)
+  )
+    invalid("credentialTimeoutMs must be a positive number");
   if (o.client !== undefined && !CLIENT_LABEL.test(o.client))
     invalid(`client must match ${CLIENT_LABEL.source}`);
   if (o.view != null) {
@@ -294,19 +354,36 @@ function resolve(endpoint: TrackEndpoint, o: OpenTrackOptions): Resolved {
     protocol: 13,
     ...(endpoint.webTransport ? { webTransport: endpoint.webTransport } : {}),
   });
-  const hello = JSON.stringify({
-    type: "track-hello",
-    protocol: TRACK_PROTOCOL,
-    kind: o.kind,
-    formats: o.formats,
-    down_formats: down,
-    credential: o.credential,
-    ...(o.client !== undefined ? { client: o.client } : {}),
-    ...(o.view != null ? { view: o.view } : {}),
-  });
-  if (new TextEncoder().encode(hello).length > HELLO_MAX_BYTES)
+  const hello = (credential: string): string =>
+    JSON.stringify({
+      type: "track-hello",
+      protocol: TRACK_PROTOCOL,
+      kind: o.kind,
+      formats: o.formats,
+      down_formats: down,
+      credential,
+      ...(o.client !== undefined ? { client: o.client } : {}),
+      ...(o.view != null ? { view: o.view } : {}),
+    });
+  const tooBig = (h: string): boolean =>
+    new TextEncoder().encode(h).length > HELLO_MAX_BYTES;
+  // A provider's base hello (everything but the credential) must fit now; its values are checked
+  // as they arrive.
+  if (tooBig(hello(provider ? "x" : (o.credential as string))))
     invalid(`the hello is over ${HELLO_MAX_BYTES} bytes`);
-  return { endpoint: ep, hello };
+  const badCredential = (v: unknown): string | null => {
+    if (typeof v !== "string") return "not-a-string";
+    if (v === "") return "empty";
+    if (endpoint.token != null && v === endpoint.token) return "view-token";
+    if (tooBig(hello(v))) return "too-long";
+    return null;
+  };
+  return {
+    endpoint: ep,
+    hello,
+    badCredential,
+    staticHello: provider ? null : hello(o.credential as string),
+  };
 }
 
 const isPosInt = (v: unknown): v is number =>
@@ -382,6 +459,8 @@ interface Attempt {
   readyTimer: unknown;
   keepaliveTimer: unknown;
   idleTimer: unknown;
+  /** The provider call's timeout (CRED1); null once it answered, and for a string credential. */
+  credTimer: unknown;
   /** The `track-error` text of this connection: its detail (and the reason if no close says it). */
   pending: { reason: string; detail: string | null } | null;
   lastSend: number;
@@ -400,7 +479,14 @@ export function openTrack(
   endpoint: TrackEndpoint,
   options: OpenTrackOptions,
 ): TrackSink {
-  const { endpoint: ep, hello } = resolve(endpoint, options);
+  const {
+    endpoint: ep,
+    hello,
+    badCredential,
+    staticHello,
+  } = resolve(endpoint, options);
+  const provider =
+    typeof options.credential === "function" ? options.credential : null;
   const clock: TrackClock = { ...REAL_CLOCK, ...options.clock };
   const factory: RenderStreamTransportFactory =
     options.transport ?? carrierTransport(options.carrier ?? "auto");
@@ -413,6 +499,8 @@ export function openTrack(
           maxMs: options.reconnect?.maxMs ?? DEFAULT_RECONNECT.maxMs,
         };
   const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
+  const credentialTimeoutMs =
+    options.credentialTimeoutMs ?? DEFAULT_CREDENTIAL_TIMEOUT_MS;
 
   let state: TrackState = "connecting";
   let ready: TrackReady | null = null;
@@ -420,6 +508,8 @@ export function openTrack(
   let failures = 0;
   let retryTimer: unknown = null;
   let lastClose: TrackCloseInfo | null = null;
+  /** Consecutive `expired` refusals (CRED1); reset by any other end of an attempt. */
+  let expiredRun = 0;
   const stats: TrackStats = {
     sent: 0,
     received: 0,
@@ -453,7 +543,12 @@ export function openTrack(
     call(options.onState, s);
   };
   const clearTimers = (a: Attempt): void => {
-    for (const k of ["readyTimer", "keepaliveTimer", "idleTimer"] as const) {
+    for (const k of [
+      "readyTimer",
+      "keepaliveTimer",
+      "idleTimer",
+      "credTimer",
+    ] as const) {
       if (a[k] !== null) clock.clearTimeout(a[k]);
       a[k] = null;
     }
@@ -480,7 +575,15 @@ export function openTrack(
     const wasOpen = a.opened;
     ready = null;
     const userClosed = state === "closed";
-    const d = trackDisposition(info.code, info.reason);
+    const expired =
+      info.reason === "track-unauthorized" && info.detail === "expired";
+    expiredRun = expired ? expiredRun + 1 : 0;
+    const d = trackDisposition(
+      info.code,
+      info.reason,
+      info.detail,
+      provider !== null && expiredRun <= EXPIRED_RETRIES,
+    );
     let delay: number | null = null;
     if (!userClosed && reconnect !== null && d.retry) {
       const base = Math.min(
@@ -566,6 +669,7 @@ export function openTrack(
       a.readyTimer = null;
       ready = p.ready;
       failures = 0;
+      expiredRun = 0;
       a.tokens = p.ready.rate.burst;
       a.tokensAt = clock.now();
       a.lastSend = clock.now();
@@ -589,23 +693,8 @@ export function openTrack(
     call(options.onMessage, text);
   };
 
-  const connect = (): void => {
-    setState("connecting");
-    stats.connections++;
-    const a: Attempt = {
-      transport: null,
-      opened: false,
-      readyTimer: null,
-      keepaliveTimer: null,
-      idleTimer: null,
-      pending: null,
-      lastSend: clock.now(),
-      lastRecv: clock.now(),
-      tokens: 0,
-      tokensAt: 0,
-      done: false,
-    };
-    attempt = a;
+  /** Creates the attempt's transport; the hello goes out when it opens. */
+  const startTransport = (a: Attempt, helloText: string): void => {
     try {
       a.transport = factory(ep, TRACK_SUBPROTOCOL, {
         open() {
@@ -618,7 +707,7 @@ export function openTrack(
             abort(a, 1001, "track-ready-timeout");
           }, readyTimeoutMs);
           try {
-            a.transport?.send(hello);
+            a.transport?.send(helloText);
           } catch {
             // the close event follows
           }
@@ -663,6 +752,97 @@ export function openTrack(
         null,
       );
     }
+  };
+
+  /** CRED1: a provided value reaches the transport only if it could be a credential. */
+  const useCredential = (a: Attempt, value: unknown): void => {
+    const bad = badCredential(value);
+    if (bad !== null) {
+      finish(
+        a,
+        {
+          code: 1008,
+          reason: "track-credential-invalid",
+          detail: bad,
+          by: "client",
+        },
+        null,
+      );
+      return;
+    }
+    startTransport(a, hello(value as string));
+  };
+  const credentialFailed = (a: Attempt, how: string, error?: unknown): void => {
+    const msg =
+      error === undefined
+        ? ""
+        : `: ${String(error instanceof Error ? error.message : error).slice(0, 120)}`;
+    finish(
+      a,
+      {
+        code: 1011,
+        reason: "track-credential-failed",
+        detail: `${how}${msg}`,
+        by: "client",
+      },
+      null,
+    );
+  };
+
+  /** Calls the provider for `a`. Nothing is connected while it works, so neither the host's hello
+   * timer nor `readyTimeoutMs` runs; a `close()` meanwhile finishes `a` and the answer is dropped. */
+  const fetchCredential = (a: Attempt, p: TrackCredentialProvider): void => {
+    let result: string | Promise<string>;
+    try {
+      result = p({ attempt: stats.connections, lastClose });
+    } catch (e) {
+      credentialFailed(a, "threw", e);
+      return;
+    }
+    if (typeof result === "string") {
+      useCredential(a, result);
+      return;
+    }
+    a.credTimer = clock.setTimeout(() => {
+      a.credTimer = null;
+      if (!a.done) credentialFailed(a, "timeout");
+    }, credentialTimeoutMs);
+    Promise.resolve(result).then(
+      (value) => {
+        if (a.done) return;
+        if (a.credTimer !== null) clock.clearTimeout(a.credTimer);
+        a.credTimer = null;
+        useCredential(a, value);
+      },
+      (e: unknown) => {
+        if (a.done) return;
+        if (a.credTimer !== null) clock.clearTimeout(a.credTimer);
+        a.credTimer = null;
+        credentialFailed(a, "rejected", e);
+      },
+    );
+  };
+
+  const connect = (): void => {
+    setState("connecting");
+    stats.connections++;
+    const a: Attempt = {
+      transport: null,
+      opened: false,
+      readyTimer: null,
+      keepaliveTimer: null,
+      idleTimer: null,
+      credTimer: null,
+      pending: null,
+      lastSend: clock.now(),
+      lastRecv: clock.now(),
+      tokens: 0,
+      tokensAt: 0,
+      done: false,
+    };
+    attempt = a;
+    if (provider === null) startTransport(a, staticHello as string);
+    else fetchCredential(a, provider);
   };
 
   const sink: TrackSink = {

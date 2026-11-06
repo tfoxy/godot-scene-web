@@ -72,8 +72,8 @@ openTrack RenderStreamTrackError TRACK_PROTOCOL TRACK_SUBPROTOCOL trackDispositi
   .split(/\s+/);
 
 const TRACKS_TYPE_EXPORTS = `
-OpenTrackOptions TrackClock TrackCloseInfo TrackDisposition TrackEndpoint TrackErrorCode TrackReady
-TrackSink TrackState TrackStats
+OpenTrackOptions TrackClock TrackCloseInfo TrackCredentialContext TrackCredentialProvider TrackDisposition
+TrackEndpoint TrackErrorCode TrackReady TrackSink TrackState TrackStats
 `
   .trim()
   .split(/\s+/);

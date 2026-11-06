@@ -1,6 +1,11 @@
 // TRK4's live check page (scripts/client-track-check.ts): opens tracks through the package's
 // `./tracks` subpath only and exposes what each one saw to the driver. It loads no view client,
 // no wasm and no harness code.
+//
+// CRED1: `open`'s `provider: true` makes the credential a provider that asks the driver (the
+// Node side, which holds the capability key) through `window.__mintCap(name)`, the way an app's
+// page asks its own server; every value it returned is kept in `mints`. `drop()` closes the last
+// transport the page constructed with a client close, the forced drop of the refresh leg.
 
 import {
   type OpenTrackOptions,
@@ -19,12 +24,17 @@ interface Entry {
   messages: string[];
   closes: TrackCloseInfo[];
   states: string[];
+  /** Every credential the provider returned (CRED1), in order. */
+  mints: string[];
+  /** Provider calls, answered or not. */
+  mintCalls: number;
 }
 const entries = new Map<string, Entry>();
 
 // Which transport class carried the tracks, as the page saw it: the driver reads these counts
 // to assert a wt run opened WebTransport sessions and a ws run only WebSockets.
 const constructed = { websocket: 0, webtransport: 0 };
+const made: { kind: "websocket" | "webtransport"; instance: unknown }[] = [];
 {
   const w = window as unknown as Record<string, unknown>;
   for (const [key, global] of [
@@ -36,7 +46,9 @@ const constructed = { websocket: 0, webtransport: 0 };
     w[global] = new Proxy(Native, {
       construct(target, a, newTarget) {
         constructed[key]++;
-        return Reflect.construct(target, a, newTarget);
+        const instance = Reflect.construct(target, a, newTarget);
+        made.push({ kind: key, instance });
+        return instance;
       },
     });
   }
@@ -53,11 +65,11 @@ const api = {
       | "kind"
       | "formats"
       | "downFormats"
-      | "credential"
       | "reconnect"
       | "client"
       | "carrier"
-    >,
+      | "credentialTimeoutMs"
+    > & { credential?: string; provider?: boolean },
   ): string | null {
     const e: Entry = {
       sink: null as never,
@@ -65,11 +77,27 @@ const api = {
       messages: [],
       closes: [],
       states: ["connecting"],
+      mints: [],
+      mintCalls: 0,
     };
+    const { provider, credential, ...rest } = options;
     try {
       e.sink = openTrack(endpoint, {
         carrier: "websocket",
-        ...options,
+        ...rest,
+        credential: provider
+          ? async () => {
+              e.mintCalls++;
+              const mint = (
+                window as unknown as {
+                  __mintCap(name: string): Promise<string>;
+                }
+              ).__mintCap;
+              const v = await mint(name);
+              e.mints.push(v);
+              return v;
+            }
+          : (credential as string),
         onOpen: (r) => e.opens.push(r),
         onMessage: (t) => e.messages.push(t),
         onClose: (c) => e.closes.push(c),
@@ -90,6 +118,8 @@ const api = {
     closes: TrackCloseInfo[];
     states: string[];
     stats: TrackStats;
+    mints: string[];
+    mintCalls: number;
   } {
     const e = entries.get(name);
     if (!e) throw new Error(`no track ${name}`);
@@ -101,10 +131,26 @@ const api = {
       closes: e.closes,
       states: e.states,
       stats: e.sink.stats(),
+      mints: e.mints,
+      mintCalls: e.mintCalls,
     };
   },
   transports(): { websocket: number; webtransport: number } {
     return { ...constructed };
+  },
+  /** Closes the transport constructed last (a client close, code 3000); its kind, or "none". */
+  drop(): string {
+    const last = made.at(-1);
+    if (!last) return "none";
+    if (last.kind === "websocket")
+      (last.instance as WebSocket).close(3000, "forced-drop");
+    else
+      (
+        last.instance as {
+          close(i: { closeCode: number; reason: string }): void;
+        }
+      ).close({ closeCode: 3000, reason: "forced-drop" });
+    return last.kind;
   },
   send(name: string, texts: string[]): boolean[] {
     const e = entries.get(name);

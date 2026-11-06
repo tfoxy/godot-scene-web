@@ -10,6 +10,8 @@ export {
   TRACK_SUBPROTOCOL,
   type TrackClock,
   type TrackCloseInfo,
+  type TrackCredentialContext,
+  type TrackCredentialProvider,
   type TrackDisposition,
   type TrackEndpoint,
   type TrackErrorCode,
