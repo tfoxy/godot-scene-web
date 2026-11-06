@@ -14,3 +14,4 @@ The control file `unbind` frees the injector node (the receiver goes away: the n
 (`scripts/run-gate8.sh run_g8l_inject`) under the TRK2 Node track client, and
 `scripts/lib/gate8-track-checks.ts` judges them (`g8l-trk-inject-*`). `../track-inject-addon` is this
 project beside the project's own copy of the addon.
+`../track-inject-addon-strict` adds `exclude_addons=false` (HYG2).

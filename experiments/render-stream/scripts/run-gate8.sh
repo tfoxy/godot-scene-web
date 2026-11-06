@@ -3532,12 +3532,16 @@ run_g8l_trk() {
 # embedded classes are renamed, so they must load beside the global GswInput* classes). Both run
 # under the TRK2 track client (four phases, the unbind phase frees the injector node), judged by
 # the g8l-trk-inject-* checks. Legs: host (stock project), addon (project ships the addon), config
-# (GRC_LIVE_TRACK_INPUT_CONFIG reaches configure()), refuse-* (bad values refuse live as a whole)
-# and two sabotages: no-release (GRC_SABOTAGE=track-inject-no-release: the built-in injector
+# (GRC_LIVE_TRACK_INPUT_CONFIG reaches configure()), addon-strict (HYG2: fixtures/track-inject-addon-strict,
+# the addon project with exclude_addons=false: the same four client phases), strict-compile (HYG2: see
+# run_g8l_strict_probe) and refuse-* (bad values refuse live as a whole), and three sabotages:
+# warnings (HYG2: strict-compile with the embedded script's @warning_ignore_start head stripped),
+# no-release (GRC_SABOTAGE=track-inject-no-release: the built-in injector
 # ignores closed()) and off (the same fixture without the injector: track-no-receiver). Native
 # only, headless, real time, as g8l/trk.
 G8L_INJECT_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/track-inject"
 G8L_INJECT_ADDON_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/track-inject-addon"
+G8L_INJECT_STRICT_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/track-inject-addon-strict"
 G8L_INJECT_SABOTAGES=(no-release off)
 G8L_INJECT_CONFIG='{"accept_kinds":["key"],"lease_ms":20000}'
 
@@ -3555,10 +3559,27 @@ run_g8l_inject_refusal() {
 	run_headless "$dir" none -- "$BINARY" --headless --max-fps 60 --path "$G8L_INJECT_FIXTURE_DIR"
 }
 
+# run_g8l_strict_probe <dir> [env word...] (HYG2): GDScript warnings exist only in a debug-enabled
+# engine, and the release template that the capture arms on has none, so no capture leg can show a
+# warning being or not being an error. This leg runs fixtures/track-inject-addon-strict's
+# compile_probe.gd under the repo's 4.5.1 editor binary (debug-enabled, warnings live, the
+# project's exclude_addons=false and warnings-as-errors in force) against the generated script the
+# capture embeds (capture/build/generated, beside the gdextension): the project's own addon must
+# compile and the embedded script must compile because of its @warning_ignore_start head.
+# RS_PROBE_STRIP_WARNING_HEAD=1 (the sabotage leg) removes the head: reload must fail.
+run_g8l_strict_probe() {
+	local dir="$1"
+	shift
+	mkdir -p "$dir"
+	LEG_ENV=(RS_PROBE_SCRIPT="$(dirname "$EXTENSION")/generated/rs_track_inject_script.gd" RS_PROBE_OUT="$dir/probe.json" "$@")
+	run_headless "$dir" none -- env -C "$REPO_ROOT" mise exec -- godot --headless --path "$G8L_INJECT_STRICT_FIXTURE_DIR" \
+		--script res://compile_probe.gd
+}
+
 run_g8l_inject() {
 	[ -z "${GATE7_LIVE_KIND:-}" ] || return 0
 	local leg="$OUT/g8l/inject" s fixture
-	for fixture in "$G8L_INJECT_FIXTURE_DIR" "$G8L_INJECT_ADDON_FIXTURE_DIR"; do
+	for fixture in "$G8L_INJECT_FIXTURE_DIR" "$G8L_INJECT_ADDON_FIXTURE_DIR" "$G8L_INJECT_STRICT_FIXTURE_DIR"; do
 		echo "run-gate8: g8l inject (fixture import: ${fixture##*/})"
 		LEG_ENV=()
 		run_headless "$leg/import/${fixture##*/}" none -- mise exec -- godot --headless --path "$fixture" --import
@@ -3583,7 +3604,14 @@ run_g8l_inject() {
 	echo "run-gate8: g8l inject addon (the project ships the gsw_input addon: global classes beside the embedded copy)"
 	G8L_TRK_LEG_FIXTURE="$G8L_INJECT_ADDON_FIXTURE_DIR"
 	run_g8l_trk_leg "$leg/addon" GRC_LIVE_TRACK_INPUT_INJECT=reference
+	echo "run-gate8: g8l inject addon-strict (HYG2: warnings are errors for addons too, exclude_addons=false)"
+	G8L_TRK_LEG_FIXTURE="$G8L_INJECT_STRICT_FIXTURE_DIR"
+	run_g8l_trk_leg "$leg/addon-strict" GRC_LIVE_TRACK_INPUT_INJECT=reference
 	G8L_TRK_LEG_FIXTURE=""
+	echo "run-gate8: g8l inject strict-compile (HYG2: the editor engine, warnings as errors, exclude_addons=false)"
+	run_g8l_strict_probe "$leg/strict-compile"
+	echo "run-gate8: g8l inject sabotage-warnings (the embedded script without its @warning_ignore_start head)"
+	run_g8l_strict_probe "$leg/sabotage-warnings" RS_PROBE_STRIP_WARNING_HEAD=1
 	echo "run-gate8: g8l inject refusals (bad values refuse live as a whole)"
 	run_g8l_inject_refusal "$leg/refuse-value" GRC_LIVE_TRACKS=input GRC_LIVE_TRACK_INPUT_INJECT=bogus
 	run_g8l_inject_refusal "$leg/refuse-no-grant" GRC_LIVE_TRACK_INPUT_INJECT=reference

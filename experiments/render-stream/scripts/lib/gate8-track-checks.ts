@@ -232,6 +232,12 @@ function injectContract(leg: TrkLeg, inject: TrkInject): string[] {
     project_addon: inject.addon,
     project_injector: inject.addon,
   };
+  if (inject.strict) {
+    // HYG2: the project makes warnings errors, addons included (fixtures/track-inject-addon-strict).
+    want.exclude_addons = false;
+    want.untyped_declaration_level = 2;
+    want.unsafe_call_argument_level = 2;
+  }
   for (const [k, v] of Object.entries(want))
     if (!same(contract[k], v))
       problems.push(
@@ -291,6 +297,12 @@ export interface TrkInject {
   addon: boolean;
   /** The SHA-256 of the addon sources (expectedAddonSha256). */
   sha256: string;
+  /**
+   * HYG2: the project also sets debug/gdscript/warnings/exclude_addons=false, with the fixtures'
+   * warnings-as-errors (fixtures/track-inject-addon-strict). Implies `addon`. (The capture's
+   * release template compiles no GDScript warnings: see run_g8l_strict_probe.)
+   */
+  strict?: boolean;
 }
 
 export function judgeTrk(
@@ -625,6 +637,121 @@ export const TRK_INJECT_SABOTAGES = {
   off: "delivered",
 } as const;
 
+/** The compile_probe.gd report (fixtures/track-inject-addon-strict) that run_g8l_strict_probe writes. */
+interface StrictProbe {
+  godot?: string;
+  debug_build?: boolean;
+  exclude_addons?: unknown;
+  untyped_declaration_level?: unknown;
+  unsafe_call_argument_level?: unknown;
+  project_addon?: {
+    global_class?: boolean;
+    constructs?: boolean;
+    files?: Record<string, boolean>;
+  };
+  embedded?: {
+    source_bytes?: number;
+    head_before?: boolean;
+    head_after?: boolean;
+    stripped?: boolean;
+    /** The generated script as it is. */
+    clean?: ProbeCompile;
+    /** The same plus one untyped member, a warning only the head can excuse. */
+    covered?: ProbeCompile;
+  };
+}
+
+interface ProbeCompile {
+  reload_error?: number;
+  constructs?: boolean;
+  has_setup?: boolean;
+}
+
+/**
+ * HYG2: judge a compile_probe.gd report. `strip` is the sabotage leg (RS_PROBE_STRIP_WARNING_HEAD):
+ * the embedded script must then NOT compile; otherwise it and the project's addon must. The
+ * environment problems (not a debug-enabled 4.5.1 engine, the strict settings not in force, no
+ * script to compile) are reported either way: they would make the probe vacuous.
+ */
+export function judgeStrictProbe(
+  probe: StrictProbe | undefined,
+  log: string,
+  strip: boolean,
+): string[] {
+  if (!probe)
+    return ["probe.json missing (the engine did not run compile_probe.gd)"];
+  const problems: string[] = [];
+  if (!probe.godot?.startsWith("4.5.1"))
+    problems.push(`engine ${JSON.stringify(probe.godot)}, expected 4.5.1`);
+  if (probe.debug_build !== true)
+    problems.push(
+      "not a debug-enabled engine: GDScript warnings do not exist there, so the probe proves nothing",
+    );
+  if (probe.exclude_addons !== false)
+    problems.push(
+      `exclude_addons ${JSON.stringify(probe.exclude_addons)}, expected false`,
+    );
+  if (
+    probe.untyped_declaration_level !== 2 ||
+    probe.unsafe_call_argument_level !== 2
+  )
+    problems.push(
+      `warning levels untyped_declaration ${JSON.stringify(probe.untyped_declaration_level)}, unsafe_call_argument ${JSON.stringify(probe.unsafe_call_argument_level)}, expected 2 (error)`,
+    );
+  const e = probe.embedded;
+  if (!e || !(e.source_bytes && e.source_bytes > 0) || e.head_before !== true) {
+    problems.push(
+      `no embedded script to compile, or it has no @warning_ignore_start head: ${JSON.stringify(e ?? null)}`,
+    );
+    return problems;
+  }
+  const clean = e.clean;
+  const covered = e.covered;
+  if (strip) {
+    if (e.stripped !== true || e.head_after !== false)
+      problems.push(
+        "the sabotage did not remove the @warning_ignore_start head",
+      );
+    if (covered?.reload_error === 0 || covered?.constructs === true)
+      problems.push(
+        `the embedded script plus a warning compiled without its @warning_ignore_start head (reload ${covered?.reload_error}): the head does not protect it, or the warnings are not errors`,
+      );
+    if (!/Warning treated as error/.test(log))
+      problems.push(
+        "the engine log has no `Warning treated as error` (the script failed for another reason)",
+      );
+    return problems;
+  }
+  if (e.stripped !== false || e.head_after !== true)
+    problems.push("the embedded script was modified on the honest leg");
+  if (
+    clean?.reload_error !== 0 ||
+    clean.constructs !== true ||
+    clean.has_setup !== true
+  )
+    problems.push(
+      `the embedded script did not compile and construct under the strict settings: ${JSON.stringify(clean ?? null)}`,
+    );
+  if (covered?.reload_error !== 0 || covered.constructs !== true)
+    problems.push(
+      `the embedded script plus a deliberate warning (an untyped member) did not compile with its @warning_ignore_start head: ${JSON.stringify(covered ?? null)}`,
+    );
+  const a = probe.project_addon;
+  const files = Object.entries(a?.files ?? {});
+  if (!a?.global_class || !a.constructs || files.length === 0)
+    problems.push(
+      `the project's own gsw_input addon: ${JSON.stringify(a ?? null)} (global class, constructs the injector)`,
+    );
+  for (const [name, ok] of files)
+    if (!ok)
+      problems.push(
+        `addon script ${name} does not compile under the strict settings`,
+      );
+  if (/Warning treated as error|SCRIPT ERROR|Parse Error/.test(log))
+    problems.push("the engine log has script errors");
+  return problems;
+}
+
 /** run-gate8.sh run_g8l_inject_refusal legs: the reason each must give (live.json `reason`). */
 export const TRK_INJECT_REFUSALS: Record<string, string> = {
   "refuse-value": "track-inject-invalid: GRC_LIVE_TRACK_INPUT_INJECT=bogus",
@@ -717,6 +844,73 @@ export async function runInjectChecks(out: string): Promise<G8aCheck[]> {
         "TRK6: a project that ships the gsw_input addon itself (global classes GswInputInjector and the rest, its own instance still constructible) loads the embedded injector without the class_name collision (the embedded classes are renamed RsBuiltin*) and every g8l-trk-inject criterion holds on it",
         problems,
         "held on g8l/inject/addon: the project's addon and the built-in injector side by side",
+      ),
+    );
+  }
+  // HYG2: the same, with warnings as errors for the project's addon too (exclude_addons=false).
+  const strict: TrkInject = { addon: true, strict: true, sha256 };
+  const strictDir = join(root, "addon-strict");
+  {
+    let problems: string[] | null = null;
+    if (!absent(strictDir)) {
+      const leg = await loadTrkLeg(strictDir);
+      problems = [];
+      for (const which of Object.values(TRK_SABOTAGES))
+        for (const p of judgeTrk(leg, which, "", strict))
+          problems.push(`${which}: ${p}`);
+    }
+    checks.push(
+      check(
+        "g8l-trk-inject-strict",
+        "HYG2: on the project with debug/gdscript/warnings/exclude_addons=false and untyped_declaration plus the unsafe_* family as errors (the observer logs the effective values), the project's own gsw_input addon constructs, the embedded injector loads beside it, and every g8l-trk-inject criterion holds (on the release template, which compiles no warnings: g8l-trk-inject-strict-compile judges the compile)",
+        problems,
+        "held on g8l/inject/addon-strict: warnings-as-errors for addons as well",
+      ),
+    );
+  }
+  {
+    // The release template has no GDScript warnings: judge compilation on the editor engine.
+    const dir = join(root, "strict-compile");
+    const probe = await readJson<StrictProbe>(join(dir, "probe.json"));
+    const log = existsSync(join(dir, "stdout.log"))
+      ? readFileSync(join(dir, "stdout.log"), "utf8")
+      : "";
+    const s = skipped(dir);
+    checks.push(
+      check(
+        "g8l-trk-inject-strict-compile",
+        "HYG2: on a debug-enabled 4.5.1 engine (GDScript warnings exist) with exclude_addons=false and untyped_declaration plus the unsafe_* family as errors, every script of the project's gsw_input addon compiles, and the capture's embedded injector (the generated script, a dynamic script protected only by its @warning_ignore_start head) compiles, constructs and has setup(), also with a deliberate warning (an untyped member) appended, which only that head excuses",
+        s ? null : judgeStrictProbe(probe, log, false),
+        "held on g8l/inject/strict-compile (editor engine)",
+      ),
+    );
+  }
+  {
+    const dir = join(root, "sabotage-warnings");
+    const s = skipped(dir);
+    let problems: string[] | null = null;
+    let caught = "";
+    if (!s) {
+      const probe = await readJson<StrictProbe>(join(dir, "probe.json"));
+      const log = existsSync(join(dir, "stdout.log"))
+        ? readFileSync(join(dir, "stdout.log"), "utf8")
+        : "";
+      // The sabotaged leg must fail the honest criterion (not blind) and fail for the sabotaged
+      // reason (judgeStrictProbe(strip=true) holds when the compile error is the warning).
+      const honest = judgeStrictProbe(probe, log, false);
+      caught = honest.find((p) => !p.includes("was modified")) ?? "";
+      problems = judgeStrictProbe(probe, log, true);
+      if (honest.length === 0)
+        problems.push(
+          "g8l-trk-inject-strict-compile passed on the warnings sabotage (the check is blind)",
+        );
+    }
+    checks.push(
+      check(
+        "g8l-trk-inject-sabotage-warnings",
+        "HYG2 sabotage: g8l-trk-inject-strict-compile fails when RS_PROBE_STRIP_WARNING_HEAD=1 removes the embedded script's @warning_ignore_start head: the script with the deliberate warning no longer compiles (`Warning treated as error` in the engine log)",
+        problems,
+        `g8l-trk-inject-strict-compile failed as it must: ${caught}`,
       ),
     );
   }

@@ -122,7 +122,8 @@ func verify(root: Viewport) -> void:
 	var pending: Array = _verify
 	_verify = []
 	var ref: WeakRef = pending[2]
-	var target: Control = (ref.get_ref() as Control) if ref != null else null
+	var live: Object = ref.get_ref() if ref != null else null
+	var target: Control = live as Control
 	if target == null or root == null:
 		return
 	var hovered: Control = root.gui_get_hovered_control()
@@ -143,7 +144,8 @@ static func _bound(binding: Dictionary, position: Vector2) -> Dictionary:
 	var node: Node = null
 	var ref: WeakRef = binding["node"]
 	if ref != null:
-		node = ref.get_ref() as Node
+		var live: Object = ref.get_ref()
+		node = live as Node
 	var item: CanvasItem = node as CanvasItem
 	if item != null and item.is_inside_tree():
 		local = item.get_screen_transform().affine_inverse() * placed
@@ -169,7 +171,8 @@ func _resolve(handles: Dictionary, resolved: Dictionary, handle: int, position: 
 	var stale: bool = cached.is_empty()
 	for item: Variant in cached:
 		var ref: WeakRef = item
-		var node: Node = ref.get_ref() as Node
+		var live: Object = ref.get_ref()
+		var node: Node = live as Node
 		if node == null or not node.is_inside_tree():
 			stale = true
 			break

@@ -643,18 +643,24 @@ func _unref_key(prefix: String, code: int) -> int:
 
 
 func _press_key(record: Dictionary) -> void:
-	var physical: int = _ref_key("p", record.get("physical_keycode", 0))
-	var keycode: int = _ref_key("k", record.get("keycode", 0))
-	var label: int = _ref_key("l", record.get("key_label", 0))
+	var physical_code: int = record.get("physical_keycode", 0)
+	var keycode_code: int = record.get("keycode", 0)
+	var label_code: int = record.get("key_label", 0)
+	var physical: int = _ref_key("p", physical_code)
+	var keycode: int = _ref_key("k", keycode_code)
+	var label: int = _ref_key("l", label_code)
 	if physical != 0 or keycode != 0 or label != 0:
 		_emit_key(record, physical, keycode, label, true, false)
 
 
 ## Releases replay the press record (modifiers, location, unicode included) with pressed: false.
 func _release_key(held: Dictionary) -> void:
-	var physical: int = _unref_key("p", held.get("physical_keycode", 0))
-	var keycode: int = _unref_key("k", held.get("keycode", 0))
-	var label: int = _unref_key("l", held.get("key_label", 0))
+	var physical_code: int = held.get("physical_keycode", 0)
+	var keycode_code: int = held.get("keycode", 0)
+	var label_code: int = held.get("key_label", 0)
+	var physical: int = _unref_key("p", physical_code)
+	var keycode: int = _unref_key("k", keycode_code)
+	var label: int = _unref_key("l", label_code)
 	if physical != 0 or keycode != 0 or label != 0:
 		_emit_key(held, physical, keycode, label, false, false)
 
@@ -729,7 +735,8 @@ func _emit_action(action: String, pressed: bool, strength: float) -> void:
 # --- joypads -----------------------------------------------------------------------------------
 
 func _joypad_button(source: _Source, record: Dictionary) -> void:
-	var device: int = _devices.acquire(source.id, record.get("device", 0))
+	var pad_slot: int = record.get("device", 0)
+	var device: int = _devices.acquire(source.id, pad_slot)
 	if device < 0:
 		_count("device-refused")
 		return
@@ -779,7 +786,8 @@ func _emit_button(key: int, pressed: bool) -> void:
 
 
 func _joypad_motion(source: _Source, record: Dictionary) -> void:
-	var device: int = _devices.acquire(source.id, record.get("device", 0))
+	var pad_slot: int = record.get("device", 0)
+	var device: int = _devices.acquire(source.id, pad_slot)
 	if device < 0:
 		_count("device-refused")
 		return

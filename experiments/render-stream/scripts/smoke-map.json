@@ -419,6 +419,7 @@
         "experiments/render-stream/capture/cmake/**",
         "experiments/render-stream/fixtures/track-inject/**",
         "experiments/render-stream/fixtures/track-inject-addon/**",
+        "experiments/render-stream/fixtures/track-inject-addon-strict/**",
         "packages/input/godot/addons/gsw_input/**",
         "experiments/render-stream/scripts/lib/track-input-client.ts",
         "experiments/render-stream/scripts/lib/gate8-track-checks.ts",

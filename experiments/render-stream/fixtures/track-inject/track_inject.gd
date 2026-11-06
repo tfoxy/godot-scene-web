@@ -65,6 +65,10 @@ func _ready() -> void:
 		"mode": "builtin",
 		"project_addon": shipped,
 		"project_injector": project_injector,
+		# HYG2: the effective GDScript warning settings, so a check can require the strict ones.
+		"exclude_addons": ProjectSettings.get_setting("debug/gdscript/warnings/exclude_addons", true),
+		"untyped_declaration_level": ProjectSettings.get_setting("debug/gdscript/warnings/untyped_declaration", 0),
+		"unsafe_call_argument_level": ProjectSettings.get_setting("debug/gdscript/warnings/unsafe_call_argument", 0),
 	})
 
 
@@ -73,7 +77,8 @@ func _ready() -> void:
 func _found(node: Node) -> void:
 	_node = node
 	_seen = true
-	var constants: Dictionary = (node.get_script() as Script).get_script_constant_map()
+	var script: Script = node.get_script()
+	var constants: Dictionary = script.get_script_constant_map()
 	var injector: Object = node.get("injector")
 	_write({
 		"ev": "builtin",
