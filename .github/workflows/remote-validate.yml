@@ -393,6 +393,24 @@ jobs:
                 -o -name stdout.log -o -name stderr.log -o -name steps.jsonl -o -name live.json -o -name 'recording*.rs9' -o -name result.json \) \
                 -size -300k -print 2>/dev/null | head -600 |
                 timeout 120 cpio -pdm --quiet "$ev/legs" 2>/dev/null )
+            # WRP: a web repeat (<gate>/web-repeat/<leg>) or wait probe (<gate>/web-probe/<group>/
+            # <probe>/<rest>) is judged on its shots against its first run's (<gate>/web/<leg>), so
+            # both keep their shots: lib/gate7-web-flakes.ts repeatDiff then reads them from --collect.
+            ( cd "$run/run" 2>/dev/null &&
+              timeout 120 find . -type d -name shots \( -path '*/web-repeat/*' -o -path '*/web-probe/*' \) \
+                -print 2>/dev/null | head -60 |
+                while read -r d; do
+                  echo "$d"
+                  case "$d" in
+                  */web-repeat/*) echo "${d%%/web-repeat/*}/web/${d#*/web-repeat/}" ;;
+                  */web-probe/*)
+                    p="${d#*/web-probe/}"; rest="${p#*/}"
+                    echo "${d%%/web-probe/*}/web/${p%%/*}/${rest#*/}" ;;
+                  esac
+                done | sort -u | while read -r d; do
+                  [ -d "$d" ] && find "$d" -maxdepth 1 -type f -name '*.png' -size -300k -print
+                done | head -600 |
+                timeout 120 cpio -pdm --quiet "$ev/legs" 2>/dev/null )
           done
           true
 

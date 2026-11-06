@@ -12,6 +12,10 @@
 //  3. buildMirrorView: replaced legs link to their targets (nested ones too), every other entry
 //     to the source, result.json is dropped and legs.json names only the view's groups.
 //  4. dropMemoryCacheOccupancy (W11e): a /11 applied.json loses only its memory-cache occupancy.
+//  5. WRP's wait probe (waitProbeChecks, midStreamFetchWait, waitProbeIds): honest probes pass;
+//     a shot that moves under the longer wait, a delay that did not lengthen the wait, a
+//     draw-during-wait sabotage that changes no shot, and a missing applied.json fail; a run the
+//     smoke tier skipped is skipped-by-tier, and no probed leg makes no rows.
 
 import {
   mkdirSync,
@@ -23,6 +27,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
 import type { Gate7Check } from "../lib/gate7-adapters";
 import {
   type RepeatDiff,
@@ -36,6 +41,9 @@ import {
   discoverFileReceiverLegs,
   dropMemoryCacheOccupancy,
   maskApproximate,
+  midStreamFetchWait,
+  waitProbeChecks,
+  waitProbeIds,
 } from "../lib/gate7b-adapters";
 
 let failures = 0;
@@ -569,6 +577,153 @@ try {
     "repeatDiff: identical frames are no difference",
     repeatDiff("g8mm/receiver", "seq-4.png", a, img(), [[0, 0, 1, 1]]) === null,
   );
+}
+
+// 5. WRP's wait probe.
+{
+  const root = mkdtempSync(join(tmpdir(), "self-test-gate7b-wrp-"));
+  // A leg dir: applied.json (status, transactions with process frames, seq 4 fetching after a
+  // `wait`-frame gap) and two 2x2 shots of colour `c`.
+  const leg = async (
+    dir: string,
+    wait: number,
+    c: [number, number, number],
+    status = "ok",
+  ) => {
+    mkdirSync(join(dir, "shots"), { recursive: true });
+    const txs = [
+      { seq: 1, process_frame: 7, resources: { fetched: 14 } },
+      { seq: 2, process_frame: 8, resources: { fetched: 0 } },
+      { seq: 3, process_frame: 9, resources: { fetched: 0 } },
+      { seq: 4, process_frame: 9 + wait, resources: { fetched: 1 } },
+      { seq: 5, process_frame: 10 + wait, resources: { fetched: 0 } },
+    ];
+    writeFileSync(
+      join(dir, "applied.json"),
+      JSON.stringify({ status, transactions: txs }),
+    );
+    for (const f of ["seq-15.png", "seq-16.png"]) {
+      const px = new Uint8Array(16);
+      for (let i = 0; i < 4; i++) px.set([...c, 255], i * 4);
+      await sharp(Buffer.from(px), {
+        raw: { width: 2, height: 2, channels: 4 },
+      })
+        .png()
+        .toFile(join(dir, "shots", f));
+    }
+  };
+  const red: [number, number, number] = [200, 0, 0];
+  const blue: [number, number, number] = [0, 0, 200];
+  let n = 0;
+  const run = async (
+    web: [number, [number, number, number]],
+    wait: [number, [number, number, number]] | "skip" | "missing",
+    sab: [number, [number, number, number]],
+  ) => {
+    const base = join(root, `case-${n++}`);
+    const l = {
+      leg: "g8pt/deferred-cmbt/receiver",
+      webDir: join(base, "web", "g8pt/deferred-cmbt/receiver"),
+      waitDir: join(base, "web-probe", "g8pt/wait/deferred-cmbt/receiver"),
+      sabotageDir: join(
+        base,
+        "web-probe",
+        "g8pt/sabotage-draw-during-wait/deferred-cmbt/receiver",
+      ),
+    };
+    await leg(l.webDir, ...web);
+    if (wait === "skip") {
+      mkdirSync(l.waitDir, { recursive: true });
+      writeFileSync(
+        join(l.waitDir, "skipped-by-tier.txt"),
+        "skipped-by-tier\n",
+      );
+    } else if (wait !== "missing") await leg(l.waitDir, ...wait);
+    await leg(l.sabotageDir, ...sab);
+    const rows = await waitProbeChecks([l]);
+    const by = (id: string) => rows.find((r) => r.id === id);
+    return {
+      invisible: by("web-wait-invisible@web"),
+      caught: by("web-wait-invisible-catches-draw-during-wait@web"),
+    };
+  };
+  const honest = await run([2, red], [4, red], [4, blue]);
+  expect(
+    "waitProbeChecks: equal shots under a longer wait, and a sabotage that moves a shot, pass",
+    honest.invisible?.passed === true && honest.caught?.passed === true,
+    JSON.stringify(honest),
+  );
+  const moved = await run([2, red], [4, blue], [4, blue]);
+  expect(
+    "waitProbeChecks: a shot that moves under the longer wait fails web-wait-invisible",
+    moved.invisible?.passed === false &&
+      /px differ with the GETs delayed/.test(moved.invisible.detail) &&
+      moved.caught?.passed === true,
+    JSON.stringify(moved),
+  );
+  const vacuous = await run([2, red], [2, red], [2, blue]);
+  expect(
+    "waitProbeChecks: a delay that does not lengthen the wait fails both rows (the probe proved nothing)",
+    vacuous.invisible?.passed === false &&
+      /did not lengthen the wait/.test(vacuous.invisible.detail) &&
+      vacuous.caught?.passed === false,
+    JSON.stringify(vacuous),
+  );
+  const uncaught = await run([2, red], [4, red], [4, red]);
+  expect(
+    "waitProbeChecks: a draw-during-wait sabotage that changes no shot fails the catches row",
+    uncaught.invisible?.passed === true &&
+      uncaught.caught?.passed === false &&
+      /every shot equals/.test(uncaught.caught.detail),
+    JSON.stringify(uncaught),
+  );
+  const missing = await run([2, red], "missing", [4, blue]);
+  expect(
+    "waitProbeChecks: a probe with no applied.json fails",
+    missing.invisible?.passed === false &&
+      /no ok applied.json/.test(missing.invisible.detail),
+    JSON.stringify(missing),
+  );
+  const skipped = await run([2, red], "skip", [4, blue]);
+  expect(
+    "waitProbeChecks: a probe the smoke tier skipped leaves both rows skipped-by-tier",
+    skipped.invisible?.passed === false &&
+      skipped.caught?.passed === false &&
+      /^skipped-by-tier: /.test(skipped.invisible.detail) &&
+      /^skipped-by-tier: /.test(skipped.caught.detail),
+    JSON.stringify(skipped),
+  );
+  expect(
+    "waitProbeChecks: no probed leg, no rows",
+    (await waitProbeChecks([])).length === 0,
+  );
+  expect(
+    "midStreamFetchWait: the longest gap before a fetching transaction after the first; none is null",
+    midStreamFetchWait({
+      transactions: [
+        { process_frame: 7, resources: { fetched: 3 } },
+        { process_frame: 8, resources: { fetched: 0 } },
+        { process_frame: 11, resources: { fetched: 1 } },
+      ],
+    }) === 3 &&
+      midStreamFetchWait({
+        transactions: [
+          { process_frame: 7, resources: { fetched: 3 } },
+          { process_frame: 9, resources: { fetched: 0 } },
+        ],
+      }) === null,
+  );
+  expect(
+    "waitProbeIds: the probes keep the leg's gate 8 group prefix",
+    JSON.stringify(
+      waitProbeIds("g8pt/deferred-cmbt/receiver").map((p) => p.leg),
+    ) ===
+      JSON.stringify([
+        "g8pt/wait/deferred-cmbt/receiver",
+        "g8pt/sabotage-draw-during-wait/deferred-cmbt/receiver",
+      ]),
+  );
+  rmSync(root, { recursive: true, force: true });
 }
 
 console.log(

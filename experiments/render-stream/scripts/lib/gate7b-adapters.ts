@@ -432,6 +432,217 @@ export function webLegSpecs(
   return { specs, discovered };
 }
 
+/** WRP (results/p3/wrp.md): the legs whose web replay pins the lazy store's wait. g8pt's
+ * deferred-cmbt fetches a payload mid-stream (J_LATE_SHADER's shader, seq 4) while emitters made
+ * earlier simulate on the receiver's own clock, so any frame drawn during that wait moves every
+ * later shot. */
+export const WAIT_PROBE_LEGS: readonly string[] = [
+  "g8pt/deferred-cmbt/receiver",
+];
+/** The probes' RS_RECEIVER_FETCH_DELAY_MS: before each store GET, about three frames at 60 fps. */
+export const WAIT_PROBE_DELAY_MS = "50";
+
+/** WRP: two more replays of each WAIT_PROBE_LEGS leg the source has, under `<probeRoot>`
+ * (= `<out>/<gate>/web-probe`), kept out of the views and the repeat: `wait` delays every store
+ * GET (the mid-stream fetch waits frames longer), and `sabotage-draw-during-wait` does the same on
+ * the pre-WRP receiver, which keeps drawing while it waits. Each id keeps its gate 8 group's
+ * prefix (`g8pt/wait/...`), so it runs in the same leg shard as the leg it is judged against. */
+export function webProbeSpecs(
+  discovered: readonly DiscoveredLeg[],
+  probeRoot: string,
+): WebLegSpec[] {
+  const out: WebLegSpec[] = [];
+  for (const d of discovered) {
+    if (d.excluded !== null || !WAIT_PROBE_LEGS.includes(d.leg)) continue;
+    for (const probe of waitProbeIds(d.leg))
+      out.push({
+        leg: probe.leg,
+        nativeDir: d.nativeDir,
+        webDir: join(probeRoot, probe.leg),
+        extraEnv: {
+          RS_RECEIVER_FETCH_DELAY_MS: WAIT_PROBE_DELAY_MS,
+          ...(probe.sabotage ? { RS_RECEIVER_SABOTAGE: probe.sabotage } : {}),
+        },
+      });
+  }
+  return out;
+}
+
+/** WRP: a probed leg's two probe ids (`g8pt/deferred-cmbt/receiver` ->
+ * `g8pt/wait/deferred-cmbt/receiver` and `g8pt/sabotage-draw-during-wait/deferred-cmbt/receiver`). */
+export function waitProbeIds(
+  leg: string,
+): { leg: string; sabotage: string | null }[] {
+  const at = leg.indexOf("/");
+  const group = leg.slice(0, at);
+  const rest = leg.slice(at + 1);
+  return [
+    { leg: `${group}/wait/${rest}`, sabotage: null },
+    {
+      leg: `${group}/sabotage-draw-during-wait/${rest}`,
+      sabotage: "draw-during-wait",
+    },
+  ];
+}
+
+/** WRP: the longest wait, in process frames, of a transaction after the first that fetched
+ * something (its process_frame less the previous transaction's), or null when none did. */
+export function midStreamFetchWait(applied: {
+  transactions?: {
+    process_frame?: number | null;
+    resources?: { fetched?: number } | null;
+  }[];
+}): number | null {
+  const txs = applied.transactions ?? [];
+  let most: number | null = null;
+  for (let i = 1; i < txs.length; i++) {
+    const a = txs[i - 1].process_frame;
+    const b = txs[i].process_frame;
+    if ((txs[i].resources?.fetched ?? 0) <= 0) continue;
+    if (typeof a !== "number" || typeof b !== "number") continue;
+    most = Math.max(most ?? 0, b - a);
+  }
+  return most;
+}
+
+const WAIT_INVISIBLE_ID = "web-wait-invisible@web";
+const WAIT_CATCHES_ID = "web-wait-invisible-catches-draw-during-wait@web";
+
+/** WRP's two rows over each probed leg (webProbeSpecs). web-wait-invisible@web: with every store
+ * GET delayed, the mid-stream fetch waits longer than in the leg's own web run, and every shot
+ * still equals that run's byte for byte (the replay draws no frame while it waits).
+ * web-wait-invisible-catches-draw-during-wait@web: on the pre-WRP receiver, under the same longer
+ * wait, at least one shot differs. A run the smoke tier skipped leaves both failing with a
+ * `skipped-by-tier` detail (the tier verdict excuses it); no probed leg, no rows. */
+export async function waitProbeChecks(
+  legs: readonly {
+    leg: string;
+    webDir: string;
+    waitDir: string;
+    sabotageDir: string;
+  }[],
+): Promise<Gate7Check[]> {
+  if (legs.length === 0) return [];
+  const invisible: string[] = [];
+  const caught: string[] = [];
+  let skipped: string | null = null;
+  let shots = 0;
+  type Applied = Parameters<typeof midStreamFetchWait>[0] & {
+    status?: string;
+  };
+  for (const l of legs) {
+    for (const d of [l.webDir, l.waitDir, l.sabotageDir])
+      if (existsSync(join(d, "skipped-by-tier.txt")))
+        skipped ??= `skipped-by-tier: ${relative(dirname(l.webDir), d) || l.leg} was not run by the smoke tier`;
+    if (skipped) continue;
+    const base = await readJson<Applied>(join(l.webDir, "applied.json"));
+    const wait = await readJson<Applied>(join(l.waitDir, "applied.json"));
+    const sab = await readJson<Applied>(join(l.sabotageDir, "applied.json"));
+    if (base?.status !== "ok") {
+      const why = `${l.leg}: its web run has no ok applied.json`;
+      invisible.push(why);
+      caught.push(why);
+      continue;
+    }
+    const baseWait = midStreamFetchWait(base);
+    if (baseWait === null) {
+      const why = `${l.leg}: no transaction after the first fetched anything, so there is no wait to probe`;
+      invisible.push(why);
+      caught.push(why);
+      continue;
+    }
+    const probe = async (
+      applied: Applied | undefined,
+      dir: string,
+      out: string[],
+      name: string,
+    ): Promise<number | null> => {
+      if (applied?.status !== "ok") {
+        out.push(`${l.leg} (${name}): no ok applied.json`);
+        return null;
+      }
+      const w = midStreamFetchWait(applied);
+      if (w === null || w <= baseWait) {
+        out.push(
+          `${l.leg} (${name}): the delayed GETs did not lengthen the wait (${w ?? "none"} frames, the web run's ${baseWait})`,
+        );
+        return null;
+      }
+      let differing = 0;
+      for (const f of filesUnder(join(l.webDir, "shots"))) {
+        if (name === "wait") shots++;
+        const a = await decodePngRgba(join(l.webDir, "shots", f));
+        const b = await decodePngRgba(join(dir, "shots", f));
+        if (!a || !b || a.width !== b.width || a.height !== b.height) {
+          differing++;
+          if (name === "wait")
+            out.push(
+              `${l.leg}: shots/${f} missing or unreadable with the GETs delayed`,
+            );
+          continue;
+        }
+        const px = diffRgba(
+          a.data,
+          b.data,
+          a.width,
+          a.height,
+        ).mismatched_pixels;
+        if (px > 0) {
+          differing++;
+          if (name === "wait")
+            out.push(
+              `${l.leg}: shots/${f}: ${px} px differ with the GETs delayed (wait ${w} frames, the web run's ${baseWait})`,
+            );
+        }
+      }
+      return differing;
+    };
+    await probe(wait, l.waitDir, invisible, "wait");
+    const differing = await probe(
+      sab,
+      l.sabotageDir,
+      caught,
+      "draw-during-wait",
+    );
+    if (differing === 0)
+      caught.push(
+        `${l.leg}: every shot equals the leg's own web run on the draw-during-wait receiver, so the probe would not see a frame drawn while waiting`,
+      );
+  }
+  const crit = `WRP (results/p3/wrp.md): ${WAIT_PROBE_LEGS.join(", ")} replayed with every store GET ${WAIT_PROBE_DELAY_MS} ms late (RS_RECEIVER_FETCH_DELAY_MS) waits longer for its mid-stream fetch`;
+  if (skipped)
+    return [
+      {
+        id: WAIT_INVISIBLE_ID,
+        criterion: crit,
+        passed: false,
+        gating: true,
+        detail: skipped,
+      },
+      {
+        id: WAIT_CATCHES_ID,
+        criterion: crit,
+        passed: false,
+        gating: true,
+        detail: skipped,
+      },
+    ];
+  return [
+    mk(
+      WAIT_INVISIBLE_ID,
+      `${crit}, and every shot still equals its web run byte for byte: no frame is drawn while a transaction waits`,
+      invisible,
+      `${legs.length} leg(s), ${shots} shots identical under the longer wait`,
+    ),
+    mk(
+      WAIT_CATCHES_ID,
+      `${crit}, and on the draw-during-wait receiver (frames keep drawing while it waits) a shot differs`,
+      caught,
+      "the draw-during-wait receiver changes a shot under the longer wait",
+    ),
+  ];
+}
+
 /** Builds `viewDir` (header, 2): the source with each `replaced` leg linked to its target. */
 export async function buildMirrorView(
   sourceDir: string,
@@ -1363,6 +1574,22 @@ export async function checkGateWeb(
       ),
     );
   }
+  // WRP: the wait probes of the probed legs this source has (webProbeSpecs).
+  checks.push(
+    ...(await waitProbeChecks(
+      specs
+        .filter((s) => WAIT_PROBE_LEGS.includes(s.leg))
+        .map((s) => {
+          const [wait, sabotage] = waitProbeIds(s.leg);
+          return {
+            leg: s.leg,
+            webDir: s.webDir,
+            waitDir: join(gateOut, "web-probe", wait.leg),
+            sabotageDir: join(gateOut, "web-probe", sabotage.leg),
+          };
+        }),
+    )),
+  );
   const excluded = discovered.filter((d) => d.excluded !== null);
   checks.push({
     id: "legs-not-replayed@web",

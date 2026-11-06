@@ -103,7 +103,9 @@ extends Node
 ##                                shader varying made `flat` before shader_set_code) or (CG1, /10)
 ##                                drop-canvas-group (canvas_item_set_canvas_group_mode is never
 ##                                called) or full-backbuffer-copy (every /10 copy_to_backbuffer is
-##                                issued with Rect2(), the whole target); all twenty-one exist only
+##                                issued with Rect2(), the whole target) or (WRP, web lazy store)
+##                                draw-during-wait (frames keep drawing while a transaction waits
+##                                on its store GETs, the pre-WRP receiver); every one exists only
 ##                                to fail checks or compare
 ##
 ## Resource budgets (G6s, gate6-design.md Q5 "Resource budgets"; both modes; rs_resource_cache.gd):
@@ -343,7 +345,7 @@ const _CODING_CODES_13: Array[String] = ["predict-check", "zr-length", "zr-nonca
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
 ## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d,
 ## gate6-design.md Q6h, G6a).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings", "shader-time-frozen", "drop-canvas-group", "full-backbuffer-copy", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2", "stale-dynamic-rx", "no-prune", "evict-carried", "ignore-released", "undrawn-multimesh", "ignore-identity-transform", "undrawn-particles", "ignore-particle-emits", "drop-particles-restart", "gl-particle-colors", "no-subparticle-stub", "no-predict-reset"]
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings", "shader-time-frozen", "drop-canvas-group", "full-backbuffer-copy", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2", "stale-dynamic-rx", "no-prune", "evict-carried", "ignore-released", "undrawn-multimesh", "ignore-identity-transform", "undrawn-particles", "ignore-particle-emits", "drop-particles-restart", "gl-particle-colors", "no-subparticle-stub", "no-predict-reset", "draw-during-wait"]
 ## The six per-transaction `resources` counters render-stream-receiver-applied/5 adds (G55d).
 const MATERIAL_COUNTERS: Array[String] = ["shaders_created", "shader_code_sets", "shader_payload_fetches", "materials_created", "param_sets", "instance_param_sets"]
 ## The three per-transaction `resources` counters render-stream-receiver-applied/6 adds (G6b).
@@ -2511,6 +2513,15 @@ func _begin_store_fetch(meta: Dictionary, record: Dictionary, seq: int, resource
 		_apply_file_transaction(meta, record, seq, resources)
 		return
 	_store_pending = {"meta": meta, "record": record, "seq": seq, "resources": resources, "hashes": wanted, "files": files, "kinds": kinds}
+	# WRP (results/p3/wrp.md): no frame is drawn while the transaction waits, as a store read
+	# natively takes no frame. Emitters and shader TIME step once per drawn frame (GLES3 even
+	# steps a 0 delta as 0.001 s, so Engine.time_scale cannot freeze them), so a wait of a
+	# wall-clock-dependent number of frames would shift every later shot's particles. Main reads
+	# render_loop_enabled after _process, so this frame's draw is skipped too and one draw
+	# separates two transactions, whatever the wait's length. The draw-during-wait sabotage keeps
+	# drawing (the pre-WRP receiver).
+	if _sabotage != "draw-during-wait":
+		RenderingServer.render_loop_enabled = false
 	_io.start_store_fetch(files, _fetch_timeout_ms, _fetch_delay_ms)
 	_poll_store_fetch()
 
@@ -2525,6 +2536,7 @@ func _poll_store_fetch() -> void:
 		return
 	var pending: Dictionary = _store_pending
 	_store_pending = {}
+	RenderingServer.render_loop_enabled = true
 	var seq: int = pending["seq"]
 	var resources: Dictionary = pending["resources"]
 	var wanted: Array[String] = pending["hashes"]

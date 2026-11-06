@@ -74,6 +74,7 @@ import {
   discoverFileReceiverLegs,
   gateDefForGroup,
   webLegSpecs,
+  webProbeSpecs,
 } from "./lib/gate7b-adapters";
 import { buildGswBundle, DEFAULT_RS_BUILD } from "./lib/gsw-bundle";
 import { sourceKey } from "./lib/source-key";
@@ -206,6 +207,26 @@ async function main(): Promise<void> {
             buildSha256: build.pck.sha256,
           },
           again,
+        );
+    }
+    // WRP (lib/gate7b-adapters.ts webProbeSpecs): the wait probes of the probed legs replayed
+    // above, after the repeat (which never sees them), into <out>/<gate>/web-probe/<probe>.
+    if (def) {
+      const replayed = new Set(specs.map((s) => s.leg));
+      const probes = webProbeSpecs(
+        discoverFileReceiverLegs(source).filter((d) => replayed.has(d.leg)),
+        join(out, gate, "web-probe"),
+      );
+      if (probes.length > 0)
+        await runWebLegs(
+          {
+            out,
+            gate,
+            sourceDir: source,
+            bundleDir: bundle,
+            buildSha256: build.pck.sha256,
+          },
+          probes,
         );
     }
     return;
