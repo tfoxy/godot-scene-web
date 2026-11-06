@@ -1,0 +1,123 @@
+{
+  "description": "Russian JCUKEN: Cyrillic labels keep the Latin physical key as keycode; key_label and unicode carry the Cyrillic letter",
+  "vectors": [
+    {
+      "name": "KeyF prints а",
+      "dom": { "type": "keydown", "code": "KeyF", "key": "а" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 70,
+        "keycode": 70,
+        "key_label": 1040,
+        "unicode": 1072,
+        "pressed": true,
+        "code": "KeyF"
+      }
+    },
+    {
+      "name": "KeyF with a Cyrillic layout map",
+      "dom": { "type": "keydown", "code": "KeyF", "key": "а" },
+      "layout": { "KeyF": "а" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 70,
+        "keycode": 70,
+        "key_label": 1040,
+        "unicode": 1072,
+        "pressed": true,
+        "code": "KeyF"
+      }
+    },
+    {
+      "name": "KeyF with a layout map reporting the Latin label",
+      "dom": { "type": "keydown", "code": "KeyF", "key": "а" },
+      "layout": { "KeyF": "a" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 70,
+        "keycode": 65,
+        "key_label": 1040,
+        "unicode": 1072,
+        "pressed": true,
+        "code": "KeyF"
+      }
+    },
+    {
+      "name": "Shift+KeyF prints А",
+      "dom": {
+        "type": "keydown",
+        "code": "KeyF",
+        "key": "А",
+        "shiftKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 70,
+        "keycode": 70,
+        "key_label": 1040,
+        "unicode": 1040,
+        "pressed": true,
+        "shift_pressed": true,
+        "code": "KeyF"
+      }
+    },
+    {
+      "name": "KeyQ prints й",
+      "dom": { "type": "keydown", "code": "KeyQ", "key": "й" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 81,
+        "keycode": 81,
+        "key_label": 1049,
+        "unicode": 1081,
+        "pressed": true,
+        "code": "KeyQ"
+      }
+    },
+    {
+      "name": "Period prints ю",
+      "dom": { "type": "keydown", "code": "Period", "key": "ю" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 46,
+        "keycode": 46,
+        "key_label": 1070,
+        "unicode": 1102,
+        "pressed": true,
+        "code": "Period"
+      }
+    },
+    {
+      "name": "Digit1 prints 1",
+      "dom": { "type": "keydown", "code": "Digit1", "key": "1" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 49,
+        "keycode": 49,
+        "key_label": 49,
+        "unicode": 49,
+        "pressed": true,
+        "code": "Digit1"
+      }
+    },
+    {
+      "name": "Shift+Digit2 prints \"",
+      "dom": {
+        "type": "keydown",
+        "code": "Digit2",
+        "key": "\"",
+        "shiftKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 50,
+        "keycode": 50,
+        "key_label": 34,
+        "unicode": 34,
+        "pressed": true,
+        "shift_pressed": true,
+        "code": "Digit2"
+      }
+    }
+  ]
+}

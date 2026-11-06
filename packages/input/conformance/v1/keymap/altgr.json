@@ -1,0 +1,142 @@
+{
+  "description": "AltGr (German layout): Windows reports a phantom ControlLeft and Ctrl+Alt flags; keycode stays the unshifted key",
+  "vectors": [
+    {
+      "name": "Windows phantom ControlLeft",
+      "dom": {
+        "type": "keydown",
+        "code": "ControlLeft",
+        "key": "Control",
+        "ctrlKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194326,
+        "keycode": 4194326,
+        "key_label": 4194326,
+        "location": 1,
+        "pressed": true,
+        "code": "ControlLeft"
+      }
+    },
+    {
+      "name": "Windows AltRight as AltGraph",
+      "dom": {
+        "type": "keydown",
+        "code": "AltRight",
+        "key": "AltGraph",
+        "ctrlKey": true,
+        "altKey": true,
+        "altGraph": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194328,
+        "keycode": 4194328,
+        "key_label": 4194328,
+        "location": 2,
+        "pressed": true,
+        "ctrl_pressed": true,
+        "code": "AltRight"
+      }
+    },
+    {
+      "name": "Linux AltRight as AltGraph",
+      "dom": {
+        "type": "keydown",
+        "code": "AltRight",
+        "key": "AltGraph",
+        "altGraph": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194328,
+        "keycode": 4194328,
+        "key_label": 4194328,
+        "location": 2,
+        "pressed": true,
+        "code": "AltRight"
+      }
+    },
+    {
+      "name": "AltGr+KeyQ prints @",
+      "dom": {
+        "type": "keydown",
+        "code": "KeyQ",
+        "key": "@",
+        "ctrlKey": true,
+        "altKey": true,
+        "altGraph": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 81,
+        "keycode": 81,
+        "key_label": 64,
+        "unicode": 64,
+        "pressed": true,
+        "ctrl_pressed": true,
+        "alt_pressed": true,
+        "code": "KeyQ"
+      }
+    },
+    {
+      "name": "AltGr+Digit7 prints { with a layout map",
+      "dom": {
+        "type": "keydown",
+        "code": "Digit7",
+        "key": "{",
+        "ctrlKey": true,
+        "altKey": true,
+        "altGraph": true
+      },
+      "layout": { "Digit7": "7" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 55,
+        "keycode": 55,
+        "key_label": 123,
+        "unicode": 123,
+        "pressed": true,
+        "ctrl_pressed": true,
+        "alt_pressed": true,
+        "code": "Digit7"
+      }
+    },
+    {
+      "name": "AltGr+KeyE prints €",
+      "dom": {
+        "type": "keydown",
+        "code": "KeyE",
+        "key": "€",
+        "ctrlKey": true,
+        "altKey": true,
+        "altGraph": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 69,
+        "keycode": 69,
+        "key_label": 8364,
+        "unicode": 8364,
+        "pressed": true,
+        "ctrl_pressed": true,
+        "alt_pressed": true,
+        "code": "KeyE"
+      }
+    },
+    {
+      "name": "QWERTZ KeyY position prints z",
+      "dom": { "type": "keydown", "code": "KeyY", "key": "z" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 89,
+        "keycode": 90,
+        "key_label": 90,
+        "unicode": 122,
+        "pressed": true,
+        "code": "KeyY"
+      }
+    }
+  ]
+}

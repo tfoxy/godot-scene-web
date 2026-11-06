@@ -1,0 +1,170 @@
+{
+  "description": "Modifier keys: left/right location, and a modifier key never sets its own flag",
+  "vectors": [
+    {
+      "name": "ShiftLeft down",
+      "dom": {
+        "type": "keydown",
+        "code": "ShiftLeft",
+        "key": "Shift",
+        "shiftKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194325,
+        "keycode": 4194325,
+        "key_label": 4194325,
+        "location": 1,
+        "pressed": true,
+        "code": "ShiftLeft"
+      }
+    },
+    {
+      "name": "ShiftRight down",
+      "dom": {
+        "type": "keydown",
+        "code": "ShiftRight",
+        "key": "Shift",
+        "shiftKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194325,
+        "keycode": 4194325,
+        "key_label": 4194325,
+        "location": 2,
+        "pressed": true,
+        "code": "ShiftRight"
+      }
+    },
+    {
+      "name": "ShiftRight up",
+      "dom": { "type": "keyup", "code": "ShiftRight", "key": "Shift" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194325,
+        "keycode": 4194325,
+        "key_label": 4194325,
+        "location": 2,
+        "pressed": false,
+        "code": "ShiftRight"
+      }
+    },
+    {
+      "name": "ControlRight down",
+      "dom": {
+        "type": "keydown",
+        "code": "ControlRight",
+        "key": "Control",
+        "ctrlKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194326,
+        "keycode": 4194326,
+        "key_label": 4194326,
+        "location": 2,
+        "pressed": true,
+        "code": "ControlRight"
+      }
+    },
+    {
+      "name": "AltLeft down",
+      "dom": {
+        "type": "keydown",
+        "code": "AltLeft",
+        "key": "Alt",
+        "altKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194328,
+        "keycode": 4194328,
+        "key_label": 4194328,
+        "location": 1,
+        "pressed": true,
+        "code": "AltLeft"
+      }
+    },
+    {
+      "name": "MetaRight down",
+      "dom": {
+        "type": "keydown",
+        "code": "MetaRight",
+        "key": "Meta",
+        "metaKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194327,
+        "keycode": 4194327,
+        "key_label": 4194327,
+        "location": 2,
+        "pressed": true,
+        "code": "MetaRight"
+      }
+    },
+    {
+      "name": "legacy OSLeft with key OS",
+      "dom": {
+        "type": "keydown",
+        "code": "OSLeft",
+        "key": "OS",
+        "metaKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194327,
+        "keycode": 4194327,
+        "key_label": 4194327,
+        "location": 1,
+        "pressed": true,
+        "code": "OSLeft"
+      }
+    },
+    {
+      "name": "ShiftRight while Control is held",
+      "dom": {
+        "type": "keydown",
+        "code": "ShiftRight",
+        "key": "Shift",
+        "shiftKey": true,
+        "ctrlKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194325,
+        "keycode": 4194325,
+        "key_label": 4194325,
+        "location": 2,
+        "pressed": true,
+        "ctrl_pressed": true,
+        "code": "ShiftRight"
+      }
+    },
+    {
+      "name": "CapsLock",
+      "dom": { "type": "keydown", "code": "CapsLock", "key": "CapsLock" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194329,
+        "keycode": 4194329,
+        "key_label": 4194329,
+        "pressed": true,
+        "code": "CapsLock"
+      }
+    },
+    {
+      "name": "ContextMenu",
+      "dom": { "type": "keydown", "code": "ContextMenu", "key": "ContextMenu" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194370,
+        "keycode": 4194370,
+        "key_label": 4194370,
+        "pressed": true,
+        "code": "ContextMenu"
+      }
+    }
+  ]
+}

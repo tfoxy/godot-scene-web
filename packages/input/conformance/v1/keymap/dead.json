@@ -1,0 +1,72 @@
+{
+  "description": "Dead keys: physical key forwarded, keycode = physical_keycode (not Godot web's 'D'), unicode 0",
+  "vectors": [
+    {
+      "name": "US-International Quote dead acute",
+      "dom": { "type": "keydown", "code": "Quote", "key": "Dead" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 39,
+        "keycode": 39,
+        "key_label": 39,
+        "pressed": true,
+        "code": "Quote"
+      }
+    },
+    {
+      "name": "Shift+Quote dead diaeresis",
+      "dom": {
+        "type": "keydown",
+        "code": "Quote",
+        "key": "Dead",
+        "shiftKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 39,
+        "keycode": 39,
+        "key_label": 39,
+        "pressed": true,
+        "shift_pressed": true,
+        "code": "Quote"
+      }
+    },
+    {
+      "name": "AZERTY BracketLeft dead circumflex",
+      "dom": { "type": "keydown", "code": "BracketLeft", "key": "Dead" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 91,
+        "keycode": 91,
+        "key_label": 91,
+        "pressed": true,
+        "code": "BracketLeft"
+      }
+    },
+    {
+      "name": "dead key release",
+      "dom": { "type": "keyup", "code": "Quote", "key": "Dead" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 39,
+        "keycode": 39,
+        "key_label": 39,
+        "pressed": false,
+        "code": "Quote"
+      }
+    },
+    {
+      "name": "composed letter after a dead key",
+      "dom": { "type": "keydown", "code": "KeyE", "key": "é" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 69,
+        "keycode": 69,
+        "key_label": 201,
+        "unicode": 233,
+        "pressed": true,
+        "code": "KeyE"
+      }
+    }
+  ]
+}

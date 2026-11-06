@@ -1,0 +1,136 @@
+{
+  "description": "Shift+digit and shifted symbols: keycode stays the unshifted key, key_label is the printed one, and the release replays the press",
+  "vectors": [
+    {
+      "name": "Shift+Digit1 presses KEY_1, not '!'",
+      "dom": {
+        "type": "keydown",
+        "code": "Digit1",
+        "key": "!",
+        "shiftKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 49,
+        "keycode": 49,
+        "key_label": 33,
+        "unicode": 33,
+        "pressed": true,
+        "shift_pressed": true,
+        "code": "Digit1"
+      }
+    },
+    {
+      "name": "Shift+Digit1 with a layout map",
+      "dom": {
+        "type": "keydown",
+        "code": "Digit1",
+        "key": "!",
+        "shiftKey": true
+      },
+      "layout": { "Digit1": "1" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 49,
+        "keycode": 49,
+        "key_label": 33,
+        "unicode": 33,
+        "pressed": true,
+        "shift_pressed": true,
+        "code": "Digit1"
+      }
+    },
+    {
+      "name": "Shift released first: the Digit1 release replays the press",
+      "press": {
+        "type": "keydown",
+        "code": "Digit1",
+        "key": "!",
+        "shiftKey": true
+      },
+      "dom": { "type": "keyup", "code": "Digit1", "key": "1" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 49,
+        "keycode": 49,
+        "key_label": 33,
+        "unicode": 33,
+        "pressed": false,
+        "shift_pressed": true,
+        "code": "Digit1"
+      }
+    },
+    {
+      "name": "an unlatched Digit1 keyup maps as is",
+      "dom": { "type": "keyup", "code": "Digit1", "key": "1" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 49,
+        "keycode": 49,
+        "key_label": 49,
+        "unicode": 49,
+        "pressed": false,
+        "code": "Digit1"
+      }
+    },
+    {
+      "name": "Shift+Equal",
+      "dom": {
+        "type": "keydown",
+        "code": "Equal",
+        "key": "+",
+        "shiftKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 61,
+        "keycode": 61,
+        "key_label": 43,
+        "unicode": 43,
+        "pressed": true,
+        "shift_pressed": true,
+        "code": "Equal"
+      }
+    },
+    {
+      "name": "Shift+Slash",
+      "dom": {
+        "type": "keydown",
+        "code": "Slash",
+        "key": "?",
+        "shiftKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 47,
+        "keycode": 47,
+        "key_label": 63,
+        "unicode": 63,
+        "pressed": true,
+        "shift_pressed": true,
+        "code": "Slash"
+      }
+    },
+    {
+      "name": "Shift+Digit2 repeat replays nothing new: echo flag only",
+      "dom": {
+        "type": "keydown",
+        "code": "Digit2",
+        "key": "@",
+        "shiftKey": true,
+        "repeat": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 50,
+        "keycode": 50,
+        "key_label": 64,
+        "unicode": 64,
+        "pressed": true,
+        "echo": true,
+        "shift_pressed": true,
+        "code": "Digit2"
+      }
+    }
+  ]
+}

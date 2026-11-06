@@ -1,0 +1,111 @@
+{
+  "description": "Numpad: physical KP_* keys, keycode from the produced key (as Godot), location UNSPECIFIED",
+  "vectors": [
+    {
+      "name": "Numpad1 with NumLock on",
+      "dom": { "type": "keydown", "code": "Numpad1", "key": "1" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194439,
+        "keycode": 49,
+        "key_label": 49,
+        "unicode": 49,
+        "pressed": true,
+        "code": "Numpad1"
+      }
+    },
+    {
+      "name": "Numpad1 with NumLock off",
+      "dom": { "type": "keydown", "code": "Numpad1", "key": "End" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194439,
+        "keycode": 4194318,
+        "key_label": 4194318,
+        "pressed": true,
+        "code": "Numpad1"
+      }
+    },
+    {
+      "name": "NumpadEnter",
+      "dom": { "type": "keydown", "code": "NumpadEnter", "key": "Enter" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194310,
+        "keycode": 4194309,
+        "key_label": 4194309,
+        "pressed": true,
+        "code": "NumpadEnter"
+      }
+    },
+    {
+      "name": "NumpadAdd",
+      "dom": { "type": "keydown", "code": "NumpadAdd", "key": "+" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194437,
+        "keycode": 43,
+        "key_label": 43,
+        "unicode": 43,
+        "pressed": true,
+        "code": "NumpadAdd"
+      }
+    },
+    {
+      "name": "NumpadMultiply",
+      "dom": { "type": "keydown", "code": "NumpadMultiply", "key": "*" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194433,
+        "keycode": 42,
+        "key_label": 42,
+        "unicode": 42,
+        "pressed": true,
+        "code": "NumpadMultiply"
+      }
+    },
+    {
+      "name": "NumpadDecimal (US)",
+      "dom": { "type": "keydown", "code": "NumpadDecimal", "key": "." },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194436,
+        "keycode": 46,
+        "key_label": 46,
+        "unicode": 46,
+        "pressed": true,
+        "code": "NumpadDecimal"
+      }
+    },
+    {
+      "name": "NumpadDecimal (German comma)",
+      "dom": { "type": "keydown", "code": "NumpadDecimal", "key": "," },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194436,
+        "keycode": 44,
+        "key_label": 44,
+        "unicode": 44,
+        "pressed": true,
+        "code": "NumpadDecimal"
+      }
+    },
+    {
+      "name": "NumLock",
+      "dom": { "type": "keydown", "code": "NumLock", "key": "NumLock" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194330,
+        "keycode": 4194330,
+        "key_label": 4194330,
+        "pressed": true,
+        "code": "NumLock"
+      }
+    },
+    {
+      "name": "NumpadComma is unmapped",
+      "dom": { "type": "keydown", "code": "NumpadComma", "key": "," },
+      "expect": null
+    }
+  ]
+}

@@ -1,0 +1,142 @@
+{
+  "description": "French AZERTY: keycode is the unshifted label, physical_keycode the US-QWERTY position",
+  "vectors": [
+    {
+      "name": "KeyQ prints a",
+      "dom": { "type": "keydown", "code": "KeyQ", "key": "a" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 81,
+        "keycode": 65,
+        "key_label": 65,
+        "unicode": 97,
+        "pressed": true,
+        "code": "KeyQ"
+      }
+    },
+    {
+      "name": "KeyA prints q",
+      "dom": { "type": "keydown", "code": "KeyA", "key": "q" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 65,
+        "keycode": 81,
+        "key_label": 81,
+        "unicode": 113,
+        "pressed": true,
+        "code": "KeyA"
+      }
+    },
+    {
+      "name": "Shift+KeyQ prints A",
+      "dom": {
+        "type": "keydown",
+        "code": "KeyQ",
+        "key": "A",
+        "shiftKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 81,
+        "keycode": 65,
+        "key_label": 65,
+        "unicode": 65,
+        "pressed": true,
+        "shift_pressed": true,
+        "code": "KeyQ"
+      }
+    },
+    {
+      "name": "Semicolon position prints m",
+      "dom": { "type": "keydown", "code": "Semicolon", "key": "m" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 59,
+        "keycode": 77,
+        "key_label": 77,
+        "unicode": 109,
+        "pressed": true,
+        "code": "Semicolon"
+      }
+    },
+    {
+      "name": "KeyM position prints ,",
+      "dom": { "type": "keydown", "code": "KeyM", "key": "," },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 77,
+        "keycode": 44,
+        "key_label": 44,
+        "unicode": 44,
+        "pressed": true,
+        "code": "KeyM"
+      }
+    },
+    {
+      "name": "Digit1 unshifted prints &",
+      "dom": { "type": "keydown", "code": "Digit1", "key": "&" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 49,
+        "keycode": 38,
+        "key_label": 38,
+        "unicode": 38,
+        "pressed": true,
+        "code": "Digit1"
+      }
+    },
+    {
+      "name": "Shift+Digit1 prints 1, layout map gives the unshifted &",
+      "dom": {
+        "type": "keydown",
+        "code": "Digit1",
+        "key": "1",
+        "shiftKey": true
+      },
+      "layout": { "Digit1": "&" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 49,
+        "keycode": 38,
+        "key_label": 49,
+        "unicode": 49,
+        "pressed": true,
+        "shift_pressed": true,
+        "code": "Digit1"
+      }
+    },
+    {
+      "name": "Shift+Digit1 without a layout map falls back to the physical key",
+      "dom": {
+        "type": "keydown",
+        "code": "Digit1",
+        "key": "1",
+        "shiftKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 49,
+        "keycode": 49,
+        "key_label": 49,
+        "unicode": 49,
+        "pressed": true,
+        "shift_pressed": true,
+        "code": "Digit1"
+      }
+    },
+    {
+      "name": "Digit2 prints é (non-ASCII label falls back to physical)",
+      "dom": { "type": "keydown", "code": "Digit2", "key": "é" },
+      "layout": { "Digit2": "é" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 50,
+        "keycode": 50,
+        "key_label": 201,
+        "unicode": 233,
+        "pressed": true,
+        "code": "Digit2"
+      }
+    }
+  ]
+}

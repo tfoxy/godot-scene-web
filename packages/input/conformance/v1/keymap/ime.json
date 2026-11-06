@@ -1,0 +1,91 @@
+{
+  "description": "IME composition: a composing keydown (isComposing or keyCode 229) is not forwarded; a keyup is still mapped, and a latched one replays its press",
+  "vectors": [
+    {
+      "name": "composition-starting keydown (Process, 229)",
+      "dom": {
+        "type": "keydown",
+        "code": "KeyN",
+        "key": "Process",
+        "keyCode": 229
+      },
+      "expect": null
+    },
+    {
+      "name": "keydown while composing",
+      "dom": {
+        "type": "keydown",
+        "code": "KeyI",
+        "key": "Process",
+        "isComposing": true,
+        "keyCode": 229
+      },
+      "expect": null
+    },
+    {
+      "name": "keydown flagged composing without 229",
+      "dom": {
+        "type": "keydown",
+        "code": "KeyA",
+        "key": "a",
+        "isComposing": true
+      },
+      "expect": null
+    },
+    {
+      "name": "keyup while composing is still mapped",
+      "dom": {
+        "type": "keyup",
+        "code": "KeyN",
+        "key": "n",
+        "isComposing": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 78,
+        "keycode": 78,
+        "key_label": 78,
+        "unicode": 110,
+        "pressed": false,
+        "code": "KeyN"
+      }
+    },
+    {
+      "name": "a key latched before composition releases as pressed",
+      "press": { "type": "keydown", "code": "KeyA", "key": "a", "keyCode": 65 },
+      "dom": {
+        "type": "keyup",
+        "code": "KeyA",
+        "key": "Process",
+        "isComposing": true,
+        "keyCode": 229
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 65,
+        "keycode": 65,
+        "key_label": 65,
+        "unicode": 97,
+        "pressed": false,
+        "code": "KeyA"
+      }
+    },
+    {
+      "name": "keydown after composition ends is forwarded",
+      "dom": {
+        "type": "keydown",
+        "code": "Enter",
+        "key": "Enter",
+        "keyCode": 13
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194309,
+        "keycode": 4194309,
+        "key_label": 4194309,
+        "pressed": true,
+        "code": "Enter"
+      }
+    }
+  ]
+}

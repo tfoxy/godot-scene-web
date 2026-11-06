@@ -1,0 +1,266 @@
+{
+  "description": "US QWERTY: letters, space, named keys, auto-repeat, Ctrl chords and unmapped codes",
+  "vectors": [
+    {
+      "name": "KeyW down",
+      "dom": { "type": "keydown", "code": "KeyW", "key": "w" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 87,
+        "keycode": 87,
+        "key_label": 87,
+        "unicode": 119,
+        "pressed": true,
+        "code": "KeyW"
+      }
+    },
+    {
+      "name": "KeyW up",
+      "dom": { "type": "keyup", "code": "KeyW", "key": "w" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 87,
+        "keycode": 87,
+        "key_label": 87,
+        "unicode": 119,
+        "pressed": false,
+        "code": "KeyW"
+      }
+    },
+    {
+      "name": "KeyW auto-repeat is echo",
+      "dom": { "type": "keydown", "code": "KeyW", "key": "w", "repeat": true },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 87,
+        "keycode": 87,
+        "key_label": 87,
+        "unicode": 119,
+        "pressed": true,
+        "echo": true,
+        "code": "KeyW"
+      }
+    },
+    {
+      "name": "Shift+KeyA",
+      "dom": {
+        "type": "keydown",
+        "code": "KeyA",
+        "key": "A",
+        "shiftKey": true
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 65,
+        "keycode": 65,
+        "key_label": 65,
+        "unicode": 65,
+        "pressed": true,
+        "shift_pressed": true,
+        "code": "KeyA"
+      }
+    },
+    {
+      "name": "CapsLock on, KeyA",
+      "dom": { "type": "keydown", "code": "KeyA", "key": "A" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 65,
+        "keycode": 65,
+        "key_label": 65,
+        "unicode": 65,
+        "pressed": true,
+        "code": "KeyA"
+      }
+    },
+    {
+      "name": "Ctrl+KeyS",
+      "dom": { "type": "keydown", "code": "KeyS", "key": "s", "ctrlKey": true },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 83,
+        "keycode": 83,
+        "key_label": 83,
+        "unicode": 115,
+        "pressed": true,
+        "ctrl_pressed": true,
+        "code": "KeyS"
+      }
+    },
+    {
+      "name": "Space",
+      "dom": { "type": "keydown", "code": "Space", "key": " " },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 32,
+        "keycode": 32,
+        "key_label": 32,
+        "unicode": 32,
+        "pressed": true,
+        "code": "Space"
+      }
+    },
+    {
+      "name": "Enter",
+      "dom": { "type": "keydown", "code": "Enter", "key": "Enter" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194309,
+        "keycode": 4194309,
+        "key_label": 4194309,
+        "pressed": true,
+        "code": "Enter"
+      }
+    },
+    {
+      "name": "ArrowUp",
+      "dom": { "type": "keydown", "code": "ArrowUp", "key": "ArrowUp" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194320,
+        "keycode": 4194320,
+        "key_label": 4194320,
+        "pressed": true,
+        "code": "ArrowUp"
+      }
+    },
+    {
+      "name": "Escape",
+      "dom": { "type": "keydown", "code": "Escape", "key": "Escape" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194305,
+        "keycode": 4194305,
+        "key_label": 4194305,
+        "pressed": true,
+        "code": "Escape"
+      }
+    },
+    {
+      "name": "F5",
+      "dom": { "type": "keydown", "code": "F5", "key": "F5" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194336,
+        "keycode": 4194336,
+        "key_label": 4194336,
+        "pressed": true,
+        "code": "F5"
+      }
+    },
+    {
+      "name": "Minus",
+      "dom": { "type": "keydown", "code": "Minus", "key": "-" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 45,
+        "keycode": 45,
+        "key_label": 45,
+        "unicode": 45,
+        "pressed": true,
+        "code": "Minus"
+      }
+    },
+    {
+      "name": "Backquote",
+      "dom": { "type": "keydown", "code": "Backquote", "key": "`" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 96,
+        "keycode": 96,
+        "key_label": 96,
+        "unicode": 96,
+        "pressed": true,
+        "code": "Backquote"
+      }
+    },
+    {
+      "name": "IntlBackslash (ISO 102nd key)",
+      "dom": { "type": "keydown", "code": "IntlBackslash", "key": "\\" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 92,
+        "keycode": 92,
+        "key_label": 92,
+        "unicode": 92,
+        "pressed": true,
+        "code": "IntlBackslash"
+      }
+    },
+    {
+      "name": "IntlYen",
+      "dom": { "type": "keydown", "code": "IntlYen", "key": "¥" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 165,
+        "keycode": 165,
+        "key_label": 165,
+        "unicode": 165,
+        "pressed": true,
+        "code": "IntlYen"
+      }
+    },
+    {
+      "name": "Backspace has no unicode",
+      "dom": { "type": "keydown", "code": "Backspace", "key": "Backspace" },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194308,
+        "keycode": 4194308,
+        "key_label": 4194308,
+        "pressed": true,
+        "code": "Backspace"
+      }
+    },
+    {
+      "name": "MediaPlayPause",
+      "dom": {
+        "type": "keydown",
+        "code": "MediaPlayPause",
+        "key": "MediaPlayPause"
+      },
+      "expect": {
+        "event": "key",
+        "physical_keycode": 4194388,
+        "keycode": 4194388,
+        "key_label": 4194388,
+        "pressed": true,
+        "code": "MediaPlayPause"
+      }
+    },
+    {
+      "name": "IntlRo is unmapped",
+      "dom": { "type": "keydown", "code": "IntlRo", "key": "/" },
+      "expect": null
+    },
+    {
+      "name": "Lang1 is unmapped",
+      "dom": { "type": "keydown", "code": "Lang1", "key": "HangulMode" },
+      "expect": null
+    },
+    {
+      "name": "KanaMode is unmapped",
+      "dom": { "type": "keydown", "code": "KanaMode", "key": "KanaMode" },
+      "expect": null
+    },
+    {
+      "name": "Unidentified code is unmapped",
+      "dom": {
+        "type": "keydown",
+        "code": "Unidentified",
+        "key": "Unidentified"
+      },
+      "expect": null
+    },
+    {
+      "name": "empty code is unmapped",
+      "dom": { "type": "keydown", "code": "", "key": "a" },
+      "expect": null
+    },
+    {
+      "name": "unmapped keyup is not forwarded either",
+      "dom": { "type": "keyup", "code": "IntlRo", "key": "/" },
+      "expect": null
+    }
+  ]
+}
