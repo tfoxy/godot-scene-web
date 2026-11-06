@@ -542,6 +542,14 @@
       "reach": ["pure"]
     },
     {
+      "why": "TRK4's client track check (tracks-design.md \"As built (TRK4)\"): a real-time headless-Chromium page driven by hand against capture/build/rs_live_host --tracks, not a validate-increment target; the package subpath it mounts (packages/render-stream-client/src/track*.ts) is reached above and is unit-tested by the package suite",
+      "paths": [
+        "experiments/render-stream/scripts/client-track-check.ts",
+        "experiments/render-stream/web/client-track-check/**"
+      ],
+      "reach": ["pure"]
+    },
+    {
       "why": "R4's instruction-count bench: its runner, parser, self-test and committed baseline (the cases are goldens and rs-core, reached above)",
       "paths": [
         "experiments/render-stream/scripts/bench-instr.sh",

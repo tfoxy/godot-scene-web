@@ -12,6 +12,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./tracks": {
+      "development": "./src/tracks.ts",
+      "types": "./dist/tracks.d.ts",
+      "import": "./dist/tracks.js"
+    },
     "./webtransport": {
       "development": "./src/webtransport.ts",
       "types": "./dist/webtransport.d.ts",
