@@ -46,6 +46,12 @@ extends Node2D
 ##                                creates and frees the late-arm registry records. The report's
 ##                                churn_us_p50/_mean time that block (the hook path, engine work
 ##                                included)
+##   RS_SCALE_CPU_REPORT [0]      1: the report adds the main thread's CPU time per frame (from
+##                                /proc/thread-self/schedstat, read at the top of each _process:
+##                                cpu_us_mean/_p50/_p95) and each per-frame block's wall time
+##                                (section_us: movers, redraws, mesh_updates, params, churn, mean
+##                                us per frame), over the same window as the frame times
+##                                (results/p3/idle-capture-cost.md)
 ##   RS_FIXTURE_QUIT_FRAME [600]  quit after this many frames
 ##   RS_SCALE_WARMUP [120]        frames before the frame-time window opens
 ##   RS_SCALE_REPORT              optional absolute path: the frame-time summary (JSON) at quit
@@ -92,6 +98,12 @@ var _setup_ms: float = 0.0
 var _churn: int = 0
 var _churn_rids: Array[RID] = []
 var _churn_us: PackedInt64Array = PackedInt64Array()
+var _cpu_report: bool = false
+var _last_cpu_ns: int = -1
+var _cpu_ns: PackedInt64Array = PackedInt64Array()
+const SECTIONS: Array[String] = ["movers", "redraws", "mesh_updates", "params", "churn"]
+var _section_us: PackedInt64Array = PackedInt64Array([0, 0, 0, 0, 0])
+var _section_frames: int = 0
 
 
 func _env_int(name: String, fallback: int) -> int:
@@ -129,6 +141,10 @@ func _ready() -> void:
 	_node_burst_frame = _env_int("RS_SCALE_NODE_BURST_FRAME", _warmup + 30)
 	_node_churn = _env_int("RS_SCALE_NODE_CHURN", 0)
 	_churn = _env_int("RS_SCALE_RESOURCE_CHURN", 0)
+	_cpu_report = _env_int("RS_SCALE_CPU_REPORT", 0) != 0
+	if _cpu_report and not FileAccess.file_exists("/proc/thread-self/schedstat"):
+		printerr("[scale] error: RS_SCALE_CPU_REPORT: no /proc/thread-self/schedstat")
+		_cpu_report = false
 	var n_nodes: int = _env_int("RS_SCALE_NODES", 0)
 	if n_nodes > 0 or _node_burst > 0 or _node_churn > 0:
 		_node_root = Node2D.new()
@@ -257,11 +273,26 @@ func _process(_delta: float) -> void:
 	elif _frame > _warmup + 1:
 		_deltas_us.append(now - _last_us)
 	_last_us = now
+	var timed: bool = _cpu_report and _frame > _warmup + 1
+	if _cpu_report:
+		# Reopened every frame: a seek(0) re-reads stdio's stale buffer. The kernel advances the
+		# figure at scheduler events, and the paced main thread sleeps once a frame, so a read at
+		# the top of _process covers the previous frame exactly.
+		var stat: FileAccess = FileAccess.open("/proc/thread-self/schedstat", FileAccess.READ)
+		var cpu_ns: int = stat.get_line().get_slice(" ", 0).to_int() if stat != null else _last_cpu_ns
+		if timed and _last_cpu_ns >= 0:
+			_cpu_ns.append(cpu_ns - _last_cpu_ns)
+		_last_cpu_ns = cpu_ns
+	if timed:
+		_section_frames += 1
+	var t: int = Time.get_ticks_usec()
 	var n: int = _items.size()
 	for j: int in mini(_movers, n):
 		var i: int = (j * 29) % n
 		var x: float = float((i * 37) % 600) + float((_frame + j) % 16)
 		RenderingServer.canvas_item_set_transform(_items[i], Transform2D(0.0, Vector2(x, (i * 23) % 330)))
+	if timed:
+		t = _section(0, t)
 	for r: int in (mini(_redraws, _draws.size()) if _draws.size() > 0 else 0):
 		var d: int = (_redraw_cursor + r) % _draws.size()
 		var rec: Array = _draws[d]
@@ -276,6 +307,8 @@ func _process(_delta: float) -> void:
 			_record(rec, 0.5 * (_vary_toggle[d] if d < _vary_toggle.size() else 0))
 	if _draws.size() > 0:
 		_redraw_cursor = (_redraw_cursor + _redraws) % _draws.size()
+	if timed:
+		t = _section(1, t)
 	var m: int = _meshes.size()
 	for u: int in _mesh_updates:
 		var k: int = (_mesh_cursor + u) % m
@@ -290,10 +323,14 @@ func _process(_delta: float) -> void:
 			RenderingServer.canvas_item_set_material(_mesh_items[k], _mesh_materials[k])
 	if m > 0:
 		_mesh_cursor = (_mesh_cursor + _mesh_updates) % m
+	if timed:
+		t = _section(2, t)
 	var nm: int = _materials.size()
 	for u: int in (_param_updates if nm > 0 else 0):
 		var mi: int = (_frame * _param_updates + u) % nm
 		RenderingServer.material_set_param(_materials[mi], "particle_param_00", float(_frame + u))
+	if timed:
+		t = _section(3, t)
 	if _churn > 0:
 		var c0: int = Time.get_ticks_usec()
 		for c: int in _churn:
@@ -304,6 +341,8 @@ func _process(_delta: float) -> void:
 			RenderingServer.free_rid(_churn_rids.pop_front())
 		if _frame > _warmup + 1:
 			_churn_us.append(Time.get_ticks_usec() - c0)
+	if timed:
+		t = _section(4, t)
 	if _node_root != null:
 		if _frame == _node_burst_frame:
 			_add_nodes(_node_burst)
@@ -314,6 +353,13 @@ func _process(_delta: float) -> void:
 	if _frame >= _quit_frame:
 		_report()
 		get_tree().quit()
+
+
+## RS_SCALE_CPU_REPORT: adds the wall time since `since` to section `index`; returns now.
+func _section(index: int, since: int) -> int:
+	var now: int = Time.get_ticks_usec()
+	_section_us[index] += now - since
+	return now
 
 
 func _add_nodes(count: int) -> void:
@@ -355,6 +401,22 @@ func _report() -> void:
 		summary["churn"] = _churn
 		summary["churn_us_p50"] = churn_sorted[churn_sorted.size() / 2] if churn_sorted.size() > 0 else 0
 		summary["churn_us_mean"] = (float(churn_total) / churn_sorted.size()) if churn_sorted.size() > 0 else 0.0
+	if _cpu_report:
+		var cpu_sorted: PackedInt64Array = _cpu_ns.duplicate()
+		cpu_sorted.sort()
+		var cpu_total: int = 0
+		for v: int in cpu_sorted:
+			cpu_total += v
+		var cpu_count: int = cpu_sorted.size()
+		summary["cpu_frames"] = cpu_count
+		summary["cpu_us_mean"] = (cpu_total / 1000.0 / cpu_count) if cpu_count > 0 else 0.0
+		summary["cpu_us_p50"] = (cpu_sorted[cpu_count / 2] / 1000.0) if cpu_count > 0 else 0.0
+		summary["cpu_us_p95"] = (cpu_sorted[mini(cpu_count - 1, (cpu_count * 95) / 100)] / 1000.0) if cpu_count > 0 else 0.0
+		var sections: Dictionary = {}
+		for k: int in SECTIONS.size():
+			sections[SECTIONS[k]] = (float(_section_us[k]) / _section_frames) if _section_frames > 0 else 0.0
+		summary["section_us"] = sections
+		summary["section_frames"] = _section_frames
 	var line: String = JSON.stringify(summary)
 	print("[scale] report " + line)
 	if OS.has_environment("RS_SCALE_REPORT"):

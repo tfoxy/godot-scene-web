@@ -37,6 +37,10 @@ Every mesh update carries new vertex values, so each one is a new content-addres
 skeletal animation produces. At the quit frame the scene prints, and writes to `RS_SCALE_REPORT`,
 its own frame-time summary over the frames after `RS_SCALE_WARMUP` (default 120): fps, frame-time
 p50/p95/max, the setup time and `redraws_varied` (the varied re-records it made).
+With `RS_SCALE_CPU_REPORT=1` it also reports the main thread's CPU time per frame
+(`cpu_us_mean/_p50/_p95`, from `/proc/thread-self/schedstat`) and each per-frame block's wall time
+(`section_us`), which time an unarmed capture's hook cost from outside the capture
+([`../../results/p3/idle-capture-cost.md`](../../results/p3/idle-capture-cost.md)).
 
 ## Use
 
