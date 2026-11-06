@@ -22,6 +22,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "report.h"
@@ -33,6 +34,7 @@
 #include "rs_http_coding.h"
 #include "rs_live.h"
 #include "rs_publish.h"
+#include "rs_payload_rest.h"
 #include "rs_resource_store.h"
 
 namespace {
@@ -1718,50 +1720,94 @@ void test_hc4b_shared_maps_and_serving() {
         "serve-skip pins nothing of a changed map");
 }
 
-// G8kz: coded bodies of the served set (render-stream-2.md "HTTP (live)").
+// G8kz, TDR: coded bodies of the served set (render-stream-2.md "HTTP (live)", rs_payload_rest.h).
+// The body is coded at rest where it was built; the served set holds that one body, answers a
+// coding request with it as stored, inflates it for an identity reader, and never compresses.
 void test_served_coded_bodies() {
   using grc::live::Coding;
-  const grc::rs::PayloadPtr big = grt1(7, 20000);
-  const grc::rs::PayloadPtr tiny = grt1(7, 16);
-  auto mesh_bytes = std::vector<std::uint8_t>(big->begin(), big->end());
+  grc::rs::RestConfig config;
+  config.coding = grc::rs::RestCoding::Zstd;
+  grc::rs::set_rest_config(config);
+  grc::rs::reset_rest_stats();
+  const grc::rs::PayloadPtr big_identity = grt1(7, 20000);
+  grc::rs::PayloadPtr big = big_identity;
+  grc::rs::code_at_rest(&big);
+  grc::rs::PayloadPtr tiny = grt1(7, 16);
+  grc::rs::code_at_rest(&tiny);
+  auto mesh_bytes = std::vector<std::uint8_t>(big_identity->begin(), big_identity->end());
   mesh_bytes[3] = '2';  // not a GRT1 magic
-  const grc::rs::PayloadPtr other = std::make_shared<grc::rs::PayloadBytes>(std::move(mesh_bytes));
+  grc::rs::PayloadPtr other = std::make_shared<grc::rs::PayloadBytes>(std::move(mesh_bytes));
+  grc::rs::code_at_rest(&other);
+  check(big->coded() && big->size() < big_identity->size() / 10 &&
+            big->identity_size() == big_identity->size() && big->held_bytes() == big->size(),
+        "a GRT1 body is coded at rest, smaller, its identity size kept");
+  check(!tiny->coded() && tiny->rest_tried && !other->coded(), "short and non-GRT1 bodies stay identity");
   grc::rs::ServedResources served;
   grc::rs::PayloadMap map = {{kH1, big}, {kH2, tiny}, {kH3, other}};
   std::vector<grc::rs::ServeEvent> events;
   served.pin({&map}, 1, &events);
+  check(served.retained_bytes() == big->size() + tiny->size() + other->size(),
+        "retained_bytes counts the bytes held, coded");
+  check(!events.empty() && events[0].bytes == big_identity->size(), "a pin event names the identity size");
 
   check(served.lookup_coded(kH1, Coding::Identity) == nullptr, "identity is never a coded body");
   const auto zstd = served.lookup_coded(kH1, Coding::Zstd);
-  check(zstd != nullptr && zstd->size() < big->size() / 10, "a GRT1 payload is coded and smaller");
-  std::vector<std::uint8_t> decoded;
-  check(zstd != nullptr && grc::rs::http_coding::zstd_decompress(zstd->data(), zstd->size(), &decoded) &&
-            decoded == *big,
-        "the zstd body decodes to the identity bytes");
-  check(served.lookup_coded(kH1, Coding::Zstd) == zstd, "coded once, the same body is kept");
-  const auto gzip = served.lookup_coded(kH1, Coding::Gzip);
-  check(gzip != nullptr && grc::rs::http_coding::gzip_decompress(gzip->data(), gzip->size(), &decoded) &&
-            decoded == *big,
-        "the gzip body decodes to the identity bytes");
-  check(served.lookup_coded(kH2, Coding::Zstd) == nullptr, "a short body is served as is");
+  check(zstd == big, "a zstd request gets the stored body itself");
+  check(served.lookup_coded(kH1, Coding::Gzip) == nullptr, "a gzip request gets no zstd body");
+  const grc::rs::RestStats before = grc::rs::rest_stats();
+  const auto identity = served.lookup(kH1);
+  const grc::rs::RestStats after_get = grc::rs::rest_stats();
+  check(identity != nullptr && *identity == *big_identity, "an identity reader gets the inflated payload");
+  check(after_get.inflate[0].count == before.inflate[0].count + 1 &&
+            after_get.inflate[0].identity_bytes == before.inflate[0].identity_bytes + big_identity->size(),
+        "the inflate is counted under get");
+  const grc::live::ResourceBody body_zstd = served.lookup_body(kH1, Coding::Zstd);
+  check(body_zstd.bytes == big && body_zstd.coding == Coding::Zstd &&
+            body_zstd.identity_bytes == big_identity->size(),
+        "lookup_body(zstd) is the stored body");
+  const grc::live::ResourceBody body_gzip = served.lookup_body(kH1, Coding::Gzip);
+  check(body_gzip.bytes != nullptr && body_gzip.coding == Coding::Identity && *body_gzip.bytes == *big_identity,
+        "lookup_body(gzip) of a zstd body is the inflated identity");
+  check(served.lookup(kH2) == tiny && served.lookup_coded(kH2, Coding::Zstd) == nullptr,
+        "a short body is served as is");
   check(served.lookup_coded(kH3, Coding::Zstd) == nullptr, "a payload that is not GRT1 is served as is");
-  check(served.lookup_coded(std::string(64, '9'), Coding::Zstd) == nullptr, "an unknown hash has no coded body");
-  grc::rs::ServedResources::Totals t = served.totals();
-  check(t.coded_made == 2 && t.coded_in_bytes == 2 * big->size(), "two coded bodies made, once each");
+  check(served.lookup_coded(std::string(64, '9'), Coding::Zstd) == nullptr && !served.contains(std::string(64, '9')),
+        "an unknown hash has no body");
 
-  // wrong-hash corrupts the served copy: the coded body is of the corrupted bytes.
+  grc::rs::RestCensus census;
+  std::unordered_set<const void *> seen;
+  served.census(&census, &seen);
+  check(census.bodies == 1 && census.coded == 1 && census.identity_bytes_held == 0 &&
+            census.held_bytes == big->size() && census.identity_bytes == big_identity->size(),
+        "census: one coded GRT1 body, no identity held");
+
+  // wrong-hash corrupts the served copy: coded again, of the corrupted bytes.
   served.corrupt(kH1);
   const auto after = served.lookup_coded(kH1, Coding::Zstd);
-  check(after != nullptr && after != zstd, "corrupt() drops the coded cache");
+  std::vector<std::uint8_t> decoded;
+  check(after != nullptr && after != zstd, "corrupt() replaces the served body");
   check(after != nullptr && grc::rs::http_coding::zstd_decompress(after->data(), after->size(), &decoded) &&
-            decoded == *served.lookup(kH1) && decoded != *big,
+            decoded == *served.lookup(kH1) && decoded != *big_identity,
         "the coded body of a corrupted copy decodes to the corrupted bytes");
 
-  // Retirement drops the coded bodies with the hash.
+  // Retirement drops the body with the hash.
   grc::rs::PayloadMap only = {{kH3, other}};
   served.retire(only, {}, 2, &events);
   check(served.lookup(kH1) == nullptr && served.lookup_coded(kH1, Coding::Zstd) == nullptr,
-        "a retired hash has no coded body");
+        "a retired hash has no body");
+
+  // at-rest-keep-identity: the identity is kept beside the coded body, and the census sees it.
+  config.keep_identity = true;
+  grc::rs::set_rest_config(config);
+  grc::rs::PayloadPtr kept = grt1(9, 20000);
+  grc::rs::code_at_rest(&kept);
+  grc::rs::RestCensus sabotaged;
+  std::unordered_set<const void *> seen2;
+  sabotaged.add(kept, &seen2);
+  check(kept->coded() && kept->kept_identity != nullptr && sabotaged.identity_bytes_held == kept->identity_size() &&
+            kept->held_bytes() > kept->identity_size(),
+        "keep-identity: the census counts the identity held beside the coded body");
+  grc::rs::set_rest_config(grc::rs::RestConfig());
 }
 
 void test_served_resources() {
@@ -1851,7 +1897,7 @@ void test_served_resources() {
     ServeRig rig;
     rig.served.corrupt(kH1);
     rig.step({{kH1, p1}, {kH2, p2}});
-    const grc::rs::PayloadPtr served = rig.served.lookup(kH1);
+    const auto served = rig.served.lookup(kH1);
     check(served != nullptr && served->size() == p1->size() && (*served)[18] == (1 ^ 0xFF) &&
               (*served)[19] == 1 && (*p1)[18] == 1,
           "corrupt(): first data byte flipped, the mirror's bytes untouched");

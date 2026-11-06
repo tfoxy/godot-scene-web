@@ -566,10 +566,12 @@ struct ServingSummary {
   std::string http_encoding = "off";
   std::uint64_t http_gets_zstd = 0;
   std::uint64_t http_gets_gzip = 0;
-  std::uint64_t coded_made = 0;
-  std::uint64_t coded_in_bytes = 0;
-  std::uint64_t coded_out_bytes = 0;
-  std::uint64_t coded_ns = 0;
+  // TDR: the at-rest coding ("identity", "zstd", "gzip"), and the GETs (and carrier requests)
+  // that took the identity of a coded body: inflated on the serving thread.
+  std::string at_rest = "identity";
+  std::uint64_t identity_inflates = 0;
+  std::uint64_t identity_inflate_bytes = 0;
+  std::uint64_t identity_inflate_ns = 0;
   std::uint64_t http_errors = 0;
   std::uint64_t preflights = 0;       // G7n: OPTIONS answered 204 (not counted in http_gets)
   std::uint64_t origin_rejected = 0;  // G7n: 403s for a foreign Origin, every route

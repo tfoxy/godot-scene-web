@@ -150,6 +150,8 @@
 namespace grc {
 namespace rs {
 
+class PayloadBytes;  // rs_captured.h (TDR: a payload body, identity or coded at rest)
+
 // What the hook read and copied from a texture_2d_create/_update Image.
 struct PayloadCopy {
   std::string status = "unsupported";  // "ok" | "unsupported"
@@ -189,7 +191,7 @@ struct PayloadCopy {
   std::string block_hash;
   std::string block_format;
   std::int64_t block_payload_bytes = 0;
-  std::shared_ptr<const std::vector<std::uint8_t>> block_bytes;
+  std::shared_ptr<const PayloadBytes> block_bytes;  // TDR: coded at rest like the main body
   // G8kc (rs_texture_cache.h, texture-delivery-design.md D7/D8): with GRC_TEXTURE_CACHE_DIR set,
   // the D7 source key (SHA-256 of the hooked image as GRT1 in its own format) and what the cache
   // made of the derivation: "hit" (the decoded payload came from a verified file), "miss"

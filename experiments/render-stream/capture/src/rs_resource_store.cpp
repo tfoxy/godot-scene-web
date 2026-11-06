@@ -9,6 +9,7 @@
 
 #include "report.h"
 #include "rs_http_coding.h"
+#include "rs_payload_rest.h"
 
 namespace grc {
 namespace rs {
@@ -150,25 +151,34 @@ ResourceStore::Put ResourceStore::put_bytes(const std::string &hash, const char 
     corrupted_ = hash;
   }
   const std::string final_path = path_join(path_join(dir_, "sha256"), hash + extension);
+  // TDR: the index and the file are the identity payload's; a body coded at rest is inflated on
+  // the writer thread (counted under `store`), never held inflated.
+  const std::uint64_t identity_size = payload->identity_size();
   std::string line = "{\"hash\":\"" + hash + "\",\"bytes\":" +
-                     std::to_string(payload->size()) + index_fields +
+                     std::to_string(identity_size) + index_fields +
                      ",\"first_frame\":" + std::to_string(frame) + "}\n";
   std::FILE *index = index_;
   std::string index_path = path_join(dir_, "index.jsonl");
   auto write = [final_path, payload, corrupt, index, line = std::move(line),
                 index_path = std::move(index_path)](std::string *why) {
-    return write_payload_file(final_path, *payload, corrupt, index, line, index_path, why);
+    const std::shared_ptr<const std::vector<std::uint8_t>> identity =
+        identity_of(payload, InflateSite::Store);
+    if (identity == nullptr) {
+      *why = "cannot inflate the coded body of " + final_path;
+      return false;
+    }
+    return write_payload_file(final_path, *identity, corrupt, index, line, index_path, why);
   };
   if (writer_ != nullptr) {
     // P3-CAP: the I/O runs on the writer thread, in submission order (rs_file_writer.h).
-    if (!writer_->submit(std::move(write), payload->size(), error)) {
+    if (!writer_->submit(std::move(write), identity_size, error)) {
       return Put::Failed;
     }
   } else if (!write(error)) {
     return Put::Failed;
   }
   hashes_.insert(hash);
-  bytes_ += payload->size();
+  bytes_ += identity_size;
   return Put::Stored;
 }
 
@@ -214,13 +224,24 @@ bool ResourceStore::write_payload_file(const std::string &final_path,
 
 namespace {
 
+// wrong-hash's served copy: the identity bytes with the first data byte flipped, then (TDR) coded
+// at rest again, so a coding GET serves it coded like every other body.
 PayloadPtr corrupted_copy(const PayloadPtr &payload) {
-  auto copy = std::make_shared<std::vector<std::uint8_t>>(*payload);
+  const std::shared_ptr<const std::vector<std::uint8_t>> identity =
+      identity_of(payload, InflateSite::Sabotage);
+  if (identity == nullptr) {
+    return payload;
+  }
+  auto copy = std::make_shared<PayloadBytes>(std::vector<std::uint8_t>(*identity));
   const std::size_t offset = ResourceStore::first_data_offset(*copy);
   if (offset != 0) {
     (*copy)[offset] ^= 0xFF;
   }
-  return copy;
+  PayloadPtr out = std::move(copy);
+  if (payload->coded()) {
+    code_at_rest(&out);
+  }
+  return out;
 }
 
 }  // namespace
@@ -232,10 +253,11 @@ void ServedResources::corrupt(const std::string &hash) {
   }
   corrupt_ = hash;
   const ServedKey key = ServedKey::from(hash);
-  coded_.erase(key);
   const auto it = served_.find(key);
   if (it != served_.end() && it->second != nullptr) {
+    bytes_ -= std::min(bytes_, it->second->held_bytes());
     it->second = corrupted_copy(it->second);
+    bytes_ += it->second->held_bytes();
   }
 }
 
@@ -261,7 +283,7 @@ bool ServedResources::add_locked(const std::string &hash, const PayloadPtr &payl
   if (hash == corrupt_) {
     entry.first->second = corrupted_copy(payload);
   }
-  bytes_ += payload->size();
+  bytes_ += entry.first->second->held_bytes();  // TDR: the bytes held (coded at rest)
   ++totals_.pinned;
   if (events != nullptr) {
     // An event is only a line for the hook log, and it costs the key's spelling back, so it is
@@ -269,7 +291,7 @@ bool ServedResources::add_locked(const std::string &hash, const PayloadPtr &payl
     ServeEvent event;
     event.op = "pin";
     event.hash = hash;
-    event.bytes = payload->size();
+    event.bytes = payload->identity_size();  // the payload's own size, as the entry names it
     event.reason = "current";
     event.sabotage = sabotage;
     events->push_back(std::move(event));
@@ -391,8 +413,8 @@ void ServedResources::retire(const PayloadMap &current,
     return;
   }
   const auto retire_one = [&](std::map<ServedKey, PayloadPtr>::iterator it, bool in_base) {
-    const std::uint64_t size = it->second != nullptr ? it->second->size() : 0;
-    bytes_ -= std::min(bytes_, size);
+    const std::uint64_t size = it->second != nullptr ? it->second->identity_size() : 0;
+    bytes_ -= std::min(bytes_, it->second != nullptr ? it->second->held_bytes() : 0);
     ++totals_.retired;
     if (in_base) {
       ++totals_.retired_unpinned;
@@ -406,7 +428,6 @@ void ServedResources::retire(const PayloadMap &current,
       event.reason = in_base ? "unpin" : "superseded";
       events->push_back(std::move(event));
     }
-    coded_.erase(it->first);
     return served_.erase(it);
   };
   if (!known_valid_ || unpin) {
@@ -486,8 +507,7 @@ void ServedResources::retire(const PayloadMap &current,
   }
 }
 
-std::shared_ptr<const std::vector<std::uint8_t>> ServedResources::lookup(std::string_view hash) {
-  std::lock_guard<std::mutex> lock(mutex_);
+PayloadPtr ServedResources::held_locked(std::string_view hash) const {
   // SERVED-MAP: the GET's key decodes in place; no std::string is built for the probe.
   const auto it = served_.find(ServedKey::from(hash));
   if (it == served_.end() || (!dropped_.empty() && it->first == dropped_key_)) {
@@ -496,60 +516,64 @@ std::shared_ptr<const std::vector<std::uint8_t>> ServedResources::lookup(std::st
   return it->second;
 }
 
+bool ServedResources::contains(std::string_view hash) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return held_locked(hash) != nullptr;
+}
+
+std::shared_ptr<const std::vector<std::uint8_t>> ServedResources::lookup(std::string_view hash) {
+  PayloadPtr held;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    held = held_locked(hash);
+  }
+  // TDR: an identity reader of a body coded at rest gets it inflated here, on the caller's thread
+  // and outside the mutex (a decompress of bytes in memory, never a texture decode), kept by
+  // nobody once served.
+  return identity_of(held, InflateSite::Get);
+}
+
 std::shared_ptr<const std::vector<std::uint8_t>> ServedResources::lookup_coded(
     std::string_view hash, live::Coding coding) {
   if (coding == live::Coding::Identity) {
     return nullptr;
   }
-  const std::size_t slot = static_cast<std::size_t>(coding);
-  const ServedKey key = ServedKey::from(hash);  // SERVED-MAP: decoded once, probed under both locks
-  PayloadPtr identity;
+  std::lock_guard<std::mutex> lock(mutex_);
+  const PayloadPtr held = held_locked(hash);
+  // TDR: the stored body, exactly as it is held, when it is held in `coding`; nothing is ever
+  // compressed here (the body was coded where it was built).
+  if (held == nullptr || static_cast<std::uint8_t>(held->rest) != static_cast<std::uint8_t>(coding)) {
+    return nullptr;
+  }
+  return held;
+}
+
+live::ResourceBody ServedResources::lookup_body(std::string_view hash, live::Coding accepted) {
+  PayloadPtr held;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = served_.find(key);
-    if (it == served_.end() || (!dropped_.empty() && it->first == dropped_key_) ||
-        it->second == nullptr) {
-      return nullptr;
-    }
-    const auto coded = coded_.find(it->first);
-    if (coded != coded_.end() && coded->second.tried[slot]) {
-      return coded->second.body[slot];
-    }
-    identity = it->second;
+    held = held_locked(hash);
   }
-  // Texture payloads only (render-stream-2.md "HTTP (live)": a mesh or shader payload, and any
-  // short body, is served as is).
-  static const std::uint8_t kGrt1[8] = {0x47, 0x52, 0x54, 0x31, 0x0D, 0x0A, 0x1A, 0x0A};
-  PayloadPtr result;
-  std::uint64_t spent_ns = 0;
-  if (identity->size() > sizeof(kGrt1) + 64 && std::equal(kGrt1, kGrt1 + 8, identity->begin())) {
-    std::vector<std::uint8_t> out;
-    const auto start = std::chrono::steady_clock::now();
-    const bool ok = coding == live::Coding::Zstd
-                        ? http_coding::zstd_compress(identity->data(), identity->size(), &out)
-                        : http_coding::gzip_compress(identity->data(), identity->size(), &out);
-    spent_ns = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start)
-            .count());
-    if (ok && out.size() < identity->size()) {
-      result = std::make_shared<const std::vector<std::uint8_t>>(std::move(out));
-    }
+  live::ResourceBody out;
+  if (held == nullptr) {
+    return out;
   }
+  out.identity_bytes = held->identity_size();
+  if (accepted != live::Coding::Identity && held->coded() &&
+      static_cast<std::uint8_t>(held->rest) == static_cast<std::uint8_t>(accepted)) {
+    out.bytes = held;
+    out.coding = accepted;
+    return out;
+  }
+  out.bytes = identity_of(held, InflateSite::Get);
+  return out;
+}
+
+void ServedResources::census(RestCensus *out, std::unordered_set<const void *> *seen) const {
   std::lock_guard<std::mutex> lock(mutex_);
-  const auto it = served_.find(key);
-  if (it == served_.end() || it->second != identity) {
-    return result;  // retired or replaced while compressing: serve this once, keep nothing
+  for (const auto &entry : served_) {
+    out->add(entry.second, seen);
   }
-  CodedBodies &kept = coded_[it->first];
-  kept.tried[slot] = true;
-  kept.body[slot] = result;
-  if (result != nullptr) {
-    ++totals_.coded_made;
-    totals_.coded_in_bytes += identity->size();
-    totals_.coded_out_bytes += result->size();
-  }
-  totals_.coded_ns += spent_ns;
-  return result;
 }
 
 std::uint64_t ServedResources::retained() const {
@@ -602,7 +626,7 @@ std::uint64_t ServedResources::retained_bytes_beyond(
       held = held || (map != nullptr && map->count(hash) != 0);
     }
     if (!held) {
-      total += it->second->size();
+      total += it->second->held_bytes();
     }
   }
   if (shadow_ && shadow_failure_.empty()) {
@@ -630,7 +654,7 @@ std::uint64_t ServedResources::beyond_full_locked(
       }
     }
     if (!held && entry.second != nullptr) {
-      total += entry.second->size();
+      total += entry.second->held_bytes();
     }
   }
   return total;

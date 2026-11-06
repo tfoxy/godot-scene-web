@@ -6484,7 +6484,7 @@ void Mirror::shadow_compare(const FullWalk &walk, const ItemsPublished &refs, Ca
   if (diff.empty() && captured->payloads.weight() != [&walk]() {
         std::uint64_t total = 0;
         for (const auto &entry : walk.payloads) {
-          total += entry.second != nullptr ? entry.second->size() : 0;
+          total += entry.second != nullptr ? entry.second->held_bytes() : 0;
         }
         return total;
       }()) {
@@ -7419,6 +7419,19 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   return captured;
 }
 
+void Mirror::at_rest_census(RestCensus *out, std::unordered_set<const void *> *seen) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto &entry : textures_) {
+    const Texture &texture = entry.second;
+    out->add(texture.bytes, seen);
+    out->add(texture.copy.block_bytes, seen);
+    if (texture.job != nullptr && texture.job->done()) {
+      out->add(texture.job->bytes(), seen);  // G8kw: finished, not settled
+      out->add(texture.job->actual().block_bytes, seen);
+    }
+  }
+}
+
 MirrorStats Mirror::stats() const {
   std::lock_guard<std::mutex> lock(mutex_);
   MirrorStats out = stats_;
@@ -7431,10 +7444,10 @@ MirrorStats Mirror::stats() const {
   for (const auto &entry : textures_) {
     const Texture &texture = entry.second;
     if (texture.bytes != nullptr && hashes.insert(texture.copy.hash).second) {
-      out.texture_payload_bytes += texture.bytes->size();
+      out.texture_payload_bytes += texture.bytes->held_bytes();
     } else if (texture.job != nullptr && texture.job->done() && texture.job->bytes() != nullptr &&
                hashes.insert(texture.job->actual().hash).second) {
-      out.texture_payload_bytes += texture.job->bytes()->size();  // G8kw: finished, not settled
+      out.texture_payload_bytes += texture.job->bytes()->held_bytes();  // G8kw: finished, not settled
     }
   }
   out.live_shaders = shaders_.size();

@@ -191,7 +191,7 @@ export function census1x1(rec: ResolvedRecording): {
 }
 
 /** cmp-rec.ts on two recordings (its main exits, so it runs as a child, as gate6b-wide does). */
-function cmpRec(a: string, b: string): { identical: boolean; detail: string } {
+export function cmpRec(a: string, b: string): { identical: boolean; detail: string } {
   if (!existsSync(a) || !existsSync(b))
     return { identical: false, detail: `missing ${existsSync(a) ? b : a}` };
   const r = spawnSync(

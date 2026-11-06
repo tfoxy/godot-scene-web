@@ -82,6 +82,7 @@
 #include "rs_rid_map.h"
 #include "rs_texture_delivery.h"
 #include "rs_variant.h"
+#include "rs_payload_rest.h"
 
 namespace grc {
 namespace rs {
@@ -1053,6 +1054,9 @@ class Mirror {
   std::vector<BasisJobPtr> basis_jobs() const;
 
   MirrorStats stats() const;
+  // TDR served-at-rest: every texture body the mirror holds (bytes, block variants, finished
+  // jobs' bodies), each distinct body once across `seen`.
+  void at_rest_census(RestCensus *out, std::unordered_set<const void *> *seen) const;
 
   // HC4a (host-cost-design.md "Byte-identity proof method", the shadow oracle; GRC_HC_SHADOW=1, a
   // test knob, never the product default): every snapshot is also built by the full walk the

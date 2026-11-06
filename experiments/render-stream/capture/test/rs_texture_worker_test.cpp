@@ -102,9 +102,9 @@ void test_parse() {
   TextureWorkerConfig c;
   std::string error;
   check(grc::rs::parse_texture_workers(nullptr, nullptr, nullptr, nullptr, &c, &error) &&
-            !c.async() && c.min_bytes == 65536 && c.delay_ms == 0 &&
+            !c.async() && c.min_bytes == 0 && c.delay_ms == 0 &&
             grc::rs::texture_workers_name(c) == "sync",
-        "unset: sync, 64 KiB threshold");
+        "unset: sync, no threshold (TDR: every copy on a worker)");
   check(grc::rs::parse_texture_workers("sync", nullptr, nullptr, nullptr, &c, &error) && !c.async(),
         "sync");
   check(grc::rs::parse_texture_workers("2", "0", "30", nullptr, &c, &error) && c.workers == 2 &&

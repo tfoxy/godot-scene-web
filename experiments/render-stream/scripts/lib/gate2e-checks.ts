@@ -609,7 +609,9 @@ interface CodingLegEvidence {
     http_bytes?: number;
     http_coded_bytes?: number;
     http_encoding?: string;
-    coded_made?: number;
+    // TDR: the at-rest coding and the GETs that took the identity of a body coded at rest.
+    at_rest?: string;
+    identity_inflates?: number;
   } | null;
   fetches: G2cFetch[];
   cacheMode: string | null;
@@ -719,6 +721,24 @@ function codingProblems(
     problems.push(
       `${leg}: live-summary http_coded_bytes ${s?.http_coded_bytes} != http_bytes ${s?.http_bytes} while off`,
     );
+  // TDR (live-swap-design.md Q5): bodies are held in the host's coding; a receiver that takes it
+  // is served the stored body and never makes the host inflate one, and one that asks for none is
+  // served inflated identity bodies (counted). Off holds identity and inflates nothing.
+  // Judged where the host reports it (a pre-TDR or synthesized summary has no `at_rest`).
+  const atRest = want === "off" ? "identity" : want;
+  const inflates = s?.identity_inflates;
+  if (s?.at_rest !== undefined) {
+    if (s.at_rest !== atRest)
+      problems.push(`${leg}: live-summary at_rest is ${s.at_rest}, expected ${atRest}`);
+    if (identityOnly && want !== "off" && coded === 0 && !((inflates ?? 0) > 0))
+      problems.push(
+        `${leg}: identity GETs of coded bodies made no inflate (identity_inflates ${inflates})`,
+      );
+    if (!identityOnly && inflates !== 0)
+      problems.push(
+        `${leg}: the receiver takes ${want} but the host inflated ${inflates} bodies for it`,
+      );
+  }
   // The receiver side: every fetch matches the host's account (Content-Length, ETag, coding),
   // and was verified after decoding (getsVsFetches' `verified`).
   if (e.failure === null || e.failure === undefined)
@@ -731,7 +751,7 @@ function codingProblems(
     );
   return {
     problems,
-    note: `${leg}: ${served.length} GETs, ${coded} ${want}-coded (${savedIdentity} B -> ${savedCoded} B), ${e.fetches.length} receiver fetches`,
+    note: `${leg}: ${served.length} GETs, ${coded} ${want}-coded (${savedIdentity} B -> ${savedCoded} B), ${s?.identity_inflates ?? "?"} host inflates, ${e.fetches.length} receiver fetches`,
   };
 }
 

@@ -1015,20 +1015,14 @@ struct Server::Impl {
       c.http_slot_held = true;
     }
 
-    const std::shared_ptr<const std::vector<std::uint8_t>> payload =
-        resource_source != nullptr ? resource_source->lookup(hash) : nullptr;
-    if (payload == nullptr) {
+    // TDR: existence and the validators first, so neither a 404 nor a 304 touches a body (an
+    // identity revalidation of a body coded at rest would otherwise inflate it for nothing).
+    if (resource_source == nullptr || !resource_source->contains(hash)) {
       send_http_status(c, 404, cors, keep_alive);
       push_event_locked(make_http_get_event(c.id, hash, 404, 0, req));
       return;
     }
     const Coding coding = negotiate_coding(header_value(req, "accept-encoding"), config.codings);
-    std::shared_ptr<const std::vector<std::uint8_t>> coded;
-    Coding used = Coding::Identity;
-    if (coding != Coding::Identity && resource_source != nullptr) {
-      coded = resource_source->lookup_coded(hash, coding);
-      if (coded != nullptr) used = coding;
-    }
     // If-None-Match: any validator of this hash (identity or either coding) matches, and the 304
     // carries the one that matched.
     for (const std::string &candidate : split_commas(header_value(req, "if-none-match"))) {
@@ -1039,18 +1033,32 @@ struct Server::Impl {
         return;
       }
     }
+    // TDR: the body as stored when the request takes its coding, else the identity (inflated by
+    // the source when it is held coded). Never compressed here. `mu` is released around the
+    // lookup: an identity reader's inflate (a plain-http LAN page's `gzip, deflate`) must not hold
+    // the frame callback's sends. Only this thread erases a Conn, so `c` stays valid; a close
+    // begun meanwhile drops the answer.
+    mu.unlock();
+    const ResourceBody found = resource_source->lookup_body(hash, coding);
+    mu.lock();
+    if (c.phase == Conn::Phase::Closed) {
+      return;
+    }
+    if (found.bytes == nullptr) {
+      send_http_status(c, 404, cors, keep_alive);  // retired since contains()
+      push_event_locked(make_http_get_event(c.id, hash, 404, 0, req));
+      return;
+    }
+    const Coding used = found.coding;
     std::vector<std::uint8_t> sabotaged;
-    const std::vector<std::uint8_t> *body = payload.get();
-    if (used != Coding::Identity) {
-      body = coded.get();
-      if (config.corrupt_coded_body && !coded->empty()) {
-        sabotaged = *coded;
-        sabotaged[sabotaged.size() / 2] ^= 0x5a;
-        body = &sabotaged;
-      }
+    const std::vector<std::uint8_t> *body = found.bytes.get();
+    if (used != Coding::Identity && config.corrupt_coded_body && !body->empty()) {
+      sabotaged = *body;
+      sabotaged[sabotaged.size() / 2] ^= 0x5a;
+      body = &sabotaged;
     }
     send_http_ok(c, hash, *body, keep_alive, cors, used);
-    Event event = make_http_get_event(c.id, hash, 200, payload->size(), req);
+    Event event = make_http_get_event(c.id, hash, 200, found.identity_bytes, req);
     event.coding = coding_token(used);
     event.coded_bytes = body->size();
     push_event_locked(std::move(event));

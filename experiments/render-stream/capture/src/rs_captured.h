@@ -27,7 +27,41 @@
 namespace grc {
 namespace rs {
 
-using PayloadBytes = std::vector<std::uint8_t>;
+// TDR (live-swap-design.md Q5 "TDR"): the coding a payload body is held in. A GRT1 texture body
+// is coded once where it is built (the texture worker, or the hook under GRC_TEXTURE_WORKERS=sync)
+// with the host's HTTP coding (GRC_HTTP_ENCODING, zstd by default) when that makes it smaller, and
+// the mirror, the served set and every snapshot then share only that coded body. The content hash
+// and every wire size stay the identity payload's (rs_payload_rest.h).
+enum class RestCoding : std::uint8_t { Identity, Zstd, Gzip };  // live::Coding's values
+
+// One payload body: the bytes as held (identity, or coded), plus the facts of the coding.
+// Everything that only moves the pointer or weighs it sees a vector; anything that reads the
+// identity content goes through rs::identity_of() (rs_payload_rest.h).
+class PayloadBytes : public std::vector<std::uint8_t> {
+ public:
+  using std::vector<std::uint8_t>::vector;
+  PayloadBytes() = default;
+  explicit PayloadBytes(std::vector<std::uint8_t> &&bytes)
+      : std::vector<std::uint8_t>(std::move(bytes)) {}
+
+  RestCoding rest = RestCoding::Identity;
+  // Coded: the identity payload's size. Identity: unused (size() is it).
+  std::uint64_t identity_bytes = 0;
+  // Set once the at-rest coding was tried on this body (an identity body with it set did not
+  // shrink, or is not a GRT1 payload); the served-at-rest census counts an untried texture body.
+  mutable bool rest_tried = false;
+  // The at-rest-keep-identity sabotage (GRC_AT_REST_FAULT=keep-identity) only: the identity body
+  // kept beside the coded one, the defect the TDR review found (Review record item 10).
+  std::shared_ptr<const std::vector<std::uint8_t>> kept_identity;
+
+  bool coded() const { return rest != RestCoding::Identity; }
+  // The identity payload's size: the hash's bytes, every wire `payload_bytes`.
+  std::uint64_t identity_size() const { return coded() ? identity_bytes : size(); }
+  // The bytes this body holds in memory (the budget's and retained_bytes' unit).
+  std::uint64_t held_bytes() const {
+    return size() + (kept_identity != nullptr ? kept_identity->size() : 0);
+  }
+};
 using PayloadPtr = std::shared_ptr<const PayloadBytes>;
 // Content hash (64 lowercase hex) -> the complete render-stream-texture/1 or
 // render-stream-mesh/1 payload. HC4b (host-cost-design.md D1): a persistent, copy-on-write map
@@ -37,7 +71,7 @@ using PayloadPtr = std::shared_ptr<const PayloadBytes>;
 template <>
 struct SharedMapWeight<PayloadPtr> {
   static std::uint64_t of(const PayloadPtr &payload) {
-    return payload != nullptr ? payload->size() : 0;
+    return payload != nullptr ? payload->held_bytes() : 0;  // TDR: the bytes held, coded or not
   }
 };
 using PayloadMap = SharedStrMap<PayloadPtr>;
@@ -215,7 +249,7 @@ inline std::uint64_t payload_union_bytes(const std::vector<const PayloadMap *> &
             earlier = maps[j] != nullptr && maps[j] != first && maps[j]->count(entry.first) != 0;
           }
           if (!earlier && entry.second != nullptr) {
-            total += entry.second->size();
+            total += entry.second->held_bytes();
           }
         },
         [](const PayloadMap::value_type &, const PayloadMap::value_type &) {});
@@ -236,7 +270,7 @@ inline std::uint64_t payload_union_bytes_full(const std::vector<const PayloadMap
         earlier = maps[j] != nullptr && maps[j]->count(entry.first) != 0;
       }
       if (!earlier && entry.second != nullptr) {
-        total += entry.second->size();
+        total += entry.second->held_bytes();
       }
     }
   }

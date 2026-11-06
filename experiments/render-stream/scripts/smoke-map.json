@@ -542,6 +542,11 @@
       "exclusive": true
     },
     {
+      "why": "TDR (protocol/live-swap-design.md Q5): gate 8's g8tdr checker and its null-receiver viewer. The capture sources it exercises (rs_payload_rest.*, the mirror, the live served set) are shared capture files and still reach '*'",
+      "paths": ["experiments/render-stream/scripts/lib/gate8-tdr-checks.ts"],
+      "reach": ["native:gate8@*"]
+    },
+    {
       "why": "REC1's client recorder legs (results/p3/rec1.md): gate 8's g8rec1 group drives web/client-record-check/ (the client package with the recorder on) through scripts/client-record-check.ts against a live tag-scene host with a tap, judged by lib/gate8-rec1-checks.ts",
       "paths": [
         "experiments/render-stream/web/client-record-check/**",

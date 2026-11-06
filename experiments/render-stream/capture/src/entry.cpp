@@ -204,6 +204,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <unordered_set>
 #include <vector>
 
 #include "calib.h"
@@ -226,6 +227,7 @@
 #include "rs_live.h"
 #include "rs2_diff.h"
 #include "rs_mirror.h"
+#include "rs_payload_rest.h"
 #include "rs_publish.h"
 #include "rs_resource_log.h"
 #include "rs_resource_store.h"
@@ -348,6 +350,7 @@ struct Stream {
   // G8kw (texture-delivery-design.md D11, Q7): GRC_TEXTURE_WORKERS and its knobs, read at arm,
   // and the publication hold-back that waits for the workers' hashes (unused when sync).
   rs::TextureWorkerConfig workers;
+  rs::RestConfig rest;  // TDR: the at-rest coding (rs_payload_rest.h)
   rs::HoldBack holdback;
   bool workers_started = false;
   uint64_t texture_cache_max_bytes = 0;  // G8kc: GRC_TEXTURE_CACHE_MAX_BYTES (0: unbounded)
@@ -2298,6 +2301,39 @@ void stream_start() {
     g_stream.holdback = rs::HoldBack();
     hooks_set_texture_workers(rs::TextureWorkerConfig());  // sync until the pool runs
   }
+  // TDR (live-swap-design.md Q5): GRT1 texture bodies are coded at rest with the host's HTTP
+  // coding, GRC_HTTP_ENCODING (zstd by default, gzip, or off: nothing coded), where each is built
+  // (rs_payload_rest.h). GRC_AT_REST_FAULT=keep-identity is served-at-rest's sabotage. Set here,
+  // before any hook (or adoption) builds a body; never while no stream is armed.
+  {
+    std::vector<live::Coding> codings;
+    std::string error;
+    rs::RestConfig rest;
+    bool rest_ok = parse_http_encoding(std::getenv("GRC_HTTP_ENCODING"), &codings, &error) &&
+                   rs::parse_rest_fault(std::getenv("GRC_AT_REST_FAULT"), &rest.keep_identity,
+                                        &error);
+    if (rest_ok && rest.keep_identity && codings.empty()) {
+      error = "GRC_AT_REST_FAULT=keep-identity needs GRC_HTTP_ENCODING=zstd or gzip";
+      rest_ok = false;
+    }
+    if (!rest_ok) {
+      log_line("stream: refused at-rest coding (" + error + ")");
+      g_stream.status = "refused";
+      g_stream.reason = error;
+      if (!g_live.listen.empty()) {
+        live_decided("refused", "stream refused: " + error);
+      }
+      return;
+    }
+    rest.coding = codings.empty() ? rs::RestCoding::Identity
+                                  : static_cast<rs::RestCoding>(codings.front());
+    rs::reset_rest_stats();
+    rs::set_rest_main_thread();
+    rs::set_rest_config(rest);
+    g_stream.rest = rest;
+    log_line(std::string("stream: at_rest=") + rs::rest_coding_token(rest.coding) +
+             (rest.keep_identity ? " fault=keep-identity" : ""));
+  }
   // G8kc (texture-delivery-design.md D8): GRC_TEXTURE_CACHE_DIR and GRC_TEXTURE_CACHE_MAX_BYTES,
   // valid at every version (the cache only stands in for a derivation, never changes a payload).
   // Unset, the cache is closed and nothing below it runs.
@@ -3558,10 +3594,14 @@ void live_close_and_stop() {
     g_live.serving.retained_bytes_max = totals.retained_bytes_max;
     g_live.serving.retained_end = g_live.served->retained();
     g_live.serving.retained_bytes_end = g_live.served->retained_bytes();
-    g_live.serving.coded_made = totals.coded_made;
-    g_live.serving.coded_in_bytes = totals.coded_in_bytes;
-    g_live.serving.coded_out_bytes = totals.coded_out_bytes;
-    g_live.serving.coded_ns = totals.coded_ns;
+    // TDR: the bodies are coded where they were built (evidence/at-rest.json); the serving side
+    // only inflates, for a GET or carrier request that does not take the stored coding.
+    const rs::RestStats rest = rs::rest_stats();
+    const rs::RestStats::Inflate &get = rest.inflate[static_cast<std::size_t>(rs::InflateSite::Get)];
+    g_live.serving.at_rest = rs::rest_coding_token(g_stream.rest.coding);
+    g_live.serving.identity_inflates = get.count;
+    g_live.serving.identity_inflate_bytes = get.identity_bytes;
+    g_live.serving.identity_inflate_ns = get.ns;
     g_live.serving.dropped_hash = g_live.served->dropped_hash();
     g_live.serving.corrupted_hash =
         g_stream.store != nullptr ? g_stream.store->corrupted_hash() : std::string();
@@ -3699,12 +3739,85 @@ void encoders_finish() {
   }
 }
 
+// TDR (live-swap-design.md Q5, served-at-rest): evidence/at-rest.json at stream end, with an
+// evidence directory only. The coding and its counters (rs_payload_rest.h), and a census of what
+// the mirror and the served set hold: each distinct GRT1 body once, identity bytes held for coded
+// (or never tried) bodies, held and identity bytes.
+void census_fields(JsonWriter *json, const rs::RestCensus &c) {
+  json->object_begin();
+  json->field("bodies", static_cast<int64_t>(c.bodies));
+  json->field("coded", static_cast<int64_t>(c.coded));
+  json->field("not_smaller", static_cast<int64_t>(c.not_smaller));
+  json->field("untried", static_cast<int64_t>(c.untried));
+  json->field("identity_bytes_held", static_cast<int64_t>(c.identity_bytes_held));
+  json->field("held_bytes", static_cast<int64_t>(c.held_bytes));
+  json->field("identity_bytes", static_cast<int64_t>(c.identity_bytes));
+  json->field("capacity_slack_bytes", static_cast<int64_t>(c.capacity_slack_bytes));
+  json->object_end();
+}
+
+void emit_at_rest() {
+  if (!g_state.evidence_ready) {
+    return;
+  }
+  const rs::RestStats st = rs::rest_stats();
+  JsonWriter json;
+  json.object_begin();
+  json.field("coding", std::string(rs::rest_coding_token(g_stream.rest.coding)));
+  json.field("fault", std::string(g_stream.rest.keep_identity ? "keep-identity" : ""));
+  json.field("texture_workers", rs::texture_workers_name(g_stream.workers));
+  json.field("worker_min_bytes", static_cast<int64_t>(g_stream.workers.min_bytes));
+  json.field("coded", static_cast<int64_t>(st.coded));
+  json.field("not_smaller", static_cast<int64_t>(st.not_smaller));
+  json.field("in_bytes", static_cast<int64_t>(st.in_bytes));
+  json.field("out_bytes", static_cast<int64_t>(st.out_bytes));
+  json.field("code_ns", static_cast<int64_t>(st.code_ns));
+  json.field("code_main_thread", static_cast<int64_t>(st.code_main_thread));
+  json.key("inflate").object_begin();
+  for (std::size_t i = 0; i < static_cast<std::size_t>(rs::InflateSite::kCount); ++i) {
+    const rs::RestStats::Inflate &in = st.inflate[i];
+    json.key(rs::inflate_site_name(static_cast<rs::InflateSite>(i))).object_begin();
+    json.field("count", static_cast<int64_t>(in.count));
+    json.field("coded_bytes", static_cast<int64_t>(in.coded_bytes));
+    json.field("identity_bytes", static_cast<int64_t>(in.identity_bytes));
+    json.field("ns", static_cast<int64_t>(in.ns));
+    json.object_end();
+  }
+  json.object_end();
+  json.field("inflate_failed", static_cast<int64_t>(st.inflate_failed));
+  std::unordered_set<const void *> seen_mirror;
+  rs::RestCensus mirror;
+  rs::mirror_instance().at_rest_census(&mirror, &seen_mirror);
+  json.key("mirror");
+  census_fields(&json, mirror);
+  if (g_live.served != nullptr) {
+    std::unordered_set<const void *> seen_served;
+    rs::RestCensus served;
+    g_live.served->census(&served, &seen_served);
+    json.key("served");
+    census_fields(&json, served);
+    // Mirror and served set together, each body once: a body both hold is held once (shared).
+    rs::RestCensus both = mirror;
+    g_live.served->census(&both, &seen_mirror);
+    json.key("both");
+    census_fields(&json, both);
+    json.field("served_retained_bytes", static_cast<int64_t>(g_live.served->retained_bytes()));
+  } else {
+    json.key("served").null();
+    json.key("both").null();
+    json.key("served_retained_bytes").null();
+  }
+  json.object_end();
+  emit("at-rest.json", json.take());
+}
+
 void stream_finish(rs2::EndReason reason) {
   if (g_stream.status != "open") {
     return;
   }
   workers_finish();
   encoders_finish();
+  emit_at_rest();  // TDR: before anything below lets a body go
   rs::mirror_enable(false);
   rs::adopt_resources_end();  // G8r
   live_drain(g_state.frames_total);  // G2c2: GETs answered so far reach the hook log first

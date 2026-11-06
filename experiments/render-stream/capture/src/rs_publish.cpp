@@ -12,6 +12,7 @@
 #include "report.h"
 #include "rs2_codec.h"
 #include "rs2_diff.h"
+#include "rs_payload_rest.h"
 #include "rs_records.h"
 
 namespace grc {
@@ -617,7 +618,13 @@ bool Publisher::form_lane(const LaneJob &job, bool direct) {
     const auto payload = published.payloads.find(hash);  // planned: present
     ResourceRecord record;
     record.hash = hash;
-    record.payload = *payload->second;
+    // TDR: the record carries the identity payload; a body coded at rest is inflated here.
+    const std::shared_ptr<const std::vector<std::uint8_t>> identity =
+        rs::identity_of(payload->second, rs::InflateSite::Inline);
+    if (identity == nullptr) {
+      return false;
+    }
+    record.payload = *identity;
     const std::vector<std::uint8_t> bytes = encode_resource(record);
     const bool ok = direct ? lane->sink->write_direct(bytes) && lane->sink->flush_direct()
                            : lane->sink->write(bytes) && lane->sink->flush();
@@ -711,7 +718,7 @@ bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t fram
         : ref.surface != nullptr ? store_->put_mesh(*ref.surface, payload->second, frame, &why)
                                  : store_->put_shader(*ref.shader, payload->second, frame, &why);
     if (events_ && put != rs::ResourceStore::Put::Present) {
-      events_("store", hash, payload->second->size(), put == rs::ResourceStore::Put::Stored,
+      events_("store", hash, payload->second->identity_size(), put == rs::ResourceStore::Put::Stored,
               frame);
     }
     if (put == rs::ResourceStore::Put::Failed) {
@@ -816,7 +823,7 @@ bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t fram
       const rs::ResourceStore::Put put =
           store_->put_variant(entry, variant, payload->second, frame, &why);
       if (events_ && put != rs::ResourceStore::Put::Present) {
-        events_("store", variant.hash, payload->second->size(),
+        events_("store", variant.hash, payload->second->identity_size(),
                 put == rs::ResourceStore::Put::Stored, frame);
       }
       if (put == rs::ResourceStore::Put::Failed) {
@@ -994,7 +1001,7 @@ bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_
     // HC5: formed on the writer, behind this publication's store writes.
     std::size_t bytes = 0;
     for (const std::string &hash : job.records) {
-      bytes += target->payloads.find(hash)->second->size();
+      bytes += target->payloads.find(hash)->second->identity_size();
     }
     const std::vector<std::string> records = job.records;
     const bool queued = former_->submit(
@@ -1008,7 +1015,8 @@ bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_
         bytes, nullptr);
     if (events_) {
       for (const std::string &hash : records) {
-        events_("inline", hash, target->payloads.find(hash)->second->size(), queued, frame);
+        events_("inline", hash, target->payloads.find(hash)->second->identity_size(), queued,
+                frame);
       }
     }
     ok = queued && ok;

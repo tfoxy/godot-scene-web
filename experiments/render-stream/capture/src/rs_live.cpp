@@ -19,6 +19,7 @@
 #include "rs_publish.h"
 #include "rs_records.h"
 #include "rs_ws.h"
+#include "rs_payload_rest.h"
 
 namespace grc {
 namespace rs2 {
@@ -2475,7 +2476,19 @@ void Hub::run_job(Job &job) {
     if (record_bytes == nullptr) {
       ResourceRecord record;
       record.hash = hash;
-      record.payload = *payload->second;
+      // TDR: the record carries the identity payload; a body coded at rest is inflated once
+      // here (the memo keeps the encoded record for every connection of this callback).
+      const std::shared_ptr<const std::vector<std::uint8_t>> identity =
+          rs::identity_of(payload->second, rs::InflateSite::Inline);
+      if (identity == nullptr) {
+        // Only a failed allocation gets here (the host coded these bytes itself): end the
+        // connection as for any record it cannot carry.
+        job.error = true;
+        job.error_detail = "resource " + hash + " could not be inflated";
+        transport_->send_text(f.id, encode_error("message-too-large", job.error_detail));
+        return;
+      }
+      record.payload = *identity;
       record_bytes = std::make_shared<const std::vector<std::uint8_t>>(encode_resource(record));
     }
     if (record_bytes->size() > job.max_message_bytes) {
@@ -2485,7 +2498,7 @@ void Hub::run_job(Job &job) {
       transport_->send_text(f.id, encode_error("message-too-large", job.error_detail));
       return;
     }
-    Held r{record_bytes, nullptr, &hash, payload->second->size()};
+    Held r{record_bytes, nullptr, &hash, payload->second->identity_size()};
     if (coded) {
       r.wire = coded_plain(&o.coded_shared, &o.coding_ns, *record_bytes, hash);
     }
@@ -3448,10 +3461,10 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
     json.field("http_encoding", resources->http_encoding);
     json.field("http_gets_zstd", static_cast<int64_t>(resources->http_gets_zstd));
     json.field("http_gets_gzip", static_cast<int64_t>(resources->http_gets_gzip));
-    json.field("coded_made", static_cast<int64_t>(resources->coded_made));
-    json.field("coded_in_bytes", static_cast<int64_t>(resources->coded_in_bytes));
-    json.field("coded_out_bytes", static_cast<int64_t>(resources->coded_out_bytes));
-    json.field("coded_ns", static_cast<int64_t>(resources->coded_ns));
+    json.field("at_rest", resources->at_rest);
+    json.field("identity_inflates", static_cast<int64_t>(resources->identity_inflates));
+    json.field("identity_inflate_bytes", static_cast<int64_t>(resources->identity_inflate_bytes));
+    json.field("identity_inflate_ns", static_cast<int64_t>(resources->identity_inflate_ns));
     json.field("http_errors", static_cast<int64_t>(resources->http_errors));
     json.field("preflights", static_cast<int64_t>(resources->preflights));
     json.field("origin_rejected", static_cast<int64_t>(resources->origin_rejected));

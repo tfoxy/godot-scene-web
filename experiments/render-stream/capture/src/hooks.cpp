@@ -28,6 +28,7 @@
 #include "rs_texture_delivery.h"
 #include "rs_texture_payload.h"
 #include "rs_texture_release.h"
+#include "rs_payload_rest.h"
 #include "rs_texture_worker.h"
 #include "rs_variant.h"
 
@@ -1576,6 +1577,9 @@ void run_texture_job(const rs::TextureJobPtr &job, std::shared_ptr<ImageDuplicat
     }
   }
   dup.reset();  // the duplicate dies here, before the job is visible as done
+  // TDR: the body's coding at rest is the job's last step, on this worker (rs_payload_rest.h).
+  rs::code_at_rest(&bytes);
+  rs::code_at_rest(&actual.block_bytes);
   job->finish(actual, std::move(bytes));
 }
 
@@ -1607,8 +1611,8 @@ bool submit_texture_job(rs::PayloadCopy *predicted, const rs::PayloadCopy &base,
 // The GRT1 bytes go to `bytes` (G2b2: the texture mirror keeps them); null
 // unless the copy is "ok". G8kw: under GRC_TEXTURE_WORKERS=<N> an "ok" copy may instead be a
 // prediction whose content `*job` delivers (`bytes` then stays null).
-rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::PayloadPtr *bytes,
-                             rs::TextureJobPtr *job) {
+rs::PayloadCopy copy_payload_identity(const ImageFacts &facts, const Ref *image,
+                                      rs::PayloadPtr *bytes, rs::TextureJobPtr *job) {
   bytes->reset();
   job->reset();
   rs::PayloadCopy copy;
@@ -1715,6 +1719,18 @@ rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::Payl
   }
   build_payload(meta, data, facts.data_size, &copy, bytes);
   note_source_payload(&copy);
+  return copy;
+}
+
+// copy_payload_identity, then (TDR) the synchronous body's coding at rest on this same thread, as
+// a worker's job ends with it: under GRC_TEXTURE_WORKERS=sync the hook is the worker. A worker's
+// prediction carries no bytes yet; its job codes them (run_texture_job). The create and update
+// hooks call copy_payload_identity and code after forwarding the call instead.
+rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::PayloadPtr *bytes,
+                             rs::TextureJobPtr *job) {
+  rs::PayloadCopy copy = copy_payload_identity(facts, image, bytes, job);
+  rs::code_at_rest(bytes);
+  rs::code_at_rest(&copy.block_bytes);
   return copy;
 }
 
@@ -2247,7 +2263,8 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
   const bool logging = resources().active();
   rs::PayloadPtr bytes;
   rs::TextureJobPtr job;
-  rs::PayloadCopy copy = logging ? copy_payload(facts, image, &bytes, &job) : rs::PayloadCopy();
+  rs::PayloadCopy copy =
+      logging ? copy_payload_identity(facts, image, &bytes, &job) : rs::PayloadCopy();
   // HTR (rs_texture_release.h): one load; zero unless GRC_HEADLESS_TEXTURE_RELEASE is set. The
   // copy (or the worker's duplicate) above was taken from the game's image; only then may the
   // engine get the placeholder instead, so the dummy rasterizer never holds the full copy.
@@ -2288,6 +2305,10 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
   }
   const RID result = original<FnTexture2dCreate>(kTexture2dCreate)(self, forwarded);
   const uint64_t forward_ns = now_ns() - t_forward;
+  // TDR: a synchronous body is coded at rest once the engine has its call (copy_payload's tail,
+  // moved after the forward: the engine is not kept waiting on the coding).
+  rs::code_at_rest(&bytes);
+  rs::code_at_rest(&copy.block_bytes);
   bool unheld = forwarded != image;  // until the mirror takes it
   registry_create(result.id, rs::RegistryKind::Texture2d);
   capture.rid = result.id;
@@ -2340,10 +2361,13 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
   const bool logging = resources().active();
   rs::PayloadPtr bytes;
   rs::TextureJobPtr job;
-  rs::PayloadCopy copy = logging ? copy_payload(facts, image, &bytes, &job) : rs::PayloadCopy();
+  rs::PayloadCopy copy =
+      logging ? copy_payload_identity(facts, image, &bytes, &job) : rs::PayloadCopy();
   const uint64_t t_forward = now_ns();
   original<FnTexture2dUpdate>(kTexture2dUpdate)(self, texture, image, layer);
   const uint64_t forward_ns = now_ns() - t_forward;
+  rs::code_at_rest(&bytes);  // TDR: as texture_2d_create, after the engine's call
+  rs::code_at_rest(&copy.block_bytes);
   if (logging) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("texture_2d_update");

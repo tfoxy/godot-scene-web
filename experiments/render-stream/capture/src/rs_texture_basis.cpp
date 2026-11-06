@@ -5,6 +5,7 @@
 #include "rs_basis_encode.h"
 #include "rs_sha256.h"
 #include "rs_texture_cache.h"
+#include "rs_payload_rest.h"
 
 namespace grc {
 namespace rs {
@@ -44,14 +45,15 @@ void run_basis_job(BasisJob *job, int level, bool perturb, bool corrupt) {
       if (perturb && !bytes.empty()) {
         bytes.back() ^= 0x01;  // perturb-ktx2 applies to served bytes too, never to the cache
       }
-      out.ktx2 = std::make_shared<const std::vector<std::uint8_t>>(std::move(bytes));
+      out.ktx2 = std::make_shared<const PayloadBytes>(std::move(bytes));
       out.ok = true;
       job->finish(std::move(out));
       return;
     }
     out.cache = got == CacheResult::Corrupt ? "corrupt" : "miss";
   }
-  const auto source = job->source();
+  // TDR: the decoded body is held coded at rest; the encode reads it inflated, on this pool.
+  const auto source = rs::identity_of(job->source(), rs::InflateSite::Basis);
   std::vector<std::vector<std::uint8_t>> levels;
   if (source == nullptr || !grt1_rgba8_levels(*source, job->format(), job->width(), job->height(),
                                               job->mipmaps(), &levels)) {
@@ -92,7 +94,7 @@ void run_basis_job(BasisJob *job, int level, bool perturb, bool corrupt) {
   if (perturb && !r.ktx2.empty()) {
     r.ktx2.back() ^= 0x01;  // perturb-ktx2: after hashing, so the bytes no longer match the hash
   }
-  out.ktx2 = std::make_shared<const std::vector<std::uint8_t>>(std::move(r.ktx2));
+  out.ktx2 = std::make_shared<const PayloadBytes>(std::move(r.ktx2));
   out.ok = true;
   job->finish(std::move(out));
 }

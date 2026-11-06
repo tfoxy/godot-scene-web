@@ -934,6 +934,8 @@ void test_http_content_coding() {
   check(resp.ok && resp.body == identity && resp.headers.count("content-encoding") == 0,
         "a coding the host does not offer is identity");
   // 4. If-None-Match: identity and either coding's validator match; 304 carries the matched one.
+  // TDR: a 304 is decided before any body is fetched (no compression, no inflate).
+  const int before_304 = source.compressions;
   for (const std::string &tag : {"\"" + hash + "\"", "\"" + hash + "-zstd\"", "\"" + hash + "-gzip\""}) {
     req = plain_http_request("GET", path, {{"Accept-Encoding", "zstd"}, {"If-None-Match", "\"x\", " + tag}});
     ::send(fd, req.data(), req.size(), 0);
@@ -942,6 +944,7 @@ void test_http_content_coding() {
               resp.headers.at("vary") == "Accept-Encoding",
           "304 for " + tag);
   }
+  check(source.compressions == before_304, "a 304 touches no body");
   // 5. A body that is not smaller is served as identity.
   req = plain_http_request("GET", config.resource_prefix + tiny, {{"Accept-Encoding", "zstd"}});
   ::send(fd, req.data(), req.size(), 0);

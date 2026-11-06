@@ -290,6 +290,14 @@
 #       `rendered-on` (the switch ignored, not-headless) and the native receivers of tex-off and
 #       tex-on; last the htr-cost timing group (`cost/{off,on}-<r>`, the g8t cost variant, each
 #       under the exclusive quiet lock). Judged by lib/gate8-htr-checks.ts.
+#   g8tdr (TDR, protocol/live-swap-design.md Q5 "served at rest": GRT1 texture bodies are zstd-coded
+#       where they are built and the mirror and the served set hold only the coded body; every leg
+#       under g8tdr/): the gate8-tex import; headless /9 captures with the stock delivery (block
+#       variants) `sync/capture` (coded on the hook thread) and `sync-off/capture`
+#       (GRC_HTTP_ENCODING=off: nothing coded), the live hosts `live/host` (/11, two texture workers,
+#       hook log on, lib/null-receiver.ts as the viewer; three curl GETs of the largest texture,
+#       get-{zstd,identity,lan}.*) and its fault leg `sabotage-at-rest-keep-identity/host`
+#       (GRC_AT_REST_FAULT=keep-identity). Judged by lib/gate8-tdr-checks.ts.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -311,11 +319,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8tag2 g8rec1 g8htr)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8tag2 g8rec1 g8htr g8tdr)
 # GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
 # is not in the default run: g8w11 already runs the native half of those legs.
-DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8tag2 g8rec1 g8htr)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8tag2 g8rec1 g8htr)
+DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8tag2 g8rec1 g8htr g8tdr)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8tag2 g8rec1 g8htr g8tdr)
 
 EXTENSION=""
 CALIBRATION=""
@@ -3811,9 +3819,121 @@ run_g8htr_cost() {
 	fi
 }
 
+# ------------------------------------------------------------------------------------- g8tdr
+# TDR (live-swap-design.md Q5): GRT1 texture bodies are zstd-coded at rest where they are built.
+# Every leg under g8tdr/. The captures are /9 with the stock delivery (passthrough: a block variant
+# beside each host-decoded RGBA8 texture); the live host is /11 (the null receiver speaks /11 with
+# live_coding, and /11 keeps the /9 block variants), two texture workers (min bytes at its default).
+G8TDR_ENV=(GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine)
+G8TDR_LIVE_ENV=(GRC_STREAM_VERSION=11 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_WORKERS=2 GRC_HOOK_LOG=on)
+G8TDR_LIVE_QUIT=600
+
+run_import_g8tdr() {
+	echo "run-gate8: g8tdr import (gate8-tex sources and fixture)"
+	LEG_ENV=()
+	run_headless "$OUT/g8tdr/import/tex-sources" none -- mise exec -- godot --headless --path "$FIXTURE_DIR" --script res://make_sources.gd
+	LEG_ENV=()
+	run_headless "$OUT/g8tdr/import/tex-fixture" none -- mise exec -- godot --headless --path "$FIXTURE_DIR" --import
+	local leg
+	for leg in tex-sources tex-fixture; do
+		if [ "$(cat "$OUT/g8tdr/import/$leg/exit-code.txt")" != "0" ]; then
+			echo "run-gate8: g8tdr import ($leg) failed, see $OUT/g8tdr/import/$leg/stdout.log" >&2
+			exit 1
+		fi
+	done
+}
+
+# run_g8tdr_probe <host dir> <port>: while the live host runs, once its pins are in resources.jsonl
+# (every pinned payload of this fixture is a GRT1 texture body, `payload_bytes` its identity size),
+# three curl GETs of the largest: get-zstd (Accept-Encoding: zstd), get-identity (no
+# Accept-Encoding) and get-lan (gzip, deflate: what Chromium sends to a plain-http LAN host). The
+# hash goes to get.hash.
+run_g8tdr_probe() {
+	local host="$1" port="$2" i=0 hash="" log="$1/evidence/resources.jsonl"
+	while [ "$i" -lt 600 ] && [ -z "$hash" ]; do
+		if grep -q '"op":"pin"' "$log" 2>/dev/null; then
+			# one second for the rest of the first pin batch, then the largest
+			sleep 1
+			hash="$(jq -rs '[.[] | select(.op == "pin")] | max_by(.payload_bytes) | .hash' "$log" 2>/dev/null)"
+			[ "$hash" = null ] && hash=""
+		fi
+		[ -z "$hash" ] && sleep 0.05
+		i=$((i + 1))
+	done
+	if [ -z "$hash" ]; then
+		echo "no pin line in resources.jsonl within 30 s" >"$host/get.error"
+		return 0
+	fi
+	echo "$hash" >"$host/get.hash"
+	local url="http://127.0.0.1:$port/resources/sha256/$hash"
+	curl -s --max-time 10 -H 'Accept-Encoding: zstd' -D "$host/get-zstd.headers" -o "$host/get-zstd.body" "$url" ||
+		echo "curl failed: $?" >"$host/get-zstd.error"
+	curl -s --max-time 10 -D "$host/get-identity.headers" -o "$host/get-identity.body" "$url" ||
+		echo "curl failed: $?" >"$host/get-identity.error"
+	curl -s --max-time 10 -H 'Accept-Encoding: gzip, deflate' -D "$host/get-lan.headers" -o "$host/get-lan.body" "$url" ||
+		echo "curl failed: $?" >"$host/get-lan.error"
+}
+
+# run_g8tdr_live <name> <probe 0|1> <env word...>: g8tdr/<name>/host, a live gate8-tex host (no file
+# sink, so no store index) and lib/null-receiver.ts as its viewer (viewer/null-receiver.json).
+run_g8tdr_live() {
+	local name="$1" probe="$2" host="$OUT/g8tdr/$1/host" waited=0 port=""
+	shift 2
+	local viewer="$OUT/g8tdr/$name/viewer"
+	mkdir -p "$host/evidence" "$viewer"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$host/evidence" GRC_LIVE_LISTEN=127.0.0.1:0 "${G8TDR_LIVE_ENV[@]}" "$@"
+		RS_FIXTURE_QUIT_FRAME="$G8TDR_LIVE_QUIT" RS_FIXTURE_STEP_LOG="$host/steps.jsonl"
+	)
+	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$FIXTURE_DIR"
+	local pid="$BG_PID"
+	[ -n "$pid" ] || return 0
+	while [ "$waited" -lt 400 ] && [ ! -s "$host/evidence/live.json" ] && kill -0 "$pid" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	if grep -q '"status": "listening"' "$host/evidence/live.json" 2>/dev/null; then
+		port="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$host/evidence/live.json")"
+	fi
+	if [ -z "$port" ]; then
+		echo "the live host is not listening (see g8tdr/$name/host/evidence/live.json)" >"$viewer/skipped.txt"
+	else
+		local probe_pid=""
+		if [ "$probe" = 1 ]; then
+			run_g8tdr_probe "$host" "$port" &
+			probe_pid=$!
+		fi
+		(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/lib/null-receiver.ts" \
+			--url "ws://127.0.0.1:$port/render-stream" --out "$viewer" --protocol 11 --window 1 \
+			--timeout-s 90 >"$viewer/stdout.log" 2>&1)
+		echo "$?" >"$viewer/exit.txt"
+		[ -z "$probe_pid" ] || wait "$probe_pid" 2>/dev/null || true
+	fi
+	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
+}
+
+run_g8tdr() {
+	run_import_g8tdr
+	local g="$OUT/g8tdr"
+	echo "run-gate8: g8tdr sync/capture (/9, GRC_TEXTURE_DECODE=engine, stock delivery and coding)"
+	RECORDING_NAME=recording.rs9
+	PATCH_RECORDING_NAME=recording-patch.rs9
+	run_capture_g8htr_tex "$g/sync/capture" "${G8TDR_ENV[@]}"
+	echo "run-gate8: g8tdr sync-off/capture (the same, GRC_HTTP_ENCODING=off: nothing coded at rest)"
+	run_capture_g8htr_tex "$g/sync-off/capture" "${G8TDR_ENV[@]}" GRC_HTTP_ENCODING=off
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+	echo "run-gate8: g8tdr live/host (/11, GRC_TEXTURE_WORKERS=2, null receiver, three GETs of the largest texture)"
+	run_g8tdr_live live 1
+	echo "run-gate8: g8tdr sabotage-at-rest-keep-identity/host (GRC_AT_REST_FAULT=keep-identity)"
+	run_g8tdr_live sabotage-at-rest-keep-identity 0 GRC_AT_REST_FAULT=keep-identity
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g8htr) run_g8htr ;;
+	g8tdr) run_g8tdr ;;
 	g8kp) run_g8kp ;;
 	g8kc) run_g8kc ;;
 	g8ku) run_g8ku ;;

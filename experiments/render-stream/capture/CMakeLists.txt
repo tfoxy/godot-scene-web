@@ -39,11 +39,11 @@ add_library(grc_codecs STATIC
   ${GRC_ZSTD_SOURCES}
   vendor/zlib/adler32.c vendor/zlib/crc32.c vendor/zlib/deflate.c vendor/zlib/inffast.c
   vendor/zlib/inflate.c vendor/zlib/inftrees.c vendor/zlib/trees.c vendor/zlib/zutil.c
-  src/rs_http_coding.cpp src/rs_live_coding.cpp)
+  src/rs_http_coding.cpp src/rs_live_coding.cpp src/rs_payload_rest.cpp)
 target_include_directories(grc_codecs PUBLIC vendor/zstd vendor/zlib src)
 target_compile_definitions(grc_codecs PRIVATE ZSTD_DISABLE_ASM=1 ZSTD_LEGACY_SUPPORT=0)
 target_compile_options(grc_codecs PRIVATE -w -O2)
-set_source_files_properties(src/rs_http_coding.cpp src/rs_live_coding.cpp PROPERTIES
+set_source_files_properties(src/rs_http_coding.cpp src/rs_live_coding.cpp src/rs_payload_rest.cpp PROPERTIES
   COMPILE_OPTIONS "-Wall;-Wextra;-Werror")
 set_target_properties(grc_codecs PROPERTIES
   POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
@@ -180,7 +180,7 @@ add_test(NAME abi_decode COMMAND abi_decode_test)
 add_executable(rs_mirror_test test/rs_mirror_test.cpp src/rs_mirror.cpp src/rs_texture_delivery.cpp src/rs_shader_payload.cpp
   src/rs_texture_payload.cpp src/rs_mesh_payload.cpp src/rs_sha256.cpp src/rs2_diff.cpp src/rs2_codec.cpp)
 target_include_directories(rs_mirror_test PRIVATE src)
-target_link_libraries(rs_mirror_test PRIVATE grc_warnings Threads::Threads)
+target_link_libraries(rs_mirror_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_mirror COMMAND rs_mirror_test)
 # HC4a: the same cases with the shadow oracle on (every snapshot compared with the full walk).
 add_test(NAME rs_mirror_shadow COMMAND rs_mirror_test)
@@ -571,7 +571,7 @@ add_executable(rs_texture_worker_test
   src/rs_resource_log.cpp src/rs_shader_payload.cpp src/rs_texture_payload.cpp
   src/rs_mesh_payload.cpp src/rs_sha256.cpp src/rs2_codec.cpp src/rs2_diff.cpp)
 target_include_directories(rs_texture_worker_test PRIVATE src)
-target_link_libraries(rs_texture_worker_test PRIVATE grc_warnings Threads::Threads)
+target_link_libraries(rs_texture_worker_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_texture_worker COMMAND rs_texture_worker_test)
 
 # G8a: the arm-time adoption pass (gate8-design.md D3-D5, D13): a born-armed hook sequence and the
@@ -584,7 +584,7 @@ add_executable(rs_adopt_test test/rs_adopt_test.cpp src/rs_adopt.cpp src/iface.c
   src/rs_sha256.cpp src/rs2_diff.cpp src/rs_resource_log.cpp src/rs_texture_worker.cpp
   src/rs2_codec.cpp src/rs_variant.cpp src/rs_registry.cpp src/report.cpp)
 target_include_directories(rs_adopt_test PRIVATE src vendor)
-target_link_libraries(rs_adopt_test PRIVATE grc_warnings Threads::Threads)
+target_link_libraries(rs_adopt_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_adopt COMMAND rs_adopt_test)
 
 # G8t: the host-decode seam (gate8-design.md D8, Q3): the decode table, the result check that

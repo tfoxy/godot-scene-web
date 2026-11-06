@@ -43,6 +43,7 @@ import { type G8resExpected, runG8res } from "./lib/gate8-res-checks";
 import { type G8hExpected, runG8h } from "./lib/gate8-size-checks";
 import { runG8tag } from "./lib/gate8-tag-checks";
 import { runG8tag2 } from "./lib/gate8-tag2-checks";
+import { runG8tdr } from "./lib/gate8-tdr-checks";
 import { type G8tExpected, runG8t } from "./lib/gate8-tex-checks";
 import { runG8w11 } from "./lib/gate8-w11-checks";
 import { runG8w11cResync } from "./lib/gate8-w11-native-checks";
@@ -80,6 +81,7 @@ const KNOWN_GROUPS = [
   "g8tag2",
   "g8rec1",
   "g8htr",
+  "g8tdr",
 ];
 
 function parseArgs(argv: string[]): { out: string } {
@@ -262,6 +264,12 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
     const g8htr = await runG8htr(out, adoptExpected);
     checks.push(...g8htr.checks);
     report.g8htr = g8htr.report;
+  }
+  if (run.includes("g8tdr")) {
+    // TDR: GRT1 bodies zstd-coded at rest (lib/gate8-tdr-checks.ts).
+    const g8tdr = await runG8tdr(out);
+    checks.push(...g8tdr.checks);
+    report.g8tdr = g8tdr.report;
   }
   if (run.includes("g8pt")) {
     const expected = JSON.parse(

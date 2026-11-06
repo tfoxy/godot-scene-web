@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "rs2_snapshot.h"
+#include "rs_captured.h"
 
 namespace grc {
 namespace rs {
@@ -157,7 +158,7 @@ class BasisJob {
   // `cache_source`: the entry's D7 source key (G8kc, PayloadCopy::source_key), empty when the
   // persisted cache is closed; the job then always encodes.
   BasisJob(std::uint32_t id, std::uint64_t version, std::string source_hash,
-           std::shared_ptr<const std::vector<std::uint8_t>> source, std::string format,
+           PayloadPtr source, std::string format,
            std::int64_t width, std::int64_t height, bool mipmaps, std::string cache_source = "")
       : id_(id), version_(version), source_hash_(std::move(source_hash)),
         source_(std::move(source)), format_(std::move(format)), width_(width), height_(height),
@@ -168,7 +169,7 @@ class BasisJob {
     std::string error;
     std::string hash;    // SHA-256 of the KTX2 bytes (before any fault)
     std::string params;  // the encoder's params_id
-    std::shared_ptr<const std::vector<std::uint8_t>> ktx2;
+    PayloadPtr ktx2;  // never coded at rest (KTX2 is zstd-supercompressed already)
     std::uint64_t encode_ns = 0;
     std::uint64_t hash_ns = 0;
     // G8kc's cache (D8): "hit" (served from a verified file, no encode), "miss" or "corrupt"
@@ -200,7 +201,7 @@ class BasisJob {
   std::uint32_t id() const { return id_; }
   std::uint64_t version() const { return version_; }
   const std::string &source_hash() const { return source_hash_; }
-  std::shared_ptr<const std::vector<std::uint8_t>> source() const {
+  PayloadPtr source() const {  // TDR: possibly coded at rest (identity_of() reads it)
     std::lock_guard<std::mutex> lock(mutex_);
     return source_;
   }
@@ -215,7 +216,7 @@ class BasisJob {
   std::uint32_t id_;
   std::uint64_t version_;
   std::string source_hash_;
-  std::shared_ptr<const std::vector<std::uint8_t>> source_;
+  PayloadPtr source_;
   std::string format_;
   std::int64_t width_;
   std::int64_t height_;

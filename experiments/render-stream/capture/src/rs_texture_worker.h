@@ -49,9 +49,11 @@ namespace rs {
 // GRC_TEXTURE_WORKERS and its test knobs, parsed once at arm.
 struct TextureWorkerConfig {
   int workers = 0;  // 0 = sync (the default): the hook copies, decodes and hashes itself
-  // GRC_TEXTURE_WORKER_MIN_BYTES: an image whose data is smaller stays synchronous (a 64 KiB
-  // payload hashes in ~30 us, less than a job's hand-off). 0 sends every copy to the pool.
-  std::uint64_t min_bytes = 65536;
+  // GRC_TEXTURE_WORKER_MIN_BYTES: an image whose data is smaller stays synchronous. TDR
+  // (live-swap-design.md Q5): 0 by default, so every copy, small ones included, is copied,
+  // decoded, hashed and coded at rest on the pool, never on the RenderingServer caller (G8kw's
+  // 64 KiB default kept small copies on the caller).
+  std::uint64_t min_bytes = 0;
   // GRC_TEXTURE_WORKER_DELAY_MS (a test knob, default 0): a worker sleeps this long before it
   // marks a job done, so a gate leg can hold publication back deterministically.
   std::uint64_t delay_ms = 0;

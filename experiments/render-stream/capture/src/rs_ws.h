@@ -275,6 +275,14 @@ bool parse_allowed_origins(std::string_view text, std::vector<std::string> *out,
 // What the server asks for the bytes behind a resource hash. Implemented by
 // G2c2's rs_resource_store; rs_ws knows nothing about where the bytes come
 // from or what they mean.
+// TDR: one GET's body: the bytes to send, the coding they are in (Identity when sent as they are),
+// and the identity payload's size (the logged `payload_bytes`). Null bytes: 404.
+struct ResourceBody {
+  std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+  Coding coding = Coding::Identity;
+  std::uint64_t identity_bytes = 0;
+};
+
 class ResourceSource {
  public:
   virtual ~ResourceSource() = default;
@@ -296,6 +304,30 @@ class ResourceSource {
     (void)hash;
     (void)coding;
     return nullptr;
+  }
+
+  // TDR: whether `hash` is servable (a GET's 404 and If-None-Match answers need no body).
+  virtual bool contains(std::string_view hash) { return lookup(hash) != nullptr; }
+
+  // TDR: the body a GET that accepts `accepted` is answered with: the coded body when the source
+  // holds one in that coding, the identity bytes otherwise. ServedResources answers with one
+  // probe and inflates only for an identity reader; this default composes the two calls above.
+  virtual ResourceBody lookup_body(std::string_view hash, Coding accepted) {
+    ResourceBody out;
+    const std::shared_ptr<const std::vector<std::uint8_t>> identity = lookup(hash);
+    if (identity == nullptr) {
+      return out;
+    }
+    out.identity_bytes = identity->size();
+    if (accepted != Coding::Identity) {
+      out.bytes = lookup_coded(hash, accepted);
+      if (out.bytes != nullptr) {
+        out.coding = accepted;
+        return out;
+      }
+    }
+    out.bytes = identity;
+    return out;
   }
 };
 

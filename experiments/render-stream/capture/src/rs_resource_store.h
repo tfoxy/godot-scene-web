@@ -63,6 +63,7 @@
 #include "rs2_snapshot.h"
 #include "rs_captured.h"
 #include "rs_file_writer.h"
+#include "rs_payload_rest.h"
 #include "rs_ws.h"
 
 namespace grc {
@@ -263,13 +264,18 @@ class ServedResources : public live::ResourceSource {
   void retire(const PayloadMap &current, const std::vector<const PayloadMap *> &bases,
               std::uint64_t frame, std::vector<ServeEvent> *events);
 
-  // I/O thread: the bytes to serve for `hash`, or null (404).
+  // I/O thread: the identity bytes to serve for `hash`, or null (404). TDR: a body coded at rest
+  // is inflated for the caller (counted, rs_payload_rest.h `get`), outside the mutex.
   std::shared_ptr<const std::vector<std::uint8_t>> lookup(std::string_view hash) override;
-  // G8kz: the coded body of a retained GRT1 payload (render-stream-2.md "HTTP (live)"), compressed
-  // on first request on the calling (I/O) thread, outside the mutex, and kept until the hash
-  // retires; null for any other payload kind or when the coded form is not smaller.
+  // G8kz, TDR: the stored body of a retained payload when it is held coded with `coding` (made
+  // once where it was built, rs_payload_rest.h); null otherwise. Never compresses.
   std::shared_ptr<const std::vector<std::uint8_t>> lookup_coded(std::string_view hash,
                                                                 live::Coding coding) override;
+  // TDR: one probe for a GET: the stored body when `accepted` is its coding, else the identity.
+  live::ResourceBody lookup_body(std::string_view hash, live::Coding accepted) override;
+  bool contains(std::string_view hash) override;
+  // served-at-rest: every retained body into `out` (each distinct body once, across `seen`).
+  void census(RestCensus *out, std::unordered_set<const void *> *seen) const;
 
   // Any thread (locked).
   std::uint64_t retained() const;
@@ -286,17 +292,12 @@ class ServedResources : public live::ResourceSource {
     std::uint64_t retired_unpinned = 0;  // of which the unpin sabotage forced
     std::uint64_t retained_max = 0;
     std::uint64_t retained_bytes_max = 0;
-    // G8kz: coded bodies made (compressed) and kept, their identity and coded bytes, and the
-    // time spent compressing on the I/O thread.
-    std::uint64_t coded_made = 0;
-    std::uint64_t coded_in_bytes = 0;
-    std::uint64_t coded_out_bytes = 0;
-    std::uint64_t coded_ns = 0;
   };
   Totals totals() const;
   std::string dropped_hash() const;
 
  private:
+  PayloadPtr held_locked(std::string_view hash) const;
   bool add_locked(const std::string &hash, const PayloadPtr &payload, std::uint64_t frame,
                   std::vector<ServeEvent> *events);
   void note_max_locked();
@@ -309,13 +310,9 @@ class ServedResources : public live::ResourceSource {
   mutable std::mutex mutex_;
   // retained hash -> the bytes it is served with (SERVED-MAP: a fixed-width binary key, not its
   // 64-character spelling).
+  // TDR: the body is the one the mirror holds, coded at rest when that shrank it; no second
+  // (identity or coded) copy is kept here.
   std::map<ServedKey, PayloadPtr> served_;
-  // G8kz: retained hash -> its coded bodies (a null slot: tried, not smaller, serve identity).
-  struct CodedBodies {
-    bool tried[3] = {false, false, false};  // indexed by live::Coding
-    PayloadPtr body[3];
-  };
-  std::map<ServedKey, CodedBodies> coded_;
   std::set<std::string> seen_;                // every hash ever pinned (drop-resource)
   std::uint64_t bytes_ = 0;
   std::uint64_t unpin_frame_ = 0;
