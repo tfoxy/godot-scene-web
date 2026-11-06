@@ -23,7 +23,9 @@
           ]
         }
       ],
-      "options": {},
+      "options": {
+        "pads": "each"
+      },
       "expect": [
         [
           {
@@ -103,7 +105,9 @@
           ]
         }
       ],
-      "options": {},
+      "options": {
+        "pads": "each"
+      },
       "expect": [
         [
           {

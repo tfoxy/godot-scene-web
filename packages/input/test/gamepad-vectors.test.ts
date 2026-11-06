@@ -1,11 +1,11 @@
 // Drives every conformance/v1/gamepad vector through `createGamepadCapture` on a scripted page:
 // each frame sets `getGamepads()`, fires the events a browser would, runs the pending poll, and
-// must push exactly that frame's `expect` records in order.
+// must push exactly that frame's `expect` records in order. Lock grants settle between frames.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { GamepadCaptureOptions, GamepadRecord } from "../src/gamepad";
-import { type FakeFrame, fakeGamepadPage } from "./gamepad-fake";
+import { type FakeFrame, fakeGamepadPage, settle } from "./gamepad-fake";
 
 interface GamepadVector {
   name: string;
@@ -37,9 +37,13 @@ describe("conformance/v1/gamepad", () => {
   for (const suite of suites)
     describe(suite.file, () => {
       for (const vector of suite.vectors)
-        it(vector.name, () => {
+        it(vector.name, async () => {
           const page = fakeGamepadPage(vector.options);
-          const got = vector.frames.map((frame) => page.step(frame));
+          const got: GamepadRecord[][] = [];
+          for (const frame of vector.frames) {
+            got.push(page.step(frame));
+            await settle();
+          }
           expect(got).toEqual(vector.expect);
           page.capture.dispose();
         });

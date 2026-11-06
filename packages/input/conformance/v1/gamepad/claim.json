@@ -1,0 +1,897 @@
+{
+  "description": "pads: \"claim\" (the default): a focused fresh press claims a pad through the Web Lock gsw-input/pad/<index>/<id>; the claiming press is consumed until released. A runner gives each vector a lock manager of its own (unless options.locks is null), applies `focus` to document.hasFocus() and `others` as locks another window holds, and lets lock grants settle between frames.",
+  "vectors": [
+    {
+      "name": "claim (default): a focused fresh press claims slot 0 and is consumed until released",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [],
+        [],
+        [],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          }
+        ]
+      ]
+    },
+    {
+      "name": "claim: a press while unfocused does not claim, and a hold carried into focus is not fresh",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ],
+          "focus": false
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ],
+          "focus": true
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0, 1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0, 1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0, 0],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "claim: a pad another window holds is never reported; a fresh press after it lets go claims",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ],
+          "others": ["gsw-input/pad/0/pad-a"]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ],
+          "others": []
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "claim: the claim takes the lowest free slot, not Gamepad.index",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 2,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 2,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0, 1],
+              "axes": [],
+              "index": 2,
+              "id": "pad-a"
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [],
+        [],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 1,
+            "pressed": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "claim: pads claim slots in claim order",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            },
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 1,
+              "id": "pad-b"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            },
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 1,
+              "id": "pad-b"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            },
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 1,
+              "id": "pad-b"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            },
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 1,
+              "id": "pad-b"
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [],
+        [],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          },
+          {
+            "event": "joypad_button",
+            "device": 1,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "claim: a trigger pull claims and stick motion does not",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.9],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                {
+                  "value": 0.8
+                }
+              ],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                {
+                  "value": 0.8
+                }
+              ],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                {
+                  "value": 0.2
+                }
+              ],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.5],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 5,
+            "axis_value": 0.1992
+          }
+        ],
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.5
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 5,
+            "axis_value": 0
+          }
+        ]
+      ]
+    },
+    {
+      "name": "claim: a disconnect releases and ends the claim; the pad must be claimed again",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": []
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [],
+        [],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          }
+        ],
+        [],
+        [],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "claim: a hidden tab releases but keeps its claim",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ],
+          "visibility": "hidden"
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ],
+          "visibility": "visible"
+        }
+      ],
+      "options": {},
+      "expect": [
+        [],
+        [],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          }
+        ],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "claim: dispose releases a claimed pad",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ],
+          "dispose": true
+        }
+      ],
+      "options": {},
+      "expect": [
+        [],
+        [],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          }
+        ]
+      ]
+    },
+    {
+      "name": "claim: without Web Locks (locks null) a claim is per-window and granted at once",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0,
+              "id": "pad-a"
+            }
+          ]
+        }
+      ],
+      "options": {
+        "locks": null
+      },
+      "expect": [
+        [],
+        [],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      ]
+    }
+  ]
+}

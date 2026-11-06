@@ -23,7 +23,9 @@
           ]
         }
       ],
-      "options": {},
+      "options": {
+        "pads": "each"
+      },
       "expect": [
         [
           {
@@ -107,7 +109,9 @@
           ]
         }
       ],
-      "options": {},
+      "options": {
+        "pads": "each"
+      },
       "expect": [
         [
           {
@@ -178,7 +182,9 @@
           ]
         }
       ],
-      "options": {},
+      "options": {
+        "pads": "each"
+      },
       "expect": [
         [
           {
@@ -257,6 +263,7 @@
         }
       ],
       "options": {
+        "pads": "each",
         "maxHz": 30
       },
       "expect": [

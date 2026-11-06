@@ -2,6 +2,7 @@
 //
 // Capture behaviour the frame vectors cannot express: lifecycle and polling, the held-state sync,
 // the `nonStandard` function, `latched`, inertness without the Gamepad API, and wire validity.
+// These run `pads: "each"`; the claim policy has gamepad-claim.test.ts.
 // Node has no Gamepad API, rAF, `window` or `document`, so default construction must be inert.
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -59,7 +60,7 @@ describe("createGamepadCapture lifecycle", () => {
   });
 
   it("polls only while a usable pad exists", () => {
-    const page = fakeGamepadPage();
+    const page = fakeGamepadPage({ pads: "each" });
     expect(page.pending()).toBe(false);
     page.step({ pads: [standard([1])] });
     expect(page.pending()).toBe(true);
@@ -70,7 +71,7 @@ describe("createGamepadCapture lifecycle", () => {
   });
 
   it("starts at once for a pad the page already knows", () => {
-    const page = fakeGamepadPage({}, [standard([1])]);
+    const page = fakeGamepadPage({ pads: "each" }, [standard([1])]);
     expect(page.pending()).toBe(true);
     expect(page.step({ pads: [standard([1])] })).toEqual([
       { event: "joypad_button", device: 0, button_index: 0, pressed: true },
@@ -78,7 +79,7 @@ describe("createGamepadCapture lifecycle", () => {
   });
 
   it("does not poll while hidden, and starts on visible", () => {
-    const page = fakeGamepadPage();
+    const page = fakeGamepadPage({ pads: "each" });
     page.document.visibilityState = "hidden";
     page.step({ pads: [standard([1])], visibility: "hidden" });
     expect(page.pending()).toBe(false);
@@ -88,7 +89,7 @@ describe("createGamepadCapture lifecycle", () => {
 
   it("enabled() off releases and parks; refresh() restarts", () => {
     let on = true;
-    const page = fakeGamepadPage({ enabled: () => on });
+    const page = fakeGamepadPage({ pads: "each", enabled: () => on });
     expect(page.step({ pads: [standard([1])] })).toHaveLength(1);
     on = false;
     page.capture.refresh();
@@ -101,7 +102,7 @@ describe("createGamepadCapture lifecycle", () => {
   });
 
   it("dispose removes every listener and is idempotent", () => {
-    const page = fakeGamepadPage();
+    const page = fakeGamepadPage({ pads: "each" });
     expect(page.window.count() + page.document.count()).toBe(3);
     page.capture.dispose();
     page.capture.dispose();
@@ -113,6 +114,7 @@ describe("createGamepadCapture lifecycle", () => {
 describe("createGamepadCapture options", () => {
   it("nonStandard as a function remaps a pad, or skips it with null", () => {
     const page = fakeGamepadPage({
+      pads: "each",
       nonStandard: (pad) =>
         pad.id === "evdev" ? { buttons: [0, pad.buttons?.[0] ?? 0] } : null,
     });
@@ -128,17 +130,17 @@ describe("createGamepadCapture options", () => {
   });
 
   it("clamps maxSlots to 1..16", () => {
-    const page = fakeGamepadPage({ maxSlots: 99 });
+    const page = fakeGamepadPage({ pads: "each", maxSlots: 99 });
     const records = page.step({ pads: [{ ...standard([1]), index: 15 }] });
     expect(records).toEqual([
       { event: "joypad_button", device: 15, button_index: 0, pressed: true },
     ]);
-    const one = fakeGamepadPage({ maxSlots: 0 });
+    const one = fakeGamepadPage({ pads: "each", maxSlots: 0 });
     expect(one.step({ pads: [{ ...standard([1]), index: 1 }] })).toEqual([]);
   });
 
   it("treats connected: false as absent", () => {
-    const page = fakeGamepadPage();
+    const page = fakeGamepadPage({ pads: "each" });
     page.step({ pads: [standard([1])] });
     expect(
       page.step({ pads: [{ ...standard([1]), connected: false }] }),
@@ -150,7 +152,7 @@ describe("createGamepadCapture options", () => {
 
 describe("heldState()", () => {
   it("reports each present slot's pressed buttons then nonzero axes", () => {
-    const page = fakeGamepadPage();
+    const page = fakeGamepadPage({ pads: "each" });
     page.step({
       pads: [
         {
@@ -177,7 +179,7 @@ describe("heldState()", () => {
   });
 
   it("leaves neutralized controls out", () => {
-    const page = fakeGamepadPage({ neutralizeHeldOnStart: true });
+    const page = fakeGamepadPage({ pads: "each", neutralizeHeldOnStart: true });
     page.step({ pads: [standard([1])] });
     expect(page.capture.heldState()).toEqual([
       { scope: "joypad", device: 0, held: [] },
@@ -187,7 +189,7 @@ describe("heldState()", () => {
 
 describe("wire validity", () => {
   it("every pushed record and held state passes the gsw-input/1 validator", () => {
-    const page = fakeGamepadPage({ maxSlots: 16 });
+    const page = fakeGamepadPage({ pads: "each", maxSlots: 16 });
     const buttons = Array.from({ length: 20 }, () => ({ value: 0.73 }));
     page.step({
       pads: [{ ...standard(buttons, [0.123456, -0.98765, 1, -1]), index: 15 }],

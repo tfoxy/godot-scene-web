@@ -25,7 +25,7 @@
 // through the structural interfaces below, which the real `window`, `document`, `KeyboardEvent`,
 // `Element` and `navigator.keyboard` satisfy.
 
-import type { InputRecord, InputSyncScope, KeyRecord } from "./format";
+import type { KeyRecord } from "./format";
 import { Key } from "./godot-enums";
 import {
   type DomKeyEvent,
@@ -33,21 +33,8 @@ import {
   keyRecordFromDom,
   releaseKeyRecord,
 } from "./keymap";
-
-/**
- * Where a capture writes its records, in order (the root entry's session is one). A capture pushes
- * a fresh object per record and never mutates it afterwards. Structurally the session's `InputSink`.
- */
-export interface KeyboardSink {
-  push(record: InputRecord): void;
-}
-
-/** One scope's complete held state: a `sync` message without `type`, `epoch` and `seq`. */
-export interface KeyboardHeldState {
-  scope: InputSyncScope;
-  device?: number;
-  held: readonly InputRecord[];
-}
+// Type-only: the subpath bundle must not pull the session (and through it the codec) in.
+import type { InputHeldState, InputSink } from "./session";
 
 /** The fields of a DOM `KeyboardEvent` the capture reads. */
 export interface KeyboardEventLike extends Omit<DomKeyEvent, "altGraph"> {
@@ -126,7 +113,7 @@ export type KeyboardPreventDefault =
 
 export interface KeyboardCaptureOptions {
   /** Where records go: a session, or a consumer's own adapter. */
-  sink: KeyboardSink;
+  sink: InputSink;
   /**
    * Read live, per keydown, so a flip lands on the next keystroke (default: always on). Turning
    * it off releases anything held on the next `refresh()`.
@@ -188,7 +175,7 @@ export interface KeyboardCaptureOptions {
 
 export interface KeyboardCapture {
   /** The latched presses as one `keyboard` scope (a session's `InputSyncSource`). Fresh objects. */
-  heldState(): readonly KeyboardHeldState[];
+  heldState(): readonly InputHeldState[];
   /** Re-read `enabled()`: off releases everything held. Cheap and idempotent. */
   refresh(): void;
   /** Release every latched key now, in press order. */
@@ -520,7 +507,7 @@ export function createKeyboardCapture(
   }
 
   return {
-    heldState(): readonly KeyboardHeldState[] {
+    heldState(): readonly InputHeldState[] {
       return [
         {
           scope: "keyboard",

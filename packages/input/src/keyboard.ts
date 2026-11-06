@@ -12,10 +12,8 @@ export {
   type KeyboardCaptureStats,
   type KeyboardDropReason,
   type KeyboardEventLike,
-  type KeyboardHeldState,
   type KeyboardLayoutSource,
   type KeyboardPreventDefault,
-  type KeyboardSink,
   type KeyEventTargetLike,
   type KeyVisibilitySource,
 } from "./keyboard-capture";

@@ -689,6 +689,7 @@ describe("createInputSession: with the real gamepad capture", () => {
       },
       events: null,
       visibility: null,
+      pads: "each",
     });
     session.attach(capture);
     const step = () => {

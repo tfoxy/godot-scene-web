@@ -15,6 +15,7 @@
         }
       ],
       "options": {
+        "pads": "each",
         "nonStandard": "as-standard"
       },
       "expect": [[]]
@@ -32,7 +33,9 @@
           ]
         }
       ],
-      "options": {},
+      "options": {
+        "pads": "each"
+      },
       "expect": [[]]
     },
     {
@@ -49,6 +52,7 @@
         }
       ],
       "options": {
+        "pads": "each",
         "nonStandard": "as-standard"
       },
       "expect": [
@@ -88,7 +92,9 @@
           ]
         }
       ],
-      "options": {},
+      "options": {
+        "pads": "each"
+      },
       "expect": [
         [
           {

@@ -31,7 +31,9 @@
           "pads": []
         }
       ],
-      "options": {},
+      "options": {
+        "pads": "each"
+      },
       "expect": [
         [
           {
@@ -119,7 +121,9 @@
           "visibility": "visible"
         }
       ],
-      "options": {},
+      "options": {
+        "pads": "each"
+      },
       "expect": [
         [
           {
@@ -198,7 +202,9 @@
           ]
         }
       ],
-      "options": {},
+      "options": {
+        "pads": "each"
+      },
       "expect": [
         [
           {

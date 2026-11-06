@@ -53,14 +53,14 @@ describe("@godot-scene-web/input export surface", () => {
 });
 
 const GAMEPAD_VALUE_EXPORTS = `
-createGamepadCapture latched LATCH_PRESS LATCH_RELEASE STANDARD_GAMEPAD_MAP
+createGamepadCapture latched LATCH_PRESS LATCH_RELEASE padLockName STANDARD_GAMEPAD_MAP
 `
   .trim()
   .split(/\s+/);
 
 const GAMEPAD_TYPE_EXPORTS = `
 GamepadButtonSnapshot GamepadSnapshot StandardGamepadView GamepadNonStandardPolicy GamepadPadsMode
-GamepadRecord GamepadSink GamepadHeldState GamepadEventTarget GamepadVisibilitySource
+GamepadRecord GamepadClaim GamepadLockManager GamepadEventTarget GamepadVisibilitySource
 GamepadCaptureOptions GamepadCapture
 `
   .trim()
@@ -98,7 +98,7 @@ keyLocationFromCode keyRecordFromDom physicalKeycodeFromCode releaseKeyRecord
 
 const KEYBOARD_TYPE_EXPORTS = `
 FocusedElementLike KeyboardCapture KeyboardCaptureOptions KeyboardCaptureStats KeyboardDropReason
-KeyboardEventLike KeyboardHeldState KeyboardLayoutSource KeyboardPreventDefault KeyboardSink
+KeyboardEventLike KeyboardLayoutSource KeyboardPreventDefault
 KeyEventTargetLike KeyVisibilitySource
 DomKeyEvent KeyboardLayoutLike KeyRecordOptions
 `
