@@ -473,6 +473,36 @@ fn the_topmost_item_in_draw_order_wins() {
 }
 
 #[test]
+fn a_hit_ignored_item_passes_the_point_to_what_is_drawn_below() {
+    // HIT1: Q covers G's corner; with Q ignored (Godot's mouse_filter IGNORE) G owns it again,
+    // the mapping follows, and a fresh applier (a coding resync) keeps the set.
+    let store = PayloadStore::default();
+    let mut s = base();
+    s.items.get_mut(&Q).unwrap().commands = Commands {
+        list: vec![Command::Rect {
+            aa: false,
+            rect: [5.0, 195.0, 20.0, 20.0],
+            color: [1.0; 4],
+        }],
+        ..Commands::default()
+    };
+    let mut b = applier();
+    b.apply(&s, &full_delta(&s), &store);
+    assert_eq!(b.hit_test(12.0, 202.0), Some(Q));
+    b.set_hit_ignore(&[Q, 999]);
+    assert_eq!(b.hit_test(12.0, 202.0), Some(G));
+    assert_eq!(b.to_game(&s, 12.0, 202.0), Some((Some(G), [12.0, 202.0])));
+    // Where only Q is drawn, an ignored Q leaves bare clear colour.
+    assert_eq!(b.hit_test(7.0, 197.0), None);
+    let mut fresh = applier();
+    fresh.inherit_overrides(&mut b);
+    fresh.apply(&s, &full_delta(&s), &store);
+    assert_eq!(fresh.hit_test(12.0, 202.0), Some(G));
+    fresh.set_hit_ignore(&[]);
+    assert_eq!(fresh.hit_test(12.0, 202.0), Some(Q));
+}
+
+#[test]
 fn a_hit_follows_a_transform_only_frame() {
     let store = PayloadStore::default();
     let mut s = base();

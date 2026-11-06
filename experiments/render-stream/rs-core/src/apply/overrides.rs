@@ -228,6 +228,7 @@ impl Applier {
     pub fn inherit_overrides(&mut self, old: &mut Applier) {
         self.overrides = std::mem::take(&mut old.overrides);
         self.removed_log = old.removed_log.take();
+        self.hit_ignore = std::mem::take(&mut old.hit_ignore);
         self.ov_sabotage = old.ov_sabotage;
         // FRZ-HOOK: the frozen membership and any pending unfreeze follow the table. The held
         // records do not (a fresh applier has none): its first apply draws the held items from
@@ -464,15 +465,27 @@ impl Applier {
 
     // ------------------------------------------------------------------------- INP1: pointer
 
+    /// HIT1: replace the set of items whose own commands [`Applier::hit_test`] passes through
+    /// (Godot's `mouse_filter = IGNORE`: the item's children still count). Ids not in the state
+    /// are kept and simply never hit; the client drops removed ids itself.
+    pub fn set_hit_ignore(&mut self, ids: &[u32]) {
+        self.hit_ignore.clear();
+        self.hit_ignore.extend(ids.iter().copied());
+    }
+
     /// INP1: the topmost drawn item under the presentation-space point `(x, y)`, in the last
     /// walk's draw order (the attach list, walked backwards). An entry counts when it emits, the
     /// point is inside its scissor, and inside its content rect under its *drawn* transform
     /// (overrides included; a rotated or sheared item is tested in its own space, not by its
-    /// AABB). Nothing is computed per frame: this reads the records the walk and the rows-only
-    /// path already keep.
+    /// AABB). HIT1: an item in the hit-ignore set never counts (what is drawn below it does).
+    /// Nothing is computed per frame: this reads the records the walk and the rows-only path
+    /// already keep.
     pub fn hit_test(&self, x: f32, y: f32) -> Option<Id> {
         for a in self.attach.iter().rev() {
             if !a.emit || a.parked {
+                continue;
+            }
+            if !self.hit_ignore.is_empty() && self.hit_ignore.contains(&a.item) {
                 continue;
             }
             if let Some(s) = a.scissor {

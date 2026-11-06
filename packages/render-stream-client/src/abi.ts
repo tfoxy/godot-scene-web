@@ -97,6 +97,8 @@ export interface GswRs {
   // INP1: pointer mapping (client-extensions-design.md "As built (INP1)").
   hit_test(x: number, y: number): number;
   to_game(x: number, y: number): Float64Array;
+  // HIT1: the items hit tests pass through (Godot's mouse_filter IGNORE).
+  set_hit_ignore(ids: Uint32Array): void;
   free(): void;
 }
 
@@ -226,5 +228,6 @@ export const CLIENT_CORE_METHODS = [
   "query_children",
   "hit_test",
   "to_game",
+  "set_hit_ignore",
   "free",
 ] as const satisfies readonly (keyof GswRs)[];

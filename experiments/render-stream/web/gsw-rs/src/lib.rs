@@ -576,6 +576,8 @@ pub struct GswRs {
     opts: Opts,
     /// TAG2: an extension listens for removed items (`onItemsRemoved`): every applier logs them.
     log_removed: bool,
+    /// HIT1: the client's hit-ignore set, handed to every applier (`set_hit_ignore`).
+    hit_ignore: Vec<u32>,
     data: Vec<u8>,
     version: u8,
     spans: Vec<RecordSpan>,
@@ -839,6 +841,7 @@ impl GswRs {
             canvas,
             opts,
             log_removed: false,
+            hit_ignore: Vec::new(),
             data: Vec::new(),
             version: 6,
             spans: Vec::new(),
@@ -1215,6 +1218,7 @@ impl GswRs {
         applier.sabotage = self.opts.apply;
         applier.ov_sabotage = self.opts.ov;
         applier.log_removed(self.log_removed);
+        applier.set_hit_ignore(&self.hit_ignore);
         // PM3: GLES3 stores multimesh colours and custom data as half floats.
         applier.half_instances = s.engine.rendering_method == "gl_compatibility";
         // G8kp (texture-delivery-design.md D3, Q3): gpu_formats from this context's extensions,
@@ -2368,6 +2372,15 @@ impl GswRs {
         a.query_subtree_rect(v.state(), id)
             .map(|r| r.iter().map(|x| f64::from(*x)).collect())
             .unwrap_or_default()
+    }
+
+    /// HIT1: the items whose own commands `hit_test` / `to_game` pass through (Godot's
+    /// `mouse_filter = IGNORE`), whole; kept for every later applier of the session.
+    pub fn set_hit_ignore(&mut self, ids: &[u32]) {
+        self.hit_ignore = ids.to_vec();
+        if let Some(a) = self.applier.as_mut() {
+            a.set_hit_ignore(ids);
+        }
     }
 
     /// INP1 `ItemQuery.hitTest`: the topmost drawn item under the presentation-space point, or

@@ -26,6 +26,9 @@ class ExtCore extends FakeCore implements ExtensionCore {
   removed: number[] = [];
   logRemoved = false;
   tables: { ids: number[]; vals: number[] }[] = [];
+  /** HIT1: the hit-ignore set as last copied in, and how often. */
+  hitIgnore: number[] = [];
+  hitIgnoreCopies = 0;
   refreshes = 0;
   override receive(data: ArrayBuffer, sessionSeen: boolean): CoreMessage {
     const m = JSON.parse(new TextDecoder().decode(data)) as CoreMessage & {
@@ -70,7 +73,14 @@ class ExtCore extends FakeCore implements ExtensionCore {
     return Uint32Array.from(id < 3 ? [id + 1] : []);
   }
   hitTest(x: number, y: number): number | null {
-    return x >= 10 && x < 14 && y >= 20 && y < 24 ? 3 : null;
+    if (x < 10 || x >= 14 || y < 20 || y >= 24) return null;
+    // Item 3 is drawn over item 2 (same rect); an ignored item passes the point below.
+    for (const id of [3, 2]) if (!this.hitIgnore.includes(id)) return id;
+    return null;
+  }
+  setHitIgnore(ids: Uint32Array): void {
+    this.hitIgnore = [...ids];
+    this.hitIgnoreCopies++;
   }
 }
 
@@ -495,6 +505,54 @@ describe("render-stream client extensions (TAG2)", () => {
     host.query.transform(3);
     host.query.rect(3);
     expect(queries).toBe(4);
+  });
+
+  it("ignoreHits passes hit tests through an item, lazily, and forgets removed items", () => {
+    let session: ExtensionSession | null = null;
+    const h = setup([
+      {
+        id: "overlay",
+        wants: { fields: ["scene", "path"] },
+        onSession: (s) => {
+          session = s;
+        },
+      },
+    ]);
+    const t = h.last();
+    t.on.message(meta(full));
+    t.on.message(tx(1));
+    h.clock.frame();
+    expect(h.ext.query.hitTest(11, 21)).toBe(3);
+    expect(h.core.hitIgnoreCopies).toBe(0); // nothing ignored: never copied
+    // Not copied when set (no work until a hit test needs it), then once.
+    expect(session).not.toBeNull();
+    session!.ignoreHits(3, true);
+    session!.ignoreHits(3, true);
+    expect(h.core.hitIgnoreCopies).toBe(0);
+    expect(h.core.logRemoved).toBe(true); // removals must reach the set
+    expect(h.ext.query.hitTest(11, 21)).toBe(2);
+    expect(h.ext.query.hitTest(12, 22)).toBe(2);
+    expect(h.core.hitIgnore).toEqual([3]);
+    expect(h.core.hitIgnoreCopies).toBe(1);
+    // A removed item leaves the set.
+    h.core.removed = [3];
+    t.on.message(tx(2));
+    h.clock.frame();
+    expect(h.ext.query.hitTest(11, 21)).toBe(3);
+    expect(h.core.hitIgnore).toEqual([]);
+    // Off again, and a new session starts empty.
+    session!.ignoreHits(2, true);
+    expect(h.ext.query.hitTest(11, 21)).toBe(3);
+    session!.ignoreHits(2, false);
+    session!.ignoreHits(3, true);
+    expect(h.ext.query.hitTest(11, 21)).toBe(2);
+    h.ext.beginSession("s2", "st2");
+    expect(h.ext.query.hitTest(11, 21)).toBe(3);
+    expect(h.core.hitIgnore).toEqual([]);
+    // Bad ids are ignored.
+    session!.ignoreHits(-1, true);
+    session!.ignoreHits(1.5, true);
+    expect(h.ext.query.hitTest(11, 21)).toBe(3);
   });
 
   it("query.hitTest asks the core on demand and is null before it is bound", () => {

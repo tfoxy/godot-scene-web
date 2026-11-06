@@ -354,6 +354,11 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     return id < 0 ? null : id;
   }
 
+  /** HIT1: the items whose own commands `hitTest` / `toGame` pass through, whole. */
+  setHitIgnore(ids: Uint32Array): void {
+    this.g.set_hit_ignore(ids);
+  }
+
   /** `[item (-1: none), x, y]` of the drawn point mapped to the game's, or empty (a singular
    * override). */
   toGame(x: number, y: number): ArrayLike<number> {

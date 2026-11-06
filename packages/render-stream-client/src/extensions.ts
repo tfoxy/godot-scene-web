@@ -50,6 +50,14 @@ export interface ExtensionSession {
   /** Draw again on the next frame callback, from outside a frame (an input, a timer): runs
    * `beforeDraw` with seq null, as `ExtensionFrame.requestRedraw` does. */
   requestRedraw(): void;
+  /**
+   * HIT1: Godot's `mouse_filter = IGNORE` for the client's pointer hit test. While on, the item's
+   * own commands never count in `ItemQuery.hitTest`, `client.toGame` / `clientToGame` or
+   * `pointerTargetResolver` (what is drawn below it does; its children still count), so a
+   * transparent overlay the game does not pick stops hiding what is under it. Drawing is
+   * unchanged. Per session: a removed item leaves the set, and a new session starts empty.
+   */
+  ignoreHits(id: number, on: boolean): void;
 }
 
 export interface ItemMeta {
@@ -198,6 +206,8 @@ export interface ExtensionCore {
   queryChildren(id: number): Uint32Array;
   /** INP1: the topmost drawn item under a presentation-space point, or null. */
   hitTest(x: number, y: number): number | null;
+  /** HIT1: the hit-ignore set, whole. */
+  setHitIgnore(ids: Uint32Array): void;
 }
 
 /** The hello's `item_meta` value (render-stream-13.md, TAG1's parser: exactly these keys). */
@@ -466,7 +476,10 @@ export class ExtensionHost {
   private redrawWanted = false;
   private readonly table: Table;
   readonly query: ItemQuery;
-  private readonly listensRemoved: boolean;
+  private listensRemoved: boolean;
+  /** HIT1: the session's hit-ignore set, copied into the core lazily (before a hit test). */
+  private readonly hitIgnore = new Set<number>();
+  private hitIgnoreDirty = false;
   private readonly drawers: RenderStreamExtension[];
   /** During the `beforeDraw` dispatch the state cannot change, so the last item read is reused:
    * `transform(id)` then `rect(id)` is one core query, not two. Off outside the dispatch. */
@@ -510,7 +523,10 @@ export class ExtensionHost {
         return f.length > 0 && f[1] !== 0;
       },
       meta: (id) => this.metas.get(id) ?? null,
-      hitTest: (x, y) => this.core?.hitTest(x, y) ?? null,
+      hitTest: (x, y) => {
+        this.flushHitIgnore();
+        return this.core?.hitTest(x, y) ?? null;
+      },
       [RAW_ITEM]: (id) => this.item(id),
     };
     this.query = query;
@@ -537,6 +553,29 @@ export class ExtensionHost {
   bind(core: ExtensionCore): void {
     this.core = core;
     if (this.listensRemoved) core.setLogRemoved(true);
+    this.hitIgnoreDirty = this.hitIgnore.size > 0;
+  }
+
+  /** HIT1: copy a changed hit-ignore set into the core (before any hit test or `toGame`). */
+  flushHitIgnore(): void {
+    if (!this.hitIgnoreDirty || this.core === null) return;
+    this.hitIgnoreDirty = false;
+    this.core.setHitIgnore(Uint32Array.from(this.hitIgnore));
+  }
+
+  private ignoreHits(id: number, on: boolean): void {
+    if (!Number.isInteger(id) || id < 0) return;
+    if (on === this.hitIgnore.has(id)) return;
+    if (on) {
+      this.hitIgnore.add(id);
+      // A removed item must leave the set (ids are not the game's to keep), so the core logs
+      // removals from the first ignored item on.
+      if (!this.listensRemoved) {
+        this.listensRemoved = true;
+        this.core?.setLogRemoved(true);
+      }
+    } else this.hitIgnore.delete(id);
+    this.hitIgnoreDirty = true;
   }
 
   /** A session record: a fresh table on both sides (ids are per session). */
@@ -550,6 +589,10 @@ export class ExtensionHost {
     this.table.resetOwners();
     this.table.dirty = false;
     this.redrawWanted = false;
+    if (this.hitIgnore.size > 0) {
+      this.hitIgnore.clear();
+      this.hitIgnoreDirty = true;
+    }
   }
 
   private announce(grant: ItemMetaGrant | null): void {
@@ -562,6 +605,7 @@ export class ExtensionHost {
       requestRedraw: () => {
         this.redrawWanted = true;
       },
+      ignoreHits: (id, on) => this.ignoreHits(id, on),
     };
     for (const e of this.exts) this.call(() => e.onSession?.(s));
   }
@@ -635,7 +679,10 @@ export class ExtensionHost {
     if (!this.listensRemoved || this.core === null) return;
     const ids = this.core.takeRemoved();
     if (ids.length === 0) return;
-    for (const id of ids) this.metas.delete(id);
+    for (const id of ids) {
+      this.metas.delete(id);
+      if (this.hitIgnore.delete(id)) this.hitIgnoreDirty = true;
+    }
     this.table.drop(ids);
     for (const e of this.exts) this.call(() => e.onItemsRemoved?.(ids));
   }

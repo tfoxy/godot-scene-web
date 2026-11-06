@@ -286,6 +286,7 @@ class Client implements RenderStreamClient {
 
   toGame(x: number, y: number): GamePoint | null {
     if (this.disposed || this.core === null) return null;
+    this.ext?.flushHitIgnore();
     const m = this.core.toGame(x, y);
     if (m.length !== 3) return null;
     return {
