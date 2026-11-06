@@ -249,6 +249,8 @@ bool parse_sabotage(std::string_view text, Sabotage *out) {
     *out = Sabotage::CapMacIgnored;
   } else if (text == "track-cap-exp-ignored") {
     *out = Sabotage::CapExpIgnored;
+  } else if (text == "track-inject-no-release") {
+    *out = Sabotage::InjectNoRelease;
   } else {
     *out = Sabotage::None;
     return false;
@@ -264,6 +266,7 @@ const char *sabotage_name(Sabotage sabotage) {
     case Sabotage::NoRelease: return "track-no-release";
     case Sabotage::CapMacIgnored: return "track-cap-mac-ignored";
     case Sabotage::CapExpIgnored: return "track-cap-exp-ignored";
+    case Sabotage::InjectNoRelease: return "track-inject-no-release";
     case Sabotage::None: break;
   }
   return "";
@@ -272,6 +275,8 @@ const char *sabotage_name(Sabotage sabotage) {
 bool sabotage_needs_caps(Sabotage sabotage) {
   return sabotage == Sabotage::CapMacIgnored || sabotage == Sabotage::CapExpIgnored;
 }
+
+bool sabotage_needs_inject(Sabotage sabotage) { return sabotage == Sabotage::InjectNoRelease; }
 
 bool parse_kinds(const char *text, std::vector<std::string> *kinds, std::string *error) {
   kinds->clear();
@@ -935,7 +940,14 @@ std::string TrackHub::json(const Extras &extras) const {
   json.key("messages_per_second").unsigned_integer(config_.rate_per_s);
   json.key("burst").unsigned_integer(config_.burst);
   json.object_end();
-  json.field_null("inject");  // TRK6
+  if (config_.inject_mode.empty()) {
+    json.field_null("inject");
+  } else {
+    json.key("inject").object_begin();
+    json.field("mode", config_.inject_mode);
+    json.field("addon_sha256", config_.inject_addon_sha256);
+    json.object_end();
+  }
   json.field("caps", std::string(config_.caps == CapsMode::Hmac ? "hmac" : "shared"));
   json.key("carriers").array_begin();
   for (const CarrierTracks &c : extras.carriers) {

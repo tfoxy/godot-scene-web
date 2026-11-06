@@ -353,7 +353,7 @@ void test_sabotages() {
   }
   Sabotage s = Sabotage::None;
   for (const char *name : {"track-view-token-accepted", "track-rate-off", "track-grant-ignored", "track-no-release",
-                           "track-cap-mac-ignored", "track-cap-exp-ignored"}) {
+                           "track-cap-mac-ignored", "track-cap-exp-ignored", "track-inject-no-release"}) {
     check(tr::parse_sabotage(name, &s) && std::string(tr::sabotage_name(s)) == name,
           std::string("parse_sabotage round trip ") + name);
   }
@@ -361,6 +361,11 @@ void test_sabotages() {
   check(tr::sabotage_needs_caps(Sabotage::CapMacIgnored) && tr::sabotage_needs_caps(Sabotage::CapExpIgnored) &&
             !tr::sabotage_needs_caps(Sabotage::NoRelease) && !tr::sabotage_needs_caps(Sabotage::None),
         "sabotage_needs_caps");
+  // TRK6: the built-in injector's sabotage acts outside the hub; it only has to parse and name.
+  check(tr::sabotage_needs_inject(Sabotage::InjectNoRelease) && !tr::sabotage_needs_inject(Sabotage::NoRelease) &&
+            !tr::sabotage_needs_inject(Sabotage::CapMacIgnored) && !tr::sabotage_needs_inject(Sabotage::None) &&
+            !tr::sabotage_needs_caps(Sabotage::InjectNoRelease),
+        "sabotage_needs_inject");
 }
 
 // ------------------------------------------------------------------- the checks
@@ -963,6 +968,17 @@ void test_json() {
   check(has("\"track-unauthorized:view-token\":1") && has("\"track-protocol\":1") && has("\"sabotage\":null"),
         "json: refusals and sabotage: " + j);
   check(j.find(kCred) == std::string::npos && j.find(kView) == std::string::npos, "json: no secret material");
+  check(has("\"inject\":null"), "json: inject null by default: " + j);
+  {
+    TrackConfig injected = base_config(Sabotage::None);
+    injected.inject_mode = "reference";
+    injected.inject_addon_sha256 = std::string(64, 'a');
+    H hi(injected);
+    const std::string ji = compact(hi.hub->json(extras));
+    check(ji.find("\"inject\":{\"mode\":\"reference\",\"addon_sha256\":\"" + std::string(64, 'a') + "\"}") !=
+              std::string::npos,
+          "json: inject object: " + ji);
+  }
   H hs(base_config(Sabotage::RateOff));
   check(compact(hs.hub->json(extras)).find("\"sabotage\":\"track-rate-off\"") != std::string::npos, "json: sabotage named");
   for (const std::string &l : h.logs) {

@@ -75,6 +75,25 @@ target_link_libraries(grc_basisu PUBLIC grc_codecs Threads::Threads)
 set_target_properties(grc_basisu PROPERTIES
   POSITION_INDEPENDENT_CODE ON CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 
+# TRK6 (protocol/tracks-design.md Q6): the gsw-input/1 reference injector embedded in the library for
+# GRC_LIVE_TRACK_INPUT_INJECT=reference. cmake/embed_gsw_input.cmake composes the addon's scripts
+# and src/track_inject_glue.gd into one GDScript (inner classes, renamed) and a header with its
+# bytes and the addon digest. The stamp makes a changed addon file regenerate; the generated files
+# are written only when their content changed, so an unchanged addon rebuilds nothing.
+set(GRC_GSW_INPUT_ADDON ${CMAKE_CURRENT_SOURCE_DIR}/../../../packages/input/godot/addons/gsw_input)
+set(GRC_INJECT_GEN ${CMAKE_CURRENT_BINARY_DIR}/generated)
+file(GLOB GRC_GSW_INPUT_SCRIPTS CONFIGURE_DEPENDS ${GRC_GSW_INPUT_ADDON}/*.gd)
+add_custom_command(
+  OUTPUT ${GRC_INJECT_GEN}/embed.stamp
+  COMMAND ${CMAKE_COMMAND} -DADDON_DIR=${GRC_GSW_INPUT_ADDON}
+    -DGLUE=${CMAKE_CURRENT_SOURCE_DIR}/src/track_inject_glue.gd -DOUT_DIR=${GRC_INJECT_GEN}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_gsw_input.cmake
+  COMMAND ${CMAKE_COMMAND} -E touch ${GRC_INJECT_GEN}/embed.stamp
+  DEPENDS ${GRC_GSW_INPUT_SCRIPTS} src/track_inject_glue.gd cmake/embed_gsw_input.cmake
+  COMMENT "Embedding the gsw-input reference injector"
+  VERBATIM)
+add_custom_target(grc_inject_script DEPENDS ${GRC_INJECT_GEN}/embed.stamp)
+
 add_library(render_stream_capture SHARED
   src/calib.cpp
   src/entry.cpp
@@ -123,7 +142,8 @@ add_library(render_stream_capture SHARED
   src/rs_ws.cpp
   src/vtable.cpp
 )
-target_include_directories(render_stream_capture PRIVATE src vendor)
+target_include_directories(render_stream_capture PRIVATE src vendor ${GRC_INJECT_GEN})
+add_dependencies(render_stream_capture grc_inject_script)
 target_link_libraries(render_stream_capture PRIVATE grc_warnings grc_codecs grc_basisu)
 set_target_properties(render_stream_capture PROPERTIES
   CXX_VISIBILITY_PRESET hidden

@@ -411,10 +411,15 @@
       "exclusive": true
     },
     {
-      "why": "TRK2 RenderStreamTrack (tracks-design.md Q6, As built (TRK2)): the class (rs_tracks_gd.*), fixtures/track-input (a GDScript receiver wired to the gsw-input reference injector, whose addon is a link to packages/input/godot/addons/gsw_input), its Node track client and the g8l-trk checks. Nothing binds a kind outside gate 8's g8l/trk legs (native only: no browser group replays them). The raw track client is shared with self-test-tracks.ts, hence pure",
+      "why": "TRK2 RenderStreamTrack (tracks-design.md Q6, As built (TRK2)): the class (rs_tracks_gd.*), fixtures/track-input (a GDScript receiver wired to the gsw-input reference injector, whose addon is a link to packages/input/godot/addons/gsw_input), its Node track client and the g8l-trk checks. TRK6 embeds that addon in the capture library (cmake/embed_gsw_input.cmake, src/track_inject_glue.gd): an addon edit rebuilds the capture and moves g8l/trk and g8l/inject (fixtures/track-inject and -addon), nothing else. Nothing binds a kind outside gate 8's g8l/trk legs (native only: no browser group replays them). The raw track client is shared with self-test-tracks.ts, hence pure",
       "paths": [
         "experiments/render-stream/capture/src/rs_tracks_gd.*",
         "experiments/render-stream/fixtures/track-input/**",
+        "experiments/render-stream/capture/src/track_inject_glue.gd",
+        "experiments/render-stream/capture/cmake/**",
+        "experiments/render-stream/fixtures/track-inject/**",
+        "experiments/render-stream/fixtures/track-inject-addon/**",
+        "packages/input/godot/addons/gsw_input/**",
         "experiments/render-stream/scripts/lib/track-input-client.ts",
         "experiments/render-stream/scripts/lib/gate8-track-checks.ts",
         "experiments/render-stream/scripts/lib/raw-track-client.ts"

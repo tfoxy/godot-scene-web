@@ -507,7 +507,8 @@ bool is_listener_sabotage(const char *kind) {
          text == "window-overrun" || text == "corrupt-coded-body" ||
          text == "coding-wrong-prefix" || text == "predict-stale" || text == "zr-overrun" ||
          text == "zr-short-run" || text == "track-view-token-accepted" || text == "track-rate-off" ||
-         text == "track-grant-ignored" || text == "track-no-release";
+         text == "track-grant-ignored" || text == "track-no-release" ||
+         text == "track-inject-no-release";
 }
 
 // W13b/W13r: the listener sabotages that code one /13 patch wrongly.
@@ -1945,9 +1946,22 @@ bool tracks_configure(std::string *why) {
   const bool on = !g_live.track_config.kinds.empty();
   rs::tracks::Sabotage sabotage = rs::tracks::Sabotage::None;
   const bool track_sabotage = rs::tracks::parse_sabotage(g_live.listener_sabotage, &sabotage);
+  const std::string inject = env_string("GRC_LIVE_TRACK_INPUT_INJECT");
+  const bool input_granted = [] {
+    for (const std::string &k : g_live.track_config.kinds) {
+      if (k == rs::tracks::kKindInput) return true;
+    }
+    return false;
+  }();
   if (!on) {
     if (track_sabotage) {
       *why = "sabotage " + g_live.listener_sabotage + " needs GRC_LIVE_TRACKS";
+      return false;
+    }
+    // TRK6: a built-in injector asked for with no grant refuses rather than serving without it.
+    if (!inject.empty() || !env_string("GRC_LIVE_TRACK_INPUT_CONFIG").empty()) {
+      *why = "track-inject-invalid: GRC_LIVE_TRACK_INPUT_INJECT / GRC_LIVE_TRACK_INPUT_CONFIG need "
+             "input in GRC_LIVE_TRACKS";
       return false;
     }
     return true;
@@ -1968,12 +1982,24 @@ bool tracks_configure(std::string *why) {
       !ranged("GRC_LIVE_TRACK_KEEPALIVE_MS", 1000, 250, 30000, &keepalive, "track-keepalive-invalid")) {
     return false;
   }
-  // TRK6 builds GRC_LIVE_TRACK_INPUT_INJECT=reference; until then a set value refuses rather than
-  // silently serving without it.
-  const std::string inject = env_string("GRC_LIVE_TRACK_INPUT_INJECT");
-  if (!inject.empty()) {
-    *why = inject == "reference" ? "track-inject-invalid: reference injection is not built yet (TRK6)"
-                                 : "track-inject-invalid: GRC_LIVE_TRACK_INPUT_INJECT=" + inject;
+  // TRK6 (Q6, Q8): GRC_LIVE_TRACK_INPUT_INJECT=reference makes the capture the `input` receiver.
+  // The embedded injector is compiled and configured here, so a bad config refuses live whole.
+  const std::string inject_config = env_string("GRC_LIVE_TRACK_INPUT_CONFIG");
+  if (!inject.empty() && inject != "reference") {
+    *why = "track-inject-invalid: GRC_LIVE_TRACK_INPUT_INJECT=" + inject + " (reference, or unset)";
+    return false;
+  }
+  if (!inject.empty() && !input_granted) {
+    *why = "track-inject-invalid: GRC_LIVE_TRACK_INPUT_INJECT=reference needs input in GRC_LIVE_TRACKS";
+    return false;
+  }
+  if (inject.empty() && !inject_config.empty()) {
+    *why = "track-inject-config-invalid: GRC_LIVE_TRACK_INPUT_CONFIG needs "
+           "GRC_LIVE_TRACK_INPUT_INJECT=reference";
+    return false;
+  }
+  if (inject.empty() && rs::tracks::sabotage_needs_inject(sabotage)) {
+    *why = "sabotage " + g_live.listener_sabotage + " needs GRC_LIVE_TRACK_INPUT_INJECT=reference";
     return false;
   }
   // TRK5 (Q2, rs_track_caps.h): per-viewer HMAC capabilities instead of the shared credential.
@@ -1989,6 +2015,14 @@ bool tracks_configure(std::string *why) {
   if (!g_state.evidence_ready) {
     *why = "tracks-need-evidence-dir";
     return false;
+  }
+  if (!inject.empty()) {
+    if (!live::gd_tracks_builtin_prepare(inject_config, sabotage == rs::tracks::Sabotage::InjectNoRelease,
+                                         why)) {
+      return false;
+    }
+    g_live.track_config.inject_mode = inject;
+    g_live.track_config.inject_addon_sha256 = live::gd_tracks_builtin_addon_sha256();
   }
   g_live.track_config.rate_per_s = static_cast<uint32_t>(rate);
   g_live.track_config.burst = static_cast<uint32_t>(rate * 2);
@@ -2595,6 +2629,7 @@ void stream_start() {
     }
     if (!live_ok) {
       g_live.track_config = rs::tracks::TrackConfig();
+      live::gd_tracks_builtin_discard();  // TRK6: a prepared injector with no stream to serve
       live_decided("refused", why);
     }
   }
@@ -3361,6 +3396,16 @@ void stream_start() {
       live_decided("listening", std::string());
       emit_live_carriers();
       refresh_live_tracks();
+      // TRK6: the built-in injector holds `input` before any script receiver can attach.
+      if (!g_live.track_config.inject_mode.empty()) {
+        std::string inject_why;
+        if (!live::gd_tracks_builtin_bind(g_live.tracks.get(), &inject_why)) {
+          log_line("live: built-in input injection could not bind: " + inject_why);
+        } else {
+          log_line("live: built-in input injection mode=reference addon_sha256=" +
+                   g_live.track_config.inject_addon_sha256);
+        }
+      }
       // TRK2 (rs_tracks_gd.h): RenderStreamTrack receivers bound before the arm join the hub now
       // (null with tracks off: they report `not-granted`).
       live::gd_tracks_attach(g_live.tracks.get());

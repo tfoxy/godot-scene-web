@@ -58,9 +58,13 @@ enum class Sabotage {
   NoRelease,          // track-no-release: a carrier Closed on an open track reports no closed()
   CapMacIgnored,      // track-cap-mac-ignored (TRK5): a capability's MAC is not checked
   CapExpIgnored,      // track-cap-exp-ignored (TRK5): an expired capability still opens
+  InjectNoRelease,    // track-inject-no-release (TRK6): the built-in injector never releases a closed source
 };
 // True for the sabotages that need GRC_LIVE_TRACK_CAPS=hmac.
 bool sabotage_needs_caps(Sabotage sabotage);
+// True for the sabotage that needs GRC_LIVE_TRACK_INPUT_INJECT=reference (it acts on the built-in
+// injector, rs_tracks_gd.h; the hub itself ignores it).
+bool sabotage_needs_inject(Sabotage sabotage);
 // "track-view-token-accepted" ... -> the sabotage; anything else -> None with false.
 bool parse_sabotage(std::string_view text, Sabotage *out);
 const char *sabotage_name(Sabotage sabotage);  // "" for None
@@ -111,6 +115,11 @@ struct TrackConfig {
   std::uint64_t hello_timeout_ms = 5000;
   std::size_t max_message_bytes = 4096;
   std::string tap_dir;  // GRC_LIVE_TAP_DIR: track-<source>.jsonl (never a payload)
+  // TRK6: GRC_LIVE_TRACK_INPUT_INJECT. "" (off) or "reference"; with it, the SHA-256 of the
+  // embedded addon sources. Only live-tracks.json `inject` reads them: the injector itself is a
+  // receiver bound like any other (rs_tracks_gd.h).
+  std::string inject_mode;
+  std::string inject_addon_sha256;
   Sabotage sabotage = Sabotage::None;
 };
 

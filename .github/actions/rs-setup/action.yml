@@ -371,7 +371,7 @@ runs:
       if: inputs.capture-build == 'true'
       with:
         path: experiments/render-stream/capture/build
-        key: capture-build-${{ runner.os }}-${{ hashFiles('experiments/render-stream/capture/**', 'experiments/render-stream/scripts/build-capture.sh') }}
+        key: capture-build-${{ runner.os }}-${{ hashFiles('experiments/render-stream/capture/**', 'experiments/render-stream/scripts/build-capture.sh', 'packages/input/godot/addons/gsw_input/*.gd') }}
 
     - name: Capture build
       if: inputs.capture-build == 'true' && steps.capture-cache.outputs.cache-hit != 'true'

@@ -19,6 +19,7 @@ on:
       - experiments/render-stream/web/*/Cargo.lock
       - experiments/render-stream/capture/**
       - experiments/render-stream/scripts/build-capture.sh
+      - packages/input/godot/addons/gsw_input/*.gd
       - experiments/render-stream/rs-core/**
       - experiments/render-stream/rs-core-capi/**
       - packages/canvas/rust-draw-list/**

@@ -1,0 +1,42 @@
+; TRK6 track-inject fixture (../../protocol/tracks-design.md Q6 "Built-in injection", TRK6 row): a stock
+; project with NO script receiver and NO gsw_input addon. With GRC_LIVE_TRACK_INPUT_INJECT=reference
+; the capture itself receives the `input` track kind; this fixture only watches (Input, the test
+; Control, the injector node's signals). Gate 8's g8l/inject legs drive it with the same Node track
+; client as fixtures/track-input. See README.md.
+
+config_version=5
+
+[application]
+
+config/name="render-stream-track-inject-fixture"
+config/features=PackedStringArray("4.5")
+run/main_scene="res://track_inject.tscn"
+
+[autoload]
+
+GrcLoader="*res://loader.gd"
+TrackInject="*res://track_inject.gd"
+
+[debug]
+
+; Typed-GDScript discipline, as every gate fixture (fixtures/gate2/project.godot).
+gdscript/warnings/untyped_declaration=2
+gdscript/warnings/unsafe_property_access=2
+gdscript/warnings/unsafe_method_access=2
+gdscript/warnings/unsafe_cast=2
+gdscript/warnings/unsafe_call_argument=2
+
+[display]
+
+window/size/viewport_width=640
+window/size/viewport_height=360
+window/stretch/mode="disabled"
+window/vsync/vsync_mode=0
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+anti_aliasing/quality/msaa_2d=0
+viewport/hdr_2d=false
+environment/defaults/default_clear_color=Color(0.2, 0.2, 0.4, 1)

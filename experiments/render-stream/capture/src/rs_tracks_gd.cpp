@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "iface.h"
+#include "rs_track_inject_script.h"
 #include "rs_tracks.h"
 
 namespace grc {
@@ -87,6 +88,12 @@ struct Fns {
   GDExtensionPtrBuiltInMethod strings_size = nullptr;
   GDExtensionPtrBuiltInMethod ints_resize = nullptr;
   GDExtensionMethodBindPtr emit = nullptr;
+  // TRK6 (the built-in injector drives a GDScript object through Variant calls).
+  GDExtensionInterfaceVariantCall variant_call = nullptr;
+  GDExtensionInterfaceObjectGetInstanceId get_instance_id = nullptr;
+  GDExtensionVariantFromTypeConstructorFunc var_from_object = nullptr;
+  GDExtensionTypeFromVariantConstructorFunc bool_from_var = nullptr;
+  GDExtensionTypeFromVariantConstructorFunc object_from_var = nullptr;
 };
 
 Fns g_fn;
@@ -312,6 +319,9 @@ struct Registry;
 // the flush list hold it), so the hub's pointer stays valid until it is unbound.
 struct State final : rs::tracks::TrackReceiver {
   GDExtensionObjectPtr owner = nullptr;  // null once the object is freed
+  // TRK6: the built-in injector's node is not ours to wrap, so its liveness is its ObjectID,
+  // resolved at each flush (0 for a RenderStreamTrack, whose free_instance clears `owner`).
+  std::uint64_t owner_id = 0;
   std::string kind;                      // "" when unbound
   std::vector<std::string> up;
   std::vector<std::string> down;
@@ -363,6 +373,7 @@ struct Registry {
   TrackHub *hub = nullptr;  // Serving only, and only when tracks are on
   std::map<std::string, std::shared_ptr<State>> bound;  // kind -> receiver
   std::vector<std::shared_ptr<State>> list;             // every state with work for the flush
+  std::shared_ptr<State> builtin;  // TRK6: the built-in injector's receiver (bound on the hub, not in `bound`)
 };
 
 Registry g_reg;
@@ -798,6 +809,11 @@ void register_signal(GDExtensionStringNamePtr cls, const char *signal,
 // Delivers one receiver's queue. A freed object's sources end here and its queue is dropped.
 void flush_one(const std::shared_ptr<State> &sp) {
   State &s = *sp;
+  if (s.owner_id != 0) {
+    s.owner = g_iface.object_get_instance_from_id != nullptr
+                  ? g_iface.object_get_instance_from_id(s.owner_id)
+                  : nullptr;
+  }
   if (s.owner == nullptr && !s.kind.empty()) unbind_state(sp);
   for (int round = 0; round < kFlushRounds && !s.queue.empty(); ++round) {
     std::deque<Queued> q;
@@ -851,6 +867,8 @@ bool gd_track_class_register(std::string *why) {
   resolve("dictionary_operator_index", &f.dict_index, &missing);
   resolve("packed_string_array_operator_index_const", &f.strings_index, &missing);
   resolve("packed_int64_array_operator_index", &f.ints_index, &missing);
+  resolve("variant_call", &f.variant_call, &missing);
+  resolve("object_get_instance_id", &f.get_instance_id, &missing);
   GDExtensionInterfaceGetVariantFromTypeConstructor from_type = nullptr;
   GDExtensionInterfaceGetVariantToTypeConstructor to_type = nullptr;
   GDExtensionInterfaceVariantGetPtrConstructor ptr_ctor = nullptr;
@@ -874,6 +892,9 @@ bool gd_track_class_register(std::string *why) {
   f.var_from_dict = from_type(GDEXTENSION_VARIANT_TYPE_DICTIONARY);
   f.var_from_strings = from_type(GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY);
   f.var_from_ints = from_type(GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY);
+  f.var_from_object = from_type(GDEXTENSION_VARIANT_TYPE_OBJECT);
+  f.bool_from_var = to_type(GDEXTENSION_VARIANT_TYPE_BOOL);
+  f.object_from_var = to_type(GDEXTENSION_VARIANT_TYPE_OBJECT);
   f.int_from_var = to_type(GDEXTENSION_VARIANT_TYPE_INT);
   f.string_from_var = to_type(GDEXTENSION_VARIANT_TYPE_STRING);
   f.strings_from_var = to_type(GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY);
@@ -903,7 +924,8 @@ bool gd_track_class_register(std::string *why) {
       f.strings_new == nullptr || f.ints_new == nullptr || f.string_destroy == nullptr ||
       f.string_name_destroy == nullptr || f.dict_destroy == nullptr ||
       f.strings_destroy == nullptr || f.ints_destroy == nullptr || f.strings_size == nullptr ||
-      f.ints_resize == nullptr || f.emit == nullptr) {
+      f.ints_resize == nullptr || f.emit == nullptr || f.var_from_object == nullptr ||
+      f.bool_from_var == nullptr || f.object_from_var == nullptr) {
     *why = "track-class-unavailable: a builtin constructor, a packed array's size/resize or "
            "Object.emit_signal is missing at the expected hash";
     return false;
@@ -926,8 +948,200 @@ bool gd_track_class_register(std::string *why) {
   return true;
 }
 
+// --- the built-in injector (TRK6) ----------------------------------------------------------------
+
+namespace {
+
+// A compiled, configured injector node that is not bound yet.
+struct Pending {
+  GDExtensionObjectPtr node = nullptr;
+  std::uint64_t id = 0;
+};
+Pending g_pending;
+bool g_builtin_attached = false;  // attach() reached a SceneTree
+
+// Calls `method` on the Variant at `self` with `args`; `ret` is always initialized. True when the
+// engine accepted the call (a script error inside it still returns true; read the result).
+bool vcall(GDExtensionVariantPtr self, const char *method, const std::vector<Value> &args,
+           GVariant *ret) {
+  SName name(method);
+  std::vector<GVariant> vs(args.size());
+  std::vector<GDExtensionConstVariantPtr> ptrs;
+  for (std::size_t i = 0; i < args.size(); ++i) {
+    write_variant(args[i], &vs[i]);
+    ptrs.push_back(&vs[i]);
+  }
+  GDExtensionCallError error;
+  std::memset(&error, 0, sizeof(error));
+  g_fn.variant_call(self, name.ptr(), ptrs.empty() ? nullptr : ptrs.data(),
+                    static_cast<GDExtensionInt>(args.size()), ret, &error);
+  for (GVariant &v : vs) g_fn.variant_destroy(&v);
+  return error.error == GDEXTENSION_CALL_OK;
+}
+
+bool variant_is(GVariant *v, GDExtensionVariantType type) { return g_fn.variant_type(v) == type; }
+
+// The Object a Variant holds, or null.
+GDExtensionObjectPtr variant_object(GVariant *v) {
+  GDExtensionObjectPtr o = nullptr;
+  if (variant_is(v, GDEXTENSION_VARIANT_TYPE_OBJECT)) g_fn.object_from_var(&o, v);
+  return o;
+}
+
+// Calls `method` on the live node `id` (queue_free, attach); the result is discarded.
+bool node_call(std::uint64_t id, const char *method, bool *result) {
+  GDExtensionObjectPtr node = g_iface.object_get_instance_from_id(id);
+  if (node == nullptr) return false;
+  GVariant self;
+  g_fn.var_from_object(&self, &node);
+  GVariant ret;
+  const bool ok = vcall(&self, method, {}, &ret);
+  if (result != nullptr) {
+    std::uint8_t b = 0;
+    if (variant_is(&ret, GDEXTENSION_VARIANT_TYPE_BOOL)) g_fn.bool_from_var(&b, &ret);
+    *result = b != 0;
+  }
+  g_fn.variant_destroy(&ret);
+  g_fn.variant_destroy(&self);
+  return ok;
+}
+
+void pending_discard() {
+  if (g_pending.node != nullptr && g_iface.object_get_instance_from_id != nullptr &&
+      g_iface.object_get_instance_from_id(g_pending.id) != nullptr) {
+    g_iface.object_destroy(g_pending.node);  // not in a tree yet: freed at once
+  }
+  g_pending = Pending();
+}
+
+// Lets go of the bound injector: off the hub, its queue dropped, its node freed (when the engine
+// may still be called).
+void builtin_release(bool call_engine) {
+  const std::shared_ptr<State> sp = std::move(g_reg.builtin);
+  g_reg.builtin.reset();
+  if (sp == nullptr) return;
+  if (sp->on_hub && g_reg.hub != nullptr) g_reg.hub->unbind(sp.get());
+  sp->on_hub = false;
+  sp->kind.clear();
+  sp->queue.clear();
+  if (call_engine && sp->owner_id != 0 && g_iface.object_get_instance_from_id != nullptr) {
+    node_call(sp->owner_id, "queue_free", nullptr);
+  }
+  g_builtin_attached = false;
+}
+
+}  // namespace
+
+bool gd_tracks_builtin_prepare(const std::string &config_json, bool sabotage_no_release,
+                               std::string *why) {
+  gd_tracks_builtin_discard();
+  if (!g_registered || g_iface.object_get_instance_from_id == nullptr ||
+      g_iface.object_destroy == nullptr) {
+    *why = "track-inject-unavailable: the engine interface lacks what the embedded injector needs";
+    return false;
+  }
+  if (std::this_thread::get_id() != g_main) {
+    *why = "track-inject-unavailable: not the main thread";
+    return false;
+  }
+  SName gdscript("GDScript");
+  GDExtensionObjectPtr script = g_fn.construct_object(gdscript.ptr());
+  if (script == nullptr) {
+    *why = "track-inject-unavailable: GDScript cannot be instantiated";
+    return false;
+  }
+  GVariant script_var;
+  g_fn.var_from_object(&script_var, &script);  // takes the new script's reference
+  const std::string source(reinterpret_cast<const char *>(kBuiltinInjectScript),
+                           sizeof(kBuiltinInjectScript));
+  GVariant ret;
+  bool ok = vcall(&script_var, "set_source_code", {string(source)}, &ret);
+  g_fn.variant_destroy(&ret);
+  std::int64_t reload_error = -1;
+  if (ok) {
+    ok = vcall(&script_var, "reload", {boolean(false)}, &ret);
+    if (variant_is(&ret, GDEXTENSION_VARIANT_TYPE_INT)) g_fn.int_from_var(&reload_error, &ret);
+    g_fn.variant_destroy(&ret);
+  }
+  if (!ok || reload_error != 0) {
+    g_fn.variant_destroy(&script_var);
+    *why = "track-inject-unavailable: the embedded injector did not compile (reload error " +
+           std::to_string(reload_error) + ", see the engine log)";
+    return false;
+  }
+  GDExtensionObjectPtr node = nullptr;
+  if (vcall(&script_var, "new", {}, &ret)) node = variant_object(&ret);
+  g_fn.variant_destroy(&ret);
+  g_fn.variant_destroy(&script_var);  // the node's script reference keeps the script alive
+  if (node == nullptr) {
+    *why = "track-inject-unavailable: the embedded injector could not be instantiated";
+    return false;
+  }
+  g_pending.node = node;
+  g_pending.id = static_cast<std::uint64_t>(g_fn.get_instance_id(node));
+  bool configured = false;
+  GVariant node_var;
+  g_fn.var_from_object(&node_var, &node);
+  ok = vcall(&node_var, "setup", {string(config_json), string(sabotage_no_release ? "no-release" : "")}, &ret);
+  if (ok && variant_is(&ret, GDEXTENSION_VARIANT_TYPE_BOOL)) {
+    std::uint8_t b = 0;
+    g_fn.bool_from_var(&b, &ret);
+    configured = b != 0;
+  }
+  g_fn.variant_destroy(&ret);
+  g_fn.variant_destroy(&node_var);
+  if (!ok) {
+    pending_discard();
+    *why = "track-inject-unavailable: the embedded injector has no setup() (see the engine log)";
+    return false;
+  }
+  if (!configured) {
+    pending_discard();
+    *why = "track-inject-config-invalid: GRC_LIVE_TRACK_INPUT_CONFIG is not a JSON object the "
+           "injector's configure() accepts";
+    return false;
+  }
+  return true;
+}
+
+void gd_tracks_builtin_discard() {
+  pending_discard();
+  builtin_release(true);
+}
+
+bool gd_tracks_builtin_bind(TrackHub *hub, std::string *why) {
+  if (g_pending.node == nullptr || hub == nullptr) {
+    *why = "track-inject-unavailable: no prepared injector";
+    return false;
+  }
+  auto sp = std::make_shared<State>();
+  sp->owner = g_pending.node;
+  sp->owner_id = g_pending.id;
+  sp->kind = rs::tracks::kKindInput;
+  sp->up = {"gsw-input/1"};
+  std::string error;
+  if (!hub->bind(sp->kind, sp.get(), &error)) {
+    sp->kind.clear();
+    pending_discard();
+    *why = "track-inject-invalid: " + error;
+    return false;
+  }
+  sp->on_hub = true;
+  g_reg.builtin = sp;
+  track_list(sp);
+  g_pending = Pending();
+  // In the tree from the next message flush; with no tree yet, the next gd_tracks_flush retries.
+  g_builtin_attached = false;
+  node_call(sp->owner_id, "attach", &g_builtin_attached);
+  return true;
+}
+
+const char *gd_tracks_builtin_addon_sha256() { return kBuiltinInjectAddonSha256; }
+
 void gd_track_class_unregister() {
   if (!g_registered) return;
+  g_pending = Pending();  // the engine is finalizing: nothing may call into it
+  builtin_release(false);
   SName cls(kClassName);
   g_fn.unregister_class(g_iface.library, cls.ptr());
   g_registered = false;
@@ -953,6 +1167,11 @@ void gd_tracks_detach() {
       if (entry.second->on_hub) g_reg.hub->unbind(entry.second.get());  // nothing is open now
       entry.second->on_hub = false;
     }
+    if (g_reg.builtin != nullptr && g_reg.builtin->on_hub) {
+      g_reg.hub->unbind(g_reg.builtin.get());
+      g_reg.builtin->on_hub = false;
+      g_reg.builtin->kind.clear();  // its queued closed() calls still flush; then it is released
+    }
   }
   g_reg.hub = nullptr;
   g_reg.phase = Phase::Stopped;
@@ -962,6 +1181,14 @@ void gd_tracks_flush() {
   if (!g_any.load(std::memory_order_relaxed)) return;
   const std::vector<std::shared_ptr<State>> list = g_reg.list;
   for (const std::shared_ptr<State> &sp : list) flush_one(sp);
+  if (g_reg.builtin != nullptr && !g_builtin_attached && g_reg.phase == Phase::Serving) {
+    node_call(g_reg.builtin->owner_id, "attach", &g_builtin_attached);
+  }
+  // TRK6: once live stopped and its last closed() reached the injector (which released what the
+  // source held), the injector node has nothing left to do.
+  if (g_reg.builtin != nullptr && g_reg.phase == Phase::Stopped && g_reg.builtin->queue.empty()) {
+    builtin_release(true);
+  }
   // A state with nothing bound and nothing queued has no more work.
   for (auto it = g_reg.list.begin(); it != g_reg.list.end();) {
     it = (*it)->kind.empty() && (*it)->queue.empty() ? g_reg.list.erase(it) : it + 1;

@@ -110,8 +110,10 @@
 #       HTTP/1.1 reverse proxy: the WebSocket and every GET through a server in front of the
 #       listener, D14). run-gate7.sh --live --legs g7-8 runs this group with a browser receiver.
 #       Native only, headless: lan, ext (CAR6), trk (TRK2: fixtures/track-input, a RenderStreamTrack
-#       receiver and the gsw-input injector under lib/track-input-client.ts, four sabotage legs) and
-#       wss.
+#       receiver and the gsw-input injector under lib/track-input-client.ts, four sabotage legs),
+#       inject (TRK6: GRC_LIVE_TRACK_INPUT_INJECT=reference on fixtures/track-inject and
+#       track-inject-addon, the same client and checks, plus config, refusal and two sabotage legs)
+#       and wss. G8L_ONLY=trk,inject runs just those two (a local iteration knob).
 #   g8ku (G8ku, texture-delivery-design.md D6, D12, D14, D16 `basis-uastc`; fixtures/gate8-basis;
 #       every leg under g8ku/): the fixture import; headless /9 captures under
 #       GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=basis-uastc GRC_TEXTURE_ENCODE_WAIT_FRAME=12
@@ -3141,6 +3143,13 @@ stop_g8l_proxy() {
 }
 
 run_g8l() {
+	# G8L_ONLY=trk,inject (a local iteration knob, not a tier): only those native headless legs,
+	# none of the rendered fixtures and no gamescope.
+	if [ -n "${G8L_ONLY:-}" ]; then
+		case ",$G8L_ONLY," in *,trk,*) run_g8l_trk ;; esac
+		case ",$G8L_ONLY," in *,inject,*) run_g8l_inject ;; esac
+		return 0
+	fi
 	# Each fixture's editor import, once per out dir (its file group's, when that ran first).
 	[ -f "$OUT/import/fixture/exit-code.txt" ] || run_import_g8t
 	[ -f "$OUT/g8a/import/fixture/exit-code.txt" ] || run_import_g8a
@@ -3182,6 +3191,7 @@ run_g8l() {
 	run_g8l_lan
 	run_g8l_ext
 	run_g8l_trk
+	run_g8l_inject
 	run_g8l_wss
 	gs_teardown "$OUT/gamescope-g8l"
 	GS_RUN_DIR=""
@@ -3304,7 +3314,7 @@ run_g8l_trk_leg() {
 		GRC_ARM_DEFER_FRAMES=2 RS_FIXTURE_QUIT_FRAME=3600 RS_TRACK_INPUT_LOG="$dir/events.jsonl"
 		RS_TRACK_INPUT_CONTROL="$dir/control" "$@"
 	)
-	start_headless_bg "$dir" -- "$BINARY" --headless --max-fps 60 --path "$G8L_TRK_FIXTURE_DIR"
+	start_headless_bg "$dir" -- "$BINARY" --headless --max-fps 60 --path "${G8L_TRK_LEG_FIXTURE:-$G8L_TRK_FIXTURE_DIR}"
 	[ -n "$BG_PID" ] || return 0 # skipped by tier
 	while [ "$waited" -lt 600 ] && [ ! -s "$dir/evidence/live.json" ] && kill -0 "$BG_PID" 2>/dev/null; do
 		sleep 0.05
@@ -3353,6 +3363,77 @@ run_g8l_trk() {
 			run_g8l_trk_leg "$leg/sabotage-$s" RS_TRACK_INPUT_SABOTAGE="$s"
 		fi
 	done
+}
+
+# TRK6 (protocol/tracks-design.md Q6 "Built-in injection", TRK6 row): GRC_LIVE_TRACK_INPUT_INJECT=
+# reference makes the capture itself the `input` receiver (an embedded copy of the gsw-input
+# reference injector), so a stock project gets input from a track with no script at all.
+# fixtures/track-inject is that project (an observer only, no addon, no RenderStreamTrack use);
+# fixtures/track-inject-addon is the same project beside the project's own copy of the addon (the
+# embedded classes are renamed, so they must load beside the global GswInput* classes). Both run
+# under the TRK2 track client (four phases, the unbind phase frees the injector node), judged by
+# the g8l-trk-inject-* checks. Legs: host (stock project), addon (project ships the addon), config
+# (GRC_LIVE_TRACK_INPUT_CONFIG reaches configure()), refuse-* (bad values refuse live as a whole)
+# and two sabotages: no-release (GRC_SABOTAGE=track-inject-no-release: the built-in injector
+# ignores closed()) and off (the same fixture without the injector: track-no-receiver). Native
+# only, headless, real time, as g8l/trk.
+G8L_INJECT_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/track-inject"
+G8L_INJECT_ADDON_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/track-inject-addon"
+G8L_INJECT_SABOTAGES=(no-release off)
+G8L_INJECT_CONFIG='{"accept_kinds":["key"],"lease_ms":20000}'
+
+# run_g8l_inject_refusal <dir> <expected reason prefix> [env word...]: the capture boots the stock
+# fixture with a bad injection setting and must refuse live (live.json), no listener.
+run_g8l_inject_refusal() {
+	local dir="$1"
+	shift
+	mkdir -p "$dir/evidence"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_VERSION=8 GRC_LIVE_LISTEN=127.0.0.1:0
+		GRC_ARM_DEFER_FRAMES=2 RS_FIXTURE_QUIT_FRAME=60 "$@"
+	)
+	run_headless "$dir" none -- "$BINARY" --headless --max-fps 60 --path "$G8L_INJECT_FIXTURE_DIR"
+}
+
+run_g8l_inject() {
+	[ -z "${GATE7_LIVE_KIND:-}" ] || return 0
+	local leg="$OUT/g8l/inject" s fixture
+	for fixture in "$G8L_INJECT_FIXTURE_DIR" "$G8L_INJECT_ADDON_FIXTURE_DIR"; do
+		echo "run-gate8: g8l inject (fixture import: ${fixture##*/})"
+		LEG_ENV=()
+		run_headless "$leg/import/${fixture##*/}" none -- mise exec -- godot --headless --path "$fixture" --import
+		if [ "$(cat "$leg/import/${fixture##*/}/exit-code.txt")" != "0" ]; then
+			echo "run-gate8: g8l inject import failed, see $leg/import/${fixture##*/}/stdout.log" >&2
+			exit 1
+		fi
+	done
+	G8L_TRK_LEG_FIXTURE="$G8L_INJECT_FIXTURE_DIR"
+	echo "run-gate8: g8l inject (a stock project: no script receiver, four client phases)"
+	run_g8l_trk_leg "$leg/host" GRC_LIVE_TRACK_INPUT_INJECT=reference
+	echo "run-gate8: g8l inject config (GRC_LIVE_TRACK_INPUT_CONFIG reaches configure())"
+	run_g8l_trk_leg "$leg/config" GRC_LIVE_TRACK_INPUT_INJECT=reference GRC_LIVE_TRACK_INPUT_CONFIG="$G8L_INJECT_CONFIG"
+	for s in "${G8L_INJECT_SABOTAGES[@]}"; do
+		echo "run-gate8: g8l inject sabotage-$s"
+		if [ "$s" = no-release ]; then
+			run_g8l_trk_leg "$leg/sabotage-$s" GRC_LIVE_TRACK_INPUT_INJECT=reference GRC_SABOTAGE=track-inject-no-release
+		else
+			run_g8l_trk_leg "$leg/sabotage-$s"
+		fi
+	done
+	echo "run-gate8: g8l inject addon (the project ships the gsw_input addon: global classes beside the embedded copy)"
+	G8L_TRK_LEG_FIXTURE="$G8L_INJECT_ADDON_FIXTURE_DIR"
+	run_g8l_trk_leg "$leg/addon" GRC_LIVE_TRACK_INPUT_INJECT=reference
+	G8L_TRK_LEG_FIXTURE=""
+	echo "run-gate8: g8l inject refusals (bad values refuse live as a whole)"
+	run_g8l_inject_refusal "$leg/refuse-value" GRC_LIVE_TRACKS=input GRC_LIVE_TRACK_INPUT_INJECT=bogus
+	run_g8l_inject_refusal "$leg/refuse-no-grant" GRC_LIVE_TRACK_INPUT_INJECT=reference
+	run_g8l_inject_refusal "$leg/refuse-config-key" GRC_LIVE_TRACKS=input GRC_LIVE_TRACK_INPUT_INJECT=reference \
+		GRC_LIVE_TRACK_INPUT_CONFIG='{"no_such_setting":1}'
+	run_g8l_inject_refusal "$leg/refuse-config-json" GRC_LIVE_TRACKS=input GRC_LIVE_TRACK_INPUT_INJECT=reference \
+		GRC_LIVE_TRACK_INPUT_CONFIG='[1,2'
+	run_g8l_inject_refusal "$leg/refuse-config-alone" GRC_LIVE_TRACKS=input GRC_LIVE_TRACK_INPUT_CONFIG='{}'
+	run_g8l_inject_refusal "$leg/refuse-sabotage" GRC_LIVE_TRACKS=input GRC_SABOTAGE=track-inject-no-release
 }
 
 # CAR4 (protocol/carrier-design.md D11, D12): tex once more with a certificate pair, so the real

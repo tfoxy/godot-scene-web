@@ -22,6 +22,12 @@
 // flush_buffered_events(), before its physics and process steps: a payload that arrives during
 // iteration N reaches game code in iteration N+1 (one frame plus the transport, at most).
 //
+// Built-in injection (TRK6, GRC_LIVE_TRACK_INPUT_INJECT=reference): the capture itself is the `input`
+// receiver. A generated GDScript (the gsw-input/1 reference injector embedded as inner classes with
+// renamed identifiers, cmake/embed_gsw_input.cmake) is compiled with GDScript.new() +
+// source_code + reload(), and its `RsTrackInputInjector` node, added under the root, receives the
+// same opened/message/closed signals a RenderStreamTrack would emit, from the same flush.
+//
 // Lifetime: the receiver's state outlives the object. When the object is freed, its sources close
 // `track-receiver-gone` at the next flush and no signal is emitted.
 //
@@ -48,6 +54,22 @@ bool gd_track_class_register(std::string *why);
 
 // Unregisters the class (deinitialize). A no-op when it was never registered.
 void gd_track_class_unregister();
+
+// TRK6: compiles the embedded injector and runs its setup() with `config_json` (GRC_LIVE_TRACK_INPUT_CONFIG,
+// "" for none); `sabotage_no_release` is GRC_SABOTAGE=track-inject-no-release. Called while the
+// arm is being checked, so a bad config refuses live as a whole. False with *why =
+// "track-inject-config-invalid: ..." or "track-inject-unavailable: ...". A prepared injector that
+// is never bound is released by gd_tracks_builtin_discard().
+bool gd_tracks_builtin_prepare(const std::string &config_json, bool sabotage_no_release, std::string *why);
+void gd_tracks_builtin_discard();
+
+// TRK6: binds the prepared injector as `hub`'s `input` receiver. Call once the hub exists and
+// BEFORE gd_tracks_attach, so a script that binds `input` gets `track-kind-bound` (one that bound
+// before the attach is unbound at it). Adds the injector node under the root. False with *why.
+bool gd_tracks_builtin_bind(rs::tracks::TrackHub *hub, std::string *why);
+
+// SHA-256 (hex) of the addon sources the embedded injector was built from.
+const char *gd_tracks_builtin_addon_sha256();
 
 // Live is listening. `hub` is the TrackHub, or null with tracks off (GRC_LIVE_TRACKS unset). Binds
 // every registered receiver whose kind the hub grants (status `serving`); the others report
