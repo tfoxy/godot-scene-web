@@ -354,9 +354,10 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     return id < 0 ? null : id;
   }
 
-  /** HIT1: the items whose own commands `hitTest` / `toGame` pass through, whole. */
-  setHitIgnore(ids: Uint32Array): void {
-    this.g.set_hit_ignore(ids);
+  /** HIT1: the mouse filters `hitTest` / `toGame` pick by, whole (1 STOP/PASS, 2 IGNORE). */
+  setHitFilters(ids: Uint32Array, filters: Uint8Array): void {
+    if (this.g.set_hit_filters(ids, filters) < 0)
+      throw failWith(this.seqOrNull(), this.g.error());
   }
 
   /** `[item (-1: none), x, y]` of the drawn point mapped to the game's, or empty (a singular

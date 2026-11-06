@@ -20,6 +20,51 @@ use crate::state::{Id, ParentKind, ResolvedState, TxDelta};
 /// the subtree's records across transactions).
 pub const OVERRIDE_FLOATS: usize = 12;
 
+/// HIT1 [`Applier::set_hit_filters`]: the node takes pointer input (`mouse_filter` STOP or PASS).
+pub const HIT_INPUT: u8 = 1;
+/// HIT1: Godot's GUI picking never stops at this item (an IGNORE Control, or not a Control).
+pub const HIT_IGNORE: u8 = 2;
+
+/// HIT1: a packed filter table is well formed (one filter per id, each [`HIT_INPUT`] or
+/// [`HIT_IGNORE`]), or the `hit-filters` error.
+pub fn check_hit_filters(ids: &[u32], filters: &[u8]) -> Result<(), String> {
+    if ids.len() != filters.len() {
+        return Err(format!(
+            "hit-filters: {} ids need {} filters, got {}",
+            ids.len(),
+            ids.len(),
+            filters.len()
+        ));
+    }
+    match ids.iter().zip(filters).find(|(_, f)| !matches!(**f, HIT_INPUT | HIT_IGNORE)) {
+        Some((id, f)) => Err(format!("hit-filters: item {id} has filter {f}")),
+        None => Ok(()),
+    }
+}
+
+/// The item parent of `id` in the state (None at a canvas or for an unknown id).
+fn parent_item(state: &ResolvedState, id: Id) -> Option<Id> {
+    state
+        .items
+        .get(&id)
+        .and_then(|it| it.parent)
+        .filter(|p| p.kind == ParentKind::Item)
+        .map(|p| p.id)
+}
+
+/// Whether `id` is `root` or inside its subtree.
+fn under(state: &ResolvedState, id: Id, root: Id) -> bool {
+    let mut cur = Some(id);
+    for _ in 0..=state.items.len() {
+        match cur {
+            Some(c) if c == root => return true,
+            Some(c) => cur = parent_item(state, c),
+            None => return false,
+        }
+    }
+    false
+}
+
 /// One item's override.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Override {
@@ -228,7 +273,7 @@ impl Applier {
     pub fn inherit_overrides(&mut self, old: &mut Applier) {
         self.overrides = std::mem::take(&mut old.overrides);
         self.removed_log = old.removed_log.take();
-        self.hit_ignore = std::mem::take(&mut old.hit_ignore);
+        self.hit_filters = std::mem::take(&mut old.hit_filters);
         self.ov_sabotage = old.ov_sabotage;
         // FRZ-HOOK: the frozen membership and any pending unfreeze follow the table. The held
         // records do not (a fresh applier has none): its first apply draws the held items from
@@ -465,51 +510,102 @@ impl Applier {
 
     // ------------------------------------------------------------------------- INP1: pointer
 
-    /// HIT1: replace the set of items whose own commands [`Applier::hit_test`] passes through
-    /// (Godot's `mouse_filter = IGNORE`: the item's children still count). Ids not in the state
-    /// are kept and simply never hit; the client drops removed ids itself.
-    pub fn set_hit_ignore(&mut self, ids: &[u32]) {
-        self.hit_ignore.clear();
-        self.hit_ignore.extend(ids.iter().copied());
+    /// HIT1: replace the client's mouse filters (Godot's `Control.mouse_filter`, as the client's
+    /// extensions know them): `ids[k]` takes `filters[k]`, [`HIT_INPUT`] (STOP or PASS: the
+    /// node takes pointer input) or [`HIT_IGNORE`] (an IGNORE Control, or a CanvasItem that is
+    /// not a Control: Godot's GUI picking never stops at it). An item not listed has no filter
+    /// and counts as drawn. Ids not in the state are kept and simply never hit; the client drops
+    /// removed ids itself.
+    pub fn set_hit_filters(&mut self, ids: &[u32], filters: &[u8]) -> Result<(), String> {
+        check_hit_filters(ids, filters)?;
+        self.hit_filters.clear();
+        self.hit_filters.extend(ids.iter().copied().zip(filters.iter().copied()));
+        Ok(())
     }
 
     /// INP1: the topmost drawn item under the presentation-space point `(x, y)`, in the last
     /// walk's draw order (the attach list, walked backwards). An entry counts when it emits, the
     /// point is inside its scissor, and inside its content rect under its *drawn* transform
     /// (overrides included; a rotated or sheared item is tested in its own space, not by its
-    /// AABB). HIT1: an item in the hit-ignore set never counts (what is drawn below it does).
-    /// Nothing is computed per frame: this reads the records the walk and the rows-only path
-    /// already keep.
+    /// AABB). Nothing is computed per frame: this reads the records the walk and the rows-only
+    /// path already keep. The mouse filters are not applied: see [`Applier::pick`].
     pub fn hit_test(&self, x: f32, y: f32) -> Option<Id> {
-        for a in self.attach.iter().rev() {
+        self.drawn_at(x, y).next()
+    }
+
+    /// Every drawn item under `(x, y)`, topmost first ([`Applier::hit_test`]'s test).
+    fn drawn_at(&self, x: f32, y: f32) -> impl Iterator<Item = Id> + '_ {
+        self.attach.iter().rev().filter_map(move |a| {
             if !a.emit || a.parked {
-                continue;
-            }
-            if !self.hit_ignore.is_empty() && self.hit_ignore.contains(&a.item) {
-                continue;
+                return None;
             }
             if let Some(s) = a.scissor {
                 let (sx, sy) = (s[0] as f32, s[1] as f32);
                 if x < sx || y < sy || x >= sx + s[2] as f32 || y >= sy + s[3] as f32 {
-                    continue;
+                    return None;
                 }
             }
-            let Some(rec) = self.items.get(&a.item) else {
-                continue;
-            };
+            let rec = self.items.get(&a.item)?;
             if rec.lowered.draws.is_empty() {
-                continue;
+                return None;
             }
             let xf = rec.draw_xform;
             let det = xf[0] * xf[3] - xf[1] * xf[2];
             if det == 0.0 || !det.is_finite() {
-                continue;
+                return None;
             }
             let [lx, ly] = geom::xform_point(&geom::affine_inverse(&xf), [x, y]);
             let [rx, ry, rw, rh] = rec.lowered.rect;
-            if lx >= rx && ly >= ry && lx < rx + rw && ly < ry + rh {
-                return Some(a.item);
+            (lx >= rx && ly >= ry && lx < rx + rw && ly < ry + rh).then_some(a.item)
+        })
+    }
+
+    /// HIT1: the item the pointer is on, as Godot's GUI picking would choose it as far as the
+    /// stream can tell (it sees drawn items, not the rect of a Control that draws nothing). With
+    /// no mouse filters it is [`Applier::hit_test`]. The drawn items under the point are read
+    /// topmost first:
+    /// - one with no filter, or [`HIT_INPUT`], is the answer;
+    /// - one with [`HIT_IGNORE`] never is. It stands for its nearest [`HIT_INPUT`] ancestor `P`
+    ///   (a button's decoration stands for the button): the reading goes on below it, but only
+    ///   inside `P`'s subtree, as Godot tries `P`'s other descendants before `P` itself. A drawn
+    ///   item outside that subtree makes `P` the answer; an IGNORE item inside it with a nearer
+    ///   input ancestor narrows `P` to that one. An IGNORE item with no input ancestor (a
+    ///   transparent overlay) just lets the point through.
+    /// So a full-screen IGNORE overlay hides nothing, an IGNORE button face reaches its button
+    /// (which may draw nothing itself), and a Node2D drawn over the UI hides nothing either.
+    pub fn pick(&self, state: &ResolvedState, x: f32, y: f32) -> Option<Id> {
+        if self.hit_filters.is_empty() {
+            return self.hit_test(x, y);
+        }
+        let mut proxy: Option<Id> = None;
+        for id in self.drawn_at(x, y) {
+            if let Some(p) = proxy {
+                if !under(state, id, p) {
+                    return Some(p);
+                }
             }
+            if self.hit_filters.get(&id) != Some(&HIT_IGNORE) {
+                return Some(id);
+            }
+            if let Some(anc) = self.input_ancestor(state, id) {
+                proxy = match proxy {
+                    Some(p) if anc == p || !under(state, anc, p) => Some(p),
+                    _ => Some(anc),
+                };
+            }
+        }
+        proxy
+    }
+
+    /// The nearest proper ancestor of `id` with [`HIT_INPUT`], or None.
+    fn input_ancestor(&self, state: &ResolvedState, id: Id) -> Option<Id> {
+        let mut cur = parent_item(state, id);
+        for _ in 0..state.items.len() {
+            let c = cur?;
+            if self.hit_filters.get(&c) == Some(&HIT_INPUT) {
+                return Some(c);
+            }
+            cur = parent_item(state, c);
         }
         None
     }
@@ -521,7 +617,7 @@ impl Applier {
     /// drawn there (nothing overrides bare clear colour), or `None` for a singular `E`.
     pub fn to_game(&self, state: &ResolvedState, x: f32, y: f32) -> Option<(Option<Id>, [f32; 2])> {
         let p = [x, y];
-        let Some(hit) = self.hit_test(x, y) else {
+        let Some(hit) = self.pick(state, x, y) else {
             return Some((None, p));
         };
         if self.overrides.is_empty() || self.ov_sabotage.inverse_skip {

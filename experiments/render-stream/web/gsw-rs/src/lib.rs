@@ -28,7 +28,7 @@ use render_stream_core::apply::payloads::{PayloadStage, PayloadStore};
 use render_stream_core::apply::programs::{ProgramEntry, ProgramInfo};
 use render_stream_core::apply::residency::TextureAccount;
 use render_stream_core::apply::retention::Retention;
-use render_stream_core::apply::overrides::{OverrideSabotage, Refresh};
+use render_stream_core::apply::overrides::{check_hit_filters, OverrideSabotage, Refresh};
 use render_stream_core::apply::{Applier, ApplySabotage, BindingKey, Viewport};
 use render_stream_core::canon;
 use render_stream_core::state::VariantEncoding;
@@ -576,8 +576,8 @@ pub struct GswRs {
     opts: Opts,
     /// TAG2: an extension listens for removed items (`onItemsRemoved`): every applier logs them.
     log_removed: bool,
-    /// HIT1: the client's hit-ignore set, handed to every applier (`set_hit_ignore`).
-    hit_ignore: Vec<u32>,
+    /// HIT1: the client's mouse filters, handed to every applier (`set_hit_filters`).
+    hit_filters: (Vec<u32>, Vec<u8>),
     data: Vec<u8>,
     version: u8,
     spans: Vec<RecordSpan>,
@@ -841,7 +841,7 @@ impl GswRs {
             canvas,
             opts,
             log_removed: false,
-            hit_ignore: Vec::new(),
+            hit_filters: (Vec::new(), Vec::new()),
             data: Vec::new(),
             version: 6,
             spans: Vec::new(),
@@ -1218,7 +1218,8 @@ impl GswRs {
         applier.sabotage = self.opts.apply;
         applier.ov_sabotage = self.opts.ov;
         applier.log_removed(self.log_removed);
-        applier.set_hit_ignore(&self.hit_ignore);
+        // Checked when it was set; an applier cannot refuse it.
+        let _ = applier.set_hit_filters(&self.hit_filters.0, &self.hit_filters.1);
         // PM3: GLES3 stores multimesh colours and custom data as half floats.
         applier.half_instances = s.engine.rendering_method == "gl_compatibility";
         // G8kp (texture-delivery-design.md D3, Q3): gpu_formats from this context's extensions,
@@ -2374,24 +2375,31 @@ impl GswRs {
             .unwrap_or_default()
     }
 
-    /// HIT1: the items whose own commands `hit_test` / `to_game` pass through (Godot's
-    /// `mouse_filter = IGNORE`), whole; kept for every later applier of the session.
-    pub fn set_hit_ignore(&mut self, ids: &[u32]) {
-        self.hit_ignore = ids.to_vec();
-        if let Some(a) = self.applier.as_mut() {
-            a.set_hit_ignore(ids);
+    /// HIT1: the client's mouse filters, whole (`ids[k]` takes `filters[k]`: 1 STOP/PASS, 2
+    /// IGNORE or not a Control), which `hit_test` / `to_game` pick by; kept for every later
+    /// applier of the session. 0, or -1 (`error`: `hit-filters`).
+    pub fn set_hit_filters(&mut self, ids: &[u32], filters: &[u8]) -> i32 {
+        if let Err(e) = check_hit_filters(ids, filters) {
+            self.error = e;
+            return -1;
         }
+        self.hit_filters = (ids.to_vec(), filters.to_vec());
+        if let Some(a) = self.applier.as_mut() {
+            let _ = a.set_hit_filters(ids, filters);
+        }
+        0
     }
 
     /// INP1 `ItemQuery.hitTest`: the topmost drawn item under the presentation-space point, or
-    /// -1. Reads the last walk's draw order; computes nothing until called. Returns f64 (not the
+    /// -1, picked by the HIT1 mouse filters when the client set any (`Applier::pick`). Reads the
+    /// last walk's draw order; computes nothing until called. Returns f64 (not the
     /// core's u32 item id directly): wasm-bindgen maps i64 to BigInt, which the page's JSON would
     /// refuse to serialise.
     pub fn hit_test(&self, x: f64, y: f64) -> f64 {
-        self.applier
-            .as_ref()
-            .and_then(|a| a.hit_test(x as f32, y as f32))
-            .map_or(-1.0, f64::from)
+        let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_ref()) else {
+            return -1.0;
+        };
+        a.pick(v.state(), x as f32, y as f32).map_or(-1.0, f64::from)
     }
 
     /// INP1 `toGame`: `[item (-1: none), x, y]`, the point mapped through the inverse of the hit

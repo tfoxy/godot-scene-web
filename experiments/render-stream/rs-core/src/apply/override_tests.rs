@@ -3,7 +3,7 @@
 //! variant state paints (`paint_digest`), through the walk, the rows-only path and the redraw
 //! path; each sabotage must be caught.
 
-use super::overrides::{OverrideSabotage, Refresh, OVERRIDE_FLOATS};
+use super::overrides::{OverrideSabotage, Refresh, HIT_IGNORE, HIT_INPUT, OVERRIDE_FLOATS};
 use super::*;
 use crate::state::*;
 
@@ -473,9 +473,10 @@ fn the_topmost_item_in_draw_order_wins() {
 }
 
 #[test]
-fn a_hit_ignored_item_passes_the_point_to_what_is_drawn_below() {
-    // HIT1: Q covers G's corner; with Q ignored (Godot's mouse_filter IGNORE) G owns it again,
-    // the mapping follows, and a fresh applier (a coding resync) keeps the set.
+fn an_ignored_overlay_passes_the_point_to_what_is_drawn_below() {
+    // HIT1: Q covers G's corner; as an IGNORE item with no input ancestor (a transparent
+    // overlay) it lets the point through to G, the mapping follows, and a fresh applier (a
+    // coding resync) keeps the filters.
     let store = PayloadStore::default();
     let mut s = base();
     s.items.get_mut(&Q).unwrap().commands = Commands {
@@ -488,18 +489,56 @@ fn a_hit_ignored_item_passes_the_point_to_what_is_drawn_below() {
     };
     let mut b = applier();
     b.apply(&s, &full_delta(&s), &store);
-    assert_eq!(b.hit_test(12.0, 202.0), Some(Q));
-    b.set_hit_ignore(&[Q, 999]);
-    assert_eq!(b.hit_test(12.0, 202.0), Some(G));
+    assert_eq!(b.pick(&s, 12.0, 202.0), Some(Q));
+    b.set_hit_filters(&[Q, 999], &[HIT_IGNORE, HIT_INPUT]).unwrap();
+    assert_eq!(b.hit_test(12.0, 202.0), Some(Q), "hit_test is the drawn order only");
+    assert_eq!(b.pick(&s, 12.0, 202.0), Some(G));
     assert_eq!(b.to_game(&s, 12.0, 202.0), Some((Some(G), [12.0, 202.0])));
     // Where only Q is drawn, an ignored Q leaves bare clear colour.
-    assert_eq!(b.hit_test(7.0, 197.0), None);
+    assert_eq!(b.pick(&s, 7.0, 197.0), None);
     let mut fresh = applier();
     fresh.inherit_overrides(&mut b);
     fresh.apply(&s, &full_delta(&s), &store);
-    assert_eq!(fresh.hit_test(12.0, 202.0), Some(G));
-    fresh.set_hit_ignore(&[]);
-    assert_eq!(fresh.hit_test(12.0, 202.0), Some(Q));
+    assert_eq!(fresh.pick(&s, 12.0, 202.0), Some(G));
+    fresh.set_hit_filters(&[], &[]).unwrap();
+    assert_eq!(fresh.pick(&s, 12.0, 202.0), Some(Q));
+    assert!(fresh.set_hit_filters(&[Q], &[]).is_err());
+    assert!(fresh.set_hit_filters(&[Q], &[7]).is_err());
+}
+
+#[test]
+fn an_ignored_button_face_stands_for_its_input_ancestor() {
+    // HIT1: P takes input and draws nothing (a button whose face is its children); C1, its
+    // IGNORE face, is drawn over Q, which is outside P and drawn first. Godot picks P, so the
+    // point reaches P, not Q; the inverse composes P's override (C1 is drawn under it).
+    let store = PayloadStore::default();
+    let mut s = base();
+    s.items.get_mut(&Q).unwrap().commands = Commands {
+        list: vec![Command::Rect {
+            aa: false,
+            rect: [0.0, 150.0, 200.0, 150.0],
+            color: [1.0; 4],
+        }],
+        ..Commands::default()
+    };
+    s.canvases.get_mut(&CANVAS).unwrap().items = vec![Q, G];
+    let mut b = applier();
+    let (ids, vals) = ov(Variant::Moved);
+    b.set_overrides(&ids, &vals).unwrap();
+    b.apply(&s, &full_delta(&s), &store);
+    // C1's game centre (32, 213) is drawn 119 px higher under P's lift.
+    assert_eq!(b.pick(&s, 32.0, 94.0), Some(C1));
+    b.set_hit_filters(&[P, C1], &[HIT_INPUT, HIT_IGNORE]).unwrap();
+    assert_eq!(b.pick(&s, 32.0, 94.0), Some(P), "the face stands for its button");
+    let (item, p) = b.to_game(&s, 32.0, 94.0).unwrap();
+    assert_eq!(item, Some(P));
+    assert!(near(p, [32.0, 213.0]), "{p:?}");
+    // Without an input ancestor the face is an overlay: Q is drawn there (at the game spot).
+    b.set_hit_filters(&[C1], &[HIT_IGNORE]).unwrap();
+    assert_eq!(b.pick(&s, 32.0, 213.0), Some(Q));
+    // A drawn item with no filter is the answer as drawn, even inside an input ancestor.
+    b.set_hit_filters(&[P, C2], &[HIT_INPUT, HIT_IGNORE]).unwrap();
+    assert_eq!(b.pick(&s, 32.0, 94.0), Some(C1), "C1 has no filter: it is the answer");
 }
 
 #[test]

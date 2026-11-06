@@ -51,13 +51,18 @@ export interface ExtensionSession {
    * `beforeDraw` with seq null, as `ExtensionFrame.requestRedraw` does. */
   requestRedraw(): void;
   /**
-   * HIT1: Godot's `mouse_filter = IGNORE` for the client's pointer hit test. While on, the item's
-   * own commands never count in `ItemQuery.hitTest`, `client.toGame` / `clientToGame` or
-   * `pointerTargetResolver` (what is drawn below it does; its children still count), so a
-   * transparent overlay the game does not pick stops hiding what is under it. Drawing is
-   * unchanged. Per session: a removed item leaves the set, and a new session starts empty.
+   * HIT1: the item's Godot `mouse_filter`, as the extension knows it (the stream does not carry
+   * it), so `ItemQuery.hitTest`, `client.toGame` / `clientToGame` and `pointerTargetResolver`
+   * pick the item Godot's GUI picking would, as far as drawn items tell: `"stop"` / `"pass"`
+   * (the node takes pointer input), `"ignore"` (an IGNORE Control, or a CanvasItem that is not a
+   * Control: Godot never stops there), `null` (not known: the item counts as drawn, today's
+   * rule). An `"ignore"` item never is the hit: it stands for its nearest `"stop"`/`"pass"`
+   * ancestor (a button's face for its button, which may draw nothing), unless something drawn
+   * below it inside that ancestor answers first, and one with no such ancestor (a transparent
+   * full-screen overlay) lets the point through. Drawing is unchanged. Per session: a removed
+   * item loses its filter, and a new session starts with none.
    */
-  ignoreHits(id: number, on: boolean): void;
+  mouseFilter(id: number, filter: "stop" | "pass" | "ignore" | null): void;
 }
 
 export interface ItemMeta {
@@ -206,8 +211,8 @@ export interface ExtensionCore {
   queryChildren(id: number): Uint32Array;
   /** INP1: the topmost drawn item under a presentation-space point, or null. */
   hitTest(x: number, y: number): number | null;
-  /** HIT1: the hit-ignore set, whole. */
-  setHitIgnore(ids: Uint32Array): void;
+  /** HIT1: the mouse filters, whole (1 STOP/PASS, 2 IGNORE or not a Control). */
+  setHitFilters(ids: Uint32Array, filters: Uint8Array): void;
 }
 
 /** The hello's `item_meta` value (render-stream-13.md, TAG1's parser: exactly these keys). */
@@ -218,6 +223,9 @@ export interface ItemMetaRequestJson {
 }
 
 export const IDENTITY: Affine2D = [1, 0, 0, 1, 0, 0];
+/** HIT1 filter codes (rs-core `HIT_INPUT` / `HIT_IGNORE`). */
+const HIT_INPUT = 1;
+const HIT_IGNORE = 2;
 const EMPTY: ArrayLike<number> = new Float64Array(0);
 const WHITE: RGBA = [1, 1, 1, 1];
 
@@ -477,9 +485,10 @@ export class ExtensionHost {
   private readonly table: Table;
   readonly query: ItemQuery;
   private listensRemoved: boolean;
-  /** HIT1: the session's hit-ignore set, copied into the core lazily (before a hit test). */
-  private readonly hitIgnore = new Set<number>();
-  private hitIgnoreDirty = false;
+  /** HIT1: the session's mouse filters (1 STOP/PASS, 2 IGNORE), copied into the core lazily
+   * (before a hit test). */
+  private readonly hitFilters = new Map<number, number>();
+  private hitFiltersDirty = false;
   private readonly drawers: RenderStreamExtension[];
   /** During the `beforeDraw` dispatch the state cannot change, so the last item read is reused:
    * `transform(id)` then `rect(id)` is one core query, not two. Off outside the dispatch. */
@@ -524,7 +533,7 @@ export class ExtensionHost {
       },
       meta: (id) => this.metas.get(id) ?? null,
       hitTest: (x, y) => {
-        this.flushHitIgnore();
+        this.flushHitFilters();
         return this.core?.hitTest(x, y) ?? null;
       },
       [RAW_ITEM]: (id) => this.item(id),
@@ -553,29 +562,46 @@ export class ExtensionHost {
   bind(core: ExtensionCore): void {
     this.core = core;
     if (this.listensRemoved) core.setLogRemoved(true);
-    this.hitIgnoreDirty = this.hitIgnore.size > 0;
+    this.hitFiltersDirty = this.hitFilters.size > 0;
   }
 
-  /** HIT1: copy a changed hit-ignore set into the core (before any hit test or `toGame`). */
-  flushHitIgnore(): void {
-    if (!this.hitIgnoreDirty || this.core === null) return;
-    this.hitIgnoreDirty = false;
-    this.core.setHitIgnore(Uint32Array.from(this.hitIgnore));
+  /** HIT1: copy changed mouse filters into the core (before any hit test or `toGame`). */
+  flushHitFilters(): void {
+    if (!this.hitFiltersDirty || this.core === null) return;
+    this.hitFiltersDirty = false;
+    const ids = new Uint32Array(this.hitFilters.size);
+    const filters = new Uint8Array(this.hitFilters.size);
+    let k = 0;
+    for (const [id, f] of this.hitFilters) {
+      ids[k] = id;
+      filters[k++] = f;
+    }
+    this.call(() => this.core?.setHitFilters(ids, filters));
   }
 
-  private ignoreHits(id: number, on: boolean): void {
-    if (!Number.isInteger(id) || id < 0) return;
-    if (on === this.hitIgnore.has(id)) return;
-    if (on) {
-      this.hitIgnore.add(id);
-      // A removed item must leave the set (ids are not the game's to keep), so the core logs
-      // removals from the first ignored item on.
+  private mouseFilter(
+    id: number,
+    filter: "stop" | "pass" | "ignore" | null,
+  ): void {
+    if (!Number.isInteger(id) || id < 0 || id > 0xffffffff) return;
+    const f =
+      filter === "stop" || filter === "pass"
+        ? HIT_INPUT
+        : filter === "ignore"
+          ? HIT_IGNORE
+          : 0;
+    if ((this.hitFilters.get(id) ?? 0) === f) return;
+    if (f === 0) this.hitFilters.delete(id);
+    else {
+      this.hitFilters.set(id, f);
+      // A removed item must lose its filter (ids are not the game's to keep), so the core logs
+      // removals from the first filter on.
       if (!this.listensRemoved) {
         this.listensRemoved = true;
         this.core?.setLogRemoved(true);
       }
-    } else this.hitIgnore.delete(id);
-    this.hitIgnoreDirty = true;
+    }
+    this.hitFiltersDirty = true;
   }
 
   /** A session record: a fresh table on both sides (ids are per session). */
@@ -589,9 +615,9 @@ export class ExtensionHost {
     this.table.resetOwners();
     this.table.dirty = false;
     this.redrawWanted = false;
-    if (this.hitIgnore.size > 0) {
-      this.hitIgnore.clear();
-      this.hitIgnoreDirty = true;
+    if (this.hitFilters.size > 0) {
+      this.hitFilters.clear();
+      this.hitFiltersDirty = true;
     }
   }
 
@@ -605,7 +631,7 @@ export class ExtensionHost {
       requestRedraw: () => {
         this.redrawWanted = true;
       },
-      ignoreHits: (id, on) => this.ignoreHits(id, on),
+      mouseFilter: (id, filter) => this.mouseFilter(id, filter),
     };
     for (const e of this.exts) this.call(() => e.onSession?.(s));
   }
@@ -681,7 +707,7 @@ export class ExtensionHost {
     if (ids.length === 0) return;
     for (const id of ids) {
       this.metas.delete(id);
-      if (this.hitIgnore.delete(id)) this.hitIgnoreDirty = true;
+      if (this.hitFilters.delete(id)) this.hitFiltersDirty = true;
     }
     this.table.drop(ids);
     for (const e of this.exts) this.call(() => e.onItemsRemoved?.(ids));

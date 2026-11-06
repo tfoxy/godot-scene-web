@@ -54,8 +54,6 @@ use std::hash::BuildHasherDefault;
 /// per cent of a walk); nothing depends on their iteration order. G7o3: the mesh residency and
 /// the texture names too.
 pub(crate) type IdMap<V> = HashMap<Id, V, BuildHasherDefault<crate::validate::IdHasher>>;
-/// An id set hashed like [`IdMap`].
-pub(crate) type IdSet = HashSet<Id, BuildHasherDefault<crate::validate::IdHasher>>;
 
 /// The root viewport as the applier draws it.
 #[derive(Clone, Copy, Debug)]
@@ -774,9 +772,9 @@ pub struct Applier {
     pub ov_sabotage: overrides::OverrideSabotage,
     /// TAG2 `onItemsRemoved`: the removed ids, logged only while an extension listens.
     removed_log: Option<Vec<Id>>,
-    /// HIT1: the items whose own commands the pointer hit test passes through (Godot's
-    /// `mouse_filter = IGNORE`, as the client's extensions declare it). Read by `hit_test` only.
-    hit_ignore: IdSet,
+    /// HIT1: the client's mouse filters ([`overrides::HIT_INPUT`] / [`overrides::HIT_IGNORE`]
+    /// per item, as its extensions know them). Read by `pick` only.
+    hit_filters: IdMap<u8>,
     /// TAG2: inside `apply` (the sabotage `override-fast-path-miss` acts there only).
     in_apply: bool,
     /// FRZ-HOOK (frz-d.md §5): the frozen membership -- every item under a frozen root, mapped to
@@ -1190,7 +1188,7 @@ impl Applier {
             ov_walk: false,
             ov_sabotage: overrides::OverrideSabotage::default(),
             removed_log: None,
-            hit_ignore: IdSet::default(),
+            hit_filters: IdMap::default(),
             in_apply: false,
             frozen: IdMap::default(),
             frozen_res: Default::default(),
