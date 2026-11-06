@@ -6,6 +6,8 @@ import * as input from "../src/index";
 import indexSource from "../src/index.ts?raw";
 import * as keyboard from "../src/keyboard";
 import keyboardSource from "../src/keyboard.ts?raw";
+import * as pointer from "../src/pointer";
+import pointerSource from "../src/pointer.ts?raw";
 
 // Consumers alias this package's source and may mirror these names in ambient declarations, so
 // both runtime and erased type exports are pinned.
@@ -111,5 +113,31 @@ describe("@godot-scene-web/input/keyboard export surface", () => {
     const parsed = parseBarrelExports(keyboardSource);
     expect(parsed.values.sort()).toEqual([...KEYBOARD_VALUE_EXPORTS].sort());
     expect(parsed.types.sort()).toEqual([...KEYBOARD_TYPE_EXPORTS].sort());
+  });
+});
+
+const POINTER_VALUE_EXPORTS = `
+createPointerCapture objectFitMapper
+`
+  .trim()
+  .split(/\s+/);
+
+const POINTER_TYPE_EXPORTS = `
+PointerCapture PointerCaptureMode PointerCaptureOptions PointerCaptureStats PointerDropReason
+PointerEventLike PointerEventTargetLike PointerHeldState PointerSink PointerStageLike
+PointerTargetsMode PointerVisibilitySource WheelEventLike
+PointerBox PointerMap PointerObjectFit PointerObjectPosition PointerPoint PointerPresentationSize
+`
+  .trim()
+  .split(/\s+/);
+
+describe("@godot-scene-web/input/pointer export surface", () => {
+  it("exports exactly the checked-in value and type lists", () => {
+    expect(Object.keys(pointer).sort()).toEqual(
+      [...POINTER_VALUE_EXPORTS].sort(),
+    );
+    const parsed = parseBarrelExports(pointerSource);
+    expect(parsed.values.sort()).toEqual([...POINTER_VALUE_EXPORTS].sort());
+    expect(parsed.types.sort()).toEqual([...POINTER_TYPE_EXPORTS].sort());
   });
 });

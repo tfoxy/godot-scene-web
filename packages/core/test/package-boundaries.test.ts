@@ -267,4 +267,28 @@ describe("package architecture", () => {
     ).toEqual([]);
     expect(inputs).toContain("packages/input/src/keymap.ts");
   });
+
+  it("bundles the input pointer subpath without the root entry, the codec or the other captures", async () => {
+    const result = await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: [join(packagesDir, "input/src/pointer.ts")],
+      bundle: true,
+      platform: "browser",
+      format: "esm",
+      conditions: ["development"],
+      write: false,
+      metafile: true,
+    });
+    const inputs = Object.keys(result.metafile!.inputs);
+    expect(
+      inputs.filter((file) => !file.startsWith("packages/input/src/")),
+    ).toEqual([]);
+    expect(
+      inputs.filter((file) =>
+        /\/(index|codec|session|keyboard|keymap|gamepad)/.test(file),
+      ),
+    ).toEqual([]);
+    expect(inputs).toContain("packages/input/src/pointer-capture.ts");
+    expect(inputs).toContain("packages/input/src/pointer-map.ts");
+  });
 });

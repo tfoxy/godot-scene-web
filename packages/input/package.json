@@ -29,6 +29,11 @@
       "development": "./src/keyboard.ts",
       "types": "./dist/keyboard.d.ts",
       "import": "./dist/keyboard.js"
+    },
+    "./pointer": {
+      "development": "./src/pointer.ts",
+      "types": "./dist/pointer.d.ts",
+      "import": "./dist/pointer.js"
     }
   },
   "main": "./dist/index.js",

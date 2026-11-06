@@ -25,22 +25,22 @@ flowchart TD
 
 ## Responsibilities
 
-| Package          | Owns                                                                                                                          | Public entrypoints                  |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| `core`           | Canonical Godot AST, Variants, resource references, primitives and narrow value conversions                                   | root                                |
-| `tscn-parser`    | Text-to-AST parsing, preserving Godot property names                                                                          | root                                |
-| `scene-graph`    | Graph types, structural options, visual derivation and external-scene resolution interfaces                                   | root, `/provenance`                 |
-| `layout`         | Rectangle-bearing scene trees, Control layout policy and anchor interpretation                                                | root, `/anchors`                    |
-| `project`        | Project resource resolution and loading                                                                                       | conditional root, `/node`, `/fetch` |
-| `effects`        | Deterministic particle simulation, preprocessing, instance packing, numeric easing, shader frontend and GLSL/WGSL compilation | `/particles`, `/shaders`, `/easing` |
-| `canvas-effects` | GPU programs, buffers, texture uploads, targets, drawing, capture and context recovery                                        | `/webgl`, `/webgpu`                 |
-| `html`           | HTML/CSS projection, text, resources, DOM placement, observers, fallback paint and presentation lifecycle                     | root, `/runtime`                    |
-| `canvas`         | Draw lists, batching, clipping, damage/replay, stage presentation and draw execution                                          | root, `/glyphs`                     |
-| `hb-gpu`         | HarfBuzz Slug glyph outlines in a borrowed GL context                                                                         | root                                |
-| `input`          | `gsw-input/1` keyboard, gamepad and pointer records, codec, session, Godot enum values (DOM-free root; captures as subpaths)  | root, `/gamepad`, `/keyboard`       |
-| `vue`            | Reactive components and slots over shared HTML presentation and runtime binding                                               | root                                |
-| `test-harness`   | Pure comparisons, browser fact collection and Node parity orchestration                                                       | root, `/browser`, `/parity`         |
-| `perf-harness`   | The shared report contract and separate Node orchestration                                                                    | root or `/report`, `/node`          |
+| Package          | Owns                                                                                                                          | Public entrypoints                        |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `core`           | Canonical Godot AST, Variants, resource references, primitives and narrow value conversions                                   | root                                      |
+| `tscn-parser`    | Text-to-AST parsing, preserving Godot property names                                                                          | root                                      |
+| `scene-graph`    | Graph types, structural options, visual derivation and external-scene resolution interfaces                                   | root, `/provenance`                       |
+| `layout`         | Rectangle-bearing scene trees, Control layout policy and anchor interpretation                                                | root, `/anchors`                          |
+| `project`        | Project resource resolution and loading                                                                                       | conditional root, `/node`, `/fetch`       |
+| `effects`        | Deterministic particle simulation, preprocessing, instance packing, numeric easing, shader frontend and GLSL/WGSL compilation | `/particles`, `/shaders`, `/easing`       |
+| `canvas-effects` | GPU programs, buffers, texture uploads, targets, drawing, capture and context recovery                                        | `/webgl`, `/webgpu`                       |
+| `html`           | HTML/CSS projection, text, resources, DOM placement, observers, fallback paint and presentation lifecycle                     | root, `/runtime`                          |
+| `canvas`         | Draw lists, batching, clipping, damage/replay, stage presentation and draw execution                                          | root, `/glyphs`                           |
+| `hb-gpu`         | HarfBuzz Slug glyph outlines in a borrowed GL context                                                                         | root                                      |
+| `input`          | `gsw-input/1` keyboard, gamepad and pointer records, codec, session, Godot enum values (DOM-free root; captures as subpaths)  | root, `/gamepad`, `/keyboard`, `/pointer` |
+| `vue`            | Reactive components and slots over shared HTML presentation and runtime binding                                               | root                                      |
+| `test-harness`   | Pure comparisons, browser fact collection and Node parity orchestration                                                       | root, `/browser`, `/parity`               |
+| `perf-harness`   | The shared report contract and separate Node orchestration                                                                    | root or `/report`, `/node`                |
 
 The parser imports core types only, with no workspace runtime dependency. `hb-gpu` has no
 workspace dependencies. Canvas loads it only through the optional glyph adapter. Core, effects

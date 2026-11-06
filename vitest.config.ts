@@ -69,6 +69,10 @@ export default defineConfig({
         "./packages/input/src/keyboard.ts",
         import.meta.url,
       ).pathname,
+      "@godot-scene-web/input/pointer": new URL(
+        "./packages/input/src/pointer.ts",
+        import.meta.url,
+      ).pathname,
       "@godot-scene-web/input": new URL(
         "./packages/input/src/index.ts",
         import.meta.url,
