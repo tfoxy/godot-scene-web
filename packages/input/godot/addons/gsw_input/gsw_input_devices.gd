@@ -69,6 +69,23 @@ func acquire(source: String, slot: int) -> int:
 	return device
 
 
+## The first device of `source`'s block (`device_base` with `share_devices`), taking a free block
+## on first use like `acquire` but attaching no pad: the id its mouse and touch events carry.
+## -1 when no block is free or the id would pass MAX_DEVICE. `release()` frees the block.
+func block_device(source: String) -> int:
+	var device: int = device_base
+	if not share_devices:
+		var block: int = _block_of.get(source, -1)
+		if block < 0:
+			block = _free_block()
+			if block < 0:
+				return -1
+			_blocks[block] = source
+			_block_of[source] = block
+		device += block * devices_per_source
+	return device if device >= 0 and device <= MAX_DEVICE else -1
+
+
 ## The device `source`'s pad `slot` is on, or -1 when the source has not acquired it.
 func device_for(source: String, slot: int) -> int:
 	var slots: Dictionary = _slots.get(source, {})

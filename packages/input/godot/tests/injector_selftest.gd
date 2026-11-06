@@ -1,8 +1,9 @@
 extends SceneTree
-## IN7/IN8: GswInputInjector against every packages/input/conformance/v1/injector vector,
+## IN7-IN9: GswInputInjector against every packages/input/conformance/v1/injector vector,
 ## asserting real `Input` state in headless Godot: the three key sets, joypad buttons and axes,
-## the test project's actions, the events `_input` actually received, `remote_joypads()`, the
-## joypad attach/detach signals and the injector's stats.
+## the test project's actions, the mouse button mask and position, the events `_input` actually
+## received (Godot's emulated mouse from touch included), `remote_joypads()`, the joypad
+## attach/detach signals and the injector's stats.
 ##
 ##   scripts/test-godot.sh            (runs the --import pass, then every tests/*_selftest.gd)
 ##
@@ -10,12 +11,17 @@ extends SceneTree
 ## {tick: msec}, {release_all: true}, {focus_lost: true}, {reassert: true}, {isolate: [device]}.
 ## `focus_lost` stands in for a window focus-out: Input.release_pressed_events() is not bound for
 ## scripts, so the runner releases every pressed key, virtual button and axis with the probe muted
-## (no `_input` delivery, as the engine call dispatches nothing), then calls on_focus_lost().
+## (no `_input` delivery, as the engine call dispatches nothing) and every pressed action with
+## `Input.action_release()` (what the engine call does, input.cpp:1290-1294), then calls
+## on_focus_lost().
 ## `isolate` runs GswJoypadIsolation.isolate(); the bindings are restored after the vector.
 ## After each step the runner flushes Input; an `expect` entry
 ## {after: step index, ...} compares the state then. Absent state fields mean empty and absent
 ## `stats` means no counter; `dispatched` lists the events `_input` received since the previous
-## entry. Events run from the first `_process` frame: `_input` delivery is not wired during
+## entry; `mouse_position` is checked only where an entry lists it (Input keeps the position across
+## vectors). `Input.get_mouse_position()` is not bound for scripts in 4.5.1: the root viewport's
+## `get_mouse_position()` reads it on headless (no FEATURE_MOUSE, viewport.cpp:1462-1464).
+## Events run from the first `_process` frame: `_input` delivery is not wired during
 ## `_initialize`. Joypad events from physical devices (ids < 16) are ignored, and physical pads
 ## are never inspected.
 ##
@@ -57,7 +63,68 @@ class Probe:
 			# + 0.0 turns -0.0 into 0.0, as JavaScript's toFixed prints it.
 			var value: float = motion.axis_value + 0.0
 			return "joy_motion %d %d %.4f" % [motion.device, motion.axis, value]
+		if event is InputEventMouseButton:
+			var button: InputEventMouseButton = event
+			var line: String = "mouse_button %d %d %s %s mask=%d" % [
+				button.device, button.button_index, "down" if button.pressed else "up", xy(button.position),
+				button.button_mask,
+			]
+			if button.factor != 1.0:
+				line += " factor=%.2f" % button.factor
+			if button.canceled:
+				line += " canceled"
+			if button.double_click:
+				line += " double"
+			return line + mods(button)
+		if event is InputEventMouseMotion:
+			var mouse: InputEventMouseMotion = event
+			var line: String = "mouse_motion %d %s rel=%s mask=%d" % [
+				mouse.device, xy(mouse.position), xy(mouse.relative), mouse.button_mask,
+			]
+			return line + pen(mouse.pressure, mouse.tilt, mouse.pen_inverted) + mods(mouse)
+		if event is InputEventScreenTouch:
+			var touch: InputEventScreenTouch = event
+			var line: String = "screen_touch %d %d %s %s" % [
+				touch.device, touch.index, "down" if touch.pressed else "up", xy(touch.position),
+			]
+			if touch.canceled:
+				line += " canceled"
+			if touch.double_tap:
+				line += " double"
+			return line
+		if event is InputEventScreenDrag:
+			var drag: InputEventScreenDrag = event
+			var line: String = "screen_drag %d %d %s rel=%s" % [drag.device, drag.index, xy(drag.position), xy(drag.relative)]
+			return line + pen(drag.pressure, drag.tilt, drag.pen_inverted)
+		if event is InputEventAction:
+			var action: InputEventAction = event
+			return "action %s %s %.2f" % [action.action, "down" if action.pressed else "up", action.strength]
 		return "other %s" % event.get_class()
+
+	static func xy(point: Vector2) -> String:
+		return "%.2f,%.2f" % [point.x + 0.0, point.y + 0.0]
+
+	static func pen(pressure: float, tilt: Vector2, inverted: bool) -> String:
+		var line: String = ""
+		if pressure != 0.0:
+			line += " pressure=%.2f" % pressure
+		if tilt != Vector2.ZERO:
+			line += " tilt=%s" % xy(tilt)
+		if inverted:
+			line += " inverted"
+		return line
+
+	static func mods(event: InputEventWithModifiers) -> String:
+		var line: String = ""
+		if event.shift_pressed:
+			line += " +shift"
+		if event.ctrl_pressed:
+			line += " +ctrl"
+		if event.alt_pressed:
+			line += " +alt"
+		if event.meta_pressed:
+			line += " +meta"
+		return line
 
 
 var _probe: Probe
@@ -223,6 +290,9 @@ func _release_pressed_events(universe: Dictionary) -> void:
 				rest.axis = axis as JoyAxis
 				Input.parse_input_event(rest)
 	Input.flush_buffered_events()
+	for action: StringName in InputMap.get_actions():
+		if Input.is_action_pressed(action):
+			Input.action_release(action)
 	_probe.muted = false
 
 
@@ -352,6 +422,15 @@ func _compare(where: String, expect: Dictionary, injector: GswInputInjector, uni
 	want_actions.assign(listed_actions)
 	want_actions.sort()
 	_same(where, "actions", actions, want_actions)
+
+	var mask: int = Input.get_mouse_button_mask()
+	var want_mask: float = expect.get("mouse_mask", 0)
+	_same(where, "mouse_mask", mask, int(want_mask))
+	if expect.has("mouse_position"):
+		var listed_position: Array = expect["mouse_position"]
+		var want_x: float = listed_position[0]
+		var want_y: float = listed_position[1]
+		_same(where, "mouse_position", root.get_mouse_position(), Vector2(want_x, want_y))
 
 	var want_dispatched: Array[String] = []
 	var listed_dispatched: Array = expect.get("dispatched", [])

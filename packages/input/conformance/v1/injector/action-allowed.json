@@ -1,0 +1,188 @@
+{
+  "name": "action-allowed",
+  "description": "The opt-in action kind: only allow-listed names are injected (InputEventAction, device key_device), refcounted across sources like keys (press reaches Input on the first holder, release on the last, with strength 0), a repeat press or unheld release is dropped, and release all lets held actions go in press order.",
+  "config": {
+    "accept_kinds": ["key", "action"],
+    "allowed_actions": ["gsw_test_jump", "gsw_test_right"]
+  },
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      },
+      "channel": "a"
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "b",
+        "epoch": 1
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "action",
+            "action": "gsw_test_jump",
+            "pressed": true
+          }
+        ]
+      },
+      "channel": "a"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "action",
+            "action": "gsw_test_jump",
+            "pressed": true,
+            "strength": 0.5
+          },
+          {
+            "event": "action",
+            "action": "ui_cancel",
+            "pressed": true
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "action",
+            "action": "gsw_test_jump",
+            "pressed": true
+          },
+          {
+            "event": "action",
+            "action": "gsw_test_jump",
+            "pressed": false
+          }
+        ]
+      },
+      "channel": "a"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "action",
+            "action": "gsw_test_right",
+            "pressed": true,
+            "strength": 0.25
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "reset",
+        "epoch": 1,
+        "seq": 3
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 3,
+        "events": [
+          {
+            "event": "action",
+            "action": "gsw_test_jump",
+            "pressed": false
+          }
+        ]
+      },
+      "channel": "a"
+    },
+    {
+      "close": "a"
+    },
+    {
+      "close": "b"
+    }
+  ],
+  "expect": [
+    {
+      "after": 2,
+      "actions": ["gsw_test_jump"],
+      "mouse_mask": 0,
+      "dispatched": ["action gsw_test_jump down 1.00"]
+    },
+    {
+      "after": 3,
+      "actions": ["gsw_test_jump"],
+      "mouse_mask": 0,
+      "dispatched": [],
+      "stats": {
+        "action-refused": 1
+      }
+    },
+    {
+      "after": 4,
+      "actions": ["gsw_test_jump"],
+      "mouse_mask": 0,
+      "dispatched": [],
+      "stats": {
+        "action-refused": 1,
+        "repeat": 1
+      }
+    },
+    {
+      "after": 5,
+      "actions": ["gsw_test_jump", "gsw_test_right"],
+      "mouse_mask": 0,
+      "dispatched": ["action gsw_test_right down 0.25"],
+      "stats": {
+        "action-refused": 1,
+        "repeat": 1
+      }
+    },
+    {
+      "after": 6,
+      "mouse_mask": 0,
+      "dispatched": [
+        "action gsw_test_jump up 0.00",
+        "action gsw_test_right up 0.00"
+      ],
+      "stats": {
+        "action-refused": 1,
+        "repeat": 1
+      }
+    },
+    {
+      "after": 7,
+      "mouse_mask": 0,
+      "dispatched": [],
+      "stats": {
+        "action-refused": 1,
+        "repeat": 1,
+        "unheld": 1
+      }
+    }
+  ]
+}

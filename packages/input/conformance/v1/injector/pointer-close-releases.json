@@ -1,0 +1,199 @@
+{
+  "name": "pointer-close-releases",
+  "description": "Release all for the pointer: close, reset and a new epoch send every held mouse button up at the last mouse position (ascending button index, canceled) and cancel every active touch at its last position (press order), after which Input's mask is 0.",
+  "config": {},
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "mouse_motion",
+            "position": [100, 100]
+          },
+          {
+            "event": "mouse_button",
+            "button_index": 2,
+            "pressed": true,
+            "position": [100, 100],
+            "button_mask": 2
+          },
+          {
+            "event": "mouse_button",
+            "button_index": 3,
+            "pressed": true,
+            "position": [101, 100],
+            "button_mask": 6
+          },
+          {
+            "event": "screen_touch",
+            "index": 0,
+            "pressed": true,
+            "position": [200, 200]
+          },
+          {
+            "event": "screen_touch",
+            "index": 3,
+            "pressed": true,
+            "position": [210, 220]
+          }
+        ]
+      }
+    },
+    {
+      "close": "a"
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 2
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 2,
+        "seq": 1,
+        "events": [
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": true,
+            "position": [5, 5],
+            "button_mask": 1
+          },
+          {
+            "event": "screen_touch",
+            "index": 1,
+            "pressed": true,
+            "position": [6, 6]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "reset",
+        "epoch": 2,
+        "seq": 2
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 2,
+        "seq": 3,
+        "events": [
+          {
+            "event": "screen_touch",
+            "index": 0,
+            "pressed": true,
+            "position": [7, 7]
+          },
+          {
+            "event": "screen_drag",
+            "index": 0,
+            "position": [8, 7],
+            "relative": [1, 0]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 3
+      }
+    },
+    {
+      "close": "a"
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "mouse_mask": 7,
+      "mouse_position": [200, 200],
+      "dispatched": [
+        "mouse_motion 64 100.00,100.00 rel=0.00,0.00 mask=0",
+        "mouse_button 64 2 down 100.00,100.00 mask=2",
+        "mouse_button 64 3 down 101.00,100.00 mask=6",
+        "mouse_button -1 1 down 200.00,200.00 mask=7",
+        "screen_touch 64 0 down 200.00,200.00",
+        "screen_touch 64 3 down 210.00,220.00"
+      ]
+    },
+    {
+      "after": 2,
+      "mouse_mask": 0,
+      "mouse_position": [200, 200],
+      "dispatched": [
+        "mouse_button 64 2 up 101.00,100.00 mask=4 canceled",
+        "mouse_button 64 3 up 101.00,100.00 mask=0 canceled",
+        "mouse_button -1 1 up 200.00,200.00 mask=0 canceled",
+        "screen_touch 64 0 up 200.00,200.00 canceled",
+        "screen_touch 64 3 up 210.00,220.00 canceled"
+      ]
+    },
+    {
+      "after": 4,
+      "mouse_mask": 1,
+      "mouse_position": [6, 6],
+      "dispatched": [
+        "mouse_button 64 1 down 5.00,5.00 mask=1",
+        "mouse_button -1 1 down 6.00,6.00 mask=1",
+        "screen_touch 64 1 down 6.00,6.00"
+      ]
+    },
+    {
+      "after": 5,
+      "mouse_mask": 0,
+      "mouse_position": [6, 6],
+      "dispatched": [
+        "mouse_button 64 1 up 5.00,5.00 mask=0 canceled",
+        "mouse_button -1 1 up 6.00,6.00 mask=0 canceled",
+        "screen_touch 64 1 up 6.00,6.00 canceled"
+      ]
+    },
+    {
+      "after": 6,
+      "mouse_mask": 1,
+      "mouse_position": [8, 7],
+      "dispatched": [
+        "mouse_button -1 1 down 7.00,7.00 mask=1",
+        "screen_touch 64 0 down 7.00,7.00",
+        "mouse_motion -1 8.00,7.00 rel=1.00,0.00 mask=1",
+        "screen_drag 64 0 8.00,7.00 rel=1.00,0.00"
+      ]
+    },
+    {
+      "after": 7,
+      "mouse_mask": 0,
+      "mouse_position": [8, 7],
+      "dispatched": [
+        "mouse_button -1 1 up 8.00,7.00 mask=0 canceled",
+        "screen_touch 64 0 up 8.00,7.00 canceled"
+      ]
+    },
+    {
+      "after": 8,
+      "mouse_mask": 0,
+      "mouse_position": [8, 7],
+      "dispatched": []
+    }
+  ]
+}

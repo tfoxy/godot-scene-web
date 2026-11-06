@@ -1,0 +1,213 @@
+{
+  "name": "pointer-sync",
+  "description": "A pointer sync heals held state: declarations apply in order, the mouse part releases unlisted buttons (canceled, at the last position), moves to the listed motion and presses listed buttons; touches release unlisted (canceled) then press listed. A sync from a non-owner without a press is dropped (mouse-not-owner); with a press it takes the mouse over.",
+  "config": {},
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      },
+      "channel": "a"
+    },
+    {
+      "recv": {
+        "type": "sync",
+        "epoch": 1,
+        "seq": 1,
+        "scope": "pointer",
+        "held": [
+          {
+            "event": "target",
+            "handle": 2,
+            "path": "Main/Pad"
+          },
+          {
+            "event": "mouse_motion",
+            "position": [30, 40],
+            "target": 2,
+            "local": [1, 1]
+          },
+          {
+            "event": "mouse_button",
+            "button_index": 2,
+            "pressed": true,
+            "position": [30, 40],
+            "button_mask": 2,
+            "target": 2,
+            "local": [1, 1]
+          },
+          {
+            "event": "screen_touch",
+            "index": 4,
+            "pressed": true,
+            "position": [80, 90]
+          }
+        ]
+      },
+      "channel": "a"
+    },
+    {
+      "recv": {
+        "type": "sync",
+        "epoch": 1,
+        "seq": 2,
+        "scope": "pointer",
+        "held": [
+          {
+            "event": "mouse_motion",
+            "position": [35, 40]
+          },
+          {
+            "event": "screen_touch",
+            "index": 5,
+            "pressed": true,
+            "position": [81, 91]
+          }
+        ]
+      },
+      "channel": "a"
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "b",
+        "epoch": 1
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "sync",
+        "epoch": 1,
+        "seq": 1,
+        "scope": "pointer",
+        "held": [
+          {
+            "event": "mouse_motion",
+            "position": [1, 1]
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "sync",
+        "epoch": 1,
+        "seq": 2,
+        "scope": "pointer",
+        "held": [
+          {
+            "event": "mouse_button",
+            "button_index": 2,
+            "pressed": true,
+            "position": [2, 2],
+            "button_mask": 2
+          },
+          {
+            "event": "mouse_motion",
+            "position": [2, 2]
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "sync",
+        "epoch": 1,
+        "seq": 3,
+        "scope": "pointer",
+        "held": []
+      },
+      "channel": "a"
+    },
+    {
+      "close": "b"
+    },
+    {
+      "close": "a"
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "mouse_mask": 3,
+      "mouse_position": [80, 90],
+      "dispatched": [
+        "mouse_motion 64 30.00,40.00 rel=0.00,0.00 mask=0",
+        "mouse_button 64 2 down 30.00,40.00 mask=2",
+        "mouse_button -1 1 down 80.00,90.00 mask=3",
+        "screen_touch 64 4 down 80.00,90.00"
+      ]
+    },
+    {
+      "after": 2,
+      "mouse_mask": 1,
+      "mouse_position": [81, 91],
+      "dispatched": [
+        "mouse_button 64 2 up 30.00,40.00 mask=0 canceled",
+        "mouse_motion 64 35.00,40.00 rel=0.00,0.00 mask=0",
+        "mouse_button -1 1 up 80.00,90.00 mask=0 canceled",
+        "screen_touch 64 4 up 80.00,90.00 canceled",
+        "mouse_button -1 1 down 81.00,91.00 mask=1",
+        "screen_touch 64 5 down 81.00,91.00"
+      ]
+    },
+    {
+      "after": 4,
+      "mouse_mask": 1,
+      "mouse_position": [81, 91],
+      "dispatched": [],
+      "stats": {
+        "mouse-not-owner": 1
+      }
+    },
+    {
+      "after": 5,
+      "mouse_mask": 3,
+      "mouse_position": [2, 2],
+      "dispatched": [
+        "mouse_motion 68 2.00,2.00 rel=0.00,0.00 mask=0",
+        "mouse_button 68 2 down 2.00,2.00 mask=2"
+      ],
+      "stats": {
+        "mouse-not-owner": 1
+      }
+    },
+    {
+      "after": 6,
+      "mouse_mask": 2,
+      "mouse_position": [81, 91],
+      "dispatched": [
+        "mouse_button -1 1 up 81.00,91.00 mask=2 canceled",
+        "screen_touch 64 5 up 81.00,91.00 canceled"
+      ],
+      "stats": {
+        "mouse-not-owner": 1
+      }
+    },
+    {
+      "after": 7,
+      "mouse_mask": 0,
+      "mouse_position": [2, 2],
+      "dispatched": ["mouse_button 68 2 up 2.00,2.00 mask=0 canceled"],
+      "stats": {
+        "mouse-not-owner": 1
+      }
+    },
+    {
+      "after": 8,
+      "mouse_mask": 0,
+      "mouse_position": [2, 2],
+      "dispatched": [],
+      "stats": {
+        "mouse-not-owner": 1
+      }
+    }
+  ]
+}

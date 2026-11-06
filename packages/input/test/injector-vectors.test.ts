@@ -60,6 +60,7 @@ describe("conformance/v1/injector", () => {
       expect(last?.physical_keys, vector.name).toEqual([]);
       expect(last?.joy_buttons, vector.name).toEqual([]);
       expect(last?.joy_axes, vector.name).toEqual([]);
+      expect(last?.mouse_mask, vector.name).toBe(0);
     }
   });
 

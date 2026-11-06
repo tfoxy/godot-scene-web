@@ -1,12 +1,13 @@
 {
   "name": "gates-and-rejects",
-  "description": "accept_kinds, allowed_actions and device range gate single records; codec rejects drop the whole message atomically and keep the seq; unknown types are ignored.",
+  "description": "accept_kinds, allowed_actions and device range gate single records (pointer and allow-listed action records are injected, gestures refused here); codec rejects drop the whole message atomically and keep the seq; unknown types are ignored; close releases the held action.",
   "config": {
     "accept_kinds": [
       "key",
       "joypad_button",
       "joypad_motion",
       "mouse_button",
+      "mouse_motion",
       "action"
     ],
     "allowed_actions": ["gsw_test_jump"]
@@ -81,16 +82,14 @@
           {
             "event": "mouse_button",
             "button_index": 1,
-            "pressed": true,
+            "pressed": false,
             "position": [10, 10],
             "target": 3,
             "local": [1, 2]
           },
           {
-            "event": "mouse_button",
-            "button_index": 1,
-            "pressed": false,
-            "position": [10, 10],
+            "event": "mouse_motion",
+            "position": [12, 10],
             "target": 9,
             "local": [1, 2]
           }
@@ -183,12 +182,17 @@
       "keys": [87],
       "labels": [87],
       "actions": ["gsw_test_jump"],
-      "dispatched": ["key 87/87/87 down"],
+      "mouse_mask": 1,
+      "mouse_position": [10, 10],
+      "dispatched": [
+        "mouse_button 64 1 down 10.00,10.00 mask=1",
+        "action gsw_test_jump down 1.00",
+        "key 87/87/87 down"
+      ],
       "stats": {
-        "kind-unsupported": 2,
+        "skipped": 1,
         "kind-refused": 2,
-        "action-refused": 1,
-        "skipped": 1
+        "action-refused": 1
       }
     },
     {
@@ -197,12 +201,15 @@
       "keys": [87],
       "labels": [87],
       "actions": ["gsw_test_jump"],
-      "dispatched": [],
+      "mouse_position": [12, 10],
+      "dispatched": [
+        "mouse_button 64 1 up 10.00,10.00 mask=0",
+        "mouse_motion 64 12.00,10.00 rel=0.00,0.00 mask=0"
+      ],
       "stats": {
-        "kind-unsupported": 4,
+        "skipped": 1,
         "kind-refused": 2,
         "action-refused": 1,
-        "skipped": 1,
         "undeclared-target": 1
       }
     },
@@ -214,10 +221,9 @@
       "actions": ["gsw_test_jump"],
       "dispatched": [],
       "stats": {
-        "kind-unsupported": 4,
+        "skipped": 1,
         "kind-refused": 2,
         "action-refused": 1,
-        "skipped": 1,
         "undeclared-target": 1,
         "device-refused": 1,
         "bad-field": 1
@@ -225,12 +231,27 @@
     },
     {
       "after": 8,
+      "actions": ["gsw_test_jump"],
       "dispatched": ["key 87/87/87 up"],
       "stats": {
-        "kind-unsupported": 4,
+        "skipped": 1,
         "kind-refused": 2,
         "action-refused": 1,
+        "undeclared-target": 1,
+        "device-refused": 1,
+        "bad-field": 1,
+        "unknown-type": 1,
+        "too-large": 1,
+        "unsupported-format": 1
+      }
+    },
+    {
+      "after": 9,
+      "dispatched": ["action gsw_test_jump up 0.00"],
+      "stats": {
         "skipped": 1,
+        "kind-refused": 2,
+        "action-refused": 1,
         "undeclared-target": 1,
         "device-refused": 1,
         "bad-field": 1,

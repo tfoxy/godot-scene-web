@@ -14,20 +14,25 @@ extends RefCounted
 ##     never release it under each other. A shared axis shows the last nonzero value written; when
 ##     a holder returns to 0 it falls back to the largest-magnitude remaining holder, then to 0.
 ##
-## Release all (keys up replaying their press record, buttons up, axes to 0) runs on `reset`,
+## Release all (keys up replaying their press record, actions up, buttons up, axes to 0, then the
+## pointer: mouse buttons up and touches canceled at their last position) runs on `reset`,
 ## `bye`, a new epoch for the source, `close_channel`, `stale_timeout_ms` (from `tick`) and
 ## `release_all()`.
 ##
-## Scope: key, joypad_button and joypad_motion are injected. Pointer records (IN9), `action` and
-## gestures pass the gates (`accept_kinds`, `allowed_actions`) and are then counted
-## `kind-unsupported`.
+## Scope: key, joypad_button, joypad_motion (IN7), the pointer kinds mouse_button, mouse_motion,
+## screen_touch and screen_drag (IN9, GswInputPointer: one mouse owner, per-source touch ranges)
+## and opt-in `action` (IN9) are injected. Gestures pass the gates and are counted
+## `kind-unsupported`; target declarations fill the handle table, and targeted pointer records
+## apply by their coordinate (IN12 resolves targets). `install_event_filter` adds the
+## physical-pointer filter (GswInputPointerFilter).
 ##
 ## Joypads (IN8): a source's pad slots get virtual device ids from GswInputDevices on first use,
 ## leased to the source until `lease_ms` after it closes, so a reconnect keeps its devices.
 ## Godot never lists injected pads, so `joypad_attached`/`joypad_detached` and `remote_joypads()`
 ## stand in for `joy_connection_changed`/`get_connected_joypads()`. GswJoypadIsolation keeps
 ## physical pads out of the InputMap. Focus loss (`on_focus_lost`, `reassert`) is handled by
-## GswInputInjectorNode, which also calls `tick()` every frame.
+## GswInputInjectorNode, which also calls `tick()` every frame. Mouse and touch events carry the
+## first device of the source's leased block (`pointer_device_for`), without attaching a pad.
 ##
 ## Typical use, one call per carrier text:
 ##   var injector := GswInputInjector.new()
@@ -50,6 +55,10 @@ const DEFAULT_ACCEPT_KINDS: Array[String] = [
 ## Every virtual device id stays below 2048 (GswInputDevices.MAX_DEVICE).
 const MAX_DEVICE: int = GswInputDevices.MAX_DEVICE
 const _POINTER_KINDS: Array[String] = ["mouse_button", "mouse_motion", "screen_touch", "screen_drag"]
+const _INJECTED_KINDS: Array[String] = [
+	"key", "joypad_button", "joypad_motion", "mouse_button", "mouse_motion", "screen_touch", "screen_drag",
+	"action",
+]
 const _RATE_WINDOW_MS: int = 1000
 # Key identity namespaces (a key record is identified by its first nonzero keycode).
 const _ID_KEYCODE: int = 1 << 24
@@ -95,6 +104,13 @@ var stale_timeout_ms: int = 0
 var max_events_per_second: int = 2000
 ## Where events go; unset means `Input.parse_input_event`. Called with one InputEvent.
 var event_sink: Callable = Callable()
+## Which source owns Godot's one mouse: "last-active" (a mouse press takes it over), "first"
+## (until its session closes) or a fixed source id. See GswInputPointer.
+var mouse_owner: String = GswInputPointer.LAST_ACTIVE:
+	set(value):
+		mouse_owner = value
+		if _pointer != null:
+			_pointer.mouse_owner = value
 
 
 class _Source:
@@ -111,7 +127,9 @@ class _Source:
 	var buttons: Dictionary = {}
 	## device << 4 | axis -> nonzero value.
 	var axes: Dictionary = {}
-	## target handle -> declaration record (pointer targets; resolved in IN9/IN12).
+	## action name -> its press strength, in press order.
+	var actions: Dictionary = {}
+	## target handle -> declaration record (pointer targets; resolved in IN12).
 	var handles: Dictionary = {}
 	var rate_start: int = 0
 	var rate_count: int = 0
@@ -122,6 +140,10 @@ class _Source:
 	var lost_keys: Dictionary = {}
 	var lost_buttons: Dictionary = {}
 	var lost_axes: Dictionary = {}
+	var lost_actions: Dictionary = {}
+	## Its touch index range (`touch_index_base`): the lowest range free when it first said hello,
+	## kept until the source is forgotten at lease end.
+	var touch_range: int = 0
 
 
 var _devices: GswInputDevices = GswInputDevices.new()
@@ -136,12 +158,17 @@ var _button_refs: Dictionary = {}
 var _axis_holders: Dictionary = {}
 ## device << 4 | axis -> the nonzero value last sent to Input.
 var _axis_emitted: Dictionary = {}
+## action name -> number of sources holding it.
+var _action_refs: Dictionary = {}
+var _pointer: GswInputPointer
 var _stats: Dictionary = {}
 
 
 func _init() -> void:
 	_devices.attached.connect(joypad_attached.emit)
 	_devices.detached.connect(joypad_detached.emit)
+	_pointer = GswInputPointer.new(_emit, _count)
+	_pointer.mouse_owner = mouse_owner
 
 
 ## Apply settings from a Dictionary (JSON numbers welcome). Returns false on an unknown key or a
@@ -170,6 +197,11 @@ func configure(config: Dictionary) -> bool:
 					continue
 				var flag: String = key
 				set(flag, value)
+			"mouse_owner":
+				if typeof(value) != TYPE_STRING:
+					ok = false
+					continue
+				mouse_owner = value
 			"device_base", "devices_per_source", "key_device", "lease_ms", "stale_timeout_ms", "max_events_per_second":
 				if not is_number:
 					ok = false
@@ -198,6 +230,44 @@ func remote_joypads() -> Array[int]:
 ## Every id the first `sources` sources can be handed (for `GswJoypadIsolation.isolate()`).
 func virtual_devices(sources: int = 1) -> Array[int]:
 	return _devices.virtual_devices(sources)
+
+
+## The virtual device of a source's mouse and touch events, or -1 when none is free: the first
+## id of its leased device block (`device_base` with `share_devices`), taken on first use without
+## attaching a pad, so it is the id its pad slot 0 gets too. Never 0, so `install_event_filter`
+## can tell the local physical pointer apart.
+func pointer_device_for(source: String) -> int:
+	return _devices.block_device(source)
+
+
+## The first host touch index of a source's range: its sender index i is host index `base + i`.
+## Each source gets the lowest free range of 32 at its first hello and keeps it until forgotten.
+func touch_index_base(source: String) -> int:
+	var state: _Source = _sources.get(source)
+	return 0 if state == null else state.touch_range * GswInputPointer.TOUCH_RANGE
+
+
+func _free_touch_range() -> int:
+	var used: Dictionary = {}
+	for state: Variant in _sources.values():
+		var other: _Source = state
+		used[other.touch_range] = true
+	var range_index: int = 0
+	while used.has(range_index):
+		range_index += 1
+	return range_index
+
+
+## The source owning the mouse, or "".
+func mouse_source() -> String:
+	return _pointer.owner_source()
+
+
+## Add the physical-pointer filter (GswInputPointerFilter) to `root`, normally
+## `get_tree().root`: it drops the local mouse and touch (device 0) before `_input` handlers and
+## GUI see them, and never drops `DEVICE_ID_EMULATION` events.
+static func install_event_filter(root: Node) -> GswInputPointerFilter:
+	return GswInputPointerFilter.install(root)
 
 
 ## Handle one carrier text from `channel` (any Variant that names the connection). Returns "" when
@@ -305,6 +375,7 @@ func _hello(channel: Variant, message: Dictionary, now_msec: int) -> String:
 	if source == null:
 		source = _Source.new()
 		source.id = id
+		source.touch_range = _free_touch_range()
 		_sources[id] = source
 	elif source.open and source.epoch == epoch:
 		return _drop(channel, "duplicate", "hello repeats epoch %d" % epoch)
@@ -332,6 +403,7 @@ func _hello(channel: Variant, message: Dictionary, now_msec: int) -> String:
 
 func _close_source(source: _Source, now_msec: int) -> void:
 	_release_source(source)
+	_pointer.close(source.id)
 	source.open = false
 	source.epoch = -1
 	source.handles.clear()
@@ -362,7 +434,7 @@ func _forget(source: _Source) -> void:
 
 static func _is_release(record: Dictionary) -> bool:
 	match record["event"]:
-		"key", "joypad_button":
+		"key", "joypad_button", "mouse_button", "screen_touch", "action":
 			return record["pressed"] == false
 		"joypad_motion":
 			return record.get("axis_value", 0.0) == 0.0
@@ -390,7 +462,7 @@ func _apply_events(source: _Source, records: Array, now_msec: int) -> String:
 	return ""
 
 
-## The gates every record passes; true when it is a key or joypad record to apply.
+## The gates every record passes; true when it is a record to inject.
 func _admit(source: _Source, record: Dictionary) -> bool:
 	var kind: String = record["event"]
 	if kind == "target":
@@ -409,7 +481,7 @@ func _admit(source: _Source, record: Dictionary) -> bool:
 		var handle: int = record.get("target", 0)
 		if handle != 0 and not source.handles.has(handle):
 			_count("undeclared-target")
-	if kind != "key" and kind != "joypad_button" and kind != "joypad_motion":
+	if not _INJECTED_KINDS.has(kind):
 		_count("kind-unsupported")
 		return false
 	return true
@@ -425,6 +497,14 @@ func _apply_record(source: _Source, record: Dictionary) -> void:
 			_joypad_button(source, record)
 		"joypad_motion":
 			_joypad_motion(source, record)
+		"action":
+			_action(source, record)
+		_:
+			var device: int = pointer_device_for(source.id)
+			if device < 0:
+				_count("device-refused")
+				return
+			_pointer.apply(source.id, device, touch_index_base(source.id), record)
 
 
 # --- keys --------------------------------------------------------------------------------------
@@ -531,6 +611,54 @@ func _emit_key(record: Dictionary, physical: int, keycode: int, label: int, pres
 	_emit(event)
 
 
+# --- actions -----------------------------------------------------------------------------------
+
+## `action` records (allow-listed): refcounted per name like keys; a press of a held action is
+## `repeat`, a release of one the source does not hold `unheld`. Releases carry strength 0.
+func _action(source: _Source, record: Dictionary) -> void:
+	var action: String = record["action"]
+	var pressed: bool = record["pressed"]
+	# Focus loss already released it in Godot (release_pressed_events releases every action).
+	if source.lost_actions.erase(action) and not pressed:
+		return
+	if pressed == source.actions.has(action):
+		_count("repeat" if pressed else "unheld")
+		return
+	if pressed:
+		var strength: float = record.get("strength", 1.0)
+		_press_action(source, action, strength)
+	else:
+		_release_action(source, action)
+
+
+func _press_action(source: _Source, action: String, strength: float) -> void:
+	source.actions[action] = strength
+	var count: int = _action_refs.get(action, 0)
+	_action_refs[action] = count + 1
+	if count == 0:
+		_emit_action(action, true, strength)
+
+
+func _release_action(source: _Source, action: String) -> void:
+	source.actions.erase(action)
+	var count: int = _action_refs.get(action, 0)
+	count -= 1
+	if count > 0:
+		_action_refs[action] = count
+		return
+	_action_refs.erase(action)
+	_emit_action(action, false, 0.0)
+
+
+func _emit_action(action: String, pressed: bool, strength: float) -> void:
+	var event := InputEventAction.new()
+	event.device = key_device
+	event.action = action
+	event.pressed = pressed
+	event.strength = strength
+	_emit(event)
+
+
 # --- joypads -----------------------------------------------------------------------------------
 
 func _joypad_button(source: _Source, record: Dictionary) -> void:
@@ -630,8 +758,8 @@ func _set_axis(source: _Source, key: int, value: float) -> void:
 # --- focus loss --------------------------------------------------------------------------------
 
 ## The window lost OS focus and Godot already ran `Input.release_pressed_events()` (every desktop
-## display server does on focus-out, core/input/input.cpp:1281): keys, joypad buttons and axes are
-## gone from Input without any release event. Forget that they were emitted, without emitting
+## display server does on focus-out, core/input/input.cpp:1281): keys, joypad buttons, axes and
+## actions are gone from Input without any release event. Forget that they were emitted, without emitting
 ## anything; each source's holds move aside, so its later release of one sends nothing, a fresh
 ## press presses again, a `sync` replaces them and `reassert()` presses them again. Pointer state
 ## is untouched (release_pressed_events keeps the mouse button mask).
@@ -641,17 +769,20 @@ func on_focus_lost() -> void:
 		source.lost_keys.merge(source.keys)
 		source.lost_buttons.merge(source.buttons)
 		source.lost_axes.merge(source.axes, true)
+		source.lost_actions.merge(source.actions)
 		source.keys.clear()
 		source.buttons.clear()
 		source.axes.clear()
+		source.actions.clear()
 	_key_refs.clear()
+	_action_refs.clear()
 	_button_refs.clear()
 	_axis_holders.clear()
 	_axis_emitted.clear()
 
 
-## Press again what focus loss dropped and the sources still hold: keys (press order), buttons,
-## axes, source by source in hello order. GswInputInjectorNode calls it on focus-in when
+## Press again what focus loss dropped and the sources still hold: keys (press order), actions
+## (press order, at their strength), buttons, axes, source by source in hello order. GswInputInjectorNode calls it on focus-in when
 ## `reassert_on_focus_in` is set.
 func reassert() -> void:
 	for state: Variant in _sources.values():
@@ -661,6 +792,11 @@ func reassert() -> void:
 				var record: Dictionary = source.lost_keys[id]
 				source.keys[id] = record
 				_press_key(record)
+		for action: Variant in source.lost_actions:
+			var name: String = action
+			var strength: float = source.lost_actions[action]
+			if not source.actions.has(name):
+				_press_action(source, name, strength)
 		for key: Variant in source.lost_buttons:
 			var button_key: int = key
 			if not source.buttons.has(button_key):
@@ -670,6 +806,7 @@ func reassert() -> void:
 			var value: float = source.lost_axes[key]
 			_set_axis(source, axis_key, value)
 		source.lost_keys.clear()
+		source.lost_actions.clear()
 		source.lost_buttons.clear()
 		source.lost_axes.clear()
 
@@ -757,26 +894,38 @@ func _apply_sync(source: _Source, message: Dictionary) -> void:
 				var value: float = axes[key]
 				_set_axis(source, axis_key, value)
 		"pointer":
-			# IN9: pointer held state. Declarations apply; the rest is gated and counted.
+			var records: Array[Dictionary] = []
 			for item: Variant in held:
 				var record: Dictionary = item
-				_admit(source, record)
+				if _admit(source, record):
+					records.append(record)
+			var device: int = pointer_device_for(source.id)
+			if device < 0:
+				if not records.is_empty():
+					_count("device-refused")
+				return
+			_pointer.sync(source.id, device, touch_index_base(source.id), records)
 
 
 func _release_source(source: _Source) -> void:
 	source.lost_keys.clear()
 	source.lost_buttons.clear()
 	source.lost_axes.clear()
+	source.lost_actions.clear()
 	for id: Variant in source.keys.keys():
 		var press: Dictionary = source.keys[id]
 		_release_key(press)
 	source.keys.clear()
+	for action: Variant in source.actions.keys():
+		var name: String = action
+		_release_action(source, name)
 	for key: Variant in source.buttons.keys():
 		var button_key: int = key
 		_release_button(source, button_key)
 	for key: Variant in source.axes.keys():
 		var axis_key: int = key
 		_set_axis(source, axis_key, 0.0)
+	_pointer.release(source.id)
 
 
 func _emit(event: InputEvent) -> void:

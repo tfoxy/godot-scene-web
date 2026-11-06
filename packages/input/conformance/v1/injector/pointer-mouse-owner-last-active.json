@@ -1,0 +1,282 @@
+{
+  "name": "pointer-mouse-owner-last-active",
+  "description": "mouse_owner last-active: the first mouse record claims the one mouse, another source's motion and releases are dropped (mouse-not-owner), its press takes over after releasing the previous owner's buttons (canceled); touches stay multi-source with per-source index ranges (source b's index 0 is host index 32); close gives the mouse up.",
+  "config": {},
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      },
+      "channel": "a"
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "b",
+        "epoch": 1
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "mouse_motion",
+            "position": [10, 10]
+          }
+        ]
+      },
+      "channel": "a"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "mouse_motion",
+            "position": [50, 50]
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": true,
+            "position": [10, 10],
+            "button_mask": 1
+          }
+        ]
+      },
+      "channel": "a"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "mouse_button",
+            "button_index": 2,
+            "pressed": true,
+            "position": [50, 50],
+            "button_mask": 2
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 3,
+        "events": [
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": false,
+            "position": [12, 10]
+          },
+          {
+            "event": "mouse_motion",
+            "position": [12, 10]
+          }
+        ]
+      },
+      "channel": "a"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 4,
+        "events": [
+          {
+            "event": "screen_touch",
+            "index": 0,
+            "pressed": true,
+            "position": [5, 5]
+          }
+        ]
+      },
+      "channel": "a"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 3,
+        "events": [
+          {
+            "event": "screen_touch",
+            "index": 0,
+            "pressed": true,
+            "position": [70, 70]
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 4,
+        "events": [
+          {
+            "event": "mouse_button",
+            "button_index": 2,
+            "pressed": false,
+            "position": [50, 50]
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "close": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 5,
+        "events": [
+          {
+            "event": "mouse_motion",
+            "position": [20, 20]
+          }
+        ]
+      },
+      "channel": "a"
+    },
+    {
+      "close": "a"
+    }
+  ],
+  "expect": [
+    {
+      "after": 2,
+      "mouse_mask": 0,
+      "mouse_position": [10, 10],
+      "dispatched": ["mouse_motion 64 10.00,10.00 rel=0.00,0.00 mask=0"]
+    },
+    {
+      "after": 3,
+      "mouse_mask": 0,
+      "mouse_position": [10, 10],
+      "dispatched": [],
+      "stats": {
+        "mouse-not-owner": 1
+      }
+    },
+    {
+      "after": 4,
+      "mouse_mask": 1,
+      "mouse_position": [10, 10],
+      "dispatched": ["mouse_button 64 1 down 10.00,10.00 mask=1"],
+      "stats": {
+        "mouse-not-owner": 1
+      }
+    },
+    {
+      "after": 5,
+      "mouse_mask": 2,
+      "mouse_position": [50, 50],
+      "dispatched": [
+        "mouse_button 64 1 up 10.00,10.00 mask=0 canceled",
+        "mouse_button 68 2 down 50.00,50.00 mask=2"
+      ],
+      "stats": {
+        "mouse-not-owner": 1
+      }
+    },
+    {
+      "after": 6,
+      "mouse_mask": 2,
+      "mouse_position": [50, 50],
+      "dispatched": [],
+      "stats": {
+        "mouse-not-owner": 3
+      }
+    },
+    {
+      "after": 7,
+      "mouse_mask": 3,
+      "mouse_position": [5, 5],
+      "dispatched": [
+        "mouse_button -1 1 down 5.00,5.00 mask=3",
+        "screen_touch 64 0 down 5.00,5.00"
+      ],
+      "stats": {
+        "mouse-not-owner": 3
+      }
+    },
+    {
+      "after": 8,
+      "mouse_mask": 3,
+      "mouse_position": [5, 5],
+      "dispatched": ["screen_touch 68 32 down 70.00,70.00"],
+      "stats": {
+        "mouse-not-owner": 3
+      }
+    },
+    {
+      "after": 9,
+      "mouse_mask": 1,
+      "mouse_position": [50, 50],
+      "dispatched": ["mouse_button 68 2 up 50.00,50.00 mask=0"],
+      "stats": {
+        "mouse-not-owner": 3
+      }
+    },
+    {
+      "after": 10,
+      "mouse_mask": 1,
+      "mouse_position": [50, 50],
+      "dispatched": ["screen_touch 68 32 up 70.00,70.00 canceled"],
+      "stats": {
+        "mouse-not-owner": 3
+      }
+    },
+    {
+      "after": 11,
+      "mouse_mask": 1,
+      "mouse_position": [20, 20],
+      "dispatched": ["mouse_motion 64 20.00,20.00 rel=0.00,0.00 mask=0"],
+      "stats": {
+        "mouse-not-owner": 3
+      }
+    },
+    {
+      "after": 12,
+      "mouse_mask": 0,
+      "mouse_position": [5, 5],
+      "dispatched": [
+        "mouse_button -1 1 up 5.00,5.00 mask=0 canceled",
+        "screen_touch 64 0 up 5.00,5.00 canceled"
+      ],
+      "stats": {
+        "mouse-not-owner": 3
+      }
+    }
+  ]
+}
