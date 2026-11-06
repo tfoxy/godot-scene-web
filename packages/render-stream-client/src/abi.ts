@@ -99,6 +99,8 @@ export interface GswRs {
   to_game(x: number, y: number): Float64Array;
   // HIT1: the mouse filters hit tests pick by (1 STOP/PASS, 2 IGNORE or not a Control).
   set_hit_filters(ids: Uint32Array, filters: Uint8Array): number;
+  // ID2: the order hit tests pick by (0 HIT1's draw order, 1 Godot's GUI tree order).
+  set_pick_order(order: number): number;
   free(): void;
 }
 
@@ -229,5 +231,6 @@ export const CLIENT_CORE_METHODS = [
   "hit_test",
   "to_game",
   "set_hit_filters",
+  "set_pick_order",
   "free",
 ] as const satisfies readonly (keyof GswRs)[];

@@ -63,6 +63,18 @@ export interface ExtensionSession {
    * item loses its filter, and a new session starts with none.
    */
   mouseFilter(id: number, filter: "stop" | "pass" | "ignore" | null): void;
+  /**
+   * ID2: the order the stated filters are read in. `"drawn"` (the default) is the topmost-drawn
+   * reading above. `"tree"` is Godot's own GUI pick order (`Viewport::gui_find_control`): canvas
+   * layers top first, then each root's subtree depth first, last child first and children before
+   * their parent, `z_index`, `show_behind_parent` and modulate ignored, a clipping Control's
+   * children only inside it. Only a `"stop"`/`"pass"` item answers, tested against its own rect
+   * (a Control's `Rect2(0, size)`, which the stream carries even when the Control draws nothing,
+   * so an undrawn hitbox is found); `"ignore"` and unstated items are passed through. With no
+   * filter stated either order is the bare topmost-drawn hit test. Per session: a new session
+   * starts at `"drawn"`. Limits: client-extensions-design.md "As built (ID2)".
+   */
+  pickOrder(order: "tree" | "drawn"): void;
 }
 
 export interface ItemMeta {
@@ -213,6 +225,8 @@ export interface ExtensionCore {
   hitTest(x: number, y: number): number | null;
   /** HIT1: the mouse filters, whole (1 STOP/PASS, 2 IGNORE or not a Control). */
   setHitFilters(ids: Uint32Array, filters: Uint8Array): void;
+  /** ID2: the order the hit test reads the filters in. */
+  setPickOrder(order: "drawn" | "tree"): void;
 }
 
 /** The hello's `item_meta` value (render-stream-13.md, TAG1's parser: exactly these keys). */
@@ -489,6 +503,9 @@ export class ExtensionHost {
    * (before a hit test). */
   private readonly hitFilters = new Map<number, number>();
   private hitFiltersDirty = false;
+  /** ID2: the session's pick order (Godot's tree order when true), copied with the filters. */
+  private pickTree = false;
+  private pickOrderDirty = false;
   private readonly drawers: RenderStreamExtension[];
   /** During the `beforeDraw` dispatch the state cannot change, so the last item read is reused:
    * `transform(id)` then `rect(id)` is one core query, not two. Off outside the dispatch. */
@@ -563,11 +580,18 @@ export class ExtensionHost {
     this.core = core;
     if (this.listensRemoved) core.setLogRemoved(true);
     this.hitFiltersDirty = this.hitFilters.size > 0;
+    this.pickOrderDirty = this.pickTree;
   }
 
   /** HIT1: copy changed mouse filters into the core (before any hit test or `toGame`). */
   flushHitFilters(): void {
-    if (!this.hitFiltersDirty || this.core === null) return;
+    if (this.core === null) return;
+    if (this.pickOrderDirty) {
+      this.pickOrderDirty = false;
+      const order = this.pickTree ? "tree" : "drawn";
+      this.call(() => this.core?.setPickOrder(order));
+    }
+    if (!this.hitFiltersDirty) return;
     this.hitFiltersDirty = false;
     const ids = new Uint32Array(this.hitFilters.size);
     const filters = new Uint8Array(this.hitFilters.size);
@@ -604,6 +628,14 @@ export class ExtensionHost {
     this.hitFiltersDirty = true;
   }
 
+  private pickOrder(order: "tree" | "drawn"): void {
+    if (order !== "tree" && order !== "drawn") return;
+    const tree = order === "tree";
+    if (tree === this.pickTree) return;
+    this.pickTree = tree;
+    this.pickOrderDirty = true;
+  }
+
   /** A session record: a fresh table on both sides (ids are per session). */
   beginSession(sessionId: string, streamId: string): void {
     this.session = { sessionId, streamId };
@@ -619,6 +651,10 @@ export class ExtensionHost {
       this.hitFilters.clear();
       this.hitFiltersDirty = true;
     }
+    if (this.pickTree) {
+      this.pickTree = false;
+      this.pickOrderDirty = true;
+    }
   }
 
   private announce(grant: ItemMetaGrant | null): void {
@@ -632,6 +668,7 @@ export class ExtensionHost {
         this.redrawWanted = true;
       },
       mouseFilter: (id, filter) => this.mouseFilter(id, filter),
+      pickOrder: (order) => this.pickOrder(order),
     };
     for (const e of this.exts) this.call(() => e.onSession?.(s));
   }

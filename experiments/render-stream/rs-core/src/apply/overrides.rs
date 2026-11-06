@@ -65,6 +65,52 @@ fn under(state: &ResolvedState, id: Id, root: Id) -> bool {
     false
 }
 
+/// ID2: one step of [`Applier::pick_tree`]'s depth-first walk: enter an item under its parent's
+/// transform, or (after its children) test it under its own.
+enum PickVisit {
+    Enter(Id, Xform),
+    Leave(Id, Xform),
+}
+
+/// ID2: push `ids` (siblings) so that the highest `draw_index` pops first; ties keep the state's
+/// order, the later one first (the one drawn later, as the walk's append order).
+fn push_siblings(state: &ResolvedState, ids: &[Id], parent_xf: Xform, stack: &mut Vec<PickVisit>) {
+    let from = stack.len();
+    stack.extend(ids.iter().map(|&c| PickVisit::Enter(c, parent_xf)));
+    insertion_sort_by_key(&mut stack[from..], |v| match v {
+        PickVisit::Enter(c, _) | PickVisit::Leave(c, _) => {
+            state.items.get(c).map_or(i64::MIN, |it| it.draw_index)
+        }
+    });
+}
+
+/// A stable insertion sort: sibling lists arrive in (or near) `draw_index` order, so this is
+/// O(n) in practice, and it keeps the default wasm small (the std stable sort is several KB per
+/// instance; client-extensions-design.md "Identity v2", the 8 KB budget).
+fn insertion_sort_by_key<T, K: Ord>(v: &mut [T], key: impl Fn(&T) -> K) {
+    for i in 1..v.len() {
+        let mut j = i;
+        while j > 0 && key(&v[j - 1]) > key(&v[j]) {
+            v.swap(j - 1, j);
+            j -= 1;
+        }
+    }
+}
+
+/// A transform with determinant 0 (or not finite): Godot prunes the subtree.
+fn singular(xf: &Xform) -> bool {
+    let det = xf[0] * xf[3] - xf[1] * xf[2];
+    det == 0.0 || !det.is_finite()
+}
+
+/// Whether the presentation-space point `p` is inside `rect` in the space `xf` maps from
+/// (`Rect2::has_point`: begin inclusive, end exclusive).
+fn contains_local(xf: &Xform, rect: &Rect, p: [f32; 2]) -> bool {
+    let [lx, ly] = geom::xform_point(&geom::affine_inverse(xf), p);
+    let [rx, ry, rw, rh] = *rect;
+    lx >= rx && ly >= ry && lx < rx + rw && ly < ry + rh
+}
+
 /// One item's override.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Override {
@@ -97,6 +143,36 @@ pub struct OverrideSabotage {
     /// FRZ-HOOK `frozen-sweeps`: [`Applier::referenced_payload_hashes`] omits the frozen
     /// subtree's payloads, so the retention sweep drops them. Fails the retention check.
     pub frozen_sweeps: bool,
+    /// ID2 `pick-draw-order`: under [`PickOrder::Tree`], [`Applier::pick`] still reads HIT1's draw
+    /// order. Fails the pick oracle at the `z_index`, `show_behind_parent` and undrawn points.
+    pub pick_draw_order: bool,
+    /// ID2 `pick-no-rect`: the tree pick tests an item's drawn content rect only, never its custom
+    /// rect, so a Control that draws nothing (a `Hitbox`) is never found.
+    pub pick_no_rect: bool,
+    /// ID2 `pick-no-clip`: the tree pick visits a clipping item's children outside its rect.
+    pub pick_no_clip: bool,
+}
+
+/// ID2 (client-extensions-design.md "Identity v2", ID-D1, ID-D8): the order [`Applier::pick`]
+/// reads. `Drawn` (the default) is HIT1's topmost-drawn reading; `Tree` is Godot's GUI pick order
+/// ([`Applier::pick_tree`]). Either reads the mouse filters; with none set, both are
+/// [`Applier::hit_test`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PickOrder {
+    #[default]
+    Drawn,
+    Tree,
+}
+
+impl PickOrder {
+    /// The wasm and C ABI code: 0 drawn, 1 tree, else the `pick-order` error.
+    pub fn from_code(code: u32) -> Result<PickOrder, &'static str> {
+        match code {
+            0 => Ok(PickOrder::Drawn),
+            1 => Ok(PickOrder::Tree),
+            _ => Err("pick-order: the order is 0 (drawn) or 1 (tree)"),
+        }
+    }
 }
 
 /// What [`Applier::refresh_overrides`] did.
@@ -274,6 +350,7 @@ impl Applier {
         self.overrides = std::mem::take(&mut old.overrides);
         self.removed_log = old.removed_log.take();
         self.hit_filters = std::mem::take(&mut old.hit_filters);
+        self.pick_order = old.pick_order;
         self.ov_sabotage = old.ov_sabotage;
         // FRZ-HOOK: the frozen membership and any pending unfreeze follow the table. The held
         // records do not (a fresh applier has none): its first apply draws the held items from
@@ -573,9 +650,16 @@ impl Applier {
     ///   transparent overlay) just lets the point through.
     /// So a full-screen IGNORE overlay hides nothing, an IGNORE button face reaches its button
     /// (which may draw nothing itself), and a Node2D drawn over the UI hides nothing either.
+    ///
+    /// ID2: under [`PickOrder::Tree`] (and with filters set) the answer is
+    /// [`Applier::pick_tree`]'s instead: Godot's own order, which also finds a Control that draws
+    /// nothing.
     pub fn pick(&self, state: &ResolvedState, x: f32, y: f32) -> Option<Id> {
         if self.hit_filters.is_empty() {
             return self.hit_test(x, y);
+        }
+        if self.pick_order == PickOrder::Tree && !self.ov_sabotage.pick_draw_order {
+            return self.pick_tree(state, x, y);
         }
         let mut proxy: Option<Id> = None;
         for id in self.drawn_at(x, y) {
@@ -595,6 +679,115 @@ impl Applier {
             }
         }
         proxy
+    }
+
+    /// ID2: the order [`Applier::pick`] reads from now on (kept across a coding resync).
+    pub fn set_pick_order(&mut self, order: PickOrder) {
+        self.pick_order = order;
+    }
+
+    pub fn pick_order(&self) -> PickOrder {
+        self.pick_order
+    }
+
+    /// ID2 (client-extensions-design.md "Identity v2", ID-D1, ID-D2): the item Godot 4.5.1's GUI
+    /// picking chooses at the presentation-space point `(x, y)` (`Viewport::gui_find_control`,
+    /// viewport.cpp:1793-1865), read from the client's own item tree:
+    /// - attached canvases from the top of the stacking down (`(layer, sublayer)`, Godot's
+    ///   `CComparator` by canvas layer), a canvas's root items by `draw_index` descending (root
+    ///   draw indices are raised in tree order);
+    /// - each item depth first: a hidden item (`visible` false, or hidden by an override) or one
+    ///   whose transform is singular prunes its subtree; its children go first, `draw_index`
+    ///   descending (a child's `draw_index` is its `get_index()`), skipped when the item clips
+    ///   and the point is outside its rect (`clip_contents`); then the item answers when its
+    ///   filter is [`HIT_INPUT`] and its rect contains the point in its own space.
+    ///
+    /// The rect is the custom rect (a Control's `Rect2(0, size)`, sent at each of its draws
+    /// whether it draws anything or not), or the drawn content rect for an item that never set
+    /// one. `z_index`, `show_behind_parent`, modulate (alpha included), materials and visibility
+    /// layers are ignored, as Godot's picking ignores them. Transforms are composed from the
+    /// state with the overrides (`E · F`, as drawn), not read from the last walk, so an item the
+    /// walk culled (alpha under 0.007, off screen) is still found. Items with no filter or
+    /// [`HIT_IGNORE`] are passed through, never returned. O(visible items), nothing per frame.
+    pub fn pick_tree(&self, state: &ResolvedState, x: f32, y: f32) -> Option<Id> {
+        let mut canvases: Vec<&crate::state::Canvas> =
+            state.canvases.values().filter(|c| c.attached).collect();
+        insertion_sort_by_key(&mut canvases, |c| (c.layer, c.sublayer, c.id));
+        let ov = !self.overrides.is_empty();
+        let p = [x, y];
+        let mut stack: Vec<PickVisit> = Vec::new();
+        for cv in canvases.iter().rev() {
+            let canvas_xf = geom::mul(&self.viewport.global_xform, &cv.xform);
+            stack.clear();
+            push_siblings(state, &cv.items, canvas_xf, &mut stack);
+            while let Some(v) = stack.pop() {
+                match v {
+                    PickVisit::Enter(id, parent_xf) => {
+                        let Some(it) = state.items.get(&id) else {
+                            continue;
+                        };
+                        if !it.visible {
+                            continue;
+                        }
+                        let mut final_xf = geom::mul(&parent_xf, &it.xform);
+                        if ov {
+                            if let Some(o) = self.overrides.get(&id) {
+                                if !o.visible {
+                                    continue;
+                                }
+                                final_xf = geom::mul(&o.xform, &final_xf);
+                            }
+                        }
+                        if singular(&final_xf) {
+                            continue;
+                        }
+                        // UIT: the item itself is drawn (and tested) in its canvas's space; its
+                        // children keep the composed transform.
+                        let own_xf = if it.use_identity_transform {
+                            canvas_xf
+                        } else {
+                            final_xf
+                        };
+                        stack.push(PickVisit::Leave(id, own_xf));
+                        if it.clip && !self.ov_sabotage.pick_no_clip {
+                            let inside = self
+                                .pick_rect(id, it)
+                                .is_some_and(|r| contains_local(&own_xf, &r, p));
+                            if !inside {
+                                continue;
+                            }
+                        }
+                        push_siblings(state, &it.children, final_xf, &mut stack);
+                    }
+                    PickVisit::Leave(id, own_xf) => {
+                        if self.hit_filters.get(&id) != Some(&HIT_INPUT) {
+                            continue;
+                        }
+                        let Some(it) = state.items.get(&id) else {
+                            continue;
+                        };
+                        if self
+                            .pick_rect(id, it)
+                            .is_some_and(|r| contains_local(&own_xf, &r, p))
+                        {
+                            return Some(id);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// ID2 (ID-D2): the rect a tree pick tests, in the item's own space: its custom rect, or the
+    /// drawn content rect when it never set one (no flag and an all-zero rect: a Control sends
+    /// one at every draw, so only a non-Control stated as input lands here).
+    fn pick_rect(&self, id: Id, it: &crate::state::Item) -> Option<Rect> {
+        if !self.ov_sabotage.pick_no_rect && (it.custom_rect || it.custom_rect_rect != [0.0; 4]) {
+            return Some(it.custom_rect_rect);
+        }
+        let rec = self.items.get(&id)?;
+        (!rec.lowered.draws.is_empty()).then_some(rec.lowered.rect)
     }
 
     /// The nearest proper ancestor of `id` with [`HIT_INPUT`], or None.

@@ -29,6 +29,8 @@ class ExtCore extends FakeCore implements ExtensionCore {
   /** HIT1: the mouse filters as last copied in (id → code), and how often. */
   hitFilters = new Map<number, number>();
   hitFilterCopies = 0;
+  /** ID2: the pick orders copied in, in order. */
+  pickOrders: string[] = [];
   refreshes = 0;
   override receive(data: ArrayBuffer, sessionSeen: boolean): CoreMessage {
     const m = JSON.parse(new TextDecoder().decode(data)) as CoreMessage & {
@@ -76,8 +78,16 @@ class ExtCore extends FakeCore implements ExtensionCore {
     if (x < 10 || x >= 14 || y < 20 || y >= 24) return null;
     // Item 3 is drawn over item 2 (same rect); an IGNORE item lets the point through (the
     // core's pick is rs-core's, tested there; this fake only shows the filters arrived).
+    // ID2: under "tree" (with filters) only an input item answers, children first.
+    if (this.pickOrders.at(-1) === "tree" && this.hitFilters.size > 0) {
+      for (const id of [3, 2, 1]) if (this.hitFilters.get(id) === 1) return id;
+      return null;
+    }
     for (const id of [3, 2]) if (this.hitFilters.get(id) !== 2) return id;
     return null;
+  }
+  setPickOrder(order: "drawn" | "tree"): void {
+    this.pickOrders.push(order);
   }
   setHitFilters(ids: Uint32Array, filters: Uint8Array): void {
     this.hitFilters = new Map([...ids].map((id, k) => [id, filters[k]]));
@@ -561,6 +571,53 @@ describe("render-stream client extensions (TAG2)", () => {
     session!.mouseFilter(1.5, "ignore");
     expect(h.ext.query.hitTest(11, 21)).toBe(3);
     expect(h.core.hitFilters.size).toBe(0);
+  });
+
+  it("pickOrder reaches the core lazily with the filters, per session, and costs nothing unset", () => {
+    let session: ExtensionSession | null = null;
+    const h = setup([
+      {
+        id: "tree",
+        wants: { fields: ["scene", "path"] },
+        onSession: (s) => {
+          session = s;
+        },
+      },
+    ]);
+    const t = h.last();
+    t.on.message(meta(full));
+    t.on.message(tx(1));
+    h.clock.frame();
+    // ID-D8: no pickOrder call, no copy: the session keeps HIT1's draw reading.
+    session!.mouseFilter(3, "pass");
+    expect(h.ext.query.hitTest(11, 21)).toBe(3);
+    expect(h.core.pickOrders).toEqual([]);
+    session!.mouseFilter(2, "stop");
+    session!.mouseFilter(3, null);
+    expect(h.ext.query.hitTest(11, 21)).toBe(3); // item 3 unstated counts as drawn
+    // "tree": copied once, before the next hit test (not when set), unstated items pass.
+    session!.pickOrder("tree");
+    session!.pickOrder("tree");
+    expect(h.core.pickOrders).toEqual([]);
+    expect(h.ext.query.hitTest(11, 21)).toBe(2);
+    expect(h.ext.query.hitTest(12, 22)).toBe(2);
+    expect(h.core.pickOrders).toEqual(["tree"]);
+    // Bad values are ignored; "drawn" goes back.
+    (session as unknown as { pickOrder(o: string): void }).pickOrder("z");
+    expect(h.ext.query.hitTest(11, 21)).toBe(2);
+    session!.pickOrder("drawn");
+    expect(h.ext.query.hitTest(11, 21)).toBe(3);
+    expect(h.core.pickOrders).toEqual(["tree", "drawn"]);
+    // A fresh core gets the order again; a new session starts at "drawn".
+    session!.pickOrder("tree");
+    const fresh = new ExtCore();
+    h.ext.bind(fresh);
+    fresh.hitFilters = new Map([[2, 1]]);
+    expect(h.ext.query.hitTest(11, 21)).toBe(2);
+    expect(fresh.pickOrders).toEqual(["tree"]);
+    h.ext.beginSession("s2", "st2");
+    h.ext.query.hitTest(11, 21);
+    expect(fresh.pickOrders).toEqual(["tree", "drawn"]);
   });
 
   it("query.hitTest asks the core on demand and is null before it is bound", () => {

@@ -34,6 +34,7 @@ import { type G8ctspExpected, runG8ctsp } from "./lib/gate8-ct-spine-checks";
 import { runG8kp } from "./lib/gate8-delivery-checks";
 import { type FloatExpected, runG8f } from "./lib/gate8-float-checks";
 import { runG8htr } from "./lib/gate8-htr-checks";
+import { runG8id } from "./lib/gate8-id-checks";
 import { runG8l } from "./lib/gate8-live-checks";
 import { type G8mExpected, runG8m } from "./lib/gate8-mat-checks";
 import { type G8mmExpected, runG8mm } from "./lib/gate8-mm-checks";
@@ -79,6 +80,7 @@ const KNOWN_GROUPS = [
   "g8res",
   "g8tag",
   "g8tag2",
+  "g8id",
   "g8rec1",
   "g8htr",
   "g8tdr",
@@ -247,6 +249,10 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
   if (run.includes("g8tag2")) {
     // TAG2: the GSW client's extension API and override table (lib/gate8-tag2-checks.ts).
     checks.push(...(await runG8tag2(join(out, "g8tag2"))));
+  }
+  if (run.includes("g8id")) {
+    // ID2: the GSW client's Godot tree-order pick (lib/gate8-id-checks.ts).
+    checks.push(...(await runG8id(join(out, "g8id"))));
   }
   if (run.includes("g8rec1")) {
     // REC1: the client recorder (lib/gate8-rec1-checks.ts).

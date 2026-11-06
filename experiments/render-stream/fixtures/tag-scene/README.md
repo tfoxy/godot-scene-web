@@ -64,3 +64,35 @@ client's rows-only path must compose with the overrides. At step 100, `RS_FIXTUR
 makes the main thread sleep that long: no frame, so no transaction (from /12 every frame's patch
 carries the shader time), which is the window `override-redraw` animates in. The `g8tag2` legs (`run-gate8.sh`) run
 the variants and the base scene beside an extension that makes the same change by tag.
+
+## Pick (ID2)
+
+`RS_FIXTURE_TAG_PICK` (any value) replaces `tag.tscn` with `pick.tscn` / `pick.gd` before the
+capture arms (`change_scene_to_file`, deferred from `tag.gd`'s `_ready`; TAG1's timeline does not
+run). The scene has one case per rule of Godot 4.5.1's GUI pick
+(`Viewport::gui_find_control`) that the client's tree-order pick reproduces
+([`../../protocol/client-extensions-design.md`](../../protocol/client-extensions-design.md)
+"As built (ID2)"). The header comment of `pick.gd` lists them.
+
+| case                                                                                     | Godot picks                         | the stream's draw order shows |
+| ---------------------------------------------------------------------------------------- | ----------------------------------- | ----------------------------- |
+| `ZHigh` (`z_index` 5) and its later sibling `ZLow`                                       | `ZLow` where they overlap           | `ZHigh` on top                |
+| `BChild` (`show_behind_parent`) in `BParent`                                             | `BChild`                            | `BParent` on top              |
+| `Card`: IGNORE `Face`, a drawn item with no node (step 5), STOP `Hitbox` drawing nothing | `Hitbox`                            | the no-node art               |
+| `ClipBox` (`clip_contents`) and its child `Spill` reaching outside it                    | not `Spill` outside the clip        | `Spill` scissored             |
+| `Under` / `Over` in CanvasLayers -1 and 1                                                | by layer                            | by layer                      |
+| `TopKid` (`top_level`) in `TopParent`, the later `Late`                                  | `TopKid` (a root after the scene's) | `TopKid`                      |
+| `Decor` (a Polygon2D) over `Button`                                                      | `Button`                            | `Decor`                       |
+| `Rot` (30 degrees)                                                                       | inside its rotated rect only        | the same                      |
+| `Hidden` (with a visible child) over `UnderHidden`                                       | `UnderHidden`                       | `UnderHidden`                 |
+| `Ghost` (modulate alpha 0) over `UnderGhost`                                             | `Ghost`                             | `UnderGhost` (Ghost culled)   |
+| `Veil`, a transparent IGNORE ColorRect over `VeilButton`                                 | `VeilButton`                        | `Veil`                        |
+
+Every CanvasItem carries meta `rs_pick` (its name) and `rs_mf` (its
+`get_mouse_filter_with_override()` as `"stop"`, `"pass"` or `"ignore"`; `"ignore"` for a CanvasItem
+that is not a Control), which the `g8id` legs' extension states with `ExtensionSession.mouseFilter`.
+At step 20 the fixture pushes a mouse motion (`Viewport.push_input`) at the centre of every cell of a
+24x16 grid and records `gui_get_hovered_control()`'s `rs_pick`: one JSON line in
+`RS_FIXTURE_TAG_PICK_LOG`, `{"frame", "size", "grid", "filters", "points"}` (points row by row, top
+first, null for no Control). `RS_FIXTURE_QUIT_FRAME` defaults to start + 60 in this mode. The no-node
+item is freed in `_exit_tree`, after the last frame, so the client's last frame still holds it.

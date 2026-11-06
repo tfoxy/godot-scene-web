@@ -49,9 +49,15 @@ var _mover: ColorRect = null
 var _early: ColorRect = null
 var _plain_held: Node = null
 var _variant: String = ""
+var _pick: bool = false
 
 
 func _ready() -> void:
+	if OS.has_environment("RS_FIXTURE_TAG_PICK"):
+		# ID2 (README.md "Pick (ID2)"): the pick scene replaces this one before anything is armed.
+		_pick = true
+		get_tree().change_scene_to_file.call_deferred("res://pick.tscn")
+		return
 	if OS.has_environment("RS_FIXTURE_TAG_START"):
 		_start = OS.get_environment("RS_FIXTURE_TAG_START").to_int()
 	_quit_frame = 200 + _start
@@ -98,6 +104,8 @@ func _make_board() -> void:
 
 
 func _process(_delta: float) -> void:
+	if _pick:
+		return
 	_frame += 1
 	match _frame - _start:
 		5:

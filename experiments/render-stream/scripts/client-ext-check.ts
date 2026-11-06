@@ -76,6 +76,7 @@ type Api = {
   dispose(): void;
   stats(): unknown;
   probe(): unknown;
+  pickProbe(): unknown;
   shot(): { width: number; height: number; rgba: string } | null;
   statuses: { kind: string; reason?: string; detail?: string }[];
   counters: unknown;
@@ -99,7 +100,7 @@ async function main(): Promise<number> {
   let glue = "/core/rs_gsw_wasm_client.js";
   if (a.sabotage) {
     if (
-      !/^(override-(no-inherit|no-damage|fast-path-miss)|inverse-skip|frozen-(still-applies|sweeps))$/.test(
+      !/^(override-(no-inherit|no-damage|fast-path-miss)|inverse-skip|frozen-(still-applies|sweeps)|pick-(draw-order|no-rect|no-clip))$/.test(
         a.sabotage,
       )
     )
@@ -248,6 +249,11 @@ export default function () {
       if (a.extension === "inp" && cssBox)
         report.probe = await page.evaluate(() =>
           (window as unknown as { __rse: Api }).__rse.probe(),
+        );
+      // ID2: the pick grid the `pick` / `pick-default` extension read during the last frame.
+      if (a.extension === "pick" || a.extension === "pick-default")
+        report.pick = await page.evaluate(() =>
+          (window as unknown as { __rse: Api }).__rse.pickProbe(),
         );
       report.ended = ended;
       report.first_frame = firstFrame;

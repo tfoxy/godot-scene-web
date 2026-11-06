@@ -914,6 +914,7 @@ export const GROUP_COVERAGE_8: Record<string, readonly string[] | string> = {
     "none: LATE-RES's late-arm pre-arm resources (the adopted items and process materials) run as a /12 fixture for the particles half (PM7), which the /8 manifest does not describe (as g8pt); the item adoption itself is the /8 control.late-join-adoption feature (g8a), so it adds no new /8 row",
   g8tag2:
     "none: TAG2's client extension API and override table are an opt-in layer of the render-stream client package over /13, which the /8 manifest does not describe",
+  g8id: "none: ID2's tree-order pick is an opt-in layer of the render-stream client package over /13 (no wire change), which the /8 manifest does not describe",
   g8rec1:
     "none: REC1's client recorder is an opt-in layer of the render-stream client package over /13 (the recording is the wire format itself), which the /8 manifest does not describe",
   g8htr:

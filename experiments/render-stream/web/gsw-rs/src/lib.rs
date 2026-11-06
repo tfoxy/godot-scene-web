@@ -28,7 +28,9 @@ use render_stream_core::apply::payloads::{PayloadStage, PayloadStore};
 use render_stream_core::apply::programs::{ProgramEntry, ProgramInfo};
 use render_stream_core::apply::residency::TextureAccount;
 use render_stream_core::apply::retention::Retention;
-use render_stream_core::apply::overrides::{check_hit_filters, OverrideSabotage, Refresh};
+use render_stream_core::apply::overrides::{
+    check_hit_filters, OverrideSabotage, PickOrder, Refresh,
+};
 use render_stream_core::apply::{Applier, ApplySabotage, BindingKey, Viewport};
 use render_stream_core::canon;
 use render_stream_core::state::VariantEncoding;
@@ -310,6 +312,10 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "override-no-damage" => o.ov.no_damage = true,
                 "override-fast-path-miss" => o.ov.fast_path_miss = true,
                 "inverse-skip" => o.ov.inverse_skip = true,
+                // ID2 (client-extensions-design.md "Identity v2"): the tree pick's sabotages.
+                "pick-draw-order" => o.ov.pick_draw_order = true,
+                "pick-no-rect" => o.ov.pick_no_rect = true,
+                "pick-no-clip" => o.ov.pick_no_clip = true,
                 // FRZ-HOOK (frz-d.md §6): the freeze-subtree hook's sabotages.
                 "frozen-still-applies" => o.ov.frozen_still_applies = true,
                 "frozen-sweeps" => o.ov.frozen_sweeps = true,
@@ -578,6 +584,8 @@ pub struct GswRs {
     log_removed: bool,
     /// HIT1: the client's mouse filters, handed to every applier (`set_hit_filters`).
     hit_filters: (Vec<u32>, Vec<u8>),
+    /// ID2: the pick order, handed to every applier (`set_pick_order`).
+    pick_order: PickOrder,
     data: Vec<u8>,
     version: u8,
     spans: Vec<RecordSpan>,
@@ -842,6 +850,7 @@ impl GswRs {
             opts,
             log_removed: false,
             hit_filters: (Vec::new(), Vec::new()),
+            pick_order: PickOrder::Drawn,
             data: Vec::new(),
             version: 6,
             spans: Vec::new(),
@@ -1220,6 +1229,7 @@ impl GswRs {
         applier.log_removed(self.log_removed);
         // Checked when it was set; an applier cannot refuse it.
         let _ = applier.set_hit_filters(&self.hit_filters.0, &self.hit_filters.1);
+        applier.set_pick_order(self.pick_order);
         // PM3: GLES3 stores multimesh colours and custom data as half floats.
         applier.half_instances = s.engine.rendering_method == "gl_compatibility";
         // G8kp (texture-delivery-design.md D3, Q3): gpu_formats from this context's extensions,
@@ -2386,6 +2396,24 @@ impl GswRs {
         self.hit_filters = (ids.to_vec(), filters.to_vec());
         if let Some(a) = self.applier.as_mut() {
             let _ = a.set_hit_filters(ids, filters);
+        }
+        0
+    }
+
+    /// ID2: the order `hit_test` / `to_game` pick by, kept for every later applier of the session:
+    /// 0 HIT1's draw order (the default), 1 Godot's GUI tree order (`Applier::pick_tree`). 0, or
+    /// -1 (`error`: `pick-order`).
+    pub fn set_pick_order(&mut self, order: u32) -> i32 {
+        let order = match PickOrder::from_code(order) {
+            Ok(o) => o,
+            Err(e) => {
+                self.error = e.to_string();
+                return -1;
+            }
+        };
+        self.pick_order = order;
+        if let Some(a) = self.applier.as_mut() {
+            a.set_pick_order(order);
         }
         0
     }

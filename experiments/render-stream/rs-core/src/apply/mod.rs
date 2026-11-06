@@ -775,6 +775,8 @@ pub struct Applier {
     /// HIT1: the client's mouse filters ([`overrides::HIT_INPUT`] / [`overrides::HIT_IGNORE`]
     /// per item, as its extensions know them). Read by `pick` only.
     hit_filters: IdMap<u8>,
+    /// ID2: the order `pick` reads (HIT1's draw order unless the client chose Godot's tree order).
+    pick_order: overrides::PickOrder,
     /// TAG2: inside `apply` (the sabotage `override-fast-path-miss` acts there only).
     in_apply: bool,
     /// FRZ-HOOK (frz-d.md §5): the frozen membership -- every item under a frozen root, mapped to
@@ -1189,6 +1191,7 @@ impl Applier {
             ov_sabotage: overrides::OverrideSabotage::default(),
             removed_log: None,
             hit_filters: IdMap::default(),
+            pick_order: overrides::PickOrder::Drawn,
             in_apply: false,
             frozen: IdMap::default(),
             frozen_res: Default::default(),
@@ -4124,6 +4127,8 @@ mod window_tests;
 mod w11c_tests;
 #[cfg(test)]
 mod override_tests;
+#[cfg(test)]
+mod pick_tree_tests;
 #[cfg(test)]
 mod gap2_rx_tests;
 

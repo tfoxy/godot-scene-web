@@ -4,7 +4,9 @@
 // nothing from the input package (each stays free of the other).
 //
 // On demand only: nothing here runs per frame, and a client nobody resolves on pays nothing. A
-// resolve is one `hitTest` (the core's topmost drawn item, overrides included), a `parent` climb
+// resolve is one `hitTest` (the core's pick, overrides included: the topmost drawn item read by
+// the session's mouse filters, or, after `ExtensionSession.pickOrder("tree")`, Godot's own GUI
+// pick order, which also finds a Control that draws nothing), a `parent` climb
 // to the first item with a node identity, and one inverse of that item's drawn transform:
 // `local = (E · T)⁻¹ · drawn point`, where `T` is the game's transform and `E` the composed
 // override, so `local` is measured against what the user saw. Identities need the host's

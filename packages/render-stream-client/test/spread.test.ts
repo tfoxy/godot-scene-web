@@ -241,6 +241,7 @@ class TreeCore implements ExtensionCore {
     return null;
   }
   setHitFilters(): void {}
+  setPickOrder(): void {}
 }
 
 /** The tree: nested shifted panels (1 > 2 > 3, 10 > 11 > 12) and pass-through groups

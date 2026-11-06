@@ -5,6 +5,7 @@
 
 import {
   createRenderStreamClient,
+  type ExtensionSession,
   type ItemMeta,
   type ItemQuery,
   type RenderStreamClient,
@@ -102,10 +103,104 @@ const inp: {
   result: null,
 };
 
+/** ID2's pick probe (fixtures/tag-scene pick.gd): every point of a 24x16 grid over the
+ * presentation, as the item's `rs_pick` name (`#<id>` for an item with no name, null for none),
+ * read during the last frame (the core's state is reset when the stream ends). */
+interface PickProbe {
+  seq: number;
+  frames: number;
+  grid: [number, number];
+  size: [number, number];
+  /** Named items in the table when the grid was read. */
+  named: number;
+  /** The filters stated, by name. */
+  filters: Record<string, string>;
+  points: (string | null)[];
+  /** Mean µs per `hitTest` over every grid read (the wasm call included; the filters are copied
+   * before the first read of a frame, outside the timing). */
+  usPerPick: number;
+}
+const pick: { size: [number, number]; result: PickProbe | null } = {
+  size: [0, 0],
+  result: null,
+};
+
+/** ID2's `pick` (Godot's tree order, `ExtensionSession.pickOrder("tree")`) and `pick-default`
+ * (the same filters, no pickOrder call: HIT1's draw reading) extensions. Each node's filter is the
+ * fixture's own, from its `rs_mf` meta, stated with `mouseFilter`, as couch states its own; items
+ * with no node stay unstated. */
+function pickExtension(name: "pick" | "pick-default"): RenderStreamExtension {
+  const metas = new Map<number, ItemMeta>();
+  let session: ExtensionSession | null = null;
+  let frames = 0;
+  let pickMs = 0;
+  let picks = 0;
+  return {
+    id: `id2.${name}`,
+    wants: { fields: ["path"], metaKeys: ["rs_pick", "rs_mf"] },
+    onSession: (s) => {
+      session = s;
+      metas.clear();
+      if (name === "pick") s.pickOrder("tree");
+    },
+    onItemMeta: (b) => {
+      if (b.form === "full") metas.clear();
+      for (const m of b.items) {
+        metas.set(m.id, m);
+        const mf = m.meta.rs_mf;
+        if (mf === "stop" || mf === "pass" || mf === "ignore")
+          session?.mouseFilter(m.id, mf);
+      }
+      counters.itemMetaRows += b.items.length;
+    },
+    onItemsRemoved: (ids) => {
+      for (const id of ids) metas.delete(id);
+      counters.removed += ids.length;
+    },
+    beforeDraw: (f) => {
+      counters.beforeDraws++;
+      if (f.seq === null) return;
+      frames++;
+      const names = new Map<number, string>();
+      const filters: Record<string, string> = {};
+      for (const m of metas.values()) {
+        const n = m.meta.rs_pick;
+        if (!m.node || typeof n !== "string") continue;
+        names.set(m.id, n);
+        filters[n] = m.meta.rs_mf ?? "";
+      }
+      const [gw, gh] = [24, 16];
+      const [w, h] = pick.size;
+      const points: (string | null)[] = [];
+      f.query.hitTest(-1, -1); // copies changed filters into the core, outside the timing
+      const t0 = performance.now();
+      const ids: (number | null)[] = [];
+      for (let j = 0; j < gh; j++)
+        for (let i = 0; i < gw; i++)
+          ids.push(f.query.hitTest(((i + 0.5) * w) / gw, ((j + 0.5) * h) / gh));
+      pickMs += performance.now() - t0;
+      picks += ids.length;
+      for (const id of ids)
+        points.push(id === null ? null : (names.get(id) ?? `#${id}`));
+      pick.result = {
+        seq: f.seq,
+        frames,
+        grid: [gw, gh],
+        size: [w, h],
+        named: names.size,
+        filters,
+        points,
+        usPerPick: picks > 0 ? (pickMs * 1000) / picks : 0,
+      };
+    },
+  };
+}
+
 /** The test extensions, by name. Each selects its item by tag in onItemMeta and writes the
  * override in beforeDraw (recomputed every frame: the table keeps only real changes). */
 function extensionOf(name: string): RenderStreamExtension[] {
   if (name === "none") return [];
+  if (name === "pick" || name === "pick-default") return [pickExtension(name)];
   const wants = {
     fields: ["scene", "path"] as const,
     metaKeys: ["rs_slot"],
@@ -506,6 +601,7 @@ const api = {
     inp.client = client;
     inp.canvas = canvas;
     inp.css = o.css ?? null;
+    pick.size = [o.width, o.height];
   },
   stats() {
     return mounted ? { ...mounted.client.stats() } : null;
@@ -516,6 +612,10 @@ const api = {
    */
   probe() {
     return inp.result;
+  },
+  /** ID2: the grid the `pick` / `pick-default` extension read during the last frame. */
+  pickProbe() {
+    return pick.result;
   },
   /** The drawing buffer, RGBA rows top first, as base64. */
   shot(): { width: number; height: number; rgba: string } | null {

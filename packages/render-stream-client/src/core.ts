@@ -360,6 +360,12 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       throw failWith(this.seqOrNull(), this.g.error());
   }
 
+  /** ID2: the order `hitTest` / `toGame` pick by: HIT1's draw order, or Godot's GUI tree order. */
+  setPickOrder(order: "drawn" | "tree"): void {
+    if (this.g.set_pick_order(order === "tree" ? 1 : 0) < 0)
+      throw failWith(this.seqOrNull(), this.g.error());
+  }
+
   /** `[item (-1: none), x, y]` of the drawn point mapped to the game's, or empty (a singular
    * override). */
   toGame(x: number, y: number): ArrayLike<number> {

@@ -201,6 +201,13 @@
 #       (a 20-frame animated lift while the host sleeps 3 s at step 100: no transaction), `dispose` (three mounts, RSS after each
 #       dispose) and the sabotage legs `sabotage-override-{no-inherit,fast-path-miss,no-damage}`
 #       (the core's start options carry the sabotage). Judged by lib/gate8-tag2-checks.ts.
+#   g8id (ID2, client-extensions-design.md "As built (ID2)": the client's Godot tree-order pick; every
+#       leg under g8id/): the fixture import and the client core (build-web.sh into g8id/core); then per
+#       leg one headless tag-scene host as g8tag2's but with RS_FIXTURE_TAG_PICK (pick.gd: one case per
+#       pick rule, the fixture's own pick on a 24x16 grid as the oracle, RS_FIXTURE_TAG_PICK_LOG) and
+#       client-ext-check.ts with the `pick` extension (the fixture's filters stated, pickOrder("tree"))
+#       or `pick-default` (the same filters, no pickOrder), and the sabotage legs
+#       `sabotage-pick-{draw-order,no-rect,no-clip}`. Judged by lib/gate8-id-checks.ts.
 #   g8mm (PM1, render-stream-11.md "As built (PM1)": multimesh on /11, the capture side only,
 #       fixtures/gate8-mm; every leg under g8mm/): the fixture import and rs-core-check's build;
 #       then, in one private 640x360 gamescope (a headless host never runs frame_pre_draw, so a
@@ -319,11 +326,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8tag2 g8rec1 g8htr g8tdr)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8tag2 g8id g8rec1 g8htr g8tdr)
 # GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
 # is not in the default run: g8w11 already runs the native half of those legs.
-DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8tag2 g8rec1 g8htr g8tdr)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8tag2 g8rec1 g8htr g8tdr)
+DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8tag2 g8id g8rec1 g8htr g8tdr)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8tag2 g8id g8rec1 g8htr g8tdr)
 
 EXTENSION=""
 CALIBRATION=""
@@ -2241,6 +2248,64 @@ run_g8tag2() {
 	run_g8tag2_leg sabotage-inverse-skip base inp 300 0 --css 700x500 --sabotage inverse-skip
 }
 
+# ID2: one headless tag-scene host in its pick mode (RS_FIXTURE_TAG_PICK; the oracle in
+# host/pick-oracle.json) and client-ext-check.ts with <extension> against it, further arguments passed
+# on (--sabotage). run_g8id_leg <leg> <extension> [driver args...]
+run_g8id_leg() {
+	local dir="$OUT/g8id/$1" ext="$2" waited=0 port="" page pid rc
+	shift 2
+	local host="$dir/host"
+	mkdir -p "$host/evidence" "$host/tap"
+	page="$(legs_free_port)"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$host/evidence" GRC_STREAM_VERSION=13 GRC_ROOT_SIZE="presentation:640x360"
+		GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip RS_FIXTURE_ARM=late RS_FIXTURE_QUIT_FRAME=150
+		RS_FIXTURE_TAG_PICK=1 RS_FIXTURE_TAG_PICK_LOG="$host/pick-oracle.json"
+		RS_FIXTURE_TAG_START=60 GRC_ITEM_META=scene,path,meta GRC_LIVE_LISTEN=127.0.0.1:0
+		GRC_LIVE_TAP_DIR="$host/tap" GRC_LIVE_MAX_CONNECTIONS=3 GRC_LIVE_AWAIT_HELLO_MS=30000
+		GRC_LIVE_ALLOWED_ORIGINS="http://127.0.0.1:$page"
+	)
+	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$TAG_DIR"
+	pid="$BG_PID"
+	[ -z "$pid" ] && return 0
+	while [ "$waited" -lt 400 ] && [ ! -s "$host/evidence/live.json" ] && kill -0 "$pid" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	if grep -q '"status": "listening"' "$host/evidence/live.json" 2>/dev/null; then
+		port="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$host/evidence/live.json")"
+	fi
+	if [ -z "$port" ]; then
+		echo "the live host is not listening (see $host/evidence/live.json)" >"$dir/skipped.txt"
+	else
+		mkdir -p "$dir/page"
+		(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/client-ext-check.ts" \
+			--dir "$dir/page" --port "$page" --ws "ws://127.0.0.1:$port/render-stream" \
+			--http "http://127.0.0.1:$port" --core "$OUT/g8id/core" --extension "$ext" --pres 640x360 "$@") \
+			>"$dir/page/stdout.log" 2>&1 && rc=0 || rc=$?
+		echo "$rc" >"$dir/page/exit-code.txt"
+	fi
+	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
+}
+
+run_g8id() {
+	echo "run-gate8: g8id import (fixtures/tag-scene) and the client core"
+	LEG_ENV=()
+	run_headless "$OUT/g8id/import" none -- mise exec -- godot --headless --path "$TAG_DIR" --import
+	mkdir -p "$OUT/g8id"
+	bash "$REPO_ROOT/packages/render-stream-client/scripts/build-web.sh" "$OUT/g8id/core" \
+		>"$OUT/g8id/core-build.log" 2>&1 || echo "run-gate8: g8id core build failed (see core-build.log)"
+	echo "run-gate8: g8id pick (the fixture's filters, pickOrder(\"tree\")) and pick-default (no pickOrder)"
+	run_g8id_leg pick pick
+	run_g8id_leg pick-default pick-default
+	echo "run-gate8: g8id sabotages (pick-draw-order, pick-no-rect, pick-no-clip)"
+	local sab
+	for sab in pick-draw-order pick-no-rect pick-no-clip; do
+		run_g8id_leg "sabotage-$sab" pick --sabotage "$sab"
+	done
+}
+
 # REC1: one headless tag-scene host at /13 with a live tap, and client-record-check.ts (the client
 # package with the recorder on) against it; the driver exports the recording, replays it through
 # rs-core-check, and the checker byte-compares it to the host's tap (lib/gate8-rec1-checks.ts).
@@ -4012,6 +4077,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g8l) run_g8l ;;
 	g8tag) run_g8tag ;;
 	g8tag2) run_g8tag2 ;;
+	g8id) run_g8id ;;
 	g8rec1) run_g8rec1 ;;
 	esac
 done

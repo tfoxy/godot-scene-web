@@ -9,6 +9,7 @@
 //!   rs-core-check validate <recording>... [--version 2..8] [--recover]
 //!                          [--item-meta-asked <request json>|none] [--item-meta-dump <path>]
 //!   rs-core-check apply-bench <recording> --store <dir> [--repeats N]
+//!   rs-core-check pick-bench <recording> --store <dir> [--seq N] [--repeats N]
 //!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred] [--clock time|allocs]
 //!   rs-core-check walk-diff <recording>... [--store <dir>] [--digests <file>]
 //!   rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]
@@ -144,6 +145,7 @@ fn main() -> ExitCode {
         "diff" => cmd_diff(&args),
         "bench" => cmd_bench(&args),
         "apply-bench" => cmd_apply_bench(&args),
+        "pick-bench" => cmd_pick_bench(&args),
         "profile" => cmd_profile(&args),
         "walk-diff" => cmd_walk_diff(&args),
         "material-diff" => cmd_material_diff(&args),
@@ -800,6 +802,174 @@ fn recover_chain(data: &[u8], version: u8) -> Result<(usize, usize, String), wir
 /// `apply-bench <recording> --store <dir>`: accept, provide (from the capture's store) and apply
 /// every transaction natively (no GL), timing `Applier::apply` and counting why each structural
 /// walk ran ([`render_stream_core::apply::Why`]). A diagnostic for the applier's paths.
+/// ID2 (client-extensions-design.md "As built (ID2)"): µs per pick, HIT1's draw order against the
+/// tree order, on one transaction of a recording (`--seq`, default the one holding the most items):
+/// replays the recording through the applier to it, then picks at the centres of a 24x16 grid,
+/// `--repeats` times (default 20), under two filter tables: every item with a custom rect (a
+/// Control) IGNORE (no answer anywhere: both orders read everything under the point, the tree
+/// order every visible item) and every such item STOP.
+fn cmd_pick_bench(args: &Args) -> ExitCode {
+    use render_stream_core::apply::geom;
+    use render_stream_core::apply::overrides::{PickOrder, HIT_IGNORE, HIT_INPUT};
+    use render_stream_core::apply::payloads::PayloadStore;
+    use render_stream_core::apply::{Applier, Viewport};
+    let Some(path) = args.positional.first() else {
+        return usage();
+    };
+    let store = args.get("store").map(PathBuf::from);
+    let repeats = args
+        .get("repeats")
+        .and_then(|r| r.parse::<usize>().ok())
+        .unwrap_or(20)
+        .max(1);
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("rs-core-check pick-bench: {path}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let run = || -> Result<(), wire::Error> {
+        let version = wire::version_of_magic(&data)
+            .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream recording"))?;
+        let spans = wire::split_records(&data, version)?;
+        let target = match args.get("seq").and_then(|s| s.parse::<i64>().ok()) {
+            Some(seq) => seq,
+            None => {
+                let mut v = Validator::new(
+                    spans[0].bytes(&data),
+                    spans[0].offset,
+                    Options::new(version),
+                )?;
+                let (mut best, mut at) = (0usize, 0i64);
+                for span in &spans[1..] {
+                    if let Accepted::Transaction = v.accept(span.bytes(&data), span.offset)? {
+                        if v.state().items.len() > best {
+                            best = v.state().items.len();
+                            at = v.state().seq;
+                        }
+                    }
+                }
+                at
+            }
+        };
+        let mut v = Validator::new(
+            spans[0].bytes(&data),
+            spans[0].offset,
+            Options::new(version),
+        )?;
+        let s = v.session();
+        let size = s
+            .viewport
+            .presentation_size
+            .unwrap_or(s.viewport.logical_size);
+        let (w, h) = (size[0].max(1) as f32, size[1].max(1) as f32);
+        let mut a = Applier::new(Viewport {
+            width: w as u32,
+            height: h as u32,
+            clear: s.clear_color,
+            global_xform: geom::IDENTITY,
+            cull_mask: s.viewport.canvas_cull_mask as u32,
+            format: gsw_canvas_draw_list::Format::Rgb10A2,
+        });
+        let mut payloads = PayloadStore::default();
+        let mut need = Vec::new();
+        for span in &spans[1..] {
+            match v.accept(span.bytes(&data), span.offset)? {
+                Accepted::Resource { hash } => {
+                    if let Some(b) = v.inline_payload(&hash) {
+                        payloads.provide(b, &hash, version, true)?;
+                    }
+                }
+                Accepted::End | Accepted::ItemMeta => {}
+                Accepted::Transaction => {
+                    payloads.accept_transaction(&v, span.bytes(&data))?;
+                    a.prepare(v.state(), v.delta());
+                    a.needed(v.state(), v.delta(), &payloads, &mut need);
+                    for hh in &need {
+                        let dir = store.as_ref().ok_or_else(|| {
+                            wire::Error::new("resource-unavailable", "no --store")
+                        })?;
+                        let mut bytes = None;
+                        for ext in ["grt", "grm", "grp"] {
+                            let p = dir.join("sha256").join(format!("{}.{ext}", hh.to_hex()));
+                            if let Ok(b) = std::fs::read(&p) {
+                                bytes = Some(b);
+                                break;
+                            }
+                        }
+                        let b = bytes
+                            .ok_or_else(|| wire::Error::new("resource-unavailable", hh.to_hex()))?;
+                        payloads.provide(&b, hh, version, true)?;
+                    }
+                    a.apply(v.state(), v.delta(), &payloads);
+                    a.list.consumed();
+                    if v.state().seq >= target {
+                        break;
+                    }
+                }
+            }
+        }
+        let st = v.state();
+        let controls: Vec<u32> = st
+            .items
+            .values()
+            .filter(|it| it.custom_rect)
+            .map(|it| it.id)
+            .collect();
+        let visible = st.items.values().filter(|it| it.visible).count();
+        println!(
+            "{path}: seq {}, {} items ({visible} visible, {} with a custom rect), viewport {w}x{h}",
+            st.seq,
+            st.items.len(),
+            controls.len()
+        );
+        let points: Vec<[f32; 2]> = (0..16)
+            .flat_map(|j| {
+                (0..24).map(move |i| {
+                    [(i as f32 + 0.5) * w / 24.0, (j as f32 + 0.5) * h / 16.0]
+                })
+            })
+            .collect();
+        for (label, f) in [("controls IGNORE", HIT_IGNORE), ("controls STOP", HIT_INPUT)] {
+            a.set_hit_filters(&controls, &vec![f; controls.len()])
+                .map_err(|e| wire::Error::new("hit-filters", e))?;
+            for order in [PickOrder::Drawn, PickOrder::Tree] {
+                a.set_pick_order(order);
+                let mut hits = 0usize;
+                let t = Instant::now();
+                for _ in 0..repeats {
+                    for p in &points {
+                        hits += usize::from(std::hint::black_box(a.pick(st, p[0], p[1])).is_some());
+                    }
+                }
+                let pick_us = t.elapsed().as_secs_f64() * 1e6 / (repeats * points.len()) as f64;
+                let t = Instant::now();
+                for _ in 0..repeats {
+                    for p in &points {
+                        std::hint::black_box(a.to_game(st, p[0], p[1]));
+                    }
+                }
+                let to_game_us =
+                    t.elapsed().as_secs_f64() * 1e6 / (repeats * points.len()) as f64;
+                println!(
+                    "  {label:<16} {order:?}: pick {pick_us:.2} us, to_game {to_game_us:.2} us, {} of {} points hit",
+                    hits / repeats,
+                    points.len()
+                );
+            }
+        }
+        Ok(())
+    };
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("rs-core-check pick-bench: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn cmd_apply_bench(args: &Args) -> ExitCode {
     use render_stream_core::apply::geom;
     use render_stream_core::apply::payloads::PayloadStore;
