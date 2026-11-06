@@ -56,6 +56,13 @@
 //                              at birth) reports origin "startup" with nothing missed, late/capture
 //                              (loaded at frame 12) reports "late-load" (registry-checks.ts
 //                              shaderClockOrigin)
+//   standby-clock              (LS1, live-swap-design.md D4) the shader clock advances through standby
+//                              on a rendered host: deferred/capture (the standby table for its first
+//                              11 frames, then armed) saw every engine draw through the draw hook
+//                              (draws_missed 0, which since LS1 counts the draws after the first tick
+//                              too) and its draws cover the standby frames
+//   sabotage-standby-no-draw   sabotage-standby-no-draw/capture (GRC_STANDBY_FAULT=no-draw: draw left
+//                              out of the standby table) fails standby-clock
 //
 // The late legs' shots are the reference's shots after the arm, in frame order: the fixture logs
 // only the steps that settle after it, and run-gate8.sh adds each settle frame's previous frame
@@ -734,6 +741,8 @@ const HEADLESS_DEFERRED_CAPTURE = "headless-deferred/capture";
 // LAR5: the particles row's sabotages (registry-off, registry-skip-particles).
 const SABOTAGE_REGISTRY_OFF_CAPTURE = "sabotage-registry-off/capture";
 const SKIP_PARTICLES_CAPTURE = "sabotage-registry-skip-particles/capture";
+// LS1: the deferred arm without draw in its standby table.
+const STANDBY_NO_DRAW_CAPTURE = "sabotage-standby-no-draw/capture";
 const BORN_CAPTURE = "capture";
 const CAPTURES = [
   LATE_CAPTURE,
@@ -746,6 +755,25 @@ const CAPTURES = [
   SABOTAGE_REGISTRY_OFF_CAPTURE,
   SKIP_PARTICLES_CAPTURE,
 ];
+
+/**
+ * LS1 standby-clock on one rendered capture's result.json shader clock: the draw hook is the source,
+ * no engine draw went unseen (draws_missed 0) and the hooked draws cover at least `standbyFrames`
+ * (the frames the capture spent on the standby table). Pure.
+ */
+export function standbyClockProblems(
+  clock: ShaderClockEvidence | null | undefined,
+  standbyFrames: number,
+): { problems: string[]; detail: string } {
+  if (!clock) return { problems: ["no result.json stream.gate8.shader_clock"], detail: "absent" };
+  const problems: string[] = [];
+  const detail = `source ${clock.source} draws ${clock.draws} draws_missed ${clock.draws_missed} ticks ${clock.ticks}`;
+  if (clock.source !== "draw-hook") problems.push(`source ${clock.source}, want draw-hook (a rendered host)`);
+  if (clock.draws_missed !== 0) problems.push(`draws_missed ${clock.draws_missed}, want 0`);
+  if (!(typeof clock.draws === "number" && clock.draws >= standbyFrames))
+    problems.push(`draws ${clock.draws}, want at least the ${standbyFrames} standby frames`);
+  return { problems, detail };
+}
 /** the deferred pixel receivers (pt-late-lifecycle, -coverage, -outside-exact) */
 const RECEIVERS = ["deferred/receiver", "deferred/receiver-patch"];
 // LAR5: `late` adopts nothing, so the placeholder residual is judged on the drop-binding sabotage
@@ -757,6 +785,7 @@ const DEFERRED_CMBT_RECEIVER = "deferred-cmbt/receiver";
 const FAULT_RECEIVER = "fault-no-particles/receiver";
 export const LATE_LEGS = [
   ...CAPTURES,
+  STANDBY_NO_DRAW_CAPTURE,
   ...RECEIVERS,
   DROP_BINDING_RECEIVER,
   SKIP_PARTICLES_RECEIVER,
@@ -1253,6 +1282,32 @@ export async function runG8ptLate(
           [...d.problems.map((p) => `${DEFERRED_CAPTURE}: ${p}`), ...l.problems.map((p) => `${LATE_CAPTURE}: ${p}`)],
           `deferred: ${d.detail}; late: ${l.detail}`,
         ),
+      );
+    }
+  }
+
+  // standby-clock (LS1) and its sabotage: the rendered deferred arm's standby frames, through the
+  // draw hook in the standby table.
+  {
+    const clockOf = async (leg: string) =>
+      ((await json(join(dir(leg), "evidence", "result.json")))?.stream as
+        | { gate8?: { shader_clock?: ShaderClockEvidence } }
+        | undefined)?.gate8?.shader_clock;
+    const standbyFrames = late.arm_frame - 1;
+    const id = "standby-clock";
+    const crit = `LS1: on the rendered host the shader clock advances through standby: ${DEFERRED_CAPTURE} (the standby table for its first ${standbyFrames} frames, then armed) sums every engine draw through the hooked draw (source draw-hook, draws_missed 0 over the whole run, draws at least the standby frames)`;
+    if (!ran(DEFERRED_CAPTURE)) checks.push(check(id, crit, null));
+    else {
+      const r = standbyClockProblems(await clockOf(DEFERRED_CAPTURE), standbyFrames);
+      checks.push(check(id, crit, r.problems.map((p) => `${DEFERRED_CAPTURE}: ${p}`), r.detail));
+    }
+    const sid = "sabotage-standby-no-draw";
+    const scrit = `${STANDBY_NO_DRAW_CAPTURE} (GRC_STANDBY_FAULT=no-draw: draw left out of the standby table) fails standby-clock`;
+    if (!ran(STANDBY_NO_DRAW_CAPTURE)) checks.push(check(sid, scrit, null));
+    else {
+      const r = standbyClockProblems(await clockOf(STANDBY_NO_DRAW_CAPTURE), standbyFrames);
+      checks.push(
+        check(sid, scrit, r.problems.length > 0 ? [] : ["standby-clock did not fail"], `${r.problems[0] ?? "no problem"}; ${r.detail}`),
       );
     }
   }

@@ -51,7 +51,7 @@ extends Node2D
 ##                                cpu_us_mean/_p50/_p95) and each per-frame block's wall time
 ##                                (section_us: movers, redraws, mesh_updates, params, churn, mean
 ##                                us per frame), over the same window as the frame times
-##                                (results/p3/idle-capture-cost.md)
+##                                (results/p3/idle-capture-cost.md); LS1: and rss_kb/hwm_kb, VmRSS and VmHWM at quit
 ##   RS_FIXTURE_QUIT_FRAME [600]  quit after this many frames
 ##   RS_SCALE_WARMUP [120]        frames before the frame-time window opens
 ##   RS_SCALE_REPORT              optional absolute path: the frame-time summary (JSON) at quit
@@ -418,6 +418,16 @@ func _report() -> void:
 		summary["section_us"] = sections
 		summary["section_frames"] = _section_frames
 		summary["param_updates"] = _param_updates if _materials.size() > 0 else 0
+		# LS1 (idle-parity): the process's resident and peak resident set at quit, from a fresh open
+		# of /proc/self/status read line by line (a procfs file reports length 0, so a whole-file read
+		# gets nothing).
+		var status: FileAccess = FileAccess.open("/proc/self/status", FileAccess.READ)
+		while status != null and not status.eof_reached():
+			var status_line: String = status.get_line()
+			if status_line.begins_with("VmRSS:"):
+				summary["rss_kb"] = status_line.substr(6).strip_edges().split(" ")[0].to_int()
+			elif status_line.begins_with("VmHWM:"):
+				summary["hwm_kb"] = status_line.substr(6).strip_edges().split(" ")[0].to_int()
 	var line: String = JSON.stringify(summary)
 	print("[scale] report " + line)
 	if OS.has_environment("RS_SCALE_REPORT"):

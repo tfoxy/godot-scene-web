@@ -134,6 +134,7 @@ add_library(render_stream_capture SHARED
   src/rs_sha1.cpp
   src/rs_sha256.cpp
   src/rs_shader_payload.cpp
+  src/rs_standby.cpp
   src/rs_texture_decode.cpp
   src/rs_texture_payload.cpp
   src/rs_texture_release.cpp
@@ -648,6 +649,23 @@ add_executable(rs_registry_test test/rs_registry_test.cpp src/rs_registry.cpp sr
 target_include_directories(rs_registry_test PRIVATE src)
 target_link_libraries(rs_registry_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_registry COMMAND rs_registry_test)
+
+# LS1 (live-swap-design.md D4, Q9 K1): the two shadow tables. rs_vtable_test builds both over a
+# polymorphic fake, checks which slots each replaces, the restore from either and the refusal of a
+# foreign vptr, then flips the vptr 10^6 times under 4 caller threads (neither table freed).
+# rs_standby_test is `standby-slot-census`: the standby set (rs_standby.cpp) against hooks.cpp's own
+# hook bodies (a hook that reaches the registry or a shim is in it; nothing else but
+# texture_set_path and draw) and against the expected list.
+add_executable(rs_vtable_test test/rs_vtable_test.cpp src/vtable.cpp)
+target_include_directories(rs_vtable_test PRIVATE src)
+target_link_libraries(rs_vtable_test PRIVATE grc_warnings Threads::Threads)
+# The test dispatches through the real vptr: no devirtualisation of the fake's calls.
+target_compile_options(rs_vtable_test PRIVATE -fno-devirtualize -fno-devirtualize-speculatively)
+add_test(NAME rs_vtable COMMAND rs_vtable_test)
+add_executable(rs_standby_test test/rs_standby_test.cpp src/rs_standby.cpp)
+target_include_directories(rs_standby_test PRIVATE src)
+target_link_libraries(rs_standby_test PRIVATE grc_warnings)
+add_test(NAME rs_standby COMMAND rs_standby_test ${CMAKE_CURRENT_SOURCE_DIR}/src/hooks.cpp)
 
 # LAR0: the registry's per-call cost (ns per create+free pair, uncontended and with 4 threads, and
 # the off gate). Built, never run by ctest: it measures, it does not judge.

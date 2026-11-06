@@ -135,10 +135,11 @@ function capture(
       .join("\n") + "\n",
   );
   const planned = Array.from(
-    { length: o.planned ?? (o.cache ? 80 : 79) },
+    { length: o.planned ?? 80 },
     (_, i) => `hook${i}`,
   );
-  if (o.cache) planned[planned.length - 1] = "texture_set_path";
+  // LS1: texture_set_path is planned with or without a cache directory.
+  if (o.planned === undefined) planned[planned.length - 1] = "texture_set_path";
   const counts: Record<string, number> = {};
   for (const p of planned) counts[p] = 1;
   const captured = o.cache
@@ -574,13 +575,14 @@ await run(
   ["cache-paths"],
 );
 {
-  const root = tree((r) => capture(r, "off/capture", { planned: 80 }));
+  // LS1: the pre-LS1 uncached plan (79 hooks, no texture_set_path) now fails.
+  const root = tree((r) => capture(r, "off/capture", { planned: 79 }));
   roots.push(root);
   const v = await verdicts(root);
   expect(
     v["cache-off-identical"]?.passed === false &&
-      /80 hooks planned|79/.test(v["cache-off-identical"]?.detail ?? ""),
-    `cache-off-identical fails when the uncached capture plans 80 hooks (${v["cache-off-identical"]?.detail})`,
+      /79 hooks planned|texture_set_path/.test(v["cache-off-identical"]?.detail ?? ""),
+    `cache-off-identical fails when the uncached capture plans 79 hooks (${v["cache-off-identical"]?.detail})`,
   );
 }
 

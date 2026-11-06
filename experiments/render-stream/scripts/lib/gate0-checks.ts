@@ -174,6 +174,8 @@ export const GATE0_HOOKS: readonly string[] = [
   "texture_2d_placeholder_create",
   "texture_2d_update",
   "texture_replace",
+  // LS1 (live-swap-design.md D5): planned always since LS1 (a standby slot).
+  "texture_set_path",
   "viewport_attach_canvas",
   "viewport_remove_canvas",
   "viewport_set_canvas_stacking",

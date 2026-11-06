@@ -55,7 +55,8 @@ func _load(when: String) -> void:
 	if _armed:
 		return
 	_armed = true
-	if not OS.has_environment("GRC_EXTENSION"):
+	# LS1: an empty GRC_EXTENSION counts as unset (idle-parity's no-capture leg, `n`).
+	if not OS.has_environment("GRC_EXTENSION") or OS.get_environment("GRC_EXTENSION") == "":
 		print("[fixture] extension load status=skipped (GRC_EXTENSION not set) arm=%s" % when)
 		return
 	var extension_path: String = OS.get_environment("GRC_EXTENSION")

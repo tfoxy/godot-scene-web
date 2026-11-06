@@ -382,7 +382,8 @@
     "viewport_set_canvas_stacking",
     "canvas_set_item_mirroring",
     "canvas_set_item_repeat",
-    "canvas_set_parent"
+    "canvas_set_parent",
+    "texture_set_path"
   ],
   "optional_counters_must_be_positive": [
     "canvas_item_add_triangle_array",

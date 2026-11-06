@@ -42,6 +42,11 @@
 #       `late-workers` (late at GRC_TEXTURE_WORKERS=2, every copy on a delayed worker) and the
 #       three GRC_ADOPT_FAULT captures (no-resources, atlas-from-dummy, claim-current), the first
 #       two also through the receiver.
+#       LS1 (live-swap-design.md D4): `standby` (GRC_MODE=standby, the loader's frame-4 churn, never
+#       armed: standby-hot-zero, registry-live-bound against the loader's own creates) and its two
+#       sabotages, `sabotage-standby-full-table` and `sabotage-standby-drop-tracked`
+#       (GRC_STANDBY_FAULT); the validation-log-cost group adds `n` (no extension) and `s`
+#       (GRC_MODE=standby) for `idle-parity`.
 #   g8h (G8h, Q4: the presentation size at a late arm, fixtures/gate8-size; every leg under g8h/):
 #       the fixture and receiver imports; headless /8 captures under GRC_UNKNOWN_ITEM=skip of `born`
 #       (armed at birth, GRC_ROOT_SIZE=presentation:640x360), `late` (armed at frame K=12 with
@@ -277,7 +282,8 @@
 #       (deferred, GRC_ADOPT_FAULT=registry-skip-particles: emitters adopted with a fresh
 #       emitter's configuration, drawing nothing), and the native
 #       `sabotage-registry-drop-binding/receiver` and `sabotage-registry-skip-particles/receiver`
-#       (`late/receiver` is gone: late adopts nothing). PFB (render-stream-12.md "As
+#       (`late/receiver` is gone: late adopts nothing). LS1: `sabotage-standby-no-draw/capture`
+#       (deferred, GRC_STANDBY_FAULT=no-draw) fails standby-clock, which deferred/capture passes. PFB (render-stream-12.md "As
 #       built (PFB)"), after the late legs, on fixtures/gate8-ptc: `ptc/reference-gl`,
 #       `ptc/reference-fwdplus` (Forward+ on Vulkan), `ptc/capture` (armed /12 on the Forward+
 #       host) and its gl_compatibility receivers `ptc/receiver`,
@@ -695,11 +701,11 @@ run_import_g8a() {
 	done
 }
 
-# run_capture_g8a <dir> <born|late|thread|deferred> <env word...>: a headless capture of the
+# run_capture_g8a <dir> <born|late|thread|deferred|standby> <env word...>: a headless capture of the
 # fixture, armed at birth (main scene res://born.tscn) or late (adopt.tscn at frame K, from the main
 # thread or a worker thread), or deferred (LAR0: adopt.tscn, the extension loaded at birth so the
 # hooks see every create, the arm itself deferred to frame K by GRC_ARM_DEFER_FRAMES=K-1), with the
-# probe log beside it.
+# probe log beside it. `standby` (LS1) loads as `deferred` does; the caller sets GRC_MODE=standby.
 run_capture_g8a() {
 	local dir="$1" arm="$2" scene=""
 	shift 2
@@ -759,9 +765,13 @@ run_registry_cost_capture() {
 # results/p3/idle-capture-cost.md's fixture legs). The scale report's cpu_us_mean is the main
 # thread's CPU a frame. Four configs, rotated over G8A_VLC_ROUNDS rounds: `a0` (GRC_MODE=validate:
 # loaded, nothing patched), `b` (hooks patched, GRC_ARM_DEFER_FRAMES never reached, GRC_ADOPT=off),
-# `c` (b with GRC_ADOPT=arm) and the sabotage (c with GRC_VALIDATION_LOG_SABOTAGE=ignored).
+# `c` (b with GRC_ADOPT=arm) and the sabotage (c with GRC_VALIDATION_LOG_SABOTAGE=ignored). LS1: b, c
+# and the sabotage keep LS0's shape, the full table published and never armed, through
+# GRC_STANDBY_FAULT=full-table (a deferred arm now waits on the standby table, where no hot hook and
+# so no validation log runs); `n` (no extension: GRC_EXTENSION empty, which the fixture's loader
+# treats as unset) and `s` (GRC_MODE=standby, the registry implied) are idle-parity's pair.
 G8A_VLC_ROUNDS=5
-G8A_VLC_CONFIGS=(a0 b c sabotage-validation-log-ignored)
+G8A_VLC_CONFIGS=(a0 b c sabotage-validation-log-ignored n s)
 G8A_VLC_ENV=(RS_FIXTURE_ARM=born GRC_STREAM_VERSION=12 GRC_UNKNOWN_ITEM=skip
 	GRC_ROOT_SIZE=presentation:1920x1080 RS_SCALE_REDRAWS=170 RS_SCALE_REDRAW_VARY=11
 	RS_SCALE_RESOURCE_CHURN=16 RS_SCALE_CPU_REPORT=1 RS_SCALE_WARMUP=300 GRC_VALIDATION_LOG=off)
@@ -777,11 +787,14 @@ run_validation_log_cost_capture() {
 	CAPTURE_EXTRA_ARGS=(--max-fps 60)
 	case "$config" in
 	a0) CAPTURE_EXTRA_ENV+=(GRC_MODE=validate) ;;
-	b) CAPTURE_EXTRA_ENV+=(GRC_ARM_DEFER_FRAMES=1000000000 GRC_ADOPT=off) ;;
-	c) CAPTURE_EXTRA_ENV+=(GRC_ARM_DEFER_FRAMES=1000000000 GRC_ADOPT=arm) ;;
+	b) CAPTURE_EXTRA_ENV+=(GRC_ARM_DEFER_FRAMES=1000000000 GRC_ADOPT=off GRC_STANDBY_FAULT=full-table) ;;
+	c) CAPTURE_EXTRA_ENV+=(GRC_ARM_DEFER_FRAMES=1000000000 GRC_ADOPT=arm GRC_STANDBY_FAULT=full-table) ;;
 	sabotage-validation-log-ignored)
-		CAPTURE_EXTRA_ENV+=(GRC_ARM_DEFER_FRAMES=1000000000 GRC_ADOPT=arm GRC_VALIDATION_LOG_SABOTAGE=ignored)
+		CAPTURE_EXTRA_ENV+=(GRC_ARM_DEFER_FRAMES=1000000000 GRC_ADOPT=arm GRC_STANDBY_FAULT=full-table
+			GRC_VALIDATION_LOG_SABOTAGE=ignored)
 		;;
+	n) CAPTURE_EXTRA_ENV+=(GRC_EXTENSION=) ;;
+	s) CAPTURE_EXTRA_ENV+=(GRC_MODE=standby) ;;
 	esac
 	CAPTURE_WITH_PATCH=0
 	run_capture "$dir" "$G8A_VLC_QUIT" none
@@ -817,7 +830,17 @@ run_g8a() {
 	echo "run-gate8: g8a sabotage-registry-keep-freed (deferred, the free hook keeps registry entries)"
 	run_capture_g8a "$OUT/g8a/sabotage-registry-keep-freed/capture" deferred "${G8A_ENV[@]}" GRC_ADOPT=arm \
 		GRC_ADOPT_FAULT=registry-keep-freed
+	# LS1 (live-swap-design.md D4): GRC_MODE=standby (the standby table published, never armed;
+	# GRC_ADOPT implied), judged by standby-hot-zero and registry-live-bound against the loader's own
+	# creates, and the two sabotages of those checks.
+	echo "run-gate8: g8a standby (GRC_MODE=standby: loaded at birth, never armed; LS1)"
+	run_capture_g8a "$OUT/g8a/standby/capture" standby "${G8A_ENV[@]}" GRC_MODE=standby
 	local s
+	for s in full-table drop-tracked; do
+		echo "run-gate8: g8a sabotage-standby-$s (standby, GRC_STANDBY_FAULT=$s)"
+		run_capture_g8a "$OUT/g8a/sabotage-standby-$s/capture" standby "${G8A_ENV[@]}" GRC_MODE=standby \
+			GRC_STANDBY_FAULT="$s"
+	done
 	for s in adopt-skip-state adopt-no-redraw adopt-skip-layers; do
 		echo "run-gate8: g8a sabotage-$s (capture)"
 		run_capture_g8a "$OUT/g8a/sabotage-$s/capture" late "${G8A_ENV[@]}" GRC_ADOPT=arm \
@@ -1742,6 +1765,11 @@ run_g8pt_late() {
 	echo "run-gate8: g8pt sabotage-registry-skip-particles/capture (deferred, GRC_ADOPT_FAULT=registry-skip-particles)"
 	run_capture_rendered_g8pt "$OUT/g8pt/sabotage-registry-skip-particles/capture" "${G8PT_DEFERRED_ENV[@]}" \
 		GRC_ADOPT_FAULT=registry-skip-particles
+	# LS1 (live-swap-design.md D4): the deferred arm without draw in its standby table; the shader
+	# clock then misses the standby frames' draws (fails standby-clock).
+	echo "run-gate8: g8pt sabotage-standby-no-draw/capture (deferred, GRC_STANDBY_FAULT=no-draw)"
+	run_capture_rendered_g8pt "$OUT/g8pt/sabotage-standby-no-draw/capture" "${G8PT_DEFERRED_ENV[@]}" \
+		GRC_STANDBY_FAULT=no-draw
 	legs_par_begin
 	local cap leg extra
 	for leg in deferred/receiver deferred/receiver-patch deferred-cmbt/receiver fault-no-particles/receiver \

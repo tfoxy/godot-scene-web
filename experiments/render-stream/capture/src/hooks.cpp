@@ -17,6 +17,7 @@
 #include "rs_canvas_texture_shim.h"
 #include "rs_mesh_payload.h"
 #include "rs_mirror.h"
+#include "rs_standby.h"
 #include "rs_particles_shim.h"
 #include "rs_registry.h"
 #include "rs_resource_log.h"
@@ -2279,7 +2280,7 @@ void hook_add_polygon(void *self, RID item, const Vector<Point2> *points,
 //
 // The engine calls texture_set_path(rid, "res://...") right after texture_2d_create on the loading
 // thread (compressed_texture.cpp:91-96, :158-161), so the path of a texture is known to the hook.
-// The hook is installed only under GRC_TEXTURE_CACHE_DIR (the cache is what uses it), keeps the
+// The hook keeps, under GRC_TEXTURE_CACHE_DIR (the cache is what uses it; LS1 plans it always), the
 // path per texture, and reports it with the texture's D7 source key and cache outcome in
 // evidence/texture-cache.json, and every call in counters.json `captured.texture_set_path`.
 
@@ -2335,10 +2336,15 @@ void note_cache_texture(uint64_t id, const rs::PayloadCopy &copy, const rs::Text
   }
 }
 
+// LS1 (live-swap-design.md D5): the hook is planned always now (a standby slot; LS4 records the
+// path in the registry). The G8kc path notes are kept only under GRC_TEXTURE_CACHE_DIR, as before:
+// without a cache directory the hook counts the call and forwards it.
+bool g_path_hook_records = false;
+
 void hook_texture_set_path(void *self, RID texture, const void *path) {
   bump(kTextureSetPath);
-  const std::string text = rs::decode_string(path);
-  {
+  if (g_path_hook_records) {
+    const std::string text = rs::decode_string(path);
     std::lock_guard<std::mutex> lock(g_cache_mutex);
     g_texture_paths[texture.id] = text;
     if (g_set_path_calls.size() < kMaxTextures) {
@@ -5637,8 +5643,10 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   *plan = HookPlan();
   g_planned_names.clear();
   g_omitted_names.clear();
+  // G8kc: the path notes are kept only under a cache directory. LS1 (live-swap-design.md D5): the
+  // texture_set_path hook itself is planned always, so session.capture.hooks_planned names it.
   const char *cache_dir = std::getenv("GRC_TEXTURE_CACHE_DIR");
-  const bool path_hook_wanted = cache_dir != nullptr && cache_dir[0] != '\0';
+  g_path_hook_records = cache_dir != nullptr && cache_dir[0] != '\0';
   // CG1: the back-buffer hooks exist for /10's item keys only (GRC_STREAM_VERSION=10; W11b: and
   // /11, which carries them too).
   const char *stream_version = std::getenv("GRC_STREAM_VERSION");
@@ -5670,13 +5678,6 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
     const bool required = spec.id < kRequiredHookCount;
     g_omitted[spec.id] = false;
     g_skipped[spec.id] = false;
-    if (spec.id == kTextureSetPath && !path_hook_wanted) {
-      // G8kc: conditional hook. Without a cache directory the plan, counters and session are
-      // exactly what they were before the hook existed.
-      g_skipped[spec.id] = true;
-      --g_hooks_total;
-      continue;
-    }
     if ((spec.id == kSetCopyToBackbuffer || spec.id == kSetCanvasGroupMode ||
          spec.id == kDraw) &&
         !backbuffer_hooks_wanted) {
@@ -5719,6 +5720,8 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
     replacement.index = static_cast<size_t>(index);
     replacement.hook = spec.hook;
     replacement.original_out = &g_original[spec.id];
+    // LS1 (rs_standby.h): also installed in the standby table.
+    replacement.standby = rs::standby_hook(spec.name);
     plan->replacements.push_back(replacement);
     plan->planned.push_back(spec.name);
   }
@@ -5955,7 +5958,7 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
     }
     json.object_end();
   }
-  if (!g_skipped[kTextureSetPath] && !g_omitted[kTextureSetPath]) {
+  if (g_path_hook_records && !g_omitted[kTextureSetPath]) {
     // G8kc: every texture_set_path call (the paths of the hook log), in call order.
     std::lock_guard<std::mutex> lock(g_cache_mutex);
     json.key("texture_set_path").array_begin();

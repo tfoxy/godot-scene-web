@@ -122,6 +122,15 @@ bool shader_clock_tick() {
     }
   }
   if (draw_source()) {
+    // LS1: every engine draw since the first tick must have passed the hook (the frame callback
+    // runs after the iteration's draw and its frames_drawn increment, main.cpp:4826-4839).
+    const std::int64_t later = (drawn - g_clock.start_drawn) -
+                               static_cast<std::int64_t>(g_clock.draws - g_clock.start_draws);
+    if (later > g_clock.later_missed) {
+      g_clock.later_missed = later;
+    }
+  }
+  if (draw_source()) {
     // P3-CK: the hooked draws keep the sum; only a host that has never drawn advances here.
     if (drawn == 0 && g_clock.draws == 0) {
       g_clock.total = std::fmod(g_clock.total + delta, g_clock.rollover);
@@ -156,12 +165,21 @@ void shader_clock_draw(double frame_step) {
 
 const char *shader_clock_source() { return draw_source() ? "draw-hook" : "frame-callback"; }
 
+namespace {
+
+// LAR7: the draws before the first tick that the hook did not see.
+std::int64_t first_tick_missed() {
+  const std::int64_t seen = static_cast<std::int64_t>(g_clock.start_draws);
+  return g_clock.start_drawn > seen ? g_clock.start_drawn - seen : 0;
+}
+
+}  // namespace
+
 std::int64_t shader_clock_draws_missed() {
   if (g_clock.start_drawn < 0 || !draw_source()) {
     return -1;
   }
-  const std::int64_t seen = static_cast<std::int64_t>(g_clock.start_draws);
-  return g_clock.start_drawn > seen ? g_clock.start_drawn - seen : 0;
+  return first_tick_missed() + g_clock.later_missed;
 }
 
 const char *shader_clock_origin() {
@@ -173,7 +191,7 @@ const char *shader_clock_origin() {
   }
   // A later first tick is still exact when the host drew and the hook saw every draw. A host that
   // never drew (headless) advances per iteration, so the iterations before the tick are missed.
-  if (draw_source() && g_clock.start_drawn > 0 && shader_clock_draws_missed() == 0) {
+  if (draw_source() && g_clock.start_drawn > 0 && first_tick_missed() == 0) {
     return "startup";
   }
   return "late-load";

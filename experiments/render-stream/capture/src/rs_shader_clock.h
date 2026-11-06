@@ -51,6 +51,9 @@ struct ShaderClock {
   bool draw_hooked = false;   // P3-CK: RenderingServer::draw is planned (hooks_plan)
   bool tree_delta_fault = false;  // GRC_SHADER_CLOCK_FAULT=tree-delta: ignore the draw hook
   std::uint64_t draws = 0;    // hooked draws seen (counted even under the fault)
+  // LS1: engine draws since the first tick that the draw hook did not see, as of the latest tick
+  // (the most it ever read): a standby table without draw shows here (live-swap-design.md D4).
+  std::int64_t later_missed = 0;
 };
 
 // The process-wide clock.
@@ -72,7 +75,8 @@ const char *shader_clock_source();
 const char *shader_clock_origin();
 
 // LAR7: engine draws the clock never summed (frames drawn before the first tick that the draw hook
-// did not see), or -1 when the hooked draws are not the source or no tick has run.
+// did not see; LS1: plus those drawn since, up to the latest tick, that it did not see), or -1 when
+// the hooked draws are not the source or no tick has run.
 std::int64_t shader_clock_draws_missed();
 
 }  // namespace rs

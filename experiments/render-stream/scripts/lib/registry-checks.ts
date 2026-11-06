@@ -77,6 +77,25 @@ export const REGISTRY_CREATE_HOOKS: Record<string, string[]> = {
 export interface LiveBoundOptions {
   /** A deferred leg's arm frame: at least one tracked free must be recorded before it (R5). */
   preArmFreesBefore?: number;
+  /**
+   * LS1: the fixture's own tracked creates per family (its `[fixture] registry-churn` line). The
+   * registry must record at least these. The hook counters cannot catch a create slot missing from
+   * the standby table: the hook then neither counts nor records, and the identity above still holds.
+   */
+  ownCreates?: Record<string, number>;
+}
+
+/** LS1: the fixture's own counts, from the `[fixture] registry-churn {...}` stdout line. */
+export function parseRegistryChurn(
+  stdout: string | null | undefined,
+): { own_creates: Record<string, number>; own_frees: number } | null {
+  const m = /\[fixture\] registry-churn (\{.*\})/.exec(stdout ?? "");
+  if (!m) return null;
+  try {
+    return JSON.parse(m[1]) as { own_creates: Record<string, number>; own_frees: number };
+  } catch {
+    return null;
+  }
 }
 
 export interface LiveBoundSummary {
@@ -138,6 +157,12 @@ export function registryLiveBound(
         `${name}: ${f} recorded ${v.creates} creates (+${v.overflow} overflow, +${v.null_creates} null) for ${hooks} create-hook calls (${REGISTRY_CREATE_HOOKS[f].join(", ")})`,
       );
     if (v.peak < v.entries) problems.push(`${name}: ${f} peak ${v.peak} below its entries ${v.entries}`);
+    // A create the engine answered with RID() (the dummy's canvas_texture_create) is recorded as a
+    // null create: it still shows the hook saw the call.
+    const own = opts.ownCreates?.[f];
+    const seen = v.creates + v.null_creates + v.overflow;
+    if (own !== undefined && seen < own)
+      problems.push(`${name}: ${f} recorded ${seen} creates (null and overflow included), below the fixture's own ${own}`);
   }
   if (total !== reg.entries) problems.push(`${name}: entries ${reg.entries}, families sum to ${total}`);
   const freeCalls = (counts.free ?? 0) + (counts.texture_replace ?? 0);
@@ -371,6 +396,46 @@ export function shaderClockOrigin(
  */
 export interface IdleSample {
   cpu_us_mean: number;
+  /** LS1: the fixture's VmRSS at quit (the scale report's rss_kb), when it reported one. */
+  rss_kb?: number;
+}
+
+/**
+ * LS1 idle-parity (live-swap-design.md D4, fork F1): GRC_MODE=standby (`s`) against no capture at
+ * all (`n`, the extension not loaded) on the same fixture, paired by round, with no exemption for
+ * the registry. F1's bound: the paired median main-thread CPU delta at most 1% of no capture's
+ * median CPU a frame, and the paired median RSS delta at most 10 MB.
+ */
+export const IDLE_PARITY_CPU_FRACTION = 0.01;
+export const IDLE_PARITY_RSS_KB = 10 * 1024;
+
+export function idleParity(samples: Record<string, IdleSample[]>): {
+  problems: string[];
+  cpu: { median: number; paired: number[]; bound: number; base: number } | null;
+  rss: { median: number; paired: number[]; bound: number } | null;
+} {
+  const problems: string[] = [];
+  const n = samples.n ?? [];
+  const st = samples.s ?? [];
+  if (n.length === 0 || st.length === 0) return { problems: [`no ${n.length === 0 ? "n" : "s"} samples`], cpu: null, rss: null };
+  if (n.length !== st.length) return { problems: [`${st.length} s legs against ${n.length} n legs: unpaired`], cpu: null, rss: null };
+  const base = median(n.map((x) => x.cpu_us_mean));
+  const paired = st.map((x, i) => x.cpu_us_mean - n[i].cpu_us_mean);
+  const m = median(paired);
+  const bound = base * IDLE_PARITY_CPU_FRACTION;
+  if (!(Number.isFinite(m) && m <= bound))
+    problems.push(
+      `s - n +${m.toFixed(1)} µs a frame (paired median of ${paired.map((d) => d.toFixed(1)).join(", ")}), bound ${bound.toFixed(1)} µs (1% of n's ${base.toFixed(1)})`,
+    );
+  let rss: { median: number; paired: number[]; bound: number } | null = null;
+  if (st.every((x) => typeof x.rss_kb === "number") && n.every((x) => typeof x.rss_kb === "number")) {
+    const rp = st.map((x, i) => (x.rss_kb as number) - (n[i].rss_kb as number));
+    const rm = median(rp);
+    rss = { median: rm, paired: rp, bound: IDLE_PARITY_RSS_KB };
+    if (!(rm <= IDLE_PARITY_RSS_KB))
+      problems.push(`s - n RSS +${(rm / 1024).toFixed(1)} MB (paired median), bound 10 MB`);
+  } else problems.push("a leg reported no rss_kb");
+  return { problems, cpu: { median: m, paired, bound, base }, rss };
 }
 
 export interface IdleComparison {
@@ -419,3 +484,115 @@ export function validationLogCost(
   }
   return { problems, comparisons };
 }
+
+/**
+ * LS1 standby-hot-zero (live-swap-design.md D4): on a capture that published the standby table and
+ * never armed (GRC_MODE=standby), every planned hook outside the standby set ran 0 times, and the
+ * set the capture installed is exactly the expected one. `standbyHooks` is rs_standby.cpp's list
+ * (STANDBY_HOOKS), not the capture's own report, so a capture that installs more fails. The caller
+ * shows the fixture makes hot calls at all (an armed leg of the same fixture counts them).
+ */
+export function standbyHotZero(
+  name: string,
+  result: { status?: string; vtable?: { published?: string; standby_hooks?: string[] } } | null | undefined,
+  counters: { hooks_planned?: string[]; counts?: Record<string, number | null> } | null | undefined,
+  standbyHooks: readonly string[],
+): { problems: string[]; hot_planned: number; hot_calls: number; standby_calls: number } {
+  const problems: string[] = [];
+  let hot = 0;
+  let hotCalls = 0;
+  let standbyCalls = 0;
+  if (!result) problems.push(`${name}: no evidence/result.json`);
+  if (!counters?.counts || !counters.hooks_planned) {
+    problems.push(`${name}: no counters.json counts/hooks_planned`);
+    return { problems, hot_planned: 0, hot_calls: 0, standby_calls: 0 };
+  }
+  if (result && result.status !== "standby") problems.push(`${name}: status ${result.status}, want standby`);
+  const want = new Set(standbyHooks);
+  const installed = [...(result?.vtable?.standby_hooks ?? [])].sort();
+  const expected = counters.hooks_planned.filter((h) => want.has(h)).sort();
+  if (installed.join(",") !== expected.join(","))
+    problems.push(
+      `${name}: the standby table installs [${installed.filter((h) => !want.has(h)).join(",")}] beyond and lacks [${expected.filter((h) => !installed.includes(h)).join(",")}] of the standby set`,
+    );
+  for (const h of counters.hooks_planned) {
+    const n = counters.counts[h] ?? 0;
+    if (want.has(h)) {
+      standbyCalls += n;
+      continue;
+    }
+    ++hot;
+    hotCalls += n;
+    if (n !== 0 && problems.length < 8) problems.push(`${name}: hot hook ${h} ran ${n} times in standby`);
+  }
+  if (hot === 0) problems.push(`${name}: no hot hook planned`);
+  return { problems, hot_planned: hot, hot_calls: hotCalls, standby_calls: standbyCalls };
+}
+
+/** LS1: rs_standby.cpp's set (the ctest rs_standby pins the C++ side to the same list). */
+export const STANDBY_HOOKS: readonly string[] = [
+  "canvas_texture_create",
+  "canvas_texture_set_channel",
+  "canvas_texture_set_texture_filter",
+  "canvas_texture_set_texture_repeat",
+  "draw",
+  "free",
+  "material_create",
+  "material_create_from_shader",
+  "material_set_param",
+  "material_set_shader",
+  "mesh_create",
+  "mesh_create_from_surfaces",
+  "multimesh_allocate_data",
+  "multimesh_create",
+  "multimesh_instance_set_color",
+  "multimesh_instance_set_custom_data",
+  "multimesh_instance_set_transform",
+  "multimesh_instance_set_transform_2d",
+  "multimesh_set_buffer",
+  "multimesh_set_buffer_interpolated",
+  "multimesh_set_custom_aabb",
+  "multimesh_set_mesh",
+  "multimesh_set_visible_instances",
+  "particles_create",
+  "particles_request_process",
+  "particles_request_process_time",
+  "particles_restart",
+  "particles_set_amount",
+  "particles_set_amount_ratio",
+  "particles_set_collision_base_size",
+  "particles_set_custom_aabb",
+  "particles_set_draw_order",
+  "particles_set_draw_pass_mesh",
+  "particles_set_draw_passes",
+  "particles_set_emission_transform",
+  "particles_set_emitter_velocity",
+  "particles_set_emitting",
+  "particles_set_explosiveness_ratio",
+  "particles_set_fixed_fps",
+  "particles_set_fractional_delta",
+  "particles_set_interp_to_end",
+  "particles_set_interpolate",
+  "particles_set_lifetime",
+  "particles_set_mode",
+  "particles_set_one_shot",
+  "particles_set_pre_process_time",
+  "particles_set_process_material",
+  "particles_set_randomness_ratio",
+  "particles_set_seed",
+  "particles_set_speed_scale",
+  "particles_set_subemitter",
+  "particles_set_trail_bind_poses",
+  "particles_set_trails",
+  "particles_set_transform_align",
+  "particles_set_use_local_coordinates",
+  "shader_create",
+  "shader_create_from_code",
+  "shader_set_code",
+  "shader_set_default_texture_parameter",
+  "texture_2d_create",
+  "texture_2d_placeholder_create",
+  "texture_2d_update",
+  "texture_replace",
+  "texture_set_path",
+];

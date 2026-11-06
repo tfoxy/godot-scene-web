@@ -21,6 +21,13 @@ extends Node
 ##                              RenderingServer, before the arm and outside the scene: the registry
 ##                              must see pre-arm frees (registry-live-bound); nothing reaches the
 ##                              stream, so the leg still equals `born` from K on
+##   RS_FIXTURE_ARM=standby     as `deferred`, for a capture under GRC_MODE=standby (LS1,
+##                              live-swap-design.md D4): loaded at birth, the standby table
+##                              published, never armed. The same frame-4 creates and frame-6 frees
+##                              run, and the loader prints its own counts (`[fixture]
+##                              registry-churn {...}`, also under `deferred`): the registry must
+##                              record at least those creates (registry-live-bound against the
+##                              fixture's own create count)
 ##
 ## An autoload enters the tree, and processes, ahead of the main scene, so at frame K the capture
 ## arms before the scene's own `_process` of that frame. `GRC_EXTENSION` unset: nothing is loaded
@@ -45,16 +52,16 @@ func _enter_tree() -> void:
 			arm_frame = text.to_int()
 		else:
 			printerr("[fixture] error: RS_FIXTURE_ARM_FRAME must be an integer >= 8 (got %s)" % JSON.stringify(text))
-	if arm_mode != "born" and arm_mode != "late" and arm_mode != "thread" and arm_mode != "deferred":
-		printerr("[fixture] error: RS_FIXTURE_ARM must be born, late, thread or deferred (got %s)" % JSON.stringify(arm_mode))
+	if arm_mode != "born" and arm_mode != "late" and arm_mode != "thread" and arm_mode != "deferred" and arm_mode != "standby":
+		printerr("[fixture] error: RS_FIXTURE_ARM must be born, late, thread, deferred or standby (got %s)" % JSON.stringify(arm_mode))
 		arm_mode = "late"
-	if arm_mode == "born" or arm_mode == "deferred":
+	if arm_mode == "born" or arm_mode == "deferred" or arm_mode == "standby":
 		_load(arm_mode)
 
 
 func _process(_delta: float) -> void:
 	_frame += 1
-	if arm_mode == "deferred":
+	if arm_mode == "deferred" or arm_mode == "standby":
 		_registry_churn()
 	if arm_mode == "late" and _frame == arm_frame:
 		_load("late frame=%d" % _frame)
@@ -74,10 +81,17 @@ func _registry_churn() -> void:
 			RenderingServer.material_create(), RenderingServer.canvas_texture_create()]
 		RenderingServer.material_set_shader(_churn[3], shader)
 	elif _frame == 6:
+		var frees: int = 0
 		for rid: RID in _churn:
 			if rid.is_valid():
 				RenderingServer.free_rid(rid)
+				frees += 1
 		_churn.clear()
+		# LS1: the fixture's own tracked creates and frees, per registry family.
+		print("[fixture] registry-churn " + JSON.stringify({
+			"own_creates": {"texture": 1, "mesh": 1, "shader": 1, "material": 1, "canvas_texture": 1},
+			"own_frees": frees,
+		}))
 
 
 func _load(when: String) -> void:

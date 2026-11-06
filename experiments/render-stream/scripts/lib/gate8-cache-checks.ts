@@ -335,12 +335,14 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
     const c = counters[off];
     if (!c) problems.push("off/capture has no counters.json");
     else {
-      if (c.hooks_planned.includes("texture_set_path"))
-        problems.push("texture_set_path is planned with no cache directory");
-      if (c.hooks_planned.length !== 79)
-        problems.push(`${c.hooks_planned.length} hooks planned, expected 79`);
-      if ("texture_set_path" in c.counts)
-        problems.push("counters.json counts name texture_set_path");
+      // LS1 (live-swap-design.md D5): texture_set_path is planned always (a standby slot); with
+      // no directory it only counts and forwards, so no path list is kept.
+      if (!c.hooks_planned.includes("texture_set_path"))
+        problems.push("texture_set_path is not planned with no cache directory (LS1 plans it always)");
+      if (c.hooks_planned.length !== 80)
+        problems.push(`${c.hooks_planned.length} hooks planned, expected 80`);
+      if (!("texture_set_path" in c.counts))
+        problems.push("counters.json counts do not name texture_set_path");
       if (c.captured.texture_set_path !== undefined)
         problems.push("counters.json captured.texture_set_path is present");
     }
@@ -389,9 +391,9 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
     checks.push(
       check(
         "cache-off-identical",
-        "G8kc: with no GRC_TEXTURE_CACHE_DIR the capture is the one it was (79 hooks planned, no texture_set_path, no texture_cache block or texture-cache.json), and with any cache state (cold, warm, prepared, bounded, damaged, repaired) every transaction's state, the hook log's texture lines and the stored payload hashes equal the uncached capture's",
+        "G8kc: with no GRC_TEXTURE_CACHE_DIR the capture is the one it was (80 hooks planned since LS1 planned texture_set_path always, no captured.texture_set_path, no texture_cache block or texture-cache.json), and with any cache state (cold, warm, prepared, bounded, damaged, repaired) every transaction's state, the hook log's texture lines and the stored payload hashes equal the uncached capture's",
         ran("off/capture") ? problems : null,
-        `compared ${compared.join(", ")} transactions; 79 hooks planned`,
+        `compared ${compared.join(", ")} transactions; 80 hooks planned`,
         "off/capture",
       ),
     );

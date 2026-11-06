@@ -27,6 +27,9 @@ import {
   registryLiveBound,
   isDeferredLeg,
   judgeResolveQueueOnly,
+  parseRegistryChurn,
+  STANDBY_HOOKS,
+  standbyHotZero,
 } from "../lib/registry-checks";
 
 let failures = 0;
@@ -487,6 +490,52 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1), s(1, 1, 1)], regoff: [
   for (const [leg, want] of [["deferred", true], ["headless-deferred", true], ["deferred-cmbt", true],
     ["late", false], ["sabotage-registry-off", false], ["fault-no-resources", false]] as const)
     expect(isDeferredLeg(leg) === want, `isDeferredLeg(${leg}) is ${want}`);
+}
+
+// LS1 (live-swap-design.md D4): registry-live-bound against the fixture's own create count, the
+// standby-hot-zero judge, and the TS standby list against rs_standby.cpp's.
+{
+  const churn = parseRegistryChurn(
+    'x\n[fixture] registry-churn {"own_creates":{"texture":1,"mesh":1,"shader":1,"material":1,"canvas_texture":1},"own_frees":5}\n',
+  );
+  expect(churn?.own_creates.canvas_texture === 1 && churn.own_frees === 5, "parseRegistryChurn reads the line");
+  expect(parseRegistryChurn("no line") === null, "parseRegistryChurn: no line is null");
+  const own = { texture: 1, mesh: 1, shader: 1, material: 1 };
+  const g = good();
+  expect(registryLiveBound("own", g.reg, g.counts, { ownCreates: own }).problems.length === 0,
+    "own creates at or under the registry's pass");
+  // good()'s canvas texture is a null create (the dummy's RID()): it counts as seen.
+  expect(registryLiveBound("own", g.reg, g.counts, { ownCreates: { ...own, canvas_texture: 1 } }).problems.length === 0,
+    "a null create counts toward the fixture's own creates");
+  // The drop-tracked shape: canvas_texture_create absent from the standby table, so neither the hook
+  // counter nor the registry saw the fixture's canvas texture; the counters identity still holds.
+  const d = good();
+  d.reg.families.canvas_texture = fam(0, 0, 0);
+  d.counts.canvas_texture_create = 0;
+  expect(registryLiveBound("drop", d.reg, d.counts).problems.length === 0,
+    "drop-tracked: the counters identity alone passes (why the own count is needed)");
+  expect(registryLiveBound("drop", d.reg, d.counts, { ownCreates: { ...own, canvas_texture: 1 } })
+    .problems.some((p) => p.includes("below the fixture's own 1")), "drop-tracked: the own count fails it");
+
+  const planned = ["canvas_item_add_rect", "canvas_item_set_transform", "texture_2d_create", "free", "texture_set_path"];
+  const result = { status: "standby", vtable: { published: "standby", standby_hooks: ["texture_2d_create", "free", "texture_set_path"] } };
+  const counts = { canvas_item_add_rect: 0, canvas_item_set_transform: 0, texture_2d_create: 9, free: 4, texture_set_path: 0 };
+  const ok = standbyHotZero("s", result, { hooks_planned: planned, counts }, STANDBY_HOOKS);
+  expect(ok.problems.length === 0 && ok.hot_planned === 2 && ok.standby_calls === 13, "standby-hot-zero passes");
+  const full = standbyHotZero("s", { ...result, vtable: { published: "standby", standby_hooks: planned } },
+    { hooks_planned: planned, counts: { ...counts, canvas_item_add_rect: 120 } }, STANDBY_HOOKS);
+  expect(full.problems.some((p) => p.includes("canvas_item_add_rect ran 120")), "full-table: a hot hook ran");
+  expect(full.problems.some((p) => p.includes("installs [canvas_item_add_rect")), "full-table: the table installs a hot slot");
+  expect(standbyHotZero("s", { ...result, status: "armed" }, { hooks_planned: planned, counts }, STANDBY_HOOKS)
+    .problems.length === 1, "standby-hot-zero: an armed capture fails");
+  expect(standbyHotZero("s", result, null, STANDBY_HOOKS).problems.length > 0, "standby-hot-zero: no counters fails");
+
+  const here = dirname(fileURLToPath(import.meta.url));
+  const cpp = readFileSync(join(here, "../../capture/src/rs_standby.cpp"), "utf8");
+  const body = cpp.slice(cpp.indexOf("std::vector<std::string> names = {"), cpp.indexOf("};", cpp.indexOf("std::vector<std::string> names = {")));
+  const names = [...body.matchAll(/^\s*"([a-z0-9_]+)",/gm)].map((m) => m[1]).sort();
+  expect(names.join(",") === [...STANDBY_HOOKS].sort().join(","),
+    `STANDBY_HOOKS equals rs_standby.cpp's list (${names.length} names)`);
 }
 
 if (failures > 0) {

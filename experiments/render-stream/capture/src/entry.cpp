@@ -233,6 +233,7 @@
 #include "rs_resource_store.h"
 #include "rs_root_query.h"
 #include "rs_shader_clock.h"
+#include "rs_standby.h"
 #include "rs_texture_cache.h"
 #include "rs_texture_decode.h"
 #include "rs_texture_payload.h"
@@ -266,6 +267,11 @@ struct State {
   // `off` refuses at the first attempt, before the vtable is patched.
   std::string validation_log_error;
   bool evidence_ready = false;
+  // LS1 (live-swap-design.md D4): GRC_MODE=standby published the standby table and waits (until
+  // LS2's arm()); every arm passes through standby first. GRC_STANDBY_FAULT is the test-only
+  // sabotage of the standby table (rs_standby.h).
+  bool standby = false;
+  rs::StandbyFault standby_fault = rs::StandbyFault::None;
 
   Calibration calib;
   ProcessFingerprint fp;
@@ -807,6 +813,25 @@ std::string result_json() {
   json.field("vptr_written", g_state.vptr_written);
   json.field("disarmed", g_state.disarmed);
   json.field_or_null("unarmed_restore", g_state.unarmed_restore_phase);  // LS0
+  if (g_state.shadow.built()) {
+    // LS1 (live-swap-design.md D4): the two tables and which one the singleton carries now.
+    const ShadowVtable::Table t = g_state.shadow.published();
+    json.key("vtable").object_begin();
+    json.field("published", std::string(t == ShadowVtable::Table::Armed     ? "armed"
+                                        : t == ShadowVtable::Table::Standby ? "standby"
+                                                                            : "engine"));
+    json.field("armed_slots", static_cast<int64_t>(g_state.shadow.armed_slots()));
+    json.field("standby_slots", static_cast<int64_t>(g_state.shadow.standby_slots()));
+    json.field("standby_fault", std::string(rs::standby_fault_name(g_state.standby_fault)));
+    json.key("standby_hooks").array_begin();
+    for (size_t i = 0; i < g_state.plan.replacements.size(); ++i) {
+      if (g_state.plan.replacements[i].standby) {
+        json.string(g_state.plan.planned[i]);
+      }
+    }
+    json.array_end();
+    json.object_end();
+  }
   json.field_or_null("display_server", g_state.display_server);
   json.field_or_null("rendering_driver", g_state.rendering_driver);
   json.field_or_null("rendering_method", g_state.rendering_method);
@@ -4671,7 +4696,17 @@ bool attempt(const char *phase) {
     }
   }
 
-  if (g_state.mode != "arm") {
+  // LS1: GRC_STANDBY_FAULT, parsed in every mode so validate predicts arm and standby.
+  {
+    std::string why;
+    if (!rs::parse_standby_fault(std::getenv("GRC_STANDBY_FAULT"), &g_state.standby_fault, &why)) {
+      log_line("standby: " + why);
+      refuse("standby-fault-invalid");
+      return true;
+    }
+  }
+
+  if (g_state.mode != "arm" && g_state.mode != "standby") {
     decide("validated", std::string());
     return true;
   }
@@ -4730,7 +4765,10 @@ bool attempt(const char *phase) {
     // value refuses the stream there, so here it only leaves the registry off.
     {
       const char *adopt_env = std::getenv("GRC_ADOPT");
-      const bool adopt = adopt_env != nullptr && std::string(adopt_env) == "arm";
+      // LS1 (live-swap-design.md D3): GRC_MODE=standby implies GRC_ADOPT=arm (an arm from standby
+      // adopts what the registry recorded); an explicit value is taken as given.
+      const bool adopt = adopt_env != nullptr ? std::string(adopt_env) == "arm"
+                                              : g_state.mode == "standby";
       rs::AdoptFault fault = rs::AdoptFault::None;
       std::string fault_error;
       rs::RegistryFault registry_fault = rs::RegistryFault::None;
@@ -4753,9 +4791,21 @@ bool attempt(const char *phase) {
                  " (fault " + rs::registry_fault_name(registry_fault) + ")");
       }
     }
+    // LS1 (live-swap-design.md D4): both tables are built once, here; the standby table is
+    // published first, whatever the mode, and an arm is one more store to the armed table.
+    // GRC_STANDBY_FAULT edits only the standby table's membership.
+    for (size_t i = 0; i < g_state.plan.replacements.size(); ++i) {
+      g_state.plan.replacements[i].standby =
+          rs::standby_hook_under(g_state.plan.planned[i], g_state.standby_fault);
+    }
     std::string arm_error;
-    if (!g_state.shadow.arm(g_state.facts.singleton, static_cast<size_t>(g_state.calib.slot_count),
-                            g_state.plan.replacements, &arm_error)) {
+    const bool built =
+        g_state.shadow.build(g_state.facts.singleton, static_cast<size_t>(g_state.calib.slot_count),
+                             g_state.plan.replacements, &arm_error);
+    if (built && !g_state.shadow.publish(ShadowVtable::Table::Standby)) {
+      arm_error = "the singleton's vptr is not the engine's";
+    }
+    if (!built || g_state.shadow.published() != ShadowVtable::Table::Standby) {
       log_line("arm: " + arm_error);
       if (g_state.ct_shim_state == "armed") {
         rs::canvas_texture_shim().configure(rs::CanvasTextureShimMode::Off, g_state.display_server);
@@ -4773,6 +4823,18 @@ bool attempt(const char *phase) {
     }
     g_state.hooks_patched = true;
     g_state.vptr_written = true;
+    log_line("vtable: standby table published (" + std::to_string(g_state.shadow.standby_slots()) +
+             " of " + std::to_string(g_state.shadow.armed_slots()) + " planned slots" +
+             (g_state.standby_fault != rs::StandbyFault::None
+                  ? std::string(", fault ") + rs::standby_fault_name(g_state.standby_fault)
+                  : std::string()) +
+             ")");
+  }
+  if (g_state.mode == "standby") {
+    // LS1: loaded, the standby table published, nothing streaming; LS2's arm() leaves this state.
+    g_state.standby = true;
+    decide("standby", std::string());
+    return true;
   }
   // LATE-SPINE: the vtable is patched (the hooks observe resource creation) but the arm itself
   // (adoption/snapshot/publish) is deferred; the frame callback retries and completes it once the
@@ -4784,6 +4846,12 @@ bool attempt(const char *phase) {
                " (hooks patched, retries are silent)");
     }
     return false;
+  }
+  // LS1: the arm is one store, standby table -> armed table (the armed table is the pre-LS1 one).
+  if (!g_state.shadow.publish(ShadowVtable::Table::Armed)) {
+    log_line("arm: the singleton's vptr is not ours to replace");
+    refuse("arm-failed");
+    return true;
   }
   g_state.armed = true;
   perf_arm();
@@ -4885,6 +4953,14 @@ void on_frame() {
   // by the previous callback's hooks_set_frame), when any changed it. Off: one relaxed load.
   if (rs::registry_on()) {
     rs::registry_frame(g_state.frames_total);
+  }
+  if (g_state.standby) {
+    // LS1 (live-swap-design.md D4): a standby callback runs the shader clock, the registry's row
+    // and the carriers' flush (one relaxed load with none registered), nothing else: no attempt, no
+    // linger, no live or track work (no hub exists to feed a track receiver before an arm).
+    hooks_set_frame(g_state.frames_total + 1);
+    live::gd_carriers_flush();
+    return;
   }
   live_linger(false);  // after a disarm: the receivers' closes, then the server stop
   if (g_state.armed && g_stream.gate8.adopt) {

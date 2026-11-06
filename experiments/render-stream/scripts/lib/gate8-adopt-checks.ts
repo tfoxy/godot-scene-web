@@ -45,6 +45,10 @@ import {
   validationLogCost,
   VALIDATION_LOG_COST_BOUND_US,
   VALIDATION_LOG_SABOTAGE_MIN_US,
+  idleParity,
+  parseRegistryChurn,
+  STANDBY_HOOKS,
+  standbyHotZero,
 } from "./registry-checks";
 import {
   decodeRecording,
@@ -143,6 +147,8 @@ export interface G8aReport {
     string,
     { equivalence_problems: number; differing_px: number }
   >;
+  /** LS1: idle-parity's paired deltas (standby against no capture). */
+  idle_parity?: { cpu: unknown; rss: unknown };
   /** LAR0: the late-arm registry (registry-live-bound, registry-cost). */
   registry?: {
     live: Record<string, unknown>;
@@ -809,7 +815,9 @@ const REGISTRY_COST_DIRS = Array.from({ length: REGISTRY_COST_ROUNDS }, (_, r) =
 ).flat();
 // LS0: the validation-log-cost timing group (run-gate8.sh G8A_VLC_CONFIGS x G8A_VLC_ROUNDS). The
 // sabotage leg is named sabotage-* so a run that skips sabotages skips it (legs_sabotage_skipped).
-const VLC_CONFIGS = ["a0", "b", "c", "sabotage-validation-log-ignored"] as const;
+// LS1: `n` (no extension loaded) and `s` (GRC_MODE=standby) for idle-parity; b, c and the sabotage
+// keep LS0's shape (the full table published and never armed) through GRC_STANDBY_FAULT=full-table.
+const VLC_CONFIGS = ["a0", "b", "c", "sabotage-validation-log-ignored", "n", "s"] as const;
 const VLC_ROUNDS = 5;
 const vlcDir = (c: string, r: number) => `validation-log-cost/${c}-${r + 1}`;
 const VLC_DIRS = Array.from({ length: VLC_ROUNDS }, (_, r) => VLC_CONFIGS.map((c) => vlcDir(c, r))).flat();
@@ -894,6 +902,10 @@ export async function runG8a(
     "late-workers/capture",
     "deferred/capture",
     "sabotage-registry-keep-freed/capture",
+    // LS1 (live-swap-design.md D4): GRC_MODE=standby, never armed, and its two sabotages.
+    "standby/capture",
+    "sabotage-standby-full-table/capture",
+    "sabotage-standby-drop-tracked/capture",
     ...REGISTRY_COST_DIRS,
     ...VLC_DIRS,
     ...SABOTAGES.map((s) => `sabotage-${s}/capture`),
@@ -1141,13 +1153,21 @@ export async function runG8a(
         )
       )?.counts ?? null,
   });
+  // LS1: the loader's own tracked creates (its `[fixture] registry-churn` line), for the legs that
+  // run its churn (deferred, standby): a create slot missing from the standby table neither counts
+  // nor records, so only the fixture's own count shows it.
+  const ownCreatesOf = async (leg: string) =>
+    parseRegistryChurn(await readText(join(root, leg, "capture/stdout.log")))?.own_creates ?? {
+      missing_registry_churn_line: Number.POSITIVE_INFINITY,
+    };
   const liveSummary: Record<string, unknown> = {};
   {
     let problems: string[] | null = null;
-    if (ran("deferred/capture") && ran("born-adopt/capture") && ran("late/capture")) {
+    if (ran("deferred/capture") && ran("born-adopt/capture") && ran("late/capture") && ran("standby/capture")) {
       problems = [];
       for (const [leg, opts] of [
-        ["deferred", { preArmFreesBefore: K }],
+        ["deferred", { preArmFreesBefore: K, ownCreates: await ownCreatesOf("deferred") }],
+        ["standby", { ownCreates: await ownCreatesOf("standby") }],
         ["born-adopt", {}],
         ["late", {}],
       ] as const) {
@@ -1155,6 +1175,8 @@ export async function runG8a(
         const r = registryLiveBound(leg, reg, counts, opts);
         problems.push(...r.problems);
         liveSummary[leg] = r.summary;
+        if ("ownCreates" in opts && "missing_registry_churn_line" in opts.ownCreates)
+          problems.push(`${leg}: no [fixture] registry-churn line in capture/stdout.log`);
       }
       // The pure path (GRC_ADOPT unset) records nothing and writes no registry evidence.
       if (existsSync(join(root, "born/capture/evidence/registry.json")))
@@ -1164,7 +1186,7 @@ export async function runG8a(
     checks.push(
       check(
         "registry-live-bound",
-        "on the deferred, born-adopt and late captures (GRC_ADOPT=arm), evidence/registry.json holds entries == creates - frees - replaced - recreated per family on every timeline row and at the end (a free always erases: the registry is bounded by live engine resources), records every tracked create (creates + overflow + null_creates == the family's create-hook calls in counters.json), never overflows or drops a row; the deferred leg records a tracked free before its arm; born (GRC_ADOPT=off) writes no registry evidence",
+        "on the deferred, standby (LS1: GRC_MODE=standby, GRC_ADOPT implied), born-adopt and late captures (GRC_ADOPT=arm), evidence/registry.json holds entries == creates - frees - replaced - recreated per family on every timeline row and at the end (a free always erases: the registry is bounded by live engine resources), records every tracked create (creates + overflow + null_creates == the family's create-hook calls in counters.json), never overflows or drops a row; the deferred and standby legs record at least the loader's own creates per family; the deferred leg records a tracked free before its arm; born (GRC_ADOPT=off) writes no registry evidence",
         problems,
         d
           ? `deferred: ${d.rows} rows, ${d.creates} creates, ${d.frees} frees (${d.pre_arm_frees} before the arm), peak ${d.peak}, ~${d.bytes_estimate} B`
@@ -1256,12 +1278,18 @@ export async function runG8a(
       for (const c of configs) {
         for (let r = 0; r < VLC_ROUNDS; r++) {
           const dir = vlcDir(c, r);
-          const scale = await readJson<{ cpu_us_mean?: number }>(join(root, dir, "scale-report.json"));
+          const scale = await readJson<{ cpu_us_mean?: number; rss_kb?: number }>(join(root, dir, "scale-report.json"));
           if (typeof scale?.cpu_us_mean !== "number") {
             problems.push(`${dir}: no scale report cpu_us_mean (RS_SCALE_CPU_REPORT=1)`);
             continue;
           }
-          (samples[c] ??= []).push({ cpu_us_mean: scale.cpu_us_mean });
+          (samples[c] ??= []).push({ cpu_us_mean: scale.cpu_us_mean, rss_kb: scale.rss_kb });
+          if (c === "n") {
+            // LS1: no capture at all; the extension wrote nothing.
+            if (existsSync(join(root, dir, "evidence/result.json")))
+              problems.push(`${dir}: the no-capture leg wrote evidence/result.json`);
+            continue;
+          }
           const counters = await readJson<{ validation_log?: string }>(join(root, dir, "evidence/counters.json"));
           const result = await readJson<{ unarmed_restore?: string | null }>(join(root, dir, "evidence/result.json"));
           const wantLog = c.startsWith("sabotage-") ? "on" : "off";
@@ -1272,6 +1300,11 @@ export async function runG8a(
           const wantRestore = c === "a0" ? null : "shutdown";
           if ((result?.unarmed_restore ?? null) !== wantRestore)
             problems.push(`${dir}: result.json unarmed_restore ${JSON.stringify(result?.unarmed_restore ?? null)}, want ${JSON.stringify(wantRestore)}`);
+          // LS1: b, c and the sabotage publish the full table (LS0's shape), s the standby table.
+          const vt = (result as { vtable?: { standby_fault?: string } } | undefined)?.vtable;
+          const wantFault = c === "a0" ? undefined : c === "s" ? "none" : "full-table";
+          if (vt?.standby_fault !== wantFault)
+            problems.push(`${dir}: result.json vtable.standby_fault ${JSON.stringify(vt?.standby_fault ?? null)}, want ${JSON.stringify(wantFault ?? null)}`);
         }
       }
       return { samples, problems };
@@ -1319,6 +1352,53 @@ export async function runG8a(
         "sabotage validation-log-ignored (GRC_VALIDATION_LOG_SABOTAGE=ignored: the knob is read, reported on, and the logs still run) fails validation-log-cost's judgement on the same fixture and puts at least 30 µs a frame of K2 back (K2 reads 44-73 µs a frame through the runner against 80 µs in prompt 1) over the honest (c)",
         sabProblems,
         sabDetail,
+      ),
+    );
+  }
+
+  // --- LS1: idle-parity (timing group, local) --------------------------------------------------
+  // GRC_MODE=standby against no capture at all, on the same legs' fixture and rounds (fork F1).
+  {
+    const dirs = Array.from({ length: VLC_ROUNDS }, (_, r) => ["n", "s"].map((c) => vlcDir(c, r))).flat();
+    let problems: string[] | null = null;
+    let detail: string | undefined;
+    if (dirs.every((l) => ran(l))) {
+      problems = [];
+      const samples: Record<string, IdleSample[]> = {};
+      for (const c of ["n", "s"]) {
+        for (let r = 0; r < VLC_ROUNDS; r++) {
+          const dir = vlcDir(c, r);
+          const scale = await readJson<{ cpu_us_mean?: number; rss_kb?: number }>(join(root, dir, "scale-report.json"));
+          if (typeof scale?.cpu_us_mean !== "number") {
+            problems.push(`${dir}: no scale report cpu_us_mean`);
+            continue;
+          }
+          (samples[c] ??= []).push({ cpu_us_mean: scale.cpu_us_mean, rss_kb: scale.rss_kb });
+        }
+        if (c === "s") {
+          for (let r = 0; r < VLC_ROUNDS; r++) {
+            const result = await readJson<{ status?: string }>(join(root, vlcDir(c, r), "evidence/result.json"));
+            if (result?.status !== "standby") problems.push(`${vlcDir(c, r)}: status ${result?.status}, want standby`);
+          }
+        }
+      }
+      const j = idleParity(samples);
+      problems.push(...j.problems);
+      detail =
+        (j.cpu
+          ? `s-n ${j.cpu.median >= 0 ? "+" : ""}${j.cpu.median.toFixed(1)}µs a frame (paired ${j.cpu.paired.map((d) => d.toFixed(1)).join(", ")}; bound ${j.cpu.bound.toFixed(1)} = 1% of n's ${j.cpu.base.toFixed(1)})`
+          : "no cpu") +
+        (j.rss
+          ? `; RSS ${(j.rss.median / 1024).toFixed(1)} MB (paired ${j.rss.paired.map((d) => (d / 1024).toFixed(1)).join(", ")}; bound 10 MB)`
+          : "; no rss");
+      report.idle_parity = { cpu: j.cpu, rss: j.rss };
+    }
+    checks.push(
+      check(
+        "idle-parity",
+        "LS1 (live-swap-design.md D4, fork F1): on the validation-log-cost fixture and rounds, GRC_MODE=standby (`s`: the standby table and the registry, nothing exempted) against no capture at all (`n`: the extension not loaded), paired by round: main-thread CPU a frame within 1% of n's, and RSS (VmRSS at quit) within 10 MB",
+        problems,
+        detail,
       ),
     );
   }
@@ -1900,6 +1980,79 @@ export async function runG8a(
         report.sabotages[s]
           ? `${report.sabotages[s].equivalence_problems} state problems, ${report.sabotages[s].differing_px} px`
           : undefined,
+      ),
+    );
+  }
+
+  // --- LS1: standby-hot-zero and its two sabotages ---------------------------------------------
+  const standbyOf = async (leg: string) => ({
+    result: await readJson<{ status?: string; vtable?: { published?: string; standby_hooks?: string[] } }>(
+      join(root, leg, "capture/evidence/result.json"),
+    ),
+    counters: await readJson<{ hooks_planned?: string[]; counts?: Record<string, number | null> }>(
+      join(root, leg, "capture/evidence/counters.json"),
+    ),
+  });
+  {
+    let problems: string[] | null = null;
+    let detail: string | undefined;
+    if (ran("standby/capture") && ran("deferred/capture")) {
+      const s = await standbyOf("standby");
+      const r = standbyHotZero("standby", s.result, s.counters, STANDBY_HOOKS);
+      problems = [...r.problems];
+      // The same fixture armed (deferred) makes hot calls, so zero in standby means something.
+      const d = await standbyOf("deferred");
+      const armedHot = (d.counters?.hooks_planned ?? [])
+        .filter((h) => !STANDBY_HOOKS.includes(h))
+        .reduce((sum, h) => sum + (d.counters?.counts?.[h] ?? 0), 0);
+      if (!(armedHot > 0)) problems.push(`deferred: ${armedHot} hot calls armed (the fixture must make some)`);
+      detail = `standby: ${r.hot_planned} hot hooks planned, ${r.hot_calls} hot calls, ${r.standby_calls} standby-slot calls; deferred (armed at ${K}): ${armedHot} hot calls`;
+    }
+    checks.push(
+      check(
+        "standby-hot-zero",
+        "LS1 (live-swap-design.md D4): the GRC_MODE=standby capture (loaded at birth, never armed) installs exactly the standby set's planned slots (result.json vtable.standby_hooks against rs_standby.cpp's list) and every other planned hook ran 0 times (counters.json counts), while the same fixture armed (deferred) makes hot calls",
+        problems,
+        detail,
+      ),
+    );
+  }
+  {
+    let problems: string[] | null = null;
+    let detail: string | undefined;
+    if (ran("sabotage-standby-full-table/capture")) {
+      const s = await standbyOf("sabotage-standby-full-table");
+      const r = standbyHotZero("sabotage-standby-full-table", s.result, s.counters, STANDBY_HOOKS);
+      problems = r.problems.length > 0 ? [] : ["standby-hot-zero did not fail"];
+      detail = `${r.problems.length} standby-hot-zero problems (${r.hot_calls} hot calls); first: ${r.problems[0] ?? "none"}`;
+    }
+    checks.push(
+      check(
+        "sabotage-standby-full-table",
+        "the standby capture under GRC_STANDBY_FAULT=full-table (the standby table is the armed table) fails standby-hot-zero",
+        problems,
+        detail,
+      ),
+    );
+  }
+  {
+    let problems: string[] | null = null;
+    let detail: string | undefined;
+    if (ran("sabotage-standby-drop-tracked/capture")) {
+      const leg = "sabotage-standby-drop-tracked";
+      const { reg, counts } = await registryOf(leg);
+      const own = await ownCreatesOf(leg);
+      const withOwn = registryLiveBound(leg, reg, counts, { ownCreates: own });
+      const countersOnly = registryLiveBound(leg, reg, counts);
+      problems = withOwn.problems.length > 0 ? [] : ["registry-live-bound did not fail"];
+      detail = `${withOwn.problems.length} registry-live-bound problems against the fixture's own count (${countersOnly.problems.length} against the hook counters alone); first: ${withOwn.problems[0] ?? "none"}`;
+    }
+    checks.push(
+      check(
+        "sabotage-standby-drop-tracked",
+        "the standby capture under GRC_STANDBY_FAULT=drop-tracked (canvas_texture_create left out of the standby table) fails registry-live-bound against the loader's own create count",
+        problems,
+        detail,
       ),
     );
   }

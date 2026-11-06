@@ -80,6 +80,7 @@ import {
   ptSyntheticSkipProblems,
   ppmStats as readPpmStats,
   runG8ptLate,
+  standbyClockProblems,
 } from "../lib/gate8-pt-late-checks";
 import {
   particlesTotals,
@@ -2368,6 +2369,22 @@ async function main(): Promise<void> {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  }
+
+  // LS1 standby-clock: the deferred leg's clock saw every draw through standby; the no-draw sabotage
+  // shape (11 standby draws unseen) and a headless clock fail.
+  {
+    const honest = { source: "draw-hook", draws: 120, draws_missed: 0, ticks: 120 };
+    expect(standbyClockProblems(honest, 11).problems.length === 0, "standby-clock: an honest rendered clock passes");
+    expect(
+      standbyClockProblems({ ...honest, draws: 109, draws_missed: 11 }, 11).problems.some((p) => p.includes("draws_missed 11")),
+      "standby-clock: draws missed in standby fail",
+    );
+    expect(
+      standbyClockProblems({ source: "frame-callback", draws: 0, draws_missed: -1, ticks: 120 }, 11).problems.length >= 2,
+      "standby-clock: a headless clock fails",
+    );
+    expect(standbyClockProblems(undefined, 11).problems.length === 1, "standby-clock: no clock fails");
   }
 
   console.log(

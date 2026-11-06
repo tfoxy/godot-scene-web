@@ -16,7 +16,8 @@
 // (`encode_ns_total`, `snapshot_ns_total`). So a recording "is byte-identical" when every
 // transaction, resource and other record has the same bytes (same sha256 over the record), the
 // session record differs at most in those ids and the keys named by --allow-session (dotted
-// paths), and the end record at most in its timing stats. --tree compares only file sinks
+// paths), and the end record at most in its timing stats (and, LS1, in max_record_bytes by exactly
+// the session's length change when the session is the largest record). --tree compares only file sinks
 // (`recording*.rsN`): a live tap or a receiver's `received*.rsN` follows the host's pacing, so its
 // transaction count is a timing fact, not a wire fact. Exit 0 when identical under those rules, 1 otherwise, 2 on usage errors.
 import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -176,7 +177,15 @@ export function cmpRecordings(
               ((endStats(y) as { max_record_bytes?: number })
                 .max_record_bytes ?? 0) >=
                 ((endStats(x) as { max_record_bytes?: number })
-                  .max_record_bytes ?? 0)),
+                  .max_record_bytes ?? 0)) ||
+            // LS1: when the session record is the file's largest, an allowed session change moves
+            // max_record_bytes by exactly the session's length change.
+            (p === "stats.max_record_bytes" &&
+              sessionDelta !== 0 &&
+              itemKeyDelta === 0 &&
+              ((endStats(y) as { max_record_bytes?: number }).max_record_bytes ?? 0) -
+                ((endStats(x) as { max_record_bytes?: number }).max_record_bytes ?? 0) ===
+                sessionDelta),
         ));
     (tolerated ? result.allowed : result.differing).push({
       index: i,
