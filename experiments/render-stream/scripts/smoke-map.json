@@ -395,12 +395,17 @@
       "exclusive": true
     },
     {
-      "why": "TRK1 tracks host core (tracks-design.md Q1-Q5, Q9): rs_tracks.{h,cpp} (TrackHub), its ctest and the pure self-test that drives rs_live_host --tracks with a Node track client. It runs only where GRC_LIVE_TRACKS grants a kind: the rs_track ctest, the pure self-tests and gate 8's g8l/trk legs (TRK2). The routing in entry.cpp, the admission pools in rs_ws.* and rs_carrier_set.*, and rs_live_host.cpp are shared capture files and keep their own reach",
+      "why": "TRK1 tracks host core (tracks-design.md Q1-Q5, Q9): rs_tracks.{h,cpp} (TrackHub), its ctest and the pure self-test that drives rs_live_host --tracks with a Node track client. It runs only where GRC_LIVE_TRACKS grants a kind: the rs_track ctest, the pure self-tests and gate 8's g8l/trk legs (TRK2). TRK5's per-viewer capabilities (rs_track_caps.*, the JSON reader it shares with rs_tracks.cpp, the golden vectors, the reference minter that the g8l/trk caps leg's client also uses, and its pure self-test) run in the same places. The routing in entry.cpp, the admission pools in rs_ws.* and rs_carrier_set.*, and rs_live_host.cpp are shared capture files and keep their own reach",
       "paths": [
         "experiments/render-stream/capture/src/rs_tracks.h",
         "experiments/render-stream/capture/src/rs_tracks.cpp",
         "experiments/render-stream/capture/test/rs_track_test.cpp",
-        "experiments/render-stream/scripts/test/self-test-tracks.ts"
+        "experiments/render-stream/scripts/test/self-test-tracks.ts",
+        "experiments/render-stream/capture/src/rs_track_caps.*",
+        "experiments/render-stream/capture/src/rs_json_lite.h",
+        "experiments/render-stream/protocol/track-cap-vectors.json",
+        "experiments/render-stream/scripts/lib/track-cap.ts",
+        "experiments/render-stream/scripts/test/self-test-track-caps.ts"
       ],
       "reach": ["capture-build", "pure", "native:gate8@*"],
       "exclusive": true

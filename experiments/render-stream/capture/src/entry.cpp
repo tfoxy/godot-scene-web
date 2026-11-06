@@ -236,6 +236,7 @@
 #include "rs_texture_payload.h"
 #include "rs_texture_release.h"
 #include "rs_item_meta_host.h"
+#include "rs_track_caps.h"
 #include "rs_tracks.h"
 #include "rs_tracks_gd.h"
 #include "rs_ws.h"
@@ -1967,18 +1968,22 @@ bool tracks_configure(std::string *why) {
       !ranged("GRC_LIVE_TRACK_KEEPALIVE_MS", 1000, 250, 30000, &keepalive, "track-keepalive-invalid")) {
     return false;
   }
-  // TRK6 builds GRC_LIVE_TRACK_INPUT_INJECT=reference and TRK5 GRC_LIVE_TRACK_CAPS=hmac; until
-  // then a set value refuses rather than silently serving without it.
+  // TRK6 builds GRC_LIVE_TRACK_INPUT_INJECT=reference; until then a set value refuses rather than
+  // silently serving without it.
   const std::string inject = env_string("GRC_LIVE_TRACK_INPUT_INJECT");
   if (!inject.empty()) {
     *why = inject == "reference" ? "track-inject-invalid: reference injection is not built yet (TRK6)"
                                  : "track-inject-invalid: GRC_LIVE_TRACK_INPUT_INJECT=" + inject;
     return false;
   }
+  // TRK5 (Q2, rs_track_caps.h): per-viewer HMAC capabilities instead of the shared credential.
   const std::string caps = env_string("GRC_LIVE_TRACK_CAPS");
-  if (!caps.empty()) {
-    *why = caps == "hmac" ? "track-caps-invalid: hmac capabilities are not built yet (TRK5)"
-                          : "track-caps-invalid: GRC_LIVE_TRACK_CAPS=" + caps;
+  if (!caps.empty() && caps != "hmac") {
+    *why = "track-caps-invalid: GRC_LIVE_TRACK_CAPS=" + caps;
+    return false;
+  }
+  if (rs::tracks::sabotage_needs_caps(sabotage) && caps != "hmac") {
+    *why = "sabotage " + g_live.listener_sabotage + " needs GRC_LIVE_TRACK_CAPS=hmac";
     return false;
   }
   if (!g_state.evidence_ready) {
@@ -1989,12 +1994,36 @@ bool tracks_configure(std::string *why) {
   g_live.track_config.burst = static_cast<uint32_t>(rate * 2);
   g_live.track_config.keepalive_ms = static_cast<uint32_t>(keepalive);
   g_live.track_config.sabotage = sabotage;
+  g_live.track_config.caps = caps == "hmac" ? rs::tracks::CapsMode::Hmac : rs::tracks::CapsMode::Shared;
   return true;
 }
 
 // TRK1 (tracks-design.md Q2, T5): one credential per granted kind, after every live and track
-// setting passed and after the view token, never equal to it, mode 0600.
+// setting passed and after the view token, never equal to it, mode 0600. TRK5: with
+// GRC_LIVE_TRACK_CAPS=hmac one key, evidence/live-track-cap-key (64 lowercase hex, never equal to
+// the view token), instead. The other mode's files are removed, so a consumer that finds a file
+// finds the mode this run serves.
 bool tracks_write_credentials(const std::string &view_token, std::string *why) {
+  const std::string key_path = path_join(g_state.evidence_dir, "live-track-cap-key");
+  if (g_live.track_config.caps == rs::tracks::CapsMode::Hmac) {
+    std::string key;
+    for (int attempt = 0; attempt < 4 && (key.empty() || rs::tracks::caps::key_to_hex(key) == view_token);
+         ++attempt) {
+      key = rs::tracks::caps::generate_key();
+    }
+    if (key.empty() || rs::tracks::caps::key_to_hex(key) == view_token ||
+        !rs::tracks::write_secret_file(key_path, rs::tracks::caps::key_to_hex(key))) {
+      *why = "track-token-write-failed: " + key_path;
+      return false;
+    }
+    for (const std::string &kind : g_live.track_config.kinds) {
+      ::unlink(path_join(g_state.evidence_dir, "live-track-" + kind + "-token").c_str());
+    }
+    g_live.track_config.cap_key = key;
+    g_live.track_config.view_token = view_token;
+    return true;
+  }
+  ::unlink(key_path.c_str());
   for (const std::string &kind : g_live.track_config.kinds) {
     std::string credential;
     for (int attempt = 0; attempt < 4 && (credential.empty() || credential == view_token); ++attempt) {
@@ -3324,6 +3353,7 @@ void stream_start() {
         log_line("live: tracks kinds=" + kinds + " max_tracks=" + std::to_string(g_live.max_tracks) +
                  " rate=" + std::to_string(g_live.track_config.rate_per_s) +
                  " keepalive_ms=" + std::to_string(g_live.track_config.keepalive_ms) +
+                 (g_live.track_config.caps == rs::tracks::CapsMode::Hmac ? " caps=hmac" : " caps=shared") +
                  (g_live.track_config.sabotage != rs::tracks::Sabotage::None
                       ? std::string(" sabotage=") + rs::tracks::sabotage_name(g_live.track_config.sabotage)
                       : std::string()));

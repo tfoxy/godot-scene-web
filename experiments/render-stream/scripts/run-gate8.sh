@@ -3283,7 +3283,9 @@ run_g8l_ext() {
 # unbinds: 1013). It writes client.json; the fixture writes events.jsonl; the checker judges both
 # (g8l-trk-*). Four sabotage legs, each caught by one check: the capture's track-no-release
 # (release-on-kill) and the fixture's drop-messages (delivered), keep-held (release-on-idle) and
-# stay-bound (no-receiver), RS_TRACK_INPUT_SABOTAGE. Headless, no receiver, real time (the idle
+# stay-bound (no-receiver), RS_TRACK_INPUT_SABOTAGE. TRK5 adds g8l/trk/caps: the same phases with
+# GRC_LIVE_TRACK_CAPS=hmac, the client minting a capability from live-track-cap-key (g8l-trk-caps:
+# the receiver's info carries its subject). Headless, no receiver, real time (the idle
 # phase is wall-clock; no fast frames). Native only, as the ext legs.
 G8L_TRK_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/track-input"
 G8L_TRK_KEEPALIVE_MS=250
@@ -3311,9 +3313,15 @@ run_g8l_trk_leg() {
 	if grep -q '"status": "listening"' "$dir/evidence/live.json" 2>/dev/null; then
 		port="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$dir/evidence/live.json")"
 	fi
-	if [ -n "$port" ] && [ -s "$dir/evidence/live-track-input-token" ]; then
+	local cred=()
+	if [ -s "$dir/evidence/live-track-cap-key" ]; then
+		cred=(--cap-key-file "$dir/evidence/live-track-cap-key" --cap-subject g8l-trk-viewer) # TRK5
+	elif [ -s "$dir/evidence/live-track-input-token" ]; then
+		cred=(--credential-file "$dir/evidence/live-track-input-token")
+	fi
+	if [ -n "$port" ] && [ "${#cred[@]}" -gt 0 ]; then
 		(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/lib/track-input-client.ts" \
-			--port "$port" --credential-file "$dir/evidence/live-track-input-token" --events "$dir/events.jsonl" \
+			--port "$port" "${cred[@]}" --events "$dir/events.jsonl" \
 			--control "$dir/control" --out "$dir/client.json" --keepalive-ms "$G8L_TRK_KEEPALIVE_MS") \
 			>"$dir/client.log" 2>&1 || echo "run-gate8: ${dir#"$OUT"/} track client failed, see client.log" >&2
 	else
@@ -3335,6 +3343,8 @@ run_g8l_trk() {
 	fi
 	echo "run-gate8: g8l trk (a RenderStreamTrack receiver and the gsw-input injector, four client phases)"
 	run_g8l_trk_leg "$leg/host"
+	echo "run-gate8: g8l trk caps (TRK5: GRC_LIVE_TRACK_CAPS=hmac, a minted per-viewer capability)"
+	run_g8l_trk_leg "$leg/caps" GRC_LIVE_TRACK_CAPS=hmac
 	for s in "${G8L_TRK_SABOTAGES[@]}"; do
 		echo "run-gate8: g8l trk sabotage-$s"
 		if [ "$s" = no-release ]; then

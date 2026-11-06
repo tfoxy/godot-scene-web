@@ -98,6 +98,7 @@ add_library(render_stream_capture SHARED
   src/rs_histogram.cpp
   src/rs_live.cpp
   src/rs_tracks.cpp
+  src/rs_track_caps.cpp
   src/rs_tracks_gd.cpp
   src/rs_item_meta.cpp
   src/rs_item_meta_host.cpp
@@ -222,9 +223,12 @@ add_test(NAME rs_carrier_set COMMAND rs_carrier_set_test)
 # TRK1 (tracks-design.md Q1-Q5): TrackHub over a recording fake transport -- the hello grammar,
 # every check in its order, every close reason, pairing, keepalive and idle, rate, UTF-8,
 # close_all -- plus the four test-only sabotages, each of which must fail its check.
-add_executable(rs_track_test test/rs_track_test.cpp src/rs_tracks.cpp src/rs_ws.cpp src/rs_sha1.cpp
-  src/report.cpp)
+add_executable(rs_track_test test/rs_track_test.cpp src/rs_tracks.cpp src/rs_track_caps.cpp src/rs_ws.cpp
+  src/rs_sha1.cpp src/rs_sha256.cpp src/report.cpp)
 target_include_directories(rs_track_test PRIVATE src)
+# TRK5: the capability golden vectors, shared with scripts/test/self-test-track-caps.ts.
+target_compile_definitions(rs_track_test PRIVATE
+  GRC_TRACK_CAP_VECTORS="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/track-cap-vectors.json")
 target_link_libraries(rs_track_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_track COMMAND rs_track_test)
 
@@ -358,6 +362,8 @@ add_executable(rs_live_host
   src/rs_net_module.cpp
   test/rs_mem_carrier.cpp
   src/rs_tracks.cpp
+  src/rs_track_caps.cpp
+  src/rs_sha256.cpp
 )
 target_include_directories(rs_live_host PRIVATE src test)
 target_link_libraries(rs_live_host PRIVATE grc_warnings grc_codecs Threads::Threads ${CMAKE_DL_LIBS})

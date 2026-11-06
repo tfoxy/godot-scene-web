@@ -68,7 +68,11 @@
 // a down payload) and records opened/message/closed as JSON lines to --track-out=FILE -- the only
 // place a payload is ever written, so the self-test can compare them (test-only). GRC_SABOTAGE
 // also takes the four track sabotages (track-view-token-accepted, track-rate-off,
-// track-grant-ignored, track-no-release). At stop the tracks close 1001 `stream-ended` before
+// track-grant-ignored, track-no-release). TRK5: --track-caps=hmac serves per-viewer capabilities
+// (rs_track_caps.h) instead: the key goes to <--evidence-dir>/live-track-cap-key, stdout prints
+// "RS_LIVE_HOST_TRACK_CAP_KEY_FILE <path>" instead of the token files, the receiver's opened line
+// carries the `subject`, and GRC_SABOTAGE also takes track-cap-mac-ignored and
+// track-cap-exp-ignored (both need --track-caps=hmac). At stop the tracks close 1001 `stream-ended` before
 // the view linger, and <--evidence-dir>/live-tracks.json is written (also after every change).
 
 #include <chrono>
@@ -93,6 +97,7 @@
 #include "rs_expose.h"
 #include "rs_net_module.h"
 #include "rs_live.h"
+#include "rs_track_caps.h"
 #include "rs_tracks.h"
 #include "rs_publish.h"
 #include "rs_ws.h"
@@ -202,7 +207,8 @@ class RecordingReceiver final : public grc::rs::tracks::TrackReceiver {
           json_string(info.kind) + ",\"format\":" + json_string(info.format) + ",\"down_format\":" +
           (info.down_format.empty() ? std::string("null") : json_string(info.down_format)) +
           ",\"client\":" + json_string(info.client) + ",\"carrier\":" + json_string(info.carrier) +
-          ",\"origin\":" + json_string(info.origin) + ",\"view\":" +
+          ",\"origin\":" + json_string(info.origin) + ",\"subject\":" + json_string(info.subject) +
+          ",\"view\":" +
           (info.view ? "{\"stream_id\":" + json_string(info.view->stream_id) +
                            ",\"connection\":" + std::to_string(info.view->connection) + "}"
                      : std::string("null")) +
@@ -261,6 +267,7 @@ int main(int argc, char **argv) {
   std::string track_formats = "gsw-input/1";
   std::string track_down_formats;
   bool track_echo = false;
+  std::string track_caps;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     const auto value_of = [&](const char *flag) -> const char * {
@@ -314,6 +321,8 @@ int main(int argc, char **argv) {
       track_down_formats = v;
     } else if (arg == "--track-echo") {
       track_echo = true;
+    } else if (const char *v = value_of("--track-caps")) {
+      track_caps = v;
     } else if (arg == "--register-checks") {
       register_checks = true;
     }
@@ -445,7 +454,27 @@ int main(int argc, char **argv) {
     track_config.sabotage = track_sabotage;
     track_config.view_token = token;
     grc::make_directories(evidence_dir);
+    if (!track_caps.empty() && track_caps != "hmac") {
+      std::fprintf(stderr, "rs_live_host: track-caps-invalid\n");
+      return 2;
+    }
+    if (grc::rs::tracks::sabotage_needs_caps(track_sabotage) && track_caps != "hmac") {
+      std::fprintf(stderr, "rs_live_host: sabotage %s needs --track-caps=hmac\n", sabotage.c_str());
+      return 2;
+    }
+    if (track_caps == "hmac") {
+      track_config.caps = grc::rs::tracks::CapsMode::Hmac;
+      std::string key;
+      while (key.empty() || grc::rs::tracks::caps::key_to_hex(key) == token) key = grc::rs::tracks::caps::generate_key();
+      const std::string path = evidence_dir + "/live-track-cap-key";
+      if (!grc::rs::tracks::write_secret_file(path, grc::rs::tracks::caps::key_to_hex(key))) {
+        std::fprintf(stderr, "rs_live_host: track-token-write-failed: %s\n", path.c_str());
+        return 2;
+      }
+      track_config.cap_key = key;
+    }
     for (const std::string &kind : track_config.kinds) {
+      if (track_config.caps == grc::rs::tracks::CapsMode::Hmac) break;
       std::string credential;
       while (credential.empty() || credential == token) credential = grc::rs::tracks::generate_credential();
       const std::string path = evidence_dir + "/live-track-" + kind + "-token";
@@ -711,8 +740,12 @@ int main(int argc, char **argv) {
     print("RS_LIVE_HOST_CERT_SHA256 " + info.cert_sha256);
   }
   if (tls != nullptr) print("RS_LIVE_HOST_TLS_SHA256 " + tls->cert_sha256());
-  for (const std::string &kind : track_config.kinds) {
-    print("RS_LIVE_HOST_TRACK_TOKEN_FILE " + evidence_dir + "/live-track-" + kind + "-token");
+  if (track_config.caps == grc::rs::tracks::CapsMode::Hmac) {
+    print("RS_LIVE_HOST_TRACK_CAP_KEY_FILE " + evidence_dir + "/live-track-cap-key");
+  } else {
+    for (const std::string &kind : track_config.kinds) {
+      print("RS_LIVE_HOST_TRACK_TOKEN_FILE " + evidence_dir + "/live-track-" + kind + "-token");
+    }
   }
 
   std::uint64_t frame = 0;

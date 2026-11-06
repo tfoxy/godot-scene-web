@@ -7,12 +7,15 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <ctime>
 #include <cerrno>
 #include <cstring>
 #include <set>
 #include <utility>
 
 #include "report.h"
+#include "rs_json_lite.h"
+#include "rs_track_caps.h"
 
 namespace grc {
 namespace rs {
@@ -23,244 +26,9 @@ namespace {
 constexpr std::uint64_t kNsPerMs = 1000ull * 1000ull;
 constexpr std::uint64_t kNsPerS = 1000ull * kNsPerMs;
 
-// ----------------------------------------------------------------------------- a strict JSON reader
-//
-// Just enough for track-hello: objects, arrays, strings, numbers, true/false/null, with a depth
-// cap. Strings are decoded (escapes, \u surrogate pairs) into UTF-8. Numbers keep their source
-// text, so a caller can demand an exact integer spelling.
-
-struct JValue {
-  enum Kind { Null, Bool, Number, String, Array, Object } kind = Null;
-  bool b = false;
-  std::string text;  // String: decoded; Number: as written
-  std::vector<JValue> items;
-  std::vector<std::pair<std::string, JValue>> fields;  // Object, in source order
-  const JValue *get(const char *key) const {
-    const JValue *found = nullptr;
-    for (const auto &f : fields) {
-      if (f.first == key) found = &f.second;  // the last duplicate wins, as JSON.parse
-    }
-    return found;
-  }
-};
-
-class Reader {
- public:
-  explicit Reader(std::string_view text) : s_(text) {}
-  bool parse(JValue *out) {
-    ws();
-    if (!value(out, 0)) return false;
-    ws();
-    return i_ == s_.size();
-  }
-
- private:
-  void ws() {
-    while (i_ < s_.size() && (s_[i_] == ' ' || s_[i_] == '\t' || s_[i_] == '\n' || s_[i_] == '\r')) ++i_;
-  }
-  bool lit(const char *word) {
-    const std::size_t n = std::strlen(word);
-    if (s_.compare(i_, n, word) != 0) return false;
-    i_ += n;
-    return true;
-  }
-  bool value(JValue *out, int depth) {
-    if (depth > 8 || i_ >= s_.size()) return false;
-    const char c = s_[i_];
-    if (c == '{') return object(out, depth);
-    if (c == '[') return array(out, depth);
-    if (c == '"') {
-      out->kind = JValue::String;
-      return string(&out->text);
-    }
-    if (c == 't') {
-      out->kind = JValue::Bool;
-      out->b = true;
-      return lit("true");
-    }
-    if (c == 'f') {
-      out->kind = JValue::Bool;
-      return lit("false");
-    }
-    if (c == 'n') {
-      out->kind = JValue::Null;
-      return lit("null");
-    }
-    return number(out);
-  }
-  bool object(JValue *out, int depth) {
-    out->kind = JValue::Object;
-    ++i_;
-    ws();
-    if (i_ < s_.size() && s_[i_] == '}') {
-      ++i_;
-      return true;
-    }
-    while (true) {
-      ws();
-      if (i_ >= s_.size() || s_[i_] != '"') return false;
-      std::string key;
-      if (!string(&key)) return false;
-      ws();
-      if (i_ >= s_.size() || s_[i_] != ':') return false;
-      ++i_;
-      ws();
-      JValue v;
-      if (!value(&v, depth + 1)) return false;
-      out->fields.emplace_back(std::move(key), std::move(v));
-      ws();
-      if (i_ >= s_.size()) return false;
-      if (s_[i_] == ',') {
-        ++i_;
-        continue;
-      }
-      if (s_[i_] == '}') {
-        ++i_;
-        return true;
-      }
-      return false;
-    }
-  }
-  bool array(JValue *out, int depth) {
-    out->kind = JValue::Array;
-    ++i_;
-    ws();
-    if (i_ < s_.size() && s_[i_] == ']') {
-      ++i_;
-      return true;
-    }
-    while (true) {
-      ws();
-      JValue v;
-      if (!value(&v, depth + 1)) return false;
-      out->items.push_back(std::move(v));
-      ws();
-      if (i_ >= s_.size()) return false;
-      if (s_[i_] == ',') {
-        ++i_;
-        continue;
-      }
-      if (s_[i_] == ']') {
-        ++i_;
-        return true;
-      }
-      return false;
-    }
-  }
-  static void put_utf8(std::string *out, std::uint32_t cp) {
-    if (cp < 0x80) {
-      out->push_back(static_cast<char>(cp));
-    } else if (cp < 0x800) {
-      out->push_back(static_cast<char>(0xC0 | (cp >> 6)));
-      out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-    } else if (cp < 0x10000) {
-      out->push_back(static_cast<char>(0xE0 | (cp >> 12)));
-      out->push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-      out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-    } else {
-      out->push_back(static_cast<char>(0xF0 | (cp >> 18)));
-      out->push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-      out->push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-      out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-    }
-  }
-  bool hex4(std::uint32_t *out) {
-    if (i_ + 4 > s_.size()) return false;
-    std::uint32_t v = 0;
-    for (int k = 0; k < 4; ++k) {
-      const char c = s_[i_++];
-      v <<= 4;
-      if (c >= '0' && c <= '9') {
-        v |= static_cast<std::uint32_t>(c - '0');
-      } else if (c >= 'a' && c <= 'f') {
-        v |= static_cast<std::uint32_t>(c - 'a' + 10);
-      } else if (c >= 'A' && c <= 'F') {
-        v |= static_cast<std::uint32_t>(c - 'A' + 10);
-      } else {
-        return false;
-      }
-    }
-    *out = v;
-    return true;
-  }
-  bool string(std::string *out) {
-    ++i_;  // the opening quote
-    while (i_ < s_.size()) {
-      const unsigned char c = static_cast<unsigned char>(s_[i_]);
-      if (c == '"') {
-        ++i_;
-        return true;
-      }
-      if (c < 0x20) return false;
-      if (c != '\\') {
-        out->push_back(static_cast<char>(c));
-        ++i_;
-        continue;
-      }
-      if (++i_ >= s_.size()) return false;
-      const char e = s_[i_++];
-      switch (e) {
-        case '"': out->push_back('"'); break;
-        case '\\': out->push_back('\\'); break;
-        case '/': out->push_back('/'); break;
-        case 'b': out->push_back('\b'); break;
-        case 'f': out->push_back('\f'); break;
-        case 'n': out->push_back('\n'); break;
-        case 'r': out->push_back('\r'); break;
-        case 't': out->push_back('\t'); break;
-        case 'u': {
-          std::uint32_t cp = 0;
-          if (!hex4(&cp)) return false;
-          if (cp >= 0xD800 && cp <= 0xDBFF) {
-            std::uint32_t lo = 0;
-            if (i_ + 2 > s_.size() || s_[i_] != '\\' || s_[i_ + 1] != 'u') return false;
-            i_ += 2;
-            if (!hex4(&lo) || lo < 0xDC00 || lo > 0xDFFF) return false;
-            cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-          } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
-            return false;  // a lone low surrogate
-          }
-          put_utf8(out, cp);
-          break;
-        }
-        default:
-          return false;
-      }
-    }
-    return false;
-  }
-  bool number(JValue *out) {
-    out->kind = JValue::Number;
-    const std::size_t start = i_;
-    if (i_ < s_.size() && s_[i_] == '-') ++i_;
-    if (i_ >= s_.size()) return false;
-    if (s_[i_] == '0') {
-      ++i_;
-    } else if (s_[i_] >= '1' && s_[i_] <= '9') {
-      while (i_ < s_.size() && s_[i_] >= '0' && s_[i_] <= '9') ++i_;
-    } else {
-      return false;
-    }
-    if (i_ < s_.size() && s_[i_] == '.') {
-      ++i_;
-      const std::size_t d = i_;
-      while (i_ < s_.size() && s_[i_] >= '0' && s_[i_] <= '9') ++i_;
-      if (i_ == d) return false;
-    }
-    if (i_ < s_.size() && (s_[i_] == 'e' || s_[i_] == 'E')) {
-      ++i_;
-      if (i_ < s_.size() && (s_[i_] == '+' || s_[i_] == '-')) ++i_;
-      const std::size_t d = i_;
-      while (i_ < s_.size() && s_[i_] >= '0' && s_[i_] <= '9') ++i_;
-      if (i_ == d) return false;
-    }
-    out->text.assign(s_.substr(start, i_ - start));
-    return true;
-  }
-
-  std::string_view s_;
-  std::size_t i_ = 0;
-};
+// The strict JSON reader (rs_json_lite.h).
+using json_lite::JValue;
+using json_lite::Reader;
 
 bool lower_alnum(char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'); }
 bool lower_hex(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }
@@ -477,6 +245,10 @@ bool parse_sabotage(std::string_view text, Sabotage *out) {
     *out = Sabotage::GrantIgnored;
   } else if (text == "track-no-release") {
     *out = Sabotage::NoRelease;
+  } else if (text == "track-cap-mac-ignored") {
+    *out = Sabotage::CapMacIgnored;
+  } else if (text == "track-cap-exp-ignored") {
+    *out = Sabotage::CapExpIgnored;
   } else {
     *out = Sabotage::None;
     return false;
@@ -490,9 +262,15 @@ const char *sabotage_name(Sabotage sabotage) {
     case Sabotage::RateOff: return "track-rate-off";
     case Sabotage::GrantIgnored: return "track-grant-ignored";
     case Sabotage::NoRelease: return "track-no-release";
+    case Sabotage::CapMacIgnored: return "track-cap-mac-ignored";
+    case Sabotage::CapExpIgnored: return "track-cap-exp-ignored";
     case Sabotage::None: break;
   }
   return "";
+}
+
+bool sabotage_needs_caps(Sabotage sabotage) {
+  return sabotage == Sabotage::CapMacIgnored || sabotage == Sabotage::CapExpIgnored;
 }
 
 bool parse_kinds(const char *text, std::vector<std::string> *kinds, std::string *error) {
@@ -667,6 +445,13 @@ TrackHub::TrackHub(TrackConfig config, rs2::LiveTransport &transport, Log log)
 
 TrackHub::~TrackHub() {
   for (auto &entry : conns_) close_tap(*entry.second);
+}
+
+std::int64_t TrackHub::wall_now_s() const {
+  if (config_.wall_clock_s) return config_.wall_clock_s();
+  struct timespec ts {};
+  ::clock_gettime(CLOCK_REALTIME, &ts);
+  return static_cast<std::int64_t>(ts.tv_sec);
 }
 
 TrackHub::Conn *TrackHub::find(std::uint32_t conn) {
@@ -870,7 +655,23 @@ void TrackHub::on_hello(Conn &c, const std::string &text, std::uint64_t now_ns) 
     refuse(c, 1008, "track-unauthorized", "view-token");
     return;
   }
-  if (!view_token) {
+  if (!view_token && config_.caps == CapsMode::Hmac) {
+    // TRK5: a per-viewer capability (rs_track_caps.h), checked against the wall clock.
+    if (hello.credential.empty()) {
+      refuse(c, 1008, "track-unauthorized", "missing");
+      return;
+    }
+    caps::Ignore ignore;
+    ignore.mac = config_.sabotage == Sabotage::CapMacIgnored;
+    ignore.exp = config_.sabotage == Sabotage::CapExpIgnored;
+    const caps::Verdict verdict =
+        caps::verify(config_.cap_key, hello.credential, hello.kind, wall_now_s(), ignore);
+    if (!verdict.ok) {
+      refuse(c, 1008, "track-unauthorized", verdict.detail);
+      return;
+    }
+    c.info.subject = verdict.subject;
+  } else if (!view_token) {
     const auto cred = config_.credentials.find(hello.kind);
     const bool ok = cred != config_.credentials.end() && !cred->second.empty() &&
                     live::constant_time_equals(hello.credential, cred->second);
@@ -913,12 +714,14 @@ void TrackHub::on_hello(Conn &c, const std::string &text, std::uint64_t now_ns) 
   c.tap_second_ns = c.last_rx_ns;
   tap(c, "{\"event\":\"ready\",\"source\":" + std::to_string(c.info.source) + ",\"format\":" +
              quoted(format) + ",\"down_format\":" +
-             (down_format.empty() ? std::string("null") : quoted(down_format)) + "}");
+             (down_format.empty() ? std::string("null") : quoted(down_format)) +
+             (config_.caps == CapsMode::Hmac ? ",\"subject\":" + quoted(c.info.subject) : std::string()) + "}");
   KindStats *s = stats(c.info.kind);
   if (s != nullptr) ++s->opened;
   changed_ = true;
   log_("live: track open source=" + std::to_string(c.info.source) + " kind=" + c.info.kind +
-       " format=" + format + " carrier=" + c.carrier + " origin=" + (c.origin.empty() ? "-" : c.origin));
+       " format=" + format + " carrier=" + c.carrier + " origin=" + (c.origin.empty() ? "-" : c.origin) +
+       (c.info.subject.empty() ? std::string() : " subject=" + c.info.subject));
   // Q4: opened() only after track-ready was queued.
   const TrackInfo info = c.info;
   receiver->opened(info);
@@ -960,9 +763,11 @@ void TrackHub::on_payload(Conn &c, const live::Event &e, std::uint64_t now_ns) {
 }
 
 void TrackHub::refuse(Conn &c, std::uint16_t code, const std::string &reason, const std::string &detail) {
-  const std::string key = reason == "track-unauthorized" && detail == "view-token"
-                              ? std::string("track-unauthorized:view-token")
-                              : reason;
+  // The view token always, and with capabilities every detail, is counted apart.
+  const std::string key =
+      reason == "track-unauthorized" && (detail == "view-token" || config_.caps == CapsMode::Hmac)
+          ? reason + ":" + detail
+          : reason;
   count_refused(c.info.kind, key);
   log_("live: track refused reason=" + reason + " detail=" + (detail.empty() ? "-" : detail) +
        " carrier=" + c.carrier);
@@ -1131,7 +936,7 @@ std::string TrackHub::json(const Extras &extras) const {
   json.key("burst").unsigned_integer(config_.burst);
   json.object_end();
   json.field_null("inject");  // TRK6
-  json.field("caps", std::string("shared"));  // TRK5 adds "hmac"
+  json.field("caps", std::string(config_.caps == CapsMode::Hmac ? "hmac" : "shared"));
   json.key("carriers").array_begin();
   for (const CarrierTracks &c : extras.carriers) {
     json.object_begin();

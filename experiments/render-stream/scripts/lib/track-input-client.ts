@@ -14,12 +14,19 @@
 // It never judges: every wait has a deadline and records what it saw in --out (client.json),
 // and lib/gate8-live-checks.ts judges client.json with the fixture's log. Then it writes the
 // control file `quit` so the fixture ends its run.
-// Usage: tsx --conditions=development track-input-client.ts --port N --credential-file F
+// TRK5: --cap-key-file F --cap-subject S instead of --credential-file presents a per-viewer
+// capability minted by the reference minter (lib/track-cap.ts, 300 s) for subject S (g8l/trk/caps).
+// Usage: tsx --conditions=development track-input-client.ts --port N
+//          (--credential-file F | --cap-key-file F --cap-subject S)
 //          --events F --control DIR --out F [--keepalive-ms 250]
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { RawTrack, TRACK_SUBPROTOCOL } from "./raw-track-client";
+import { mintTrackCapFor, readCapKeyFile } from "./track-cap";
+
+/** The subject g8l/trk/caps mints for (TRK5). */
+export const TRK_CAP_SUBJECT = "g8l-trk-viewer";
 
 /** The fixture's test Control (track_input.tscn `Target`) and the click point inside it. */
 export const TRK_TARGET = {
@@ -89,10 +96,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const port = Number(argOf(argv, "--port"));
-  const credential = readFileSync(
-    argOf(argv, "--credential-file"),
-    "utf8",
-  ).trim();
+  const credential = argv.includes("--cap-key-file")
+    ? mintTrackCapFor(
+        readCapKeyFile(argOf(argv, "--cap-key-file")),
+        "input",
+        argOf(argv, "--cap-subject"),
+        300,
+      )
+    : readFileSync(argOf(argv, "--credential-file"), "utf8").trim();
   const eventsFile = argOf(argv, "--events");
   const control = argOf(argv, "--control");
   const outFile = argOf(argv, "--out");

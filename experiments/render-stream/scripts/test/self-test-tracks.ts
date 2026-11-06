@@ -23,9 +23,19 @@
 //   pure-path          a host without --tracks answers a track upgrade with the same bytes as an
 //                      unknown subprotocol's, writes no track file, and its live-carriers.json has
 //                      the same members as a tracks-on run's
+//   caps (TRK5)        a host with --track-caps=hmac: the key file (64 hex, 0600, no shared token
+//                      file); a capability minted by scripts/lib/track-cap.ts opens with its
+//                      `subject` and delivers; one 5 s past exp opens (skew); `cap-expired`,
+//                      `cap-bad-mac` (payload changed after signing), `cap-wrong-kind`,
+//                      `cap-shared-form` (a 64-hex credential: malformed) and the view token are
+//                      refused with their details; `cap-no-secret`: no tap, evidence file, stdout
+//                      or stderr line holds the key or a capability's MAC; `cap-evidence`:
+//                      live-tracks.json `caps: "hmac"` and the refusals under
+//                      `track-unauthorized:<detail>`
 // Sabotages (GRC_SABOTAGE on the host): track-view-token-accepted must fail `view-token`,
-// track-rate-off `rate`, track-grant-ignored `kind-refused`, track-no-release `kill-closed`.
-// The default run does the honest pass and all four; `--only honest|<sabotage>` runs one.
+// track-rate-off `rate`, track-grant-ignored `kind-refused`, track-no-release `kill-closed`,
+// track-cap-exp-ignored `cap-expired`, track-cap-mac-ignored `cap-bad-mac`.
+// The default run does the honest pass and all six; `--only honest|<sabotage>` runs one.
 // Usage: mise exec -- pnpm exec tsx --conditions=development \
 //          experiments/render-stream/scripts/test/self-test-tracks.ts [--only X] [--keep]
 import { type ChildProcess, spawn } from "node:child_process";
@@ -42,6 +52,11 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 import { type Closed, RawTrack } from "../lib/raw-track-client";
+import {
+  mintTrackCap,
+  mintTrackCapFor,
+  readCapKeyFile,
+} from "../lib/track-cap";
 
 const RS = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const HOST = join(RS, "capture/build/rs_live_host");
@@ -75,8 +90,10 @@ interface Host {
   proc: ChildProcess;
   port: number;
   tokenFile: string | null;
+  capKeyFile: string | null;
   exited: Promise<number | null>;
   stdout: string[];
+  stderr: () => string;
 }
 
 function cleanEnv(): NodeJS.ProcessEnv {
@@ -122,7 +139,9 @@ async function startHost(
       if (m) got[m[1]] = m[2];
       if (
         got.RS_LIVE_HOST_PORT &&
-        (!tracks || got.RS_LIVE_HOST_TRACK_TOKEN_FILE)
+        (!tracks ||
+          got.RS_LIVE_HOST_TRACK_TOKEN_FILE ||
+          got.RS_LIVE_HOST_TRACK_CAP_KEY_FILE)
       ) {
         clearTimeout(t);
         res();
@@ -136,8 +155,10 @@ async function startHost(
     proc,
     port: Number(got.RS_LIVE_HOST_PORT),
     tokenFile: got.RS_LIVE_HOST_TRACK_TOKEN_FILE ?? null,
+    capKeyFile: got.RS_LIVE_HOST_TRACK_CAP_KEY_FILE ?? null,
     exited,
     stdout,
+    stderr: () => stderr,
   };
 }
 
@@ -157,6 +178,7 @@ interface Rec {
   reason?: string;
   format?: string;
   down_format?: string | null;
+  subject?: string;
 }
 
 function records(file: string): Rec[] {
@@ -512,6 +534,173 @@ async function mainPass(
   return r;
 }
 
+/** Every file under `dir`, recursively, as text. */
+function allFiles(dir: string): string {
+  let text = "";
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    text += e.isDirectory() ? allFiles(p) : `${readFileSync(p, "utf8")}\n`;
+  }
+  return text;
+}
+
+async function capsPass(
+  label: string,
+  sabotage: string | null,
+): Promise<Results> {
+  const r: Results = new Map();
+  const note = (name: string, ok: boolean, why = "") => {
+    r.set(name, (r.get(name) ?? true) && ok);
+    console.log(
+      `  [${label}] ${ok ? "ok  " : "FAIL"} ${name}${why ? ` (${why})` : ""}`,
+    );
+  };
+  const dir = mkdtempSync(join(tmpdir(), "rs-tracks-caps-"));
+  const out = join(dir, "track-out.jsonl");
+  const host = await startHost(
+    dir,
+    ["--tracks=input", "--track-caps=hmac", `--track-out=${out}`],
+    sabotage ? { GRC_SABOTAGE: sabotage } : {},
+  );
+  const keyFile = host.capKeyFile ?? join(dir, "live-track-cap-key");
+  const keyHex = existsSync(keyFile) ? readFileSync(keyFile, "utf8") : "";
+  const mode = existsSync(keyFile)
+    ? (await import("node:fs")).statSync(keyFile).mode & 0o777
+    : 0;
+  note(
+    "cap-key",
+    host.capKeyFile !== null &&
+      host.tokenFile === null &&
+      /^[0-9a-f]{64}$/.test(keyHex) &&
+      keyHex !== VIEW_TOKEN &&
+      mode === 0o600 &&
+      !existsSync(join(dir, "live-track-input-token")),
+    `mode ${mode.toString(8)}`,
+  );
+  const key = readCapKeyFile(keyFile);
+  const now = Math.floor(Date.now() / 1000);
+  const presented: string[] = [];
+  const attempt = async (credential: string) => {
+    presented.push(credential);
+    const t = await openTrack(host.port, hello(credential));
+    return t;
+  };
+  const refusedWith = async (
+    name: string,
+    credential: string,
+    detail: string,
+  ) => {
+    const { track, error } = await attempt(credential);
+    await track.until(() => track.closed !== null || track.ended, 2000);
+    note(
+      name,
+      error?.reason === "track-unauthorized" &&
+        error?.detail === detail &&
+        track.closed?.code === 1008 &&
+        track.closed?.reason === "track-unauthorized",
+      `${JSON.stringify(error)} ${JSON.stringify(track.closed)}`,
+    );
+    track.destroy();
+  };
+  try {
+    {
+      const { track, ready } = await attempt(
+        mintTrackCapFor(key, "input", "viewer-1", 300),
+      );
+      track.send('{"n":1}');
+      await sleep(200);
+      track.close(1000);
+      await track.until(() => track.ended, 3000);
+      await sleep(100);
+      const recs = records(out);
+      const opened = recs.find(
+        (x) => x.event === "opened" && x.source === Number(ready?.source),
+      );
+      const msgs = recs.filter(
+        (x) => x.event === "message" && x.source === Number(ready?.source),
+      );
+      note(
+        "cap-accepted",
+        ready !== null &&
+          opened?.subject === "viewer-1" &&
+          msgs.length === 1 &&
+          msgs[0].text === '{"n":1}',
+        `ready=${ready !== null} opened=${JSON.stringify(opened)}`,
+      );
+    }
+    {
+      const { track, ready } = await attempt(
+        mintTrackCap(key, { kind: "input", sub: "viewer-skew", exp: now - 5 }),
+      );
+      note("cap-skew", ready !== null);
+      track.destroy();
+    }
+    await refusedWith(
+      "cap-expired",
+      mintTrackCap(key, { kind: "input", sub: "viewer-old", exp: now - 120 }),
+      "expired",
+    );
+    {
+      const good = mintTrackCapFor(key, "input", "viewer-1", 300);
+      const forged = Buffer.from(
+        JSON.stringify({ v: 1, kind: "input", sub: "admin", exp: now + 300 }),
+      ).toString("base64url");
+      await refusedWith(
+        "cap-bad-mac",
+        `cap1.${forged}.${good.split(".")[2]}`,
+        "bad-mac",
+      );
+    }
+    await refusedWith(
+      "cap-wrong-kind",
+      mintTrackCapFor(key, "clipboard", "viewer-1", 300),
+      "wrong-kind",
+    );
+    await refusedWith("cap-shared-form", "9f".repeat(32), "malformed");
+    await refusedWith("cap-view-token", VIEW_TOKEN, "view-token");
+  } finally {
+    const code = await stopHost(host);
+    note("host-exit", code === 0, String(code));
+  }
+  {
+    // The key and every presented MAC: in no tap, evidence file (bar the key file) or log line.
+    const files = allFiles(dir).replace(keyHex, "<the key file>");
+    const logs = `${host.stdout.join("\n")}\n${host.stderr()}`;
+    const secrets = [
+      keyHex,
+      ...presented
+        .filter((c) => c.startsWith("cap1."))
+        .map((c) => c.split(".")[2]),
+    ];
+    const leaks = secrets.filter(
+      (x) => x.length > 0 && (files.includes(x) || logs.includes(x)),
+    );
+    note(
+      "cap-no-secret",
+      leaks.length === 0 && !files.includes("cap1.") && !logs.includes("cap1."),
+      `${leaks.length} leaked`,
+    );
+    const lt = JSON.parse(readFileSync(join(dir, "live-tracks.json"), "utf8"));
+    const refused = lt.tracks?.input?.refused ?? {};
+    note(
+      "cap-evidence",
+      lt.caps === "hmac" &&
+        refused["track-unauthorized:view-token"] === 1 &&
+        refused["track-unauthorized:malformed"] === 1 &&
+        refused["track-unauthorized:wrong-kind"] === 1 &&
+        (sabotage === "track-cap-exp-ignored" ||
+          refused["track-unauthorized:expired"] === 1) &&
+        (sabotage === "track-cap-mac-ignored" ||
+          refused["track-unauthorized:bad-mac"] === 1) &&
+        refused["track-unauthorized"] === undefined,
+      JSON.stringify(refused),
+    );
+  }
+  if (!keep) rmSync(dir, { recursive: true, force: true });
+  else console.log(`  [${label}] kept ${dir}`);
+  return r;
+}
+
 async function noReceiverPass(): Promise<Results> {
   const r: Results = new Map();
   const dir = mkdtempSync(join(tmpdir(), "rs-tracks-nr-"));
@@ -593,6 +782,11 @@ const SABOTAGES: Record<string, string> = {
   "track-grant-ignored": "kind-refused",
   "track-no-release": "kill-closed",
 };
+// TRK5: run against the caps pass.
+const CAP_SABOTAGES: Record<string, string> = {
+  "track-cap-exp-ignored": "cap-expired",
+  "track-cap-mac-ignored": "cap-bad-mac",
+};
 
 async function main(): Promise<number> {
   if (!existsSync(HOST)) {
@@ -607,6 +801,7 @@ async function main(): Promise<number> {
     const all = new Map([
       ...(await mainPass("honest", null)),
       ...(await noReceiverPass()),
+      ...(await capsPass("caps", null)),
       ...(await purePathPass()),
     ]);
     for (const [name, ok] of all)
@@ -619,6 +814,17 @@ async function main(): Promise<number> {
     if (only !== null && only !== sabotage) continue;
     console.log(`sabotage ${sabotage} (must fail ${predicate}):`);
     const res = await mainPass(sabotage, sabotage);
+    if (res.get(predicate) !== false) {
+      console.log(`FAIL sabotage ${sabotage} went unnoticed by ${predicate}`);
+      failed++;
+    } else {
+      console.log(`ok   sabotage ${sabotage} caught by ${predicate}`);
+    }
+  }
+  for (const [sabotage, predicate] of Object.entries(CAP_SABOTAGES)) {
+    if (only !== null && only !== sabotage) continue;
+    console.log(`sabotage ${sabotage} (must fail ${predicate}):`);
+    const res = await capsPass(sabotage, sabotage);
     if (res.get(predicate) !== false) {
       console.log(`FAIL sabotage ${sabotage} went unnoticed by ${predicate}`);
       failed++;

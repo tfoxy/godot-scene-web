@@ -9,7 +9,7 @@
 // of iteration N is applied at iteration N+1's flush_buffered_events(). The checks pin that: every
 // Input change the fixture's _process sees is exactly one process frame after the signal that
 // caused it.
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -21,6 +21,7 @@ import {
   skipped,
 } from "./gate8-adopt-checks";
 import {
+  TRK_CAP_SUBJECT,
   TRK_CLICK,
   TRK_CLIENT,
   TRK_KEYS,
@@ -218,7 +219,7 @@ function releasedAfterClose(
   nextFrame(events, up, source, `key ${code} up`, problems);
 }
 
-export function judgeTrk(leg: TrkLeg, which: TrkCheck): string[] {
+export function judgeTrk(leg: TrkLeg, which: TrkCheck, subject = ""): string[] {
   const problems: string[] = [];
   const ev = leg.events;
   if (ev.length === 0) return ["events.jsonl missing or empty"];
@@ -265,7 +266,7 @@ export function judgeTrk(leg: TrkLeg, which: TrkCheck): string[] {
       format: "gsw-input/1",
       kind: "input",
       origin: "",
-      subject: "",
+      subject,
       view: TRK_VIEW,
     };
     const o = ev[opened];
@@ -446,7 +447,44 @@ export async function runTrkChecks(out: string): Promise<G8aCheck[]> {
   for (const which of Object.values(TRK_SABOTAGES)) {
     const problems = honest ? judgeTrk(honest, which) : null;
     checks.push(
-      check(`g8l-trk-${which}`, CRITERIA[which], problems, "held on g8l/trk/host"),
+      check(
+        `g8l-trk-${which}`,
+        CRITERIA[which],
+        problems,
+        "held on g8l/trk/host",
+      ),
+    );
+  }
+  // TRK5: the same four phases with GRC_LIVE_TRACK_CAPS=hmac and a minted capability.
+  const capsDir = join(root, "caps");
+  if (existsSync(capsDir)) {
+    let problems: string[] | null = null;
+    if (!absent(capsDir)) {
+      const leg = await loadTrkLeg(capsDir);
+      problems = judgeTrk(leg, "delivered", TRK_CAP_SUBJECT);
+      const ev = join(capsDir, "evidence");
+      const keyFile = join(ev, "live-track-cap-key");
+      const key = existsSync(keyFile) ? readFileSync(keyFile, "utf8") : "";
+      const mode = existsSync(keyFile) ? statSync(keyFile).mode & 0o777 : 0;
+      if (!/^[0-9a-f]{64}$/.test(key) || mode !== 0o600)
+        problems.push(
+          `live-track-cap-key: ${key.length} chars, mode ${mode.toString(8)}`,
+        );
+      if (existsSync(join(ev, "live-track-input-token")))
+        problems.push(
+          "a shared live-track-input-token beside the capability key",
+        );
+      const caps = (leg.tracks as Record<string, unknown> | null)?.caps;
+      if (caps !== "hmac")
+        problems.push(`live-tracks.json caps ${JSON.stringify(caps)}`);
+    }
+    checks.push(
+      check(
+        "g8l-trk-caps",
+        "TRK5: with GRC_LIVE_TRACK_CAPS=hmac the capture writes live-track-cap-key (64 hex, mode 0600) and no shared token, a capability minted by scripts/lib/track-cap.ts opens the track, and the GDScript receiver's opened info (signal and info()) carries its `sub` as `subject`, with every g8l-trk-delivered criterion holding",
+        problems,
+        `held on g8l/trk/caps, subject ${TRK_CAP_SUBJECT}`,
+      ),
     );
   }
   for (const [sabotage, which] of Object.entries(TRK_SABOTAGES)) {

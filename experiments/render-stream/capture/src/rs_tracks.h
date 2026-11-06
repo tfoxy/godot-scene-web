@@ -56,7 +56,11 @@ enum class Sabotage {
   RateOff,            // track-rate-off: the token bucket never closes
   GrantIgnored,       // track-grant-ignored: hello check 2 (kind granted) is skipped
   NoRelease,          // track-no-release: a carrier Closed on an open track reports no closed()
+  CapMacIgnored,      // track-cap-mac-ignored (TRK5): a capability's MAC is not checked
+  CapExpIgnored,      // track-cap-exp-ignored (TRK5): an expired capability still opens
 };
+// True for the sabotages that need GRC_LIVE_TRACK_CAPS=hmac.
+bool sabotage_needs_caps(Sabotage sabotage);
 // "track-view-token-accepted" ... -> the sabotage; anything else -> None with false.
 bool parse_sabotage(std::string_view text, Sabotage *out);
 const char *sabotage_name(Sabotage sabotage);  // "" for None
@@ -88,9 +92,18 @@ std::string generate_credential();
 // before any byte is written). False on any failure.
 bool write_secret_file(const std::string &path, const std::string &text);
 
+// GRC_LIVE_TRACK_CAPS (TRK5): the shared per-kind credential (unset) or per-viewer HMAC
+// capabilities (`hmac`, rs_track_caps.h).
+enum class CapsMode { Shared, Hmac };
+
 struct TrackConfig {
   std::vector<std::string> kinds;                  // GRC_LIVE_TRACKS, validated
-  std::map<std::string, std::string> credentials;  // kind -> 64 lowercase hex
+  std::map<std::string, std::string> credentials;  // kind -> 64 lowercase hex (Shared only)
+  CapsMode caps = CapsMode::Shared;
+  std::string cap_key;  // Hmac: the 32 key bytes. Never logged, tapped or written outside its file
+  // Hmac: the wall clock in whole seconds since the Unix epoch for `exp`; null reads
+  // CLOCK_REALTIME (tests pin it).
+  std::function<std::int64_t()> wall_clock_s;
   std::string view_token;                          // refused by name; "" when view auth is none
   std::uint32_t keepalive_ms = 1000;
   std::uint32_t rate_per_s = 1000;
@@ -114,7 +127,7 @@ struct TrackInfo {
   std::string client;
   std::string carrier;
   std::string origin;
-  std::string subject;  // TRK5 (capabilities); "" with the shared credential
+  std::string subject;  // TRK5: the capability's `sub`; "" with the shared credential
   std::optional<TrackView> view;  // advisory, never checked (F4)
 };
 
@@ -181,7 +194,9 @@ class TrackHub {
     std::uint64_t bytes_in = 0;
     std::uint64_t messages_out = 0;
     std::uint64_t bytes_out = 0;
-    std::map<std::string, std::uint64_t> refused;  // reason (view token: `track-unauthorized:view-token`)
+    // reason (view token: `track-unauthorized:view-token`; with capabilities every
+    // track-unauthorized is `track-unauthorized:<detail>`, e.g. `:expired`, `:bad-mac`)
+    std::map<std::string, std::uint64_t> refused;
     std::map<std::string, std::uint64_t> closes;   // reason (a peer close: `peer-<code>`)
     std::map<std::string, std::uint64_t> faults;   // `send-failed`
   };
@@ -205,6 +220,7 @@ class TrackHub {
  private:
   struct Conn;
   Conn *find(std::uint32_t conn);
+  std::int64_t wall_now_s() const;  // TRK5: capability `exp` checks
   Conn *find_source(std::uint32_t source);
   void on_hello(Conn &c, const std::string &text, std::uint64_t now_ns);
   void on_payload(Conn &c, const live::Event &e, std::uint64_t now_ns);

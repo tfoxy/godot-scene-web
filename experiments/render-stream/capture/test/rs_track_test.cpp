@@ -10,21 +10,33 @@
 // receiver close/send; bind/unbind; close_all; re-entrant receivers; one closed() per opened() in
 // every path; json(); parse_kinds, utf8_valid and format_ok.
 //
-// The four TRK1 sabotages are test-only: each must make its predicate fail; main() runs every
+// TRK5: per-viewer capabilities (rs_track_caps.h): HMAC-SHA256 (RFC 4231), strict base64url,
+// every golden vector of protocol/track-cap-vectors.json (shared with the TS reference minter,
+// scripts/lib/track-cap.ts) through caps::verify and through the hub, the C++ minter reproducing
+// the minted vectors, the hub's hmac mode (view token still refused by name, `missing`, counts
+// under `track-unauthorized:<detail>`, `subject` in opened(), no key or capability in logs or
+// json, an open track outliving its `exp`).
+//
+// The TRK1 and TRK5 sabotages are test-only: each must make its predicate fail; main() runs every
 // predicate honest (must hold) and under its sabotage (must not), and fails when a sabotage goes
 // unnoticed.
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
 #include <string>
 #include <tuple>
+#include <sstream>
 #include <vector>
 
+#include "rs_json_lite.h"
+#include "rs_track_caps.h"
 #include "rs_tracks.h"
 
 namespace tr = grc::rs::tracks;
+namespace caps = grc::rs::tracks::caps;
 using grc::live::Event;
 using tr::Sabotage;
 using tr::TrackConfig;
@@ -275,6 +287,45 @@ bool release_reported(Sabotage s) {
          h.r.closes[src][0].second == "peer-1006" && h.r.paired() && h.hub->open_tracks() == 0;
 }
 
+// TRK5 fixtures: a fixed key and wall clock.
+const std::string kCapKey = std::string("\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f"
+                                        "\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f",
+                                        32);
+constexpr std::int64_t kNow = 1767225600;
+
+TrackConfig caps_config(Sabotage sabotage = Sabotage::None, std::int64_t *clock = nullptr) {
+  TrackConfig c = base_config(sabotage);
+  c.credentials.clear();
+  c.caps = tr::CapsMode::Hmac;
+  c.cap_key = kCapKey;
+  if (clock != nullptr) {
+    c.wall_clock_s = [clock] { return *clock; };
+  } else {
+    c.wall_clock_s = [] { return kNow; };
+  }
+  return c;
+}
+
+// TRK5: a capability expired past the skew is refused `expired`; one inside it opens.
+bool cap_exp_enforced(Sabotage s) {
+  H h(caps_config(s));
+  h.track(1, hello("input", caps::mint(kCapKey, "input", "v", kNow - caps::kSkewS - 1, "e")));
+  const bool expired = refused(h, 1, 1008, "track-unauthorized", "expired");
+  const std::uint32_t src = h.track(2, hello("input", caps::mint(kCapKey, "input", "v", kNow - caps::kSkewS, "e")));
+  return expired && src != 0;
+}
+
+// TRK5: a payload changed after signing is refused `bad-mac`.
+bool cap_mac_enforced(Sabotage s) {
+  H h(caps_config(s));
+  const std::string good = caps::mint(kCapKey, "input", "viewer-1", kNow + 300, "m");
+  const std::string forged_payload =
+      caps::base64url_encode("{\"v\":1,\"kind\":\"input\",\"sub\":\"viewer-9\",\"exp\":" + std::to_string(kNow + 300) + "}");
+  const std::string forged = std::string(caps::kPrefix) + forged_payload + good.substr(good.rfind('.'));
+  h.track(1, hello("input", forged));
+  return refused(h, 1, 1008, "track-unauthorized", "bad-mac");
+}
+
 void test_sabotages() {
   struct Case {
     Sabotage sabotage;
@@ -286,6 +337,8 @@ void test_sabotages() {
       {Sabotage::RateOff, &rate_closes, "rate closes track-rate"},
       {Sabotage::GrantIgnored, &grant_enforced, "grant enforced"},
       {Sabotage::NoRelease, &release_reported, "peer close reports closed()"},
+      {Sabotage::CapExpIgnored, &cap_exp_enforced, "expired capability refused"},
+      {Sabotage::CapMacIgnored, &cap_mac_enforced, "forged capability refused"},
   };
   for (const Case &c : cases) {
     check(c.pred(Sabotage::None), std::string("honest: ") + c.what);
@@ -299,11 +352,15 @@ void test_sabotages() {
     }
   }
   Sabotage s = Sabotage::None;
-  for (const char *name : {"track-view-token-accepted", "track-rate-off", "track-grant-ignored", "track-no-release"}) {
+  for (const char *name : {"track-view-token-accepted", "track-rate-off", "track-grant-ignored", "track-no-release",
+                           "track-cap-mac-ignored", "track-cap-exp-ignored"}) {
     check(tr::parse_sabotage(name, &s) && std::string(tr::sabotage_name(s)) == name,
           std::string("parse_sabotage round trip ") + name);
   }
   check(!tr::parse_sabotage("track-nope", &s) && s == Sabotage::None, "parse_sabotage unknown -> None");
+  check(tr::sabotage_needs_caps(Sabotage::CapMacIgnored) && tr::sabotage_needs_caps(Sabotage::CapExpIgnored) &&
+            !tr::sabotage_needs_caps(Sabotage::NoRelease) && !tr::sabotage_needs_caps(Sabotage::None),
+        "sabotage_needs_caps");
 }
 
 // ------------------------------------------------------------------- the checks
@@ -1004,6 +1061,193 @@ void test_format_ok() {
 
 }  // namespace
 
+// ------------------------------------------------------------------- TRK5 capabilities
+
+std::string hex_of(const std::array<std::uint8_t, 32> &d) {
+  return caps::key_to_hex(std::string_view(reinterpret_cast<const char *>(d.data()), d.size()));
+}
+
+void test_cap_primitives() {
+  // RFC 4231 cases 1, 2 and 6 (a key longer than the block is hashed first).
+  check(hex_of(caps::hmac_sha256(std::string(20, '\x0b'), "Hi There")) ==
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+        "hmac: RFC 4231 case 1");
+  check(hex_of(caps::hmac_sha256("Jefe", "what do ya want for nothing?")) ==
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+        "hmac: RFC 4231 case 2");
+  check(hex_of(caps::hmac_sha256(std::string(131, '\xaa'), "Test Using Larger Than Block-Size Key - Hash Key First")) ==
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+        "hmac: RFC 4231 case 6");
+  // base64url: RFC 4648 section 10's vectors without padding, round trip, strictness.
+  const std::pair<const char *, const char *> b64[] = {
+      {"", ""}, {"f", "Zg"}, {"fo", "Zm8"}, {"foo", "Zm9v"}, {"foob", "Zm9vYg"}, {"fooba", "Zm9vYmE"}, {"foobar", "Zm9vYmFy"}};
+  for (const auto &[plain, enc] : b64) {
+    std::string back;
+    check(caps::base64url_encode(plain) == enc && caps::base64url_decode(enc, &back) && back == plain,
+          std::string("base64url: ") + plain);
+  }
+  std::string all;
+  for (int i = 0; i < 256; ++i) all.push_back(static_cast<char>(i));
+  std::string back;
+  const std::string all_enc = caps::base64url_encode(all);
+  check(all_enc.find_first_of("+/=") == std::string::npos && caps::base64url_decode(all_enc, &back) && back == all,
+        "base64url: every byte round trips, url alphabet only");
+  for (const char *bad : {"Zg==", "Zm9v+", "Zm9v/", "Z", "Zm9vY", "Zh", "Zm9", "Zm9vYmF=", "Zm 9v"}) {
+    check(!caps::base64url_decode(bad, &back), std::string("base64url: refuses ") + bad);
+  }
+  check(caps::base64url_decode("Zm8", &back) && !caps::base64url_decode("Zm9", &back), "base64url: canonical last char only");
+  std::string key;
+  check(caps::key_from_hex(caps::key_to_hex(kCapKey), &key) && key == kCapKey, "key hex round trip");
+  check(!caps::key_from_hex(std::string(64, 'A'), &key) && !caps::key_from_hex(std::string(62, 'a'), &key),
+        "key hex: 64 lowercase only");
+  const std::string k1 = caps::generate_key();
+  const std::string k2 = caps::generate_key();
+  check(k1.size() == 32 && k2.size() == 32 && k1 != k2, "generate_key: 32 random bytes");
+  check(caps::mint(kCapKey, "Input", "v", 1, "") .empty() && caps::mint(kCapKey, "input", "", 1, "").empty() &&
+            caps::mint(kCapKey, "input", "v", 0, "").empty() && caps::mint(kCapKey, "input", "v", 1, "a b").empty(),
+        "mint: refuses arguments outside the grammar");
+}
+
+struct CapVector {
+  std::string name, kind, credential, expect, subject;
+};
+
+bool load_cap_vectors(std::string *key, std::int64_t *now, std::vector<CapVector> *out) {
+  std::ifstream in(GRC_TRACK_CAP_VECTORS, std::ios::binary);
+  if (!in) return false;
+  std::stringstream buf;
+  buf << in.rdbuf();
+  const std::string text = buf.str();
+  grc::rs::json_lite::JValue root;
+  grc::rs::json_lite::Reader reader(text);
+  using JV = grc::rs::json_lite::JValue;
+  if (!reader.parse(&root) || root.kind != JV::Object) return false;
+  const JV *schema = root.get("schema");
+  const JV *key_hex = root.get("key_hex");
+  const JV *now_v = root.get("now");
+  const JV *skew = root.get("skew_s");
+  const JV *life = root.get("max_lifetime_s");
+  const JV *vectors = root.get("vectors");
+  if (schema == nullptr || schema->text != "render-stream-track-cap-vectors/1" || key_hex == nullptr ||
+      !caps::key_from_hex(key_hex->text, key) || now_v == nullptr || now_v->kind != JV::Number || skew == nullptr ||
+      skew->text != std::to_string(caps::kSkewS) || life == nullptr ||
+      life->text != std::to_string(caps::kMaxLifetimeS) || vectors == nullptr || vectors->kind != JV::Array) {
+    return false;
+  }
+  *now = std::stoll(now_v->text);
+  for (const JV &v : vectors->items) {
+    CapVector c;
+    const JV *name = v.get("name");
+    const JV *kind = v.get("kind");
+    const JV *cred = v.get("credential");
+    const JV *expect = v.get("expect");
+    const JV *subject = v.get("subject");
+    if (name == nullptr || kind == nullptr || cred == nullptr || expect == nullptr) return false;
+    c.name = name->text;
+    c.kind = kind->text;
+    c.credential = cred->text;
+    c.expect = expect->text;
+    c.subject = subject != nullptr ? subject->text : std::string();
+    out->push_back(std::move(c));
+  }
+  return !out->empty();
+}
+
+void test_cap_vectors() {
+  std::string key;
+  std::int64_t now = 0;
+  std::vector<CapVector> vectors;
+  check(load_cap_vectors(&key, &now, &vectors), std::string("vectors: load ") + GRC_TRACK_CAP_VECTORS);
+  check(key == kCapKey && now == kNow, "vectors: key 0x00..0x1f, now 2026-01-01");
+  int ok = 0;
+  int refusals = 0;
+  for (const CapVector &v : vectors) {
+    const caps::Verdict d = caps::verify(key, v.credential, v.kind, now);
+    const bool want_ok = v.expect == "ok";
+    check(d.ok == want_ok && (want_ok ? d.subject == v.subject : d.detail == v.expect),
+          "vector " + v.name + ": want " + v.expect + " got " + (d.ok ? "ok " + d.subject : d.detail));
+    (want_ok ? ok : refusals) += 1;
+    // The same answer through the hub (hello check 3), with both kinds granted and bound.
+    TrackConfig c = caps_config();
+    c.kinds = {"input", "data"};
+    H hub(c, false);
+    std::string error;
+    check(hub.hub->bind(v.kind, &hub.r, &error), "vector " + v.name + ": bind " + error);
+    const std::uint32_t src = hub.track(1, hello(v.kind, v.credential));
+    if (want_ok) {
+      check(src != 0 && hub.r.opens.size() == 1 && hub.r.opens[0].subject == v.subject,
+            "vector " + v.name + " through the hub: opened with subject " + v.subject + ": " + describe(hub, 1));
+    } else {
+      check(refused(hub, 1, 1008, "track-unauthorized", v.expect),
+            "vector " + v.name + " through the hub: " + describe(hub, 1));
+    }
+  }
+  check(ok >= 5 && refusals >= 30, "vectors: " + std::to_string(ok) + " ok, " + std::to_string(refusals) + " refused");
+  // The C++ minter writes the TS minter's bytes.
+  const auto find = [&vectors](const std::string &name) {
+    for (const CapVector &v : vectors) {
+      if (v.name == name) return v.credential;
+    }
+    return std::string();
+  };
+  check(caps::mint(kCapKey, "input", "viewer-1", kNow + 300, "n1") == find("ok"), "mint == vector ok");
+  check(caps::mint(kCapKey, "input", "alice@example.com", kNow + 60, "") == find("ok-no-nonce"),
+        "mint == vector ok-no-nonce");
+  check(caps::mint(kCapKey, "input", "v", kNow - 31, "s") == find("expired"), "mint == vector expired");
+}
+
+void test_cap_hub() {
+  std::int64_t clock = kNow;
+  TrackConfig c = caps_config(Sabotage::None, &clock);
+  c.tap_dir.clear();
+  H h(c);
+  const std::string cap = caps::mint(kCapKey, "input", "viewer-1", kNow + 10, "n");
+  // The view token is still refused by name before any capability parsing; empty is `missing`;
+  // a shared 64-hex credential is `malformed`.
+  h.track(1, hello("input", kView));
+  check(refused(h, 1, 1008, "track-unauthorized", "view-token"), "caps: view token by name: " + describe(h, 1));
+  h.track(2, hello("input", ""));
+  check(h.last_close(2) == std::make_pair(std::uint16_t(1008), std::string("track-unauthorized")) &&
+            h.t.texts[2].back() == TrackHub::error_json("track-unauthorized", "missing"),
+        "caps: empty credential is missing");
+  h.track(3, hello("input", kCred));
+  check(h.t.texts[3].back() == TrackHub::error_json("track-unauthorized", "malformed"), "caps: shared credential malformed");
+  // Accepted: subject in opened(); the track lives on past exp.
+  const std::uint32_t src = h.track(4, hello("input", cap));
+  check(src != 0 && h.r.opens.back().subject == "viewer-1", "caps: opened with subject");
+  clock = kNow + 3600;
+  h.text(4, "late payload", 1 * kMs);
+  check(h.r.messages[src].size() == 1 && h.t.closes[4].empty(), "caps: an open track outlives its exp");
+  h.track(5, hello("input", cap), 2 * kMs);
+  check(h.t.texts[5].back() == TrackHub::error_json("track-unauthorized", "expired"), "caps: the same capability later: expired");
+  const TrackHub::KindStats *k = h.hub->kind_stats("input");
+  check(k != nullptr && k->refused.count("track-unauthorized:view-token") == 1 &&
+            k->refused.count("track-unauthorized:missing") == 1 && k->refused.count("track-unauthorized:malformed") == 1 &&
+            k->refused.count("track-unauthorized:expired") == 1 && k->refused.count("track-unauthorized") == 0,
+        "caps: refusals counted by detail");
+  TrackHub::Extras extras;
+  const std::string j = compact(h.hub->json(extras));
+  check(j.find("\"caps\":\"hmac\"") != std::string::npos, "caps: json caps hmac: " + j);
+  const std::string key_hex = caps::key_to_hex(kCapKey);
+  const std::string mac = cap.substr(cap.rfind('.') + 1);
+  check(j.find(key_hex) == std::string::npos && j.find(mac) == std::string::npos, "caps: json holds no key or capability");
+  bool subject_logged = false;
+  for (const std::string &l : h.logs) {
+    check(l.find(key_hex) == std::string::npos && l.find(mac) == std::string::npos && l.find("cap1.") == std::string::npos,
+          "caps: logs hold no key or capability: " + l);
+    subject_logged = subject_logged || l.find("subject=viewer-1") != std::string::npos;
+  }
+  check(subject_logged, "caps: the open line names the subject");
+  // Shared mode: subject "", json caps shared, refusals keep TRK1's keys.
+  H shared;
+  shared.track(1, hello());
+  check(shared.r.opens.size() == 1 && shared.r.opens[0].subject.empty(), "shared: subject empty");
+  check(compact(shared.hub->json(extras)).find("\"caps\":\"shared\"") != std::string::npos, "shared: json caps shared");
+  // A capability presented to a shared-credential host is just wrong.
+  shared.track(2, hello("input", cap));
+  check(shared.t.texts[2].back() == TrackHub::error_json("track-unauthorized", "wrong"), "shared: a capability is wrong");
+}
+
 int main() {
   test_claims();
   test_hello_grammar();
@@ -1023,6 +1267,9 @@ int main() {
   test_parse_kinds();
   test_utf8();
   test_format_ok();
+  test_cap_primitives();
+  test_cap_vectors();
+  test_cap_hub();
   test_sabotages();
   std::printf("rs_track_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
