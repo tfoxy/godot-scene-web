@@ -72,20 +72,40 @@ bool parse_carrier_list(const char *text, std::vector<std::string> *out, std::st
 bool carrier_name_ok(const std::string &name);
 
 // The D6 counter: at most `cap` slots held at once. Thread-safe, lock-free.
+// TRK1 (tracks-design.md Q3): two such counters, one per AdmissionPool; the track cap is 0 (every
+// track refused) unless tracks are on. held()/held_max()/cap() without a pool are the view pool's.
 class SharedAdmission final : public Admission {
  public:
-  explicit SharedAdmission(std::size_t cap) : cap_(cap) {}
-  bool admit() override;
-  void release() override;
-  std::size_t held() const { return held_.load(std::memory_order_acquire); }
-  std::size_t held_max() const { return held_max_.load(std::memory_order_acquire); }
-  std::size_t cap() const { return cap_; }
+  explicit SharedAdmission(std::size_t cap, std::size_t track_cap = 0)
+      : pools_{Pool(cap), Pool(track_cap)} {}
+  using Admission::admit;
+  using Admission::release;
+  bool admit(AdmissionPool pool) override;
+  void release(AdmissionPool pool) override;
+  std::size_t held(AdmissionPool pool = AdmissionPool::View) const {
+    return at(pool).held.load(std::memory_order_acquire);
+  }
+  std::size_t held_max(AdmissionPool pool = AdmissionPool::View) const {
+    return at(pool).held_max.load(std::memory_order_acquire);
+  }
+  std::size_t cap(AdmissionPool pool = AdmissionPool::View) const { return at(pool).cap; }
 
  private:
-  std::size_t cap_;
-  std::atomic<std::size_t> held_{0};
-  std::atomic<std::size_t> held_max_{0};
+  struct Pool {
+    explicit Pool(std::size_t c) : cap(c) {}
+    std::size_t cap;
+    std::atomic<std::size_t> held{0};
+    std::atomic<std::size_t> held_max{0};
+  };
+  Pool &at(AdmissionPool pool) { return pools_[pool == AdmissionPool::Track ? 1 : 0]; }
+  const Pool &at(AdmissionPool pool) const { return pools_[pool == AdmissionPool::Track ? 1 : 0]; }
+  Pool pools_[2];
 };
+
+// TRK1 (tracks-design.md Q3, Q7): the pool a subprotocol belongs to, from the carrier config's
+// comma lists `subprotocols` and `track_subprotocols`. False when it is in neither.
+bool subprotocol_pool(const std::map<std::string, std::string> &config, const std::string &subprotocol,
+                      AdmissionPool *pool);
 
 // What a carrier may ask of the capture: the services half of grc_carrier_host_v1.
 struct CarrierServices {
@@ -200,6 +220,7 @@ class AbiCarrier final : public Carrier {
   explicit AbiCarrier(const grc_carrier_v1 &vtable);
   struct Local {
     bool admitted = false;
+    AdmissionPool pool = AdmissionPool::View;  // TRK1: the pool that granted the slot
     bool opened = false;
     bool doomed = false;  // refused by the host (fault); closed()/rejected() just forget it
   };
@@ -242,7 +263,8 @@ class CarrierSet final : public rs2::LiveTransport {
     PerCarrierAdmission,  // a counter per carrier, each with the whole cap, instead of the total
   };
 
-  CarrierSet(std::size_t max_connections, CarrierServices services);
+  // TRK1: `max_tracks` is the track pool's cap (GRC_LIVE_MAX_TRACKS), 0 with tracks off.
+  CarrierSet(std::size_t max_connections, CarrierServices services, std::size_t max_tracks = 0);
   ~CarrierSet() override;  // destroys every carrier; one still running stops without a flush
   CarrierSet(const CarrierSet &) = delete;
   CarrierSet &operator=(const CarrierSet &) = delete;
@@ -274,6 +296,9 @@ class CarrierSet final : public rs2::LiveTransport {
   bool started(std::uint8_t index) const;      // added and started successfully
   std::size_t admitted() const;                // slots held right now (the D6 total)
   std::size_t admitted_max() const;            // the most ever held at once
+  // TRK1: the track pool's (live-tracks.json); live-carriers.json counts view connections only.
+  std::size_t admitted_tracks() const;
+  std::size_t admitted_tracks_max() const;
   std::uint64_t faults(std::uint8_t index, const std::string &code) const;
 
   // evidence/live-carriers.json (D13), schema render-stream-live-carriers/1.

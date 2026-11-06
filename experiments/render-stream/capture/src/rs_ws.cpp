@@ -587,6 +587,7 @@ struct Conn {
   bool opened = false;              // an Opened event was pushed for this connection (WebSocket only).
   bool http_slot_held = false;      // this connection counts against max_http_clients.
   bool admission_held = false;      // CAR1: holds a ServerConfig::admission slot (D6).
+  AdmissionPool pool = AdmissionPool::View;  // TRK1: which pool admitted it (Q3)
   bool shutdown_after_flush = false;
   std::uint16_t pending_close_code = 1000;
   std::string pending_close_reason;
@@ -709,7 +710,7 @@ struct Server::Impl {
     if (c.opened) push_event_locked(make_closed_event(c.id, code, reason));
     if (c.admission_held) {
       c.admission_held = false;
-      config.admission->release();
+      config.admission->release(c.pool);
     }
     c.phase = Conn::Phase::Closed;
   }
@@ -847,10 +848,14 @@ struct Server::Impl {
   }
 
   // Counts other open WebSocket connections (against ServerConfig::max_clients).
-  std::size_t count_ws_open(const Conn &exclude) const {
+  // TRK1: per pool, so a track never takes a viewer's place (and the reverse).
+  std::size_t count_ws_open(const Conn &exclude, AdmissionPool pool) const {
     std::size_t n = 0;
     for (const auto &entry : conns) {
-      if (entry.second.id != exclude.id && entry.second.phase == Conn::Phase::Open) ++n;
+      if (entry.second.id != exclude.id && entry.second.phase == Conn::Phase::Open &&
+          entry.second.pool == pool) {
+        ++n;
+      }
     }
     return n;
   }
@@ -1065,7 +1070,18 @@ struct Server::Impl {
       reject(c, 400, "expected GET");
       return;
     }
-    const UpgradeHeaders up = check_upgrade_headers(req, config.subprotocols);
+    // TRK1 (tracks-design.md Q3): the track subprotocols are matched after every view one, so a
+    // client offering both gets the view subprotocol; with none configured the list is today's.
+    const bool tracks_on = !config.track_subprotocols.empty();
+    std::vector<std::string> with_tracks;
+    if (tracks_on) {
+      with_tracks = config.subprotocols;
+      with_tracks.insert(with_tracks.end(), config.track_subprotocols.begin(),
+                         config.track_subprotocols.end());
+    }
+    const UpgradeHeaders up = check_upgrade_headers(req, tracks_on ? with_tracks : config.subprotocols);
+    const bool is_track = tracks_on && up.protocol_ok && contains(config.track_subprotocols, up.subprotocol);
+    const AdmissionPool pool = is_track ? AdmissionPool::Track : AdmissionPool::View;
     if (!up.has_upgrade_websocket || !up.has_connection_upgrade || !up.version13 || up.key.empty()) {
       reject(c, 400, "malformed upgrade request");
       return;
@@ -1076,7 +1092,9 @@ struct Server::Impl {
     }
     // G7n: a subprotocol whose token travels in its hello (render-stream/7) is not bearer-checked
     // here; the layer above checks the hello.
-    if (!contains(config.hello_token_subprotocols, up.subprotocol) && !bearer_ok(req, config.auth_token)) {
+    // TRK1: nor is a track subprotocol (its credential travels in track-hello).
+    if (!is_track && !contains(config.hello_token_subprotocols, up.subprotocol) &&
+        !bearer_ok(req, config.auth_token)) {
       // G2e: 401, never a close code (render-stream-2.md "Live transport"). reject() always
       // closes the TCP connection after flushing, which is fine here: an upgrade attempt is not a
       // request stream a client needs to keep open across a retry.
@@ -1086,12 +1104,13 @@ struct Server::Impl {
     }
     if (config.admission != nullptr) {
       // CAR1 (carrier-design.md D6): the slot is shared with every other carrier.
-      if (!config.admission->admit()) {
+      if (!config.admission->admit(pool)) {
         reject(c, 503, "max_clients");
         return;
       }
       c.admission_held = true;
-    } else if (count_ws_open(c) >= config.max_clients) {
+      c.pool = pool;
+    } else if (count_ws_open(c, pool) >= (is_track ? config.max_tracks : config.max_clients)) {
       reject(c, 503, "max_clients");
       return;
     }
@@ -1105,6 +1124,7 @@ struct Server::Impl {
     c.send_buf.insert(c.send_buf.end(), resp.begin(), resp.end());
     c.phase = Conn::Phase::Open;
     c.opened = true;
+    c.pool = pool;
     push_event_locked(make_opened_event(c.id, up.subprotocol, origin));
     if (!c.recv_buf.empty()) process_frames(c);
   }

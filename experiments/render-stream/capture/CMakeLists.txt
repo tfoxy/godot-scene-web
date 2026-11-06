@@ -97,6 +97,7 @@ add_library(render_stream_capture SHARED
   src/rs_gate8_policy.cpp
   src/rs_histogram.cpp
   src/rs_live.cpp
+  src/rs_tracks.cpp
   src/rs_item_meta.cpp
   src/rs_item_meta_host.cpp
   src/rs_mirror.cpp
@@ -216,6 +217,15 @@ add_executable(rs_carrier_set_test test/rs_carrier_set_test.cpp src/rs_carrier_s
 target_include_directories(rs_carrier_set_test PRIVATE src)
 target_link_libraries(rs_carrier_set_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_carrier_set COMMAND rs_carrier_set_test)
+
+# TRK1 (tracks-design.md Q1-Q5): TrackHub over a recording fake transport -- the hello grammar,
+# every check in its order, every close reason, pairing, keepalive and idle, rate, UTF-8,
+# close_all -- plus the four test-only sabotages, each of which must fail its check.
+add_executable(rs_track_test test/rs_track_test.cpp src/rs_tracks.cpp src/rs_ws.cpp src/rs_sha1.cpp
+  src/report.cpp)
+target_include_directories(rs_track_test PRIVATE src)
+target_link_libraries(rs_track_test PRIVATE grc_warnings grc_codecs Threads::Threads)
+add_test(NAME rs_track COMMAND rs_track_test)
 
 # CAR6 (carrier-design.md "Writing a carrier"): the consumer-carrier registry's rules, the owner
 # ledger's double-release fault, and grc_carrier_register as the built capture library exports it
@@ -343,6 +353,7 @@ add_executable(rs_live_host
   src/rs_expose.cpp
   src/rs_net_module.cpp
   test/rs_mem_carrier.cpp
+  src/rs_tracks.cpp
 )
 target_include_directories(rs_live_host PRIVATE src test)
 target_link_libraries(rs_live_host PRIVATE grc_warnings grc_codecs Threads::Threads ${CMAKE_DL_LIBS})

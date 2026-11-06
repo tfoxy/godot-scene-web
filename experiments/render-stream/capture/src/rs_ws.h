@@ -164,11 +164,19 @@ Coding negotiate_coding(std::string_view accept_encoding, const std::vector<Codi
 // CAR1 (carrier-design.md D6): the connection-slot counter every live carrier shares. admit()
 // takes one slot (true) or refuses (false); release() returns one. Both are thread-safe and
 // memory-speed: the server calls them on its I/O thread with its own mutex held.
+// TRK1 (tracks-design.md Q3, T6): two pools. A view connection (render-stream.N) takes a View
+// slot (GRC_LIVE_MAX_CONNECTIONS), a track connection (render-stream-track.1) a Track slot
+// (GRC_LIVE_MAX_TRACKS); neither ever takes the other's. A connection returns its slot to the pool
+// that granted it.
+enum class AdmissionPool : std::uint8_t { View, Track };
+
 class Admission {
  public:
   virtual ~Admission() = default;
-  virtual bool admit() = 0;
-  virtual void release() = 0;
+  virtual bool admit(AdmissionPool pool) = 0;
+  virtual void release(AdmissionPool pool) = 0;
+  bool admit() { return admit(AdmissionPool::View); }
+  void release() { release(AdmissionPool::View); }
 };
 
 // CAR4 (carrier-design.md D12): one connection's TLS server session, sans-IO. The I/O thread
@@ -223,6 +231,12 @@ struct ServerConfig {
   std::string auth_token;            // empty (default): no bearer-token check (G2e).
   // G7n: subprotocols whose upgrade skips the bearer check (the token travels in the hello).
   std::vector<std::string> hello_token_subprotocols;
+  // TRK1 (tracks-design.md Q1.1, Q3): track subprotocols (render-stream-track.1), matched after
+  // every entry of `subprotocols`, never bearer-checked (the credential travels in track-hello),
+  // admitted from the Track pool: `admission`'s, or `max_tracks` without one. Empty (default):
+  // a track upgrade is today's 400 "missing subprotocol", byte for byte.
+  std::vector<std::string> track_subprotocols;
+  std::size_t max_tracks = 0;
   // G7n (gate7-design.md D3): exact `Origin` values allowed; a request with any other Origin gets
   // 403. Empty (default): every request carrying an Origin is refused; one without is unaffected.
   std::vector<std::string> allowed_origins;

@@ -6,6 +6,7 @@
 #include "rs_carrier_gd.h"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -512,6 +513,25 @@ Value m_register(Instance *self, const Args &a) {
   return integer(index);
 }
 
+// TRK1: whether `sp` is one of config("track_subprotocols") (a comma list; NULL with tracks off).
+bool is_track_subprotocol(const grc_carrier_host_v1 *host, const std::string &sp) {
+  if (host->size < offsetof(grc_carrier_host_v1, admit_subprotocol) + sizeof(void *) ||
+      host->admit_subprotocol == nullptr || sp.empty()) {
+    return false;
+  }
+  const char *list = host->config(host->host, "track_subprotocols");
+  if (list == nullptr) return false;
+  const std::string text(list);
+  std::size_t start = 0;
+  while (start <= text.size()) {
+    std::size_t comma = text.find(',', start);
+    if (comma == std::string::npos) comma = text.size();
+    if (text.compare(start, comma - start, sp) == 0 && comma - start == sp.size()) return true;
+    start = comma + 1;
+  }
+  return false;
+}
+
 // opened(local: int, subprotocol: String, origin: String) -> bool: admit, then opened.
 Value m_opened(Instance *self, const Args &a) {
   State &s = *self->state;
@@ -522,7 +542,13 @@ Value m_opened(Instance *self, const Args &a) {
     std::lock_guard<std::mutex> lock(s.mu);
     if (s.conns.count(local) != 0) return boolean(false);
   }
-  if (host->admit(host->host, local) == 0) return boolean(false);  // the D6 total is full
+  // TRK1 (tracks-design.md Q7): admits by subprotocol, so a track subprotocol takes a track slot.
+  // A subprotocol outside the track list keeps admit()'s behaviour exactly.
+  const bool track = is_track_subprotocol(host, a[1].s);
+  if ((track ? host->admit_subprotocol(host->host, local, a[1].s.data(), a[1].s.size())
+             : host->admit(host->host, local)) == 0) {
+    return boolean(false);  // the pool is full
+  }
   {
     std::lock_guard<std::mutex> lock(s.mu);
     s.conns[local] = Conn();

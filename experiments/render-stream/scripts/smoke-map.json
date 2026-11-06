@@ -395,6 +395,16 @@
       "exclusive": true
     },
     {
+      "why": "TRK1 tracks host core (tracks-design.md Q1-Q5, Q9): rs_tracks.{h,cpp} (TrackHub), its ctest and the pure self-test that drives rs_live_host --tracks with a Node track client. Nothing here runs unless GRC_LIVE_TRACKS grants a kind, which no gate leg does, so it reaches the build (rs_track ctest) and the pure self-tests. The routing in entry.cpp, the admission pools in rs_ws.* and rs_carrier_set.*, and rs_live_host.cpp are shared capture files and keep their own reach",
+      "paths": [
+        "experiments/render-stream/capture/src/rs_tracks*",
+        "experiments/render-stream/capture/test/rs_track_test.cpp",
+        "experiments/render-stream/scripts/test/self-test-tracks.ts"
+      ],
+      "reach": ["capture-build", "pure"],
+      "exclusive": true
+    },
+    {
       "why": "CAR6 fixtures/carrier-ext: the GDScript consumer carrier and its peer, run by gate 8's g8l/ext legs (native only: no browser group replays them; the checker is under the gate 8 rule)",
       "paths": ["experiments/render-stream/fixtures/carrier-ext/**"],
       "reach": ["native:gate8@*"],

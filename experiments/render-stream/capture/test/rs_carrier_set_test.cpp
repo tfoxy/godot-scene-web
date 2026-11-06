@@ -3,6 +3,9 @@
 // routing, close, queued bytes, per-connection order, the admission total across carriers
 // (including the real rs_ws server as `ws`), conn-id-overflow, no callback after stop, the owner
 // ledger, resource events and services, GRC_LIVE_CARRIERS parsing and live-carriers.json.
+// TRK1 (tracks-design.md Q3, Q7): the two admission pools, admit_subprotocol through the C ABI,
+// the admit-pool-mismatch doom, `sessions` counting view connections only, and the host struct's
+// size covering admit_subprotocol.
 //
 // The CAR1 sabotages are test-only: CarrierSet::Sabotage::RouteByLocal must fail the routing
 // check and PerCarrierAdmission the admission check; main() runs both checks under each and
@@ -13,6 +16,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -142,6 +146,9 @@ struct Fake {
 
   // Carrier-side helpers: what a real carrier's I/O would report.
   int admit(std::uint32_t local) { return host->admit(host->host, local); }
+  int admit_sp(std::uint32_t local, const std::string &sp) {
+    return host->admit_subprotocol(host->host, local, sp.data(), sp.size());
+  }
   void opened(std::uint32_t local, const std::string &sp = "render-stream.13",
               const std::string &origin = "") {
     open.insert(local);
@@ -577,6 +584,162 @@ void test_ws_shares_admission() {
   set.stop();
 }
 
+
+// ------------------------------------------------------------------- TRK1: two pools
+
+using grc::live::AdmissionPool;
+
+const std::string kViewSp = "render-stream.13";
+const std::string kTrackSp = "render-stream-track.1";
+
+CarrierServices track_services() {
+  CarrierServices s;
+  s.config["subprotocols"] = kViewSp;
+  s.config["track_subprotocols"] = kTrackSp;
+  return s;
+}
+
+void test_two_pools() {
+  grc::live::SharedAdmission a(2, 3);
+  check(a.cap(AdmissionPool::View) == 2 && a.cap(AdmissionPool::Track) == 3 && a.cap() == 2, "pools: caps");
+  check(a.admit(AdmissionPool::View) && a.admit(), "pools: two view slots");
+  check(!a.admit(AdmissionPool::View), "pools: the third view slot refused");
+  check(a.admit(AdmissionPool::Track) && a.admit(AdmissionPool::Track) && a.admit(AdmissionPool::Track),
+        "pools: three track slots while the view pool is full");
+  check(!a.admit(AdmissionPool::Track), "pools: the fourth track slot refused");
+  check(a.held(AdmissionPool::View) == 2 && a.held() == 2 && a.held(AdmissionPool::Track) == 3,
+        "pools: held per pool");
+  a.release(AdmissionPool::Track);
+  check(a.held(AdmissionPool::Track) == 2 && a.held(AdmissionPool::View) == 2,
+        "pools: a track release returns to the track pool only");
+  check(!a.admit(AdmissionPool::View), "pools: a freed track slot is not a view slot");
+  check(a.admit(AdmissionPool::Track), "pools: ...it is a track slot");
+  a.release(AdmissionPool::View);
+  a.release();
+  check(a.held(AdmissionPool::View) == 0 && a.held(AdmissionPool::Track) == 3,
+        "pools: view releases return to the view pool only");
+  a.release(AdmissionPool::View);
+  check(a.held(AdmissionPool::View) == 0, "pools: release on an empty pool does not underflow");
+  check(a.held_max(AdmissionPool::View) == 2 && a.held_max() == 2 && a.held_max(AdmissionPool::Track) == 3,
+        "pools: held_max per pool");
+  check(a.admit(AdmissionPool::View) && a.held_max(AdmissionPool::View) == 2, "pools: held_max is a high-water mark");
+  grc::live::SharedAdmission off(1);
+  check(off.cap(AdmissionPool::Track) == 0 && !off.admit(AdmissionPool::Track) && off.admit(),
+        "pools: tracks off -> track cap 0, view unchanged");
+
+  AdmissionPool pool = AdmissionPool::View;
+  const std::map<std::string, std::string> cfg = {{"subprotocols", "render-stream.13,render-stream.7"},
+                                                  {"track_subprotocols", kTrackSp}};
+  check(grc::live::subprotocol_pool(cfg, "render-stream.7", &pool) && pool == AdmissionPool::View,
+        "subprotocol_pool: second view entry");
+  check(grc::live::subprotocol_pool(cfg, kTrackSp, &pool) && pool == AdmissionPool::Track,
+        "subprotocol_pool: track");
+  check(!grc::live::subprotocol_pool(cfg, "render-stream", &pool) &&
+            !grc::live::subprotocol_pool(cfg, "render-stream.1", &pool) &&
+            !grc::live::subprotocol_pool(cfg, "", &pool) && !grc::live::subprotocol_pool(cfg, "nope.1", &pool),
+        "subprotocol_pool: prefixes, empty and unknown are in neither list");
+  check(!grc::live::subprotocol_pool({{"subprotocols", kViewSp}}, kTrackSp, &pool),
+        "subprotocol_pool: no track list -> a track subprotocol is unknown");
+}
+
+void test_admit_subprotocol() {
+  Fake a("fa");
+  CarrierSet set(1, track_services(), 2);
+  std::string error;
+  check(set.add(0, adopt(a), &error) && set.start(&error), "admit_sp: start " + error);
+  const grc_carrier_host_v1 *host = a.host;
+  check(host->size >= offsetof(grc_carrier_host_v1, admit_subprotocol) + sizeof(void *),
+        "host: size covers admit_subprotocol");
+  check(host->admit_subprotocol != nullptr, "host: admit_subprotocol set");
+  check(host->config(host->host, "track_subprotocols") != nullptr &&
+            std::string(host->config(host->host, "track_subprotocols")) == kTrackSp,
+        "host: track_subprotocols config");
+  check(a.admit_sp(1, kTrackSp) == 1, "admit_sp: a track sp takes a track slot");
+  check(set.admitted_tracks() == 1 && set.admitted() == 0, "admit_sp: ...from the track pool");
+  check(a.admit_sp(2, kTrackSp) == 1 && a.admit_sp(3, kTrackSp) == 0, "admit_sp: track pool full -> 0");
+  check(a.admit_sp(4, kViewSp) == 1 && set.admitted() == 1 && set.admitted_tracks() == 2,
+        "admit_sp: a view sp takes a view slot");
+  check(a.admit_sp(5, kViewSp) == 0 && a.admit(5) == 0, "admit_sp: view pool full -> 0 (and admit())");
+  check(a.admit_sp(6, "nope.1") == 0 && a.admit_sp(6, "") == 0 && a.admit_sp(6, "render-stream-track") == 0,
+        "admit_sp: unknown sp -> 0");
+  check(host->admit_subprotocol(host->host, 6, nullptr, 0) == 0, "admit_sp: null sp -> 0");
+  check(a.admit_sp(1, kTrackSp) == 0 && set.faults(0, "local-reused") == 1, "admit_sp: a reused local is a fault");
+  check(a.admit_sp(0, kTrackSp) == 0 && set.faults(0, "conn-id-overflow") == 1, "admit_sp: local 0 refused");
+  check(set.admitted() == 1 && set.admitted_tracks() == 2, "admit_sp: refusals hold nothing");
+
+  a.opened(1, kTrackSp);
+  a.opened(4, kViewSp);
+  std::vector<Event> ev = set.take_events();
+  check(ev.size() == 2 && ev[0].kind == Event::Opened && ev[0].subprotocol == kTrackSp && ev[1].kind == Event::Opened &&
+            ev[1].subprotocol == kViewSp,
+        "admit_sp: both open with their subprotocols");
+  check(set.carriers_json().find("\"sessions\":1,") != std::string::npos,
+        "sessions: a track Opened is not a session: " + set.carriers_json());
+  a.closed(1);
+  check(set.admitted_tracks() == 1 && set.admitted() == 1, "admit_sp: a track closed returns a track slot");
+  a.host->rejected(a.host->host, 2, GRC_REJECT_CAPACITY, "", 0);
+  check(set.admitted_tracks() == 0 && set.admitted() == 1, "admit_sp: a track rejected returns a track slot");
+  a.closed(4);
+  check(set.admitted() == 0 && set.admitted_tracks() == 0, "admit_sp: a view closed returns a view slot");
+  check(set.admitted_tracks_max() == 2 && set.admitted_max() == 1, "admit_sp: held_max per pool");
+  set.take_events();
+  // A track slot still held at stop returns to the track pool.
+  check(a.admit_sp(9, kTrackSp) == 1 && set.admitted_tracks() == 1, "admit_sp: held before stop");
+  set.stop();
+  check(set.admitted_tracks() == 0 && set.admitted() == 0, "admit_sp: stop returns the track slot");
+
+  // Tracks off (max_tracks 0): a track sp is refused even with the config listing it.
+  Fake b("fb");
+  CarrierSet off(1, track_services());
+  check(off.add(0, adopt(b), &error) && off.start(&error), "admit_sp off: start");
+  check(b.admit_sp(1, kTrackSp) == 0 && b.admit_sp(2, kViewSp) == 1, "admit_sp off: track 0, view 1");
+  off.stop();
+}
+
+void test_admit_pool_mismatch() {
+  Fake a("fa");
+  CarrierSet set(2, track_services(), 2);
+  std::string error;
+  check(set.add(0, adopt(a), &error) && set.start(&error), "mismatch: start " + error);
+  // A view slot (admit()) opened with the track subprotocol.
+  check(a.admit(1) == 1, "mismatch: view admit");
+  a.opened(1, kTrackSp);
+  check(set.take_events().empty(), "mismatch: view slot + track sp never reaches the hub");
+  check(set.faults(0, "admit-pool-mismatch") == 1, "mismatch: fault counted");
+  check(a.closes.size() == 1 && std::get<0>(a.closes[0]) == 1 && std::get<1>(a.closes[0]) == 1011 &&
+            std::get<2>(a.closes[0]) == "admit-pool-mismatch",
+        "mismatch: closed 1011 admit-pool-mismatch");
+  a.text(1, "x");
+  a.closed(1, 1011, "admit-pool-mismatch");
+  check(set.take_events().empty() && set.admitted() == 0, "mismatch: its text/closed absorbed, view slot back");
+  // A track slot opened with the view subprotocol.
+  check(a.admit_sp(2, kTrackSp) == 1, "mismatch: track admit");
+  a.opened(2, kViewSp);
+  check(set.take_events().empty() && set.faults(0, "admit-pool-mismatch") == 2, "mismatch: track slot + view sp");
+  check(a.closes.size() == 2 && std::get<0>(a.closes[1]) == 2 && std::get<1>(a.closes[1]) == 1011 &&
+            std::get<2>(a.closes[1]) == "admit-pool-mismatch",
+        "mismatch: closed 1011 too");
+  check(set.admitted_tracks() == 1, "mismatch: the doomed track slot is held until closed");
+  a.closed(2, 1011, "admit-pool-mismatch");
+  set.take_events();
+  check(set.admitted_tracks() == 0 && set.admitted() == 0, "mismatch: track slot back at closed");
+  // A track slot opened with an unknown subprotocol counts as a view one: also a mismatch.
+  check(a.admit_sp(3, kTrackSp) == 1, "mismatch: track admit 2");
+  a.opened(3, "nope.1");
+  check(set.take_events().empty() && set.faults(0, "admit-pool-mismatch") == 3, "mismatch: track slot + unknown sp");
+  a.closed(3);
+  // A view slot opened with an unknown subprotocol keeps today's behaviour (opens).
+  check(a.admit(4) == 1, "mismatch: view admit 2");
+  a.opened(4, "nope.1");
+  const std::vector<Event> ev = set.take_events();
+  check(ev.size() == 1 && ev[0].kind == Event::Opened && ev[0].subprotocol == "nope.1",
+        "mismatch: view slot + unknown sp still opens");
+  check(set.faults(0, "admit-pool-mismatch") == 3, "mismatch: no fault for it");
+  check(set.carriers_json().find("\"sessions\":1,") != std::string::npos,
+        "sessions: the unknown-sp view connection is a session, doomed ones are not");
+  set.stop();
+}
+
 }  // namespace
 
 int main() {
@@ -590,6 +753,9 @@ int main() {
   test_start_failure();
   test_carrier_list();
   test_ws_shares_admission();
+  test_two_pools();
+  test_admit_subprotocol();
+  test_admit_pool_mismatch();
   std::printf("rs_carrier_set_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

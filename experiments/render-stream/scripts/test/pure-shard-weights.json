@@ -60,6 +60,7 @@
     "self-test-smoke-sabotage": 0.7,
     "self-test-source-cache": 2.4,
     "self-test-source-key": 1.4,
+    "self-test-tracks": 14.0,
     "self-test-validate-tier": 6.5,
     "self-test-web-legs-shards": 1.0
   },

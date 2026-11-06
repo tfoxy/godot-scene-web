@@ -31,6 +31,10 @@
 //     OriginRejected event on the upgrade, GET and OPTIONS; exact matching), CORS headers on an
 //     allowed GET (200, 404, 401), the exact 204 preflight for any hash, the accept-any-origin and
 //     no-cors switches, and parse_allowed_origins.
+//   - TRK1 (tracks-design.md Q1.1, Q3): with no track_subprotocols a track upgrade is answered
+//     byte for byte as an unknown subprotocol; with them, a track upgrade is 101 without the
+//     bearer check, has its own max_tracks pool (503 past it while a view upgrade still succeeds),
+//     and a client offering both a view and a track subprotocol gets the view one.
 //   - CAR2 (carrier-design.md D10, Security): allow_non_loopback binds 0.0.0.0, "::" and a host
 //     address and serves through a non-loopback address; a hostname still refuses; the Origin
 //     allow-list holds there; and a malformed-input set (headers over 8 KiB, bad lengths,
@@ -1638,6 +1642,123 @@ int connect_ipv4(const std::string &host, std::uint16_t port) {
 }
 
 // CAR2 (D10): ServerConfig::allow_non_loopback is the one switch; without it nothing changes.
+// ---- TRK1: track subprotocols (tracks-design.md Q1.1, Q3) ----
+
+const char *const kTrackSp = "render-stream-track.1";
+
+// Waits for one event of `kind` (others are dropped); false on timeout.
+bool wait_kind(grc::live::Server &server, grc::live::Event::Kind kind, grc::live::Event *out = nullptr) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+  while (std::chrono::steady_clock::now() < deadline) {
+    for (auto &e : server.take_events()) {
+      if (e.kind == kind) {
+        if (out != nullptr) *out = e;
+        return true;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return false;
+}
+
+void test_trk1_track_upgrade_off() {
+  grc::live::Server server;
+  grc::live::ServerConfig config;  // default: no track_subprotocols
+  check(config.track_subprotocols.empty() && config.max_tracks == 0, "trk1 off: defaults");
+  std::string error;
+  check(server.start(config, nullptr, &error), "server starts: " + error);
+  const int fd1 = connect_loopback(server.port());
+  const Handshake track = do_handshake(fd1, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", kTrackSp);
+  const int fd2 = connect_loopback(server.port());
+  const Handshake unknown = do_handshake(fd2, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "nope.1");
+  check(track.ok && track.status == 400, "trk1 off: a track upgrade -> 400, got " + std::to_string(track.status));
+  check(!track.raw.empty() && track.raw == unknown.raw,
+        "trk1 off: the track upgrade's response is byte-identical to an unknown subprotocol's:\n" + track.raw +
+            "\n---\n" + unknown.raw);
+  check(wait_events(server, 1, 300).empty(), "trk1 off: no event for either");
+  ::close(fd1);
+  ::close(fd2);
+  server.stop(1000);
+}
+
+void test_trk1_track_upgrade_on() {
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  config.track_subprotocols = {kTrackSp};
+  config.max_tracks = 1;
+  config.max_clients = 1;
+  config.auth_token = "s3cr3t-token";
+  const std::pair<std::string, std::string> bearer = {"Authorization", "Bearer s3cr3t-token"};
+  std::string error;
+  check(server.start(config, nullptr, &error), "server starts: " + error);
+
+  // A track upgrade without the bearer header: 101 with the track subprotocol.
+  const int t1 = connect_loopback(server.port());
+  const Handshake hs1 = do_handshake(t1, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", kTrackSp);
+  check(hs1.status == 101, "trk1 on: track upgrade without a token -> 101, got " + std::to_string(hs1.status));
+  check(hs1.raw.find(std::string("Sec-WebSocket-Protocol: ") + kTrackSp + "\r\n") != std::string::npos,
+        "trk1 on: echoes the track subprotocol");
+  grc::live::Event opened;
+  check(wait_kind(server, grc::live::Event::Opened, &opened) && opened.subprotocol == kTrackSp,
+        "trk1 on: Opened reports the track subprotocol");
+
+  // A view upgrade still needs the token.
+  {
+    const int fd = connect_loopback(server.port());
+    const Handshake hs = do_handshake(fd, "AAAAAAAAAAAAAAAAAAAAAA==");
+    check(hs.status == 401, "trk1 on: view upgrade without the token -> 401, got " + std::to_string(hs.status));
+    check(wait_kind(server, grc::live::Event::AuthRejected), "trk1 on: ...an AuthRejected event");
+    ::close(fd);
+  }
+  // A second track upgrade is over max_tracks.
+  const int t2 = connect_loopback(server.port());
+  const Handshake hs2 = do_handshake(t2, "BBBBBBBBBBBBBBBBBBBBBA==", "/render-stream", kTrackSp);
+  check(hs2.status == 503, "trk1 on: second track upgrade -> 503, got " + std::to_string(hs2.status));
+  ::close(t2);
+  // ...while a view upgrade (with the token) still succeeds: the pools are independent.
+  const int v1 = connect_loopback(server.port());
+  const Handshake hv = do_handshake(v1, "CCCCCCCCCCCCCCCCCCCCCA==", "/render-stream", "render-stream.1", {bearer});
+  check(hv.status == 101, "trk1 on: view upgrade beside a track -> 101, got " + std::to_string(hv.status));
+  check(wait_kind(server, grc::live::Event::Opened, &opened) && opened.subprotocol == "render-stream.1",
+        "trk1 on: the view Opened");
+  // And with the view pool full, a view upgrade is 503 while the track stays.
+  {
+    const int fd = connect_loopback(server.port());
+    const Handshake hs = do_handshake(fd, "DDDDDDDDDDDDDDDDDDDDDA==", "/render-stream", "render-stream.1", {bearer});
+    check(hs.status == 503, "trk1 on: second view upgrade -> 503, got " + std::to_string(hs.status));
+    ::close(fd);
+  }
+  ::close(v1);
+  check(wait_kind(server, grc::live::Event::Closed), "trk1 on: view Closed");
+
+  // A client offering both gets the view subprotocol, in either offer order (and is bearer-checked).
+  for (const char *offer : {"render-stream.1, render-stream-track.1", "render-stream-track.1, render-stream.1"}) {
+    const int fd = connect_loopback(server.port());
+    const Handshake hs = do_handshake(fd, "EEEEEEEEEEEEEEEEEEEEEA==", "/render-stream", offer, {bearer});
+    check(hs.status == 101 && hs.raw.find("Sec-WebSocket-Protocol: render-stream.1\r\n") != std::string::npos,
+          std::string("trk1 on: offering '") + offer + "' gets the view subprotocol, got " + hs.raw);
+    check(wait_kind(server, grc::live::Event::Opened, &opened) && opened.subprotocol == "render-stream.1",
+          std::string("trk1 on: '") + offer + "' Opened as view");
+    ::close(fd);
+    check(wait_kind(server, grc::live::Event::Closed), "trk1 on: closed between offers");
+  }
+  {
+    // Offering both without a token: it is a view upgrade, so 401.
+    const int fd = connect_loopback(server.port());
+    const Handshake hs = do_handshake(fd, "FFFFFFFFFFFFFFFFFFFFFA==", "/render-stream", "render-stream.1, render-stream-track.1");
+    check(hs.status == 401, "trk1 on: both offered without the token -> 401, got " + std::to_string(hs.status));
+    ::close(fd);
+  }
+  // The track slot returns at its Closed.
+  ::close(t1);
+  check(wait_kind(server, grc::live::Event::Closed), "trk1 on: track Closed");
+  const int t3 = connect_loopback(server.port());
+  const Handshake hs3 = do_handshake(t3, "GGGGGGGGGGGGGGGGGGGGGA==", "/render-stream", kTrackSp);
+  check(hs3.status == 101, "trk1 on: a track upgrade after the first closed -> 101, got " + std::to_string(hs3.status));
+  ::close(t3);
+  server.stop(1000);
+}
+
 void test_lan_bind() {
   {
     grc::live::Server server;
@@ -2522,6 +2643,8 @@ int main(int argc, char **argv) {
   test_g7n_origin_and_cors_on_resources();
   test_g7n_sabotage_switches();
   test_g7n_parse_allowed_origins();
+  test_trk1_track_upgrade_off();
+  test_trk1_track_upgrade_on();
   test_lan_bind();
   test_malformed_inputs_on_lan_listener();
   test_wss(false);

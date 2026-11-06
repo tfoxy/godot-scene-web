@@ -113,7 +113,9 @@ typedef struct grc_carrier_host_v1 {
   /* Resolved configuration, NUL-terminated, or NULL when unset. Keys: "listen", "expose",
    * "path", "subprotocols" and "hello_token_subprotocols" (comma lists, most preferred first),
    * "max_inbound_text", "max_queued_bytes" (decimal), "tls_cert", "tls_key", "wt_listen",
-   * "wt_cert", "evidence_dir". The pointer stays valid until stop() returns. */
+   * "wt_cert", "evidence_dir"; TRK1: "track_subprotocols" (a comma list, render-stream-track.1,
+   * NULL unless GRC_LIVE_TRACKS grants a kind; never listed in "subprotocols"). The pointer stays
+   * valid until stop() returns. */
   const char *(*config)(void *host, const char *key);
 
   /* Admission (D6): 1 = a slot is granted to `local`, 0 = refused (capacity, or a bad `local`).
@@ -147,6 +149,15 @@ typedef struct grc_carrier_host_v1 {
   void (*release)(void *host, void *owner);
   /* One log line (no trailing newline needed); `level` is a GRC_LOG_* value. */
   void (*log)(void *host, int level, const char *msg, size_t len);
+
+  /* TRK1 (tracks-design.md Q3, Q7): admission by subprotocol. 1 = a slot from the pool that
+     `subprotocol` belongs to (a view subprotocol: the view pool, exactly admit(); one of
+     config("track_subprotocols"): the track pool); 0 = that pool is full or the subprotocol is
+     unknown. The slot returns at closed(), or at rejected() for a connection that never opened.
+     Read it only when `size >= offsetof(grc_carrier_host_v1, admit_subprotocol) +
+     sizeof(void *)`. opened() with a subprotocol of the other pool than the one that admitted
+     `local` is closed 1011 (fault `admit-pool-mismatch`). */
+  int (*admit_subprotocol)(void *host, uint32_t local, const char *subprotocol, size_t sp_len);
 } grc_carrier_host_v1;
 
 /* The carrier's side. */

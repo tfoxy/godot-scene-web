@@ -143,28 +143,60 @@ bool parse_carrier_list(const char *text, std::vector<std::string> *out, std::st
 
 // ------------------------------------------------------------------------ admission
 
-bool SharedAdmission::admit() {
-  std::size_t held = held_.load(std::memory_order_acquire);
+bool SharedAdmission::admit(AdmissionPool which) {
+  Pool &pool = at(which);
+  std::size_t held = pool.held.load(std::memory_order_acquire);
   while (true) {
-    if (held >= cap_) return false;
-    if (held_.compare_exchange_weak(held, held + 1, std::memory_order_acq_rel,
-                                    std::memory_order_acquire)) {
+    if (held >= pool.cap) return false;
+    if (pool.held.compare_exchange_weak(held, held + 1, std::memory_order_acq_rel,
+                                        std::memory_order_acquire)) {
       break;
     }
   }
-  std::size_t max = held_max_.load(std::memory_order_acquire);
+  std::size_t max = pool.held_max.load(std::memory_order_acquire);
   while (held + 1 > max &&
-         !held_max_.compare_exchange_weak(max, held + 1, std::memory_order_acq_rel,
-                                          std::memory_order_acquire)) {
+         !pool.held_max.compare_exchange_weak(max, held + 1, std::memory_order_acq_rel,
+                                              std::memory_order_acquire)) {
   }
   return true;
 }
 
-void SharedAdmission::release() {
-  std::size_t held = held_.load(std::memory_order_acquire);
-  while (held > 0 && !held_.compare_exchange_weak(held, held - 1, std::memory_order_acq_rel,
-                                                  std::memory_order_acquire)) {
+void SharedAdmission::release(AdmissionPool which) {
+  Pool &pool = at(which);
+  std::size_t held = pool.held.load(std::memory_order_acquire);
+  while (held > 0 && !pool.held.compare_exchange_weak(held, held - 1, std::memory_order_acq_rel,
+                                                      std::memory_order_acquire)) {
   }
+}
+
+namespace {
+bool comma_list_has(const std::map<std::string, std::string> &config, const char *key,
+                    const std::string &value) {
+  const auto it = config.find(key);
+  if (it == config.end() || value.empty()) return false;
+  const std::string &list = it->second;
+  std::size_t start = 0;
+  while (start <= list.size()) {
+    std::size_t comma = list.find(',', start);
+    if (comma == std::string::npos) comma = list.size();
+    if (list.compare(start, comma - start, value) == 0 && comma - start == value.size()) return true;
+    start = comma + 1;
+  }
+  return false;
+}
+}  // namespace
+
+bool subprotocol_pool(const std::map<std::string, std::string> &config, const std::string &subprotocol,
+                      AdmissionPool *pool) {
+  if (comma_list_has(config, "subprotocols", subprotocol)) {
+    *pool = AdmissionPool::View;
+    return true;
+  }
+  if (comma_list_has(config, "track_subprotocols", subprotocol)) {
+    *pool = AdmissionPool::Track;
+    return true;
+  }
+  return false;
 }
 
 // ------------------------------------------------------------------------ ws
@@ -283,8 +315,31 @@ struct AbiCarrier::Thunks {
       c->ctx_->fault("local-reused");
       return 0;
     }
-    if (!c->ctx_->admission().admit()) return 0;
+    if (!c->ctx_->admission().admit(AdmissionPool::View)) return 0;
     c->locals_[local].admitted = true;
+    return 1;
+  }
+
+  // TRK1 (grc_carrier.h, tracks-design.md Q7): admit() from the pool `sp` belongs to.
+  static int admit_subprotocol(void *host, std::uint32_t local, const char *sp, std::size_t sp_len) {
+    AbiCarrier *c = self(host);
+    std::lock_guard<std::mutex> lock(c->mu_);
+    if (late_locked(c)) return 0;
+    if (!local_ok(local)) {
+      c->ctx_->fault("conn-id-overflow");
+      return 0;
+    }
+    if (c->locals_.count(local) != 0) {
+      c->ctx_->fault("local-reused");
+      return 0;
+    }
+    AdmissionPool pool = AdmissionPool::View;
+    const std::string subprotocol(sp != nullptr ? sp : "", sp != nullptr ? sp_len : 0);
+    if (!subprotocol_pool(c->ctx_->services().config, subprotocol, &pool)) return 0;
+    if (!c->ctx_->admission().admit(pool)) return 0;
+    Local &l = c->locals_[local];
+    l.admitted = true;
+    l.pool = pool;
     return 1;
   }
 
@@ -301,6 +356,19 @@ struct AbiCarrier::Thunks {
     if (it == c->locals_.end() || !it->second.admitted || it->second.opened || it->second.doomed) {
       c->doom_locked(local, "opened-without-admit");
       return;
+    }
+    // TRK1 (Q3): a track subprotocol on a view slot, or a view one on a track slot, is closed
+    // 1011. A subprotocol in neither list keeps today's behaviour on a view slot.
+    {
+      AdmissionPool sp_pool = AdmissionPool::View;
+      const std::string subprotocol(sp != nullptr ? sp : "", sp != nullptr ? sp_len : 0);
+      if (!subprotocol_pool(c->ctx_->services().config, subprotocol, &sp_pool)) {
+        sp_pool = AdmissionPool::View;
+      }
+      if (sp_pool != it->second.pool) {
+        c->doom_locked(local, "admit-pool-mismatch");
+        return;
+      }
     }
     it->second.opened = true;
     Event e;
@@ -500,6 +568,7 @@ AbiCarrier::AbiCarrier(const grc_carrier_v1 &vt) : vt_(vt), name_(vt.name) {
   host_.host = this;
   host_.config = &Thunks::config;
   host_.admit = &Thunks::admit;
+  host_.admit_subprotocol = &Thunks::admit_subprotocol;  // TRK1, at the struct's end
   host_.opened = &Thunks::opened;
   host_.text = &Thunks::text;
   host_.closed = &Thunks::closed;
@@ -547,7 +616,7 @@ void AbiCarrier::stop() {
   stopped_ = true;
   // Slots of connections the carrier never closed return now; the set is finishing anyway.
   for (auto &entry : locals_) {
-    if (entry.second.admitted) ctx_->admission().release();
+    if (entry.second.admitted) ctx_->admission().release(entry.second.pool);
   }
   locals_.clear();
   pending_close_.clear();
@@ -562,7 +631,7 @@ void AbiCarrier::push_locked(Event e) {
 void AbiCarrier::forget_locked(std::uint32_t local) {
   const auto it = locals_.find(local);
   if (it == locals_.end()) return;
-  if (it->second.admitted) ctx_->admission().release();
+  if (it->second.admitted) ctx_->admission().release(it->second.pool);
   locals_.erase(it);
 }
 
@@ -648,8 +717,9 @@ CarrierInfo AbiCarrier::info() const {
 // ------------------------------------------------------------------------ the set
 
 struct CarrierSet::Slot final : CarrierContext {
-  Slot(CarrierSet *owner, std::uint8_t i, std::unique_ptr<Carrier> c, std::size_t cap)
-      : set(owner), index(i), carrier(std::move(c)), name(carrier->name()), own(cap) {}
+  Slot(CarrierSet *owner, std::uint8_t i, std::unique_ptr<Carrier> c, std::size_t cap,
+       std::size_t track_cap)
+      : set(owner), index(i), carrier(std::move(c)), name(carrier->name()), own(cap, track_cap) {}
   // The carrier goes first: its teardown may still call back into this context.
   ~Slot() override { carrier.reset(); }
 
@@ -679,10 +749,10 @@ struct CarrierSet::Slot final : CarrierContext {
   std::uint64_t messages_sent = 0;
 };
 
-CarrierSet::CarrierSet(std::size_t max_connections, CarrierServices services)
+CarrierSet::CarrierSet(std::size_t max_connections, CarrierServices services, std::size_t max_tracks)
     : max_connections_(max_connections),
       services_(std::move(services)),
-      admission_(max_connections) {}
+      admission_(max_connections, max_tracks) {}
 
 CarrierSet::~CarrierSet() {
   // No stop() here: each carrier's destructor tears down what is still running without a flush
@@ -711,7 +781,8 @@ bool CarrierSet::add(std::uint8_t index, std::unique_ptr<Carrier> carrier, std::
       return false;
     }
   }
-  slots_[index] = std::make_unique<Slot>(this, index, std::move(carrier), max_connections_);
+  slots_[index] = std::make_unique<Slot>(this, index, std::move(carrier), max_connections_,
+                                         admission_.cap(AdmissionPool::Track));
   return true;
 }
 
@@ -757,7 +828,13 @@ std::vector<Event> CarrierSet::take_events() {
       out.reserve(events.size());
     }
     for (Event &e : events) {
-      if (e.kind == Event::Opened) ++slot->sessions;
+      // TRK1 (T19): `sessions` counts view connections only; a track's Opened is not one.
+      if (e.kind == Event::Opened) {
+        AdmissionPool pool = AdmissionPool::View;
+        if (!subprotocol_pool(services_.config, e.subprotocol, &pool) || pool == AdmissionPool::View) {
+          ++slot->sessions;
+        }
+      }
       if (e.kind == Event::HttpGet && e.method == "GET") ++slot->resource_gets;
       e.conn = carrier_conn(slot->index, e.conn);
       e.carrier = slot->name;
@@ -834,6 +911,10 @@ bool CarrierSet::started(std::uint8_t index) const {
 
 std::size_t CarrierSet::admitted() const { return admission_.held(); }
 std::size_t CarrierSet::admitted_max() const { return admission_.held_max(); }
+std::size_t CarrierSet::admitted_tracks() const { return admission_.held(AdmissionPool::Track); }
+std::size_t CarrierSet::admitted_tracks_max() const {
+  return admission_.held_max(AdmissionPool::Track);
+}
 
 std::uint64_t CarrierSet::faults(std::uint8_t index, const std::string &code) const {
   const Slot *slot = slots_[index].get();

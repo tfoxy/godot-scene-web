@@ -73,6 +73,20 @@
 // atomically on every connection open or close (CAR8), and again at stop. The per-connection
 // `carrier` is a field of each `open` line in the live log, live.jsonl (rs_live.cpp).
 //
+// Tracks (TRK1, protocol/tracks-design.md): GRC_LIVE_TRACKS (a comma list of kinds; `/1` builds
+// `input`) opens render-stream-track.1 connections on the same listener, admitted from their own
+// pool (GRC_LIVE_MAX_TRACKS, 1..16, default 4), each authorized by its kind's credential in
+// evidence/live-track-<kind>-token (mode 0600, never the view token). live_drain hands every
+// track connection to rs::tracks::TrackHub (rs_tracks.h) before the view Hub sees it; the hub
+// never parses a payload. GRC_LIVE_TRACK_RATE (1..10000/s, burst twice it) and
+// GRC_LIVE_TRACK_KEEPALIVE_MS (250..30000) tune it; a bad setting refuses live as a whole
+// (tracks-invalid, tracks-reserved, tracks-need-evidence-dir, track-*-invalid,
+// track-token-write-failed). evidence/live-tracks.json (render-stream-live-tracks/1) is written
+// at listen, after any frame that opened or closed a track, and at stop. Unset: nothing changes
+// (T3) -- no track subprotocol, no config key, no token file, no live-tracks.json. Sabotages
+// (GRC_SABOTAGE, need GRC_LIVE_TRACKS): track-view-token-accepted, track-rate-off,
+// track-grant-ignored, track-no-release.
+//
 // WebTransport (CAR3, carrier-design.md D8, D9, D11, Q4): `wt` in GRC_LIVE_CARRIERS loads the net
 // module (rs_net_module.h: GRC_LIVE_NET_MODULE, else librender_stream_net.so beside this .so;
 // `net-module-missing` / `net-module-abi` when it cannot) and starts carrier `wt` (index 1,
@@ -219,6 +233,7 @@
 #include "rs_texture_payload.h"
 #include "rs_texture_release.h"
 #include "rs_item_meta_host.h"
+#include "rs_tracks.h"
 #include "rs_ws.h"
 #include "vtable.h"
 
@@ -402,6 +417,12 @@ struct Live {
   std::string tls_cert;
   std::string tls_key;
   std::unique_ptr<rs2::Hub> hub;
+  // TRK1 (tracks-design.md Q5, T3): the track grant and its hub, built only when GRC_LIVE_TRACKS
+  // grants a kind (null otherwise: live_drain's one extra null test). Declared after `carriers`,
+  // whose set it sends through, so it is destroyed first.
+  rs::tracks::TrackConfig track_config;
+  uint64_t max_tracks = 0;
+  std::unique_ptr<rs::tracks::TrackHub> tracks;
   // After the end records went out: wait (bounded) for the receivers to close first
   // (rs2::Hub::finish).
   bool ending = false;
@@ -480,7 +501,8 @@ bool is_listener_sabotage(const char *kind) {
   return text == "no-cors" || text == "accept-any-origin" || text == "token-ignored" ||
          text == "window-overrun" || text == "corrupt-coded-body" ||
          text == "coding-wrong-prefix" || text == "predict-stale" || text == "zr-overrun" ||
-         text == "zr-short-run";
+         text == "zr-short-run" || text == "track-view-token-accepted" || text == "track-rate-off" ||
+         text == "track-grant-ignored" || text == "track-no-release";
 }
 
 // W13b/W13r: the listener sabotages that code one /13 patch wrongly.
@@ -1878,6 +1900,113 @@ void refresh_live_carriers() {
   }
 }
 
+// TRK1 (tracks-design.md Q9): evidence/live-tracks.json, only with tracks on; written at listen,
+// atomically after any frame that opened or closed a track, and at stop.
+void refresh_live_tracks() {
+  if (!g_state.evidence_ready || g_live.tracks == nullptr || g_live.carriers == nullptr) return;
+  rs::tracks::TrackHub::Extras extras;
+  extras.max_tracks = static_cast<std::size_t>(g_live.max_tracks);
+  extras.admitted_max = g_live.carriers->admitted_tracks_max();
+  for (unsigned i = 0; i < 256; ++i) {
+    const auto index = static_cast<std::uint8_t>(i);
+    live::Carrier *c = g_live.carriers->carrier(index);
+    if (c == nullptr) continue;
+    rs::tracks::CarrierTracks ct;
+    ct.name = c->name();
+    // ws serves tracks; wt not until TRK3's features bit; a consumer carrier cannot be judged.
+    if (index == live::kCarrierWs) {
+      ct.tracks = g_live.carriers->started(index);
+    } else if (index == live::kCarrierWt) {
+      ct.tracks = false;
+    }
+    extras.carriers.push_back(std::move(ct));
+  }
+  const std::string path = path_join(g_state.evidence_dir, "live-tracks.json");
+  const std::string tmp = path + ".tmp";
+  if (!write_file(tmp, g_live.tracks->json(extras)) || std::rename(tmp.c_str(), path.c_str()) != 0) {
+    log_line("could not refresh " + path);
+  }
+}
+
+// TRK1 (tracks-design.md Q8): GRC_LIVE_TRACKS and its knobs into g_live.track_config. True with
+// tracks off (the pure path) or a valid grant; false with *why the typed refusal.
+bool tracks_configure(std::string *why) {
+  g_live.track_config = rs::tracks::TrackConfig();
+  g_live.max_tracks = 0;
+  if (!rs::tracks::parse_kinds(std::getenv("GRC_LIVE_TRACKS"), &g_live.track_config.kinds, why)) {
+    return false;
+  }
+  const bool on = !g_live.track_config.kinds.empty();
+  rs::tracks::Sabotage sabotage = rs::tracks::Sabotage::None;
+  const bool track_sabotage = rs::tracks::parse_sabotage(g_live.listener_sabotage, &sabotage);
+  if (!on) {
+    if (track_sabotage) {
+      *why = "sabotage " + g_live.listener_sabotage + " needs GRC_LIVE_TRACKS";
+      return false;
+    }
+    return true;
+  }
+  const auto ranged = [why](const char *name, uint64_t def, uint64_t lo, uint64_t hi, uint64_t *out,
+                            const char *reason) {
+    if (!env_positive(name, def, out) || *out < lo || *out > hi) {
+      *why = std::string(reason) + ": " + name + " (a decimal integer " + std::to_string(lo) + ".." +
+             std::to_string(hi) + ")";
+      return false;
+    }
+    return true;
+  };
+  uint64_t rate = 0;
+  uint64_t keepalive = 0;
+  if (!ranged("GRC_LIVE_MAX_TRACKS", 4, 1, 16, &g_live.max_tracks, "track-max-invalid") ||
+      !ranged("GRC_LIVE_TRACK_RATE", 1000, 1, 10000, &rate, "track-rate-invalid") ||
+      !ranged("GRC_LIVE_TRACK_KEEPALIVE_MS", 1000, 250, 30000, &keepalive, "track-keepalive-invalid")) {
+    return false;
+  }
+  // TRK6 builds GRC_LIVE_TRACK_INPUT_INJECT=reference and TRK5 GRC_LIVE_TRACK_CAPS=hmac; until
+  // then a set value refuses rather than silently serving without it.
+  const std::string inject = env_string("GRC_LIVE_TRACK_INPUT_INJECT");
+  if (!inject.empty()) {
+    *why = inject == "reference" ? "track-inject-invalid: reference injection is not built yet (TRK6)"
+                                 : "track-inject-invalid: GRC_LIVE_TRACK_INPUT_INJECT=" + inject;
+    return false;
+  }
+  const std::string caps = env_string("GRC_LIVE_TRACK_CAPS");
+  if (!caps.empty()) {
+    *why = caps == "hmac" ? "track-caps-invalid: hmac capabilities are not built yet (TRK5)"
+                          : "track-caps-invalid: GRC_LIVE_TRACK_CAPS=" + caps;
+    return false;
+  }
+  if (!g_state.evidence_ready) {
+    *why = "tracks-need-evidence-dir";
+    return false;
+  }
+  g_live.track_config.rate_per_s = static_cast<uint32_t>(rate);
+  g_live.track_config.burst = static_cast<uint32_t>(rate * 2);
+  g_live.track_config.keepalive_ms = static_cast<uint32_t>(keepalive);
+  g_live.track_config.sabotage = sabotage;
+  return true;
+}
+
+// TRK1 (tracks-design.md Q2, T5): one credential per granted kind, after every live and track
+// setting passed and after the view token, never equal to it, mode 0600.
+bool tracks_write_credentials(const std::string &view_token, std::string *why) {
+  for (const std::string &kind : g_live.track_config.kinds) {
+    std::string credential;
+    for (int attempt = 0; attempt < 4 && (credential.empty() || credential == view_token); ++attempt) {
+      credential = rs::tracks::generate_credential();
+    }
+    const std::string path = path_join(g_state.evidence_dir, "live-track-" + kind + "-token");
+    if (credential.empty() || credential == view_token ||
+        !rs::tracks::write_secret_file(path, credential)) {
+      *why = "track-token-write-failed: " + path;
+      return false;
+    }
+    g_live.track_config.credentials[kind] = credential;
+  }
+  g_live.track_config.view_token = view_token;
+  return true;
+}
+
 // HC4a test knob: GRC_HC_SHADOW=1, read at stream start (the shadow oracle).
 bool g_hc_shadow = false;
 // HC4b: the first budget or serving shadow-oracle difference (GRC_HC_SHADOW=1).
@@ -2279,6 +2408,9 @@ void stream_start() {
   std::string live_auth_token;
   rs2::Auth live_auth = rs2::Auth::None;
   bool live_ok = sabotage.ok && !g_live.listen.empty();
+  if (g_live.listen.empty() && !env_string("GRC_LIVE_TRACKS").empty()) {
+    log_line("live: GRC_LIVE_TRACKS ignored (no GRC_LIVE_LISTEN)");  // TRK1 (Q8), like every GRC_LIVE_*
+  }
   if (live_ok) {
     std::string why;
     const char *tap = std::getenv("GRC_LIVE_TAP_DIR");
@@ -2372,6 +2504,9 @@ void stream_start() {
       // TAG1 (client-extensions-design.md §2.1): the operator's grant, empty by default.
       live_ok = false;
       why = g_meta.config_error;
+    } else if (!tracks_configure(&why)) {
+      // TRK1 (tracks-design.md Q8): the track checks, after every other live check.
+      live_ok = false;
     }
     live_config.item_meta_grant = g_meta.grant;
     live_config.predict_zr = g_live.listener_sabotage == "zr-overrun"     ? rs13::ZrSabotage::Overrun
@@ -2419,7 +2554,12 @@ void stream_start() {
         }
       }
     }
+    if (live_ok && !g_live.track_config.kinds.empty() &&
+        !tracks_write_credentials(live_auth_token, &why)) {
+      live_ok = false;
+    }
     if (!live_ok) {
+      g_live.track_config = rs::tracks::TrackConfig();
       live_decided("refused", why);
     }
   }
@@ -3017,6 +3157,13 @@ void stream_start() {
     server_config.cors_headers = g_live.listener_sabotage != "no-cors";
     server_config.codings = g_live.http_codings;  // G8kz
     server_config.corrupt_coded_body = g_live.listener_sabotage == "corrupt-coded-body";
+    const bool tracks_on = !g_live.track_config.kinds.empty();
+    if (tracks_on) {
+      // TRK1 (tracks-design.md Q3, Q7): matched after every view subprotocol, admitted from the
+      // track pool. Off: neither member is touched (T3).
+      server_config.track_subprotocols = {rs::tracks::kTrackSubprotocolV1};
+      server_config.max_tracks = static_cast<std::size_t>(g_live.max_tracks);
+    }
     g_live.http_coding_on = !g_live.http_codings.empty();
     g_live.address = live_host;
     std::string error;
@@ -3074,9 +3221,11 @@ void stream_start() {
           c["tls_key"] = g_live.tls_key;
         }
         if (g_state.evidence_ready) c["evidence_dir"] = g_state.evidence_dir;
+        if (tracks_on) c["track_subprotocols"] = join(server_config.track_subprotocols);  // TRK1
       }
       g_live.carriers = std::make_unique<live::CarrierSet>(
-          static_cast<std::size_t>(live_max_connections), std::move(services));
+          static_cast<std::size_t>(live_max_connections), std::move(services),
+          tracks_on ? static_cast<std::size_t>(g_live.max_tracks) : 0);
       bool added = false;
       if (g_live.ws_enabled) {
         auto ws = std::make_unique<live::WsCarrier>(server_config, g_live.served.get(), 2000);
@@ -3156,8 +3305,26 @@ void stream_start() {
       tmpl.resources.auth = live_auth;  // G2e: "bearer" exactly when GRC_LIVE_AUTH=token.
       tmpl.resources.mesh_dynamic = g_stream.mesh_dynamic;  // W11b: encoded at /11 only
       g_live.hub = std::make_unique<rs2::Hub>(g_live.carriers.get(), live_config, tmpl);
+      if (tracks_on) {
+        // TRK1: the view Hub's hello timeout and the carrier's text cap apply to tracks too.
+        rs::tracks::TrackConfig tc = g_live.track_config;
+        tc.hello_timeout_ms = live_config.hello_timeout_ms;
+        tc.max_message_bytes = server_config.max_inbound_text;
+        tc.tap_dir = live_config.tap_dir;
+        g_live.tracks = std::make_unique<rs::tracks::TrackHub>(
+            std::move(tc), *g_live.carriers, [](const std::string &line) { log_line(line); });
+        std::string kinds;
+        for (const std::string &k : g_live.track_config.kinds) kinds += (kinds.empty() ? "" : ",") + k;
+        log_line("live: tracks kinds=" + kinds + " max_tracks=" + std::to_string(g_live.max_tracks) +
+                 " rate=" + std::to_string(g_live.track_config.rate_per_s) +
+                 " keepalive_ms=" + std::to_string(g_live.track_config.keepalive_ms) +
+                 (g_live.track_config.sabotage != rs::tracks::Sabotage::None
+                      ? std::string(" sabotage=") + rs::tracks::sabotage_name(g_live.track_config.sabotage)
+                      : std::string()));
+      }
       live_decided("listening", std::string());
       emit_live_carriers();
+      refresh_live_tracks();
     }
   }
   g_stream.status = "open";
@@ -3263,9 +3430,19 @@ void live_drain(uint64_t frame) {
       log_line("live: 401 unauthorized upgrade (missing or wrong bearer token)");
       continue;
     }
+    // TRK1 (tracks-design.md T7, Q5): a track connection never reaches the view Hub, which would
+    // map its unknown subprotocol to a view version and send it a session.
+    if (g_live.tracks != nullptr && g_live.tracks->claims(event)) {
+      g_live.tracks->on_event(event, monotonic_ns());
+      continue;
+    }
     g_live.hub->on_event(rs2::to_live_event(event), frame);
   }
   if (connections_changed) refresh_live_carriers();
+  if (g_live.tracks != nullptr) {
+    g_live.tracks->tick(monotonic_ns());  // hello timeout, idle, the host's keepalives
+    if (g_live.tracks->take_changed()) refresh_live_tracks();
+  }
 }
 
 // The end of the linger: close whatever is still open with 1000, stop the
@@ -3276,10 +3453,15 @@ void live_close_and_stop() {
   }
   live_drain(g_state.frames_total);
   g_live.hub->close_open(g_state.frames_total);
+  if (g_live.tracks != nullptr) {
+    // TRK1 (Q5): a track that opened during the linger ends before the carriers stop.
+    g_live.tracks->close_all(1001, "stream-ended");
+  }
   if (g_live.carriers != nullptr) {
     g_live.carriers->stop();  // ws: the 2-second flush budget
     emit_live_carriers();
   }
+  refresh_live_tracks();
   g_live.stopped = true;
   g_live.ending = false;
   if (g_live.served != nullptr) {
@@ -3360,6 +3542,11 @@ void live_finish(rs2::EndReason reason, bool blocking) {
     return;
   }
   live_drain(g_state.frames_total);
+  if (g_live.tracks != nullptr) {
+    // TRK1 (T13): tracks end with live, at once, and never hold the linger open.
+    g_live.tracks->close_all(1001, "stream-ended");
+    refresh_live_tracks();
+  }
   g_live.hub->finish(reason, g_state.frames_total, monotonic_ns());
   g_live.ending = true;
   g_live.linger_deadline_ns = monotonic_ns() + kLiveLingerNs;

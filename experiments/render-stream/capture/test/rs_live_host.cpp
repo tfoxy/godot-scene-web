@@ -55,6 +55,21 @@
 // entry.cpp logs to stdout.log where it has one (`live: 403 origin <origin> <method> <route>`).
 //
 // The transport is the CarrierSet (rs_carrier_set.h) with `ws` at index 0, as in entry.cpp.
+//
+// TRK1 (protocol/tracks-design.md Q5): --tracks=<kinds> builds the same TrackHub entry.cpp builds
+// (rs_tracks.h, the kinds parsed by parse_kinds) and routes track connections to it before the
+// view Hub, exactly as live_drain does; its credentials are written to
+// <--evidence-dir>/live-track-<kind>-token (required) and stdout prints
+// "RS_LIVE_HOST_TRACK_TOKEN_FILE <path>" per kind. --max-tracks=N (default 4),
+// --track-rate=N (default 1000/s, burst twice it), --track-keepalive-ms=N (default 1000) and
+// --hello-timeout-ms=N (default 5000) are its knobs. An in-host test receiver binds every granted
+// kind (--track-receiver=none binds nothing; --track-formats=a,b and --track-down-formats=a,b
+// set what it declares, default gsw-input/1 and none; --track-echo sends each up payload back as
+// a down payload) and records opened/message/closed as JSON lines to --track-out=FILE -- the only
+// place a payload is ever written, so the self-test can compare them (test-only). GRC_SABOTAGE
+// also takes the four track sabotages (track-view-token-accepted, track-rate-off,
+// track-grant-ignored, track-no-release). At stop the tracks close 1001 `stream-ended` before
+// the view linger, and <--evidence-dir>/live-tracks.json is written (also after every change).
 
 #include <chrono>
 #include <csignal>
@@ -78,6 +93,7 @@
 #include "rs_expose.h"
 #include "rs_net_module.h"
 #include "rs_live.h"
+#include "rs_tracks.h"
 #include "rs_publish.h"
 #include "rs_ws.h"
 
@@ -139,6 +155,83 @@ void print(const std::string &line) {
   std::fflush(stdout);
 }
 
+std::vector<std::string> split_commas(const std::string &text) {
+  std::vector<std::string> out;
+  std::size_t start = 0;
+  while (!text.empty() && start <= text.size()) {
+    std::size_t comma = text.find(',', start);
+    if (comma == std::string::npos) comma = text.size();
+    out.push_back(text.substr(start, comma - start));
+    start = comma + 1;
+  }
+  return out;
+}
+
+std::string json_string(const std::string &value) {
+  std::string out = "\"";
+  for (const char ch : value) {
+    const unsigned char c = static_cast<unsigned char>(ch);
+    if (c == '"' || c == '\\') {
+      out.push_back('\\');
+      out.push_back(ch);
+    } else if (c < 0x20) {
+      char buf[8];
+      std::snprintf(buf, sizeof buf, "\\u%04x", c);
+      out += buf;
+    } else {
+      out.push_back(ch);
+    }
+  }
+  out.push_back('"');
+  return out;
+}
+
+// TRK1: the recording test receiver (test-only: the one place payloads are written).
+class RecordingReceiver final : public grc::rs::tracks::TrackReceiver {
+ public:
+  RecordingReceiver(std::vector<std::string> formats, std::vector<std::string> down, std::FILE *out)
+      : formats_(std::move(formats)), down_(std::move(down)), out_(out) {}
+  void set_hub(grc::rs::tracks::TrackHub *hub, bool echo) {
+    hub_ = hub;
+    echo_ = echo;
+  }
+  std::vector<std::string> formats() const override { return formats_; }
+  std::vector<std::string> down_formats() const override { return down_; }
+  void opened(const grc::rs::tracks::TrackInfo &info) override {
+    write("{\"event\":\"opened\",\"source\":" + std::to_string(info.source) + ",\"kind\":" +
+          json_string(info.kind) + ",\"format\":" + json_string(info.format) + ",\"down_format\":" +
+          (info.down_format.empty() ? std::string("null") : json_string(info.down_format)) +
+          ",\"client\":" + json_string(info.client) + ",\"carrier\":" + json_string(info.carrier) +
+          ",\"origin\":" + json_string(info.origin) + ",\"view\":" +
+          (info.view ? "{\"stream_id\":" + json_string(info.view->stream_id) +
+                           ",\"connection\":" + std::to_string(info.view->connection) + "}"
+                     : std::string("null")) +
+          "}");
+  }
+  void message(std::uint32_t source, const std::string &text) override {
+    write("{\"event\":\"message\",\"source\":" + std::to_string(source) + ",\"text\":" +
+          json_string(text) + "}");
+    if (echo_ && hub_ != nullptr) hub_->send(source, text);
+  }
+  void closed(std::uint32_t source, std::uint16_t code, const std::string &reason) override {
+    write("{\"event\":\"closed\",\"source\":" + std::to_string(source) + ",\"code\":" +
+          std::to_string(code) + ",\"reason\":" + json_string(reason) + "}");
+  }
+
+ private:
+  void write(const std::string &line) {
+    if (out_ == nullptr) return;
+    std::fputs(line.c_str(), out_);
+    std::fputc('\n', out_);
+    std::fflush(out_);
+  }
+  std::vector<std::string> formats_;
+  std::vector<std::string> down_;
+  std::FILE *out_;
+  grc::rs::tracks::TrackHub *hub_ = nullptr;
+  bool echo_ = false;
+};
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -156,6 +249,18 @@ int main(int argc, char **argv) {
   std::string mem_out;
   std::string skip_register;
   bool register_checks = false;
+  // TRK1
+  std::string track_kinds_text;
+  bool tracks_flag = false;
+  unsigned long max_tracks = 4;
+  unsigned long track_rate = 1000;
+  unsigned long track_keepalive_ms = 1000;
+  unsigned long hello_timeout_ms = 5000;
+  std::string track_out;
+  std::string track_receiver = "bound";
+  std::string track_formats = "gsw-input/1";
+  std::string track_down_formats;
+  bool track_echo = false;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     const auto value_of = [&](const char *flag) -> const char * {
@@ -188,6 +293,27 @@ int main(int argc, char **argv) {
       mem_out = v;
     } else if (const char *v = value_of("--skip-register")) {
       skip_register = v;
+    } else if (const char *v = value_of("--tracks")) {
+      tracks_flag = true;
+      track_kinds_text = v;
+    } else if (const char *v = value_of("--max-tracks")) {
+      max_tracks = std::strtoul(v, nullptr, 10);
+    } else if (const char *v = value_of("--track-rate")) {
+      track_rate = std::strtoul(v, nullptr, 10);
+    } else if (const char *v = value_of("--track-keepalive-ms")) {
+      track_keepalive_ms = std::strtoul(v, nullptr, 10);
+    } else if (const char *v = value_of("--hello-timeout-ms")) {
+      hello_timeout_ms = std::strtoul(v, nullptr, 10);
+    } else if (const char *v = value_of("--track-out")) {
+      track_out = v;
+    } else if (const char *v = value_of("--track-receiver")) {
+      track_receiver = v;
+    } else if (const char *v = value_of("--track-formats")) {
+      track_formats = v;
+    } else if (const char *v = value_of("--track-down-formats")) {
+      track_down_formats = v;
+    } else if (arg == "--track-echo") {
+      track_echo = true;
     } else if (arg == "--register-checks") {
       register_checks = true;
     }
@@ -272,10 +398,65 @@ int main(int argc, char **argv) {
   }
   const char *sabotage_env = std::getenv("GRC_SABOTAGE");
   const std::string sabotage = sabotage_env != nullptr ? sabotage_env : "";
+  grc::rs::tracks::Sabotage track_sabotage = grc::rs::tracks::Sabotage::None;
+  const bool is_track_sabotage = grc::rs::tracks::parse_sabotage(sabotage, &track_sabotage);
   if (!sabotage.empty() && sabotage != "no-cors" && sabotage != "accept-any-origin" &&
-      sabotage != "token-ignored") {
+      sabotage != "token-ignored" && !is_track_sabotage) {
     std::fprintf(stderr, "rs_live_host: GRC_SABOTAGE %s is not a listener sabotage\n", sabotage.c_str());
     return 2;
+  }
+  // TRK1: the grant, its knobs (entry.cpp's ranges) and the credentials, before anything listens.
+  grc::rs::tracks::TrackConfig track_config;
+  if (tracks_flag) {
+    std::string why;
+    if (!grc::rs::tracks::parse_kinds(track_kinds_text.c_str(), &track_config.kinds, &why)) {
+      std::fprintf(stderr, "rs_live_host: %s\n", why.c_str());
+      return 2;
+    }
+  }
+  const bool tracks_on = !track_config.kinds.empty();
+  if (is_track_sabotage && !tracks_on) {
+    std::fprintf(stderr, "rs_live_host: sabotage %s needs --tracks\n", sabotage.c_str());
+    return 2;
+  }
+  if (tracks_on) {
+    if (max_tracks < 1 || max_tracks > 16) {
+      std::fprintf(stderr, "rs_live_host: track-max-invalid\n");
+      return 2;
+    }
+    if (track_rate < 1 || track_rate > 10000) {
+      std::fprintf(stderr, "rs_live_host: track-rate-invalid\n");
+      return 2;
+    }
+    if (track_keepalive_ms < 250 || track_keepalive_ms > 30000) {
+      std::fprintf(stderr, "rs_live_host: track-keepalive-invalid\n");
+      return 2;
+    }
+    if (evidence_dir.empty()) {
+      std::fprintf(stderr, "rs_live_host: tracks-need-evidence-dir\n");
+      return 2;
+    }
+    track_config.rate_per_s = static_cast<std::uint32_t>(track_rate);
+    track_config.burst = static_cast<std::uint32_t>(track_rate * 2);
+    track_config.keepalive_ms = static_cast<std::uint32_t>(track_keepalive_ms);
+    track_config.hello_timeout_ms = hello_timeout_ms;
+    track_config.max_message_bytes = server_config.max_inbound_text;
+    track_config.tap_dir = tap_dir;
+    track_config.sabotage = track_sabotage;
+    track_config.view_token = token;
+    grc::make_directories(evidence_dir);
+    for (const std::string &kind : track_config.kinds) {
+      std::string credential;
+      while (credential.empty() || credential == token) credential = grc::rs::tracks::generate_credential();
+      const std::string path = evidence_dir + "/live-track-" + kind + "-token";
+      if (!grc::rs::tracks::write_secret_file(path, credential)) {
+        std::fprintf(stderr, "rs_live_host: track-token-write-failed: %s\n", path.c_str());
+        return 2;
+      }
+      track_config.credentials[kind] = credential;
+    }
+    server_config.track_subprotocols = {grc::rs::tracks::kTrackSubprotocolV1};
+    server_config.max_tracks = max_tracks;
   }
   server_config.subprotocols = {kSubprotocolV7, "render-stream.6"};
   server_config.hello_token_subprotocols = {kSubprotocolV7};
@@ -311,6 +492,7 @@ int main(int argc, char **argv) {
   services.config["expose"] = expose == grc::live::Expose::Lan ? "lan" : "loopback";
   services.config["wt_cert"] = "self";
   if (!evidence_dir.empty()) services.config["evidence_dir"] = evidence_dir;
+  if (tracks_on) services.config["track_subprotocols"] = grc::rs::tracks::kTrackSubprotocolV1;
   // CAR6: declared before the set, so its report runs after the set destroyed every carrier.
   struct ExtStats {
     std::string name;
@@ -330,7 +512,7 @@ int main(int argc, char **argv) {
     }
   } ext_report;
   std::vector<std::unique_ptr<ExtStats>> &ext_stats = ext_report.stats;
-  grc::live::CarrierSet transport(server_config.max_clients, services);
+  grc::live::CarrierSet transport(server_config.max_clients, services, tracks_on ? max_tracks : 0);
   auto ws_carrier = std::make_unique<grc::live::WsCarrier>(server_config, &source, 2000);
   grc::live::WsCarrier *ws = ws_carrier.get();
   grc::live::NetWtCarrier *wt = nullptr;
@@ -473,6 +655,52 @@ int main(int argc, char **argv) {
   tmpl.resources.auth = token.empty() ? Auth::None : Auth::Bearer;
   Hub hub(&transport, live_config, tmpl);
   ServingSummary serving;
+  // TRK1: the track hub and its recording receiver, as entry.cpp builds them.
+  std::FILE *track_file = nullptr;
+  if (tracks_on && !track_out.empty()) {
+    track_file = std::fopen(track_out.c_str(), "wb");
+    if (track_file == nullptr) {
+      std::fprintf(stderr, "rs_live_host: cannot write %s\n", track_out.c_str());
+      return 1;
+    }
+  }
+  std::vector<std::string> receiver_down;
+  if (!track_down_formats.empty()) receiver_down = split_commas(track_down_formats);
+  RecordingReceiver receiver(split_commas(track_formats), receiver_down, track_file);
+  std::unique_ptr<grc::rs::tracks::TrackHub> tracks;
+  const auto write_tracks_json = [&]() {
+    if (tracks == nullptr) return;
+    grc::rs::tracks::TrackHub::Extras extras;
+    extras.max_tracks = max_tracks;
+    extras.admitted_max = transport.admitted_tracks_max();
+    for (unsigned i = 0; i < 256; ++i) {
+      grc::live::Carrier *c = transport.carrier(static_cast<std::uint8_t>(i));
+      if (c == nullptr) continue;
+      grc::rs::tracks::CarrierTracks ct;
+      ct.name = c->name();
+      if (i == grc::live::kCarrierWs) ct.tracks = transport.started(grc::live::kCarrierWs);
+      if (i == grc::live::kCarrierWt) ct.tracks = false;
+      extras.carriers.push_back(ct);
+    }
+    const std::string path = evidence_dir + "/live-tracks.json";
+    const std::string tmp = path + ".tmp";
+    if (grc::write_file(tmp, tracks->json(extras))) std::rename(tmp.c_str(), path.c_str());
+  };
+  if (tracks_on) {
+    tracks = std::make_unique<grc::rs::tracks::TrackHub>(
+        track_config, transport, [](const std::string &line) { print(line); });
+    if (track_receiver != "none") {
+      for (const std::string &kind : track_config.kinds) {
+        std::string why;
+        if (!tracks->bind(kind, &receiver, &why)) {
+          std::fprintf(stderr, "rs_live_host: bind %s: %s\n", kind.c_str(), why.c_str());
+          return 2;
+        }
+      }
+      receiver.set_hub(tracks.get(), track_echo);
+    }
+    write_tracks_json();
+  }
   const grc::rs::Captured snapshot = scene();
   print("RS_LIVE_HOST_PORT " + std::to_string(has_ws ? ws->port() : 0));
   if (wt != nullptr) {
@@ -481,10 +709,22 @@ int main(int argc, char **argv) {
     print("RS_LIVE_HOST_CERT_SHA256 " + info.cert_sha256);
   }
   if (tls != nullptr) print("RS_LIVE_HOST_TLS_SHA256 " + tls->cert_sha256());
+  for (const std::string &kind : track_config.kinds) {
+    print("RS_LIVE_HOST_TRACK_TOKEN_FILE " + evidence_dir + "/live-track-" + kind + "-token");
+  }
 
   std::uint64_t frame = 0;
   const auto drain = [&]() {
     for (const grc::live::Event &event : transport.take_events()) {
+      // TRK1: entry.cpp's live_drain routing -- a track connection never reaches the view Hub.
+      if (tracks != nullptr && tracks->claims(event)) {
+        if (event.kind == grc::live::Event::Opened) {
+          print("live: track connection conn=" + std::to_string(event.conn) + " origin=" + event.origin +
+                (event.carrier.empty() ? "" : " carrier=" + event.carrier));
+        }
+        tracks->on_event(event, now_ns());
+        continue;
+      }
       switch (event.kind) {
         case grc::live::Event::HttpGet: {
           const bool preflight = event.method == "OPTIONS";
@@ -523,9 +763,15 @@ int main(int argc, char **argv) {
     }
   };
 
+  const auto track_tick = [&]() {
+    if (tracks == nullptr) return;
+    tracks->tick(now_ns());
+    if (tracks->take_changed()) write_tracks_json();
+  };
   while (!g_stop) {
     ++frame;
     drain();
+    track_tick();
     const std::uint64_t now = now_ns();
     hub.on_frame(frame, now, hub.wants_snapshot(frame, now) ? &snapshot : nullptr, 1, 0);
     std::this_thread::sleep_for(std::chrono::milliseconds(16));
@@ -534,6 +780,10 @@ int main(int argc, char **argv) {
   // entry.cpp's shutdown: the end record, a linger for the receivers to close, then the rest.
   // Everything the I/O thread already answered reaches the hub before the end records go out.
   drain();
+  if (tracks != nullptr) {
+    tracks->close_all(1001, "stream-ended");  // T13: before the view linger, never held by it
+    write_tracks_json();
+  }
   hub.finish(EndReason::Shutdown, frame, now_ns());
   const std::uint64_t deadline = now_ns() + 1500ull * 1000ull * 1000ull;
   while (hub.open_connections() > 0 && now_ns() < deadline) {
@@ -542,7 +792,13 @@ int main(int argc, char **argv) {
   }
   drain();
   hub.close_open(frame);
+  if (tracks != nullptr) tracks->close_all(1001, "stream-ended");
   transport.stop();
+  if (tracks != nullptr) {
+    tracks->take_changed();
+    write_tracks_json();
+  }
+  if (track_file != nullptr) std::fclose(track_file);
   if (tls != nullptr && has_ws) {
     const grc::live::Server::TlsStats t = ws->tls_stats();
     print("RS_LIVE_HOST_TLS_STATS connections=" + std::to_string(t.tls_connections) +
