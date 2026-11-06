@@ -1,0 +1,344 @@
+{
+  "description": "Pad slots: each (Gamepad.index) and merge (slot 0).",
+  "vectors": [
+    {
+      "name": "each: Gamepad.index is the slot",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 2
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [
+          {
+            "event": "joypad_button",
+            "device": 2,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "each: indices at or above maxSlots (4) are ignored",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 4
+            },
+            {
+              "mapping": "standard",
+              "buttons": [0, 1],
+              "axes": [],
+              "index": 0
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 1,
+            "pressed": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "each: maxSlots widens the slot range",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 4
+            },
+            {
+              "mapping": "standard",
+              "buttons": [0, 1],
+              "axes": [],
+              "index": 0
+            }
+          ]
+        }
+      ],
+      "options": {
+        "maxSlots": 6
+      },
+      "expect": [
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 1,
+            "pressed": true
+          },
+          {
+            "event": "joypad_button",
+            "device": 4,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "each: a disconnect releases only that slot",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0
+            },
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 1
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          },
+          {
+            "event": "joypad_button",
+            "device": 1,
+            "button_index": 0,
+            "pressed": true
+          }
+        ],
+        [
+          {
+            "event": "joypad_button",
+            "device": 1,
+            "button_index": 0,
+            "pressed": false
+          }
+        ]
+      ]
+    },
+    {
+      "name": "merge: buttons from every pad are ORed into slot 0",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0
+            },
+            {
+              "mapping": "standard",
+              "buttons": [1, 1],
+              "axes": [],
+              "index": 1
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0
+            },
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 1
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 0
+            },
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 1
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 0
+            },
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [],
+              "index": 1
+            }
+          ]
+        }
+      ],
+      "options": {
+        "pads": "merge"
+      },
+      "expect": [
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 1,
+            "pressed": true
+          }
+        ],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 1,
+            "pressed": false
+          }
+        ],
+        [],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          }
+        ]
+      ]
+    },
+    {
+      "name": "merge: the largest-magnitude axis wins",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.5],
+              "index": 0
+            },
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [-0.75],
+              "index": 3
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.5],
+              "index": 0
+            },
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.25],
+              "index": 3
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.5],
+              "index": 0
+            }
+          ]
+        },
+        {
+          "pads": []
+        }
+      ],
+      "options": {
+        "pads": "merge"
+      },
+      "expect": [
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": -0.75
+          }
+        ],
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.5
+          }
+        ],
+        [],
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0
+          }
+        ]
+      ]
+    }
+  ]
+}

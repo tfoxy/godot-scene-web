@@ -61,6 +61,10 @@ export default defineConfig({
         import.meta.url,
       ).pathname,
       // Subpaths (`/keyboard`, `/gamepad`, `/pointer`) go ABOVE this entry when they land: prefix match.
+      "@godot-scene-web/input/gamepad": new URL(
+        "./packages/input/src/gamepad.ts",
+        import.meta.url,
+      ).pathname,
       "@godot-scene-web/input": new URL(
         "./packages/input/src/index.ts",
         import.meta.url,

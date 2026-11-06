@@ -1,0 +1,283 @@
+{
+  "description": "neutralizeHeldOnStart: controls held in the first sample are ignored until released.",
+  "vectors": [
+    {
+      "name": "a button held at start is ignored until released",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1, 1],
+              "axes": []
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1, 0],
+              "axes": []
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1, 1],
+              "axes": []
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0, 1],
+              "axes": []
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1, 1],
+              "axes": []
+            }
+          ]
+        }
+      ],
+      "options": {
+        "neutralizeHeldOnStart": true
+      },
+      "expect": [
+        [],
+        [],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 1,
+            "pressed": true
+          }
+        ],
+        [],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "an axis held at start rejoins below 0.35; small values pass at once",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.9, 0.2]
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.4, 0.2]
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.34, 0.2]
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.9, 0.2]
+            }
+          ]
+        }
+      ],
+      "options": {
+        "neutralizeHeldOnStart": true
+      },
+      "expect": [
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 1,
+            "axis_value": 0.1992
+          }
+        ],
+        [],
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.3398
+          }
+        ],
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.8984
+          }
+        ]
+      ]
+    },
+    {
+      "name": "a trigger held at start is neutralized like an axis",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                {
+                  "value": 0.8
+                }
+              ],
+              "axes": []
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                {
+                  "value": 0.1
+                }
+              ],
+              "axes": []
+            }
+          ]
+        }
+      ],
+      "options": {
+        "neutralizeHeldOnStart": true
+      },
+      "expect": [
+        [],
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 4,
+            "axis_value": 0.1016
+          }
+        ]
+      ]
+    },
+    {
+      "name": "the first sample is the first frame with a usable pad",
+      "frames": [
+        {
+          "pads": []
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": []
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": []
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": []
+            }
+          ]
+        }
+      ],
+      "options": {
+        "neutralizeHeldOnStart": true
+      },
+      "expect": [
+        [],
+        [],
+        [],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "without the option a held button presses at once",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": []
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      ]
+    }
+  ]
+}

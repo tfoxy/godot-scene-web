@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseBarrelExports } from "../../../scripts/parse-barrel-exports";
+import * as gamepad from "../src/gamepad";
+import gamepadSource from "../src/gamepad.ts?raw";
 import * as input from "../src/index";
 import indexSource from "../src/index.ts?raw";
 
@@ -40,5 +42,42 @@ describe("@godot-scene-web/input export surface", () => {
     );
     for (const kind of input.POINTER_TARGET_KINDS)
       expect(input.INPUT_RECORD_KINDS).toContain(kind);
+  });
+});
+
+const GAMEPAD_VALUE_EXPORTS = `
+createGamepadCapture latched LATCH_PRESS LATCH_RELEASE STANDARD_GAMEPAD_MAP
+`
+  .trim()
+  .split(/\s+/);
+
+const GAMEPAD_TYPE_EXPORTS = `
+GamepadButtonSnapshot GamepadSnapshot StandardGamepadView GamepadNonStandardPolicy GamepadPadsMode
+GamepadRecord GamepadSink GamepadHeldState GamepadEventTarget GamepadVisibilitySource
+GamepadCaptureOptions GamepadCapture
+`
+  .trim()
+  .split(/\s+/);
+
+describe("@godot-scene-web/input/gamepad export surface", () => {
+  it("exports exactly the checked-in value list", () => {
+    expect(Object.keys(gamepad).sort()).toEqual(
+      [...GAMEPAD_VALUE_EXPORTS].sort(),
+    );
+    // Declared in place rather than re-exported, so read the declarations themselves.
+    const declared = (kinds: string) =>
+      [
+        ...gamepadSource.matchAll(
+          new RegExp(`^export (?:${kinds}) (\\w+)`, "gm"),
+        ),
+      ]
+        .map((match) => match[1])
+        .sort();
+    expect(declared("const|function")).toEqual(
+      [...GAMEPAD_VALUE_EXPORTS].sort(),
+    );
+    expect(declared("interface|type")).toEqual(
+      [...GAMEPAD_TYPE_EXPORTS].sort(),
+    );
   });
 });

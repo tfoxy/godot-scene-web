@@ -1,0 +1,104 @@
+{
+  "description": "Which Gamepad.mapping values are read (nonStandard option).",
+  "vectors": [
+    {
+      "name": "xr-standard is always skipped",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "xr-standard",
+              "buttons": [1],
+              "axes": []
+            }
+          ]
+        }
+      ],
+      "options": {
+        "nonStandard": "as-standard"
+      },
+      "expect": [[]]
+    },
+    {
+      "name": "a non-standard pad is skipped by default",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "",
+              "buttons": [1],
+              "axes": [0.5]
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [[]]
+    },
+    {
+      "name": "as-standard reads a non-standard pad in standard order",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "",
+              "buttons": [1],
+              "axes": [0.5]
+            }
+          ]
+        }
+      ],
+      "options": {
+        "nonStandard": "as-standard"
+      },
+      "expect": [
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.5
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "a skipped pad leaves the standard pad beside it alone",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "",
+              "buttons": [1],
+              "axes": [],
+              "index": 0
+            },
+            {
+              "mapping": "standard",
+              "buttons": [0, 1],
+              "axes": [],
+              "index": 1
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [
+          {
+            "event": "joypad_button",
+            "device": 1,
+            "button_index": 1,
+            "pressed": true
+          }
+        ]
+      ]
+    }
+  ]
+}

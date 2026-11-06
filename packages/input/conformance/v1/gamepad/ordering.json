@@ -1,0 +1,139 @@
+{
+  "description": "Per frame: every button release, then axis motions, then presses; slots ascending.",
+  "vectors": [
+    {
+      "name": "releases precede motions precede presses",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+              "axes": []
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+              "axes": [0.5]
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 11,
+            "pressed": true
+          }
+        ],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 11,
+            "pressed": false
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.5
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 1,
+            "pressed": true
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 12,
+            "pressed": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "across slots every release comes before any press",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 0
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0, 1],
+              "axes": [],
+              "index": 0
+            },
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [],
+              "index": 1
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 1,
+            "pressed": true
+          },
+          {
+            "event": "joypad_button",
+            "device": 1,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      ]
+    }
+  ]
+}

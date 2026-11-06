@@ -1,0 +1,223 @@
+{
+  "description": "Disconnect, hidden tab and dispose release held state.",
+  "vectors": [
+    {
+      "name": "a disconnect releases its buttons and zeroes its axes",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                {
+                  "value": 0.5
+                }
+              ],
+              "axes": [0.5]
+            }
+          ]
+        },
+        {
+          "pads": []
+        },
+        {
+          "pads": []
+        }
+      ],
+      "options": {},
+      "expect": [
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.5
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 5,
+            "axis_value": 0.5
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 5,
+            "axis_value": 0
+          }
+        ],
+        []
+      ]
+    },
+    {
+      "name": "a hidden tab releases; visible again presses what is still held",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [-1]
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [-1]
+            }
+          ],
+          "visibility": "hidden"
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [-1]
+            }
+          ],
+          "visibility": "hidden"
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [-1]
+            }
+          ],
+          "visibility": "visible"
+        }
+      ],
+      "options": {},
+      "expect": [
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": -1
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0
+          }
+        ],
+        [],
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": -1
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "dispose releases what is held and stops",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": []
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": []
+            }
+          ],
+          "dispose": true
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": []
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          }
+        ],
+        []
+      ]
+    }
+  ]
+}

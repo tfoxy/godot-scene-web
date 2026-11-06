@@ -1,0 +1,305 @@
+{
+  "description": "Analog policy: rest floor 0.02, 1/256 quanta with <= 4 decimals, changed axes only, maxHz.",
+  "vectors": [
+    {
+      "name": "values below the 0.02 rest floor read 0",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.019, -0.01, 0.02, -0.02]
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.015, 0, 0.01, -0.02]
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 2,
+            "axis_value": 0.0195
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 3,
+            "axis_value": -0.0195
+          }
+        ],
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 2,
+            "axis_value": 0
+          }
+        ]
+      ]
+    },
+    {
+      "name": "axes are quantized to 1/256 and an unchanged quantum is not resent",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.3]
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.301]
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [-0.7344]
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.5]
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [-0.03125]
+            }
+          ]
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.03125]
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.3008
+          }
+        ],
+        [],
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": -0.7344
+          }
+        ],
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.5
+          }
+        ],
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": -0.0313
+          }
+        ],
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.0313
+          }
+        ]
+      ]
+    },
+    {
+      "name": "out-of-range sticks clamp to -1..1 and triggers to 0..1",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                {
+                  "value": 1.2
+                },
+                {
+                  "value": -0.5
+                }
+              ],
+              "axes": [1.5, -2]
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "expect": [
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 1
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 1,
+            "axis_value": -1
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 4,
+            "axis_value": 1
+          }
+        ]
+      ]
+    },
+    {
+      "name": "maxHz delays axis updates but never buttons",
+      "frames": [
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [],
+              "axes": [0.5]
+            }
+          ],
+          "t": 0
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [0.75]
+            }
+          ],
+          "t": 16
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [0.75]
+            }
+          ],
+          "t": 33
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [1],
+              "axes": [1]
+            }
+          ],
+          "t": 50
+        },
+        {
+          "pads": [
+            {
+              "mapping": "standard",
+              "buttons": [0],
+              "axes": [1]
+            }
+          ],
+          "t": 66
+        }
+      ],
+      "options": {
+        "maxHz": 30
+      },
+      "expect": [
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.5
+          }
+        ],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ],
+        [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.75
+          }
+        ],
+        [],
+        [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 1
+          }
+        ]
+      ]
+    }
+  ]
+}

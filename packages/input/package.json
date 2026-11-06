@@ -19,6 +19,11 @@
       "development": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./gamepad": {
+      "development": "./src/gamepad.ts",
+      "types": "./dist/gamepad.d.ts",
+      "import": "./dist/gamepad.js"
     }
   },
   "main": "./dist/index.js",
