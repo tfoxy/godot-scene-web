@@ -50,6 +50,12 @@ bool hooks_image_payload_available();
 // every other caller "other" (loader threads). Called at SCENE initialisation.
 void hooks_set_main_thread();
 
+// LS0 (live-swap-design.md D3, F2): GRC_VALIDATION_LOG, set once at SCENE initialisation before the
+// vtable is patched. Off (the default) skips the validation logs that fill counters.json
+// `captured`; counters.json carries `validation_log` so a validation runner can assert it.
+void hooks_set_validation_log(bool on);
+bool hooks_validation_log();
+
 // GRC_RESOURCE_FORMATS / GRC_RESOURCE_MAX_PAYLOAD_BYTES, set at arm before the
 // texture hook log starts.
 void hooks_set_resource_policy(const rs::FormatPolicy &formats, uint64_t max_payload_bytes);

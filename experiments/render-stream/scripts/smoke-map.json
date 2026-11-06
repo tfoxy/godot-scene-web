@@ -779,6 +779,14 @@
       "reach": ["native:gate8@*", "g7:g7-8@*", "g7live:g7-8@*"]
     },
     {
+      "why": "LS0's validation-log guard (live-swap-design.md D3, K5): the checkers of gates -1, 2 (with 2f) and 3 refuse a leg whose counters.json validation_log is not \"on\"; gate 7's g7-2 and g7-3 replay gates 2 and 3",
+      "paths": [
+        "experiments/render-stream/scripts/lib/validation-log.ts",
+        "experiments/render-stream/scripts/test/self-test-validation-log.ts"
+      ],
+      "reach": ["pure", "native:gate-minus1@*", "native:gate2@*", "native:gate3@*", "g7:g7-2@*", "g7:g7-3@*"]
+    },
+    {
       "why": "LAR0's registry checks (late-arm-registry-design.md): registry-live-bound and registry-cost, read only by g8a's checker (native gate 8), with a pure self-test",
       "paths": ["experiments/render-stream/scripts/lib/registry-checks.ts"],
       "reach": ["pure", "native:gate8@*"]

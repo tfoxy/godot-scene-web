@@ -21,6 +21,8 @@ import {
   REGISTRY_CREATE_HOOKS,
   type RegistryEvidence,
   registryCost,
+  validationLogCost,
+  VALIDATION_LOG_COST_BOUND_US,
   shaderClockOrigin,
   registryLiveBound,
   isDeferredLeg,
@@ -221,6 +223,41 @@ const s = (f: number, c: number, cb: number): CostSample => ({
 expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1)] }, 96).problems.includes("no regoff samples"), "missing config fails");
 expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1)], regoff: [s(1, 1, 1)] }, Number.NaN).problems.length === 1, "no call count fails");
 expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1), s(1, 1, 1)], regoff: [s(1, 1, 1)] }, 96).problems.length === 1, "unpaired fails");
+
+// LS0: material_set_param judged alone, on - regoff paired by round, at the per-call budget.
+{
+  const sp = (churn: number, params: number): CostSample => ({ frame_us_p50: 1, churn_us_mean: churn, callback_us_mean: 900, params_us: params });
+  const quiet = [sp(400, 100), sp(410, 105), sp(405, 98)];
+  const cheap = registryCost({ off: quiet, on: [sp(420, 120), sp(425, 118), sp(430, 112)], regoff: quiet }, 96, 64);
+  const judged = cheap.comparisons.find((c) => c.judged && c.metric === "params_us");
+  expect(cheap.problems.length === 0 && judged?.delta === 14 && judged.allowed === 64,
+    `0.3 µs a param call passes a 1 µs budget (${cheap.problems.join("; ")}; ${judged?.delta}, ${judged?.allowed})`);
+  const dear = registryCost({ off: quiet, on: [sp(420, 190), sp(425, 185), sp(430, 180)], regoff: quiet }, 96, 64);
+  expect(dear.problems.length === 1 && dear.problems[0].startsWith("material_set_param alone"),
+    `3 µs a param call fails alone, the churn passing (${dear.problems.join("; ")})`);
+  expect(registryCost({ off: quiet, on: [s(1, 420, 900), s(1, 420, 900), s(1, 420, 900)], regoff: quiet }, 96, 64).problems.length === 1,
+    "missing params_us fails once param calls are named");
+  expect(registryCost({ off: quiet, on: quiet, regoff: quiet }, 96).problems.length === 0, "no param calls named: not judged");
+}
+
+// LS0 validation-log-cost
+{
+  const i = (v: number) => ({ cpu_us_mean: v });
+  const base = [750, 760, 745, 755, 748].map(i);
+  const near = (d: number) => base.map((x) => i(x.cpu_us_mean + d));
+  const ok = validationLogCost({ a0: base, b: near(8), c: near(22) });
+  expect(ok.problems.length === 0 && ok.comparisons.length === 2, `b +8 and c +22 pass (${ok.problems.join("; ")})`);
+  const bad = validationLogCost({ a0: base, b: near(8), c: near(22 + 80) });
+  expect(bad.problems.length === 1 && bad.problems[0].startsWith("c - a0"), `K2 back on c fails (${bad.problems.join("; ")})`);
+  const sab = validationLogCost({ a0: base, cs: near(100) }, ["cs"]);
+  expect(sab.problems.length === 1, "the sabotage's legs fail the same judgement");
+  expect(validationLogCost({ a0: base, b: near(VALIDATION_LOG_COST_BOUND_US.b) }, ["b"]).problems.length === 0, "the bound itself passes");
+  expect(validationLogCost({ a0: [], b: base }).problems.includes("no a0 samples"), "no a0 fails");
+  expect(validationLogCost({ a0: base, b: near(1), c: near(1).slice(1) }).problems.length === 1, "unpaired fails");
+  // a noisy outlier round does not decide: the median does
+  const noisy = base.map((x, k) => i(x.cpu_us_mean + (k === 2 ? 300 : 10)));
+  expect(validationLogCost({ a0: base, c: noisy }, ["c"]).problems.length === 0, "one outlier round is not the median");
+}
 
 // clock-origin (LAR7)
 {

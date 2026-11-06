@@ -182,6 +182,9 @@ export interface CostSample {
   frame_us_p50: number;
   churn_us_mean: number;
   callback_us_mean: number;
+  /** LS0: the scale report's params block (section_us.params, RS_SCALE_CPU_REPORT=1): wall µs a frame
+   * of `paramCalls` material_set_param calls, judged alone. Absent in older samples. */
+  params_us?: number;
 }
 
 export interface CostComparison {
@@ -207,7 +210,9 @@ const median = (xs: number[]) => {
 };
 
 /** The metrics registry-cost reads (frame_us_p50 is sleep-paced, see the header). */
-export const COST_METRICS: (keyof CostSample)[] = ["churn_us_mean", "callback_us_mean"];
+export const COST_METRICS: ("churn_us_mean" | "callback_us_mean")[] = ["churn_us_mean", "callback_us_mean"];
+/** LS0: the metric `material_set_param` is judged alone on (its calls a frame, not the churn's). */
+export const PARAM_METRIC: keyof CostSample = "params_us";
 
 /**
  * The registry's budget per tracked call (create, free, setter), in situ, wherever its cost lands
@@ -234,6 +239,7 @@ export const COST_CALLS_PER_TRIPLE = 6;
 export function registryCost(
   samples: Record<string, CostSample[]>,
   callsPerFrame: number,
+  paramCalls = 0,
 ): {
   problems: string[];
   comparisons: CostComparison[];
@@ -264,6 +270,26 @@ export function registryCost(
       const ref = samples.off.map((s) => s[metric]);
       const paired = ref.length === on.length ? on.map((v, i) => v - ref[i]) : [];
       comparisons.push({ metric, against: "off", on: median(on), ref: median(ref), delta: median(on) - median(ref), allowed: null, paired, judged: false, ok: true });
+    }
+  }
+  // LS0: material_set_param judged alone, on-regoff paired by round, at the same per-call budget.
+  // `paramCalls` is the report's param_updates; absent (0), the metric is not judged.
+  if (paramCalls > 0) {
+    const have = (c: string) => samples[c].every((s) => typeof s[PARAM_METRIC] === "number");
+    if (!have("on") || !have("regoff")) {
+      problems.push(`params_us missing from the on/regoff samples (RS_SCALE_CPU_REPORT=1 and RS_SCALE_PARAM_UPDATES=${paramCalls})`);
+    } else {
+      const on = samples.on.map((s) => s[PARAM_METRIC] as number);
+      const ref = samples.regoff.map((s) => s[PARAM_METRIC] as number);
+      const paired = on.map((v, i) => v - ref[i]);
+      const delta = median(paired);
+      const allowedParams = (paramCalls * REGISTRY_CALL_BUDGET_NS) / 1000;
+      const ok = Number.isFinite(delta) && delta <= allowedParams;
+      comparisons.push({ metric: PARAM_METRIC, against: "regoff", on: median(on), ref: median(ref), delta, allowed: allowedParams, paired, judged: true, ok });
+      if (!ok)
+        problems.push(
+          `material_set_param alone: on - regoff +${delta.toFixed(1)} µs over ${paramCalls} calls a frame (paired median of ${paired.map((d) => d.toFixed(1)).join(", ")}), budget ${allowedParams.toFixed(1)} µs (${REGISTRY_CALL_BUDGET_NS} ns a call)`,
+        );
     }
   }
   return { problems, comparisons };
@@ -323,4 +349,73 @@ export function shaderClockOrigin(
   if (want === "startup" && clock.source === "draw-hook" && clock.draws_missed !== 0)
     problems.push(`draws_missed ${clock.draws_missed}, want 0`);
   return { problems, detail };
+}
+
+/**
+ * LS0 validation-log-cost (a timing group): capture-scale at STS2's redraw rate (1,532 hooked calls
+ * a frame), loaded and unarmed, the main thread's CPU a frame (the scale report's cpu_us_mean) in
+ * four configs interleaved over rounds: `a0` (GRC_MODE=validate: loaded, nothing patched), `b`
+ * (hooks patched, never armed, GRC_ADOPT=off), `c` (b plus GRC_ADOPT=arm, the registry recording)
+ * and `cs` (c with the validation-log-ignored sabotage: the knob is read, the logs still run).
+ * Provenance: results/p3/idle-capture-cost.md measured the same legs with the logs on: (b) +72 µs,
+ * (c) +110 µs over no capture, K2 (the validation logs) 80 µs of it (paired c - d, 71-90 µs over 5
+ * rounds). The bound is on the paired median of (config - a0), per round. LS0 measured (5 rounds,
+ * machine at load 6-15, so noisy): b - a0 median -4 and c - a0 median +3 µs (means +26 and +19; the
+ * main thread's CPU a frame ran 790-920 µs round to round), and the sabotage +183 µs. Through the
+ * runner at load 3-5: b - a0 -22 and +17, c - a0 -2 and +35, the sabotage +98 and +114 µs over a0
+ * (+73 over c). The bounds are 6% (b) and 7% (c) of a frame's 840 µs: above the remaining registry
+ * work (creates and frees about 24 µs a frame at 96 calls, material_set_param about 4 µs at 8 calls)
+ * plus a median's noise, and under what K2 puts back (80 µs quiet, more under load). Under a load
+ * of 8 or more the numbers are not usable (one run read b - a0 +88, c - a0 +140): rerun on a quiet
+ * machine.
+ */
+export interface IdleSample {
+  cpu_us_mean: number;
+}
+
+export interface IdleComparison {
+  config: string;
+  against: "a0";
+  median: number;
+  paired: number[];
+  bound: number;
+  ok: boolean;
+}
+
+export const VALIDATION_LOG_COST_BOUND_US = {
+  b: 50,
+  c: 60,
+} as const;
+/** The sabotage must show at least this much of K2 (µs a frame) over the honest (c). */
+export const VALIDATION_LOG_SABOTAGE_MIN_US = 30;
+
+export function validationLogCost(
+  samples: Record<string, IdleSample[]>,
+  judge: readonly ("b" | "c" | "cs")[] = ["b", "c"],
+): { problems: string[]; comparisons: IdleComparison[] } {
+  const problems: string[] = [];
+  const comparisons: IdleComparison[] = [];
+  const a0 = samples.a0 ?? [];
+  if (a0.length === 0) return { problems: ["no a0 samples"], comparisons };
+  for (const config of judge) {
+    const rows = samples[config] ?? [];
+    if (rows.length === 0) {
+      problems.push(`no ${config} samples`);
+      continue;
+    }
+    if (rows.length !== a0.length) {
+      problems.push(`${rows.length} ${config} legs against ${a0.length} a0 legs: unpaired`);
+      continue;
+    }
+    const paired = rows.map((s, i) => s.cpu_us_mean - a0[i].cpu_us_mean);
+    const m = median(paired);
+    const bound = VALIDATION_LOG_COST_BOUND_US[config === "cs" ? "c" : config];
+    const ok = Number.isFinite(m) && m <= bound;
+    comparisons.push({ config, against: "a0", median: m, paired, bound, ok });
+    if (!ok)
+      problems.push(
+        `${config} - a0 +${m.toFixed(1)} µs a frame (paired median of ${paired.map((d) => d.toFixed(1)).join(", ")}), bound ${bound} µs`,
+      );
+  }
+  return { problems, comparisons };
 }

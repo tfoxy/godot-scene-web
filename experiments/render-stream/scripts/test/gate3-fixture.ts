@@ -471,6 +471,7 @@ export function counters(o: { quit?: number; extraClipTrue?: number } = {}) {
   const customEntries = [...custom.values()];
   return {
     schema: "render-stream-gate-minus1-counters/1",
+    validation_log: "on",
     frames_total: o.quit ?? CAPTURE_QUIT,
     hooks_planned: [...GATE0_HOOKS],
     hooks_omitted: [] as string[],

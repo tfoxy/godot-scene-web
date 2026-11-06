@@ -417,6 +417,7 @@ func _report() -> void:
 			sections[SECTIONS[k]] = (float(_section_us[k]) / _section_frames) if _section_frames > 0 else 0.0
 		summary["section_us"] = sections
 		summary["section_frames"] = _section_frames
+		summary["param_updates"] = _param_updates if _materials.size() > 0 else 0
 	var line: String = JSON.stringify(summary)
 	print("[scale] report " + line)
 	if OS.has_environment("RS_SCALE_REPORT"):

@@ -360,6 +360,7 @@ async function buildGoodEvidence(
   const armedDir = join(dir, "headless-armed");
   await writeJson(join(armedDir, "evidence", "counters.json"), {
     schema: "render-stream-gate-minus1-counters/1",
+    validation_log: "on",
     frames_total: 400,
     frames_armed: 340,
     hooks_planned: [],
@@ -629,6 +630,7 @@ const scenarios: Scenario[] = [
       await buildGoodEvidence(dir, expected);
       const counters = {
         schema: "render-stream-gate-minus1-counters/1",
+        validation_log: "on",
         frames_total: 400,
         counts: { canvas_item_add_rect: 2 },
         captured: {
@@ -669,6 +671,7 @@ const scenarios: Scenario[] = [
         join(dir, "headless-armed", "evidence", "counters.json"),
         {
           frames_total: 400,
+          validation_log: "on",
           captured: {
             canvas_item_add_polygon: [
               {

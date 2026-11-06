@@ -521,6 +521,87 @@ int main() {
            "skip-params: no parameter recorded");
   }
 
+  // LS0: interned parameter names and the latest value stored in place. A name is one immortal
+  // string known by its StringName identity (key); a value is stored over the previous one only
+  // when the registry alone holds it and the hook's overwrite accepts it.
+  {
+    using namespace grc::rs;
+    registry_configure(true, RegistryFault::None);
+    constexpr std::uint64_t kMat = 0x600000010, kMat2 = 0x600000011, kGone = 0x600000099;
+    constexpr std::uintptr_t kKeyTint = 0x7000, kKeyGain = 0x7008;
+    registry_note_create(kMat, RegistryKind::Material);
+    registry_note_create(kMat2, RegistryKind::Material);
+    auto num = [](int v) -> RegistryValue { return std::make_shared<int>(v); };
+    auto val = [](const RegistryValue &v) { return v != nullptr ? *static_cast<const int *>(v.get()) : -1; };
+    int overwrites = 0;
+    static int *overwrite_count = nullptr;
+    overwrite_count = &overwrites;
+    RegistryOverwrite store = [](const void *held, const void *variant) {
+      *const_cast<int *>(static_cast<const int *>(held)) = *static_cast<const int *>(variant);
+      ++*overwrite_count;
+      return true;
+    };
+    RegistryOverwrite refuse_store = [](const void *, const void *) { return false; };
+
+    expect(!registry_name_find(kKeyTint) && !registry_name_find(0), "names: an unseen key is empty");
+    int nine = 9;
+    RegistryName name;
+    expect(registry_note_param_fast(kMat, kKeyTint, &nine, store, &name) == RegistryParamFast::NeedName,
+           "names: an unseen key asks for its name");
+    const RegistryName tint = registry_name_intern(kKeyTint, "tint", std::make_shared<int>(0));
+    expect(tint == "tint" && registry_name_find(kKeyTint).same(tint), "names: a key finds its name");
+    expect(registry_name_intern(0, "gain", nullptr) == "gain" && !registry_name_find(0),
+           "names: no key or no keepalive caches nothing");
+    expect(registry_name_intern(kKeyGain, "gain", std::make_shared<int>(0)) == "gain" &&
+               registry_name_find(kKeyGain).same(registry_name_intern(0, "gain", nullptr)),
+           "names: one text, one string");
+    expect(registry_name_intern(kKeyTint, "tint", nullptr).same(tint), "names: interning is idempotent");
+
+    expect(registry_note_param_fast(kMat, kKeyTint, &nine, store, &name) == RegistryParamFast::NeedValue &&
+               name.same(tint),
+           "fast: a new parameter needs a value");
+    registry_note_material_param(kMat, name, num(1));
+    expect(registry_note_param_fast(kGone, kKeyTint, &nine, store, &name) == RegistryParamFast::Recorded,
+           "fast: an unknown material records nothing");
+    expect(registry_note_param_fast(kMat, kKeyTint, &nine, refuse_store, &name) == RegistryParamFast::NeedValue,
+           "fast: an overwrite the hook refuses falls back to a new value");
+    expect(registry_note_param_fast(kMat, kKeyTint, &nine, store, &name) == RegistryParamFast::Recorded &&
+               overwrites == 1,
+           "fast: an unshared value is stored over in place");
+    RegistryMaterial mat;
+    expect(registry_material(kMat, &mat) && mat.params.size() == 1 && val(mat.params[0].value) == 9 &&
+               mat.params[0].name.same(tint),
+           "fast: the stored value is the latest");
+    int eight = 8;
+    expect(registry_note_param_fast(kMat, kKeyTint, &eight, store, &name) == RegistryParamFast::NeedValue &&
+               overwrites == 1 && val(mat.params[0].value) == 9,
+           "fast: a value a reader holds is not touched");
+    registry_note_material_param(kMat, name, num(8));
+    expect(val(mat.params[0].value) == 9, "fast: the reader keeps the value it copied");
+    mat = RegistryMaterial();
+    expect(registry_material(kMat, &mat) && val(mat.params[0].value) == 8 &&
+               registry_stats().material_params == 1,
+           "fast: the replacement is the latest value, one parameter");
+    registry_note_material_param(kMat, tint, nullptr);
+    expect(registry_material(kMat, &mat) && mat.params.empty() && registry_stats().material_params == 0,
+           "names: a null value erases by name");
+    registry_note_material_param(kMat2, "tint", num(5));
+    expect(registry_material(kMat2, &mat) && mat.params[0].name.same(tint),
+           "names: the by-text entry point lands on the same interned name");
+
+    registry_configure(true, RegistryFault::SkipParams);
+    registry_note_create(kMat, RegistryKind::Material);
+    expect(registry_note_param_fast(kMat, kKeyTint, &nine, store, &name) == RegistryParamFast::Recorded &&
+               registry_material(kMat, &mat) && mat.params.empty(),
+           "fast: registry-skip-params records nothing");
+
+    registry_names_release();
+    expect(!registry_name_find(kKeyTint), "names: release forgets the keys");
+    expect(registry_name_intern(kKeyTint, "tint", std::make_shared<int>(0)).same(tint),
+           "names: the interned text survives a release");
+    registry_configure(true, RegistryFault::None);
+  }
+
   // LAR5: the particles payload -- every setter the mirror taps, the last writer winning, the
   // engine's refusals followed; a fresh emitter is GLES3's; erased with the kind entry.
   {

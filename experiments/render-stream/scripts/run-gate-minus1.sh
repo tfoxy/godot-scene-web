@@ -177,7 +177,7 @@ run_headless_leg() {
 
 	# Inherited GRC_* values are stripped so, e.g., an exported GRC_CALIBRATION cannot leak into
 	# refuse-nocal.
-	local -a cmd=(env -u DISPLAY -u WAYLAND_DISPLAY -u GRC_CALIBRATION -u GRC_DISARM_AFTER_FRAMES -u GRC_SCREENSHOT -u GRC_SCREENSHOT_FRAME -u GRC_STREAM_OUT -u GRC_RESOURCE_STORE_DIR GRC_EXTENSION="$EXTENSION" GRC_MODE="$grc_mode" GRC_EVIDENCE_DIR="$evidence_dir")
+	local -a cmd=(env -u DISPLAY -u WAYLAND_DISPLAY -u GRC_CALIBRATION -u GRC_DISARM_AFTER_FRAMES -u GRC_SCREENSHOT -u GRC_SCREENSHOT_FRAME -u GRC_STREAM_OUT -u GRC_RESOURCE_STORE_DIR GRC_EXTENSION="$EXTENSION" GRC_MODE="$grc_mode" GRC_EVIDENCE_DIR="$evidence_dir" GRC_VALIDATION_LOG=on)
 	[ -n "$calibration_path" ] && cmd+=(GRC_CALIBRATION="$calibration_path")
 	[ -n "$disarm_frames" ] && cmd+=(GRC_DISARM_AFTER_FRAMES="$disarm_frames")
 	# G6k (gate6-design.md Q2): a stream opens resources.jsonl (capture/src/entry.cpp's
@@ -192,6 +192,7 @@ run_headless_leg() {
 		echo "argv: --headless --path $FIXTURE_DIR"
 		echo "GRC_EXTENSION=$EXTENSION"
 		echo "GRC_MODE=$grc_mode"
+		echo "GRC_VALIDATION_LOG=on"
 		echo "GRC_EVIDENCE_DIR=$evidence_dir"
 		echo "GRC_CALIBRATION=${calibration_path:-<unset>}"
 		echo "GRC_DISARM_AFTER_FRAMES=${disarm_frames:-<unset>}"
@@ -310,7 +311,7 @@ run_rendered_leg() {
 	# baseline the handoff's transparency check names: "with capture armed and with capture absent".
 	local -a grc_env=(GRC_SCREENSHOT="$leg_dir/$screenshot_name" GRC_SCREENSHOT_FRAME="60")
 	if [ "$grc_mode" != "absent" ]; then
-		grc_env+=(GRC_EXTENSION="$EXTENSION" GRC_MODE="$grc_mode" GRC_EVIDENCE_DIR="$evidence_dir" GRC_CALIBRATION="$CALIBRATION")
+		grc_env+=(GRC_EXTENSION="$EXTENSION" GRC_MODE="$grc_mode" GRC_EVIDENCE_DIR="$evidence_dir" GRC_CALIBRATION="$CALIBRATION" GRC_VALIDATION_LOG=on)
 	fi
 	{
 		echo "binary: $BINARY"

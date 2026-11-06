@@ -80,6 +80,7 @@ import {
 } from "./gate1-checks";
 import type { Gate1Expected } from "./gate1-expected";
 import type { Gate2Class } from "./gate2-checks";
+import { assertValidationLog } from "./validation-log";
 import {
   type ClipRectValue,
   clipValueEqual,
@@ -1015,6 +1016,7 @@ interface CapturedClipEntry {
 }
 
 interface ClipCounters {
+  validation_log?: string;
   counts?: Record<string, number | null>;
   captured?: Record<string, CapturedClipEntry[] | unknown>;
   captured_dropped?: Record<string, number>;
@@ -1061,6 +1063,7 @@ export async function checkClipCallCensus(
 ): Promise<{ check: Gate3Check; census: ClipCensus | null }> {
   const path = join(outDir, "capture", "evidence", "counters.json");
   const counters = await readJson<ClipCounters>(path);
+  assertValidationLog(counters, path);
   const problems: string[] = [];
   if (!counters) {
     problems.push("counters.json missing or unparseable");

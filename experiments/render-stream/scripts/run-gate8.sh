@@ -720,7 +720,12 @@ G8A_COST_CONFIGS=(off on regoff)
 G8A_COST_ENV=(RS_FIXTURE_ARM=born GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip
 	GRC_ROOT_SIZE=presentation:1920x1080 RS_SCALE_ITEMS=600 RS_SCALE_TEXTURES=24 RS_SCALE_TEX_W=64
 	RS_SCALE_TEX_H=64 RS_SCALE_DRAWN_TEXTURES=24 RS_SCALE_FLOAT_TEXTURES=16 RS_SCALE_SHADERS=8
-	RS_SCALE_MATERIALS=80 RS_SCALE_WARMUP=60 RS_SCALE_RESOURCE_CHURN=16)
+	RS_SCALE_MATERIALS=80 RS_SCALE_WARMUP=60 RS_SCALE_RESOURCE_CHURN=16
+	# LS0: material_set_param judged alone (the scale report's params block, RS_SCALE_PARAM_UPDATES'
+	# default of 8 calls a frame: 64 a frame made the stream's frame callback, a metric here, 2 ms
+	# and its pairs +-100 us), and the validation logs off, the default these legs measure
+	# (run_capture turns them on).
+	RS_SCALE_CPU_REPORT=1 GRC_VALIDATION_LOG=off)
 G8A_COST_QUIT=420
 
 # run_registry_cost_capture <dir> <off|on|regoff>: one registry-cost leg (under timing_leg).
@@ -739,6 +744,41 @@ run_registry_cost_capture() {
 	CAPTURE_WITH_PATCH=1
 	# Only the scale report and evidence/perf.json are judged: the recording, the store and the
 	# hook log (~145 MB a leg) go.
+	rm -rf "${dir:?}/$RECORDING_NAME" "${dir:?}/store" "${dir:?}/evidence/resources.jsonl"
+}
+
+# LS0 validation-log-cost (a timing group, local only): fixtures/capture-scale at STS2's redraw rate
+# (~1,530 hooked calls a frame), loaded and unarmed, for 2,400 frames at --max-fps 60 (real time;
+# results/p3/idle-capture-cost.md's fixture legs). The scale report's cpu_us_mean is the main
+# thread's CPU a frame. Four configs, rotated over G8A_VLC_ROUNDS rounds: `a0` (GRC_MODE=validate:
+# loaded, nothing patched), `b` (hooks patched, GRC_ARM_DEFER_FRAMES never reached, GRC_ADOPT=off),
+# `c` (b with GRC_ADOPT=arm) and the sabotage (c with GRC_VALIDATION_LOG_SABOTAGE=ignored).
+G8A_VLC_ROUNDS=5
+G8A_VLC_CONFIGS=(a0 b c sabotage-validation-log-ignored)
+G8A_VLC_ENV=(RS_FIXTURE_ARM=born GRC_STREAM_VERSION=12 GRC_UNKNOWN_ITEM=skip
+	GRC_ROOT_SIZE=presentation:1920x1080 RS_SCALE_REDRAWS=170 RS_SCALE_REDRAW_VARY=11
+	RS_SCALE_RESOURCE_CHURN=16 RS_SCALE_CPU_REPORT=1 RS_SCALE_WARMUP=300 GRC_VALIDATION_LOG=off)
+G8A_VLC_QUIT=2400
+
+# run_validation_log_cost_capture <dir> <config>: one validation-log-cost leg (under timing_leg).
+run_validation_log_cost_capture() {
+	local dir="$1" config="$2"
+	mkdir -p "$dir"
+	cat /proc/loadavg >"$dir/loadavg.txt" 2>/dev/null || true
+	CAPTURE_FIXTURE_DIR="$G8A_COST_DIR"
+	CAPTURE_EXTRA_ENV=("${G8A_VLC_ENV[@]}" RS_SCALE_REPORT="$dir/scale-report.json")
+	CAPTURE_EXTRA_ARGS=(--max-fps 60)
+	case "$config" in
+	a0) CAPTURE_EXTRA_ENV+=(GRC_MODE=validate) ;;
+	b) CAPTURE_EXTRA_ENV+=(GRC_ARM_DEFER_FRAMES=1000000000 GRC_ADOPT=off) ;;
+	c) CAPTURE_EXTRA_ENV+=(GRC_ARM_DEFER_FRAMES=1000000000 GRC_ADOPT=arm) ;;
+	sabotage-validation-log-ignored)
+		CAPTURE_EXTRA_ENV+=(GRC_ARM_DEFER_FRAMES=1000000000 GRC_ADOPT=arm GRC_VALIDATION_LOG_SABOTAGE=ignored)
+		;;
+	esac
+	CAPTURE_WITH_PATCH=0
+	run_capture "$dir" "$G8A_VLC_QUIT" none
+	CAPTURE_WITH_PATCH=1
 	rm -rf "${dir:?}/$RECORDING_NAME" "${dir:?}/store" "${dir:?}/evidence/resources.jsonl"
 }
 
@@ -823,6 +863,24 @@ run_g8a_cost() {
 			for c in "${G8A_COST_CONFIGS[@]}"; do
 				echo "run-gate8: g8a registry-cost/$c-$r (capture-scale, born, GRC_ADOPT config $c)"
 				timing_leg "g8a-registry-cost-$c-$r" run_registry_cost_capture "$OUT/g8a/registry-cost/$c-$r" "$c"
+			done
+		done
+	fi
+	# LS0: validation-log-cost, the config order rotated by the round.
+	local -a vlc_dirs=()
+	local k n="${#G8A_VLC_CONFIGS[@]}"
+	for r in $(seq 1 "$G8A_VLC_ROUNDS"); do
+		for c in "${G8A_VLC_CONFIGS[@]}"; do
+			vlc_dirs+=("$OUT/g8a/validation-log-cost/$c-$r")
+		done
+	done
+	if ! legs_skip_group validation-log-cost "${vlc_dirs[@]}"; then
+		for r in $(seq 1 "$G8A_VLC_ROUNDS"); do
+			for k in $(seq 0 $((n - 1))); do
+				c="${G8A_VLC_CONFIGS[$(((k + r - 1) % n))]}"
+				echo "run-gate8: g8a validation-log-cost/$c-$r (capture-scale, loaded and unarmed)"
+				timing_leg "g8a-validation-log-cost-$c-$r" run_validation_log_cost_capture \
+					"$OUT/g8a/validation-log-cost/$c-$r" "$c"
 			done
 		done
 	fi

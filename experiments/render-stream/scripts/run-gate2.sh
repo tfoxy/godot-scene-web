@@ -280,7 +280,7 @@ run_reference() {
 	if [ "$armed" = "1" ]; then
 		mkdir -p "$dir/evidence"
 		LEG_ENV+=(
-			GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+			GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm GRC_VALIDATION_LOG=on
 			GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
 			GRC_RESOURCE_STORE_DIR="$dir/store"
 		)
@@ -394,7 +394,7 @@ start_live_host() {
 	shift
 	mkdir -p "$dir/evidence" "$dir/tap"
 	LEG_ENV=(
-		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm GRC_VALIDATION_LOG=on
 		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
 		GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME" GRC_RESOURCE_STORE_DIR="$dir/store"
 		GRC_ROOT_SIZE=enforce-min-size GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_TAP_DIR="$dir/tap"
@@ -752,7 +752,7 @@ g2_capture_rendered() {
 	shift
 	mkdir -p "$dir/evidence" "$dir/store" "$dir/shots"
 	LEG_ENV=(
-		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm GRC_VALIDATION_LOG=on
 		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
 		GRC_RESOURCE_STORE_DIR="$dir/store" GRC_ROOT_SIZE=enforce-min-size
 		RS_FIXTURE_TEXTURE_LOG="$dir/textures.jsonl" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl"

@@ -231,7 +231,7 @@ run_reference() {
 	if [ "$armed" = "1" ]; then
 		mkdir -p "$dir/evidence"
 		LEG_ENV+=(
-			GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+			GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm GRC_VALIDATION_LOG=on
 			GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
 			GRC_RESOURCE_STORE_DIR="$dir/store"
 		)

@@ -1366,6 +1366,7 @@ export async function writeCounters(
 ): Promise<void> {
   await writeJson(join(dir, "evidence", "counters.json"), {
     schema: "render-stream-gate-minus1-counters/1",
+    validation_log: "on",
     frames_total: quit,
     hooks_planned: [...GATE0_HOOKS],
     hooks_omitted: [],

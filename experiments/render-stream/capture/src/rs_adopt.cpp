@@ -2632,7 +2632,7 @@ bool adopt_material_registered(std::uint64_t rid, const rs::RegistryMaterial &re
   if (mat_sabotage() != AdoptMaterialSabotage::SkipParams) {
     params.reserve(reg.params.size());
     for (const rs::RegistryParam &p : reg.params) {
-      params.push_back({p.name, p.value.get()});
+      params.push_back({p.name.str(), p.value.get()});
     }
   }
   if (hooks_adopt_material(rid, reg.shader, params)) {
@@ -3423,7 +3423,7 @@ bool adopt_ppm(void *material, std::uint64_t rid) {
   std::set<std::string> seen;
   if (registered) {
     for (const rs::RegistryParam &p : reg.params) {
-      if (seen.insert(p.name).second) params.push_back({p.name, p.value.get()});
+      if (seen.insert(p.name.str()).second) params.push_back({p.name.str(), p.value.get()});
     }
   }
   // FOG-U: the placeholder's declared uniforms no setter ever set, read back from the server when

@@ -64,6 +64,7 @@ import {
 } from "./gate2c-checks";
 import { runG2e } from "./gate2e-checks";
 import { runG2f } from "./gate2f-checks";
+import { assertValidationLog } from "./validation-log";
 
 // ---------------------------------------------------------------------------------------------
 // Constants of the contract
@@ -1343,9 +1344,11 @@ interface TextureRectCapture {
 /** Texture RIDs the captured texture-rect draws name (counters.json), and dropped entries. */
 async function drawnTextureRids(dir: string) {
   const counters = await readJson<{
+    validation_log?: string;
     captured?: Record<string, TextureRectCapture[]>;
     captured_dropped?: Record<string, number>;
   }>(join(dir, "evidence", "counters.json"));
+  assertValidationLog(counters, join(dir, "evidence", "counters.json"));
   const rids = new Set<string>();
   let dropped = 0;
   for (const op of TEXTURE_DRAW_OPS) {

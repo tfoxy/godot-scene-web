@@ -2,7 +2,9 @@
 #include "rs_registry.h"
 
 #include <algorithm>
+#include <deque>
 #include <mutex>
+#include <unordered_map>
 #include <utility>
 
 #include "report.h"
@@ -54,6 +56,22 @@ struct State {
   std::uint64_t material_capacity = 0;
   std::uint64_t material_sets = 0;
   std::uint64_t material_params = 0;  // live recorded parameters, all materials
+  // LS0: the interned parameter names. Immortal texts (a deque never moves its elements); `by_key`
+  // is a small open-addressed table from a StringName's identity to its name (names are few and
+  // hot, so it stays in cache), `by_text` serves the by-text entry point.
+  struct NameEntry {
+    std::string text;
+    RegistryValue keepalive;  // the StringName copy that keeps `key` naming this text
+    std::uintptr_t key = 0;
+  };
+  std::deque<NameEntry> names;
+  std::unordered_map<std::string, NameEntry *> by_text;
+  struct KeySlot {
+    std::uintptr_t key = 0;
+    const std::string *text = nullptr;
+  };
+  std::vector<KeySlot> by_key;
+  std::size_t by_key_used = 0;
   // LAR5: the particles payload (a subset of `map`'s keys, created and erased with the kind entry).
   RidMap<RegistryParticles> particles;
   std::uint64_t particles_capacity = 0;
@@ -681,39 +699,186 @@ void registry_note_material_shader(std::uint64_t rid, std::uint64_t shader) {
   ++s.material_sets;
 }
 
-void registry_note_material_param(std::uint64_t rid, const std::string &name,
-                                  RegistryValue value) {
-  State &s = state();
-  RegistryValue old;  // released after the lock
-  std::lock_guard<std::mutex> lock(s.mutex);
+namespace {
+
+std::size_t key_slot(std::uintptr_t key, std::size_t mask) {
+  return static_cast<std::size_t>((key * 0x9E3779B97F4A7C15ull) >> 24) & mask;
+}
+
+const std::string *find_key_locked(State &s, std::uintptr_t key) {
+  if (key == 0 || s.by_key.empty()) {
+    return nullptr;
+  }
+  const std::size_t mask = s.by_key.size() - 1;
+  for (std::size_t i = key_slot(key, mask);; i = (i + 1) & mask) {
+    const State::KeySlot &slot = s.by_key[i];
+    if (slot.key == key) {
+      return slot.text;
+    }
+    if (slot.key == 0) {
+      return nullptr;
+    }
+  }
+}
+
+void insert_key_locked(State &s, std::uintptr_t key, const std::string *text) {
+  if (key == 0) {
+    return;
+  }
+  if ((s.by_key_used + 1) * 2 > s.by_key.size()) {
+    std::vector<State::KeySlot> old;
+    old.swap(s.by_key);
+    s.by_key.assign(old.empty() ? 64 : old.size() * 2, State::KeySlot());
+    s.by_key_used = 0;
+    for (const State::KeySlot &slot : old) {
+      if (slot.key != 0) {
+        insert_key_locked(s, slot.key, slot.text);
+      }
+    }
+  }
+  const std::size_t mask = s.by_key.size() - 1;
+  std::size_t i = key_slot(key, mask);
+  while (s.by_key[i].key != 0 && s.by_key[i].key != key) {
+    i = (i + 1) & mask;
+  }
+  if (s.by_key[i].key == 0) {
+    ++s.by_key_used;
+  }
+  s.by_key[i] = State::KeySlot{key, text};
+}
+
+// The interned entry of `text` (made on first sight).
+State::NameEntry *intern_locked(State &s, const std::string &text) {
+  const auto it = s.by_text.find(text);
+  if (it != s.by_text.end()) {
+    return it->second;
+  }
+  s.names.push_back(State::NameEntry{text, nullptr, 0});
+  State::NameEntry *entry = &s.names.back();
+  s.by_text.emplace(text, entry);
+  return entry;
+}
+
+// Stores (or erases, with a null `value`) `name` on a material; the caller holds the lock and
+// releases `old` after it.
+void param_store_locked(State &s, std::uint64_t rid, RegistryName name, RegistryValue &&value,
+                        RegistryValue *old) {
   if (s.fault == RegistryFault::SkipParams) {
-    old = std::move(value);
+    *old = std::move(value);
     return;
   }
   const auto it = s.material.find(rid);
   if (it == s.material.end()) {
-    old = std::move(value);
+    *old = std::move(value);
     return;
   }
   std::vector<RegistryParam> &params = it->second.params;
   auto p = params.begin();
-  while (p != params.end() && p->name != name) {
+  while (p != params.end() && !p->name.same(name)) {
     ++p;
   }
   if (value == nullptr) {
     if (p != params.end()) {
-      old = std::move(p->value);
+      *old = std::move(p->value);
       params.erase(p);
       --s.material_params;
     }
   } else if (p != params.end()) {
-    old = std::move(p->value);
+    *old = std::move(p->value);
     p->value = std::move(value);
   } else {
     params.push_back(RegistryParam{name, std::move(value)});
     ++s.material_params;
   }
   ++s.material_sets;
+}
+
+}  // namespace
+
+void registry_note_material_param(std::uint64_t rid, RegistryName name, RegistryValue value) {
+  State &s = state();
+  RegistryValue old;  // released after the lock
+  std::lock_guard<std::mutex> lock(s.mutex);
+  param_store_locked(s, rid, name, std::move(value), &old);
+}
+
+void registry_note_material_param(std::uint64_t rid, const std::string &name, RegistryValue value) {
+  State &s = state();
+  RegistryValue old;  // released after the lock
+  std::lock_guard<std::mutex> lock(s.mutex);
+  param_store_locked(s, rid, RegistryName(&intern_locked(s, name)->text), std::move(value), &old);
+}
+
+RegistryName registry_name_find(std::uintptr_t key) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  return RegistryName(find_key_locked(s, key));
+}
+
+RegistryName registry_name_intern(std::uintptr_t key, const std::string &text,
+                                  RegistryValue keepalive) {
+  State &s = state();
+  RegistryName name;
+  {
+    std::lock_guard<std::mutex> lock(s.mutex);
+    State::NameEntry *entry = intern_locked(s, text);
+    // A key is cached only with its keepalive, and only for the first live identity of a text (the
+    // engine interns, so a second one does not occur); otherwise the caller decodes each time.
+    if (key != 0 && keepalive != nullptr && entry->keepalive == nullptr) {
+      entry->keepalive = std::move(keepalive);
+      entry->key = key;
+      insert_key_locked(s, key, &entry->text);
+    }
+    name = RegistryName(&entry->text);
+  }
+  return name;  // a keepalive that was not stored is released here, after the lock
+}
+
+RegistryParamFast registry_note_param_fast(std::uint64_t rid, std::uintptr_t key,
+                                           const void *variant, RegistryOverwrite overwrite,
+                                           RegistryName *name) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  if (s.fault == RegistryFault::SkipParams) {
+    return RegistryParamFast::Recorded;
+  }
+  const std::string *text = find_key_locked(s, key);
+  if (text == nullptr) {
+    return RegistryParamFast::NeedName;
+  }
+  const auto it = s.material.find(rid);
+  if (it == s.material.end()) {
+    return RegistryParamFast::Recorded;
+  }
+  *name = RegistryName(text);
+  for (RegistryParam &p : it->second.params) {
+    if (p.name.same(*name)) {
+      // Only the registry holds it (a copy handed out under this lock shares the count), and the
+      // hook says the old value can be destroyed here: store the new one over it.
+      if (p.value.use_count() == 1 && overwrite(p.value.get(), variant)) {
+        ++s.material_sets;
+        return RegistryParamFast::Recorded;
+      }
+      break;
+    }
+  }
+  return RegistryParamFast::NeedValue;
+}
+
+void registry_names_release() {
+  State &s = state();
+  std::vector<RegistryValue> released;  // destroyed after the lock
+  {
+    std::lock_guard<std::mutex> lock(s.mutex);
+    for (State::NameEntry &e : s.names) {
+      if (e.keepalive != nullptr) {
+        released.push_back(std::move(e.keepalive));
+      }
+      e.key = 0;
+    }
+    s.by_key.clear();
+    s.by_key_used = 0;
+  }
 }
 
 bool registry_shader(std::uint64_t rid, RegistryShader *out) {

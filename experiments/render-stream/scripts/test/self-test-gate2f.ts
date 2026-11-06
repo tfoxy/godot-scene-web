@@ -124,6 +124,7 @@ function counters(
   over: { creates?: string; free?: string[]; dropped?: number } = {},
 ): Record<string, unknown> {
   return {
+    validation_log: "on",
     captured: {
       canvas_texture_create: [{ rid: String(SYNTH) }],
       texture_2d_create: [{ rid: over.creates ?? String(ENGINE) }],

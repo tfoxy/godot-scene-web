@@ -762,6 +762,10 @@ run_capture() {
 		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
 		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
 		RS_FIXTURE_STEP_LOG="$dir/steps.jsonl"
+		# LS0 (live-swap-design.md F2, K5): run_capture's legs are validation legs; the capture
+		# defaults the validation logs off, and a timing leg that measures the default passes
+		# GRC_VALIDATION_LOG=off in CAPTURE_EXTRA_ENV (later words win).
+		GRC_VALIDATION_LOG=on
 	)
 	if [ "$store" != "none" ]; then
 		LEG_ENV+=(GRC_RESOURCE_STORE_DIR="$store")

@@ -259,6 +259,12 @@ struct State {
   // lets a capture armed late still observe pre-arm resource creation (canvas_texture_create /
   // set_channel, ...), which the adoption path then resolves. 0 (default): arm at load.
   uint64_t defer_arm_frames = 0;
+  // LS0: the deferred arm's wait is logged once, not once a frame (an fprintf, an fflush and a
+  // write a frame, about 15 us on a standby seat; results/p3/idle-capture-cost.md).
+  bool defer_logged = false;
+  // LS0: GRC_VALIDATION_LOG, read once at SCENE initialisation. A value that is neither `on` nor
+  // `off` refuses at the first attempt, before the vtable is patched.
+  std::string validation_log_error;
   bool evidence_ready = false;
 
   Calibration calib;
@@ -275,6 +281,9 @@ struct State {
   // observed during a deferred arm's pre-arm frames; the arm itself (adoption/snapshot/publish)
   // is what GRC_ARM_DEFER_FRAMES defers.
   bool hooks_patched = false;
+  // LS0: the vtable was restored at shutdown or deinitialize although the capture never armed.
+  std::string unarmed_restore_phase;
+  bool unarmed_restore_restored = false;
   bool disarmed = false;
   bool disarm_was_shadow = false;
   bool disarm_restored = false;
@@ -797,6 +806,7 @@ std::string result_json() {
   json.field_or_null("reason", g_state.reason);
   json.field("vptr_written", g_state.vptr_written);
   json.field("disarmed", g_state.disarmed);
+  json.field_or_null("unarmed_restore", g_state.unarmed_restore_phase);  // LS0
   json.field_or_null("display_server", g_state.display_server);
   json.field_or_null("rendering_driver", g_state.rendering_driver);
   json.field_or_null("rendering_method", g_state.rendering_method);
@@ -4460,7 +4470,17 @@ bool attempt(const char *phase) {
   if (g_state.decided) {
     return true;
   }
-  log_line(std::string("attempting at ") + phase + " in mode " + g_state.mode);
+  // LS0: a deferred arm's retries (hooks patched, defer frame not reached) log nothing; the first
+  // attempt, the deferral and the arm itself are each one line.
+  const bool deferred_retry = g_state.hooks_patched && g_state.defer_arm_frames != 0 &&
+                              g_state.frames_total < g_state.defer_arm_frames;
+  if (!deferred_retry) {
+    log_line(std::string("attempting at ") + phase + " in mode " + g_state.mode);
+  }
+  if (!g_state.validation_log_error.empty()) {
+    refuse("invalid-validation-log");
+    return true;
+  }
 
   // LATE-SPINE: the checks run once, before the vtable is patched; a deferred arm's later
   // attempts re-run the slot-mask/behaviour checks on the now-patched vtable and would refuse.
@@ -4758,6 +4778,11 @@ bool attempt(const char *phase) {
   // (adoption/snapshot/publish) is deferred; the frame callback retries and completes it once the
   // defer frame passes.
   if (g_state.defer_arm_frames != 0 && g_state.frames_total < g_state.defer_arm_frames) {
+    if (!g_state.defer_logged) {
+      g_state.defer_logged = true;
+      log_line("arm deferred until frame " + std::to_string(g_state.defer_arm_frames) +
+               " (hooks patched, retries are silent)");
+    }
     return false;
   }
   g_state.armed = true;
@@ -4770,8 +4795,31 @@ bool attempt(const char *phase) {
   return true;
 }
 
+// LS0: a capture that patched the vtable and never armed (a deferred arm that never came, a
+// standby seat) restores it at shutdown and at deinitialize too. do_disarm returns early when not
+// armed, so before this the hooks outlived the library's teardown; on a signal-driven exit that
+// turned SIGABRT into SIGSEGV (results/p3/idle-capture-cost.md "Other findings").
+void restore_unarmed(const char *phase) {
+  if (g_state.armed || g_state.disarmed || !g_state.vptr_written ||
+      !g_state.unarmed_restore_phase.empty()) {
+    return;
+  }
+  bool was_shadow = false;
+  bool restored = false;
+  g_state.shadow.disarm(&was_shadow, &restored);
+  if (g_state.pump_connected) {
+    rs::predraw_pump_disconnect();
+    g_state.pump_connected = false;
+  }
+  g_state.unarmed_restore_phase = phase;
+  g_state.unarmed_restore_restored = restored;
+  log_line(std::string("unarmed restore from ") + phase + " was_shadow=" +
+           (was_shadow ? "true" : "false") + " restored=" + (restored ? "true" : "false"));
+}
+
 void do_disarm(const char *phase) {
   if (!g_state.armed) {
+    restore_unarmed(phase);
     return;
   }
   bool was_shadow = false;
@@ -4956,6 +5004,27 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   g_stream.path = env_string("GRC_STREAM_OUT");
   g_stream.patch_path = env_string("GRC_STREAM_PATCH_OUT");
   g_live.listen = env_string("GRC_LIVE_LISTEN");
+  // LS0 (live-swap-design.md D3, F2): GRC_VALIDATION_LOG=on|off, per load, default off. The
+  // validation logs (hooks.cpp log_entry and its callers' pre-copies, the direct g_mutex sites and
+  // read_image) feed counters.json `captured` and cost about 80 us a frame on capture-scale;
+  // validation runners set `on` and assert counters.json `validation_log`.
+  {
+    const std::string validation_log = env_string("GRC_VALIDATION_LOG");
+    if (validation_log.empty() || validation_log == "off") {
+      hooks_set_validation_log(false);
+    } else if (validation_log == "on") {
+      hooks_set_validation_log(true);
+    } else {
+      g_state.validation_log_error =
+          "invalid GRC_VALIDATION_LOG=" + validation_log + " (expected on or off)";
+      log_line("init: " + g_state.validation_log_error);
+    }
+    // Test-only sabotage (validation-log-ignored): the knob is read and reported, the logs still run.
+    if (env_string("GRC_VALIDATION_LOG_SABOTAGE") == "ignored") {
+      hooks_set_validation_log(true);
+      log_line("init: sabotage validation-log-ignored (the logs run whatever the knob says)");
+    }
+  }
   hooks_set_main_thread();
   // CAR6: consumer carriers (rs_carrier_ext.h) and the RenderStreamCarrier class (rs_carrier_gd.h)
   // for engine-language consumers; neither changes anything until a consumer uses it.
@@ -4996,6 +5065,7 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   rs::texture_worker_pool().stop();  // G8kw: no worker (or engine Image) outlives the extension
   live_linger(true);
   do_disarm("deinitialize");
+  rs::registry_names_release();  // LS0: the parameter names' StringName keepalives go before the engine does
   hooks_release_placeholder_drop();  // HTR
   // CAR6: a capture that never armed still owns its registrations; each gets its one destroy().
   for (live::RegisteredCarrier &r : live::carrier_registry().close()) {

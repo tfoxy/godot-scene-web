@@ -545,6 +545,10 @@ struct HeldString {
 struct HeldVariant {
   alignas(8) unsigned char data[40] = {};  // a Variant (24 B; 40 B on a double-precision build)
   bool made = false;
+  // LS0: the held type cannot own an Object (anything but Object, Callable, Signal, Dictionary and
+  // Array), so destroying it cannot free one and re-enter a hook: the registry may store a later
+  // value over it under its lock.
+  bool plain = false;
   HeldVariant() = default;
   HeldVariant(const HeldVariant &) = delete;
   HeldVariant &operator=(const HeldVariant &) = delete;
@@ -569,19 +573,78 @@ rs::RegistryValue registry_held_string(const void *string) {
   return rs::RegistryValue(held, held->data);
 }
 
-rs::RegistryValue registry_held_variant(const void *variant) {
+bool variant_type_plain(GDExtensionVariantType type) {
+  return type != GDEXTENSION_VARIANT_TYPE_OBJECT && type != GDEXTENSION_VARIANT_TYPE_CALLABLE &&
+         type != GDEXTENSION_VARIANT_TYPE_SIGNAL && type != GDEXTENSION_VARIANT_TYPE_DICTIONARY &&
+         type != GDEXTENSION_VARIANT_TYPE_ARRAY;
+}
+
+rs::RegistryValue registry_held_variant(const void *variant, GDExtensionVariantType type) {
   if (variant == nullptr || g_iface.variant_new_copy == nullptr) {
     return nullptr;
   }
   auto held = std::make_shared<HeldVariant>();
   g_iface.variant_new_copy(held->data, variant);
   held->made = true;
+  held->plain = variant_type_plain(type);
   return rs::RegistryValue(held, held->data);
+}
+
+// LS0: the registry's store-over-the-latest-value hook (rs::RegistryOverwrite). `held` is a
+// registry-only HeldVariant; both it and the new value must be plain.
+bool registry_overwrite_variant(const void *held, const void *variant) {
+  HeldVariant *h = const_cast<HeldVariant *>(static_cast<const HeldVariant *>(held));
+  const GDExtensionVariantType type = g_iface.variant_get_type(const_cast<GDExtensionVariantPtr>(variant));
+  if (!h->made || !h->plain || !variant_type_plain(type)) {
+    return false;
+  }
+  g_iface.variant_destroy(h->data);
+  g_iface.variant_new_copy(h->data, variant);
+  return true;
+}
+
+// LS0: a StringName copy that keeps a parameter name's identity (its data pointer) naming one string.
+struct HeldStringName {
+  alignas(8) unsigned char data[8] = {};
+  bool made = false;
+  HeldStringName() = default;
+  HeldStringName(const HeldStringName &) = delete;
+  HeldStringName &operator=(const HeldStringName &) = delete;
+  ~HeldStringName() {
+    if (made) {
+      const GDExtensionPtrDestructor dtor =
+          g_iface.variant_get_ptr_destructor(GDEXTENSION_VARIANT_TYPE_STRING_NAME);
+      if (dtor != nullptr) dtor(data);
+    }
+  }
+};
+
+rs::RegistryValue registry_held_string_name(const void *name) {
+  if (g_iface.variant_get_ptr_constructor == nullptr) {
+    return nullptr;
+  }
+  const GDExtensionPtrConstructor copy =
+      g_iface.variant_get_ptr_constructor(GDEXTENSION_VARIANT_TYPE_STRING_NAME, 1);
+  if (copy == nullptr) {
+    return nullptr;
+  }
+  auto held = std::make_shared<HeldStringName>();
+  const GDExtensionConstTypePtr args[1] = {name};
+  copy(held->data, args);
+  held->made = true;
+  return rs::RegistryValue(held, held->data);
+}
+
+// A StringName is one pointer to the engine's interned data: equal pointers are equal names.
+std::uintptr_t string_name_key(const void *name) {
+  return name == nullptr ? 0 : *static_cast<const std::uintptr_t *>(name);
 }
 
 // LAR3: material_set_param into the registry as the server keeps it (material_storage.cpp): NIL
 // and RID() erase the parameter, an Object is refused (no change), anything else is the value.
-void registry_param(uint64_t material, const std::string &name, const void *value) {
+// LS0: the name is interned by the StringName's identity, and a plain value is stored over the
+// parameter's previous one in place; the first sighting of a name decodes it once.
+void registry_param(uint64_t material, const void *name, const void *value) {
   if (value == nullptr || g_iface.variant_get_type == nullptr) {
     return;
   }
@@ -597,13 +660,32 @@ void registry_param(uint64_t material, const std::string &name, const void *valu
         &id, const_cast<GDExtensionVariantPtr>(value));
     erase = id == 0;
   }
+  const std::uintptr_t key = string_name_key(name);
+  rs::RegistryName interned;
+  if (!erase) {
+    switch (rs::registry_note_param_fast(material, key, value, &registry_overwrite_variant,
+                                         &interned)) {
+      case rs::RegistryParamFast::Recorded:
+        return;
+      case rs::RegistryParamFast::NeedValue:
+        rs::registry_note_material_param(material, interned, registry_held_variant(value, type));
+        return;
+      case rs::RegistryParamFast::NeedName:
+        break;
+    }
+  }
+  interned = rs::registry_name_find(key);
+  if (!interned) {
+    interned = rs::registry_name_intern(key, rs::decode_string_name(name),
+                                        key != 0 ? registry_held_string_name(name) : nullptr);
+  }
   if (erase) {
-    rs::registry_note_material_param(material, name, nullptr);
+    rs::registry_note_material_param(material, interned, nullptr);
     return;
   }
-  rs::RegistryValue held = registry_held_variant(value);
+  rs::RegistryValue held = registry_held_variant(value, type);
   if (held != nullptr) {
-    rs::registry_note_material_param(material, name, std::move(held));
+    rs::registry_note_material_param(material, interned, std::move(held));
   }
 }
 
@@ -714,10 +796,18 @@ constexpr size_t kMaxTextureRectEntries = 256;
 
 std::mutex g_mutex;
 
+// LS0 (live-swap-design.md D3, F2): GRC_VALIDATION_LOG. Off (the default) skips the validation
+// logs: log_entry and the entries its callers build for it, the geometry pre-copies, the direct
+// g_mutex sites below (rects, polygons, texture creates and updates) and the image facts read for
+// them. They fill counters.json `captured`; validation runners set `on` and assert
+// counters.json `validation_log`. Functional state the arm uses (g_mesh_buffers, g_texture_paths)
+// is not gated. Set once at SCENE initialisation, before the vtable is patched.
+bool g_validation_logs = false;
+
 // Records `entry` (under g_mutex): bumps an identical entry, or appends a new
 // one while there is room, or counts it as dropped.
 template <typename Entry>
-void log_entry(Log<Entry> *log, Entry entry) {
+void log_entry_impl(Log<Entry> *log, Entry entry) {
   const uint64_t frame = current_frame();
   if constexpr (requires { entry.hash(); }) {
     const uint64_t h = entry.hash();
@@ -767,6 +857,13 @@ void log_entry(Log<Entry> *log, Entry entry) {
   entry.seen.last_frame = frame;
   log->entries.push_back(std::move(entry));
 }
+// The macro keeps a call's arguments (the entry it builds) from being evaluated when the logs are off.
+#define log_entry(...)             \
+  do {                             \
+    if (g_validation_logs) {       \
+      log_entry_impl(__VA_ARGS__); \
+    }                              \
+  } while (0)
 
 // Copies at most kMaxElements elements of an engine Vector and returns its full size.
 template <typename T>
@@ -2042,7 +2139,7 @@ rs::MaterialParamCopy decode_material_param(const void *value_ptr,
 
 void hook_add_rect(void *self, RID item, const Rect2 *rect, const Color *color, bool antialiased) {
   bump(kAddRect);
-  if (rect != nullptr && color != nullptr) {
+  if (g_validation_logs && rect != nullptr && color != nullptr) {
     RectCapture capture = {item.id, *rect, *color, antialiased};
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_rects.size() < kMaxRects) {
@@ -2151,7 +2248,7 @@ void hook_add_polygon(void *self, RID item, const Vector<Point2> *points,
     mirror().add_primitive(item.id, whole_points(points), whole_colors(colors), whole_points(uvs),
                            texture.id, /*polygon=*/true, current_frame());
   }
-  {
+  if (g_validation_logs) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_polygons.size() < kMaxPolygons) {
       PolygonCapture capture;
@@ -2254,13 +2351,17 @@ void hook_texture_set_path(void *self, RID texture, const void *path) {
 RID hook_texture_2d_create(void *self, const Ref *image) {
   bump(kTexture2dCreate);
   const uint64_t t_hook = now_ns();
-  const ImageFacts facts = read_image(image);
-  ImageCapture capture = describe_image(facts, 0, -1);
   // D3: the bytes are copied and hashed here, on the calling thread, before the
   // engine sees the call (a worker-thread create is initialized later, from
   // whatever the Image then holds). G8kw: or, under GRC_TEXTURE_WORKERS=<N>, a copy-on-write
   // duplicate taken here is copied and hashed by a worker.
+  // LS0: `logging` and `htr` are each read once, ahead of the image facts. The five engine getters
+  // behind the facts run only for a consumer: the validation log, the resource log or HTR.
   const bool logging = resources().active();
+  const uint32_t htr = rs::texture_release_flags();
+  const ImageFacts facts =
+      (g_validation_logs || logging || htr != 0) ? read_image(image) : ImageFacts();
+  ImageCapture capture = describe_image(facts, 0, -1);
   rs::PayloadPtr bytes;
   rs::TextureJobPtr job;
   rs::PayloadCopy copy =
@@ -2268,7 +2369,6 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
   // HTR (rs_texture_release.h): one load; zero unless GRC_HEADLESS_TEXTURE_RELEASE is set. The
   // copy (or the worker's duplicate) above was taken from the game's image; only then may the
   // engine get the placeholder instead, so the dummy rasterizer never holds the full copy.
-  const uint32_t htr = rs::texture_release_flags();
   const Ref *forwarded = image;
   Ref placeholder{nullptr};
   rs::ReleaseSkip release_skip = rs::ReleaseSkip::Inactive;
@@ -2312,7 +2412,7 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
   bool unheld = forwarded != image;  // until the mirror takes it
   registry_create(result.id, rs::RegistryKind::Texture2d);
   capture.rid = result.id;
-  {
+  if (g_validation_logs) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_creates.size() < kMaxTextures) {
       g_creates.push_back(capture);
@@ -2347,8 +2447,9 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
 void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer) {
   bump(kTexture2dUpdate);
   const uint64_t t_hook = now_ns();
-  const ImageFacts facts = read_image(image);
-  {
+  const bool logging = resources().active();  // LS0: read once, ahead of the image facts
+  const ImageFacts facts = (g_validation_logs || logging) ? read_image(image) : ImageFacts();
+  if (g_validation_logs) {
     ImageCapture capture = describe_image(facts, texture.id, layer);
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_updates.size() < kMaxTextures) {
@@ -2358,7 +2459,6 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
   if (rs::registry_on()) {
     rs::registry_note_texture_update(texture.id);  // LAR6: its getter is no longer the content
   }
-  const bool logging = resources().active();
   rs::PayloadPtr bytes;
   rs::TextureJobPtr job;
   rs::PayloadCopy copy =
@@ -2473,17 +2573,19 @@ void hook_add_triangle_array(void *self, RID item, const Vector<int32_t> *indice
                                 skinned ? std::vector<rs2::Point2>() : whole_points(uvs), skinned,
                                 texture.id, count, current_frame());
   }
-  GeometryEntry entry;
-  entry.item = item.id;
-  entry.indices_total = copy_head(indices, &entry.indices);
-  entry.points_total = copy_head(points, &entry.points);
-  entry.colors_total = copy_head(colors, &entry.colors);
-  entry.uvs_total = copy_head(uvs, &entry.uvs);
-  entry.bones_total = bones != nullptr ? bones->size() : 0;
-  entry.weights_total = weights != nullptr ? weights->size() : 0;
-  entry.texture = texture.id;
-  entry.count = count;
-  log_entry(&g_triangle_arrays, std::move(entry));
+  if (g_validation_logs) {
+    GeometryEntry entry;
+    entry.item = item.id;
+    entry.indices_total = copy_head(indices, &entry.indices);
+    entry.points_total = copy_head(points, &entry.points);
+    entry.colors_total = copy_head(colors, &entry.colors);
+    entry.uvs_total = copy_head(uvs, &entry.uvs);
+    entry.bones_total = bones != nullptr ? bones->size() : 0;
+    entry.weights_total = weights != nullptr ? weights->size() : 0;
+    entry.texture = texture.id;
+    entry.count = count;
+    log_entry(&g_triangle_arrays, std::move(entry));
+  }
   original<FnAddTriangleArray>(kAddTriangleArray)(self, item, indices, points, colors, uvs, bones,
                                                   weights, texture, count);
 }
@@ -2575,13 +2677,15 @@ void hook_add_primitive(void *self, RID item, const Vector<Point2> *points,
     mirror().add_primitive(item.id, whole_points(points), whole_colors(colors), whole_points(uvs),
                            texture.id, /*polygon=*/false, current_frame());
   }
-  GeometryEntry entry;
-  entry.item = item.id;
-  entry.points_total = copy_head(points, &entry.points);
-  entry.colors_total = copy_head(colors, &entry.colors);
-  entry.uvs_total = copy_head(uvs, &entry.uvs);
-  entry.texture = texture.id;
-  log_entry(&g_primitives, std::move(entry));
+  if (g_validation_logs) {
+    GeometryEntry entry;
+    entry.item = item.id;
+    entry.points_total = copy_head(points, &entry.points);
+    entry.colors_total = copy_head(colors, &entry.colors);
+    entry.uvs_total = copy_head(uvs, &entry.uvs);
+    entry.texture = texture.id;
+    log_entry(&g_primitives, std::move(entry));
+  }
   original<FnAddPrimitive>(kAddPrimitive)(self, item, points, colors, uvs, texture);
 }
 
@@ -2613,13 +2717,15 @@ void hook_add_polyline(void *self, RID item, const Vector<Point2> *points,
     mirror().add_polyline(item.id, whole_points(points), whole_colors(colors), width, antialiased,
                           /*multiline=*/false, current_frame());
   }
-  GeometryEntry entry;
-  entry.item = item.id;
-  entry.points_total = copy_head(points, &entry.points);
-  entry.colors_total = copy_head(colors, &entry.colors);
-  entry.width = width;
-  entry.antialiased = antialiased;
-  log_entry(&g_polylines, std::move(entry));
+  if (g_validation_logs) {
+    GeometryEntry entry;
+    entry.item = item.id;
+    entry.points_total = copy_head(points, &entry.points);
+    entry.colors_total = copy_head(colors, &entry.colors);
+    entry.width = width;
+    entry.antialiased = antialiased;
+    log_entry(&g_polylines, std::move(entry));
+  }
   original<FnAddPolyline>(kAddPolyline)(self, item, points, colors, width, antialiased);
 }
 
@@ -3080,13 +3186,15 @@ void hook_add_multiline(void *self, RID item, const Vector<Point2> *points,
     mirror().add_polyline(item.id, whole_points(points), whole_colors(colors), width, antialiased,
                           /*multiline=*/true, current_frame());
   }
-  GeometryEntry entry;
-  entry.item = item.id;
-  entry.points_total = copy_head(points, &entry.points);
-  entry.colors_total = copy_head(colors, &entry.colors);
-  entry.width = width;
-  entry.antialiased = antialiased;
-  log_entry(&g_multilines, std::move(entry));
+  if (g_validation_logs) {
+    GeometryEntry entry;
+    entry.item = item.id;
+    entry.points_total = copy_head(points, &entry.points);
+    entry.colors_total = copy_head(colors, &entry.colors);
+    entry.width = width;
+    entry.antialiased = antialiased;
+    log_entry(&g_multilines, std::move(entry));
+  }
   original<FnAddPolyline>(kAddMultiline)(self, item, points, colors, width, antialiased);
 }
 
@@ -3219,8 +3327,7 @@ void hook_material_set_param(void *self, RID material, const void *name, const v
   }
   original<FnMaterialSetParam>(kMaterialSetParam)(self, material, name, value);
   if (rs::registry_on()) {  // LAR3
-    registry_param(material.id, resources().active() ? param_name : rs::decode_string_name(name),
-                   value);
+    registry_param(material.id, name, value);
   }
 }
 
@@ -5209,6 +5316,10 @@ void hooks_release_placeholder_drop() {
 
 bool hooks_image_payload_available() { return g_image_binds.payload_available; }
 
+void hooks_set_validation_log(bool on) { g_validation_logs = on; }
+
+bool hooks_validation_log() { return g_validation_logs; }
+
 void hooks_set_main_thread() { g_main_thread = std::this_thread::get_id(); }
 
 void hooks_set_resource_policy(const rs::FormatPolicy &formats, uint64_t max_payload_bytes) {
@@ -5703,6 +5814,7 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
   json.field("frames_total", static_cast<int64_t>(frames_total));
   json.field("frames_armed", static_cast<int64_t>(frames_armed));
   json.field("image_details_available", g_image_binds.available);
+  json.field("validation_log", std::string(g_validation_logs ? "on" : "off"));  // LS0
 
   json.key("hooks_planned").array_begin();
   for (const std::string &name : g_planned_names) {

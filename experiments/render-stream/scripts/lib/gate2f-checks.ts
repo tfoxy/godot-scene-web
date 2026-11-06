@@ -51,6 +51,7 @@ import {
   receiverCheckpoints,
 } from "./gate2b-checks";
 import { evaluateCapture } from "./gate3-checks";
+import { assertValidationLog } from "./validation-log";
 import type { Gate5Expected } from "./gate5-expected";
 import { evaluateCaptureCanvas } from "./gate5d-checks";
 
@@ -125,6 +126,7 @@ interface ShimResultJson {
 }
 
 interface CountersJson {
+  validation_log?: string;
   captured?: Record<string, Array<{ rid?: string }>>;
   captured_dropped?: Record<string, number>;
 }
@@ -310,6 +312,7 @@ export async function checkShimPrivateRids(
   const shim = await shimEvidence(cap.dir);
   const countersPath = join(cap.dir, "evidence", "counters.json");
   const counters = await readJson<CountersJson>(countersPath);
+  assertValidationLog(counters, countersPath);
   const synthetic = new Set<bigint>();
   if (shim?.schema !== "render-stream-canvas-texture-shim/1")
     problems.push("canvas-texture-shim.json missing or of another schema");

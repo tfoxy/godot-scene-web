@@ -15,6 +15,7 @@ import { join } from "node:path";
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
 import { compareRgbaBuffers } from "../../../../packages/test-harness/src/image-diff";
 import { engineCall, loadResourceLog } from "./gate2-checks";
+import { assertValidationLog } from "./validation-log";
 
 export type CriterionStatus = "pass" | "fail" | "unavailable";
 
@@ -121,6 +122,8 @@ interface CountersJson {
   counts?: Record<string, number | null>;
   hooks_planned?: string[];
   hooks_omitted?: string[];
+  /** LS0: "on" when the validation logs ran (GRC_VALIDATION_LOG=on); `captured` is evidence only then. */
+  validation_log?: string;
   captured?: {
     canvas_item_add_rect?: CapturedAddRect[];
     canvas_item_add_polygon?: CapturedAddPolygon[];
@@ -441,6 +444,7 @@ export async function checkCaptureCounts(
     "counters.json",
   );
   const counters = await readJson<CountersJson>(evidencePath);
+  assertValidationLog(counters, evidencePath);
 
   if (!counters) {
     const missing = (id: string, description: string): Criterion => ({
@@ -541,6 +545,7 @@ export async function checkPolygonBitExact(
   const description =
     "the script's add_polygon call decodes exactly (3 points/colors, uvs_count 0) vs expected.json";
   const counters = await readJson<CountersJson>(evidencePath);
+  assertValidationLog(counters, evidencePath);
   if (!counters) {
     return {
       id,

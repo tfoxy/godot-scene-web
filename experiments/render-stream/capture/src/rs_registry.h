@@ -268,11 +268,27 @@ struct RegistryShader {
   std::vector<RegistryDefaultTexture> defaults;
 };
 
+// LS0: a material parameter's name, interned. Every name is one immortal std::string, so a parameter
+// holds a pointer (8 B) instead of a string copy, and two names are equal when their pointers are.
+class RegistryName {
+ public:
+  RegistryName() = default;
+  explicit RegistryName(const std::string *text) : text_(text) {}
+  explicit operator bool() const { return text_ != nullptr; }
+  const std::string &str() const { return *text_; }
+  bool same(RegistryName other) const { return text_ == other.text_; }
+  bool operator==(const char *other) const { return text_ != nullptr && *text_ == other; }
+  bool operator==(const std::string &other) const { return text_ != nullptr && *text_ == other; }
+
+ private:
+  const std::string *text_ = nullptr;
+};
+
 // One material_set_param, as the server keeps it (material_storage.cpp material_set_param): the
 // last value per name; NIL and RID() erase it (the hooks pass a null value), an Object is refused
 // (the hooks record nothing).
 struct RegistryParam {
-  std::string name;
+  RegistryName name;
   RegistryValue value;  // a Variant
 };
 
@@ -290,7 +306,33 @@ void registry_note_shader_default_texture(std::uint64_t rid, const std::string &
                                           std::uint64_t texture, std::int32_t index);
 void registry_note_material_shader(std::uint64_t rid, std::uint64_t shader);
 // `value` null: the call erased the parameter (NIL or RID()). Nothing under registry-skip-params.
+void registry_note_material_param(std::uint64_t rid, RegistryName name, RegistryValue value);
+// By text: interns the name first (the ctests; the hooks use the key form below).
 void registry_note_material_param(std::uint64_t rid, const std::string &name, RegistryValue value);
+
+// LS0: the hooks' material_set_param path, a latest-value store with interned names (<= 0.3 us a
+// call). A hook knows a parameter's name by the StringName's identity (the engine's interned data
+// pointer, `key`, nonzero); the registry holds the first sighting's text and a keepalive (a copy of
+// the StringName) so the key never names another string.
+//   registry_name_find     the interned name of a key (empty: not seen yet).
+//   registry_name_intern   interns `text` (and `key`, when nonzero), keeping `keepalive` alive until
+//                          registry_names_release().
+//   registry_note_param_fast  one lock: stores `variant` over the parameter's existing value when
+//                          nothing else shares it and `overwrite` (hooks.cpp: the held Variant is
+//                          one whose destructor cannot re-enter a hook) accepts it.
+// Fast results: Recorded (stored, or nothing to record: the material is unknown or
+// registry-skip-params), NeedValue (record `*name` with a new held value through
+// registry_note_material_param), NeedName (the key is not interned yet).
+enum class RegistryParamFast : std::uint8_t { Recorded, NeedValue, NeedName };
+using RegistryOverwrite = bool (*)(const void *held, const void *variant);
+RegistryName registry_name_find(std::uintptr_t key);
+RegistryName registry_name_intern(std::uintptr_t key, const std::string &text,
+                                  RegistryValue keepalive);
+RegistryParamFast registry_note_param_fast(std::uint64_t rid, std::uintptr_t key,
+                                           const void *variant, RegistryOverwrite overwrite,
+                                           RegistryName *name);
+// Unload: releases every keepalive (outside the lock) and forgets the keys; the interned texts stay.
+void registry_names_release();
 
 // The recorded shader or material of a live RID (false: not registered as one).
 bool registry_shader(std::uint64_t rid, RegistryShader *out);

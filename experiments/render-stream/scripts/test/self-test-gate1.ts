@@ -976,6 +976,7 @@ async function writeCaptureLeg(
   });
   await writeJson(join(dir, "evidence", "counters.json"), {
     schema: "render-stream-gate-minus1-counters/1",
+    validation_log: "on",
     frames_total: opts.quit,
     hooks_planned: [...GATE0_HOOKS],
     hooks_omitted: [],

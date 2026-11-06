@@ -41,6 +41,10 @@ import {
   COST_CALLS_PER_TRIPLE,
   REGISTRY_CALL_BUDGET_NS,
   registryLiveBound,
+  type IdleSample,
+  validationLogCost,
+  VALIDATION_LOG_COST_BOUND_US,
+  VALIDATION_LOG_SABOTAGE_MIN_US,
 } from "./registry-checks";
 import {
   decodeRecording,
@@ -803,6 +807,12 @@ const REGISTRY_COST_ROUNDS = 5;
 const REGISTRY_COST_DIRS = Array.from({ length: REGISTRY_COST_ROUNDS }, (_, r) =>
   REGISTRY_COST_CONFIGS.map((c) => `registry-cost/${c}-${r + 1}`),
 ).flat();
+// LS0: the validation-log-cost timing group (run-gate8.sh G8A_VLC_CONFIGS x G8A_VLC_ROUNDS). The
+// sabotage leg is named sabotage-* so a run that skips sabotages skips it (legs_sabotage_skipped).
+const VLC_CONFIGS = ["a0", "b", "c", "sabotage-validation-log-ignored"] as const;
+const VLC_ROUNDS = 5;
+const vlcDir = (c: string, r: number) => `validation-log-cost/${c}-${r + 1}`;
+const VLC_DIRS = Array.from({ length: VLC_ROUNDS }, (_, r) => VLC_CONFIGS.map((c) => vlcDir(c, r))).flat();
 // The adopt_stats fields that are timings (differ run to run), left out of a deferred = late
 // comparison.
 const isTiming = (k: string) => k.endsWith("_ns");
@@ -885,6 +895,7 @@ export async function runG8a(
     "deferred/capture",
     "sabotage-registry-keep-freed/capture",
     ...REGISTRY_COST_DIRS,
+    ...VLC_DIRS,
     ...SABOTAGES.map((s) => `sabotage-${s}/capture`),
     ...FAULTS.map((s) => `fault-${s}/capture`),
     "reference",
@@ -1170,14 +1181,18 @@ export async function runG8a(
       const samples: Record<string, CostSample[]> = {};
       const missing: string[] = [];
       const churns = new Set<number>();
+      const paramUpdates = new Set<number>();
       for (const l of REGISTRY_COST_DIRS) {
         const config = l.split("/")[1].replace(/-\d+$/, "");
         const scale = await readJson<{
           frame_us_p50: number;
           churn_us_mean: number;
           churn?: number;
+          param_updates?: number;
+          section_us?: { params?: number };
         }>(join(root, l, "scale-report.json"));
         if (typeof scale?.churn === "number") churns.add(scale.churn);
+        if (typeof scale?.param_updates === "number") paramUpdates.add(scale.param_updates);
         const perf = await readJson<{
           histograms: { frame_callback_us: { mean: number } };
         }>(join(root, l, "evidence/perf.json"));
@@ -1189,16 +1204,19 @@ export async function runG8a(
           frame_us_p50: scale.frame_us_p50,
           churn_us_mean: scale.churn_us_mean,
           callback_us_mean: perf.histograms.frame_callback_us.mean,
+          params_us: scale.section_us?.params,
         });
       }
       // The tracked calls a churned frame makes: every leg churns the same triples (run-gate8.sh
       // RS_SCALE_RESOURCE_CHURN), each created and freed once a frame.
       const churn = churns.size === 1 ? [...churns][0] : Number.NaN;
       const callsPerFrame = churn * COST_CALLS_PER_TRIPLE;
-      const r = registryCost(samples, callsPerFrame);
+      const paramCalls = paramUpdates.size === 1 ? [...paramUpdates][0] : Number.NaN;
+      const r = registryCost(samples, callsPerFrame, paramCalls);
       problems = [
         ...missing.map((l) => `${l}: no scale report or perf.json`),
         ...(churns.size === 1 ? [] : [`scale reports name churn ${JSON.stringify([...churns])}, want one value`]),
+        ...(paramUpdates.size === 1 ? [] : [`scale reports name param_updates ${JSON.stringify([...paramUpdates])}, want one value`]),
         ...r.problems,
       ];
       costReport = { samples, calls_per_frame: callsPerFrame, budget_ns_per_call: REGISTRY_CALL_BUDGET_NS, comparisons: r.comparisons };
@@ -1214,7 +1232,7 @@ export async function runG8a(
     checks.push(
       check(
         "registry-cost",
-        "the registry-cost timing group (capture-scale born at a tenth of its scale plus 16 mesh/shader/material triples created and freed a frame, headless, 5 interleaved rounds): the registry's own cost, GRC_ADOPT=arm against GRC_ADOPT_FAULT=registry-off paired by round, stays within REGISTRY_CALL_BUDGET_NS (1 µs) per tracked call (96 a churned frame) on the churned create/free block's churn_us_mean (the hook path) and on perf.json's frame_callback_us mean; against GRC_ADOPT=off is reported, not judged (it folds in G8r adoption's lookups); frame_us_p50 is reported, not judged (sleep-paced)",
+        "the registry-cost timing group (capture-scale born at a tenth of its scale plus 16 mesh/shader/material triples created and freed a frame and 8 material_set_param calls a frame, headless, 5 interleaved rounds): the registry's own cost, GRC_ADOPT=arm against GRC_ADOPT_FAULT=registry-off paired by round, stays within REGISTRY_CALL_BUDGET_NS (1 µs) per tracked call (96 a churned frame) on the churned create/free block's churn_us_mean (the hook path) and on perf.json's frame_callback_us mean, and material_set_param judged alone (LS0) at the same budget on the scale report's params block; against GRC_ADOPT=off is reported, not judged (it folds in G8r adoption's lookups); frame_us_p50 is reported, not judged (sleep-paced)",
         problems,
         cmp
           .map(
@@ -1226,6 +1244,84 @@ export async function runG8a(
     );
   }
   report.registry = { live: liveSummary, cost: costReport };
+
+  // --- LS0: validation-log-cost (timing group, local) -----------------------------------------
+  // The capture loaded and unarmed (hooks patched, GRC_ARM_DEFER_FRAMES never reached) costs the
+  // main thread about what a loaded-but-unpatched capture does once the validation logs default off
+  // and the registry stores in place; the sabotage (knob read, logs still run) must put K2 back.
+  {
+    const collect = async (configs: readonly string[]) => {
+      const samples: Record<string, IdleSample[]> = {};
+      const problems: string[] = [];
+      for (const c of configs) {
+        for (let r = 0; r < VLC_ROUNDS; r++) {
+          const dir = vlcDir(c, r);
+          const scale = await readJson<{ cpu_us_mean?: number }>(join(root, dir, "scale-report.json"));
+          if (typeof scale?.cpu_us_mean !== "number") {
+            problems.push(`${dir}: no scale report cpu_us_mean (RS_SCALE_CPU_REPORT=1)`);
+            continue;
+          }
+          (samples[c] ??= []).push({ cpu_us_mean: scale.cpu_us_mean });
+          const counters = await readJson<{ validation_log?: string }>(join(root, dir, "evidence/counters.json"));
+          const result = await readJson<{ unarmed_restore?: string | null }>(join(root, dir, "evidence/result.json"));
+          const wantLog = c.startsWith("sabotage-") ? "on" : "off";
+          if (counters?.validation_log !== wantLog)
+            problems.push(`${dir}: counters.json validation_log ${JSON.stringify(counters?.validation_log ?? null)}, want "${wantLog}"`);
+          // a0 patches nothing (validate mode); b and c patch the vtable and never arm, so the
+          // shutdown restores it (the SIGSEGV after TERM, K3)
+          const wantRestore = c === "a0" ? null : "shutdown";
+          if ((result?.unarmed_restore ?? null) !== wantRestore)
+            problems.push(`${dir}: result.json unarmed_restore ${JSON.stringify(result?.unarmed_restore ?? null)}, want ${JSON.stringify(wantRestore)}`);
+        }
+      }
+      return { samples, problems };
+    };
+    const honestDirs = Array.from({ length: VLC_ROUNDS }, (_, r) => ["a0", "b", "c"].map((c) => vlcDir(c, r))).flat();
+    let costProblems: string[] | null = null;
+    let costDetail: string | undefined;
+    let samples: Record<string, IdleSample[]> = {};
+    if (honestDirs.every((l) => ran(l))) {
+      const got = await collect(["a0", "b", "c"]);
+      samples = got.samples;
+      const judged = validationLogCost(got.samples, ["b", "c"]);
+      costProblems = [...got.problems, ...judged.problems];
+      costDetail = judged.comparisons
+        .map((c) => `${c.config}-a0 ${c.median >= 0 ? "+" : ""}${c.median.toFixed(1)}µs (bound ${c.bound})`)
+        .join("; ");
+    }
+    checks.push(
+      check(
+        "validation-log-cost",
+        `the validation-log-cost timing group (capture-scale at STS2's redraw rate, ~1,530 hooked calls a frame, headless, 2,400 frames, 5 interleaved rounds): a capture loaded with its hooks patched and never armed (b), and the same with the registry recording (c), cost the main thread within ${VALIDATION_LOG_COST_BOUND_US.b} µs a frame of a loaded-but-unpatched capture (a0), paired by round (idle-capture-cost.md measured +72 and +110 µs with the logs on); every b/c leg ran with the validation logs off (counters.json validation_log) and restored the vtable at shutdown (result.json unarmed_restore)`,
+        costProblems,
+        costDetail,
+      ),
+    );
+    const sabDirs = Array.from({ length: VLC_ROUNDS }, (_, r) => vlcDir("sabotage-validation-log-ignored", r));
+    let sabProblems: string[] | null = null;
+    let sabDetail: string | undefined;
+    if (sabDirs.every((l) => ran(l)) && honestDirs.every((l) => ran(l))) {
+      const got = await collect(["sabotage-validation-log-ignored"]);
+      const sab = got.samples["sabotage-validation-log-ignored"] ?? [];
+      const judged = validationLogCost({ a0: samples.a0 ?? [], cs: sab }, ["cs"]);
+      const k2 = sab.length === (samples.c ?? []).length ? sab.map((s, i) => s.cpu_us_mean - samples.c[i].cpu_us_mean).sort((a, b) => a - b) : [];
+      const k2Median = k2.length > 0 ? k2[Math.floor(k2.length / 2)] : Number.NaN;
+      sabProblems = [...got.problems];
+      if (judged.problems.length === 0)
+        sabProblems.push("the sabotaged legs passed validation-log-cost: the check cannot see K2");
+      if (!(k2Median >= VALIDATION_LOG_SABOTAGE_MIN_US))
+        sabProblems.push(`sabotage - c +${k2Median.toFixed?.(1)} µs, K2 (80 µs in idle-capture-cost.md) should return at least ${VALIDATION_LOG_SABOTAGE_MIN_US}`);
+      sabDetail = `sabotage-a0 ${judged.comparisons.map((c) => c.median.toFixed(1)).join(",")}µs, sabotage-c ${k2Median.toFixed(1)}µs`;
+    }
+    checks.push(
+      check(
+        "validation-log-ignored-caught",
+        "sabotage validation-log-ignored (GRC_VALIDATION_LOG_SABOTAGE=ignored: the knob is read, reported on, and the logs still run) fails validation-log-cost's judgement on the same fixture and puts at least 30 µs a frame of K2 back (K2 reads 44-73 µs a frame through the runner against 80 µs in prompt 1) over the honest (c)",
+        sabProblems,
+        sabDetail,
+      ),
+    );
+  }
 
   // --- adopt-noop-at-birth: GRC_ADOPT=arm on the born layout adopts nothing ------------------
   {
