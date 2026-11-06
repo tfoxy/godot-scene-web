@@ -68,7 +68,7 @@ const grc_net_module_table_v1 *load_net_module_at(const std::string &path, std::
   }
   const grc_net_module_table_v1 *m = reinterpret_cast<grc_net_module_table_v1_fn>(entry)();
   if (m == nullptr || m->abi_version != GRC_NET_MODULE_ABI_VERSION ||
-      m->size < sizeof(grc_net_module_table_v1)) {
+      m->size < offsetof(grc_net_module_table_v1, features)) {
     *error = "net-module-abi: " + path + "'s module table is not version " +
              std::to_string(GRC_NET_MODULE_ABI_VERSION);
     return nullptr;
@@ -81,6 +81,13 @@ const grc_net_module_table_v1 *load_net_module_at(const std::string &path, std::
     return nullptr;
   }
   return m;
+}
+
+bool net_module_serves_tracks(const grc_net_module_table_v1 *m) {
+  if (m == nullptr || m->size < offsetof(grc_net_module_table_v1, features) + sizeof(std::uint32_t)) {
+    return false;
+  }
+  return (m->features & GRC_NET_FEATURE_TRACKS) != 0;
 }
 
 const grc_net_module_table_v1 *load_net_module(const char *explicit_path, std::string *error,
@@ -278,7 +285,8 @@ static_assert(sizeof(grc_carrier_v1) == 88, "grc_carrier_v1 layout");
 static_assert(sizeof(grc_net_wt_info_v1) == 184, "grc_net_wt_info_v1 layout");
 static_assert(offsetof(grc_net_wt_info_v1, port) == 72, "grc_net_wt_info_v1 layout");
 static_assert(offsetof(grc_net_wt_info_v1, sessions_refused) == 160, "grc_net_wt_info_v1 layout");
-static_assert(sizeof(grc_net_module_table_v1) == 40, "grc_net_module_table_v1 layout");
+static_assert(sizeof(grc_net_module_table_v1) == 48, "grc_net_module_table_v1 layout");
+static_assert(offsetof(grc_net_module_table_v1, features) == 40, "grc_net_module_table_v1 layout");
 static_assert(sizeof(grc_net_tls_table_v1) == 112, "grc_net_tls_table_v1 layout");
 static_assert(offsetof(grc_net_tls_table_v1, feed) == 56, "grc_net_tls_table_v1 layout");
 static_assert(offsetof(grc_net_tls_table_v1, close_notify) == 104, "grc_net_tls_table_v1 layout");

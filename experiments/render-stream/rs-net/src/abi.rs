@@ -13,6 +13,9 @@ pub const GRC_CODING_IDENTITY: c_int = 0;
 pub const GRC_CODING_GZIP: c_int = 1;
 pub const GRC_CODING_ZSTD: c_int = 2;
 
+/// grc_net_module_table_v1.features bit 0 (TRK3): the wt carrier admits track subprotocols.
+pub const GRC_NET_FEATURE_TRACKS: u32 = 1;
+
 pub const GRC_REJECT_AUTH: c_int = 1;
 pub const GRC_REJECT_ORIGIN: c_int = 2;
 pub const GRC_REJECT_CAPACITY: c_int = 3;
@@ -47,6 +50,30 @@ pub struct GrcCarrierHostV1 {
     pub lookup: unsafe extern "C" fn(*mut c_void, *const c_char, c_int, *mut GrcBuf) -> c_int,
     pub release: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub log: unsafe extern "C" fn(*mut c_void, c_int, *const c_char, usize),
+    /// TRK1 (grc_carrier.h): admission by subprotocol. The host sets `size` to its own struct
+    /// size; a host older than TRK1 has 112 bytes and no such field, so `read_host` leaves it
+    /// `None` and the carrier offers no track subprotocol.
+    pub admit_subprotocol: Option<unsafe extern "C" fn(*mut c_void, u32, *const c_char, usize) -> c_int>,
+}
+
+/// Bytes of grc_carrier_host_v1 before TRK1's `admit_subprotocol` (the CAR1 struct).
+pub const HOST_V1_BASE_SIZE: usize = std::mem::offset_of!(GrcCarrierHostV1, admit_subprotocol);
+
+/// Reads the host's struct without reading past its own `size`: abi_version 1, at least the CAR1
+/// base, and `admit_subprotocol` only when `size` covers it. A host older than TRK1 yields
+/// `admit_subprotocol: None`. Returns None for a wrong version or a short struct.
+///
+/// # Safety
+/// `host` points at `size` readable bytes, where `size` is the second u32 at `host`.
+pub unsafe fn read_host(host: *const GrcCarrierHostV1) -> Option<GrcCarrierHostV1> {
+    let head = std::ptr::read_unaligned(host as *const [u32; 2]);
+    let (version, size) = (head[0], head[1] as usize);
+    if version != GRC_CARRIER_ABI_VERSION || size < HOST_V1_BASE_SIZE {
+        return None;
+    }
+    let mut raw = std::mem::MaybeUninit::<GrcCarrierHostV1>::zeroed();
+    std::ptr::copy_nonoverlapping(host as *const u8, raw.as_mut_ptr() as *mut u8, size.min(std::mem::size_of::<GrcCarrierHostV1>()));
+    Some(raw.assume_init())
 }
 
 #[repr(C)]
@@ -111,6 +138,9 @@ pub struct GrcNetModuleV1 {
     pub module_version: *const c_char,
     pub wt_create: unsafe extern "C" fn(*mut GrcCarrierV1, *mut c_char, usize) -> c_int,
     pub wt_info: unsafe extern "C" fn(*mut c_void, *mut GrcNetWtInfoV1) -> c_int,
+    /// TRK3: GRC_NET_FEATURE_* bits. A reader reads it only when `size` covers it.
+    pub features: u32,
+    pub features_reserved: u32,
 }
 
 // The table is immutable static data.

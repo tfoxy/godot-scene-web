@@ -36,6 +36,12 @@ struct Fake {
     token: String,
     origins: Vec<String>,
     cap: usize,
+    /// TRK3: the track pool's cap (admit_subprotocol on a track subprotocol).
+    track_cap: usize,
+    track_slots: Mutex<HashSet<u32>>,
+    /// Every admission the carrier asked for: (local, None) is admit(), (local, Some(sp)) is
+    /// admit_subprotocol().
+    admits: Mutex<Vec<(u32, Option<String>)>>,
     resources: HashMap<String, (Arc<Vec<u8>>, Option<Arc<Vec<u8>>>)>,
     events: Mutex<Vec<Ev>>,
     slots: Mutex<HashSet<u32>>,
@@ -65,11 +71,25 @@ unsafe extern "C" fn h_config(h: *mut c_void, key: *const c_char) -> *const c_ch
 }
 unsafe extern "C" fn h_admit(h: *mut c_void, local: u32) -> c_int {
     let f = fake(h);
+    f.admits.lock().unwrap().push((local, None));
     let mut slots = f.slots.lock().unwrap();
     if slots.len() >= f.cap {
         return 0;
     }
     slots.insert(local);
+    1
+}
+unsafe extern "C" fn h_admit_subprotocol(h: *mut c_void, local: u32, sp: *const c_char, n: usize) -> c_int {
+    let f = fake(h);
+    let sp = s(sp, n);
+    f.admits.lock().unwrap().push((local, Some(sp.clone())));
+    let track = f.config.get("track_subprotocols").is_some_and(|l| l.to_str().unwrap().split(',').any(|x| x == sp));
+    let (pool, cap) = if track { (&f.track_slots, f.track_cap) } else { (&f.slots, f.cap) };
+    let mut pool = pool.lock().unwrap();
+    if pool.len() >= cap {
+        return 0;
+    }
+    pool.insert(local);
     1
 }
 unsafe extern "C" fn h_opened(h: *mut c_void, local: u32, sp: *const c_char, spn: usize, o: *const c_char, on: usize) {
@@ -81,11 +101,13 @@ unsafe extern "C" fn h_text(h: *mut c_void, local: u32, d: *const c_char, n: usi
 unsafe extern "C" fn h_closed(h: *mut c_void, local: u32, code: u16, r: *const c_char, n: usize) {
     let f = fake(h);
     f.slots.lock().unwrap().remove(&local);
+    f.track_slots.lock().unwrap().remove(&local);
     f.events.lock().unwrap().push(Ev::Closed { local, code, reason: s(r, n) });
 }
 unsafe extern "C" fn h_rejected(h: *mut c_void, local: u32, why: c_int, d: *const c_char, n: usize) {
     let f = fake(h);
     f.slots.lock().unwrap().remove(&local);
+    f.track_slots.lock().unwrap().remove(&local);
     f.events.lock().unwrap().push(Ev::Rejected { local, why, detail: s(d, n) });
 }
 unsafe extern "C" fn h_served(h: *mut c_void, _local: u32, hash: *const c_char, status: u16, coding: c_int, id: u64, wire: u64) {
@@ -126,11 +148,20 @@ struct Opts {
     token: String,
     origins: Vec<String>,
     cap: usize,
+    track_cap: usize,
+    /// The `size` the host reports for its struct (None: the real 120 bytes). 112 is a host
+    /// older than TRK1.
+    host_size: Option<u32>,
     extra: Vec<(&'static str, String)>,
 }
 impl Default for Opts {
     fn default() -> Self {
-        Self { token: String::new(), origins: vec!["http://127.0.0.1:5173".into()], cap: 4, extra: vec![] }
+        Self { token: String::new(), origins: vec!["http://127.0.0.1:5173".into()],
+            cap: 4,
+            track_cap: 4,
+            host_size: None,
+            extra: vec![],
+        }
     }
 }
 
@@ -201,6 +232,9 @@ impl Harness {
             token: o.token,
             origins: o.origins,
             cap: o.cap,
+            track_cap: o.track_cap,
+            track_slots: Mutex::new(HashSet::new()),
+            admits: Mutex::new(vec![]),
             resources,
             events: Mutex::new(vec![]),
             slots: Mutex::new(HashSet::new()),
@@ -209,7 +243,7 @@ impl Harness {
         });
         let host = Box::new(GrcCarrierHostV1 {
             abi_version: GRC_CARRIER_ABI_VERSION,
-            size: std::mem::size_of::<GrcCarrierHostV1>() as u32,
+            size: o.host_size.unwrap_or(std::mem::size_of::<GrcCarrierHostV1>() as u32),
             host: &*fake as *const Fake as *mut c_void,
             config: h_config,
             admit: h_admit,
@@ -223,6 +257,7 @@ impl Harness {
             lookup: h_lookup,
             release: h_release,
             log: h_log,
+            admit_subprotocol: Some(h_admit_subprotocol),
         });
         let module = unsafe { &*render_stream_net::grc_net_module_v1() };
         assert_eq!(module.abi_version, GRC_NET_MODULE_ABI_VERSION);
@@ -906,6 +941,9 @@ fn start_refusals_are_typed() {
             token: String::new(),
             origins: vec![],
             cap: 1,
+            track_cap: 1,
+            track_slots: Mutex::new(HashSet::new()),
+            admits: Mutex::new(vec![]),
             resources: HashMap::new(),
             events: Mutex::new(vec![]),
             slots: Mutex::new(HashSet::new()),
@@ -928,6 +966,7 @@ fn start_refusals_are_typed() {
             lookup: h_lookup,
             release: h_release,
             log: h_log,
+            admit_subprotocol: Some(h_admit_subprotocol),
         };
         let module = unsafe { &*render_stream_net::grc_net_module_v1() };
         let mut vt = std::mem::MaybeUninit::<GrcCarrierV1>::zeroed();
@@ -1261,4 +1300,250 @@ fn uplink_violations_close_like_the_live_stream() {
         let (code, _) = h.wait_closed(local);
         assert_eq!(code, want, "{what}");
     }
+}
+
+// ------------------------------------------------------------------------------ TRK3: tracks
+
+const TRACK_SP: &str = "render-stream-track.1";
+
+fn track_opts() -> Opts {
+    Opts { extra: vec![("track_subprotocols", TRACK_SP.into())], ..Default::default() }
+}
+
+fn track_url(h: &Harness) -> String {
+    h.url.replace(SP, TRACK_SP)
+}
+
+async fn connect_track(h: &Harness) -> Result<Connection, ConnectingError> {
+    connect_with(&track_url(h), &h.hash, &[("origin", "http://127.0.0.1:5173")]).await
+}
+
+fn status_of(r: Result<Connection, ConnectingError>) -> u16 {
+    match r {
+        Err(ConnectingError::SessionRejectedStatus(s)) => s,
+        Ok(_) => 200,
+        Err(e) => panic!("unexpected {e}"),
+    }
+}
+
+/// The module advertises the tracks capability (grc_net_module.h GRC_NET_FEATURE_TRACKS) at
+/// offset 40, inside its reported size.
+#[test]
+fn module_table_advertises_the_tracks_feature() {
+    let module = unsafe { &*render_stream_net::grc_net_module_v1() };
+    assert_eq!(module.size as usize, std::mem::size_of::<GrcNetModuleV1>());
+    assert_eq!(module.size, 48);
+    assert_eq!(module.features & GRC_NET_FEATURE_TRACKS, GRC_NET_FEATURE_TRACKS);
+}
+
+/// A track CONNECT is admitted from the track pool by admit_subprotocol, opens with the track
+/// subprotocol, and carries texts both ways (live stream and uplink batches) exactly as a view
+/// session does; a view session beside it still uses admit(); a resource stream is refused on the
+/// track and served on the view.
+#[test]
+fn track_session_is_admitted_by_subprotocol_and_carries_payloads() {
+    let h = Harness::start(track_opts());
+    let rt = rt();
+    let t = rt.block_on(connect_track(&h)).expect("track connect");
+    let local = h.wait_opened(0);
+    assert!(matches!(&h.events()[0], Ev::Opened { sp, .. } if sp == TRACK_SP));
+    assert_eq!(h.fake.admits.lock().unwrap().clone(), vec![(local, Some(TRACK_SP.to_string()))]);
+    assert_eq!(h.fake.track_slots.lock().unwrap().len(), 1, "a track slot");
+    assert!(h.fake.slots.lock().unwrap().is_empty(), "no view slot");
+
+    let (mut live, mut r) = rt.block_on(open_live(&t));
+    rt.block_on(async {
+        live.write_all(&frame(1, br#"{"type":"hello"}"#)).await.unwrap();
+        uplink(&t, 0, &["p0", "p1"]).await;
+        uplink(&t, 1, &["p2"]).await;
+        // Resource streams do not exist on a track session.
+        let (mut s, mut rr) = t.open_bi().await.unwrap().await.unwrap();
+        let path = format!("/resources/sha256/{HASH_B}");
+        let mut req = vec![0x01, 0];
+        req.extend_from_slice(&(path.len() as u16).to_le_bytes());
+        req.extend_from_slice(path.as_bytes());
+        req.push(0);
+        s.write_all(&req).await.unwrap();
+        let mut b = [0u8; 8];
+        match rr.read(&mut b).await {
+            Err(StreamReadError::Reset(code)) => assert_eq!(code.into_inner(), wt_error_to_h3(1), "unknown-stream-type"),
+            other => panic!("expected a reset, got {other:?}"),
+        }
+    });
+    h.wait("track texts", |_| (h.texts(local).len() == 4).then_some(()));
+    assert_eq!(h.texts(local), vec![r#"{"type":"hello"}"#, "p0", "p1", "p2"]);
+    assert_eq!(h.info().streams_refused, 1);
+
+    // Host to client: texts keep their order and the close does not cut the last one.
+    assert!(h.send_text(local, r#"{"type":"track-ready"}"#));
+    assert!(h.send_text(local, "payload"));
+    h.close(local, 1000, "done");
+    let (got, err) = rt.block_on(read_messages(&mut r));
+    assert_eq!(err, None);
+    assert_eq!(got, vec![(1u8, br#"{"type":"track-ready"}"#.to_vec()), (1u8, b"payload".to_vec())]);
+    assert_eq!(rt.block_on(close_code(&t)), Some((1000, "done".to_string())));
+    assert_eq!(h.wait_closed(local), (1000, "done".to_string()));
+    assert!(h.fake.track_slots.lock().unwrap().is_empty(), "the slot came back");
+
+    // A view session on the same host: admit(), and its resources are served.
+    let v = rt.block_on(connect(&h));
+    let view = h.wait_opened(1);
+    assert_eq!(h.fake.admits.lock().unwrap().last().cloned(), Some((view, None)), "a view uses admit()");
+    let (st, _, body_) = rt.block_on(get(&v, 0, &format!("/resources/sha256/{HASH_B}"), ""));
+    assert_eq!((st, body_.len()), (200, 10));
+    assert_eq!(h.info().streams_refused, 1, "unchanged by the view's GET");
+}
+
+/// A track text that is not UTF-8 closes the session 1007 like a view's (parse_client_frames).
+#[test]
+fn track_inbound_limits_close_like_a_view() {
+    let h = Harness::start(track_opts());
+    let rt = rt();
+    let cases: [(Vec<u8>, u16); 3] = [(frame(1, &[0xff, 0xfe]), 1007), (frame(0, b"bin"), 1003), (frame(1, &vec![b'a'; 4097]), 1009)];
+    for (i, (bytes, code)) in cases.iter().enumerate() {
+        let c = rt.block_on(connect_track(&h)).unwrap();
+        let local = h.wait_opened(i);
+        let (mut s, _r) = rt.block_on(open_live(&c));
+        rt.block_on(s.write_all(bytes)).unwrap();
+        assert_eq!(h.wait_closed(local).0, *code, "case {i}");
+    }
+}
+
+/// The track pool is separate from the view pool: a full view pool leaves a track admissible and
+/// a full track pool answers 503 with a capacity rejection, as a full view pool does.
+#[test]
+fn track_pool_is_separate_and_full_means_503() {
+    let h = Harness::start(Opts { cap: 1, track_cap: 1, ..track_opts() });
+    let rt = rt();
+    let _v = rt.block_on(connect(&h));
+    h.wait_opened(0);
+    assert_eq!(status_of(rt.block_on(connect_with(&h.url, &h.hash, &[]))), 503, "the view pool is full");
+    let t = rt.block_on(connect_track(&h)).expect("a track fits beside a full view pool");
+    let local = h.wait_opened(1);
+    let refused = status_of(rt.block_on(connect_track(&h)));
+    assert_eq!(refused, 503, "the track pool is full");
+    let ev = h.events();
+    assert!(
+        ev.iter().any(|e| matches!(e, Ev::Rejected { why, .. } if *why == GRC_REJECT_CAPACITY)),
+        "a capacity rejection reached the host: {ev:?}"
+    );
+    t.close_session(1000, b"");
+    h.wait_closed(local);
+    let _again = rt.block_on(connect_track(&h)).expect("the slot came back");
+    h.wait_opened(2);
+}
+
+/// Refusal shapes match ws: with tracks off (no `track_subprotocols`) the track name is as
+/// unknown as any other (400, no admission call, nothing rejected to the host); with them on, a
+/// WT-Available-Protocols list that omits the name is 400, and a name in neither list is 400.
+#[test]
+fn track_refusals_match_the_view_shapes() {
+    let off = Harness::start(Opts::default());
+    let rt = rt();
+    assert_eq!(status_of(rt.block_on(connect_track(&off))), 400, "tracks off: the unknown-subprotocol shape");
+    assert!(off.fake.admits.lock().unwrap().is_empty(), "no admission was asked for");
+    assert!(!off.events().iter().any(|e| matches!(e, Ev::Opened { .. } | Ev::Rejected { .. })));
+    assert_eq!(off.info().sessions_refused, 1);
+    drop(off);
+
+    let on = Harness::start(track_opts());
+    let base = on.url.split("/render-stream").next().unwrap().to_string();
+    rt.block_on(async {
+        assert_eq!(
+            status_of(connect_with(&track_url(&on), &on.hash, &[("wt-available-protocols", "\"render-stream.13\"")]).await),
+            400,
+            "negotiation must agree with the query"
+        );
+        assert_eq!(
+            status_of(
+                connect_with(&format!("{base}/render-stream?protocol=render-stream-track.2"), &on.hash, &[]).await
+            ),
+            400
+        );
+        assert_eq!(
+            status_of(connect_with(&track_url(&on), &on.hash, &[("origin", "https://evil.example")]).await),
+            403,
+            "the Origin check applies to tracks"
+        );
+        assert_eq!(status_of(connect_with(&format!("{base}/other?protocol={TRACK_SP}"), &on.hash, &[]).await), 404);
+        let ok = connect_with(&track_url(&on), &on.hash, &[("wt-available-protocols", "\"render-stream-track.1\"")]).await;
+        assert_eq!(status_of(ok), 200);
+    });
+    assert!(on.events().iter().filter(|e| matches!(e, Ev::Opened { .. })).count() == 1);
+}
+
+/// A track subprotocol that is also a view subprotocol stays a view (the view list wins), so
+/// admission is the view pool's admit().
+#[test]
+fn a_name_in_both_lists_is_a_view() {
+    let h = Harness::start(Opts { extra: vec![("track_subprotocols", format!("{SP},{TRACK_SP}"))], ..Default::default() });
+    let rt = rt();
+    let _c = rt.block_on(connect(&h));
+    let local = h.wait_opened(0);
+    assert_eq!(h.fake.admits.lock().unwrap().clone(), vec![(local, None)]);
+    let _t = rt.block_on(connect_track(&h)).unwrap();
+    let t = h.wait_opened(1);
+    assert_eq!(h.fake.admits.lock().unwrap()[1], (t, Some(TRACK_SP.to_string())));
+}
+
+/// A host struct older than TRK1 (size 112, no admit_subprotocol) still starts and serves views
+/// byte-for-byte as before; it is never offered a track subprotocol, whatever its config says.
+#[test]
+fn an_old_layout_host_leaves_tracks_off() {
+    let h = Harness::start(Opts { host_size: Some(112), ..track_opts() });
+    let rt = rt();
+    assert_eq!(status_of(rt.block_on(connect_track(&h))), 400);
+    assert!(h.fake.admits.lock().unwrap().is_empty());
+    let _v = rt.block_on(connect(&h));
+    let local = h.wait_opened(0);
+    assert_eq!(h.fake.admits.lock().unwrap().clone(), vec![(local, None)]);
+}
+
+/// The host struct's `size` must cover at least the CAR1 base (112 bytes).
+#[test]
+fn a_host_struct_shorter_than_the_base_is_refused() {
+    let mut config: HashMap<String, CString> = HashMap::new();
+    for (k, v) in [("wt_listen", "127.0.0.1:0"), ("subprotocols", SP), ("hello_token_subprotocols", SP)] {
+        config.insert(k.to_string(), CString::new(v).unwrap());
+    }
+    let fake = Box::new(Fake {
+        config,
+        token: String::new(),
+        origins: vec![],
+        cap: 1,
+        track_cap: 1,
+        track_slots: Mutex::new(HashSet::new()),
+        admits: Mutex::new(vec![]),
+        resources: HashMap::new(),
+        events: Mutex::new(vec![]),
+        slots: Mutex::new(HashSet::new()),
+        outstanding: AtomicI64::new(0),
+        logs: Mutex::new(vec![]),
+    });
+    let host = GrcCarrierHostV1 {
+        abi_version: GRC_CARRIER_ABI_VERSION,
+        size: 111,
+        host: &*fake as *const Fake as *mut c_void,
+        config: h_config,
+        admit: h_admit,
+        opened: h_opened,
+        text: h_text,
+        closed: h_closed,
+        rejected: h_rejected,
+        resource_served: h_served,
+        token_ok: h_token_ok,
+        origin_ok: h_origin_ok,
+        lookup: h_lookup,
+        release: h_release,
+        log: h_log,
+        admit_subprotocol: None,
+    };
+    let module = unsafe { &*render_stream_net::grc_net_module_v1() };
+    let mut vt = std::mem::MaybeUninit::<GrcCarrierV1>::zeroed();
+    let mut err = [0 as c_char; 256];
+    unsafe { (module.wt_create)(vt.as_mut_ptr(), err.as_mut_ptr(), err.len()) };
+    let vt = unsafe { vt.assume_init() };
+    assert_eq!(unsafe { (vt.start)(vt.self_, &host, err.as_mut_ptr(), err.len()) }, 0);
+    assert!(cstr(&err).starts_with("net-module-abi"), "{}", cstr(&err));
+    unsafe { (vt.destroy)(vt.self_) };
 }

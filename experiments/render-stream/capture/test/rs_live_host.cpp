@@ -679,7 +679,9 @@ int main(int argc, char **argv) {
       grc::rs::tracks::CarrierTracks ct;
       ct.name = c->name();
       if (i == grc::live::kCarrierWs) ct.tracks = transport.started(grc::live::kCarrierWs);
-      if (i == grc::live::kCarrierWt) ct.tracks = false;
+      if (i == grc::live::kCarrierWt) {
+        ct.tracks = wt != nullptr && wt->serves_tracks() && transport.started(grc::live::kCarrierWt);
+      }
       extras.carriers.push_back(ct);
     }
     const std::string path = evidence_dir + "/live-tracks.json";

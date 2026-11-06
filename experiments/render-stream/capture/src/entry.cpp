@@ -1917,11 +1917,12 @@ void refresh_live_tracks() {
     if (c == nullptr) continue;
     rs::tracks::CarrierTracks ct;
     ct.name = c->name();
-    // ws serves tracks; wt not until TRK3's features bit; a consumer carrier cannot be judged.
+    // ws serves tracks; wt when started and its module sets GRC_NET_FEATURE_TRACKS (TRK3);
+    // a consumer carrier cannot be judged.
     if (index == live::kCarrierWs) {
       ct.tracks = g_live.carriers->started(index);
     } else if (index == live::kCarrierWt) {
-      ct.tracks = false;
+      ct.tracks = g_live.carriers->started(index) && live::net_module_serves_tracks(g_live.net_module);
     }
     extras.carriers.push_back(std::move(ct));
   }

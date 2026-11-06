@@ -64,6 +64,20 @@ impl Host {
         self.with(false, |h| unsafe { (h.admit)(h.host, local) == 1 })
     }
 
+    /// Admission by subprotocol (TRK1): a slot from the pool `subprotocol` belongs to. False
+    /// when the pool is full, the subprotocol is unknown or this host predates the entry.
+    pub fn admit_subprotocol(&self, local: u32, subprotocol: &str) -> bool {
+        self.with(false, |h| match h.admit_subprotocol {
+            Some(f) => unsafe { f(h.host, local, subprotocol.as_ptr() as *const c_char, subprotocol.len()) == 1 },
+            None => false,
+        })
+    }
+
+    /// Whether the host's struct carries `admit_subprotocol` (TRK1 or later).
+    pub fn has_admit_subprotocol(&self) -> bool {
+        self.raw.admit_subprotocol.is_some()
+    }
+
     pub fn opened(&self, local: u32, subprotocol: &str, origin: Option<&str>) {
         let origin = origin.unwrap_or("");
         self.with((), |h| unsafe {

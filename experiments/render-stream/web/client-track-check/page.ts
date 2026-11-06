@@ -7,6 +7,7 @@ import {
   openTrack,
   RenderStreamTrackError,
   type TrackCloseInfo,
+  type TrackEndpoint,
   type TrackReady,
   type TrackSink,
   type TrackStats,
@@ -21,15 +22,41 @@ interface Entry {
 }
 const entries = new Map<string, Entry>();
 
+// Which transport class carried the tracks, as the page saw it: the driver reads these counts
+// to assert a wt run opened WebTransport sessions and a ws run only WebSockets.
+const constructed = { websocket: 0, webtransport: 0 };
+{
+  const w = window as unknown as Record<string, unknown>;
+  for (const [key, global] of [
+    ["websocket", "WebSocket"],
+    ["webtransport", "WebTransport"],
+  ] as const) {
+    const Native = w[global] as (new (...a: unknown[]) => unknown) | undefined;
+    if (!Native) continue;
+    w[global] = new Proxy(Native, {
+      construct(target, a, newTarget) {
+        constructed[key]++;
+        return Reflect.construct(target, a, newTarget);
+      },
+    });
+  }
+}
+
 const api = {
   ready: true,
   /** Opens a track under `name`; returns a thrown option error's code instead of throwing. */
   open(
     name: string,
-    endpoint: { url: string; token?: string | null },
+    endpoint: TrackEndpoint,
     options: Pick<
       OpenTrackOptions,
-      "kind" | "formats" | "downFormats" | "credential" | "reconnect" | "client"
+      | "kind"
+      | "formats"
+      | "downFormats"
+      | "credential"
+      | "reconnect"
+      | "client"
+      | "carrier"
     >,
   ): string | null {
     const e: Entry = {
@@ -41,8 +68,8 @@ const api = {
     };
     try {
       e.sink = openTrack(endpoint, {
-        ...options,
         carrier: "websocket",
+        ...options,
         onOpen: (r) => e.opens.push(r),
         onMessage: (t) => e.messages.push(t),
         onClose: (c) => e.closes.push(c),
@@ -75,6 +102,9 @@ const api = {
       states: e.states,
       stats: e.sink.stats(),
     };
+  },
+  transports(): { websocket: number; webtransport: number } {
+    return { ...constructed };
   },
   send(name: string, texts: string[]): boolean[] {
     const e = entries.get(name);

@@ -104,6 +104,10 @@ pub struct Config {
     pub path: String,
     /// What `?protocol=` may name: the host's subprotocols whose token travels in the hello.
     pub subprotocols: Vec<String>,
+    /// TRK3 (tracks-design.md Q7): the host's `track_subprotocols`, offered only when the host's
+    /// struct carries `admit_subprotocol`. A session on one is a track session: admitted from the
+    /// track pool, no resource streams. Empty with tracks off or a host older than TRK1.
+    pub track_subprotocols: Vec<String>,
     pub max_inbound_text: usize,
     pub max_queued_bytes: u64,
     pub cert: CertMode,
@@ -155,6 +159,14 @@ impl Config {
         if subprotocols.is_empty() {
             return Err("carrier-config-invalid: no subprotocol whose token travels in the hello".into());
         }
+        let track_subprotocols: Vec<String> = if host.has_admit_subprotocol() {
+            split_list(&host.config("track_subprotocols").unwrap_or_default())
+                .into_iter()
+                .filter(|s| !subprotocols.contains(s))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let num = |key: &str, default: u64| -> Result<u64, String> {
             match host.config(key) {
                 None => Ok(default),
@@ -181,7 +193,7 @@ impl Config {
             Some(v) if v.is_empty() => 0,
             Some(v) => v.parse::<u64>().map_err(|_| format!("carrier-config-invalid: GRC_NET_DEBUG_STATS_MS={v}"))?,
         };
-        Ok(Self { listen, path, subprotocols, max_inbound_text, max_queued_bytes, cert, evidence_dir, fault, debug_stats_ms })
+        Ok(Self { listen, path, subprotocols, track_subprotocols, max_inbound_text, max_queued_bytes, cert, evidence_dir, fault, debug_stats_ms })
     }
 }
 
@@ -193,6 +205,8 @@ enum Out {
 /// One admitted, opened session.
 pub struct Conn {
     local: u32,
+    /// A track session (TRK3): its subprotocol is one of `track_subprotocols`.
+    track: bool,
     connection: Connection,
     tx: mpsc::UnboundedSender<Out>,
     queued: AtomicU64,
@@ -584,7 +598,7 @@ async fn run_session(shared: Arc<Shared>, incoming: IncomingSession) {
         return;
     }
     let protocol = match query_protocol(query) {
-        Some(p) if shared.cfg.subprotocols.contains(&p) => p,
+        Some(p) if shared.cfg.subprotocols.contains(&p) || shared.cfg.track_subprotocols.contains(&p) => p,
         _ => {
             refuse(&shared);
             req.reject_with_status(400).await;
@@ -600,7 +614,11 @@ async fn run_session(shared: Arc<Shared>, incoming: IncomingSession) {
         }
     }
     let local = shared.alloc_local();
-    if !shared.host.admit(local) {
+    // A view subprotocol is admitted exactly as before TRK3 (admit); a track one from the track
+    // pool. The view list wins when a name is in both (Config::from_host removes the overlap).
+    let track = shared.cfg.track_subprotocols.contains(&protocol);
+    let admitted = if track { shared.host.admit_subprotocol(local, &protocol) } else { shared.host.admit(local) };
+    if !admitted {
         refuse(&shared);
         shared.host.rejected(local, GRC_REJECT_CAPACITY, "");
         req.reject_with_status(503).await;
@@ -622,6 +640,7 @@ async fn run_session(shared: Arc<Shared>, incoming: IncomingSession) {
     let (live_tx, live_rx) = oneshot::channel();
     let conn = Arc::new(Conn {
         local,
+        track,
         connection: connection.clone(),
         tx,
         queued: AtomicU64::new(0),
@@ -722,7 +741,8 @@ async fn dispatch(shared: Arc<Shared>, conn: Arc<Conn>, mut send: SendStream, mu
             }
             live_reader(shared, conn, recv).await;
         }
-        STREAM_RESOURCE => resource(shared, conn, send, recv).await,
+        // TRK3: a track session serves no resources; the type is refused like an unknown one.
+        STREAM_RESOURCE if !conn.track => resource(shared, conn, send, recv).await,
         _ => {
             shared.streams_refused.fetch_add(1, Ordering::AcqRel);
             let code = VarInt::try_from_u64(wt_error_to_h3(ERR_UNKNOWN_STREAM_TYPE)).unwrap_or(VarInt::from_u32(0));

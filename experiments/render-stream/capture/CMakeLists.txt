@@ -253,13 +253,16 @@ add_library(rs_net_fake_noentry MODULE test/rs_net_fake_module.c)
 target_compile_definitions(rs_net_fake_noentry PRIVATE GRC_FAKE_NO_ENTRY=1)
 add_library(rs_net_fake_badabi MODULE test/rs_net_fake_module.c)
 target_include_directories(rs_net_fake_badabi PRIVATE src)
+add_library(rs_net_fake_car3 MODULE test/rs_net_fake_module.c)
+target_compile_definitions(rs_net_fake_car3 PRIVATE GRC_FAKE_CAR3=1)
+target_include_directories(rs_net_fake_car3 PRIVATE src)
 add_executable(rs_net_module_test test/rs_net_module_test.cpp src/rs_net_module.cpp
   src/rs_carrier_set.cpp src/rs_ws.cpp src/rs_sha1.cpp)
 target_include_directories(rs_net_module_test PRIVATE src)
 target_link_libraries(rs_net_module_test PRIVATE grc_warnings grc_codecs Threads::Threads ${CMAKE_DL_LIBS})
-add_dependencies(rs_net_module_test rs_net_fake_noentry rs_net_fake_badabi)
+add_dependencies(rs_net_module_test rs_net_fake_noentry rs_net_fake_badabi rs_net_fake_car3)
 add_test(NAME rs_net_module COMMAND rs_net_module_test
-  $<TARGET_FILE:rs_net_fake_noentry> $<TARGET_FILE:rs_net_fake_badabi>)
+  $<TARGET_FILE:rs_net_fake_noentry> $<TARGET_FILE:rs_net_fake_badabi> $<TARGET_FILE:rs_net_fake_car3>)
 
 # Test-only echo server for the Node and Godot interop self-tests
 # (scripts/test/self-test-rs-ws.ts, receiver/tests/ws_selftest.gd). Not linked

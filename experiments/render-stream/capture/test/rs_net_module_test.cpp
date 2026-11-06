@@ -3,7 +3,7 @@
 // module has been built beside this test (scripts/build-rs-net.sh) -- a `wt` carrier through the
 // CarrierSet: start, live-carriers.json, stop.
 //
-// Usage: rs_net_module_test <no-entry fake .so> <bad-abi fake .so>
+// Usage: rs_net_module_test <no-entry fake .so> <bad-abi fake .so> <car3 fake .so>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -29,8 +29,8 @@ bool starts_with(const std::string &s, const std::string &p) { return s.rfind(p,
 
 int main(int argc, char **argv) {
   using namespace grc::live;  // NOLINT
-  if (argc != 3) {
-    std::fprintf(stderr, "usage: rs_net_module_test <no-entry.so> <bad-abi.so>\n");
+  if (argc != 4) {
+    std::fprintf(stderr, "usage: rs_net_module_test <no-entry.so> <bad-abi.so> <car3.so>\n");
     return 2;
   }
   std::string error;
@@ -45,6 +45,26 @@ int main(int argc, char **argv) {
   refused = load_net_module_at(argv[2], &error) == nullptr;
   check(refused && starts_with(error, "net-module-abi: "),
         "a module with another table version is net-module-abi (" + error + ")");
+  // TRK3: a CAR3-era table (size 40, no `features`) still loads and serves no tracks.
+  error.clear();
+  const grc_net_module_table_v1 *car3 = load_net_module_at(argv[3], &error);
+  check(car3 != nullptr && car3->size == 40 && !net_module_serves_tracks(car3),
+        "TRK3: a size-40 (CAR3-era) module loads and serves no tracks (" + error + ")");
+  {
+    grc_net_module_table_v1 t{};
+    t.abi_version = GRC_NET_MODULE_ABI_VERSION;
+    t.size = sizeof(grc_net_module_table_v1);
+    t.features = GRC_NET_FEATURE_TRACKS;
+    check(sizeof(t) == 48 && net_module_serves_tracks(&t), "TRK3: size 48 with the tracks bit serves tracks");
+    t.features = 0;
+    check(!net_module_serves_tracks(&t), "TRK3: size 48 with features 0 serves no tracks");
+    t.features = 2u;
+    check(!net_module_serves_tracks(&t), "TRK3: size 48 with only another bit serves no tracks");
+    t.features = GRC_NET_FEATURE_TRACKS;
+    t.size = 40;
+    check(!net_module_serves_tracks(&t), "TRK3: a size-40 table is never read for features");
+    check(!net_module_serves_tracks(nullptr), "TRK3: a null table serves no tracks");
+  }
   // CAR4: the TLS entry is looked up on its own; the bad-ABI fake (a CAR3-shaped module) has none.
   {
     void *handle = nullptr;

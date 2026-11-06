@@ -77,11 +77,12 @@ unsafe extern "C" fn wt_start(self_: *mut c_void, host: *const GrcCarrierHostV1,
             write_error(error, cap, "carrier-start-failed: no host");
             return 0;
         }
-        let raw = *host;
-        if raw.abi_version != GRC_CARRIER_ABI_VERSION || (raw.size as usize) < std::mem::size_of::<GrcCarrierHostV1>() {
+        // TRK3: a host older than TRK1 (112 bytes, no admit_subprotocol) still starts; it just
+        // never gets a track subprotocol.
+        let Some(raw) = read_host(host) else {
             write_error(error, cap, "net-module-abi: the host's grc_carrier_host_v1 is not version 1");
             return 0;
-        }
+        };
         let h = Host::new(raw);
         match catch_unwind(AssertUnwindSafe(|| wt::Running::start(h.clone()))) {
             Ok(Ok(r)) => {
@@ -249,6 +250,8 @@ static MODULE: GrcNetModuleV1 = GrcNetModuleV1 {
     module_version: MODULE_VERSION.as_ptr() as *const c_char,
     wt_create,
     wt_info,
+    features: GRC_NET_FEATURE_TRACKS,
+    features_reserved: 0,
 };
 
 /// The module's one entry (grc_net_module.h, struct grc_net_module_table_v1).

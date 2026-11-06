@@ -69,6 +69,10 @@ class NetTlsContext final : public TlsContext {
 // The default module path: librender_stream_net.so in this binary's directory.
 std::string default_net_module_path();
 
+// True when `m` is a module whose table is big enough to carry `features` and sets
+// GRC_NET_FEATURE_TRACKS (a CAR3-era table, size 40, serves no tracks). False for null.
+bool net_module_serves_tracks(const grc_net_module_table_v1 *m);
+
 class NetWtCarrier final : public Carrier {
  public:
   // Null (with *error) when the module cannot make one.
@@ -94,6 +98,8 @@ class NetWtCarrier final : public Carrier {
   // The module's view (zeroed when the module would not answer).
   grc_net_wt_info_v1 module_info() const;
   const AbiCarrier &abi() const { return *abi_; }
+  // Whether the module admits track subprotocols on this carrier (net_module_serves_tracks).
+  bool serves_tracks() const { return net_module_serves_tracks(module_); }
 
  private:
   NetWtCarrier(const grc_net_module_table_v1 *module, std::unique_ptr<AbiCarrier> abi, void *self)

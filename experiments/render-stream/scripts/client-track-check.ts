@@ -1,7 +1,7 @@
 // TRK4 live leg (protocol/tracks-design.md Q10, the TRK4 row): drives web/client-track-check/ (the
 // client package's `./tracks` subpath alone) in the pinned headless Chromium against
-// capture/build/rs_live_host --tracks over ws, with an echo receiver. Legs and checks (written to
-// <dir>/client-track.json; exit 1 when one fails):
+// capture/build/rs_live_host --tracks with an echo receiver, over ws (default) or, TRK3, the net
+// module's wt carrier. Legs and checks (written to <dir>/client-track.json; exit 1 when one fails):
 //   echo            a track with a down format: 20 payloads (non-ASCII too) reach the receiver in
 //                   order between one `opened` and one `closed`, come back verbatim, and the
 //                   page's close() is the receiver's `closed` 1000
@@ -20,10 +20,23 @@
 //                   reconnecting with backoff, then close() stops it
 //   stream-ended    SIGTERM of the host: the open track closes `stream-ended` 1001 and the client
 //                   plans a reconnect
-// No browser, no check: if the pinned Chromium is missing the leg says so and exits 0 (skipped).
+//   carrier-is-ws / carrier-is-wt  (after the last leg, per pass) every track the host's receiver
+//                   saw opened carries `carrier` = the pass's carrier, live-tracks.json says that
+//                   carrier serves tracks, and the page constructed only that transport's class
+//                   (WebSocket vs WebTransport, counted by page.ts)
+// --carrier ws|wt|both (default ws, which is exactly the pre-TRK3 run): `wt` starts both hosts with
+// `--carriers=ws,wt --net-module=capture/build/librender_stream_net.so`, pins the host's
+// self-signed certificate through `serverCertificateHashes` and opens every track with
+// `carrier: "webtransport"`; `both` runs a ws pass then a wt pass in one browser launch and one
+// report. In the report `checks` is flat (wt ids are prefixed `wt:`), `carrier` is the flag and
+// `passes` has one `{ carrier, wall_ms, checks }` per pass. Over wt the host's close arrives as a
+// CLOSE_WEBTRANSPORT_SESSION code; the same typed closes and reconnect rules must hold.
+// No browser, no check: if the pinned Chromium is missing the leg says so and exits 0 (skipped);
+// so it does when rs_live_host is not built, or (wt) librender_stream_net.so is not (with `both`
+// only the wt pass is skipped).
 //
 //   tsx --conditions=development experiments/render-stream/scripts/client-track-check.ts \
-//     --dir <out> [--port <page port>]
+//     --dir <out> [--port <page port>] [--carrier ws|wt|both]
 
 import { type ChildProcess, spawn } from "node:child_process";
 import {
@@ -49,6 +62,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RS = resolve(HERE, "..");
 const HOST = join(RS, "capture", "build", "rs_live_host");
+const NET_MODULE = join(RS, "capture", "build", "librender_stream_net.so");
 const PAGE_DIR = join(RS, "web", "client-track-check");
 const VIEW_TOKEN = "cd".repeat(32);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -70,6 +84,9 @@ interface Host {
   port: number;
   dir: string;
   credential: string;
+  /** UDP port and certificate hash (hex SHA-256) of the `wt` carrier; 0 and "" when it is off. */
+  wtPort: number;
+  cert: string;
   out: string;
   exited: Promise<number | null>;
 }
@@ -102,6 +119,7 @@ async function startHost(
     stderr += String(d);
   });
   const got: Record<string, string> = {};
+  const wt = extra.includes("--carriers=ws,wt");
   await new Promise<void>((res, rej) => {
     const t = setTimeout(
       () => rej(new Error(`rs_live_host did not start\n${stderr}`)),
@@ -112,7 +130,11 @@ async function startHost(
       (l) => {
         const m = /^(RS_LIVE_HOST_[A-Z0-9_]+) (\S+)$/.exec(l);
         if (m) got[m[1]] = m[2];
-        if (got.RS_LIVE_HOST_PORT && got.RS_LIVE_HOST_TRACK_TOKEN_FILE) {
+        if (
+          got.RS_LIVE_HOST_PORT &&
+          got.RS_LIVE_HOST_TRACK_TOKEN_FILE &&
+          (!wt || (got.RS_LIVE_HOST_WT_PORT && got.RS_LIVE_HOST_CERT_SHA256))
+        ) {
           clearTimeout(t);
           res();
         }
@@ -127,6 +149,8 @@ async function startHost(
     port: Number(got.RS_LIVE_HOST_PORT),
     dir,
     credential: readFileSync(got.RS_LIVE_HOST_TRACK_TOKEN_FILE, "utf8").trim(),
+    wtPort: Number(got.RS_LIVE_HOST_WT_PORT ?? 0),
+    cert: got.RS_LIVE_HOST_CERT_SHA256 ?? "",
     out,
     exited,
   };
@@ -143,6 +167,7 @@ async function stopHost(h: Host): Promise<void> {
 interface Rec {
   event: "opened" | "message" | "closed";
   source: number;
+  carrier?: string;
   text?: string;
   code?: number;
   reason?: string;
@@ -162,6 +187,7 @@ interface KindStats {
   closes?: Record<string, number>;
 }
 interface TracksJson {
+  carriers?: { name: string; tracks: boolean | null }[];
   refused?: Record<string, number>;
   tracks?: Record<string, KindStats>;
 }
@@ -197,83 +223,45 @@ interface PageState {
   };
 }
 
-async function main(): Promise<number> {
-  const a = args();
-  const dir = resolve(a.dir);
-  mkdirSync(dir, { recursive: true });
-  const reportPath = join(dir, "client-track.json");
-  if (!existsSync(HOST)) {
-    console.log(
-      `client-track-check: SKIP ${HOST} is not built (scripts/build-capture.sh, or cmake --build capture/build --target rs_live_host)`,
-    );
-    writeFileSync(reportPath, JSON.stringify({ skipped: "no rs_live_host" }));
-    return 0;
-  }
-  try {
-    resolvePinnedChromium();
-  } catch (e) {
-    console.log(`client-track-check: SKIP ${String(e)}`);
-    writeFileSync(
-      reportPath,
-      JSON.stringify({ skipped: "no pinned Chromium", why: String(e) }),
-    );
-    return 0;
-  }
+type Check = { id: string; passed: boolean; detail: string };
+interface PassContext {
+  dir: string;
+  origin: string;
+  launched: Awaited<ReturnType<typeof launchHarnessBrowser>>;
+  inputs: string[];
+  first: boolean;
+}
 
-  const staticDir = join(dir, "static");
-  rmSync(staticDir, { recursive: true, force: true });
-  mkdirSync(staticDir, { recursive: true });
-  writeFileSync(
-    join(staticDir, "index.html"),
-    readFileSync(join(PAGE_DIR, "index.html")),
-  );
-  const bundle = await build({
-    entryPoints: [join(PAGE_DIR, "page.ts")],
-    bundle: true,
-    splitting: true,
-    platform: "browser",
-    format: "esm",
-    target: "es2022",
-    conditions: ["development"],
-    outdir: staticDir,
-    metafile: true,
-    logLevel: "warning",
-  });
-  const inputs = Object.keys(bundle.metafile?.inputs ?? {}).map((p) =>
-    p.replace(/^.*packages\//, "packages/"),
-  );
-  const server = new HarnessServer({
-    staticRoot: staticDir,
-    evidenceRoot: join(dir, "evidence"),
-    allowedLegNonces: [],
-  });
-  const { origin } = await server.start(Number(a.port ?? 0));
-
-  const hostA = await startHost(join(dir, "host-a"), origin, [
+/** One full run of every leg over one carrier, with its own pair of hosts and its own page. */
+async function runPass(
+  carrier: "ws" | "wt",
+  ctx: PassContext,
+  report: Record<string, unknown>,
+): Promise<Check[]> {
+  const { dir, origin, launched, inputs } = ctx;
+  // ws: the hosts exactly as before TRK3. wt: the net module's carriers beside ws.
+  const more =
+    carrier === "wt" ? ["--carriers=ws,wt", `--net-module=${NET_MODULE}`] : [];
+  const sub = carrier === "wt" ? "wt-" : "";
+  const hostA = await startHost(join(dir, `${sub}host-a`), origin, [
     "--track-rate=100",
     "--track-keepalive-ms=250",
     "--track-down-formats=gsw-input-feedback/1",
     "--track-echo",
+    ...more,
   ]);
-  const hostB = await startHost(join(dir, "host-b"), origin, [
+  const hostB = await startHost(join(dir, `${sub}host-b`), origin, [
     "--track-receiver=none",
     "--track-keepalive-ms=250",
+    ...more,
   ]);
-  const launched = await launchHarnessBrowser();
-  const checks: { id: string; passed: boolean; detail: string }[] = [];
+  const checks: Check[] = [];
   const check = (id: string, passed: boolean, detail: string) => {
-    checks.push({ id, passed, detail });
+    checks.push({ id: carrier === "wt" ? `wt:${id}` : id, passed, detail });
     console.log(
-      `client-track-check: ${passed ? "pass" : "FAIL"} ${id}: ${detail}`,
+      `client-track-check: ${passed ? "pass" : "FAIL"} ${carrier === "wt" ? "wt:" : ""}${id}: ${detail}`,
     );
   };
-  const report: Record<string, unknown> = {
-    schema: "render-stream-client-track-check/1",
-    origin,
-    chromium: launched.browser.version(),
-    page_inputs: inputs.filter((p) => p.includes("render-stream-client")),
-  };
-
   try {
     const page: Page = await launched.browser.newPage();
     page.on("console", (m) => {
@@ -284,24 +272,38 @@ async function main(): Promise<number> {
     await page.waitForFunction(
       () => (window as unknown as Record<string, unknown>).__trk !== undefined,
     );
-    const prov = await checkBrowserProvenance(
-      page,
-      launched,
-      [...BROWSER_LAUNCH_ARGS],
-      { DISPLAY: undefined, WAYLAND_DISPLAY: undefined },
-    );
-    check("browser-provenance", prov.ok, prov.reasons.join("; ") || "ok");
-    check(
-      "page-imports-no-view-client",
-      !inputs.some((p) =>
-        /render-stream-client\/src\/(client|loop|loader|core|extensions)\.ts$/.test(
-          p,
+    if (ctx.first) {
+      const prov = await checkBrowserProvenance(
+        page,
+        launched,
+        [...BROWSER_LAUNCH_ARGS],
+        { DISPLAY: undefined, WAYLAND_DISPLAY: undefined },
+      );
+      check("browser-provenance", prov.ok, prov.reasons.join("; ") || "ok");
+      check(
+        "page-imports-no-view-client",
+        !inputs.some((p) =>
+          /render-stream-client\/src\/(client|loop|loader|core|extensions)\.ts$/.test(
+            p,
+          ),
         ),
-      ),
-      `${inputs.filter((p) => p.includes("render-stream-client")).join(", ")}`,
-    );
+        `${inputs.filter((p) => p.includes("render-stream-client")).join(", ")}`,
+      );
+    }
 
     const wsUrl = (h: Host) => `ws://127.0.0.1:${h.port}/render-stream`;
+    const endpoint = (h: Host, token?: string) => ({
+      url: wsUrl(h),
+      ...(carrier === "wt"
+        ? {
+            webTransport: {
+              url: `https://127.0.0.1:${h.wtPort}/render-stream`,
+              certificateHashes: [h.cert],
+            },
+          }
+        : {}),
+      ...(token ? { token } : {}),
+    });
     const open = (
       name: string,
       h: Host,
@@ -317,12 +319,13 @@ async function main(): Promise<number> {
           ).__trk.open(n, ep, opt),
         [
           name,
-          { url: wsUrl(h), ...(token ? { token } : {}) },
+          endpoint(h, token),
           {
             kind: "input",
             formats: ["gsw-input/1"],
             credential: h.credential,
             client: `trk4-${name}`,
+            carrier: carrier === "wt" ? "webtransport" : "websocket",
             ...o,
           },
         ] as const,
@@ -586,6 +589,39 @@ async function main(): Promise<number> {
         // token was refused once (not by a reconnect loop, nor by the guard's leg).
         const t = evidence(hostA);
         const k = t.tracks?.input ?? {};
+        // Which transport carried every track, on both sides: the host's receiver saw
+        // `opened.carrier` (the CarrierSet's name for the connection), live-tracks.json says the
+        // carrier serves tracks, and the page counts the constructors it called.
+        const opened = records(hostA).filter((r) => r.event === "opened");
+        const tc = t.carriers?.find((c) => c.name === carrier);
+        const pageT = await page.evaluate(() =>
+          (
+            window as unknown as {
+              __trk: {
+                transports(): { websocket: number; webtransport: number };
+              };
+            }
+          ).__trk.transports(),
+        );
+        report.page_transports = {
+          ...(report.page_transports as object | undefined),
+          [carrier]: pageT,
+        };
+        check(
+          `carrier-is-${carrier}`,
+          opened.length === k.opened &&
+            opened.length > 0 &&
+            opened.every((r) => r.carrier === carrier) &&
+            tc?.tracks === true &&
+            (carrier === "wt"
+              ? pageT.webtransport > 0 && pageT.websocket === 0
+              : pageT.websocket > 0 && pageT.webtransport === 0),
+          JSON.stringify({
+            opened: opened.map((r) => r.carrier),
+            live_tracks_carrier: tc ?? null,
+            page: pageT,
+          }),
+        );
         const refused = k.refused ?? {};
         check(
           "host-counts-each-refusal-once",
@@ -605,12 +641,114 @@ async function main(): Promise<number> {
   } catch (e) {
     check("leg-completed", false, String((e as Error).stack ?? e));
   } finally {
+    await stopHost(hostA);
+    await stopHost(hostB);
+  }
+  return checks;
+}
+
+async function main(): Promise<number> {
+  const a = args();
+  const dir = resolve(a.dir);
+  mkdirSync(dir, { recursive: true });
+  const reportPath = join(dir, "client-track.json");
+  const carrierArg = a.carrier ?? "ws";
+  if (!["ws", "wt", "both"].includes(carrierArg))
+    throw new Error("client-track-check: --carrier must be ws, wt or both");
+  const passes: ("ws" | "wt")[] =
+    carrierArg === "both" ? ["ws", "wt"] : [carrierArg as "ws" | "wt"];
+  if (!existsSync(HOST)) {
+    console.log(
+      `client-track-check: SKIP ${HOST} is not built (scripts/build-capture.sh, or cmake --build capture/build --target rs_live_host)`,
+    );
+    writeFileSync(reportPath, JSON.stringify({ skipped: "no rs_live_host" }));
+    return 0;
+  }
+  const skippedPasses: { carrier: string; skipped: string }[] = [];
+  if (passes.includes("wt") && !existsSync(NET_MODULE)) {
+    const why = `${NET_MODULE} is not built (cmake --build capture/build --target render_stream_net)`;
+    console.log(`client-track-check: SKIP wt pass: ${why}`);
+    if (carrierArg === "wt") {
+      writeFileSync(
+        reportPath,
+        JSON.stringify({ skipped: "no librender_stream_net.so", why }),
+      );
+      return 0;
+    }
+    passes.splice(passes.indexOf("wt"), 1);
+    skippedPasses.push({
+      carrier: "wt",
+      skipped: "no librender_stream_net.so",
+    });
+  }
+  try {
+    resolvePinnedChromium();
+  } catch (e) {
+    console.log(`client-track-check: SKIP ${String(e)}`);
+    writeFileSync(
+      reportPath,
+      JSON.stringify({ skipped: "no pinned Chromium", why: String(e) }),
+    );
+    return 0;
+  }
+  const staticDir = join(dir, "static");
+  rmSync(staticDir, { recursive: true, force: true });
+  mkdirSync(staticDir, { recursive: true });
+  writeFileSync(
+    join(staticDir, "index.html"),
+    readFileSync(join(PAGE_DIR, "index.html")),
+  );
+  const bundle = await build({
+    entryPoints: [join(PAGE_DIR, "page.ts")],
+    bundle: true,
+    splitting: true,
+    platform: "browser",
+    format: "esm",
+    target: "es2022",
+    conditions: ["development"],
+    outdir: staticDir,
+    metafile: true,
+    logLevel: "warning",
+  });
+  const inputs = Object.keys(bundle.metafile?.inputs ?? {}).map((p) =>
+    p.replace(/^.*packages\//, "packages/"),
+  );
+  const server = new HarnessServer({
+    staticRoot: staticDir,
+    evidenceRoot: join(dir, "evidence"),
+    allowedLegNonces: [],
+  });
+  const { origin } = await server.start(Number(a.port ?? 0));
+
+  const launched = await launchHarnessBrowser();
+  const checks: Check[] = [];
+  const report: Record<string, unknown> = {
+    schema: "render-stream-client-track-check/1",
+    carrier: carrierArg,
+    origin,
+    chromium: launched.browser.version(),
+    page_inputs: inputs.filter((p) => p.includes("render-stream-client")),
+  };
+  const passReports: Record<string, unknown>[] = [...skippedPasses];
+  try {
+    let first = true;
+    for (const carrier of passes) {
+      const t0 = Date.now();
+      const pc = await runPass(
+        carrier,
+        { dir, origin, launched, inputs, first },
+        report,
+      );
+      first = false;
+      checks.push(...pc);
+      passReports.push({ carrier, wall_ms: Date.now() - t0, checks: pc });
+    }
+  } finally {
     report.checks = checks;
+    report.passes = passReports;
     writeFileSync(reportPath, JSON.stringify(report, null, 2));
     await launched.browser.close().catch(() => {});
     await server.stop().catch(() => {});
-    await stopHost(hostA);
-    await stopHost(hostB);
   }
   const failed = checks.filter((c) => !c.passed);
   console.log(

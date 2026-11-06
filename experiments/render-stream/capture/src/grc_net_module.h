@@ -63,7 +63,16 @@ typedef struct grc_net_module_table_v1 {
   /* Fills *out (whose abi_version and size the caller sets) for a carrier wt_create made; `self`
    * is its grc_carrier_v1.self. 1 when filled. Thread-safe, memory-speed. */
   int (*wt_info)(void *self, grc_net_wt_info_v1 *out);
+  /* TRK3: GRC_NET_FEATURE_* bits. A reader reads `features` only when `size` >=
+   * offsetof(grc_net_module_table_v1, features) + 4; a CAR3-era module (size 40) has no
+   * features, which reads as 0. */
+  uint32_t features;
+  uint32_t features_reserved; /* 0 */
 } grc_net_module_table_v1;
+
+/* Bit 0: the `wt` carrier admits track subprotocols through grc_carrier_host_v1.admit_subprotocol
+ * (protocol/tracks-design.md Q7). Without it the capture does not report wt as serving tracks. */
+#define GRC_NET_FEATURE_TRACKS 1u
 
 typedef const grc_net_module_table_v1 *(*grc_net_module_table_v1_fn)(void);
 

@@ -10,6 +10,11 @@
 //! Usage:
 //!   rs-net-probe --url URL --cert-sha256 HEX --out DIR [--hello JSON] [--origin ORIGIN]
 //!                [--token HEX] [--fetch PATH]... [--gzip] [--close-after-ms N]
+//!                [--send TEXT]... [--uplink TEXT]...
+//!
+//! TRK3 (a track session, `?protocol=render-stream-track.1`, `--hello` the track-hello):
+//! `--send` texts go on the live stream and `--uplink` texts in one uplink batch (type 0x10),
+//! both right after the first message from the host (the track-ready), `--send` first.
 //! Exit: 0 when the session opened and ended without a framing error, 3 when it never opened,
 //! 4 on a framing error.
 
@@ -30,6 +35,8 @@ struct Args {
     fetch: Vec<String>,
     gzip: bool,
     close_after_ms: Option<u64>,
+    send: Vec<String>,
+    uplink: Vec<String>,
 }
 
 fn parse() -> Result<Args, String> {
@@ -43,6 +50,8 @@ fn parse() -> Result<Args, String> {
         fetch: vec![],
         gzip: false,
         close_after_ms: None,
+        send: vec![],
+        uplink: vec![],
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -56,6 +65,8 @@ fn parse() -> Result<Args, String> {
             "--token" => a.token = v()?,
             "--fetch" => a.fetch.push(v()?),
             "--gzip" => a.gzip = true,
+            "--send" => a.send.push(v()?),
+            "--uplink" => a.uplink.push(v()?),
             "--close-after-ms" => a.close_after_ms = Some(v()?.parse().map_err(|_| "bad --close-after-ms")?),
             other => return Err(format!("unknown argument {other}")),
         }
@@ -64,6 +75,13 @@ fn parse() -> Result<Args, String> {
         return Err("--url and a 64-hex --cert-sha256 are required".into());
     }
     Ok(a)
+}
+
+fn text_frame(t: &str) -> Vec<u8> {
+    let mut f = vec![1u8];
+    f.extend_from_slice(&(t.len() as u32).to_le_bytes());
+    f.extend_from_slice(t.as_bytes());
+    f
 }
 
 fn json_str(s: &str) -> String {
@@ -129,6 +147,7 @@ async fn main() {
     let mut framing_error: Option<String> = None;
     let mut resources: Vec<String> = vec![];
     let mut fetched = a.fetch.is_empty();
+    let mut sent = a.send.is_empty() && a.uplink.is_empty();
     let mut buf: Vec<u8> = vec![];
     let mut chunk = vec![0u8; 1 << 16];
     let close_at = a.close_after_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
@@ -175,6 +194,22 @@ async fn main() {
             break;
         }
         buf.drain(..at);
+        if !sent && !sizes.is_empty() {
+            sent = true;
+            for t in &a.send {
+                send.write_all(&text_frame(t)).await.expect("send");
+            }
+            if !a.uplink.is_empty() {
+                let mut u = conn.open_uni().await.expect("open_uni").await.expect("uplink stream");
+                let mut b = vec![0x10u8];
+                b.extend_from_slice(&0u32.to_le_bytes());
+                for t in &a.uplink {
+                    b.extend_from_slice(&text_frame(t));
+                }
+                u.write_all(&b).await.expect("uplink");
+                u.finish().await.expect("uplink finish");
+            }
+        }
         if !fetched && !sizes.is_empty() {
             fetched = true;
             for p in &a.fetch {
