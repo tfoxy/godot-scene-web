@@ -105,16 +105,30 @@ export interface MouseModeHost {
     reason: "inactive" | "off-picture" | "extra-touch" | "intercepted",
   ): void;
   capturePointer(pointerId: number): void;
+  // Every primitive takes the DOM client point the record stands for (`client`), which the
+  // capture's pointer targets (IN12) resolve at; absent (a cancel), nothing is resolved.
   /** One `mouse_motion` at `at` now (pending motion flushed first). */
-  hover(at: Vec): void;
+  hover(at: Vec, client?: Vec): void;
   /** Coalesced drag motion to `at` (one per animation frame). */
-  drag(at: Vec): void;
+  drag(at: Vec, client?: Vec): void;
   /** LEFT/RIGHT press owned by `owner`; false (and nothing sent) when refused. */
-  press(button: number, at: Vec, owner: number, doubleClick: boolean): boolean;
+  press(
+    button: number,
+    at: Vec,
+    owner: number,
+    doubleClick: boolean,
+    client?: Vec,
+  ): boolean;
   /** Release `button` if `owner` holds it. */
-  release(button: number, at: Vec, owner: number, canceled: boolean): void;
+  release(
+    button: number,
+    at: Vec,
+    owner: number,
+    canceled: boolean,
+    client?: Vec,
+  ): void;
   /** A press+release pair of any button (wheel buttons: factor 1); false when refused. */
-  click(button: number, at: Vec): boolean;
+  click(button: number, at: Vec, client?: Vec): boolean;
   now(): number;
 }
 
@@ -286,8 +300,9 @@ export function createMouseMode(
     // "swallow" leaves the finger pending: a later lift is still a tap, travel still a drag.
     if (decision === "send" && s.phase === p) {
       setPhase(s, { type: "inert" });
-      host.hover(p.down);
-      host.click(MouseButton.RIGHT, p.down);
+      const start: Vec = [p.startX, p.startY];
+      host.hover(p.down, start);
+      host.click(MouseButton.RIGHT, p.down, start);
     }
     tell(gesture, decision);
   }
@@ -309,8 +324,9 @@ export function createMouseMode(
     const decision = decide(gesture);
     // "swallow" makes the finger inert to its lift (no press, so nothing to release).
     if (decision === "send" && session === s) {
-      host.hover(p.down);
-      if (host.press(MouseButton.LEFT, p.down, s.id, false))
+      const start: Vec = [p.startX, p.startY];
+      host.hover(p.down, start);
+      if (host.press(MouseButton.LEFT, p.down, s.id, false, start))
         setPhase(s, {
           type: "drag",
           last: p.down,
@@ -339,7 +355,7 @@ export function createMouseMode(
       d.last = at;
       d.lastX = x;
       d.lastY = y;
-      host.drag(at);
+      host.drag(at, [x, y]);
     }
     tell(gesture, decision);
   }
@@ -353,8 +369,14 @@ export function createMouseMode(
     canceled: boolean,
   ) {
     setPhase(s, { type: "inert" });
-    const point = (canceled ? null : host.map(x, y)) ?? d.last;
-    host.release(MouseButton.LEFT, point, s.id, canceled);
+    const lifted = canceled ? null : host.map(x, y);
+    const point = lifted ?? d.last;
+    const client: Vec | undefined = canceled
+      ? undefined
+      : lifted
+        ? [x, y]
+        : [d.lastX, d.lastY];
+    host.release(MouseButton.LEFT, point, s.id, canceled, client);
     tell(
       {
         kind: "drag-end",
@@ -398,9 +420,10 @@ export function createMouseMode(
     };
     const decision = decide(gesture);
     if (decision === "send") {
-      host.hover(at);
-      if (host.press(MouseButton.LEFT, at, s.id, doubleClick))
-        host.release(MouseButton.LEFT, at, s.id, false);
+      const client: Vec = [x, y];
+      host.hover(at, client);
+      if (host.press(MouseButton.LEFT, at, s.id, doubleClick, client))
+        host.release(MouseButton.LEFT, at, s.id, false, client);
     }
     tell(gesture, decision);
   }
@@ -482,7 +505,8 @@ export function createMouseMode(
         button,
       };
       const decision = decide(gesture);
-      if (decision === "send") host.click(button, scroll.at);
+      if (decision === "send")
+        host.click(button, scroll.at, [scroll.clientAt[0], scroll.clientAt[1]]);
       tell(gesture, decision);
     }
   }

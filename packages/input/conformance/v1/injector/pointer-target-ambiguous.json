@@ -1,0 +1,133 @@
+{
+  "name": "pointer-target-ambiguous",
+  "description": "A scene-relative path with several live instances resolves to the one the coordinate lands on; when none (or several) lands the target is missing (target-ambiguous, target_missing) and goes by its coordinate, never a guess.",
+  "config": {},
+  "scene": [
+    {
+      "path": "Main",
+      "class": "Node"
+    },
+    {
+      "path": "Main/Card1",
+      "class": "Control",
+      "position": [0, 30],
+      "size": [20, 20],
+      "scene_file_path": "res://card.tscn"
+    },
+    {
+      "path": "Main/Card1/Face",
+      "class": "Control",
+      "position": [2, 2],
+      "size": [10, 10]
+    },
+    {
+      "path": "Main/Card2",
+      "class": "Control",
+      "position": [30, 30],
+      "size": [20, 20],
+      "scene_file_path": "res://card.tscn"
+    },
+    {
+      "path": "Main/Card2/Face",
+      "class": "Control",
+      "position": [2, 2],
+      "size": [10, 10]
+    }
+  ],
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "target",
+            "handle": 2,
+            "path": "Face",
+            "scene": "res://card.tscn"
+          },
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": true,
+            "position": [35, 35],
+            "button_mask": 1,
+            "target": 2,
+            "local": [3, 3]
+          },
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": false,
+            "position": [35, 35],
+            "target": 2,
+            "local": [3, 3]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": true,
+            "position": [25, 5],
+            "button_mask": 1,
+            "target": 2,
+            "local": [3, 3]
+          },
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": false,
+            "position": [25, 5],
+            "target": 2,
+            "local": [3, 3]
+          }
+        ]
+      }
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "dispatched": [
+        "mouse_button 64 1 down 35.00,35.00 mask=1 meta=2",
+        "mouse_button 64 1 up 35.00,35.00 mask=0 meta=2"
+      ],
+      "gui": [
+        "Main/Card2/Face mouse_button 64 1 down 3.00,3.00 meta=2:Face@3.00,3.00",
+        "Main/Card2/Face mouse_button 64 1 up 3.00,3.00 meta=2:Face@3.00,3.00"
+      ],
+      "target_signals": [
+        "pointer_target a Main/Card2/Face 3.00,3.00",
+        "pointer_target a Main/Card2/Face 3.00,3.00"
+      ]
+    },
+    {
+      "after": 2,
+      "dispatched": [
+        "mouse_button 64 1 down 25.00,5.00 mask=1 meta=2",
+        "mouse_button 64 1 up 25.00,5.00 mask=0 meta=2"
+      ],
+      "stats": {
+        "target-ambiguous": 1
+      },
+      "target_signals": ["target_missing a 2"]
+    }
+  ]
+}

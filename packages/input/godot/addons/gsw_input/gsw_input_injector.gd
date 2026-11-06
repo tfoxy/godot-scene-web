@@ -22,9 +22,10 @@ extends RefCounted
 ## Scope: key, joypad_button, joypad_motion (IN7), the pointer kinds mouse_button, mouse_motion,
 ## screen_touch and screen_drag (IN9, GswInputPointer: one mouse owner, per-source touch ranges)
 ## and opt-in `action` (IN9) are injected. Gestures pass the gates and are counted
-## `kind-unsupported`; target declarations fill the handle table, and targeted pointer records
-## apply by their coordinate (IN12 resolves targets). `install_event_filter` adds the
-## physical-pointer filter (GswInputPointerFilter).
+## `kind-unsupported`. Target declarations fill each source's handle table; a targeted pointer
+## record is placed by GswInputTargets (IN12: `retarget`, `missing_target`, held-button binding,
+## `gsw_target` meta and the target signals). `install_event_filter` adds the physical-pointer
+## filter (GswInputPointerFilter).
 ##
 ## Joypads (IN8): a source's pad slots get virtual device ids from GswInputDevices on first use,
 ## leased to the source until `lease_ms` after it closes, so a reconnect keeps its devices.
@@ -48,6 +49,15 @@ signal rejected(channel: Variant, code: String, detail: String)
 signal joypad_attached(device: int, source: String, slot: int)
 ## A virtual pad device's last holder's lease expired.
 signal joypad_detached(device: int, source: String, slot: int)
+## A targeted event resolved to `node`, just before it is injected (its `gsw_target` meta is set;
+## `local` is the point in the node's coordinates).
+signal pointer_target(source: String, event: InputEvent, node: Node, local: Vector2)
+## A targeted record's node cannot be resolved or is not visible in tree (`identity` is its
+## declaration); the event goes by `missing_target`.
+signal target_missing(source: String, identity: Dictionary)
+## `verify_targets`: after a targeted mouse event, the hovered Control (or null) is neither the
+## target nor inside it. Checked on `tick()`.
+signal target_mismatch(source: String, identity: Dictionary, hovered: Control)
 
 const DEFAULT_ACCEPT_KINDS: Array[String] = [
 	"key", "joypad_button", "joypad_motion", "mouse_button", "mouse_motion", "screen_touch", "screen_drag",
@@ -111,6 +121,31 @@ var mouse_owner: String = GswInputPointer.LAST_ACTIVE:
 		mouse_owner = value
 		if _pointer != null:
 			_pointer.mouse_owner = value
+## Where a targeted event goes when its coordinate misses its node: "off", "when-missed"
+## (default) or "always" (GswInputTargets).
+var retarget: String:
+	get:
+		return _targets.retarget
+	set(value):
+		_targets.retarget = value
+## A target that cannot be resolved or is hidden: "coordinate" (default) or "drop".
+var missing_target: String:
+	get:
+		return _targets.missing_target
+	set(value):
+		_targets.missing_target = value
+## Emit `target_mismatch` from `tick()`.
+var verify_targets: bool:
+	get:
+		return _targets.verify_targets
+	set(value):
+		_targets.verify_targets = value
+## Host px within which a non-Control CanvasItem's `transform * local` counts as landed.
+var target_tolerance: float:
+	get:
+		return _targets.tolerance
+	set(value):
+		_targets.tolerance = value
 
 
 class _Source:
@@ -129,8 +164,10 @@ class _Source:
 	var axes: Dictionary = {}
 	## action name -> its press strength, in press order.
 	var actions: Dictionary = {}
-	## target handle -> declaration record (pointer targets; resolved in IN12).
+	## target handle -> declaration record.
 	var handles: Dictionary = {}
+	## target handle -> weak refs to its resolved node(s) (GswInputTargets' cache).
+	var resolved: Dictionary = {}
 	var rate_start: int = 0
 	var rate_count: int = 0
 	## While closed: when its device lease ends (-1 while open).
@@ -161,6 +198,9 @@ var _axis_emitted: Dictionary = {}
 ## action name -> number of sources holding it.
 var _action_refs: Dictionary = {}
 var _pointer: GswInputPointer
+var _targets: GswInputTargets = GswInputTargets.new(
+	pointer_target.emit, target_missing.emit, target_mismatch.emit, _count
+)
 var _stats: Dictionary = {}
 
 
@@ -169,6 +209,7 @@ func _init() -> void:
 	_devices.detached.connect(joypad_detached.emit)
 	_pointer = GswInputPointer.new(_emit, _count)
 	_pointer.mouse_owner = mouse_owner
+	_pointer.targets = _targets
 
 
 ## Apply settings from a Dictionary (JSON numbers welcome). Returns false on an unknown key or a
@@ -202,6 +243,26 @@ func configure(config: Dictionary) -> bool:
 					ok = false
 					continue
 				mouse_owner = value
+			"retarget", "missing_target":
+				var allowed: Array[String] = [GswInputTargets.COORDINATE, GswInputTargets.DROP]
+				if key == "retarget":
+					allowed = [GswInputTargets.OFF, GswInputTargets.WHEN_MISSED, GswInputTargets.ALWAYS]
+				if typeof(value) != TYPE_STRING or not allowed.has(value):
+					ok = false
+					continue
+				var policy: String = key
+				set(policy, value)
+			"verify_targets":
+				if typeof(value) != TYPE_BOOL:
+					ok = false
+					continue
+				verify_targets = value
+			"target_tolerance":
+				if not is_number:
+					ok = false
+					continue
+				var tolerance: float = value
+				target_tolerance = tolerance
 			"device_base", "devices_per_source", "key_device", "lease_ms", "stale_timeout_ms", "max_events_per_second":
 				if not is_number:
 					ok = false
@@ -340,6 +401,9 @@ func tick(now_msec: int = -1) -> void:
 	if now_msec < 0:
 		now_msec = Time.get_ticks_msec()
 	_expire_leases(now_msec)
+	if _targets.verify_targets:
+		var tree: SceneTree = Engine.get_main_loop() as SceneTree
+		_targets.verify(tree.root if tree != null else null)
 	if stale_timeout_ms <= 0:
 		return
 	for state: Variant in _sources.values():
@@ -386,6 +450,7 @@ func _hello(channel: Variant, message: Dictionary, now_msec: int) -> String:
 		# A new epoch: the old one's state goes, the source (and its devices) stays.
 		_release_source(source)
 		source.handles.clear()
+		source.resolved.clear()
 		_by_channel.erase(source.channel)
 	source.open = true
 	source.lease_until = -1
@@ -407,6 +472,7 @@ func _close_source(source: _Source, now_msec: int) -> void:
 	source.open = false
 	source.epoch = -1
 	source.handles.clear()
+	source.resolved.clear()
 	_by_channel.erase(source.channel)
 	source.channel = null
 	source_closed.emit(source.id)
@@ -468,6 +534,7 @@ func _admit(source: _Source, record: Dictionary) -> bool:
 	if kind == "target":
 		var handle: int = record["handle"]
 		source.handles[handle] = record
+		source.resolved.erase(handle)
 		return false
 	if not accept_kinds.has(kind):
 		_count("kind-refused")
@@ -504,7 +571,7 @@ func _apply_record(source: _Source, record: Dictionary) -> void:
 			if device < 0:
 				_count("device-refused")
 				return
-			_pointer.apply(source.id, device, touch_index_base(source.id), record)
+			_pointer.apply(source.id, device, touch_index_base(source.id), record, source.handles, source.resolved)
 
 
 # --- keys --------------------------------------------------------------------------------------
@@ -904,7 +971,7 @@ func _apply_sync(source: _Source, message: Dictionary) -> void:
 				if not records.is_empty():
 					_count("device-refused")
 				return
-			_pointer.sync(source.id, device, touch_index_base(source.id), records)
+			_pointer.sync(source.id, device, touch_index_base(source.id), records, source.handles, source.resolved)
 
 
 func _release_source(source: _Source) -> void:

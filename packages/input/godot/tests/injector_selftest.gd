@@ -15,6 +15,13 @@ extends SceneTree
 ## `Input.action_release()` (what the engine call does, input.cpp:1290-1294), then calls
 ## on_focus_lost().
 ## `isolate` runs GswJoypadIsolation.isolate(); the bindings are restored after the vector.
+## IN12 target vectors: a vector's `scene` lists nodes created under the root before its first
+## step ({path, class: Node|Control|Node2D, position, size, scale, visible, scene_file_path});
+## Controls record their `_gui_input` as `gui` lines (control-local positions, ` meta=` with the
+## `gsw_target` meta). Scene steps: {move: path, position}, {free: path}, {add: node},
+## {hide: path}, {show: path}. `target_signals` lists the injector's pointer_target,
+## target_missing and target_mismatch signals. The scene is freed after the vector. Hover only
+## reaches `_gui_input` inside the headless root's 64x64 visible rect (viewport.cpp:2064).
 ## After each step the runner flushes Input; an `expect` entry
 ## {after: step index, ...} compares the state then. Absent state fields mean empty and absent
 ## `stats` means no counter; `dispatched` lists the events `_input` received since the previous
@@ -26,6 +33,7 @@ extends SceneTree
 ## are never inspected.
 ##
 ## Prints "[injector-selftest] ok N/N vectors" and quits 0, or prints each failure and quits 1.
+## A dispatched event tagged with `gsw_target` meta ends with ` meta=<handle>`.
 
 const TAG: String = "[injector-selftest]"
 const ACTIONS: Array[String] = ["gsw_test_jump", "gsw_test_right"]
@@ -33,6 +41,39 @@ const ACTIONS: Array[String] = ["gsw_test_jump", "gsw_test_right"]
 const FIRST_VIRTUAL: int = 16
 const AXIS_COUNT: int = 10
 const AXIS_TOLERANCE: float = 1e-6
+
+
+## A test Control: records its `_gui_input` into the runner's shared `gui` list.
+class GuiProbe:
+	extends Control
+	var lines: Array[String] = []
+
+	func _gui_input(event: InputEvent) -> void:
+		var path: String = str(get_tree().root.get_path_to(self))
+		var line: String = ""
+		if event is InputEventMouseButton:
+			var button: InputEventMouseButton = event
+			line = "mouse_button %d %d %s %s" % [
+				button.device, button.button_index, "down" if button.pressed else "up", Probe.xy(button.position),
+			]
+		elif event is InputEventMouseMotion:
+			var motion: InputEventMouseMotion = event
+			line = "mouse_motion %d %s" % [motion.device, Probe.xy(motion.position)]
+		elif event is InputEventScreenTouch:
+			var touch: InputEventScreenTouch = event
+			line = "screen_touch %d %s %s" % [touch.index, "down" if touch.pressed else "up", Probe.xy(touch.position)]
+		elif event is InputEventScreenDrag:
+			var drag: InputEventScreenDrag = event
+			line = "screen_drag %d %s" % [drag.index, Probe.xy(drag.position)]
+		else:
+			return
+		if event.has_meta(GswInputTargets.META):
+			var meta: Dictionary = event.get_meta(GswInputTargets.META)
+			var handle: int = meta["handle"]
+			var meta_path: String = meta["path"]
+			var local: Vector2 = meta["local"]
+			line += " meta=%d:%s@%s" % [handle, meta_path, Probe.xy(local)]
+		lines.append("%s %s" % [path, line])
 
 
 class Probe:
@@ -49,6 +90,14 @@ class Probe:
 
 	## The vectors' `dispatched` notation; "" for events the runner ignores.
 	static func describe(event: InputEvent) -> String:
+		var line: String = describe_event(event)
+		if line != "" and event.has_meta(GswInputTargets.META):
+			var meta: Dictionary = event.get_meta(GswInputTargets.META)
+			var handle: int = meta["handle"]
+			line += " meta=%d" % handle
+		return line
+
+	static func describe_event(event: InputEvent) -> String:
 		if event is InputEventKey:
 			var key: InputEventKey = event
 			var what: String = "echo" if key.echo else ("down" if key.pressed else "up")
@@ -132,6 +181,13 @@ var _ran: bool = false
 var _failures: int = 0
 ## Joypad attach/detach signals since the previous expect entry.
 var _signals: Array[String] = []
+## Target signals since the previous expect entry.
+var _target_signals: Array[String] = []
+## `_gui_input` lines of the vector's Controls since the previous expect entry (shared by every
+## GuiProbe of the vector).
+var _gui: Array[String] = []
+## The vector's top-level scene nodes (freed after it).
+var _scene: Array[Node] = []
 
 
 func _initialize() -> void:
@@ -181,16 +237,90 @@ func _run(file: String, vector: Dictionary) -> void:
 	# with release_all(), checked to leave Input clean, so the next one starts clean.
 	_probe.got.clear()
 	_signals.clear()
+	_target_signals.clear()
+	_gui.clear()
 	var injector := GswInputInjector.new()
 	injector.joypad_attached.connect(_on_joypad.bind("attached"))
 	injector.joypad_detached.connect(_on_joypad.bind("detached"))
+	injector.pointer_target.connect(_on_pointer_target)
+	injector.target_missing.connect(_on_target_missing)
+	injector.target_mismatch.connect(_on_target_mismatch)
 	var config: Dictionary = vector.get("config", {})
 	if not injector.configure(config):
 		_fail(file, "bad config")
 		return
+	var scene: Array = vector.get("scene", [])
+	for item: Variant in scene:
+		var spec: Dictionary = item
+		if not _add_node(spec):
+			_fail(file, "bad scene node %s" % JSON.stringify(spec))
 	var isolation: Dictionary = {}
 	_steps(file, vector, injector, isolation)
 	GswJoypadIsolation.restore(isolation)
+	for node: Node in _scene:
+		if is_instance_valid(node):
+			node.free()
+	_scene.clear()
+
+
+func _on_pointer_target(source: String, _event: InputEvent, node: Node, local: Vector2) -> void:
+	_target_signals.append("pointer_target %s %s %s" % [source, root.get_path_to(node), Probe.xy(local)])
+
+
+func _on_target_missing(source: String, identity: Dictionary) -> void:
+	var handle: int = identity["handle"]
+	_target_signals.append("target_missing %s %d" % [source, handle])
+
+
+func _on_target_mismatch(source: String, identity: Dictionary, hovered: Control) -> void:
+	var handle: int = identity["handle"]
+	var where: String = str(root.get_path_to(hovered)) if hovered != null else "-"
+	_target_signals.append("target_mismatch %s %d %s" % [source, handle, where])
+
+
+## Create a scene node under the root ({path, class, position, size, scale, visible,
+## scene_file_path}); false when its parent is missing or its class unknown.
+func _add_node(spec: Dictionary) -> bool:
+	var path: String = spec.get("path", "")
+	var parent_path: String = path.get_base_dir()
+	var parent: Node = root if parent_path == "" else root.get_node_or_null(NodePath(parent_path))
+	if parent == null:
+		return false
+	var node: Node
+	match spec.get("class", ""):
+		"Node":
+			node = Node.new()
+		"Control":
+			var control := GuiProbe.new()
+			control.lines = _gui
+			control.size = _vec2(spec.get("size"))
+			control.position = _vec2(spec.get("position"))
+			node = control
+		"Node2D":
+			var node_2d := Node2D.new()
+			node_2d.position = _vec2(spec.get("position"))
+			node_2d.scale = _vec2(spec.get("scale"), Vector2.ONE)
+			node = node_2d
+		_:
+			return false
+	node.name = path.get_file()
+	var canvas: CanvasItem = node as CanvasItem
+	if canvas != null:
+		canvas.visible = spec.get("visible", true)
+	node.scene_file_path = spec.get("scene_file_path", "")
+	parent.add_child(node)
+	if parent == root:
+		_scene.append(node)
+	return true
+
+
+static func _vec2(value: Variant, fallback: Vector2 = Vector2.ZERO) -> Vector2:
+	if typeof(value) != TYPE_ARRAY:
+		return fallback
+	var pair: Array = value
+	var x: float = pair[0]
+	var y: float = pair[1]
+	return Vector2(x, y)
 
 
 func _on_joypad(device: int, source: String, slot: int, what: String) -> void:
@@ -234,6 +364,33 @@ func _steps(file: String, vector: Dictionary, injector: GswInputInjector, isolat
 		elif step.has("isolate"):
 			var devices: Array[int] = _ints(step["isolate"])
 			isolation.merge(GswJoypadIsolation.isolate(devices))
+		elif step.has("move") or step.has("free") or step.has("hide") or step.has("show"):
+			var key: String = "move" if step.has("move") else "free" if step.has("free") else "hide" if step.has("hide") else "show"
+			var node_path: String = step[key]
+			var node: Node = root.get_node_or_null(NodePath(node_path))
+			if node == null:
+				_fail(where, "no scene node %s" % node_path)
+				return
+			match key:
+				"move":
+					var item: CanvasItem = node as CanvasItem
+					if item is Control:
+						var control: Control = item
+						control.position = _vec2(step["position"])
+					elif item is Node2D:
+						var node_2d: Node2D = item
+						node_2d.position = _vec2(step["position"])
+				"free":
+					_scene.erase(node)
+					node.free()
+				_:
+					var item: CanvasItem = node as CanvasItem
+					item.visible = key == "show"
+		elif step.has("add"):
+			var spec: Dictionary = step["add"]
+			if not _add_node(spec):
+				_fail(where, "bad scene node %s" % JSON.stringify(spec))
+				return
 		else:
 			_fail(where, "unknown step %s" % JSON.stringify(step))
 			return
@@ -254,6 +411,8 @@ func _steps(file: String, vector: Dictionary, injector: GswInputInjector, isolat
 		"joypads": injector.remote_joypads(),
 		"joypad_signals": _signals.duplicate(),
 		"stats": injector.stats(),
+		"gui": _gui.duplicate(),
+		"target_signals": _target_signals.duplicate(),
 	}
 	_compare("%s after release_all()" % file, clean, injector, universe)
 
@@ -444,6 +603,17 @@ func _compare(where: String, expect: Dictionary, injector: GswInputInjector, uni
 	want_signals.assign(listed_signals)
 	_same(where, "joypad_signals", _signals, want_signals)
 	_signals.clear()
+
+	var want_gui: Array[String] = []
+	var listed_gui: Array = expect.get("gui", [])
+	want_gui.assign(listed_gui)
+	_same(where, "gui", _gui, want_gui)
+	_gui.clear()
+	var want_targets: Array[String] = []
+	var listed_targets: Array = expect.get("target_signals", [])
+	want_targets.assign(listed_targets)
+	_same(where, "target_signals", _target_signals, want_targets)
+	_target_signals.clear()
 
 	var stats: Dictionary = injector.stats()
 	var want_stats: Dictionary = expect.get("stats", {})

@@ -26,6 +26,11 @@ extends RefCounted
 ## (a wheel press includes its bit, its release does not, as Godot web sends them). Every release
 ## the host makes up (release all, a takeover, a sync that no longer lists a button or touch) is
 ## `canceled: true`, at the last position: a game must not read it as a completed click or tap.
+##
+## Targets (IN12): with `targets` set, a record carrying a declared `target` (and every event of
+## a press bound to one) is placed by GswInputTargets before its event is built, and the event
+## is tagged with `gsw_target` meta. The mouse binding is the owner's first press's (until every
+## button is up); each touch keeps its press's. A record without a target never reaches it.
 
 const LAST_ACTIVE: String = "last-active"
 const FIRST: String = "first"
@@ -35,6 +40,8 @@ const _BUTTONS: int = 9
 
 ## The ownership policy: "last-active", "first" or a fixed source id.
 var mouse_owner: String = LAST_ACTIVE
+## Target placement (GswInputInjector sets it); null places nothing.
+var targets: GswInputTargets = null
 
 var _emit: Callable
 var _count: Callable
@@ -46,8 +53,11 @@ var _held: int = 0
 var _held_device: int = 0
 ## The last position a mouse event went out at.
 var _position: Vector2 = Vector2.ZERO
-## source id -> {host touch index: [position: Vector2, device: int]}, in press order.
+## source id -> {host touch index: [position: Vector2, device: int, binding: Dictionary]}, in
+## press order.
 var _touches: Dictionary = {}
+## The owner's mouse press binding (GswInputTargets.place), empty when unbound.
+var _mouse_binding: Dictionary = {}
 
 
 ## `emit(event: InputEvent)` sends an event; `count(code: String)` counts a dropped record.
@@ -61,30 +71,31 @@ func owner_source() -> String:
 	return _owner
 
 
-## One admitted pointer record of `source`.
-func apply(source: String, device: int, touch_base: int, record: Dictionary) -> void:
+## One admitted pointer record of `source`. `handles` and `resolved` are the source's target
+## declarations and their resolution cache (GswInputTargets).
+func apply(source: String, device: int, touch_base: int, record: Dictionary, handles: Dictionary = {}, resolved: Dictionary = {}) -> void:
 	match record["event"]:
 		"mouse_button":
 			var pressed: bool = record["pressed"]
 			if _take(source, device, pressed):
-				_mouse_button(device, record)
+				_mouse_button(device, record, source, handles, resolved)
 			else:
 				_count.call("mouse-not-owner")
 		"mouse_motion":
 			if _take(source, device, false):
-				_mouse_motion(device, record)
+				_mouse_motion(device, record, source, handles, resolved)
 			else:
 				_count.call("mouse-not-owner")
 		"screen_touch":
-			_screen_touch(source, device, touch_base, record)
+			_screen_touch(source, device, touch_base, record, handles, resolved)
 		"screen_drag":
-			_screen_drag(source, device, touch_base, record)
+			_screen_drag(source, device, touch_base, record, handles, resolved)
 
 
 ## A `pointer` sync: the admitted `held` records (mouse buttons, at most one meaningful motion,
 ## touches). Mouse first (release what is not listed, move to the listed motion, press what is
 ## listed and not held), then touches (release, then press).
-func sync(source: String, device: int, touch_base: int, held: Array[Dictionary]) -> void:
+func sync(source: String, device: int, touch_base: int, held: Array[Dictionary], handles: Dictionary = {}, resolved: Dictionary = {}) -> void:
 	var buttons: Dictionary = {}
 	var motion: Dictionary = {}
 	var touches: Dictionary = {}
@@ -106,11 +117,11 @@ func sync(source: String, device: int, touch_base: int, held: Array[Dictionary])
 			if (_held & _bit(button)) != 0 and not buttons.has(button):
 				_release_button(button)
 		if not motion.is_empty():
-			_mouse_motion(device, motion)
+			_mouse_motion(device, motion, source, handles, resolved)
 		for button: int in range(1, _BUTTONS + 1):
 			if buttons.has(button) and (_held & _bit(button)) == 0:
 				var record: Dictionary = buttons[button]
-				_mouse_button(device, record)
+				_mouse_button(device, record, source, handles, resolved)
 	var held_touches: Dictionary = _touches.get(source, {})
 	for index: Variant in held_touches.keys():
 		if not touches.has(index):
@@ -119,7 +130,7 @@ func sync(source: String, device: int, touch_base: int, held: Array[Dictionary])
 	for index: Variant in touches:
 		if not held_touches.has(index):
 			var record: Dictionary = touches[index]
-			_screen_touch(source, device, touch_base, record)
+			_screen_touch(source, device, touch_base, record, handles, resolved)
 
 
 ## Release what `source` holds: its mouse buttons when it owns the mouse (ascending button
@@ -182,19 +193,45 @@ static func _modifiers(event: InputEventWithModifiers, record: Dictionary) -> vo
 	event.meta_pressed = record.get("meta_pressed", false)
 
 
-func _mouse_button(device: int, record: Dictionary) -> void:
+## Where a record's event goes: GswInputTargets' placement, or {} (by its coordinate) when the
+## record names no target and nothing is bound.
+func _place(source: String, handles: Dictionary, resolved: Dictionary, record: Dictionary, position: Vector2, binding: Dictionary, release: bool) -> Dictionary:
+	if targets == null or (binding.is_empty() and record.get("target", 0) == 0):
+		return {}
+	var placement: Dictionary = targets.place(source, handles, resolved, record, position, binding, release)
+	if placement["drop"]:
+		_count.call("target-dropped")
+	return placement
+
+
+func _tag(source: String, event: InputEvent, placement: Dictionary) -> void:
+	if not placement.is_empty():
+		targets.tag(source, event, placement)
+
+
+func _mouse_button(device: int, record: Dictionary, source: String = "", handles: Dictionary = {}, resolved: Dictionary = {}) -> void:
 	var button: int = record["button_index"]
 	var pressed: bool = record["pressed"]
 	var bit: int = _bit(button)
 	if pressed == ((_held & bit) != 0):
 		_count.call("repeat" if pressed else "unheld")
 		return
+	var position: Vector2 = _vec(record["position"])
+	var placement: Dictionary = _place(source, handles, resolved, record, position, _mouse_binding, not pressed)
+	if not placement.is_empty():
+		if placement["drop"]:
+			return
+		position = placement["position"]
+		if pressed and _held == 0:
+			_mouse_binding = placement["binding"]
 	if pressed:
 		_held |= bit
 	else:
 		_held &= ~bit
+		if _held == 0:
+			_mouse_binding = {}
 	_held_device = device
-	_position = _vec(record["position"])
+	_position = position
 	var event := InputEventMouseButton.new()
 	event.device = device
 	event.button_index = button as MouseButton
@@ -207,11 +244,18 @@ func _mouse_button(device: int, record: Dictionary) -> void:
 	var factor: float = record.get("factor", 1.0)
 	event.factor = factor
 	_modifiers(event, record)
+	_tag(source, event, placement)
 	_emit.call(event)
 
 
-func _mouse_motion(device: int, record: Dictionary) -> void:
-	_position = _vec(record["position"])
+func _mouse_motion(device: int, record: Dictionary, source: String = "", handles: Dictionary = {}, resolved: Dictionary = {}) -> void:
+	var position: Vector2 = _vec(record["position"])
+	var placement: Dictionary = _place(source, handles, resolved, record, position, _mouse_binding, false)
+	if not placement.is_empty():
+		if placement["drop"]:
+			return
+		position = placement["position"]
+	_position = position
 	var relative: Vector2 = _vec(record.get("relative"))
 	var event := InputEventMouseMotion.new()
 	event.device = device
@@ -227,6 +271,7 @@ func _mouse_motion(device: int, record: Dictionary) -> void:
 	event.tilt = _vec(record.get("tilt"))
 	event.pen_inverted = record.get("pen_inverted", false)
 	_modifiers(event, record)
+	_tag(source, event, placement)
 	_emit.call(event)
 
 
@@ -239,6 +284,8 @@ func _release_held() -> void:
 
 func _release_button(button: int) -> void:
 	_held &= ~_bit(button)
+	if _held == 0:
+		_mouse_binding = {}
 	var event := InputEventMouseButton.new()
 	event.device = _held_device
 	event.button_index = button as MouseButton
@@ -250,7 +297,7 @@ func _release_button(button: int) -> void:
 	_emit.call(event)
 
 
-func _screen_touch(source: String, device: int, touch_base: int, record: Dictionary) -> void:
+func _screen_touch(source: String, device: int, touch_base: int, record: Dictionary, handles: Dictionary = {}, resolved: Dictionary = {}) -> void:
 	var sender_index: int = record.get("index", 0)
 	var index: int = touch_base + sender_index
 	var pressed: bool = record["pressed"]
@@ -259,8 +306,19 @@ func _screen_touch(source: String, device: int, touch_base: int, record: Diction
 		_count.call("repeat" if pressed else "unheld")
 		return
 	var position: Vector2 = _vec(record["position"])
+	var binding: Dictionary = {}
+	if not pressed:
+		var entry: Array = held[index]
+		binding = entry[2]
+	var placement: Dictionary = _place(source, handles, resolved, record, position, binding, not pressed)
+	if not placement.is_empty():
+		if placement["drop"]:
+			return
+		position = placement["position"]
+		if pressed:
+			binding = placement["binding"]
 	if pressed:
-		held[index] = [position, device]
+		held[index] = [position, device, binding]
 		_touches[source] = held
 	else:
 		held.erase(index)
@@ -271,10 +329,11 @@ func _screen_touch(source: String, device: int, touch_base: int, record: Diction
 	event.position = position
 	event.canceled = record.get("canceled", false)
 	event.double_tap = record.get("double_tap", false)
+	_tag(source, event, placement)
 	_emit.call(event)
 
 
-func _screen_drag(source: String, device: int, touch_base: int, record: Dictionary) -> void:
+func _screen_drag(source: String, device: int, touch_base: int, record: Dictionary, handles: Dictionary = {}, resolved: Dictionary = {}) -> void:
 	var sender_index: int = record.get("index", 0)
 	var index: int = touch_base + sender_index
 	var held: Dictionary = _touches.get(source, {})
@@ -282,7 +341,14 @@ func _screen_drag(source: String, device: int, touch_base: int, record: Dictiona
 		_count.call("unheld")
 		return
 	var position: Vector2 = _vec(record["position"])
-	held[index] = [position, device]
+	var entry: Array = held[index]
+	var binding: Dictionary = entry[2]
+	var placement: Dictionary = _place(source, handles, resolved, record, position, binding, false)
+	if not placement.is_empty():
+		if placement["drop"]:
+			return
+		position = placement["position"]
+	held[index] = [position, device, binding]
 	var relative: Vector2 = _vec(record.get("relative"))
 	var event := InputEventScreenDrag.new()
 	event.device = device
@@ -294,6 +360,7 @@ func _screen_drag(source: String, device: int, touch_base: int, record: Dictiona
 	event.pressure = pressure
 	event.tilt = _vec(record.get("tilt"))
 	event.pen_inverted = record.get("pen_inverted", false)
+	_tag(source, event, placement)
 	_emit.call(event)
 
 

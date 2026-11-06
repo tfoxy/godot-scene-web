@@ -1,0 +1,149 @@
+{
+  "name": "pointer-target-meta",
+  "description": "A targeted press and release reach the Control's _gui_input with the gsw_target meta {path, local, handle} intact (and _input sees it too); pointer_target fires with the node and local; a declaration relative to a scene instance (scene_file_path) resolves under that instance; a record without a target carries no meta.",
+  "config": {},
+  "scene": [
+    {
+      "path": "Main",
+      "class": "Node"
+    },
+    {
+      "path": "Main/Pad",
+      "class": "Control",
+      "position": [20, 10],
+      "size": [16, 12]
+    },
+    {
+      "path": "Main/Card",
+      "class": "Control",
+      "position": [40, 30],
+      "size": [20, 20],
+      "scene_file_path": "res://card.tscn"
+    },
+    {
+      "path": "Main/Card/Face",
+      "class": "Control",
+      "position": [2, 2],
+      "size": [10, 10]
+    }
+  ],
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "target",
+            "handle": 3,
+            "path": "Main/Pad",
+            "class": "Control"
+          },
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": true,
+            "position": [24, 14],
+            "button_mask": 1,
+            "target": 3,
+            "local": [4, 4],
+            "frame": 7
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": false,
+            "position": [25, 14],
+            "target": 3,
+            "local": [5, 4]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 3,
+        "events": [
+          {
+            "event": "target",
+            "handle": 4,
+            "path": "Face",
+            "scene": "res://card.tscn"
+          },
+          {
+            "event": "mouse_motion",
+            "position": [45, 35],
+            "relative": [20, 21],
+            "target": 4,
+            "local": [3, 3]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 4,
+        "events": [
+          {
+            "event": "mouse_motion",
+            "position": [5, 5],
+            "relative": [-40, -30]
+          }
+        ]
+      }
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "mouse_mask": 1,
+      "dispatched": ["mouse_button 64 1 down 24.00,14.00 mask=1 meta=3"],
+      "gui": [
+        "Main/Pad mouse_button 64 1 down 4.00,4.00 meta=3:Main/Pad@4.00,4.00"
+      ],
+      "target_signals": ["pointer_target a Main/Pad 4.00,4.00"]
+    },
+    {
+      "after": 2,
+      "dispatched": ["mouse_button 64 1 up 25.00,14.00 mask=0 meta=3"],
+      "gui": [
+        "Main/Pad mouse_button 64 1 up 5.00,4.00 meta=3:Main/Pad@5.00,4.00"
+      ],
+      "target_signals": ["pointer_target a Main/Pad 5.00,4.00"]
+    },
+    {
+      "after": 3,
+      "dispatched": [
+        "mouse_motion 64 45.00,35.00 rel=20.00,21.00 mask=0 meta=4"
+      ],
+      "gui": ["Main/Card/Face mouse_motion 64 3.00,3.00 meta=4:Face@3.00,3.00"],
+      "target_signals": ["pointer_target a Main/Card/Face 3.00,3.00"]
+    },
+    {
+      "after": 4,
+      "dispatched": ["mouse_motion 64 5.00,5.00 rel=-40.00,-30.00 mask=0"]
+    }
+  ]
+}

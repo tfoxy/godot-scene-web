@@ -20,8 +20,10 @@
 // with `relative` summed, and is flushed before any edge so a fast move-then-press presses at the
 // right place.
 //
-// Seam for a later increment: `targets` only takes "off" (IN12 adds "press"/"all" with
-// `resolveTarget`); with targets off no resolver runs and no record carries target fields.
+// TARGETS (`targets: "press" | "all"` with `resolveTarget`, docs/input.md "Pointer targets")
+// live in pointer-targets.ts; this file only calls `stampTarget` where a record goes out, and
+// hands mouse mode a stamping hook for its synthetic presses. With targets "off" (default) no
+// table exists, no resolver runs and no record carries target fields.
 //
 // DOM-free types: the package typechecks without DOM libraries, so the browser objects are read
 // through the structural interfaces below, which the real `HTMLElement`, `window`, `document`,
@@ -44,6 +46,11 @@ import {
   type MouseMode,
   type PointerGestureOptions,
 } from "./pointer-mouse-mode";
+import {
+  createPointerTargetTable,
+  type PointerTargetResolver,
+  type PointerTargetStamp,
+} from "./pointer-targets";
 // Type-only: the subpath bundle must not pull the session (and through it the codec) in.
 import type { InputHeldState, InputSink, InputSyncSource } from "./session";
 
@@ -155,6 +162,10 @@ export interface PointerCaptureStats {
   magnifies: number;
   /** Presses, wheels and gestures not forwarded, by reason. */
   dropped: Record<PointerDropReason, number>;
+  /** `resolveTarget` calls (0 with targets off). */
+  resolves: number;
+  /** `target` declarations pushed, `heldState()`'s included. */
+  declarations: number;
 }
 
 /**
@@ -163,8 +174,11 @@ export interface PointerCaptureStats {
  */
 export type PointerCaptureMode = "native" | "mouse";
 
-/** Targets off only for now; IN12 adds `"press"` and `"all"` with a `resolveTarget` option. */
-export type PointerTargetsMode = "off";
+/**
+ * `"off"`: no resolver, no target bytes. `"press"`: one resolve per press, release and wheel
+ * event. `"all"`: also one per coalesced motion record (at most one per animation frame).
+ */
+export type PointerTargetsMode = "off" | "press" | "all";
 
 export interface PointerCaptureOptions {
   /** The element the game is drawn on: listened on, captured to, focused. */
@@ -177,8 +191,14 @@ export interface PointerCaptureOptions {
   mode?: PointerCaptureMode;
   /** `mode: "mouse"` tuning and hooks (`intercept`, `onGesture`); ignored in native mode. */
   gestures?: PointerGestureOptions;
-  /** `"off"` (default and only value for now): no resolver calls, no target fields. */
+  /** `"off"` (default): no resolver calls, no target fields. Others need `resolveTarget`. */
   targets?: PointerTargetsMode;
+  /**
+   * Which node a client point is over (docs/input.md "Pointer targets"): render-stream-client's
+   * `pointerTargetResolver`, html's `htmlPointerTargetResolver`, or a product's own. Called with
+   * the event's client point and its mapped host point; never while the pointer is locked.
+   */
+  resolveTarget?: PointerTargetResolver;
   /**
    * Read live, per press, so a flip lands on the next press (default: always on). Turning it off
    * releases anything held on the next `refresh()`.
@@ -231,15 +251,18 @@ export interface PointerCapture extends InputSyncSource {
   heldState(): readonly InputHeldState[];
   /**
    * Push one `mouse_motion` to `position` (host px) now, pending motion first. For gesture hooks
-   * and product UI (a tap-to-focus hover). False, and nothing sent, while inactive.
+   * and product UI (a tap-to-focus hover). False, and nothing sent, while inactive. With targets
+   * "all", `client` (the DOM client point it stands for) is resolved as a motion's would be;
+   * without it the record carries no target.
    */
-  hover(position: InputVec2): boolean;
+  hover(position: InputVec2, client?: InputVec2): boolean;
   /**
    * Push a press+release pair of `button` (a `MouseButton`; wheel buttons go as one wheel step)
    * at `position`, without a motion first. False, and nothing sent, while inactive or while that
-   * button is held.
+   * button is held. With targets on, `client` is resolved once for the pair, as a press's would
+   * be; without it the records carry no target.
    */
-  click(button: number, position: InputVec2): boolean;
+  click(button: number, position: InputVec2, client?: InputVec2): boolean;
   /** Push pending coalesced motion now. */
   flush(): void;
   /** Re-read `enabled()`: off releases everything held. Cheap and idempotent. */
@@ -340,6 +363,17 @@ interface Touch {
   last: Vec;
   /** Summed relative of a pending drag, or null when none is pending. */
   pending: Vec | null;
+  /** The last client point (a target resolve's input). */
+  client: Vec;
+  /** The target stamped on this touch's last record and where (targets on only). */
+  target: { stamp: PointerTargetStamp; at: Vec } | null;
+}
+
+/** A record that may carry the target fields. */
+interface TargetFieldsHolder {
+  target?: number;
+  local?: readonly [number, number];
+  frame?: number;
 }
 
 const emptyDropped = (): Record<PointerDropReason, number> => ({
@@ -370,9 +404,13 @@ export function createPointerCapture(
   if (mode !== "native" && mode !== "mouse")
     throw new Error(`createPointerCapture: unsupported mode ${String(mode)}`);
   const targets = options.targets ?? "off";
-  if (targets !== "off")
+  if (targets !== "off" && targets !== "press" && targets !== "all")
     throw new Error(
       `createPointerCapture: unsupported targets ${String(targets)}`,
+    );
+  if (targets !== "off" && typeof options.resolveTarget !== "function")
+    throw new Error(
+      `createPointerCapture: targets "${targets}" needs resolveTarget`,
     );
   const { stage, map, sink } = options;
   const enabled = options.enabled ?? (() => true);
@@ -405,6 +443,8 @@ export function createPointerCapture(
     drags: 0,
     magnifies: 0,
     dropped: emptyDropped(),
+    resolves: 0,
+    declarations: 0,
   };
 
   // Mouse and pen share Godot's one mouse.
@@ -422,6 +462,38 @@ export function createPointerCapture(
   const wheelAcc: Vec = [0, 0];
   let lastClick: { button: number; at: number; pos: Vec } | null = null;
   let disposed = false;
+  /** The last mouse client point (a target resolve's input). */
+  const mouseClient: Vec = [0, 0];
+  /** The target stamped on the last mouse record and the position it was resolved at. */
+  let mouseTarget: { stamp: PointerTargetStamp; at: Vec } | null = null;
+  const table =
+    targets === "off" || !options.resolveTarget
+      ? null
+      : createPointerTargetTable(
+          options.resolveTarget,
+          (record) => sink.push(record),
+          (handle) =>
+            mouseTarget?.stamp.target === handle ||
+            [...touches.values()].some(
+              (t) => t.target?.stamp.target === handle,
+            ),
+        );
+  const motionTargets = targets === "all";
+
+  /**
+   * Resolve the node under `client` and stamp `record` (pushing a declaration first when the
+   * handle is new this epoch). A no-op with targets off or while the pointer is locked.
+   */
+  function stampTarget(
+    record: TargetFieldsHolder,
+    client: Vec,
+    at: Vec,
+  ): PointerTargetStamp | null {
+    if (!table || locked()) return null;
+    const stamp = table.resolve(client[0], client[1], at);
+    if (stamp) Object.assign(record, stamp);
+    return stamp;
+  }
 
   const heldMask = () => {
     let mask = 0;
@@ -437,6 +509,13 @@ export function createPointerCapture(
     pointerLock &&
     visibility?.pointerLockElement != null &&
     visibility.pointerLockElement === stage;
+
+  /** A hook's optional client point, when finite. */
+  function hookClient(p: InputVec2 | undefined): Vec | undefined {
+    return p && Number.isFinite(p[0]) && Number.isFinite(p[1])
+      ? [p[0], p[1]]
+      : undefined;
+  }
 
   function hookPoint(p: InputVec2): Vec | null {
     return Number.isFinite(p[0]) && Number.isFinite(p[1])
@@ -479,6 +558,10 @@ export function createPointerCapture(
       if (m.tilt[0] !== 0 || m.tilt[1] !== 0) record.tilt = m.tilt;
       if (m.inverted) record.pen_inverted = true;
       Object.assign(record, m.mods);
+      if (motionTargets) {
+        const stamp = stampTarget(record, mouseClient, mousePos);
+        mouseTarget = stamp ? { stamp, at: [...mousePos] } : null;
+      }
       stats.motions++;
       sink.push(record);
     }
@@ -493,6 +576,10 @@ export function createPointerCapture(
       };
       if (touch.index !== 0) record.index = touch.index;
       if (relative[0] !== 0 || relative[1] !== 0) record.relative = relative;
+      if (motionTargets) {
+        const stamp = stampTarget(record, touch.client, touch.last);
+        touch.target = stamp ? { stamp, at: [...touch.last] } : null;
+      }
       stats.drags++;
       sink.push(record);
     }
@@ -519,6 +606,8 @@ export function createPointerCapture(
     } else {
       const p = mapEvent(sample);
       if (!p) return;
+      mouseClient[0] = sample.clientX;
+      mouseClient[1] = sample.clientY;
       const before = mousePos;
       delta = before ? [p[0] - before[0], p[1] - before[1]] : [0, 0];
       // A move that changes only `buttons` (a chord) is an edge, not a motion; a pen's pressure
@@ -576,6 +665,7 @@ export function createPointerCapture(
     at: Vec,
     mods: Modifiers,
     canceled: boolean,
+    client: Vec | null = null,
   ) {
     held.delete(button);
     const record: MouseButtonRecord = {
@@ -588,6 +678,11 @@ export function createPointerCapture(
     if (mask !== 0) record.button_mask = mask;
     if (canceled) record.canceled = true;
     Object.assign(record, mods);
+    // A user release is resolved; a cancel the capture makes up is not.
+    if (client) {
+      const stamp = stampTarget(record, client, at);
+      mouseTarget = stamp ? { stamp, at: [...at] } : null;
+    }
     stats.releases++;
     sink.push(record);
   }
@@ -603,12 +698,20 @@ export function createPointerCapture(
     } else reported.set(id, after);
     if (before === after) return;
     const mods = modifiers(event);
+    const client: Vec = [event.clientX, event.clientY];
     // Releases first, then presses, ascending.
     for (const button of MOUSE_BUTTONS) {
       const b = bit(button);
       if ((before & b) !== 0 && (after & b) === 0 && held.get(button) === id) {
         flushMotion();
-        release(button, at ?? mousePos ?? [0, 0], mods, false);
+        // Off picture the release goes at the last point, by its coordinate only.
+        release(
+          button,
+          at ?? mousePos ?? [0, 0],
+          mods,
+          false,
+          at ? client : null,
+        );
       }
     }
     for (const button of MOUSE_BUTTONS) {
@@ -634,6 +737,10 @@ export function createPointerCapture(
       };
       if (doubleClick(event, button, at)) record.double_click = true;
       Object.assign(record, mods);
+      mouseClient[0] = client[0];
+      mouseClient[1] = client[1];
+      const stamp = stampTarget(record, client, at);
+      mouseTarget = stamp ? { stamp, at: [...at] } : null;
       stats.presses++;
       sink.push(record);
     }
@@ -662,23 +769,40 @@ export function createPointerCapture(
     };
     if (touch.index !== 0) record.index = touch.index;
     if (canceled) record.canceled = true;
+    else {
+      const stamp = stampTarget(record, touch.client, touch.last);
+      touch.target = stamp ? { stamp, at: [...touch.last] } : null;
+    }
     stats.touches++;
     sink.push(record);
   }
 
-  function endTouch(id: number, at: Vec | null, canceled: boolean): void {
+  function endTouch(
+    id: number,
+    at: Vec | null,
+    canceled: boolean,
+    client: Vec | null = null,
+  ): void {
     const touch = touches.get(id);
     if (!touch) return;
     flushMotion();
     if (at && !canceled) touch.last = at;
+    if (client && at && !canceled) touch.client = client;
     touches.delete(id);
     touchRecord(touch, false, canceled);
   }
 
   // ---- mouse mode: record primitives the gesture module drives ----
 
-  /** One `mouse_motion` at `at` now, after any pending motion. */
-  function hoverAt(at: Vec): void {
+  /** Targets: remember the client point a mouse-mode record stands for. */
+  function setMouseClient(client: Vec | undefined): void {
+    if (!client) return;
+    mouseClient[0] = client[0];
+    mouseClient[1] = client[1];
+  }
+
+  /** One `mouse_motion` at `at` now, after any pending motion (`client`: resolved in "all"). */
+  function hoverAt(at: Vec, client?: Vec): void {
     flushMotion();
     const record: MouseMotionRecord = {
       event: "mouse_motion",
@@ -691,14 +815,20 @@ export function createPointerCapture(
     const mask = heldMask();
     if (mask !== 0) record.button_mask = mask;
     mousePos = at;
+    setMouseClient(client);
+    if (motionTargets && client) {
+      const stamp = stampTarget(record, client, at);
+      mouseTarget = stamp ? { stamp, at: [...at] } : null;
+    }
     stats.motions++;
     sink.push(record);
   }
 
   /** Coalesced motion to `at`, as a mouse drag's. */
-  function dragTo(at: Vec): void {
+  function dragTo(at: Vec, client?: Vec): void {
     const before = mousePos;
     mousePos = at;
+    setMouseClient(client);
     const m: PendingMotion = pending ?? {
       relative: [0, 0],
       mods: {},
@@ -719,6 +849,7 @@ export function createPointerCapture(
     at: Vec,
     owner: number,
     double: boolean,
+    client?: Vec,
   ): boolean {
     if (!active()) {
       drop("inactive");
@@ -739,6 +870,11 @@ export function createPointerCapture(
       button_mask: heldMask(),
     };
     if (double) record.double_click = true;
+    if (client) {
+      setMouseClient(client);
+      const stamp = stampTarget(record, client, at);
+      mouseTarget = stamp ? { stamp, at: [...at] } : null;
+    }
     stats.presses++;
     sink.push(record);
     return true;
@@ -749,14 +885,15 @@ export function createPointerCapture(
     at: Vec,
     owner: number,
     canceled: boolean,
+    client?: Vec,
   ): void {
     if (held.get(button) !== owner) return;
     flushMotion();
     if (!canceled) mousePos = at;
-    release(button, at, {}, canceled);
+    release(button, at, {}, canceled, canceled ? null : (client ?? null));
   }
 
-  function clickAt(button: number, at: Vec): boolean {
+  function clickAt(button: number, at: Vec, client?: Vec): boolean {
     if (!active()) {
       drop("inactive");
       return false;
@@ -764,11 +901,16 @@ export function createPointerCapture(
     if (button >= MouseButton.WHEEL_UP && button <= MouseButton.WHEEL_RIGHT) {
       flushMotion();
       mousePos = at;
-      pushWheel(button, 1, at, {});
+      let target: PointerTargetStamp | null = null;
+      if (client) {
+        target = stampTarget({}, client, at);
+        if (target) mouseTarget = { stamp: target, at: [...at] };
+      }
+      pushWheel(button, 1, at, {}, target);
       return true;
     }
-    if (!pressBy(button, at, HOOK_OWNER, false)) return false;
-    releaseBy(button, at, HOOK_OWNER, false);
+    if (!pressBy(button, at, HOOK_OWNER, false, client)) return false;
+    releaseBy(button, at, HOOK_OWNER, false, client);
     return true;
   }
 
@@ -833,7 +975,13 @@ export function createPointerCapture(
         return;
       }
       flushMotion();
-      const touch: Touch = { index, last: at, pending: null };
+      const touch: Touch = {
+        index,
+        last: at,
+        pending: null,
+        client: [event.clientX, event.clientY],
+        target: null,
+      };
       touches.set(event.pointerId, touch);
       capturePointer(event.pointerId);
       touchRecord(touch, true, false);
@@ -875,6 +1023,7 @@ export function createPointerCapture(
       for (const sample of list) {
         const at = mapEvent(sample);
         if (!at) continue;
+        touch.client = [sample.clientX, sample.clientY];
         const rel = touch.pending ?? [0, 0];
         rel[0] += at[0] - touch.last[0];
         rel[1] += at[1] - touch.last[1];
@@ -916,7 +1065,10 @@ export function createPointerCapture(
       return;
     }
     if (isTouch(event)) {
-      endTouch(event.pointerId, mapEvent(event), false);
+      endTouch(event.pointerId, mapEvent(event), false, [
+        event.clientX,
+        event.clientY,
+      ]);
       return;
     }
     diffButtons(event, mousePoint(event));
@@ -966,7 +1118,13 @@ export function createPointerCapture(
     if (tracked(id)) cancelPointer(id);
   }
 
-  function pushWheel(button: number, factor: number, at: Vec, mods: Modifiers) {
+  function pushWheel(
+    button: number,
+    factor: number,
+    at: Vec,
+    mods: Modifiers,
+    target: PointerTargetStamp | null,
+  ) {
     const mask = heldMask();
     const press: MouseButtonRecord = {
       event: "mouse_button",
@@ -977,6 +1135,7 @@ export function createPointerCapture(
     };
     if (factor !== 1) press.factor = factor;
     Object.assign(press, mods);
+    if (target) Object.assign(press, target);
     const rel: MouseButtonRecord = { ...press, pressed: false };
     if (mask !== 0) rel.button_mask = mask;
     else delete rel.button_mask;
@@ -1028,6 +1187,8 @@ export function createPointerCapture(
     wheelAcc[1] += (Number.isFinite(event.deltaY) ? event.deltaY : 0) * scale;
     const mods = modifiers(event);
     flushMotion();
+    // One resolve per wheel event, made at its first step; every step shares it.
+    let target: PointerTargetStamp | null | undefined;
     // Vertical first, as Godot web prefers it; then horizontal. deltaX > 0 -> WHEEL_RIGHT
     // (native Godot, not Godot web; docs/input.md "Wheel").
     for (const axis of [1, 0] as const) {
@@ -1047,7 +1208,12 @@ export function createPointerCapture(
             : MouseButton.WHEEL_RIGHT;
       const factor = Math.min(10_000, q4(Math.abs(step)));
       if (Math.abs(step) > 10_000) wheelAcc[axis] = 0;
-      pushWheel(button, factor, at, mods);
+      if (target === undefined) {
+        const probe: TargetFieldsHolder = {};
+        target = stampTarget(probe, [event.clientX, event.clientY], at);
+        if (target) mouseTarget = { stamp: target, at: [...at] };
+      }
+      pushWheel(button, factor, at, mods, target);
     }
   }
 
@@ -1114,7 +1280,7 @@ export function createPointerCapture(
   visibility?.addEventListener("visibilitychange", onVisibility);
 
   return {
-    hover(position: InputVec2): boolean {
+    hover(position: InputVec2, client?: InputVec2): boolean {
       const at = hookPoint(position);
       if (!at) {
         drop("off-picture");
@@ -1124,21 +1290,40 @@ export function createPointerCapture(
         drop("inactive");
         return false;
       }
-      hoverAt(at);
+      hoverAt(at, hookClient(client));
       return true;
     },
-    click(button: number, position: InputVec2): boolean {
+    click(button: number, position: InputVec2, client?: InputVec2): boolean {
       const at = hookPoint(position);
       if (!at || !Number.isInteger(button) || button < 1 || button > 9) {
         drop("unmapped-button");
         return false;
       }
-      return clickAt(button, at);
+      return clickAt(button, at, hookClient(client));
     },
     heldState(): readonly InputHeldState[] {
       const list: InputRecord[] = [];
-      if (mousePos)
-        list.push({ event: "mouse_motion", position: [...mousePos] });
+      // Handles do not survive an epoch (this runs after each hello): the held state re-declares
+      // the targets it references, first, and every later reference re-declares lazily. A target
+      // goes along only while its point is still the held one; held buttons carry none (their
+      // press's `local` no longer matches the point).
+      const stamps: TargetFieldsHolder[] = [];
+      const current = (
+        t: { stamp: PointerTargetStamp; at: Vec } | null,
+        at: Vec,
+      ) => (t && t.at[0] === at[0] && t.at[1] === at[1] ? t.stamp : null);
+      if (mousePos) {
+        const motion: MouseMotionRecord = {
+          event: "mouse_motion",
+          position: [...mousePos],
+        };
+        const stamp = table ? current(mouseTarget, mousePos) : null;
+        if (stamp) {
+          Object.assign(motion, stamp);
+          stamps.push(stamp);
+        }
+        list.push(motion);
+      }
       let mask = 0;
       for (const button of held.keys()) {
         mask |= bit(button);
@@ -1159,7 +1344,18 @@ export function createPointerCapture(
           position: [...touch.last],
         };
         if (touch.index !== 0) record.index = touch.index;
+        const stamp = table ? current(touch.target, touch.last) : null;
+        if (stamp) {
+          Object.assign(record, stamp);
+          stamps.push(stamp);
+        }
         list.push(record);
+      }
+      if (table) {
+        const declarations = table.redeclare(
+          stamps.map((stamp) => stamp.target as number),
+        );
+        list.unshift(...declarations);
       }
       return [{ scope: "pointer", held: list }];
     },
@@ -1188,7 +1384,12 @@ export function createPointerCapture(
       if (addedTabIndex) stage.removeAttribute?.("tabindex");
     },
     stats(): PointerCaptureStats {
-      return { ...stats, dropped: { ...stats.dropped } };
+      return {
+        ...stats,
+        dropped: { ...stats.dropped },
+        resolves: table?.stats.resolves ?? 0,
+        declarations: table?.stats.declarations ?? 0,
+      };
     },
   };
 }

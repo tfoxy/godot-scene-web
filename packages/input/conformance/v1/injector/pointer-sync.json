@@ -139,11 +139,12 @@
       "mouse_mask": 3,
       "mouse_position": [80, 90],
       "dispatched": [
-        "mouse_motion 64 30.00,40.00 rel=0.00,0.00 mask=0",
-        "mouse_button 64 2 down 30.00,40.00 mask=2",
+        "mouse_motion 64 30.00,40.00 rel=0.00,0.00 mask=0 meta=2",
+        "mouse_button 64 2 down 30.00,40.00 mask=2 meta=2",
         "mouse_button -1 1 down 80.00,90.00 mask=3",
         "screen_touch 64 4 down 80.00,90.00"
-      ]
+      ],
+      "target_signals": ["target_missing a 2", "target_missing a 2"]
     },
     {
       "after": 2,

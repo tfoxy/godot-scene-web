@@ -10,6 +10,8 @@ import {
 } from "./endpoint";
 import {
   ExtensionHost,
+  IDENTITY,
+  type ItemQuery,
   type Point,
   type Rect,
   type RenderStreamExtension,
@@ -39,6 +41,11 @@ import {
   presentationToClient,
   readLayout,
 } from "./pointer";
+import {
+  coreItemQuery,
+  POINTER_TARGET_SOURCE,
+  type PointerTargetSource,
+} from "./pointer-targets";
 import {
   createRecorder,
   type RecorderOptions,
@@ -295,6 +302,22 @@ class Client implements RenderStreamClient {
 
   recording(): Recording | null {
     return this.recorder?.export() ?? null;
+  }
+
+  /** IN12: what `pointerTargetResolver` reads, on demand (pointer-targets.ts). */
+  [POINTER_TARGET_SOURCE](): PointerTargetSource {
+    let bare: ItemQuery | null = null;
+    return {
+      cssToPresentation: (x, y) => this.cssToPresentation(x, y),
+      query: () => {
+        if (this.disposed || this.core === null) return null;
+        if (this.ext) return this.ext.query;
+        bare ??= coreItemQuery(() => this.core);
+        return bare;
+      },
+      effective: (id) => this.ext?.overrides.effective(id) ?? IDENTITY,
+      drawnSeq: () => this.loop?.drawnSeq ?? null,
+    };
   }
 
   dispose(): void {

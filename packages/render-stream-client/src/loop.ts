@@ -201,6 +201,9 @@ export class StreamLoop {
   private restoreWant: string[] | null = null;
   private readonly restoreBodies = new Map<string, string | null>();
   private lastAppliedSeq = 0;
+  /** IN12: the transaction on screen (the last draw's), null before one in this session; a
+   * pointer target's `frame`. */
+  drawnSeq: number | null = null;
   /** PH3: seqs applied (folded ones included) and not drawn yet; their `submitted` acks wait for
    * the draw. */
   private undrawn: number[] = [];
@@ -513,6 +516,7 @@ export class StreamLoop {
   private beginSession(conn: Connection, session: SessionMeta): void {
     conn.streamId = session.stream?.stream_id ?? "";
     this.o.onSession?.(session);
+    this.drawnSeq = null;
     if (this.ext)
       this.ext.beginSession(session.session_id ?? "", conn.streamId);
     this.grantedWindow = session.publication?.credit_window ?? 1;
@@ -883,6 +887,7 @@ export class StreamLoop {
     const seq = this.lastAppliedSeq;
     if (this.ext) this.ext.beforeDraw(seq, this.o.clock.now());
     this.o.core.draw(seq);
+    this.drawnSeq = seq;
     const now = this.o.clock.now();
     for (const s of this.undrawn) this.ack(s, "submitted", now);
     this.undrawn.length = 0;
@@ -952,6 +957,7 @@ export class StreamLoop {
     }
     this.restoreWant = null;
     this.ctx = "ok";
+    this.drawnSeq = this.lastAppliedSeq;
     // PH3: the redraw drew the newest applied state, so every apply waiting for a draw is in it.
     const now = this.o.clock.now();
     for (const s of this.undrawn) this.ack(s, "submitted", now);

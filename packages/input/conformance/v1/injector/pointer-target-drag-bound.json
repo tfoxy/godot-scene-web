@@ -1,0 +1,257 @@
+{
+  "name": "pointer-target-drag-bound",
+  "description": "Held-button binding: a press retargeted onto a moved slider binds its target and offset until release, so drag motions and the release move by the same offset and carry the press's target even when they name another node; after the release a targeted hover lands on its own node. A touch press binds per touch the same way (Godot's emulated mouse follows the placed touch and carries no meta).",
+  "config": {},
+  "scene": [
+    {
+      "path": "Main",
+      "class": "Node"
+    },
+    {
+      "path": "Main/Slider",
+      "class": "Control",
+      "position": [30, 10],
+      "size": [30, 8]
+    },
+    {
+      "path": "Main/Other",
+      "class": "Control",
+      "position": [0, 40],
+      "size": [20, 20]
+    }
+  ],
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "target",
+            "handle": 5,
+            "path": "Main/Slider"
+          },
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": true,
+            "position": [40, 50],
+            "button_mask": 1,
+            "target": 5,
+            "local": [10, 4]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "mouse_motion",
+            "position": [50, 50],
+            "relative": [10, 0],
+            "button_mask": 1
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 3,
+        "events": [
+          {
+            "event": "target",
+            "handle": 6,
+            "path": "Main/Other"
+          },
+          {
+            "event": "mouse_motion",
+            "position": [5, 50],
+            "relative": [-45, 0],
+            "button_mask": 1,
+            "target": 6,
+            "local": [5, 10]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 4,
+        "events": [
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": false,
+            "position": [5, 50],
+            "target": 6,
+            "local": [5, 10]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 5,
+        "events": [
+          {
+            "event": "mouse_motion",
+            "position": [6, 50],
+            "relative": [1, 0],
+            "target": 6,
+            "local": [6, 10]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 6,
+        "events": [
+          {
+            "event": "screen_touch",
+            "pressed": true,
+            "position": [40, 50],
+            "target": 5,
+            "local": [10, 4]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 7,
+        "events": [
+          {
+            "event": "screen_drag",
+            "position": [50, 52],
+            "relative": [10, 2]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 8,
+        "events": [
+          {
+            "event": "screen_touch",
+            "pressed": false,
+            "position": [50, 52]
+          }
+        ]
+      }
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "mouse_mask": 1,
+      "dispatched": ["mouse_button 64 1 down 40.00,14.00 mask=1 meta=5"],
+      "gui": [
+        "Main/Slider mouse_button 64 1 down 10.00,4.00 meta=5:Main/Slider@10.00,4.00"
+      ],
+      "target_signals": ["pointer_target a Main/Slider 10.00,4.00"]
+    },
+    {
+      "after": 2,
+      "mouse_mask": 1,
+      "dispatched": [
+        "mouse_motion 64 50.00,14.00 rel=10.00,0.00 mask=1 meta=5"
+      ],
+      "gui": [
+        "Main/Slider mouse_motion 64 20.00,4.00 meta=5:Main/Slider@20.00,4.00"
+      ],
+      "target_signals": ["pointer_target a Main/Slider 20.00,4.00"]
+    },
+    {
+      "after": 3,
+      "mouse_mask": 1,
+      "dispatched": [
+        "mouse_motion 64 5.00,14.00 rel=-45.00,0.00 mask=1 meta=5"
+      ],
+      "gui": [
+        "Main/Slider mouse_motion 64 -25.00,4.00 meta=5:Main/Slider@-25.00,4.00"
+      ],
+      "target_signals": ["pointer_target a Main/Slider -25.00,4.00"]
+    },
+    {
+      "after": 4,
+      "dispatched": ["mouse_button 64 1 up 5.00,14.00 mask=0 meta=5"],
+      "gui": [
+        "Main/Slider mouse_button 64 1 up -25.00,4.00 meta=5:Main/Slider@-25.00,4.00"
+      ],
+      "target_signals": ["pointer_target a Main/Slider -25.00,4.00"]
+    },
+    {
+      "after": 5,
+      "dispatched": ["mouse_motion 64 6.00,50.00 rel=1.00,0.00 mask=0 meta=6"],
+      "gui": [
+        "Main/Other mouse_motion 64 6.00,10.00 meta=6:Main/Other@6.00,10.00"
+      ],
+      "target_signals": ["pointer_target a Main/Other 6.00,10.00"]
+    },
+    {
+      "after": 6,
+      "mouse_mask": 1,
+      "dispatched": [
+        "mouse_button -1 1 down 40.00,14.00 mask=1",
+        "screen_touch 64 0 down 40.00,14.00 meta=5"
+      ],
+      "gui": [
+        "Main/Slider mouse_button -1 1 down 10.00,4.00",
+        "Main/Slider screen_touch 0 down 10.00,4.00 meta=5:Main/Slider@10.00,4.00"
+      ],
+      "target_signals": ["pointer_target a Main/Slider 10.00,4.00"]
+    },
+    {
+      "after": 7,
+      "mouse_mask": 1,
+      "dispatched": [
+        "mouse_motion -1 50.00,16.00 rel=10.00,2.00 mask=1",
+        "screen_drag 64 0 50.00,16.00 rel=10.00,2.00 meta=5"
+      ],
+      "gui": [
+        "Main/Slider mouse_motion -1 20.00,6.00",
+        "Main/Slider screen_drag 0 20.00,6.00 meta=5:Main/Slider@20.00,6.00"
+      ],
+      "target_signals": ["pointer_target a Main/Slider 20.00,6.00"]
+    },
+    {
+      "after": 8,
+      "dispatched": [
+        "mouse_button -1 1 up 50.00,16.00 mask=0",
+        "screen_touch 64 0 up 50.00,16.00 meta=5"
+      ],
+      "gui": [
+        "Main/Slider mouse_button -1 1 up 20.00,6.00",
+        "Main/Slider screen_touch 0 up 20.00,6.00 meta=5:Main/Slider@20.00,6.00"
+      ],
+      "target_signals": ["pointer_target a Main/Slider 20.00,6.00"]
+    }
+  ]
+}

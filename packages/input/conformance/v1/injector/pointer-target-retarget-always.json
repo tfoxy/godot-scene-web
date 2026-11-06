@@ -1,0 +1,98 @@
+{
+  "name": "pointer-target-retarget-always",
+  "description": "retarget always: every targeted event is placed by node + local, even one whose coordinate already lands on the node.",
+  "config": {
+    "retarget": "always"
+  },
+  "scene": [
+    {
+      "path": "Main",
+      "class": "Node"
+    },
+    {
+      "path": "Main/Pad",
+      "class": "Control",
+      "position": [20, 10],
+      "size": [16, 12]
+    }
+  ],
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "target",
+            "handle": 3,
+            "path": "Main/Pad"
+          },
+          {
+            "event": "mouse_motion",
+            "position": [21, 11],
+            "target": 3,
+            "local": [4, 4]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": true,
+            "position": [21, 11],
+            "button_mask": 1,
+            "target": 3,
+            "local": [4, 4]
+          },
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": false,
+            "position": [21, 11],
+            "target": 3,
+            "local": [4, 4]
+          }
+        ]
+      }
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "dispatched": ["mouse_motion 64 24.00,14.00 rel=0.00,0.00 mask=0 meta=3"],
+      "gui": ["Main/Pad mouse_motion 64 4.00,4.00 meta=3:Main/Pad@4.00,4.00"],
+      "target_signals": ["pointer_target a Main/Pad 4.00,4.00"]
+    },
+    {
+      "after": 2,
+      "dispatched": [
+        "mouse_button 64 1 down 24.00,14.00 mask=1 meta=3",
+        "mouse_button 64 1 up 24.00,14.00 mask=0 meta=3"
+      ],
+      "gui": [
+        "Main/Pad mouse_button 64 1 down 4.00,4.00 meta=3:Main/Pad@4.00,4.00",
+        "Main/Pad mouse_button 64 1 up 4.00,4.00 meta=3:Main/Pad@4.00,4.00"
+      ],
+      "target_signals": [
+        "pointer_target a Main/Pad 4.00,4.00",
+        "pointer_target a Main/Pad 4.00,4.00"
+      ]
+    }
+  ]
+}

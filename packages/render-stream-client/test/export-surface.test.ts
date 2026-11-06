@@ -10,6 +10,7 @@ createRenderStreamClient RenderStreamEndpointError validateEndpoint clientHello 
 RECONNECT_BACKOFF_MS webSocketTransport
 webTransportAvailable isAndroidPage invertAffine mulAffine createRecorder
 computeSpreadItem containerHAlignFactor createSpreadExtension fieldDx rootSpreadContext spreadDelta
+pointerTargetIdentity pointerTargetResolver
 `
   .trim()
   .split(/\s+/);
@@ -22,6 +23,7 @@ RenderStreamTransportFactory RenderStreamCarrier ApplyOn CreditStage Affine2D Ex
 ItemMetaBatch ItemMetaField ItemMetaGrant ItemQuery OverrideTable OverrideValues Point Rect RGBA
 GamePoint SpreadBudget SpreadContext SpreadDeps SpreadOptions SpreadOut SpreadShape
 Recording RecordKind RecorderOptions RenderStreamRecorder
+PointerTargetResolverOptions RenderStreamPointerTarget RenderStreamPointerTargetResolver
 `
   .trim()
   .split(/\s+/);

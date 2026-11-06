@@ -11,8 +11,19 @@
 // (packages/input/godot/project.godot), whose joypad bindings GswJoypadIsolation can narrow, and
 // the mouse: button mask, position, `emulate_mouse_from_touch` (core/input/input.cpp:840-893) and
 // the buffer that accumulates consecutive motions and drags until the runner flushes
-// (input.cpp:1229-1263).
+// (input.cpp:1229-1263). The IN12 target half, the test scene and Godot's GUI routing live in
+// model-targets.ts.
 import { parseInputMessage } from "../src/index";
+import {
+  type Binding,
+  ModelGui,
+  ModelScene,
+  ModelTargets,
+  type Placement,
+  type SceneNode,
+  type SceneNodeSpec,
+  type TargetMeta,
+} from "./model-targets";
 
 type Json = Record<string, unknown>;
 
@@ -28,6 +39,10 @@ export interface InjectorConfig {
   reassert_on_focus_in?: boolean;
   max_events_per_second?: number;
   mouse_owner?: string;
+  retarget?: string;
+  missing_target?: string;
+  verify_targets?: boolean;
+  target_tolerance?: number;
 }
 
 export type InjectorStep =
@@ -39,7 +54,13 @@ export type InjectorStep =
   | { focus_lost: true }
   | { reassert: true }
   /** `GswJoypadIsolation.isolate(devices)`; the runner restores the bindings after the vector. */
-  | { isolate: number[] };
+  | { isolate: number[] }
+  /** Scene edits (IN12 target vectors): set a node's position, free it, add one, hide or show. */
+  | { move: string; position: [number, number] }
+  | { free: string }
+  | { add: SceneNodeSpec }
+  | { hide: string }
+  | { show: string };
 
 export interface InjectorExpect {
   after: number;
@@ -58,12 +79,18 @@ export interface InjectorExpect {
   /** `joypad_attached`/`joypad_detached` since the previous entry: `attached D source slot`. */
   joypad_signals?: string[];
   stats?: Record<string, number>;
+  /** `_gui_input` of the scene's Controls since the previous entry (control-local positions). */
+  gui?: string[];
+  /** `pointer_target` / `target_missing` / `target_mismatch` since the previous entry. */
+  target_signals?: string[];
 }
 
 export interface InjectorVector {
   name: string;
   description: string;
   config: InjectorConfig;
+  /** Nodes created under the root before the first step, in order (IN12 target vectors). */
+  scene?: SceneNodeSpec[];
   steps: InjectorStep[];
   expect: InjectorExpect[];
 }
@@ -127,6 +154,8 @@ interface PointerEvent {
   tilt?: Vec;
   inverted?: boolean;
   mods?: Json;
+  /** The `gsw_target` meta. */
+  meta?: TargetMeta | null;
 }
 
 type Buffered =
@@ -157,6 +186,8 @@ class ModelInput {
   dispatched: string[] = [];
   /** The devices GswJoypadIsolation narrowed the joypad bindings to; null = all devices. */
   isolated: number[] | null = null;
+  /** Godot's GUI over the vector's scene (routes every dispatched mouse/touch event). */
+  gui: ModelGui | null = null;
 
   /** `Input.release_pressed_events()`: state cleared, no events dispatched. */
   /** Input.release_pressed_events (input.cpp:1281-1295): the mouse mask is kept. */
@@ -319,6 +350,7 @@ class ModelInput {
         inverted: event.inverted,
       });
     this.dispatched.push(describePointer(event));
+    this.gui?.dispatch(event);
   }
 
   state(): Omit<InjectorState, "stats" | "joypads" | "joypad_signals"> {
@@ -370,7 +402,7 @@ function sameMods(a: Json | undefined, b: Json | undefined): boolean {
 }
 
 /** The selftest's `dispatched` notation (injector_selftest.gd Probe.describe). */
-function describePointer(event: PointerEvent): string {
+function describePointerEvent(event: PointerEvent): string {
   const pen = () =>
     (event.pressure ? ` pressure=${f32(event.pressure).toFixed(2)}` : "") +
     (event.tilt && (event.tilt[0] !== 0 || event.tilt[1] !== 0)
@@ -408,42 +440,74 @@ function describePointer(event: PointerEvent): string {
   }
 }
 
+/** The selftest's `dispatched` notation, with the ` meta=<handle>` suffix of a tagged event. */
+function describePointer(event: PointerEvent): string {
+  const line = describePointerEvent(event);
+  return event.meta ? `${line} meta=${event.meta.handle}` : line;
+}
+
+/** A source's target tables, as the injector passes them to the pointer. */
+interface TargetTables {
+  handles: Map<number, Json>;
+  resolved: Map<number, SceneNode[]>;
+}
+
+const NO_TABLES: TargetTables = { handles: new Map(), resolved: new Map() };
+
 /** The pointer half, rule for rule as gsw_input_pointer.gd. */
 class ModelPointer {
   mouseOwner = "last-active";
   owner = "";
+  targets: ModelTargets | null = null;
   private held = 0;
   private heldDevice = 0;
   private position: Vec = [0, 0];
-  /** source -> host touch index -> [position, device], in press order. */
-  private readonly touches = new Map<string, Map<number, [Vec, number]>>();
+  /** source -> host touch index -> [position, device, binding], in press order. */
+  private readonly touches = new Map<
+    string,
+    Map<number, [Vec, number, Binding | null]>
+  >();
+  private mouseBinding: Binding | null = null;
 
   constructor(
     private readonly input: ModelInput,
     private readonly count: (code: string, n?: number) => void,
   ) {}
 
-  apply(source: string, device: number, touchBase: number, record: Json) {
+  apply(
+    source: string,
+    device: number,
+    touchBase: number,
+    record: Json,
+    tables: TargetTables = NO_TABLES,
+  ) {
     switch (record.event) {
       case "mouse_button":
         if (this.take(source, device, record.pressed === true))
-          this.mouseButton(device, record);
+          this.mouseButton(device, record, source, tables);
         else this.count("mouse-not-owner");
         break;
       case "mouse_motion":
-        if (this.take(source, device, false)) this.mouseMotion(device, record);
+        if (this.take(source, device, false))
+          this.mouseMotion(device, record, source, tables);
         else this.count("mouse-not-owner");
         break;
       case "screen_touch":
-        this.screenTouch(source, device, touchBase, record);
+        this.screenTouch(source, device, touchBase, record, tables);
         break;
       case "screen_drag":
-        this.screenDrag(source, device, touchBase, record);
+        this.screenDrag(source, device, touchBase, record, tables);
         break;
     }
   }
 
-  sync(source: string, device: number, touchBase: number, held: Json[]) {
+  sync(
+    source: string,
+    device: number,
+    touchBase: number,
+    held: Json[],
+    tables: TargetTables = NO_TABLES,
+  ) {
     const buttons = new Map<number, Json>();
     let motion: Json | null = null;
     const touches = new Map<number, Json>();
@@ -460,11 +524,11 @@ class ModelPointer {
       for (let button = 1; button <= MOUSE_BUTTONS; button++)
         if (this.held & bit(button) && !buttons.has(button))
           this.releaseButton(button);
-      if (motion) this.mouseMotion(device, motion);
+      if (motion) this.mouseMotion(device, motion, source, tables);
       for (let button = 1; button <= MOUSE_BUTTONS; button++) {
         const record = buttons.get(button);
         if (record && !(this.held & bit(button)))
-          this.mouseButton(device, record);
+          this.mouseButton(device, record, source, tables);
       }
     }
     const heldTouches = this.touches.get(source) ?? new Map();
@@ -472,7 +536,7 @@ class ModelPointer {
       if (!touches.has(index)) this.cancelTouch(source, index);
     for (const [index, record] of touches)
       if (!heldTouches.has(index))
-        this.screenTouch(source, device, touchBase, record);
+        this.screenTouch(source, device, touchBase, record, tables);
   }
 
   release(source: string) {
@@ -502,17 +566,66 @@ class ModelPointer {
     return true;
   }
 
-  private mouseButton(device: number, record: Json) {
+  /** gsw_input_pointer.gd `_place`: null when the record names no target and nothing is bound. */
+  private place(
+    source: string,
+    tables: TargetTables,
+    record: Json,
+    position: Vec,
+    binding: Binding | null,
+    release: boolean,
+  ): Placement | null {
+    if (!this.targets || (!binding && num(record, "target") === 0)) return null;
+    const placement = this.targets.place(
+      source,
+      tables.handles,
+      tables.resolved,
+      record,
+      position,
+      binding,
+      release,
+    );
+    if (placement.drop) this.count("target-dropped");
+    return placement;
+  }
+
+  private tag(source: string, mouse: boolean, placement: Placement | null) {
+    return placement ? this.targets?.tag(source, mouse, placement) : null;
+  }
+
+  private mouseButton(
+    device: number,
+    record: Json,
+    source = "",
+    tables: TargetTables = NO_TABLES,
+  ) {
     const button = record.button_index as number;
     const pressed = record.pressed === true;
     if (pressed === ((this.held & bit(button)) !== 0)) {
       this.count(pressed ? "repeat" : "unheld");
       return;
     }
+    let position = vec(record.position);
+    const placement = this.place(
+      source,
+      tables,
+      record,
+      position,
+      this.mouseBinding,
+      !pressed,
+    );
+    if (placement) {
+      if (placement.drop) return;
+      position = placement.position;
+      if (pressed && this.held === 0) this.mouseBinding = placement.binding;
+    }
     if (pressed) this.held |= bit(button);
-    else this.held &= ~bit(button);
+    else {
+      this.held &= ~bit(button);
+      if (this.held === 0) this.mouseBinding = null;
+    }
     this.heldDevice = device;
-    this.position = vec(record.position);
+    this.position = position;
     this.input.pointer({
       type: "mouse_button",
       device,
@@ -524,11 +637,30 @@ class ModelPointer {
       canceled: record.canceled === true,
       double: record.double_click === true,
       mods: record,
+      meta: this.tag(source, true, placement),
     });
   }
 
-  private mouseMotion(device: number, record: Json) {
-    this.position = vec(record.position);
+  private mouseMotion(
+    device: number,
+    record: Json,
+    source = "",
+    tables: TargetTables = NO_TABLES,
+  ) {
+    let position = vec(record.position);
+    const placement = this.place(
+      source,
+      tables,
+      record,
+      position,
+      this.mouseBinding,
+      false,
+    );
+    if (placement) {
+      if (placement.drop) return;
+      position = placement.position;
+    }
+    this.position = position;
     this.input.pointer({
       type: "mouse_motion",
       device,
@@ -539,6 +671,7 @@ class ModelPointer {
       tilt: vec(record.tilt),
       inverted: record.pen_inverted === true,
       mods: record,
+      meta: this.tag(source, true, placement),
     });
   }
 
@@ -549,6 +682,7 @@ class ModelPointer {
 
   private releaseButton(button: number) {
     this.held &= ~bit(button);
+    if (this.held === 0) this.mouseBinding = null;
     this.input.pointer({
       type: "mouse_button",
       device: this.heldDevice,
@@ -565,17 +699,36 @@ class ModelPointer {
     device: number,
     touchBase: number,
     record: Json,
+    tables: TargetTables = NO_TABLES,
   ) {
     const index = touchBase + num(record, "index");
     const pressed = record.pressed === true;
-    const held = this.touches.get(source) ?? new Map<number, [Vec, number]>();
+    const held =
+      this.touches.get(source) ??
+      new Map<number, [Vec, number, Binding | null]>();
     if (pressed === held.has(index)) {
       this.count(pressed ? "repeat" : "unheld");
       return;
     }
-    const position = vec(record.position);
+    let position = vec(record.position);
+    let binding: Binding | null = pressed
+      ? null
+      : (held.get(index)?.[2] ?? null);
+    const placement = this.place(
+      source,
+      tables,
+      record,
+      position,
+      binding,
+      !pressed,
+    );
+    if (placement) {
+      if (placement.drop) return;
+      position = placement.position;
+      if (pressed) binding = placement.binding;
+    }
     if (pressed) {
-      held.set(index, [position, device]);
+      held.set(index, [position, device, binding]);
       this.touches.set(source, held);
     } else held.delete(index);
     this.input.pointer({
@@ -586,6 +739,7 @@ class ModelPointer {
       position,
       canceled: record.canceled === true,
       double: record.double_tap === true,
+      meta: this.tag(source, false, placement),
     });
   }
 
@@ -594,15 +748,30 @@ class ModelPointer {
     device: number,
     touchBase: number,
     record: Json,
+    tables: TargetTables = NO_TABLES,
   ) {
     const index = touchBase + num(record, "index");
     const held = this.touches.get(source);
-    if (!held?.has(index)) {
+    const entry = held?.get(index);
+    if (!held || !entry) {
       this.count("unheld");
       return;
     }
-    const position = vec(record.position);
-    held.set(index, [position, device]);
+    let position = vec(record.position);
+    const binding = entry[2];
+    const placement = this.place(
+      source,
+      tables,
+      record,
+      position,
+      binding,
+      false,
+    );
+    if (placement) {
+      if (placement.drop) return;
+      position = placement.position;
+    }
+    held.set(index, [position, device, binding]);
     this.input.pointer({
       type: "screen_drag",
       device,
@@ -612,6 +781,7 @@ class ModelPointer {
       pressure: num(record, "pressure"),
       tilt: vec(record.tilt),
       inverted: record.pen_inverted === true,
+      meta: this.tag(source, false, placement),
     });
   }
 
@@ -647,6 +817,7 @@ interface Source {
   /** action name -> press strength, in press order. */
   actions: Map<string, number>;
   handles: Map<number, Json>;
+  resolved: Map<number, SceneNode[]>;
   rateStart: number;
   rateCount: number;
   leaseUntil: number;
@@ -768,8 +939,13 @@ export class ModelInjector {
   private readonly pointer = new ModelPointer(this.input, (code, n) =>
     this.count(code, n),
   );
+  readonly scene = new ModelScene();
+  readonly targets = new ModelTargets(this.scene, (code) => this.count(code));
 
   constructor(config: InjectorConfig = {}) {
+    this.pointer.targets = this.targets;
+    this.targets.configure(config);
+    this.input.gui = new ModelGui(this.scene);
     if (config.accept_kinds) this.acceptKinds = config.accept_kinds;
     if (config.allowed_actions) this.allowedActions = config.allowed_actions;
     const devices = this.devices;
@@ -852,6 +1028,8 @@ export class ModelInjector {
 
   tick(now: number) {
     this.expireLeases(now);
+    if (this.targets.verifyTargets)
+      this.targets.verify(this.input.gui?.hovered ?? null);
     if (this.staleTimeoutMs <= 0) return;
     for (const source of this.sources.values())
       if (
@@ -893,6 +1071,7 @@ export class ModelInjector {
         axes: new Map(),
         actions: new Map(),
         handles: new Map(),
+        resolved: new Map(),
         rateStart: 0,
         rateCount: 0,
         leaseUntil: -1,
@@ -910,6 +1089,7 @@ export class ModelInjector {
     if (source.open) {
       this.releaseSource(source);
       source.handles.clear();
+      source.resolved.clear();
       if (source.channel !== null) this.byChannel.delete(source.channel);
     }
     source.open = true;
@@ -931,6 +1111,7 @@ export class ModelInjector {
     source.open = false;
     source.epoch = -1;
     source.handles.clear();
+    source.resolved.clear();
     if (source.channel !== null) this.byChannel.delete(source.channel);
     source.channel = null;
     source.leaseUntil = now + this.leaseMs;
@@ -1011,6 +1192,7 @@ export class ModelInjector {
     const kind = record.event as string;
     if (kind === "target") {
       source.handles.set(record.handle as number, record);
+      source.resolved.delete(record.handle as number);
       return false;
     }
     if (!this.acceptKinds.includes(kind)) {
@@ -1051,6 +1233,7 @@ export class ModelInjector {
           device,
           this.touchIndexBase(source.id),
           record,
+          source,
         );
     }
   }
@@ -1291,6 +1474,7 @@ export class ModelInjector {
         device,
         this.touchIndexBase(source.id),
         records,
+        source,
       );
     }
   }
@@ -1343,6 +1527,8 @@ function isRelease(record: Json): boolean {
 /** Run a vector; returns, per expect entry, the actual state in the vectors' normal form. */
 export function runInjectorVector(vector: InjectorVector): InjectorState[] {
   const injector = new ModelInjector(vector.config);
+  for (const spec of vector.scene ?? []) injector.scene.add(spec);
+  const gui = injector.input.gui as ModelGui;
   const states: InjectorState[] = [];
   let now = 0;
   let next = 0;
@@ -1367,7 +1553,22 @@ export function runInjectorVector(vector: InjectorVector): InjectorState[] {
       injector.onFocusLost();
     } else if ("reassert" in step) injector.reassert();
     else if ("isolate" in step) injector.input.isolated = step.isolate;
-    else throw new Error(`${vector.name} step ${index}: unknown step`);
+    else if ("move" in step) {
+      const node = injector.scene.get(step.move);
+      if (!node)
+        throw new Error(`${vector.name} step ${index}: no ${step.move}`);
+      node.position = [
+        Math.fround(step.position[0]),
+        Math.fround(step.position[1]),
+      ];
+    } else if ("free" in step) injector.scene.free(step.free);
+    else if ("add" in step) injector.scene.add(step.add);
+    else if ("hide" in step || "show" in step) {
+      const path = "hide" in step ? step.hide : step.show;
+      const node = injector.scene.get(path);
+      if (!node) throw new Error(`${vector.name} step ${index}: no ${path}`);
+      node.visible = "show" in step;
+    } else throw new Error(`${vector.name} step ${index}: unknown step`);
     injector.input.flush();
     while (next < vector.expect.length && vector.expect[next].after === index) {
       const state: InjectorState = {
@@ -1375,7 +1576,11 @@ export function runInjectorVector(vector: InjectorVector): InjectorState[] {
         joypads: injector.remoteJoypads(),
         joypad_signals: injector.devices.signals,
         stats: injector.stats(),
+        gui: gui.lines,
+        target_signals: injector.targets.signals,
       };
+      gui.lines = [];
+      injector.targets.signals = [];
       if (vector.expect[next].mouse_position === undefined)
         delete state.mouse_position;
       states.push(state);
@@ -1410,5 +1615,7 @@ export function normalizeExpect(expect: InjectorExpect): InjectorState {
     joypads: [...(expect.joypads ?? [])].sort((a, b) => a - b),
     joypad_signals: expect.joypad_signals ?? [],
     stats: expect.stats ?? {},
+    gui: expect.gui ?? [],
+    target_signals: expect.target_signals ?? [],
   };
 }

@@ -32,3 +32,8 @@ export type {
   PointerGestureKind,
   PointerGestureOptions,
 } from "./pointer-mouse-mode";
+export type {
+  PointerTargetHit,
+  PointerTargetIdentity,
+  PointerTargetResolver,
+} from "./pointer-targets";

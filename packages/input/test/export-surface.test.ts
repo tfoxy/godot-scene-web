@@ -127,6 +127,7 @@ PointerCapture PointerCaptureMode PointerCaptureOptions PointerCaptureStats Poin
 PointerEventLike PointerEventTargetLike PointerStageLike
 PointerTargetsMode PointerVisibilitySource WheelEventLike
 PointerGesture PointerGestureDecision PointerGestureKind PointerGestureOptions
+PointerTargetHit PointerTargetIdentity PointerTargetResolver
 PointerBox PointerMap PointerObjectFit PointerObjectPosition PointerPoint PointerPresentationSize
 `
   .trim()

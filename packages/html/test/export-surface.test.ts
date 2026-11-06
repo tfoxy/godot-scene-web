@@ -33,6 +33,7 @@ DEFAULT_STILL_CACHE_BYTES DEFAULT_SURFACE_WATCHDOG_MS
 STABLE_OBSERVATIONS_BEFORE_SWAP STATIC_CAPTURE_BLANK STATIC_SURFACE_IMAGE_ATTR describeGpu
 MAX_PINNED_BACKING_DIM MAX_SURFACE_PIXEL_RATIO parseSurfacePixelRatio SURFACE_PIXEL_RATIO_ATTR
 reportUnsupportedRender   backingStoreSize effectivePixelRatio
+htmlPointerTargetResolver
 `
   .trim()
   .split(/\s+/);
@@ -52,6 +53,7 @@ StaticSurfaceEncodePacing StaticSurfaceGate StaticSurfaceOption StaticSurfacePol
 StaticSurfaceQuietWindowGate StaticSurfaceTimerHandle GpuInfo UnsupportedRenderInfo
 UnsupportedRenderKind UnsupportedRenderReporter
 WebgpuFallbackReason
+HtmlPointerTarget HtmlPointerTargetOptions HtmlPointerTargetResolver
 `
   .trim()
   .split(/\s+/);

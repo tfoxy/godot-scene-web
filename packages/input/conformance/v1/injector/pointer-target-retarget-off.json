@@ -1,0 +1,73 @@
+{
+  "name": "pointer-target-retarget-off",
+  "description": "retarget off: a targeted press goes by its coordinate even when it misses its (resolved) node; the meta and pointer_target still go.",
+  "config": {
+    "retarget": "off"
+  },
+  "scene": [
+    {
+      "path": "Main",
+      "class": "Node"
+    },
+    {
+      "path": "Main/Pad",
+      "class": "Control",
+      "position": [8, 20],
+      "size": [16, 12]
+    }
+  ],
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "target",
+            "handle": 3,
+            "path": "Main/Pad"
+          },
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": true,
+            "position": [44, 44],
+            "button_mask": 1,
+            "target": 3,
+            "local": [4, 4]
+          },
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": false,
+            "position": [44, 44],
+            "target": 3,
+            "local": [4, 4]
+          }
+        ]
+      }
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "dispatched": [
+        "mouse_button 64 1 down 44.00,44.00 mask=1 meta=3",
+        "mouse_button 64 1 up 44.00,44.00 mask=0 meta=3"
+      ],
+      "target_signals": [
+        "pointer_target a Main/Pad 4.00,4.00",
+        "pointer_target a Main/Pad 36.00,24.00"
+      ]
+    }
+  ]
+}

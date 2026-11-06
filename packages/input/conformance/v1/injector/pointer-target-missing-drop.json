@@ -1,0 +1,159 @@
+{
+  "name": "pointer-target-missing-drop",
+  "description": "missing_target drop: a press or motion whose target cannot be resolved is dropped (target-dropped, target_missing); a release is never dropped (here it finds nothing held: unheld); a resolvable target still goes.",
+  "config": {
+    "missing_target": "drop"
+  },
+  "scene": [
+    {
+      "path": "Main",
+      "class": "Node"
+    },
+    {
+      "path": "Main/Pad",
+      "class": "Control",
+      "position": [20, 10],
+      "size": [16, 12]
+    }
+  ],
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "target",
+            "handle": 3,
+            "path": "Main/Gone"
+          },
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": true,
+            "position": [24, 14],
+            "button_mask": 1,
+            "target": 3,
+            "local": [4, 4]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": false,
+            "position": [24, 14],
+            "target": 3,
+            "local": [4, 4]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 3,
+        "events": [
+          {
+            "event": "mouse_motion",
+            "position": [25, 14],
+            "relative": [1, 0],
+            "target": 3,
+            "local": [5, 4]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 4,
+        "events": [
+          {
+            "event": "target",
+            "handle": 4,
+            "path": "Main/Pad"
+          },
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": true,
+            "position": [24, 14],
+            "button_mask": 1,
+            "target": 4,
+            "local": [4, 4]
+          },
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": false,
+            "position": [24, 14],
+            "target": 4,
+            "local": [4, 4]
+          }
+        ]
+      }
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "stats": {
+        "target-dropped": 1
+      },
+      "target_signals": ["target_missing a 3"]
+    },
+    {
+      "after": 2,
+      "stats": {
+        "target-dropped": 1,
+        "unheld": 1
+      }
+    },
+    {
+      "after": 3,
+      "stats": {
+        "target-dropped": 2,
+        "unheld": 1
+      },
+      "target_signals": ["target_missing a 3"]
+    },
+    {
+      "after": 4,
+      "dispatched": [
+        "mouse_button 64 1 down 24.00,14.00 mask=1 meta=4",
+        "mouse_button 64 1 up 24.00,14.00 mask=0 meta=4"
+      ],
+      "stats": {
+        "target-dropped": 2,
+        "unheld": 1
+      },
+      "gui": [
+        "Main/Pad mouse_button 64 1 down 4.00,4.00 meta=4:Main/Pad@4.00,4.00",
+        "Main/Pad mouse_button 64 1 up 4.00,4.00 meta=4:Main/Pad@4.00,4.00"
+      ],
+      "target_signals": [
+        "pointer_target a Main/Pad 4.00,4.00",
+        "pointer_target a Main/Pad 4.00,4.00"
+      ]
+    }
+  ]
+}

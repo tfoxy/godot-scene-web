@@ -1,0 +1,133 @@
+{
+  "name": "pointer-target-when-missed",
+  "description": "retarget when-missed: a hover and a press aimed at a button the test moved after the frame land on it at the same local (position rewritten to the node's transform applied to local); the release stays bound to the press's offset; a coordinate that already lands is kept.",
+  "config": {},
+  "scene": [
+    {
+      "path": "Main",
+      "class": "Node"
+    },
+    {
+      "path": "Main/Pad",
+      "class": "Control",
+      "position": [40, 40],
+      "size": [16, 12]
+    }
+  ],
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "target",
+            "handle": 3,
+            "path": "Main/Pad"
+          },
+          {
+            "event": "mouse_motion",
+            "position": [42, 42],
+            "target": 3,
+            "local": [2, 2]
+          }
+        ]
+      }
+    },
+    {
+      "move": "Main/Pad",
+      "position": [8, 20]
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "mouse_motion",
+            "position": [43, 43],
+            "relative": [1, 1],
+            "target": 3,
+            "local": [3, 3]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 3,
+        "events": [
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": true,
+            "position": [44, 44],
+            "button_mask": 1,
+            "target": 3,
+            "local": [4, 4]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 4,
+        "events": [
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": false,
+            "position": [44, 44],
+            "target": 3,
+            "local": [4, 4]
+          }
+        ]
+      }
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "dispatched": ["mouse_motion 64 42.00,42.00 rel=0.00,0.00 mask=0 meta=3"],
+      "gui": ["Main/Pad mouse_motion 64 2.00,2.00 meta=3:Main/Pad@2.00,2.00"],
+      "target_signals": ["pointer_target a Main/Pad 2.00,2.00"]
+    },
+    {
+      "after": 3,
+      "dispatched": ["mouse_motion 64 11.00,23.00 rel=1.00,1.00 mask=0 meta=3"],
+      "gui": ["Main/Pad mouse_motion 64 3.00,3.00 meta=3:Main/Pad@3.00,3.00"],
+      "target_signals": ["pointer_target a Main/Pad 3.00,3.00"]
+    },
+    {
+      "after": 4,
+      "mouse_mask": 1,
+      "dispatched": ["mouse_button 64 1 down 12.00,24.00 mask=1 meta=3"],
+      "gui": [
+        "Main/Pad mouse_button 64 1 down 4.00,4.00 meta=3:Main/Pad@4.00,4.00"
+      ],
+      "target_signals": ["pointer_target a Main/Pad 4.00,4.00"]
+    },
+    {
+      "after": 5,
+      "dispatched": ["mouse_button 64 1 up 12.00,24.00 mask=0 meta=3"],
+      "gui": [
+        "Main/Pad mouse_button 64 1 up 4.00,4.00 meta=3:Main/Pad@4.00,4.00"
+      ],
+      "target_signals": ["pointer_target a Main/Pad 4.00,4.00"]
+    }
+  ]
+}

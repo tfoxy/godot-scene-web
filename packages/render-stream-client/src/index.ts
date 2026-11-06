@@ -42,6 +42,13 @@ export {
   type RenderStreamStatus,
 } from "./loop";
 export {
+  type PointerTargetResolverOptions,
+  pointerTargetIdentity,
+  pointerTargetResolver,
+  type RenderStreamPointerTarget,
+  type RenderStreamPointerTargetResolver,
+} from "./pointer-targets";
+export {
   createRecorder,
   type RecorderOptions,
   type Recording,

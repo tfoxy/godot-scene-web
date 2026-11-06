@@ -58,6 +58,12 @@ export {
   renderSceneToHtmlModel,
 } from "./model";
 export { emissionExtentPad, spriteExtentPad } from "./particles/extents";
+export {
+  type HtmlPointerTarget,
+  type HtmlPointerTargetOptions,
+  type HtmlPointerTargetResolver,
+  htmlPointerTargetResolver,
+} from "./pointer-targets";
 export { stabilizeRenderElements } from "./render-stabilize";
 export {
   FRAME_CLASS,

@@ -1,0 +1,126 @@
+{
+  "name": "pointer-target-verify",
+  "description": "verify_targets: on tick, the last targeted mouse event's Control target is compared with the hovered Control (Viewport.gui_get_hovered_control); target_mismatch names the hovered one, or - when nothing is hovered.",
+  "config": {
+    "verify_targets": true,
+    "retarget": "off"
+  },
+  "scene": [
+    {
+      "path": "Main",
+      "class": "Node"
+    },
+    {
+      "path": "Main/Pad",
+      "class": "Control",
+      "position": [0, 0],
+      "size": [16, 12]
+    },
+    {
+      "path": "Main/Other",
+      "class": "Control",
+      "position": [30, 30],
+      "size": [16, 12]
+    }
+  ],
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "target",
+            "handle": 3,
+            "path": "Main/Pad"
+          },
+          {
+            "event": "mouse_motion",
+            "position": [35, 35],
+            "target": 3,
+            "local": [4, 4]
+          }
+        ]
+      }
+    },
+    {
+      "tick": 1
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "mouse_motion",
+            "position": [4, 4],
+            "relative": [-31, -31],
+            "target": 3,
+            "local": [4, 4]
+          }
+        ]
+      }
+    },
+    {
+      "tick": 2
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 3,
+        "events": [
+          {
+            "event": "mouse_motion",
+            "position": [60, 60],
+            "relative": [56, 56],
+            "target": 3,
+            "local": [4, 4]
+          }
+        ]
+      }
+    },
+    {
+      "tick": 3
+    }
+  ],
+  "expect": [
+    {
+      "after": 2,
+      "dispatched": ["mouse_motion 64 35.00,35.00 rel=0.00,0.00 mask=0 meta=3"],
+      "gui": ["Main/Other mouse_motion 64 5.00,5.00 meta=3:Main/Pad@4.00,4.00"],
+      "target_signals": [
+        "pointer_target a Main/Pad 4.00,4.00",
+        "target_mismatch a 3 Main/Other"
+      ]
+    },
+    {
+      "after": 4,
+      "dispatched": [
+        "mouse_motion 64 4.00,4.00 rel=-31.00,-31.00 mask=0 meta=3"
+      ],
+      "gui": ["Main/Pad mouse_motion 64 4.00,4.00 meta=3:Main/Pad@4.00,4.00"],
+      "target_signals": ["pointer_target a Main/Pad 4.00,4.00"]
+    },
+    {
+      "after": 6,
+      "dispatched": [
+        "mouse_motion 64 60.00,60.00 rel=56.00,56.00 mask=0 meta=3"
+      ],
+      "target_signals": [
+        "pointer_target a Main/Pad 4.00,4.00",
+        "target_mismatch a 3 -"
+      ]
+    }
+  ]
+}

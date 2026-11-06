@@ -1,0 +1,145 @@
+{
+  "name": "pointer-target-node2d",
+  "description": "A non-Control CanvasItem lands when its transform applied to local is within target_tolerance (1 px) of the coordinate; otherwise the event moves there; a bound drag recomputes the meta's local through the node's inverse transform.",
+  "config": {},
+  "scene": [
+    {
+      "path": "Main",
+      "class": "Node"
+    },
+    {
+      "path": "Main/Sprite",
+      "class": "Node2D",
+      "position": [30, 30],
+      "scale": [2, 2]
+    }
+  ],
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "target",
+            "handle": 7,
+            "path": "Main/Sprite"
+          },
+          {
+            "event": "mouse_motion",
+            "position": [32, 32],
+            "target": 7,
+            "local": [1, 1]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "mouse_motion",
+            "position": [32.5, 32],
+            "relative": [0.5, 0],
+            "target": 7,
+            "local": [1, 1]
+          }
+        ]
+      }
+    },
+    {
+      "move": "Main/Sprite",
+      "position": [10, 10]
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 3,
+        "events": [
+          {
+            "event": "mouse_motion",
+            "position": [32, 32],
+            "relative": [-0.5, 0],
+            "target": 7,
+            "local": [1, 1]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 4,
+        "events": [
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": true,
+            "position": [32, 32],
+            "button_mask": 1,
+            "target": 7,
+            "local": [1, 1]
+          },
+          {
+            "event": "mouse_motion",
+            "position": [40, 40],
+            "relative": [8, 8],
+            "button_mask": 1
+          },
+          {
+            "event": "mouse_button",
+            "button_index": 1,
+            "pressed": false,
+            "position": [40, 40]
+          }
+        ]
+      }
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "dispatched": ["mouse_motion 64 32.00,32.00 rel=0.00,0.00 mask=0 meta=7"],
+      "target_signals": ["pointer_target a Main/Sprite 1.00,1.00"]
+    },
+    {
+      "after": 2,
+      "dispatched": ["mouse_motion 64 32.50,32.00 rel=0.50,0.00 mask=0 meta=7"],
+      "target_signals": ["pointer_target a Main/Sprite 1.00,1.00"]
+    },
+    {
+      "after": 4,
+      "dispatched": [
+        "mouse_motion 64 12.00,12.00 rel=-0.50,0.00 mask=0 meta=7"
+      ],
+      "target_signals": ["pointer_target a Main/Sprite 1.00,1.00"]
+    },
+    {
+      "after": 5,
+      "dispatched": [
+        "mouse_button 64 1 down 12.00,12.00 mask=1 meta=7",
+        "mouse_motion 64 20.00,20.00 rel=8.00,8.00 mask=1 meta=7",
+        "mouse_button 64 1 up 20.00,20.00 mask=0 meta=7"
+      ],
+      "target_signals": [
+        "pointer_target a Main/Sprite 1.00,1.00",
+        "pointer_target a Main/Sprite 5.00,5.00",
+        "pointer_target a Main/Sprite 5.00,5.00"
+      ]
+    }
+  ]
+}
