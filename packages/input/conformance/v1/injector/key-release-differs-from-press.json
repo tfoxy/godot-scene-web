@@ -1,0 +1,63 @@
+{
+  "name": "key-release-differs-from-press",
+  "description": "A sender whose release carries the unshifted key_label still clears the shifted label: the host replays its own press record.",
+  "config": {},
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 7
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 1,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 49,
+            "keycode": 49,
+            "key_label": 33,
+            "unicode": 33,
+            "shift_pressed": true,
+            "code": "Digit1",
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 2,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 49,
+            "keycode": 49,
+            "key_label": 49,
+            "pressed": false
+          }
+        ]
+      }
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "physical_keys": [49],
+      "keys": [49],
+      "labels": [33],
+      "dispatched": ["key 49/49/33 down"]
+    },
+    {
+      "after": 2,
+      "dispatched": ["key 49/49/33 up"]
+    }
+  ]
+}

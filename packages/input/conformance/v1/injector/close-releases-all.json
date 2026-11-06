@@ -1,0 +1,172 @@
+{
+  "name": "close-releases-all",
+  "description": "close_channel releases keys (press order), then buttons, then axes; the closed channel needs a new hello, which may reuse the epoch.",
+  "config": {},
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 7
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 1,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": true
+          },
+          {
+            "event": "key",
+            "physical_keycode": 4194325,
+            "keycode": 4194325,
+            "key_label": 4194325,
+            "location": 1,
+            "code": "ShiftLeft",
+            "pressed": true
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          },
+          {
+            "event": "joypad_button",
+            "device": 1,
+            "button_index": 2,
+            "pressed": true
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 1,
+            "axis_value": -1
+          },
+          {
+            "event": "joypad_motion",
+            "device": 1,
+            "axis": 4,
+            "axis_value": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "close": "a"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 2,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": true
+          }
+        ]
+      },
+      "result": "no-hello"
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 7
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 1,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "close": "a"
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "physical_keys": [87, 4194325],
+      "keys": [87, 4194325],
+      "labels": [87, 4194325],
+      "joy_buttons": [[64, 0], [65, 2]],
+      "joy_axes": [[64, 1, -1], [65, 4, 0.5]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": [
+        "key 87/87/87 down",
+        "key 4194325/4194325/4194325 down",
+        "joy_button 64 0 down",
+        "joy_button 65 2 down",
+        "joy_motion 64 1 -1.0000",
+        "joy_motion 65 4 0.5000"
+      ]
+    },
+    {
+      "after": 2,
+      "dispatched": [
+        "key 87/87/87 up",
+        "key 4194325/4194325/4194325 up",
+        "joy_button 64 0 up",
+        "joy_button 65 2 up",
+        "joy_motion 64 1 0.0000",
+        "joy_motion 65 4 0.0000"
+      ]
+    },
+    {
+      "after": 3,
+      "dispatched": [],
+      "stats": {
+        "no-hello": 1
+      }
+    },
+    {
+      "after": 5,
+      "physical_keys": [87],
+      "keys": [87],
+      "labels": [87],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["key 87/87/87 down"],
+      "stats": {
+        "no-hello": 1
+      }
+    },
+    {
+      "after": 6,
+      "dispatched": ["key 87/87/87 up"],
+      "stats": {
+        "no-hello": 1
+      }
+    }
+  ]
+}

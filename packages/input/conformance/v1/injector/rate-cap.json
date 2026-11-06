@@ -1,0 +1,194 @@
+{
+  "name": "rate-cap",
+  "description": "max_events_per_second 4: a message over the cap is dropped but its releases apply; the window restarts after 1000 ms.",
+  "config": {
+    "max_events_per_second": 4
+  },
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 7
+      },
+      "at": 0
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 1,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": true
+          },
+          {
+            "event": "key",
+            "physical_keycode": 83,
+            "keycode": 83,
+            "key_label": 83,
+            "unicode": 115,
+            "code": "KeyS",
+            "pressed": true
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      },
+      "at": 0
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 2,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 68,
+            "keycode": 68,
+            "key_label": 68,
+            "unicode": 100,
+            "code": "KeyD",
+            "pressed": true
+          },
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": false
+          }
+        ]
+      },
+      "at": 10,
+      "result": "rate"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 3,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 83,
+            "keycode": 83,
+            "key_label": 83,
+            "unicode": 115,
+            "code": "KeyS",
+            "pressed": false
+          }
+        ]
+      },
+      "at": 500
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 4,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 68,
+            "keycode": 68,
+            "key_label": 68,
+            "unicode": 100,
+            "code": "KeyD",
+            "pressed": true
+          },
+          {
+            "event": "key",
+            "physical_keycode": 68,
+            "keycode": 68,
+            "key_label": 68,
+            "unicode": 100,
+            "code": "KeyD",
+            "pressed": false
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.5
+          },
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0
+          }
+        ]
+      },
+      "at": 1000,
+      "result": "rate"
+    },
+    {
+      "close": "a"
+    }
+  ],
+  "expect": [
+    {
+      "after": 2,
+      "physical_keys": [83],
+      "keys": [83],
+      "labels": [83],
+      "joy_buttons": [[64, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": [
+        "key 87/87/87 down",
+        "key 83/83/83 down",
+        "joy_button 64 0 down",
+        "key 87/87/87 up"
+      ],
+      "stats": {
+        "rate": 1
+      }
+    },
+    {
+      "after": 3,
+      "joy_buttons": [[64, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["key 83/83/83 up"],
+      "stats": {
+        "rate": 1
+      }
+    },
+    {
+      "after": 4,
+      "dispatched": ["joy_button 64 0 up"],
+      "stats": {
+        "rate": 2,
+        "unheld": 1
+      }
+    },
+    {
+      "after": 5,
+      "dispatched": [],
+      "stats": {
+        "rate": 2,
+        "unheld": 1
+      }
+    }
+  ]
+}

@@ -1,0 +1,209 @@
+{
+  "name": "shared-key-two-sources",
+  "description": "Two sources holding one key: Input sees one press and one release, on the last holder. Overlapping keys share per key set (physical, keycode, label).",
+  "config": {},
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "b",
+        "epoch": 2
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 2,
+        "seq": 1,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": true
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": false
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 2,
+        "seq": 2,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": false
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 3,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 81,
+            "keycode": 65,
+            "key_label": 65,
+            "unicode": 97,
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 2,
+        "seq": 3,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 65,
+            "keycode": 65,
+            "key_label": 65,
+            "unicode": 97,
+            "pressed": true
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "close": "a"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 2,
+        "seq": 4,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 65,
+            "keycode": 65,
+            "key_label": 65,
+            "unicode": 97,
+            "pressed": false
+          }
+        ]
+      },
+      "channel": "b"
+    }
+  ],
+  "expect": [
+    {
+      "after": 2,
+      "physical_keys": [87],
+      "keys": [87],
+      "labels": [87],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["key 87/87/87 down"]
+    },
+    {
+      "after": 3,
+      "physical_keys": [87],
+      "keys": [87],
+      "labels": [87],
+      "actions": ["gsw_test_jump"],
+      "dispatched": []
+    },
+    {
+      "after": 4,
+      "physical_keys": [87],
+      "keys": [87],
+      "labels": [87],
+      "actions": ["gsw_test_jump"],
+      "dispatched": []
+    },
+    {
+      "after": 5,
+      "dispatched": ["key 87/87/87 up"]
+    },
+    {
+      "after": 6,
+      "physical_keys": [81],
+      "keys": [65],
+      "labels": [65],
+      "dispatched": ["key 81/65/65 down"]
+    },
+    {
+      "after": 7,
+      "physical_keys": [65, 81],
+      "keys": [65],
+      "labels": [65],
+      "dispatched": ["key 65/0/0 down"]
+    },
+    {
+      "after": 8,
+      "physical_keys": [65],
+      "keys": [65],
+      "labels": [65],
+      "dispatched": ["key 81/0/0 up"]
+    },
+    {
+      "after": 9,
+      "dispatched": ["key 65/65/65 up"]
+    }
+  ]
+}

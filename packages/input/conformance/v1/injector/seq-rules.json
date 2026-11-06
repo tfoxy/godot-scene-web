@@ -1,0 +1,161 @@
+{
+  "name": "seq-rules",
+  "description": "No hello, duplicate and old seq are dropped and counted; a gap is counted and applied.",
+  "config": {},
+  "steps": [
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 5,
+        "seq": 1,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": true
+          }
+        ]
+      },
+      "result": "no-hello"
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 5
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 5,
+        "seq": 1,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 5,
+        "seq": 1,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": false
+          }
+        ]
+      },
+      "result": "duplicate"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 5,
+        "seq": 0,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": false
+          }
+        ]
+      },
+      "result": "duplicate"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 5,
+        "seq": 4,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": false
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "heartbeat",
+        "epoch": 5,
+        "seq": 5
+      }
+    },
+    {
+      "close": "a"
+    }
+  ],
+  "expect": [
+    {
+      "after": 2,
+      "physical_keys": [87],
+      "keys": [87],
+      "labels": [87],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["key 87/87/87 down"],
+      "stats": {
+        "no-hello": 1
+      }
+    },
+    {
+      "after": 4,
+      "physical_keys": [87],
+      "keys": [87],
+      "labels": [87],
+      "actions": ["gsw_test_jump"],
+      "dispatched": [],
+      "stats": {
+        "no-hello": 1,
+        "duplicate": 2
+      }
+    },
+    {
+      "after": 5,
+      "dispatched": ["key 87/87/87 up"],
+      "stats": {
+        "no-hello": 1,
+        "duplicate": 2,
+        "gap": 1
+      }
+    },
+    {
+      "after": 7,
+      "dispatched": [],
+      "stats": {
+        "no-hello": 1,
+        "duplicate": 2,
+        "gap": 1
+      }
+    }
+  ]
+}

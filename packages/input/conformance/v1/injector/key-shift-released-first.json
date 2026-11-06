@@ -1,0 +1,109 @@
+{
+  "name": "key-shift-released-first",
+  "description": "Shift+1 then Shift up then 1 up: the release replays the press record (key_label 33), so every key set clears.",
+  "config": {},
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 7
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 1,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 4194325,
+            "keycode": 4194325,
+            "key_label": 4194325,
+            "location": 1,
+            "code": "ShiftLeft",
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 2,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 49,
+            "keycode": 49,
+            "key_label": 33,
+            "unicode": 33,
+            "shift_pressed": true,
+            "code": "Digit1",
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 3,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 4194325,
+            "keycode": 4194325,
+            "key_label": 4194325,
+            "location": 1,
+            "code": "ShiftLeft",
+            "pressed": false
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 4,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 49,
+            "keycode": 49,
+            "key_label": 33,
+            "unicode": 33,
+            "shift_pressed": true,
+            "code": "Digit1",
+            "pressed": false
+          }
+        ]
+      }
+    }
+  ],
+  "expect": [
+    {
+      "after": 2,
+      "physical_keys": [49, 4194325],
+      "keys": [49, 4194325],
+      "labels": [33, 4194325],
+      "dispatched": ["key 4194325/4194325/4194325 down", "key 49/49/33 down"]
+    },
+    {
+      "after": 3,
+      "physical_keys": [49],
+      "keys": [49],
+      "labels": [33],
+      "dispatched": ["key 4194325/4194325/4194325 up"]
+    },
+    {
+      "after": 4,
+      "dispatched": ["key 49/49/33 up"]
+    }
+  ]
+}

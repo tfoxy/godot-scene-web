@@ -1,0 +1,126 @@
+{
+  "name": "reset-and-bye",
+  "description": "reset releases and keeps the session; bye releases and ends it.",
+  "config": {},
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 7
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 1,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": true
+          },
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "reset",
+        "epoch": 7,
+        "seq": 2,
+        "reason": "hidden"
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 3,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "bye",
+        "epoch": 7,
+        "seq": 4,
+        "reason": "dispose"
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 5,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": true
+          }
+        ]
+      },
+      "result": "no-hello"
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "physical_keys": [87],
+      "keys": [87],
+      "labels": [87],
+      "actions": ["gsw_test_jump"],
+      "joy_buttons": [[64, 0]],
+      "dispatched": ["key 87/87/87 down", "joy_button 64 0 down"]
+    },
+    {
+      "after": 2,
+      "dispatched": ["key 87/87/87 up", "joy_button 64 0 up"]
+    },
+    {
+      "after": 3,
+      "physical_keys": [87],
+      "keys": [87],
+      "labels": [87],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["key 87/87/87 down"]
+    },
+    {
+      "after": 4,
+      "dispatched": ["key 87/87/87 up"]
+    },
+    {
+      "after": 5,
+      "dispatched": [],
+      "stats": {
+        "no-hello": 1
+      }
+    }
+  ]
+}

@@ -1,0 +1,136 @@
+{
+  "name": "stale-timeout",
+  "description": "stale_timeout_ms 3000: a heartbeat keeps held state; silence releases it once; the next sync restores it.",
+  "config": {
+    "stale_timeout_ms": 3000
+  },
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 7
+      },
+      "at": 0
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 7,
+        "seq": 1,
+        "events": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": true
+          }
+        ]
+      },
+      "at": 100
+    },
+    {
+      "tick": 2000
+    },
+    {
+      "recv": {
+        "type": "heartbeat",
+        "epoch": 7,
+        "seq": 2
+      },
+      "at": 2500
+    },
+    {
+      "tick": 5000
+    },
+    {
+      "tick": 5600
+    },
+    {
+      "tick": 9000
+    },
+    {
+      "recv": {
+        "type": "sync",
+        "epoch": 7,
+        "seq": 3,
+        "scope": "keyboard",
+        "held": [
+          {
+            "event": "key",
+            "physical_keycode": 87,
+            "keycode": 87,
+            "key_label": 87,
+            "unicode": 119,
+            "code": "KeyW",
+            "pressed": true
+          }
+        ]
+      },
+      "at": 9100
+    },
+    {
+      "tick": 12000
+    },
+    {
+      "tick": 12100
+    }
+  ],
+  "expect": [
+    {
+      "after": 4,
+      "physical_keys": [87],
+      "keys": [87],
+      "labels": [87],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["key 87/87/87 down"]
+    },
+    {
+      "after": 5,
+      "dispatched": ["key 87/87/87 up"],
+      "stats": {
+        "stale-timeout": 1
+      }
+    },
+    {
+      "after": 6,
+      "dispatched": [],
+      "stats": {
+        "stale-timeout": 1
+      }
+    },
+    {
+      "after": 7,
+      "physical_keys": [87],
+      "keys": [87],
+      "labels": [87],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["key 87/87/87 down"],
+      "stats": {
+        "stale-timeout": 1
+      }
+    },
+    {
+      "after": 8,
+      "physical_keys": [87],
+      "keys": [87],
+      "labels": [87],
+      "actions": ["gsw_test_jump"],
+      "dispatched": [],
+      "stats": {
+        "stale-timeout": 1
+      }
+    },
+    {
+      "after": 9,
+      "dispatched": ["key 87/87/87 up"],
+      "stats": {
+        "stale-timeout": 2
+      }
+    }
+  ]
+}

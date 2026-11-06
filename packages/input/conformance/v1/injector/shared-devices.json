@@ -1,0 +1,237 @@
+{
+  "name": "shared-devices",
+  "description": "share_devices: two sources on device 64. A button releases on its last holder; an axis shows the last nonzero write and falls back to the largest remaining holder.",
+  "config": {
+    "share_devices": true
+  },
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "b",
+        "epoch": 2
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 2,
+        "seq": 1,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": true
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 2,
+        "seq": 2,
+        "events": [
+          {
+            "event": "joypad_button",
+            "device": 0,
+            "button_index": 0,
+            "pressed": false
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 3,
+        "events": [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.8
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 2,
+        "seq": 3,
+        "events": [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": -0.6
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 4,
+        "events": [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 5,
+        "events": [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.9
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 2,
+        "seq": 4,
+        "events": [
+          {
+            "event": "joypad_motion",
+            "device": 0,
+            "axis": 0,
+            "axis_value": 0.3
+          }
+        ]
+      },
+      "channel": "b"
+    },
+    {
+      "close": "b"
+    },
+    {
+      "recv": {
+        "type": "reset",
+        "epoch": 1,
+        "seq": 6,
+        "reason": "hidden"
+      }
+    }
+  ],
+  "expect": [
+    {
+      "after": 2,
+      "joy_buttons": [[64, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": ["joy_button 64 0 down"]
+    },
+    {
+      "after": 3,
+      "joy_buttons": [[64, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": []
+    },
+    {
+      "after": 4,
+      "joy_buttons": [[64, 0]],
+      "actions": ["gsw_test_jump"],
+      "dispatched": []
+    },
+    {
+      "after": 5,
+      "dispatched": ["joy_button 64 0 up"]
+    },
+    {
+      "after": 6,
+      "joy_axes": [[64, 0, 0.8]],
+      "actions": ["gsw_test_right"],
+      "dispatched": ["joy_motion 64 0 0.8000"]
+    },
+    {
+      "after": 7,
+      "joy_axes": [[64, 0, -0.6]],
+      "dispatched": ["joy_motion 64 0 -0.6000"]
+    },
+    {
+      "after": 8,
+      "joy_axes": [[64, 0, -0.6]],
+      "dispatched": []
+    },
+    {
+      "after": 9,
+      "joy_axes": [[64, 0, 0.9]],
+      "actions": ["gsw_test_right"],
+      "dispatched": ["joy_motion 64 0 0.9000"]
+    },
+    {
+      "after": 10,
+      "joy_axes": [[64, 0, 0.3]],
+      "dispatched": ["joy_motion 64 0 0.3000"]
+    },
+    {
+      "after": 11,
+      "joy_axes": [[64, 0, 0.9]],
+      "actions": ["gsw_test_right"],
+      "dispatched": ["joy_motion 64 0 0.9000"]
+    },
+    {
+      "after": 12,
+      "dispatched": ["joy_motion 64 0 0.0000"]
+    }
+  ]
+}
