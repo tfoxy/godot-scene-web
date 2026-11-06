@@ -124,8 +124,9 @@ createPointerCapture objectFitMapper
 
 const POINTER_TYPE_EXPORTS = `
 PointerCapture PointerCaptureMode PointerCaptureOptions PointerCaptureStats PointerDropReason
-PointerEventLike PointerEventTargetLike PointerHeldState PointerSink PointerStageLike
+PointerEventLike PointerEventTargetLike PointerStageLike
 PointerTargetsMode PointerVisibilitySource WheelEventLike
+PointerGesture PointerGestureDecision PointerGestureKind PointerGestureOptions
 PointerBox PointerMap PointerObjectFit PointerObjectPosition PointerPoint PointerPresentationSize
 `
   .trim()

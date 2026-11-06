@@ -1,7 +1,9 @@
 // Browser pointer capture -> gsw-input/1 mouse, touch and wheel records (docs/input.md "Pointer"),
-// exported as `@godot-scene-web/input/pointer`. Native mode only: mouse and pen become
-// `mouse_motion` / `mouse_button`, touch becomes `screen_touch` / `screen_drag`, and the host's own
-// `emulate_mouse_from_touch` serves mouse-only UI exactly as on a real phone.
+// exported as `@godot-scene-web/input/pointer`. Mouse and pen always become `mouse_motion` /
+// `mouse_button`. In `mode: "native"` (default) touch becomes `screen_touch` / `screen_drag`, and
+// the host's own `emulate_mouse_from_touch` serves mouse-only UI exactly as on a real phone; in
+// `mode: "mouse"` touch is translated into mouse gestures by `pointer-mouse-mode.ts`, which drives
+// the record primitives below and never pushes a record itself.
 //
 // COORDINATES ARE THE CALLER'S. `map(clientX, clientY)` turns a DOM client point into host
 // root-window px or `null` (letterbox, off picture). A press that maps to `null` never starts; a
@@ -18,9 +20,8 @@
 // with `relative` summed, and is flushed before any edge so a fast move-then-press presses at the
 // right place.
 //
-// Seams for later increments: `mode` only takes "native" (IN11 adds "mouse": touch -> mouse
-// gestures), and `targets` only takes "off" (IN12 adds "press"/"all" with `resolveTarget`); with
-// targets off no resolver runs and no record carries target fields.
+// Seam for a later increment: `targets` only takes "off" (IN12 adds "press"/"all" with
+// `resolveTarget`); with targets off no resolver runs and no record carries target fields.
 //
 // DOM-free types: the package typechecks without DOM libraries, so the browser objects are read
 // through the structural interfaces below, which the real `HTMLElement`, `window`, `document`,
@@ -29,7 +30,7 @@
 
 import type {
   InputRecord,
-  InputSyncScope,
+  InputVec2,
   MagnifyGestureRecord,
   MouseButtonRecord,
   MouseMotionRecord,
@@ -38,18 +39,13 @@ import type {
 } from "./format";
 import { MouseButton } from "./godot-enums";
 import type { PointerMap, PointerPoint } from "./pointer-map";
-
-/** Where a capture writes its records, in order. Structurally the session's `InputSink`. */
-export interface PointerSink {
-  push(record: InputRecord): void;
-}
-
-/** One scope's complete held state: a `sync` message without `type`, `epoch` and `seq`. */
-export interface PointerHeldState {
-  scope: InputSyncScope;
-  device?: number;
-  held: readonly InputRecord[];
-}
+import {
+  createMouseMode,
+  type MouseMode,
+  type PointerGestureOptions,
+} from "./pointer-mouse-mode";
+// Type-only: the subpath bundle must not pull the session (and through it the codec) in.
+import type { InputHeldState, InputSink, InputSyncSource } from "./session";
 
 type Listener = (event: { type: string }) => void;
 
@@ -137,7 +133,10 @@ export type PointerDropReason =
   | "off-picture"
   | "max-touches"
   | "pinch"
-  | "unmapped-button";
+  | "unmapped-button"
+  | "extra-touch"
+  | "intercepted"
+  | "button-held";
 
 export interface PointerCaptureStats {
   /** `mouse_motion` records pushed. */
@@ -158,8 +157,11 @@ export interface PointerCaptureStats {
   dropped: Record<PointerDropReason, number>;
 }
 
-/** Native mode only for now; IN11 adds `"mouse"` (touch -> mouse gestures). */
-export type PointerCaptureMode = "native";
+/**
+ * `"native"`: touch is `screen_touch` / `screen_drag`. `"mouse"`: touch is translated into mouse
+ * gestures (docs/input.md "Mouse mode"); mouse and pen are the same in both.
+ */
+export type PointerCaptureMode = "native" | "mouse";
 
 /** Targets off only for now; IN12 adds `"press"` and `"all"` with a `resolveTarget` option. */
 export type PointerTargetsMode = "off";
@@ -170,9 +172,11 @@ export interface PointerCaptureOptions {
   /** DOM client px -> host root-window px, or `null` off picture (see `objectFitMapper`). */
   map: PointerMap;
   /** Where records go: a session, or a consumer's own adapter. */
-  sink: PointerSink;
-  /** `"native"` (default and only value for now). */
+  sink: InputSink;
+  /** `"native"` (default) or `"mouse"` (touch -> mouse gestures). */
   mode?: PointerCaptureMode;
+  /** `mode: "mouse"` tuning and hooks (`intercept`, `onGesture`); ignored in native mode. */
+  gestures?: PointerGestureOptions;
   /** `"off"` (default and only value for now): no resolver calls, no target fields. */
   targets?: PointerTargetsMode;
   /**
@@ -218,13 +222,24 @@ export interface PointerCaptureOptions {
   now?: () => number;
 }
 
-export interface PointerCapture {
+export interface PointerCapture extends InputSyncSource {
   /**
    * The `pointer` scope (a session's `InputSyncSource`): the last mouse position as a
    * `mouse_motion`, then held mouse buttons in press order (each with the mask after it), then
    * active touches by index, all at their last points. Fresh objects.
    */
-  heldState(): readonly PointerHeldState[];
+  heldState(): readonly InputHeldState[];
+  /**
+   * Push one `mouse_motion` to `position` (host px) now, pending motion first. For gesture hooks
+   * and product UI (a tap-to-focus hover). False, and nothing sent, while inactive.
+   */
+  hover(position: InputVec2): boolean;
+  /**
+   * Push a press+release pair of `button` (a `MouseButton`; wheel buttons go as one wheel step)
+   * at `position`, without a motion first. False, and nothing sent, while inactive or while that
+   * button is held.
+   */
+  click(button: number, position: InputVec2): boolean;
   /** Push pending coalesced motion now. */
   flush(): void;
   /** Re-read `enabled()`: off releases everything held. Cheap and idempotent. */
@@ -263,6 +278,9 @@ const MOUSE_BUTTONS: readonly number[] = [
   MouseButton.XBUTTON1,
   MouseButton.XBUTTON2,
 ];
+
+/** The `held` owner of a press made through `click()` (never a real pointerId). */
+const HOOK_OWNER = -0x7fff_ffff;
 
 const bit = (button: number) => 1 << (button - 1);
 const wheelScale = (event: { deltaMode: number }) =>
@@ -330,6 +348,9 @@ const emptyDropped = (): Record<PointerDropReason, number> => ({
   "max-touches": 0,
   pinch: 0,
   "unmapped-button": 0,
+  "extra-touch": 0,
+  intercepted: 0,
+  "button-held": 0,
 });
 
 /**
@@ -346,7 +367,7 @@ export function createPointerCapture(
     performance?: { now(): number };
   };
   const mode = options.mode ?? "native";
-  if (mode !== "native")
+  if (mode !== "native" && mode !== "mouse")
     throw new Error(`createPointerCapture: unsupported mode ${String(mode)}`);
   const targets = options.targets ?? "off";
   if (targets !== "off")
@@ -416,6 +437,12 @@ export function createPointerCapture(
     pointerLock &&
     visibility?.pointerLockElement != null &&
     visibility.pointerLockElement === stage;
+
+  function hookPoint(p: InputVec2): Vec | null {
+    return Number.isFinite(p[0]) && Number.isFinite(p[1])
+      ? point({ x: p[0], y: p[1] })
+      : null;
+  }
 
   function mapEvent(event: { clientX: number; clientY: number }): Vec | null {
     const p = map(event.clientX, event.clientY);
@@ -648,6 +675,123 @@ export function createPointerCapture(
     touchRecord(touch, false, canceled);
   }
 
+  // ---- mouse mode: record primitives the gesture module drives ----
+
+  /** One `mouse_motion` at `at` now, after any pending motion. */
+  function hoverAt(at: Vec): void {
+    flushMotion();
+    const record: MouseMotionRecord = {
+      event: "mouse_motion",
+      position: [...at],
+    };
+    if (mousePos) {
+      const relative: Vec = [q2(at[0] - mousePos[0]), q2(at[1] - mousePos[1])];
+      if (relative[0] !== 0 || relative[1] !== 0) record.relative = relative;
+    }
+    const mask = heldMask();
+    if (mask !== 0) record.button_mask = mask;
+    mousePos = at;
+    stats.motions++;
+    sink.push(record);
+  }
+
+  /** Coalesced motion to `at`, as a mouse drag's. */
+  function dragTo(at: Vec): void {
+    const before = mousePos;
+    mousePos = at;
+    const m: PendingMotion = pending ?? {
+      relative: [0, 0],
+      mods: {},
+      pressure: 0,
+      tilt: [0, 0],
+      inverted: false,
+    };
+    if (before) {
+      m.relative[0] += at[0] - before[0];
+      m.relative[1] += at[1] - before[1];
+    }
+    pending = m;
+    schedule();
+  }
+
+  function pressBy(
+    button: number,
+    at: Vec,
+    owner: number,
+    double: boolean,
+  ): boolean {
+    if (!active()) {
+      drop("inactive");
+      return false;
+    }
+    if (held.has(button)) {
+      drop("button-held");
+      return false;
+    }
+    flushMotion();
+    mousePos = at;
+    held.set(button, owner);
+    const record: MouseButtonRecord = {
+      event: "mouse_button",
+      button_index: button,
+      pressed: true,
+      position: [...at],
+      button_mask: heldMask(),
+    };
+    if (double) record.double_click = true;
+    stats.presses++;
+    sink.push(record);
+    return true;
+  }
+
+  function releaseBy(
+    button: number,
+    at: Vec,
+    owner: number,
+    canceled: boolean,
+  ): void {
+    if (held.get(button) !== owner) return;
+    flushMotion();
+    if (!canceled) mousePos = at;
+    release(button, at, {}, canceled);
+  }
+
+  function clickAt(button: number, at: Vec): boolean {
+    if (!active()) {
+      drop("inactive");
+      return false;
+    }
+    if (button >= MouseButton.WHEEL_UP && button <= MouseButton.WHEEL_RIGHT) {
+      flushMotion();
+      mousePos = at;
+      pushWheel(button, 1, at, {});
+      return true;
+    }
+    if (!pressBy(button, at, HOOK_OWNER, false)) return false;
+    releaseBy(button, at, HOOK_OWNER, false);
+    return true;
+  }
+
+  const mouseMode: MouseMode | null =
+    mode === "mouse"
+      ? createMouseMode(
+          {
+            map: (x, y) => mapEvent({ clientX: x, clientY: y }),
+            scaleAt: movementScale,
+            active,
+            drop,
+            capturePointer,
+            hover: hoverAt,
+            drag: dragTo,
+            press: pressBy,
+            release: releaseBy,
+            click: clickAt,
+            now,
+          },
+          options.gestures,
+        )
+      : null;
+
   // ---- listeners ----
 
   const isTouch = (event: PointerEventLike) => event.pointerType === "touch";
@@ -668,6 +812,10 @@ export function createPointerCapture(
     // the browser's own focus move, so focus is handed over by hand).
     event.preventDefault?.();
     if (focusStage) stage.focus?.({ preventScroll: true });
+    if (isTouch(event) && mouseMode) {
+      mouseMode.down(event.pointerId, event.clientX, event.clientY);
+      return;
+    }
     if (isTouch(event)) {
       if (touches.has(event.pointerId)) return;
       if (!active()) {
@@ -716,6 +864,11 @@ export function createPointerCapture(
         ? event.getCoalescedEvents()
         : [];
     const list = samples.length > 0 ? samples : [event];
+    if (isTouch(event) && mouseMode) {
+      for (const sample of list)
+        mouseMode.move(event.pointerId, sample.clientX, sample.clientY);
+      return;
+    }
     if (isTouch(event)) {
       const touch = touches.get(event.pointerId);
       if (!touch) return;
@@ -758,6 +911,10 @@ export function createPointerCapture(
     if (disposed) return;
     // X1/X2 navigate history on mouseup unless prevented.
     event.preventDefault?.();
+    if (isTouch(event) && mouseMode) {
+      mouseMode.up(event.pointerId, event.clientX, event.clientY);
+      return;
+    }
     if (isTouch(event)) {
       endTouch(event.pointerId, mapEvent(event), false);
       return;
@@ -767,7 +924,11 @@ export function createPointerCapture(
 
   /** Does this pointer hold anything the capture owes a release for? */
   function tracked(id: number): boolean {
-    return touches.has(id) || [...held.values()].includes(id);
+    return (
+      touches.has(id) ||
+      mouseMode?.tracks(id) === true ||
+      [...held.values()].includes(id)
+    );
   }
 
   // The window copy: only a pointer the stage pressed and has not released yet (its pointerup
@@ -777,6 +938,10 @@ export function createPointerCapture(
   }
 
   function cancelPointer(id: number): void {
+    if (mouseMode?.tracks(id)) {
+      mouseMode.cancel(id);
+      return;
+    }
     if (touches.has(id)) {
       endTouch(id, null, true);
       return;
@@ -896,6 +1061,7 @@ export function createPointerCapture(
   }
 
   function releaseAll(): void {
+    mouseMode?.cancelAll();
     flushMotion();
     for (const id of [...touches.keys()]) endTouch(id, null, true);
     for (const button of [...held.keys()])
@@ -948,7 +1114,28 @@ export function createPointerCapture(
   visibility?.addEventListener("visibilitychange", onVisibility);
 
   return {
-    heldState(): readonly PointerHeldState[] {
+    hover(position: InputVec2): boolean {
+      const at = hookPoint(position);
+      if (!at) {
+        drop("off-picture");
+        return false;
+      }
+      if (!active()) {
+        drop("inactive");
+        return false;
+      }
+      hoverAt(at);
+      return true;
+    },
+    click(button: number, position: InputVec2): boolean {
+      const at = hookPoint(position);
+      if (!at || !Number.isInteger(button) || button < 1 || button > 9) {
+        drop("unmapped-button");
+        return false;
+      }
+      return clickAt(button, at);
+    },
+    heldState(): readonly InputHeldState[] {
       const list: InputRecord[] = [];
       if (mousePos)
         list.push({ event: "mouse_motion", position: [...mousePos] });
@@ -984,6 +1171,7 @@ export function createPointerCapture(
     dispose(): void {
       if (disposed) return;
       releaseAll();
+      mouseMode?.dispose();
       disposed = true;
       if (rafHandle !== null) {
         cancelRaf?.(rafHandle);

@@ -1,5 +1,6 @@
-// createPointerCapture (native mode) and objectFitMapper against docs/input.md "Pointer": jsdom
-// elements and synthetic PointerEvent/WheelEvent, a fake frame clock and a fake clock.
+// createPointerCapture (native mode; mouse mode is pointerMouse.test.ts) and objectFitMapper against
+// docs/input.md "Pointer": jsdom elements and synthetic PointerEvent/WheelEvent, a fake frame clock
+// and a fake clock.
 
 import {
   createPointerCapture,
@@ -868,14 +869,14 @@ describe("pointer capture: held state and the session", () => {
     }
   });
 
-  it("rejects modes and target settings later increments add", () => {
+  it("rejects unknown modes and target settings a later increment adds", () => {
     const base = {
       stage: document.createElement("div"),
       map: letterbox,
       sink: { push: () => {} },
     };
     expect(() =>
-      createPointerCapture({ ...base, mode: "mouse" as "native" }),
+      createPointerCapture({ ...base, mode: "gesture" as "native" }),
     ).toThrow(/mode/);
     expect(() =>
       createPointerCapture({ ...base, targets: "all" as "off" }),

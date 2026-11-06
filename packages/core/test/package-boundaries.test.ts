@@ -290,5 +290,6 @@ describe("package architecture", () => {
     ).toEqual([]);
     expect(inputs).toContain("packages/input/src/pointer-capture.ts");
     expect(inputs).toContain("packages/input/src/pointer-map.ts");
+    expect(inputs).toContain("packages/input/src/pointer-mouse-mode.ts");
   });
 });

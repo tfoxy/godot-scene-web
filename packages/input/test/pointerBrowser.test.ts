@@ -1,7 +1,7 @@
 // @vitest-environment node
 //
 // One real-browser check of the pointer capture (docs/input.md "Pointer"): real touch emulation
-// through CDP `Input.dispatchTouchEvent`, and the browser traps jsdom cannot show: X1/X2 history
+// through CDP `Input.dispatchTouchEvent` in native and mouse mode (a tap, a two-finger scroll), and the browser traps jsdom cannot show: X1/X2 history
 // navigation (Chromium navigates on an unprevented mouseup of the back/forward buttons; the
 // load-bearing prevent is `pointerup`, `auxclick` alone does not stop it), the middle press, the
 // right-button context menu, and a chord's second button arriving as a `pointermove`.
@@ -30,11 +30,14 @@ window.records = [];
 window.seen = [];
 for (const type of ["pointerdown", "contextmenu", "mousedown"])
   window.addEventListener(type, (e) => window.seen.push([type, e.button, e.defaultPrevented]));
+window.gestures = [];
 window.capture = GswPointer.createPointerCapture({
   stage,
   // 400x300 CSS px showing an 800x600 host window.
   map: GswPointer.objectFitMapper(() => stage.getBoundingClientRect(), { width: 800, height: 600 }),
   sink: { push: (r) => window.records.push(r) },
+  mode: location.search.includes("mouse") ? "mouse" : "native",
+  gestures: { onGesture: (g) => window.gestures.push(g.kind) },
 });
 </script></body></html>`;
 
@@ -69,14 +72,17 @@ afterAll(async () => {
   await new Promise((resolve) => server?.close(resolve));
 });
 
-async function open(touch = false): Promise<{ page: Page; cdp: CDPSession }> {
+async function open(
+  touch = false,
+  mode: "native" | "mouse" = "native",
+): Promise<{ page: Page; cdp: CDPSession }> {
   const context = await browser.newContext({
     viewport: { width: 800, height: 600 },
     hasTouch: touch,
   });
   const page = await context.newPage();
   await page.goto(`${origin}/first`);
-  await page.goto(`${origin}/stage`);
+  await page.goto(`${origin}/stage?${mode}`);
   const cdp = await context.newCDPSession(page);
   return { page, cdp };
 }
@@ -158,6 +164,72 @@ describe("pointer capture in headless Chromium", () => {
         () => document.getElementById("stage")?.style.touchAction,
       ),
     ).toBe("none");
+    await page.context().close();
+  });
+
+  it("mouse mode: a real tap is a motion and a LEFT click, with no touch records", async () => {
+    const { page, cdp } = await open(true, "mouse");
+    const touch = (type: "touchStart" | "touchEnd", points: Rec[]) =>
+      cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
+    await touch("touchStart", [{ x: 50, y: 60, id: 1 }]);
+    await touch("touchEnd", []);
+    await frames(page);
+    expect(await records(page)).toEqual([
+      { event: "mouse_motion", position: [100, 120] },
+      {
+        event: "mouse_button",
+        button_index: 1,
+        pressed: true,
+        position: [100, 120],
+        button_mask: 1,
+      },
+      {
+        event: "mouse_button",
+        button_index: 1,
+        pressed: false,
+        position: [100, 120],
+      },
+    ]);
+    expect(
+      await page.evaluate(
+        () => (window as unknown as { gestures: string[] }).gestures,
+      ),
+    ).toEqual(["touch-down", "tap", "touch-end"]);
+    await page.context().close();
+  });
+
+  it("mouse mode: a real two-finger scroll becomes natural-direction wheel ticks", async () => {
+    const { page, cdp } = await open(true, "mouse");
+    const touch = (
+      type: "touchStart" | "touchMove" | "touchEnd",
+      points: Rec[],
+    ) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
+    await touch("touchStart", [{ x: 100, y: 100, id: 1 }]);
+    await touch("touchStart", [
+      { x: 100, y: 100, id: 1 },
+      { x: 200, y: 100, id: 2 },
+    ]);
+    // Fingers DOWN 60 CSS px = 120 host px of centroid drift: two WHEEL_UP ticks (56 px each).
+    for (const y of [120, 140, 160])
+      await touch("touchMove", [
+        { x: 100, y, id: 1 },
+        { x: 200, y, id: 2 },
+      ]);
+    await touch("touchEnd", []);
+    await frames(page);
+    const got = await records(page);
+    // Latch: the centroid (150, 100) CSS -> host (300, 200).
+    const tick = {
+      event: "mouse_button",
+      button_index: 4,
+      position: [300, 200],
+    };
+    expect(got).toEqual([
+      { ...tick, pressed: true, button_mask: 8 },
+      { ...tick, pressed: false },
+      { ...tick, pressed: true, button_mask: 8 },
+      { ...tick, pressed: false },
+    ]);
     await page.context().close();
   });
 

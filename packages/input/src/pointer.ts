@@ -1,6 +1,7 @@
-// @godot-scene-web/input/pointer: the browser pointer capture (mouse, pen, touch, wheel) and the
-// DOM-free object-fit mapper it is usually given. A subpath of its own so the root entry never
-// pulls capture code (docs/architecture.md). Spec: docs/input.md "Pointer".
+// @godot-scene-web/input/pointer: the browser pointer capture (mouse, pen, touch, wheel; touch as
+// mouse gestures in mode "mouse") and the DOM-free object-fit mapper it is usually given. A subpath
+// of its own so the root entry never pulls capture code (docs/architecture.md). Spec:
+// docs/input.md "Pointer".
 
 export {
   createPointerCapture,
@@ -11,8 +12,6 @@ export {
   type PointerDropReason,
   type PointerEventLike,
   type PointerEventTargetLike,
-  type PointerHeldState,
-  type PointerSink,
   type PointerStageLike,
   type PointerTargetsMode,
   type PointerVisibilitySource,
@@ -27,3 +26,9 @@ export {
   type PointerPoint,
   type PointerPresentationSize,
 } from "./pointer-map";
+export type {
+  PointerGesture,
+  PointerGestureDecision,
+  PointerGestureKind,
+  PointerGestureOptions,
+} from "./pointer-mouse-mode";
