@@ -246,4 +246,25 @@ describe("package architecture", () => {
       inputs.filter((file) => /\/(index|codec|keyboard|pointer)/.test(file)),
     ).toEqual([]);
   });
+
+  it("bundles the input keyboard subpath without the root entry or the other captures", async () => {
+    const result = await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: [join(packagesDir, "input/src/keyboard.ts")],
+      bundle: true,
+      platform: "browser",
+      format: "esm",
+      conditions: ["development"],
+      write: false,
+      metafile: true,
+    });
+    const inputs = Object.keys(result.metafile!.inputs);
+    expect(
+      inputs.filter((file) => !file.startsWith("packages/input/src/")),
+    ).toEqual([]);
+    expect(
+      inputs.filter((file) => /\/(index|codec|gamepad|pointer)/.test(file)),
+    ).toEqual([]);
+    expect(inputs).toContain("packages/input/src/keymap.ts");
+  });
 });

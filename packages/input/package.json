@@ -24,6 +24,11 @@
       "development": "./src/gamepad.ts",
       "types": "./dist/gamepad.d.ts",
       "import": "./dist/gamepad.js"
+    },
+    "./keyboard": {
+      "development": "./src/keyboard.ts",
+      "types": "./dist/keyboard.d.ts",
+      "import": "./dist/keyboard.js"
     }
   },
   "main": "./dist/index.js",

@@ -65,6 +65,10 @@ export default defineConfig({
         "./packages/input/src/gamepad.ts",
         import.meta.url,
       ).pathname,
+      "@godot-scene-web/input/keyboard": new URL(
+        "./packages/input/src/keyboard.ts",
+        import.meta.url,
+      ).pathname,
       "@godot-scene-web/input": new URL(
         "./packages/input/src/index.ts",
         import.meta.url,

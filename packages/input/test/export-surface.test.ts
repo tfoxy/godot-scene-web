@@ -4,6 +4,8 @@ import * as gamepad from "../src/gamepad";
 import gamepadSource from "../src/gamepad.ts?raw";
 import * as input from "../src/index";
 import indexSource from "../src/index.ts?raw";
+import * as keyboard from "../src/keyboard";
+import keyboardSource from "../src/keyboard.ts?raw";
 
 // Consumers alias this package's source and may mirror these names in ambient declarations, so
 // both runtime and erased type exports are pinned.
@@ -82,5 +84,32 @@ describe("@godot-scene-web/input/gamepad export surface", () => {
     expect(declared("interface|type")).toEqual(
       [...GAMEPAD_TYPE_EXPORTS].sort(),
     );
+  });
+});
+
+const KEYBOARD_VALUE_EXPORTS = `
+createKeyboardCapture isActivationTarget isTextEntryElement
+keyLocationFromCode keyRecordFromDom physicalKeycodeFromCode releaseKeyRecord
+`
+  .trim()
+  .split(/\s+/);
+
+const KEYBOARD_TYPE_EXPORTS = `
+FocusedElementLike KeyboardCapture KeyboardCaptureOptions KeyboardCaptureStats KeyboardDropReason
+KeyboardEventLike KeyboardHeldState KeyboardLayoutSource KeyboardPreventDefault KeyboardSink
+KeyEventTargetLike KeyVisibilitySource
+DomKeyEvent KeyboardLayoutLike KeyRecordOptions
+`
+  .trim()
+  .split(/\s+/);
+
+describe("@godot-scene-web/input/keyboard export surface", () => {
+  it("exports exactly the checked-in value and type lists", () => {
+    expect(Object.keys(keyboard).sort()).toEqual(
+      [...KEYBOARD_VALUE_EXPORTS].sort(),
+    );
+    const parsed = parseBarrelExports(keyboardSource);
+    expect(parsed.values.sort()).toEqual([...KEYBOARD_VALUE_EXPORTS].sort());
+    expect(parsed.types.sort()).toEqual([...KEYBOARD_TYPE_EXPORTS].sort());
   });
 });

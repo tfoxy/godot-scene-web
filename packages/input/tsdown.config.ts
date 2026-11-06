@@ -1,7 +1,7 @@
 import { defineConfig } from "tsdown";
 
 export default defineConfig({
-  entry: ["src/index.ts", "src/gamepad.ts"],
+  entry: ["src/index.ts", "src/gamepad.ts", "src/keyboard.ts"],
   format: ["esm"],
   dts: true,
   sourcemap: true,
