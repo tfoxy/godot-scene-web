@@ -18,6 +18,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type CostSample,
+  type IdleParitySample,
+  idleParity,
   isDeferredLeg,
   judgeResolveQueueOnly,
   parseRegistryChurn,
@@ -965,6 +967,126 @@ expect(
   expect(
     names.join(",") === [...STANDBY_HOOKS].sort().join(","),
     `STANDBY_HOOKS equals rs_standby.cpp's list (${names.length} names)`,
+  );
+}
+
+// idle-parity: paired block costs, whole-frame residual and unchanged RSS bound.
+{
+  const sample = (cpu: number, params = 1, churn = 1) => ({
+    cpu_us_mean: cpu,
+    rss_kb: 100_000,
+    section_us: { movers: 100, redraws: 200, mesh_updates: 100, params, churn },
+  });
+  const n = sample(1000);
+  const s = sample(1002, 2, 2);
+  s.section_us.movers += 40;
+  s.section_us.redraws -= 40;
+  s.section_us.mesh_updates += 40;
+  expect(
+    idleParity({ n: [n], s: [s] }).problems.length === 0,
+    "idle-parity: hooked blocks under bound pass despite controls at ±40 µs",
+  );
+  expect(
+    idleParity({ n: [n], s: [sample(1000, 8, 8)] }).problems.length > 0,
+    "idle-parity: hooked blocks over bound fail even with whole frame flat",
+  );
+  expect(
+    idleParity({ n: [n], s: [sample(1010, 6, 6)] }).problems.length === 0,
+    "idle-parity: exactly at tracked bound passes",
+  );
+  expect(
+    idleParity({ n: [n], s: [sample(1080, 2, 2)] }).problems.some((p) =>
+      p.includes("cost outside the timed blocks"),
+    ),
+    "idle-parity: whole frame +80 with tracked +2 fails outside guard",
+  );
+  expect(
+    idleParity({
+      n: [n],
+      s: [{ cpu_us_mean: 1000, rss_kb: 100_000 }],
+    }).problems.some((p) => p.includes("section_us")),
+    "idle-parity: missing section_us fails",
+  );
+  expect(
+    idleParity({ n: [n], s: [s, s] }).problems.some((p) =>
+      p.includes("unpaired"),
+    ),
+    "idle-parity: unpaired samples fail",
+  );
+  const whole = [61.3, 12.6, 42, -8.8, 116.9];
+  expect(
+    idleParity({
+      n: whole.map(() => sample(692.4)),
+      s: whole.map((delta) => sample(692.4 + delta, 6, 29.1)),
+    }).problems.some((p) => p.includes("tracked +33.1")),
+    "idle-parity: LS1-shaped data fails at tracked +33.1 µs",
+  );
+  for (const config of ["n", "s"]) {
+    for (const block of ["params", "churn"] as const) {
+      const samples: Record<string, IdleParitySample[]> = {
+        n: [sample(1000)],
+        s: [sample(1002)],
+      };
+      delete samples[config][0].section_us?.[block];
+      const result = idleParity(samples);
+      expect(
+        result.tracked === null &&
+          result.problems.some((p) => p.includes(`section_us.${block}`)),
+        `idle-parity: missing ${config} hooked block ${block} fails, never zero`,
+      );
+    }
+  }
+  expect(
+    idleParity({ n: [n], s: [{ ...s, section_us: {} }] }).problems.length > 0,
+    "idle-parity: empty section_us fails",
+  );
+  expect(
+    idleParity({ n: [n], s: [sample(1002, Number.NaN)] }).problems.length > 0,
+    "idle-parity: nonfinite hooked data fails",
+  );
+  // A sum of paired medians is 4; median of the per-round sums is 22.
+  // The changing n values also distinguish paired medians from differences of medians.
+  const ns = [sample(1000, 1, 1), sample(1000, 101, 101), sample(1000, 1, 1)];
+  const ss = [sample(1004, 1, 21), sample(1004, 103, 103), sample(1004, 21, 1)];
+  ss[0].section_us.movers += 40;
+  ss[1].section_us.movers -= 40;
+  const paired = idleParity({ n: ns, s: ss });
+  expect(
+    paired.problems.length === 0 &&
+      paired.tracked?.us === 4 &&
+      paired.blocks.every((b) => b.median === 2),
+    "idle-parity: sum each block's paired median, preserving round order",
+  );
+  const movers = paired.controls.find((b) => b.block === "movers");
+  expect(
+    paired.controls.length === 3 &&
+      movers?.median === 0 &&
+      movers.min === -40 &&
+      movers.max === 40 &&
+      movers.paired.join(",") === "40,-40,0",
+    "idle-parity: controls report paired median and min..max",
+  );
+  expect(
+    idleParity({ n: [n], s: [sample(1052, 2, 2)] }).problems.length === 0,
+    "idle-parity: exactly at residual bound passes",
+  );
+  expect(
+    idleParity({ n: [n], s: [{ ...s, rss_kb: n.rss_kb + 10 * 1024 }] }).problems
+      .length === 0,
+    "idle-parity: exactly 10 MB RSS passes",
+  );
+  expect(
+    idleParity({
+      n: [n],
+      s: [{ ...s, rss_kb: n.rss_kb + 10 * 1024 + 1 }],
+    }).problems.some((p) => p.includes("RSS")),
+    "idle-parity: RSS over bound fails",
+  );
+  expect(
+    idleParity({ n: [n], s: [{ ...s, rss_kb: undefined }] }).problems.some(
+      (p) => p.includes("rss_kb"),
+    ),
+    "idle-parity: missing RSS fails",
   );
 }
 

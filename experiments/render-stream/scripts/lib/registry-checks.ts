@@ -479,43 +479,130 @@ export interface IdleSample {
   rss_kb?: number;
 }
 
-/**
- * LS1 idle-parity (fork F1): GRC_MODE=standby (`s`) against no capture at
- * all (`n`, the extension not loaded) on the same fixture, paired by round, with no exemption for
- * the registry. F1's bound: the paired median main-thread CPU delta at most 1% of no capture's
- * median CPU a frame, and the paired median RSS delta at most 10 MB.
- */
+/** Per-block wall time (mean µs a frame) from capture-scale's RS_SCALE_CPU_REPORT=1. */
+export interface IdleParitySample extends IdleSample {
+  section_us?: Partial<Record<IdleParityBlock, number>>;
+}
+
+const IDLE_PARITY_BLOCKS = [
+  "movers",
+  "redraws",
+  "mesh_updates",
+  "params",
+  "churn",
+] as const;
+type IdleParityBlock = (typeof IDLE_PARITY_BLOCKS)[number];
+
+/** Blocks containing any call in rs_standby.cpp's make_names():
+ * params: material_set_param; churn: mesh_create, shader_create, material_create, free
+ * (scale.gd calls free_rid). Movers, redraws (including _record) and mesh_updates contain
+ * no standby-table call, so their deltas report the control noise floor only. */
+export const IDLE_PARITY_HOOKED_BLOCKS = ["params", "churn"] as const;
 export const IDLE_PARITY_CPU_FRACTION = 0.01;
 export const IDLE_PARITY_RSS_KB = 10 * 1024;
+export const IDLE_PARITY_RESIDUAL_US = 50;
 
-export function idleParity(samples: Record<string, IdleSample[]>): {
+export interface IdleParityBlockRow {
+  block: IdleParityBlock;
+  median: number;
+  paired: number[];
+  min: number;
+  max: number;
+}
+
+/**
+ * LS1 idle-parity (fork F1): standby (`s`) against no capture (`n`), paired by round.
+ * Sum each hooked block's paired median wall-time delta; require at most 1% of n's
+ * median main-thread CPU a frame. Unhooked blocks are controls, never judged. The whole-frame
+ * paired median remains evidence: standby's frame and draw hooks do O(1) work a frame outside
+ * the timed blocks, bounded only by the coarse 50 µs residual guard (the whole-frame pair swing).
+ * Paired median RSS must remain within 10 MB. Missing block data never counts as zero.
+ */
+export function idleParity(samples: Record<string, IdleParitySample[]>): {
   problems: string[];
-  cpu: { median: number; paired: number[]; bound: number; base: number } | null;
+  tracked: { us: number; bound: number; base: number } | null;
+  blocks: IdleParityBlockRow[];
+  controls: IdleParityBlockRow[];
+  whole_frame: { median: number; paired: number[] } | null;
+  residual: { us: number; bound: number } | null;
   rss: { median: number; paired: number[]; bound: number } | null;
 } {
   const problems: string[] = [];
   const n = samples.n ?? [];
   const st = samples.s ?? [];
+  const empty = {
+    tracked: null,
+    blocks: [],
+    controls: [],
+    whole_frame: null,
+    residual: null,
+    rss: null,
+  };
   if (n.length === 0 || st.length === 0)
-    return {
-      problems: [`no ${n.length === 0 ? "n" : "s"} samples`],
-      cpu: null,
-      rss: null,
-    };
+    return { ...empty, problems: [`no ${n.length === 0 ? "n" : "s"} samples`] };
   if (n.length !== st.length)
     return {
+      ...empty,
       problems: [`${st.length} s legs against ${n.length} n legs: unpaired`],
-      cpu: null,
-      rss: null,
     };
   const base = median(n.map((x) => x.cpu_us_mean));
   const paired = st.map((x, i) => x.cpu_us_mean - n[i].cpu_us_mean);
   const m = median(paired);
   const bound = base * IDLE_PARITY_CPU_FRACTION;
-  if (!(Number.isFinite(m) && m <= bound))
-    problems.push(
-      `s - n +${m.toFixed(1)} µs a frame (paired median of ${paired.map((d) => d.toFixed(1)).join(", ")}), bound ${bound.toFixed(1)} µs (1% of n's ${base.toFixed(1)})`,
+  const blocks: IdleParityBlockRow[] = [];
+  const controls: IdleParityBlockRow[] = [];
+  for (const [config, rows] of [
+    ["n", n],
+    ["s", st],
+  ] as const) {
+    rows.forEach((row, i) => {
+      if (!row.section_us) problems.push(`${config}-${i + 1}: no section_us`);
+    });
+  }
+  for (const block of IDLE_PARITY_BLOCKS) {
+    const hooked = IDLE_PARITY_HOOKED_BLOCKS.some((b) => b === block);
+    let missing = false;
+    for (const [config, rows] of [
+      ["n", n],
+      ["s", st],
+    ] as const) {
+      rows.forEach((row, i) => {
+        if (!Number.isFinite(row.section_us?.[block])) {
+          missing = true;
+          if (hooked && row.section_us)
+            problems.push(`${config}-${i + 1}: no finite section_us.${block}`);
+        }
+      });
+    }
+    if (missing) continue;
+    const deltas = st.map(
+      (x, i) =>
+        (x.section_us?.[block] as number) -
+        (n[i].section_us?.[block] as number),
     );
+    (hooked ? blocks : controls).push({
+      block,
+      median: median(deltas),
+      paired: deltas,
+      min: Math.min(...deltas),
+      max: Math.max(...deltas),
+    });
+  }
+  let tracked: { us: number; bound: number; base: number } | null = null;
+  let residual: { us: number; bound: number } | null = null;
+  if (blocks.length === IDLE_PARITY_HOOKED_BLOCKS.length) {
+    const us = blocks.reduce((sum, row) => sum + row.median, 0);
+    tracked = { us, bound, base };
+    if (!(Number.isFinite(us) && us <= bound))
+      problems.push(
+        `tracked +${us.toFixed(1)} µs a frame (sum of hooked block paired medians), bound ${bound.toFixed(1)} µs (1% of n's ${base.toFixed(1)})`,
+      );
+    residual = { us: m - us, bound: IDLE_PARITY_RESIDUAL_US };
+    if (!(Number.isFinite(residual.us) && residual.us <= residual.bound))
+      problems.push(
+        `cost outside the timed blocks: whole-frame median - tracked ${residual.us.toFixed(1)} µs, bound ${residual.bound} µs`,
+      );
+  }
   let rss: { median: number; paired: number[]; bound: number } | null = null;
   if (
     st.every((x) => typeof x.rss_kb === "number") &&
@@ -529,7 +616,15 @@ export function idleParity(samples: Record<string, IdleSample[]>): {
         `s - n RSS +${(rm / 1024).toFixed(1)} MB (paired median), bound 10 MB`,
       );
   } else problems.push("a leg reported no rss_kb");
-  return { problems, cpu: { median: m, paired, bound, base }, rss };
+  return {
+    problems,
+    tracked,
+    blocks,
+    controls,
+    whole_frame: { median: m, paired },
+    residual,
+    rss,
+  };
 }
 
 export interface IdleComparison {

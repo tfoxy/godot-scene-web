@@ -37,6 +37,7 @@ import { compareWorkerRecordings } from "./gate8-tex-checks";
 import {
   COST_CALLS_PER_TRIPLE,
   type CostSample,
+  type IdleParitySample,
   type IdleSample,
   idleParity,
   parseRegistryChurn,
@@ -148,7 +149,7 @@ export interface G8aReport {
     { equivalence_problems: number; differing_px: number }
   >;
   /** LS1: idle-parity's paired deltas (standby against no capture). */
-  idle_parity?: { cpu: unknown; rss: unknown };
+  idle_parity?: Omit<ReturnType<typeof idleParity>, "problems">;
   /** LAR0: the late-arm registry (registry-live-bound, registry-cost). */
   registry?: {
     live: Record<string, unknown>;
@@ -1474,13 +1475,14 @@ export async function runG8a(
     let detail: string | undefined;
     if (dirs.every((l) => ran(l))) {
       problems = [];
-      const samples: Record<string, IdleSample[]> = {};
+      const samples: Record<string, IdleParitySample[]> = {};
       for (const c of ["n", "s"]) {
         for (let r = 0; r < VLC_ROUNDS; r++) {
           const dir = vlcDir(c, r);
           const scale = await readJson<{
             cpu_us_mean?: number;
             rss_kb?: number;
+            section_us?: IdleParitySample["section_us"];
           }>(join(root, dir, "scale-report.json"));
           if (typeof scale?.cpu_us_mean !== "number") {
             problems.push(`${dir}: no scale report cpu_us_mean`);
@@ -1490,6 +1492,7 @@ export async function runG8a(
           samples[c].push({
             cpu_us_mean: scale.cpu_us_mean,
             rss_kb: scale.rss_kb,
+            section_us: scale.section_us,
           });
         }
         if (c === "s") {
@@ -1507,18 +1510,33 @@ export async function runG8a(
       const j = idleParity(samples);
       problems.push(...j.problems);
       detail =
-        (j.cpu
-          ? `s-n ${j.cpu.median >= 0 ? "+" : ""}${j.cpu.median.toFixed(1)}µs a frame (paired ${j.cpu.paired.map((d) => d.toFixed(1)).join(", ")}; bound ${j.cpu.bound.toFixed(1)} = 1% of n's ${j.cpu.base.toFixed(1)})`
-          : "no cpu") +
+        (j.tracked
+          ? `s-n tracked +${j.tracked.us.toFixed(1)}µs a frame (bound ${j.tracked.bound.toFixed(1)} = 1% of n's ${j.tracked.base.toFixed(1)})`
+          : "no tracked cost") +
+        `; blocks ${j.blocks.map((b) => `${b.block} ${b.median.toFixed(1)}µs`).join(", ")}` +
+        `; controls ${j.controls.map((b) => `${b.block} ${b.median.toFixed(1)}µs [${b.min.toFixed(1)}..${b.max.toFixed(1)}]`).join(", ")}` +
+        (j.whole_frame
+          ? `; whole frame ${j.whole_frame.median.toFixed(1)}µs (paired ${j.whole_frame.paired.map((d) => d.toFixed(1)).join(", ")})`
+          : "; no whole frame") +
+        (j.residual
+          ? `; residual ${j.residual.us.toFixed(1)}µs (bound ${j.residual.bound})`
+          : "; no residual") +
         (j.rss
           ? `; RSS ${(j.rss.median / 1024).toFixed(1)} MB (paired ${j.rss.paired.map((d) => (d / 1024).toFixed(1)).join(", ")}; bound 10 MB)`
           : "; no rss");
-      report.idle_parity = { cpu: j.cpu, rss: j.rss };
+      report.idle_parity = {
+        tracked: j.tracked,
+        blocks: j.blocks,
+        controls: j.controls,
+        whole_frame: j.whole_frame,
+        residual: j.residual,
+        rss: j.rss,
+      };
     }
     checks.push(
       check(
         "idle-parity",
-        "LS1 (live-swap-design.md D4, fork F1): on the validation-log-cost fixture and rounds, GRC_MODE=standby (`s`: the standby table and the registry, nothing exempted) against no capture at all (`n`: the extension not loaded), paired by round: main-thread CPU a frame within 1% of n's, and RSS (VmRSS at quit) within 10 MB",
+        "LS1 (live-swap-design.md D4, fork F1): on the validation-log-cost fixture and rounds, GRC_MODE=standby (`s`: the standby table and the registry, nothing exempted) against no capture at all (`n`: the extension not loaded), paired by round: sum of hooked blocks' paired median wall-time deltas within 1% of n's median CPU a frame; unhooked blocks report control noise; whole-frame median minus tracked cost at most 50 µs; RSS (VmRSS at quit) within 10 MB",
         problems,
         detail,
       ),
