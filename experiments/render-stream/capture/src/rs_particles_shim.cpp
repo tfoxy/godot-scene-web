@@ -76,6 +76,11 @@ std::uint64_t ParticlesShim::on_create(std::uint64_t engine_rid) {
 }
 
 void ParticlesShim::on_free(std::uint64_t rid) {
+  // Off and non-synthetic frees never changed a counter under the old lock. Mode is atomic so
+  // this check is safe; the locked recheck preserves the decision if configure races it.
+  if (mode_.load(std::memory_order_acquire) != ParticlesShimMode::Synthesize || !is_synthetic(rid)) {
+    return;
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   if (mode_ == ParticlesShimMode::Synthesize && is_synthetic(rid)) {
     ++freed_;

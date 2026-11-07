@@ -18,6 +18,7 @@
 #ifndef GRC_RS_PARTICLES_SHIM_H
 #define GRC_RS_PARTICLES_SHIM_H
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -54,7 +55,7 @@ class ParticlesShim {
 
  private:
   mutable std::mutex mutex_;
-  ParticlesShimMode mode_ = ParticlesShimMode::Off;
+  std::atomic<ParticlesShimMode> mode_{ParticlesShimMode::Off};
   std::uint64_t next_index_ = kIndexBase;
   std::uint64_t synthesized_ = 0;
   std::uint64_t engine_allocated_ = 0;

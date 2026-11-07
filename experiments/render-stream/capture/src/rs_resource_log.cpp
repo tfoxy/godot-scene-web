@@ -477,8 +477,6 @@ void ResourceLog::stop() {
   active_ = false;
 }
 
-bool ResourceLog::active() const { return active_.load(std::memory_order_acquire); }
-
 namespace {
 
 ResourceLog::Line base_line(const TapContext &ctx, const char *op) {

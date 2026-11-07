@@ -2097,6 +2097,13 @@ rs::ShaderCopy copy_shader_code(const void *code_ptr, rs::PayloadPtr *payload_ou
 // (rs_adopt.cpp's temporary Shader) instead of the mirror and the hook log, and every other
 // shader and free call passes straight to the engine: none of them is the game's.
 thread_local bool t_internal = false;
+std::atomic<std::uint64_t> g_internal_any{0};
+// The common path avoids dynamic-library TLS lookup. A thread increments before setting its
+// flag and decrements after clearing it, so its own internal calls always see a nonzero count.
+// Calls on other threads retain their old per-thread decision. No lock or TLS-model change.
+bool internal_work() {
+  return g_internal_any.load(std::memory_order_relaxed) != 0 && t_internal;
+}
 thread_local std::string *t_internal_code = nullptr;
 thread_local uint64_t *t_internal_rid = nullptr;
 
@@ -2500,7 +2507,7 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
 }
 
 void hook_free(void *self, RID rid) {
-  if (t_internal) {  // G8m (D4): the temporary Shader's RID
+  if (internal_work()) {  // G8m (D4): the temporary Shader's RID
     original<FnFree>(kFree)(self, rid);
     return;
   }
@@ -2514,7 +2521,12 @@ void hook_free(void *self, RID rid) {
   if (rs::registry_on()) {
     rs::registry_note_free(rid.id);  // LAR0 (design R5): erased before the call is forwarded
   }
-  {
+  // Arm publishes mirror-enabled and resource-log active with release semantics. Reading both
+  // false orders this no-op free before those stores, just as the old locked check could do.
+  // Arm resets/enables the mirror and starts the resource log without g_texture_order; no arm
+  // step relies on that lock excluding an idle free. Registry erase and every counter above
+  // still run. Once either flag is true, retain the original lock and checks unchanged.
+  if (streaming() || resources().active()) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("free");
     if (streaming()) {
@@ -3250,7 +3262,7 @@ void hook_attach_skeleton(void *self, RID item, RID skeleton) {
 }
 
 RID hook_shader_create_from_code(void *self, const void *code, const void *path_hint) {
-  if (t_internal) {  // G8m (D4): the capture's temporary Shader
+  if (internal_work()) {  // G8m (D4): the capture's temporary Shader
     const RID made =
         original<FnShaderCreateFromCode>(kShaderCreateFromCode)(self, code, path_hint);
     if (t_internal_code != nullptr) {
@@ -3284,7 +3296,7 @@ RID hook_shader_create_from_code(void *self, const void *code, const void *path_
 }
 
 void hook_shader_set_code(void *self, RID shader, const void *code) {
-  if (t_internal) {  // G8m (D4)
+  if (internal_work()) {  // G8m (D4)
     original<FnShaderSetCode>(kShaderSetCode)(self, shader, code);
     return;
   }
@@ -3307,7 +3319,7 @@ void hook_shader_set_code(void *self, RID shader, const void *code) {
 }
 
 void hook_material_set_param(void *self, RID material, const void *name, const void *value) {
-  if (t_internal) {  // G8m: the capture's own temporary objects pass straight through
+  if (internal_work()) {  // G8m: the capture's own temporary objects pass straight through
     original<FnMaterialSetParam>(kMaterialSetParam)(self, material, name, value);
     return;
   }
@@ -3385,7 +3397,7 @@ void hook_shader_set_default_texture_parameter(void *self, RID shader, const voi
 }
 
 RID hook_material_create(void *self) {
-  if (t_internal) {  // G8m: the capture's own temporary objects pass straight through
+  if (internal_work()) {  // G8m: the capture's own temporary objects pass straight through
     return original<FnCreate>(kMaterialCreate)(self);
   }
   bump(kMaterialCreate);
@@ -3404,7 +3416,7 @@ RID hook_material_create(void *self) {
 }
 
 RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority, RID shader) {
-  if (t_internal) {  // G8m: the capture's own temporary objects pass straight through
+  if (internal_work()) {  // G8m: the capture's own temporary objects pass straight through
     return original<FnMaterialCreateFromShader>(kMaterialCreateFromShader)(self, next_pass,
                                                                             priority, shader);
   }
@@ -3435,7 +3447,7 @@ RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority
 }
 
 void hook_material_set_shader(void *self, RID material, RID shader) {
-  if (t_internal) {  // G8m: the capture's own temporary objects pass straight through
+  if (internal_work()) {  // G8m: the capture's own temporary objects pass straight through
     original<FnSetMaterial>(kMaterialSetShader)(self, material, shader);
     return;
   }
@@ -5434,15 +5446,18 @@ bool hooks_adopt_mesh(uint64_t rid, const std::vector<rs::AdoptSurface> &surface
 // --- Adoption (rs_adopt.h): pre-arm shaders and materials ---------
 
 void hooks_internal_begin(std::string *code_out, uint64_t *rid_out) {
+  if (!t_internal) g_internal_any.fetch_add(1, std::memory_order_relaxed);
   t_internal = true;
   t_internal_code = code_out;
   t_internal_rid = rid_out;
 }
 
 void hooks_internal_end() {
+  const bool was_internal = t_internal;
   t_internal = false;
   t_internal_code = nullptr;
   t_internal_rid = nullptr;
+  if (was_internal) g_internal_any.fetch_sub(1, std::memory_order_relaxed);
 }
 
 bool hooks_adopt_multimesh(uint64_t rid, rs::Mirror::MultimeshAdopt adopt) {

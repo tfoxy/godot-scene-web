@@ -784,8 +784,10 @@ run_registry_cost_capture() {
 # GRC_STANDBY_FAULT=full-table (a deferred arm now waits on the standby table, where no hot hook and
 # so no validation log runs); `n` (no extension: GRC_EXTENSION empty, which the fixture's loader
 # treats as unset) and `s` (GRC_MODE=standby, the registry implied) are idle-parity's pair.
-G8A_VLC_ROUNDS=5
-G8A_VLC_CONFIGS=(a0 b c sabotage-validation-log-ignored n s)
+# Optional `s-off` (GRC_MODE=standby GRC_ADOPT=off, not in the default list) measures the standby
+# hook bodies with the registry not recording.
+G8A_VLC_ROUNDS="${G8A_VLC_ROUNDS:-5}"
+read -r -a G8A_VLC_CONFIGS <<<"${G8A_VLC_CONFIGS:-a0 b c sabotage-validation-log-ignored n s}"
 G8A_VLC_ENV=(RS_FIXTURE_ARM=born GRC_STREAM_VERSION=12 GRC_UNKNOWN_ITEM=skip
 	GRC_ROOT_SIZE=presentation:1920x1080 RS_SCALE_REDRAWS=170 RS_SCALE_REDRAW_VARY=11
 	RS_SCALE_RESOURCE_CHURN=16 RS_SCALE_CPU_REPORT=1 RS_SCALE_WARMUP=300 GRC_VALIDATION_LOG=off)
@@ -809,6 +811,7 @@ run_validation_log_cost_capture() {
 		;;
 	n) CAPTURE_EXTRA_ENV+=(GRC_EXTENSION=) ;;
 	s) CAPTURE_EXTRA_ENV+=(GRC_MODE=standby) ;;
+	s-off) CAPTURE_EXTRA_ENV+=(GRC_MODE=standby GRC_ADOPT=off) ;;
 	esac
 	CAPTURE_WITH_PATCH=0
 	run_capture "$dir" "$G8A_VLC_QUIT" none
@@ -820,10 +823,14 @@ run_validation_log_cost_capture() {
 # legs), so the cost judgement can be repeated cheaply. Read only registry-cost from such a run:
 # every other g8a check fails for missing evidence, so the gate's verdict is meaningless.
 G8A_ONLY_COST="${G8A_ONLY_COST:-0}"
+# Run the import and only the named timing group. Read only that check from such a run:
+# every other g8a check lacks evidence, so the overall gate verdict is meaningless.
+G8A_ONLY_VLC="${G8A_ONLY_VLC:-0}"
+G8A_ONLY_REGCOST="${G8A_ONLY_REGCOST:-0}"
 
 run_g8a() {
 	run_import_g8a
-	if [ "$G8A_ONLY_COST" = 1 ]; then
+	if [ "$G8A_ONLY_COST" = 1 ] || [ "$G8A_ONLY_VLC" = 1 ] || [ "$G8A_ONLY_REGCOST" = 1 ]; then
 		run_g8a_cost
 		return
 	fi
@@ -902,13 +909,16 @@ run_g8a_cost() {
 			cost_dirs+=("$OUT/g8a/registry-cost/$c-$r")
 		done
 	done
-	if ! legs_skip_group registry-cost "${cost_dirs[@]}"; then
+	if [ "$G8A_ONLY_VLC" != 1 ] && ! legs_skip_group registry-cost "${cost_dirs[@]}"; then
 		for r in $(seq 1 "$G8A_COST_ROUNDS"); do
 			for c in "${G8A_COST_CONFIGS[@]}"; do
 				echo "run-gate8: g8a registry-cost/$c-$r (capture-scale, born, GRC_ADOPT config $c)"
 				timing_leg "g8a-registry-cost-$c-$r" run_registry_cost_capture "$OUT/g8a/registry-cost/$c-$r" "$c"
 			done
 		done
+	fi
+	if [ "$G8A_ONLY_REGCOST" = 1 ]; then
+		return
 	fi
 	# LS0: validation-log-cost, the config order rotated by the round.
 	local -a vlc_dirs=()
