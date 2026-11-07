@@ -60,23 +60,35 @@ export const THROTTLE_PROFILES: Record<string, ThrottleProfile> = {
 
 const SUBCHUNK_BYTES = 8192;
 
+/** Injectable time source for deterministic shaping tests. */
+export interface ThrottleClock {
+  now(): number;
+  setTimeout(fn: () => void, ms: number): unknown;
+}
+
+const systemClock: ThrottleClock = {
+  now: () => Date.now(),
+  setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
+};
+
 // ----------------------------------------------------------------------------------- token bucket
 
-class TokenBucket {
+export class TokenBucket {
   private tokens: number;
   private lastRefillMs: number;
 
   constructor(
     private readonly capacity: number,
     private readonly ratePerSec: number,
+    private readonly clock: ThrottleClock = systemClock,
   ) {
     this.tokens = capacity;
-    this.lastRefillMs = Date.now();
+    this.lastRefillMs = this.clock.now();
   }
 
   private refill(): void {
     if (this.ratePerSec <= 0) return;
-    const now = Date.now();
+    const now = this.clock.now();
     const elapsedS = (now - this.lastRefillMs) / 1000;
     this.tokens = Math.min(
       this.capacity,
@@ -145,7 +157,7 @@ function summarize(stats: RunningStats): {
  * shared token bucket. One instance per direction per connection; the bucket may be shared
  * across every connection of a direction (the proxy constrains the LINK, not each stream), which
  * is why it is passed in rather than owned. */
-class DirectionShaper {
+export class DirectionShaper {
   private queue: Promise<void> = Promise.resolve();
   bytesForwarded = 0;
   readonly latencyMs = newRunningStats();
@@ -170,10 +182,11 @@ class DirectionShaper {
       arrived?: (chunk: Buffer, atMs: number) => void;
       delivered?: (chunk: Buffer, atMs: number) => void;
     },
+    private readonly clock: ThrottleClock = systemClock,
   ) {}
 
   push(chunk: Buffer): void {
-    const arrivalMs = Date.now();
+    const arrivalMs = this.clock.now();
     this.observer?.arrived?.(chunk, arrivalMs);
     this.pendingBytes += chunk.length;
     this.maxPendingBytes = Math.max(this.maxPendingBytes, this.pendingBytes);
@@ -211,7 +224,7 @@ class DirectionShaper {
       await this.waitUntilReady(availableSinceMs, take);
       if (this.dst.destroyed) return;
       const piece = chunk.subarray(offset, offset + take);
-      const sentAtMs = Date.now();
+      const sentAtMs = this.clock.now();
       record(this.latencyMs, sentAtMs - arrivalMs);
       if (offset === 0) this.observer?.delivered?.(chunk, sentAtMs);
       if (!this.dst.write(piece)) {
@@ -232,16 +245,16 @@ class DirectionShaper {
   ): Promise<void> {
     return new Promise((resolve) => {
       const attempt = () => {
-        const now = Date.now();
+        const now = this.clock.now();
         if (now < availableSinceMs) {
-          setTimeout(attempt, availableSinceMs - now);
+          this.clock.setTimeout(attempt, availableSinceMs - now);
           return;
         }
         if (this.bucket.tryTake(take)) {
           resolve();
           return;
         }
-        setTimeout(attempt, Math.max(1, this.bucket.msUntil(take)));
+        this.clock.setTimeout(attempt, Math.max(1, this.bucket.msUntil(take)));
       };
       attempt();
     });

@@ -13,8 +13,8 @@
 // 2. aggregate() computed by hand against five known values (median/min/max/cov), and a metric
 //    with one unavailable repeat dropped from the result entirely.
 // 3. The throttle proxy measured against a real loopback echo: a saturating stream stays within
-//    5% of its configured rate; discrete low-rate messages stay within 2ms of its configured
-//    delay (both read from the proxy's own stats.json, loopback-only, two live TCP servers).
+//    5% of its configured rate; discrete low-rate messages never release early and exceed their
+//    configured delay by at most event-loop lag + 2ms (proxy stats, two live loopback TCP servers).
 // 4. The /proc sampler against a real spawned child process: VmRSS > 0, at least one thread, and
 //    its one thread's CPU time increases after it does CPU work.
 // 5. provenance.ts's host probe and sha256File against a real temp file.
@@ -28,9 +28,11 @@
 
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createServer, connect as netConnect } from "node:net";
+import { createServer, connect as netConnect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { monitorEventLoopDelay } from "node:perf_hooks";
+import { setImmediate as settle } from "node:timers/promises";
 
 import {
   analyzeParamBytesPerFrame,
@@ -54,9 +56,12 @@ import {
 } from "../lib/render-stream-report";
 import { buildReport } from "../report-gate6";
 import {
+  DirectionShaper,
   queueLimitBytes,
   startThrottleProxy,
   THROTTLE_PROFILES,
+  type ThrottleClock,
+  TokenBucket,
 } from "../throttle-proxy";
 
 let assertions = 0;
@@ -469,6 +474,147 @@ function aggregateCases(): void {
 // 3. throttle-proxy.ts, measured against real loopback servers
 // ======================================================================================
 
+/** Manual time; let the shaper's FIFO promise continuations settle at each timer boundary. */
+class ManualClock implements ThrottleClock {
+  private timeMs = 1000;
+  private timers: { atMs: number; fn: () => void }[] = [];
+
+  now(): number {
+    return this.timeMs;
+  }
+
+  setTimeout(fn: () => void, ms: number): unknown {
+    this.timers.push({ atMs: this.timeMs + ms, fn });
+    return undefined;
+  }
+
+  async advanceTo(atMs: number): Promise<void> {
+    if (atMs < this.timeMs) throw new Error("Manual clock cannot go backwards");
+    await settle();
+    for (;;) {
+      this.timers.sort((a, b) => a.atMs - b.atMs);
+      const next = this.timers[0];
+      if (!next || next.atMs > atMs) break;
+      this.timers.shift();
+      this.timeMs = next.atMs;
+      next.fn();
+      await settle();
+    }
+    this.timeMs = atMs;
+    await settle();
+  }
+}
+
+function shapedSocket(capacity: number, rate: number, delayMs: number) {
+  const clock = new ManualClock();
+  const writes: { atMs: number; bytes: Buffer }[] = [];
+  // Only the socket operations the shaper touches; writes never apply backpressure here.
+  const socket = {
+    destroyed: false,
+    write(bytes: Buffer) {
+      writes.push({ atMs: clock.now(), bytes: Buffer.from(bytes) });
+      return true;
+    },
+    once() {
+      throw new Error("Unexpected drain wait");
+    },
+    pause() {},
+    resume() {},
+  } as unknown as Socket;
+  const bucket = new TokenBucket(capacity, rate, clock);
+  const shaper = new DirectionShaper(
+    socket,
+    socket,
+    bucket,
+    delayMs,
+    0,
+    undefined,
+    clock,
+  );
+  return {
+    clock,
+    bucket,
+    shaper,
+    check(name: string, expected: { atMs: number; bytes: Buffer }[]) {
+      assert(
+        `deterministic throttle proxy: ${name}`,
+        writes.length === expected.length &&
+          writes.every(
+            (w, i) =>
+              w.atMs === expected[i].atMs && w.bytes.equals(expected[i].bytes),
+          ),
+        JSON.stringify(
+          writes.map((w) => ({ atMs: w.atMs, bytes: w.bytes.length })),
+        ),
+      );
+    },
+  };
+}
+
+async function throttleProxyDeterministicCase(): Promise<void> {
+  const delay = shapedSocket(1, 0, 30);
+  const first = Buffer.from("first");
+  const second = Buffer.from("second");
+  delay.shaper.push(first);
+  await delay.clock.advanceTo(1010);
+  delay.shaper.push(second);
+  await delay.clock.advanceTo(1029);
+  delay.check("no release one tick before the delay", []);
+  await delay.clock.advanceTo(1030);
+  const firstWrite = { atMs: 1030, bytes: first };
+  delay.check("first chunk releases exactly at arrival + delay", [firstWrite]);
+  await delay.clock.advanceTo(1039);
+  delay.check("queued chunk waits for its own arrival + delay", [firstWrite]);
+  await delay.clock.advanceTo(1040);
+  await delay.shaper.drained();
+  delay.check("queued chunk releases FIFO at its own deadline", [
+    firstWrite,
+    { atMs: 1040, bytes: second },
+  ]);
+
+  const tokens = shapedSocket(10, 3, 0);
+  assert(
+    "deterministic throttle proxy: consume the initial burst",
+    tokens.bucket.tryTake(10),
+  );
+  assert(
+    "deterministic throttle proxy: fractional token wait rounds up to 667ms",
+    tokens.bucket.msUntil(2) === 667,
+  );
+  const pair = Buffer.from([7, 8]);
+  tokens.shaper.push(pair);
+  await tokens.clock.advanceTo(1666);
+  tokens.check("no release before the rounded token deadline", []);
+  await tokens.clock.advanceTo(1667);
+  await tokens.shaper.drained();
+  tokens.check("token-limited bytes release at the rounded deadline", [
+    { atMs: 1667, bytes: pair },
+  ]);
+
+  const split = shapedSocket(8192, 8192, 30);
+  const large = Buffer.from(
+    Array.from({ length: 8192 * 2 + 3 }, (_, i) => i % 251),
+  );
+  split.shaper.push(large);
+  await split.clock.advanceTo(1029);
+  split.check("large chunk waits out its delay", []);
+  await split.clock.advanceTo(1030);
+  const head = { atMs: 1030, bytes: large.subarray(0, 8192) };
+  split.check("large chunk starts with exactly 8192 bytes", [head]);
+  await split.clock.advanceTo(2029);
+  split.check("next subchunk waits for its tokens", [head]);
+  await split.clock.advanceTo(2030);
+  const middle = { atMs: 2030, bytes: large.subarray(8192, 8192 * 2) };
+  split.check("second subchunk has its own release", [head, middle]);
+  await split.clock.advanceTo(2031);
+  await split.shaper.drained();
+  split.check("final subchunk preserves every remaining byte", [
+    head,
+    middle,
+    { atMs: 2031, bytes: large.subarray(8192 * 2) },
+  ]);
+}
+
 async function throttleProxyRateCase(): Promise<void> {
   const chunk = Buffer.alloc(16384, 7);
   const echo = createServer((sock) => {
@@ -523,28 +669,43 @@ async function throttleProxyDelayCase(): Promise<void> {
   client.on("data", () => {});
   // Small, infrequent messages: well under the token bucket's rate, so the measured latency
   // isolates the fixed delay rather than queueing behind a saturated bucket.
+  const resolution = 1;
+  const h = monitorEventLoopDelay({ resolution });
+  h.enable();
   for (let i = 0; i < 20; i++) {
     client.write(Buffer.from([i]));
     await new Promise((r) => setTimeout(r, 120));
   }
   await new Promise((r) => setTimeout(r, 200));
+  h.disable();
+  // Histogram samples include the monitor's interval; only the excess is event-loop lag.
+  const eventLoopMeanMs = h.mean / 1e6;
+  const lag = Math.max(0, eventLoopMeanMs - resolution);
   client.destroy();
   const stats = await handle.stop();
   echo.close();
 
   const delayMs = THROTTLE_PROFILES.constrained.delayMs;
-  assert(
-    "throttle proxy client->server latency is within 2ms of the configured delay",
-    stats.client_to_server.latency_ms.count > 0 &&
-      close(stats.client_to_server.latency_ms.mean_ms, delayMs, 2),
-    JSON.stringify(stats.client_to_server.latency_ms),
-  );
-  assert(
-    "throttle proxy server->client latency is within 2ms of the configured delay",
-    stats.server_to_client.latency_ms.count > 0 &&
-      close(stats.server_to_client.latency_ms.mean_ms, delayMs, 2),
-    JSON.stringify(stats.server_to_client.latency_ms),
-  );
+  for (const [direction, latency] of [
+    ["client->server", stats.client_to_server.latency_ms],
+    ["server->client", stats.server_to_client.latency_ms],
+  ] as const) {
+    const detail = JSON.stringify({
+      ...latency,
+      lag_ms: lag,
+      event_loop_mean_ms: eventLoopMeanMs,
+    });
+    console.log(
+      `[SELF-TEST DETAIL] ${direction} configured delay -- ${detail}`,
+    );
+    assert(
+      `throttle proxy ${direction} latency honors the configured delay within event-loop lag + 2ms`,
+      latency.count > 0 &&
+        latency.min_ms >= delayMs &&
+        latency.mean_ms - delayMs <= lag + 2,
+      detail,
+    );
+  }
 }
 
 // ======================================================================================
@@ -932,6 +1093,7 @@ async function main(): Promise<void> {
   reportCases();
   aggregateCases();
   deltaLines();
+  await throttleProxyDeterministicCase();
   await throttleProxyRateCase();
   await throttleProxyDelayCase();
   await throttleProxyBackpressureCase();
