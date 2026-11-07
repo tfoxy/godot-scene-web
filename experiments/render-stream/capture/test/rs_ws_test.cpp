@@ -52,7 +52,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <atomic>
+#include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -525,6 +528,320 @@ void test_close_handshake() {
   check(n == 0, "TCP connection actually closes after the close handshake");
   ::close(fd);
   server.stop(1000);
+}
+
+// Reads through the final FIN as well as the frame/response: a reset can arrive after all
+// application bytes, so successfully decoding them alone does not prove a graceful close.
+void expect_clean_eof(int fd, const std::string &label) {
+  std::uint8_t probe;
+  errno = 0;
+  const ssize_t n = ::recv(fd, &probe, 1, 0);
+  const int saved_errno = errno;
+  int socket_error = 0;
+  socklen_t error_len = sizeof(socket_error);
+  const bool queried = ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_len) == 0;
+  check(n == 0 && queried && socket_error == 0,
+        label + ": EOF, recv=" + std::to_string(n) + " errno=" + std::to_string(saved_errno) +
+            " (" + std::strerror(saved_errno) + "), socket errno=" + std::to_string(socket_error) +
+            " (" + std::strerror(socket_error) + ")");
+}
+
+int closed_count(const std::vector<grc::live::Event> &events, std::uint32_t conn) {
+  int count = 0;
+  for (const auto &e : events) {
+    if (e.conn == conn && e.kind == grc::live::Event::Closed) ++count;
+  }
+  return count;
+}
+
+void test_close_while_client_sends() {
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  std::string error;
+  check(server.start(config, nullptr, &error), "linger WS server starts: " + error);
+  const int fd = connect_loopback(server.port());
+  check(do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==").status == 101, "linger WS upgrade");
+  const std::uint32_t conn = expect_opened(server);
+  check(conn != 0, "linger WS opened");
+  std::atomic<bool> started{false};
+  std::atomic<bool> closing{false};
+  int sent_after_close = 0;
+  int first_send_error = 0;
+  std::thread writer([&] {
+    const auto frame = client_text(std::string(1024, 'x'));
+    do {
+      ::send(fd, frame.data(), frame.size(), MSG_NOSIGNAL);
+      started.store(true);
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (!closing.load());
+    for (int i = 0; i < 100; ++i) {
+      if (::send(fd, frame.data(), frame.size(), MSG_NOSIGNAL) == static_cast<ssize_t>(frame.size())) {
+        ++sent_after_close;
+      } else if (first_send_error == 0) {
+        first_send_error = errno;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  });
+  while (!started.load()) std::this_thread::yield();
+  check(server.send_text(conn, "final text"), "linger WS queues final text");
+  server.close(conn, 1008, "track-rate");
+  closing.store(true);
+  writer.join();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const ServerFrame text = read_server_frame(fd);
+  check(text.ok && text.opcode == 1 && std::string(text.payload.begin(), text.payload.end()) == "final text",
+        "linger WS receives complete final text");
+  const ServerFrame close = read_server_frame(fd);
+  const std::vector<std::uint8_t> expected = {0x03, 0xf0, 't', 'r', 'a', 'c', 'k', '-', 'r', 'a', 't', 'e'};
+  check(close.ok && close.opcode == 8 && close.payload == expected,
+        "linger WS receives complete close 1008 track-rate");
+  expect_clean_eof(fd, "linger WS");
+  check(sent_after_close == 100, "linger WS accepts 100 trailing client frames, first errno=" +
+                                    std::to_string(first_send_error) + " (" + std::strerror(first_send_error) + ")");
+  auto events = server.take_events();
+  check(closed_count(events, conn) == 1, "linger WS exactly one Closed at flush");
+  bool after_closed = false;
+  for (const auto &e : events) {
+    if (e.conn != conn) continue;
+    if (e.kind == grc::live::Event::Closed) {
+      after_closed = true;
+      check(e.code == 1008 && e.reason == "track-rate", "linger WS Closed retains code and reason");
+    } else {
+      check(!after_closed, "linger WS no events after Closed");
+    }
+  }
+  ::close(fd);
+  const auto start = std::chrono::steady_clock::now();
+  server.stop(1500);
+  const double wall_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  std::printf("linger WS stop(1500): %.3f ms\n", wall_ms);
+  check(wall_ms < 2000, "linger WS stop bounded");
+  check(closed_count(server.take_events(), conn) == 0, "linger WS no duplicate Closed at peer FIN/stop");
+}
+
+void test_http_close_with_trailing_bytes(bool reject) {
+  FakeResourceSource source;
+  const std::string hash = make_hash('a');
+  const auto body = pattern_bytes(16384, 7);
+  source.set(hash, body);
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  std::string error;
+  const std::string label = reject ? "linger HTTP reject 404" : "linger HTTP 200";
+  check(server.start(config, &source, &error), label + " server starts: " + error);
+  const int fd = connect_loopback(server.port());
+  // More than handle_readable's buffer: there must be unread kernel input when the
+  // response flushes, even if the whole first recv contains the request and some junk.
+  const std::string request = plain_http_request("GET", reject ? "/unknown" : config.resource_prefix + hash,
+                                                 {{"Connection", "close"}}) + std::string(256 * 1024, 'x');
+  ::send(fd, request.data(), request.size(), MSG_NOSIGNAL);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const HttpResponse response = read_http_response(fd);
+  check(response.ok && response.status == (reject ? 404 : 200) &&
+            response.body == (reject ? std::vector<std::uint8_t>{} : body), label + " complete response");
+  expect_clean_eof(fd, label);
+  ::close(fd);
+  server.stop(1000);
+}
+
+void test_linger_releases_slots_and_stop() {
+  // Keep the old peer open after receiving our FIN: the replacement must be admitted
+  // before the linger expires, and the old connection must already be absent from the API.
+  for (bool track : {false, true}) {
+    grc::live::Server server;
+    grc::live::ServerConfig config;
+    config.max_clients = 1;
+    config.max_tracks = 1;
+    config.track_subprotocols = {"render-stream-track.1"};
+    const std::string protocol = track ? "render-stream-track.1" : "render-stream.1";
+    std::string error;
+    check(server.start(config, nullptr, &error), "linger slot server starts: " + error);
+    const int fd = connect_loopback(server.port());
+    check(do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", config.path, protocol).status == 101,
+          "linger slot first upgrade");
+    const std::uint32_t conn = expect_opened(server);
+    server.close(conn, 1008, "track-rate");
+    check(read_server_frame(fd).opcode == 8, "linger slot close frame");
+    expect_clean_eof(fd, "linger slot");
+    check(closed_count(wait_events(server, 1, 2000), conn) == 1, "linger slot Closed at flush");
+    check(!server.send_text(conn, "no") && !server.send_binary(conn, {1}), "linger absent from send API");
+    server.close(conn, 1000, "ignored");
+    const auto stats = server.stats(conn);
+    check(stats.queued_bytes == 0 && stats.max_queued_bytes == 0 && stats.sent_bytes == 0 &&
+              stats.sent_messages == 0 && stats.received_text == 0, "linger stats are zero");
+    const int replacement = connect_loopback(server.port());
+    check(do_handshake(replacement, "dGhlIHNhbXBsZSBub25jZQ==", config.path, protocol).status == 101,
+          track ? "linger frees max_tracks slot" : "linger frees max_clients slot");
+    const auto opened = expect_opened(server);
+    check(opened != 0, "linger replacement opened");
+    const auto start = std::chrono::steady_clock::now();
+    server.stop(0);
+    const double wall_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    std::printf("linger %s stop(0), peer never FIN: %.3f ms\n", track ? "track" : "view", wall_ms);
+    check(wall_ms < 500, "linger stop(0) returns promptly");
+    const auto events = server.take_events();
+    check(closed_count(events, conn) == 0 && closed_count(events, opened) == 1,
+          "linger stop timeout pushes no duplicate Closed");
+    ::close(fd);
+    ::close(replacement);
+  }
+  FakeResourceSource source;
+  const std::string hash = make_hash('b');
+  source.set(hash, {1, 2, 3});
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  config.max_http_clients = 1;
+  std::string error;
+  check(server.start(config, &source, &error), "linger HTTP slot server starts: " + error);
+  const int fd = connect_loopback(server.port());
+  const std::string request = plain_http_request("GET", config.resource_prefix + hash, {{"Connection", "close"}});
+  ::send(fd, request.data(), request.size(), MSG_NOSIGNAL);
+  check(read_http_response(fd).status == 200, "linger HTTP slot first GET");
+  expect_clean_eof(fd, "linger HTTP slot");
+  const int replacement = connect_loopback(server.port());
+  const std::string next = plain_http_request("GET", config.resource_prefix + hash);
+  ::send(replacement, next.data(), next.size(), MSG_NOSIGNAL);
+  check(read_http_response(replacement).status == 200, "linger frees max_http_clients slot");
+  server.stop(0);
+  ::close(fd);
+  ::close(replacement);
+}
+
+void test_linger_deadline_and_admission() {
+  class CountingAdmission : public grc::live::Admission {
+   public:
+    std::atomic<int> held{0};
+    std::atomic<int> releases{0};
+    bool admit(grc::live::AdmissionPool) override { return held.exchange(1) == 0; }
+    void release(grc::live::AdmissionPool) override { held.store(0); ++releases; }
+  } admission;
+  for (int timeout : {2000, 120}) {
+    grc::live::Server server;
+    grc::live::ServerConfig config;
+    config.admission = &admission;
+    std::string error;
+    check(server.start(config, nullptr, &error), "linger deadline server starts: " + error);
+    const int fd = connect_loopback(server.port());
+    check(do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==").status == 101, "linger deadline upgrade");
+    const std::uint32_t conn = expect_opened(server);
+    server.close(conn, 1008, "track-rate");
+    check(read_server_frame(fd).opcode == 8, "linger deadline close frame");
+    expect_clean_eof(fd, "linger deadline");
+    check(closed_count(wait_events(server, 1, 2000), conn) == 1, "linger deadline Closed at flush");
+    check(admission.held.load() == 0, "linger admission released at flush");
+    const int releases = admission.releases.load();
+    const auto start = std::chrono::steady_clock::now();
+    server.stop(timeout);  // The client never sends FIN; the idle poll sweep must run.
+    const double wall_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    std::printf("linger stop(%d), peer never FIN: %.3f ms\n", timeout, wall_ms);
+    check(wall_ms < (timeout == 2000 ? 1800 : 600), "linger stop bounded by linger/flush deadline");
+    check(admission.releases.load() == releases && closed_count(server.take_events(), conn) == 0,
+          "linger deadline/stop sweep releases and reports exactly once");
+    ::close(fd);
+  }
+}
+
+void test_linger_flood(bool stop_now) {
+  class CountingAdmission : public grc::live::Admission {
+   public:
+    std::atomic<int> held{0};
+    std::atomic<int> releases{0};
+    bool admit(grc::live::AdmissionPool) override { return held.exchange(1) == 0; }
+    void release(grc::live::AdmissionPool) override { held.store(0); ++releases; }
+  } admission;
+  const std::string label = stop_now ? "linger flood stop(0)" : "linger flood deadline";
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  config.admission = &admission;
+  std::string error;
+  check(server.start(config, nullptr, &error), label + " server starts: " + error);
+  const int fd = connect_loopback(server.port());
+  check(do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==").status == 101, label + " upgrade");
+  const std::uint32_t conn = expect_opened(server);
+  check(conn != 0 && admission.held.load() == 1, label + " admitted once");
+  server.close(conn, 1008, "track-rate");
+  const ServerFrame close = read_server_frame(fd);
+  const std::vector<std::uint8_t> expected = {0x03, 0xf0, 't', 'r', 'a', 'c', 'k', '-', 'r', 'a', 't', 'e'};
+  check(close.ok && close.opcode == 8 && close.payload == expected, label + " close frame");
+  check(closed_count(wait_events(server, 1, 2000), conn) == 1, label + " exactly one Closed at flush");
+  check(admission.held.load() == 0 && admission.releases.load() == 1, label + " admission released at flush");
+
+  // Never send FIN. Keep the receive queue busy after the close frame, without blocking
+  // a writer on a full socket. The safety deadline also bounds a regressed stop() call.
+  const auto start = std::chrono::steady_clock::now();
+  std::atomic<bool> sending{true};
+  std::atomic<int> active{0};
+  std::atomic<int> send_error{0};
+  std::vector<std::thread> writers;
+  for (int i = 0; i < 4; ++i) {
+    writers.emplace_back([&] {
+      const std::vector<std::uint8_t> tail(65536, 'x');
+      bool wrote = false;
+      while (sending.load() && std::chrono::steady_clock::now() - start < std::chrono::seconds(3)) {
+        // Prime each writer with one byte before flooding, so a single writer
+        // cannot monopolize the socket's send buffer before the others start.
+        const ssize_t n = ::send(fd, tail.data(), wrote ? tail.size() : 1, MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (n > 0) {
+          if (!wrote) {
+            wrote = true;
+            ++active;
+            while (active.load() < 4 && sending.load() &&
+                   std::chrono::steady_clock::now() - start < std::chrono::seconds(3)) {
+              std::this_thread::yield();
+            }
+          }
+        } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+          std::this_thread::yield();
+        } else {
+          int unset = 0;
+          send_error.compare_exchange_strong(unset, n < 0 ? errno : EPIPE);
+          break;
+        }
+      }
+    });
+  }
+  while (active.load() < 4 && std::chrono::steady_clock::now() - start < std::chrono::milliseconds(200)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  check(active.load() == 4, label + " all four writers sent trailing bytes");
+  double wall_ms;
+  if (stop_now) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    const auto stop_start = std::chrono::steady_clock::now();
+    server.stop(0);
+    wall_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - stop_start).count();
+  } else {
+    while (send_error.load() == 0 && std::chrono::steady_clock::now() - start < std::chrono::milliseconds(1600)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    wall_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  }
+  sending.store(false);
+  for (auto &writer : writers) writer.join();
+  std::printf("%s, peer never FIN: %.3f ms, send errno=%d (%s)\n", label.c_str(), wall_ms,
+              send_error.load(), std::strerror(send_error.load()));
+  check(wall_ms < (stop_now ? 500 : 1500), label + " returns/closes within bound");
+  if (!stop_now) {
+    check(send_error.load() == EPIPE || send_error.load() == ECONNRESET,
+          label + " socket torn down while peer sends");
+    check(closed_count(server.take_events(), conn) == 0 && admission.releases.load() == 1 &&
+              admission.held.load() == 0, label + " deadline reports/releases no second time");
+    server.stop(0);
+  }
+  check(closed_count(server.take_events(), conn) == 0 && admission.releases.load() == 1 &&
+            admission.held.load() == 0, label + " stop reports/releases no second time");
+  ::close(fd);
+}
+
+void test_linger() {
+  test_close_while_client_sends();
+  test_http_close_with_trailing_bytes(false);
+  test_http_close_with_trailing_bytes(true);
+  test_linger_releases_slots_and_stop();
+  test_linger_deadline_and_admission();
+  test_linger_flood(false);
+  test_linger_flood(true);
 }
 
 void test_fragmentation_rejected() {
@@ -2271,6 +2588,91 @@ void test_wss_upgrade_frames_and_stop(const TestPki &pki, grc::live::TlsContext 
   stopper.join();
 }
 
+void test_wss_close_while_client_sends(const TestPki &pki, grc::live::TlsContext *ctx) {
+  grc::live::Server server;
+  std::string error;
+  check(server.start(wss_config(ctx), nullptr, &error), "linger WSS server starts: " + error);
+  auto c = tls_connect(connect_loopback(server.port()), pki);
+  check(c->ok, "linger WSS TLS handshake");
+  if (!c->ok) {
+    server.stop(0);
+    return;
+  }
+  check(c->send(http_request("dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7", kOriginHeader)),
+        "linger WSS upgrade request");
+  check(tls_read_http_response(*c).status == 101, "linger WSS upgrade");
+  const std::uint32_t conn = expect_opened(server);
+  check(conn != 0, "linger WSS opened");
+  // OpenSSL's socket BIO uses write(), unlike the raw client's MSG_NOSIGNAL send().
+  // Keep a reset observable as a failed check rather than terminating the test process.
+  const auto previous_sigpipe = std::signal(SIGPIPE, SIG_IGN);
+  std::atomic<bool> started{false};
+  std::atomic<bool> closing{false};
+  int sent_after_close = 0;
+  int first_send_error = 0;
+  std::thread writer([&] {
+    const auto frame = client_text(std::string(1024, 'x'));
+    do {
+      c->send(frame.data(), frame.size());
+      started.store(true);
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (!closing.load());
+    for (int i = 0; i < 100; ++i) {
+      errno = 0;
+      if (c->send(frame.data(), frame.size())) {
+        ++sent_after_close;
+      } else if (first_send_error == 0) {
+        first_send_error = errno;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  });
+  while (!started.load()) std::this_thread::yield();
+  check(server.send_text(conn, "final text"), "linger WSS queues final text");
+  server.close(conn, 1008, "track-rate");
+  closing.store(true);
+  writer.join();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const ServerFrame text = tls_read_server_frame(*c);
+  check(text.ok && text.opcode == 1 && std::string(text.payload.begin(), text.payload.end()) == "final text",
+        "linger WSS receives complete final text");
+  const ServerFrame close = tls_read_server_frame(*c);
+  const std::vector<std::uint8_t> expected = {0x03, 0xf0, 't', 'r', 'a', 'c', 'k', '-', 'r', 'a', 't', 'e'};
+  check(close.ok && close.opcode == 8 && close.payload == expected,
+        "linger WSS receives complete close 1008 track-rate");
+  std::uint8_t tail[16];
+  errno = 0;
+  const int end = c->recv(tail, sizeof tail);
+  const int recv_error = errno;
+  check(end == 0, "linger WSS receives close_notify, recv=" + std::to_string(end) +
+                      " errno=" + std::to_string(recv_error) + " (" + std::strerror(recv_error) + ")");
+  expect_clean_eof(c->fd, "linger WSS");
+  check(sent_after_close == 100, "linger WSS accepts 100 trailing TLS records, sent=" +
+                                    std::to_string(sent_after_close) + " first errno=" +
+                                    std::to_string(first_send_error) + " (" + std::strerror(first_send_error) + ")");
+  const auto events = server.take_events();
+  check(closed_count(events, conn) == 1, "linger WSS exactly one Closed at flush");
+  bool after_closed = false;
+  for (const auto &e : events) {
+    if (e.conn != conn) continue;
+    if (e.kind == grc::live::Event::Closed) {
+      after_closed = true;
+      check(e.code == 1008 && e.reason == "track-rate", "linger WSS Closed retains code and reason");
+    } else {
+      check(!after_closed, "linger WSS no events after Closed");
+    }
+  }
+  check(server.tls_stats().tls_failed == 0, "linger WSS trailing ciphertext causes no TLS failure");
+  c.reset();
+  std::signal(SIGPIPE, previous_sigpipe);
+  const auto start = std::chrono::steady_clock::now();
+  server.stop(1500);
+  const double wall_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  std::printf("linger WSS stop(1500): %.3f ms\n", wall_ms);
+  check(wall_ms < 2000, "linger WSS stop bounded");
+  check(closed_count(server.take_events(), conn) == 0, "linger WSS no duplicate Closed at peer FIN/stop");
+}
+
 void test_wss_resources(const TestPki &pki, grc::live::TlsContext *ctx) {
   CodedResourceSource source;
   const std::string a = make_hash('a');
@@ -2568,6 +2970,7 @@ void test_wss(bool bench) {
   }
   test_wss_bad_pair(pki);
   test_wss_upgrade_frames_and_stop(pki, ctx.get());
+  test_wss_close_while_client_sends(pki, ctx.get());
   test_wss_resources(pki, ctx.get());
   test_wss_tls_required_off_loopback(pki, ctx.get());
   test_wss_lan_plaintext(pki, ctx.get());
@@ -2579,13 +2982,20 @@ void test_wss(bool bench) {
 }
 
 int main(int argc, char **argv) {
+  bool linger_only = false;
   bool tls_only = false;
   bool tls_bench_only = false;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
+    if (arg == "--linger-only") linger_only = true;
     if (arg == "--require-tls") g_require_tls = true;
     if (arg == "--tls-only") tls_only = true;
     if (arg == "--tls-bench") tls_bench_only = true;
+  }
+  if (linger_only) {
+    test_linger();
+    std::printf("rs_ws_test linger: %d/%d checks passed, %d failed\n", g_checks - g_failures, g_checks, g_failures);
+    return g_failures == 0 ? 0 : 1;
   }
   if (tls_bench_only) {
     test_wss(true);
@@ -2606,6 +3016,7 @@ int main(int argc, char **argv) {
   test_frame_header_length_classes();
   test_ping_pong();
   test_close_handshake();
+  test_linger();
   test_fragmentation_rejected();
   test_binary_inbound_rejected();
   test_unmasked_inbound_rejected();

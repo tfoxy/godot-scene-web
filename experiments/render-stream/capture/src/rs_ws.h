@@ -405,8 +405,10 @@ class Server {
   bool send_text(std::uint32_t conn, std::string message);
 
   // Queues a close frame (best effort) and marks conn for shutdown; the I/O
-  // thread closes the TCP connection once the frame is flushed or on the
-  // next pass if the peer is unresponsive. A no-op if conn is not open.
+  // thread flushes it (and TLS close_notify), reports Closed and releases admission.
+  // Sockets then send FIN and drain peer input for at most 1000 ms; they are already
+  // absent from send/close/stats and client counts during that drain.
+  // A no-op if conn is not open.
   void close(std::uint32_t conn, std::uint16_t code, std::string reason);
 
   struct ConnStats {

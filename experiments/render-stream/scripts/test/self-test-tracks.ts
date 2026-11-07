@@ -397,8 +397,21 @@ async function mainPass(
     // rate: 400 texts at once against a bucket of 200
     {
       const { track, ready } = await openTrack(host.port, hello(credential));
+      let err: string | null = null;
+      track.socket.on("error", (e) => {
+        err = (e as NodeJS.ErrnoException).code ?? String(e);
+      });
+      const t0 = Date.now();
       for (let i = 0; i < 400; i++) track.send(`{"r":${i}}`);
       await track.until(() => track.closed !== null || track.ended, 3000);
+      const transport = {
+        elapsed_ms: Date.now() - t0,
+        ended: track.ended,
+        err,
+        bytesRead: track.socket.bytesRead,
+        bytesWritten: track.socket.bytesWritten,
+        texts: track.texts.length,
+      };
       await sleep(150);
       const source = Number(ready?.source ?? 0);
       const closed = records(out).filter(
@@ -410,7 +423,11 @@ async function mainPass(
           track.closed?.reason === "track-rate" &&
           closed.length === 1 &&
           closed[0].reason === "track-rate",
-        JSON.stringify({ closed: track.closed, recorded: closed }),
+        JSON.stringify({
+          closed: track.closed,
+          recorded: closed,
+          ...transport,
+        }),
       );
       track.destroy();
     }

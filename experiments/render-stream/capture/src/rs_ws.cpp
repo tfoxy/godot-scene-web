@@ -580,15 +580,16 @@ struct Conn {
   std::uint32_t id = 0;
   // Handshaking also means "awaiting the next HTTP request line": an HTTP connection (unlike a
   // WebSocket one) never leaves this phase, since every request on it is parsed the same way.
-  enum class Phase { Handshaking, Open, Closed } phase = Phase::Handshaking;
+  enum class Phase { Handshaking, Open, Lingering, Closed } phase = Phase::Handshaking;
   std::vector<std::uint8_t> recv_buf;
   std::vector<std::uint8_t> send_buf;
   std::size_t send_off = 0;
-  bool opened = false;              // an Opened event was pushed for this connection (WebSocket only).
+  bool opened = false;              // an Opened event awaits its Closed event (WebSocket only).
   bool http_slot_held = false;      // this connection counts against max_http_clients.
   bool admission_held = false;      // CAR1: holds a ServerConfig::admission slot (D6).
   AdmissionPool pool = AdmissionPool::View;  // TRK1: which pool admitted it (Q3)
   bool shutdown_after_flush = false;
+  std::chrono::steady_clock::time_point linger_deadline{};
   std::uint16_t pending_close_code = 1000;
   std::string pending_close_reason;
   std::uint64_t max_queued_bytes_seen = 0;
@@ -612,6 +613,7 @@ struct Conn {
 // encrypted only once tls_out is on the socket, so at most this much (plus record overhead) is
 // ciphertext waiting; queued_bytes counts it too (pending_bytes).
 constexpr std::size_t kTlsChunk = 64u << 10;
+constexpr int kCloseLingerMs = 1000;
 
 bool peer_is_loopback(const sockaddr_storage &addr) {
   if (addr.ss_family == AF_INET) {
@@ -701,24 +703,50 @@ struct Server::Impl {
     c.pending_close_reason = std::move(reason);
   }
 
-  // Tears the socket down right now: no attempt to flush or send a frame.
-  // Idempotent.
-  void finalize_now(Conn &c, std::uint16_t code, const std::string &reason) {
-    if (c.phase == Conn::Phase::Closed) return;
-    ::shutdown(c.fd, SHUT_RDWR);
-    ::close(c.fd);
-    if (c.opened) push_event_locked(make_closed_event(c.id, code, reason));
+  // Release the logical connection at flush completion, even while its socket drains.
+  void report_closed(Conn &c, std::uint16_t code, const std::string &reason) {
+    if (c.opened) {
+      push_event_locked(make_closed_event(c.id, code, reason));
+      c.opened = false;
+    }
+    c.http_slot_held = false;
     if (c.admission_held) {
       c.admission_held = false;
       config.admission->release(c.pool);
     }
+  }
+
+  // Tears the socket down right now: no attempt to flush or send a frame.
+  // Lingering sockets have already sent FIN and released their logical connection.
+  void finalize_now(Conn &c, std::uint16_t code, const std::string &reason) {
+    if (c.phase == Conn::Phase::Closed) return;
+    if (c.phase != Conn::Phase::Lingering) ::shutdown(c.fd, SHUT_RDWR);
+    ::close(c.fd);
+    report_closed(c, code, reason);
     c.phase = Conn::Phase::Closed;
   }
 
-  // If a graceful close has fully flushed, finalize it. Called after every
+  enum class LingerDrain { Empty, BudgetUsed, Finalized };
+
+  // No parsing or TLS feed after our FIN. Bound work under mu so a busy peer cannot
+  // starve other connections, stop(), or the deadline sweep.
+  LingerDrain drain_linger(Conn &c) {
+    std::uint8_t buf[65536];
+    constexpr int kMaxReads = 4;
+    for (int i = 0; i < kMaxReads; ++i) {
+      const ssize_t n = ::recv(c.fd, buf, sizeof(buf), 0);
+      if (n > 0) continue;
+      if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return LingerDrain::Empty;
+      finalize_now(c, c.pending_close_code, c.pending_close_reason);
+      return LingerDrain::Finalized;
+    }
+    return LingerDrain::BudgetUsed;
+  }
+
+  // If a graceful close has fully flushed, send FIN and drain the peer. Called after every
   // read/write pass for a connection.
   void maybe_finalize(Conn &c) {
-    if (!c.shutdown_after_flush) return;
+    if (!c.shutdown_after_flush || c.phase == Conn::Phase::Lingering || c.phase == Conn::Phase::Closed) return;
     if (c.send_off < c.send_buf.size()) return;
     if (c.tls) {
       // CAR4: everything encrypted and sent, then close_notify, sent too, before the TCP close.
@@ -731,7 +759,12 @@ struct Server::Impl {
         if (c.phase == Conn::Phase::Closed || c.tls_out_off < c.tls_out.size()) return;
       }
     }
-    finalize_now(c, c.pending_close_code, c.pending_close_reason);
+    ::shutdown(c.fd, SHUT_WR);
+    report_closed(c, c.pending_close_code, c.pending_close_reason);
+    c.phase = Conn::Phase::Lingering;
+    c.linger_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kCloseLingerMs);
+    c.recv_buf.clear();
+    drain_linger(c);
   }
 
   // CAR4: moves every ciphertext byte the session has into tls_out.
@@ -1421,7 +1454,7 @@ struct Server::Impl {
         entries.push_back({wake_r, 0, false, true});
         for (auto &entry : conns) {
           short want = POLLIN;
-          if (pending_bytes(entry.second) > 0) want |= POLLOUT;
+          if (entry.second.phase != Conn::Phase::Lingering && pending_bytes(entry.second) > 0) want |= POLLOUT;
           fds.push_back({entry.second.fd, want, 0});
           entries.push_back({entry.second.fd, entry.first, false, false});
         }
@@ -1432,7 +1465,6 @@ struct Server::Impl {
         if (errno == EINTR) continue;
         break;
       }
-      if (n == 0) continue;
 
       for (std::size_t i = 0; i < fds.size(); ++i) {
         if (fds[i].revents == 0) continue;
@@ -1456,7 +1488,18 @@ struct Server::Impl {
         auto it = conns.find(entries[i].id);
         if (it == conns.end()) continue;
         Conn &c = it->second;
-        if (fds[i].revents & (POLLHUP | POLLERR | POLLNVAL)) {
+        if (c.phase == Conn::Phase::Lingering) {
+          if (fds[i].revents & (POLLERR | POLLNVAL)) {
+            finalize_now(c, 1006, "connection reset");
+          } else {
+            // If the budget is used up, POLLHUP will fire again next pass. Closing
+            // before the queued tail drains would reset the peer's final response.
+            const auto drained = drain_linger(c);
+            if ((fds[i].revents & POLLHUP) && drained == LingerDrain::Empty) {
+              finalize_now(c, c.pending_close_code, c.pending_close_reason);
+            }
+          }
+        } else if (fds[i].revents & (POLLHUP | POLLERR | POLLNVAL)) {
           finalize_now(c, 1006, "connection reset");
         } else {
           if (fds[i].revents & POLLOUT) try_flush(c);
@@ -1464,6 +1507,20 @@ struct Server::Impl {
           maybe_finalize(c);
         }
         if (c.phase == Conn::Phase::Closed) conns.erase(it);
+      }
+      // Poll timeouts also reach this sweep: an idle peer need not send another byte.
+      std::lock_guard<std::mutex> lock(mu);
+      const auto now = std::chrono::steady_clock::now();
+      for (auto it = conns.begin(); it != conns.end();) {
+        Conn &c = it->second;
+        if (c.phase == Conn::Phase::Lingering && now >= c.linger_deadline) {
+          // One final bounded drain; the deadline is a hard teardown bound even
+          // when a peer continues to fill the receive queue.
+          drain_linger(c);
+          finalize_now(c, c.pending_close_code, c.pending_close_reason);
+        }
+        if (c.phase == Conn::Phase::Closed) it = conns.erase(it);
+        else ++it;
       }
     }
 
@@ -1624,7 +1681,7 @@ Server::ConnStats Server::stats(std::uint32_t conn) const {
   std::lock_guard<std::mutex> lock(impl_->mu);
   ConnStats out{};
   auto it = impl_->conns.find(conn);
-  if (it == impl_->conns.end()) return out;
+  if (it == impl_->conns.end() || it->second.phase == Conn::Phase::Lingering) return out;
   const Conn &c = it->second;
   out.queued_bytes = pending_bytes(c);
   out.max_queued_bytes = c.max_queued_bytes_seen;
