@@ -52,26 +52,26 @@ python3 experiments/render-stream/fixtures/gate6-scene/make_expected.py --check
 
 ## Layout (640×360; regions `[x0,y0,x1,y1)`, moved by (8, 4) at steps 10 and 11)
 
-| Region   | Item(s) (position, size)                                                                    | Model |
-| -------- | -------------------------------------------------------------------------------------------- | ----- |
-| `SC`     | `ScrollContainer` (8,8) 168×112, rows of a 24×20 rect and a 14 px "row r" Label, separation 4 | rects exact inside the scissor; labels undecided; the VScrollBar's two theme boxes |
-| `RT`     | `RichTextLabel` (184,8) 200×112, nine lines, line 2 `TEXA` as a 64×64 inline image          | undecided |
-| `TR`     | `TextureRect` (392,8) 64×64, `TEXA`, `TEXB` from step 8                                      | exact (nearest texels) |
-| `NP`     | `NinePatchRect` (464,8) 96×64, `TEXN`, margins 4                                             | exact |
-| `Marker` | 32×32 rect (592,16)                                                                          | exact |
-| `HU`     | `ZH` (400,84) 112×32, z 100; `HUD` `CanvasLayer` with a `Panel` (456,88) 168×28 and a Label  | exact, the label undecided; not compared receiver against reference before G6b |
-| `PB`     | `ProgressBar` (8,128) 168×24, 12 px percentage, value from the `Tween`                       | theme boxes; text undecided |
-| `BT`     | `Button` (8,160) 120×32, "Play", "Pause" from step 6                                         | theme box; text undecided |
-| `LE`     | `LineEdit` (8,200) 168×32, "edit me", focused, forced caret, `select(0,4)`, `(2,7)` from 7  | normal and focus boxes; content box undecided; the selection and caret rects are checked on the wire against the oracle |
-| `CD`     | `Control` (184,128) 120×104 with `_draw()`                                                    | gate 5 lowering |
-| `MS`     | `MeshInstance2D` (312,128), a 2×8-vertex strip, region-updated every frame                   | formula, per-vertex colours |
-| `SM`     | `ColorRect` (424,128) 64×48, `ShaderMaterial` `phase_tint`                                    | shader twin |
-| `CM`     | `ColorRect`s (496,128) 48×40 and (512,144) 48×32, the second with a `CanvasItemMaterial`     | blend model (add, sub from step 4) |
-| `HB`     | `HBoxContainer` (8,248) 400×48 (496 from step 7) of three `Panel`s                           | StyleBoxFlat port, AA ring band |
-| `AN`     | `Sprite2D` `TEXN` ×2, moved by an `AnimationPlayer`, period 88                               | exact (edges a quarter pixel off the centres) |
-| `LB`     | `Label` (8,304) 320×32                                                                       | undecided |
-| `TL`     | `ColorRect` 16×16 (600,344), `top_level`, child of row 3                                     | exact |
-| `RF`     | `refused` only: `CPUParticles2D`, `PointLight2D`, a `TIME` shader, an LCD Label             | undecided, excluded |
+| Region   | Item(s) (position, size)                                                                      | Model                                                                                                                   |
+| -------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `SC`     | `ScrollContainer` (8,8) 168×112, rows of a 24×20 rect and a 14 px "row r" Label, separation 4 | rects exact inside the scissor; labels undecided; the VScrollBar's two theme boxes                                      |
+| `RT`     | `RichTextLabel` (184,8) 200×112, nine lines, line 2 `TEXA` as a 64×64 inline image            | undecided                                                                                                               |
+| `TR`     | `TextureRect` (392,8) 64×64, `TEXA`, `TEXB` from step 8                                       | exact (nearest texels)                                                                                                  |
+| `NP`     | `NinePatchRect` (464,8) 96×64, `TEXN`, margins 4                                              | exact                                                                                                                   |
+| `Marker` | 32×32 rect (592,16)                                                                           | exact                                                                                                                   |
+| `HU`     | `ZH` (400,84) 112×32, z 100; `HUD` `CanvasLayer` with a `Panel` (456,88) 168×28 and a Label   | exact, the label undecided; not compared receiver against reference before G6b                                          |
+| `PB`     | `ProgressBar` (8,128) 168×24, 12 px percentage, value from the `Tween`                        | theme boxes; text undecided                                                                                             |
+| `BT`     | `Button` (8,160) 120×32, "Play", "Pause" from step 6                                          | theme box; text undecided                                                                                               |
+| `LE`     | `LineEdit` (8,200) 168×32, "edit me", focused, forced caret, `select(0,4)`, `(2,7)` from 7    | normal and focus boxes; content box undecided; the selection and caret rects are checked on the wire against the oracle |
+| `CD`     | `Control` (184,128) 120×104 with `_draw()`                                                    | gate 5 lowering                                                                                                         |
+| `MS`     | `MeshInstance2D` (312,128), a 2×8-vertex strip, region-updated every frame                    | formula, per-vertex colours                                                                                             |
+| `SM`     | `ColorRect` (424,128) 64×48, `ShaderMaterial` `phase_tint`                                    | shader twin                                                                                                             |
+| `CM`     | `ColorRect`s (496,128) 48×40 and (512,144) 48×32, the second with a `CanvasItemMaterial`      | blend model (add, sub from step 4)                                                                                      |
+| `HB`     | `HBoxContainer` (8,248) 400×48 (496 from step 7) of three `Panel`s                            | StyleBoxFlat port, AA ring band                                                                                         |
+| `AN`     | `Sprite2D` `TEXN` ×2, moved by an `AnimationPlayer`, period 88                                | exact (edges a quarter pixel off the centres)                                                                           |
+| `LB`     | `Label` (8,304) 320×32                                                                        | undecided                                                                                                               |
+| `TL`     | `ColorRect` 16×16 (600,344), `top_level`, child of row 3                                      | exact                                                                                                                   |
+| `RF`     | `refused` only: `CPUParticles2D`, `PointLight2D`, a `TIME` shader, an LCD Label               | undecided, excluded                                                                                                     |
 
 ## Timeline (file: S = 1, N = 10, settle +7, intermediate shots 13, 53, 93)
 

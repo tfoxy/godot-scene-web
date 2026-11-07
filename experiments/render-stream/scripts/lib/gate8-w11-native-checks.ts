@@ -963,8 +963,7 @@ export async function runG8w11NativeCoding(g: string): Promise<G8aCheck[]> {
         | undefined;
       if (v.name === "coded") {
         if (
-          !conn ||
-          conn.coded !== true ||
+          conn?.coded !== true ||
           (conn.prefixed ?? 0) === 0 ||
           (conn.errors ?? 0) > 0
         )

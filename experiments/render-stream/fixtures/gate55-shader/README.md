@@ -44,16 +44,16 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate55-s
 
 ## Layout (640×360; regions `[x0,y0,x1,y1)`)
 
-| Region   | Item(s) (position), material                    | Pixels                                                                                   |
-| -------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `TI`     | 56×48 rect (32,32), `MT` on `tint`               | `grid(tint * gain)`: (.2,.4,.2); (.4,.2,0) at 1; `tint_b` (0,.2,.4) at 3; gain erased (0,.4,.8) at 4 |
-| `PA`     | `draw_texture_rect(TEX16, (8,8,32,32))` (120,24), `MP` on `pal` | `texture(pal, UV) * mul`: `pal` unset, so the shader's default `TEX16`; `TEX16B` from 6 |
-| `IN`     | 48×48 rects `I1` (208,32), `I2` (264,32), both `MI` on `inst` | `I1` (.2,.8,.4); `I2` the default white, (.8,.2,.6) from 2                           |
-| `TY`     | 56×48 rect (344,32), `MY` on `types`             | `on` false: (f, iv.y·.2, 0) = (.6,.6,0); from 7 `on`, `k` 3: (v2.x, v3.y, lv[3]) = (.4,.8,.8) |
-| `PH`     | 56×48 rect (432,32), `MPh` on `phase`            | `phase` = the frame: (p·.2, (5−p)·.2, .4) with p = phase mod 6                            |
-| `RM`     | 56×48 rect (32,128), `MR` on `tint`              | (.8,.8,.2); `tint_b` (.2,.8,.8) at 3; `MR2` (`tint` (.2,.8,.8)) (.8,.8,.2) at 5          |
-| `SH`     | 56×48 rect (120,128), `MS` on `sh_a`             | (.2,.8,.4); `sh_b` (.8,.2,.6) at 8                                                        |
-| `Marker` | 32×32 rect (592,16)                              | gate 3's marker colour of the step                                                        |
+| Region   | Item(s) (position), material                                    | Pixels                                                                                               |
+| -------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `TI`     | 56×48 rect (32,32), `MT` on `tint`                              | `grid(tint * gain)`: (.2,.4,.2); (.4,.2,0) at 1; `tint_b` (0,.2,.4) at 3; gain erased (0,.4,.8) at 4 |
+| `PA`     | `draw_texture_rect(TEX16, (8,8,32,32))` (120,24), `MP` on `pal` | `texture(pal, UV) * mul`: `pal` unset, so the shader's default `TEX16`; `TEX16B` from 6              |
+| `IN`     | 48×48 rects `I1` (208,32), `I2` (264,32), both `MI` on `inst`   | `I1` (.2,.8,.4); `I2` the default white, (.8,.2,.6) from 2                                           |
+| `TY`     | 56×48 rect (344,32), `MY` on `types`                            | `on` false: (f, iv.y·.2, 0) = (.6,.6,0); from 7 `on`, `k` 3: (v2.x, v3.y, lv[3]) = (.4,.8,.8)        |
+| `PH`     | 56×48 rect (432,32), `MPh` on `phase`                           | `phase` = the frame: (p·.2, (5−p)·.2, .4) with p = phase mod 6                                       |
+| `RM`     | 56×48 rect (32,128), `MR` on `tint`                             | (.8,.8,.2); `tint_b` (.2,.8,.8) at 3; `MR2` (`tint` (.2,.8,.8)) (.8,.8,.2) at 5                      |
+| `SH`     | 56×48 rect (120,128), `MS` on `sh_a`                            | (.2,.8,.4); `sh_b` (.8,.2,.6) at 8                                                                   |
+| `Marker` | 32×32 rect (592,16)                                             | gate 3's marker colour of the step                                                                   |
 
 Variant `refused` adds `TM` (`TIME`, (.2,.4,.6)), `SC` (screen texture: 1 − clear = (.8,.8,.6)),
 `SD` (`texture_sdf`, (.4,.2,.8)), `GU` (`global uniform`, (.6,.2,.4)) at y 128 and x 208, 296,

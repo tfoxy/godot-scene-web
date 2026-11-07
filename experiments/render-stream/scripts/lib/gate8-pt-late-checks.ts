@@ -74,7 +74,6 @@ import { join } from "node:path";
 import { decodePngRgba } from "./gate-minus1-checks";
 import { check, type G8aCheck, readText, skipped } from "./gate8-adopt-checks";
 import { mmCellDiff, type Rgba } from "./gate8-mm-checks";
-import { type ShaderClockEvidence, shaderClockOrigin } from "./registry-checks";
 import {
   type PtPixels,
   ptCoverageProblems,
@@ -82,6 +81,7 @@ import {
   ptLifecycleProblems,
   ptShots,
 } from "./gate8-pt-receiver-checks";
+import { type ShaderClockEvidence, shaderClockOrigin } from "./registry-checks";
 
 export interface PtLate {
   arm_frame: number;
@@ -249,11 +249,7 @@ export function ptLateAdoptProblems(
           : (last.shaders.get(m.shader) as
               | { status?: string; builtin?: { kind?: string } | null }
               | undefined);
-      if (
-        !s ||
-        s.status !== "ok" ||
-        s.builtin?.kind !== "particle_process_material"
-      )
+      if (s?.status !== "ok" || s.builtin?.kind !== "particle_process_material")
         problems.push(
           `entry ${e.id}: process shader ${m.shader} is not an ok particle_process_material builtin`,
         );
@@ -506,11 +502,7 @@ export function ptLateCmbtProblems(
         : (last.shaders.get(m.shader) as
             | { status?: string; builtin?: { kind?: string } | null }
             | undefined);
-    if (
-      !s ||
-      s.status !== "ok" ||
-      s.builtin?.kind !== "particle_process_material"
-    )
+    if (s?.status !== "ok" || s.builtin?.kind !== "particle_process_material")
       problems.push(
         `entry ${entry.id}: process shader ${m.shader} is not an ok particle_process_material builtin`,
       );
@@ -540,11 +532,7 @@ function realShaderProblem(
     m.shader === null
       ? undefined
       : (last.shaders.get(m.shader) as PtShaderFacts | undefined);
-  if (
-    !s ||
-    s.status !== "ok" ||
-    s.builtin?.kind !== "particle_process_material"
-  )
+  if (s?.status !== "ok" || s.builtin?.kind !== "particle_process_material")
     return `entry ${entry.id}: process shader ${m.shader} is not an ok particle_process_material builtin`;
   if (s.synthetic === true)
     return `entry ${entry.id}: process shader ${m.shader} is the synthetic placeholder`;
@@ -765,13 +753,21 @@ export function standbyClockProblems(
   clock: ShaderClockEvidence | null | undefined,
   standbyFrames: number,
 ): { problems: string[]; detail: string } {
-  if (!clock) return { problems: ["no result.json stream.gate8.shader_clock"], detail: "absent" };
+  if (!clock)
+    return {
+      problems: ["no result.json stream.gate8.shader_clock"],
+      detail: "absent",
+    };
   const problems: string[] = [];
   const detail = `source ${clock.source} draws ${clock.draws} draws_missed ${clock.draws_missed} ticks ${clock.ticks}`;
-  if (clock.source !== "draw-hook") problems.push(`source ${clock.source}, want draw-hook (a rendered host)`);
-  if (clock.draws_missed !== 0) problems.push(`draws_missed ${clock.draws_missed}, want 0`);
+  if (clock.source !== "draw-hook")
+    problems.push(`source ${clock.source}, want draw-hook (a rendered host)`);
+  if (clock.draws_missed !== 0)
+    problems.push(`draws_missed ${clock.draws_missed}, want 0`);
   if (!(typeof clock.draws === "number" && clock.draws >= standbyFrames))
-    problems.push(`draws ${clock.draws}, want at least the ${standbyFrames} standby frames`);
+    problems.push(
+      `draws ${clock.draws}, want at least the ${standbyFrames} standby frames`,
+    );
   return { problems, detail };
 }
 /** the deferred pixel receivers (pt-late-lifecycle, -coverage, -outside-exact) */
@@ -1267,19 +1263,25 @@ export async function runG8ptLate(
     const id = "pt-clock-origin";
     const criterion =
       "LAR7: result.json stream.gate8.shader_clock shows where the carried shader clock began: deferred/capture (extension loaded at birth) origin startup, first tick at process frame 0, no draw missed; late/capture (extension loaded at frame 12) origin late-load, first tick after process frame 0";
-    if (!ran(DEFERRED_CAPTURE) || !ran(LATE_CAPTURE)) checks.push(check(id, criterion, null));
+    if (!ran(DEFERRED_CAPTURE) || !ran(LATE_CAPTURE))
+      checks.push(check(id, criterion, null));
     else {
       const clockOf = async (leg: string) =>
-        ((await json(join(dir(leg), "evidence", "result.json")))?.stream as
-          | { gate8?: { shader_clock?: ShaderClockEvidence } }
-          | undefined)?.gate8?.shader_clock;
+        (
+          (await json(join(dir(leg), "evidence", "result.json")))?.stream as
+            | { gate8?: { shader_clock?: ShaderClockEvidence } }
+            | undefined
+        )?.gate8?.shader_clock;
       const d = shaderClockOrigin(await clockOf(DEFERRED_CAPTURE), "startup");
       const l = shaderClockOrigin(await clockOf(LATE_CAPTURE), "late-load");
       checks.push(
         check(
           id,
           criterion,
-          [...d.problems.map((p) => `${DEFERRED_CAPTURE}: ${p}`), ...l.problems.map((p) => `${LATE_CAPTURE}: ${p}`)],
+          [
+            ...d.problems.map((p) => `${DEFERRED_CAPTURE}: ${p}`),
+            ...l.problems.map((p) => `${LATE_CAPTURE}: ${p}`),
+          ],
           `deferred: ${d.detail}; late: ${l.detail}`,
         ),
       );
@@ -1290,24 +1292,44 @@ export async function runG8ptLate(
   // draw hook in the standby table.
   {
     const clockOf = async (leg: string) =>
-      ((await json(join(dir(leg), "evidence", "result.json")))?.stream as
-        | { gate8?: { shader_clock?: ShaderClockEvidence } }
-        | undefined)?.gate8?.shader_clock;
+      (
+        (await json(join(dir(leg), "evidence", "result.json")))?.stream as
+          | { gate8?: { shader_clock?: ShaderClockEvidence } }
+          | undefined
+      )?.gate8?.shader_clock;
     const standbyFrames = late.arm_frame - 1;
     const id = "standby-clock";
     const crit = `LS1: on the rendered host the shader clock advances through standby: ${DEFERRED_CAPTURE} (the standby table for its first ${standbyFrames} frames, then armed) sums every engine draw through the hooked draw (source draw-hook, draws_missed 0 over the whole run, draws at least the standby frames)`;
     if (!ran(DEFERRED_CAPTURE)) checks.push(check(id, crit, null));
     else {
-      const r = standbyClockProblems(await clockOf(DEFERRED_CAPTURE), standbyFrames);
-      checks.push(check(id, crit, r.problems.map((p) => `${DEFERRED_CAPTURE}: ${p}`), r.detail));
+      const r = standbyClockProblems(
+        await clockOf(DEFERRED_CAPTURE),
+        standbyFrames,
+      );
+      checks.push(
+        check(
+          id,
+          crit,
+          r.problems.map((p) => `${DEFERRED_CAPTURE}: ${p}`),
+          r.detail,
+        ),
+      );
     }
     const sid = "sabotage-standby-no-draw";
     const scrit = `${STANDBY_NO_DRAW_CAPTURE} (GRC_STANDBY_FAULT=no-draw: draw left out of the standby table) fails standby-clock`;
     if (!ran(STANDBY_NO_DRAW_CAPTURE)) checks.push(check(sid, scrit, null));
     else {
-      const r = standbyClockProblems(await clockOf(STANDBY_NO_DRAW_CAPTURE), standbyFrames);
+      const r = standbyClockProblems(
+        await clockOf(STANDBY_NO_DRAW_CAPTURE),
+        standbyFrames,
+      );
       checks.push(
-        check(sid, scrit, r.problems.length > 0 ? [] : ["standby-clock did not fail"], `${r.problems[0] ?? "no problem"}; ${r.detail}`),
+        check(
+          sid,
+          scrit,
+          r.problems.length > 0 ? [] : ["standby-clock did not fail"],
+          `${r.problems[0] ?? "no problem"}; ${r.detail}`,
+        ),
       );
     }
   }

@@ -347,8 +347,7 @@ export function includeRefused(
     }
     const r = view(f, expected.include_refused.item);
     if (
-      !r.sh ||
-      r.sh.status !== "unsupported" ||
+      r.sh?.status !== "unsupported" ||
       r.sh.reason !== "shader-adopt-include" ||
       r.sh.hash !== null ||
       r.sh.origin !== "adopted"

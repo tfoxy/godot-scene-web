@@ -53,28 +53,28 @@ settles at `S + N·k + 7`. Steps 1, 4 and 7 are also shot one frame after they a
 quits at `S + N·9 + 11` (102) unless `RS_FIXTURE_QUIT_FRAME` asks for later. Every step
 recolours the `Marker`.
 
-| step | change                                                                 | F@16 uploads |
-| ---- | ---------------------------------------------------------------------- | ------------ |
+| step | change                                                                     | F@16 uploads |
+| ---- | -------------------------------------------------------------------------- | ------------ |
 | 0    | `L1`/`L2` "Hello", `L3` "Sphinx" (24 px), `LD` "Default", `LT`/`LA` "Hole" | create       |
-| 1    | `L1` "Hello Quartz"                                                    | 1            |
-| 2    | `L3` moves 8 px right                                                  | 0            |
-| 3    | hidden `LH` gets "Wyvern"                                              | 0            |
-| 4    | `LH` shown                                                             | 1            |
-| 5    | `L1` emptied                                                           | 0            |
-| 6    | `L1` "Quartz Hello"                                                    | 0            |
-| 7    | `L2` "Jump!", then `L1` "Fjord"                                        | 2            |
-| 8    | `L3`'s colour changes                                                  | 0            |
-| 9    | `LD` "Default 2" (the default font's page: 1 update)                   | 0            |
+| 1    | `L1` "Hello Quartz"                                                        | 1            |
+| 2    | `L3` moves 8 px right                                                      | 0            |
+| 3    | hidden `LH` gets "Wyvern"                                                  | 0            |
+| 4    | `LH` shown                                                                 | 1            |
+| 5    | `L1` emptied                                                               | 0            |
+| 6    | `L1` "Quartz Hello"                                                        | 0            |
+| 7    | `L2` "Jump!", then `L1` "Fjord"                                            | 2            |
+| 8    | `L3`'s colour changes                                                      | 0            |
+| 9    | `LD` "Default 2" (the default font's page: 1 update)                       | 0            |
 
 ## Environment
 
-| Variable                 | Meaning                                                                         |
-| ------------------------ | ------------------------------------------------------------------------------- |
-| `RS_FIXTURE_STEP_LOG`    | absolute path: one JSONL line per step at its applied frame                     |
+| Variable                 | Meaning                                                                          |
+| ------------------------ | -------------------------------------------------------------------------------- |
+| `RS_FIXTURE_STEP_LOG`    | absolute path: one JSONL line per step at its applied frame                      |
 | `RS_FIXTURE_SHOT_DIR`    | absolute dir: `step-<k>.png` at each settle frame, `early-<k>.png` for k 1, 4, 7 |
-| `RS_FIXTURE_ENV_LOG`     | absolute path: `env.json` (TextServer, font hashes and properties, settings)    |
-| `RS_FIXTURE_GLYPH_LOG`   | absolute path: the oracle; refused (exit 2) next to any `GRC_*` variable        |
-| `RS_FIXTURE_START_FRAME` | `S` ≥ 1, default 1                                                              |
-| `RS_FIXTURE_STEP_FRAMES` | `N` ≥ 8, default 10                                                             |
-| `RS_FIXTURE_QUIT_FRAME`  | ≥ the default `S + N·9 + 11`                                                    |
-| `RS_FIXTURE_VARIANT`     | refused (exit 2)                                                             |
+| `RS_FIXTURE_ENV_LOG`     | absolute path: `env.json` (TextServer, font hashes and properties, settings)     |
+| `RS_FIXTURE_GLYPH_LOG`   | absolute path: the oracle; refused (exit 2) next to any `GRC_*` variable         |
+| `RS_FIXTURE_START_FRAME` | `S` ≥ 1, default 1                                                               |
+| `RS_FIXTURE_STEP_FRAMES` | `N` ≥ 8, default 10                                                              |
+| `RS_FIXTURE_QUIT_FRAME`  | ≥ the default `S + N·9 + 11`                                                     |
+| `RS_FIXTURE_VARIANT`     | refused (exit 2)                                                                 |

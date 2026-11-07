@@ -50,9 +50,9 @@ import {
   receiverCheckpoints,
 } from "./gate2b-checks";
 import { evaluateCapture } from "./gate3-checks";
-import { assertValidationLog } from "./validation-log";
 import type { Gate5Expected } from "./gate5-expected";
 import { evaluateCaptureCanvas } from "./gate5d-checks";
+import { assertValidationLog } from "./validation-log";
 
 const GATE5_EXPECTED = resolve(
   dirname(fileURLToPath(import.meta.url)),

@@ -68,17 +68,17 @@ an exclusive release), `GSW_QUIET_SCHED=v1` (the older admission order), and cor
 
 ## Build scripts
 
-| Script | Builds |
-| ------ | ------ |
-| `build-capture.sh [build type]` | The capture GDExtension (CMake) and its ctest suite; prints the `.gdextension` path under `capture/build/`. |
-| `build-rs-net.sh [--no-test]` | The optional net module `capture/build/librender_stream_net.so` (WebTransport, TLS). Run after `build-capture.sh`. |
-| `build-rs-core.sh [--native-only\|--wasm-only]` | `rs-core-check` and `rs-gsw-wasm` into `artifacts/render-stream/rs-core/<sha>/` (`latest` points at the newest). |
-| `build-rs-core-ext.sh [--no-test]` | The native receiver's adapter `receiver/ext/build/librs_core_ext.so`. Needed before any native receiver launch. |
-| `build-rs-core-web.sh` | The same adapter as an emscripten side module for the web export. |
-| `build-web-receiver.sh --core rust [--out DIR] [--force]` | The web-export receiver bundle, from pinned, sha-checked editor and template binaries. |
-| `build-basis-transcoder.sh` | GSW's KTX2/Basis transcoder wasm. |
-| `prepare-textures.sh --cache DIR (--project\|--images\|--list) ...` | Warms the capture's persisted texture cache, headless, before any session. |
-| `calibrate.sh [--check]` | Re-derives the committed calibration record (`--check` diffs instead of writing). |
+| Script                                                              | Builds                                                                                                             |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `build-capture.sh [build type]`                                     | The capture GDExtension (CMake) and its ctest suite; prints the `.gdextension` path under `capture/build/`.        |
+| `build-rs-net.sh [--no-test]`                                       | The optional net module `capture/build/librender_stream_net.so` (WebTransport, TLS). Run after `build-capture.sh`. |
+| `build-rs-core.sh [--native-only\|--wasm-only]`                     | `rs-core-check` and `rs-gsw-wasm` into `artifacts/render-stream/rs-core/<sha>/` (`latest` points at the newest).   |
+| `build-rs-core-ext.sh [--no-test]`                                  | The native receiver's adapter `receiver/ext/build/librs_core_ext.so`. Needed before any native receiver launch.    |
+| `build-rs-core-web.sh`                                              | The same adapter as an emscripten side module for the web export.                                                  |
+| `build-web-receiver.sh --core rust [--out DIR] [--force]`           | The web-export receiver bundle, from pinned, sha-checked editor and template binaries.                             |
+| `build-basis-transcoder.sh`                                         | GSW's KTX2/Basis transcoder wasm.                                                                                  |
+| `prepare-textures.sh --cache DIR (--project\|--images\|--list) ...` | Warms the capture's persisted texture cache, headless, before any session.                                         |
+| `calibrate.sh [--check]`                                            | Re-derives the committed calibration record (`--check` diffs instead of writing).                                  |
 
 Every build holds the quiet lock shared and is incremental; cargo builds are offline (`--offline`,
 pinned lockfiles).
@@ -91,19 +91,19 @@ sabotage and fault legs that must fail a named check) and writes evidence under 
 runs the checker, which classifies every leg, evaluates every check, writes
 `<out>/result.json` and prints one line per check.
 
-| Runner | Gate |
-| ------ | ---- |
-| `run-gate-minus1.sh` | The capture seam: the hooks on the pinned binary, against the spike fixture, headless and rendered. |
-| `run-gate0.sh` | First stream: a recording replayed pixel-exact by the receiver. |
-| `run-gate1.sh` | Retained state, patches and the live WebSocket transport (stall, reconnect, resync). |
-| `run-gate2.sh` | Textures: payloads, the resource store, cache and live HTTP GETs, auth. |
-| `run-gate3.sh` | Clipping, including transformed clips and `clip_ignore`. |
-| `run-gate4.sh` | Text: atlases, layout, i18n, MSDF, rich text. |
-| `run-gate5.sh` | Geometry, meshes and styleboxes. |
-| `run-gate55.sh` | Materials and shaders. |
-| `run-gate6.sh` | A full scene at presentation size, canvas layers, HD, live cadence, soak and perf legs. |
-| `run-gate7.sh` | The browser receivers (web export and GSW) replaying the other gates' sources, live legs, benches and device legs. |
-| `run-gate8.sh` | Late-join adoption, compressed and float textures, delivery variants, host cache, presentation size, canvas groups, particles, multimesh, item metadata. |
+| Runner               | Gate                                                                                                                                                     |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run-gate-minus1.sh` | The capture seam: the hooks on the pinned binary, against the spike fixture, headless and rendered.                                                      |
+| `run-gate0.sh`       | First stream: a recording replayed pixel-exact by the receiver.                                                                                          |
+| `run-gate1.sh`       | Retained state, patches and the live WebSocket transport (stall, reconnect, resync).                                                                     |
+| `run-gate2.sh`       | Textures: payloads, the resource store, cache and live HTTP GETs, auth.                                                                                  |
+| `run-gate3.sh`       | Clipping, including transformed clips and `clip_ignore`.                                                                                                 |
+| `run-gate4.sh`       | Text: atlases, layout, i18n, MSDF, rich text.                                                                                                            |
+| `run-gate5.sh`       | Geometry, meshes and styleboxes.                                                                                                                         |
+| `run-gate55.sh`      | Materials and shaders.                                                                                                                                   |
+| `run-gate6.sh`       | A full scene at presentation size, canvas layers, HD, live cadence, soak and perf legs.                                                                  |
+| `run-gate7.sh`       | The browser receivers (web export and GSW) replaying the other gates' sources, live legs, benches and device legs.                                       |
+| `run-gate8.sh`       | Late-join adoption, compressed and float textures, delivery variants, host cache, presentation size, canvas groups, particles, multimesh, item metadata. |
 
 Native runners share one shape:
 
@@ -200,20 +200,20 @@ one set. Entries live in the main checkout's ignored `artifacts/render-stream/so
 
 Most runs need none of these; runners set what their legs need.
 
-| Variable | Effect |
-| -------- | ------ |
-| `RS_QUIET_LOCK_DIR` | A private quiet-lock directory (tooling tests and synthetic runs only). |
-| `RS_LEG_SHARDS=N` | Run file-mode legs on N parallel workers, each with its own gamescope (gates 0–3 and gate 7 file groups; default serial). |
-| `RS_FAST_FRAMES=all\|host\|receiver`, `RS_FAST_FRAMES_MAX_FPS` | Run allowlisted live correctness legs unthrottled (default off; 61..1000 fps, default 240). |
-| `RS_SABOTAGE_TIER=skip` | Skip sabotage legs; their checks are reported skipped-by-tier. |
-| `RS_SMOKE_LEGS`, `GATE7_SMOKE_LEGS` | The smoke tier's leg selection (set by `validate-increment.sh`). |
-| `RS_SKIP_TIMING_GROUPS=1` | Skip exclusive-lock timing groups (set only by the hosted-runner workflow). |
-| `RS_SOURCE_CACHE=0` | Do not look up or publish gate 7 sources in the cache. |
-| `GATE7_CREDIT_WINDOW` | The live credit window for gate 7 runs (same as `--credit-window`). |
-| `RS_PRIVATE_BROWSERS_DIR` | The root of the pinned Chromium copy. |
-| `RS_RECEIVER_*` | Receiver configuration, normally set per leg by the runner; see [../receiver/README.md](../receiver/README.md). |
-| `GRC_*` | Capture configuration, set per leg by the runner; see [../protocol/streaming-host.md](../protocol/streaming-host.md). |
-| `RS_FIXTURE_*` | Fixture-scene controls (frames to quit at, shot frames, variants), read by the fixtures' own scripts. |
+| Variable                                                       | Effect                                                                                                                    |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `RS_QUIET_LOCK_DIR`                                            | A private quiet-lock directory (tooling tests and synthetic runs only).                                                   |
+| `RS_LEG_SHARDS=N`                                              | Run file-mode legs on N parallel workers, each with its own gamescope (gates 0–3 and gate 7 file groups; default serial). |
+| `RS_FAST_FRAMES=all\|host\|receiver`, `RS_FAST_FRAMES_MAX_FPS` | Run allowlisted live correctness legs unthrottled (default off; 61..1000 fps, default 240).                               |
+| `RS_SABOTAGE_TIER=skip`                                        | Skip sabotage legs; their checks are reported skipped-by-tier.                                                            |
+| `RS_SMOKE_LEGS`, `GATE7_SMOKE_LEGS`                            | The smoke tier's leg selection (set by `validate-increment.sh`).                                                          |
+| `RS_SKIP_TIMING_GROUPS=1`                                      | Skip exclusive-lock timing groups (set only by the hosted-runner workflow).                                               |
+| `RS_SOURCE_CACHE=0`                                            | Do not look up or publish gate 7 sources in the cache.                                                                    |
+| `GATE7_CREDIT_WINDOW`                                          | The live credit window for gate 7 runs (same as `--credit-window`).                                                       |
+| `RS_PRIVATE_BROWSERS_DIR`                                      | The root of the pinned Chromium copy.                                                                                     |
+| `RS_RECEIVER_*`                                                | Receiver configuration, normally set per leg by the runner; see [../receiver/README.md](../receiver/README.md).           |
+| `GRC_*`                                                        | Capture configuration, set per leg by the runner; see [../protocol/streaming-host.md](../protocol/streaming-host.md).     |
+| `RS_FIXTURE_*`                                                 | Fixture-scene controls (frames to quit at, shot frames, variants), read by the fixtures' own scripts.                     |
 
 ## Self-tests
 

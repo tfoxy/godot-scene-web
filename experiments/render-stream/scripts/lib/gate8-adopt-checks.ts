@@ -35,20 +35,20 @@ import { join } from "node:path";
 import { decodePngRgba } from "./gate-minus1-checks";
 import { compareWorkerRecordings } from "./gate8-tex-checks";
 import {
-  type CostSample,
-  type RegistryEvidence,
-  registryCost,
   COST_CALLS_PER_TRIPLE,
-  REGISTRY_CALL_BUDGET_NS,
-  registryLiveBound,
+  type CostSample,
   type IdleSample,
-  validationLogCost,
-  VALIDATION_LOG_COST_BOUND_US,
-  VALIDATION_LOG_SABOTAGE_MIN_US,
   idleParity,
   parseRegistryChurn,
+  REGISTRY_CALL_BUDGET_NS,
+  type RegistryEvidence,
+  registryCost,
+  registryLiveBound,
   STANDBY_HOOKS,
   standbyHotZero,
+  VALIDATION_LOG_COST_BOUND_US,
+  VALIDATION_LOG_SABOTAGE_MIN_US,
+  validationLogCost,
 } from "./registry-checks";
 import {
   decodeRecording,
@@ -810,17 +810,27 @@ const FAULTS_RENDERED = ["no-resources", "atlas-from-dummy"] as const;
 // LAR0: the registry-cost timing group (run-gate8.sh G8A_COST_CONFIGS x G8A_COST_ROUNDS).
 const REGISTRY_COST_CONFIGS = ["off", "on", "regoff"] as const;
 const REGISTRY_COST_ROUNDS = 5;
-const REGISTRY_COST_DIRS = Array.from({ length: REGISTRY_COST_ROUNDS }, (_, r) =>
-  REGISTRY_COST_CONFIGS.map((c) => `registry-cost/${c}-${r + 1}`),
+const REGISTRY_COST_DIRS = Array.from(
+  { length: REGISTRY_COST_ROUNDS },
+  (_, r) => REGISTRY_COST_CONFIGS.map((c) => `registry-cost/${c}-${r + 1}`),
 ).flat();
 // LS0: the validation-log-cost timing group (run-gate8.sh G8A_VLC_CONFIGS x G8A_VLC_ROUNDS). The
 // sabotage leg is named sabotage-* so a run that skips sabotages skips it (legs_sabotage_skipped).
 // LS1: `n` (no extension loaded) and `s` (GRC_MODE=standby) for idle-parity; b, c and the sabotage
 // keep LS0's shape (the full table published and never armed) through GRC_STANDBY_FAULT=full-table.
-const VLC_CONFIGS = ["a0", "b", "c", "sabotage-validation-log-ignored", "n", "s"] as const;
+const VLC_CONFIGS = [
+  "a0",
+  "b",
+  "c",
+  "sabotage-validation-log-ignored",
+  "n",
+  "s",
+] as const;
 const VLC_ROUNDS = 5;
 const vlcDir = (c: string, r: number) => `validation-log-cost/${c}-${r + 1}`;
-const VLC_DIRS = Array.from({ length: VLC_ROUNDS }, (_, r) => VLC_CONFIGS.map((c) => vlcDir(c, r))).flat();
+const VLC_DIRS = Array.from({ length: VLC_ROUNDS }, (_, r) =>
+  VLC_CONFIGS.map((c) => vlcDir(c, r)),
+).flat();
 // The adopt_stats fields that are timings (differ run to run), left out of a deferred = late
 // comparison.
 const isTiming = (k: string) => k.endsWith("_ns");
@@ -865,15 +875,23 @@ export function judgeTexCurrentUnupdated(
   const creation = adopt.filter((l) => l.adopted_content === "creation");
   const pristine = registry.filter((l) => !updated.has(String(l.rid)));
   if (pristine.length === 0)
-    problems.push("no adopted texture declared current from the registry's `updated` bit");
+    problems.push(
+      "no adopted texture declared current from the registry's `updated` bit",
+    );
   for (const l of registry)
     if (l.adopted_content !== "current")
-      problems.push(`registry-sourced texture ${l.rid} declared ${l.adopted_content}`);
+      problems.push(
+        `registry-sourced texture ${l.rid} declared ${l.adopted_content}`,
+      );
   if (creation.length !== 1)
-    problems.push(`${creation.length} textures declared creation, expected 1 (Stale)`);
+    problems.push(
+      `${creation.length} textures declared creation, expected 1 (Stale)`,
+    );
   for (const l of creation)
     if (!updated.has(String(l.rid)))
-      problems.push(`creation texture ${l.rid} is never updated in place (only Stale should be)`);
+      problems.push(
+        `creation texture ${l.rid} is never updated in place (only Stale should be)`,
+      );
   if (!res) problems.push("no stream.gate8.adopt_stats.resources");
   else if (res.textures_registry !== registry.length)
     problems.push(
@@ -1084,7 +1102,8 @@ export async function runG8a(
     if (born.rec && deferred.rec && deferred.bytes) {
       problems = [];
       const errors = validateRecording(deferred.bytes, 8);
-      if (errors.length > 0) problems.push(`invalid /8 recording: ${errors[0]}`);
+      if (errors.length > 0)
+        problems.push(`invalid /8 recording: ${errors[0]}`);
       const decoded = decodeRecording(deferred.bytes, 8) as unknown as {
         records: { meta: Record<string, unknown> }[];
       };
@@ -1098,10 +1117,13 @@ export async function runG8a(
         );
       const first = deferred.rec.transactions[0];
       if (!first || first.frame !== K)
-        problems.push(`first transaction at frame ${first?.frame}, expected ${K}`);
+        problems.push(
+          `first transaction at frame ${first?.frame}, expected ${K}`,
+        );
       const e = equivalence(born.rec, deferred.rec, K, expected.residue, allow);
       problems.push(...e.problems.slice(0, 20));
-      if (e.problems.length > 20) problems.push(`... ${e.problems.length - 20} more`);
+      if (e.problems.length > 20)
+        problems.push(`... ${e.problems.length - 20} more`);
       const a = stripTimings(deferredResult?.stream?.gate8?.adopt_stats, true);
       const b = stripTimings(lateResult?.stream?.gate8?.adopt_stats, true);
       if (a === undefined || JSON.stringify(a) !== JSON.stringify(b))
@@ -1125,7 +1147,9 @@ export async function runG8a(
       const lines = jsonl<Record<string, unknown>>(
         await readText(join(root, "deferred/capture/evidence/resources.jsonl")),
       );
-      const st = deferredResult?.stream?.gate8?.adopt_stats as Record<string, unknown> | undefined;
+      const st = deferredResult?.stream?.gate8?.adopt_stats as
+        | Record<string, unknown>
+        | undefined;
       const j = judgeTexCurrentUnupdated(
         lines,
         st?.resources as Record<string, unknown> | undefined,
@@ -1145,7 +1169,9 @@ export async function runG8a(
 
   // --- LAR0: registry-live-bound -------------------------------------------------------------
   const registryOf = async (leg: string) => ({
-    reg: await readJson<RegistryEvidence>(join(root, leg, "capture/evidence/registry.json")),
+    reg: await readJson<RegistryEvidence>(
+      join(root, leg, "capture/evidence/registry.json"),
+    ),
     counts:
       (
         await readJson<{ counts: Record<string, number | null> }>(
@@ -1157,16 +1183,25 @@ export async function runG8a(
   // run its churn (deferred, standby): a create slot missing from the standby table neither counts
   // nor records, so only the fixture's own count shows it.
   const ownCreatesOf = async (leg: string) =>
-    parseRegistryChurn(await readText(join(root, leg, "capture/stdout.log")))?.own_creates ?? {
+    parseRegistryChurn(await readText(join(root, leg, "capture/stdout.log")))
+      ?.own_creates ?? {
       missing_registry_churn_line: Number.POSITIVE_INFINITY,
     };
   const liveSummary: Record<string, unknown> = {};
   {
     let problems: string[] | null = null;
-    if (ran("deferred/capture") && ran("born-adopt/capture") && ran("late/capture") && ran("standby/capture")) {
+    if (
+      ran("deferred/capture") &&
+      ran("born-adopt/capture") &&
+      ran("late/capture") &&
+      ran("standby/capture")
+    ) {
       problems = [];
       for (const [leg, opts] of [
-        ["deferred", { preArmFreesBefore: K, ownCreates: await ownCreatesOf("deferred") }],
+        [
+          "deferred",
+          { preArmFreesBefore: K, ownCreates: await ownCreatesOf("deferred") },
+        ],
         ["standby", { ownCreates: await ownCreatesOf("standby") }],
         ["born-adopt", {}],
         ["late", {}],
@@ -1175,14 +1210,28 @@ export async function runG8a(
         const r = registryLiveBound(leg, reg, counts, opts);
         problems.push(...r.problems);
         liveSummary[leg] = r.summary;
-        if ("ownCreates" in opts && "missing_registry_churn_line" in opts.ownCreates)
-          problems.push(`${leg}: no [fixture] registry-churn line in capture/stdout.log`);
+        if (
+          "ownCreates" in opts &&
+          "missing_registry_churn_line" in opts.ownCreates
+        )
+          problems.push(
+            `${leg}: no [fixture] registry-churn line in capture/stdout.log`,
+          );
       }
       // The pure path (GRC_ADOPT unset) records nothing and writes no registry evidence.
       if (existsSync(join(root, "born/capture/evidence/registry.json")))
         problems.push("born (GRC_ADOPT=off) wrote evidence/registry.json");
     }
-    const d = liveSummary.deferred as { rows: number; creates: number; frees: number; peak: number; bytes_estimate: number; pre_arm_frees: number } | undefined;
+    const d = liveSummary.deferred as
+      | {
+          rows: number;
+          creates: number;
+          frees: number;
+          peak: number;
+          bytes_estimate: number;
+          pre_arm_frees: number;
+        }
+      | undefined;
     checks.push(
       check(
         "registry-live-bound",
@@ -1214,7 +1263,8 @@ export async function runG8a(
           section_us?: { params?: number };
         }>(join(root, l, "scale-report.json"));
         if (typeof scale?.churn === "number") churns.add(scale.churn);
-        if (typeof scale?.param_updates === "number") paramUpdates.add(scale.param_updates);
+        if (typeof scale?.param_updates === "number")
+          paramUpdates.add(scale.param_updates);
         const perf = await readJson<{
           histograms: { frame_callback_us: { mean: number } };
         }>(join(root, l, "evidence/perf.json"));
@@ -1222,7 +1272,8 @@ export async function runG8a(
           missing.push(l);
           continue;
         }
-        (samples[config] ??= []).push({
+        samples[config] ??= [];
+        samples[config].push({
           frame_us_p50: scale.frame_us_p50,
           churn_us_mean: scale.churn_us_mean,
           callback_us_mean: perf.histograms.frame_callback_us.mean,
@@ -1233,15 +1284,29 @@ export async function runG8a(
       // RS_SCALE_RESOURCE_CHURN), each created and freed once a frame.
       const churn = churns.size === 1 ? [...churns][0] : Number.NaN;
       const callsPerFrame = churn * COST_CALLS_PER_TRIPLE;
-      const paramCalls = paramUpdates.size === 1 ? [...paramUpdates][0] : Number.NaN;
+      const paramCalls =
+        paramUpdates.size === 1 ? [...paramUpdates][0] : Number.NaN;
       const r = registryCost(samples, callsPerFrame, paramCalls);
       problems = [
         ...missing.map((l) => `${l}: no scale report or perf.json`),
-        ...(churns.size === 1 ? [] : [`scale reports name churn ${JSON.stringify([...churns])}, want one value`]),
-        ...(paramUpdates.size === 1 ? [] : [`scale reports name param_updates ${JSON.stringify([...paramUpdates])}, want one value`]),
+        ...(churns.size === 1
+          ? []
+          : [
+              `scale reports name churn ${JSON.stringify([...churns])}, want one value`,
+            ]),
+        ...(paramUpdates.size === 1
+          ? []
+          : [
+              `scale reports name param_updates ${JSON.stringify([...paramUpdates])}, want one value`,
+            ]),
         ...r.problems,
       ];
-      costReport = { samples, calls_per_frame: callsPerFrame, budget_ns_per_call: REGISTRY_CALL_BUDGET_NS, comparisons: r.comparisons };
+      costReport = {
+        samples,
+        calls_per_frame: callsPerFrame,
+        budget_ns_per_call: REGISTRY_CALL_BUDGET_NS,
+        comparisons: r.comparisons,
+      };
     }
     const cmp = (costReport?.comparisons ?? []) as {
       metric: string;
@@ -1278,38 +1343,64 @@ export async function runG8a(
       for (const c of configs) {
         for (let r = 0; r < VLC_ROUNDS; r++) {
           const dir = vlcDir(c, r);
-          const scale = await readJson<{ cpu_us_mean?: number; rss_kb?: number }>(join(root, dir, "scale-report.json"));
+          const scale = await readJson<{
+            cpu_us_mean?: number;
+            rss_kb?: number;
+          }>(join(root, dir, "scale-report.json"));
           if (typeof scale?.cpu_us_mean !== "number") {
-            problems.push(`${dir}: no scale report cpu_us_mean (RS_SCALE_CPU_REPORT=1)`);
+            problems.push(
+              `${dir}: no scale report cpu_us_mean (RS_SCALE_CPU_REPORT=1)`,
+            );
             continue;
           }
-          (samples[c] ??= []).push({ cpu_us_mean: scale.cpu_us_mean, rss_kb: scale.rss_kb });
+          samples[c] ??= [];
+          samples[c].push({
+            cpu_us_mean: scale.cpu_us_mean,
+            rss_kb: scale.rss_kb,
+          });
           if (c === "n") {
             // LS1: no capture at all; the extension wrote nothing.
             if (existsSync(join(root, dir, "evidence/result.json")))
-              problems.push(`${dir}: the no-capture leg wrote evidence/result.json`);
+              problems.push(
+                `${dir}: the no-capture leg wrote evidence/result.json`,
+              );
             continue;
           }
-          const counters = await readJson<{ validation_log?: string }>(join(root, dir, "evidence/counters.json"));
-          const result = await readJson<{ unarmed_restore?: string | null }>(join(root, dir, "evidence/result.json"));
+          const counters = await readJson<{ validation_log?: string }>(
+            join(root, dir, "evidence/counters.json"),
+          );
+          const result = await readJson<{ unarmed_restore?: string | null }>(
+            join(root, dir, "evidence/result.json"),
+          );
           const wantLog = c.startsWith("sabotage-") ? "on" : "off";
           if (counters?.validation_log !== wantLog)
-            problems.push(`${dir}: counters.json validation_log ${JSON.stringify(counters?.validation_log ?? null)}, want "${wantLog}"`);
+            problems.push(
+              `${dir}: counters.json validation_log ${JSON.stringify(counters?.validation_log ?? null)}, want "${wantLog}"`,
+            );
           // a0 patches nothing (validate mode); b and c patch the vtable and never arm, so the
           // shutdown restores it (the SIGSEGV after TERM, K3)
           const wantRestore = c === "a0" ? null : "shutdown";
           if ((result?.unarmed_restore ?? null) !== wantRestore)
-            problems.push(`${dir}: result.json unarmed_restore ${JSON.stringify(result?.unarmed_restore ?? null)}, want ${JSON.stringify(wantRestore)}`);
+            problems.push(
+              `${dir}: result.json unarmed_restore ${JSON.stringify(result?.unarmed_restore ?? null)}, want ${JSON.stringify(wantRestore)}`,
+            );
           // LS1: b, c and the sabotage publish the full table (LS0's shape), s the standby table.
-          const vt = (result as { vtable?: { standby_fault?: string } } | undefined)?.vtable;
-          const wantFault = c === "a0" ? undefined : c === "s" ? "none" : "full-table";
+          const vt = (
+            result as { vtable?: { standby_fault?: string } } | undefined
+          )?.vtable;
+          const wantFault =
+            c === "a0" ? undefined : c === "s" ? "none" : "full-table";
           if (vt?.standby_fault !== wantFault)
-            problems.push(`${dir}: result.json vtable.standby_fault ${JSON.stringify(vt?.standby_fault ?? null)}, want ${JSON.stringify(wantFault ?? null)}`);
+            problems.push(
+              `${dir}: result.json vtable.standby_fault ${JSON.stringify(vt?.standby_fault ?? null)}, want ${JSON.stringify(wantFault ?? null)}`,
+            );
         }
       }
       return { samples, problems };
     };
-    const honestDirs = Array.from({ length: VLC_ROUNDS }, (_, r) => ["a0", "b", "c"].map((c) => vlcDir(c, r))).flat();
+    const honestDirs = Array.from({ length: VLC_ROUNDS }, (_, r) =>
+      ["a0", "b", "c"].map((c) => vlcDir(c, r)),
+    ).flat();
     let costProblems: string[] | null = null;
     let costDetail: string | undefined;
     let samples: Record<string, IdleSample[]> = {};
@@ -1319,7 +1410,10 @@ export async function runG8a(
       const judged = validationLogCost(got.samples, ["b", "c"]);
       costProblems = [...got.problems, ...judged.problems];
       costDetail = judged.comparisons
-        .map((c) => `${c.config}-a0 ${c.median >= 0 ? "+" : ""}${c.median.toFixed(1)}µs (bound ${c.bound})`)
+        .map(
+          (c) =>
+            `${c.config}-a0 ${c.median >= 0 ? "+" : ""}${c.median.toFixed(1)}µs (bound ${c.bound})`,
+        )
         .join("; ");
     }
     checks.push(
@@ -1330,20 +1424,34 @@ export async function runG8a(
         costDetail,
       ),
     );
-    const sabDirs = Array.from({ length: VLC_ROUNDS }, (_, r) => vlcDir("sabotage-validation-log-ignored", r));
+    const sabDirs = Array.from({ length: VLC_ROUNDS }, (_, r) =>
+      vlcDir("sabotage-validation-log-ignored", r),
+    );
     let sabProblems: string[] | null = null;
     let sabDetail: string | undefined;
     if (sabDirs.every((l) => ran(l)) && honestDirs.every((l) => ran(l))) {
       const got = await collect(["sabotage-validation-log-ignored"]);
       const sab = got.samples["sabotage-validation-log-ignored"] ?? [];
-      const judged = validationLogCost({ a0: samples.a0 ?? [], cs: sab }, ["cs"]);
-      const k2 = sab.length === (samples.c ?? []).length ? sab.map((s, i) => s.cpu_us_mean - samples.c[i].cpu_us_mean).sort((a, b) => a - b) : [];
-      const k2Median = k2.length > 0 ? k2[Math.floor(k2.length / 2)] : Number.NaN;
+      const judged = validationLogCost({ a0: samples.a0 ?? [], cs: sab }, [
+        "cs",
+      ]);
+      const k2 =
+        sab.length === (samples.c ?? []).length
+          ? sab
+              .map((s, i) => s.cpu_us_mean - samples.c[i].cpu_us_mean)
+              .sort((a, b) => a - b)
+          : [];
+      const k2Median =
+        k2.length > 0 ? k2[Math.floor(k2.length / 2)] : Number.NaN;
       sabProblems = [...got.problems];
       if (judged.problems.length === 0)
-        sabProblems.push("the sabotaged legs passed validation-log-cost: the check cannot see K2");
+        sabProblems.push(
+          "the sabotaged legs passed validation-log-cost: the check cannot see K2",
+        );
       if (!(k2Median >= VALIDATION_LOG_SABOTAGE_MIN_US))
-        sabProblems.push(`sabotage - c +${k2Median.toFixed?.(1)} µs, K2 (80 µs in idle-capture-cost.md) should return at least ${VALIDATION_LOG_SABOTAGE_MIN_US}`);
+        sabProblems.push(
+          `sabotage - c +${k2Median.toFixed?.(1)} µs, K2 (80 µs in idle-capture-cost.md) should return at least ${VALIDATION_LOG_SABOTAGE_MIN_US}`,
+        );
       sabDetail = `sabotage-a0 ${judged.comparisons.map((c) => c.median.toFixed(1)).join(",")}µs, sabotage-c ${k2Median.toFixed(1)}µs`;
     }
     checks.push(
@@ -1359,7 +1467,9 @@ export async function runG8a(
   // --- LS1: idle-parity (timing group, local) --------------------------------------------------
   // GRC_MODE=standby against no capture at all, on the same legs' fixture and rounds (fork F1).
   {
-    const dirs = Array.from({ length: VLC_ROUNDS }, (_, r) => ["n", "s"].map((c) => vlcDir(c, r))).flat();
+    const dirs = Array.from({ length: VLC_ROUNDS }, (_, r) =>
+      ["n", "s"].map((c) => vlcDir(c, r)),
+    ).flat();
     let problems: string[] | null = null;
     let detail: string | undefined;
     if (dirs.every((l) => ran(l))) {
@@ -1368,17 +1478,29 @@ export async function runG8a(
       for (const c of ["n", "s"]) {
         for (let r = 0; r < VLC_ROUNDS; r++) {
           const dir = vlcDir(c, r);
-          const scale = await readJson<{ cpu_us_mean?: number; rss_kb?: number }>(join(root, dir, "scale-report.json"));
+          const scale = await readJson<{
+            cpu_us_mean?: number;
+            rss_kb?: number;
+          }>(join(root, dir, "scale-report.json"));
           if (typeof scale?.cpu_us_mean !== "number") {
             problems.push(`${dir}: no scale report cpu_us_mean`);
             continue;
           }
-          (samples[c] ??= []).push({ cpu_us_mean: scale.cpu_us_mean, rss_kb: scale.rss_kb });
+          samples[c] ??= [];
+          samples[c].push({
+            cpu_us_mean: scale.cpu_us_mean,
+            rss_kb: scale.rss_kb,
+          });
         }
         if (c === "s") {
           for (let r = 0; r < VLC_ROUNDS; r++) {
-            const result = await readJson<{ status?: string }>(join(root, vlcDir(c, r), "evidence/result.json"));
-            if (result?.status !== "standby") problems.push(`${vlcDir(c, r)}: status ${result?.status}, want standby`);
+            const result = await readJson<{ status?: string }>(
+              join(root, vlcDir(c, r), "evidence/result.json"),
+            );
+            if (result?.status !== "standby")
+              problems.push(
+                `${vlcDir(c, r)}: status ${result?.status}, want standby`,
+              );
           }
         }
       }
@@ -1413,7 +1535,7 @@ export async function runG8a(
     if (ba.rec && born.rec) {
       problems = [];
       const st = baResult?.stream?.gate8?.adopt_stats;
-      if (!st || st.items !== 0 || st.layers !== 0 || st.ran !== true)
+      if (st?.items !== 0 || st.layers !== 0 || st.ran !== true)
         problems.push(`adopt_stats ${JSON.stringify(st)}`);
       const e = equivalence(born.rec, ba.rec, 1, 0);
       problems.push(...e.problems);
@@ -1470,8 +1592,7 @@ export async function runG8a(
             (x) => x.reason === expected.strict.reason,
           );
           if (
-            !f ||
-            !f.detail.includes(`op=${expected.strict.op}`) ||
+            !f?.detail.includes(`op=${expected.strict.op}`) ||
             !f.detail.includes(`frame=${failAt}`)
           ) {
             problems.push(
@@ -1986,12 +2107,14 @@ export async function runG8a(
 
   // --- LS1: standby-hot-zero and its two sabotages ---------------------------------------------
   const standbyOf = async (leg: string) => ({
-    result: await readJson<{ status?: string; vtable?: { published?: string; standby_hooks?: string[] } }>(
-      join(root, leg, "capture/evidence/result.json"),
-    ),
-    counters: await readJson<{ hooks_planned?: string[]; counts?: Record<string, number | null> }>(
-      join(root, leg, "capture/evidence/counters.json"),
-    ),
+    result: await readJson<{
+      status?: string;
+      vtable?: { published?: string; standby_hooks?: string[] };
+    }>(join(root, leg, "capture/evidence/result.json")),
+    counters: await readJson<{
+      hooks_planned?: string[];
+      counts?: Record<string, number | null>;
+    }>(join(root, leg, "capture/evidence/counters.json")),
   });
   {
     let problems: string[] | null = null;
@@ -2005,7 +2128,10 @@ export async function runG8a(
       const armedHot = (d.counters?.hooks_planned ?? [])
         .filter((h) => !STANDBY_HOOKS.includes(h))
         .reduce((sum, h) => sum + (d.counters?.counts?.[h] ?? 0), 0);
-      if (!(armedHot > 0)) problems.push(`deferred: ${armedHot} hot calls armed (the fixture must make some)`);
+      if (!(armedHot > 0))
+        problems.push(
+          `deferred: ${armedHot} hot calls armed (the fixture must make some)`,
+        );
       detail = `standby: ${r.hot_planned} hot hooks planned, ${r.hot_calls} hot calls, ${r.standby_calls} standby-slot calls; deferred (armed at ${K}): ${armedHot} hot calls`;
     }
     checks.push(
@@ -2022,7 +2148,12 @@ export async function runG8a(
     let detail: string | undefined;
     if (ran("sabotage-standby-full-table/capture")) {
       const s = await standbyOf("sabotage-standby-full-table");
-      const r = standbyHotZero("sabotage-standby-full-table", s.result, s.counters, STANDBY_HOOKS);
+      const r = standbyHotZero(
+        "sabotage-standby-full-table",
+        s.result,
+        s.counters,
+        STANDBY_HOOKS,
+      );
       problems = r.problems.length > 0 ? [] : ["standby-hot-zero did not fail"];
       detail = `${r.problems.length} standby-hot-zero problems (${r.hot_calls} hot calls); first: ${r.problems[0] ?? "none"}`;
     }
@@ -2044,7 +2175,8 @@ export async function runG8a(
       const own = await ownCreatesOf(leg);
       const withOwn = registryLiveBound(leg, reg, counts, { ownCreates: own });
       const countersOnly = registryLiveBound(leg, reg, counts);
-      problems = withOwn.problems.length > 0 ? [] : ["registry-live-bound did not fail"];
+      problems =
+        withOwn.problems.length > 0 ? [] : ["registry-live-bound did not fail"];
       detail = `${withOwn.problems.length} registry-live-bound problems against the fixture's own count (${countersOnly.problems.length} against the hook counters alone); first: ${withOwn.problems[0] ?? "none"}`;
     }
     checks.push(
@@ -2072,7 +2204,8 @@ export async function runG8a(
         equivalence_problems: r.problems.length,
         differing_px: 0,
       };
-      if (r.problems.length === 0) problems.push("registry-live-bound did not fail");
+      if (r.problems.length === 0)
+        problems.push("registry-live-bound did not fail");
     }
     checks.push(
       check(

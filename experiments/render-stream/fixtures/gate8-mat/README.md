@@ -35,16 +35,16 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate8-ma
 
 ## Layout (640×360; boxes 48×40 at their position)
 
-| item | at | material | before arm | after arm |
-| ---- | -- | -------- | ---------- | --------- |
-| `A`  | (32,32)   | `MA`: ShaderMaterial on main, `pal` = PAL, `tint` | `tint` changes at frame 5 | `tint` changes at K+14 |
-| `I`  | (96,32)   | `MA` | instance `inst` set | `inst` changes at K+14 |
-| `R`  | (160,32)  | `MR`: ShaderMaterial on rel, `tint` | | |
-| `C`  | (224,32)  | `MC`: CanvasItemMaterial, blend add | the add mode is first used | |
-| `N1` | (32,128)  | `MP`: ShaderMaterial on main, `pal` = PAL2 (made before arm, on no item) | | added at K+4 |
-| `N2` | (96,128)  | `MN`: a new ShaderMaterial on spare (its default texture PAL2) | spare's RID made | added at K+4; `tint` changes at K+14 |
-| `N3` | (160,128) | `M3`: a new CanvasItemMaterial, blend mul | the mul mode is built (a material in a field) | added at K+4 |
-| `N4` | (224,128) | `M4`: a new CanvasItemMaterial, blend add | | added at K+4 |
+| item | at        | material                                                                 | before arm                                    | after arm                            |
+| ---- | --------- | ------------------------------------------------------------------------ | --------------------------------------------- | ------------------------------------ |
+| `A`  | (32,32)   | `MA`: ShaderMaterial on main, `pal` = PAL, `tint`                        | `tint` changes at frame 5                     | `tint` changes at K+14               |
+| `I`  | (96,32)   | `MA`                                                                     | instance `inst` set                           | `inst` changes at K+14               |
+| `R`  | (160,32)  | `MR`: ShaderMaterial on rel, `tint`                                      |                                               |                                      |
+| `C`  | (224,32)  | `MC`: CanvasItemMaterial, blend add                                      | the add mode is first used                    |                                      |
+| `N1` | (32,128)  | `MP`: ShaderMaterial on main, `pal` = PAL2 (made before arm, on no item) |                                               | added at K+4                         |
+| `N2` | (96,128)  | `MN`: a new ShaderMaterial on spare (its default texture PAL2)           | spare's RID made                              | added at K+4; `tint` changes at K+14 |
+| `N3` | (160,128) | `M3`: a new CanvasItemMaterial, blend mul                                | the mul mode is built (a material in a field) | added at K+4                         |
+| `N4` | (224,128) | `M4`: a new CanvasItemMaterial, blend add                                |                                               | added at K+4                         |
 
 Checkpoints settle at K+2, K+11 and K+21 (K = 12); the fixture quits at K+24.
 

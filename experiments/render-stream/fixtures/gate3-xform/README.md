@@ -25,12 +25,12 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate3-xf
 - `gate3x.gd`: builds every item in `_ready()` in `expected.json` `creation_order` (wire ids
   1..18), four groups and the `Marker`:
 
-  | Group     | Items                                                                                                             | Region             |
-  | --------- | ----------------------------------------------------------------------------------------------------------------- | ------------------ |
-  | `rot`     | `RP` (`Node2D`, 30°) > `RQ` (clip, pivot at its centre) > `RQF` (covers `RQ`'s bounding box), `RQI`               | `[64,64,128,112]`  |
-  | `rotnest` | `OA` (clip, axis-aligned) > `RP2` (`Node2D`, 20°) > `RQ2` (clip) > `RQ2F`                                         | `[224,56,112,112]` |
-  | `half`    | `SP` (`Node2D`, scale 1.5) > `SQ` (clip, a half-pixel box) > `SQF`, `SR` (clip, a 0.75 px sliver) > `SRF`         | `[352,32,80,72]`   |
-  | `flip`    | `FP` (`Node2D`, scale (−1, 1)) > `FQ` (clip) > `FQF`, `FQI`                                                       | `[440,200,160,64]` |
+  | Group     | Items                                                                                                     | Region             |
+  | --------- | --------------------------------------------------------------------------------------------------------- | ------------------ |
+  | `rot`     | `RP` (`Node2D`, 30°) > `RQ` (clip, pivot at its centre) > `RQF` (covers `RQ`'s bounding box), `RQI`       | `[64,64,128,112]`  |
+  | `rotnest` | `OA` (clip, axis-aligned) > `RP2` (`Node2D`, 20°) > `RQ2` (clip) > `RQ2F`                                 | `[224,56,112,112]` |
+  | `half`    | `SP` (`Node2D`, scale 1.5) > `SQ` (clip, a half-pixel box) > `SQF`, `SR` (clip, a 0.75 px sliver) > `SRF` | `[352,32,80,72]`   |
+  | `flip`    | `FP` (`Node2D`, scale (−1, 1)) > `FQ` (clip) > `FQF`, `FQI`                                               | `[440,200,160,64]` |
 
   `RS_FIXTURE_VARIANT` is refused (exit 2). All output lines start with `[fixture]`.
 
@@ -57,21 +57,21 @@ least 8). Step 0 is the `_ready()` state at frame 1. Step _k_ ≥ 1 is applied a
 settles at `S + N·k + 7`. The fixture quits at `S + N·4 + 11` (52) unless
 `RS_FIXTURE_QUIT_FRAME` asks for later. Every step recolours the `Marker`.
 
-| step | change                                       | redraws (`content_version` bumps) | scissors that change                                 |
-| ---- | -------------------------------------------- | --------------------------------- | ---------------------------------------------------- |
-| 0    | initial                                      | all                               | `RQ` `[83,83,172,158)`, `RQ2` `[232,79,328,145)`, …  |
-| 1    | `RP.rotation_degrees = 60`                   | none                              | `RQ` `[91,75,166,164)`                               |
-| 2    | `RP.rotation_degrees = 30`; `RQ.scale = 1.25` | `RQ` (clear, custom rect, clip)   | `RQ` `[72,73,184,166)`                               |
-| 3    | `SP.scale = (2, 2)`                          | none                              | `SQ` `[374,54,416,84)`, `SR` `[414,58,415,74)`       |
-| 4    | `FP.scale = (1, 1)`                          | none                              | `FQ` `[528,208,592,256)`                             |
+| step | change                                        | redraws (`content_version` bumps) | scissors that change                                |
+| ---- | --------------------------------------------- | --------------------------------- | --------------------------------------------------- |
+| 0    | initial                                       | all                               | `RQ` `[83,83,172,158)`, `RQ2` `[232,79,328,145)`, … |
+| 1    | `RP.rotation_degrees = 60`                    | none                              | `RQ` `[91,75,166,164)`                              |
+| 2    | `RP.rotation_degrees = 30`; `RQ.scale = 1.25` | `RQ` (clear, custom rect, clip)   | `RQ` `[72,73,184,166)`                              |
+| 3    | `SP.scale = (2, 2)`                           | none                              | `SQ` `[374,54,416,84)`, `SR` `[414,58,415,74)`      |
+| 4    | `FP.scale = (1, 1)`                           | none                              | `FQ` `[528,208,592,256)`                            |
 
 ## Environment
 
-| Variable                 | Meaning                                                            |
-| ------------------------ | ------------------------------------------------------------------ |
-| `RS_FIXTURE_STEP_LOG`    | absolute path: one JSONL line per step at its applied frame        |
+| Variable                 | Meaning                                                           |
+| ------------------------ | ----------------------------------------------------------------- |
+| `RS_FIXTURE_STEP_LOG`    | absolute path: one JSONL line per step at its applied frame       |
 | `RS_FIXTURE_SHOT_DIR`    | absolute dir: `step-<k>.png` at each settle frame (rendered runs) |
-| `RS_FIXTURE_START_FRAME` | `S` ≥ 1, default 1                                                 |
-| `RS_FIXTURE_STEP_FRAMES` | `N` ≥ 8, default 10                                                |
-| `RS_FIXTURE_QUIT_FRAME`  | ≥ the default `S + N·4 + 11`                                       |
-| `RS_FIXTURE_VARIANT`     | refused (exit 2)                                                   |
+| `RS_FIXTURE_START_FRAME` | `S` ≥ 1, default 1                                                |
+| `RS_FIXTURE_STEP_FRAMES` | `N` ≥ 8, default 10                                               |
+| `RS_FIXTURE_QUIT_FRAME`  | ≥ the default `S + N·4 + 11`                                      |
+| `RS_FIXTURE_VARIANT`     | refused (exit 2)                                                  |

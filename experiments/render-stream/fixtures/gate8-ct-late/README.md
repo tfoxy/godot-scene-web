@@ -36,24 +36,24 @@ It has two arm modes:
 Four 64x64 cells. Every image is a 16x16 opaque RGBA8 pattern of 4x4-texel blocks (distinct per
 seed, every channel in 10..239, never white), drawn only through a CanvasTexture's diffuse.
 
-| Cell | Position | Draw | Through |
-| ---- | -------- | ---- | ------- |
-| `SPRITE` | (40,40) | `Sprite2D` at scale 4 (`add_texture_rect`) | CT_A |
-| `TRECT` | (136,40) | `TextureRect` (a Control's `add_texture_rect`) | CT_B |
-| `MESH` | (232,40) | `MeshInstance2D`, an `ArrayMesh` quad (`add_mesh`, the spine shape) | CT_C |
-| `CACHED` | (328,40) | `Sprite2D` at scale 4 (`add_texture_rect`) | `cached_ct.tres` |
+| Cell     | Position | Draw                                                                | Through          |
+| -------- | -------- | ------------------------------------------------------------------- | ---------------- |
+| `SPRITE` | (40,40)  | `Sprite2D` at scale 4 (`add_texture_rect`)                          | CT_A             |
+| `TRECT`  | (136,40) | `TextureRect` (a Control's `add_texture_rect`)                      | CT_B             |
+| `MESH`   | (232,40) | `MeshInstance2D`, an `ArrayMesh` quad (`add_mesh`, the spine shape) | CT_C             |
+| `CACHED` | (328,40) | `Sprite2D` at scale 4 (`add_texture_rect`)                          | `cached_ct.tres` |
 
 ## Timeline
 
-| frame | |
-| ----- | - |
-| 0 | `_ready` builds all four CanvasTextures and items (`deferred`: under the hooks, recorded by the registry) |
-| 1..11 | the items draw, unarmed (nothing captured) |
-| 12 | the capture arms (`GRC_ADOPT=arm`; `late` loads it here): the walk adopts the items, `queue_redraw` re-sends the draws, and each CanvasTexture is adopted at its first post-arm draw (`deferred`: from the registry; `late`: CACHED from the resource cache, the rest refused) |
-| 17 | checkpoint 0: the reference saves `step-0.png`; the receivers shoot the sequence the step log maps to this settle frame |
-| 22 | SPRITE's `texture` is set to null: the CanvasTexture and its diffuse are freed (`FREE_FRAME`) |
-| 26 | checkpoint 1: the SPRITE cell is empty (the reference and both receivers agree) |
-| 30 | quit |
+| frame |                                                                                                                                                                                                                                                                                |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0     | `_ready` builds all four CanvasTextures and items (`deferred`: under the hooks, recorded by the registry)                                                                                                                                                                      |
+| 1..11 | the items draw, unarmed (nothing captured)                                                                                                                                                                                                                                     |
+| 12    | the capture arms (`GRC_ADOPT=arm`; `late` loads it here): the walk adopts the items, `queue_redraw` re-sends the draws, and each CanvasTexture is adopted at its first post-arm draw (`deferred`: from the registry; `late`: CACHED from the resource cache, the rest refused) |
+| 17    | checkpoint 0: the reference saves `step-0.png`; the receivers shoot the sequence the step log maps to this settle frame                                                                                                                                                        |
+| 22    | SPRITE's `texture` is set to null: the CanvasTexture and its diffuse are freed (`FREE_FRAME`)                                                                                                                                                                                  |
+| 26    | checkpoint 1: the SPRITE cell is empty (the reference and both receivers agree)                                                                                                                                                                                                |
+| 30    | quit                                                                                                                                                                                                                                                                           |
 
 The capture must run on a rendered host (a private 640x360 gamescope): a headless host's dummy
 storage allocates no canvas texture (`canvas_texture_allocate` returns `RID()` in

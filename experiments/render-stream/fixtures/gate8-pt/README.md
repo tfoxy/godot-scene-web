@@ -32,29 +32,29 @@ cell uses 8. Every emitter has `use_fixed_seed` and its own seed, a 4x4 white te
 flipbook), lifetime 1, and a process material with `particle_flag_disable_z` and an explicit 2D
 gravity (so `set_process_material` does not rewrite it).
 
-| Cell | Position | Amount | What |
-| ---- | -------- | ------ | ---- |
-| `A_BOX` | (106,60) | 3 | box emitter, local coordinates; two `emit_particle` calls at each of steps 1 and 2 |
-| `B_SPHERE` | (260..318,60) | 5 | sphere emitter, `local_coords = false`, under a `Node2D` moved 2 px a frame (back every 30): an emission transform every frame, an emitter velocity at each change |
-| `C_RING` | (533,60) | 6 | ring emitter; step 1 `request_particles_process(0.5)`, step 2 seed 2003 |
-| `D_ONESHOT` | (106,180) | 7 | `one_shot`, `explosiveness` 1, `emitting = false`; `restart()` at steps 1 and 2 |
-| `E_FLIP` | (320,180) | 9 | a 32x8 four-frame flipbook through a `CanvasItemMaterial` with `particles_animation` |
-| `F_CURVES` | (533,180) | 10 | `scale_curve` (a 64x1 `CurveTexture`, RGBF) and `color_ramp` (a 64x1 `GradientTexture1D`, `use_hdr`: RGBAF) |
-| `G_TURB` | (106,300) | 11 | turbulence |
-| `H_SUB` | (320,300) | 12 | `sub_emitter_mode` AT_END naming its child `SubEmitter` (`H_CHILD`, amount 2, `emitting = false`) |
-| `I_TRAILS` | (533,300) | 13 | trails: `trail_lifetime` 0.3, 4 sections (5 bind poses), transform align Y-to-velocity |
+| Cell        | Position      | Amount | What                                                                                                                                                               |
+| ----------- | ------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `A_BOX`     | (106,60)      | 3      | box emitter, local coordinates; two `emit_particle` calls at each of steps 1 and 2                                                                                 |
+| `B_SPHERE`  | (260..318,60) | 5      | sphere emitter, `local_coords = false`, under a `Node2D` moved 2 px a frame (back every 30): an emission transform every frame, an emitter velocity at each change |
+| `C_RING`    | (533,60)      | 6      | ring emitter; step 1 `request_particles_process(0.5)`, step 2 seed 2003                                                                                            |
+| `D_ONESHOT` | (106,180)     | 7      | `one_shot`, `explosiveness` 1, `emitting = false`; `restart()` at steps 1 and 2                                                                                    |
+| `E_FLIP`    | (320,180)     | 9      | a 32x8 four-frame flipbook through a `CanvasItemMaterial` with `particles_animation`                                                                               |
+| `F_CURVES`  | (533,180)     | 10     | `scale_curve` (a 64x1 `CurveTexture`, RGBF) and `color_ramp` (a 64x1 `GradientTexture1D`, `use_hdr`: RGBAF)                                                        |
+| `G_TURB`    | (106,300)     | 11     | turbulence                                                                                                                                                         |
+| `H_SUB`     | (320,300)     | 12     | `sub_emitter_mode` AT_END naming its child `SubEmitter` (`H_CHILD`, amount 2, `emitting = false`)                                                                  |
+| `I_TRAILS`  | (533,300)     | 13     | trails: `trail_lifetime` 0.3, 4 sections (5 bind poses), transform align Y-to-velocity                                                                             |
 
 ## Timeline
 
-| frame | |
-| ----- | - |
-| 1 | checkpoint 0 (the scene `_ready` built); settles at 4 |
-| 20 | step 1: A_BOX emits two; C_RING requests 0.5 s of processing; D_ONESHOT restarts; settles at 27 |
-| 30 | the capture sabotages start (`GRC_SABOTAGE_FRAME`) |
-| 40 | step 2: A_BOX emits two; C_RING's seed changes; D_ONESHOT restarts (after the sabotage frame: `drop-restart` drops it); settles at 47 |
-| 90 | quit (the default) |
-| 95, 110 | PM6a's tail shots (`tail-95.png`, `tail-110.png`): D_ONESHOT's second burst alive, then gone one lifetime after its restart at 40 |
-| 120 | quit in run-gate8.sh's rendered g8pt legs (`RS_FIXTURE_QUIT_FRAME=120`) |
+| frame   |                                                                                                                                       |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| 1       | checkpoint 0 (the scene `_ready` built); settles at 4                                                                                 |
+| 20      | step 1: A_BOX emits two; C_RING requests 0.5 s of processing; D_ONESHOT restarts; settles at 27                                       |
+| 30      | the capture sabotages start (`GRC_SABOTAGE_FRAME`)                                                                                    |
+| 40      | step 2: A_BOX emits two; C_RING's seed changes; D_ONESHOT restarts (after the sabotage frame: `drop-restart` drops it); settles at 47 |
+| 90      | quit (the default)                                                                                                                    |
+| 95, 110 | PM6a's tail shots (`tail-95.png`, `tail-110.png`): D_ONESHOT's second burst alive, then gone one lifetime after its restart at 40     |
+| 120     | quit in run-gate8.sh's rendered g8pt legs (`RS_FIXTURE_QUIT_FRAME=120`)                                                               |
 
 `RS_FIXTURE_STEP_LOG` gets `{"step", "applied_frame", "settle_frame"}` per checkpoint. PM6a:
 `RS_FIXTURE_SHOT_DIR` (rendered runs) gets `step-<k>.png` at each settle frame, `step-<k>-prev.png`

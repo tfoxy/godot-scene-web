@@ -45,19 +45,19 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate5 --
 
 ## Layout (640×360; regions `[x0,y0,x1,y1)`)
 
-| Region | Node (position)                            | Content (local)                                                                                                    |
-| ------ | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| `LN`   | `Node2D` (16,16)                           | L1 width 1 at y 8.5; L2 width 2 (4 from step 1) at y 20; L3 vertical width 3 at x 140.5; L4 thin at y 32.5; L5 dashed width 2, dash 8 (8 dashes at integers); L6 diagonal width 4, antialiased until step 8 |
-| `PL`   | `Node2D` (176,16)                          | P1 L-shape width 4, colour (.4,.8,1) then (1,.8,.2) at step 3; P2 unfilled rect (80,8,48,32) width 2; P3 4 points, 2 colours, width 4 |
-| `PG`   | `Node2D` (336,16), nearest                 | G1 concave arrow (+(0,8) at step 2); G2 triangle in red, green, blue; G3 16×16 square, `TEX16` 1:1                  |
-| `PR`   | `Node2D` (472,16)                          | R1 triangle primitive; R2 quad primitive; R3 raw triangle array of two quads, `count` 2 then 4 at step 4         |
-| `CI`   | `Node2D` (16,112)                          | C1 filled r 24 (20 from step 6); C2 antialiased r 16; C3 unfilled r 12 width 2                                     |
-| `ST`   | `Node2D` (176,112) + `STC` (96,44)          | A; B under translate (32,0) scale 2 (3 from step 5); C under an exact 90° matrix; D under translate (0,40) only; `STC` draws E |
-| `CG`   | `Control` (344,120) 64×48, `clip_contents` | X fills it; Y overhangs right-bottom between `clip_ignore(true)` and `(false)`; Z overhangs top-left (clipped); +(16,8) at step 7 |
-| `NP`   | `Node2D` (472,112), nearest                | two raw nine-patches of `TEX9`, margins 4, 56×40: `stretch` with centre, `tile` without                             |
-| `RA`   | `Node2D` (16,208)                          | antialiased white rect (8,8,48,32)                                                                                 |
-| `BL`   | `Node2D` (176,208)                         | white panel, then a polygon at (.2,.4,1,.6) over it and the background                                             |
-| `L2`   | `Line2D` (328,216)                         | 3 points, width 6, sharp joint, no caps, (1,.6,.2); `antialiased = true` at step 3 (no effect)                     |
-| `Marker` | `Node2D` (592,16)                        | 32×32 rect in gate 3's marker colour of the step                                                                   |
+| Region   | Node (position)                            | Content (local)                                                                                                                                                                                             |
+| -------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LN`     | `Node2D` (16,16)                           | L1 width 1 at y 8.5; L2 width 2 (4 from step 1) at y 20; L3 vertical width 3 at x 140.5; L4 thin at y 32.5; L5 dashed width 2, dash 8 (8 dashes at integers); L6 diagonal width 4, antialiased until step 8 |
+| `PL`     | `Node2D` (176,16)                          | P1 L-shape width 4, colour (.4,.8,1) then (1,.8,.2) at step 3; P2 unfilled rect (80,8,48,32) width 2; P3 4 points, 2 colours, width 4                                                                       |
+| `PG`     | `Node2D` (336,16), nearest                 | G1 concave arrow (+(0,8) at step 2); G2 triangle in red, green, blue; G3 16×16 square, `TEX16` 1:1                                                                                                          |
+| `PR`     | `Node2D` (472,16)                          | R1 triangle primitive; R2 quad primitive; R3 raw triangle array of two quads, `count` 2 then 4 at step 4                                                                                                    |
+| `CI`     | `Node2D` (16,112)                          | C1 filled r 24 (20 from step 6); C2 antialiased r 16; C3 unfilled r 12 width 2                                                                                                                              |
+| `ST`     | `Node2D` (176,112) + `STC` (96,44)         | A; B under translate (32,0) scale 2 (3 from step 5); C under an exact 90° matrix; D under translate (0,40) only; `STC` draws E                                                                              |
+| `CG`     | `Control` (344,120) 64×48, `clip_contents` | X fills it; Y overhangs right-bottom between `clip_ignore(true)` and `(false)`; Z overhangs top-left (clipped); +(16,8) at step 7                                                                           |
+| `NP`     | `Node2D` (472,112), nearest                | two raw nine-patches of `TEX9`, margins 4, 56×40: `stretch` with centre, `tile` without                                                                                                                     |
+| `RA`     | `Node2D` (16,208)                          | antialiased white rect (8,8,48,32)                                                                                                                                                                          |
+| `BL`     | `Node2D` (176,208)                         | white panel, then a polygon at (.2,.4,1,.6) over it and the background                                                                                                                                      |
+| `L2`     | `Line2D` (328,216)                         | 3 points, width 6, sharp joint, no caps, (1,.6,.2); `antialiased = true` at step 3 (no effect)                                                                                                              |
+| `Marker` | `Node2D` (592,16)                          | 32×32 rect in gate 3's marker colour of the step                                                                                                                                                            |
 
 Step 9 sets the canvas transform to a translation by (8,4).

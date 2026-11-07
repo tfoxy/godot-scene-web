@@ -14,7 +14,15 @@
 //          experiments/render-stream/scripts/test/wt-chromium-smoke.ts [--out DIR]
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -54,15 +62,37 @@ const HELLO = JSON.stringify({
   dpr_milli: 1000,
 });
 
-async function startHost(dir: string, origin: string): Promise<{ proc: ChildProcess; wtPort: number; cert: string; exited: Promise<number | null> }> {
-  const proc = spawn(HOST, ["--carriers=ws,wt", `--net-module=${MODULE}`, `--tap-dir=${join(dir, "tap")}`, `--evidence-dir=${dir}`], {
-    stdio: ["ignore", "pipe", "ignore"],
-    env: { ...process.env, GRC_LIVE_ALLOWED_ORIGINS: origin }, // the page's Origin (Q4.1)
-  });
-  const exited = new Promise<number | null>((r) => proc.on("exit", (c) => r(c)));
+async function startHost(
+  dir: string,
+  origin: string,
+): Promise<{
+  proc: ChildProcess;
+  wtPort: number;
+  cert: string;
+  exited: Promise<number | null>;
+}> {
+  const proc = spawn(
+    HOST,
+    [
+      "--carriers=ws,wt",
+      `--net-module=${MODULE}`,
+      `--tap-dir=${join(dir, "tap")}`,
+      `--evidence-dir=${dir}`,
+    ],
+    {
+      stdio: ["ignore", "pipe", "ignore"],
+      env: { ...process.env, GRC_LIVE_ALLOWED_ORIGINS: origin }, // the page's Origin (Q4.1)
+    },
+  );
+  const exited = new Promise<number | null>((r) =>
+    proc.on("exit", (c) => r(c)),
+  );
   const got: Record<string, string> = {};
   await new Promise<void>((res, rej) => {
-    const t = setTimeout(() => rej(new Error("rs_live_host did not print its ports")), 15000);
+    const t = setTimeout(
+      () => rej(new Error("rs_live_host did not print its ports")),
+      15000,
+    );
     createInterface({ input: proc.stdout! }).on("line", (l) => {
       const m = /^(RS_LIVE_HOST_[A-Z0-9_]+) (\S+)$/.exec(l);
       if (m) got[m[1]] = m[2];
@@ -72,7 +102,12 @@ async function startHost(dir: string, origin: string): Promise<{ proc: ChildProc
       }
     });
   });
-  return { proc, wtPort: Number(got.RS_LIVE_HOST_WT_PORT), cert: got.RS_LIVE_HOST_CERT_SHA256, exited };
+  return {
+    proc,
+    wtPort: Number(got.RS_LIVE_HOST_WT_PORT),
+    cert: got.RS_LIVE_HOST_CERT_SHA256,
+    exited,
+  };
 }
 
 /** Page script: one render-stream-wt/1 session; resolves `window.__wtDone` at the session's end. */
@@ -146,15 +181,24 @@ function tapSha(dir: string): string | null {
   for (const f of readdirSync(tap)) {
     const m = /^live-(\d+)\.jsonl$/.exec(f);
     if (m && readFileSync(join(tap, f), "utf8").includes('"carrier":"wt"')) {
-      return createHash("sha256").update(readFileSync(join(tap, `stream-${m[1]}.rs2`))).digest("hex");
+      return createHash("sha256")
+        .update(readFileSync(join(tap, `stream-${m[1]}.rs2`)))
+        .digest("hex");
     }
   }
   return null;
 }
 
 async function main(): Promise<void> {
-  const b = spawnSync("bash", [join(RS, "scripts/build-rs-net.sh"), "--no-test"], { stdio: ["ignore", "ignore", "inherit"] });
-  if (b.status !== 0 || !existsSync(HOST)) throw new Error("build-rs-net.sh failed or rs_live_host is missing (build-capture.sh)");
+  const b = spawnSync(
+    "bash",
+    [join(RS, "scripts/build-rs-net.sh"), "--no-test"],
+    { stdio: ["ignore", "ignore", "inherit"] },
+  );
+  if (b.status !== 0 || !existsSync(HOST))
+    throw new Error(
+      "build-rs-net.sh failed or rs_live_host is missing (build-capture.sh)",
+    );
   const server = createServer((_q, s) => {
     s.writeHead(200, { "content-type": "text/html" });
     s.end(PAGE);
@@ -162,9 +206,14 @@ async function main(): Promise<void> {
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const pageUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
   const profile = mkdtempSync(join(tmpdir(), "wt-smoke-profile-"));
-  const { browser, executablePath } = await launchHarnessBrowser({ userDataDir: profile });
+  const { browser, executablePath } = await launchHarnessBrowser({
+    userDataDir: profile,
+  });
   console.log(`chromium ${browser.version()} (${executablePath})`);
-  const report: Record<string, unknown> = { schema: "rs-wt-chromium-smoke/1", chromium: browser.version() };
+  const report: Record<string, unknown> = {
+    schema: "rs-wt-chromium-smoke/1",
+    chromium: browser.version(),
+  };
   try {
     for (const leg of ["honest", "wrong-cert-hash"] as const) {
       const dir = mkdtempSync(join(tmpdir(), "wt-smoke-"));
@@ -176,32 +225,67 @@ async function main(): Promise<void> {
         const url = `https://127.0.0.1:${host.wtPort}/render-stream?protocol=render-stream.7`;
         const t0 = Date.now();
         const early = await page.evaluate(
-          ([u, c, h, p]) => (window as unknown as { wtSmoke: (...a: string[]) => Promise<unknown> }).wtSmoke(u, c, h, p),
+          ([u, c, h, p]) =>
+            (
+              window as unknown as {
+                wtSmoke: (...a: string[]) => Promise<unknown>;
+              }
+            ).wtSmoke(u, c, h, p),
           [url, cert, HELLO, `/resources/sha256/${"1".repeat(64)}`],
         );
         const openMs = Date.now() - t0;
         await new Promise((r) => setTimeout(r, 500));
         host.proc.kill("SIGTERM");
         await host.exited;
-        const state = (await page.evaluate(() => (window as unknown as { __wtDone: Promise<unknown> }).__wtDone)) as {
+        const state = (await page.evaluate(
+          () => (window as unknown as { __wtDone: Promise<unknown> }).__wtDone,
+        )) as {
           opened: boolean;
           error: string | null;
           messages: number;
           close: { closeCode?: number; reason?: string; error?: string } | null;
-          resource: { status?: number; bytes?: number; framed?: boolean; coding?: number } | null;
+          resource: {
+            status?: number;
+            bytes?: number;
+            framed?: boolean;
+            coding?: number;
+          } | null;
           sha256: string;
           binaryBytes: number;
         };
         report[leg] = { early, state, openMs };
         if (leg === "honest") {
-          ok((early as { secure: boolean }).secure, "the page is a secure context (http://127.0.0.1)");
-          ok(state.opened && state.error === null, `WebTransport opened with serverCertificateHashes (${state.error ?? "no error"})`);
-          ok(state.messages >= 3 && state.sha256 === tapSha(dir), `page bytes == tap (${state.messages} messages, ${state.binaryBytes} bytes)`);
-          ok(state.close?.closeCode === 1000 && state.close?.reason === "shutdown", `closed = ${JSON.stringify(state.close)}`);
-          ok(state.resource?.status === 200 && state.resource.bytes === 1024 && state.resource.framed === true, `resource stream: ${JSON.stringify(state.resource)}`);
-          console.log(`measure: session + first messages in ${openMs} ms (page.evaluate wall)`);
+          ok(
+            (early as { secure: boolean }).secure,
+            "the page is a secure context (http://127.0.0.1)",
+          );
+          ok(
+            state.opened && state.error === null,
+            `WebTransport opened with serverCertificateHashes (${state.error ?? "no error"})`,
+          );
+          ok(
+            state.messages >= 3 && state.sha256 === tapSha(dir),
+            `page bytes == tap (${state.messages} messages, ${state.binaryBytes} bytes)`,
+          );
+          ok(
+            state.close?.closeCode === 1000 &&
+              state.close?.reason === "shutdown",
+            `closed = ${JSON.stringify(state.close)}`,
+          );
+          ok(
+            state.resource?.status === 200 &&
+              state.resource.bytes === 1024 &&
+              state.resource.framed === true,
+            `resource stream: ${JSON.stringify(state.resource)}`,
+          );
+          console.log(
+            `measure: session + first messages in ${openMs} ms (page.evaluate wall)`,
+          );
         } else {
-          ok(!state.opened && (state.error ?? "").startsWith("ready:"), `a wrong hash fails the handshake (${state.error})`);
+          ok(
+            !state.opened && (state.error ?? "").startsWith("ready:"),
+            `a wrong hash fails the handshake (${state.error})`,
+          );
         }
         await page.close();
       } finally {
@@ -216,9 +300,16 @@ async function main(): Promise<void> {
   report.results = results;
   if (OUT) {
     mkdirSync(OUT, { recursive: true });
-    writeFileSync(join(OUT, "wt-chromium-smoke.json"), `${JSON.stringify(report, null, 2)}\n`);
+    writeFileSync(
+      join(OUT, "wt-chromium-smoke.json"),
+      `${JSON.stringify(report, null, 2)}\n`,
+    );
   }
-  console.log(failed === 0 ? "wt-chromium-smoke: all passed" : `wt-chromium-smoke: ${failed} failed`);
+  console.log(
+    failed === 0
+      ? "wt-chromium-smoke: all passed"
+      : `wt-chromium-smoke: ${failed} failed`,
+  );
   process.exit(failed === 0 ? 0 : 1);
 }
 

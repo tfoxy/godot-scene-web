@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Check staged blobs in an isolated index snapshot, including staged formatter configuration.
+# The working tree and index are never changed. Feature branches stay unconstrained.
+set -euo pipefail
+ENFORCED_BRANCH="main"
+# $COMMIT_HOOK_BRANCH lets the self-test exercise the rules without being on main.
+branch="${COMMIT_HOOK_BRANCH:-$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo HEAD)}"
+[ "$branch" = "$ENFORCED_BRANCH" ] || exit 0
+
+root="$(git rev-parse --show-toplevel)"
+biome="$root/node_modules/.bin/biome"
+prettier="$root/node_modules/.bin/prettier"
+if [ ! -x "$biome" ] || [ ! -x "$prettier" ]; then
+  echo "pre-commit: node_modules formatter tools missing; skipping staged format checks."
+  exit 0
+fi
+mapfile -d '' -t staged < <(git diff --cached --name-only --diff-filter=ACMRT -z)
+[ "${#staged[@]}" -gt 0 ] || exit 0
+
+snapshot="$(mktemp -d)"
+trap 'rm -rf "$snapshot"' EXIT
+paths=("${staged[@]}")
+# Preserve ignore rules and formatter configuration from the index, even if not in this diff.
+while IFS= read -r -d '' path; do
+  case "${path##*/}" in
+    biome.json|biome.jsonc|.prettierignore|.gitignore|.editorconfig|.prettierrc|.prettierrc.*|prettier.config.*|package.json)
+      paths+=("$path") ;;
+  esac
+done < <(git ls-files -z)
+printf '%s\0' "${paths[@]}" | sort -zu | git checkout-index --stdin -z --prefix="$snapshot/"
+biome_files=()
+prettier_files=()
+for path in "${staged[@]}"; do
+  # Symlinks are not source blobs and may point outside the snapshot.
+  [ -f "$snapshot/$path" ] && [ ! -L "$snapshot/$path" ] || continue
+  biome_files+=("./$path")
+  case "$path" in *.md|*.yml|*.yaml) prettier_files+=("./$path") ;; esac
+done
+
+fix_command() {
+  printf 'pre-commit: fix with %s' "$1" >&2
+  shift
+  printf ' %q' "$@" >&2
+  printf '\nThen stage the corrected files.\n' >&2
+}
+(
+  # Git may export these when invoking a hook (including for an alternate index).
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
+  cd "$snapshot"
+  git init --quiet
+  status=0
+  if [ "${#biome_files[@]}" -gt 0 ] && ! "$biome" check --no-errors-on-unmatched --files-ignore-unknown=true -- "${biome_files[@]}"; then
+    fix_command './node_modules/.bin/biome check --write' "${biome_files[@]}"
+    status=1
+  fi
+  if [ "${#prettier_files[@]}" -gt 0 ] && ! "$prettier" --check --ignore-unknown -- "${prettier_files[@]}"; then
+    fix_command './node_modules/.bin/prettier --write' "${prettier_files[@]}"
+    status=1
+  fi
+  exit "$status"
+)

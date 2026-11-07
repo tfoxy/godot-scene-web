@@ -222,7 +222,7 @@ function rrTrace(leg: string): RrTx[] | null {
   const txs: RrTx[] = [];
   for (let i = 1; i < split.records.length; i++) {
     const meta = decodeRecord(split.records[i], 11).record?.meta as any;
-    if (!meta || meta.type !== "transaction") continue;
+    if (meta?.type !== "transaction") continue;
     const full = meta.encoding === "full";
     if (full) cv.clear();
     let withCommands = 0;

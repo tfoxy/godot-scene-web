@@ -183,8 +183,10 @@ export function cmpRecordings(
             (p === "stats.max_record_bytes" &&
               sessionDelta !== 0 &&
               itemKeyDelta === 0 &&
-              ((endStats(y) as { max_record_bytes?: number }).max_record_bytes ?? 0) -
-                ((endStats(x) as { max_record_bytes?: number }).max_record_bytes ?? 0) ===
+              ((endStats(y) as { max_record_bytes?: number })
+                .max_record_bytes ?? 0) -
+                ((endStats(x) as { max_record_bytes?: number })
+                  .max_record_bytes ?? 0) ===
                 sessionDelta),
         ));
     (tolerated ? result.allowed : result.differing).push({

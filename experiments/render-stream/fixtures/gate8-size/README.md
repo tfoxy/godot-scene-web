@@ -24,12 +24,12 @@ bottom-right, an `Edge` strip anchored to the right edge (it shows the visible r
 
 ## Timeline
 
-| frame | |
-| ----- | - |
-| K=12 | the late capture arms and adopts, then sizes. Checkpoint 0 settles at K+2 |
-| K+4 | Title gets new glyphs, Corner's self-modulate changes. Checkpoint 1: K+11 |
-| K+14 | Note's font size grows, Back's border widens. Checkpoint 2: K+21 |
-| K+26 | quit |
+| frame |                                                                           |
+| ----- | ------------------------------------------------------------------------- |
+| K=12  | the late capture arms and adopts, then sizes. Checkpoint 0 settles at K+2 |
+| K+4   | Title gets new glyphs, Corner's self-modulate changes. Checkpoint 1: K+11 |
+| K+14  | Note's font size grows, Back's border widens. Checkpoint 2: K+21          |
+| K+26  | quit                                                                      |
 
 `RS_FIXTURE_SIZE_LOG` (absolute path) gets the engine's window, visible rect, stretch and
 oversampling at K-1 and K+1. The reference is this project run unarmed in a 640x360 window.

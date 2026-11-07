@@ -10,7 +10,10 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertValidationLog, validationLogProblem } from "../lib/validation-log";
+import {
+  assertValidationLog,
+  validationLogProblem,
+} from "../lib/validation-log";
 
 let failures = 0;
 let assertions = 0;
@@ -22,11 +25,27 @@ function expect(ok: boolean, what: string): void {
   }
 }
 
-expect(validationLogProblem({ validation_log: "on" }, "p") === undefined, "on passes");
-expect(validationLogProblem(undefined, "p") === undefined, "absent counters are the caller's finding");
-expect(validationLogProblem({ validation_log: "off" }, "p")?.includes('"off"') === true, "off is refused, naming the value");
-expect(validationLogProblem({}, "p")?.includes("null") === true, "a counters.json without the field (an old capture) is refused");
-expect(validationLogProblem({ validation_log: true }, "p") !== undefined, "only the string on passes");
+expect(
+  validationLogProblem({ validation_log: "on" }, "p") === undefined,
+  "on passes",
+);
+expect(
+  validationLogProblem(undefined, "p") === undefined,
+  "absent counters are the caller's finding",
+);
+expect(
+  validationLogProblem({ validation_log: "off" }, "p")?.includes('"off"') ===
+    true,
+  "off is refused, naming the value",
+);
+expect(
+  validationLogProblem({}, "p")?.includes("null") === true,
+  "a counters.json without the field (an old capture) is refused",
+);
+expect(
+  validationLogProblem({ validation_log: true }, "p") !== undefined,
+  "only the string on passes",
+);
 let threw = false;
 try {
   assertValidationLog({ validation_log: "off" }, "evidence/counters.json");
@@ -45,13 +64,26 @@ for (const [file, want] of [
   ["run-gate3.sh", 1],
 ] as const) {
   const n = (text(file).match(/GRC_VALIDATION_LOG=on/g) ?? []).length;
-  expect(n >= want, `${file} sets GRC_VALIDATION_LOG=on at its ${want} capture launch site(s) (found ${n})`);
+  expect(
+    n >= want,
+    `${file} sets GRC_VALIDATION_LOG=on at its ${want} capture launch site(s) (found ${n})`,
+  );
 }
-expect(/GRC_VALIDATION_LOG=on/.test(text("lib/legs.sh")), "run_capture (lib/legs.sh) sets GRC_VALIDATION_LOG=on");
-expect(/GRC_VALIDATION_LOG/.test(text("lib/gamescope.sh")), "the launcher strips an inherited GRC_VALIDATION_LOG");
+expect(
+  /GRC_VALIDATION_LOG=on/.test(text("lib/legs.sh")),
+  "run_capture (lib/legs.sh) sets GRC_VALIDATION_LOG=on",
+);
+expect(
+  /GRC_VALIDATION_LOG/.test(text("lib/gamescope.sh")),
+  "the launcher strips an inherited GRC_VALIDATION_LOG",
+);
 
 if (failures > 0) {
-  console.error(`self-test-validation-log: ${failures} of ${assertions} assertion(s) failed`);
+  console.error(
+    `self-test-validation-log: ${failures} of ${assertions} assertion(s) failed`,
+  );
   process.exit(1);
 }
-console.log(`self-test-validation-log: ${assertions}/${assertions} assertions passed`);
+console.log(
+  `self-test-validation-log: ${assertions}/${assertions} assertions passed`,
+);

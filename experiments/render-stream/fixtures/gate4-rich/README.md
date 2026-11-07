@@ -29,7 +29,7 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate4-ri
   `FontVariation`s over it, `FB` (`variation_embolden 1.2`) and `FI` (`variation_transform` skewed
   0.2). It builds `RTL` (position (24,32), size (400,190), `bbcode_enabled`, `fit_content`,
   `scroll_active = false`) and `Marker` in `_ready()` (`expected.json` `creation_order`: `RTL`,
-  `Marker`). `RTL`'s size is chosen generously: `fit_content` only *grows* a free Control's actual
+  `Marker`). `RTL`'s size is chosen generously: `fit_content` only _grows_ a free Control's actual
   size up to its minimum when the minimum exceeds the offset-derived size
   (`scene/gui/control.cpp:1742-1786`), and this fixture's content never needs more than the chosen
   190 px, so `RTL`'s clip rect stays the fixed rectangle every step (checked against the rendered
@@ -63,24 +63,24 @@ least 8). Step 0 is the `_ready()` state at frame 1. Step _k_ >= 1 is applied at
 settles at `S + N*k + 7`. There are no "early" shots. The fixture quits at `S + N*5 + 11` (62) unless `RS_FIXTURE_QUIT_FRAME` asks for
 later. Every step recolours the `Marker`.
 
-| step | change                                        | new cache traffic              |
-| ---- | ---------------------------------------------- | ------------------------------- |
-| 0    | `[color]Amber[/color] plain [font_size=24]Big` | `F@16` create, `F@24` create    |
-| 1    | `+ [b]Bold[/b]`                                 | `FB@16` create                  |
-| 2    | `+ [i]Italic[/i]`                               | `FI@16` create                  |
-| 3    | `+ [bgcolor=cyan]Marked[/bgcolor]`              | `F@16` update (M, k, d)         |
+| step | change                                                                           | new cache traffic                                  |
+| ---- | -------------------------------------------------------------------------------- | -------------------------------------------------- |
+| 0    | `[color]Amber[/color] plain [font_size=24]Big`                                   | `F@16` create, `F@24` create                       |
+| 1    | `+ [b]Bold[/b]`                                                                  | `FB@16` create                                     |
+| 2    | `+ [i]Italic[/i]`                                                                | `FI@16` create                                     |
+| 3    | `+ [bgcolor=cyan]Marked[/bgcolor]`                                               | `F@16` update (M, k, d)                            |
 | 4    | `+ [outline_size=2][outline_color=black]Outlined[/outline_color][/outline_size]` | `F@16` update (O, u, t); `FO@16` create (8 glyphs) |
-| 5    | `append_text("\n[color=magenta]More[/color]")` | `F@16` update (o)               |
+| 5    | `append_text("\n[color=magenta]More[/color]")`                                   | `F@16` update (o)                                  |
 
 ## Environment
 
 | Variable                 | Meaning                                                                      |
-| ------------------------ | ------------------------------------------------------------------------------ |
-| `RS_FIXTURE_STEP_LOG`    | absolute path: one JSONL line per step at its applied frame                    |
-| `RS_FIXTURE_SHOT_DIR`    | absolute dir: `step-<k>.png` at each settle frame                              |
-| `RS_FIXTURE_ENV_LOG`     | absolute path: `env.json` (TextServer, font hashes and properties, settings)    |
-| `RS_FIXTURE_GLYPH_LOG`   | absolute path: the oracle; refused (exit 2) next to any `GRC_*` variable        |
-| `RS_FIXTURE_START_FRAME` | `S` >= 1, default 1                                                            |
-| `RS_FIXTURE_STEP_FRAMES` | `N` >= 8, default 10                                                           |
-| `RS_FIXTURE_QUIT_FRAME`  | >= the default `S + N*5 + 11`                                                  |
-| `RS_FIXTURE_VARIANT`     | `""` (default) or `"underline"`; anything else is refused (exit 2)             |
+| ------------------------ | ---------------------------------------------------------------------------- |
+| `RS_FIXTURE_STEP_LOG`    | absolute path: one JSONL line per step at its applied frame                  |
+| `RS_FIXTURE_SHOT_DIR`    | absolute dir: `step-<k>.png` at each settle frame                            |
+| `RS_FIXTURE_ENV_LOG`     | absolute path: `env.json` (TextServer, font hashes and properties, settings) |
+| `RS_FIXTURE_GLYPH_LOG`   | absolute path: the oracle; refused (exit 2) next to any `GRC_*` variable     |
+| `RS_FIXTURE_START_FRAME` | `S` >= 1, default 1                                                          |
+| `RS_FIXTURE_STEP_FRAMES` | `N` >= 8, default 10                                                         |
+| `RS_FIXTURE_QUIT_FRAME`  | >= the default `S + N*5 + 11`                                                |
+| `RS_FIXTURE_VARIANT`     | `""` (default) or `"underline"`; anything else is refused (exit 2)           |

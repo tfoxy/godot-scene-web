@@ -61,7 +61,7 @@ globalThis.fetch = (async (url: string, init: { body: Blob | string }) => {
   return { ok: true, status: 200 } as Response;
 }) as typeof fetch;
 const cfg = { evidenceUrl: "http://h/evidence/n" } as unknown as ReceiverConfig;
-const big = "😀".repeat(5_000_000) + "tail"; // 20 MB of UTF-8, surrogate pairs
+const big = `${"😀".repeat(5_000_000)}tail`; // 20 MB of UTF-8, surrogate pairs
 await put(cfg, "a.json", [big, "\n"]);
 const joined = Buffer.concat(calls.map((c) => c.bytes));
 check(

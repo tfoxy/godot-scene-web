@@ -1203,7 +1203,7 @@ export function ptBuiltinProblems(
       if (s.mode === "particles") seen.set(`${s.id}:${s.version}`, s);
   for (const s of seen.values()) {
     const b = s.builtin;
-    if (!b || b.kind !== "particle_process_material") {
+    if (b?.kind !== "particle_process_material") {
       problems.push(
         `shader ${s.id} v${s.version}: particles mode, ${s.status}/${s.reason ?? "-"}, builtin ${b ? b.kind : "null"}`,
       );
@@ -1239,7 +1239,7 @@ export function ptBuiltinProblems(
           ? undefined
           : last.shaders.get(m.shader);
       const b = s?.builtin;
-      if (!b || b.kind !== "particle_process_material") {
+      if (b?.kind !== "particle_process_material") {
         problems.push(
           `${name}: no builtin through its emitter's process material (particles ${id}, material ${p?.process_material}, shader ${m?.shader})`,
         );
@@ -1599,8 +1599,6 @@ const LEGS = [
   "import/ptc-fixture",
   ...Object.values(PTC_LEGS),
 ];
-
-const FRZP_SABOTAGES = ["freeze-drop-events", "freeze-send-positions"] as const;
 
 function rsCoreValidate(path: string, version: number): string {
   if (!existsSync(RS_CORE_CHECK))

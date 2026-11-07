@@ -447,6 +447,6 @@ next steps for DeepSeek Harness:
   - run \`scripts/install-agent-config.sh --user\` once to mirror ~/.claude/CLAUDE.md
     and ~/.claude/skills into the shared ~/.agents root.
 verify with: bash scripts/test-claude-guard.sh && bash scripts/test-install-agent-config.sh \\
-             && python3 scripts/test-gen-dsh-config.py && bash scripts/test-commit-msg-hook.sh \\
+             && python3 scripts/test-gen-dsh-config.py && bash scripts/test-commit-msg-hook.sh && bash scripts/test-pre-commit-hook.sh \\
              && bash scripts/test-pre-push-hook.sh && bash scripts/test-check-public-tree.sh
 EOF

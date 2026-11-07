@@ -34,27 +34,27 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate4-ms
 
 ## Layout (640×360; regions `[x0,y0,x1,y1)`)
 
-| Node  | Size        | Colour            | What it covers                         | Region               |
-| ----- | ----------- | ----------------- | -------------------------------------- | -------------------- |
-| `M16` | 16          | (1,1,1)           | new glyphs (steps 1, 7), colour        | `[16,16,240,52)`     |
-| `M24` | 24 → 56     | (1,.8,.2)         | the size change, new placement         | `[16,56,336,148)`    |
-| `M40` | 40          | (.4,1,.6)         | the outline toggle (4), outline colour | `[16,152,336,232)`   |
-| `MT`  | 24, on `P`  | (0,0,0,.6)        | semi-transparent ink on the panel      | `[352,32,568,80)`    |
-| `MR`  | 16, under R | (.2,0,.4), on `P` | rotated 20° → 35° and scaled 1.5       | `[352,96,568,200)`   |
+| Node  | Size        | Colour            | What it covers                         | Region             |
+| ----- | ----------- | ----------------- | -------------------------------------- | ------------------ |
+| `M16` | 16          | (1,1,1)           | new glyphs (steps 1, 7), colour        | `[16,16,240,52)`   |
+| `M24` | 24 → 56     | (1,.8,.2)         | the size change, new placement         | `[16,56,336,148)`  |
+| `M40` | 40          | (.4,1,.6)         | the outline toggle (4), outline colour | `[16,152,336,232)` |
+| `MT`  | 24, on `P`  | (0,0,0,.6)        | semi-transparent ink on the panel      | `[352,32,568,80)`  |
+| `MR`  | 16, under R | (.2,0,.4), on `P` | rotated 20° → 35° and scaled 1.5       | `[352,96,568,200)` |
 
 ## Timeline
 
-| step | change                                   | FM@48 page        |
-| ---- | ---------------------------------------- | ----------------- |
-| 0    | everything (19 glyphs)                   | create            |
-| 1    | `M16` "Hello Wyvern"                     | 1 update          |
-| 2    | `M24` 24 → 56 px                         | none              |
-| 3    | `M40` outline 4, colour (1,.4,0)         | none              |
-| 4    | `M16` colour (1,.6,.6)                   | none              |
-| 5    | `R` rotation 20° → 35°                   | none              |
-| 6    | `M40` outline colour (.4,1,1)            | none              |
-| 7    | `MT` "Jump!", `M16` "Wizard"             | 2 updates, 1 wire |
-| 8    | `M24` "Ship"                             | none              |
-| 9    | `M40` "Quartz Quiz"                      | none              |
+| step | change                           | FM@48 page        |
+| ---- | -------------------------------- | ----------------- |
+| 0    | everything (19 glyphs)           | create            |
+| 1    | `M16` "Hello Wyvern"             | 1 update          |
+| 2    | `M24` 24 → 56 px                 | none              |
+| 3    | `M40` outline 4, colour (1,.4,0) | none              |
+| 4    | `M16` colour (1,.6,.6)           | none              |
+| 5    | `R` rotation 20° → 35°           | none              |
+| 6    | `M40` outline colour (.4,1,1)    | none              |
+| 7    | `MT` "Jump!", `M16` "Wizard"     | 2 updates, 1 wire |
+| 8    | `M24` "Ship"                     | none              |
+| 9    | `M40` "Quartz Quiz"              | none              |
 
 The environment variables are fixtures/gate4's (see its README); there is no variant.

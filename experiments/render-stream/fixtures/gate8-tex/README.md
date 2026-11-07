@@ -56,15 +56,15 @@ Every pixel is a pure function of its coordinates, so the sources are identical 
 
 Derived from the 4.5.1 importer and decoders, not measured:
 
-| texture | channels (`detect_used_channels`) | desktop → payload | mobile → payload |
-| ------- | --------------------------------- | ----------------- | ---------------- |
-| `opaque` | RGB | DXT1 → RGBA8 | ETC2_RGB8 → RGBA8 |
-| `alpha`, `alpha_mip` (mipmaps) | RGBA | DXT5 → RGBA8 | ETC2_RGBA8 → RGBA8 |
-| `hq` (`high_quality`) | RGBA | BPTC_RGBA → RGBA8 | ASTC_4x4 → RGBA8 |
-| `mask_r` (`channel_pack` Optimized) | R | RGTC_R → R8 | ETC2_R11 → RGBA8 |
-| `mask_rg` (`channel_pack` Optimized) | RG | RGTC_RG → RG8 | ETC2_RG11 → RGBA8 |
-| `control` (Lossless) | RGBA | RGBA8, not decoded | (one variant) |
-| `hdr` (opaque float EXR) | HDR | BPTC_RGBFU, refused | ASTC_4x4_HDR, refused |
+| texture                              | channels (`detect_used_channels`) | desktop → payload   | mobile → payload      |
+| ------------------------------------ | --------------------------------- | ------------------- | --------------------- |
+| `opaque`                             | RGB                               | DXT1 → RGBA8        | ETC2_RGB8 → RGBA8     |
+| `alpha`, `alpha_mip` (mipmaps)       | RGBA                              | DXT5 → RGBA8        | ETC2_RGBA8 → RGBA8    |
+| `hq` (`high_quality`)                | RGBA                              | BPTC_RGBA → RGBA8   | ASTC_4x4 → RGBA8      |
+| `mask_r` (`channel_pack` Optimized)  | R                                 | RGTC_R → R8         | ETC2_R11 → RGBA8      |
+| `mask_rg` (`channel_pack` Optimized) | RG                                | RGTC_RG → RG8       | ETC2_RG11 → RGBA8     |
+| `control` (Lossless)                 | RGBA                              | RGBA8, not decoded  | (one variant)         |
+| `hdr` (opaque float EXR)             | HDR                               | BPTC_RGBFU, refused | ASTC_4x4_HDR, refused |
 
 Channel detection: `core/io/image.cpp:3412-3488` (sRGB-friendly packing turns R/RG into RGB, hence
 `channel_pack` Optimized for the masks); format choice: `modules/etcpak/image_compress_etcpak.cpp:41-80`,
@@ -84,12 +84,12 @@ ETC and ASTC_8x8 (same decoders, RGBA8 output); the other five stay `unsupported
 a game's float textures: small curve and gradient textures, mostly made on
 loader threads, used as shader inputs. Thirteen float textures, all created after arm:
 
-| texture | made by | format and shape |
-| ------- | ------- | ---------------- |
-| `curve_rf`, `curve_rgb`, `curve_xyz` | `CurveTexture` (RED, RGB), `CurveXYZTexture`, main thread, deferred update | RF, RGBF, RGBF, 256x1 |
-| `grad_hdr` | `GradientTexture1D` `use_hdr`, main thread | RGBAF 256x1, then 192x1 (create + replace) |
-| `img_rgf`, `img_rh`, `img_rgh`, `img_rgbh`, `img_rgbah`, `img_rgbaf_mip`, `img_rf_odd` | images built and uploaded on a loader `Thread` | RGF, RH, RGH, RGBH, RGBAH 16x16; RGBAF 16x16 + 5 mips; RF 5x3 + 2 mips |
-| `hdr_bptc`, `hdr_astc` | the imported `hdr.exr` (desktop BPTC_RGBFU, mobile ASTC_4x4_HDR) | decoded to RGBH and RGBAH 16x16 |
+| texture                                                                                | made by                                                                    | format and shape                                                       |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `curve_rf`, `curve_rgb`, `curve_xyz`                                                   | `CurveTexture` (RED, RGB), `CurveXYZTexture`, main thread, deferred update | RF, RGBF, RGBF, 256x1                                                  |
+| `grad_hdr`                                                                             | `GradientTexture1D` `use_hdr`, main thread                                 | RGBAF 256x1, then 192x1 (create + replace)                             |
+| `img_rgf`, `img_rh`, `img_rgh`, `img_rgbh`, `img_rgbah`, `img_rgbaf_mip`, `img_rf_odd` | images built and uploaded on a loader `Thread`                             | RGF, RH, RGH, RGBH, RGBAH 16x16; RGBAF 16x16 + 5 mips; RF 5x3 + 2 mips |
+| `hdr_bptc`, `hdr_astc`                                                                 | the imported `hdr.exr` (desktop BPTC_RGBFU, mobile ASTC_4x4_HDR)           | decoded to RGBH and RGBAH 16x16                                        |
 
 Every texture is the `src` uniform of a `ColorRect` with a small canvas_item shader (nearest,
 clamped); `img_rgbah`, `img_rgbh`, `hdr_astc` and `hdr_bptc` are also drawn by a `Sprite2D`. Step 1

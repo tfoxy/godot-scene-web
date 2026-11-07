@@ -15,6 +15,7 @@ Changelog: one sentence an integrator would read — feat/fix/perf only, or `non
 ```
 
 - Enforced by `scripts/githooks/commit-msg` **on `main` only**. Feature branches are free.
+- `scripts/githooks/pre-commit` checks staged Biome and Markdown/YAML formatting **on `main` only**.
 - Installed by `scripts/install-agent-config.sh` (`core.hooksPath`), so it holds in every worktree.
 - Emergency bypass: `git commit --no-verify`.
 
@@ -22,17 +23,17 @@ Changelog: one sentence an integrator would read — feat/fix/perf only, or `non
 
 Nine, closed. If none fits, the commit is probably two commits.
 
-| Type | For | Trailer |
-| --- | --- | --- |
-| `feat` | a capability a consumer can use | required |
-| `fix` | a defect a consumer could hit — including a geometry or appearance mismatch with Godot | required |
-| `perf` | a measured speed or memory win | required |
-| `refactor` | no behaviour change — including retiring a shipped flag or experiment | — |
-| `docs` | documentation only | — |
-| `test` | tests, benches, harnesses, fixtures, parity gates | — |
-| `build` | build, dependencies, packaging | — |
-| `ci` | workflows and the release pipeline | — |
-| `chore` | everything else | — |
+| Type       | For                                                                                    | Trailer  |
+| ---------- | -------------------------------------------------------------------------------------- | -------- |
+| `feat`     | a capability a consumer can use                                                        | required |
+| `fix`      | a defect a consumer could hit — including a geometry or appearance mismatch with Godot | required |
+| `perf`     | a measured speed or memory win                                                         | required |
+| `refactor` | no behaviour change — including retiring a shipped flag or experiment                  | —        |
+| `docs`     | documentation only                                                                     | —        |
+| `test`     | tests, benches, harnesses, fixtures, parity gates                                      | —        |
+| `build`    | build, dependencies, packaging                                                         | —        |
+| `ci`       | workflows and the release pipeline                                                     | —        |
+| `chore`    | everything else                                                                        | —        |
 
 Earlier history used a wider, drifting set. Those fold in: `cleanup` → `refactor`, `bench` →
 `test` (or `perf` when a number moved), and `html` / `particles` / `analyze` become **scopes**, e.g.
@@ -44,7 +45,7 @@ Every package under `packages/` is published to npm on tag, so a break is somebo
 ## The `Changelog:` trailer
 
 Release notes are not assembled from subjects. A release spans hundreds of commits whose subjects
-are correct and unreadable, so the note is written *once, at commit time*, by whoever still has the
+are correct and unreadable, so the note is written _once, at commit time_, by whoever still has the
 context:
 
 ```
@@ -134,7 +135,7 @@ after changing the check itself.
 
 `publish.yml` typechecks, tests, builds, re-checks the tag against every package version, checks
 that `CHANGELOG.md` has a section for it, and publishes the packages to npm with provenance. It
-creates no GitHub Release, so `CHANGELOG.md` in the repo *is* the published record. Pushing is
+creates no GitHub Release, so `CHANGELOG.md` in the repo _is_ the published record. Pushing is
 always explicit; no agent pushes a branch or a tag on its own.
 
 ## Reading the history

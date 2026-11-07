@@ -45,21 +45,21 @@ python3 experiments/render-stream/fixtures/gate5-style/make_expected.py --check
 top-left cell (1, .4, .4) and the rest a checker of (.4, .2, .8) and (.2, .8, .6). Every textured
 node uses nearest filtering.
 
-| Region   | Node (position, size)                         | Content                                                                                       |
-| -------- | --------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `NS`     | `NinePatchRect` (16,16) 52×40, 68×56 from 2   | `TEXN`, margins 4, `stretch`/`stretch`                                                        |
-| `NT`     | `NinePatchRect` (112,16)                      | `tile`/`tile`                                                                                 |
-| `NF`     | `NinePatchRect` (208,16)                      | `tile_fit`/`tile_fit` (6 repeats of 7.33 px across, then 8 of 7.5 px)                        |
-| `NH`     | `NinePatchRect` (304,16)                      | `stretch`, `draw_center = false`                                                              |
-| `TX`     | `StyleNode` (404,20) 56×40                    | `StyleBoxTexture`: `TEXN`, texture margins 4, expand margins 4, modulate (.6,.6,1); (1,.6,.6) at 8 |
-| `SF`     | `StyleNode` (16,116) 64×48                    | `StyleBoxFlat` sharp, bg (.4,.8,.4); (1,.6,.2) at 1                                           |
-| `SB`     | `StyleNode` (112,116) 64×48                   | sharp, bg (.2,.4,.8), border (1,1,.6) widths L2 T4 R6 B8; L6 at 3                             |
-| `SR`     | `StyleNode` (208,116) 64×48                   | radius 8 (12 at 6), antialiased, bg (1,.4,.4)                                                 |
-| `SS`     | `StyleNode` (312,116) 56×40                   | sharp, bg (.8,.8,.2), shadow size 4 offset (2,2) ((-2,2) at 7), shadow colour (0,0,0,.6)      |
-| `SK`     | `StyleNode` (408,116) 56×40                   | skew (0.2, 0), antialiased, bg (.6,.4,1)                                                      |
-| `DP`     | `Panel` (504,116) 56×40, +(8,4) at 5          | the default theme's box: (0.1,0.1,0.1,0.6), radius 3, corner detail 5, antialiased            |
-| `FL`     | `StyleNode` (16,212) 64×48, flipped           | sharp, bg (.2,.6,.6), border (1,.8,.4) L2 T2 R2 B6, drawn under `(0,48)` scale `(1,-1)`         |
-| `RT`     | `RichTextLabel` (124,220) 56×40, empty text   | focused until 4: the theme focus box (expand 2, border 2 (.8,.8,.8), radius 3) between clip-ignores |
-| `Marker` | `Node2D` (592,16)                             | 32×32 rect in gate 3's marker colour of the step                                              |
+| Region   | Node (position, size)                       | Content                                                                                             |
+| -------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `NS`     | `NinePatchRect` (16,16) 52×40, 68×56 from 2 | `TEXN`, margins 4, `stretch`/`stretch`                                                              |
+| `NT`     | `NinePatchRect` (112,16)                    | `tile`/`tile`                                                                                       |
+| `NF`     | `NinePatchRect` (208,16)                    | `tile_fit`/`tile_fit` (6 repeats of 7.33 px across, then 8 of 7.5 px)                               |
+| `NH`     | `NinePatchRect` (304,16)                    | `stretch`, `draw_center = false`                                                                    |
+| `TX`     | `StyleNode` (404,20) 56×40                  | `StyleBoxTexture`: `TEXN`, texture margins 4, expand margins 4, modulate (.6,.6,1); (1,.6,.6) at 8  |
+| `SF`     | `StyleNode` (16,116) 64×48                  | `StyleBoxFlat` sharp, bg (.4,.8,.4); (1,.6,.2) at 1                                                 |
+| `SB`     | `StyleNode` (112,116) 64×48                 | sharp, bg (.2,.4,.8), border (1,1,.6) widths L2 T4 R6 B8; L6 at 3                                   |
+| `SR`     | `StyleNode` (208,116) 64×48                 | radius 8 (12 at 6), antialiased, bg (1,.4,.4)                                                       |
+| `SS`     | `StyleNode` (312,116) 56×40                 | sharp, bg (.8,.8,.2), shadow size 4 offset (2,2) ((-2,2) at 7), shadow colour (0,0,0,.6)            |
+| `SK`     | `StyleNode` (408,116) 56×40                 | skew (0.2, 0), antialiased, bg (.6,.4,1)                                                            |
+| `DP`     | `Panel` (504,116) 56×40, +(8,4) at 5        | the default theme's box: (0.1,0.1,0.1,0.6), radius 3, corner detail 5, antialiased                  |
+| `FL`     | `StyleNode` (16,212) 64×48, flipped         | sharp, bg (.2,.6,.6), border (1,.8,.4) L2 T2 R2 B6, drawn under `(0,48)` scale `(1,-1)`             |
+| `RT`     | `RichTextLabel` (124,220) 56×40, empty text | focused until 4: the theme focus box (expand 2, border 2 (.8,.8,.8), radius 3) between clip-ignores |
+| `Marker` | `Node2D` (592,16)                           | 32×32 rect in gate 3's marker colour of the step                                                    |
 
 Step 9 sets the canvas transform to a translation by (8,4).

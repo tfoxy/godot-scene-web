@@ -78,13 +78,13 @@ overlap. The fixture calls `get_tree().quit()` once `RS_FIXTURE_QUIT_FRAME` is r
 
 All optional:
 
-| Variable                | Meaning                                                                                                                                                                                 |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GRC_EXTENSION`         | absolute `.gdextension` path for `loader.gd` to load in `_enter_tree`                                                                                                                   |
-| `RS_FIXTURE_STEP_LOG`   | absolute path. At each step's applied frame, one JSONL line `{"step":k,"applied_frame":a,"settle_frame":s}` (keys in that order) is appended and flushed                                |
-| `RS_FIXTURE_SHOT_DIR`   | absolute directory. At each settle frame, if the display server is not `headless`, awaits `RenderingServer.frame_post_draw` then saves `step-<k>.png`. Under `headless`, logs and skips |
-| `RS_FIXTURE_VARIANT`    | unset/empty runs the normal fixture. `unsupported` makes the Marker also `draw_circle` (inside a whole-period animation slice) from step 2 on. Any other value prints an error and quits with code 2                            |
-| `RS_FIXTURE_QUIT_FRAME` | integer ≥ 52, default 52                                                                                                                                                                |
+| Variable                | Meaning                                                                                                                                                                                              |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GRC_EXTENSION`         | absolute `.gdextension` path for `loader.gd` to load in `_enter_tree`                                                                                                                                |
+| `RS_FIXTURE_STEP_LOG`   | absolute path. At each step's applied frame, one JSONL line `{"step":k,"applied_frame":a,"settle_frame":s}` (keys in that order) is appended and flushed                                             |
+| `RS_FIXTURE_SHOT_DIR`   | absolute directory. At each settle frame, if the display server is not `headless`, awaits `RenderingServer.frame_post_draw` then saves `step-<k>.png`. Under `headless`, logs and skips              |
+| `RS_FIXTURE_VARIANT`    | unset/empty runs the normal fixture. `unsupported` makes the Marker also `draw_circle` (inside a whole-period animation slice) from step 2 on. Any other value prints an error and quits with code 2 |
+| `RS_FIXTURE_QUIT_FRAME` | integer ≥ 52, default 52                                                                                                                                                                             |
 
 ## expected.json schema
 
@@ -114,7 +114,10 @@ All optional:
     },
     // ... one entry per step, 0..4
   ],
-  "unsupported_variant": { "from_step": 2, "op": "canvas_item_add_animation_slice" },
+  "unsupported_variant": {
+    "from_step": 2,
+    "op": "canvas_item_add_animation_slice",
+  },
   "preexisting": {
     // preexisting.tscn's extra rects, painted before Subject and Marker
     "scene": "res://preexisting.tscn",

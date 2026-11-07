@@ -21,3 +21,9 @@ artifacts/perf/
 *.uid
 
 fixtures/assets/fonts/roboto/
+
+# Wire specifications keep deliberate manual wrapping.
+experiments/render-stream/protocol/
+
+# Vendored third-party sources stay byte-identical to upstream.
+experiments/render-stream/rs-net/vendor/

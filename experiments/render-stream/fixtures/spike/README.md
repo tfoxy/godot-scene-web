@@ -144,7 +144,7 @@ template, for both the headless legs and the rendered gamescope legs.
 
 - Calibrator-8 hooks: materials and canvas
   shaders: `_ready()`'s existing `Shader`/`ShaderMaterial` on the Panel gains a `set_default_
-  texture_parameter` call (naming a uniform `TINT_SHADER_B` does not declare) and an instance
+texture_parameter` call (naming a uniform `TINT_SHADER_B` does not declare) and an instance
   parameter on the Panel itself (`shader_set_default_texture_parameter`,
   `canvas_item_set_instance_shader_parameter`; `material_create_from_shader` and
   `material_set_param` were already exercised by that `ShaderMaterial`). A fresh

@@ -90,7 +90,10 @@ export function parseRegistryChurn(
   const m = /\[fixture\] registry-churn (\{.*\})/.exec(stdout ?? "");
   if (!m) return null;
   try {
-    return JSON.parse(m[1]) as { own_creates: Record<string, number>; own_frees: number };
+    return JSON.parse(m[1]) as {
+      own_creates: Record<string, number>;
+      own_frees: number;
+    };
   } catch {
     return null;
   }
@@ -116,12 +119,16 @@ export function registryLiveBound(
   opts: LiveBoundOptions = {},
 ): { problems: string[]; summary: LiveBoundSummary | null } {
   const problems: string[] = [];
-  if (!reg) return { problems: [`${name}: no evidence/registry.json`], summary: null };
-  if (!counts) return { problems: [`${name}: no evidence/counters.json`], summary: null };
+  if (!reg)
+    return { problems: [`${name}: no evidence/registry.json`], summary: null };
+  if (!counts)
+    return { problems: [`${name}: no evidence/counters.json`], summary: null };
   if (reg.schema !== "render-stream-registry/1")
     problems.push(`${name}: schema ${reg.schema}`);
   if (!reg.configured || !reg.enabled)
-    problems.push(`${name}: registry not recording (configured ${reg.configured}, enabled ${reg.enabled})`);
+    problems.push(
+      `${name}: registry not recording (configured ${reg.configured}, enabled ${reg.enabled})`,
+    );
   const order = reg.timeline?.family_order ?? [];
   const families = Object.keys(REGISTRY_CREATE_HOOKS);
   if (order.join(",") !== families.join(","))
@@ -145,7 +152,8 @@ export function registryLiveBound(
       problems.push(
         `${name}: ${f} ends with ${v.entries} entries for ${v.creates} creates - ${v.frees} frees - ${v.replaced} replaced - ${v.recreated} recreated = ${live} live`,
       );
-    if (v.overflow !== 0) problems.push(`${name}: ${f} overflowed ${v.overflow} times`);
+    if (v.overflow !== 0)
+      problems.push(`${name}: ${f} overflowed ${v.overflow} times`);
     const hooks = REGISTRY_CREATE_HOOKS[f].reduce(
       (sum, h) => sum + (counts[h] ?? 0),
       0,
@@ -154,18 +162,26 @@ export function registryLiveBound(
       problems.push(
         `${name}: ${f} recorded ${v.creates} creates (+${v.overflow} overflow, +${v.null_creates} null) for ${hooks} create-hook calls (${REGISTRY_CREATE_HOOKS[f].join(", ")})`,
       );
-    if (v.peak < v.entries) problems.push(`${name}: ${f} peak ${v.peak} below its entries ${v.entries}`);
+    if (v.peak < v.entries)
+      problems.push(
+        `${name}: ${f} peak ${v.peak} below its entries ${v.entries}`,
+      );
     // A create the engine answered with RID() (the dummy's canvas_texture_create) is recorded as a
     // null create: it still shows the hook saw the call.
     const own = opts.ownCreates?.[f];
     const seen = v.creates + v.null_creates + v.overflow;
     if (own !== undefined && seen < own)
-      problems.push(`${name}: ${f} recorded ${seen} creates (null and overflow included), below the fixture's own ${own}`);
+      problems.push(
+        `${name}: ${f} recorded ${seen} creates (null and overflow included), below the fixture's own ${own}`,
+      );
   }
-  if (total !== reg.entries) problems.push(`${name}: entries ${reg.entries}, families sum to ${total}`);
+  if (total !== reg.entries)
+    problems.push(`${name}: entries ${reg.entries}, families sum to ${total}`);
   const freeCalls = (counts.free ?? 0) + (counts.texture_replace ?? 0);
   if (frees > freeCalls)
-    problems.push(`${name}: ${frees} registry frees for ${freeCalls} free/texture_replace calls`);
+    problems.push(
+      `${name}: ${frees} registry frees for ${freeCalls} free/texture_replace calls`,
+    );
   let rowProblems = 0;
   let preArmFrees = 0;
   let lastFrame = -1;
@@ -181,12 +197,18 @@ export function registryLiveBound(
           );
       }
     }
-    if (opts.preArmFreesBefore !== undefined && row.frame < opts.preArmFreesBefore)
+    if (
+      opts.preArmFreesBefore !== undefined &&
+      row.frame < opts.preArmFreesBefore
+    )
       preArmFrees = row.frees.reduce((a, b) => a + b, 0);
   }
-  if (rowProblems > 5) problems.push(`${name}: ... ${rowProblems - 5} more row mismatches`);
+  if (rowProblems > 5)
+    problems.push(`${name}: ... ${rowProblems - 5} more row mismatches`);
   if (opts.preArmFreesBefore !== undefined && preArmFrees === 0)
-    problems.push(`${name}: no tracked free recorded before the arm (frame ${opts.preArmFreesBefore})`);
+    problems.push(
+      `${name}: no tracked free recorded before the arm (frame ${opts.preArmFreesBefore})`,
+    );
   return {
     problems,
     summary: {
@@ -233,7 +255,10 @@ const median = (xs: number[]) => {
 };
 
 /** The metrics registry-cost reads (frame_us_p50 is sleep-paced, see the header). */
-export const COST_METRICS: ("churn_us_mean" | "callback_us_mean")[] = ["churn_us_mean", "callback_us_mean"];
+export const COST_METRICS: ("churn_us_mean" | "callback_us_mean")[] = [
+  "churn_us_mean",
+  "callback_us_mean",
+];
 /** LS0: the metric `material_set_param` is judged alone on (its calls a frame, not the churn's). */
 export const PARAM_METRIC: keyof CostSample = "params_us";
 
@@ -264,11 +289,21 @@ export function registryCost(
   const problems: string[] = [];
   const comparisons: CostComparison[] = [];
   for (const c of ["off", "on", "regoff"])
-    if (!samples[c] || samples[c].length === 0) problems.push(`no ${c} samples`);
+    if (!samples[c] || samples[c].length === 0)
+      problems.push(`no ${c} samples`);
   if (problems.length > 0) return { problems, comparisons };
   if (samples.on.length !== samples.regoff.length)
-    return { problems: [`${samples.on.length} on legs against ${samples.regoff.length} regoff legs: unpaired`], comparisons };
-  if (!(callsPerFrame > 0)) return { problems: [`tracked calls a frame ${callsPerFrame}: no budget`], comparisons };
+    return {
+      problems: [
+        `${samples.on.length} on legs against ${samples.regoff.length} regoff legs: unpaired`,
+      ],
+      comparisons,
+    };
+  if (!(callsPerFrame > 0))
+    return {
+      problems: [`tracked calls a frame ${callsPerFrame}: no budget`],
+      comparisons,
+    };
   const allowed = (callsPerFrame * REGISTRY_CALL_BUDGET_NS) / 1000;
   for (const metric of COST_METRICS) {
     const on = samples.on.map((s) => s[metric]);
@@ -277,7 +312,17 @@ export function registryCost(
       const paired = on.map((v, i) => v - ref[i]);
       const delta = median(paired);
       const ok = Number.isFinite(delta) && delta <= allowed;
-      comparisons.push({ metric, against: "regoff", on: median(on), ref: median(ref), delta, allowed, paired, judged: true, ok });
+      comparisons.push({
+        metric,
+        against: "regoff",
+        on: median(on),
+        ref: median(ref),
+        delta,
+        allowed,
+        paired,
+        judged: true,
+        ok,
+      });
       if (!ok)
         problems.push(
           `${metric}: on - regoff +${delta.toFixed(1)} µs (paired median of ${paired.map((d) => d.toFixed(1)).join(", ")}), budget ${allowed.toFixed(1)} µs (${callsPerFrame} tracked calls a frame x ${REGISTRY_CALL_BUDGET_NS} ns)`,
@@ -285,16 +330,30 @@ export function registryCost(
     }
     {
       const ref = samples.off.map((s) => s[metric]);
-      const paired = ref.length === on.length ? on.map((v, i) => v - ref[i]) : [];
-      comparisons.push({ metric, against: "off", on: median(on), ref: median(ref), delta: median(on) - median(ref), allowed: null, paired, judged: false, ok: true });
+      const paired =
+        ref.length === on.length ? on.map((v, i) => v - ref[i]) : [];
+      comparisons.push({
+        metric,
+        against: "off",
+        on: median(on),
+        ref: median(ref),
+        delta: median(on) - median(ref),
+        allowed: null,
+        paired,
+        judged: false,
+        ok: true,
+      });
     }
   }
   // LS0: material_set_param judged alone, on-regoff paired by round, at the same per-call budget.
   // `paramCalls` is the report's param_updates; absent (0), the metric is not judged.
   if (paramCalls > 0) {
-    const have = (c: string) => samples[c].every((s) => typeof s[PARAM_METRIC] === "number");
+    const have = (c: string) =>
+      samples[c].every((s) => typeof s[PARAM_METRIC] === "number");
     if (!have("on") || !have("regoff")) {
-      problems.push(`params_us missing from the on/regoff samples (RS_SCALE_CPU_REPORT=1 and RS_SCALE_PARAM_UPDATES=${paramCalls})`);
+      problems.push(
+        `params_us missing from the on/regoff samples (RS_SCALE_CPU_REPORT=1 and RS_SCALE_PARAM_UPDATES=${paramCalls})`,
+      );
     } else {
       const on = samples.on.map((s) => s[PARAM_METRIC] as number);
       const ref = samples.regoff.map((s) => s[PARAM_METRIC] as number);
@@ -302,7 +361,17 @@ export function registryCost(
       const delta = median(paired);
       const allowedParams = (paramCalls * REGISTRY_CALL_BUDGET_NS) / 1000;
       const ok = Number.isFinite(delta) && delta <= allowedParams;
-      comparisons.push({ metric: PARAM_METRIC, against: "regoff", on: median(on), ref: median(ref), delta, allowed: allowedParams, paired, judged: true, ok });
+      comparisons.push({
+        metric: PARAM_METRIC,
+        against: "regoff",
+        on: median(on),
+        ref: median(ref),
+        delta,
+        allowed: allowedParams,
+        paired,
+        judged: true,
+        ok,
+      });
       if (!ok)
         problems.push(
           `material_set_param alone: on - regoff +${delta.toFixed(1)} µs over ${paramCalls} calls a frame (paired median of ${paired.map((d) => d.toFixed(1)).join(", ")}), budget ${allowedParams.toFixed(1)} µs (${REGISTRY_CALL_BUDGET_NS} ns a call)`,
@@ -314,8 +383,17 @@ export function registryCost(
 
 /** LAR6 resolve-queue-only: the late groups whose deferred legs it reads, and the leg names that
  * count as deferred (the extension loaded at birth, the arm deferred: every resource registered). */
-export const RESOLVE_QUEUE_GROUPS = ["g8a", "g8m", "g8mm", "g8ctl", "g8ctsp", "g8res", "g8pt"] as const;
-export const isDeferredLeg = (leg: string): boolean => /^(headless-)?deferred(-[a-z0-9]+)?$/.test(leg);
+export const RESOLVE_QUEUE_GROUPS = [
+  "g8a",
+  "g8m",
+  "g8mm",
+  "g8ctl",
+  "g8ctsp",
+  "g8res",
+  "g8pt",
+] as const;
+export const isDeferredLeg = (leg: string): boolean =>
+  /^(headless-)?deferred(-[a-z0-9]+)?$/.test(leg);
 
 /** resolve-queue-only's verdict: every deferred leg's adopt_stats.resolve_scans (the mirror scans
  * the frame drains made) is 0. Pure. A leg without the counter fails; no deferred leg at all is
@@ -323,13 +401,19 @@ export const isDeferredLeg = (leg: string): boolean => /^(headless-)?deferred(-[
 export function judgeResolveQueueOnly(
   legs: readonly { leg: string; resolve_scans: number | undefined }[],
 ): { problems: string[] | null; detail: string } {
-  if (legs.length === 0) return { problems: null, detail: "no deferred leg ran" };
+  if (legs.length === 0)
+    return { problems: null, detail: "no deferred leg ran" };
   const problems: string[] = [];
   for (const l of legs) {
-    if (typeof l.resolve_scans !== "number") problems.push(`${l.leg}: no adopt_stats.resolve_scans`);
-    else if (l.resolve_scans !== 0) problems.push(`${l.leg}: resolve_scans ${l.resolve_scans}`);
+    if (typeof l.resolve_scans !== "number")
+      problems.push(`${l.leg}: no adopt_stats.resolve_scans`);
+    else if (l.resolve_scans !== 0)
+      problems.push(`${l.leg}: resolve_scans ${l.resolve_scans}`);
   }
-  return { problems, detail: legs.map((l) => `${l.leg} ${l.resolve_scans}`).join(", ") };
+  return {
+    problems,
+    detail: legs.map((l) => `${l.leg} ${l.resolve_scans}`).join(", "),
+  };
 }
 
 /** LAR7: result.json `stream.gate8.shader_clock` (capture/src/rs_shader_clock.h), evidence only. */
@@ -355,15 +439,26 @@ export function shaderClockOrigin(
   clock: ShaderClockEvidence | null | undefined,
   want: "startup" | "late-load",
 ): { problems: string[]; detail: string } {
-  if (!clock) return { problems: ["no result.json stream.gate8.shader_clock"], detail: "absent" };
+  if (!clock)
+    return {
+      problems: ["no result.json stream.gate8.shader_clock"],
+      detail: "absent",
+    };
   const problems: string[] = [];
   const detail = `origin ${clock.origin} first_tick_process_frames ${clock.first_tick_process_frames} draws_missed ${clock.draws_missed} source ${clock.source}`;
-  if (clock.origin !== want) problems.push(`origin ${clock.origin}, want ${want}`);
+  if (clock.origin !== want)
+    problems.push(`origin ${clock.origin}, want ${want}`);
   const frames = clock.first_tick_process_frames;
   if (typeof frames !== "number") problems.push("no first_tick_process_frames");
-  else if (want === "startup" && frames !== 0) problems.push(`first_tick_process_frames ${frames}, want 0`);
-  else if (want === "late-load" && frames <= 0) problems.push(`first_tick_process_frames ${frames}, want > 0`);
-  if (want === "startup" && clock.source === "draw-hook" && clock.draws_missed !== 0)
+  else if (want === "startup" && frames !== 0)
+    problems.push(`first_tick_process_frames ${frames}, want 0`);
+  else if (want === "late-load" && frames <= 0)
+    problems.push(`first_tick_process_frames ${frames}, want > 0`);
+  if (
+    want === "startup" &&
+    clock.source === "draw-hook" &&
+    clock.draws_missed !== 0
+  )
     problems.push(`draws_missed ${clock.draws_missed}, want 0`);
   return { problems, detail };
 }
@@ -401,8 +496,18 @@ export function idleParity(samples: Record<string, IdleSample[]>): {
   const problems: string[] = [];
   const n = samples.n ?? [];
   const st = samples.s ?? [];
-  if (n.length === 0 || st.length === 0) return { problems: [`no ${n.length === 0 ? "n" : "s"} samples`], cpu: null, rss: null };
-  if (n.length !== st.length) return { problems: [`${st.length} s legs against ${n.length} n legs: unpaired`], cpu: null, rss: null };
+  if (n.length === 0 || st.length === 0)
+    return {
+      problems: [`no ${n.length === 0 ? "n" : "s"} samples`],
+      cpu: null,
+      rss: null,
+    };
+  if (n.length !== st.length)
+    return {
+      problems: [`${st.length} s legs against ${n.length} n legs: unpaired`],
+      cpu: null,
+      rss: null,
+    };
   const base = median(n.map((x) => x.cpu_us_mean));
   const paired = st.map((x, i) => x.cpu_us_mean - n[i].cpu_us_mean);
   const m = median(paired);
@@ -412,12 +517,17 @@ export function idleParity(samples: Record<string, IdleSample[]>): {
       `s - n +${m.toFixed(1)} µs a frame (paired median of ${paired.map((d) => d.toFixed(1)).join(", ")}), bound ${bound.toFixed(1)} µs (1% of n's ${base.toFixed(1)})`,
     );
   let rss: { median: number; paired: number[]; bound: number } | null = null;
-  if (st.every((x) => typeof x.rss_kb === "number") && n.every((x) => typeof x.rss_kb === "number")) {
+  if (
+    st.every((x) => typeof x.rss_kb === "number") &&
+    n.every((x) => typeof x.rss_kb === "number")
+  ) {
     const rp = st.map((x, i) => (x.rss_kb as number) - (n[i].rss_kb as number));
     const rm = median(rp);
     rss = { median: rm, paired: rp, bound: IDLE_PARITY_RSS_KB };
     if (!(rm <= IDLE_PARITY_RSS_KB))
-      problems.push(`s - n RSS +${(rm / 1024).toFixed(1)} MB (paired median), bound 10 MB`);
+      problems.push(
+        `s - n RSS +${(rm / 1024).toFixed(1)} MB (paired median), bound 10 MB`,
+      );
   } else problems.push("a leg reported no rss_kb");
   return { problems, cpu: { median: m, paired, bound, base }, rss };
 }
@@ -453,7 +563,9 @@ export function validationLogCost(
       continue;
     }
     if (rows.length !== a0.length) {
-      problems.push(`${rows.length} ${config} legs against ${a0.length} a0 legs: unpaired`);
+      problems.push(
+        `${rows.length} ${config} legs against ${a0.length} a0 legs: unpaired`,
+      );
       continue;
     }
     const paired = rows.map((s, i) => s.cpu_us_mean - a0[i].cpu_us_mean);
@@ -478,10 +590,24 @@ export function validationLogCost(
  */
 export function standbyHotZero(
   name: string,
-  result: { status?: string; vtable?: { published?: string; standby_hooks?: string[] } } | null | undefined,
-  counters: { hooks_planned?: string[]; counts?: Record<string, number | null> } | null | undefined,
+  result:
+    | {
+        status?: string;
+        vtable?: { published?: string; standby_hooks?: string[] };
+      }
+    | null
+    | undefined,
+  counters:
+    | { hooks_planned?: string[]; counts?: Record<string, number | null> }
+    | null
+    | undefined,
   standbyHooks: readonly string[],
-): { problems: string[]; hot_planned: number; hot_calls: number; standby_calls: number } {
+): {
+  problems: string[];
+  hot_planned: number;
+  hot_calls: number;
+  standby_calls: number;
+} {
   const problems: string[] = [];
   let hot = 0;
   let hotCalls = 0;
@@ -491,7 +617,8 @@ export function standbyHotZero(
     problems.push(`${name}: no counters.json counts/hooks_planned`);
     return { problems, hot_planned: 0, hot_calls: 0, standby_calls: 0 };
   }
-  if (result && result.status !== "standby") problems.push(`${name}: status ${result.status}, want standby`);
+  if (result && result.status !== "standby")
+    problems.push(`${name}: status ${result.status}, want standby`);
   const want = new Set(standbyHooks);
   const installed = [...(result?.vtable?.standby_hooks ?? [])].sort();
   const expected = counters.hooks_planned.filter((h) => want.has(h)).sort();
@@ -507,10 +634,16 @@ export function standbyHotZero(
     }
     ++hot;
     hotCalls += n;
-    if (n !== 0 && problems.length < 8) problems.push(`${name}: hot hook ${h} ran ${n} times in standby`);
+    if (n !== 0 && problems.length < 8)
+      problems.push(`${name}: hot hook ${h} ran ${n} times in standby`);
   }
   if (hot === 0) problems.push(`${name}: no hot hook planned`);
-  return { problems, hot_planned: hot, hot_calls: hotCalls, standby_calls: standbyCalls };
+  return {
+    problems,
+    hot_planned: hot,
+    hot_calls: hotCalls,
+    standby_calls: standbyCalls,
+  };
 }
 
 /** LS1: rs_standby.cpp's set (the ctest rs_standby pins the C++ side to the same list). */

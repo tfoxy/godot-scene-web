@@ -7,8 +7,8 @@ output. Godot 4.5.1 embeds these exact bytes as its default GUI theme font
 for source consumers and for a packed package without a host-specific asset
 copy rule.
 
-| file | bytes | sha256 |
-| --- | ---: | --- |
+| file                      |  bytes | sha256                                                             |
+| ------------------------- | -----: | ------------------------------------------------------------------ |
 | `OpenSans_SemiBold.woff2` | 46 392 | `661e2d9975d3029aeb32bf37b1b963c31c7c3ce08ac1bab2c8ebe27e135c4ec2` |
 
 ## Provenance
@@ -39,7 +39,7 @@ theme constructs a `FontVariation` over this SemiBold face with
 `embolden * (font_size * 64) / 4096` to every glyph advance: 0.3 px at the
 default 16 px. Browser `font-synthesis` changes glyph ink but does not make
 `Range` geometry include that advance. The renderer therefore uses a 0.5 px
-tracking emulation for the *implicit* default bold role: 0.3 px from Godot's
+tracking emulation for the _implicit_ default bold role: 0.3 px from Godot's
 formula plus the measured cross-shaper/hinting rounding gap. It is deliberately
 not applied when an explicit bold FontFile/FontVariation resolves, and it
 resets a normal FontVariation's `spacing_glyph` instead of inheriting it.

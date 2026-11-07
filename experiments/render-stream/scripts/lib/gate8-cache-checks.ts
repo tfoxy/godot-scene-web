@@ -338,7 +338,9 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
       // LS1: texture_set_path is planned always (a standby slot); with
       // no directory it only counts and forwards, so no path list is kept.
       if (!c.hooks_planned.includes("texture_set_path"))
-        problems.push("texture_set_path is not planned with no cache directory (LS1 plans it always)");
+        problems.push(
+          "texture_set_path is not planned with no cache directory (LS1 plans it always)",
+        );
       if (c.hooks_planned.length !== 80)
         problems.push(`${c.hooks_planned.length} hooks planned, expected 80`);
       if (!("texture_set_path" in c.counts))

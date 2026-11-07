@@ -42,14 +42,14 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate55-c
 
 ## Layout (640×360; regions `[x0,y0,x1,y1)`)
 
-| Region   | Items (origin)                     | Content (local)                                                                                                        |
-| -------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `BM`…`BD` | `U_<r>`, `O_<r>` (16 + 88k, 16)   | `U` rect (8,8,56,48) in (.4,.6,.2); `O` (its CIM's blend mode) opaque (24,16,48,24) and `.6` strip (24,44,48,16) in (.4,.2,.6), both overhanging `U` onto the background |
-| `LN`…`LO` | `LN`, `LM`, `LU`, `LO` (16 + 88k, 112) | rect (16,16,56,48) in (.6,.4,1): no material, `mix`/`normal`, `unshaded`, `light_only`                         |
-| `UP`     | `UB`, `UP` (16,208), `UC` (UP's child) | `UB` (8,8,120,48) in (.4,.4,.4); `UP` (CIM `add`) (8,24,60,48) and `UC` (no material) (68,24,60,48) in (.2,.2,.2), overhanging `UB` |
-| `RC`     | `RB`, `RI` (168,208)               | `RB` (8,8,56,48) in (.4,.4,.4); `RI` (CIM `sub`) (24,24,56,40) in (.2,.2,.2), overhanging                                 |
-| `Marker` | `Marker` (592,16)                  | 32×32 rect in G55b's marker colour of the step                                                                         |
-| —        | `CM` (variant `modulate`)          | the `CanvasModulate`, created last: (1,1,0) at 0, (0,1,1) at 2, hidden at 8                                             |
+| Region    | Items (origin)                         | Content (local)                                                                                                                                                          |
+| --------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BM`…`BD` | `U_<r>`, `O_<r>` (16 + 88k, 16)        | `U` rect (8,8,56,48) in (.4,.6,.2); `O` (its CIM's blend mode) opaque (24,16,48,24) and `.6` strip (24,44,48,16) in (.4,.2,.6), both overhanging `U` onto the background |
+| `LN`…`LO` | `LN`, `LM`, `LU`, `LO` (16 + 88k, 112) | rect (16,16,56,48) in (.6,.4,1): no material, `mix`/`normal`, `unshaded`, `light_only`                                                                                   |
+| `UP`      | `UB`, `UP` (16,208), `UC` (UP's child) | `UB` (8,8,120,48) in (.4,.4,.4); `UP` (CIM `add`) (8,24,60,48) and `UC` (no material) (68,24,60,48) in (.2,.2,.2), overhanging `UB`                                      |
+| `RC`      | `RB`, `RI` (168,208)                   | `RB` (8,8,56,48) in (.4,.4,.4); `RI` (CIM `sub`) (24,24,56,40) in (.2,.2,.2), overhanging                                                                                |
+| `Marker`  | `Marker` (592,16)                      | 32×32 rect in G55b's marker colour of the step                                                                                                                           |
+| —         | `CM` (variant `modulate`)              | the `CanvasModulate`, created last: (1,1,0) at 0, (0,1,1) at 2, hidden at 8                                                                                              |
 
 Timeline: 1 `BD` → `mix`; 2 `LO` → `normal`; 3 `LU` → `light_only`; 4 `RI.material = null`;
 5 `RI.material` = a new CIM `add`; 6 `UC.use_parent_material = true`; 7 `O_BA` moves by (4,0);

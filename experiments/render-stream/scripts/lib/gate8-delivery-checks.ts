@@ -700,7 +700,7 @@ export async function runG8kp(
       }
       blocks++;
       const v = variants.length === 1 ? variants[0] : undefined;
-      if (!v || v.encoding !== "block") {
+      if (v?.encoding !== "block") {
         problems.push(
           `${name}: variants ${JSON.stringify(variants)}, expected one block variant`,
         );

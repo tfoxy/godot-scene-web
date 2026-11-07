@@ -189,14 +189,13 @@ export function accountProblems(
 ): string[] {
   const problems: string[] = [];
   const st = r.stream?.gate8?.adopt_stats;
-  if (!st || st.ran !== true || st.items !== expected.adopted)
+  if (st?.ran !== true || st.items !== expected.adopted)
     problems.push(`adopt_stats ${JSON.stringify(st)}`);
   if (r.stream?.status === "refused")
     problems.push(`stream refused: ${r.stream.reason}`);
   const ui = r.stream?.unknown_items;
   if (
-    !ui ||
-    ui.unknown_calls !== 0 ||
+    ui?.unknown_calls !== 0 ||
     ui.unknown_rids_named !== 0 ||
     ui.withheld_items !== 0
   )

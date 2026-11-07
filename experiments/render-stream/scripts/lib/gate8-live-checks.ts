@@ -789,7 +789,9 @@ export async function runG8l(
         want("close_reason", "disarm");
         want("stopped", true);
         want("status_stopped", "stopped");
-        if (!/librender_stream_capture\.so$/.test(String(peer.library_path ?? "")))
+        if (
+          !/librender_stream_capture\.so$/.test(String(peer.library_path ?? ""))
+        )
           problems.push(
             `peer.library_path ${JSON.stringify(peer.library_path)} does not end in librender_stream_capture.so`,
           );
@@ -801,7 +803,9 @@ export async function runG8l(
       if (!carriers) problems.push("evidence/live-carriers.json missing");
       else {
         if (ws?.index !== 0)
-          problems.push(`ws carrier index ${JSON.stringify(ws?.index)}, expected 0`);
+          problems.push(
+            `ws carrier index ${JSON.stringify(ws?.index)}, expected 0`,
+          );
         if (!gd) problems.push("no gdpeer entry in live-carriers.json");
         else {
           if (gd.index !== 2)
@@ -813,12 +817,16 @@ export async function runG8l(
           if (gd.sessions !== 1)
             problems.push(`gdpeer sessions ${gd.sessions}, expected 1`);
           if (gd.transport !== null)
-            problems.push(`gdpeer transport ${JSON.stringify(gd.transport)}, expected null`);
+            problems.push(
+              `gdpeer transport ${JSON.stringify(gd.transport)}, expected null`,
+            );
           if (Object.keys(gd.faults ?? {}).length > 0)
             problems.push(`gdpeer faults ${JSON.stringify(gd.faults)}`);
         }
         if (names.includes("gdunlisted"))
-          problems.push("gdunlisted (registered, not in GRC_LIVE_CARRIERS) is listed");
+          problems.push(
+            "gdunlisted (registered, not in GRC_LIVE_CARRIERS) is listed",
+          );
       }
       const bytes = await extCarrierBytes(honest, "gdpeer");
       problems.push(...bytes.problems);

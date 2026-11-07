@@ -80,7 +80,6 @@ import {
 } from "./gate1-checks";
 import type { Gate1Expected } from "./gate1-expected";
 import type { Gate2Class } from "./gate2-checks";
-import { assertValidationLog } from "./validation-log";
 import {
   type ClipRectValue,
   clipValueEqual,
@@ -96,6 +95,7 @@ import {
 } from "./gate3-expected";
 import { type G3cResult, runG3c } from "./gate3x-checks";
 import type { Gate3xExpected } from "./gate3x-expected";
+import { assertValidationLog } from "./validation-log";
 
 // ---------------------------------------------------------------------------------------------
 // Constants of the contract

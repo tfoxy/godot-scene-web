@@ -109,7 +109,7 @@ function meshLine(
 function trace(
   frames: number[],
   dynamicAt: (frame: number) => boolean,
-  hashOf = (f: number) => h("a"),
+  hashOf = (_f: number) => h("a"),
 ): DynamicTrace {
   return {
     txs: frames.map((f) => ({

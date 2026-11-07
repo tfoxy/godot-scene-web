@@ -36,35 +36,35 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate4-la
 
 ## Layout (640×360; regions `[x0,y0,x1,y1)`)
 
-| Node | Font, size | What it covers | Region |
-| ---- | ---------- | -------------- | ------ |
-| `LZ` | F 16 → 40 | size change: new cache, 512² page | `[8,8,152,68)` |
-| `LS` | F 12 | the 12 px cache | `[152,8,296,68)` |
-| `LW` | F 16, `AUTOWRAP_WORD`, 120 wide | word wrap, rewrap at step 2 | `[8,68,152,128)` |
-| `LR` | F 16, `AUTOWRAP_ARBITRARY`, 48 wide, alpha .6 | grapheme wrap | `[152,68,296,128)` |
-| `LK` | F 16, `clip_text`, 80×28 | clipped overflow | `[8,128,96,188)` (ends at the clip) |
-| `LO` | F 24, outline 4 | outline cache, per-glyph uploads | `[152,128,296,188)` |
-| `LSh` | F 24, shadow (2,2), `shadow_outline_size` 0 | shadow on the text page | `[8,188,152,248)` |
-| `LX` | FX 14 | subpixel variants | `[152,188,296,248)` |
-| `AL`, `AC`, `AR`, `AF` | F 16, boxes 120×64 on the panel | left/top, centre/centre, right/bottom, fill/top | panel cells |
-| `LL` | FL 16 | page lifetime | `[304,168,440,248)` |
-| `LP` | F 320, `clip_text`, box 600×120 | two 1024² pages, clipped | `[8,252,616,360)` (ends at the clip) |
-| `LC` | FC 16 (variant `lcd` only) | LCD, typed unsupported | `[440,168,576,248)` |
+| Node                   | Font, size                                    | What it covers                                  | Region                               |
+| ---------------------- | --------------------------------------------- | ----------------------------------------------- | ------------------------------------ |
+| `LZ`                   | F 16 → 40                                     | size change: new cache, 512² page               | `[8,8,152,68)`                       |
+| `LS`                   | F 12                                          | the 12 px cache                                 | `[152,8,296,68)`                     |
+| `LW`                   | F 16, `AUTOWRAP_WORD`, 120 wide               | word wrap, rewrap at step 2                     | `[8,68,152,128)`                     |
+| `LR`                   | F 16, `AUTOWRAP_ARBITRARY`, 48 wide, alpha .6 | grapheme wrap                                   | `[152,68,296,128)`                   |
+| `LK`                   | F 16, `clip_text`, 80×28                      | clipped overflow                                | `[8,128,96,188)` (ends at the clip)  |
+| `LO`                   | F 24, outline 4                               | outline cache, per-glyph uploads                | `[152,128,296,188)`                  |
+| `LSh`                  | F 24, shadow (2,2), `shadow_outline_size` 0   | shadow on the text page                         | `[8,188,152,248)`                    |
+| `LX`                   | FX 14                                         | subpixel variants                               | `[152,188,296,248)`                  |
+| `AL`, `AC`, `AR`, `AF` | F 16, boxes 120×64 on the panel               | left/top, centre/centre, right/bottom, fill/top | panel cells                          |
+| `LL`                   | FL 16                                         | page lifetime                                   | `[304,168,440,248)`                  |
+| `LP`                   | F 320, `clip_text`, box 600×120               | two 1024² pages, clipped                        | `[8,252,616,360)` (ends at the clip) |
+| `LC`                   | FC 16 (variant `lcd` only)                    | LCD, typed unsupported                          | `[440,168,576,248)`                  |
 
 ## Timeline
 
-| step | change | uploads (c = create) |
-| ---- | ------ | -------------------- |
-| 0 | everything | F@16, F@12, F@24, F@320, FL@16: c; F@24/4: c + 6; FX@14: c + some |
-| 1 | `LZ` 16 → 40 px | F@40: c |
-| 2 | `LW` "Words wrap again", `LR` "Breakable" | F@16: 1 |
-| 3 | `LO` "Overt" | F@24: 1, F@24/4: 2 |
-| 4 | `LX` "Subpixel wave" | FX@14: some (bounded) |
-| 5 | `AC` right, `AR` top | none |
-| 6 | `LK` "Clip me as you can" | F@16: 1 |
-| 7 | `LP` "ABCDEFGHIJKLMNOPQRSTUVWXYZ" | F@320: page 0 update, page 1 create |
-| 8 | `FL.hinting = NONE` | FL@16 freed, FL2@16: c, in one frame |
-| 9 | `LO` outline colour | none |
+| step | change                                    | uploads (c = create)                                              |
+| ---- | ----------------------------------------- | ----------------------------------------------------------------- |
+| 0    | everything                                | F@16, F@12, F@24, F@320, FL@16: c; F@24/4: c + 6; FX@14: c + some |
+| 1    | `LZ` 16 → 40 px                           | F@40: c                                                           |
+| 2    | `LW` "Words wrap again", `LR` "Breakable" | F@16: 1                                                           |
+| 3    | `LO` "Overt"                              | F@24: 1, F@24/4: 2                                                |
+| 4    | `LX` "Subpixel wave"                      | FX@14: some (bounded)                                             |
+| 5    | `AC` right, `AR` top                      | none                                                              |
+| 6    | `LK` "Clip me as you can"                 | F@16: 1                                                           |
+| 7    | `LP` "ABCDEFGHIJKLMNOPQRSTUVWXYZ"         | F@320: page 0 update, page 1 create                               |
+| 8    | `FL.hinting = NONE`                       | FL@16 freed, FL2@16: c, in one frame                              |
+| 9    | `LO` outline colour                       | none                                                              |
 
 The environment variables are fixtures/gate4's (see its README), and `RS_FIXTURE_VARIANT=lcd` is
 the only variant; the oracle refuses to run with it.

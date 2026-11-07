@@ -729,7 +729,9 @@ function codingProblems(
   const inflates = s?.identity_inflates;
   if (s?.at_rest !== undefined) {
     if (s.at_rest !== atRest)
-      problems.push(`${leg}: live-summary at_rest is ${s.at_rest}, expected ${atRest}`);
+      problems.push(
+        `${leg}: live-summary at_rest is ${s.at_rest}, expected ${atRest}`,
+      );
     if (identityOnly && want !== "off" && coded === 0 && !((inflates ?? 0) > 0))
       problems.push(
         `${leg}: identity GETs of coded bodies made no inflate (identity_inflates ${inflates})`,

@@ -125,7 +125,9 @@ export function servedAtRestProblems(
   // A body whose vector keeps more capacity than its size holds memory its held_bytes hides (the
   // coder's ZSTD_compressBound buffer kept the identity's footprint until TDR copied it exactly).
   if (a.mirror.capacity_slack_bytes !== 0)
-    problems.push(`mirror.capacity_slack_bytes ${a.mirror.capacity_slack_bytes}, want 0`);
+    problems.push(
+      `mirror.capacity_slack_bytes ${a.mirror.capacity_slack_bytes}, want 0`,
+    );
   const s = a.served;
   if (!s) {
     problems.push("no served census (not a live host)");
@@ -135,7 +137,9 @@ export function servedAtRestProblems(
       problems.push(`served.identity_bytes_held ${s.identity_bytes_held}`);
     if (s.untried !== 0) problems.push(`served.untried ${s.untried}`);
     if (s.capacity_slack_bytes !== 0)
-      problems.push(`served.capacity_slack_bytes ${s.capacity_slack_bytes}, want 0`);
+      problems.push(
+        `served.capacity_slack_bytes ${s.capacity_slack_bytes}, want 0`,
+      );
     if (!(s.held_bytes < s.identity_bytes))
       problems.push(
         `served.held_bytes ${s.held_bytes} not below identity ${s.identity_bytes}`,

@@ -37,16 +37,16 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate5-me
 
 ## Layout (640×360; regions `[x0,y0,x1,y1)`)
 
-| Region   | Item (position)                 | Mesh (local)                                                                                                       |
-| -------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `MI`     | `MeshInstance2D` (40,40)        | `AM1`: 64×48 quad, (1,.6,0), indexed; +8 px in x at 1; at 8 cleared and re-added as two unindexed triangles (.2,.6,1) |
-| `RM`     | raw item (176,40), drawn once   | `RMS`: quad with a tie-free diagonal, (.2,.8,.4), dynamic; vertices at 2, colours (1,.2,.2) at 3, triangle 2 degenerate at 4 |
-| `M2`     | raw item (288,40), drawn once   | white indexed square and an unindexed (.4,.4,1) triangle; surface 0 removed at 6                                   |
-| `DF`     | raw item (400,40), every frame  | 9×5 grid over 128×64, UVs into `TEXG`, white ((.8,.8,1) from 3); column c moves by `W[(frame + c) mod 8]`; rebuilt 5×3 at 5 |
-| `P2`     | `Polygon2D` (40,160)            | concave tie-free arrow (.6,.2,1); a longer one at 7                                                                |
-| `LD`     | raw item (176,160), drawn once  | `ld_mesh.tres`: 48×40 quad (.8,.8,.2)                                                                               |
-| `FR`     | raw item (288,160), drawn once  | `FM`: 56×48 quad (1,.4,.6); freed at 7 (draws nothing), the item cleared at 8                                     |
-| `Marker` | `Node2D` (592,16)               | 32×32 rect in gate 3's marker colour of the step                                                                   |
+| Region   | Item (position)                | Mesh (local)                                                                                                                 |
+| -------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `MI`     | `MeshInstance2D` (40,40)       | `AM1`: 64×48 quad, (1,.6,0), indexed; +8 px in x at 1; at 8 cleared and re-added as two unindexed triangles (.2,.6,1)        |
+| `RM`     | raw item (176,40), drawn once  | `RMS`: quad with a tie-free diagonal, (.2,.8,.4), dynamic; vertices at 2, colours (1,.2,.2) at 3, triangle 2 degenerate at 4 |
+| `M2`     | raw item (288,40), drawn once  | white indexed square and an unindexed (.4,.4,1) triangle; surface 0 removed at 6                                             |
+| `DF`     | raw item (400,40), every frame | 9×5 grid over 128×64, UVs into `TEXG`, white ((.8,.8,1) from 3); column c moves by `W[(frame + c) mod 8]`; rebuilt 5×3 at 5  |
+| `P2`     | `Polygon2D` (40,160)           | concave tie-free arrow (.6,.2,1); a longer one at 7                                                                          |
+| `LD`     | raw item (176,160), drawn once | `ld_mesh.tres`: 48×40 quad (.8,.8,.2)                                                                                        |
+| `FR`     | raw item (288,160), drawn once | `FM`: 56×48 quad (1,.4,.6); freed at 7 (draws nothing), the item cleared at 8                                                |
+| `Marker` | `Node2D` (592,16)              | 32×32 rect in gate 3's marker colour of the step                                                                             |
 
 Step 9 sets the canvas transform to a translation by (8,4). `DF` is a band region; every other region
 is exact.

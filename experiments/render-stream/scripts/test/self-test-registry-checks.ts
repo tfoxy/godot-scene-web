@@ -18,18 +18,18 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type CostSample,
-  REGISTRY_CREATE_HOOKS,
-  type RegistryEvidence,
-  registryCost,
-  validationLogCost,
-  VALIDATION_LOG_COST_BOUND_US,
-  shaderClockOrigin,
-  registryLiveBound,
   isDeferredLeg,
   judgeResolveQueueOnly,
   parseRegistryChurn,
+  REGISTRY_CREATE_HOOKS,
+  type RegistryEvidence,
+  registryCost,
+  registryLiveBound,
   STANDBY_HOOKS,
+  shaderClockOrigin,
   standbyHotZero,
+  VALIDATION_LOG_COST_BOUND_US,
+  validationLogCost,
 } from "../lib/registry-checks";
 
 let failures = 0;
@@ -44,7 +44,12 @@ function expect(ok: boolean, what: string): void {
 
 const families = Object.keys(REGISTRY_CREATE_HOOKS);
 const zero = () => families.map(() => 0);
-function fam(entries: number, creates: number, frees: number, extra: Partial<Record<string, number>> = {}) {
+function fam(
+  entries: number,
+  creates: number,
+  frees: number,
+  extra: Partial<Record<string, number>> = {},
+) {
   return {
     entries,
     peak: Math.max(entries, creates),
@@ -61,7 +66,10 @@ function fam(entries: number, creates: number, frees: number, extra: Partial<Rec
 
 // The shape the deferred leg produced (a manual run): 8 textures, 2 meshes, a shader, a
 // material created; the loader's churn freed at frame 6, before the arm at 12.
-function good(): { reg: RegistryEvidence; counts: Record<string, number | null> } {
+function good(): {
+  reg: RegistryEvidence;
+  counts: Record<string, number | null>;
+} {
   const row = (frame: number, e: number[], c: number[], f: number[]) => ({
     frame,
     entries: e,
@@ -95,8 +103,18 @@ function good(): { reg: RegistryEvidence; counts: Record<string, number | null> 
         rows: [
           row(1, [6, 0, 1, 0, 0, 0, 0], [6, 0, 1, 0, 0, 0, 0], r0),
           row(4, [7, 0, 2, 0, 1, 1, 0], [7, 0, 2, 0, 1, 1, 0], r0),
-          row(6, [6, 0, 1, 0, 0, 0, 0], [7, 0, 2, 0, 1, 1, 0], [1, 0, 1, 0, 1, 1, 0]),
-          row(16, [7, 0, 1, 0, 0, 0, 0], [8, 0, 2, 0, 1, 1, 0], [1, 0, 1, 0, 1, 1, 0]),
+          row(
+            6,
+            [6, 0, 1, 0, 0, 0, 0],
+            [7, 0, 2, 0, 1, 1, 0],
+            [1, 0, 1, 0, 1, 1, 0],
+          ),
+          row(
+            16,
+            [7, 0, 1, 0, 0, 0, 0],
+            [8, 0, 2, 0, 1, 1, 0],
+            [1, 0, 1, 0, 1, 1, 0],
+          ),
         ],
       },
     },
@@ -118,29 +136,44 @@ function good(): { reg: RegistryEvidence; counts: Record<string, number | null> 
 
 {
   const g = good();
-  const r = registryLiveBound("deferred", g.reg, g.counts, { preArmFreesBefore: 12 });
-  expect(r.problems.length === 0, `good evidence passes (${r.problems.join("; ")})`);
-  expect(r.summary?.pre_arm_frees === 4, `pre-arm frees counted (${r.summary?.pre_arm_frees})`);
+  const r = registryLiveBound("deferred", g.reg, g.counts, {
+    preArmFreesBefore: 12,
+  });
+  expect(
+    r.problems.length === 0,
+    `good evidence passes (${r.problems.join("; ")})`,
+  );
+  expect(
+    r.summary?.pre_arm_frees === 4,
+    `pre-arm frees counted (${r.summary?.pre_arm_frees})`,
+  );
 }
 {
   // registry-keep-freed: the frame-6 free left the entry (entries stay 7), and so at the end.
   const g = good();
   g.reg.timeline.rows[2].entries = [7, 0, 2, 0, 1, 1, 0];
   const r = registryLiveBound("keep", g.reg, g.counts);
-  expect(r.problems.some((p) => p.includes("frame 6 texture")), "a kept entry fails its row");
+  expect(
+    r.problems.some((p) => p.includes("frame 6 texture")),
+    "a kept entry fails its row",
+  );
   const g2 = good();
   g2.reg.families.texture.entries = 8;
   g2.reg.entries = 8;
   expect(
-    registryLiveBound("keep", g2.reg, g2.counts).problems.some((p) => p.includes("texture ends with 8")),
+    registryLiveBound("keep", g2.reg, g2.counts).problems.some((p) =>
+      p.includes("texture ends with 8"),
+    ),
     "a kept entry fails the end",
   );
 }
 {
   const g = good();
-  g.counts.mesh_create_from_surfaces = 1;  // a create the registry did not record
+  g.counts.mesh_create_from_surfaces = 1; // a create the registry did not record
   expect(
-    registryLiveBound("miss", g.reg, g.counts).problems.some((p) => p.includes("mesh recorded 2")),
+    registryLiveBound("miss", g.reg, g.counts).problems.some((p) =>
+      p.includes("mesh recorded 2"),
+    ),
     "a missed create fails",
   );
 }
@@ -148,30 +181,51 @@ function good(): { reg: RegistryEvidence; counts: Record<string, number | null> 
   const g = good();
   g.reg.families.texture.overflow = 1;
   g.counts.texture_2d_create = 8;
-  expect(registryLiveBound("ovf", g.reg, g.counts).problems.some((p) => p.includes("overflowed")), "overflow fails");
+  expect(
+    registryLiveBound("ovf", g.reg, g.counts).problems.some((p) =>
+      p.includes("overflowed"),
+    ),
+    "overflow fails",
+  );
 }
 {
   const g = good();
   g.reg.timeline.dropped = 3;
-  expect(registryLiveBound("drop", g.reg, g.counts).problems.some((p) => p.includes("dropped")), "dropped rows fail");
+  expect(
+    registryLiveBound("drop", g.reg, g.counts).problems.some((p) =>
+      p.includes("dropped"),
+    ),
+    "dropped rows fail",
+  );
 }
 {
   const g = good();
-  g.reg.timeline.rows = g.reg.timeline.rows.slice(0, 2).concat([g.reg.timeline.rows[3]]);
+  g.reg.timeline.rows = g.reg.timeline.rows
+    .slice(0, 2)
+    .concat([g.reg.timeline.rows[3]]);
   g.reg.timeline.rows[2] = { ...g.reg.timeline.rows[2], frame: 16 };
   expect(
-    registryLiveBound("nofree", { ...g.reg }, g.counts, { preArmFreesBefore: 12 }).problems.some((p) =>
-      p.includes("before the arm"),
-    ),
+    registryLiveBound("nofree", { ...g.reg }, g.counts, {
+      preArmFreesBefore: 12,
+    }).problems.some((p) => p.includes("before the arm")),
     "no pre-arm free fails a deferred leg",
   );
 }
 {
   const g = good();
   g.reg.enabled = false;
-  expect(registryLiveBound("off", g.reg, g.counts).problems.length > 0, "a registry not recording fails");
-  expect(registryLiveBound("none", undefined, g.counts).problems.length === 1, "missing registry.json fails");
-  expect(registryLiveBound("none", g.reg, null).problems.length === 1, "missing counters.json fails");
+  expect(
+    registryLiveBound("off", g.reg, g.counts).problems.length > 0,
+    "a registry not recording fails",
+  );
+  expect(
+    registryLiveBound("none", undefined, g.counts).problems.length === 1,
+    "missing registry.json fails",
+  );
+  expect(
+    registryLiveBound("none", g.reg, null).problems.length === 1,
+    "missing counters.json fails",
+  );
 }
 
 // registry-cost
@@ -190,11 +244,22 @@ const s = (f: number, c: number, cb: number): CostSample => ({
     },
     96,
   );
-  expect(r.problems.length === 0, `within budget passes (${r.problems.join("; ")})`);
+  expect(
+    r.problems.length === 0,
+    `within budget passes (${r.problems.join("; ")})`,
+  );
   expect(r.comparisons.length === 4, "two metrics against two references");
-  expect(r.comparisons.filter((c) => c.judged).every((c) => c.against === "regoff"), "only regoff is judged");
-  const churn = r.comparisons.find((c) => c.judged && c.metric === "churn_us_mean");
-  expect(churn?.delta === 31 && churn.allowed === 96, `paired median and budget (${churn?.delta}, ${churn?.allowed})`);
+  expect(
+    r.comparisons.filter((c) => c.judged).every((c) => c.against === "regoff"),
+    "only regoff is judged",
+  );
+  const churn = r.comparisons.find(
+    (c) => c.judged && c.metric === "churn_us_mean",
+  );
+  expect(
+    churn?.delta === 31 && churn.allowed === 96,
+    `paired median and budget (${churn?.delta}, ${churn?.allowed})`,
+  );
 }
 {
   const r = registryCost(
@@ -220,27 +285,93 @@ const s = (f: number, c: number, cb: number): CostSample => ({
     },
     96,
   );
-  const churn = r.comparisons.find((c) => c.judged && c.metric === "churn_us_mean");
-  expect(r.problems.length === 0 && churn?.delta === 30, `round drift cancels (${churn?.delta})`);
+  const churn = r.comparisons.find(
+    (c) => c.judged && c.metric === "churn_us_mean",
+  );
+  expect(
+    r.problems.length === 0 && churn?.delta === 30,
+    `round drift cancels (${churn?.delta})`,
+  );
 }
-expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1)] }, 96).problems.includes("no regoff samples"), "missing config fails");
-expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1)], regoff: [s(1, 1, 1)] }, Number.NaN).problems.length === 1, "no call count fails");
-expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1), s(1, 1, 1)], regoff: [s(1, 1, 1)] }, 96).problems.length === 1, "unpaired fails");
+expect(
+  registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1)] }, 96).problems.includes(
+    "no regoff samples",
+  ),
+  "missing config fails",
+);
+expect(
+  registryCost(
+    { off: [s(1, 1, 1)], on: [s(1, 1, 1)], regoff: [s(1, 1, 1)] },
+    Number.NaN,
+  ).problems.length === 1,
+  "no call count fails",
+);
+expect(
+  registryCost(
+    { off: [s(1, 1, 1)], on: [s(1, 1, 1), s(1, 1, 1)], regoff: [s(1, 1, 1)] },
+    96,
+  ).problems.length === 1,
+  "unpaired fails",
+);
 
 // LS0: material_set_param judged alone, on - regoff paired by round, at the per-call budget.
 {
-  const sp = (churn: number, params: number): CostSample => ({ frame_us_p50: 1, churn_us_mean: churn, callback_us_mean: 900, params_us: params });
+  const sp = (churn: number, params: number): CostSample => ({
+    frame_us_p50: 1,
+    churn_us_mean: churn,
+    callback_us_mean: 900,
+    params_us: params,
+  });
   const quiet = [sp(400, 100), sp(410, 105), sp(405, 98)];
-  const cheap = registryCost({ off: quiet, on: [sp(420, 120), sp(425, 118), sp(430, 112)], regoff: quiet }, 96, 64);
-  const judged = cheap.comparisons.find((c) => c.judged && c.metric === "params_us");
-  expect(cheap.problems.length === 0 && judged?.delta === 14 && judged.allowed === 64,
-    `0.3 µs a param call passes a 1 µs budget (${cheap.problems.join("; ")}; ${judged?.delta}, ${judged?.allowed})`);
-  const dear = registryCost({ off: quiet, on: [sp(420, 190), sp(425, 185), sp(430, 180)], regoff: quiet }, 96, 64);
-  expect(dear.problems.length === 1 && dear.problems[0].startsWith("material_set_param alone"),
-    `3 µs a param call fails alone, the churn passing (${dear.problems.join("; ")})`);
-  expect(registryCost({ off: quiet, on: [s(1, 420, 900), s(1, 420, 900), s(1, 420, 900)], regoff: quiet }, 96, 64).problems.length === 1,
-    "missing params_us fails once param calls are named");
-  expect(registryCost({ off: quiet, on: quiet, regoff: quiet }, 96).problems.length === 0, "no param calls named: not judged");
+  const cheap = registryCost(
+    {
+      off: quiet,
+      on: [sp(420, 120), sp(425, 118), sp(430, 112)],
+      regoff: quiet,
+    },
+    96,
+    64,
+  );
+  const judged = cheap.comparisons.find(
+    (c) => c.judged && c.metric === "params_us",
+  );
+  expect(
+    cheap.problems.length === 0 &&
+      judged?.delta === 14 &&
+      judged.allowed === 64,
+    `0.3 µs a param call passes a 1 µs budget (${cheap.problems.join("; ")}; ${judged?.delta}, ${judged?.allowed})`,
+  );
+  const dear = registryCost(
+    {
+      off: quiet,
+      on: [sp(420, 190), sp(425, 185), sp(430, 180)],
+      regoff: quiet,
+    },
+    96,
+    64,
+  );
+  expect(
+    dear.problems.length === 1 &&
+      dear.problems[0].startsWith("material_set_param alone"),
+    `3 µs a param call fails alone, the churn passing (${dear.problems.join("; ")})`,
+  );
+  expect(
+    registryCost(
+      {
+        off: quiet,
+        on: [s(1, 420, 900), s(1, 420, 900), s(1, 420, 900)],
+        regoff: quiet,
+      },
+      96,
+      64,
+    ).problems.length === 1,
+    "missing params_us fails once param calls are named",
+  );
+  expect(
+    registryCost({ off: quiet, on: quiet, regoff: quiet }, 96).problems
+      .length === 0,
+    "no param calls named: not judged",
+  );
 }
 
 // LS0 validation-log-cost
@@ -249,29 +380,84 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1), s(1, 1, 1)], regoff: [
   const base = [750, 760, 745, 755, 748].map(i);
   const near = (d: number) => base.map((x) => i(x.cpu_us_mean + d));
   const ok = validationLogCost({ a0: base, b: near(8), c: near(22) });
-  expect(ok.problems.length === 0 && ok.comparisons.length === 2, `b +8 and c +22 pass (${ok.problems.join("; ")})`);
+  expect(
+    ok.problems.length === 0 && ok.comparisons.length === 2,
+    `b +8 and c +22 pass (${ok.problems.join("; ")})`,
+  );
   const bad = validationLogCost({ a0: base, b: near(8), c: near(22 + 80) });
-  expect(bad.problems.length === 1 && bad.problems[0].startsWith("c - a0"), `K2 back on c fails (${bad.problems.join("; ")})`);
+  expect(
+    bad.problems.length === 1 && bad.problems[0].startsWith("c - a0"),
+    `K2 back on c fails (${bad.problems.join("; ")})`,
+  );
   const sab = validationLogCost({ a0: base, cs: near(100) }, ["cs"]);
-  expect(sab.problems.length === 1, "the sabotage's legs fail the same judgement");
-  expect(validationLogCost({ a0: base, b: near(VALIDATION_LOG_COST_BOUND_US.b) }, ["b"]).problems.length === 0, "the bound itself passes");
-  expect(validationLogCost({ a0: [], b: base }).problems.includes("no a0 samples"), "no a0 fails");
-  expect(validationLogCost({ a0: base, b: near(1), c: near(1).slice(1) }).problems.length === 1, "unpaired fails");
+  expect(
+    sab.problems.length === 1,
+    "the sabotage's legs fail the same judgement",
+  );
+  expect(
+    validationLogCost({ a0: base, b: near(VALIDATION_LOG_COST_BOUND_US.b) }, [
+      "b",
+    ]).problems.length === 0,
+    "the bound itself passes",
+  );
+  expect(
+    validationLogCost({ a0: [], b: base }).problems.includes("no a0 samples"),
+    "no a0 fails",
+  );
+  expect(
+    validationLogCost({ a0: base, b: near(1), c: near(1).slice(1) }).problems
+      .length === 1,
+    "unpaired fails",
+  );
   // a noisy outlier round does not decide: the median does
   const noisy = base.map((x, k) => i(x.cpu_us_mean + (k === 2 ? 300 : 10)));
-  expect(validationLogCost({ a0: base, c: noisy }, ["c"]).problems.length === 0, "one outlier round is not the median");
+  expect(
+    validationLogCost({ a0: base, c: noisy }, ["c"]).problems.length === 0,
+    "one outlier round is not the median",
+  );
 }
 
 // clock-origin (LAR7)
 {
-  const startup = { source: "draw-hook", origin: "startup", first_tick_process_frames: 0, first_tick_frames_drawn: 1, draws_missed: 0 };
-  const late = { source: "draw-hook", origin: "late-load", first_tick_process_frames: 12, first_tick_frames_drawn: 13, draws_missed: 12 };
-  expect(shaderClockOrigin(startup, "startup").problems.length === 0, "a startup clock passes startup");
-  expect(shaderClockOrigin(late, "late-load").problems.length === 0, "a late clock passes late-load");
-  expect(shaderClockOrigin(late, "startup").problems.length > 0, "a late clock fails startup");
-  expect(shaderClockOrigin(startup, "late-load").problems.length > 0, "a startup clock fails late-load");
-  expect(shaderClockOrigin({ ...startup, draws_missed: 3 }, "startup").problems.length > 0, "missed draws fail startup");
-  expect(shaderClockOrigin(undefined, "startup").problems.length === 1, "an absent clock fails");
+  const startup = {
+    source: "draw-hook",
+    origin: "startup",
+    first_tick_process_frames: 0,
+    first_tick_frames_drawn: 1,
+    draws_missed: 0,
+  };
+  const late = {
+    source: "draw-hook",
+    origin: "late-load",
+    first_tick_process_frames: 12,
+    first_tick_frames_drawn: 13,
+    draws_missed: 12,
+  };
+  expect(
+    shaderClockOrigin(startup, "startup").problems.length === 0,
+    "a startup clock passes startup",
+  );
+  expect(
+    shaderClockOrigin(late, "late-load").problems.length === 0,
+    "a late clock passes late-load",
+  );
+  expect(
+    shaderClockOrigin(late, "startup").problems.length > 0,
+    "a late clock fails startup",
+  );
+  expect(
+    shaderClockOrigin(startup, "late-load").problems.length > 0,
+    "a startup clock fails late-load",
+  );
+  expect(
+    shaderClockOrigin({ ...startup, draws_missed: 3 }, "startup").problems
+      .length > 0,
+    "missed draws fail startup",
+  );
+  expect(
+    shaderClockOrigin(undefined, "startup").problems.length === 1,
+    "an absent clock fails",
+  );
 }
 
 // K1 coverage pin (source scan of hooks.cpp).
@@ -297,38 +483,62 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1), s(1, 1, 1)], regoff: [
     for (const h of hooks) {
       const b = body(h);
       expect(b !== null, `hooks.cpp has hook_${h}`);
-      const m = b ? /registry_create\([^,]+, rs::RegistryKind::(\w+)\)/.exec(b) : null;
+      const m = b
+        ? /registry_create\([^,]+, rs::RegistryKind::(\w+)\)/.exec(b)
+        : null;
       expect(
         m !== null && kinds[family].includes(m[1]),
         `hook_${h} records a ${family} kind (${m?.[1] ?? "no registry_create"})`,
       );
     }
-  expect(/registry_note_free\(rid\.id\)/.test(body("free") ?? ""), "hook_free erases");
   expect(
-    /registry_note_replace\(texture\.id, by_texture\.id\)/.test(body("texture_replace") ?? ""),
+    /registry_note_free\(rid\.id\)/.test(body("free") ?? ""),
+    "hook_free erases",
+  );
+  expect(
+    /registry_note_replace\(texture\.id, by_texture\.id\)/.test(
+      body("texture_replace") ?? "",
+    ),
     "hook_texture_replace erases the by-texture",
   );
   // LAR1 (K1 for the CanvasTexture payload): every hooked canvas_texture_set_* records into the
   // registry, and the adoption hands the mirror exactly the recorded fields, so the registry's
   // field set equals canvas_texture_adopt's arguments.
-  const setters = [...src.matchAll(/\nvoid hook_(canvas_texture_set_\w+)\(/g)].map((m) => m[1]);
-  expect(setters.length === 3, `three hooked canvas_texture setters (${setters.join(", ")})`);
+  const setters = [
+    ...src.matchAll(/\nvoid hook_(canvas_texture_set_\w+)\(/g),
+  ].map((m) => m[1]);
+  expect(
+    setters.length === 3,
+    `three hooked canvas_texture setters (${setters.join(", ")})`,
+  );
   for (const h of setters)
     expect(
-      /rs::registry_note_canvas_(channel|filter|repeat)\(canvas_texture\.id, /.test(body(h) ?? ""),
+      /rs::registry_note_canvas_(channel|filter|repeat)\(canvas_texture\.id, /.test(
+        body(h) ?? "",
+      ),
       `hook_${h} records into the registry`,
     );
-  const adopt = readFileSync(join(here, "../../capture/src/rs_adopt.cpp"), "utf8");
+  const adopt = readFileSync(
+    join(here, "../../capture/src/rs_adopt.cpp"),
+    "utf8",
+  );
   expect(
     /hooks_adopt_canvas_texture\(rid, c\.diffuse, c\.normal, c\.specular, c\.filter, c\.repeat\)/.test(
       adopt,
     ),
     "a registered CanvasTexture is adopted with every recorded field",
   );
-  const header = readFileSync(join(here, "../../capture/src/rs_registry.h"), "utf8");
-  const struct = /struct RegistryCanvasTexture \{([^}]*)\}/.exec(header)?.[1] ?? "";
+  const header = readFileSync(
+    join(here, "../../capture/src/rs_registry.h"),
+    "utf8",
+  );
+  const struct =
+    /struct RegistryCanvasTexture \{([^}]*)\}/.exec(header)?.[1] ?? "";
   for (const f of ["diffuse", "normal", "specular", "filter", "repeat"])
-    expect(new RegExp(`\\b${f} = 0;`).test(struct), `RegistryCanvasTexture records ${f}`);
+    expect(
+      new RegExp(`\\b${f} = 0;`).test(struct),
+      `RegistryCanvasTexture records ${f}`,
+    );
   // LAR2 (K1 for the multimesh payload): every hooked multimesh setter that changes the state an
   // adoption carries records into the registry (allocate, mesh, visible, custom AABB, both buffer
   // sets, the four instance setters), and the adoption hands Mirror::MultimeshAdopt every recorded
@@ -336,32 +546,60 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1), s(1, 1, 1)], regoff: [
   const mmTaps: Record<string, RegExp> = {
     multimesh_allocate_data:
       /rs::registry_note_multimesh_allocate\(multimesh\.id, instances, format, colors, custom, indirect\)/,
-    multimesh_set_mesh: /rs::registry_note_multimesh_mesh\(multimesh\.id, mesh\.id\)/,
-    multimesh_set_visible_instances: /rs::registry_note_multimesh_visible\(multimesh\.id, visible\)/,
+    multimesh_set_mesh:
+      /rs::registry_note_multimesh_mesh\(multimesh\.id, mesh\.id\)/,
+    multimesh_set_visible_instances:
+      /rs::registry_note_multimesh_visible\(multimesh\.id, visible\)/,
     multimesh_set_custom_aabb: /rs::registry_note_multimesh_custom_aabb\(/,
     multimesh_set_buffer: /rs::registry_note_multimesh_buffer\(multimesh\.id, /,
-    multimesh_set_buffer_interpolated: /rs::registry_note_multimesh_buffer\(multimesh\.id, /,
-    multimesh_instance_set_transform: /rs::registry_note_multimesh_instance_edit\(multimesh\.id\)/,
-    multimesh_instance_set_transform_2d: /rs::registry_note_multimesh_instance_edit\(multimesh\.id\)/,
-    multimesh_instance_set_color: /rs::registry_note_multimesh_instance_edit\(multimesh\.id\)/,
-    multimesh_instance_set_custom_data: /rs::registry_note_multimesh_instance_edit\(multimesh\.id\)/,
+    multimesh_set_buffer_interpolated:
+      /rs::registry_note_multimesh_buffer\(multimesh\.id, /,
+    multimesh_instance_set_transform:
+      /rs::registry_note_multimesh_instance_edit\(multimesh\.id\)/,
+    multimesh_instance_set_transform_2d:
+      /rs::registry_note_multimesh_instance_edit\(multimesh\.id\)/,
+    multimesh_instance_set_color:
+      /rs::registry_note_multimesh_instance_edit\(multimesh\.id\)/,
+    multimesh_instance_set_custom_data:
+      /rs::registry_note_multimesh_instance_edit\(multimesh\.id\)/,
   };
   for (const [h, re] of Object.entries(mmTaps))
     expect(re.test(body(h) ?? ""), `hook_${h} records into the registry`);
-  const mirrorHeader = readFileSync(join(here, "../../capture/src/rs_mirror.h"), "utf8");
-  const mmStruct = /struct MultimeshAdopt \{([^}]*)\}/.exec(mirrorHeader)?.[1] ?? "";
-  const regStruct = /struct RegistryMultimesh \{([^}]*)\}/.exec(header)?.[1] ?? "";
-  for (const f of ["instances", "format", "colors", "custom", "indirect", "visible", "mesh", "custom_aabb"]) {
-    expect(new RegExp(`\\b${f}\\b`).test(regStruct), `RegistryMultimesh records ${f}`);
-    expect(new RegExp(`\\b${f}\\b`).test(mmStruct), `MultimeshAdopt carries ${f}`);
+  const mirrorHeader = readFileSync(
+    join(here, "../../capture/src/rs_mirror.h"),
+    "utf8",
+  );
+  const mmStruct =
+    /struct MultimeshAdopt \{([^}]*)\}/.exec(mirrorHeader)?.[1] ?? "";
+  const regStruct =
+    /struct RegistryMultimesh \{([^}]*)\}/.exec(header)?.[1] ?? "";
+  for (const f of [
+    "instances",
+    "format",
+    "colors",
+    "custom",
+    "indirect",
+    "visible",
+    "mesh",
+    "custom_aabb",
+  ]) {
+    expect(
+      new RegExp(`\\b${f}\\b`).test(regStruct),
+      `RegistryMultimesh records ${f}`,
+    );
+    expect(
+      new RegExp(`\\b${f}\\b`).test(mmStruct),
+      `MultimeshAdopt carries ${f}`,
+    );
     expect(
       new RegExp(`adopt\\.${f} = reg\\.${f};`).test(adopt),
       `a registered multimesh is adopted with its recorded ${f}`,
     );
   }
   expect(
-    !/kRsMultimeshGet(InstanceCount|VisibleInstances|Mesh|CustomAabb)\b/.test(adopt) &&
-      !/multimesh_format_via_node|infer_multimesh_format/.test(adopt),
+    !/kRsMultimeshGet(InstanceCount|VisibleInstances|Mesh|CustomAabb)\b/.test(
+      adopt,
+    ) && !/multimesh_format_via_node|infer_multimesh_format/.test(adopt),
     "no multimesh getter but the buffer's, no node format read, no honest stride guess (LAR2)",
   );
 }
@@ -379,32 +617,68 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1), s(1, 1, 1)], regoff: [
     return end < 0 ? "" : src.slice(m.index, end);
   };
   const has = (hook: string, needle: string) =>
-    expect(body(hook).includes(needle), `LAR3: hook_${hook} contains ${needle}`);
+    expect(
+      body(hook).includes(needle),
+      `LAR3: hook_${hook} contains ${needle}`,
+    );
   has("shader_create_from_code", "registry_note_shader_code(result.id");
   has("shader_set_code", "registry_note_shader_code(shader.id");
-  has("shader_set_default_texture_parameter", "registry_note_shader_default_texture(shader.id");
+  has(
+    "shader_set_default_texture_parameter",
+    "registry_note_shader_default_texture(shader.id",
+  );
   has("material_create_from_shader", "registry_note_material_shader(result.id");
-  has("material_create_from_shader", "materialize(shader.id, rs::RefKind::Shader)");
+  has(
+    "material_create_from_shader",
+    "materialize(shader.id, rs::RefKind::Shader)",
+  );
   has("material_set_shader", "registry_note_material_shader(material.id");
   has("material_set_shader", "materialize(shader.id, rs::RefKind::Shader)");
   has("material_set_param", "registry_param(material.id");
   has("set_material", "materialize(material.id, rs::RefKind::Material)");
-  const adopt = readFileSync(join(here, "../../capture/src/rs_adopt.cpp"), "utf8");
-  expect(adopt.includes("take_pending_material_refs()"), "LAR3: the adoption drains take_pending_material_refs()");
-  expect(adopt.includes("hooks_adopt_shader(rid, code)"), "LAR3: a registered shader is adopted with its recorded code");
+  const adopt = readFileSync(
+    join(here, "../../capture/src/rs_adopt.cpp"),
+    "utf8",
+  );
   expect(
-    !adopt.includes("material_refs_epoch") && !/\bpending_material_refs\(\)/.test(adopt),
+    adopt.includes("take_pending_material_refs()"),
+    "LAR3: the adoption drains take_pending_material_refs()",
+  );
+  expect(
+    adopt.includes("hooks_adopt_shader(rid, code)"),
+    "LAR3: a registered shader is adopted with its recorded code",
+  );
+  expect(
+    !adopt.includes("material_refs_epoch") &&
+      !/\bpending_material_refs\(\)/.test(adopt),
     "LAR3: no epoch scan of the node map in rs_adopt.cpp",
   );
-  const mirrorHeader = readFileSync(join(here, "../../capture/src/rs_mirror.h"), "utf8");
-  expect(!mirrorHeader.includes("material_refs_epoch"), "LAR3: rs_mirror.h has no material_refs_epoch");
-  const header = readFileSync(join(here, "../../capture/src/rs_registry.h"), "utf8");
-  const shaderStruct = /struct RegistryShader \{([^}]*)\}/.exec(header)?.[1] ?? "";
-  const materialStruct = /struct RegistryMaterial \{([^}]*)\}/.exec(header)?.[1] ?? "";
+  const mirrorHeader = readFileSync(
+    join(here, "../../capture/src/rs_mirror.h"),
+    "utf8",
+  );
+  expect(
+    !mirrorHeader.includes("material_refs_epoch"),
+    "LAR3: rs_mirror.h has no material_refs_epoch",
+  );
+  const header = readFileSync(
+    join(here, "../../capture/src/rs_registry.h"),
+    "utf8",
+  );
+  const shaderStruct =
+    /struct RegistryShader \{([^}]*)\}/.exec(header)?.[1] ?? "";
+  const materialStruct =
+    /struct RegistryMaterial \{([^}]*)\}/.exec(header)?.[1] ?? "";
   for (const f of ["code", "defaults"])
-    expect(new RegExp(`\\b${f}\\b`).test(shaderStruct), `LAR3: RegistryShader records ${f}`);
+    expect(
+      new RegExp(`\\b${f}\\b`).test(shaderStruct),
+      `LAR3: RegistryShader records ${f}`,
+    );
   for (const f of ["shader", "params"])
-    expect(new RegExp(`\\b${f}\\b`).test(materialStruct), `LAR3: RegistryMaterial records ${f}`);
+    expect(
+      new RegExp(`\\b${f}\\b`).test(materialStruct),
+      `LAR3: RegistryMaterial records ${f}`,
+    );
 }
 
 // LAR4 (process materials): M16's duplicate trick is removed; a registered process material is adopted
@@ -413,17 +687,38 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1), s(1, 1, 1)], regoff: [
   const here = dirname(fileURLToPath(import.meta.url));
   const dir = join(here, "../../capture/src");
   const adopt = readFileSync(join(dir, "rs_adopt.cpp"), "utf8");
-  for (const gone of ["g_pta.duplicate", "hooks_internal_material", "ppm_epoch", "PpmNoShader"])
-    expect(!adopt.includes(gone), `LAR4: rs_adopt.cpp no longer contains ${gone}`);
-  const start = adopt.indexOf("bool adopt_ppm(void *material, std::uint64_t rid) {");
-  const adoptPpm = start < 0 ? "" : adopt.slice(start, adopt.indexOf("\n}\n", start));
-  expect(adoptPpm.includes("rs::registry_material("), "LAR4: adopt_ppm reads rs::registry_material(");
+  for (const gone of [
+    "g_pta.duplicate",
+    "hooks_internal_material",
+    "ppm_epoch",
+    "PpmNoShader",
+  ])
+    expect(
+      !adopt.includes(gone),
+      `LAR4: rs_adopt.cpp no longer contains ${gone}`,
+    );
+  const start = adopt.indexOf(
+    "bool adopt_ppm(void *material, std::uint64_t rid) {",
+  );
+  const adoptPpm =
+    start < 0 ? "" : adopt.slice(start, adopt.indexOf("\n}\n", start));
+  expect(
+    adoptPpm.includes("rs::registry_material("),
+    "LAR4: adopt_ppm reads rs::registry_material(",
+  );
   const resolveAt = adopt.indexOf("void adopt_particles_resolve() {");
-  const resolve = resolveAt < 0 ? "" : adopt.slice(resolveAt, adopt.indexOf("\n}\n", resolveAt));
-  expect(resolve.includes("take_ppm_candidates()"), "LAR4: adopt_particles_resolve calls take_ppm_candidates()");
+  const resolve =
+    resolveAt < 0
+      ? ""
+      : adopt.slice(resolveAt, adopt.indexOf("\n}\n", resolveAt));
+  expect(
+    resolve.includes("take_ppm_candidates()"),
+    "LAR4: adopt_particles_resolve calls take_ppm_candidates()",
+  );
   const registry = readFileSync(join(dir, "rs_registry.cpp"), "utf8");
   const noteAt = registry.indexOf("void registry_note_material_shader(");
-  const note = noteAt < 0 ? "" : registry.slice(noteAt, registry.indexOf("\n}\n", noteAt));
+  const note =
+    noteAt < 0 ? "" : registry.slice(noteAt, registry.indexOf("\n}\n", noteAt));
   expect(
     note.includes("RegistryFault::DropBinding"),
     "LAR4: registry_note_material_shader checks RegistryFault::DropBinding",
@@ -432,7 +727,10 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1), s(1, 1, 1)], regoff: [
   for (const gone of ["t_internal_shader", "t_internal_param_names"])
     expect(!hooks.includes(gone), `LAR4: hooks.cpp no longer contains ${gone}`);
   const mirror = readFileSync(join(dir, "rs_mirror.cpp"), "utf8");
-  expect(!mirror.includes("ppm_epoch_"), "LAR4: rs_mirror.cpp no longer contains ppm_epoch_");
+  expect(
+    !mirror.includes("ppm_epoch_"),
+    "LAR4: rs_mirror.cpp no longer contains ppm_epoch_",
+  );
 }
 
 // LAR5 (particles): a pre-arm emitter is adopted purely from the registry; the node-getter reads and
@@ -441,8 +739,16 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1), s(1, 1, 1)], regoff: [
   const here = dirname(fileURLToPath(import.meta.url));
   const dir = join(here, "../../capture/src");
   const adopt = readFileSync(join(dir, "rs_adopt.cpp"), "utf8");
-  for (const gone of ["get_amount", "adopt_particles_note_draw", "pta_instance_id", "refused_no_draw"])
-    expect(!adopt.includes(gone), `LAR5: rs_adopt.cpp no longer contains ${gone}`);
+  for (const gone of [
+    "get_amount",
+    "adopt_particles_note_draw",
+    "pta_instance_id",
+    "refused_no_draw",
+  ])
+    expect(
+      !adopt.includes(gone),
+      `LAR5: rs_adopt.cpp no longer contains ${gone}`,
+    );
   for (const present of ["registry_particles(", "refused_preload_particles"])
     expect(adopt.includes(present), `LAR5: rs_adopt.cpp contains ${present}`);
   const hooks = readFileSync(join(dir, "hooks.cpp"), "utf8");
@@ -462,33 +768,79 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1), s(1, 1, 1)], regoff: [
   const dir = join(here, "../../capture/src");
   const adopt = readFileSync(join(dir, "rs_adopt.cpp"), "utf8");
   for (const gone of [
-    "g_res_refused_textures", "g_res_refused_meshes", "g_res_refused_multimeshes",
-    "g_pta_refused;", "std::set<std::uint64_t> g_pta_refused_materials",
-    "void adopt_texture_ref(", "void adopt_mesh_ref(", "void adopt_multimesh_ref(",
-    "bool adopt_material_ref(", "bool adopt_shader_ref(", "void adopt_particles_ref(",
+    "g_res_refused_textures",
+    "g_res_refused_meshes",
+    "g_res_refused_multimeshes",
+    "g_pta_refused;",
+    "std::set<std::uint64_t> g_pta_refused_materials",
+    "void adopt_texture_ref(",
+    "void adopt_mesh_ref(",
+    "void adopt_multimesh_ref(",
+    "bool adopt_material_ref(",
+    "bool adopt_shader_ref(",
+    "void adopt_particles_ref(",
     "bool adopt_process_material_ref(",
   ])
-    expect(!adopt.includes(gone), `LAR6: rs_adopt.cpp no longer contains ${gone}`);
-  for (const present of ["RidMap<Refusal> g_refused", "bool materialize(", "drain_offmain", "textures_registry"])
+    expect(
+      !adopt.includes(gone),
+      `LAR6: rs_adopt.cpp no longer contains ${gone}`,
+    );
+  for (const present of [
+    "RidMap<Refusal> g_refused",
+    "bool materialize(",
+    "drain_offmain",
+    "textures_registry",
+  ])
     expect(adopt.includes(present), `LAR6: rs_adopt.cpp contains ${present}`);
   const hooks = readFileSync(join(dir, "hooks.cpp"), "utf8");
-  expect(!/rs::adopt_[a-z_]+_ref\(/.test(hooks), "LAR6: hooks.cpp calls no adopt_*_ref (materialize only)");
-  expect(hooks.includes("registry_note_texture_update"), "LAR6: hooks.cpp records the updated bit");
+  expect(
+    !/rs::adopt_[a-z_]+_ref\(/.test(hooks),
+    "LAR6: hooks.cpp calls no adopt_*_ref (materialize only)",
+  );
+  expect(
+    hooks.includes("registry_note_texture_update"),
+    "LAR6: hooks.cpp records the updated bit",
+  );
   const entry = readFileSync(join(dir, "entry.cpp"), "utf8");
-  expect(entry.includes("rs::adopt_frame_drain()") && !entry.includes("rs::adopt_materials_resolve()"),
-    "LAR6: entry.cpp's frame callback drains through adopt_frame_drain");
+  expect(
+    entry.includes("rs::adopt_frame_drain()") &&
+      !entry.includes("rs::adopt_materials_resolve()"),
+    "LAR6: entry.cpp's frame callback drains through adopt_frame_drain",
+  );
   const q = judgeResolveQueueOnly([
     { leg: "g8a/deferred", resolve_scans: 0 },
     { leg: "g8pt/headless-deferred", resolve_scans: 0 },
   ]);
-  expect(q.problems !== null && q.problems.length === 0, "resolve-queue-only: all zero passes");
-  expect((judgeResolveQueueOnly([{ leg: "g8m/deferred", resolve_scans: 2 }]).problems ?? []).length === 1,
-    "resolve-queue-only: a scan fails");
-  expect((judgeResolveQueueOnly([{ leg: "g8m/deferred", resolve_scans: undefined }]).problems ?? []).length === 1,
-    "resolve-queue-only: a missing counter fails");
-  expect(judgeResolveQueueOnly([]).problems === null, "resolve-queue-only: nothing ran is not-run");
-  for (const [leg, want] of [["deferred", true], ["headless-deferred", true], ["deferred-cmbt", true],
-    ["late", false], ["sabotage-registry-off", false], ["fault-no-resources", false]] as const)
+  expect(
+    q.problems !== null && q.problems.length === 0,
+    "resolve-queue-only: all zero passes",
+  );
+  expect(
+    (
+      judgeResolveQueueOnly([{ leg: "g8m/deferred", resolve_scans: 2 }])
+        .problems ?? []
+    ).length === 1,
+    "resolve-queue-only: a scan fails",
+  );
+  expect(
+    (
+      judgeResolveQueueOnly([{ leg: "g8m/deferred", resolve_scans: undefined }])
+        .problems ?? []
+    ).length === 1,
+    "resolve-queue-only: a missing counter fails",
+  );
+  expect(
+    judgeResolveQueueOnly([]).problems === null,
+    "resolve-queue-only: nothing ran is not-run",
+  );
+  for (const [leg, want] of [
+    ["deferred", true],
+    ["headless-deferred", true],
+    ["deferred-cmbt", true],
+    ["late", false],
+    ["sabotage-registry-off", false],
+    ["fault-no-resources", false],
+  ] as const)
     expect(isDeferredLeg(leg) === want, `isDeferredLeg(${leg}) is ${want}`);
 }
 
@@ -498,48 +850,130 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1), s(1, 1, 1)], regoff: [
   const churn = parseRegistryChurn(
     'x\n[fixture] registry-churn {"own_creates":{"texture":1,"mesh":1,"shader":1,"material":1,"canvas_texture":1},"own_frees":5}\n',
   );
-  expect(churn?.own_creates.canvas_texture === 1 && churn.own_frees === 5, "parseRegistryChurn reads the line");
-  expect(parseRegistryChurn("no line") === null, "parseRegistryChurn: no line is null");
+  expect(
+    churn?.own_creates.canvas_texture === 1 && churn.own_frees === 5,
+    "parseRegistryChurn reads the line",
+  );
+  expect(
+    parseRegistryChurn("no line") === null,
+    "parseRegistryChurn: no line is null",
+  );
   const own = { texture: 1, mesh: 1, shader: 1, material: 1 };
   const g = good();
-  expect(registryLiveBound("own", g.reg, g.counts, { ownCreates: own }).problems.length === 0,
-    "own creates at or under the registry's pass");
+  expect(
+    registryLiveBound("own", g.reg, g.counts, { ownCreates: own }).problems
+      .length === 0,
+    "own creates at or under the registry's pass",
+  );
   // good()'s canvas texture is a null create (the dummy's RID()): it counts as seen.
-  expect(registryLiveBound("own", g.reg, g.counts, { ownCreates: { ...own, canvas_texture: 1 } }).problems.length === 0,
-    "a null create counts toward the fixture's own creates");
+  expect(
+    registryLiveBound("own", g.reg, g.counts, {
+      ownCreates: { ...own, canvas_texture: 1 },
+    }).problems.length === 0,
+    "a null create counts toward the fixture's own creates",
+  );
   // The drop-tracked shape: canvas_texture_create absent from the standby table, so neither the hook
   // counter nor the registry saw the fixture's canvas texture; the counters identity still holds.
   const d = good();
   d.reg.families.canvas_texture = fam(0, 0, 0);
   d.counts.canvas_texture_create = 0;
-  expect(registryLiveBound("drop", d.reg, d.counts).problems.length === 0,
-    "drop-tracked: the counters identity alone passes (why the own count is needed)");
-  expect(registryLiveBound("drop", d.reg, d.counts, { ownCreates: { ...own, canvas_texture: 1 } })
-    .problems.some((p) => p.includes("below the fixture's own 1")), "drop-tracked: the own count fails it");
+  expect(
+    registryLiveBound("drop", d.reg, d.counts).problems.length === 0,
+    "drop-tracked: the counters identity alone passes (why the own count is needed)",
+  );
+  expect(
+    registryLiveBound("drop", d.reg, d.counts, {
+      ownCreates: { ...own, canvas_texture: 1 },
+    }).problems.some((p) => p.includes("below the fixture's own 1")),
+    "drop-tracked: the own count fails it",
+  );
 
-  const planned = ["canvas_item_add_rect", "canvas_item_set_transform", "texture_2d_create", "free", "texture_set_path"];
-  const result = { status: "standby", vtable: { published: "standby", standby_hooks: ["texture_2d_create", "free", "texture_set_path"] } };
-  const counts = { canvas_item_add_rect: 0, canvas_item_set_transform: 0, texture_2d_create: 9, free: 4, texture_set_path: 0 };
-  const ok = standbyHotZero("s", result, { hooks_planned: planned, counts }, STANDBY_HOOKS);
-  expect(ok.problems.length === 0 && ok.hot_planned === 2 && ok.standby_calls === 13, "standby-hot-zero passes");
-  const full = standbyHotZero("s", { ...result, vtable: { published: "standby", standby_hooks: planned } },
-    { hooks_planned: planned, counts: { ...counts, canvas_item_add_rect: 120 } }, STANDBY_HOOKS);
-  expect(full.problems.some((p) => p.includes("canvas_item_add_rect ran 120")), "full-table: a hot hook ran");
-  expect(full.problems.some((p) => p.includes("installs [canvas_item_add_rect")), "full-table: the table installs a hot slot");
-  expect(standbyHotZero("s", { ...result, status: "armed" }, { hooks_planned: planned, counts }, STANDBY_HOOKS)
-    .problems.length === 1, "standby-hot-zero: an armed capture fails");
-  expect(standbyHotZero("s", result, null, STANDBY_HOOKS).problems.length > 0, "standby-hot-zero: no counters fails");
+  const planned = [
+    "canvas_item_add_rect",
+    "canvas_item_set_transform",
+    "texture_2d_create",
+    "free",
+    "texture_set_path",
+  ];
+  const result = {
+    status: "standby",
+    vtable: {
+      published: "standby",
+      standby_hooks: ["texture_2d_create", "free", "texture_set_path"],
+    },
+  };
+  const counts = {
+    canvas_item_add_rect: 0,
+    canvas_item_set_transform: 0,
+    texture_2d_create: 9,
+    free: 4,
+    texture_set_path: 0,
+  };
+  const ok = standbyHotZero(
+    "s",
+    result,
+    { hooks_planned: planned, counts },
+    STANDBY_HOOKS,
+  );
+  expect(
+    ok.problems.length === 0 && ok.hot_planned === 2 && ok.standby_calls === 13,
+    "standby-hot-zero passes",
+  );
+  const full = standbyHotZero(
+    "s",
+    { ...result, vtable: { published: "standby", standby_hooks: planned } },
+    {
+      hooks_planned: planned,
+      counts: { ...counts, canvas_item_add_rect: 120 },
+    },
+    STANDBY_HOOKS,
+  );
+  expect(
+    full.problems.some((p) => p.includes("canvas_item_add_rect ran 120")),
+    "full-table: a hot hook ran",
+  );
+  expect(
+    full.problems.some((p) => p.includes("installs [canvas_item_add_rect")),
+    "full-table: the table installs a hot slot",
+  );
+  expect(
+    standbyHotZero(
+      "s",
+      { ...result, status: "armed" },
+      { hooks_planned: planned, counts },
+      STANDBY_HOOKS,
+    ).problems.length === 1,
+    "standby-hot-zero: an armed capture fails",
+  );
+  expect(
+    standbyHotZero("s", result, null, STANDBY_HOOKS).problems.length > 0,
+    "standby-hot-zero: no counters fails",
+  );
 
   const here = dirname(fileURLToPath(import.meta.url));
-  const cpp = readFileSync(join(here, "../../capture/src/rs_standby.cpp"), "utf8");
-  const body = cpp.slice(cpp.indexOf("std::vector<std::string> names = {"), cpp.indexOf("};", cpp.indexOf("std::vector<std::string> names = {")));
-  const names = [...body.matchAll(/^\s*"([a-z0-9_]+)",/gm)].map((m) => m[1]).sort();
-  expect(names.join(",") === [...STANDBY_HOOKS].sort().join(","),
-    `STANDBY_HOOKS equals rs_standby.cpp's list (${names.length} names)`);
+  const cpp = readFileSync(
+    join(here, "../../capture/src/rs_standby.cpp"),
+    "utf8",
+  );
+  const body = cpp.slice(
+    cpp.indexOf("std::vector<std::string> names = {"),
+    cpp.indexOf("};", cpp.indexOf("std::vector<std::string> names = {")),
+  );
+  const names = [...body.matchAll(/^\s*"([a-z0-9_]+)",/gm)]
+    .map((m) => m[1])
+    .sort();
+  expect(
+    names.join(",") === [...STANDBY_HOOKS].sort().join(","),
+    `STANDBY_HOOKS equals rs_standby.cpp's list (${names.length} names)`,
+  );
 }
 
 if (failures > 0) {
-  console.error(`self-test-registry-checks: ${failures} of ${assertions} assertion(s) failed`);
+  console.error(
+    `self-test-registry-checks: ${failures} of ${assertions} assertion(s) failed`,
+  );
   process.exit(1);
 }
-console.log(`self-test-registry-checks: ${assertions}/${assertions} assertions passed`);
+console.log(
+  `self-test-registry-checks: ${assertions}/${assertions} assertions passed`,
+);

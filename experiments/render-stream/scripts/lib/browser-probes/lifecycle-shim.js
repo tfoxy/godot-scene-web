@@ -193,7 +193,7 @@
     for (const type of DEFERRED) {
       const prop = `on${type}`;
       const desc = Object.getOwnPropertyDescriptor(WSP, prop);
-      if (!desc || !desc.set) continue;
+      if (!desc?.set) continue;
       const own = new WeakMap(); // socket -> the page's own handler
       Object.defineProperty(WSP, prop, {
         configurable: true,
@@ -265,7 +265,7 @@
     pagehideStashed = true;
     saved.pages.push(rec);
     persist();
-    const lines = (window.__rsShell && window.__rsShell.lines) || [];
+    const lines = window.__rsShell?.lines || [];
     for (const keep of [lines.length, 5000, 1000]) {
       try {
         sessionStorage.setItem(
@@ -336,7 +336,7 @@
         const canvas = document.querySelector("canvas");
         const gl =
           canvas && (canvas.getContext("webgl2") || canvas.getContext("webgl"));
-        const ext = gl && gl.getExtension("WEBGL_lose_context");
+        const ext = gl?.getExtension("WEBGL_lose_context");
         if (!ext) {
           rec.errors.push(
             "context-loss: no WEBGL_lose_context on the receiver canvas",

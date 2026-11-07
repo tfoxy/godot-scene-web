@@ -271,16 +271,16 @@ expect(
     "source: every canvas texture from the registry passes",
   );
   expect(
-    registrySourceProblems({ ...res, canvas_registry: 2, canvas_residual: 1 }, reg, 3)
-      .length > 0,
-    "source: one through the residual path fails",
-  );
-  expect(
     registrySourceProblems(
-      { textures_canvas: 3, textures_refused: 0 },
+      { ...res, canvas_registry: 2, canvas_residual: 1 },
       reg,
       3,
     ).length > 0,
+    "source: one through the residual path fails",
+  );
+  expect(
+    registrySourceProblems({ textures_canvas: 3, textures_refused: 0 }, reg, 3)
+      .length > 0,
     "source: a pre-LAR1 capture (no canvas_registry) fails",
   );
   expect(
@@ -412,7 +412,13 @@ expect(
   );
   expect(
     residualProblems(
-      { ...res, textures_canvas: 4, canvas_residual: 4, textures_refused: 0, refused_no_image: 0 },
+      {
+        ...res,
+        textures_canvas: 4,
+        canvas_residual: 4,
+        textures_refused: 0,
+        refused_no_image: 0,
+      },
       { rec: late },
       LATE,
     ).length > 0,

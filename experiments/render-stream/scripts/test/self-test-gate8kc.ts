@@ -97,22 +97,20 @@ function textures(outcome: (i: number) => string) {
 }
 
 function indexText(skip: number[] = []): string {
-  return (
-    lines
-      .map((_, i) => ({
-        v: 1,
-        source: srcKey(i),
-        encoding: "decoded",
-        params: DECODE_PARAMS_ID,
-        hash: decKey(i),
-        bytes: 100,
-        ext: "grt",
-        use: i + 1,
-      }))
-      .filter((_, i) => !skip.includes(i))
-      .map((r) => JSON.stringify(r))
-      .join("\n") + "\n"
-  );
+  return `${lines
+    .map((_, i) => ({
+      v: 1,
+      source: srcKey(i),
+      encoding: "decoded",
+      params: DECODE_PARAMS_ID,
+      hash: decKey(i),
+      bytes: 100,
+      ext: "grt",
+      use: i + 1,
+    }))
+    .filter((_, i) => !skip.includes(i))
+    .map((r) => JSON.stringify(r))
+    .join("\n")}\n`;
 }
 
 function capture(
@@ -130,14 +128,11 @@ function capture(
   write(
     root,
     `g8kc/${leg}/textures.jsonl`,
-    lines
+    `${lines
       .map((l) => JSON.stringify({ ...l, path: path(l.name, l.family) }))
-      .join("\n") + "\n",
+      .join("\n")}\n`,
   );
-  const planned = Array.from(
-    { length: o.planned ?? 80 },
-    (_, i) => `hook${i}`,
-  );
+  const planned = Array.from({ length: o.planned ?? 80 }, (_, i) => `hook${i}`);
   // LS1: texture_set_path is planned with or without a cache directory.
   if (o.planned === undefined) planned[planned.length - 1] = "texture_set_path";
   const counts: Record<string, number> = {};
@@ -210,7 +205,7 @@ function uastcCapture(
   write(
     root,
     `g8kc/${leg}/store/index.jsonl`,
-    Array.from({ length: UASTC_N }, (_, i) =>
+    `${Array.from({ length: UASTC_N }, (_, i) =>
       JSON.stringify({
         hash: o.vhash ? o.vhash(i) : uastcKey(i),
         type: "texture-ktx2",
@@ -220,24 +215,22 @@ function uastcCapture(
         height: 128,
         mipmaps: false,
       }),
-    ).join("\n") + "\n",
+    ).join("\n")}\n`,
   );
 }
 function uastcIndex(): string {
-  return (
-    Array.from({ length: UASTC_N }, (_, i) =>
-      JSON.stringify({
-        v: 1,
-        source: uastcSrc(i),
-        encoding: "uastc",
-        params: UASTC_PARAMS_ID,
-        hash: uastcKey(i),
-        bytes: 50,
-        ext: "ktx2",
-        use: i + 1,
-      }),
-    ).join("\n") + "\n"
-  );
+  return `${Array.from({ length: UASTC_N }, (_, i) =>
+    JSON.stringify({
+      v: 1,
+      source: uastcSrc(i),
+      encoding: "uastc",
+      params: UASTC_PARAMS_ID,
+      hash: uastcKey(i),
+      bytes: 50,
+      ext: "ktx2",
+      use: i + 1,
+    }),
+  ).join("\n")}\n`;
 }
 
 function preparedUastc(root: string, encodes: number) {
@@ -581,7 +574,9 @@ await run(
   const v = await verdicts(root);
   expect(
     v["cache-off-identical"]?.passed === false &&
-      /79 hooks planned|texture_set_path/.test(v["cache-off-identical"]?.detail ?? ""),
+      /79 hooks planned|texture_set_path/.test(
+        v["cache-off-identical"]?.detail ?? "",
+      ),
     `cache-off-identical fails when the uncached capture plans 79 hooks (${v["cache-off-identical"]?.detail})`,
   );
 }

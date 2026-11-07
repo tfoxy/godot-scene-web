@@ -586,7 +586,7 @@ export async function runGate6bWide(
           [join(dir, "applied.json"), join(dir, "shots")],
         ),
       );
-      legs[leg + "-wide"] = {
+      legs[`${leg}-wide`] = {
         group: "g6b",
         expected_class: "unsupported",
         result_class: cls.result_class,

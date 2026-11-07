@@ -583,9 +583,9 @@ async function runOne(
       .catch(() => null);
     await writeFile(
       join(spec.webDir, "stdout.log"),
-      (state?.lines ?? [])
+      `${(state?.lines ?? [])
         .map((l) => (l.stream === "err" ? `[stderr] ${l.line}` : l.line))
-        .join("\n") + "\n",
+        .join("\n")}\n`,
     );
     await writeFile(
       join(spec.webDir, "timings.json"),

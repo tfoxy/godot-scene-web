@@ -161,7 +161,7 @@ export function traceDynamic(
   for (let i = 1; i < split.records.length; i++) {
     const raw = split.records[i];
     const meta = decodeRecord(raw, version).record?.meta as WireTx | undefined;
-    if (!meta || meta.type !== "transaction") continue;
+    if (meta?.type !== "transaction") continue;
     const full = meta.encoding === "full";
     if (full) held.clear();
     for (const id of meta.removed_meshes ?? []) held.delete(id);

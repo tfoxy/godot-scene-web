@@ -49,20 +49,6 @@ function args(): Record<string, string> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-type Api = {
-  mount(o: unknown): void;
-  dispose(): void;
-  stats(): { applied: number; heapBytes: number } | null;
-  statuses: { kind: string; reason?: string; detail?: string; t: number }[];
-  recording(): {
-    bytes: string | null;
-    records: number;
-    fullSeq: number;
-    overflow: boolean;
-    resources: [string, string][];
-  } | null;
-};
-
 async function main(): Promise<number> {
   const a = args();
   const dir = resolve(a.dir);

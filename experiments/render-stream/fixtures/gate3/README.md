@@ -50,28 +50,28 @@ least 8). Step 0 is the `_ready()` state at frame 1. Step _k_ ≥ 1 is applied a
 settles at `S + N·k + 7`. The fixture quits at `S + N·9 + 11` (102) unless
 `RS_FIXTURE_QUIT_FRAME` asks for later. Every step recolours the `Marker`.
 
-| step | change                                                                  | Controls redrawn                    |
-| ---- | ----------------------------------------------------------------------- | ----------------------------------- |
-| 0    | initial                                                                 | all 15                              |
-| 1    | `S1` moves across `A`'s right edge                                      | none                                |
-| 2    | `B`, `BF` and `CU` move (B's window slides, `BF` stays put globally)    | none                                |
-| 3    | `B.size = (60, 50)`                                                     | `B`                                 |
-| 4    | `A.clip_contents = false`                                               | `A`                                 |
-| 5    | `A.clip_contents = true`; `D.color` changes                             | `A`, `D`                            |
-| 6    | `RC`: clear, add_rect, no `set_clip`                                    | none (`RC` is raw)                  |
-| 7    | `RC`: clear, add_rect, `set_custom_rect(false)`, `set_clip(true)`       | none                                |
-| 8    | `RC`: clear, `set_clip(true)`                                           | none                                |
-| 9    | the root canvas transform shifts by (8, 4)                              | none                                |
+| step | change                                                               | Controls redrawn   |
+| ---- | -------------------------------------------------------------------- | ------------------ |
+| 0    | initial                                                              | all 15             |
+| 1    | `S1` moves across `A`'s right edge                                   | none               |
+| 2    | `B`, `BF` and `CU` move (B's window slides, `BF` stays put globally) | none               |
+| 3    | `B.size = (60, 50)`                                                  | `B`                |
+| 4    | `A.clip_contents = false`                                            | `A`                |
+| 5    | `A.clip_contents = true`; `D.color` changes                          | `A`, `D`           |
+| 6    | `RC`: clear, add_rect, no `set_clip`                                 | none (`RC` is raw) |
+| 7    | `RC`: clear, add_rect, `set_custom_rect(false)`, `set_clip(true)`    | none               |
+| 8    | `RC`: clear, `set_clip(true)`                                        | none               |
+| 9    | the root canvas transform shifts by (8, 4)                           | none               |
 
 `expected.json` `clip_rects` holds the final scissor of every clip owner per step.
 
 ## Environment
 
-| Variable                 | Meaning                                                            |
-| ------------------------ | ------------------------------------------------------------------ |
-| `RS_FIXTURE_STEP_LOG`    | absolute path: one JSONL line per step at its applied frame        |
+| Variable                 | Meaning                                                           |
+| ------------------------ | ----------------------------------------------------------------- |
+| `RS_FIXTURE_STEP_LOG`    | absolute path: one JSONL line per step at its applied frame       |
 | `RS_FIXTURE_SHOT_DIR`    | absolute dir: `step-<k>.png` at each settle frame (rendered runs) |
-| `RS_FIXTURE_START_FRAME` | `S` ≥ 1, default 1                                                 |
-| `RS_FIXTURE_STEP_FRAMES` | `N` ≥ 8, default 10                                                |
-| `RS_FIXTURE_QUIT_FRAME`  | ≥ the default `S + N·9 + 11`                                       |
-| `RS_FIXTURE_VARIANT`     | unset or `clip-ignore`; anything else exits 2                      |
+| `RS_FIXTURE_START_FRAME` | `S` ≥ 1, default 1                                                |
+| `RS_FIXTURE_STEP_FRAMES` | `N` ≥ 8, default 10                                               |
+| `RS_FIXTURE_QUIT_FRAME`  | ≥ the default `S + N·9 + 11`                                      |
+| `RS_FIXTURE_VARIANT`     | unset or `clip-ignore`; anything else exits 2                     |

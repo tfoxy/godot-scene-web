@@ -26,26 +26,26 @@ The scene does not know about the capture and runs the same whether `GRC_EXTENSI
 
 ## Scene
 
-| node | what it covers |
-| ---- | -------------- |
-| `World` (Node2D) | a moved, modulated parent; its texture filter changes before arm and its children inherit it |
-| `World/Box`, `World/Box/BoxChild` | self-modulate (not inherited), z index 1, a nested item |
-| `World/Behind` | `show_behind_parent`; moved to index 0 after arm (a child draw-index change) |
-| `World/Spin` | rotation and scale, a rect and a circle |
-| `World/Hidden`, `World/Hidden/HiddenRect` (ColorRect) | hidden before arm, shown after it: no commands until shown |
-| `World/Sprite` (Sprite2D, scale 8) | a post-arm 4x4 texture, filter inherited from `World` (linear) |
-| `World/TopA`, `World/TopB` | top-level items on the root canvas, raised before and after arm (move_to_front) |
-| `World/ZHigh` | absolute z 3; freed after arm (an adopted item freed) |
-| `UI` (Control, `clip_contents`) > `Back`, `Overflow` (clipped), `Inner` > `InnerRect`, `Tiled` (TextureRect tile, repeat enabled) | nested Controls, a clip, a clip turned on after arm, a tiled post-arm texture |
-| `Layer` (CanvasLayer, layer 2, offset) > `Tint` (CanvasModulate), `LayerBox`, `LayerUI` | an adopted layer canvas, its stacking, transform and canvas modulate; hidden after arm |
-| the residue | `RenderingServer.canvas_item_create` in `_ready`, parented to the root canvas at draw index 1000, no commands: an RS-only item with no node, which adoption cannot reach |
-| `World/Stale` (Sprite2D, scale 8) | G8r: a pre-arm `ImageTexture` updated in place at frame 5 (the dummy keeps its creation image: adopted `creation`, the declared region) and again at K+14 (current from then on) |
-| `World/Plain` (Sprite2D, scale 8) | G8r: a pre-arm `ImageTexture` never updated: an exact `creation` copy |
-| `World/Hidden/HiddenSprite` (Sprite2D) | G8r: hidden before arm; its texture's update at K+4 is the first post-arm reference (adopted from the update, `current`) |
-| `World/Placeholder` (Sprite2D) | G8r: a `PlaceholderTexture2D` has no image to read back: stays `unknown-texture`, counted (the refused region) |
-| `World/Chip`, `World/ChipBc` (Sprite2D) | G8r: `CompressedTexture2D`s loaded with the scene, lossless (RGBA8) and VRAM (DXT5, host-decoded under `GRC_TEXTURE_DECODE=engine`): `current`, found in the resource cache |
-| `World/Mesh` (MeshInstance2D) | G8r: a pre-arm `ArrayMesh` (one indexed, coloured quad): adopted through `mesh_get_surface`, `creation` |
-| `Grown` (Label) | G8r: its glyph page is created at frame 1 and grows at frame 5 (an in-place update the dummy drops): adopted from the TextServer, `current`; it grows again at K+4 |
+| node                                                                                                                              | what it covers                                                                                                                                                                   |
+| --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `World` (Node2D)                                                                                                                  | a moved, modulated parent; its texture filter changes before arm and its children inherit it                                                                                     |
+| `World/Box`, `World/Box/BoxChild`                                                                                                 | self-modulate (not inherited), z index 1, a nested item                                                                                                                          |
+| `World/Behind`                                                                                                                    | `show_behind_parent`; moved to index 0 after arm (a child draw-index change)                                                                                                     |
+| `World/Spin`                                                                                                                      | rotation and scale, a rect and a circle                                                                                                                                          |
+| `World/Hidden`, `World/Hidden/HiddenRect` (ColorRect)                                                                             | hidden before arm, shown after it: no commands until shown                                                                                                                       |
+| `World/Sprite` (Sprite2D, scale 8)                                                                                                | a post-arm 4x4 texture, filter inherited from `World` (linear)                                                                                                                   |
+| `World/TopA`, `World/TopB`                                                                                                        | top-level items on the root canvas, raised before and after arm (move_to_front)                                                                                                  |
+| `World/ZHigh`                                                                                                                     | absolute z 3; freed after arm (an adopted item freed)                                                                                                                            |
+| `UI` (Control, `clip_contents`) > `Back`, `Overflow` (clipped), `Inner` > `InnerRect`, `Tiled` (TextureRect tile, repeat enabled) | nested Controls, a clip, a clip turned on after arm, a tiled post-arm texture                                                                                                    |
+| `Layer` (CanvasLayer, layer 2, offset) > `Tint` (CanvasModulate), `LayerBox`, `LayerUI`                                           | an adopted layer canvas, its stacking, transform and canvas modulate; hidden after arm                                                                                           |
+| the residue                                                                                                                       | `RenderingServer.canvas_item_create` in `_ready`, parented to the root canvas at draw index 1000, no commands: an RS-only item with no node, which adoption cannot reach         |
+| `World/Stale` (Sprite2D, scale 8)                                                                                                 | G8r: a pre-arm `ImageTexture` updated in place at frame 5 (the dummy keeps its creation image: adopted `creation`, the declared region) and again at K+14 (current from then on) |
+| `World/Plain` (Sprite2D, scale 8)                                                                                                 | G8r: a pre-arm `ImageTexture` never updated: an exact `creation` copy                                                                                                            |
+| `World/Hidden/HiddenSprite` (Sprite2D)                                                                                            | G8r: hidden before arm; its texture's update at K+4 is the first post-arm reference (adopted from the update, `current`)                                                         |
+| `World/Placeholder` (Sprite2D)                                                                                                    | G8r: a `PlaceholderTexture2D` has no image to read back: stays `unknown-texture`, counted (the refused region)                                                                   |
+| `World/Chip`, `World/ChipBc` (Sprite2D)                                                                                           | G8r: `CompressedTexture2D`s loaded with the scene, lossless (RGBA8) and VRAM (DXT5, host-decoded under `GRC_TEXTURE_DECODE=engine`): `current`, found in the resource cache      |
+| `World/Mesh` (MeshInstance2D)                                                                                                     | G8r: a pre-arm `ArrayMesh` (one indexed, coloured quad): adopted through `mesh_get_surface`, `creation`                                                                          |
+| `Grown` (Label)                                                                                                                   | G8r: its glyph page is created at frame 1 and grows at frame 5 (an in-place update the dummy drops): adopted from the TextServer, `current`; it grows again at K+4               |
 
 ## Timeline
 
@@ -53,15 +53,15 @@ Fixture frames are the main-loop iteration (`_process` count). Under `GRC_ADOPT=
 dates its frames the same way (entry.cpp aligns its counter with `Engine.get_process_frames()`), so
 born and late recordings, the step log and the reference all share one clock.
 
-| frame | |
-| ----- | - |
-| `_ready` | the scene as authored, the residue item |
-| 5 | (before a late arm) World moves, TopA is raised above TopB, Hidden hides, World's filter becomes linear, UI moves; Stale's texture is updated in place; Grown's text grows |
-| K | late: the capture arms and adopts. Checkpoint 0 settles at K+2 |
-| K+4 | HiddenSprite's texture is updated, then Hidden shows; a 4x4 checker `ImageTexture` is created and drawn by Sprite and Tiled; the residue is moved (`canvas_item_set_transform`); World's modulate changes; Grown grows again. Checkpoint 1 at K+11 |
-| K+14 | Behind moves to index 0, TopB is raised, Spin turns, Inner clips, the CanvasModulate colour and the layer offset change; Stale is updated again. Checkpoint 2 at K+21 |
-| K+24 | the layer hides, a new item `Late` is added under World, ZHigh is freed, UI moves. Checkpoint 3 at K+31 |
-| K+38 | quit |
+| frame    |                                                                                                                                                                                                                                                    |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `_ready` | the scene as authored, the residue item                                                                                                                                                                                                            |
+| 5        | (before a late arm) World moves, TopA is raised above TopB, Hidden hides, World's filter becomes linear, UI moves; Stale's texture is updated in place; Grown's text grows                                                                         |
+| K        | late: the capture arms and adopts. Checkpoint 0 settles at K+2                                                                                                                                                                                     |
+| K+4      | HiddenSprite's texture is updated, then Hidden shows; a 4x4 checker `ImageTexture` is created and drawn by Sprite and Tiled; the residue is moved (`canvas_item_set_transform`); World's modulate changes; Grown grows again. Checkpoint 1 at K+11 |
+| K+14     | Behind moves to index 0, TopB is raised, Spin turns, Inner clips, the CanvasModulate colour and the layer offset change; Stale is updated again. Checkpoint 2 at K+21                                                                              |
+| K+24     | the layer hides, a new item `Late` is added under World, ZHigh is freed, UI moves. Checkpoint 3 at K+31                                                                                                                                            |
+| K+38     | quit                                                                                                                                                                                                                                               |
 
 The step log holds only the four checkpoints, in every leg, so the shots line up. At K-1 and K+1
 the probe (`RS_FIXTURE_PROBE_LOG`) hashes every stored property of every node under `Adopt` and

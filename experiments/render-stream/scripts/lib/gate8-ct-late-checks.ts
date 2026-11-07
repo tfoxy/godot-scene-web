@@ -374,7 +374,9 @@ export function residualProblems(
         `${canvases} adopted ok canvas textures in the last state, ${late.canvas_residual} expected`,
       );
     if (late.refused_no_image > 0 && unknownTextureCount(rec.rec) === 0)
-      problems.push("no unknown-texture command for the refused CanvasTextures");
+      problems.push(
+        "no unknown-texture command for the refused CanvasTextures",
+      );
   }
   return problems;
 }
@@ -784,7 +786,8 @@ export async function runG8ctl(
       if (!rec.rec) problems.push(rec.error ?? "no recording");
       const source = registrySourceProblems(res, reg, expected.canvas_count);
       const adopt = adoptProblems(res, rec, expected, []);
-      if (source.length === 0) problems.push("ctl-registry-source did not fail");
+      if (source.length === 0)
+        problems.push("ctl-registry-source did not fail");
       if (adopt.length === 0) problems.push("ct-late-adopt did not fail");
       detail = `ctl-registry-source ${source.length} problems, ct-late-adopt ${adopt.length}`;
     }

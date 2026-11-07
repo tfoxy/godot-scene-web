@@ -220,7 +220,7 @@ export function crossCheckWireLists(entries: readonly FeatureEntry[]): void {
   for (const { resource, reason } of UNSUPPORTED_RESOURCES_V6) {
     const key = `resource:resource.${resource}`;
     const e = byKindId.get(key);
-    if (!e || e.status !== "typed-unsupported" || e.reason !== reason)
+    if (e?.status !== "typed-unsupported" || e.reason !== reason)
       throw new Error(
         `make-features: ${key} must be typed-unsupported with reason ${reason} (rs_publish.cpp unsupported_resources)`,
       );
@@ -228,7 +228,7 @@ export function crossCheckWireLists(entries: readonly FeatureEntry[]): void {
   for (const id of OBSERVED_UNSUPPORTED_OPS_V6) {
     const key = `op:${id}`;
     const e = byKindId.get(key);
-    if (!e || e.status !== "typed-unsupported")
+    if (e?.status !== "typed-unsupported")
       throw new Error(
         `make-features: ${key} must be typed-unsupported (rs_publish.cpp observed_unsupported_ops)`,
       );
@@ -236,7 +236,7 @@ export function crossCheckWireLists(entries: readonly FeatureEntry[]): void {
   for (const id of UNOBSERVED_V6) {
     const key = `op:${id}`;
     const e = byKindId.get(key);
-    if (!e || e.status !== "unobserved")
+    if (e?.status !== "unobserved")
       throw new Error(
         `make-features: ${key} must be unobserved (rs_publish.cpp unobserved)`,
       );

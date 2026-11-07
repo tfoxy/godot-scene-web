@@ -655,7 +655,7 @@ try {
             // the replay's own shot stays compared outside the pending legs
             (timedShots || !r.ok)
         : !r.ok && r.live_timed.length === 0,
-      `GRT6: ${leg} ${timed ? "applied.json is live-timed" + (timedShots ? " with its shots" : ", its shots still compared") : "still disagrees on a deterministic replay"}`,
+      `GRT6: ${leg} ${timed ? `applied.json is live-timed${timedShots ? " with its shots" : ", its shots still compared"}` : "still disagrees on a deterministic replay"}`,
     );
   }
 } finally {

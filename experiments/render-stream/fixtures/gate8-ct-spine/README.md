@@ -12,7 +12,7 @@ registry — the RID the draw itself named — not from a node property.
 
 - `project.godot`: 640x360, `gl_compatibility`, autoload `GrcLoader`, main scene `spine.tscn`.
 - `loader.gd`: loads the capture GDExtension in `_process` at fixture frame 8
-  (`RS_FIXTURE_ARM_FRAME`), **before** the CanvasTexture exists, so the canvas_texture_* hooks are
+  (`RS_FIXTURE_ARM_FRAME`), **before** the CanvasTexture exists, so the canvas*texture*\* hooks are
   installed when its channels are set.
 - `spine.tscn` / `spine.gd`: a plain `Node` that creates a custom `SpineLike` Node2D in `_ready`
   and the runtime CanvasTexture in `_process` at frame 10 (after the capture loads, before the arm).
@@ -25,20 +25,20 @@ registry — the RID the draw itself named — not from a node property.
 One 64x64 cell at (40,40), a 16x16 opaque RGBA8 pattern (distinct per seed, every channel in
 10..239, never white), drawn only through a runtime CanvasTexture's diffuse via `add_mesh`.
 
-| Cell | Position | Draw | Through |
-| ---- | -------- | ---- | ------- |
-| `MESH` | (40,40) | a custom Node2D's `draw_mesh` (the spine shape, no `texture` property) | CT |
+| Cell   | Position | Draw                                                                   | Through |
+| ------ | -------- | ---------------------------------------------------------------------- | ------- |
+| `MESH` | (40,40)  | a custom Node2D's `draw_mesh` (the spine shape, no `texture` property) | CT      |
 
 ## Timeline
 
-| frame | |
-| ----- | - |
-| 0 | `_ready` creates the `SpineLike` draw node |
-| 8 | the loader arms the capture's hooks (`GDExtensionManager.load_extension`): the vtable is patched, but the arm (adoption/snapshot/publish) is deferred by `GRC_ARM_DEFER_FRAMES=6` |
-| 10 | `_process` builds the CanvasTexture (diffuse = the pattern image) and queues the draw node's redraw; the canvas_texture_* hooks record its channels into the registry |
-| 14 | the deferred arm runs: the walk adopts the items, `queue_redraw` re-sends `draw_mesh`, and the CanvasTexture is adopted from the registry at its first post-arm draw |
-| 17 | checkpoint 0: the reference saves `step-0.png` |
-| 30 | quit |
+| frame |                                                                                                                                                                                   |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0     | `_ready` creates the `SpineLike` draw node                                                                                                                                        |
+| 8     | the loader arms the capture's hooks (`GDExtensionManager.load_extension`): the vtable is patched, but the arm (adoption/snapshot/publish) is deferred by `GRC_ARM_DEFER_FRAMES=6` |
+| 10    | `_process` builds the CanvasTexture (diffuse = the pattern image) and queues the draw node's redraw; the canvas*texture*\* hooks record its channels into the registry            |
+| 14    | the deferred arm runs: the walk adopts the items, `queue_redraw` re-sends `draw_mesh`, and the CanvasTexture is adopted from the registry at its first post-arm draw              |
+| 17    | checkpoint 0: the reference saves `step-0.png`                                                                                                                                    |
+| 30    | quit                                                                                                                                                                              |
 
 The capture must run on a rendered host (a private 640x360 gamescope): a headless host's dummy
 storage allocates no canvas texture (`canvas_texture_allocate` returns `RID()` in

@@ -372,7 +372,16 @@
         "experiments/render-stream/capture/src/rs_carrier*",
         "experiments/render-stream/capture/test/rs_carrier*"
       ],
-      "reach": ["capture-build", "pure", "native:gate1@*", "native:gate2@*", "native:gate6@*", "native:gate8@*", "native:hc1@*", "g7live:*@*"],
+      "reach": [
+        "capture-build",
+        "pure",
+        "native:gate1@*",
+        "native:gate2@*",
+        "native:gate6@*",
+        "native:gate8@*",
+        "native:hc1@*",
+        "g7live:*@*"
+      ],
       "exclusive": true
     },
     {
@@ -452,7 +461,11 @@
         "experiments/render-stream/scripts/test/wss-chromium-smoke.ts",
         "experiments/render-stream/scripts/lib/test-pki.ts"
       ],
-      "reach": ["capture-build", "pure", "cargo:experiments/render-stream/rs-net"],
+      "reach": [
+        "capture-build",
+        "pure",
+        "cargo:experiments/render-stream/rs-net"
+      ],
       "exclusive": true
     },
     {
@@ -785,7 +798,14 @@
         "experiments/render-stream/scripts/lib/validation-log.ts",
         "experiments/render-stream/scripts/test/self-test-validation-log.ts"
       ],
-      "reach": ["pure", "native:gate-minus1@*", "native:gate2@*", "native:gate3@*", "g7:g7-2@*", "g7:g7-3@*"]
+      "reach": [
+        "pure",
+        "native:gate-minus1@*",
+        "native:gate2@*",
+        "native:gate3@*",
+        "g7:g7-2@*",
+        "g7:g7-3@*"
+      ]
     },
     {
       "why": "LAR0's registry checks (late-arm-registry-design.md): registry-live-bound and registry-cost, read only by g8a's checker (native gate 8), with a pure self-test",

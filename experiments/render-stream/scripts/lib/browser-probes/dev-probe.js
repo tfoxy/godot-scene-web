@@ -90,7 +90,7 @@
       return remove.call(this, type, listener, opts);
     };
     const desc = Object.getOwnPropertyDescriptor(proto, "onmessage");
-    if (desc && desc.set && desc.get) {
+    if (desc?.set && desc.get) {
       Object.defineProperty(proto, "onmessage", {
         configurable: true,
         enumerable: desc.enumerable,
@@ -143,9 +143,11 @@
       wasm = -1;
     }
     mem.push(now(), m ? m.usedJSHeapSize : -1, wasm ?? -1);
+    // biome-ignore lint/suspicious/noFocusedTests: fit sizes the canvas, not a test.
     if (FIT) fit();
   }, 1000);
   if (FIT) {
+    // biome-ignore lint/suspicious/noFocusedTests: fit sizes the canvas, not a test.
     new MutationObserver(() => fit()).observe(document, {
       childList: true,
       subtree: true,
