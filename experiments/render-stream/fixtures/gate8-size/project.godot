@@ -1,4 +1,4 @@
-; Gate 8 size fixture (G8h, ../../protocol/gate8-design.md "Q4. Host size at a late arm"): logical 640x360,
+; Gate 8 size fixture: logical 640x360,
 ; `canvas_items` stretch, aspect `expand`; one scene, size.tscn, run late-armed or born. See README.md.
 
 config_version=5

@@ -1,7 +1,6 @@
 # Gate 5 style fixture
 
-The reference rendering for gate 5's nine-patch and stylebox coverage (G5g,
-[`../../protocol/gate5-design.md`](../../protocol/gate5-design.md) "Q6f", "Q1h" and "G5g"). Ten
+The reference rendering for gate 5's nine-patch and stylebox coverage. Ten
 steps (0..9) cover `NinePatchRect` in `stretch`, `tile`, `tile_fit` and hollow, a resize of all
 four, a `StyleBoxTexture` with modulate and expand margins, `StyleBoxFlat` sharp, bordered,
 rounded (antialiased), shadowed and skewed (antialiased), the default theme's `Panel` box, a
@@ -32,10 +31,9 @@ python3 experiments/render-stream/fixtures/gate5-style/make_expected.py --check
   `StyleBoxFlat::draw` and `draw_rounded_rectangle` to float32 (every triangle array's indices,
   points, per-vertex colours and UVs; `ulp: 2`), turns each `draw_rounded_rectangle` pass into one
   coverage shape (flat passes exact, translucent ones delta 1, the antialiasing and shadow rings
-  band), and asserts the colour rule, disjoint regions, tie-freeness, the hand census, Q1h's hand
+  band), and asserts the colour rule, disjoint regions, tie-freeness, the hand census, the hand
   vertex and index counts per box, the freshness rows and the receiver sabotage's regions. It
   imports gate 5's `make_expected.py` for the shared float32, transform and welding helpers.
-  Nothing in it is measured.
 - `expected.json`: as gate 5's (`op_lists`, per step `calls`, `items`, `fresh`), plus
   `translucent_shapes` and `theme_shapes` (the default theme's colours are off the 0.2 grid and
   exempt from it), `lowering_predictions` per box and `predictions`

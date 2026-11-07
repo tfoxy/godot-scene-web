@@ -1,5 +1,4 @@
-// G7k (gate7-design.md Q6 "Samplers", D16, Q10 startup/soak): the memory samplers Q6 names and
-// G7h deferred ("Q6's 'Samplers' bullet... is D16/G7k's own deliverable", g7h.md "Deviations"),
+// G7k (startup/soak): the memory samplers Q6 names and
 // at 1 Hz, for one browser leg.
 //
 // Per D16 ("Memory accounting... per process, from /proc and CDP, never from one number"):
@@ -7,8 +6,7 @@
 //     `proc-sampler.ts`, reused as-is: it is already engine-free, pid-only);
 //   - JS heap from CDP `Performance.getMetrics` (`JSHeapUsedSize`);
 //   - the wasm heap from the page's own `window.__rsWasmHeap()` (both receivers already expose
-//     this: GSW's `memory.buffer.byteLength`, the web export's `HEAP8.byteLength`; D29 amendment
-//     to g7k.md: "never shrinks");
+//     this: GSW's `memory.buffer.byteLength`, the web export's `HEAP8.byteLength`; it never shrinks);
 //   - per-process GPU memory from `nvidia-smi`, reusing `packages/perf-harness/src/nvidia.ts`'s
 //     `sampleChromeVram` (same pid-attributed reader the device/desktop perf harness uses).
 //

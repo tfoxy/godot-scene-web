@@ -1350,7 +1350,7 @@ def build_invalid_vectors(predict13: bytes, patch13: bytes) -> dict[str, tuple[b
 
 # --------------------------------------------------------------------------- item_meta (TAG1)
 #
-# client-extensions-design.md §2.4: the /13 `item_meta` record, a JSON meta with no blocks:
+# The /13 `item_meta` record, a JSON meta with no blocks:
 #   {"type":"item_meta","form":"full"|"delta","grant":{fields,groups,meta_keys}|null,
 #    "strings_from":n,"strings":[...],"items":[[id,col...],...],"blocks":[]}
 # A full goes before every full transaction of a granted stream (the grant, the whole string
@@ -1825,7 +1825,7 @@ def build() -> dict[str, bytes]:
              "seq": seq, "description": description}
             for name, (_, code, description, version, seq) in invalid.items()
         ] + [
-            # TAG1 (client-extensions-design.md §2.4): `item_meta` is the validator's ask (a
+            # `item_meta` is the validator's ask (a
             # request object; "none" for a live viewer that did not ask; absent for a recording)
             # and record_index the record the vector fails at.
             {"file": "item-meta.rs13" if data is item_meta13 else f"invalid/{name}.rs13",

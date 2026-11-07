@@ -1,5 +1,5 @@
-// Provenance helpers for `render-stream-report/1`'s `provenance` block (D10, Q7f of
-// ../../protocol/gate6-design.md). This module owns only what a runner on THIS machine can read
+// Provenance helpers for `render-stream-report/1`'s `provenance` block.
+// This module owns only what a runner on THIS machine can read
 // without Godot: host facts (`/proc/cpuinfo`, `os`), the display compositor's own version string,
 // and sha256 digests of files the runner already has paths to (the extension, the receiver
 // project, the engine binary). It never launches Godot and never reads engine or capture state --

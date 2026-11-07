@@ -1,5 +1,5 @@
 extends Node
-## Gate 7 pace fixture (../../protocol/gate7-design.md Q13d `pace`, G7d): one 32x32 opaque texture
+## Gate 7 pace fixture (`pace`, G7d): one 32x32 opaque texture
 ## (a Sprite2D) on a 640x360 root, moving 1 px per host frame and wrapping. Nothing else changes, so
 ## the first transaction carries the sprite and its texture and every later one is one transform
 ## patch: the workload that isolates a receiver's fixed per-frame cost (socket, decode, apply,

@@ -1,6 +1,5 @@
-// G8kp (render-stream-9.md "Live transport", texture-delivery-design.md Q3): the GSW receiver's
-// texture-delivery hello keys, pure so scripts/test/self-test-gate8kp.ts can pin them, and (MIR-1)
-// the client's whole hello.
+// The GSW receiver's texture-delivery hello keys (render-stream-9.md "Live transport"), pure so
+// scripts/test/self-test-gate8kp.ts can pin them, and the client's whole hello.
 
 /** Godot's feature names (the hello's gpu_formats) and the WebGL extension each needs. */
 export const GPU_EXTENSIONS: readonly (readonly [string, string])[] = [
@@ -52,15 +51,15 @@ export function helloV9(
   };
 }
 
-/** MIR-1: this client's `receiver` name in the hello (a free string at the host, rs_live.cpp). */
+/** This client's `receiver` name in the hello (a free string at the host, rs_live.cpp). */
 export const CLIENT_RECEIVER_NAME = "gsw-render-stream-client";
-/** MIR-1: the client's live coding offer (W11t), the harness's default. */
+/** The client's live coding offer (W11t), the harness's default. */
 export const CLIENT_LIVE_CODING = "zstd-base,zstd";
 /** The inbound buffer the client announces (the harness's default, 16 MiB). */
 export const CLIENT_INBOUND_BYTES = 16777216;
 
 /**
- * The core's start options (rs-gsw-wasm `parse_options`). PH2: `digest: "none"`, since the client
+ * The core's start options (rs-gsw-wasm `parse_options`). `digest: "none"`, since the client
  * never reads a record's SHA-256 (`last_digest_ptr`, `digest()`); every check that reads no record
  * digest stays (resource payload hashes, mesh body digests, W11t's checksum, /13 `predict-check`,
  * the seq and base rules). The harness receiver keeps `inline`: its checks read the digests.
@@ -76,11 +75,11 @@ export function coreStartOptions(protocol: number): string {
   });
 }
 
-/** What the client's hello states about itself (mirror-client-design.md "The loop", "Hello"). */
+/** What the client's hello states about itself. */
 export interface ClientHelloFacts {
   protocol: 11 | 12 | 13;
   creditWindow: 1 | 2;
-  /** PH3: the credit stage; default `submitted`. */
+  /** The credit stage; default `submitted`. */
   creditStage?: "submitted" | "applied";
   token: string | null;
   /** The canvas's backing store and CSS box, and the device pixel ratio in thousandths. */
@@ -89,7 +88,7 @@ export interface ClientHelloFacts {
   dprMilli: number;
   /** gpuFormatsOf the canvas's own context (`none` when empty). */
   gpuFormats: string;
-  /** TAG2: the extensions' merged `item_meta` request (/13); absent or null: no key, the pure
+  /** The extensions' merged `item_meta` request (/13); absent or null: no key, the pure
    * hello byte for byte. */
   itemMeta?: {
     fields: readonly string[];
@@ -125,7 +124,7 @@ export function clientHello(f: ClientHelloFacts): Record<string, unknown> {
     `render-stream/${f.protocol}` as const,
     CLIENT_LIVE_CODING,
   );
-  // TAG2 (client-extensions-design.md §2.1): the item_meta key last, only when asked (at /13; the
+  // The item_meta key last, only when asked (at /13; the
   // key is a hello error below it).
   if (f.itemMeta) {
     if (f.protocol < 13)

@@ -1,11 +1,8 @@
 extends Node
-## render-stream/5 receiver (gate0-design.md "Q5. Receiver", extended by gate1-design.md "Q5.
-## Receiver", "G1b2" and "G1c2", by gate2-design.md "Q5. Receiver" and "G2b2", since G4e2 by
-## gate4-design.md "Q5. Receiver" -- /3 is /2 plus the msdf command -- and since G5d by
-## gate5-design.md "Q5. Receiver": /4 adds the immediate geometry ops, add_set_transform and
-## add_clip_ignore, replayed in order; since G5e the mesh table: every `ok` mesh a command names
-## is made resident from its GRM1 surface payloads and add_mesh replays; since G55d by
-## gate5_5-design.md "Q5. Receiver": /5's shader and material tables are compiled and created
+## render-stream/5 receiver (/3 is /2 plus the msdf command; /4 adds the immediate geometry ops,
+## add_set_transform and add_clip_ignore, replayed in order, and the mesh table: every `ok` mesh a command names
+## is made resident from its GRM1 surface payloads and add_mesh replays; /5's shader and material
+## tables are compiled and created
 ## natively from their GRP1 code, items get their material, use_parent_material and instance
 ## parameters, canvas 1 its modulate). Its only input is a
 ## render-stream/5 byte stream: a recording file (file mode) or the binary messages of one
@@ -29,7 +26,7 @@ extends Node
 ##                                replay-failure cache-not-fresh) or warm (it must exist)
 ##   RS_RECEIVER_STORE_DIR        file mode: the capture's store, the origin for fetch "directory"
 ##                                (reading from it counts as a fetch)
-##   RS_RECEIVER_WEB_STORE        WX (web export, file mode; results/p3/wx.md): lazy (default)
+##   RS_RECEIVER_WEB_STORE        WX (web export, file mode): lazy (default)
 ##                                fetches each payload from RS_RECEIVER_STORE_DIR when the
 ##                                transaction that needs it is applied (the browser's fetch(),
 ##                                as live GETs) and drops it from memory once uploaded (64 KiB
@@ -45,7 +42,7 @@ extends Node
 ##                                zstd, gzip, or off (no header: identity bodies). A coded body is
 ##                                decoded here and verified after decoding; a web receiver's
 ##                                browser negotiates and decodes by itself (the variable is unused)
-##   RS_RECEIVER_TEXTURE_ENCODINGS G8kp (texture-delivery-design.md D3): the delivery preference a
+##   RS_RECEIVER_TEXTURE_ENCODINGS the delivery preference a
 ##                                /9 stream is read with (and a /9 hello states): default
 ##                                "block,uastc,decoded" (G8ku: `uastc` through Godot's own KTX2
 ##                                loader, D14); each texture's payload is the first encoding listed
@@ -63,7 +60,7 @@ extends Node
 ##                                variant it prefers appears at an equal version; upgrade refetches
 ##   RS_RECEIVER_TRANSCODE_LOG    G8ku (D16): 1 hashes each KTX2 transcode's uploaded blocks into
 ##                                the report's transcodes[] (format, size and time are always there)
-##   RS_RECEIVER_SHADER_LIBRARY   G55d (gate5_5-design.md D4, Q5): absolute operator-local GRP1
+##   RS_RECEIVER_SHADER_LIBRARY   absolute operator-local GRP1
 ##                                library (sha256/<hash>.grp) a `withheld` shader's code comes
 ##                                from, verified by hash; without it (or without that hash) the
 ##                                shader is skipped and applied.json's `unsupported` gains
@@ -76,13 +73,13 @@ extends Node
 ##                                transaction), ignore-cache (fetch even on a cache hit),
 ##                                wrong-http-token (live only, G2e: send the correct bearer token
 ##                                on the WebSocket upgrade but a deliberately wrong one on every
-##                                resource GET), ignore-clip (gate3-design.md Q5, G3b: every
+##                                resource GET), ignore-clip (every
 ##                                canvas_item_set_clip call passes false) or clip-before-clear
 ##                                (G3b: the pre-gate-3 apply order, the clip setter before content
-##                                with no shadow reset on clear) or drop-msdf (gate4-design.md
-##                                Q5, G4e2: every add_msdf_texture_rect_region is skipped with no
+##                                with no shadow reset on clear) or drop-msdf (every
+##                                add_msdf_texture_rect_region is skipped with no
 ##                                typed record, the pre-/3 picture), ignore-set-transform or
-##                                ignore-clip-ignore (gate5-design.md Q5, G5d: every
+##                                ignore-clip-ignore (every
 ##                                add_set_transform / add_clip_ignore is skipped with no record),
 ##                                ignore-nine-patch-axis (G5g: every add_nine_patch is drawn
 ##                                stretch/stretch), drop-mesh-surface (G5e: a mesh build never adds
@@ -108,7 +105,7 @@ extends Node
 ##                                on its store GETs, the pre-WRP receiver); every one exists only
 ##                                to fail checks or compare
 ##
-## Resource budgets (G6s, gate6-design.md Q5 "Resource budgets"; both modes; rs_resource_cache.gd):
+## Resource budgets (both modes; rs_resource_cache.gd):
 ##   RS_RECEIVER_MEMORY_BUDGET_BYTES  unset: unlimited (off by default, every other gate's
 ##                                    receiver included); set: in-memory payloads past this many
 ##                                    bytes are evicted least-recently-used, never a hash the
@@ -169,14 +166,14 @@ extends Node
 ##   RS_RECEIVER_RECONNECT       <step> (G1d): after the shot for <step> (and its submitted ack),
 ##                               close with 1000, free every RID the applier made, and connect
 ##                               again: a fresh session on received-2.rs2
-##   RS_RECEIVER_RECONNECT_MEMORY drop (default, G2c2) or keep (G6l, gate6-design.md Q7c): what
+##   RS_RECEIVER_RECONNECT_MEMORY drop (default) or keep: what
 ##                               the payloads held in memory do across RS_RECEIVER_RECONNECT.
 ##                               drop: connection 2 takes them from its inline records, the
 ##                               cache directory or a fetch; keep: they stay (content-addressed,
 ##                               already verified by hash), so only payloads in neither memory nor
 ##                               the cache directory are fetched. live.reconnect records the mode
 ##                               and the hashes in memory and in the cache at that moment
-##   RS_RECEIVER_RECONNECT_ON_LOSS 1 (G7u, gate7-design.md D14 as amended): a connection that
+##   RS_RECEIVER_RECONNECT_ON_LOSS 1 (as amended): a connection that
 ##                               closes without an end record, other than a host 1002/1008/1009
 ##                               close, after a session (a frozen page's socket: 1006 on resume)
 ##                               is recovered as RS_RECEIVER_RECONNECT's part 2 (dispose, a fresh
@@ -185,16 +182,16 @@ extends Node
 ##   RS_RECEIVER_RESYNC          <step> (G1d): refuse the first transaction in that step's window
 ##                               unapplied, send `resync` for it, and ignore patches until a full
 ##                               transaction arrives
-##   RS_RECEIVER_ALLOW_LAN       CAR2 (carrier-design.md D10): "1" lets RS_RECEIVER_URL be
+##   RS_RECEIVER_ALLOW_LAN       "1" lets RS_RECEIVER_URL be
 ##                               ws://<IPv4>:<port>/... (the gate 8 lan leg); default: loopback only
-##   RS_RECEIVER_TOKEN_FILE      G2e (gate2-design.md D13): absolute path to a file holding the
+##   RS_RECEIVER_TOKEN_FILE      absolute path to a file holding the
 ##                               bearer token, sent as "Authorization: Bearer <token>" on the
 ##                               WebSocket upgrade and on every resource GET. Unset: no token sent
 ##                               (the session must then declare resources.auth "none" or the host
 ##                               refuses the upgrade with 401 -> replay-failure live-connect-failed)
 ##                               Native only. At /7 the token goes in the hello instead of the
 ##                               upgrade header (resource GETs keep the header).
-##   RS_RECEIVER_PROTOCOL        G7l (gate7-design.md Q4 "Live client"): 6 or 7, the wire version
+##   RS_RECEIVER_PROTOCOL        6 or 7, the wire version
 ##                               spoken. Natively the default is 6, so every /6 gate is unchanged;
 ##                               on the web only 7 is allowed, and it is the default. At /7 the
 ##                               receiver offers subprotocol render-stream.7, sends the /7 hello
@@ -202,7 +199,7 @@ extends Node
 ##                               received.rs7 (received-2.rs7 after a reconnect). A close 1008 (or
 ##                               an `error`) with reason `unauthorized` before any session is
 ##                               replay-failure live-connect-failed: the /7 analogue of /6's 401
-##                               upgrade (gate7-design.md Q8).
+##                               upgrade.
 ##                               G8g: 8 is render-stream/8's live transport (/7's, natively and on
 ##                               the web; render-stream-8.md "Live transport"): subprotocol
 ##                               render-stream.8, the /7 hello with protocol "render-stream/8",
@@ -247,7 +244,7 @@ extends Node
 ##                               receiver.credit_window records the grant from the session)
 ##   RS_RECEIVER_MANIFEST_SHA256 G7e/G7l: 64 lowercase hex, sent as the /7 hello's manifest_sha256
 ##                               (null when unset) and recorded in applied.json `receiver`
-##   RS_RECEIVER_LATE_POLL       G7r (gate7-design.md Q4 "Late poll", D4): 1 moves the socket read,
+##   RS_RECEIVER_LATE_POLL       1 moves the socket read,
 ##                               the fetch poll and the apply from _process to
 ##                               RenderingServer.frame_pre_draw (the same main-loop iteration, just
 ##                               before its draw); the `submitted` ack stays at that frame's
@@ -279,33 +276,33 @@ extends Node
 ## status ok and quits with 0. A usage error (missing or malformed environment, or an unsupported
 ## mode) quits with 2 and writes nothing.
 ##
-## applied.json is render-stream-receiver-applied/4 since G5e (gate5-design.md Q5): /3's shape,
+## applied.json is render-stream-receiver-applied/4: /3's shape,
 ## each transaction's `resources` gaining meshes_created, meshes_rebuilt, surface_updates,
 ## mesh_upload_bytes and skipped_mesh_commands (and the entry mesh_commands), a top-level
 ## `mesh_uploads` list ({stream, seq, id, op: create|rebuild|update|free|custom_aabb, surfaces,
 ## buffers, bytes}) and mesh totals in resources_summary; state dumps gain `meshes`.
-## render-stream-receiver-applied/5 since G55d (gate5_5-design.md Q5): /4's shape, each
+## render-stream-receiver-applied/5: /4's shape, each
 ## transaction's `resources` gaining shaders_created, shader_code_sets, shader_payload_fetches,
 ## materials_created, param_sets and instance_param_sets (their totals in resources_summary too),
 ## fetches of GRP1 payloads with kind "shader", `unsupported` gaining the receiver's own
 ## shader-withheld entries; state dumps of a /5 stream gain the canvases' `modulate`, the items'
 ## `material`, `use_parent_material` and `instance_params`, and the `shaders` and `materials`
 ## tables, all in render-stream-5.md's resolved shapes and key order.
-## render-stream-receiver-applied/6 since G6b (gate6-design.md Q5): /5's shape; `viewport` gains
+## render-stream-receiver-applied/6: /5's shape; `viewport` gains
 ## presentation_size, window_size, oversampling, presentation_check (ok | mismatch |
 ## skipped-headless) and stretch_applied; each transaction's `resources` (and resources_summary)
 ## gains canvases_created, canvas_attach (viewport_attach_canvas and viewport_remove_canvas calls)
 ## and canvas_stacking_sets; `unsupported` gains the receiver's own typed session entries
 ## (presentation-mismatch, oversampling-mismatch, stretch-mode: seq null, item null, name
 ## "viewport"); state dumps of a /6 stream carry each canvas's `layer` and `sublayer`.
-## render-stream-receiver-applied/7 since G7e (gate7-design.md Q5): /6's shape plus a top-level
+## render-stream-receiver-applied/7 : /6's shape plus a top-level
 ## `receiver` block {kind: native | web-export, build_sha256 (RS_RECEIVER_BUILD_SHA256, else
 ## null), manifest_sha256 (RS_RECEIVER_MANIFEST_SHA256, else null), protocol, credit_window (1 in
 ## live mode, null in file mode)}. On a web export `cache` is {dir: null, mode: "http-cache"}: the
 ## browser's HTTP cache stands in for RS_RECEIVER_CACHE_DIR, which is native only (Q4), and a
 ## disk budget there is typed `cache-budget-unsupported` (seq null, item null, name "cache").
 ##
-## Core (G7xn, gate7-design.md D34, Q14e; both modes): RsRustApplier -- the shared Rust core,
+## Core (both modes): RsRustApplier -- the shared Rust core,
 ## experiments/render-stream/rs-core, through the GDExtension adapter receiver/ext/ -- decodes,
 ## validates, resolves and applies in native code, apply as RenderingServer ptrcalls for what
 ## changed; this script keeps configuration, I/O, evidence and shots. G7gd (2026-10-21) removed
@@ -318,7 +315,7 @@ extends Node
 ## State dumps are the core's resolved `state` in render-stream-2.ts's form (the same keys;
 ## numbers as JavaScript prints them), which statesEqual() compares.
 ##
-## Configuration and I/O (G7e, gate7-design.md Q4): every RS_RECEIVER_* value is read through
+## Configuration and I/O: every RS_RECEIVER_* value is read through
 ## RsConfig.get_env() (the environment, else `--rs-env=NAME=VALUE` after `--`), and RsIo carries
 ## the web export's sources (fetched into memory before the session is applied) and sinks (PUT to
 ## RS_RECEIVER_EVIDENCE_URL before the exit). Natively both are what they always were.
@@ -342,9 +339,7 @@ const EXIT_REPLAY_FAILURE: int = 3
 # render-stream-13.md "Decoding and check order": the /13 codes a live receiver resyncs on (reason
 # `coding`): predict-check (W13d) and the zero-run codes (W13r).
 const _CODING_CODES_13: Array[String] = ["predict-check", "zr-length", "zr-noncanonical"]
-## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
-## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d,
-## gate6-design.md Q6h, G6a).
+## RS_RECEIVER_SABOTAGE's accepted values.
 const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings", "shader-time-frozen", "drop-canvas-group", "full-backbuffer-copy", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2", "stale-dynamic-rx", "no-prune", "evict-carried", "ignore-released", "undrawn-multimesh", "ignore-identity-transform", "undrawn-particles", "ignore-particle-emits", "drop-particles-restart", "gl-particle-colors", "no-subparticle-stub", "no-predict-reset", "draw-during-wait"]
 ## The six per-transaction `resources` counters render-stream-receiver-applied/5 adds (G55d).
 const MATERIAL_COUNTERS: Array[String] = ["shaders_created", "shader_code_sets", "shader_payload_fetches", "materials_created", "param_sets", "instance_param_sets"]
@@ -407,7 +402,7 @@ var _summary: Dictionary = {
 	"shaders_created": 0, "shader_code_sets": 0, "shader_payload_fetches": 0, "materials_created": 0,
 	"param_sets": 0, "instance_param_sets": 0,
 	"canvases_created": 0, "canvas_attach": 0, "canvas_stacking_sets": 0,
-	# G6s (gate6-design.md Q5 "Resource budgets"): unconditionally present (memory eviction needs
+	# unconditionally present (memory eviction needs
 	# no RS_RECEIVER_CACHE_DIR), synced from _cache's own counters at _write_report().
 	"evictions_memory": 0, "evictions_disk": 0, "refetch_after_evict": 0,
 }
@@ -481,10 +476,10 @@ var _received_stored: int = 0
 ## G6s (live-buffer trim): `_data` holds at most the one message currently being decoded
 ## (the core reads a record at an offset local to `_data`, so nothing more is needed); the
 ## current connection's received byte count, which used to read `_data.size()`, is tracked here
-## instead (rs-g6s-live-data-unbounded-growth.md). The whole-stream sha256 is read back from
+## instead. The whole-stream sha256 is read back from
 ## `_received_path` -- an exact mirror of `_data`'s old content, flushed every message -- once
-## per connection at its end, rather than hashed incrementally on the hot per-message path (a
-## benchmark measured incremental HashingContext.update() at +36 us/message, a measurable
+## per connection at its end, rather than hashed incrementally on the hot per-message path (
+## incremental HashingContext.update() is a measurable
 ## slowdown; a once-per-connection file read-back costs nothing there).
 var _data_received_bytes: int = 0
 var _session_seen: bool = false
@@ -492,7 +487,7 @@ var _stream_id: String = ""
 var _windows: Array[Dictionary] = []  # {step, from, to, shot: bool}
 var _waiting: Array[Dictionary] = []  # accepted, not yet applied: {entry, meta}
 var _submit_pending: bool = false
-## G7q (credit window 2, gate7-design.md Q2 "Credit with window w"): the window the session granted
+## G7q (credit window 2): the window the session granted
 ## (publication.credit_window; 1 below /7). At 2 the host may have a second transaction in flight,
 ## so several accepted transactions can wait for one apply: the resolved state is the newest's, so
 ## the newest is applied and drawn and the older ones are folded into it (`_coalesced`), each acked
@@ -512,7 +507,7 @@ var _token: String = ""
 ## G7l: the wire version (RS_RECEIVER_PROTOCOL in live mode; the recording's magic in file mode),
 ## the hello's credit window and manifest sha256 ("" for null).
 var _wire_version: int = 6
-## G8kp (texture-delivery-design.md D3, Q3): the delivery preference and the GPU families this
+## the delivery preference and the GPU families this
 ## receiver states (RS_RECEIVER_TEXTURE_ENCODINGS, RS_RECEIVER_GPU_FORMAT_MASK); gpu_formats is
 ## detected once the renderer exists (_new_applier).
 const GPU_FAMILIES: Array[String] = ["s3tc", "bptc", "rgtc", "etc2", "astc"]
@@ -532,7 +527,7 @@ var _texture_encodings: String = "block,uastc,decoded"
 var _variant_upgrade: bool = false
 var _transcode_log: bool = false
 var _transcodes: Array[Dictionary] = []
-## G8kf (texture-delivery-design.md Q3): each uastc variant whose transcode failed, {stream, seq,
+## each uastc variant whose transcode failed, {stream, seq,
 ## hash, fallback}: the entry went on with D3's next preference (`decoded` at last).
 var _variant_fallbacks: Array[Dictionary] = []
 var _gpu_format_mask: Array[String] = []
@@ -762,7 +757,7 @@ func _init_report(mode: String) -> String:
 		"shots_missed": [],
 		"unsupported": _unsupported,
 		"live": null,
-		# G2b2 (render-stream-receiver-applied/3, gate2-design.md Q5 "applied.json"). G6s:
+		# G2b2 (render-stream-receiver-applied/3). G6s:
 		# RS_RECEIVER_LOG=summary drops these too (resources_summary keeps the totals), the same
 		# rule as "transactions" above; _fetches/_uploads/_mesh_uploads are never appended to
 		# under summary mode either, so none of the three grows unbounded over a long soak.
@@ -830,7 +825,7 @@ func _parse_resource_env(live: bool) -> bool:
 	if library_dir != "" and not library_dir.is_absolute_path():
 		_log("error: RS_RECEIVER_SHADER_LIBRARY must be an absolute directory (got %s)" % JSON.stringify(library_dir))
 		return false
-	# G6s (gate6-design.md Q5 "Resource budgets"): unset is unlimited for both (-1: RsResourceCache's
+	# unset is unlimited for both (-1: RsResourceCache's
 	# own "no budget" sentinel; 0 is RS_RECEIVER_CACHE_BUDGET_BYTES's literal "unlimited" instead,
 	# so it goes through the shared non-negative parser), so every other gate's receiver -- none of
 	# which sets either variable -- keeps budgets off and its existing behaviour unchanged.
@@ -845,7 +840,7 @@ func _parse_resource_env(live: bool) -> bool:
 	if cache_budget < 0:
 		return false
 	if RsConfig.is_web():
-		# gate7-design.md Q4: the cache directory is native only; the browser's HTTP cache is the
+		# The cache directory is native only; the browser's HTTP cache is the
 		# web export's "disk cache", and it cannot be evicted from, so a disk budget is typed.
 		if cache_dir != "":
 			_log("error: RS_RECEIVER_CACHE_DIR is native only; on the web the cache is the browser's HTTP cache (got %s)" % JSON.stringify(cache_dir))
@@ -945,7 +940,7 @@ func _receive_resource(record: Dictionary) -> bool:
 	return true
 
 
-## gate2-design.md Q5 step 2: every payload the resolved state needs is made available before
+##  step 2: every payload the resolved state needs is made available before
 ## any RenderingServer call for it. Fills `resources` (fetched, fetched_bytes, cache_hits,
 ## fetch_us, and since G55d shader_payload_fetches) and the report's fetch list. Returns "" or the
 ## replay-failure error.
@@ -955,7 +950,7 @@ func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> Strin
 	var mesh_hashes: Array = need["mesh_hashes"]
 	var shader_hashes: Array = need["shader_hashes"]
 	var ktx2_hashes: Array = need["ktx2_hashes"] if need.has("ktx2_hashes") else []
-	# G6s (gate2-design.md Q5, gate6-design.md Q5 "Resource budgets"): eviction must not touch any
+	# eviction must not touch any
 	# of these while this loop is making them available, one call at a time, below.
 	_cache.set_needed(hashes)
 	var fetch_us: int = RsWire.as_int(resources["fetch_us"])
@@ -1190,7 +1185,7 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 	return {"ok": true, "stats": stats}
 
 
-## G7k (gate7-design.md Q10 "Startup", D15's navigation-relative marks): a no-op natively (every
+## Navigation-relative marks: a no-op natively (every
 ## call site here is also guarded by RsConfig.is_web(), but this helper repeats the guard so a
 ## future web-only call site cannot forget it). Fire-and-forget: performance.mark() returns
 ## nothing worth reading back, so this needs no JavaScriptBridge.create_callback.
@@ -1232,7 +1227,7 @@ func _begin_session(accepted: Dictionary) -> bool:
 	_adopt_presentation(session_viewport, blocks_for_stretch)
 	if DisplayServer.get_name() != "headless" and _sabotage != "ignore-presentation":
 		var visible_size: Vector2 = get_viewport().get_visible_rect().size
-		# PRES-A (gate6-design.md "Amendment (PRES-A)"): a "match" host's visible rect is the
+		# a "match" host's visible rect is the
 		# stretch's visible size for its presentation (wider than logical_size under expand,
 		# keep_width or keep_height at another aspect; the core validated it), so that is what
 		# this window must lay out. Any other host is held to logical_size, as before.
@@ -1286,7 +1281,7 @@ func _begin_session(accepted: Dictionary) -> bool:
 	return true
 
 
-## G6b (gate6-design.md D2, Q5): adopts the session's stretch on the receiver's root window, then
+## adopts the session's stretch on the receiver's root window, then
 ## checks the presentation size and the oversampling. Runs once per process (a reconnect's second
 ## session carries the same declaration). A /5 or older session has no presentation keys: its
 ## stretch is still adopted, the checks are skipped.
@@ -1413,7 +1408,7 @@ func _process(_delta: float) -> void:
 				return
 			_apply_file_transaction(meta, record, RsWire.as_int(meta["seq"]), {})
 		"item_meta":
-			# TAG1 (client-extensions-design.md §2.4): identities for client extensions; the core
+			# identities for client extensions; the core
 			# holds the record for its transaction. Nothing to apply.
 			pass
 		"end":
@@ -1641,7 +1636,7 @@ func _ready_live() -> void:
 			_quit(EXIT_USAGE)
 			return
 	_url = RsConfig.get_env("RS_RECEIVER_URL").strip_edges()
-	# CAR2 (carrier-design.md D10): RS_RECEIVER_ALLOW_LAN=1 accepts ws://<IPv4>:<port>/..., the
+	# RS_RECEIVER_ALLOW_LAN=1 accepts ws://<IPv4>:<port>/..., the
 	# gate 8 lan leg's host address; the default stays loopback only.
 	var allow_lan: bool = RsConfig.get_env("RS_RECEIVER_ALLOW_LAN").strip_edges() == "1"
 	var lan_url: RegEx = RegEx.create_from_string("^ws://[0-9]{1,3}(\\.[0-9]{1,3}){3}:[0-9]+/")
@@ -1872,7 +1867,7 @@ func _parse_wire_env() -> bool:
 
 ## G7l: the /7 hello for this receiver: kind, window, token, manifest and the presentation
 ## integers (the window's backing size and the display scale; headless: the project's viewport
-## size and 1000, gate7-design.md Q2).
+## size and 1000).
 func _hello_v7() -> Dictionary:
 	var kind: String = "web-export" if RsConfig.is_web() else "native"
 	var backing := Vector2i(0, 0)
@@ -1928,7 +1923,7 @@ func _parse_windows() -> bool:
 
 
 ## RS_RECEIVER_STALL (<step>:<ms>), RS_RECEIVER_RECONNECT (<step>) and RS_RECEIVER_RESYNC
-## (<step>), each optional; every step must have a shot window (gate1-design.md Q5, G1d).
+## (<step>), each optional; every step must have a shot window.
 func _parse_g1d_options() -> bool:
 	var stall: String = RsConfig.get_env("RS_RECEIVER_STALL").strip_edges()
 	if stall != "":
@@ -2078,7 +2073,7 @@ func _process_live() -> void:
 		# the error's reason) is what a Godot client can rely on.
 		if code == 1008 and reason == "unauthorized" and not _session_seen:
 			# G7l: the /7 host checks the hello's token after the upgrade; its refusal before any
-			# session is the /7 analogue of /6's 401 upgrade (gate7-design.md Q8).
+			# session is the /7 analogue of /6's 401 upgrade.
 			_fail(null, "live-connect-failed", "unauthorized: the host closed with %d before any session" % code)
 		elif code == 1002 or code == 1008 or code == 1009:
 			_fail(_last_seq_or_null(), "host-error", "%s: the host closed with %d" % [reason, code])
@@ -2102,7 +2097,7 @@ func _begin_reconnect() -> void:
 	_log("reconnect: closing connection %d after seq %d" % [_conn_index, _last_applied_seq])
 
 
-## RS_RECEIVER_RECONNECT_ON_LOSS (G7u, gate7-design.md D14 as amended): the connection closed
+## RS_RECEIVER_RECONNECT_ON_LOSS (as amended): the connection closed
 ## without an end record and not by a host error (a frozen page's socket, 1006 on resume). The
 ## recovery is RS_RECEIVER_RECONNECT's part 2, unscheduled: dispose, then a fresh session whose
 ## first transaction is the host's newest state. The host treats the lost connection as gate 1d's
@@ -2397,8 +2392,7 @@ func _receive_binary(message: PackedByteArray) -> void:
 	# G6s (live-buffer trim): every message after the first is exactly one record (enforced
 	# above), so `_data` holds nothing more to decode once this one is accepted; the next
 	# message's `offset := _data.size()` starts back at 0. Bounds receiver RSS by the largest
-	# in-flight record instead of growing with total bytes received
-	# (rs-g6s-live-data-unbounded-growth.md).
+	# in-flight record instead of growing with total bytes received.
 	_data = PackedByteArray()
 
 
@@ -2513,7 +2507,7 @@ func _begin_store_fetch(meta: Dictionary, record: Dictionary, seq: int, resource
 		_apply_file_transaction(meta, record, seq, resources)
 		return
 	_store_pending = {"meta": meta, "record": record, "seq": seq, "resources": resources, "hashes": wanted, "files": files, "kinds": kinds}
-	# WRP (results/p3/wrp.md): no frame is drawn while the transaction waits, as a store read
+	# no frame is drawn while the transaction waits, as a store read
 	# natively takes no frame. Emitters and shader TIME step once per drawn frame (GLES3 even
 	# steps a 0 delta as 0.001 s, so Engine.time_scale cannot freeze them), so a wait of a
 	# wall-clock-dependent number of frames would shift every later shot's particles. Main reads
@@ -2770,7 +2764,7 @@ func _after_post_draw(entry: Dictionary, step: int) -> void:
 			"state_path": _state_paths.get(_seq_name(seq)),
 			"process_frame": Engine.get_process_frames(),
 			"applied_through": _last_applied_seq,
-			# G6s (gate6-design.md Q7e): the wire frame this shot's transaction was published at,
+			# the wire frame this shot's transaction was published at,
 			# so a realtime-timeline checker can find the right shot without the per-transaction
 			# array RS_RECEIVER_LOG=summary drops.
 			"frame": RsWire.as_int(entry["frame"]),
@@ -2795,7 +2789,7 @@ func _after_post_draw(entry: Dictionary, step: int) -> void:
 		_log("stall: blocked %d us after the step %d shot (seq %d), injected" % [end_us - start_us, step, seq])
 	var now_us: int = Time.get_ticks_usec()
 	entry["submitted_us"] = now_us
-	# G7l (gate7-design.md Q9 `credit-from-paced-loop`): the main-loop iteration of this submitted
+	# the main-loop iteration of this submitted
 	# ack. Equal to the entry's process_frame when the transaction was applied and drawn in one
 	# iteration (the web runs one per rAF callback). G7mm records it on native too, next to
 	# received_process_frame, for motion-monotonic's hold-in-frames rule.
@@ -2985,7 +2979,7 @@ func _new_applier() -> void:
 	_cache.stager = null if _sabotage == "verify-in-frame" else _applier
 
 
-## G8kp (texture-delivery-design.md D3, Q3): RS_RECEIVER_TEXTURE_ENCODINGS and
+## RS_RECEIVER_TEXTURE_ENCODINGS and
 ## RS_RECEIVER_GPU_FORMAT_MASK, checked against render-stream-9.md's hello grammar and names, and
 ## (G8ku) RS_RECEIVER_VARIANT_POLICY and RS_RECEIVER_TRANSCODE_LOG; the web export reads them too.
 ## Logs and returns false on a malformed value.
@@ -3186,7 +3180,7 @@ func _write_report() -> void:
 			_received_file.flush()
 		# G6s (live-buffer trim): `_data` only ever holds the message in flight; `_received_path`
 		# is its exact byte-for-byte mirror, so the whole connection's sha256 is read back from
-		# disk once here instead of carried in memory (rs-g6s-live-data-unbounded-growth.md).
+		# disk once here instead of carried in memory.
 		var sha256: String = RsWire.sha256_hex(FileAccess.get_file_as_bytes(_received_path))
 		_stream_report["received_sha256"] = sha256
 		_stream_report["received_bytes"] = _data_received_bytes

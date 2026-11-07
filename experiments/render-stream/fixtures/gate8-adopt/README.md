@@ -1,7 +1,6 @@
 # Gate 8 adoption fixture (`gate8-adopt`, G8a, G8r)
 
-The fixture for gate 8's arm-time late-join adoption
-([`../../protocol/gate8-design.md`](../../protocol/gate8-design.md) D3-D5, "Q2. Late-join adoption").
+The fixture for gate 8's arm-time late-join adoption.
 One scene, `adopt.tscn`, is run two ways by the same loader autoload, so a capture armed after the
 scene exists (`late`, `GRC_ADOPT=arm`) can be compared with one armed before it existed (`born`).
 The scene does not know about the capture and runs the same whether `GRC_EXTENSION` is set or not.
@@ -14,12 +13,11 @@ The scene does not know about the capture and runs the same whether `GRC_EXTENSI
 - `loader.gd`: gate 1's loader plus a late arm. `RS_FIXTURE_ARM=born` loads `GRC_EXTENSION` in
   `_enter_tree`; `RS_FIXTURE_ARM=late` (the default) loads it in `_process` at fixture frame
   `K = RS_FIXTURE_ARM_FRAME` (default 12, at least 8) through `GDExtensionManager.load_extension`,
-  the modder's route (Q1a); `RS_FIXTURE_ARM=thread` does the same from a worker `Thread` (the
+  the modder's route; `RS_FIXTURE_ARM=thread` does the same from a worker `Thread` (the
   stream must refuse `adopt-thread`). The autoload processes before the main scene, so the capture
   arms before the scene's own frame K.
 - `born.tscn` / `born.gd`: the `born` main scene, a plain `Node` that instantiates `adopt.tscn` in
-  `_ready`, after the capture armed: every canvas, layer and item is created under the hooks
-  (memory gate0-route-a-fixture-rule).
+  `_ready`, after the capture armed: every canvas, layer and item is created under the hooks.
 - `adopt.tscn` / `adopt.gd`: the scene and its timeline (below). `box.gd`: a custom-drawn rect.
 - `expected.json`: the hand-derived census and timeline the checker reads.
 - `make_sources.gd` (G8r, editor only): writes `tex/chip.png` and `tex/chip_bc.png` with their
@@ -34,7 +32,7 @@ The scene does not know about the capture and runs the same whether `GRC_EXTENSI
 | `World/Box`, `World/Box/BoxChild` | self-modulate (not inherited), z index 1, a nested item |
 | `World/Behind` | `show_behind_parent`; moved to index 0 after arm (a child draw-index change) |
 | `World/Spin` | rotation and scale, a rect and a circle |
-| `World/Hidden`, `World/Hidden/HiddenRect` (ColorRect) | hidden before arm, shown after it: no commands until shown (Q2's exception) |
+| `World/Hidden`, `World/Hidden/HiddenRect` (ColorRect) | hidden before arm, shown after it: no commands until shown |
 | `World/Sprite` (Sprite2D, scale 8) | a post-arm 4x4 texture, filter inherited from `World` (linear) |
 | `World/TopA`, `World/TopB` | top-level items on the root canvas, raised before and after arm (move_to_front) |
 | `World/ZHigh` | absolute z 3; freed after arm (an adopted item freed) |

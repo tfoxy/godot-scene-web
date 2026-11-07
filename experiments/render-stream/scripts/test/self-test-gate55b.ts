@@ -5,7 +5,7 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate55b.ts
 //
-// 1. The blend modes on hand-computed bytes (gate5_5-design.md Q1c, D13): add, sub, mul and
+// 1. The blend modes on hand-computed bytes: add, sub, mul and
 //    premul_alpha over a known destination, disabled writing its own alpha on an 8-bit and a 2-bit
 //    target, a light_only (alpha 0) rect painting and covering nothing, and mix unchanged.
 // 2. checkExpectedSelfConsistent55 on the committed expected.json and on broken copies.

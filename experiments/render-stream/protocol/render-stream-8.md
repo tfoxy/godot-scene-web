@@ -1,7 +1,6 @@
 # render-stream/8 wire format
 
-Status: specified and golden-tested at G8w (2026-10-23), written with
-[gate8-design.md](gate8-design.md) D1, D2, D8, D9 and Q6, which this document implements. /8 is
+Status: frozen; specified and golden-tested. /8 is
 **opt-in**: no receiver advertises it, the capture's file sinks stay on /6 unless asked
 (`GRC_STREAM_VERSION=8`), and the live listener offers `render-stream.8` last unless a gate 8
 policy is set. Nothing in /2 to /7 changes: `golden-2/` to `golden-7/` pass unchanged and the
@@ -16,7 +15,7 @@ their successors fill.
 [render-stream-7.md](render-stream-7.md) and, through it, render-stream-6.md to
 render-stream-0.md are not superseded.
 
-As with /3 to /7 (memory g4e1-rs3-version-switch-pattern), /8 is **not** a new forked module. The
+As with /3 to /7, /8 is **not** a new forked module. The
 version-parameterized C++/TypeScript/Rust modules grow a seventh value: C++'s `Session::version`
 gains `ProtocolVersion::V8` (still defaulting to `V2`), and the TypeScript `version` parameter
 and the Rust `version: u8` widen to `2..=8` (the TypeScript default stays `6`). Every cascade that
@@ -70,11 +69,11 @@ object keeps /7's `credit_window`.
 "adoption":null | {"mode":"arm","frame":<int>=1>}
 ```
 
-- `resources.decode` declares the host's texture-decode policy (`GRC_TEXTURE_DECODE`, gate8-design.md
-  D8). `"engine"` means the host decodes block-compressed payloads with the engine's own
+- `resources.decode` declares the host's texture-decode policy (`GRC_TEXTURE_DECODE`).
+  `"engine"` means the host decodes block-compressed payloads with the engine's own
   `Image::decompress`, so a texture entry may carry a `source_format`.
 - `adoption` declares that the capture adopted a scene that already existed when it armed
-  (`GRC_ADOPT=arm`, D3-D5). `frame` dates the arm: the capture host's frame counter then, at least
+  (`GRC_ADOPT=arm`). `frame` dates the arm: the capture host's frame counter then, at least
   1. `null` means no adoption: every object was created under the hooks.
 - New invariants: `adoption-entry` (the declaration is malformed, `frame` is below 1, or any
   canvas, item, texture, mesh, shader or material has `origin: "adopted"` in a session whose
@@ -82,9 +81,9 @@ object keeps /7's `credit_window`.
 
 ### Sabotage kinds
 
-`sabotage.kind` gains: `adopt-skip-state`, `adopt-no-redraw`, `adopt-skip-layers` (gate8-design.md
-Q2), `perturb-decode` (Q3), `size-before-adopt` (Q4), `adopt-raw-shader-code` and
-`adopt-skip-params` (Q5). They are legal in a /8 session only (a decoder below /8 reports
+`sabotage.kind` gains: `adopt-skip-state`, `adopt-no-redraw`, `adopt-skip-layers`,
+`perturb-decode`, `size-before-adopt`, `adopt-raw-shader-code` and
+`adopt-skip-params`. They are legal in a /8 session only (a decoder below /8 reports
 `meta-schema`), and the capture refuses them without a /8 sink (`policy-needs-v8`). G8w declares
 them on the wire; the behaviours land with the increment that owns each.
 
@@ -101,21 +100,21 @@ The four tables' entries keep every /7 field, in /7's order, with these addition
 ```
 
 - `origin` is `"created"` below /8. At /8 `"adopted"` means the capture met the object already
-  existing at arm and published it by reading it back (gate8-design.md D6, D7, D11, D12).
+  existing at arm and published it by reading it back.
 - `adopted_content` (texture and mesh) says how much the adopted bytes can be trusted:
-  `"current"` is provably current (a TextureServer readback, D7, or a `CompressedTexture2D`
+  `"current"` is provably current (a TextureServer readback, or a `CompressedTexture2D`
   reached through a node, which the engine never updates in place); `"creation"` is the dummy
-  renderer's creation-time copy (D6), exact unless the engine changed the content in place before
+  renderer's creation-time copy, exact unless the engine changed the content in place before
   arm. It is non-null exactly when `origin` is `"adopted"` (`adoption-entry`), and it follows the
   entry through patches like any field: an entry that changes only `adopted_content` is a patch
   entry.
-- `source_format` (texture) is non-null exactly when the payload is a host decode (D8): `format`
+- `source_format` (texture) is non-null exactly when the payload is a host decode: `format`
   stays the payload's own format (`RGBA8`, `R8`, `RG8`, or a half float), and `source_format` names
   the format the host decoded from. Invariants (`decode-entry`): it is a valid `Image.Format` name
   (`meta-schema` otherwise); it is non-null only on an `ok` entry of kind `image` (not freed, not
   `unsupported`, not a placeholder or canvas texture); it differs from `format`; and the session's
   `resources.decode` is `"engine"`. A freed entry carries `null`.
-- Shader entries gain one reason, `shader-adopt-include` (G8m, gate8-design.md Q5): an adopted
+- Shader entries gain one reason, `shader-adopt-include`: an adopted
   shader whose code the capture could not recover, because its preprocessing left an `#include`
   it could not resolve. Its entry keeps the no-code shape (`mode`, `source` and `hash` null,
   `payload_bytes` 0) with `status: "unsupported"`; a material naming it is `unsupported` through
@@ -137,7 +136,7 @@ times the sum, over the mip chain, of `w·h`.
 | ------ | -- | --- | ---- | ----- | -- | --- | ---- | ----- |
 | bytes per pixel | 4 | 8 | 12 | 16 | 2 | 4 | 6 | 8 |
 
-A float payload is carried exact: no conversion on the host (gate8-design.md D9). `RGBA4444`,
+A float payload is carried exact: no conversion on the host. `RGBA4444`,
 `RGB565` and `RGBE9995` stay unsized and refused by the capture. A wrong size is `payload-size`.
 Below /8 the float formats stay unsized in the decoders, exactly as before, and the capture still
 refuses them (`unsupported-format`). The channels are little-endian IEEE-754 (binary32 for
@@ -156,7 +155,7 @@ reasons are /7's. A /7 hello on a /8 connection, or the reverse, is `error` `pro
 - default: `render-stream.7`, `render-stream.6`, `render-stream.8` (the default stays /7);
 - `GRC_STREAM_VERSION=8`: `render-stream.8` first, then `.7`, `.6`;
 - under a gate 8 policy (below): `render-stream.8` only, so no /6 or /7 decoder sees a field it
-  would reject (gate8-design.md D2).
+  would reject.
 
 No receiver's hello offers `render-stream.8` in G8w.
 
@@ -178,7 +177,7 @@ file stream version, the policy, the adoption counts) only when a /8 sink or a g
 play, so every other run's `result.json` is unchanged.
 
 G8w's seams: `GRC_ADOPT=arm` calls `rs::adopt_at_arm` in `entry.cpp` after the root query and
-before the root-size policy (D4's order); `GRC_TEXTURE_DECODE=engine` lets `hooks.cpp`'s texture
+before the root-size policy; `GRC_TEXTURE_DECODE=engine` lets `hooks.cpp`'s texture
 copy ask `rs::texture_decode` about a format outside `GRC_RESOURCE_FORMATS`. Both bodies are empty:
 adoption adopts nothing (the session still declares it), and the decode seam declines, so a
 compressed texture is refused `unsupported-format` exactly as at /6 until G8t.
@@ -233,7 +232,7 @@ format is a new version.
 
 ## As built (G8w)
 
-- **Key positions.** Q6 left them open. `adopted_content` sits right after `origin` (texture and
+- **Key positions.** `adopted_content` sits right after `origin` (texture and
   mesh), `source_format` right after `format`, `resources.decode` after `auth`, and `adoption`
   after `unknown_item_policy`/`sabotage`. `adoption` is always present at /8 (null when off) so a
   /8 session has one key list per skip state, not one per adoption state.
@@ -244,9 +243,9 @@ format is a new version.
   refuses them without a /8 sink. A kind with no wire spelling at /7 should not appear in a /7
   stream, and nothing used to stop it.
 - **`GRC_STREAM_VERSION=7` is invalid.** /7 has no file sink (render-stream-7.md); the variable is
-  `6|8`, as D2 says.
-- **Float formats in `GRC_RESOURCE_FORMATS`** count as a gate 8 policy (they trigger D2's
-  refusal) but are still refused by the format parser afterwards (`not one of L8, LA8 ...`): the
+  `6|8`.
+- **Float formats in `GRC_RESOURCE_FORMATS`** count as a gate 8 policy (they trigger the
+  `policy-needs-v8` refusal) but are still refused by the format parser afterwards (`not one of L8, LA8 ...`): the
   capture's float size table is G8f's. G8w makes them legal on the wire and in the decoders only.
 - **`gate2_features` for /8.** `/7` and `/8` change no feature list, so the session's `features`
   are /6's.
@@ -254,17 +253,16 @@ format is a new version.
   it to the frame of the walk.
 - **The Rust core's resolved state** carries `origin`, `adopted_content` and `source_format` as
   fields; its apply layer, `rs-core-capi` and every receiver ignore them (an adopted entry draws
-  like any other, gate8-design.md Q2 "Impact"). The capi pin (`/6` or `/7`) is unchanged.
+  like any other). The capi pin (`/6` or `/7`) is unchanged.
 
 ## As built (G8t)
 
 - **`source_format` is produced.** Under `GRC_TEXTURE_DECODE=engine` the capture decodes DXT1, DXT3,
   DXT5, BPTC_RGBA, ETC, ETC2_R11, ETC2_RG11, ETC2_RGB8, ETC2_RGBA8, ASTC_4x4 and ASTC_8x8 to RGBA8,
-  RGTC_R to R8 and RGTC_RG to RG8 (the engine's own `Image::decompress` on a duplicate,
-  gate8-design.md D8 and "As built (G8t)"); the entry's `format` is the payload's and
+  RGTC_R to R8 and RGTC_RG to RG8 (the engine's own `Image::decompress` on a duplicate); the entry's `format` is the payload's and
   `source_format` the hooked image's. Every other format keeps its /6 refusal: `unsupported` with
   reason `unsupported-format`, `format` the source format, `source_format` null. No wire change:
-  G8w's validators already held D8's invariants (`decode-entry`).
+  G8w's validators already held the `decode-entry` invariants.
 - **The hook log** (`evidence/resources.jsonl`, not a wire format) fills the existing `decode_ns`
   column on a texture line whose decode was tried, and appends a trailing `source_format` key only
   on a host-decoded texture's line, so every log without a decode is byte-for-byte as before.
@@ -277,7 +275,7 @@ format is a new version.
 
 - **Adopted origins are produced.** Under `GRC_ADOPT=arm` the first transaction carries every
   canvas layer's canvas and every canvas item reachable from the root window with
-  `origin: "adopted"` (gate8-design.md Q2 "As built (G8a)"); objects created after arm are
+  `origin: "adopted"`; objects created after arm are
   `created`, as always. Resource tables stay `created` until G8r/G8m adopt resources. No wire
   change: items and canvases accept `adopted` since /0.
 - **`adoption.frame` is the iteration of the walk**, in the host's own main-loop iterations: an
@@ -287,7 +285,7 @@ format is a new version.
 
 ## As built (G8f)
 
-Float payloads end to end (gate8-design.md D9). Where the design left room:
+Float payloads end to end. Where the design left room:
 
 - **Capture.** `payload_pixel_size` sizes the eight float formats (Image.Format 8-15), so
   `GRC_RESOURCE_FORMATS` parses them and the hook copies a float Image's bytes exactly as it copies
@@ -335,7 +333,7 @@ Float payloads end to end (gate8-design.md D9). Where the design left room:
   at arm gets its table entry at its first reference by a hooked call, with `origin: "adopted"` and
   `adopted_content` `"current"` (a TextServer atlas read-back, a `CompressedTexture2D`, or a
   texture first met as a whole-image update) or `"creation"` (the dummy renderer's creation-time
-  copy; every adopted mesh), gate8-design.md Q2 "As built (G8r)". The entry is otherwise exactly a
+  copy; every adopted mesh). The entry is otherwise exactly a
   created one: a new id, version 1, the same payload, `source_format` for a host decode.
 - **`adopted_content` follows the content.** An accepted whole `texture_2d_update`, a
   `texture_replace` by a hooked texture and a `mesh_clear` turn an adopted entry `"current"`,
@@ -351,7 +349,7 @@ Float payloads end to end (gate8-design.md D9). Where the design left room:
 - **Adopted shaders and materials are produced.** Under `GRC_ADOPT=arm` a shader or material that
   existed at arm gets its table entry with `origin: "adopted"`, at arm (every adopted item's
   material) or at the frame boundary after a hooked call first names it, before that frame's
-  transaction is formed (gate8-design.md Q5 "As built (G8m)"). The entry is otherwise exactly a
+  transaction is formed. The entry is otherwise exactly a
   created one: a new id, version 1, a `ShaderMaterial` shader's GRP1 payload of the code the
   server received (preprocessed, `@@` markers included), a `CanvasItemMaterial` shader's template
   code and `builtin` object, and the parameters as `material_set_param` would have declared them.

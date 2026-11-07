@@ -2,7 +2,7 @@
 ; persistent mutable meshes: an ArrayMesh in a MeshInstance2D, a raw mesh drawn once and changed by
 ; region updates, a two-surface mesh losing a surface, a geoclip-like deforming mesh updated every
 ; frame and recreated, a Polygon2D, a loaded ArrayMesh resource and a freed mesh still named by its
-; item. See fixtures/gate5-mesh/README.md and ../../protocol/gate5-design.md ("Q6d") for the
+; item. See fixtures/gate5-mesh/README.md for the
 ; contract.
 
 config_version=5

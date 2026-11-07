@@ -72,8 +72,8 @@ struct ResourceLog::Line {
   std::int64_t http_status = -1;  // -1 = null (G2c2: http-get lines)
   std::string coding;  // G8kz: a 200 http-get line's content coding (trailing keys), "" otherwise
   std::uint64_t coded_bytes = 0;
-  std::string method;  // G7n: "OPTIONS" on a preflight's http-get line only (trailing key)
-  // G5a (gate5-design.md Q3d): mesh fields, present only on a kind:"mesh" line. `format` and
+  std::string method;  // "OPTIONS" on a preflight's http-get line only (trailing key)
+  // mesh fields, present only on a kind:"mesh" line. `format` and
   // `hash`/`copy_ns`/`hash_ns` share the texture columns above (never both present on one line);
   // everything below is new, trailing columns.
   const MeshSurfaceCopy *mesh_payload = nullptr;
@@ -85,7 +85,7 @@ struct ResourceLog::Line {
   bool has_bytes = false;
   std::int64_t bytes = 0;
   std::string outcome;   // "applied" | "rejected" | "unknown"
-  // G55a (gate5_5-design.md Q3d): shader/material/item-material trailing columns. `hash`/
+  // shader/material/item-material trailing columns. `hash`/
   // `payload_bytes`/`copy_ns`/`hash_ns` share the texture/mesh columns above through this
   // pointer, as a mesh line shares them through `mesh_payload`.
   const ShaderCopy *shader_copy = nullptr;
@@ -95,7 +95,7 @@ struct ResourceLog::Line {
   std::int64_t n = 0;
   bool has_decode_ns = false;
   std::int64_t decode_ns = 0;
-  // G6k (gate6-design.md Q2): canvas trailing columns, null on every other line.
+  // canvas trailing columns, null on every other line.
   bool has_sublayer = false;
   std::int32_t sublayer = 0;
   bool has_transform = false;
@@ -293,7 +293,7 @@ void ResourceLog::format(std::string *out, const Line &l) const {
   } else {
     o += "null";
   }
-  // G5a (gate5-design.md Q3d): mesh-only trailing columns, null on every other line.
+  // mesh-only trailing columns, null on every other line.
   key("surface");
   i64_or_null(l.has_surface, l.surface);
   key("buffer");
@@ -311,7 +311,7 @@ void ResourceLog::format(std::string *out, const Line &l) const {
   i64_or_null(mp != nullptr && mp->index_count >= 0, mp != nullptr ? mp->index_count : 0);
   key("outcome");
   str_or_null(l.outcome);
-  // G55a (gate5_5-design.md Q3d): shader/material/item-material trailing columns, null on every
+  // shader/material/item-material trailing columns, null on every
   // other line.
   key("mode");
   str_or_null(sp != nullptr ? sp->mode : std::string());
@@ -357,7 +357,7 @@ void ResourceLog::format(std::string *out, const Line &l) const {
   } else {
     i64_or_null(l.has_decode_ns, l.decode_ns);
   }
-  // G6k (gate6-design.md Q2): canvas trailing columns, null on every other line.
+  // canvas trailing columns, null on every other line.
   key("sublayer");
   i64_or_null(l.has_sublayer, l.sublayer);
   key("transform");
@@ -401,7 +401,7 @@ void ResourceLog::format(std::string *out, const Line &l) const {
   } else {
     o += "null";
   }
-  // G8t (gate8-design.md D8): present only on a host-decoded texture's line, the format the
+  // present only on a host-decoded texture's line, the format the
   // payload was decoded from (`format` is the payload's).
   if (p != nullptr && p->source_format >= 0) {
     o += ",\"source_format\":";
@@ -799,7 +799,7 @@ void ResourceLog::free_rid(const TapContext &ctx, std::uint64_t rid, bool omitte
     line.status = "freed";
     emit(line);
     shader_by_rid_.erase(rid);
-    // G55d (gate5_5-design.md D5; g3ms.cpp:2184-2198): freeing a shader sets every material that
+    // Freeing a shader sets every material that
     // names it to no shader, version + 1 -- the mirror's rule, applied here too so both registries
     // keep counting the same versions. No line of its own: a reader replays it from this free
     // line (every material whose last shader was this one).
@@ -844,7 +844,7 @@ void ResourceLog::spurious_update(const TapContext &ctx, std::uint64_t rid) {
   if (entry == nullptr) {
     return;
   }
-  // The same bytes again at a new version (gate2-design.md G2b2 spurious-texture-update).
+  // The same bytes again at a new version (the spurious-texture-update sabotage).
   settle(entry);
   entry->version += 1;
   Line line = base_line(ctx, "texture_2d_update");
@@ -990,8 +990,8 @@ void ResourceLog::canvas_texture_set_channel(const TapContext &ctx, std::uint64_
       ct->version += 1;
     }
     // A non-null normal (1) or specular (2) channel makes the entry unsupported
-    // (canvas-texture-channel); clearing both back to null makes it ok again (gate2-design.md
-    // G2d, mirrored from Mirror::canvas_texture_set_channel).
+    // (canvas-texture-channel); clearing both back to null makes it ok again
+    // (mirrored from Mirror::canvas_texture_set_channel).
     const auto channel_set = [&](std::int32_t c) {
       const auto found = ct->channels.find(c);
       return found != ct->channels.end() && found->second != 0;
@@ -1154,7 +1154,7 @@ void ResourceLog::viewport_set_default_texture_repeat(const TapContext &ctx,
   emit(line);
 }
 
-// --- meshes (gate5-design.md Q3d, G5a) --------------------------------------
+// --- meshes --------------------------------------
 
 ResourceLog::MeshEntry *ResourceLog::find_mesh(std::uint64_t rid) {
   auto it = mesh_by_rid_.find(rid);
@@ -1235,7 +1235,7 @@ void ResourceLog::mesh_create_from_surfaces(const TapContext &ctx, std::uint64_t
   line.status = entry.status;
   line.reason = entry.reason;
   line.outcome = "applied";
-  // G5c (gate5-design.md "As built (G5c)"): a creation with exactly one surface -- every loaded
+  // A creation with exactly one surface -- every loaded
   // single-surface ArrayMesh -- carries that surface on its line, exactly as a mesh_add_surface
   // line would (surface 0, hash, format, counts, copy/hash cost), so the log alone names every
   // surface hash. With several surfaces the line keeps them all null, as before.
@@ -1367,7 +1367,7 @@ void ResourceLog::mesh_surface_update_region(const TapContext &ctx, std::uint64_
   line.id = entry->id;
   if (std::string(outcome) == "applied") {
     // An update on an already-unsupported surface still bumps the version with no hash change
-    // (gate5-design.md Q3b: "on an unsupported entry: version + 1 only"); `new_surface` is then
+    // `new_surface` is then
     // null (the caller never re-hashes a surface it never decoded).
     entry->version += 1;
     if (new_surface != nullptr && surface >= 0 &&
@@ -1502,7 +1502,7 @@ void ResourceLog::mesh_set_custom_aabb(const TapContext &ctx, std::uint64_t rid,
   emit(line);
 }
 
-// --- shaders and materials (gate5_5-design.md Q3d, G55a) --------------------
+// --- shaders and materials --------------------
 
 ResourceLog::ShaderEntry *ResourceLog::find_shader(std::uint64_t rid) {
   auto it = shader_by_rid_.find(rid);
@@ -1921,7 +1921,7 @@ void ResourceLog::canvas_light_attach_to_canvas(const TapContext &ctx, std::uint
   emit(line);
 }
 
-// --- canvases (gate6-design.md Q2, G6k, calibrator 9): decode and log only, no registry, no
+// --- canvases (calibrator 9): decode and log only, no registry, no
 // classification (that is G6b's mirror). See the header comment for the field layout. ---------
 
 void ResourceLog::viewport_remove_canvas(const TapContext &ctx, std::uint64_t viewport,

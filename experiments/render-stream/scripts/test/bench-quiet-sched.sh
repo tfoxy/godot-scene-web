@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GRT's synthetic scheduler benchmark (results/grt.md): fake runners on a PRIVATE lock, no Godot.
+# GRT's synthetic scheduler benchmark: fake runners on a PRIVATE lock, no Godot.
 # One "soak" runner runs X exclusive timing legs (`sleep XS`, default 3 x 20 s) back to back while R
 # correctness runners each run L shared legs (`sleep LS`, default 4 runners x 15 legs x 2 s) in
 # sequence with a 0.3 s gap -- the pattern that starved G7o3's gate runners behind 6-minute soaks.

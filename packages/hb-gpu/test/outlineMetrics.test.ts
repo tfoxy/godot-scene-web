@@ -15,9 +15,8 @@
 //   3. registration a sub-pixel translation moves every metric by <0.02 px
 //   4. selectivity  a scallop moves `r50Stdev` and the 16-cycle amplitude and NOT the ramp width
 //
-// 2 and 4 are the pair that matters. Stage 1 of this round expects to fix a SOFTNESS defect and
-// Stage 2 a SCALLOP defect, and if one number moved for both there would be no way to say which
-// fix worked.
+// 2 and 4 are the pair that matters. A SOFTNESS defect and a SCALLOP defect have different fixes,
+// and if one number moved for both there would be no way to say which fix worked.
 //
 // EVERY FIXTURE SITS AT A DELIBERATELY IRREGULAR CENTRE. A disk centred on a pixel corner has its
 // four-fold symmetry aligned with the lattice, every quadrant sees the same sub-pixel phases, and

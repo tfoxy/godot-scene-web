@@ -3,11 +3,10 @@
 The fixture for CanvasTextures adopted at a **late arm**: three **runtime-built** ones
 (`ImageTexture.create_from_image` + `CanvasTexture` assigned to the item's `texture`, which has no
 resource path and no `canvas_texture_get_channel` RenderingServer getter; spine-godot builds its
-atlases this way, the generic shape of C3 gap 5) and one **cached** `.tres` (`cached_ct.tres`,
+atlases this way) and one **cached** `.tres` (`cached_ct.tres`,
 PM9's resource-cache path).
 
-Since LAR1 ([`../../protocol/late-arm-registry-design.md`](../../protocol/late-arm-registry-design.md))
-it has two arm modes:
+It has two arm modes:
 
 - `deferred` (`RS_FIXTURE_ARM=deferred`): the loader loads the capture in `_enter_tree`, before the
   scene exists, and the runner defers the arm to frame 12 (`GRC_ARM_DEFER_FRAMES=11`). Every
@@ -15,10 +14,9 @@ it has two arm modes:
   adopts all four from it. Its receivers (full and patch sinks) are judged against the unarmed
   `reference`.
 - `late` (the default): the loader loads the capture at frame 12, after everything exists
-  (load-late, retired as a fidelity target by the design's F1). It judges the residual path: the
+  (load-late, no longer a fidelity target). It judges the residual path: the
   cached `.tres` is adopted through the resource cache (PM9), and the three runtime-built
-  CanvasTextures are refused, typed `refused_no_image`, their draws `unknown-texture`. RT-CTX's
-  node read, which used to adopt them here, was removed by LAR1.
+  CanvasTextures are refused, typed `refused_no_image`, their draws `unknown-texture`.
 
 ## Files
 
@@ -58,7 +56,8 @@ seed, every channel in 10..239, never white), drawn only through a CanvasTexture
 | 30 | quit |
 
 The capture must run on a rendered host (a private 640x360 gamescope): a headless host's dummy
-storage allocates no canvas texture (`../../protocol/canvas-texture-headless.md`), so a runtime
+storage allocates no canvas texture (`canvas_texture_allocate` returns `RID()` in
+`../godot-4.5.1-stable/servers/rendering/dummy/storage/texture_storage.h`), so a runtime
 CanvasTexture has no RID to adopt. The `reference` leg runs the same project unarmed in the same
 private 640x360 gamescope.
 
@@ -67,20 +66,20 @@ private 640x360 gamescope.
 - `ctl-legs`: every g8ctl leg that ran exits 0.
 - `ct-late-adopt` (`deferred`): every CanvasTexture adopted (origin adopted, status ok, diffuse an
   ok image), nothing refused, no unknown-texture draw.
-- `ctl-registry-source` (`deferred`, LAR1): every adopted CanvasTexture came from the registry
+- `ctl-registry-source` (`deferred`): every adopted CanvasTexture came from the registry
   (`canvas_registry` = 4, `canvas_residual` 0), and `registry.json` recorded the creates.
-- `ct-adopt-named` (`deferred` and `late`, LAR1, for F2): every adopted canvas texture is named by
+- `ct-adopt-named` (`deferred` and `late`): every adopted canvas texture is named by
   a command in the transaction that first carries it.
-- `ct-late-residual` (`late`, LAR1 under F1): CACHED adopted through the resource cache
+- `ct-late-residual` (`late`): CACHED adopted through the resource cache
   (`canvas_residual` 1), the three runtime ones refused, all typed `refused_no_image`, their draws
   unknown-texture.
 - `ct-late-fault` (`late`): under `GRC_ADOPT_FAULT=no-resources` nothing is adopted and the draws
   through a CanvasTexture stay unknown-texture.
-- `sabotage-registry-off` (`deferred`, LAR1): under `GRC_ADOPT_FAULT=registry-off` the registry
+- `sabotage-registry-off` (`deferred`): under `GRC_ADOPT_FAULT=registry-off` the registry
   records nothing, and both `ctl-registry-source` and `ct-late-adopt` fail.
 - `ct-late-diffuse-uploaded` (GAP2-RX, `deferred`'s receivers): each receiver uploads every
-  adopted canvas texture's diffuse as an image, although no command names the diffuse itself. Since
-  LAR8 the receivers have no adopted shortcut: the diffuse is resident because a command names the
+  adopted canvas texture's diffuse as an image, although no command names the diffuse itself. The
+  receivers have no adopted shortcut: the diffuse is resident because a command names the
   canvas texture (`ct-adopt-named`).
 - `ct-late-free` (`deferred`): after the free at frame 22 the capture's table drops SPRITE's
   canvas texture and its diffuse and each receiver's transactions at or after the free release a

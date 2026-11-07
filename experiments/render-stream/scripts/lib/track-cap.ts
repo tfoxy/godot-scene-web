@@ -1,4 +1,4 @@
-// TRK5 (protocol/tracks-design.md Q2, "As built (TRK5)"): the reference minter for per-viewer
+// TRK5: the reference minter for per-viewer
 // track capabilities, the server-side half of GRC_LIVE_TRACK_CAPS=hmac. The capture verifies
 // (capture/src/rs_track_caps.{h,cpp}); a consumer's server mints with the key the capture wrote to
 // evidence/live-track-cap-key and hands one capability to each page allowed to open a track.

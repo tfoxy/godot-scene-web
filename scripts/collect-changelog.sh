@@ -10,8 +10,7 @@
 # trailer. That second list is the point — it is how a user-visible change avoids disappearing
 # from the release notes because nobody wrote a line for it.
 #
-# Rewrite the draft in the reader's voice before it goes into CHANGELOG.md. The release-notes skill
-# (skills/release-notes/) does that step.
+# Rewrite the draft in the reader's voice before it goes into CHANGELOG.md.
 
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."

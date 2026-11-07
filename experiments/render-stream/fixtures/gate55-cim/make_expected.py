@@ -2,7 +2,7 @@
 """Write fixtures/gate55-cim/expected.json (render-stream-gate55-expected/1).
 
 Every number below is derived from the fixture's own parameters and the engine's material rules as
-read from the source (protocol/gate5_5-design.md Q1), written down as code. Nothing here runs or
+read from the source, written down as code. Nothing here runs or
 reads the engine: the capture's hook counts and the rendered reference have to agree with it, and a
 disagreement is a finding to explain from the source, never a number to copy.
 
@@ -153,8 +153,8 @@ HAND_STEP_CENSUS = {
 # Variant `modulate` adds the CanvasModulate's calls (scene/2d/canvas_modulate.cpp:43, :108, :53-55).
 HAND_MODULATE_CENSUS = {0: {"canvas_set_modulate": 1}, 2: {"canvas_set_modulate": 1}, 8: {"canvas_set_modulate": 1}}
 
-# Ops the release record hooks before calibrator 8 (counts only, gate5_5-design.md Q2) and the
-# ones only calibrator 8 hooks (G55a). Engine textures: the hue strip (memory rs-g2a-texture-census-facts).
+# Ops the release record hooks before calibrator 8 (counts only) and the
+# ones only calibrator 8 hooks (G55a). Engine textures: the hue strip.
 HOOKED_BEFORE_8 = ["canvas_item_set_material", "material_set_param", "shader_set_code", "shader_create_from_code"]
 CALIBRATOR8_OPS = [
     "canvas_item_set_use_parent_material",

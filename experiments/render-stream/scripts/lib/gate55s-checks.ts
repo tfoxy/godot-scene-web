@@ -1,4 +1,4 @@
-// Gate 5.5 group g55s (P3-ST, protocol/gate5_5-design.md "Screen texture (P3-ST)"): screen-reading
+// Gate 5.5 group g55s: screen-reading
 // ShaderMaterials (`hint_screen_texture`) over fixtures/gate55-screen, judged against the Godot
 // reference and an independent hand model of GLES3's back-buffer copies
 // (drivers/gles3/rasterizer_canvas_gles3.cpp:397-540): one automatic full copy per canvas, before
@@ -88,7 +88,7 @@ const swizzle = (c: Rgb): Rgb => [c[1], c[2], c[0]];
 /**
  * The hand model at pixel (x, y): `null` inside RE (the engine's blur), `rf` marks the
  * SCREEN_UV reader (compared within 1). `receiver`: a receiver's picture, where the refused
- * reader RT is dropped (gate5_5-design.md "Refused materials") and the back buffer shows; else
+ * reader RT is dropped and the back buffer shows; else
  * the reference's, where RT inverts it. `perReader` models the screen-copy-per-reader sabotage
  * (a fresh copy before every reader).
  */

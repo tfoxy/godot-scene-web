@@ -1,4 +1,4 @@
-; TAG1 fixture (client-extensions-design.md §6, ../../results/p3/tag1.md): Godot's own tagging
+; TAG1 fixture: Godot's own tagging
 ; (groups, metadata, instance scenes) on a scene whose nodes the capture resolves into item_meta
 ; rows, with its own oracle dump. See README.md.
 

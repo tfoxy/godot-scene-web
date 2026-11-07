@@ -1,6 +1,5 @@
 extends Node
-## Gate 5.5 TIME and sampler-default fixture (P3-TM, ../../protocol/gate5_5-design.md "TIME and
-## sampler defaults (P3-TM)").
+## Gate 5.5 TIME and sampler-default fixture.
 ##
 ## canvas_item ShaderMaterials that read TIME, which Godot 4.5.1's GLES3 rasterizer advances by
 ## every drawn frame's scaled step (drivers/gles3/rasterizer_gles3.cpp:97-107), and samplers left

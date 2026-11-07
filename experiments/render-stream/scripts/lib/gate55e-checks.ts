@@ -1,4 +1,4 @@
-// Gate 5.5e checks (protocol/gate5_5-design.md "G55e", D4, D8, D11-D15, Q3c, Q4, Q5, Q6c, Q6e):
+// Gate 5.5e checks:
 // ShaderMaterial end to end on render-stream/5 over fixtures/gate55-shader, the `params` and
 // `exclude` shader-source policies, and perturb-shader. Pure evaluators over values already read
 // from a run-gate55.sh evidence directory, plus small loaders and runGate55e, which check-gate55.ts

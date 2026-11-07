@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""The remote workflow's job matrix (.github/workflows/remote-validate.yml, plan job; docs/remote-compute.md
-"Scheduling and leg shards").
+"""The remote workflow's job matrix (.github/workflows/remote-validate.yml, plan job).
 
   remote-matrix.py --runs JSON [--run-groups JSON] [--determinism 3,1] [--pure-shards 6]
                    [--max-parallel 16] [--leg-shards auto|off|force] [--tier smoke|full] [--table FILE] [--repo DIR]

@@ -1,8 +1,7 @@
 # Gate 8 late-arm pre-arm resources fixture (`gate8-res`, LATE-RES)
 
-The fixture for fidelity gap #5 ("on a late arm, textures/items/materials created before the arm
-are unknown"), the confirmed late-arm fidelity blocker from `results/p3/fidelity.md` and
-`results/p3/late-cmbt.md`: a capture that arms **late** must adopt pre-arm resources first **drawn**
+The fixture for late-arm adoption of pre-arm resources ("on a late arm, textures/items/materials
+created before the arm are unknown"): a capture that arms **late** must adopt pre-arm resources first **drawn**
 after the arm, the same as an arm-at-init capture.
 
 Three cells, each drawn only after the arm:
@@ -49,7 +48,7 @@ and `particles.adoption`, plus the recording's resolved tables); there is no `re
 - `res-late-adopt` (`deferred/capture`): the capture adopts the pre-arm texture (1), the emitter (1),
   both process materials from the registry (2) and both pre-arm items (2), with no refused
   texture/material, `unknown_material_keyed` 0 and **no unknown item RIDs** (`residue` 0).
-- `res-late-adopt` also counts, since LAR6, the loader-thread texture: `expected.json` `deferred.textures`
+- `res-late-adopt` also counts the loader-thread texture: `expected.json` `deferred.textures`
   (2) and `deferred.offmain_adopted` (1), adopted from the off-main queue at frame 16's boundary.
 - `res-late-adopt-catches-registry-queue-drop` (`sabotage-registry-queue-drop/capture`, LAR6): the
   deferred capture under `GRC_ADOPT_FAULT=registry-queue-drop` (the frame boundary discards the

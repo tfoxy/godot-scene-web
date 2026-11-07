@@ -1,8 +1,7 @@
-# Item-identity fixture (`tag-scene`, TAG1)
+# Item-identity fixture (`tag-scene`)
 
-TAG1's fixture
-([`../../protocol/client-extensions-design.md`](../../protocol/client-extensions-design.md) §6,
-"As built (TAG1)"; results in [`../../results/p3/tag1.md`](../../results/p3/tag1.md)).
+The fixture for the capture's `item_meta` identity rows
+([`../../protocol/render-stream-13.md`](../../protocol/render-stream-13.md)).
 
 It is a scene tagged with Godot's own mechanisms only: groups, metadata, instance scenes and
 scripts. The capture resolves its canvas items into `item_meta` rows. The scene knows nothing about
@@ -52,11 +51,10 @@ the capture, and writes its own identity table as the oracle the rows are checke
 The fixture needs one editor `--import` before the release template can run it. The `g8tag` group
 runs that import itself.
 
-## Variants (TAG2)
+## Variants
 
-`RS_FIXTURE_TAG_VARIANT` (unset: TAG1's timeline exactly) adds two steps. At step 70 the game
-makes the change a client override makes in the `override-oracle` check
-([`../../results/p3/tag2.md`](../../results/p3/tag2.md)): `moved` moves Card1 by (0, −119),
+`RS_FIXTURE_TAG_VARIANT` (unset: the base timeline exactly) adds two steps. At step 70 the game
+makes the change a client override makes in the `override-oracle` check: `moved` moves Card1 by (0, −119),
 `scaled` scales Card1's `DescriptionLabel` by 1.24 about its bottom centre (`pivot_offset`),
 `hidden` hides `Table`, `tinted` sets `Hand`'s modulate to (1, 0.5, 0.5, 0.75), and `base` does
 nothing. At step 80, under any variant, `Hand` moves by (10, 0): a transform-only frame that the
@@ -65,14 +63,12 @@ makes the main thread sleep that long: no frame, so no transaction (from /12 eve
 carries the shader time), which is the window `override-redraw` animates in. The `g8tag2` legs (`run-gate8.sh`) run
 the variants and the base scene beside an extension that makes the same change by tag.
 
-## Pick (ID2)
+## Pick
 
 `RS_FIXTURE_TAG_PICK` (any value) replaces `tag.tscn` with `pick.tscn` / `pick.gd` before the
-capture arms (`change_scene_to_file`, deferred from `tag.gd`'s `_ready`; TAG1's timeline does not
+capture arms (`change_scene_to_file`, deferred from `tag.gd`'s `_ready`; the base timeline does not
 run). The scene has one case per rule of Godot 4.5.1's GUI pick
-(`Viewport::gui_find_control`) that the client's tree-order pick reproduces
-([`../../protocol/client-extensions-design.md`](../../protocol/client-extensions-design.md)
-"As built (ID2)"). The header comment of `pick.gd` lists them.
+(`Viewport::gui_find_control`) that the client's tree-order pick reproduces. The header comment of `pick.gd` lists them.
 
 | case                                                                                     | Godot picks                         | the stream's draw order shows |
 | ---------------------------------------------------------------------------------------- | ----------------------------------- | ----------------------------- |
@@ -97,11 +93,10 @@ At step 20 the fixture pushes a mouse motion (`Viewport.push_input`) at the cent
 first, null for no Control). `RS_FIXTURE_QUIT_FRAME` defaults to start + 60 in this mode. The no-node
 item is freed in `_exit_tree`, after the last frame, so the client's last frame still holds it.
 
-## Variant V2 (ID3)
+## Variant V2
 
-`RS_FIXTURE_TAG_V2` (any value; unset: TAG1's scene exactly; no effect under `RS_FIXTURE_TAG_PICK`) is the fixture of ID3's item_meta
-v2 (`instance_id`, `mouse_filter`, re-stamped rows; [`../../protocol/render-stream-14.md`](../../protocol/render-stream-14.md),
-results in [`../../results/p3/id3.md`](../../results/p3/id3.md)). In `_ready` it adds, owned by
+`RS_FIXTURE_TAG_V2` (any value; unset: the base scene exactly; no effect under `RS_FIXTURE_TAG_PICK`) is the fixture of item_meta
+v2 (`instance_id`, `mouse_filter`, re-stamped rows; [`../../protocol/render-stream-14.md`](../../protocol/render-stream-14.md)). In `_ready` it adds, owned by
 the scene:
 
 | node                                                                                                                    | what it is for                                                 |
@@ -111,7 +106,7 @@ the scene:
 | `Pointy` (ColorRect, `haspoint.gd`)                                                                                     | a script `_has_point`: `mouse_filter` + 4                      |
 | `Hitbox` (Control)                                                                                                      | a STOP Control that draws nothing                              |
 
-The steps (shifted by `RS_FIXTURE_TAG_START`, after TAG1's work of that step):
+The steps (shifted by `RS_FIXTURE_TAG_START`, after the base scene's work of that step):
 
 - **40:** Card1 and Flipper `set_mouse_filter(IGNORE)` (from STOP).
 - **50:** Card1 and Flipper `set_mouse_filter(PASS)`.

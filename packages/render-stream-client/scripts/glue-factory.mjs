@@ -1,4 +1,4 @@
-// MIR-1 (src/loader.ts): wraps wasm-bindgen's `--target web` glue in a factory module, so that every
+// For src/loader.ts: wraps wasm-bindgen's `--target web` glue in a factory module, so that every
 // client gets a fresh closure (its own `wasm` binding and instance) from ONE module record, and the
 // instance is collectable once the client drops it. A page's module map keeps every module record
 // it loads, so importing the plain glue per client (`?client=<n>`) keeps every instance alive.

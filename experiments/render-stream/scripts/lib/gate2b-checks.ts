@@ -1,7 +1,7 @@
 // Gate 2 group g2b (G2b2): render-stream/2 with textures -- the capture's texture table against its
 // hook log, the store directory and inline resource records, cold/warm/patch/inline file-mode
 // receivers, a live inline host, the unsupported variant, and the sabotages, each leg classified
-// with gate2-design.md Q7's precedence (protocol/gate2-design.md "G2b2").
+// with the contract's precedence.
 //
 // Everything here reads an evidence directory written by run-gate2.sh, or is pure over values
 // already read from one, so scripts/test/self-test-gate2.ts can drive it with fabricated trees.
@@ -152,7 +152,7 @@ export interface HookLine {
   omitted?: boolean;
 }
 
-/** The publisher's own hook-log ops (gate2-design.md Q3 "Hook log"): not RenderingServer calls. */
+/** The publisher's own hook-log ops: not RenderingServer calls. */
 export const PUBLISHER_OPS: readonly string[] = [
   "store",
   "inline",
@@ -288,7 +288,7 @@ export async function loadResolved(path: string): Promise<Resolved> {
   };
 }
 
-/** applied.json, render-stream-receiver-applied/3 (gate2-design.md Q5). */
+/** applied.json, render-stream-receiver-applied/3. */
 export interface Applied3 {
   schema?: string;
   status?: string;
@@ -339,7 +339,7 @@ export interface Applied3 {
     cache_hits?: number;
     uploads?: number;
     upload_bytes?: number;
-    // G6s (gate6-design.md Q5 "Resource budgets"): always present (RsResourceCache's own
+    // G6s: always present (RsResourceCache's own
     // counters), regardless of whether a cache directory is configured.
     evictions_memory?: number;
     evictions_disk?: number;
@@ -1076,7 +1076,7 @@ export function perStepResources(
   });
 }
 
-/** Resource-violation evidence on a receiver (gate2-design.md D12): a hash fetched twice in one
+/** Resource-violation evidence on a receiver: a hash fetched twice in one
  * process, an upload of an id whose content did not change (redundant-upload), and a warm cache
  * receiver fetching a hash its cache held (`warmHashes`). */
 export function receiverResourceViolations(
@@ -1093,7 +1093,7 @@ export function receiverResourceViolations(
         `warm-cache-fetch: seq ${f.seq} fetched ${f.hash.slice(0, 12)} from ${f.source} although the warm cache holds it`,
       );
   }
-  // G7l: a browser receiver (cache mode `http-cache`, gate7-design.md Q4) fetches through its
+  // G7l: a browser receiver (cache mode `http-cache`) fetches through its
   // browser's HTTP cache, which answers a repeat itself; that the host served each hash at most
   // once is gate 2c's http-gets-match-fetches (getsVsFetches), judged from the host's GET log.
   if (r.applied?.cache?.mode !== "http-cache")
@@ -1443,7 +1443,7 @@ function sessionMeta(r: Resolved): Record<string, unknown> | null {
 
 const HEADLESS_REFUSAL = "canvas-texture-headless";
 
-/** protocol/canvas-texture-headless.md: a headless host cannot allocate a CanvasTexture (the dummy
+/** : a headless host cannot allocate a CanvasTexture (the dummy
  * storage's canvas_texture_allocate returns RID(), servers/rendering/dummy/storage/
  * texture_storage.h:54), so it refuses them, typed. On canvas-headless (the `canvas` variant on a
  * headless capture host): the session declares canvas_texture in `unsupported_resources`
@@ -1551,7 +1551,7 @@ export function checkCanvasTextureHeadlessRefusal(
 }
 
 /** render-stream-2.md: a CanvasTexture's own non-default filter/repeat override the item's
- * (gate2-design.md Q1d). At step 11 the `canvas` variant's SC asks for linear/disabled on the item
+ * At step 11 the `canvas` variant's SC asks for linear/disabled on the item
  * and nearest/enabled on its CanvasTexture; region sc of canvas-host's own rendered frame (a
  * GPU-backed host: host-renderer evidence, not headless support) equals synthesizeGate2's
  * nearest/enabled. */
@@ -2083,7 +2083,7 @@ export function checkLiveInline(live: LiveEvidence): G2bCheck {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Classification (gate2-design.md Q7)
+// Classification
 // ---------------------------------------------------------------------------------------------
 
 export interface G2bLegInput {
@@ -2254,7 +2254,7 @@ export function classifyLive(live: LiveEvidence): G2bClassification {
   };
 }
 
-/** gate2-design.md G2b2 "Legs (group g2b)": expected class and the reason or step set each leg
+/** G2b2 "Legs (group g2b)": expected class and the reason or step set each leg
  * must show. */
 export interface G2bLegExpectation {
   leg: string;
@@ -2319,8 +2319,8 @@ export const G2B_LEGS: readonly G2bLegExpectation[] = [
     expected_class: "resource-violation",
     reason: "warm-cache-fetch",
   },
-  // G2d. canvas-headless: the `canvas` variant on a headless host, refused typed
-  // (protocol/canvas-texture-headless.md). canvas-host, canvas-normal and the sabotage run on a
+  // G2d. canvas-headless: the `canvas` variant on a headless host, refused typed.
+  // Canvas-host, canvas-normal and the sabotage run on a
   // rendered host: host-renderer evidence, not headless support.
   {
     leg: "canvas-headless",

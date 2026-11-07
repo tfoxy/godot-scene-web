@@ -1,4 +1,4 @@
-// rs_track_caps: per-viewer track capabilities (rs_track_caps.h; tracks-design.md Q2, TRK5).
+// rs_track_caps: per-viewer track capabilities (rs_track_caps.h).
 #include "rs_track_caps.h"
 
 #include <sys/random.h>

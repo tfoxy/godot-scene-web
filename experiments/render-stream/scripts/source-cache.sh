@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # source-cache.sh -- the machine-wide cache of gate 7 SOURCE runs, keyed by their inputs (GRT,
-# results/grt.md; D21 as amended). A source run is a native run-gate<N>.sh run that the browser
+# as amended). A source run is a native run-gate<N>.sh run that the browser
 # receivers replay; its content key (lib/source-key.ts: template, capture library, calibration,
 # receiver core and every source-shaping file) says when two are interchangeable, so one source
 # set per key serves the native, gsw and web halves of a validation and every later increment

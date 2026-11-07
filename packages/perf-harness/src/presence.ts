@@ -47,14 +47,11 @@ export interface PresenceOptions {
    * guard must not have.
    *
    * The scale is UNIFORM, and it is the SMALLER of the two ratios — a per-axis scale is wrong.
-   * Measured on the moto g86 5G (Chrome 151, no emulation): viewport 349x657 CSS px at DPR 3.4876,
-   * screenshot 1220x2452, so the ratios are x=3.4957 and y=3.7321. The page did not render taller
-   * than it is wide-scaled; the surface is 155 device px TALLER than the content, and the content
-   * sits at its TOP-LEFT (proved with a centre marker: it landed at image y=1145, i.e. exactly
-   * `657/2 x 3.4957`, not at the image's own centre 1226). Rasterisation is uniform and browser
-   * chrome only ever makes the surface BIGGER than the viewport, so the axis with the smaller ratio
-   * is the one carrying no chrome, and its ratio is the true scale. Using y here stretched every
-   * sample point down the image and cost a perfectly good phone run 24 of its 50 hits.
+   * On a phone without emulation the screenshot surface can be TALLER than the content, with the
+   * content at its TOP-LEFT. Rasterisation is uniform and browser chrome only ever makes the surface
+   * BIGGER than the viewport, so the axis with the smaller ratio is the one carrying no chrome, and
+   * its ratio is the true scale. Using the larger one stretches every sample point down the image
+   * and makes a perfectly good phone run miss.
    */
   cssViewport?: { width: number; height: number };
   /** Page background as [r,g,b]; anything further than `tolerance` from it counts as content. */

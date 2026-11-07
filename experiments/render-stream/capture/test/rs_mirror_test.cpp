@@ -2,17 +2,13 @@
 //
 // Drives the mirror through its public API exactly as the hooks do, with plain
 // uint64 RIDs and no engine, and checks the snapshots against
-// protocol/gate0-design.md "Q1" and "Q3", render-stream-0.md "Transaction",
-// and (gate 1, G1b2) render-stream-1.md "Invariant 9" / "Unsupported reasons"
-// and gate1-design.md "Q1", "Q4" and "G1b2" (omit-op, mutation epoch), and
-// (gate 2, G2b2) gate2-design.md Q3 "Texture mirror" with render-stream-2.md
-// "Texture" and "Item-level unsupported entries", and (gate 3, G3a)
-// gate3-design.md Q3 "Mirror fix": canvas_item_clear resets clip, and (gate 4, G4e2)
-// gate4-design.md Q3 "MSDF tap" and "perturb-glyph", and (gate 5, G5d) gate5-design.md Q3b/Q3c:
+// render-stream-0.md "Transaction", render-stream-1.md "Invariant 9" / "Unsupported reasons"
+// and render-stream-2.md "Texture" and "Item-level unsupported entries"; also omit-op, the mutation
+// epoch, canvas_item_clear resetting clip, the msdf tap and perturb-glyph, and
 // the render-stream/4 immediate geometry taps, add_set_transform, add_clip_ignore (a typed
-// refusal from G3d until G5d), D11's RID() ambiguity and perturb-vertex, (G5e) the mesh
+// refusal), the RID() ambiguity and perturb-vertex, the mesh
 // table: ids, versions, whole-surface payloads, tombstones, add_mesh, unsupported/unknown meshes,
-// omit-op and perturb-vertex on payloads, and protocol/unknown-item-skip.md: the opt-in Skip
+// omit-op and perturb-vertex on payloads, and : the opt-in Skip
 // policy's exclusion rules (unknown target, unknown parent, reparent into/out of a withheld
 // subtree with re-keying, free of an unknown RID) and patch/full equivalence over them.
 
@@ -132,7 +128,7 @@ bool has_material_entry(const Snapshot &s, uint32_t id) {
   return false;
 }
 
-// gate5-design.md D2, calibrator 7: canvas_item_attach_skeleton with a non-null skeleton, the
+// Calibrator 7: canvas_item_attach_skeleton with a non-null skeleton, the
 // same unsupported-state idea as a non-null material, under its own op name.
 bool has_skeleton_entry(const Snapshot &s, uint32_t id) {
   for (const auto &u : s.unsupported) {
@@ -612,7 +608,7 @@ void test_process_wide_gate() {
   mirror_enable(false);
 }
 
-// HC4a (host-cost-design.md D1): the persistent item and canvas tables. A static snapshot shares
+// the persistent item and canvas tables. A static snapshot shares
 // every chunk with the last one and visits no item; a same-value setter republishes nothing; a
 // real change replaces one entry of one chunk; ties, item-level entries and removals follow the
 // changes; the shadow oracle agrees, and catches both sabotages.
@@ -968,7 +964,7 @@ void test_tie_ordering_with_unsupported_op() {
 
 // G1a runtime case: a node entering the tree is appended at the RS default
 // draw index 0 before the deferred _top_level_raise_self gives every
-// top-level item a fresh index (gate1-design.md Q2c).
+// top-level item a fresh index.
 void test_tie_new_top_level_item_until_raise() {
   Mirror m;
   bind_root(&m);
@@ -1202,7 +1198,7 @@ void test_process_wide_g1b2() {
   mirror_enable(false);
 }
 
-// --- textures (gate 2, G2b2; gate2-design.md Q3 "Texture mirror") ----------------------------
+// --- textures (gate 2) ----------------------------
 
 grc::rs::PayloadCopy rgba8_copy(int64_t w, int64_t h, const std::vector<uint8_t> &data,
                                 grc::rs::PayloadPtr *bytes) {
@@ -1242,7 +1238,7 @@ void drawing_item(Mirror *m, uint64_t item_rid, uint64_t tex_rid, uint64_t frame
   m->add_texture_rect(item_rid, kRect, tex_rid, false, kRed, false, frame);
 }
 
-// HC4b (host-cost-design.md D1): the resource tables, the payload map and the name index are
+// the resource tables, the payload map and the name index are
 // shared between snapshots and change by the entries that moved; the record plan over the
 // differing entries equals records_before()'s full walk.
 void test_hc4b_resource_tables() {
@@ -1524,7 +1520,7 @@ void test_texture_unsupported_copies_and_filters() {
         "item-level entries ordered by op then reason");
 }
 
-// gate2-design.md Q3 "canvas_texture_create / canvas_texture_set_*" (G2d), render-stream-2.md
+// render-stream-2.md
 // "Texture" (kind canvas) and "Item-level unsupported entries" (the diffuse chain).
 void test_canvas_texture() {
   Mirror m;
@@ -1605,7 +1601,7 @@ void test_canvas_texture() {
         "omit-op canvas_texture_set_texture_filter drops the call");
 }
 
-// protocol/canvas-texture-headless.md (G2d): on a headless host the dummy storage returns RID()
+// On a headless host the dummy storage returns RID()
 // for every canvas_texture_create, so a CanvasTexture's draw names RID(). With the flag on, that
 // draw is a typed refusal (canvas-texture-headless), never `tex: null` (the white default).
 void test_canvas_texture_headless_refusal() {
@@ -1666,7 +1662,7 @@ void test_texture_omit_op_and_spurious() {
         "spurious-texture-update bumps the version and re-copies identical bytes");
 }
 
-// gate3-design.md Q3 "Mirror fix" (D3): the engine's Item::clear() sets clip = false and keeps
+// The engine's Item::clear() sets clip = false and keeps
 // custom_rect (servers/rendering/renderer_canvas_render.h:455), so the mirror's clear does too.
 void test_clear_resets_clip() {
   Mirror m;
@@ -1738,13 +1734,13 @@ void test_omit_clip_then_clear() {
   check(m.stats().dropped_omit_op == 1, "one set_clip counted as dropped_omit_op");
 }
 
-// gate3-design.md Q3 "Clip-ignore tap" (G3d, D4): canvas_item_add_clip_ignore joins the generic
+// canvas_item_add_clip_ignore joins the generic
 // add_unsupported path (`canvas_item_add_rect` neighbours like `canvas_item_add_circle` and
 // `canvas_item_add_lcd_texture_rect_region` already exercise it), with reason unsupported-op and
 // the `ignore` argument itself kept out of the wire entirely (it is counters.json's job, at the
 // hook, not the mirror's).
 void test_clip_ignore_tap() {
-  // G5d (gate5-design.md D10, render-stream-4.md): canvas_item_add_clip_ignore is the /4
+  // G5d (render-stream-4.md): canvas_item_add_clip_ignore is the /4
   // add_clip_ignore command, the bool carried, in order; G3d's typed refusal is gone.
   Mirror m;
   bind_root(&m);
@@ -1778,7 +1774,7 @@ void test_clip_ignore_tap() {
   check(m.snapshot(2, 2).state.failures.size() == 1, "an unknown item fails like any other tap");
 }
 
-// G5d (gate5-design.md Q3b, render-stream-4.md "Command"): every immediate geometry tap records
+// G5d (render-stream-4.md "Command"): every immediate geometry tap records
 // the call, argument for argument and every array whole, in call order, and the snapshot is
 // stamped V4 so make_full carries the /4 blocks.
 void test_geometry_taps() {
@@ -1924,7 +1920,7 @@ void test_geometry_texture_ambiguity() {
   check(item(h.snapshot(1, 1).state, 1)->commands[0].kind == CommandKind::AddPrimitive,
         "reset() clears the canvas-texture-created flag");
 
-  // The opt-in headless shim (canvas-texture-headless.md "Experiment (a) result"): the create
+  // The opt-in headless shim: the create
   // carries a private, non-null RID, so RID() stays unambiguous on a headless host and the
   // canvas texture itself is drawable.
   Mirror sh;
@@ -1955,7 +1951,7 @@ void test_geometry_texture_ambiguity() {
         "rendered host with a canvas texture: RID() is still tex null");
 }
 
-// perturb-vertex (gate5-design.md Q3c): from its frame on, the first point's x of every
+// perturb-vertex: from its frame on, the first point's x of every
 // line/polyline/multiline/primitive/polygon/triangle-array command gains +1.0; earlier commands,
 // circles and other points never move.
 void test_perturb_vertex() {
@@ -1986,7 +1982,7 @@ void test_perturb_vertex() {
   check(cmds[7].circle_position == Point2{5, 5}, "add_circle is outside perturb-vertex's scope");
 }
 
-// gate4-design.md Q3 "MSDF tap" (G4e2), render-stream-3.md "Command": the msdf draw is a /3
+// render-stream-3.md "Command": the msdf draw is a /3
 // command with its outline, px_range and scale, follows add_texture_rect_region's texture rules,
 // honours omit-op and treats an unknown item as pre-existing-object.
 void test_msdf_command_with_outline() {
@@ -2081,7 +2077,7 @@ void test_msdf_omit_op() {
   check(m.stats().dropped_omit_op == 1, "the dropped msdf draw is counted");
 }
 
-// gate4-design.md Q3 "perturb-glyph": from the sabotage frame on, the mirror records rect.x +
+// From the sabotage frame on, the mirror records rect.x +
 // 0.25 for both glyph commands, nothing else.
 void test_perturb_glyph() {
   Mirror m;
@@ -2119,7 +2115,7 @@ void test_perturb_glyph() {
   check(item(m.snapshot(1, 9).state, 1)->commands[0].rect == rect, "reset() turns it off");
 }
 
-// gate5-design.md D2, D16, calibrator 7: canvas_item_attach_skeleton with a non-null skeleton is
+// Calibrator 7: canvas_item_attach_skeleton with a non-null skeleton is
 // reported in Snapshot::unsupported only, exactly like a non-null material (set_material), under
 // its own op name, and never bumps content_version. attach_skeleton(RID()) (the spike's and
 // Polygon2D's per-draw call) is free: it clears the flag again when already clear.
@@ -2151,7 +2147,7 @@ void test_attach_skeleton_tap() {
   check(m.snapshot(3, 3).state.failures.size() == 1, "an unknown item fails like any other tap");
 }
 
-// --- meshes (G5e; gate5-design.md D5-D8, Q3b, Q3c; render-stream-4.md "Mesh table") ---------
+// --- meshes (render-stream-4.md "Mesh table") ---------
 
 // A GRM1 surface the way a mesh hook hands it to the mirror: `n` 2D vertices whose first x is
 // `x0`, triangles, no colour/UV/index, an AABB at (x0, 0).
@@ -2416,7 +2412,7 @@ void test_mesh_omit_op_and_perturb_vertex() {
   check(*late.bytes == *mesh_input(7).bytes, "the hook's own payload is not modified");
 }
 
-// --- unknown items under Skip (protocol/unknown-item-skip.md) ------------------------------------
+// --- unknown items under Skip ------------------------------------
 
 constexpr uint64_t kUnknownItem = 0xABC;    // an item created before arming
 constexpr uint64_t kUnknownParent = 0x777;  // an unknown parent (an item or a canvas)
@@ -2700,7 +2696,7 @@ void test_skip_patch_full_equivalence() {
   check(states[4].items.size() == 3, "state 5: the orphaned subtree is published again");
 }
 
-// --- G55d: shaders, materials, item and canvas material state (gate5_5-design.md Q3b) -----------
+// --- shaders, materials, item and canvas material state -----------
 
 // A shader code as the hook hands it over: classification plus the GRP1 payload.
 grc::rs::ShaderCodeInput shader_input(const std::string &code, const char *status = "ok",
@@ -3018,7 +3014,7 @@ void test_canvas_modulate_and_light() {
         "an unknown canvas RID follows the unknown-RID rule");
 }
 
-// G6b (gate6-design.md Q3b): attach resets the stacking, removal detaches but keeps the items,
+// attach resets the stacking, removal detaches but keeps the items,
 // a tie between two attached canvases is derived per snapshot, and the patch carries exactly the
 // one changed canvas.
 void test_canvas_layers() {
@@ -3330,7 +3326,7 @@ void test_v11_mesh_classification() {
   check(mesh(m.snapshot(9, 401).state, 1)->dynamic, "refilled, it is dynamic again");
 }
 
-// --- HC3 (host-cost-design.md D2): lazy mesh surfaces ------------------------------------------
+// --- lazy mesh surfaces ------------------------------------------
 
 // The vertex-region write the hook makes: the 8*n vertex bytes of `to` at the payload's data
 // offset (12 + meta + 40), the AABB untouched. `to` must outlive the call.
@@ -3602,7 +3598,7 @@ void test_v11_stable_content_version() {
         "cv-churn: the counter moves on every re-record, as below /11");
 }
 
-// HC2 (host-cost-design.md D1): the mirror's command lists are shared with its snapshots; a /11
+// the mirror's command lists are shared with its snapshots; a /11
 // identical re-record publishes the published list again with no digest; any other change, and
 // every re-record below /11, publishes the new list.
 void test_hc2_shared_command_lists() {

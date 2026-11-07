@@ -1,4 +1,4 @@
-//! The `wt` carrier: render-stream-wt/1 (carrier-design.md Q4) over wtransport.
+//! The `wt` carrier: render-stream-wt/1 over wtransport.
 //!
 //! Threads. The hub's hot calls (send, close, queued bytes) run on the capture's main thread and
 //! only touch memory: a message goes into its connection's unbounded channel, counted in
@@ -66,7 +66,7 @@ pub fn wt_error_to_h3(n: u32) -> u64 {
     0x52e4_a40f_a8db + u64::from(n) + u64::from(n) / 0x1e
 }
 
-/// GRC_NET_FAULT: test-only sabotages (carrier-design.md CAR3 "Sabotages").
+/// GRC_NET_FAULT: test-only sabotages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Fault {
     None,
@@ -104,7 +104,7 @@ pub struct Config {
     pub path: String,
     /// What `?protocol=` may name: the host's subprotocols whose token travels in the hello.
     pub subprotocols: Vec<String>,
-    /// TRK3 (tracks-design.md Q7): the host's `track_subprotocols`, offered only when the host's
+    /// the host's `track_subprotocols`, offered only when the host's
     /// struct carries `admit_subprotocol`. A session on one is a track session: admitted from the
     /// track pool, no resource streams. Empty with tracks off or a host older than TRK1.
     pub track_subprotocols: Vec<String>,
@@ -140,7 +140,7 @@ impl Config {
             .ok_or_else(|| "wt-listen-invalid: no wt_listen address".to_string())?;
         let listen = parse_listen(&wt_listen)
             .ok_or_else(|| format!("wt-listen-invalid: {wt_listen} is not <host>:<port>"))?;
-        // CAR2 (carrier-design.md D10): the same rule as the capture's rs_expose.cpp, held again
+        // the same rule as the capture's rs_expose.cpp, held again
         // here so the module never binds a non-loopback address the host did not expose.
         let expose = host.config("expose").unwrap_or_else(|| "loopback".to_string());
         match expose.as_str() {

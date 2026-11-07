@@ -1,11 +1,11 @@
 //! `canvas-items`: an executor for `gsw-canvas-draw-list`'s packed CanvasItem [`DrawList`] on WebGL2
-//! through `glow`, with no wgpu (gate7-design.md Q14b, D30).
+//! through `glow`, with no wgpu.
 //!
 //! The browser half is [`CanvasItemsExecutor`] (wasm32). One frame is
 //! [`CanvasItemsExecutor::execute`], then the caller's [`DrawList::consumed`]:
 //!
 //! 1. the list's [`TextureOp`](gsw_canvas_draw_list::TextureOp)s, in order: `texImage2D` of straight
-//!    RGBA8 straight from a view of `texture_bytes` or of a shared payload (GLJ), or a delete;
+//!    RGBA8 straight from a view of `texture_bytes` or of a shared payload, or a delete;
 //! 2. the dirty uploads, each straight from a view of the list's own memory: item rows
 //!    (`texSubImage2D` into an RGBA32F data texture, three texels per item, [`ITEMS_PER_ROW`] items
 //!    per texture row), vertex and index ranges (`bufferSubData`). `dirty.all`, a grown array or a
@@ -17,13 +17,13 @@
 //!    [`DRAW_UNTEXTURED`](gsw_canvas_draw_list::DRAW_UNTEXTURED) draws binds its textured draws'
 //!    texture, and the builtin program draws an
 //!    [`ITEM_UNTEXTURED`](gsw_canvas_draw_list::ITEM_UNTEXTURED) item's fragments as the white
-//!    texel (G7o4);
-//! 5. the blit to the canvas with G7c's `StageTarget` semantics (`packages/canvas/src/present.ts`):
-//!    RGB10_A2 is a `texelFetch` draw writing `floor(c·255 + 0.5)/255`, never `blitFramebuffer`
-//!    (memory g7c-gpu-blend-conversion-facts); RGBA8 is a `blitFramebuffer`;
-//! 6. a fence ([`CanvasItemsExecutor::poll_fence`]), since the g31 has no timer query.
+//!    texel;
+//! 5. the blit to the canvas with the TypeScript stage's `StageTarget` semantics (`packages/canvas/src/present.ts`):
+//!    RGB10_A2 is a `texelFetch` draw writing `floor(c·255 + 0.5)/255`, never `blitFramebuffer`;
+//!    RGBA8 is a `blitFramebuffer`;
+//! 6. a fence ([`CanvasItemsExecutor::poll_fence`]), since many mobile GPUs have no timer query.
 //!
-//! The colour contract is G7c's TypeScript textured-mesh path (`executor-webgl.ts`,
+//! The colour contract is the TypeScript executor's textured-mesh path (`executor-webgl.ts`,
 //! `TEXTURED_MESH_FRAGMENT_SRC`): `fragColor = texel * colour * tint`, the texel premultiplied after
 //! filtering, the straight vertex colour premultiplied per fragment and the item modulate
 //! premultiplied; a [`Blend::PremulAlpha`] draw uses all three as given (modulate straight) under
@@ -50,7 +50,7 @@ pub const ITEMS_PER_ROW: u32 = 512;
 /// RGBA32F texels per item (an `Item` is 48 bytes).
 pub const ITEM_TEXELS: u32 = 3;
 
-/// The sabotages of gate7-design.md G7x. Each must make the executor's own pixel test fail.
+/// Deliberate faults for proving the pixel tests. Each must make the executor's own pixel test fail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sabotage {
     /// Skip every second merged draw call the executor plans (the 2nd, 4th, …, counted across
@@ -58,11 +58,11 @@ pub enum Sabotage {
     DropDraws,
     /// Skip uploading dirty item rows unless `dirty.all`: a transform-only frame draws stale rows.
     StaleItemRow,
-    /// gate7-design.md Q5's `premultiplied-upload`: textures are premultiplied (8-bit) on upload
+    /// `premultiplied-upload`: textures are premultiplied (8-bit) on upload
     /// and sampled as premultiplied, so linear filtering mixes premultiplied texels where Godot
     /// filters straight ones and premultiplies after.
     PremultipliedUpload,
-    /// G7tm's `msdf-no-median`: an MSDF draw takes the smallest of the three distances instead of
+    /// `msdf-no-median`: an MSDF draw takes the smallest of the three distances instead of
     /// their median. Wherever the channels disagree (every edge the field colours with two of the
     /// three channels) coverage drops, and it never rises, so only drawn ink changes.
     MsdfNoMedian,
@@ -90,8 +90,8 @@ pub struct ExecOptions {
     /// GL window (row 0 at the bottom is design row 0), through `screen_transform` exactly as
     /// `canvas_render_items` builds it (`translate_local(-w/2, -h/2)` then `scale(2/w, 2/h)`, in
     /// float32) and applied as a `mat4` product (canvas.glsl). GL's fill rule then breaks ties of
-    /// edges exactly on pixel centres the way the engine does (G7t: gate 4's hex box, the gate 6
-    /// LineEdit's StyleBoxFlat). Shots read the target without a row swap and the present draw
+    /// edges exactly on pixel centres the way the engine does (a hexagon's
+    /// edges, a LineEdit's StyleBoxFlat). Shots read the target without a row swap and the present draw
     /// flips it onto the canvas. Off by default, which keeps `executor-webgl.ts`'s orientation.
     pub godot_orientation: bool,
 }
@@ -138,7 +138,7 @@ pub struct ExecStats {
     pub program_binds: u32,
     /// Bindings whose uniform values were (re)sent to their program.
     pub binding_uploads: u32,
-    /// P3-ST, CG3: back-buffer copies and clears (`ScreenOpKind::Copy`, `ScreenOpKind::Clear`)
+    /// Back-buffer copies and clears (`ScreenOpKind::Copy`, `ScreenOpKind::Clear`)
     /// and mip chains built (`ScreenOpKind::Mipmaps`, or a copy's).
     pub screen_copies: u32,
     pub screen_mipmaps: u32,
@@ -221,7 +221,7 @@ float gsw_msdf_coverage(sampler2D color_texture, vec2 uv, vec2 msdf, bool no_med
 "#;
 
 /// The builtin program's fragment stage for a [`DRAW_MSDF`](gsw_canvas_draw_list::DRAW_MSDF) draw
-/// (G7tm). Godot's order (canvas.glsl:566-618, 716): `color = color_interp` (the vertex colour ×
+/// Godot's order (canvas.glsl:566-618, 716): `color = color_interp` (the vertex colour ×
 /// the modulate, straight), then `color.a = coverage · color.a`; the texel is not multiplied in.
 /// The vertex stage passes the modulate straight (`u_premultiply` 0) and the colour is
 /// premultiplied last, for every blend but `premul_alpha` (`u_premultiply_out`), so the blend
@@ -250,14 +250,14 @@ void main() {{
     )
 }
 
-/// The fragment stage of an item-space program (G7s): `canvas.glsl`'s order (Godot 4.5.1,
+/// The fragment stage of an item-space program: `canvas.glsl`'s order (Godot 4.5.1,
 /// drivers/gles3/shaders/canvas.glsl:566-717) around the program module, which declares its
 /// uniforms and samplers, its helpers, and `void godot_item_fragment(inout vec4 COLOR, in vec2 UV)`
 /// (`@godot-scene-web/effects`'s `transpileGodotItemShader`):
 ///
 /// ```text
 /// color = color_interp * texture(color_texture, uv)   (straight: vertex colour × item modulate)
-///   or, for an MSDF draw (G7tm), color.a = coverage · color.a   (canvas.glsl:601-618)
+///   or, for an MSDF draw, color.a = coverage · color.a   (canvas.glsl:601-618)
 /// fragment(COLOR = color, UV = uv)
 /// color *= canvas_modulation                           (gsw_post_modulate; white when unshaded)
 /// ```
@@ -297,7 +297,7 @@ void main() {{
     )
 }
 
-/// The vertex stage of an item-space program whose code has its own (P3-VX: a `vertex()`, or
+/// The vertex stage of an item-space program whose code has its own (a `vertex()`, or
 /// `skip_vertex_transform`), around the transpiler's vertex module (`@godot-scene-web/effects`'
 /// `vertexGlsl`, which declares `void godot_item_vertex(inout vec2 VERTEX, inout vec2 UV,
 /// inout vec4 COLOR, inout float POINT_SIZE, in mat4 MODEL_MATRIX, in mat4 CANVAS_MATRIX,
@@ -380,7 +380,7 @@ void main() {{
     )
 }
 
-/// The uniform names [`item_program_vertex`] reads from a binding (P3-VX).
+/// The uniform names [`item_program_vertex`] reads from a binding.
 pub const CANVAS_MATRIX_UNIFORM: &str = "gsw_canvas_matrix";
 pub const CANVAS_INVERSE_UNIFORM: &str = "gsw_canvas_inverse";
 
@@ -398,7 +398,7 @@ pub struct Call {
     pub draw: u32,
     pub first_index: u32,
     pub index_count: u32,
-    /// G7o4: the draw whose texture and sampler the call binds: the run's first draw that is not
+    /// The draw whose texture and sampler the call binds: the run's first draw that is not
     /// [`DRAW_UNTEXTURED`], else `draw` (an all-untextured run, which needs no texture of its own).
     pub texture_draw: u32,
 }
@@ -576,7 +576,7 @@ pub fn godot_screen_transform(width: u32, height: u32) -> [f32; 16] {
     ]
 }
 
-/// PHV: the integer factor a `width`x`height` upload is reduced by to fit a context whose
+/// The integer factor a `width`x`height` upload is reduced by to fit a context whose
 /// `MAX_TEXTURE_SIZE` is `max_side` (1 when it fits). A GLES3-class phone has 4096 where a desktop
 /// has 16384, and a host can send a wider image (STS2's character-select background is 5380x1320),
 /// which the context would refuse. Draws sample with normalized UVs, so a reduced texture draws the

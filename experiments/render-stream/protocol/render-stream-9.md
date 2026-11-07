@@ -1,8 +1,6 @@
 # render-stream/9 wire format
 
-Status: specified and golden-tested at G8k9 (2026-10-24), written with
-[texture-delivery-design.md](texture-delivery-design.md) D1, D4, D5, D6, D12, D13 and Q5, which this
-document implements. /9 is **opt-in**: the capture's file sinks stay on /6 unless asked
+Status: frozen; specified and golden-tested. /9 is **opt-in**: the capture's file sinks stay on /6 unless asked
 (`GRC_STREAM_VERSION=9`), the live listener offers `render-stream.9` only under
 `GRC_STREAM_VERSION=9`, and a receiver offers it only when told to (G8kp: the native receiver's and
 GSW's `RS_RECEIVER_PROTOCOL=9`; "As built (G8kp)"). Nothing in /2 to /8 changes: `golden-2/` to `golden-8/` pass unchanged
@@ -16,7 +14,7 @@ empty seam (`capture/src/rs_texture_delivery.*`) that G8kp, G8ku and G8ke fill.
 [render-stream-8.md](render-stream-8.md) and, through it, render-stream-7.md to render-stream-0.md
 are not superseded.
 
-As with /3 to /8 (memory g4e1-rs3-version-switch-pattern), /9 is **not** a new forked module. The
+As with /3 to /8, /9 is **not** a new forked module. The
 version-parameterized C++/TypeScript/Rust modules grow an eighth value: C++'s `Session::version`
 gains `ProtocolVersion::V9`, and the TypeScript `version` parameter and the Rust `version: u8`
 widen to `2..=9` (the TypeScript default stays `6`). Every cascade that means "/8 or later"
@@ -26,7 +24,7 @@ render-stream/9 is render-stream/8 plus exactly:
 
 - a new magic (`GRS9`), protocol string (`render-stream/9`) and subprotocol (`render-stream.9`);
 - the session key `resources.texture_delivery`, the last key of the session's `resources` object,
-  right after `resources.decode`: `{"mode":<D1 mode>,"encoder":null|<params_id prefix>}`;
+  right after `resources.decode`: `{"mode":<delivery mode>,"encoder":null|<params_id prefix>}`;
 - `variants` in texture entries, right after `payload_bytes`: the alternative payloads of an ok
   image texture;
 - `block` GRT1 payloads (a block-compressed `format`), legal only as a variant;
@@ -39,7 +37,7 @@ render-stream-0.md: record framing, the block types, the record sha256 definitio
 every table's other fields and invariants, every other payload format, out-of-band delivery, HTTP
 resource routes (`Content-Encoding` of G8kz included) and the live control messages. **Records,
 blocks, items, canvases, commands, meshes, shaders and materials are byte-identical to /8.** The
-base texture entry keeps its /8 meaning, the `decoded` payload (texture-delivery-design.md D5), so
+base texture entry keeps its /8 meaning, the `decoded` payload, so
 a receiver that ignores `variants` is a correct /8 receiver.
 
 ## File layout
@@ -69,15 +67,13 @@ Key order is /8's: `type`, `protocol`, `session_id`, `stream`, `engine`, `captur
                                  "encoder":null|"<params_id prefix>"}}
 ```
 
-- `resources.texture_delivery` declares the host's delivery mode (`GRC_TEXTURE_DELIVERY`,
-  texture-delivery-design.md D1) and the Basis encoder it runs. `mode` names the variants the host
+- `resources.texture_delivery` declares the host's delivery mode (`GRC_TEXTURE_DELIVERY`) and the Basis encoder it runs. `mode` names the variants the host
   offers beside `decoded`: `rgba` none, `passthrough` `block`, `basis-uastc` `block` and `uastc`,
   `basis-etc1s` `etc1s`. `encoder` is the params_id prefix of the Basis encoder (for example
   `basisu-1.60`, matching `^[a-z0-9][a-z0-9._-]*$`), or `null` when the host runs none.
-- **The key is `texture_delivery`, not `delivery`.** The design text (D4, Q5) called it
+- **The key is `texture_delivery`, not `delivery`.** The design text called it
   `resources.delivery`, but `resources.delivery` already exists since /2 (`out-of-band`, `inline` or
-  `mixed`), so a second key of that name would be a duplicate in one JSON object. G8k9 renamed it;
-  texture-delivery-design.md is corrected to match.
+  `mixed`), so a second key of that name would be a duplicate in one JSON object. G8k9 renamed it.
 
 ## Texture entries
 
@@ -92,9 +88,9 @@ A texture entry keeps every /8 field, in /8's order, and gains `variants` right 
  "canvas":..}
 ```
 
-`hash`, `format`, `payload_bytes` and `source_format` keep their /8 meaning: the `decoded` variant
-(D5). `variants` only adds alternatives, each a payload the host can serve at
-`/resources/sha256/<hash>` (D3 leaves the choice to the receiver).
+`hash`, `format`, `payload_bytes` and `source_format` keep their /8 meaning: the `decoded` variant.
+`variants` only adds alternatives, each a payload the host can serve at
+`/resources/sha256/<hash>` (the receiver chooses which).
 
 - `variants` is `[]` for anything but an `ok` image entry, and for an `ok` image whose host has
   prepared nothing.
@@ -107,7 +103,7 @@ A texture entry keeps every /8 field, in /8's order, and gains `variants` right 
   session's `encoder` and a `/` (`basisu-1.60/uastc-l1/zstd6/linear`). Its payload is a KTX2 file.
 - `payload_bytes` of a variant is its whole payload's length, as for the base entry. It is at least
   1.
-- **Variant lifetime (D6).** `version` counts content. `variants` may **grow at an equal
+- **Variant lifetime.** `version` counts content. `variants` may **grow at an equal
   `version`**: a lazy encode that finishes publishes a changed (patch) entry with one more variant
   and the same `version`. Every earlier variant stays identical. A content change raises `version`
   and resets `variants` to what is ready for the new content.
@@ -140,9 +136,9 @@ is checked against its entry: see "Payload checks".
 ### Texture reasons
 
 `reason` gains `delivery-pending` (legal at /9 only; `meta-schema` below). It sits on an `unsupported`
-image entry (hash null, `payload_bytes` 0, the usual rule): the async worker path (D11) had no
+image entry (hash null, `payload_bytes` 0, the usual rule): the async worker path had no
 hook-time hash yet. When the payload is ready the entry returns as `ok` with a raised `version`.
-At /6 to /8 G8kw holds publication back instead (Q7), with no wire change. G8k9's capture never
+At /6 to /8 G8kw holds publication back instead, with no wire change. G8k9's capture never
 published it; since G8kf it does under `GRC_TEXTURE_PENDING=publish` (see "As built (G8kf)").
 
 ## Texture payload
@@ -168,7 +164,7 @@ a carried resource record supplies for a variant must match that variant's entry
 
 ## KTX2 payload
 
-`render-stream-texture/ktx2` is a KTX2 file (KTX 2.0) per texture-delivery-design.md D13, exactly
+`render-stream-texture/ktx2` is a KTX2 file (KTX 2.0), exactly
 the bytes of the resource record's block, the store file `<hash>.ktx2` and the HTTP body
 (`Content-Type: image/ktx2`, never content-coded). A decoder tells it from GRT1, GRM1 and GRP1 by
 its 12-byte KTX2 identifier (`AB 4B 54 58 20 32 30 BB 0D 0A 1A 0A`); only at /9.
@@ -193,7 +189,7 @@ the colour model is the variant's encoding (`uastc` or `etc1s`), `pixelWidth` x 
 the entry's, and `levelCount` is the entry's mip chain length (1 without mipmaps), and the file's
 length is the variant's `payload_bytes`.
 
-The transcode target and its oracle (D14, D16) are receiver behaviour and not part of the wire.
+The transcode target and its oracle are receiver behaviour and not part of the wire.
 
 ## Live transport
 
@@ -202,7 +198,7 @@ with /9's session and tables. Its hello is /7's thirteen keys under `protocol` `
 **plus two flat string keys**, so the hello grammar stays flat (no arrays, booleans or nulls):
 
 - `texture_encodings`: the receiver's preference, comma-separated, from `block`, `uastc`, `etc1s`
-  and `decoded` (texture-delivery-design.md D3, Q3);
+  and `decoded`;
 - `gpu_formats`: Godot's feature names the receiver can upload (`s3tc`, `bptc`, `rgtc`, `etc2`,
   `astc`). A receiver with none sends `none`.
 
@@ -214,8 +210,7 @@ The listener offers `render-stream.9` **only under `GRC_STREAM_VERSION=9`**, the
 (under a gate 8 policy, `.9` then `.8`). Every other configuration offers exactly what /8 offered.
 No receiver's hello offers `render-stream.9` in G8k9; since G8kp the native receiver and GSW do
 under `RS_RECEIVER_PROTOCOL=9` ("As built (G8kp)"). Since G8kb GSW's /9 hello lists
-`block,uastc,decoded` by default (its transcoder worker, texture-delivery-design.md "As built
-(G8kb)"), and gate 8's g8l `basis` leg runs it live.
+`block,uastc,decoded` by default (its transcoder worker), and gate 8's g8l `basis` leg runs it live.
 
 ## Capture policy
 
@@ -224,7 +219,7 @@ under `RS_RECEIVER_PROTOCOL=9` ("As built (G8kp)"). Since G8kb GSW's /9 hello li
 | `GRC_STREAM_VERSION` | `6` (default), `8`, `9` | the wire version of **file** sinks |
 | `GRC_TEXTURE_DELIVERY` | `passthrough` (default since TDP; was `rgba`), `rgba`, `basis-uastc`, `basis-etc1s` | declared by a /9 session as `resources.texture_delivery.mode` |
 
-`GRC_TEXTURE_DELIVERY` has no effect below /9, where the `decoded` payload is all there is (D4), so
+`GRC_TEXTURE_DELIVERY` has no effect below /9, where the `decoded` payload is all there is, so
 it is not a gate 8 policy and needs no /9 sink. An invalid value refuses with
 `invalid GRC_TEXTURE_DELIVERY=…`. `result.json` gains `stream.gate8.texture_delivery` only when the
 file sink is /9.
@@ -300,8 +295,9 @@ format is a new version.
 - **Hello keys are required at /9** and `none` spells an empty `gpu_formats`.
 - **`delivery-pending` is an `unsupported` image entry.** It uses the existing reason/status
   coupling, so no new entry rule was needed; the recovery is a new `version`.
-- **Variant payloads in a recording.** Q5 said inline resource records carry only `decoded`
-  payloads, because D12(c) keeps small textures off Basis. That is the *host's* policy; the
+- **Variant payloads in a recording.** The design said inline resource records carry only
+  `decoded` payloads, because small textures (under `GRC_TEXTURE_BASIS_MIN_PX` texels) stay off
+  Basis. That is the *host's* policy; the
   validators accept a variant payload as a resource record (golden-9's `inline.rs9` has four) and
   check it against its entry. This is what exercises `ktx2-header` and `ktx2-shape` in a recording,
   and a file sink's store holds them as files in any case.
@@ -315,8 +311,7 @@ format is a new version.
 
 ## As built (G8kp)
 
-The wire is unchanged; G8kp fills the seam and the receivers
-([texture-delivery-design.md](texture-delivery-design.md) "As built (G8kp)").
+The wire is unchanged; G8kp fills the seam and the receivers.
 
 - **Capture policy at /9:** `GRC_TEXTURE_DELIVERY` accepts `rgba` and `passthrough`; `basis-uastc`
   and `basis-etc1s` refuse the stream (`texture-delivery-unimplemented: …`) until their encoders
@@ -335,8 +330,7 @@ The wire is unchanged; G8kp fills the seam and the receivers
 
 ## As built (G8ku)
 
-The wire is unchanged; G8ku produces and consumes `uastc` variants
-([texture-delivery-design.md](texture-delivery-design.md) "As built (G8ku)").
+The wire is unchanged; G8ku produces and consumes `uastc` variants.
 
 - **Capture policy at /9:** `GRC_TEXTURE_DELIVERY=basis-uastc` is accepted and declares
   `{"mode":"basis-uastc","encoder":"basisu-1.60"}`; `basis-etc1s` still refuses the stream until

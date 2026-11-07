@@ -4,7 +4,7 @@
 // its first draw after the arm. Before PM7 every such draw was unknown-particles and a receiver
 // drew nothing; GRC_ADOPT_FAULT=no-particles is that capture.
 //
-// LAR4 (late-arm-registry-design.md, the process-material row) moves the adoption judgments onto the
+// LAR4 moves the adoption judgments onto the
 // `deferred` arm (loaded at birth, armed at frame 12 by GRC_ARM_DEFER_FRAMES=11): every process
 // material is adopted from the registry with its real shader.
 //
@@ -56,7 +56,7 @@
 //                              at birth) reports origin "startup" with nothing missed, late/capture
 //                              (loaded at frame 12) reports "late-load" (registry-checks.ts
 //                              shaderClockOrigin)
-//   standby-clock              (LS1, live-swap-design.md D4) the shader clock advances through standby
+//   standby-clock              the shader clock advances through standby
 //                              on a rendered host: deferred/capture (the standby table for its first
 //                              11 frames, then armed) saw every engine draw through the draw hook
 //                              (draws_missed 0, which since LS1 counts the draws after the first tick
@@ -91,7 +91,7 @@ export interface PtLate {
   coverage_from_frame: number;
 }
 
-/** LATE-CMBT (results/p3/late-cmbt.md): expected.json `late_shader`. */
+/** LATE-CMBT: expected.json `late_shader`. */
 export interface PtLateShader {
   amount: number;
   seed: number;

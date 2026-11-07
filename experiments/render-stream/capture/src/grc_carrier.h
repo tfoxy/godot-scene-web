@@ -1,6 +1,6 @@
 /* grc_carrier.h -- grc_carrier_v1, the public C ABI of a render-stream live carrier.
  *
- * protocol/carrier-design.md Q1 (D4, D5, D6, D17). A carrier moves the live hub's messages to and
+ * A carrier moves the live hub's messages to and
  * from its peers over some transport: the built-in "ws" (WebSocket over TCP, rs_ws), the built-in
  * "wt" (WebTransport, the net module) or a consumer's own. A carrier knows nothing about
  * render-stream records: it carries opaque binary messages out, small text messages in, and
@@ -84,7 +84,7 @@ typedef struct grc_buf {
   void *owner;
 } grc_buf;
 
-/* HTTP-style content codings of a resource body (texture-delivery-design.md D2). */
+/* HTTP-style content codings of a resource body. */
 typedef enum grc_coding {
   GRC_CODING_IDENTITY = 0,
   GRC_CODING_GZIP = 1,
@@ -150,7 +150,7 @@ typedef struct grc_carrier_host_v1 {
   /* One log line (no trailing newline needed); `level` is a GRC_LOG_* value. */
   void (*log)(void *host, int level, const char *msg, size_t len);
 
-  /* TRK1 (tracks-design.md Q3, Q7): admission by subprotocol. 1 = a slot from the pool that
+  /* Admission by subprotocol. 1 = a slot from the pool that
      `subprotocol` belongs to (a view subprotocol: the view pool, exactly admit(); one of
      config("track_subprotocols"): the track pool); 0 = that pool is full or the subprotocol is
      unknown. The slot returns at closed(), or at rejected() for a connection that never opened.
@@ -184,8 +184,8 @@ typedef struct grc_carrier_v1 {
   void (*destroy)(void *self);
 } grc_carrier_v1;
 
-/* CAR6: the capture's exported registration entry point (protocol/carrier-design.md "Writing a
- * carrier"). Registers a consumer carrier before live starts. The capture copies *carrier (its
+/* The capture's exported registration entry point.
+ * Registers a consumer carrier before live starts. The capture copies *carrier (its
  * v1 fields) and returns its index (2..255, in registration order), or -1 -- the carrier then
  * stays its caller's, untouched -- when the struct's abi_version is not GRC_CARRIER_ABI_VERSION
  * or its size is below sizeof(grc_carrier_v1) (`carrier-abi`), an entry point is NULL

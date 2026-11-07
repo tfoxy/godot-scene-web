@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Self-test of lib/quiet.sh's share-window scheduling (GRT, results/grt.md) and of its
+# Self-test of lib/quiet.sh's share-window scheduling and of its
 # compatibility with the v1 lock code other worktrees still run (test/quiet-fixtures/quiet-v1.sh,
 # a frozen copy of lib/quiet.sh as of 821606d3). Private lock (GSW_QUIET_DIR under a temp dir), so it
 # is safe beside real runs. ~4 min.

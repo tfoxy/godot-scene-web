@@ -1,6 +1,6 @@
 //! The `wt` carrier against an in-crate fake host, driven through the module's C ABI exactly as
 //! the capture drives it (grc_net_module_v1 -> wt_create -> grc_carrier_v1), with a wtransport
-//! client on the other side (carrier-design.md CAR3 "Checks" and "Sabotages").
+//! client on the other side.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
@@ -877,7 +877,7 @@ fn lan_ipv4() -> Option<std::net::Ipv4Addr> {
 
 #[test]
 fn lan_listen_needs_expose_lan_and_serves_through_a_lan_address() {
-    // CAR2 (carrier-design.md D10): with expose=lan, 0.0.0.0 binds, the session works on the
+    // with expose=lan, 0.0.0.0 binds, the session works on the
     // loopback address and, when this machine has one, through its LAN address.
     let h = Harness::start(Opts {
         extra: vec![("wt_listen", "0.0.0.0:0".to_string()), ("expose", "lan".to_string())],
@@ -1221,7 +1221,7 @@ fn credit_loop_survives_loss_and_reordering() {
 /// CAR10's defect, modelled: once the client's live stream stops sending (Chrome on Android
 /// wedges a WebTransport stream; its writes keep resolving), acks on that stream never arrive
 /// and the credit loop stalls with the host owed its last acks. This is the sabotage half: it
-/// proves the loop detects the g31 stall.
+/// proves the loop detects the stall.
 #[test]
 fn credit_loop_on_a_wedged_live_stream_stalls() {
     let e = credit_loop(LoopOpts { uplink: false, wedge_after: Some(40), impair: None, total: 200 })

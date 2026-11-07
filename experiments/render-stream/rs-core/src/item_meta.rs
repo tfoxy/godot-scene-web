@@ -1,4 +1,4 @@
-//! TAG1: the render-stream/13 `item_meta` record (client-extensions-design.md §2.4) and the
+//! the render-stream/13 `item_meta` record and the
 //! receiver's identity table it builds; ID3: render-stream/14's item_meta v2
 //! (render-stream-14.md), which adds the `instance_id` and `mouse_filter` columns and re-stamped
 //! rows.

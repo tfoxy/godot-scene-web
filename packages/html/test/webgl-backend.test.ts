@@ -9,9 +9,9 @@
 //      per tick, so a render outside the bracket would simply never reach the screen. The wrapper
 //      below is the real GL backend with the three calls recorded around it — nothing is faked.
 //   2. `drawableSource` SKIPS A WEBGPU CANVAS — the SCREEN_TEXTURE capture composites earlier
-//      self-layers with `drawImage`, which comes back blank/pathological from a WebGPU canvas (S7,
-//      docs/perf-harness.md). A canvas stamped `data-godot-effects-backend="webgpu"` must be passed
-//      over in favour of the layer's texture image. Observed through the capture composite, the way
+//      self-layers with `drawImage`, which comes back blank/pathological from a WebGPU canvas. A
+//      canvas stamped `data-godot-effects-backend="webgpu"` must be passed over in favour of the
+//      layer's texture image. Observed through the capture composite, the way
 //      `webgl-screen-texture.test.ts` observes the rest of that path.
 import {
   afterAll,

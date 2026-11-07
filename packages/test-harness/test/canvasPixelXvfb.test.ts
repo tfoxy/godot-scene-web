@@ -35,16 +35,14 @@
 // already owns it for the WebGL path.
 //
 // FLAGS: none, for `webglCompositeXvfb.test.ts`'s measured reason —
-// `--enable-features=Vulkan` breaks WebGL canvases on this box.
+// `--enable-features=Vulkan` breaks WebGL canvases on some drivers.
 //
 // HEADED by default, and not for the sibling's reason. Nothing about the page
 // COMPOSITOR is under test here (the assertions read the drawing buffer directly),
 // so `GSW_CANVAS_PIXEL_HEADLESS=1` opts into a headless run when a display is not
 // available. The default remains headed because it runs on the same renderer as
-// the application. Measured on this box, under the same Xvfb:
-//
-//   headless   ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader driver)
-//   headed     ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 2060/PCIe/SSE2, OpenGL ES 3.2)
+// the application. Under the same Xvfb, old headless gets SwiftShader and headed gets the
+// hardware GPU through ANGLE/GL.
 //
 // Every case below passes on BOTH, which is a useful thing to know — but blend
 // equations, scissor rounding and `discard` are exactly where a real driver and a
@@ -56,8 +54,7 @@
 // `GSW_CANVAS_PIXEL_HEADLESS=new` is the third launch, and the one to use on a
 // desktop box: `--headless=new --enable-gpu --use-angle=vulkan` with DISPLAY and
 // WAYLAND_DISPLAY stripped, i.e. the real GPU through ANGLE/Vulkan and NO window
-// (headed Chromium here reaches the user's Wayland compositor even under Xvfb).
-// Measured 2026-10-14: ANGLE (NVIDIA, Vulkan 1.4.329 (NVIDIA GeForce RTX 2060)).
+// (headed Chromium under a Wayland session reaches the user's compositor even under Xvfb).
 
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";

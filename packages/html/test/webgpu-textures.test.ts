@@ -102,7 +102,7 @@ describe("cache keys are the SAME strings as the WebGL cache's", () => {
   it("still matches the literal `getImageTexture` builds in shared-gl (drift guard)", () => {
     // `shared-gl.ts` exports no key builder, so string-equality is proven from BOTH sides: the
     // assertion above pins this module's output, and this one pins the template the GL cache keys
-    // with (`getImageTexture`, shared-gl.ts:318). If that line moves or changes shape, this fails
+    // with (`getImageTexture` in shared-gl.ts). If that line moves or changes shape, this fails
     // and the two caches stop being provably parallel.
     const source = readFileSync(
       resolve("packages/html/src/webgl/shared-gl.ts"),

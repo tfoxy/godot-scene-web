@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the render-stream/8 golden vectors (stdlib only, deterministic).
 
-render-stream/8 (../render-stream-8.md) is render-stream/7 plus exactly gate8-design.md Q6's list:
+render-stream/8 (../render-stream-8.md) is render-stream/7 plus exactly the list in render-stream-8.md:
 the GRS8 magic and protocol string, the session key `adoption`, `resources.decode`, the
 `origin` field "adopted" in the texture/mesh/shader/material tables, `adopted_content` on texture
 and mesh entries, `source_format` on texture entries, the eight float payload formats, and seven

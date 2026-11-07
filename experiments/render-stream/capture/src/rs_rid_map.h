@@ -1,4 +1,4 @@
-// HC6 (host-cost-design.md D5 "Hook overhead per RenderingServer call", item 5): a flat map from a
+// A flat map from a
 // RenderingServer RID (any 64-bit value) to a small value, for the mirror's per-call lookups.
 //
 // std::unordered_map costs a hooked call two dependent cache misses (the bucket array, then the

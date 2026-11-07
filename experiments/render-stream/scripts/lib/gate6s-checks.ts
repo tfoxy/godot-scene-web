@@ -1,5 +1,5 @@
-// Gate 6 group g6s (protocol/gate6-design.md "G6s", Q5 "Resource budgets", Q7e "Stability
-// (g6s)"): receiver cache budgets and eviction, over a 300-s soak on fixtures/gate6-scene's
+// Gate 6 group g6s:
+// receiver cache budgets and eviction, over a 300-s soak on fixtures/gate6-scene's
 // `animate` variant, the `soak` timeline, `realtime` time and `GRC_HOOK_LOG=off` (so nothing here
 // reads a per-call hook log; everything comes from the two sides' own 1 Hz perf timelines and the
 // runner-side `/proc` sampler, scripts/sample-proc.ts over lib/proc-sampler.ts, matching D9: host
@@ -68,12 +68,11 @@ export const G6S_THIRD_S = (G6S_WINDOW_END_S - G6S_WINDOW_START_S) / 3;
 // residency-bounded's growth half ("max over the last third <= max over the first third") is
 // exact in Q7e's wording, but these are small live integer counts (host_retained, mirror counts,
 // live RIDs) that legitimately tick by 1 for a frame or two during an ordinary resource swap --
-// not a leak. Measured on a real honest soak-scene run: host_retained's first-third max was 10,
-// its last-third max 11 (one transient pin during a routine retire/re-add), which a zero-slack
-// comparison flagged as "grew" on a leg with no sabotage at all. A small additive slack absorbs
-// that without weakening detection: every real sabotage signal measured so far (no-evict's
-// receiver memory-cache 128 flat vs an honest ~64-120, retain-superseded's host retained 139 flat
-// vs an honest ~10) is caught by the budget-derived-bound half regardless, which has no slack.
+// not a leak (host_retained can tick up by one for a transient pin during a routine retire/re-add,
+// which a zero-slack comparison flags as "grew" on a leg with no sabotage at all). A small additive
+// slack absorbs that without weakening detection: the real sabotage signals (no-evict's receiver
+// memory-cache, retain-superseded's host retained count) are caught by the budget-derived-bound
+// half regardless, which has no slack.
 export const G6S_RESIDENCY_GROWTH_SLACK = 2;
 
 export interface G6sLeg {
@@ -271,8 +270,7 @@ export function maxInWindowThird(
  * Used for the "every budgeted count <= its budget-derived bound" half of residency-bounded: a
  * sabotage whose extra residency is already fully present by the window's own first third (the
  * burst that fills it happens during fixture setup, before t=60s) shows no first-third-to-last-
- * third growth at all, so that comparison alone cannot see it (measured, G6s real-run evidence:
- * `sabotage-soak-no-evict`'s receiver memory-cache and `sabotage-soak-retain-superseded`'s host
+ * third growth at all, so that comparison alone cannot see it (`sabotage-soak-no-evict`'s receiver memory-cache and `sabotage-soak-retain-superseded`'s host
  * retained count both plateau by the window's first sample and stay perfectly flat afterward). */
 export function maxInWindow(points: readonly TimePoint[]): number | null {
   const vs = inRange(points, G6S_WINDOW_START_S, G6S_WINDOW_END_S);
@@ -383,8 +381,8 @@ function hostCurrentResourcesSeries(ev: G6sLegEvidence): TimePoint[] {
 /** Every counted series Q7e's residency-bounded names, max(first third) vs max(last third), plus
  * the budget-derived bound half for the two metrics Q5 actually budgets or structurally caps.
  * `inlineReceiverCache` skips the receiver memory-cache bound for `soak-inline`, which overrides
- * the Q7e budget to a generous one by design (run-gate6.sh's g6s_leg soak-inline; memory
- * rs-g6s-carried-set-resource-duplicate explains why -- no fallback source for a recurring hash). */
+ * the Q7e budget to a generous one by design (run-gate6.sh's g6s_leg soak-inline;
+ * explains why -- no fallback source for a recurring hash). */
 export function residencyMetrics(
   ev: G6sLegEvidence,
   inlineReceiverCache = false,
@@ -474,10 +472,9 @@ export function residencyMetrics(
       overBudget = memBytesMax !== null && memBytesMax > memBudgetBound;
     }
     // Once a metric has a budget-derived bound, that bound is the test -- the growth half is
-    // skipped for it, not ANDed in. Measured on a real honest soak-scene run: active LRU eviction
-    // near a byte budget makes the receiver's memory-cache ENTRY COUNT oscillate by itself (first-
-    // third max 113, last-third max 120, evicting and re-admitting differently sized payloads is
-    // ordinary behaviour, not growth) while its BYTES stayed under budget the whole time. A metric
+    // skipped for it, not ANDed in. Active LRU eviction near a byte budget makes the receiver's
+    // memory-cache ENTRY COUNT oscillate by itself (evicting and re-admitting differently sized
+    // payloads is ordinary behaviour, not growth) while its BYTES stay under budget. A metric
     // with no configured/derived bound (the mirror and live-RID counts) has no such budget-driven
     // noise source, so it keeps the growth check as its only signal.
     const bounded = budgetBound !== null ? !overBudget : !grew;

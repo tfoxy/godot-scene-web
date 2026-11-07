@@ -1,5 +1,5 @@
-// Gate 8 g8id's checks (ID2, protocol/client-extensions-design.md "Identity v2" and "As built
-// (ID2)"): the GSW client's Godot tree-order pick, judged on run-gate8.sh run_g8id's legs (under
+// Gate 8 g8id's checks:
+// the GSW client's Godot tree-order pick, judged on run-gate8.sh run_g8id's legs (under
 // g8id/; each leg's host/pick-oracle.json is fixtures/tag-scene pick.gd's own pick -- Godot's
 // `gui_get_hovered_control()` after a pushed mouse motion -- on a 24x16 grid, and page/client-ext.json
 // holds the grid the client's `query.hitTest` read during the last frame, by the items' `rs_pick`

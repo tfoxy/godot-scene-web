@@ -1,4 +1,4 @@
-// CAR6 consumer carriers (protocol/carrier-design.md "Writing a carrier"): capture/build/rs_live_host
+// CAR6 consumer carriers: capture/build/rs_live_host
 // registers in-memory `mem` carriers (capture/test/rs_mem_carrier.*) through the exported
 // grc_carrier_register, next to or instead of `ws`. Scenarios, each in its own temp dir:
 //   1. honest, next to ws: every registration result, start/destroy counts, mem bytes == its tap,

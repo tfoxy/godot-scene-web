@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 project(render_stream_capture LANGUAGES C CXX)
 
-# Gate -1 of docs/handoff-headless-render-stream.md: a RenderingServer capture
+# A RenderingServer capture
 # seam for an unmodified official Godot Linux x86-64 template. The library
 # depends on nothing but libc/libstdc++ and the vendored GDExtension header.
 
@@ -75,7 +75,7 @@ target_link_libraries(grc_basisu PUBLIC grc_codecs Threads::Threads)
 set_target_properties(grc_basisu PROPERTIES
   POSITION_INDEPENDENT_CODE ON CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 
-# TRK6 (protocol/tracks-design.md Q6): the gsw-input/1 reference injector embedded in the library for
+# the gsw-input/1 reference injector embedded in the library for
 # GRC_LIVE_TRACK_INPUT_INJECT=reference. cmake/embed_gsw_input.cmake composes the addon's scripts
 # and src/track_inject_glue.gd into one GDScript (inner classes, renamed) and a header with its
 # bytes and the addon digest. The stamp makes a changed addon file regenerate; the generated files
@@ -157,7 +157,7 @@ set_target_properties(render_stream_capture PROPERTIES
 target_compile_options(render_stream_capture PRIVATE -fno-omit-frame-pointer)
 find_package(Threads REQUIRED)
 target_link_libraries(render_stream_capture PRIVATE Threads::Threads)
-# CAR3 (carrier-design.md D8): dlopen of the net module, only when GRC_LIVE_CARRIERS lists wt.
+# dlopen of the net module, only when GRC_LIVE_CARRIERS lists wt.
 target_link_libraries(render_stream_capture PRIVATE ${CMAKE_DL_LIBS})
 
 # `.gdextension` file with the absolute path of the library just built, so a
@@ -213,10 +213,10 @@ target_compile_definitions(rs_publish_test PRIVATE
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_publish_test_tmp")
 add_test(NAME rs_publish COMMAND rs_publish_test)
 
-# G1c1: rs_ws, a dependency-free RFC 6455 server on its own I/O thread
-# (protocol/gate1-design.md D3, Q3, Q4). Pure transport: no mirror, no engine.
+# rs_ws, a dependency-free RFC 6455 server on its own I/O thread
+# Pure transport: no mirror, no engine.
 # Linked into render_stream_capture since G1c2 (GRC_LIVE_LISTEN, src/rs1_live.*).
-# CAR4 (carrier-design.md D12): rs_ws_test's wss cases drive the real net module's TLS session
+# rs_ws_test's wss cases drive the real net module's TLS session
 # (librender_stream_net.so beside the test, from build-rs-net.sh) with an OpenSSL client and a
 # certificate generated at test time. OpenSSL is a test-only dependency (the capture never links
 # it); without it, or without the module, those cases print `skip` (scripts/test/self-test-wss.ts
@@ -232,7 +232,7 @@ if(OPENSSL_FOUND)
 endif()
 add_test(NAME rs_ws COMMAND rs_ws_test)
 
-# CAR1 (carrier-design.md Q1, Q2, D5, D6): the CarrierSet and the grc_carrier_v1 adapter with two
+# the CarrierSet and the grc_carrier_v1 adapter with two
 # fake C ABI carriers and the real rs_ws server as `ws`; also runs the test-only sabotages
 # (route-by-local, per-carrier admission), which must fail their checks.
 add_executable(rs_carrier_set_test test/rs_carrier_set_test.cpp src/rs_carrier_set.cpp src/rs_ws.cpp
@@ -241,7 +241,7 @@ target_include_directories(rs_carrier_set_test PRIVATE src)
 target_link_libraries(rs_carrier_set_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_carrier_set COMMAND rs_carrier_set_test)
 
-# TRK1 (tracks-design.md Q1-Q5): TrackHub over a recording fake transport -- the hello grammar,
+# TrackHub over a recording fake transport -- the hello grammar,
 # every check in its order, every close reason, pairing, keepalive and idle, rate, UTF-8,
 # close_all -- plus the four test-only sabotages, each of which must fail its check.
 add_executable(rs_track_test test/rs_track_test.cpp src/rs_tracks.cpp src/rs_track_caps.cpp src/rs_ws.cpp
@@ -253,7 +253,7 @@ target_compile_definitions(rs_track_test PRIVATE
 target_link_libraries(rs_track_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_track COMMAND rs_track_test)
 
-# CAR6 (carrier-design.md "Writing a carrier"): the consumer-carrier registry's rules, the owner
+# the consumer-carrier registry's rules, the owner
 # ledger's double-release fault, and grc_carrier_register as the built capture library exports it
 # (dlopen as Godot does, then RTLD_NOLOAD + dlsym).
 add_executable(rs_carrier_ext_test test/rs_carrier_ext_test.cpp src/rs_carrier_ext.cpp
@@ -263,13 +263,13 @@ target_link_libraries(rs_carrier_ext_test PRIVATE grc_warnings grc_codecs Thread
 add_dependencies(rs_carrier_ext_test render_stream_capture)
 add_test(NAME rs_carrier_ext COMMAND rs_carrier_ext_test $<TARGET_FILE:render_stream_capture>)
 
-# CAR2 (carrier-design.md D10, Q3): the LAN exposure policy's refusal matrix.
+# the LAN exposure policy's refusal matrix.
 add_executable(rs_expose_test test/rs_expose_test.cpp src/rs_expose.cpp)
 target_include_directories(rs_expose_test PRIVATE src)
 target_link_libraries(rs_expose_test PRIVATE grc_warnings)
 add_test(NAME rs_expose COMMAND rs_expose_test)
 
-# CAR3 (carrier-design.md D8, Q3): the net module loader's refusals (net-module-missing,
+# the net module loader's refusals (net-module-missing,
 # net-module-abi) against two fake modules, and -- when scripts/build-rs-net.sh has put the real
 # librender_stream_net.so beside the tests -- its table and a wt carrier's start/stop through the
 # CarrierSet. The wire itself is the crate's (rs-net/tests) and the interop leg's
@@ -333,7 +333,7 @@ add_test(NAME rs_live COMMAND rs_live_test)
 add_test(NAME rs_live_thread COMMAND rs_live_test --formation=thread)
 set_tests_properties(rs_live rs_live_thread PROPERTIES RESOURCE_LOCK rs_live_tmp)
 
-# G7q: credit window tests (gate7-design.md D4, Q2 "Credit with window w"): window 1 pinned by
+# credit window tests: window 1 pinned by
 # transcript digests recorded before G7q (test/golden/live-window1-transcripts.txt), and window 2.
 add_executable(rs_live_window_test
   test/rs_live_window_test.cpp
@@ -476,7 +476,7 @@ add_test(NAME rs6_codec COMMAND rs6_codec_test)
 
 # Gate 7 (G7w): render-stream/7 is a live-transport-only protocol-version switch on the SAME /2
 # codec module (Session::version), proven byte-identical to protocol/golden-7/{rate,window2}.rs7
-# -- the publication.credit_window delta (gate7-design.md D2). No rs2_diff.cpp linkage needed:
+# -- the publication.credit_window delta. No rs2_diff.cpp linkage needed:
 # both golden-7 legs are hand-built Transactions, never make_full()/make_patch().
 add_executable(rs7_codec_test test/rs7_codec_test.cpp src/rs2_codec.cpp)
 target_include_directories(rs7_codec_test PRIVATE src test)
@@ -495,8 +495,8 @@ target_compile_definitions(rs8_codec_test PRIVATE
   GRC_GOLDEN8_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-8")
 add_test(NAME rs8_codec COMMAND rs8_codec_test)
 
-# Gate 8 (G8k9): render-stream/9 is /8 plus the texture-delivery wire (texture-delivery-design.md
-# D4/Q5), proven byte-identical to protocol/golden-9/{full,patch,inline,off}.rs9.
+# Gate 8: render-stream/9 is /8 plus the texture-delivery wire,
+# proven byte-identical to protocol/golden-9/{full,patch,inline,off}.rs9.
 add_executable(rs9_codec_test test/rs9_codec_test.cpp src/rs2_codec.cpp src/rs2_diff.cpp)
 target_include_directories(rs9_codec_test PRIVATE src test)
 target_link_libraries(rs9_codec_test PRIVATE grc_warnings)
@@ -572,7 +572,7 @@ target_link_libraries(rs_item_meta_test PRIVATE grc_warnings)
 add_test(NAME rs_item_meta COMMAND rs_item_meta_test)
 
 # G8kw: the texture worker pool, the publication hold-back and the held hook-log lines
-# (texture-delivery-design.md D11, Q7): async predictions plus jobs resolve to the synchronous
+# Async predictions plus jobs resolve to the synchronous
 # snapshots (full-transaction bytes) and log lines; stop/drain/refusal, mispredict, the fault knob.
 add_executable(rs_texture_worker_test
   test/rs_texture_worker_test.cpp src/rs_texture_worker.cpp src/rs_mirror.cpp src/rs_texture_delivery.cpp
@@ -582,7 +582,7 @@ target_include_directories(rs_texture_worker_test PRIVATE src)
 target_link_libraries(rs_texture_worker_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_texture_worker COMMAND rs_texture_worker_test)
 
-# G8a: the arm-time adoption pass (gate8-design.md D3-D5, D13): a born-armed hook sequence and the
+# the arm-time adoption pass: a born-armed hook sequence and the
 # walk's AdoptPlan give the same mirror state but for origin; the walk sabotages; the residue under
 # strict and skip; the configurable caps. The walk itself runs only inside Godot (run-gate8.sh g8a).
 # G8r: adopted textures and meshes equal created ones but for origin and adopted_content, the
@@ -595,7 +595,7 @@ target_include_directories(rs_adopt_test PRIVATE src vendor)
 target_link_libraries(rs_adopt_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_adopt COMMAND rs_adopt_test)
 
-# G8t: the host-decode seam (gate8-design.md D8, Q3): the decode table, the result check that
+# the host-decode seam: the decode table, the result check that
 # refuses an engine decode of the wrong format or shape, perturb-decode and the totals, against a
 # fake backend (the engine backend itself runs only inside Godot: run-gate8.sh's g8t legs).
 add_executable(rs_texture_decode_test
@@ -614,7 +614,7 @@ target_link_libraries(rs_sha256_test PRIVATE grc_warnings)
 add_test(NAME rs_sha256 COMMAND rs_sha256_test)
 
 # G8sha: the SHA-256 throughput microbench (MB/s per path on 64 B..4 KiB and 16 MiB). Built, never
-# run by ctest: it measures, it does not judge (results/gate8/g8sha.md).
+# run by ctest: it measures, it does not judge.
 add_executable(rs_sha256_bench test/rs_sha256_bench.cpp src/rs_sha256.cpp)
 target_include_directories(rs_sha256_bench PRIVATE src)
 target_link_libraries(rs_sha256_bench PRIVATE grc_warnings)
@@ -632,8 +632,8 @@ target_include_directories(rs_histogram_test PRIVATE src)
 target_link_libraries(rs_histogram_test PRIVATE grc_warnings)
 add_test(NAME rs_histogram COMMAND rs_histogram_test)
 
-# The opt-in headless CanvasTexture shim (protocol/canvas-texture-headless.md "Experiment (a)
-# result"): mode parsing, the headless-only arm decision, private RIDs at index >= 2^31 only for an
+# The opt-in headless CanvasTexture shim:
+# mode parsing, the headless-only arm decision, private RIDs at index >= 2^31 only for an
 # RID() engine result, pass-through when off or when the engine allocated, free bookkeeping.
 add_executable(rs_canvas_texture_shim_test
   test/rs_canvas_texture_shim_test.cpp src/rs_canvas_texture_shim.cpp src/report.cpp)
@@ -649,7 +649,7 @@ target_include_directories(rs_texture_release_test PRIVATE src)
 target_link_libraries(rs_texture_release_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_texture_release COMMAND rs_texture_release_test)
 
-# LAR0 (late-arm-registry-design.md): the resource registry -- kinds per tracked create, erase on
+# the resource registry -- kinds per tracked create, erase on
 # free and texture_replace, the per-family cap and overflow, the accounting identity
 # registry-live-bound judges, the timeline, the two fault knobs, the off gate, threads.
 add_executable(rs_registry_test test/rs_registry_test.cpp src/rs_registry.cpp src/report.cpp)
@@ -657,7 +657,7 @@ target_include_directories(rs_registry_test PRIVATE src)
 target_link_libraries(rs_registry_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_registry COMMAND rs_registry_test)
 
-# LS1 (live-swap-design.md D4, Q9 K1): the two shadow tables. rs_vtable_test builds both over a
+# the two shadow tables. rs_vtable_test builds both over a
 # polymorphic fake, checks which slots each replaces, the restore from either and the refusal of a
 # foreign vptr, then flips the vptr 10^6 times under 4 caller threads (neither table freed).
 # rs_standby_test is `standby-slot-census`: the standby set (rs_standby.cpp) against hooks.cpp's own
@@ -703,7 +703,7 @@ target_include_directories(rs_resource_log_test PRIVATE src)
 target_link_libraries(rs_resource_log_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_resource_log COMMAND rs_resource_log_test)
 
-# Gate 5 (G5a): the GRM1 mesh payload encoder (gate5-design.md Q4) and D7's format classification.
+# Gate 5: the GRM1 mesh payload encoder and its format classification.
 add_executable(rs_mesh_payload_test
   test/rs_mesh_payload_test.cpp src/rs_mesh_payload.cpp src/rs_sha256.cpp)
 target_include_directories(rs_mesh_payload_test PRIVATE src)
@@ -711,7 +711,7 @@ target_link_libraries(rs_mesh_payload_test PRIVATE grc_warnings)
 add_test(NAME rs_mesh_payload COMMAND rs_mesh_payload_test)
 
 # Gate 5.5 (G55a): the GRP1 shader payload encoder, the D11 token scan and the D7
-# CanvasItemMaterial template recognizer (gate5_5-design.md Q3a, Q4). Engine-free, as the GRM1
+# CanvasItemMaterial template recognizer. Engine-free, as the GRM1
 # test is.
 add_executable(rs_shader_payload_test
   test/rs_shader_payload_test.cpp src/rs_shader_payload.cpp src/rs_sha256.cpp)
@@ -744,7 +744,7 @@ add_test(NAME rs_basis_roundtrip
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test/g8kv-roundtrip.sh ${CMAKE_CURRENT_BINARY_DIR}/g8kv-roundtrip)
 set_tests_properties(rs_basis_roundtrip PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 
-# G8kc: the persisted host texture cache (texture-delivery-design.md D7, D8): put/get, reopen,
+# the persisted host texture cache: put/get, reopen,
 # verify-against-name, corrupt delete, the LRU byte budget, key validation.
 add_executable(rs_texture_cache_test test/rs_texture_cache_test.cpp src/rs_texture_cache.cpp src/rs_sha256.cpp)
 target_include_directories(rs_texture_cache_test PRIVATE src)

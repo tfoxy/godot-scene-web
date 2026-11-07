@@ -1,11 +1,11 @@
 class_name RsConfig
 extends RefCounted
-## The receiver's one configuration reader (gate7-design.md Q4 "rs_config.gd", G7e). Every
+## The receiver's one configuration reader. Every
 ## RS_RECEIVER_* value is read through get_env(): the process environment first, then
 ## `--rs-env=NAME=VALUE` from OS.get_cmdline_user_args() (the words after `--` on the command
 ## line). Natively the environment is what every runner sets, so native behaviour is unchanged.
 ## A web export has only the second: OS_Web's environment is emscripten's synthetic one, with no
-## RS_* variable (gate7-design.md Q1a "Environment"), so receiver/web/shell.html turns the page's
+## RS_* variable, so receiver/web/shell.html turns the page's
 ## `?env=` query into `--rs-env=` words after `--`.
 ##
 ## A name given twice in --rs-env keeps its last value. An empty environment value counts as

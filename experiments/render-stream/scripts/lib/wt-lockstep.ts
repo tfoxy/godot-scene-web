@@ -57,8 +57,7 @@ export function readPageState(): PageState {
  * default, or "live", the pre-CAR10 path) and `wedge` (per-write probability, 0 = off) with
  * `seed`. The wedge injector models the CAR10 defect of Chrome on Android in any Chromium: once a
  * stream wedges, its writes still resolve, nothing more reaches the wire and its close never
- * settles (for a unidirectional stream the wedging write itself gets through half the time, as
- * the g31 showed). */
+ * settles (for a unidirectional stream the wedging write itself gets through half the time). */
 export function pageHtml(bundle: string): string {
   return `<!doctype html><meta charset="utf-8"><title>wt lockstep</title><script>
 // Diagnostics: every stream write the page issues, and how many settled.

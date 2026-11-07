@@ -429,9 +429,8 @@ describe("frozen WebGPU shader surfaces swap through the capture hook", () => {
   // ---- the blank guard -------------------------------------------------------------------------
   //
   // A device that reads back NOTHING — the readback completes, reports no error, and the bytes are
-  // all zero. Measured for real, headed under Xvfb on Chrome's default ANGLE backend
-  // (docs/perf-harness.md, S8): every surface swapped, every counter said so, and the page showed
-  // nothing. `renderedPixel: null` is that device.
+  // all zero, as headed Chrome under Xvfb on its default ANGLE backend can do: every surface
+  // swaps, every counter says so, and the page shows nothing. `renderedPixel: null` is that device.
 
   it("a readback that comes back EMPTY refuses the swap and leaves the canvas up", async () => {
     const handle = withWebgpu({ renderedPixel: null });

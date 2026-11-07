@@ -1,12 +1,12 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Q7's pixel policy for the GSW canvas receiver (gate7-design.md Q7, D8, G7a): per gate and step,
+// Q7's pixel policy for the GSW canvas receiver: per gate and step,
 // the masks the hand model does not decide exactly, derived from each gate's OWN expected.json and
 // models, never from a GSW run, and committed as fixtures/gsw-tolerance.json.
 //
 //   delta1     translucent blends: Godot blends straight alpha in the blend unit
 //              (SRC_ALPHA, ONE_MINUS_SRC_ALPHA), GSW premultiplied in the shader (ONE,
-//              ONE_MINUS_SRC_ALPHA); equal in exact arithmetic, a level apart after rounding
-//              (memory g7c-gpu-blend-conversion-facts). Channel <= 1, any count.
+//              ONE_MINUS_SRC_ALPHA); equal in exact arithmetic, a level apart after rounding.
+//              Channel <= 1, any count.
 //   undecided  linearly filtered texture draws (the hand model samples texel centres only) and,
 //              for gate 3c, the rotated-edge band of gate3x-expected.ts (`band_px` around every
 //              non-axis-aligned edge, where the rasterizer's own edge rule decides). Diffs are
@@ -240,7 +240,7 @@ function gate5(rel: string, raster: RasterKey): GateTolerance {
   };
 }
 
-/** G7g: gate 6's `animate` variant (gate6-design.md Q6d) on the default scene's per-shot model.
+/** G7g: gate 6's `animate` variant on the default scene's per-shot model.
  * Its continuous writes move or redraw five regions the default shots do not model: SC (the
  * v_scroll triangle wave), LB (the frame counter), CD (`k = ⌊f/15⌋ mod 4`), TR and RT (TEXA's
  * in-place updates). There every pixel the default model decides is `delta1` instead (what is
@@ -290,7 +290,7 @@ interface CimOp {
  * blend unit, from the fixture's own op lists (the effective blend of each item at each step):
  * a translucent mix, add, sub or premul_alpha, and mul at any alpha. The rendered reference
  * blends in the native GL driver; ANGLE/Vulkan converts the source to the target's levels before
- * the blend (memory g7c-gpu-blend-conversion-facts), so a product of source and destination may
+ * the blend, so a product of source and destination may
  * round one level apart. An opaque mix, add or sub (a replace or a sum of whole levels) and
  * `disabled` (no blend) stay decided. */
 function gate55cim(variant: "base" | "modulate"): GateTolerance {

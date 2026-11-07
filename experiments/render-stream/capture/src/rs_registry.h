@@ -1,4 +1,4 @@
-// The late-arm resource registry (protocol/late-arm-registry-design.md, LAR0): one entry per live
+// The late-arm resource registry: one entry per live
 // RID the hooks saw created, so a later arm can tell what each referenced RID is without
 // inferring it from a failed getter.
 //

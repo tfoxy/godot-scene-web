@@ -69,8 +69,8 @@ const SWAP_FIXTURE_NAMES = ["textured", "shader-wave"] as const;
 /**
  * PER-CHANNEL tolerance, in premultiplied space.
  *
- * OBSERVED: **0** on both fixtures, stable over three runs (chromium headless
- * `--use-angle=vulkan`, real nvidia adapter, 2026-08-20) — the round trip is EXACT here, which is
+ * OBSERVED: **0** on both fixtures, stable over repeated runs (chromium headless
+ * `--use-angle=vulkan`, hardware adapter) — the round trip is EXACT here, which is
  * the strongest thing this file could have found: PNG is lossless, the decoder is exact, and the
  * unpremultiply/re-premultiply pair happens to be its own inverse over the values these fixtures
  * produce.
@@ -104,7 +104,7 @@ const CHROME_ARGS = ["--enable-unsafe-webgpu", "--enable-features=Vulkan"];
 
 /**
  * The launch ladder, and the order, are `webgpuParityBrowser.test.ts`'s — measured there, and the
- * same constraints apply here: `--use-angle=vulkan` is the only rung on this box that reaches the
+ * same constraints apply here: `--use-angle=vulkan` is the only rung that reliably reaches the
  * REAL adapter without a display, headless-default lands on SwiftShader (whose device is lost a few
  * hundred ms in), and the headed rung needs DISPLAY. This suite needs strictly less than that one
  * (no WebGL side at all), but a rung that cannot render WebGPU cannot run it either.
@@ -231,7 +231,7 @@ async function probeBrowser(
     if (still.staticImagesLive < 1) {
       // `blankCaptures` is the rung's own verdict on itself: the readback ran and produced an
       // entirely transparent frame, so this configuration would have measured a PNG of nothing. The
-      // ladder moves on, which is exactly what it should do (see docs/perf-harness.md, S8).
+      // ladder moves on, which is exactly what it should do.
       return `the probe fixture never swapped (captures=${still.staticImageCaptures}, captureFailures=${still.staticImageCaptureFailures}, blankCaptures=${still.staticImageBlankCaptures})`;
     }
   } catch (error) {
@@ -421,8 +421,8 @@ describe("frozen WebGPU surfaces publish an <img> that matches the frame it repl
       expect(frame.staticImageCaptureFailures).toBe(0);
       // THE BLANK GUARD MUST STAY QUIET ON THIS RUNG. It refuses a readback that comes back
       // entirely transparent for a surface the renderer knows it drew — the launch-mode hazard this
-      // suite's ladder exists to avoid (headed + default ANGLE reads back nothing; see
-      // docs/perf-harness.md, S8). Here the readback works, so a non-zero would mean the guard is
+      // suite's ladder exists to avoid (headed + default ANGLE reads back nothing). Here the
+      // readback works, so a non-zero would mean the guard is
       // firing on frames that are real — and every pixel assertion below would then be untested,
       // because a refused capture publishes no `<img>` at all.
       expect(

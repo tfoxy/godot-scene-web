@@ -43,7 +43,7 @@ import { runGate55v } from "./lib/gate55v-checks";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
 
-/** Every group of protocol/gate5_5-design.md "Increments", and those whose increment landed. */
+/** Every group, and those whose increment landed. */
 export const ALL_GROUPS = [
   "g55b",
   "g55c",

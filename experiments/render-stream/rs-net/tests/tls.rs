@@ -1,5 +1,5 @@
 //! The sans-IO TLS server session (src/tls.rs) through its C ABI, `grc_net_tls_v1()`, exactly as
-//! the capture's `ws` carrier drives it (carrier-design.md D12, CAR4 "Checks"), against a rustls
+//! the capture's `ws` carrier drives it, against a rustls
 //! client. The certificates are generated here, at test time (a test CA and a leaf it signs),
 //! written to a temporary directory and never committed.
 

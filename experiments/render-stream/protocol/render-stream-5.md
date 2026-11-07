@@ -1,25 +1,23 @@
 # render-stream/5 wire format
 
-Status: specified and golden-tested at G55w (2026-10-10); since G55d (2026-10-11) the capture, the
-receiver and every gate runner speak /5 (gate5_5-design.md D1, D17, "As built (G55d)"). Written
-with [gate5_5-design.md](gate5_5-design.md) Q4, which this document implements. Codecs (G55w): C++ encoder/diff (`capture/src/rs2_codec.*`, `rs2_diff.*`,
-behind `Session::version`), TypeScript decoder/validator/resolver (`scripts/lib/render-stream-2.ts`,
-behind an explicit `version` parameter) and GDScript decoder (`receiver/rs2_decoder.gd`), all
-checked byte-for-byte and state-for-state against `protocol/golden-5/`, per this text. The shader
-payload format (`render-stream-shader/1`, "Shader payload" below) has its own read-side modules:
+Status: frozen. The capture, the receiver and every gate runner speak /5. Codecs: C++ encoder/diff
+(`capture/src/rs2_codec.*`, `rs2_diff.*`, behind `Session::version`), TypeScript
+decoder/validator/resolver (`scripts/lib/render-stream-2.ts`, behind an explicit `version`
+parameter) and GDScript decoder (`receiver/rs2_decoder.gd`), all checked byte-for-byte and
+state-for-state against `protocol/golden-5/`, per this text. The shader payload format
+(`render-stream-shader/1`, "Shader payload" below) has its own read-side modules:
 `scripts/lib/render-stream-shader.ts` and `receiver/rs_shader_payload.gd`, parallel to the mesh
 payload's `rs_mesh_payload.*` and the texture payload's `rs_texture_payload.*`.
 [render-stream-4.md](render-stream-4.md), [render-stream-3.md](render-stream-3.md) and
 [render-stream-2.md](render-stream-2.md) are not superseded: `golden-2/` through `golden-4/` keep
-passing unchanged (gate5_5-design.md D1).
+passing unchanged.
 
-As with /3 and /4 (memory g4e1-rs3-version-switch-pattern), /5 is **not** a new forked module. The
-version-parameterized C++/TypeScript/GDScript modules /4 already extended grow a fourth value:
-C++'s `Session::version` gains `ProtocolVersion::V5` (still defaulting to `V2`, so every existing
-/2/3/4 caller is unaffected), and the TypeScript/GDScript `version` parameter widens to
-`2 | 3 | 4 | 5` (defaulting to `3` until G5d, `4` from G5d and `5` since G55d, when the capture and the receiver
-switched to /5). Renaming `rs2_codec.*`/`rs2_diff.*`/`render-stream-2.ts`/
-`rs2_decoder.gd` is not part of this document.
+As with /3 and /4, /5 is **not** a new forked module. The version-parameterized
+C++/TypeScript/GDScript modules /4 already extended grow a fourth value: C++'s `Session::version`
+gains `ProtocolVersion::V5` (still defaulting to `V2`, so every existing /2/3/4 caller is
+unaffected), and the TypeScript/GDScript `version` parameter widens to `2 | 3 | 4 | 5` (defaulting
+to `5` since the capture and the receiver switched to /5). Renaming
+`rs2_codec.*`/`rs2_diff.*`/`render-stream-2.ts`/`rs2_decoder.gd` is not part of this document.
 
 render-stream/5 is render-stream/4 plus:
 
@@ -92,7 +90,7 @@ A new session key, after `resources`:
 "materials": {"shader_policy": "source" | "params" | "exclude"}
 ```
 
-gate5_5-design.md D4: `GRC_SHADER_POLICY`, default `source`. `source` carries shader code as a
+`GRC_SHADER_POLICY`, default `source`. `source` carries shader code as a
 `GRP1` payload under the ordinary resource policy. `params` withholds the code (shader entries
 carry `"source":"withheld"`, with the hash and size the payload would have had, so no code byte
 reaches the stream, the store or HTTP). `exclude` makes every shader entry `"unsupported"`
@@ -113,17 +111,15 @@ policy leg (its own small recording, not part of the shared `full`/`patch`/`inli
 - `observed_unsupported_ops`: /4's list loses `canvas_item_set_material` (superseded by item-level
   material state) and gains `canvas_light_attach_to_canvas`, re-sorted.
 - `unobserved`: /4's list loses `canvas_item_set_instance_shader_parameter` and
-  `canvas_set_modulate` (both now hooked and observed) and gains D16's five:
+  `canvas_set_modulate` (both now hooked and observed) and gains five concepts:
   `global_shader_parameter_add`, `global_shader_parameter_remove`, `global_shader_parameter_set`,
   `global_shader_parameter_set_override`, `material_set_next_pass`, `material_set_render_priority`,
-  `shader_set_path_hint` (D16 names five concepts; `global_shader_parameter_*` is four distinct
-  setters), re-sorted.
+  `shader_set_path_hint` (`global_shader_parameter_*` is four distinct setters), re-sorted.
 - Every other `features` key is unchanged.
 
 ### Sabotage
 
-Sabotage kinds: /4's, plus `perturb-shader`. Its `op` is `null`, like every kind but `omit-op`
-(gate5_5-design.md Q3c).
+Sabotage kinds: /4's, plus `perturb-shader`. Its `op` is `null`, like every kind but `omit-op`.
 
 ## Canvas
 
@@ -148,12 +144,12 @@ content_version commands
 ```
 
 `material` is a resolved material-table id or `null` (no material set, or an unknown RID --
-`unknown-material`, below). `use_parent_material` follows the parent chain while set
-(gate5_5-design.md D9); the *effective* material an item draws with is not itself carried on the
+`unknown-material`, below). `use_parent_material` follows the parent chain while set;
+the *effective* material an item draws with is not itself carried on the
 wire -- a consumer wanting it follows `use_parent_material` up the parent chain the same way the
 engine does. `instance_params` is `[<param>]` (below), sorted strictly ascending by name. `material`,
-`use_parent_material` and `instance_params` are item state, never bump `content_version` (D9:
-setting a material does not redraw).
+`use_parent_material` and `instance_params` are item state, never bump `content_version`
+(setting a material does not redraw).
 
 ## Shader table
 
@@ -172,17 +168,16 @@ patch transactions only (ascending, no duplicates). A shader entry:
  "default_textures":[{"name":<str>,"index":<int>,"tex":<int>}, ...]}
 ```
 
-- `id` has its own per-session counter, starting at 1, never reused (gate5_5-design.md D5): a
+- `id` has its own per-session counter, starting at 1, never reused: a
   shader id, a material id, a texture id and a mesh id never collide, and creating one never
-  perturbs any other table's id sequence. **No tombstones** -- D5: GLES3 unreferences on free
+  perturbs any other table's id sequence. **No tombstones** -- GLES3 unreferences on free
   (freeing a shader sets every material that used it to no shader), so nothing can name a freed
   shader entry; `status` is only `"ok"`/`"unsupported"`, never `"freed"`.
 - `reason` is non-null exactly for `status: "unsupported"` (`shader-entry`). Shader reasons:
   `shader-mode`, `shader-screen-texture`, `shader-sdf`, `shader-time`, `shader-global-uniform`,
-  `shader-excluded`, `payload-too-large`, `payload-unavailable` (gate5_5-design.md D11, D4). P3-ST
-  (2026-10-25): the capture no longer produces `shader-screen-texture` (a `hint_screen_texture`
-  shader is `ok`, `uses` naming `screen_texture`); the reason stays valid on the wire
-  (gate5_5-design.md "Screen texture (P3-ST)").
+  `shader-excluded`, `payload-too-large`, `payload-unavailable`. The capture
+  no longer produces `shader-screen-texture` (a `hint_screen_texture`
+  shader is `ok`, `uses` naming `screen_texture`); the reason stays valid on the wire.
 - `version` starts at 1 and increments by 1 on every accepted mutating call to that shader; it
   never decreases and is monotonic per id across the whole stream (`shader-version`, mirroring
   `texture-version`/`mesh-version`, but with no `"freed"` exception: at an equal version the entry
@@ -190,19 +185,19 @@ patch transactions only (ascending, no duplicates). A shader entry:
 - `mode`/`source`/`hash`/`payload_bytes` are null/null/null/0 together exactly when the shader has
   no code yet (a freshly-created, still-codeless shader); otherwise `mode` is the engine's
   `shader_type`, `source` is `"payload"` (code travels as a `GRP1` resource) or `"withheld"`
-  (D4's `params` policy: no payload, but `hash`/`payload_bytes` are still the hash and size the
+  (the `params` policy: no payload, but `hash`/`payload_bytes` are still the hash and size the
   payload would have had), and `payload_bytes` is the whole `GRP1` payload's length (not the code
   bytes alone).
-- `builtin` is non-null exactly for a recognized `CanvasItemMaterial` shader (gate5_5-design.md
-  D7: the capture compares the code, after its version-comment line, against the 36 blend × light
+- `builtin` is non-null exactly for a recognized `CanvasItemMaterial` shader (the
+  capture compares the code, after its version-comment line, against the 36 blend × light
   × particles templates): `blend_mode`/`light_mode`/`particles_animation` name the recognized
   template, so a consumer never needs a GLSL parser for it.
-- `uses` lists every D11 dependency the shader's code mentions (a token scan outside comments, not
+- `uses` lists every dependency the shader's code mentions (a token scan outside comments, not
   after `.`), sorted ascending without repeats: `global_uniform`, `instance_uniform` (a
   non-`CanvasItemMaterial` shader with instance-uniform declarations), `light`, `screen_texture`,
   `sdf`, `time`. A `"shader-mode"`/`"shader-screen-texture"`/`"shader-sdf"`/`"shader-time"`/
-  `"shader-global-uniform"` `reason` is the first match in that fixed order (gate5_5-design.md
-  D11), independent of `uses`'s own sort order.
+  `"shader-global-uniform"` `reason` is the first match in that fixed order,
+  independent of `uses`'s own sort order.
 - `default_textures` is `[{"name","index","tex"}]`, sorted strictly ascending by `(name, index)`;
   `tex` names an entry in the resolved texture table.
 
@@ -220,7 +215,7 @@ transactions only (ascending, no duplicates). A material entry:
 
 - `id`/`version`/no-tombstones follow the shader table's rules exactly, in the material id space.
 - `reason` is non-null exactly for `status: "unsupported"` (`material-entry`). Material reasons:
-  `unknown-shader` (gate5_5-design.md D7's cache trap: a material whose shader-cache key was first
+  `unknown-shader` (a material whose shader-cache key was first
   used before arming), `unknown-texture` (a parameter or default texture naming an unknown RID),
   `param-type`, `param-range`.
 - `shader` names an entry in the resolved shader table, or `null` (no shader set yet).
@@ -233,8 +228,7 @@ A material entry's shape rule (`material-entry`): `"reason"` must be null exactl
 
 ### `<param>`
 
-Shared shape for a material's own parameters and an item's `instance_params` (gate5_5-design.md
-D8):
+Shared shape for a material's own parameters and an item's `instance_params`:
 
 ```json
 {"name":<str>,"type":<variant type>,"n":<int>,"tex":<int>|null,"f":<int>}
@@ -246,7 +240,7 @@ D8):
 - `tex` is non-null exactly for `type: "rid"` (a resolved texture-table id); null for every other
   type (`param-entry`).
 - `f` is a running offset into `param_f64`, counted over **materials in table order first, then
-  items' `instance_params` in item order** (`param-offset`, gate5_5-design.md D8) -- not simply
+  items' `instance_params` in item order** (`param-offset`) -- not simply
   "this entry's own table", since the block is shared between the two. The float count consumed
   is `n ×` the type's component count: 0 for `nil`/`rid`; 1 for `bool`/`int`/`float` and every
   packed array's per-element count; 2 for `vector2`/`vector2i`; 3 for `vector3`/`vector3i`; 4 for
@@ -258,7 +252,7 @@ D8):
 New at /5, alongside /2's `unsupported-texture` and /4's `unsupported-mesh`:
 
 - `{"op":"canvas_item_set_material","item":<id>,"reason":"unsupported-material"}`: the item's
-  effective material (D9: its own `material`, or the nearest ancestor's while
+  effective material (its own `material`, or the nearest ancestor's while
   `use_parent_material` chains up) is itself `"unsupported"`, names an `"unsupported"` shader, or
   names a texture parameter or default texture whose resolved entry is `"unsupported"`.
   Independently reconstructable from the resolved state (the only one of the three that is), so a
@@ -285,7 +279,7 @@ New sticky, session-level (`"item":null`) entry:
 {"op":"canvas_light_attach_to_canvas","item":null,"reason":"canvas-light"}
 ```
 
-gate5_5-design.md D10, D16: a `Light2D` attached to a non-null canvas is typed `unsupported`; this
+A `Light2D` attached to a non-null canvas is typed `unsupported`; this
 entry records that it happened at all, once, for the whole session (not per item -- `Light2D` is
 not a `CanvasItem`). Like every session-level entry, it must sort before every item-level entry in
 `unsupported[]` (the existing cross-version ordering invariant); among session-level entries
@@ -306,7 +300,7 @@ separate `data_len` (unlike `render-stream-texture/1`) -- the payload simply end
 length. The hash is the SHA-256 of the whole payload (magic through the end of `data`), exactly as
 a texture or mesh payload's hash is. A `"withheld"` shader entry's `hash`/`payload_bytes` are the
 hash and size this payload would have had, even though the payload itself never exists on the wire,
-in the store or over HTTP (D4).
+in the store or over HTTP.
 
 Errors: `payload-magic` (bad magic), `payload-meta` (meta is not well-formed canonical JSON with
 exactly the keys above, or `type` is not `"shader-code"`), `payload-length` (the trailing byte
@@ -363,7 +357,7 @@ materials -- same scene, items, textures, meshes and commands as golden-4, none 
   `unsupported-material` on the item naming it; a second item naming an unknown material RID
   (`unknown-material`); a material whose `"param-type"` reason covers an unsupported-typed
   parameter; a third item with an instance `"param-type"` entry; and the session-level
-  `canvas-light` entry. gate5_5-design.md's own "As built (G5d)" finding (golden-4 state 8's
+  `canvas-light` entry. A known golden-4 defect (state 8's
   `add_triangle_array` has `count` 3 over 6 indices, which the real engine's
   `count × 3 <= indices.size()` rule refuses -- `renderer_canvas_render.h`'s `Polygon::create`)
   would otherwise carry forward into every golden-5 state derived from golden-4's state 8 onward;
@@ -371,8 +365,8 @@ materials -- same scene, items, textures, meshes and commands as golden-4, none 
   golden-5 state inherits an engine-invalid fixture.
 
 `full.rs5`, `patch.rs5` and `inline.rs5` resolve to one `resolved.json` (gate 2's exceptions:
-`session_id`/`stream_id`/per-transaction `encoding` omitted, memory
-rs1-resolved-json-excepted-fields). `params.rs5` (`materials.shader_policy: "params"`) is a
+`session_id`/`stream_id`/per-transaction `encoding` omitted, as in
+render-stream-1.md "Golden vectors"). `params.rs5` (`materials.shader_policy: "params"`) is a
 separate, independent small recording -- not a leg of the shared `full`/`patch`/`inline` streams --
 resolving to its own `resolved-params.json`, with every shader entry `"source":"withheld"` and no
 `GRP1` resource records at all. Shader code and mesh surface payloads are kept small and synthetic
@@ -405,16 +399,24 @@ vectors (unaffected).
 ## Live transport
 
 As /4, except the subprotocol is `render-stream.5` and the hello's `protocol` is
-`"render-stream/5"`. The capture's listener and the receiver's live client speak it since G55d.
+`"render-stream/5"`. The capture's listener and the receiver's live client speak it.
 
 ## Optional keys: unknown-item skip
 
 A capture armed with the opt-in `GRC_UNKNOWN_ITEM=skip` adds two keys that no other session or
 transaction carries: `"unknown_item_policy":"skip"` in the session, right after `sabotage`, and,
 in every one of that session's transactions, `"unknown_items":{…}` right after `unsupported`.
-[unknown-item-skip.md](unknown-item-skip.md) specifies both, with their validation (`meta-schema`
-otherwise) and the reason the version does not change. A strict recording, every golden vector
-included, never contains either key.
+`"skip"` is the policy's only legal value; an absent key is the only spelling of strict.
+`unknown_items` is exactly `{"unknown_rids","withheld_items","withheld_commands","unknown_calls"}`,
+four non-negative integers: the unknown canvas/item RIDs named since arming and not freed, the
+known items withheld at this transaction (their parent chain reaches an unknown RID), the commands
+those items hold, and the hook calls that named an unknown RID since arming (cumulative). Like
+`unsupported` it is complete and never patched. Each of these is `meta-schema`: either key at /2 or
+/3; a policy value other than `"skip"`; an `unknown_items` that is not exactly those four
+non-negative integers; `unknown_items` present when the session does not declare `skip`, or absent
+when it does. The version does not change: every strict recording stays byte-identical, and a
+decoder that predates the keys refuses a skip session with `meta-schema`, which fails closed. A
+strict recording, every golden vector included, never contains either key.
 
 ## Versioning
 
@@ -424,10 +426,10 @@ format is a new version.
 ## As built (G55w)
 
 - The wire's Variant type spellings (`VARIANT_TYPES` in all three codecs) are this codec's own
-  decision, not quoted verbatim from gate5_5-design.md D8: snake_case, matching the engine's own
+  decision: snake_case, matching the engine's own
   `Variant::Type` names lowercased (`vector2`, `transform2d`, `packed_float64_array`, ...), for
   consistency with every other enum string already on this wire (`"ok"`, `"unsupported-op"`,
-  `"canvas_item"`, ...). `VARIANT_COMPONENTS` maps each to the float count D8 specifies.
+  `"canvas_item"`, ...). `VARIANT_COMPONENTS` maps each to its float count (`<param>` above).
 - The `canvas-light` session-level entry sorts **first** among `unsupported[]`'s session-level
   entries (ahead of `non-root-viewport`/`extra-canvas`/`degenerate-host-size` were any to co-occur
   with it), to satisfy the pre-existing cross-version invariant that every session-level entry
@@ -454,8 +456,8 @@ format is a new version.
   shared** fix: the Python generator edits its own `item7_immediate_ops()` directly, and the C++
   test edits only a `rs5_codec_test.cpp`-local wrapper around the shared `golden::state()`/
   `golden::item7_immediate_ops()` helpers `rs4_codec_test.cpp` still uses unchanged -- `golden-4/`
-  and its own test stay byte-for-byte frozen, carrying the engine-invalid fixture gate 7's
-  conformance notes already flag (gate5-design.md "As built (G5d)").
+  and its own test stay byte-for-byte frozen, carrying the known engine-invalid
+  fixture.
 - `params.rs5`'s own leg lives in `index.json`'s `params_leg` key, not folded into the shared
   `valid` list: it is a genuinely independent small recording (a different scene, a different
   shader policy) that resolves against its own `resolved-params.json`, so comparing it against the

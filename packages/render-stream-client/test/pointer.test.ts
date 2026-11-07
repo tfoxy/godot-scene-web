@@ -1,4 +1,4 @@
-// INP1 (client-extensions-design.md "As built (INP1)"): the picture's layout on the page and the
+// The picture's layout on the page and the
 // points across it. The letterbox maps to null, whatever the presentation's aspect.
 
 import { describe, expect, it } from "vitest";

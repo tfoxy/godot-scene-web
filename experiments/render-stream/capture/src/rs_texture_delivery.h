@@ -1,17 +1,15 @@
-// The texture-delivery seam (texture-delivery-design.md D1, D4, D5, D6; G8k9 landed the seam, the
-// G8kp/G8ku/G8ke increments fill it).
+// The texture-delivery seam (render-stream-9.md).
 //
-// GRC_TEXTURE_DELIVERY=rgba|passthrough|basis-uastc|basis-etc1s (D1, default rgba) names the
+// GRC_TEXTURE_DELIVERY=rgba|passthrough|basis-uastc|basis-etc1s (default rgba) names the
 // variants the host offers per texture. At /9 the session declares the mode and the encoder
 // (`resources.texture_delivery`), and each ok image texture entry lists the variants the host has
-// ready (`variants`, D5/D6). G8k9 landed the wire and the plumbing (the mode parsed and declared,
-// the encoder null, no variant). G8kp fills `passthrough`: a block-compressed source that the host
-// decodes (G8t) also keeps its hooked bytes as a `block` variant, a GRT1 payload in the source's
-// own block format (render-stream-9.md "Texture payload"), hashed where the decoded payload is
-// (the calling thread, or G8kw's worker). G8ku fills `basis-uastc`: on top of passthrough's
-// variants, every D12-eligible image gets a `uastc` variant (a KTX2 payload), encoded lazily on the
-// encode pool (rs_texture_basis.h) and published per D6 as a patch entry with one more variant at
-// an equal `version`. `basis-etc1s` stays refused at /9 (`delivery_mode_implemented`) until G8ke. Below /9 nothing here runs: the hooks build a
+// ready (`variants`). `passthrough`: a block-compressed source that the host decodes also keeps
+// its hooked bytes as a `block` variant, a GRT1 payload in the source's own block format
+// (render-stream-9.md "Texture payload"), hashed where the decoded payload is (the calling
+// thread, or a worker). `basis-uastc`: on top of passthrough's variants, every eligible image gets
+// a `uastc` variant (a KTX2 payload), encoded lazily on the encode pool (rs_texture_basis.h) and
+// published as a patch entry with one more variant at an equal `version`. `basis-etc1s` stays
+// refused at /9 (`delivery_mode_implemented`). Below /9 nothing here runs: the hooks build a
 // block payload only when `texture_delivery_block_enabled()` (a /9 stream under a mode offering
 // `block`), and the codec never writes the key, so the seam changes no existing byte.
 //
@@ -34,8 +32,8 @@ namespace grc {
 namespace rs {
 
 struct DeliveryPolicy {
-  // rgba | passthrough | basis-uastc | basis-etc1s (D1). Unset is `passthrough` (live-swap-design.md
-  // Q5 "TDP"); a leg that must offer `decoded` only sets GRC_TEXTURE_DELIVERY=rgba explicitly.
+  // rgba | passthrough | basis-uastc | basis-etc1s Unset is `passthrough`;
+  // a leg that must offer `decoded` only sets GRC_TEXTURE_DELIVERY=rgba explicitly.
   std::string mode = "passthrough";
   bool set = false;  // GRC_TEXTURE_DELIVERY was present and non-empty
 };
@@ -60,7 +58,7 @@ bool mode_offers_block(const std::string &mode);
 void texture_delivery_set_block(bool enabled);
 bool texture_delivery_block_enabled();
 
-// The gpu_formats family a block format belongs to (texture-delivery-design.md Q3, D3; Godot's
+// The gpu_formats family a block format belongs to (Godot's
 // feature names): "s3tc" for DXT1/DXT3/DXT5, "bptc" for BPTC_RGBA, "rgtc" for RGTC_R/RGTC_RG,
 // "etc2" for ETC and the unswizzled ETC2 family, "astc" for ASTC_4x4/ASTC_8x8. nullptr for every
 // other format, including the ones render-stream-9.md never offers as a variant (the

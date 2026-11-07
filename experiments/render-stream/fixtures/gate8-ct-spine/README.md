@@ -41,7 +41,8 @@ One 64x64 cell at (40,40), a 16x16 opaque RGBA8 pattern (distinct per seed, ever
 | 30 | quit |
 
 The capture must run on a rendered host (a private 640x360 gamescope): a headless host's dummy
-storage allocates no canvas texture (`../../protocol/canvas-texture-headless.md`). The `reference`
+storage allocates no canvas texture (`canvas_texture_allocate` returns `RID()` in
+`../godot-4.5.1-stable/servers/rendering/dummy/storage/texture_storage.h`). The `reference`
 leg runs the same project unarmed in the same private 640x360 gamescope.
 
 ## Checks (`ctsp-*`, `ct-spine-*`)

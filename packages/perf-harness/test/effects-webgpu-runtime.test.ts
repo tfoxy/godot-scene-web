@@ -91,7 +91,7 @@ describe("effects-webgpu-runtime: registry", () => {
   });
 
   it("keeps S7's arm names for the arms it continues, and takes none of S6's", () => {
-    // S7's table is what this scenario's numbers are read against (47 -> 87 Hz), so the four arms
+    // S7's table is what this scenario's numbers are read against, so the four arms
     // that exist in both are spelled the same on purpose — a reader lining the tables up should not
     // have to translate. The probe's blit arm has no counterpart: nothing shipped blits from WebGPU.
     for (const mechanism of EFFECTS_WEBGPU_RUNTIME_MECHANISMS) {
@@ -354,7 +354,7 @@ describe("effects-webgpu-runtime: metric key sets", () => {
   it("keeps the WebGL arms reporting exactly S6's keys", () => {
     // The reference arms mount the shipped runtimes with `effectsProfiling` on, so their key set is
     // `particleCounters`/`shaderCounters` plus S6's two whole-life rows. If this drifts, the
-    // in-session reference stops being comparable with S6's and S7's published tables.
+    // in-session reference stops being comparable with S6's and S7's tables.
     expect(runtimeMetricKeysFor("particles-webgl").sort()).toEqual(
       [
         "blitMs",

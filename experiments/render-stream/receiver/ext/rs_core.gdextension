@@ -1,5 +1,5 @@
-; The receiver's adapter over the shared Rust core (gate7-design.md G7xn, G7xw, Q14e), the
-; receiver's only core since G7gd. Natively, RsRustApplier.load_core() loads it at run time:
+; The receiver's adapter over the shared Rust core, the
+; receiver's only core. Natively, RsRustApplier.load_core() loads it at run time:
 ; receiver/ext/ carries a .gdignore, so the editor never registers this file. The `Web (rust
 ; core)` export (build-web-receiver.sh) stages receiver/ext/ without its .gdignore, so the editor
 ; lists this file and exports the web.wasm32 side module beside the engine, whose dlink loader

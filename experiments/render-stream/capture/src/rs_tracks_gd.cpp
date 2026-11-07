@@ -496,7 +496,7 @@ Value m_close(Instance *self, const Args &a) {
   State &s = *self->state;
   if (!main_thread(s)) return boolean(false);
   const std::int64_t code = a[1].i;
-  // /1 has one receiver close reason (tracks-design.md Q1.4); the code tells the client whether
+  // /1 has one receiver close reason; the code tells the client whether
   // to reconnect (1000) or not (4000-4999).
   if (a[2].s != "track-closed" || (code != 1000 && (code < 4000 || code > 4999))) {
     s.last_error = "track-close-invalid";

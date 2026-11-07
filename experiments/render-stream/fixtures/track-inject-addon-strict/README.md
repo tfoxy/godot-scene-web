@@ -1,4 +1,4 @@
-# track-inject-addon-strict fixture (HYG2)
+# track-inject-addon-strict fixture
 
 `../track-inject-addon` (the project ships the gsw-input addon) with GDScript warnings treated as
 errors for the addon as well. `project.godot`, `loader.gd`, `track_inject.gd`, `track_inject.tscn`
@@ -27,6 +27,6 @@ res://compile_probe.gd`), where the warnings are live, and reports (`g8l/inject/
 The sabotage `g8l/inject/sabotage-warnings` (`RS_PROBE_STRIP_WARNING_HEAD=1`) strips that head
 before both compiles: the script with the deliberate warning must then fail `reload()` with
 `Warning treated as error` (`g8l-trk-inject-sabotage-warnings`). The unmodified embedded script
-still compiles without its head, because the addon is warning-clean since HYG2; the head is the
+still compiles without its head, because the addon is warning-clean; the head is the
 guard against the next warning, not a fix for a current one. Import once with the editor
 (`--import`) before a run; the leg does.

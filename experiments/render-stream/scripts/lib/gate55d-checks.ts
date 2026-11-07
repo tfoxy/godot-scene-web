@@ -1,5 +1,4 @@
-// Gate 5.5d checks (protocol/gate5_5-design.md "G55d", D5-D10, D13-D15, Q3b, Q5, Q6b and the
-// "As built (G55b)" amendments): render-stream/5's shader and material tables, CanvasItemMaterial
+// Gate 5.5d checks: render-stream/5's shader and material tables, CanvasItemMaterial
 // end to end and the canvas modulate, over fixtures/gate55-cim in both scenes (base and variant
 // `modulate`). Pure evaluators over values already read from a run-gate55.sh evidence directory,
 // plus small loaders and runGate55d, which check-gate55.ts merges into the gate 5.5 report. Nothing
@@ -899,7 +898,7 @@ export function evaluateFreshWithoutRedraw(
 }
 
 /** applied.json render-stream-receiver-applied/5: the per-transaction shader/material counters
- * (gate5_5-design.md Q5). */
+ * */
 export const MATERIAL_COUNTERS = [
   "shaders_created",
   "shader_code_sets",
@@ -1306,7 +1305,7 @@ function legEntry(
 }
 
 /** The seqs a receiver leg asked to be shot (run-gate55.sh's shot-seqs.txt, RS_RECEIVER_SHOT_SEQS
- * as settle_seqs wrote it), else the settle seqs (memory rs-g4b-receiver-checker-facts:
+ * as settle_seqs wrote it), else the settle seqs:
  * requestedShotSeqs mirrors what each leg requested). */
 export async function requestedSeqs(
   dir: string,

@@ -33,7 +33,7 @@ import {
   type ExpectedWithDrawPaths,
 } from "./lib/gate-minus1-checks";
 
-/** Which criterion each check id belongs to: the handoff's eight gate -1 criteria, then #9
+/** Which criterion each check id belongs to: the eight gate -1 criteria, then #9
  * (calibrator-2 draw paths, toward gate -0.25) and #10 (older calibration records still load). */
 const CRITERION_NUMBER: Record<string, number> = {
   "frame-callback-ticked": 1,

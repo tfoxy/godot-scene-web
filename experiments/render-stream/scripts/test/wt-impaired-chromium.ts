@@ -1,4 +1,4 @@
-// CAR10 (protocol/carrier-design.md "As built (CAR10)"): the credit loop over WebTransport on an
+// CAR10: the credit loop over WebTransport on an
 // impaired UDP path, in the pinned headless Chromium with the client package's own WebTransport
 // transport (packages/render-stream-client/src/webtransport.ts, bundled into the page). The host
 // is rs-net-lockstep (the `wt` carrier with the hub's credit rule: a ~2.4 KB binary message every
@@ -12,7 +12,7 @@
 //   wedge       the page's wedge injector (0.3% of stream writes wedge their stream for good,
 //               the CAR10 defect of Chrome on Android, modelled) -> every message acknowledged
 //   wedge-live  the same with `uplink: "live"`, the pre-CAR10 client: the SABOTAGE leg, which
-//               must stall (the g31 freeze: the page applied everything, the host still waits)
+//               must stall (the phone freeze: the page applied everything, the host still waits)
 // A leg stalls when the host sees no credit for 5 s while it is owed one.
 //
 // Usage: mise exec -- pnpm exec tsx --conditions=development \

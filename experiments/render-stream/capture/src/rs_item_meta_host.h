@@ -1,4 +1,4 @@
-// TAG1 (protocol/client-extensions-design.md §2.2, §2.5, "As built (TAG1)"): the main thread's
+// The main thread's
 // half of item identity. While a viewer asked (the union of the granted requests is non-empty)
 // it holds the node map (rs_adopt.h node_map_acquire_tag) and, after each snapshot, resolves the
 // items created since its watermark, within GRC_ITEM_META_BUDGET_US, into the host tables. Each
@@ -46,7 +46,7 @@ struct HostStats {
     std::uint64_t frame, items, ns;
   };
   std::vector<Burst> bursts;  // passes resolving >= 16 entries (the first 256)
-  // ID3 (client-extensions-design.md ID-D4, ID-D5): the mouse_filter watch, sweep and re-stamps.
+  // the mouse_filter watch, sweep and re-stamps.
   bool v2_ever = false;            // mouse_filter was asked at some point
   std::uint64_t watches = 0;       // property_list_changed connections made
   std::uint64_t watch_ns = 0;      // in filter_watch (the connects)

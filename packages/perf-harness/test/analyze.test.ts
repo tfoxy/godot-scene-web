@@ -212,8 +212,8 @@ describe("analyzeTrace in-raster decode detection", () => {
   });
 
   it("does NOT flag cheap in-raster cache lookups", () => {
-    // Measured on a real capture: 1,484 in-raster DecodeImageIfNecessary calls totalling 2.7 ms,
-    // all cache hits. Counting lookups would fire the hard-failure alarm on every healthy run.
+    // A real capture carries over a thousand cheap in-raster DecodeImageIfNecessary calls, all cache
+    // hits. Counting lookups would fire the hard-failure alarm on every healthy run.
     const events = [
       ...base,
       complete("RasterTask", 100, 5, {

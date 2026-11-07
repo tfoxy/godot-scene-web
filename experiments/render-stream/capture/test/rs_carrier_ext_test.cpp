@@ -1,4 +1,4 @@
-// CAR6 (protocol/carrier-design.md "Writing a carrier"): the consumer-carrier registry
+// the consumer-carrier registry
 // (rs_carrier_ext.h), grc_carrier_register as the real capture library exports it, and the owner
 // ledger that turns a double release into the fault `release-unknown` instead of a double free.
 //

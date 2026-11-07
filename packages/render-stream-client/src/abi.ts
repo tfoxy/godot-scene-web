@@ -1,7 +1,6 @@
 // The wasm ABI of `rs-gsw-wasm` (experiments/render-stream/web/gsw-rs/src/lib.rs, wasm-bindgen
 // `--target web`): the surface the client and the harness receiver (web/gsw-receiver/) drive, its
-// accept codes and its stats block. MIR-1 moved these from the harness's common.ts so that the ABI
-// has one owner; the harness imports them from here.
+// accept codes and its stats block. The ABI has one owner; the harness imports it from here.
 
 /** The wasm-bindgen surface of `rs-gsw-wasm` (web/gsw-rs/src/lib.rs). */
 export interface GswRs {
@@ -14,10 +13,10 @@ export interface GswRs {
   needed_kinds_ptr(): number;
   alloc_payload(len: number): number;
   provide(len: number): number;
-  /** G7o2: verify and decode a payload on arrival / provide the next needed one from there. */
+  /** Verify and decode a payload on arrival / provide the next needed one from there. */
   stage_payload(len: number, hash: string): number;
   provide_staged(): number;
-  /** G8kb: a KTX2 (uastc) payload: verified, transcoded in the worker, staged; or refused. */
+  /** A KTX2 (uastc) payload: verified, transcoded in the worker, staged; or refused. */
   is_ktx2(hash: string): boolean;
   stage_ktx2(len: number, hash: string): number;
   stage_transcoded(len: number, hash: string, format: string): number;
@@ -36,9 +35,9 @@ export interface GswRs {
   target_height(): number;
   error(): string;
   session_meta(): string;
-  /** G8kp: `{texture_encodings, gpu_formats, gpu_formats_detected, gpu_format_mask}` after start. */
+  /** `{texture_encodings, gpu_formats, gpu_formats_detected, gpu_format_mask}` after start. */
   delivery_json(): string;
-  // G7g: the window this receiver presents into, and how it adopted the session's presentation.
+  // The window this receiver presents into, and how it adopted the session's presentation.
   set_window(width: number, height: number): void;
   presentation_json(): string;
   state_dump(): string;
@@ -58,26 +57,26 @@ export interface GswRs {
     vertexGlsl: string,
   ): number;
   refuse_program(i: number, reason: string, detail: string): number;
-  // G7l live mode.
+  // Live mode.
   rx(len: number): number;
-  /** REC1: the receive buffer's current pointer (after `decode_rx`; `rx()` may have grown it). */
+  /** The receive buffer's current pointer (after `decode_rx`; `rx()` may have grown it). */
   rx_ptr(): number;
   live_session(len: number, version: number): number;
   live_accept(len: number): number;
   last_digest_ptr(): number;
   live_rebuild(): number;
-  /** GTS: a coding resync skipped transactions; the next full may jump the seq. */
+  /** A coding resync skipped transactions; the next full may jump the seq. */
   transport_skip(): void;
   dispose_json(): string;
   live_reset(keepPayloads: boolean): number;
   memory_hashes(): string;
-  // G7u: the in-place context restore (D14, D29).
+  // The in-place context restore.
   restore_missing(): string;
   restore_take(hash: string): number;
   /** Whether a payload is staged (verified on arrival, not yet in the store). */
   is_staged(hash: string): boolean;
   restore_json(): string;
-  // G7k (Q10 soak): live mode's residency and budget (D29 amendment).
+  // Live mode's residency and budget.
   residency_json(): string;
   /** W11c: "" when a GET of the hash is allowed, else the `inline-fetch-zero` refusal. */
   check_fetch(hash: string): string;
@@ -85,7 +84,7 @@ export interface GswRs {
   particles_sync(): string;
   shader_time(): number;
   particles_set(id: number, data: Float32Array): void;
-  // TAG2: client extensions (client-extensions-design.md §3).
+  // Client extensions (render-stream-13.md `item_meta`).
   item_meta_json(): string;
   set_log_removed(on: boolean): void;
   take_removed(): Uint32Array;
@@ -94,12 +93,12 @@ export interface GswRs {
   query_item(id: number): Float64Array;
   query_subtree_rect(id: number): Float64Array;
   query_children(id: number): Uint32Array;
-  // INP1: pointer mapping (client-extensions-design.md "As built (INP1)").
+  // Pointer mapping.
   hit_test(x: number, y: number): number;
   to_game(x: number, y: number): Float64Array;
-  // HIT1: the mouse filters hit tests pick by (1 STOP/PASS, 2 IGNORE or not a Control).
+  // The mouse filters hit tests pick by (1 STOP/PASS, 2 IGNORE or not a Control).
   set_hit_filters(ids: Uint32Array, filters: Uint8Array): number;
-  // ID2: the order hit tests pick by (0 HIT1's draw order, 1 Godot's GUI tree order).
+  // The order hit tests pick by (0 topmost-drawn order, 1 Godot's GUI tree order).
   set_pick_order(order: number): number;
   free(): void;
 }
@@ -128,7 +127,7 @@ export const ACCEPT_END = 2;
 export const ACCEPT_NEEDS_PAYLOADS = 3;
 /** W13c: a /13 patch dropped while a `predict-check` resync awaits its full (no apply, no ack). */
 export const ACCEPT_HELD = 4;
-/** TAG1: a /13 `item_meta` record (client-extensions-design.md §2.4): the core holds it for its
+/** A /13 `item_meta` record (render-stream-13.md): the core holds it for its
  * transaction; nothing to apply, nothing to ack, not a transaction. */
 export const ACCEPT_ITEM_META = 5;
 
@@ -163,7 +162,7 @@ export const STAT_FIELDS = [
 ] as const;
 export type StatName = (typeof STAT_FIELDS)[number];
 
-/** A reader of the stats block, its view re-derived whenever memory grew (Q14c step 5). */
+/** A reader of the stats block, its view re-derived whenever memory grew. */
 export function statsReader(
   g: GswRs,
   mem: WebAssembly.Memory,

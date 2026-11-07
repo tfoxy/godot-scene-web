@@ -1,7 +1,7 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// G7d self-test (protocol/gate7-design.md "G7d" Checks and Sabotage): the device harness, dry-run
+// G7d self-test (Checks and Sabotage): the device harness, dry-run
 // with no phone. A fake `adb` binary (written here, driven by scripts/test/device-fixtures/<id>/:
-// the g31's recorded 2026-10-15 adb excerpts and the g86's synthesized ones) and a fake DevTools
+// the g31's recorded adb excerpts and the g86's synthesized ones) and a fake DevTools
 // endpoint (HTTP /json/version plus a flattened-CDP WebSocket answering the handful of methods
 // perf-harness's openDeviceBrowser sends) let the REAL path run end to end:
 // browser-harness.ts openHarnessDevice -> perf-harness selectDevice / readDeviceProps / lock check /

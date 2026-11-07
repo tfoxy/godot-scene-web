@@ -12,7 +12,7 @@ it draws.
 The release template at
 `~/.cache/godot-render-stream/templates/4.5.1-stable/linux_release.x86_64` is an **export**
 template: it expects to run a packed `.pck`/embedded-data build, not a bare project directory of
-`.tscn`/`.gd` text files. Measured directly (see `scripts/README.md` for the reproduction):
+`.tscn`/`.gd` text files. Observed directly (see `scripts/README.md` for the reproduction):
 
 - `linux_release.x86_64 --headless --path fixtures/spike` against a **freshly checked-out**
   project (no `.godot/` yet) fails immediately with
@@ -30,8 +30,7 @@ template: it expects to run a packed `.pck`/embedded-data build, not a bare proj
   `linux_release.x86_64 --headless --path fixtures/spike` loads `spike.tscn`, runs the autoload
   and main scene, and exits 0 at frame 400.
 - `.godot/` is already covered by the repo-root `.gitignore` (`.godot/`, `*.import`, `*.uid`), so
-  it is never committed; every runner invocation re-imports before launching the template (cheap:
-  well under a second for this fixture, and idempotent).
+  it is never committed; every runner invocation re-imports before launching the template (cheap and idempotent).
 
 `scripts/run-gate-minus1.sh` and `scripts/lib/gamescope.sh` both run the import step
 (`mise exec -- godot --headless --path <project> --import`) before every launch of the release
@@ -64,7 +63,7 @@ template, for both the headless legs and the rendered gamescope legs.
   `--headless` (`DisplayServer.get_name() == "headless"`) this is skipped with a log line instead
   of awaiting a signal a truly headless run may never fire. At frame 400 it calls
   `get_tree().quit(0)`, printing `[fixture] draws=<n> frames=<n>`.
-- Calibrator-2 draw paths, added for gate −0.25. Every literal is exactly
+- Calibrator-2 draw paths. Every literal is exactly
   representable in float32. The exact values are in `expected.json`
   `draw_paths`. The canvas items are:
   - a `Panel` at (500, 20) with a rounded `StyleBoxFlat`, drawn natively through
@@ -92,7 +91,7 @@ template, for both the headless legs and the rendered gamescope legs.
   canvas item after the capture armed. The scene's own items already exist
   before the extension loads.
 
-- Calibrator-3 state hooks, added for gate 0. Nothing here draws, so the pixels
+- Calibrator-3 state hooks. Nothing here draws, so the pixels
   do not change:
   - the post-arm `Node2D` gets `z_index = 1` (`canvas_item_set_z_index`) and a
     non-white `self_modulate` (`canvas_item_set_self_modulate`). The colour is
@@ -107,14 +106,14 @@ template, for both the headless legs and the rendered gamescope legs.
     and the deferred `_set_draw_index`. Each `Control` redraw calls
     `canvas_item_set_custom_rect` and `_set_clip` (`scene/gui/control.cpp:3899-3901`).
 
-- Calibrator-4 state hooks, added for gate 1 G1e (`canvas_item_set_z_as_relative_to_parent`,
+- Calibrator-4 state hooks (`canvas_item_set_z_as_relative_to_parent`,
   `canvas_item_set_draw_behind_parent`). Nothing here draws either, so the pixels do not change:
   the same post-arm `Node2D` also gets `z_as_relative = false` and `show_behind_parent = true`.
   Neither is left at its default (`z_relative` true, `behind` false), because
   `CanvasItem::set_z_as_relative` and `set_draw_behind_parent` return early on an unchanged value
   (`scene/main/canvas_item.cpp:655-661`, `:1155-1161`) and would never reach the RenderingServer.
 
-- Calibrator-5 texture hooks, added for gate 2 G2a (`gate2-design.md` Q2), all with non-default
+- Calibrator-5 texture hooks, all with non-default
   values and none reaching the screen: the post-arm `Node2D` gets `texture_filter = NEAREST` and
   `texture_repeat = ENABLED` (`canvas_item_set_default_texture_filter`/`_repeat`; the setters
   return early on an unchanged value, `canvas_item.cpp:1626`, `:1680`); a raw placeholder is
@@ -125,12 +124,12 @@ template, for both the headless legs and the rendered gamescope legs.
   `_set_channel`, `_set_texture_filter`, `_set_texture_repeat`); and an LCD text rect lands on a
   raw canvas item that has no parent canvas (`canvas_item_add_lcd_texture_rect_region`).
 
-- Calibrator-6 hook, added for gate 3 G3d (`gate3-design.md` Q2): another raw canvas item with no
+- Calibrator-6 hook: another raw canvas item with no
   parent canvas gets `add_clip_ignore(true)`, a rect, then `add_clip_ignore(false)`
   (`canvas_item_add_clip_ignore`). As with the LCD rect above, the item never draws, so the pixels
   do not change.
 
-- Calibrator-7 hooks, added for gate 5 G5a (`gate5-design.md` Q2), closing two previously-silent
+- Calibrator-7 hooks, closing two previously-silent
   holes and exercising the new typed refusals and mesh hooks: `_draw()` gains a `draw_dashed_line`
   (dash shorter than its length, so it goes through `canvas_item_add_multiline`, never
   `canvas_item_add_line`; alpha 0) and, after every other command, a `draw_animation_slice`
@@ -143,20 +142,20 @@ template, for both the headless legs and the rendered gamescope legs.
   index-region update (`mesh_surface_update_skin_region`, `_index_region`) and its only surface
   removed (`mesh_surface_remove`). None of this draws, so the pixels do not change.
 
-- Calibrator-8 hooks, added for gate 5.5 G55a (`gate5_5-design.md` Q2), materials and canvas
+- Calibrator-8 hooks: materials and canvas
   shaders: `_ready()`'s existing `Shader`/`ShaderMaterial` on the Panel gains a `set_default_
   texture_parameter` call (naming a uniform `TINT_SHADER_B` does not declare) and an instance
   parameter on the Panel itself (`shader_set_default_texture_parameter`,
   `canvas_item_set_instance_shader_parameter`; `material_create_from_shader` and
   `material_set_param` were already exercised by that `ShaderMaterial`). A fresh
-  `CanvasItemMaterial`, recognized by D7, is set on a raw canvas item (`shader_create`,
+  `CanvasItemMaterial` is set on a raw canvas item (`shader_create`,
   `material_create` from its own constructor, `material_set_shader`); a raw child item gets
   `use_parent_material` (`canvas_item_set_use_parent_material`); a default-colour (white)
-  `CanvasModulate` is added as a child (`canvas_set_modulate`; white changes no pixel, D10); and
+  `CanvasModulate` is added as a child (`canvas_set_modulate`; white changes no pixel); and
   a raw canvas gets a light attached (`canvas_light_create`, `canvas_light_attach_to_canvas`).
   None of this draws, so the pixels do not change.
 
-- Calibrator-9 hooks, added for gate 6 G6k (`gate6-design.md` Q2): a `CanvasLayer`, parented to a
+- Calibrator-9 hooks: a `CanvasLayer`, parented to a
   throwaway `Node` so its sibling index (and so its stacking sublayer) is deterministically 0,
   gets an explicit `set_layer` (`viewport_set_canvas_stacking`), `set_follow_viewport(true)`
   (`canvas_set_parent` with a non-null parent) and then a `remove_child` (`viewport_remove_canvas`).

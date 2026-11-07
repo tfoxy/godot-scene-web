@@ -12,7 +12,7 @@
 //
 // state(8)..state(11) and their helpers are new at G5w: the ground truth for protocol/golden-4/
 // {full,patch,inline}.rs4's eighth through eleventh transactions, hand-transcribed from
-// protocol/golden-4/make_golden.py's state8()..state11(). As built (G5w): gate5-design.md's Q4
+// protocol/golden-4/make_golden.py's state8()..state11(). The original plan
 // describes three new states (8, 9, 10); this splits the "mesh version change with no item
 // change" proof point into its own state (10) so it is never conflated with another mesh
 // becoming "freed" or "unsupported" in the same transaction, and moves that content to a fourth
@@ -137,7 +137,7 @@ inline const std::vector<std::string> kPermittedFormats = {"L8", "LA8", "R8", "R
 
 // new at /3 (render-stream-3.md "Features"): kFeatureOps plus add_msdf_texture_rect_region, and
 // kFeatureObservedUnsupported without it, both re-sorted ascending by byte value.
-// canvas_item_add_clip_ignore (gate3-design.md D4, calibrator 6) stays refused at /3 too.
+// canvas_item_add_clip_ignore (calibrator 6) stays refused at /3 too.
 inline const std::vector<std::string> kFeatureOpsV3 = {
     "add_msdf_texture_rect_region", "add_rect", "add_texture_rect", "add_texture_rect_region"};
 
@@ -790,9 +790,9 @@ inline TextureEntry texture_n() {
 // --- item 6 and texture 7 ("the page"), new at /3's state 7 --------------------------------
 
 // payload_sha256() of protocol/golden-3/payloads/page.grt (make_golden.py HASH_PAGE): a 16x16
-// RGBA8 quadrant image -- a stand-in; the real atlas is 512x512 at msdf_size 48 (gate4-design.md
-// D5), but a codec-level golden only needs to exercise the wire shape, and 512x512 bloated
-// golden-3/ to 4.9 MB against golden-2's 0.8 MB (amended, "As built").
+// RGBA8 quadrant image -- a stand-in; the real atlas is 512x512 at msdf_size 48,
+// but a codec-level golden only needs to exercise the wire shape, and 512x512 bloated
+// golden-3/ to 4.9 MB against golden-2's 0.8 MB .
 inline const std::string kHashPage =
     "6d5f7f065ce133348fc1ebbd94ff4ab2dd51dd36fc5a2b8209a073126dcc2437";
 
@@ -830,7 +830,7 @@ inline TextureEntry texture_page() {
 
 // --- item 7 and state 8, new at /4 (G5w): one of every new immediate op --------------------
 
-// ARRAY_FORMAT_*/ARRAY_FLAG_* bits this test needs (gate5-design.md Q1e; render-stream-4.md
+// ARRAY_FORMAT_*/ARRAY_FLAG_* bits this test needs (render-stream-4.md
 // "Mesh payload"), carried as plain ints, never as a Mesh.ArrayFormat enum.
 inline constexpr std::int64_t kArrayFormatColor = 1 << 3;
 inline constexpr std::int64_t kArrayFormatTexUv = 1 << 4;
@@ -1014,7 +1014,7 @@ inline MaterialEntry material_entry(MaterialStatus status, std::uint64_t version
   return m;
 }
 
-// Shader 1: the builtin CanvasItemMaterial "add" blend template (gate5_5-design.md Q1e), payload
+// Shader 1: the builtin CanvasItemMaterial "add" blend template, payload
 // sha256 of protocol/golden-5/payloads/shader1-add.grp (make_golden.py HASH_SHADER1).
 inline const std::string kHashShader1 =
     "a8a44694faba8c68274a255d14ebf9a300a51baaa4c15e338ad10df6a58bcd17";
@@ -1026,12 +1026,12 @@ inline constexpr std::uint64_t kShader2V1PayloadBytes = 157;
 inline const std::string kHashShader2V2 =
     "586e44786613868036df5a0a72e1c2a512397d6300502e87d927be6ff7329dbe";
 inline constexpr std::uint64_t kShader2V2PayloadBytes = 163;
-// Shader 3, state 15: uses TIME (gate5_5-design.md D11 -> shader-time).
+// Shader 3, state 15: uses TIME (-> shader-time).
 inline const std::string kHashShader3 =
     "f50e1b48065c02d118f568210a9bb22b6923f89b2810db7d041ffc9da440394c";
 inline constexpr std::uint64_t kShader3PayloadBytes = 131;
 
-// Material 1: the builtin CIM's own three params (gate5_5-design.md Q1a), sorted by name.
+// Material 1: the builtin CIM's own three params, sorted by name.
 inline std::vector<Param> material1_params() {
   return {
       make_param("particles_anim_h_frames", VariantType::Int, {1.0}),
@@ -1040,7 +1040,7 @@ inline std::vector<Param> material1_params() {
   };
 }
 
-// Material 2: one param of EVERY supported Variant type (gate5_5-design.md D8), sorted by name.
+// Material 2: one param of EVERY supported Variant type, sorted by name.
 // p_rid names texture 7 ("the page"), already present in the resolved table from state 7 on.
 inline std::vector<Param> material2_params_v1() {
   return {
@@ -1164,7 +1164,7 @@ inline ItemState item15_unsupported_material() {
 }
 
 inline ItemState item16_unknown_material() {
-  // gate5_5-design.md Q3b: an unknown non-null material RID -> wire "material": null, plus the
+  // An unknown non-null material RID -> wire "material": null, plus the
   // derived unknown-material entry.
   ItemState it;
   it.id = 16;
@@ -1218,7 +1218,7 @@ inline const UnsupportedRef kParamTypeItem17 = []() {
 
 // Session-level (item: null), sticky. As built (G55w): sorts FIRST among unsupported[] entries --
 // every protocol version's validator already requires every session-level entry to precede
-// every item-level one, so a sticky entry observed mid-stream (gate5_5-design.md D10) is still
+// every item-level one, so a sticky entry observed mid-stream is still
 // reported at the front, not at the position it was first observed.
 inline const UnsupportedRef kCanvasLight = []() {
   UnsupportedRef u;

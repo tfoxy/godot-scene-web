@@ -5,7 +5,7 @@
 //
 //   mise exec -- pnpm exec tsx --conditions=development scripts/test/self-test-rs1.ts
 //
-// Checks, each required by gate1-design.md's G1b1 "Pass criteria":
+// Checks, each required by the contract's G1b1 "Pass criteria":
 //   - decodeRecording(full.rs1) deep-equals full.decoded.json, same for patch.rs1;
 //   - recordSha256() reproduces every record's sha256 in both decoded forms;
 //   - validateRecording() of both valid vectors is [];

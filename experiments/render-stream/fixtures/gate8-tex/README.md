@@ -1,8 +1,6 @@
 # Gate 8 texture fixture (`gate8-tex`, G8t and G8f)
 
-The fixture for gate 8's host decode of block-compressed textures
-([`../../protocol/gate8-design.md`](../../protocol/gate8-design.md) D8, "Q3. Compressed and float
-textures"). Every texture is created after arm, as in the STS2 census (Q1e), so it needs no
+The fixture for gate 8's host decode of block-compressed textures. Every texture is created after arm, so it needs no
 adoption. The project does not know about the capture and runs the same whether `GRC_EXTENSION`
 is set or not.
 
@@ -41,10 +39,10 @@ Every pixel is a pure function of its coordinates, so the sources are identical 
   and never drawn. `RS_FIXTURE_SOURCE=decoded` draws the oracle's decoded payloads instead of the
   `.ctex` files (the `reference` leg); `RS_FIXTURE_VARIANT=cost` creates only the 2048×2048 cost
   textures, one per frame from frame 2 (the `decode-cost` leg).
-- `oracle.gd`: the decode oracle (D15 (3)), a separate headless template process run with
+- `oracle.gd`: the decode oracle, a separate headless template process run with
   `--script`: it loads every `.ctex`, decodes a duplicate with `Image.decompress()` and records the
-  GRT1 payload's SHA-256 (`oracle.json`) and the payload itself (`<name>.<family>.grt1`); since
-  G8kp also the `.ctex`'s own block bytes as a GRT1 payload in their block format
+  GRT1 payload's SHA-256 (`oracle.json`) and the payload itself (`<name>.<family>.grt1`); also
+  the `.ctex`'s own block bytes as a GRT1 payload in their block format
   (`<name>.<family>.block.grt1`, `block_payload_sha256`), what a `passthrough` capture's `block`
   variant must equal (run-gate8.sh's `g8kp` group). With
   `RS_ORACLE_TIMING=1` it times the decode of the cost textures instead, best of 3.
@@ -52,7 +50,7 @@ Every pixel is a pure function of its coordinates, so the sources are identical 
   2's, deliberately not shared with the capture or the receiver).
 - `expected.json` (`render-stream-gate8-tex-expected/1`): per texture and family, the format the
   importer produces and the payload format the decode publishes, or the typed refusal; the cost
-  textures; the design's measured decode times for comparison; the engine's hue strip.
+  textures; the engine's hue strip.
 
 ## Expected
 
@@ -83,7 +81,7 @@ ETC and ASTC_8x8 (same decoders, RGBA8 output); the other five stay `unsupported
 
 `gate8_float.tscn` / `gate8_float.gd` is a second main scene of the same project, run by
 `run-gate8.sh`'s `g8f` group (`expected-float.json`, `render-stream-gate8-float-expected/1`). It models
-STS2's float textures (gate8-design.md Q1e, D9): small curve and gradient textures, mostly made on
+a game's float textures: small curve and gradient textures, mostly made on
 loader threads, used as shader inputs. Thirteen float textures, all created after arm:
 
 | texture | made by | format and shape |

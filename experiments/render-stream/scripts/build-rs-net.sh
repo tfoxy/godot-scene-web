@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build render-stream's net module (protocol/carrier-design.md D8, CAR3): rs-net, a Rust cdylib on
+# Build render-stream's net module: rs-net, a Rust cdylib on
 # the stable toolchain (every crate from the local registry, pinned by rs-net/Cargo.lock; the
 # patched wtransport is vendored in rs-net/vendor/), installed as
 # capture/build/librender_stream_net.so -- beside librender_stream_capture.so, where the capture

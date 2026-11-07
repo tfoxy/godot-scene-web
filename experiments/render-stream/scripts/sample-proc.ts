@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// A runner-side `/proc` sampler CLI (gate6-design.md Q7e "Stability (g6s)"): wraps
+// A runner-side `/proc` sampler CLI: wraps
 // `lib/proc-sampler.ts`'s pure functions in a long-lived process `run-gate6.sh` can start in the
 // background (as it does the host and the receiver), one per pid it wants a timeline for over a
 // long soak. Every sample is appended to `--out` as one JSON line (ProcSample) the moment it is

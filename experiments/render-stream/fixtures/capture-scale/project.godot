@@ -1,4 +1,4 @@
-; Capture-scale fixture (P3-CAP, ../../results/p3/p3-cap.md): the capture's per-frame cost at a
+; Capture-scale fixture: the capture's per-frame cost at a
 ; game-sized scene -- thousands of canvas items, a large resident texture table, hundreds of
 ; materials and per-frame mesh vertex updates -- built from the stock template only. See README.md.
 

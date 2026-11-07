@@ -428,7 +428,6 @@ void append_texture_entry(std::string &out, const TextureEntry &t, bool v8, bool
 // `param_f64` and recording the resulting offset as "f" -- the same running-offset pattern
 // cmd_f32/mesh_f32 use, but over param_f64 and across BOTH materials (table order) and items
 // (item order), since "f" is one running offset shared by the whole transaction
-// (gate5_5-design.md D8 "param-offset").
 void append_param_entry(std::string &out, const Param &p, std::vector<double> &param_f64) {
   out += "{\"name\":";
   append_json_string(out, p.name);
@@ -1183,7 +1182,7 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
 
   if (is_v6) {
     // render-stream-6.md "Session": a new top-level "publication" key, right after "features"
-    // (gate6-design.md D8) -- distinct from features.publication above.
+    // -- distinct from features.publication above.
     m += ",\"publication\":{\"mode\":";
     append_json_string(m, to_wire(session.publication.mode));
     m += ",\"target_fps\":";
@@ -1216,7 +1215,7 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
     }
     m += "}";
   }
-  // protocol/unknown-item-skip.md "Session": present only in a skip session, only at /4 and /5;
+  // Present only in a skip session, only at /4 and /5;
   // a strict session encodes exactly as before the policy existed.
   if (session.unknown_item_policy == UnknownItemPolicy::Skip && is_v4_or_later) {
     m += ",\"unknown_item_policy\":\"skip\"";
@@ -1252,7 +1251,7 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
 }
 
 std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
-  // render-stream-7.md: transactions are byte-identical to /6 (gate7-design.md D2), so is_v6
+  // render-stream-7.md: transactions are byte-identical to /6, so is_v6
   // (meaning "V6 or later") is only needed for the unknown_items version gate below and the
   // canvas layer/sublayer keys /6 added.
   // render-stream-10.md: /10 is /9 plus the two back-buffer item keys and the backbuffer_f32 block.
@@ -1320,7 +1319,7 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     m += "]";
   }
 
-  // protocol/unknown-item-skip.md "Transaction": in a session that declares
+  // In a session that declares
   // `unknown_item_policy: "skip"` (and only then, at /4, /5 and /6), every transaction carries
   // what it left out, right after `unsupported`. Complete in full and patch transactions alike.
   if (transaction.unknown_items.present && (transaction.version == ProtocolVersion::V4 ||
@@ -1475,7 +1474,7 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     if (is_v5) {
       // render-stream-5.md "Item": material, use_parent_material, instance_params -- in that
       // order, before content_version. instance_params' floats continue the SAME param_f64 the
-      // material table above already claimed (gate5_5-design.md D8 "param-offset": materials in
+      // material table above already claimed (materials in
       // table order, then items in item order).
       items_json += ",\"material\":";
       if (item.has_material) {

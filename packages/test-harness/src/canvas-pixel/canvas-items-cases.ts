@@ -1,8 +1,8 @@
 /**
  * The fixed lists of `test/canvasItemsRustPixel.test.ts`: each case is ONE spec drawn twice, once
- * as a packed `PDL1` list through the Rust `canvas-items` executor (gate7-design.md Q14b) and once
+ * as a packed `PDL1` list through the Rust `canvas-items` executor and once
  * as the equivalent `@godot-scene-web/canvas` `DrawList` (DRAW_TEXTURED_MESH with vertex colours,
- * a tint, straight-alpha bindings and sampling options) through G7c's TypeScript executor, which
+ * a tint, straight-alpha bindings and sampling options) through the TypeScript executor, which
  * is the spec of record. The two shots must be byte-identical.
  *
  * WHERE THE TWO PATHS COMPUTE DIFFERENTLY, THE INPUTS ARE CHOSEN SO BOTH ARE EXACT:
@@ -50,11 +50,11 @@ export interface MeshSpec {
   blend: Blend;
   /** Top-left `[x, y, w, h]` in target pixels. */
   scissor?: readonly [number, number, number, number];
-  /** `Draw::program`: 0 (absent) the builtin, else a binding slot + 1 (G7s item-space programs). */
+  /** `Draw::program`: 0 (absent) the builtin, else a binding slot + 1 (item-space programs). */
   program?: number;
-  /** G7tm: `DRAW_MSDF` with `Draw::msdf` `[px_range, outline]`; absent for a plain draw. */
+  /** `DRAW_MSDF` with `Draw::msdf` `[px_range, outline]`; absent for a plain draw. */
   msdf?: readonly [number, number];
-  /** G7o4: `DRAW_UNTEXTURED` (texture 0, the builtin program, no MSDF); its item's row carries
+  /** `DRAW_UNTEXTURED` (texture 0, the builtin program, no MSDF); its item's row carries
    *  `ITEM_UNTEXTURED` when every mesh of the item is untextured. The TypeScript spec draws it as
    *  any white mesh. */
   untextured?: boolean;
@@ -78,7 +78,7 @@ export interface ItemsCase {
   format: TargetFormat;
   /** STRAIGHT clear colour. */
   clear: Rgba;
-  /** `Target::opaque` (G7s): Godot's non-transparent render target's blend arithmetic. */
+  /** `Target::opaque`: Godot's non-transparent render target's blend arithmetic. */
   opaque?: boolean;
   textures: readonly TextureSpec[];
   meshes: readonly MeshSpec[];
@@ -90,7 +90,7 @@ const f32 = Math.fround;
 const IDENTITY: ItemSpec["xform"] = [1, 0, 0, 1, 0, 0];
 const WHITE: Rgba = [1, 1, 1, 1];
 
-/** The tint G7c's executor takes: the f32 product a GPU multiply gives, or the modulate as given
+/** The tint the TypeScript executor takes: the f32 product a GPU multiply gives, or the modulate as given
  *  for premul_alpha. */
 export function tintOf(modulate: Rgba, blend: Blend): Rgba {
   if (blend === "premul_alpha") return modulate.map(f32) as unknown as Rgba;
@@ -128,7 +128,7 @@ function stateKey(mesh: MeshSpec): string {
 }
 
 /** Draw calls the Rust executor must issue: runs of adjacent meshes with equal state (their index
- *  ranges always touch, since meshes are packed in order). G7o4 (`gsw_canvas_draw_list::merged`):
+ *  ranges always touch, since meshes are packed in order). (`gsw_canvas_draw_list::merged`):
  *  an untextured mesh matches any texture and sampler, and a run that was untextured so far takes
  *  the first textured mesh's. */
 export function expectedDrawCalls(spec: ItemsCase): number {
@@ -152,14 +152,14 @@ export function expectedDrawCalls(spec: ItemsCase): number {
   return calls;
 }
 
-/** G7o4: `ITEM_UNTEXTURED` (bit 30) for an item whose every mesh is untextured. */
+/** `ITEM_UNTEXTURED` (bit 30) for an item whose every mesh is untextured. */
 function itemFlags(spec: ItemsCase, item: number): number {
   const own = spec.meshes.filter((m) => m.item === item);
   return own.length > 0 && own.every((m) => m.untextured) ? 0x40000000 : 0;
 }
 
 /** `PDL1` (see `gsw_canvas_draw_list::pdl1`) of `spec` with frame `frame`'s items: version 1
- * (44-byte draws) unless a mesh is an MSDF draw, then version 2 (52-byte draws, G7tm). */
+ * (44-byte draws) unless a mesh is an MSDF draw, then version 2 (52-byte draws). */
 export function encodePdl1(spec: ItemsCase, frame: number): Uint8Array {
   const items = spec.frames[frame];
   const vertexCount = spec.meshes.reduce((n, m) => n + m.vertices.length, 0);
@@ -259,9 +259,9 @@ export interface QuadOptions {
   /** `[u0, v0, u1, v1]`. */
   uv?: readonly [number, number, number, number];
   program?: number;
-  /** G7tm: an MSDF draw's `[px_range, outline]`. */
+  /** An MSDF draw's `[px_range, outline]`. */
   msdf?: readonly [number, number];
-  /** G7o4: `DRAW_UNTEXTURED` (white texel, builtin program). */
+  /** `DRAW_UNTEXTURED` (white texel, builtin program). */
   untextured?: boolean;
 }
 
@@ -386,7 +386,7 @@ function solidQuads(): ItemsCase {
   };
 }
 
-/** Colour AND alpha vary across the quad (G7c's vertexGradient), plus a vertical one. */
+/** Colour AND alpha vary across the quad (as the canvas modes suite's vertexGradient), plus a vertical one. */
 function gradient(format: TargetFormat): ItemsCase {
   const left: Rgba = [1, 0.5, 0, 1];
   const right: Rgba = [0, 0.5, 1, 0];
@@ -719,7 +719,7 @@ function itemsOnlyUpdate(): ItemsCase {
   return { ...base, frames: [first, frame2, frame3] };
 }
 
-/** G7o4: `manyItems` with every white quad untextured, so the white runs join the textured runs
+/** `manyItems` with every white quad untextured, so the white runs join the textured runs
  *  around them (fewer calls, the textured draw's texture bound); frame 2 moves a few items. The
  *  shots must equal the TypeScript spec's, which draws the white quads with the white texel. */
 function untexturedRuns(): ItemsCase {
@@ -735,7 +735,7 @@ function untexturedRuns(): ItemsCase {
   };
 }
 
-/** G7c's rgb10a2Stack: an opaque base under five MIX layers of alpha 0.2 (left), one
+/** The canvas modes suite's rgb10a2Stack: an opaque base under five MIX layers of alpha 0.2 (left), one
  *  translucent quad over the transparent clear (right). */
 function stack(format: TargetFormat): ItemsCase {
   const half = S / 2;

@@ -1,7 +1,7 @@
 // Driver-attributed VRAM: the PURE half of nvidia.ts.
 //
-// The fixtures are real output, trimmed. `NVIDIA_SMI` is `nvidia-smi -q -x` on this box (RTX 2060,
-// driver 595.71.05) with the process list cut down and the paths shortened; the shape — including
+// The fixtures are real output, trimmed. `NVIDIA_SMI` is `nvidia-smi -q -x` output with the process
+// list cut down and the paths shortened; the shape — including
 // `<fb_memory_usage><used>` sitting above a `<processes>` block, and a second, FOREIGN Chromium's
 // `--type=gpu-process` in it — is exactly what the parser has to survive.
 //

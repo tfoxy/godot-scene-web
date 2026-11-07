@@ -1,6 +1,5 @@
-// @godot-scene-web/render-stream-client/tracks: the client end of `render-stream-track/1`
-// (protocol/tracks-design.md Q10). A separate subpath so the main entry, the pure client, imports
-// and bundles none of it.
+// @godot-scene-web/render-stream-client/tracks: the client end of `render-stream-track/1`. A
+// separate subpath so the main entry, the pure client, imports and bundles none of it.
 
 export {
   type OpenTrackOptions,

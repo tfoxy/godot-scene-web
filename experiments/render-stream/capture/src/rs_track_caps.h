@@ -1,4 +1,4 @@
-// rs_track_caps: per-viewer track capabilities (protocol/tracks-design.md Q2, "As built (TRK5)").
+// rs_track_caps: per-viewer track capabilities.
 //
 // With GRC_LIVE_TRACK_CAPS=hmac the capture writes one 32-byte key (evidence/live-track-cap-key,
 // 64 lowercase hex, mode 0600) instead of the shared per-kind credential, and a consumer's server

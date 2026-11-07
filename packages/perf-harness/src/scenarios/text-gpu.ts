@@ -12,11 +12,9 @@
 // IT SHAPES IN THIS MODULE NOW, WHICH IS WHY THE ARM HOLDS ONE HARFBUZZ. `hb-gpu.symbols` exports
 // `hb_shape`, so the scenario arm runs `HbGpuFont.shape` through {@link shapeRunWithHbGpu} instead
 // of npm `harfbuzzjs`: one wasm module, one copy of each face, and {@link
-// HbGpuTextStats.wasmHeapBytes} is the whole of this arm's wasm rather than half of it. The
-// arrangement this replaces shaped with harfbuzzjs and used this module only to read outlines, so
-// every face was resident in two heaps at once.
+// HbGpuTextStats.wasmHeapBytes} is the whole of this arm's wasm.
 //
-// AND THAT TURNED A STRUCTURAL INVARIANT INTO A CHECKED ONE — read this before touching either
+// THAT MAKES A STRUCTURAL INVARIANT A CHECKED ONE — read this before touching either
 // shaper. `hb-atlas` / `hb-run` still shape with `createHarfBuzzShaper`, so the pen positions this
 // arm draws at are no longer identical to theirs BY CONSTRUCTION (a shared object), only by
 // AGREEMENT between two independently compiled HarfBuzz builds. The alignment guard can be read as
@@ -31,11 +29,11 @@
 // against are fed pen positions from one shaper. That is only sound while the same agreement holds,
 // which is the other reason the test above exists and why it covers the probe's run strings too.
 //
-// THE PLACEMENT ARITHMETIC IS `glyphLocal`, IMPORTED, NOT RE-DERIVED. Every arm in this round
+// THE PLACEMENT ARITHMETIC IS `glyphLocal`, IMPORTED, NOT RE-DERIVED. Every arm in this scenario
 // anchors the alphabetic baseline exactly `baselinePx` below the run box's top edge and rotates
 // about the run box's centre. A second expression for that here — even a correct one — is a second
-// thing to keep correct, and `docs/text-rendering.md` records four separate rounds in which a
-// fraction of a pixel of disagreement was the entire finding.
+// thing to keep correct, and a fraction of a pixel of disagreement is enough to fail the
+// comparison.
 //
 // ONE MODEL MATRIX PER FRAME, AND THE RUNS ARE PRE-ROTATED INTO IT. `hb_gpu_dilate` computes its
 // half-pixel dilation in SCREEN space through the same matrix the quad is transformed by, so a quad
@@ -226,15 +224,15 @@ export function textOutlineParamRefusal(
 
 /**
  * Shape one run through hb-gpu's OWN HarfBuzz, into the key space and the pen units every arm of
- * this round places glyphs in.
+ * this scenario places glyphs in.
  *
  * WHY THE ARITHMETIC IS RESTATED HERE AND NOT IMPORTED. There is no shaper object to reuse:
  * `createHarfBuzzShaper` owns a `harfbuzzjs` font and this owns an `HbGpuFont`, and the four lines
  * below are the whole of what they have in common. They are copied deliberately and held equal by
  * `test/text-shaper-agreement.test.ts` — `penPx = (pen + xOffset) * fontSizePx / upem`, with the
- * offset positioning THIS glyph only and the advance moving the pen AFTER it. `docs/text-rendering.md`
- * records four rounds in which half a step of that was the entire finding, and `HbGpuFont.shape`'s
- * own doc comment writes it out for the same reason.
+ * offset positioning THIS glyph only and the advance moving the pen AFTER it. Half a step of
+ * disagreement there is visible, and `HbGpuFont.shape`'s own doc comment writes it out for the
+ * same reason.
  *
  * THE KEY IS `<face>/g<gid>`, from `glyphKey`, because everything downstream — the encoder's
  * `harfbuzzGlyphIdOf`, the atlas, the fidelity probe — reads that one format, and because a face
@@ -324,7 +322,7 @@ export interface HbGpuTextStats {
    * Live texels x 8 — what the resident glyph data actually occupies.
    *
    * The number to compare against a baked atlas's OCCUPIED bytes, and NOT the one to put beside
-   * `hb-atlas`'s 1.45 MiB. See {@link reservationBytes}.
+   * `hb-atlas`'s atlas bytes. See {@link reservationBytes}.
    */
   atlasBytes: number;
   /**
@@ -341,9 +339,8 @@ export interface HbGpuTextStats {
   /**
    * ms spent in `hb_gpu_draw_encode`, and NOTHING ELSE.
    *
-   * SPLIT FROM {@link programMs} BECAUSE THE COMBINED NUMBER LIED. With the shader link folded in,
-   * this counter went UP (182.8 -> 226.4 ms) when the encode work was HALVED — because what
-   * dominated it was the driver blocking on a program link, not the encoder. `hb-atlas`'s `bakeMs`
+   * SPLIT FROM {@link programMs} BECAUSE A COMBINED NUMBER WOULD LIE. With the shader link folded
+   * in, what dominates is the driver blocking on a program link, not the encoder. `hb-atlas`'s `bakeMs`
    * is rasterisation only and excludes its own link, so this is the figure the two arms can be
    * compared on.
    */
@@ -384,11 +381,10 @@ export type HbGpuTextPass = "outline" | "fill";
  * The taps are colour-blind — the shader does the same work whatever `u_color` holds — so this
  * choice buys the evidence and costs nothing that is being measured.
  *
- * IT IS THE DEFAULT OF {@link HbGpuTextOptions.outlineColor} RATHER THAN THE ONLY VALUE, since the
- * A1 crossover probe. That probe draws the PRODUCT's own palette (light ink over a black outline
- * over a dark card) because the defect it grades is stated in bytes at those colours — and the
- * argument above is an argument about S9's page, not a property of the arm. Omitting the option
- * leaves S9 byte-identical.
+ * IT IS THE DEFAULT OF {@link HbGpuTextOptions.outlineColor} RATHER THAN THE ONLY VALUE: a caller
+ * grading a product's own palette (light ink over a black outline over a dark card) needs those
+ * colours, and the argument above is an argument about S9's page, not a property of the arm.
+ * Omitting the option leaves S9 byte-identical.
  */
 const OUTLINE_COLOR: readonly [number, number, number, number] = [
   1, 0.35, 0.1, 1,
@@ -475,7 +471,7 @@ export interface HbGpuTextOptions {
   radians: number;
   /**
    * The consumer's `strokeText` lineWidth, in DESIGN px. `0` (the default) is fill only, and is
-   * byte-for-byte the frame this arm was measured with before an outline existed.
+   * byte-for-byte the frame this arm draws without an outline.
    *
    * THE RADIUS IS HALF IT, AND THE HALVING IS THE CALLER'S. A centred stroke of width `W` reaches
    * `W / 2` outward, and `HbGpuRenderer.setSpread` takes the reach rather than the width precisely
@@ -483,15 +479,14 @@ export interface HbGpuTextOptions {
    * matching a centred `ctx.strokeText`, which is what the downstream consumer draws.
    *
    * AND IT IS SCALED BY THE DEVICE-PIXEL RATIO, because this arm's object space IS device pixels.
-   * A 6 design-px stroke on a dpr 3.49 phone really does cover 21 device px, and the shader picks
+   * A 6 design-px stroke at dpr 3 really does cover 18 device px, and the shader picks
    * its tap count from the DEVICE radius — so a design-px spread passed through unscaled would
    * under-report the phone's cost by the ratio itself, which is the whole quantity in question.
    */
   outlinePx?: number;
   /**
    * The contrast curve the renderer applies to final coverage. Defaults to
-   * {@link HB_GPU_CONTRAST_NONE} — which is what this file hardcoded before the option existed, so
-   * omitting it leaves S9 and the fidelity probe byte-identical.
+   * {@link HB_GPU_CONTRAST_NONE}, so omitting it leaves S9 and the fidelity probe on raw coverage.
    *
    * THE LEVER EXISTS BECAUSE THE SHIPPED CONSUMER IS ON THE OTHER SETTING. `createHbGpuRenderer`
    * defaults to {@link HB_GPU_CONTRAST_DEFAULT}, i.e. stem darkening ON, and every product that
@@ -500,8 +495,8 @@ export interface HbGpuTextOptions {
    * block at the `contrast:` call site below), and that is still the right default here. But it
    * means a crossover sweep that only ever measured NONE would not be measuring the picture the
    * user is looking at: stem darkening moves partially covered fragments, which is exactly where
-   * an interior-uniformity or edge-width reading lives. The A1 probe therefore sweeps BOTH and
-   * reports which one each table was taken at.
+   * an interior-uniformity or edge-width reading lives. A crossover sweep therefore has to sweep
+   * BOTH and report which one each table was taken at.
    */
   contrast?: HbGpuContrast;
   /**
@@ -578,11 +573,10 @@ export function createHbGpuText(options: HbGpuTextOptions): HbGpuTextArm {
         `text-gpu: hb_gpu_draw_encode failed for glyph "${key}" — an arm that skipped it would draw a run with a hole in it and report as cheap`,
       );
     }
-    // THE FACE TRAVELS WITH THE GLYPH ID NOW, and the `upem` no longer does. Namespacing moved one
-    // layer down in Phase 1A: `HbGpuRenderer.registerFace` owns it, so `upload` is handed a face
-    // handle plus a raw gid and the renderer builds the key. What used to be enforced by this
-    // file's key format — that Noto Sans SC's gid 97 and Roboto's gid 97 are different outlines —
-    // is now enforced by the thing that owns the atlas, where every consumer gets it.
+    // THE FACE TRAVELS WITH THE GLYPH ID, and the `upem` does not. `HbGpuRenderer.registerFace`
+    // owns namespacing, so `upload` is handed a face handle plus a raw gid and the renderer builds
+    // the key. That Noto Sans SC's gid 97 and Roboto's gid 97 are different outlines is enforced by
+    // the thing that owns the atlas, where every consumer gets it.
     encoded.set(key, { ...glyph, faceId, glyphId: gid });
     // A zero-length blob is a glyph with no ink (a space) — a legitimate result, and NOT something
     // to count as an encoded glyph or reserve texels for.
@@ -649,10 +643,9 @@ export function createHbGpuText(options: HbGpuTextOptions): HbGpuTextArm {
   const stage: CanvasStage = createdStage;
   stage.setStageSize(deviceWidth, deviceHeight);
 
-  // THE PROGRAM IS TIMED SEPARATELY, and finding out why is what made this split necessary.
-  // Folding it into `encodeMs` produced a counter that went UP (182.8 -> 226.4 ms) when the encode
-  // work was HALVED, because what dominates it is not encoding at all: `createHbGpuRenderer`
-  // compiles and links HarfBuzz's Slug GLSL, and reading a link status blocks on the driver.
+  // THE PROGRAM IS TIMED SEPARATELY. Folded into `encodeMs`, it would dominate the counter, and
+  // not because of encoding: `createHbGpuRenderer` compiles and links HarfBuzz's Slug GLSL, and
+  // reading a link status blocks on the driver.
   // `hb-atlas`'s `bakeMs` excludes its own program link for the same reason, so a comparison
   // between the two is only meaningful once this is out of `encodeMs`.
   const programStartedAt = performance.now();
@@ -663,8 +656,8 @@ export function createHbGpuText(options: HbGpuTextOptions): HbGpuTextArm {
   renderer = createHbGpuRenderer(options.module, {
     gl: stage.gl,
     // DESIGN SPACE IS DEVICE PIXELS IN THIS ARM, on purpose: the stage above was created with
-    // `designWidth: deviceWidth`, so the two pairs below are the same numbers and the frame is the
-    // one this arm won the round with. They are passed separately anyway, because they are two
+    // `designWidth: deviceWidth`, so the two pairs below are the same numbers. They are passed
+    // separately anyway, because they are two
     // different things the moment a consumer scales its stage by a device-pixel ratio — the design
     // pair builds the projection, the framebuffer pair is `u_viewport`.
     designWidth: deviceWidth,
@@ -677,9 +670,8 @@ export function createHbGpuText(options: HbGpuTextOptions): HbGpuTextArm {
     // OFF, EXPLICITLY, AND THIS ARM IS THE EXCEPTION RATHER THAN THE RULE. `createHbGpuRenderer`
     // ships stem darkening ON because every shipping consumer wants legible text; a fidelity probe
     // is not a consumer. `probes/text-fidelity.ts` grades this arm against an 8x area-coverage
-    // reference and reports `distortion = |1 - acutance/reference|` — the documented 0.196 (Han,
-    // ppem 14) and 0.017 (ppem 49) in `docs/text-rendering.md` are statements about what evaluating
-    // Slug coverage costs in sharpness, and they only mean that against RAW coverage. An arm
+    // reference and reports `distortion = |1 - acutance/reference|` — a statement about what
+    // evaluating Slug coverage costs in sharpness, which only means that against RAW coverage. An arm
     // carrying a contrast curve would be scoring the curve: stem darkening moves the ink and the
     // gradient sum together, so it lands in the acutance ratio directly and would read as the
     // rasterizer having got better or worse when nothing about the rasterizer changed.
@@ -688,11 +680,11 @@ export function createHbGpuText(options: HbGpuTextOptions): HbGpuTextArm {
     // partially covered fragments, and a cost table that quietly included it could not be compared
     // with the rows already recorded.
     //
-    // IT IS A DEFAULTED OPTION NOW, NOT A CONSTANT — see {@link HbGpuTextOptions.contrast}. The
-    // argument above is why the DEFAULT is still NONE and why S9 and the fidelity probe must not
-    // pass anything else. The A1 crossover probe passes `HB_GPU_CONTRAST_DEFAULT` on a second run
-    // precisely because the shipped consumer gets that, and a sweep of only this setting would be
-    // grading a frame no user sees.
+    // IT IS A DEFAULTED OPTION, NOT A CONSTANT — see {@link HbGpuTextOptions.contrast}. The
+    // argument above is why the DEFAULT is NONE and why S9 and the fidelity probe must not pass
+    // anything else. A crossover sweep should also run `HB_GPU_CONTRAST_DEFAULT`, because the
+    // shipped consumer gets that, and a sweep of only this setting would be grading a frame no
+    // user sees.
     contrast: options.contrast ?? HB_GPU_CONTRAST_NONE,
     onError: (failure) => failures.push(failure),
   });
@@ -835,15 +827,15 @@ export function createHbGpuText(options: HbGpuTextOptions): HbGpuTextArm {
     },
 
     end() {
-      // THE VIEWPORT AND THE CLEAR ARE THIS FILE'S NOW. Both used to be the first two statements of
-      // `HbGpuRenderer.end`, and both are wrong in a context the renderer does not own — a clear
+      // THE VIEWPORT AND THE CLEAR ARE THIS FILE'S, not `HbGpuRenderer.end`'s: both are wrong in a
+      // context the renderer does not own — a clear
       // inside a glyph pass erases whatever the embedder already drew. They are done here, in this
-      // order, immediately before the pass, so the frame is byte-identical to the one this arm won
-      // the round with: viewport over the whole drawing buffer, then a transparent clear, then the
-      // draw. `HbGpuRenderer.end` documents exactly what it leaves dirty in return.
+      // order, immediately before the pass: viewport over the whole drawing buffer, then a
+      // transparent clear, then the draw. `HbGpuRenderer.end` documents exactly what it leaves
+      // dirty in return.
       stage.applyViewport();
       // THE CLEAR IS THE FRAME'S, NOT THE PASS'S — see {@link HbGpuTextArm.end}. At `outlinePx=0`
-      // there is one pass and it is the first, so this is the same single clear as before.
+      // there is one pass and it is the first, so this is the frame's single clear.
       if (currentPass === passes[0]) {
         stage.gl.clearColor(0, 0, 0, 0);
         stage.gl.clear(stage.gl.COLOR_BUFFER_BIT);
@@ -877,12 +869,10 @@ function fontFor(
 /**
  * One `HbGpuFont` per face — the arm's shaper AND its encoder, from one copy of each face.
  *
- * ONE FONT OBJECT DOES BOTH JOBS NOW, which is what removed a whole class of mismatch rather than
- * merely making it unlikely. The glyph ids come from `shape` and the outlines from `encode` on the
- * SAME `hb_font_t` over the SAME bytes, so gid 97 cannot mean one outline to the shaper and another
- * to the encoder. Under the arrangement this replaces the ids came out of npm `harfbuzzjs` reading
- * one copy of the face and the outlines out of HarfBuzz 14.4.0 inside this wasm reading another,
- * and handing those two different files would have rendered fluent, crisp, WRONG text.
+ * ONE FONT OBJECT DOES BOTH JOBS, which removes a whole class of mismatch rather than merely making
+ * it unlikely. The glyph ids come from `shape` and the outlines from `encode` on the SAME
+ * `hb_font_t` over the SAME bytes, so gid 97 cannot mean one outline to the shaper and another to
+ * the encoder — which would render fluent, crisp, WRONG text.
  *
  * The face-qualified keys are still load-bearing for the other half of that failure — Roboto's gid
  * 97 and Noto Sans SC's gid 97 are unrelated outlines in one atlas. See `GLYPH_KEY_SEPARATOR`.
@@ -893,7 +883,7 @@ export function createHbGpuFonts(
 ): Map<string, HbGpuFont> {
   const fonts = new Map<string, HbGpuFont>();
   for (const [faceId, bytes] of bytesByFace) {
-    // `createFont` is construct-or-null since Phase 1B; `loadHbGpuModule`'s `onError` normally
+    // `createFont` is construct-or-null; `loadHbGpuModule`'s `onError` normally
     // turns a refusal into a throw carrying the reason, so reaching this line means a refusal with
     // no reason at all — still a face that cannot be drawn, still louder than a blank page.
     const font = module.createFont(new Uint8Array(bytes));

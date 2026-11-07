@@ -1,5 +1,5 @@
 extends RefCounted
-## The gate 6 HD oracle (../../protocol/gate6-design.md "Q6f", G6h; `render-stream-gate6-hd-oracle/1`).
+## The gate 6 HD oracle (G6h; `render-stream-gate6-hd-oracle/1`).
 ##
 ## Reference legs only (gate6_hd.gd refuses it when a GRC_* capture variable is set). At each
 ## settle frame's `frame_post_draw` it writes one JSON line read back from the rendered engine:

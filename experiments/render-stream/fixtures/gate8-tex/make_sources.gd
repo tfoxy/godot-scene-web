@@ -1,7 +1,7 @@
 extends SceneTree
 ## Writes the gate 8 texture fixture's synthetic sources and their import settings into res://tex/
 ## (gitignored), for the editor's `--import` to compress (release templates cannot encode: the
-## S3TC/BPTC/ETC2/ASTC encoders are TOOLS_ENABLED only, gate8-design.md D8). Run by run-gate8.sh's
+## S3TC/BPTC/ETC2/ASTC encoders are TOOLS_ENABLED only). Run by run-gate8.sh's
 ## import leg with the pinned editor:
 ##
 ##   mise exec -- godot --headless --path fixtures/gate8-tex --script res://make_sources.gd

@@ -1,4 +1,4 @@
-// G7s's own checks for the GSW canvas receiver on gate 5.5 (gate7-design.md G7s "Checks" and
+// G7s's own checks for the GSW canvas receiver on gate 5.5 (G7s "Checks" and
 // "Sabotages", Q7), beside gate 5.5's g55d/g55e checks that lib/gate7-gsw.ts runs through
 // check-gate55.ts's own code:
 //

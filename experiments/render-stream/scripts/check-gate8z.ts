@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Gate 8 group G8z: gate 8's manifest checks, the seven of Q11 (gate7-design.md) judged against the
+// Gate 8 group G8z: gate 8's manifest checks, the seven of Q11 judged against the
 // render-stream-8 files and the runs lib/feature-evidence-8.ts quotes. Pure; it reads existing run
 // directories and never runs a leg.
 //

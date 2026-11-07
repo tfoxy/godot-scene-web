@@ -1,5 +1,4 @@
-// Gate 8 g8id14's checks (ID3, protocol/render-stream-14.md, client-extensions-design.md "Identity
-// v2"): item_meta v2 (`instance_id`, `mouse_filter`, re-stamped rows) on fixtures/tag-scene's
+// Gate 8 g8id14's checks (ID3, protocol/render-stream-14.md): item_meta v2 (`instance_id`, `mouse_filter`, re-stamped rows) on fixtures/tag-scene's
 // RS_FIXTURE_TAG_V2 variant and the pure path on capture-scale and gate6-scene, judged on
 // run-gate8.sh run_g8id14's legs (under g8id14/):
 //

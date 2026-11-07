@@ -1,4 +1,4 @@
-// The texture worker pool (texture-delivery-design.md D11, Q7; G8kw).
+// The texture worker pool.
 //
 // Under GRC_TEXTURE_WORKERS=<N> the texture hooks (hooks.cpp texture_2d_create/_update) stop
 // copying, decoding and hashing an Image on the RenderingServer caller. The hook still reads the
@@ -49,10 +49,9 @@ namespace rs {
 // GRC_TEXTURE_WORKERS and its test knobs, parsed once at arm.
 struct TextureWorkerConfig {
   int workers = 0;  // 0 = sync (the default): the hook copies, decodes and hashes itself
-  // GRC_TEXTURE_WORKER_MIN_BYTES: an image whose data is smaller stays synchronous. TDR
-  // (live-swap-design.md Q5): 0 by default, so every copy, small ones included, is copied,
-  // decoded, hashed and coded at rest on the pool, never on the RenderingServer caller (G8kw's
-  // 64 KiB default kept small copies on the caller).
+  // GRC_TEXTURE_WORKER_MIN_BYTES: an image whose data is smaller stays synchronous.
+  // 0 by default, so every copy, small ones included, is copied,
+  // decoded, hashed and coded at rest on the pool, never on the RenderingServer caller.
   std::uint64_t min_bytes = 0;
   // GRC_TEXTURE_WORKER_DELAY_MS (a test knob, default 0): a worker sleeps this long before it
   // marks a job done, so a gate leg can hold publication back deterministically.

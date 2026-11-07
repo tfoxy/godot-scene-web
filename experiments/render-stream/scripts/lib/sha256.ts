@@ -1,6 +1,6 @@
 // Pure, synchronous, dependency-free SHA-256 (FIPS 180-4, section 6.2). No `node:crypto`, no
-// `node:*` import at all -- this is the module gate7-design.md G7j adds so
-// render-stream-2.ts/-mesh.ts/-shader.ts can be bundled for a browser (gate7-design.md Q5: the GSW
+// `node:*` import at all -- this is the module G7j adds so
+// render-stream-2.ts/-mesh.ts/-shader.ts can be bundled for a browser (the GSW
 // canvas receiver has no synchronous native hash; `crypto.subtle.digest` is async, and the decoder
 // is pure sync code that hashes mid-decode).
 //

@@ -1,12 +1,11 @@
 // @vitest-environment node
 //
-// THE RUST `canvas-items` EXECUTOR, BYTE-IDENTICAL TO G7c'S TYPESCRIPT EXECUTOR, ON A REAL GPU
-// (gate7-design.md Q14b, last paragraph).
+// THE RUST `canvas-items` EXECUTOR, BYTE-IDENTICAL TO THE TYPESCRIPT EXECUTOR, ON A REAL GPU.
 //
 // Every case of `../src/canvas-pixel/canvas-items-cases` is drawn twice in one page: as a packed
 // `PDL1` list through `packages/canvas/rust-prototype`'s `canvas-items` executor (the
 // `canvas-items-test` wasm module), and as the equivalent `@godot-scene-web/canvas` DrawList
-// through the TypeScript executor into G7c's `StageTarget`. Per frame, every byte must agree:
+// through the TypeScript executor into the canvas package's `StageTarget`. Per frame, every byte must agree:
 //   - the shot: Rust `read_target` == TypeScript `StageTarget.readPixels` (RGBA8 readback of the
 //     RGB10_A2 or RGBA8 target), alpha included;
 //   - the presentation: the Rust canvas after its blit == the TypeScript canvas after `blit()`;
@@ -18,7 +17,8 @@
 // and `stale-item-row` (dirty item rows not uploaded). They are run here too, inverted.
 //
 // LAUNCH: `--headless=new --enable-gpu --use-angle=vulkan`, DISPLAY and WAYLAND_DISPLAY removed:
-// the real GPU, no window, never headed, never Xvfb (memory xvfb-does-not-isolate-on-wayland).
+// the real GPU, no window, never headed, never Xvfb (Xvfb does not contain a headed Chromium
+// under Wayland).
 // Opt in with GSW_CANVAS_ITEMS_PIXEL=1. The wasm is built first by
 // `packages/canvas/rust-prototype/scripts/build-canvas-items-test.sh` (cargo, offline, incremental).
 //
@@ -63,7 +63,7 @@ interface Diff {
   worst: string;
 }
 
-/** Every byte, alpha included (memory pixelmatch-hides-alpha-errors). */
+/** Every byte, alpha included (pixelmatch cannot see a wrong alpha convention). */
 function byteDiff(
   expected: readonly number[],
   actual: readonly number[],

@@ -1,4 +1,4 @@
-// LS1 (live-swap-design.md D4, Q9 K1): the two shadow tables of vtable.h.
+// the two shadow tables of vtable.h.
 //
 // A polymorphic fake stands in for RenderingServer. The checks: build fills the originals and
 // publishes nothing; the standby table replaces only the standby slots and the armed table every

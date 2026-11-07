@@ -1,5 +1,4 @@
-// Types and pure helpers for fixtures/gate6-scene/expected.json (render-stream-gate6-expected/1,
-// protocol/gate6-design.md "Q6f"), written by fixtures/gate6-scene/make_expected.py. No I/O, no
+// Types and pure helpers for fixtures/gate6-scene/expected.json (render-stream-gate6-expected/1), written by fixtures/gate6-scene/make_expected.py. No I/O, no
 // Godot, no capture evidence. The coverage model is gate 5's (lib/gate5-expected.ts), rasterized
 // by lib/geometry-raster.ts, plus gate 6's undecided boxes (text, the RichTextLabel, RF).
 

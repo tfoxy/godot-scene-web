@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # remote-toolchain-smoke.sh -- build the four render-stream toolchain outputs and record the sha256 of
-# each (docs/remote-compute.md, R0b). The same script runs on a hosted runner (remote-validate.sh
+# each. The same script runs on a hosted runner (remote-validate.sh
 # --toolchain-smoke) and locally, so the two hash sets are comparable:
 #
 #   scripts/remote-toolchain-smoke.sh [--out DIR]

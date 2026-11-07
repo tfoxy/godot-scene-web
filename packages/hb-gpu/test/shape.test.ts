@@ -189,7 +189,7 @@ function directionName(direction: string): "LTR" | "RTL" | "TTB" | "BTT" {
 }
 
 /**
- * Pen positions in CSS px, the arithmetic every arm in the S9 round uses.
+ * Pen positions in CSS px, the arithmetic every arm in the S9 scenario uses.
  *
  * Stated here rather than imported from the perf-harness on purpose: the point is that a consumer
  * writing this from the doc comment on `HbGpuFont.shape` gets the same pixels as one that wrote it

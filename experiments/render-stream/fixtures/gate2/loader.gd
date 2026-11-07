@@ -4,7 +4,7 @@ extends Node
 ## `run/main_scene`, so `_enter_tree()` here runs first and loads the capture GDExtension through
 ## `GDExtensionManager` before the main scene creates anything.
 ##
-## One addition (gate2-design.md Q6 "Textures"): under `RS_FIXTURE_VARIANT=unsupported` it makes
+## One addition: under `RS_FIXTURE_VARIANT=unsupported` it makes
 ## the texture `PRE` (RGBA8 4x4) BEFORE loading the extension, so its `texture_2d_create` is never
 ## hooked and every later draw of it names a RID the capture never saw created
 ## (`unknown-texture`). The main scene reads it back through `pre_texture`.

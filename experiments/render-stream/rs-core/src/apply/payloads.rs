@@ -22,7 +22,7 @@ pub struct TexturePixels {
     /// GLJ: shared with the draw list's upload of it (no copy), as are `compressed` and `half`.
     pub rgba: SharedBytes,
     /// G8kp: level 0 of a block-format payload, exactly the payload's bytes (no decode here: the
-    /// GPU samples it, texture-delivery-design.md Q6 "GSW").
+    /// GPU samples it).
     pub compressed: Option<SharedBytes>,
     /// P3-CK: level 0 of a half-float payload (`RH`, `RGH`, `RGBH`, `RGBAH`) as RGBA16F, 8 bytes a
     /// texel (a missing G or B is 0, a missing alpha 1, each half little-endian and bit-exact):
@@ -116,8 +116,8 @@ pub fn half_to_f32(h: u16) -> f32 {
     }
 }
 
-/// The unorm8 a float channel quantizes to for a receiver that cannot sample float (gate8-design.md
-/// D9, render-stream-8.md "As built (G8f)"): NaN is 0; any other value is clamped to [0, 1]
+/// The unorm8 a float channel quantizes to for a receiver that cannot sample float (
+/// render-stream-8.md): NaN is 0; any other value is clamped to [0, 1]
 /// (so +-infinity and everything outside become 1 and 0); then `floor(fl32(fl32(c * 255) + 0.5))`,
 /// that is round-half-up in single precision. No sRGB conversion: the value is taken as stored.
 pub fn quantize_unorm8(v: f32) -> u8 {
@@ -340,7 +340,7 @@ pub fn texture_block_level0(
     }))
 }
 
-/// G8kb (texture-delivery-design.md Q6 "GSW", D14): a KTX2 `uastc` variant after the browser's
+/// a KTX2 `uastc` variant after the browser's
 /// transcoder worker turned it into `format` (an Image.Format name: a block format the context
 /// uploads, or `RGBA8`, the fallback when it has none of D14's families). `data` is every
 /// transcoded level, level 0 first; level 0 is what is uploaded, as for every other payload, and
@@ -554,7 +554,7 @@ pub struct PayloadStore {
     /// re-provide). A browser adapter with no budget never calls [`Self::evict_unreferenced`], so
     /// this is dead weight (one `VecDeque` push per provide) until it does.
     ///
-    /// P3-LV (results/p3/p3-lv.md): each slot carries its touch stamp, and a slot whose stamp is
+    /// each slot carries its touch stamp, and a slot whose stamp is
     /// no longer the hash's current one in `touched` (re-touched later, or evicted) is stale and
     /// skipped, so a touch is O(1) instead of a scan of every held entry. At game scale the store
     /// holds one entry per animated mesh pose ever received (hundreds of thousands), and the scan

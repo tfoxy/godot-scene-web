@@ -127,7 +127,7 @@ function handQuadCases(assert: Assert): void {
   );
 }
 
-// gate3-design.md Q6d's semantic-probe table, typed in: per probe, the item each model shows.
+// the contract's semantic-probe table, typed in: per probe, the item each model shows.
 const RQF = "255,153,0,255";
 const SQF = "204,204,51,255";
 const SRF = "255,51,153,255";

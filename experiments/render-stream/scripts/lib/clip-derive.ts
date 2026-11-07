@@ -1,5 +1,5 @@
-// An independent derivation of every item's final scissor from a render-stream/2 resolved state
-// (protocol/gate3-design.md D2, Q1c, G3a). No engine code: this restates the cull's clip rules
+// An independent derivation of every item's final scissor from a render-stream/2 resolved state.
+// No engine code: this restates the cull's clip rules
 // from the pinned 4.5.1 source so the checker can recompute what a receiver's engine will do, and
 // it is the reference implementation gate 7's browser receiver follows.
 //
@@ -23,7 +23,7 @@
 // An unsupported command contributes bounds the wire does not carry, so an item without a custom
 // rect that holds one has an unknown rect: if it clips, it and its subtree derive as "unknown".
 //
-// render-stream/4 (gate5-design.md D9, D10, G5d). Step 1 follows Item::get_rect
+// render-stream/4. Step 1 follows Item::get_rect
 // (renderer_canvas_render.cpp:36-132) for the /4 commands too:
 //   - add_set_transform replaces the item's draw transform (never composed, reset per item, never
 //     inherited by children): every LATER command's rect is the bounding box of its own rect
@@ -39,7 +39,7 @@
 //   - Rects that depend on the server's lowering beyond that -- antialiased lines (feather
 //     primitives), wide polylines and multilines (bisector strips, per-segment quads), circles
 //     (cosf/sinf fans) -- are unknown, exactly as an unsupported command is.
-//   - add_mesh (G5e, gate5-design.md Q1f): mesh_get_aabb as a Rect2 (position.xy, size.xy),
+//   - add_mesh: mesh_get_aabb as a Rect2 (position.xy, size.xy),
 //     ignoring the command's own transform, then the draw transform: the mesh entry's custom AABB
 //     when it is non-zero, else the merge of its surfaces' AABBs, which the wire does not carry
 //     (they are in the GRM1 payloads): DeriveOptions.surfaceAabbs supplies them by hash, and

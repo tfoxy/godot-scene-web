@@ -1,4 +1,4 @@
-// Gate 7 group G7z (protocol/gate7-design.md "Q11. Feature manifests: `render-stream-features/2`"):
+// Gate 7 group G7z:
 // the per-receiver evidence map behind protocol/features/render-stream-7/{native,web-export,
 // gsw-canvas}.json. scripts/make-features.ts --receiver <kind> is the generator; this file is its
 // editorial content, as lib/feature-evidence.ts is for the /1 manifest.
@@ -15,15 +15,14 @@
 //   browser, with the gap named in `notes`.
 //
 // Evidence references name a group (`gate`: "gate6", "gate5.5" for the native gate reports,
-// "g7-0".."g7-k" for gate 7's; `<group>-live` is a group's live run, `g7-r-w1` g7-r at window 1), a leg and the real check id that group's report writes (memory
-// rs-g6z-manifest-check-id-suffix: copy ids from a result.json, never from the design prose). Which
+// "g7-0".."g7-k" for gate 7's; `<group>-live` is a group's live run, `g7-r-w1` g7-r at window 1), a leg and the real check id that group's report writes:
+// copy ids from a result.json, never from the design prose). Which
 // run each group@kind is quoted from is `EVIDENCE_RUNS`; lib/gate7z-checks.ts's
 // manifest-evidence re-reads that run and requires the check to have passed there.
 //
 // Device targets (Q11 `limits.receiver.device_targets`, D25) are not editorial: make-features.ts
 // --collect derives them from the g31 runs in `DEVICE_RUNS` into
-// protocol/features/render-stream-7/collected.json, which generation reads. G7z's amendment
-// (2026-10-23, protocol/gate7/g7z.md) removed the g86 entries: the user descoped that phone, so
+// protocol/features/render-stream-7/collected.json, which generation reads. The g86 is descoped, so
 // each browser file has six targets (the g31's), not twelve.
 
 import { readFileSync } from "node:fs";
@@ -103,11 +102,10 @@ export const RECEIVER_TYPED_REASONS: readonly string[] = [
 // -------------------------------------------------------------------------------------------
 // The quoted runs. Paths are relative to the evidence root (default
 // <main checkout>/artifacts/render-stream/gate7). `build` is the commit the run was made from.
-// Every row is G7z's closing run (g7z.md "Pass"): one build, main at 6a454065 (G7rf landed, so
-// G7kh 0fc739f7, G7w2c d78be95f and G7kr 099a92f9 are in it), run locally from one worktree into
+// Every row is one closing run of one build, made locally from one worktree into
 // gate7/g7z/. The paths were fixed before the live runs, because every live hello carries the
 // sha256 of the file these rows are part of (manifest-matches-hello); a rerun replaces a run in
-// place. Outcomes, reruns and labelled failures are in results/gate7/g7z.md, not here.
+// place. Outcomes, reruns and labelled failures are not recorded here.
 // -------------------------------------------------------------------------------------------
 
 export interface EvidenceRun {

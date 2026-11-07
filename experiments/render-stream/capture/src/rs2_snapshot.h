@@ -4,7 +4,7 @@
 // Plain C++17, no engine or GDExtension types, header-only, so the codec, the diff, their unit
 // tests and (from G2b2) the mirror and publisher can share one definition. The wire format these
 // structs encode to is specified in experiments/render-stream/protocol/render-stream-2.md; the
-// gate-2 behaviour that fills them in production is protocol/gate2-design.md. Field order here
+// gate-2 behaviour that fills them in production is . Field order here
 // follows the wire's JSON key order and block float order.
 //
 // Three structs matter, as in rs1_snapshot.h:
@@ -58,8 +58,8 @@ inline constexpr const char *kPayloadSchema = "render-stream-texture/1";
 // render-stream/3 (G4e1, render-stream-3.md): /2 plus one draw command
 // (AddMsdfTextureRectRegion) and one host sabotage kind (PerturbGlyph). Rather than fork this
 // whole module the way rs1 forked from rs0, /3 is implemented AS a protocol-version switch on
-// Session (Session::version) inside the same rs2_* modules (gate4-design.md G4e1: "Renaming files
-// is not part of this contract"). encode_session() picks the magic/protocol string from
+// Session (Session::version) inside the same rs2_* modules (renaming files
+// is not part of this contract). encode_session() picks the magic/protocol string from
 // Session::version; everything else -- the new CommandKind and SabotageKind values -- is always
 // representable, since a /2 session simply never uses them.
 inline constexpr std::array<std::uint8_t, 8> kMagicV3 = {0x47, 0x52, 0x53, 0x33,
@@ -68,7 +68,7 @@ inline constexpr const char *kProtocolV3 = "render-stream/3";
 
 // render-stream/4 (G5w, render-stream-4.md): /3 plus eleven new draw/state commands, a mesh
 // table, a new `i32` block (`cmd_i32`), a new `mesh_f32` transaction block and a new mesh payload
-// format (`render-stream-mesh/1`). As with /3 (gate4-design.md G4e1), /4 is a protocol-version
+// format (`render-stream-mesh/1`). As with /3, /4 is a protocol-version
 // switch on Session, not a fork.
 inline constexpr std::array<std::uint8_t, 8> kMagicV4 = {0x47, 0x52, 0x53, 0x34,
                                                           0x0D, 0x0A, 0x1A, 0x0A};
@@ -77,15 +77,15 @@ inline constexpr const char *kMeshPayloadSchema = "render-stream-mesh/1";
 
 // render-stream/5 (G55w, render-stream-5.md): /4 plus a shader table, a material table, canvas
 // modulate, item material/use_parent_material/instance_params and a new `f64` block
-// (`param_f64`). As with /3 and /4 (gate5_5-design.md D1), /5 is a protocol-version switch on
+// (`param_f64`). As with /3 and /4, /5 is a protocol-version switch on
 // Session, not a fork: the capture and the receiver keep speaking /4 until G55d.
 inline constexpr std::array<std::uint8_t, 8> kMagicV5 = {0x47, 0x52, 0x53, 0x35,
                                                           0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV5 = "render-stream/5";
 inline constexpr const char *kShaderPayloadSchema = "render-stream-shader/1";
 
-// render-stream/6 (G6w, render-stream-6.md): a session-and-canvas delta on /5 (gate6-design.md
-// D1): presentation stretch declarations (`presentation_size`, `font_oversampling`, `snap_2d`),
+// render-stream/6 (render-stream-6.md): a session-and-canvas delta on /5:
+// presentation stretch declarations (`presentation_size`, `font_oversampling`, `snap_2d`),
 // a new session key `publication`, canvas `layer`/`sublayer`, and five new session-level
 // unsupported reasons. Transactions, blocks, items, commands, payloads, HTTP and control messages
 // are byte-identical to /5 apart from the magic/protocol/subprotocol strings. As with /3 to /5
@@ -95,7 +95,7 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV6 = {0x47, 0x52, 0x53, 0x36,
                                                           0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV6 = "render-stream/6";
 
-// render-stream/7 (G7w, render-stream-7.md): a live-transport delta on /6 (gate7-design.md D2):
+// render-stream/7 (render-stream-7.md): a live-transport delta on /6:
 // the hello gains receiver_kind/credit_window/token/manifest_sha256/presentation geometry, the
 // session's new top-level `publication` key gains `credit_window`, `error.reason` gains
 // `unauthorized`, and HTTP gains CORS. Records, transactions, payloads and HTTP routes are
@@ -106,7 +106,7 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV7 = {0x47, 0x52, 0x53, 0x37,
                                                           0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV7 = "render-stream/7";
 
-// render-stream/8 (G8w, render-stream-8.md, gate8-design.md D1/Q6): /7 plus the late-join and
+// render-stream/8: /7 plus the late-join and
 // compressed-texture wire delta: the session keys `adoption` and `resources.decode`, "adopted"
 // origins in the texture/mesh/shader/material tables, `adopted_content` on texture and mesh
 // entries, `source_format` on texture entries, the eight float payload formats and seven sabotage
@@ -117,7 +117,7 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV8 = {0x47, 0x52, 0x53, 0x38,
                                                           0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV8 = "render-stream/8";
 
-// render-stream/9 (G8k9, render-stream-9.md, texture-delivery-design.md D4/Q5): /8 plus the
+// render-stream/9 (render-stream-9.md): /8 plus the
 // texture-delivery wire delta: the session key `resources.texture_delivery`, texture-entry
 // `variants`, `block` GRT1 payloads and `render-stream-texture/ktx2` payloads (as variants only),
 // the texture reason `delivery-pending`, and the hello keys `texture_encodings` / `gpu_formats`.
@@ -342,7 +342,7 @@ enum class UnsupportedReason : std::uint8_t {
   UnknownMaterial,      // new at /5: canvas_item_set_material named a material RID the mirror never saw
   ParamType,            // new at /5: an instance shader parameter of an unsupported Variant type
   CanvasLight,          // new at /5: session-level, sticky -- canvas_light_attach_to_canvas observed
-  // --- new at /6 (gate6-design.md Q4), all session-level ("item": null) -------------------------
+  // --- new at /6, all session-level ("item": null) -------------------------
   CanvasStackingTie,       // viewport_set_canvas_stacking: two attached canvases share (layer, sublayer)
   CanvasRepeat,             // canvas_set_item_mirroring/_repeat, sticky
   CanvasFollowViewport,     // canvas_set_parent, sticky
@@ -373,12 +373,12 @@ enum class SabotageKind : std::uint8_t {
   Unpin,                   // new at /2 (G2c2)
   PerturbGlyph,            // new at /3 (G4e1/G4e2, render-stream-3.md)
   PerturbVertex,           // new at /4 (G5w, render-stream-4.md)
-  PerturbShader,           // new at /5 (G55w, render-stream-5.md; gate5_5-design.md Q3c)
-  RetainSuperseded,        // G6s (gate6-design.md Q5, Q6h): ServedResources.retire() never retires
+  PerturbShader,           // new at /5 (render-stream-5.md)
+  RetainSuperseded,        // ServedResources.retire() never retires
                            // a superseded hash, so the host's retained set grows unboundedly
-  // New at /8 (G8w, gate8-design.md Q2-Q5; render-stream-8.md "Sabotage kinds"). Declared on the
-  // wire only in a /8 session; the behaviours land with G8a/G8t/G8h/G8m.
-  AdoptSkipState,          // Q2: adoption declares structure without transforms or modulate
+  // New at /8 (render-stream-8.md "Sabotage kinds"). Declared on the
+  // wire only in a /8 session; the adoption, decode and size-order sabotages act on them.
+  AdoptSkipState,          // adoption declares structure without transforms or modulate
   AdoptNoRedraw,           // Q2: adoption does not queue the items' redraw
   AdoptSkipLayers,         // Q2: adoption leaves canvas layers unknown
   PerturbDecode,           // Q3: one texel flipped after a host decode, before hashing
@@ -396,7 +396,7 @@ enum class SabotageKind : std::uint8_t {
   // New at /12 (PM5, render-stream-12.md "Sabotages").
   PerturbSeed,   // the encoder adds 1 to the seed of the first particles entry it writes
   DropRestart,   // the first particles_restart at or after the frame is not counted
-  // New at /12 (FRZ-P, results/p3/frz-p.md): they act on a particle-frozen seat only
+  // New at /12: they act on a particle-frozen seat only
   // (GRC_FREEZE_PARTICLES), which is why they need the grant, not just /12.
   FreezeDropEvents,    // from the frame on, the frozen seat's restart/emit events never reach the wire
   FreezeSendPositions, // from the frame on, the frozen seat's encoder emits per-frame positions
@@ -411,9 +411,9 @@ enum class Encoding : std::uint8_t { Full, Patch };
 enum class StretchMode : std::uint8_t { Disabled, CanvasItems, Viewport };
 enum class StretchAspect : std::uint8_t { Ignore, Keep, KeepWidth, KeepHeight, Expand };
 enum class ScaleMode : std::uint8_t { Fractional, Integer };
-// Presentation: new at /6 (gate6-design.md D2, Q3a): `GRC_ROOT_SIZE=presentation:<W>x<H>`.
+// Presentation: new at /6: `GRC_ROOT_SIZE=presentation:<W>x<H>`.
 enum class RootSizePolicy : std::uint8_t { Observe, EnforceMinSize, Presentation };
-// protocol/unknown-item-skip.md: what the mirror does with a canvas or item RID it never saw
+// What the mirror does with a canvas or item RID it never saw
 // created. Strict (the default) is gate 0's sticky `pre-existing-object` capture failure; Skip is
 // the opt-in diagnostic mode (GRC_UNKNOWN_ITEM=skip) that withholds the affected subtrees instead.
 enum class UnknownItemPolicy : std::uint8_t { Strict, Skip };
@@ -462,7 +462,7 @@ enum class MeshReason : std::uint8_t { MeshFormat, MeshBlendShapes, PayloadTooLa
 
 // --- new at /5: shader table, material table, param_f64 (render-stream-5.md) ------------------
 
-// gate5_5-design.md D8: the Variant type names a material or instance parameter may carry on the
+// The Variant type names a material or instance parameter may carry on the
 // wire, plus the numeric packed array types. "As built" (G55w): wire spellings are this codec's
 // own decision (snake_case, matching the engine's own type names) -- the design doc lists the
 // scalar names and the packed-array component words without committing to one concrete array
@@ -481,11 +481,11 @@ enum class ShaderStatus : std::uint8_t { Ok, Unsupported };
 enum class ShaderReason : std::uint8_t {
   ShaderMode, ShaderScreenTexture, ShaderSdf, ShaderTime, ShaderGlobalUniform,
   ShaderExcluded, PayloadTooLarge, PayloadUnavailable,
-  // new at /8 (render-stream-8.md "Resource tables", gate8-design.md Q5): an adopted shader whose
+  // new at /8 (render-stream-8.md "Resource tables"): an adopted shader whose
   // code the capture could not recover (its preprocessing failed on an #include).
   ShaderAdoptInclude,
 };
-// gate5_5-design.md D11/Q3a: listed in `uses`, for information only (never drives `reason` except
+// Listed in `uses`, for information only (never drives `reason` except
 // in the priority order D11 states: time, screen-texture, sdf, global-uniform, mode).
 enum class ShaderUse : std::uint8_t {
   GlobalUniform, InstanceUniform, Light, ScreenTexture, Sdf, Time,
@@ -493,7 +493,7 @@ enum class ShaderUse : std::uint8_t {
 // D4: whether a shader's code travels as a GRP1 payload, is withheld by policy, or (shader has no
 // code yet) is null on the wire -- represented here by ShaderEntry::has_source.
 enum class ShaderSource : std::uint8_t { Payload, Withheld };
-// gate5_5-design.md D7: the CanvasItemMaterial-generated shader's recognized blend/light modes.
+// The CanvasItemMaterial-generated shader's recognized blend/light modes.
 enum class BlendMode : std::uint8_t { Mix, Add, Sub, Mul, PremulAlpha, Disabled };
 enum class LightMode : std::uint8_t { Normal, Unshaded, LightOnly };
 
@@ -501,10 +501,10 @@ enum class LightMode : std::uint8_t { Normal, Unshaded, LightOnly };
 enum class MaterialStatus : std::uint8_t { Ok, Unsupported };
 enum class MaterialReason : std::uint8_t { UnknownShader, UnknownTexture, ParamType, ParamRange };
 
-// gate5_5-design.md D4: the session's declared shader-source policy.
+// The session's declared shader-source policy.
 enum class ShaderPolicy : std::uint8_t { Source, Params, Exclude };
 
-// --- new at /6 (render-stream-6.md "Session"; gate6-design.md D8) -----------------------------
+// --- new at /6 (render-stream-6.md "Session") -----------------------------
 
 // The session's declared live-publication rate control: `GRC_PUBLISH_FPS=uncapped|<1..240>`. A
 // `file` stream is always EveryFrame/null.
@@ -801,7 +801,7 @@ inline const char *to_wire(VariantType v) {
   return "nil";
 }
 
-// gate5_5-design.md D8: the number of float64 components `param_f64` holds per element of this
+// The number of float64 components `param_f64` holds per element of this
 // type (0 for nil/rid, which never contribute floats), in Godot's own member order.
 inline int variant_components(VariantType v) {
   switch (v) {
@@ -953,7 +953,7 @@ struct Stretch {
   ScaleMode scale_mode = ScaleMode::Fractional;
 };
 
-// render-stream-6.md "Session": the root's snap-to-pixel settings (gate6-design.md D17), new at
+// render-stream-6.md "Session": the root's snap-to-pixel settings, new at
 // /6, read through Viewport method binds at arm.
 struct Snap2DInfo {
   bool transforms = false;
@@ -966,7 +966,7 @@ struct ViewportInfo {
   std::array<std::int32_t, 2> logical_size = {0, 0};
   Stretch stretch;
   RootSizePolicy root_size_policy = RootSizePolicy::Observe;
-  // new at /6 (gate6-design.md D2, Q3a): the policy's declared presentation size. Equals
+  // new at /6: the policy's declared presentation size. Equals
   // logical_size unless root_size_policy is Presentation.
   std::array<std::int32_t, 2> presentation_size = {0, 0};
   HostSizeStatus host_size_status = HostSizeStatus::Match;
@@ -977,12 +977,12 @@ struct ViewportInfo {
   Snap2DInfo snap_2d;
 };
 
-// render-stream-6.md "Session": a new session key, right after `features` (gate6-design.md D8).
+// render-stream-6.md "Session": a new session key, right after `features`.
 struct PublicationInfo {
   PublicationMode mode = PublicationMode::EveryFrame;
   bool has_target_fps = false;  // false -> "target_fps": null
   std::int32_t target_fps = 0;
-  // render-stream-7.md "Session": the granted live credit window, 1 or 2 (gate7-design.md D4).
+  // render-stream-7.md "Session": the granted live credit window, 1 or 2.
   // Encoded only at /7; always 1 on a file stream. Defaults to 1 so every /6 caller that never
   // sets this field is unaffected.
   std::int32_t credit_window = 1;
@@ -1025,18 +1025,18 @@ struct ResourcesInfo {
   bool has_http_path = false;  // non-null exactly for fetch == Http
   std::string http_path;
   Auth auth = Auth::None;
-  // render-stream-8.md "Session": the host's declared texture-decode policy (gate8-design.md D8),
+  // render-stream-8.md "Session": the host's declared texture-decode policy,
   // encoded as resources.decode at /8 only; Off at every earlier version.
   TextureDecode decode = TextureDecode::Off;
-  // render-stream-9.md "Session": the host's declared texture-delivery mode (texture-delivery-
-  // design.md D1) and the encoder prefix, encoded as resources.texture_delivery at /9 only.
+  // render-stream-9.md "Session": the host's declared texture-delivery mode
+  // and the encoder prefix, encoded as resources.texture_delivery at /9 only.
   TextureDeliveryDeclaration texture_delivery;
   // render-stream-11.md "Session record": encoded as resources.mesh_dynamic, last, at /11 only.
   MeshDynamicPolicy mesh_dynamic;
 };
 
 // render-stream-8.md "Session": adoption is null (off) or {"mode":"arm","frame":<int >= 1>}, the
-// arm-time late-join adoption declaration (gate8-design.md D4). Encoded at /8 only.
+// arm-time late-join adoption declaration. Encoded at /8 only.
 struct AdoptionInfo {
   bool present = false;  // false -> "adoption": null
   std::int32_t frame = 1;
@@ -1058,7 +1058,7 @@ struct Features {
   std::vector<std::string> unobserved;
   std::string publication = kPublication;
   // render-stream-5.md "Session": a new key, right after item_state, present only at /5
-  // (gate5_5-design.md Q4: "A new features.canvas_state: [\"modulate\",\"transform\"]").
+  // (features.canvas_state: [\"modulate\",\"transform\"]).
   std::vector<std::string> canvas_state;
 };
 
@@ -1069,8 +1069,8 @@ struct Sabotage {
   std::string op;
 };
 
-// render-stream-5.md "Session": the session's declared shader-source policy (gate5_5-design.md
-// D4), new at /5, following `resources`.
+// render-stream-5.md "Session": the session's declared shader-source policy,
+// new at /5, following `resources`.
 struct MaterialsInfo {
   ShaderPolicy shader_policy = ShaderPolicy::Source;
 };
@@ -1078,7 +1078,7 @@ struct MaterialsInfo {
 struct Session {
   // Which wire format encode_session()/encode_transaction() produce (render-stream-3.md
   // "render-stream/3"). Defaults to V2, so existing /2 callers that never set this field are
-  // unaffected -- golden-2/ must keep passing unchanged (gate4-design.md G4e1).
+  // unaffected -- golden-2/ must keep passing unchanged.
   ProtocolVersion version = ProtocolVersion::V2;
   std::string session_id;
   StreamInfo stream;
@@ -1090,7 +1090,7 @@ struct Session {
   Features features;
   PublicationInfo publication;  // new at /6, between features and sabotage
   Sabotage sabotage;
-  // protocol/unknown-item-skip.md: Skip adds `"unknown_item_policy":"skip"` after `sabotage` (at
+  // Skip adds `"unknown_item_policy":"skip"` after `sabotage` (at
   // /4 and /5 only); Strict adds nothing, so a strict session is byte-identical to one encoded
   // before the policy existed.
   UnknownItemPolicy unknown_item_policy = UnknownItemPolicy::Strict;
@@ -1149,7 +1149,7 @@ struct Command {
   std::string name;          // Unsupported: the hooked RenderingServer method name
   UnsupportedCmdReason unsupported_reason = UnsupportedCmdReason::UnsupportedOp;
   // new at /3 (AddMsdfTextureRectRegion only): the engine's int outline_size, px_range and
-  // size/msdf_size scale (render-stream-3.md "Command"; gate4-design.md Q1g).
+  // size/msdf_size scale (render-stream-3.md "Command").
   std::int32_t msdf_outline = 0;
   float msdf_px_range = 0.0f;
   float msdf_scale = 0.0f;
@@ -1178,7 +1178,7 @@ struct Command {
 };
 
 // --- new at /5: a material or instance-shader-parameter value (render-stream-5.md "Material
-// table", gate5_5-design.md D8) -----------------------------------------------------------------
+// table") -----------------------------------------------------------------
 //
 // `floats` holds `n * variant_components(type)` values in Godot's own member order
 // (transform2d as /0's xforms; basis row-major; projection by column); it is empty for `nil` and
@@ -1193,7 +1193,7 @@ struct Param {
   std::vector<double> floats;
 };
 
-// P3-CAP (results/p3/p3-cap.md): an immutable, shared sequence with std::vector's read interface.
+// an immutable, shared sequence with std::vector's read interface.
 // Copying one copies a pointer, so a published table entry that holds one (MaterialEntry::params,
 // and since HC2 ItemState::commands) costs O(1) to snapshot, compare against an unchanged base
 // (`shares`) and release. A mutation (push_back, assigning a vector) never touches another holder's
@@ -1279,7 +1279,7 @@ class SharedVector {
   std::shared_ptr<const std::vector<T>> data_;
 };
 
-// HC4a (host-cost-design.md D1 "Shape"): a table of entries sorted by wire id, held as immutable
+// a table of entries sorted by wire id, held as immutable
 // shared entries in chunks of 64 consecutive ids. Copying a table is one refcount bump per chunk;
 // a writer replaces one entry by copying its chunk's pointer array (in place while no other table
 // holds the chunk). Two tables that share a chunk, or an entry, hold equal values there without a
@@ -1557,7 +1557,7 @@ class SharedTable {
 
 // --- new at /5: the shader table (render-stream-5.md "Shader table") --------------------------
 
-// gate5_5-design.md D7: a CanvasItemMaterial-recognized engine-generated shader, described rather
+// A CanvasItemMaterial-recognized engine-generated shader, described rather
 // than carried as a GRP1 payload-identified blob of unrecognized text.
 struct BuiltinCanvasItemMaterial {
   BlendMode blend_mode = BlendMode::Mix;
@@ -1742,7 +1742,7 @@ struct ItemState {
   Filter texture_filter = Filter::Default;   // new at /2
   Repeat texture_repeat = Repeat::Default;   // new at /2
   std::uint64_t content_version = 0;
-  // HC2 (host-cost-design.md D1): shared between the mirror, every snapshot and every base a
+  // shared between the mirror, every snapshot and every base a
   // connection holds until the item records again; an identical /11 re-record keeps the old one.
   SharedVector<Command> commands;
   // --- new at /5 (render-stream-5.md "Item"): before content_version on the wire --------------
@@ -1778,7 +1778,6 @@ struct CanvasState {
   CanvasRole role = CanvasRole::None;
   bool attached = false;
   // new at /6 (render-stream-6.md "Canvas"): RS defaults 0, 0; reset to (0,0) on attach
-  // (gate6-design.md Q3b).
   std::int32_t layer = 0;
   std::int32_t sublayer = 0;
   Xform xform = kIdentityXform;
@@ -1799,7 +1798,7 @@ struct CanvasTextureInfo {
 // field table there; this struct can represent any legal combination, and an illegal one too
 // (for building invalid golden vectors), since it performs no validation itself.
 // new at /9 (render-stream-9.md "Texture entries"): one alternative payload of an ok image
-// texture. The base entry stays the `decoded` variant (texture-delivery-design.md D5).
+// texture. The base entry stays the `decoded` variant.
 struct TextureVariant {
   VariantEncoding encoding = VariantEncoding::Block;
   std::string hash;  // 64 lowercase hex
@@ -1825,7 +1824,7 @@ struct TextureEntry {
   std::string hash;       // 64 lowercase hex
   bool has_format = false;  // false -> "format": null
   std::string format;
-  // new at /8: the format a host decode started from (gate8-design.md D8); null otherwise.
+  // new at /8: the format a host decode started from; null otherwise.
   bool has_source_format = false;
   std::string source_format;
   std::int32_t width = 0;
@@ -1846,7 +1845,7 @@ struct MeshSurface {
   std::string hash;  // 64 lowercase hex, the sha256 of the whole GRM1 payload
   std::uint64_t payload_bytes = 0;
   Primitive primitive = Primitive::Triangles;
-  // The engine's raw ARRAY_FORMAT_* bitmask (gate5-design.md Q1e); format version bit 35 means
+  // The engine's raw ARRAY_FORMAT_* bitmask; format version bit 35 means
   // this can exceed 32 bits, so it is a signed 64-bit value, never interpreted by this codec.
   std::int64_t format = 0;
   std::int32_t vertex_count = 0;
@@ -1857,7 +1856,7 @@ struct MeshSurface {
   // `hash` is then not encoded (null on the wire) and whose `payload_bytes` is the body's length.
   // Shared, never copied by a snapshot (P3-CAP).
   std::shared_ptr<const std::vector<std::uint8_t>> body;
-  // HC3 (host-cost-design.md D2), capture-side only, never encoded: true when `hash` is not the
+  // HC3, capture-side only, never encoded: true when `hash` is not the
   // payload's SHA-256 but a capture-local key naming it in the snapshot's payload map. Only a
   // dynamic surface of a /11 snapshot that nothing below /11 reads has one; no /11 transaction
   // encodes a dynamic surface's hash, and make_patch compares such a surface by its mesh's content
@@ -2052,7 +2051,7 @@ struct UnsupportedRef {
   UnsupportedReason reason = UnsupportedReason::UnsupportedOp;
 };
 
-// protocol/unknown-item-skip.md "Transaction": the per-transaction account of what an
+// The per-transaction account of what an
 // `unknown_item_policy: "skip"` session left out. `present` is true exactly in such a session
 // (the key is then in every transaction, zeros included) and false otherwise (no key at all).
 // Complete, never patched, like `failures` and `unsupported`.
@@ -2075,16 +2074,16 @@ struct Snapshot {
   std::uint64_t frame = 0;
   std::vector<Failure> failures;
   std::vector<UnsupportedRef> unsupported;
-  UnknownItems unknown_items;  // protocol/unknown-item-skip.md
+  UnknownItems unknown_items;
   // P3-TM (render-stream-10.md "Shader time"): the host's shader time at this frame, set exactly
   // when the session carries it and the state holds an `ok` shader whose `uses` names `time`.
   std::optional<double> shader_time;
   Filter default_texture_filter = Filter::Nearest;    // new at /2: never Default on the wire
   Repeat default_texture_repeat = Repeat::Disabled;   // new at /2: never Default on the wire
-  // HC4a (host-cost-design.md D1): shared, immutable entries; a copy shares every chunk.
+  // shared, immutable entries; a copy shares every chunk.
   SharedTable<CanvasState> canvases;  // sorted by id ascending
   SharedTable<ItemState> items;       // sorted by id ascending
-  // HC4b (host-cost-design.md D1): the resource tables are shared tables too, so a snapshot
+  // the resource tables are shared tables too, so a snapshot
   // shares every resource entry that did not change since the previous one.
   SharedTable<TextureEntry> textures;    // sorted by id ascending; new at /2
   SharedTable<MeshEntry> meshes;         // sorted by id ascending; new at /4
@@ -2139,7 +2138,7 @@ struct Transaction {
   std::optional<std::uint64_t> base_seq;
   std::vector<Failure> failures;
   std::vector<UnsupportedRef> unsupported;
-  UnknownItems unknown_items;  // protocol/unknown-item-skip.md; complete, never patched
+  UnknownItems unknown_items;  // complete, never patched
   std::optional<double> shader_time;  // P3-TM: /10 on; complete, never patched
   // render-stream-11.md "Patched `unsupported`": true in a /11 patch whose `unsupported` equals
   // the base's, which then encodes as null. `unsupported` still holds the (equal) list.

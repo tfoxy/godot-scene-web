@@ -1,7 +1,6 @@
 # Gate 5.5 CanvasItemMaterial fixture
 
-The reference rendering for gate 5.5's `CanvasItemMaterial` (G55b,
-[`../../protocol/gate5_5-design.md`](../../protocol/gate5_5-design.md) "Q6b" and "Q6d"). Ten steps
+The reference rendering for gate 5.5's `CanvasItemMaterial` (G55b). Ten steps
 (0..9) cover the six blend modes over two backgrounds each (`mix`, `add`, `sub`, `mul`,
 `premul_alpha` and the unbound `disabled`), the three light modes (`normal`, `unshaded`,
 `light_only`), mode changes that free and recreate engine shaders, a material removed and
@@ -30,7 +29,7 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate55-c
   source of every rule: `CimSim` (cim.cpp's shader cache, dirty list and destructor, emitting every
   RenderingServer call with ids), the effective material, the light-mode and canvas-modulate
   fragment rule, GL's blend equations and the RGB10_A2 target. It asserts the hand census per
-  step, Q6b's freshness rows, the marker rules, the light-mode visibility and Q6b's sabotage sets.
+  step, the freshness rows, the marker rules, the light-mode visibility and the sabotage sets.
   Nothing in it is measured.
 - `expected.json` (`render-stream-gate55-expected/1`). Shared: `regions`, `target_alpha_bits`,
   `op_lists` (each rect as a mesh with its fragment colour and `blend`), `hook_census` per variant,

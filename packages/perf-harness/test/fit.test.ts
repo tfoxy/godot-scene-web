@@ -37,7 +37,7 @@ import {
   textRender,
 } from "../src/scenarios";
 
-/** The moto g86 5G's real viewport, the phone this round is measured on. */
+/** A real portrait phone viewport. */
 const PHONE_PORTRAIT = { width: 412, height: 883 };
 const PHONE_LANDSCAPE = { width: 883, height: 412 };
 const DESKTOP = { width: 1280, height: 800 };
@@ -387,9 +387,8 @@ describe("scenario stage boxes", () => {
   });
 
   it("the OLD behaviour is what fails: unfitted, a portrait phone loses most of S1's grid", () => {
-    // Regression pin for the whole workstream. Without the fit, the sprite grid is laid out at its
-    // authored size in a 412 px viewport and most sample points are off screen — which is why the
-    // device runner used to force-emulate 1280x800 instead.
+    // Regression pin for the fit. Without it, the sprite grid is laid out at its authored size in a
+    // 412 px viewport and most sample points are off screen.
     const ctx = contextFor(atlasSprites, {}, UNFITTED_DESKTOP);
     const points = atlasSprites.samplePoints(ctx);
     const offScreen = points.filter((point) => point.x > PHONE_PORTRAIT.width);
@@ -398,8 +397,8 @@ describe("scenario stage boxes", () => {
 });
 
 describe("resolveViewportPolicy", () => {
-  // The one asymmetry in the whole workstream, pinned: desktop stays reproducible, the phone stops
-  // being lied to about its own size.
+  // The one asymmetry, pinned: desktop stays reproducible, the phone stops being lied to about its
+  // own size.
   it("ci: fixed 1280x800, EMULATED, stage used 1:1", () => {
     expect(resolveViewportPolicy({ kind: "ci" })).toEqual({
       viewport: DEFAULT_CI_VIEWPORT,

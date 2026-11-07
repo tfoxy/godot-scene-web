@@ -2,7 +2,7 @@
 //
 // Effect-loop PACING (see ../src/effects-loop-pacing). Both live effect loops are FPS-capped, but they
 // used to keep a rAF armed on EVERY display frame and skip inside the tick — so a 30fps cap on a 60Hz
-// phone cost two main-thread frame wakeups per rendered frame, one of them pure overhead. With
+// display cost two main-thread frame wakeups per rendered frame, one of them pure overhead. With
 // `effectsLoopPacing: "timer"` (the default) a capped loop PARKS on a setTimeout to the next cap
 // boundary and re-enters through ONE rAF; the display frames it would only skip cost no frame wakeup at
 // all. `effectsLoopPacing: "raf"` restores the old spin verbatim (the kill switch).

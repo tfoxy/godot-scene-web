@@ -72,9 +72,9 @@ export const ENVIRONMENT_SPECIFIC_METRICS = [
   "renderSurfaceListPasses",
   "swapRateHz",
   "presented.nonEmptyRatio",
-  // The whole GPU block. This box is SwiftShader when headless — a software rasteriser with no
-  // hardware GPU at all — an RTX 2060 when headed, and the phone is a Mali behind ANGLE, so a bucket
-  // total from one says nothing about the other.
+  // The whole GPU block. Headless is SwiftShader — a software rasteriser with no hardware GPU at
+  // all — headed is the desktop GPU, and the phone is its own GPU behind ANGLE, so a bucket total
+  // from one says nothing about the other.
   "gpu.* (SwiftShader headless / RTX 2060 headed here, Mali/ANGLE on the phone)",
   // DRIVER-ATTRIBUTED VRAM, and the reason it needs its own line rather than hiding under `gpu.*`:
   // the two rungs are different instruments as well as different hardware. `dumpsys gfxinfo` reports
@@ -83,7 +83,7 @@ export const ENVIRONMENT_SPECIFIC_METRICS = [
   // which one produced the bytes, and a byte from one is not comparable with a byte from the other.
   "gpu.device.gpuMemoryBytes / gpu.device.gpuMemoryDeltaBytes (source: dumpsys-gfxinfo | nvidia-smi)",
   // Chrome's own allocator totals (`--memory-dump`). Self-counted, and its relationship to the
-  // driver's figure is a property of the GPU stack under it — an ANGLE/Mali gap is not this box's.
+  // driver's figure is a property of the GPU stack under it — a phone's ANGLE gap is not this box's.
   "gpu.device.memoryDump.*",
   // Absolute CPU milliseconds: they are `tdur` LOWER BOUNDS, so they are only as comparable as the
   // two captures' category sets and thread inventories.

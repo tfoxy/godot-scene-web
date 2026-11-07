@@ -1,4 +1,4 @@
-// Gate 5e checks (protocol/gate5-design.md "G5e", D5-D8, D14, D15, Q3b-Q3d, Q5, Q6d): meshes on
+// Gate 5e checks: meshes on
 // render-stream/4 end to end, over fixtures/gate5-mesh. Pure evaluators over values already read
 // from a run-gate5.sh evidence directory (group g5e, under <out>/mesh/ beside g5c's legs), plus
 // small loaders and runGate5e, which check-gate5.ts merges into the gate 5 report. Nothing here
@@ -10,7 +10,7 @@
 // frame from the byte model, and the sabotage sets; the reference's mesh oracle reads the rendered
 // reference's own GPU buffers back. The wire is compared against those, never with itself.
 //
-// Evidence layout added by group g5e under <out>/mesh/ (see scripts/README.md "Gate 5"):
+// Evidence layout added by group g5e under <out>/mesh/:
 //   import/receiver/                editor --import of receiver/
 //   receiver/, receiver-patch/      rendered receiver on capture/'s full / patch sink: applied.json
 //                                   (render-stream-receiver-applied/4), shots/seq-<n>.png at the

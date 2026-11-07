@@ -1,16 +1,14 @@
-# Gate 4 RichTextLabel fixture (G4d)
+# Gate 4 RichTextLabel fixture
 
-The reference rendering for gate 4's RichTextLabel increment, G4d
-([`../../protocol/gate4-design.md`](../../protocol/gate4-design.md) "G4d", Q6e). Six steps (0..5)
+The reference rendering for gate 4's RichTextLabel increment. Six steps (0..5)
 cumulatively add BBCode spans to one `RichTextLabel` (`RTL`): a `[color]` span, a plain-text span,
 a `[font_size=24]` span, a `[b]` span (its own `FontVariation` cache, `variation_embolden 1.2`), an
 `[i]` span (its own `FontVariation` cache, `variation_transform` skewed 0.2), a `[bgcolor]` span
 (an `add_rect`), and an outlined span (`[outline_size=2][outline_color]`, its own bitmap-outline
 cache alongside the ordinary fill glyphs). Step 5 is `append_text`, not a full `.text=` replace.
 `RS_FIXTURE_VARIANT=underline` wraps the first span's word in `[u]...[/u]`, which draws
-`canvas_item_add_line` inside `RTL`'s region -- typed `unsupported` on render-stream/3
-(gate4-design.md Q2), a wide line the receiver replays since G5d (render-stream/4,
-gate5-design.md Q6g), so every leg of this fixture classifies `success`.
+`canvas_item_add_line` inside `RTL`'s region -- typed `unsupported` on render-stream/3, a wide
+line the receiver replays on render-stream/4 and later, so every leg of this fixture classifies `success`.
 
 Like gates 0-4a, the project does not know about the capture library and runs the same whether
 `GRC_EXTENSION` is set or not.
@@ -27,7 +25,7 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate4-ri
 - `project.godot`: a copy of `fixtures/gate4/project.godot`'s settings and `[debug]` warning keys.
 - `loader.gd`: a copy of `fixtures/gate4/loader.gd`.
 - `gate4-rich.tscn`: a root `Node` (not a `CanvasItem`) with `gate4-rich.gd`.
-- `gate4-rich.gd`: loads `res://fonts/OpenSans_SemiBold.woff2` as `F` (D3 settings), and two
+- `gate4-rich.gd`: loads `res://fonts/OpenSans_SemiBold.woff2` as `F` (the pinned font settings), and two
   `FontVariation`s over it, `FB` (`variation_embolden 1.2`) and `FI` (`variation_transform` skewed
   0.2). It builds `RTL` (position (24,32), size (400,190), `bbcode_enabled`, `fit_content`,
   `scroll_active = false`) and `Marker` in `_ready()` (`expected.json` `creation_order`: `RTL`,
@@ -39,21 +37,20 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate4-ri
   and the step log both read, built from the same literal words as the BBCode fragments
   (`FRAG_0`..`FRAG_5`) so the two cannot silently drift. `RS_FIXTURE_VARIANT` accepts only `""` or
   `"underline"`.
-- `glyph_oracle.gd` (`render-stream-gate4-glyphs/1`, Q6c): its own copy, independent of
+- `glyph_oracle.gd` (`render-stream-gate4-glyphs/1`): its own copy, independent of
   `fixtures/gate4/glyph_oracle.gd`. At each settle frame it reports, per BBCode span, the glyph
-  **set and count** (not quads: Q6c, "For RichTextLabel the oracle reports glyph sets and counts
-  per span"), re-shaping the span's own plain text with its own Font and size -- it never
+  **set and count** (not quads), re-shaping the span's own plain text with its own Font and size -- it never
   introspects `RichTextLabel`'s own `Item` tree. An outlined span expands to two entries sharing
   its `key`: a fill-pass entry (cache `font_key@size`) and an outline-pass entry, relabelled
   `font_key + "O"` (e.g. `"FO"`) so it never collides with the fill cache under this repo's
   `cacheKeyOf` (`font_key@size` alone) -- the real engine keeps both caches on the same TextServer
   RID, keyed only by `(size, outline)`. It also dumps every atlas page's GRT1 SHA-256, as
   `fixtures/gate4/glyph_oracle.gd` does.
-- `fonts.lock.json`, `fonts/.gitignore`, `fonts/.gdignore`: the one font (Q6a), as gate4's own.
+- `fonts.lock.json`, `fonts/.gitignore`, `fonts/.gdignore`: the one font, as gate4's own.
 - `make_expected.py`: writes `expected.json` (`--check` compares values). It independently derives
   the per-cache census (new glyphs, page creates/uploads, hook/wire versions, cumulative distinct
   glyph counts) from the same cumulative span list `_spans_upto` builds, including the outlined
-  span's two cache contributions. Nothing in it is measured or read from the engine.
+  span's two cache contributions. Nothing in it is read from the engine.
 - `expected.json` (`render-stream-gate4-expected/1`, extended with `spans` per step and a hand
   `clip_rects.RTL`, gate 3's shape): per step the cumulative spans, ink-glyph count, the census per
   cache (`F@16`, `F@24`, `FB@16`, `FI@16`, `FO@16`), `RTL`'s fixed text region and clip rect, and
@@ -63,8 +60,7 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate4-ri
 
 `S` = `RS_FIXTURE_START_FRAME` (default 1) and `N` = `RS_FIXTURE_STEP_FRAMES` (default 10, at
 least 8). Step 0 is the `_ready()` state at frame 1. Step _k_ >= 1 is applied at `S + N*k` and
-settles at `S + N*k + 7`. There are no "early" shots (gate4-design.md G4d has no intermediate-shot
-requirement). The fixture quits at `S + N*5 + 11` (62) unless `RS_FIXTURE_QUIT_FRAME` asks for
+settles at `S + N*k + 7`. There are no "early" shots. The fixture quits at `S + N*5 + 11` (62) unless `RS_FIXTURE_QUIT_FRAME` asks for
 later. Every step recolours the `Marker`.
 
 | step | change                                        | new cache traffic              |

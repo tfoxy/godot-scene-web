@@ -1,5 +1,5 @@
 // A fabricated gate 3 (g3a) evidence tree for scripts/test/self-test-gate3.ts: an independent TS
-// model of fixtures/gate3/gate3.gd's RenderingServer calls (gate3-design.md Q6b, Q1a) turned into
+// model of fixtures/gate3/gate3.gd's RenderingServer calls turned into
 // render-stream/2 states, both capture sinks, the capture's evidence and counters, and rendered
 // shots synthesized from fixtures/gate3/expected.json. It shares nothing with make_expected.py
 // but the scene's numbers, so the passing tree's clip-state-invariants, clip-rects-derived and
@@ -638,7 +638,7 @@ export async function buildTree(
 }
 
 // ---------------------------------------------------------------------------------------------
-// g3b: a fabricated receiver on each leg's capture (gate3-design.md "G3b"). Shots are synthesized
+// g3b: a fabricated receiver on each leg's capture. Shots are synthesized
 // from the SAME expected.json the checker reads, so a passing leg is pixel-identical to
 // synthesizeGate3 by construction; a sabotage leg's "wrong" pixel (or, for ignore-clip, the whole
 // unclipped frame) is placed at exactly the steps/colours expected.json `predictions[leg]` says,
@@ -867,7 +867,7 @@ export async function writeG3bProjects(root: string): Promise<G3bProjects> {
   return { fixtureProjectDir, receiverProjectDir };
 }
 
-/** The five legs that capture their own fresh recording (gate3-design.md "G3b" leg table):
+/** The five legs that capture their own fresh recording (leg table):
  * freeze-frame, perturb-transform and the two omit-op host sabotages reuse /1's sabotages
  * unmodified (their effect is stood in for here by a bad pixel at the predicted steps, since
  * only the *checking* code is under test); root-size-observe declares a non-"match" host size. */
@@ -883,7 +883,7 @@ const G3B_OWN_CAPTURE_LEGS = [
  * receiver and receiver-patch on the g3a capture, a headless trace, the four host-sabotage legs
  * and root-size-observe each on their own fresh capture, and the two receiver sabotages on the
  * g3a capture -- every leg's predicted mismatch (expected.json `predictions[leg]`) reproduced
- * exactly, so the whole tree classifies and checks exactly as gate3-design.md Q7 says. */
+ * exactly, so the whole tree classifies and checks exactly as the contract says. */
 export async function writeG3bTree(
   out: string,
   e: Gate3Expected,
@@ -983,7 +983,7 @@ export async function buildFullTree(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Group g3d: calibrator 6, canvas_item_add_clip_ignore (gate3-design.md "G3d")
+// Group g3d: calibrator 6, canvas_item_add_clip_ignore
 // ---------------------------------------------------------------------------------------------
 
 /** RI's wire id: the 19th item created (after RCF, id 18), as the real fixture's variant. */
@@ -1005,7 +1005,7 @@ function riItem(): TItem {
     clip: true,
     custom_rect: true,
     custom_rect_rect: [0, 0, 48, 32],
-    // Since G5d (gate5-design.md D10, render-stream/4) both add_clip_ignore calls are real
+    // Since G5d (render-stream/4) both add_clip_ignore calls are real
     // commands; on /3 they were unsupported commands with an item-level unsupported-op entry.
     commands: [
       { op: "add_rect", rect: [0, 0, 48, 32], color: [0.4, 0.8, 0.4, 1] },
@@ -1016,8 +1016,7 @@ function riItem(): TItem {
   };
 }
 
-/** `buildStates` plus the variant's static raw item RI (gate3-design.md Q6b "Variant
- * clip-ignore"), present in every frame unmodified. Since G5d RI carries no unsupported entry. */
+/** `buildStates` plus the variant's static raw item RI, present in every frame unmodified. Since G5d RI carries no unsupported entry. */
 export function buildStatesWithRI(
   e: Gate3Expected,
   quit = CAPTURE_QUIT,
@@ -1102,7 +1101,7 @@ export async function writeClipIgnoreReference(
 
 /** A receiver on capture-clip-ignore's recording: a shot per settle step, named by seq (`==
  * frame`, since `buildStates` publishes one transaction per frame), synthesized with that step's
- * RI receiver draws. Since G5d (render-stream/4, gate5-design.md D10) the receiver replays both
+ * RI receiver draws. Since G5d (render-stream/4) the receiver replays both
  * `add_clip_ignore` commands, so those draws equal the reference's (second rect unclipped) and
  * applied.json -- derived from the bytes of `recordingPath` (capture-clip-ignore's full sink), as
  * g3b's receivers are, so the classification reaches `success` -- lists nothing unsupported.
@@ -1138,7 +1137,7 @@ export async function writeClipIgnoreReceiver(
 }
 
 /** A passing g3d evidence tree alongside g3a's: capture-clip-ignore, reference-clip-ignore and a
- * rendered receiver-clip-ignore on the capture's recording (gate3-design.md "G3d"). */
+ * rendered receiver-clip-ignore on the capture's recording. */
 export async function buildG3dTree(
   out: string,
   e: Gate3Expected,

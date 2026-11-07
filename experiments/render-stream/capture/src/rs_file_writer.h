@@ -1,4 +1,4 @@
-// P3-CAP (results/p3/p3-cap.md): one background thread for the file sinks' blocking I/O.
+// one background thread for the file sinks' blocking I/O.
 //
 // At a game's scale the patch sink's out-of-band store writes one file per new mesh payload --
 // about 70 a frame for a skeletal-animation scene -- and each costs an open, a write, a close, a
@@ -6,7 +6,7 @@
 // snapshot. The publisher still decides everything on the calling thread (which hashes are new,
 // the index line, the wrong-hash corruption, the transaction bytes); only the I/O is queued here,
 // and it runs strictly in submission order. So a store payload is on disk before any transaction
-// naming it reaches its sink (gate2-design.md Q4 "File sinks"), and the files, the index and the
+// naming it reaches its sink, and the files, the index and the
 // recordings hold exactly the bytes a synchronous writer would have written, in the same order.
 //
 // A failed task is sticky: every later submit() returns false with its error (the publisher then

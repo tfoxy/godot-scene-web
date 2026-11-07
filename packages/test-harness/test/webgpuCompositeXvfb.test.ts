@@ -19,8 +19,7 @@
 // of known 50%-alpha white over a saturated page background, sampled at its centre. That is a
 // two-line arithmetic check that no amount of texture readback can perform.
 //
-// WHY IT IS HEADED, AND WHY THAT NEEDS Xvfb. Measured on this box and recorded in
-// docs/perf-harness.md (S7 reference section): headless Chrome acquires an adapter and accepts
+// WHY IT IS HEADED, AND WHY THAT NEEDS Xvfb. Headless Chrome acquires an adapter and accepts
 // submits but NEVER composites a WebGPU canvas — the screenshot stays blank. Headed under
 // `xvfb-run -a` it composites correctly. Hence the root script `pnpm test:webgpu-composite`, and
 // hence `describe.skipIf(!process.env.DISPLAY)`: a plain `pnpm test` on a display-less box skips
@@ -167,7 +166,7 @@ describe.skipIf(!process.env.DISPLAY)("WebGPU canvas→page composite", () => {
       (globalThis as Record<string, unknown>).__gswForceWebgpuEffects = true;
     });
 
-    // A REAL ORIGIN, not `about:blank`. Measured on this box: `page.setContent` leaves the page on
+    // A REAL ORIGIN, not `about:blank`. `page.setContent` leaves the page on
     // an opaque origin, `isSecureContext` is false, and Chrome then does not expose `navigator.gpu`
     // AT ALL — the WebGPU runtime would fall back to WebGL for reason `no-navigator-gpu` and the
     // composite this file exists to check would never be exercised. `http://localhost` is a

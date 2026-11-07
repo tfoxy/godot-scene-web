@@ -1,4 +1,4 @@
-// Gate 5.5 group g55t (P3-TM, protocol/gate5_5-design.md "TIME and sampler defaults (P3-TM)"):
+// Gate 5.5 group g55t:
 // canvas_item ShaderMaterials that read TIME, and samplers left unset under each default hint,
 // over fixtures/gate55-time, judged against the Godot reference and a hand model of Godot 4.5.1's
 // GLES3 TIME (RasterizerGLES3::begin_frame: each drawn frame's scaled step summed, wrapped at
@@ -534,8 +534,8 @@ const STALL_FRAMES = [12, 22, 32, 42];
 const STALL_S = 0.3;
 /**
  * A clamped iteration processes max_physics_steps_per_frame (8) physics steps' worth plus the timer
- * sync's remainder (main.cpp:4710-4713; main_timer_sync.cpp keeps up to about one step of it, and
- * a gate 7 run measured exactly 9/60): under 10/60 s, against the stall's 0.3 s unclamped.
+ * sync's remainder (main.cpp:4710-4713; main_timer_sync.cpp keeps up to about one step of it):
+ * under 10/60 s, against the stall's 0.3 s unclamped.
  */
 const CLAMPED_DELTA_MAX = 10 / 60;
 /** The fault falls behind by each stall's unclamped excess: far more than 0.05 s by step 1. */

@@ -5,7 +5,7 @@ The fixture for render-stream/10's two item keys
 state `clip_children` and `CanvasGroup` set through `canvas_item_set_canvas_group_mode`, and
 `copy_to_backbuffer`, the state `BackBufferCopy` sets through `canvas_item_set_copy_to_backbuffer`.
 Before /10 neither reached the wire, so every receiver drew the game's HP bars as square, full-height
-fills (C3 gap 9, [`../../results/p3/p3-np.md`](../../results/p3/p3-np.md)). The scene does not know
+fills. The scene does not know
 about the capture. Gate 8's group `g8cg` runs it (`scripts/run-gate8.sh`,
 `scripts/lib/gate8-cg-checks.ts`).
 
@@ -31,7 +31,7 @@ centre's colour rests on a texel-boundary tie.
 
 | Cell | Position | Construction | What it proves |
 | ---- | -------- | ------------ | -------------- |
-| `HPBAR` | (40,32) | p3-np.md's HP bar node for node: `HpBackground` nine-patch (20x16, margins 9/0/9/0, modulated) at (-8,-3) 248x16; `ForegroundContainer` (a `Control`, no draw, clip only); `Mask` nine-patch (12x10 with pointed caps, alpha 0 outside the point, margins 6/0/6/0) stretched to 232x10, clip only; under it `HpMiddleground` (15x16 fill, margins 6/0/6/0, 229x18 at y -4, modulate orange) and `HpForeground` (232x18 at y -4, self-modulate red, clip and draw) | the fills are clipped to the mask's pointed 10 px alpha; the command-less container is no group; `HpForeground`'s clip-and-draw is ignored inside `Mask`'s open group |
+| `HPBAR` | (40,32) | a game's HP bar node for node: `HpBackground` nine-patch (20x16, margins 9/0/9/0, modulated) at (-8,-3) 248x16; `ForegroundContainer` (a `Control`, no draw, clip only); `Mask` nine-patch (12x10 with pointed caps, alpha 0 outside the point, margins 6/0/6/0) stretched to 232x10, clip only; under it `HpMiddleground` (15x16 fill, margins 6/0/6/0, 229x18 at y -4, modulate orange) and `HpForeground` (232x18 at y -4, self-modulate red, clip and draw) | the fills are clipped to the mask's pointed 10 px alpha; the command-less container is no group; `HpForeground`'s clip-and-draw is ignored inside `Mask`'s open group |
 | `HPLOW` | (40,72) | the same bar at a lower value (middleground 180, foreground 120 wide) | the orange middleground between them, clipped too |
 | `CLIPDRAW` | (336,16) | a clip-and-draw `Sprite2D` owner (16x16 at scale 4, four alpha rings 255/192/128/64) over an opaque child overflowing it by 16 px | clip-and-draw with partial alpha |
 | `GROUP` | (448,16) | a `CanvasGroup` (fit_margin 6, clear_margin 12, use_mipmaps, self-modulate alpha 0.6) over two overlapping 0.7-alpha `ColorRect`s | the group composites its children as one layer; non-default margins and `blur_mipmaps` travel |

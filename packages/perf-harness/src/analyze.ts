@@ -3,8 +3,8 @@
 // hand-authored event arrays without a browser anywhere near the test.
 //
 // EVENT NAMES ARE NOT GUESSED. They were taken from `perf --dump-trace-names` run against a real
-// capture on the Chrome in this environment (Chrome for Testing 148.0.7778.56); see
-// docs/perf-harness.md for the observed histogram and the names that differed from expectation.
+// capture on Chrome for Testing 148.0.7778.56; re-run it on any new Chrome before trusting the
+// matchers.
 // Where a name could plausibly drift, the analyzer accepts a small family and picks the MAXIMAL
 // events (containment stack), so a renamed inner event can never double-count.
 //
@@ -17,7 +17,7 @@
 import type { MemoryDumpCrossCheck } from "./memory-dump";
 import type { TraceEvent } from "./trace";
 
-// --- observed on Chrome 148 (see docs/perf-harness.md) ------------------------------------------
+// --- observed on Chrome 148 ---------------------------------------------------------------------
 /** ph "I", cat disabled-by-default-devtools.timeline.frame, thread Renderer/Compositor. */
 const ACTIVATE = "ActivateLayerTree";
 /** ph "I", same cat/thread. Swap cadence — deliberately NOT reported as a frame rate. */
@@ -33,7 +33,7 @@ const RASTER_TASK = "RasterTask";
  * SOFTWARE path and emits `SoftwareImageDecodeCache::*`; a real phone with a GPU runs the GPU path and
  * emits `GpuImageDecodeCache::*` instead. An analyzer that matched only the software names would
  * report ZERO decode on the phone — and "the phone does no image decode" is precisely the wrong
- * conclusion to hand a device workstream. `decodeCacheFamily` in the output records which family was
+ * conclusion to hand a device run. `decodeCacheFamily` in the output records which family was
  * actually seen so a silent zero is impossible to mistake for a good result.
  *
  * `*ImageDecodeCache::DecodeImageInTask` is cat `cc,benchmark`, i.e. present WITHOUT the
@@ -181,8 +181,8 @@ export interface DecodeMetrics {
    * cache, so the decode is re-paid on every re-raster, forever. A HARD FAILURE, not a slow number.
    *
    * Deliberately counted on codec runs, not on decode-cache lookups: a cache LOOKUP inside raster is
-   * normal and costs ~0 (measured: 1484 in-raster `DecodeImageIfNecessary` calls totalling 2.7 ms),
-   * so counting lookups would fire this alarm on every healthy run and train everyone to ignore it.
+   * normal and costs ~0, so counting lookups would fire this alarm on every healthy run and train
+   * everyone to ignore it.
    */
   inRasterCount: number;
   inRasterMs: number;
@@ -429,7 +429,7 @@ export interface GpuMetrics {
    * MEASURED (e.g. `--no-gpu`), never "the GPU did nothing".
    */
   available: boolean;
-  /** Short label from CDP `SystemInfo.getInfo`, e.g. `Mali-G615 MC2 (ANGLE)` or `swiftshader`. */
+  /** Short label from CDP `SystemInfo.getInfo`, e.g. `<renderer> (ANGLE)` or `swiftshader`. */
   hardware: string;
   /** The raw renderer string behind `hardware`, driver version included. */
   hardwareDetail: string;
@@ -1210,8 +1210,7 @@ export function analyzeTrace(
   );
   // Maximal events only: the decode families nest (ImageDecodeTask > DecodeImageInTask >
   // Decode Image), and summing them all would triple-count the same microseconds. This is also why
-  // the raw "3380 ms of DecodeImageIfNecessary" reading in a name histogram is misleading — that is
-  // a NESTED total; the real decode wall on the decode workers here is ~1754 ms.
+  // a raw `DecodeImageIfNecessary` total in a name histogram is misleading — it is a NESTED total.
   const decodeEvents = maximalPerThread(decodeCandidates);
 
   // The two identities alias: `ImageDecodeTask` carries `pixelRefId` while the decode-cache events

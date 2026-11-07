@@ -4,7 +4,6 @@
 to run Godot 4.5.1's canvas.glsl vertex stage in its order: `COLOR` is the vertex colour times the
 modulate before `vertex()`; the model, canvas and screen transforms come around the code as the
 render modes say; and varyings are interpolated unless `flat`.
-([`../../protocol/gate5_5-design.md`](../../protocol/gate5_5-design.md) "vertex() (P3-VX)".)
 
 Five steps (0..4, S=1, N=10, settle +7, quit at frame 52). Every shader is synthetic and written for
 this fixture; `hsv.gdshader` has the shape of STS2's settings-gear shader. The project does not

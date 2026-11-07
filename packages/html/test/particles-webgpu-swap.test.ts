@@ -427,8 +427,8 @@ describe("frozen WebGPU particle surfaces swap through the capture hook", () => 
 // ---- the blank guard ---------------------------------------------------------------------------
 //
 // A device whose readback completes, reports nothing wrong, and hands back an ENTIRELY TRANSPARENT
-// frame (`renderedPixel: null`) — measured for real, headed under Xvfb on Chrome's default ANGLE
-// backend, where all 12 surfaces swapped and the page showed nothing (docs/perf-harness.md, S8).
+// frame (`renderedPixel: null`) — what headed Chrome under Xvfb on its default ANGLE backend can
+// do, swapping every surface while the page shows nothing.
 //
 // The pair below is the whole judgement: the SAME all-zero readback, opposite verdicts, decided only
 // by whether the runtime packed any instances for the capture it just took.

@@ -527,7 +527,7 @@ describe("particle runtime — onBindingRendered", () => {
     rt.dispose();
   });
 
-  // The particle twin of the shader cache-hit case, and the reason a phone's frozen fleet matters: N
+  // The particle twin of the shader cache-hit case, and the reason a frozen fleet matters: N
   // systems built from ONE spec are pixel-identical by construction (the CPU simulation is seeded and
   // deterministic), so gsw warms and draws once and blits the rest. Each blit still writes a canvas.
   it("static mode: fires on the identical-frame cache-hit blit as well as the draw", () => {

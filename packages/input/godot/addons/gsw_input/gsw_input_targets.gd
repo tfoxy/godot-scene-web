@@ -1,6 +1,6 @@
 class_name GswInputTargets
 extends RefCounted
-## Pointer targets for GswInputInjector (docs/input.md "Pointer targets", IN12): resolves a
+## Pointer targets for GswInputInjector (docs/input.md "Pointer targets"): resolves a
 ## source's declared handles to live nodes, places a targeted event by the `retarget` policy,
 ## applies `missing_target`, tags the event with `gsw_target` meta and reports mismatches.
 ## GswInputPointer calls `place()` before it builds an event; a record without `target` (or with

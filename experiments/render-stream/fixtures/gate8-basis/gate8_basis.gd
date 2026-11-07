@@ -1,5 +1,5 @@
 extends Node
-## Gate 8 Basis fixture (G8ku, texture-delivery-design.md D6, D12, D14, D16). Every texture is made at
+## Gate 8 Basis fixture. Every texture is made at
 ## runtime from a procedural source (no import, no committed image) and drawn 1:1 at its own place
 ## in the receiver's 640x360 viewport, so a /9 `basis-uastc` capture lists a lazy `uastc` variant
 ## exactly where D12 admits one (every admitted size is >= 128x128 = 16384 texels):

@@ -1,4 +1,4 @@
-// Gate 2 checks and leg classification (protocol/gate2-design.md "Q7", "G2a" and "G2b2").
+// Gate 2 checks and leg classification.
 //
 // Everything here reads an evidence directory written by run-gate2.sh, or is pure over values
 // already read from one, so scripts/test/self-test-gate2.ts can drive it with fabricated trees.
@@ -11,7 +11,7 @@
 // texture draws are real commands, so the capture leg classifies success. Group g2b
 // (receivers, store, inline, live inline, sabotages) lives in gate2b-checks.ts.
 //
-// Evidence layout under <out>/ (see scripts/README.md "Gate 2"):
+// Evidence layout under <out>/:
 //   legs.json, binary.json
 //   import/fixture/                editor --import of fixtures/gate2
 //   capture/                       400-frame capture host, GRC_ROOT_SIZE=enforce-min-size:
@@ -73,7 +73,7 @@ import { assertValidationLog } from "./validation-log";
 /** The capture leg's quit frame: one transaction per frame, so 400 transactions. */
 export const G2A_CAPTURE_QUIT_FRAME = 400;
 
-/** gate2-design.md Q7 "Class precedence": gate 1's classes plus resource-violation. */
+/** : gate 1's classes plus resource-violation. */
 export type Gate2Class =
   | "capture-failure"
   | "unsupported"
@@ -103,8 +103,8 @@ export const LANDED_GROUPS: readonly string[] = [
   "g2e",
 ];
 /** Experiment groups judged only when --legs named them, never reported not-run; run-gate2.sh's
- * OPTIN_GROUPS must say the same. g2f: the headless CanvasTexture shim
- * (protocol/canvas-texture-headless.md "Experiment (a) result"). */
+ * OPTIN_GROUPS must say the same. g2f: the headless CanvasTexture shim.
+ * */
 export const OPTIN_GROUPS: readonly string[] = ["g2f"];
 
 /** Legs with an expected class. G2a has one: the capture, which since G2b2 (render-stream/2)
@@ -126,13 +126,13 @@ export const TEXTURE_DRAW_OPS: readonly string[] = [
   "canvas_item_add_texture_rect_region",
 ];
 
-/** RenderingServer texture calls the hook log records (Q3 "Hook log"), plus (G5a,
- * gate5-design.md Q3d) the mesh calls it gains kind:"mesh" lines for, (G55a,
- * gate5_5-design.md Q3d) the shader/material/item-material calls it gains lines for --
+/** RenderingServer texture calls the hook log records (Q3 "Hook log"), plus
+ * the mesh calls it gains kind:"mesh" lines for,
+ * the shader/material/item-material calls it gains lines for --
  * including shader_create_from_code/shader_set_code/material_set_param, which only logged a
  * counters.json entry (RID only) before G55a, and canvas_item_set_material (hooked since
  * calibrator 2), logged now for the material census though its item field stays G55d's -- and
- * (G6k, gate6-design.md Q2) the six calibrator-9 canvas calls it gains kind:"canvas" lines for. */
+ * the six calibrator-9 canvas calls it gains kind:"canvas" lines for. */
 export const RESOURCE_LOG_OPS: readonly string[] = [
   "canvas_item_set_default_texture_filter",
   "canvas_item_set_default_texture_repeat",
@@ -179,9 +179,9 @@ export const RESOURCE_LOG_OPS: readonly string[] = [
 ];
 
 /** Exact key order of a render-stream-resource-log/1 line (the contract's keys, then G2a's, then
- * G5a's mesh trailing columns (gate5-design.md Q3d), then G55a's shader/material/item-material
- * trailing columns (gate5_5-design.md Q3d), then G6k's canvas trailing columns (gate6-design.md
- * Q2)). Since G2b2 a sabotage's own line appends `sabotage` (and `omitted` for an op the omit-op
+ * G5a's mesh trailing columns, then G55a's shader/material/item-material
+ * trailing columns, then G6k's canvas trailing columns).
+ * Since G2b2 a sabotage's own line appends `sabotage` (and `omitted` for an op the omit-op
  * sabotage dropped from the capture), and the publisher writes `store` / `inline` lines. */
 export const RESOURCE_LINE_KEYS: readonly string[] = [
   "frame",
@@ -267,7 +267,7 @@ export interface ResourceLine {
   status: string | null;
   reason: string | null;
   /** A texture format name (string) on an image line; the raw ArrayFormat bitfield (number) on a
-   * mesh line (gate5-design.md Q3d: the two never share a line). */
+   * mesh line (the two never share a line). */
   format: string | number | null;
   width: number | null;
   height: number | null;
@@ -284,7 +284,7 @@ export interface ResourceLine {
   value: number | null;
   layer: number | null;
   root_viewport: boolean | null;
-  /** G5a (gate5-design.md Q3d): mesh-only trailing columns, null on every other line. */
+  /** G5a: mesh-only trailing columns, null on every other line. */
   surface: number | null;
   buffer: "vertex" | "attribute" | "skin" | "index" | null;
   offset: number | null;
@@ -299,7 +299,7 @@ export interface ResourceLine {
   vertex_count: number | null;
   index_count: number | null;
   outcome: "applied" | "rejected" | "unknown" | null;
-  /** G55a (gate5_5-design.md Q3d): shader/material/item-material trailing columns, null on every
+  /** G55a: shader/material/item-material trailing columns, null on every
    * other line. `builtin` is the D7 CanvasItemMaterial recognition, or null when unrecognized or
    * not a shader line. The hook writes `source` "payload" whatever the policy; "withheld" only
    * appears in a view with the policy applied (gate55e-checks.ts applyPolicyToLog, D4). */
@@ -317,7 +317,7 @@ export interface ResourceLine {
   type: string | null;
   n: number | null;
   decode_ns: number | null;
-  /** G6k (gate6-design.md Q2): canvas trailing columns, null on every other line.
+  /** G6k: canvas trailing columns, null on every other line.
    * `viewport_set_canvas_stacking`'s layer reuses the generic `layer` column above; its
    * sublayer is this one. `transform` is `viewport_set_global_canvas_transform`'s Transform2D,
    * flattened column-major `[a, b, c, d, origin.x, origin.y]`. `parent` is
@@ -332,7 +332,7 @@ export interface ResourceLine {
   /** G2b2: a sabotage's own line; `omitted` for an op the omit-op sabotage dropped */
   sabotage?: boolean;
   omitted?: boolean;
-  /** G7n (gate7-design.md Q3): "OPTIONS" on a CORS preflight's http-get line, the only line
+  /** G7n: "OPTIONS" on a CORS preflight's http-get line, the only line
    * that carries `method` (a GET's line is unchanged). */
   method?: "OPTIONS";
   /** G8kz: a 200 http-get line's content coding and the bytes that crossed the wire, present
@@ -588,7 +588,7 @@ function overlaps(a: readonly number[], b: readonly number[]): boolean {
   );
 }
 
-/** expected.json obeys its own rules (gate2-design.md Q6 "Colour rule", layout, timeline). */
+/** expected.json obeys its own rules (layout, timeline). */
 export function checkExpectedSelfConsistent(
   expected: Gate2Expected,
 ): Gate2Check {
@@ -1553,7 +1553,7 @@ export function checkCaptureLegClass(e: Gate2LegEvaluation): Gate2Check {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Copy and hash costs (README "Gate 2a result")
+// Copy and hash costs
 // ---------------------------------------------------------------------------------------------
 
 export interface Stat {

@@ -1,4 +1,4 @@
-// GSW's KTX2 transcoder worker (G8kb, protocol/texture-delivery-design.md D14, Q6 "GSW"): runs
+// GSW's KTX2 transcoder worker: runs
 // basis_transcoder.wasm (transcoder.cpp, scripts/build-basis-transcoder.sh) off the main thread.
 // A payload is transcoded when it arrives, before the transaction that needs it is applied (G7o2's
 // pattern: the main thread's step transaction never transcodes).

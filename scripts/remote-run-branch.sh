@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# remote-run-branch.sh -- the only code that deletes remote-run branches (docs/remote-compute.md,
-# "Run branches never accumulate"). Used by the workflow's cleanup job, scripts/remote-validate.sh's
+# remote-run-branch.sh -- the only code that deletes remote-run branches, so run branches never
+# accumulate. Used by the workflow's cleanup job, scripts/remote-validate.sh's
 # traps and the scheduled janitor.
 #
 #   remote-run-branch.sh delete <refs/heads/remote-run/NAME>

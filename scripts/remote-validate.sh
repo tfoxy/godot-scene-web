@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# remote-validate.sh -- run validate-increment.sh's runs on GitHub-hosted runners (docs/remote-compute.md).
+# remote-validate.sh -- run validate-increment.sh's runs on GitHub-hosted runners.
 #
 #   scripts/remote-validate.sh [--base main] [--tier smoke|full] [--only id,id] [--paths p1,p2]
 #                              [--milestone] [--no-wait] [--collect RUN_KEY] [--and-local] [--dry-run]
@@ -7,8 +7,9 @@
 # Mirrors validate-increment.sh's planning flags. It plans locally (validate-increment.sh --plan),
 # splits the runs into remote-capable ones and refused ones (smoke-map.json "remote"), snapshots the
 # worktree (uncommitted and untracked files included, ignored files out) as a throwaway commit built
-# with a temporary GIT_INDEX_FILE -- HEAD, the branch and the real index stay untouched -- pushes ONLY
-# <sha>:refs/heads/remote-run/<worktree>-<shortsha>, dispatches .github/workflows/remote-validate.yml
+# with a temporary GIT_INDEX_FILE -- HEAD, the branch and the real index stay untouched -- checks it
+# with scripts/check-public-tree.py --push (the push skips the pre-push hook), pushes ONLY
+# <sha>:refs/heads/remote-run/<id>-<shortsha>, dispatches .github/workflows/remote-validate.yml
 # on that branch, waits (gh run watch), downloads the merged summary and the failing runs' evidence
 # into artifacts/render-stream/remote/<UTC>/ and exits non-zero when any run failed.
 #
@@ -26,6 +27,10 @@
 #                    the CI-only software renderer gate 7's browser legs declare (RS_BROWSER_PROVENANCE,
 #                    lib/browser-renderer.ts); lavapipe, the workflow's default, is the only one
 #   --dry-run        plan and print what would be pushed and dispatched; touch nothing
+#
+# The repository is public, so nothing pushed or dispatched names the worktree: <id> is an opaque
+# hash of the worktree path (stable, so the workflow's per-worktree concurrency group still holds),
+# and the snapshot's commit message and the run's title carry only it, shas and the run key.
 #
 # Cleanup: a failed push or dispatch, SIGINT/SIGTERM and a normal finish (unless --no-wait) cancel the
 # run when needed and delete the branch through scripts/remote-run-branch.sh.
@@ -248,7 +253,7 @@ for r in plan["runs"]:
         why = next((w for pat, w in ref.get("match", {}).items() if re.search(pat, blob)), None)
     if not why and not any(fnmatch.fnmatch(r["id"], g) for g in cap):
         why = rem.get("default_reason", "not yet remote-capable")
-    # R3: refuse.groups {<id glob>: {<group>: why}} refuses single groups of a gate 7 run (a check that
+    # refuse.groups {<id glob>: {<group>: why}} refuses single groups of a gate 7 run (a check that
     # is load-sensitive on a runner): the run keeps its other groups remotely, and is refused
     # whole when none is left. A partial refusal is listed with its groups (run them locally with
     # RS_VALIDATE_GROUPS, as --and-local does).
@@ -264,8 +269,8 @@ for r in plan["runs"]:
             r["groups"] = keep
             refused.append({"id": r["id"], "groups": sorted(gw), "reason": "; ".join(f"{g}: {w}" for g, w in gw.items())})
     (refused.append({"id": r["id"], "reason": why}) if why else remote.append(r["id"]))
-# R3: a gate 7 run becomes one job per group (receiver x group), even a single-group run, so every
-# job's matrix carries its group (G78 keys the per-shard watchdog on <id>@<group>); the workflow's
+# a gate 7 run becomes one job per group (receiver x group), even a single-group run, so every
+# job's matrix carries its group (the per-shard watchdog is keyed on <id>@<group>); the workflow's
 # merge folds them back into the run's one row. A run left with one group by a group refusal still
 # names it, so the job runs only that group.
 groups = {r["id"]: r["groups"] for r in plan["runs"]
@@ -274,12 +279,12 @@ groups = {r["id"]: r["groups"] for r in plan["runs"]
 json.dump({"remote": remote, "refused": refused, "groups": groups}, sys.stdout)
 PY
 if [ "$TSMOKE" = 1 ]; then
-	# R0b: not a planned run. Builds the four toolchain outputs on a runner (scripts/remote-toolchain-smoke.sh)
+	# not a planned run. Builds the four toolchain outputs on a runner (scripts/remote-toolchain-smoke.sh)
 	echo '{"remote":["toolchain-smoke"],"refused":[]}' >"$TMP/split.json"
 fi
 REMOTE_IDS="$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1]))["remote"]))' "$TMP/split.json")"
 REFUSED_IDS="$(python3 -c 'import json,sys; print(",".join(x["id"] for x in json.load(open(sys.argv[1]))["refused"] if not x.get("groups")))' "$TMP/split.json")"
-# R3: runs refused only in some groups: their ids, and the union of those groups (RS_VALIDATE_GROUPS)
+# runs refused only in some groups: their ids, and the union of those groups (RS_VALIDATE_GROUPS)
 PARTIAL_IDS="$(python3 -c 'import json,sys; print(",".join(x["id"] for x in json.load(open(sys.argv[1]))["refused"] if x.get("groups")))' "$TMP/split.json")"
 PARTIAL_GROUPS="$(python3 -c 'import json,sys; print(",".join(sorted({g for x in json.load(open(sys.argv[1]))["refused"] for g in x.get("groups") or []})))' "$TMP/split.json")"
 RUNS_JSON="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["remote"]))' "$TMP/split.json")"
@@ -287,6 +292,8 @@ REFUSED_JSON="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys
 GROUPS_JSON="$(python3 -c 'import json,sys; g=json.load(open(sys.argv[1])).get("groups") or {}; print(json.dumps(g) if g else "")' "$TMP/split.json")"
 
 WT="$(basename "$REPO" | sed 's/[^A-Za-z0-9._-]/-/g')"
+# what the remote sees instead of the worktree name (see the header)
+WT_ID="wt-$(printf '%s' "$REPO" | sha256sum | cut -c1-10)"
 echo "remote-validate: remote runs: ${REMOTE_IDS:-none}"
 python3 -c '
 import json, sys
@@ -318,7 +325,7 @@ snapshot() {
 			tree="$(git write-tree)" &&
 			GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-remote-validate}" GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-remote-validate@localhost}" \
 				GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-remote-validate}" GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-remote-validate@localhost}" \
-				git commit-tree "$tree" -p HEAD -m "remote-run snapshot of $WT at $(git rev-parse --short HEAD)"
+				git commit-tree "$tree" -p HEAD -m "remote-run snapshot $WT_ID at $(git rev-parse --short HEAD)"
 	)
 }
 
@@ -338,15 +345,23 @@ matrix_explain() {
 
 if [ "$DRY" = 1 ]; then
 	matrix_explain | sed 's/^/remote-validate: dry run: /'
-	echo "remote-validate: dry run: would snapshot $WT at ${HEAD_SHA:0:12}, push refs/heads/remote-run/$WT-<shortsha>, dispatch $WORKFLOW"
-	echo "remote-validate: dry run: inputs worktree=$WT base=$BASE_SHA tier=$TIER milestone=$MILESTONE runs=$RUNS_JSON${DETERMINISM:+ determinism=$DETERMINISM}${BROWSER_RENDERER:+ browser_renderer=$BROWSER_RENDERER}${GROUPS_JSON:+ run_groups=$GROUPS_JSON}${LEG_SHARDS:+ leg_shards=$LEG_SHARDS}"
+	echo "remote-validate: dry run: would snapshot $WT ($WT_ID) at ${HEAD_SHA:0:12}, push refs/heads/remote-run/$WT_ID-<shortsha>, dispatch $WORKFLOW"
+	echo "remote-validate: dry run: inputs worktree=$WT_ID base=$BASE_SHA tier=$TIER milestone=$MILESTONE runs=$RUNS_JSON${DETERMINISM:+ determinism=$DETERMINISM}${BROWSER_RENDERER:+ browser_renderer=$BROWSER_RENDERER}${GROUPS_JSON:+ run_groups=$GROUPS_JSON}${LEG_SHARDS:+ leg_shards=$LEG_SHARDS}"
 	exit 0
 fi
 
 SHA="$(snapshot)" || { echo "remote-validate: snapshot failed" >&2; exit 2; }
-BRANCH="remote-run/$WT-${SHA:0:10}"
+BRANCH="remote-run/$WT_ID-${SHA:0:10}"
 RUN_KEY="rv-$(date -u +%Y%m%dT%H%M%SZ)-${SHA:0:7}-$RANDOM"
 echo "remote-validate: snapshot ${SHA:0:12} (HEAD ${HEAD_SHA:0:12}) -> $BRANCH, run_key $RUN_KEY"
+
+# The push below skips the pre-push hook (--no-verify), so its check runs here: no pre-rewrite
+# history, a publishable tree, and no commit outside $REMOTE adding a denied path.
+if ! (cd "$REPO" && python3 scripts/check-public-tree.py --push "$SHA" 0000000000000000000000000000000000000000 "$REMOTE") >"$TMP/public-tree.log" 2>&1; then
+	cat "$TMP/public-tree.log" >&2
+	echo "remote-validate: the snapshot fails scripts/check-public-tree.py; nothing was pushed" >&2
+	exit 2
+fi
 
 PUSHED=1 # set before the push so that a half-failed push is still cleaned up (404 is success)
 if ! git -C "$REPO" push --no-verify -q "$REMOTE" "$SHA:refs/heads/$BRANCH"; then
@@ -357,7 +372,7 @@ fi
 milestone_in=""
 if [ "$MILESTONE" = 1 ]; then milestone_in=complete && [ "$BASE_SET" = 1 ] && milestone_in=delta; fi
 if ! gh workflow run "$WORKFLOW" --ref "$BRANCH" \
-	-f "run_key=$RUN_KEY" -f "worktree=$WT" -f "sha=$SHA" -f "base=$BASE_SHA" -f "tier=$TIER" \
+	-f "run_key=$RUN_KEY" -f "worktree=$WT_ID" -f "sha=$SHA" -f "base=$BASE_SHA" -f "tier=$TIER" \
 	-f "runs=$RUNS_JSON" -f "milestone=$milestone_in" -f "paths=$PATHS" -f "refused=$REFUSED_JSON" \
 	${DETERMINISM:+-f "determinism=$DETERMINISM"} ${BROWSER_RENDERER:+-f "browser_renderer=$BROWSER_RENDERER"} \
 	${GROUPS_JSON:+-f "run_groups=$GROUPS_JSON"} ${LEG_SHARDS:+-f "leg_shards=$LEG_SHARDS"} \

@@ -1,5 +1,5 @@
-// HTTP content codings for resource GETs (G8kz; texture-delivery-design.md D2, Q5;
-// render-stream-2.md "HTTP (live)"): zstd (level 3) and gzip (level 6) over the vendored zstd 1.5.7
+// HTTP content codings for resource GETs
+// (render-stream-2.md "HTTP (live)"): zstd (level 3) and gzip (level 6) over the vendored zstd 1.5.7
 // and zlib 1.3.1 (capture/vendor/PROVENANCE.md). Engine-free and thread-safe (no shared state).
 // The decoders exist for the tests and the sabotage checks; the host only compresses.
 #ifndef GRC_RS_HTTP_CODING_H

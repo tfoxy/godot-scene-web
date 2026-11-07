@@ -58,7 +58,7 @@ pub const KIND_SESSION: i32 = 4;
 /// W13d: a /13 patch that arrived while a `predict-check` failure awaits its full transaction
 /// (render-stream-13.md "As built (W13d)"): not accepted, so neither applied nor acked.
 pub const KIND_HELD: i32 = 5;
-/// TAG1 (client-extensions-design.md §2.4): a /13 `item_meta` record (kind "item_meta"). The
+/// a /13 `item_meta` record (kind "item_meta"). The
 /// validator holds it for the transaction it describes; nothing to apply and nothing to ack.
 /// The native receiver does not opt in, so this only keeps a recording that carries the records
 /// playable. (5 is `KIND_HELD` here; GSW's wasm ABI calls it `ACCEPT_ITEM_META` = 5.)
@@ -212,7 +212,7 @@ impl Core {
         }
     }
 
-    /// G8kp (texture-delivery-design.md D3): the receiver's `texture_encodings` and `gpu_formats`,
+    /// the receiver's `texture_encodings` and `gpu_formats`,
     /// as its hello states them; the planner then fetches and uploads D3's choice per texture.
     /// False (error in `text`) for a list render-stream-9.md's grammar or names refuse.
     pub fn set_delivery(&mut self, encodings: &str, gpu_formats: &str) -> bool {
@@ -233,7 +233,7 @@ impl Core {
         }
     }
 
-    /// G8kf (texture-delivery-design.md Q3): the receiver could not transcode the variant `hash_hex`
+    /// the receiver could not transcode the variant `hash_hex`
     /// (`delivery-transcode-failed`); D3 then chooses the entry's next preference, `decoded` at
     /// last. False for a malformed hash.
     pub fn refuse_variant(&mut self, hash_hex: &str) -> bool {

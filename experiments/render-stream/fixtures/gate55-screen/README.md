@@ -1,8 +1,7 @@
 # Gate 5.5 screen-texture fixture (P3-ST)
 
 Screen-reading `ShaderMaterial`s (`hint_screen_texture`) over nearest-filtered textures, so a
-receiver has to take Godot 4.5.1's GLES3 back-buffer copies at the reference's points
-([`../../protocol/gate5_5-design.md`](../../protocol/gate5_5-design.md) "Screen texture (P3-ST)").
+receiver has to take Godot 4.5.1's GLES3 back-buffer copies at the reference's points.
 Six steps (0..5, S=1, N=10, settle +7, quit at frame 62). Every shader is synthetic and written for
 this fixture. The project does not know about the capture library.
 

@@ -1,5 +1,5 @@
-// GSW's handle on its KTX2 transcoder worker (G8kb, protocol/texture-delivery-design.md Q6 "GSW";
-// worker.ts). One worker per page, started once; transcodes are queued in the worker's own message
+// GSW's handle on its KTX2 transcoder worker
+// (worker.ts). One worker per page, started once; transcodes are queued in the worker's own message
 // order and resolved by id.
 
 import { familyBits, TARGET_FORMAT, type TranscodeReply } from "./protocol";
@@ -23,7 +23,7 @@ export class TranscodeError extends Error {}
 
 /** The BC families WebGL uploads only at block-aligned sizes: WEBGL_compressed_texture_s3tc,
  * EXT_texture_compression_bptc and _rgtc refuse a level 0 whose width or height is not a multiple
- * of 4 (INVALID_OPERATION; measured in the pinned Chromium, G8kb), where desktop GL, Godot's
+ * of 4 (INVALID_OPERATION in Chromium), where desktop GL, Godot's
  * native target, accepts it. ETC2 and ASTC have no such rule. */
 export const BLOCK_ALIGNED_FAMILIES: readonly string[] = [
   "s3tc",

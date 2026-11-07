@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Gate 7 runner (G7h skeleton; G7d adds the phone-target groups g7-dev and g7-bench and the device
-# environment; protocol/gate7-design.md "G7h", "G7d", Q13).
+# environment).
 #
 #   bash run-gate7.sh [--legs g7-dev,g7-bench,...] [--out DIR] \
 #     [--env desktop|device] [--device g31|g86] [--receiver native|gsw|web] \
@@ -13,8 +13,7 @@
 #
 # Device arms never run without both `--env device` and `--device <id>` (D28): either flag alone is
 # a usage error (exit 2), and a run without `--env device` never selects a `dev-` arm. The g86 is
-# operator-attended (D28): its device arms also need RS_GATE7_OPERATOR_ATTENDED=g86, set only with
-# the user's go-ahead in that session. The g31 has standing approval.
+# operator-attended (D28): its device arms also need RS_GATE7_OPERATOR_ATTENDED=g86.
 #
 # Groups landed (G7d):
 #   g7-dev    Q13d's phone legs. Desktop (no --env device): <out>/g7-dev/plan.json lists only the
@@ -62,25 +61,25 @@
 #             <out>/gate0/web/<leg>/; check-gate7.ts judges them with gate 0's own checker
 #             (lib/gate7-adapters.ts). Sources are recorded in <out>/sources.json.
 #
-# --web-core rust (G7xw, gate7-design.md "G7xw", Q14e): every web-export leg and the web bench
+# --web-core rust: every web-export leg and the web bench
 # arm run on the shared Rust core through its dlink side module (build-web-receiver.sh, or
 # `--bundle`, such a build). G7gd removed the GDScript core, so `rust` is the only value accepted
 # (the flag stays for callers that pass it); a bundle whose build.json does not say core rust (an
 # old GDScript build) is refused before anything runs.
 #
 # --manifest-features 8 (G8z) points --manifest-hello at protocol/features/render-stream-8/.
-# --manifest-hello (G7z, gate7-design.md Q11 manifest-matches-hello): every live receiver's /7
+# --manifest-hello (G7z, manifest-matches-hello): every live receiver's /7
 #             hello sends its kind's protocol/features/render-stream-7/<kind>.json sha256 (browsers
 #             through the daemon, native through lib/gate6c-legs.sh's /7 path). The manifests are
 #             judged by `check-gate7.ts --legs g7-z` afterwards, never by this runner.
-# --web-fetch fetch|httpclient (G7wf, protocol/gate7/g7wf.md; --live only): how the web export
+# --web-fetch fetch|httpclient (G7wf; --live only): how the web export
 # GETs resource payloads. `fetch` (the default) is the browser's fetch() through JavaScriptBridge;
 # `httpclient` (GATE7_WEB_FETCH to the browser daemon, RS_RECEIVER_WEB_FETCH=httpclient on every
 # web leg) is Godot's web HTTPClient, the pre-G7wf path, kept for the A/B. check-gate7.ts
 # --web-fetch adds fetch-impl@web, which fails a live web leg whose applied.json
 # `live.fetch_impl` is not the requested mechanism.
 #
-# Groups landed (G7a, the GSW canvas receiver on the shared Rust core, gate7-design.md "G7a"):
+# Groups landed (G7a, the GSW canvas receiver on the shared Rust core):
 #   g7-0..g7-3  gates 0 to 3's file-mode receiver legs in the GSW canvas receiver (`gsw`), and
 #             g7-0's web half (G7e). Sources: `--source gate<N>=<dir>` or `--make-sources` (runs
 #             run-gate<N>.sh and records gate7-source.json). The gsw half needs the core built:
@@ -111,13 +110,13 @@
 #             source is the same shape as the web half's (run-gate55.sh --legs g55b-g55e; g55f's
 #             live legs are G7l's), and source-run-valid@gsw accepts its not-run g55f.
 #
-# Groups landed (G7t, gates 4 and 5 in the GSW canvas receiver, gate7-design.md "G7t"):
+# Groups landed (G7t, gates 4 and 5 in the GSW canvas receiver):
 #   g7-4, g7-5  gates 4 and 5's file-mode receiver legs (text, geometry, meshes, styleboxes) in the
 #             GSW receiver, sourced and judged exactly as g7-0..g7-3 (lib/gate7-gsw-g45.ts), plus
 #             G7t's checks (lib/gate7-gsw-g45-checks.ts; g7-5's lowering-parity runs
 #             `rs-core-check lowered` over the gate 5 source recordings). g5f's live legs are G7l's.
 #
-# Live halves (G7l, gate7-design.md "G7l", Q8; `--live`, which runs ONLY these; G7g adds g7-6's
+# Live halves (G7l; `--live`, which runs ONLY these; G7g adds g7-6's
 # g6l):
 #   g7-1 g7-2 g7-5 g7-55  the live groups of gates 1 (g1c, g1d), 2 (g2c, g2e, plus G7l's
 #             origin-refused and sabotage-no-cors), 5 (g5f) and 5.5 (g55f, plus P3-ST's g55s
@@ -132,7 +131,7 @@
 #             browser leg as `<id>@<kind>` plus gate 7's live checks (lib/gate7-live.ts). Timing-
 #             sensitive: run it on a quiet machine.
 #
-# Group landed (G7g, protocol/gate7/g7g.md): the gsw half of
+# Group landed: the gsw half of
 #   g7-6      gate 6's file receiver legs (g6a's scene, patch, inline, animate, refused and receiver
 #             sabotages; g6h's HD native at a 1920x1080 backing store; g6b's HD half at 960x540, the
 #             presentation hazard, ignore-presentation and ignore-canvas-stacking) in the GSW
@@ -141,7 +140,7 @@
 #             presentation-check (the page's canvas backing store equals presentation_size; the web
 #             half gets it too, lib/gate7-g6-checks.ts). `--live` with g7-6 runs g6l in both browsers.
 #
-# Group landed (G8g, protocol/gate8-design.md "As built (G8g)"):
+# Group landed:
 #   g7-8      gate 8's file receiver legs (g8t, g8a, g8h, g8f, g8m, g8c, g8cg, g8w11, g8mm, g8pt; G8_FILE_LEGS below) in both
 #             browsers from one native gate 8 source (`--make-sources`: run-gate8.sh --legs
 #             $G8_FILE_LEGS): the web half through G7b's views (lib/gate7b-adapters.ts GATE8_FILE_GROUPS),
@@ -160,7 +159,7 @@
 #             usage error (exit 2). A subset source is cached under its own legs and never served
 #             from the gate's `all` entry (a superset).
 #
-# Group landed (G7r, protocol/gate7/g7r.md, gate7-design.md Q9; `--live` only): pacing, rates, the
+# Group landed (G7r; `--live` only): pacing, rates, the
 #   g7-r      60/60 phase study and dual receivers at credit window 1, on all three receivers. G6c's
 #             group is reused unforked (lib/gate6c-legs.sh with receiver kinds): run-gate6.sh
 #             --legs g6c runs once per receiver kind (`--receiver native|web|gsw`, else all three)
@@ -175,7 +174,7 @@
 #             after), so no Chromium start-up lands in a timed window. check-gate7.ts --live judges
 #             them (lib/gate7r-checks.ts). Timing legs: each holds the quiet lock exclusive.
 #
-# Group landed (G7p, protocol/gate7/g7p.md, gate7-design.md Q12 "Matrix (G7p)"; `--live` only): the
+# Group landed (G7p; `--live` only): the
 #   g7-p      measurement matrix. G6p's group is reused unforked (lib/gate6p-legs.sh run_g7p):
 #             run-gate6.sh --legs g6p runs once per receiver kind and credit window (G7P_WINDOWS,
 #             default "1 2") with G7P_MATRIX=1, into <out>/gate6/matrix-<kind>-w<window>/. Window 1:
@@ -186,7 +185,7 @@
 #             per kind (lib/gate7p-checks.ts, report-gate7.ts) and, with G7P_DEVICE_EVIDENCE (a CSV of
 #             G7v run directories), the g31 rows from G7v's run.
 #
-# --credit-window 1|2 (G7q, protocol/gate7/g7q.md; fork F1 resolved 2026-10-22: the default is 2,
+# --credit-window 1|2 (G7q; the default is 2,
 # window 1 is explicit; `--live` only): exports
 # GATE7_CREDIT_WINDOW to the gate runners, so every live host's GRC_LIVE_CREDIT_WINDOW_MAX and
 # every live browser receiver's hello ask for that window (lib/gamescope.sh, lib/legs.sh), and
@@ -196,7 +195,7 @@
 # phase-window2-rate check. G7wd: without the flag a `--live` run is at window 2 (so g7-r's
 # default list is the window-2 one; `--credit-window 1` runs the window-1 list, G7R_LEGS_<kind>).
 #
-# Group landed (G7u, protocol/gate7/g7u.md, g7u-as-built.md, D14; `--live` only): suspension
+# Group landed (G7u, D14; `--live` only): suspension
 #   g7-lc     and lifecycle in both browser receivers. G6l's group is reused: run-gate6.sh --legs
 #             g6l runs once per browser kind (`--receiver web|gsw`, else both) with G7U_LEGS naming
 #             the kind's lifecycle legs (run-gate6.sh g6l_lc_words: RS_RECEIVER_LIFECYCLE, a harness
@@ -213,11 +212,11 @@
 #             passed to the browser daemon, whose device mode runs them on the phone's real Chrome
 #             (lib/gate7-device-legs.ts; it never falls back to the desktop). A device run raises
 #             S per kind (G7U_START_FRAME, default G7U_DEVICE_START_FRAME_<kind>: web 900, since the
-#             web export needs ~9.5 s on the g31 to connect; gsw 300). G7U_LEGS (a CSV) replaces
+#             web export connects slowly on a phone; gsw 300). G7U_LEGS (a CSV) replaces
 #             every kind's list (development). check-gate7.ts --live judges them
 #             (lib/gate7u-checks.ts). Timing legs.
 #
-# Group landed (G7k, protocol/gate7/g7k.md, gate7-design.md Q10 "Startup, memory"; `--live`
+# Group landed (G7k; `--live`
 #   g7-k      only): startup cost and soak stability, on both browser receivers. Two run-gate6.sh
 #             invocations per kind:
 #               soak     --legs g6s (G6S_LEGS a CSV, run-gate6.sh's own new override; default per
@@ -242,7 +241,7 @@
 #             leg holds the quiet lock exclusive, 300 s for a soak leg and a few seconds for a
 #             startup one.
 #
-# Group landed (G7v, protocol/gate7/g7v.md, gate7-design.md Q13d; `--live`): the phone legs.
+# Group landed (G7v; `--live`): the phone legs.
 #   g7-dev    `--live --legs g7-dev` runs Q13d's live legs once per browser kind and credit window
 #             (G7V_WINDOWS, default 1,2): run-gate6.sh --legs g6c with G6C_LEGS naming only `dev-`
 #             legs (lib/gate6c-legs.sh "G7v") into <out>/gate6/<arm>-<kind>-w<w>/, where <arm> is
@@ -273,7 +272,7 @@ HD_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate6-hd"
 FIXTURE_DIR="$PACE_FIXTURE_DIR"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
-# The final leg-group vocabulary (gate7-design.md "Gate 7 passes when…") plus the phone groups.
+# The final leg-group vocabulary plus the phone groups.
 KNOWN_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-8 g7-lc g7-r g7-k g7-dev g7-bench g7-p)
 LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-8 g7-lc g7-r g7-k g7-dev g7-bench g7-p)
 
@@ -594,7 +593,7 @@ fi
 mkdir -p "$OUT"
 OUT="$(realpath "$OUT")"
 
-# Measurement isolation (lib/quiet.sh, results/measurement-isolation.md): the machine-wide quiet
+# Measurement isolation (lib/quiet.sh): the machine-wide quiet
 # lock is taken per leg, never around this run. The runners this one calls lock their own legs
 # (gate 7's live legs exclusive: lib/legs.sh); the web and gsw file legs hold it shared, one leg
 # at a time (lib/gate7-web-legs.ts); gate7-bench.ts holds it exclusive per arm, after its builds;

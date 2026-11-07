@@ -1,8 +1,6 @@
 # Gate 8 size fixture (`gate8-size`, G8h)
 
-The fixture for gate 8's presentation size at a late arm
-([`../../protocol/gate8-design.md`](../../protocol/gate8-design.md) D10, "Q4. Host size at a late
-arm", "As built (G8h)"). One scene, `size.tscn`, is run two ways by the same loader autoload: armed
+The fixture for gate 8's presentation size at a late arm. One scene, `size.tscn`, is run two ways by the same loader autoload: armed
 after the scene exists (`late`, `GRC_ADOPT=arm`, `GRC_ROOT_SIZE=presentation:640x360`) and armed at
 birth (`born`, main scene `born.tscn`). The scene does not know about the capture.
 

@@ -1,4 +1,4 @@
-//! G7s: custom `ShaderMaterial`s as item-space programs (gate7-design.md Q5 "Materials", G7s).
+//! custom `ShaderMaterial`s as item-space programs.
 //!
 //! The core never sees GLSL. Its adapter transpiles each shader's code once per GRP1 hash
 //! (`@godot-scene-web/effects`' `transpileGodotItemShader`), registers the module with the executor,

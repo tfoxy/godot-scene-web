@@ -1,4 +1,4 @@
-// IN12 htmlPointerTargetResolver: the closest [data-godot-path] under a point, `local` scaled from
+// htmlPointerTargetResolver: the closest [data-godot-path] under a point, `local` scaled from
 // the element's client rect to the Control's model size (px and the container technique's cq
 // units), the scene option, the root filter and model getters.
 

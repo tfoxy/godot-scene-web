@@ -1,7 +1,7 @@
 // S6 `effects-runtime` — a live particle system's frame, taken apart.
 //
-// THE QUESTION. On the target phone (moto g86 5G) live PARTICLES feel slow with only a handful of
-// systems on screen, while live SHADERS do not. The suspicion is the CPU simulation
+// THE QUESTION. On a phone, live PARTICLES can feel slow with only a handful of systems on screen,
+// while live SHADERS do not. The obvious suspect is the CPU simulation
 // (`packages/html/src/particles/simulate.ts`), which runs a fixed-step integration over every
 // particle of every system on the main thread every tick. But a particle frame is FOUR things —
 // the sim, the instance-buffer build, the instanced GL draw, and the GL→2D blit onto the node's
@@ -76,9 +76,8 @@
 // the runtime's built-in procedural dot (`render-webgl.ts`), so sprite-sheet decode and texture
 // upload are an explicit NON-GOAL here — a different question, for a different scenario.
 //
-// NO `perf assert` GATE. Gates get written FROM device readings, not from desktop intuition: S2's
-// gate was written that way and a device run then contradicted three of its five relations. The
-// verdict arithmetic is in `docs/perf-harness.md`; the numbers to put in it come off the phone.
+// NO `perf assert` GATE. Gates get written FROM device readings, not from desktop intuition; the
+// numbers that decide this scenario's question come off the phone.
 
 import {
   emissionExtentPad,
@@ -178,10 +177,10 @@ export const EFFECTS_CANARY_PX = CANARY_PX;
  * So the stage carries ONE tiny generated PNG, painted once in a corner of the container. The trace
  * then has a real decode of a real painted image, which is what the validator is actually asking
  * about. It rides the CONTAINER and not the churn cells on purpose: a cell that repaints every frame
- * re-decodes its background with it (measured: 150 decode tasks and 8 ms of decode for the same one
- * image), which is a per-frame cost this scenario has no reason to pay and a `REDECODES` row a
- * reader would have to explain. It is also deliberately NOT an atlas region — texture decode is this
- * scenario's stated non-goal, and a 4096² page would put ~150 ms of it inside every arm.
+ * re-decodes its background with it, which is a per-frame cost this scenario has no reason to pay
+ * and a `REDECODES` row a reader would have to explain. It is also deliberately NOT an atlas region —
+ * texture decode is this scenario's stated non-goal, and a 4096² page would put its decode inside
+ * every arm.
  *
  * `toDataURL` (not `toBlob`) so mount stays synchronous — there is nothing to await, and the stage
  * carries its image from the first painted frame.

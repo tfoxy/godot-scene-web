@@ -1,4 +1,4 @@
-// G2a: the texture hook log (rs_resource_log.h, gate2-design.md Q3 "Hook log"),
+// the texture hook log (rs_resource_log.h),
 // driven through its taps with no engine: id assignment from one per-session
 // counter, version bumps, update shape and layer rules, replace retiring the
 // by-texture, free logging only known textures, the root-viewport flag, the
@@ -162,7 +162,7 @@ int main() {
   EXPECT(has(lines[4], "\"version\":4,"));
   EXPECT(has(lines[4], "\"value\":2,"));
 
-  // A headless host (protocol/canvas-texture-headless.md): canvas_texture_create returned RID()
+  // A headless host: canvas_texture_create returned RID()
   // and the setters name RID(): each line is a typed refusal with no id, and no id is spent.
   log.canvas_texture_create(main_ctx, 0);
   log.canvas_texture_set_channel(main_ctx, 0, 0, 101);
@@ -242,7 +242,7 @@ int main() {
          has(lines[0], "\"format\":null,") && has(lines[0], "\"payload_bytes\":1135,\"hash\":\"abcd\"") &&
          has(lines[0], "\"conn\":null,"));
   EXPECT(has(lines[1], "\"op\":\"inline\"") && has(lines[1], "\"conn\":3,"));
-  // G7n (gate7-design.md Q3): a GET's http-get line is unchanged; a preflight's ends with
+  // a GET's http-get line is unchanged; a preflight's ends with
   // "method":"OPTIONS", the only line carrying `method`.
   log.serve_event(main_ctx, "http-get", "abcd", 10, nullptr, 2, 200, false);
   log.serve_event(main_ctx, "http-get", "abcd", 0, nullptr, 2, 204, false, "OPTIONS");
@@ -252,7 +252,7 @@ int main() {
          lines[0].back() == '}' && lines[0].find("\"repeat\":null}") != std::string::npos);
   EXPECT(has(lines[1], "\"http_status\":204,") && has(lines[1], "\"repeat\":null,\"method\":\"OPTIONS\"}"));
 
-  // G5a (gate5-design.md Q3d): meshes have their own id counter, independent of textures'.
+  // meshes have their own id counter, independent of textures'.
   using grc::rs::MeshSurfaceCopy;
   const auto ok_surface = [](const char *hash) {
     MeshSurfaceCopy s;
@@ -364,7 +364,7 @@ int main() {
   EXPECT(lines.size() == 1 && has(lines[0], "\"id\":2,") && has(lines[0], "\"version\":1,") &&
          has(lines[0], ",\"sabotage\":true,\"omitted\":true}"));
 
-  // G55a (gate5_5-design.md Q3d): shaders and materials have their own id counters,
+  // shaders and materials have their own id counters,
   // independent of textures' and meshes'.
   using grc::rs::MaterialParamCopy;
   using grc::rs::ShaderCopy;
@@ -481,7 +481,7 @@ int main() {
                        "\"status\":null,\"reason\":null,") &&
          has(lines[4], "\"target\":null,"));
 
-  // G6k (gate6-design.md Q2, calibrator 9): canvas lines, decode only, no registry.
+  // G6k (calibrator 9): canvas lines, decode only, no registry.
   const float global_transform[6] = {1.0f, 0.0f, 0.0f, 1.0f, 8.5f, 4.25f};
   const float mirroring[2] = {16.25f, 8.5f};
   const float repeat_size[2] = {32.5f, 24.25f};

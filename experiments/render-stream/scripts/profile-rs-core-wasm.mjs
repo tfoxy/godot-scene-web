@@ -1,4 +1,4 @@
-// G7o2 (protocol/gate7/g7o2.md "Profile"): `rs-core-check profile` as wasm in Node. Loads
+// G7o2: `rs-core-check profile` as wasm in Node. Loads
 // rs-gsw-wasm's `--target web` glue (scripts/build-rs-core.sh) and runs `core_profile` -- the same
 // `render_stream_core::prof::replay` the native CLI runs, with the core's phase timers on
 // `performance.now()` -- over each input of a bench inputs.json, writing <out>/<input>.jsonl (one

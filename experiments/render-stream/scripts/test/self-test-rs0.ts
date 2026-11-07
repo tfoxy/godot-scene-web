@@ -5,7 +5,7 @@
 //
 //   mise exec -- pnpm exec tsx --conditions=development scripts/test/self-test-rs0.ts
 //
-// Checks, each required by gate0-design.md's WP2 "Passes when":
+// Checks, each required by the contract's WP2 "Passes when":
 //   - decodeRecording(minimal.bin) deep-equals minimal.decoded.json;
 //   - validateRecording(minimal.bin) is [] (it validates clean);
 //   - recordSha256() reproduces every record's sha256 in minimal.decoded.json;

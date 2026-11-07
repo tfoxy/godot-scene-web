@@ -1,4 +1,4 @@
-// PM3 (render-stream-11.md "As built (PM3)"; particles-multimesh-design.md "Increments" PM3): GSW's
+// PM3 (render-stream-11.md "As built (PM3)"): GSW's
 // instanced multimesh draws, judged against the UNARMED reference of fixtures/gate8-mm (the native
 // gate 8 source's g8mm/reference shots, PM2), not against the native receiver. A GSW shot is paired
 // with the reference shot of its transaction's host frame (step-<k>.png at a settle frame,

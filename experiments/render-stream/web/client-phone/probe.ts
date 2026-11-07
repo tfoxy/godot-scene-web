@@ -1,4 +1,4 @@
-// PHN's page-side probes (scripts/client-device-check.ts, results/p3/phn.md). Installed before the
+// PHN's page-side probes (scripts/client-device-check.ts). Installed before the
 // client package is created, they time what the package does on the phone's main thread without
 // touching it:
 //   - every requestAnimationFrame callback: its frame timestamp (the rAF interval is the phone's

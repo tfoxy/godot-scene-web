@@ -1,5 +1,4 @@
-// render-stream-report/1: the measured-cost report schema (D10, Q7f of
-// ../../protocol/gate6-design.md), its validator and its cross-repeat aggregator.
+// render-stream-report/1: the measured-cost report schema, its validator and its cross-repeat aggregator.
 //
 // This is new: nothing else in the repository defines it (D10), and it is never the same document
 // as perf-report/1 (../../../../docs/perf-report-contract.md), which is a different,
@@ -34,7 +33,7 @@
 // ------------------------------------------------------------------------------------------- types
 
 export const RENDER_STREAM_REPORT_SCHEMA = "render-stream-report/1";
-/** G7p (gate7-design.md Q12): /1 plus the browser and device fields below. `validate()` accepts
+/** G7p: /1 plus the browser and device fields below. `validate()` accepts
  * both; a /2 report is judged by the extra rules in `validateV2`. */
 export const RENDER_STREAM_REPORT_2_SCHEMA = "render-stream-report/2";
 

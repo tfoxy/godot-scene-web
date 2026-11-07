@@ -1,5 +1,5 @@
 extends RefCounted
-## The gate 5 fixture's region nodes (../../protocol/gate5-design.md "Q6b"). Each class issues the
+## The gate 5 fixture's region nodes. Each class issues the
 ## draw calls of one region in its own local coordinates; gate5.gd builds and steps them, and
 ## make_expected.py models the same calls from its own copy of these numbers. A property that a
 ## step changes queues a redraw from its setter, so each step re-records exactly the items its

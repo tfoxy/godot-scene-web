@@ -264,7 +264,7 @@ enum BindId : int {
   kRsCanvasItemGetInstanceShaderParameterList,
   kRsCanvasItemGetInstanceShaderParameter,
   kRsCanvasItemGetInstanceShaderParameterDefault,
-  // TAG1 (client-extensions-design.md §2.3): an item's identity.
+  // an item's identity.
   kObjectGetClass,
   kObjectGetScript,
   kObjectHasMeta,
@@ -273,7 +273,7 @@ enum BindId : int {
   kNodeGetOwner,
   kNodeGetPathTo,
   kNodeIsInGroup,
-  // ID3 (client-extensions-design.md ID-D3): item_meta v2's mouse_filter.
+  // item_meta v2's mouse_filter.
   kControlGetMouseFilter,
   kControlGetMouseFilterWithOverride,
   kObjectHasMethod,
@@ -332,7 +332,7 @@ const BindSpec kBinds[kBindCount] = {
     {"BackBufferCopy", "get_rect", 1639390495LL},            // -> Rect2
     // UIT (render-stream-11.md "As built (UIT)"), const.
     {"CPUParticles2D", "get_use_local_coordinates", 36873697LL},  // -> bool
-    // G8r (gate8-design.md D6, D7), every one read-only.
+    // Every one read-only.
     {"RenderingServer", "texture_2d_get", 4206205781LL},          // (RID) -> Image
     {"RenderingServer", "mesh_get_surface_count", 2198884583LL},  // (RID) -> int
     {"RenderingServer", "mesh_get_surface", 186674697LL},         // (RID, int) -> Dictionary
@@ -364,7 +364,7 @@ const BindSpec kBinds[kBindCount] = {
     {"Image", "get_height", 3905245786LL},
     {"Image", "get_format", 3847873762LL},
     {"Image", "has_mipmaps", 36873697LL},
-    // G8m (gate8-design.md D11, D12). set_code and set_path_cache act on the capture's own
+    // set_code and set_path_cache act on the capture's own
     // temporary Shader only; connect/disconnect add and remove the node map's one callable.
     {"Shader", "get_code", 201670096LL},                          // -> String
     {"Shader", "set_code", 83702148LL},                           // (String)
@@ -865,7 +865,7 @@ AdoptStats adopt_at_arm(const AdoptConfig &config) {
 
 // ===================================================================== G8r: resources by RID
 //
-// gate8-design.md D6, D7 and rs_adopt.h. Everything below runs inside a hook, before its mirror
+//  and rs_adopt.h. Everything below runs inside a hook, before its mirror
 // tap, so it never holds a hook lock while it calls the engine (the TextServer read-back may
 // itself flush a page through the hooked texture_2d_update).
 
@@ -880,7 +880,7 @@ std::mutex g_res_mutex;  // guards the census, the refused map and the stats
 AdoptResourceStats g_res_stats;
 thread_local bool t_res_inside = false;
 
-// LAR6 (late-arm-registry-design.md Q4 "Refused sets"): the one refused map, RID -> reason, for
+// the one refused map, RID -> reason, for
 // every family adoption refuses (textures, meshes, multimeshes, emitters, process materials; RID
 // values are unique across the engine's owners, so one map holds them all). It replaces G8r's
 // three sets and PM7's two, with their one rule: cleared at stream begin, erased on free. Under
@@ -1814,7 +1814,7 @@ bool stride_guess_sabotage(std::int32_t instances, std::size_t floats, std::int3
 // Why a multimesh adoption refused (AdoptResourceStats' typed counters).
 enum class MultimeshRefusal { None, Preload, EditedDummy, Buffer };
 
-// LAR2 (late-arm-registry-design.md R2, R4, O3, F1): a multimesh is adopted from the registry's
+// a multimesh is adopted from the registry's
 // recorded allocation, mesh, visible count and custom AABB -- exact on every renderer, where the
 // getters answer 0 / RID() / AABB() on the dummy -- with the buffer from multimesh_get_buffer
 // (payload-sized, so never recorded). PM9's stride guess and its read of the drawing node's
@@ -1944,7 +1944,7 @@ bool adopt_from_update_begin() {
 
 // ===================================================================== G8m: materials, shaders
 //
-// gate8-design.md D11, D12, Q5 and rs_adopt.h. Everything below runs on the main thread (at arm
+//  and rs_adopt.h. Everything below runs on the main thread (at arm
 // and in the frame callback, before the transaction is formed), never under a hook lock: the
 // hooks_adopt_* calls take the hooks' own locks. The node map is the one structure another thread
 // (a node_added emitted off the main thread) may write; g_node_mutex guards it.
@@ -2135,7 +2135,7 @@ struct MatTags {
 };
 MatTags g_mat_tags;
 
-// TAG1: the node map's second user (client-extensions-design.md §2.2), and the sabotage
+// the node map's second user, and the sabotage
 // meta-before-ready's early identities (resolved in node_added, before the node's _ready).
 std::atomic<bool> g_tag_active{false};
 bool g_tag_before_ready = false;
@@ -2591,7 +2591,7 @@ bool adopt_material_object(void *material, std::uint64_t rid, bool at_arm) {
   return m.knows_material(rid);
 }
 
-// LAR3 (late-arm-registry-design.md R2, R4): a shader the registry holds, adopted from the code
+// a shader the registry holds, adopted from the code
 // the server was given (the preprocessed code a born capture carries: no temporary Shader, no
 // include to resolve) and its recorded default textures. No getter is read, so the dummy
 // renderer's empty shader_get_code does not matter. True when the mirror knows the shader.
@@ -3054,7 +3054,7 @@ void pump_call(void * /*userdata*/, const GDExtensionConstVariantPtr * /*args*/,
 // LATE-PPM: a synthetic process shader's capture-reserved RID and code. An engine whose
 // ParticleProcessMaterial assigns its shader outside get_rid() (MegaDot 4.5.1.m.12) names no
 // shader to the duplicate, and no server getter returns a material's shader
-// (Material.get_shader_rid is not bound, gate8-design.md D12). The particle_process_material
+// (Material.get_shader_rid is not bound). The particle_process_material
 // builtin key, though, is readable from the material's own getters (ppm_key), so a synthetic
 // `particles` shader carrying that key is adopted under a reserved RID (the top two bits set, which
 // no 31-bit-validator RID takes) and re-keyed if a hooked call ever names the engine's RID. A
@@ -3136,7 +3136,7 @@ void adopt_particles_resolve() {
     return;
   }
   Mirror &m = mirror_instance();
-  // LAR4 (late-arm-registry-design.md R4, Q4 M18): the mirror's queue replaces the ppm epoch. A
+  // the mirror's queue replaces the ppm epoch. A
   // frame that queued nothing costs this one atomic load; otherwise only the queued emitters are
   // looked at (rs_mirror.h take_ppm_candidates).
   if (!m.has_pending_ppm() || !m.particles_options().enabled || !ppm_binds()) {
@@ -3374,7 +3374,7 @@ std::uint64_t adopt_ppm_builtin(void *material) {
   return synth;
 }
 
-// LAR4 (late-arm-registry-design.md Q4 M16, M17): a pre-arm ParticleProcessMaterial (`material`,
+// a pre-arm ParticleProcessMaterial (`material`,
 // RID `rid`). PM7's duplicate trick is gone.
 //   - Registered (made under the hooks): adopted from the registry, as any material (LAR3): the
 //     shader material_set_shader named, with the code the server was given, and every recorded
@@ -3500,7 +3500,7 @@ std::uint64_t pta_process_material(void *node) {
   return rid;  // an unknown one makes the entry unknown-material, as a hooked call would
 }
 
-// LAR5 (late-arm-registry-design.md Q4 M19): the adoption entry of a registered emitter, built from
+// the adoption entry of a registered emitter, built from
 // the registry's record alone: the configuration and floats as the engine's setters declared them,
 // the trail poses the last particles_set_trail_bind_poses gave, the recorded draw passes, process
 // material and subemitter. PM7's node getters, its collision-size and transform-align inferences
@@ -3629,7 +3629,6 @@ void adopt_emitters_forget(std::uint64_t rid) {
 
 // --- LAR6: the one entry, the off-main queue and the frame drain ------------------------------
 //
-// late-arm-registry-design.md R4, Q4 (M9 removed, "Refused sets" simplified, M14/M18 queue-driven).
 
 namespace {
 
@@ -3794,7 +3793,7 @@ void adopt_particles_resolve_unknown_material(
 
 // ===================================================================== TAG1: item identity
 //
-// client-extensions-design.md §2.2, §2.3: the node map's second user, and what one item's node
+// The node map's second user, and what one item's node
 // says about itself. Main thread only (ObjectDB), in the frame callback.
 
 namespace {

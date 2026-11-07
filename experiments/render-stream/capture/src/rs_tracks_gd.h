@@ -1,5 +1,4 @@
-// rs_tracks_gd: the RenderStreamTrack engine class (TRK2, protocol/tracks-design.md Q6, "As built
-// (TRK2)").
+// rs_tracks_gd: the RenderStreamTrack engine class.
 //
 // A thin RefCounted class, registered with ClassDB by the capture beside RenderStreamCarrier, that
 // makes a script (GDScript, C#, any engine language) the receiver of one track kind: it binds the

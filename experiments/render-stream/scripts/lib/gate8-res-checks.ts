@@ -1,4 +1,4 @@
-// Gate 8 g8res checks (LATE-RES, results/p3/late-res.md; LAR5): a capture armed late must adopt
+// Gate 8 g8res checks (LATE-RES; LAR5): a capture armed late must adopt
 // pre-arm resources first drawn after the arm -- a pre-arm texture (G8r) and a pre-arm item that
 // enters the tree after the arm (the pooled node, LATE-RES's node_added adoption) -- leaving no
 // unknown item RIDs. LAR5 adopts a pre-arm GPUParticles2D emitter and its ParticleProcessMaterial

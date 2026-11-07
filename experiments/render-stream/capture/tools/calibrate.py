@@ -84,7 +84,7 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("shader_set_code", ("shader_set_code",)),
     ("material_set_param", ("material_set_param",)),
     # calibrator 3: gate 0's retained canvas mirror -- canvas and viewport
-    # identity, parenting and per-item state (protocol/gate0-design.md Q2b)
+    # identity, parenting and per-item state
     ("viewport_attach_canvas", ("viewport_attach_canvas",)),
     ("viewport_set_canvas_transform", ("viewport_set_canvas_transform",)),
     ("canvas_create", ("canvas_create",)),
@@ -96,11 +96,11 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("canvas_item_set_visibility_layer", ("canvas_item_set_visibility_layer",)),
     ("canvas_item_set_z_index", ("canvas_item_set_z_index",)),
     ("canvas_item_set_draw_index", ("canvas_item_set_draw_index",)),
-    # calibrator 4: draw-order items the mirror held at RS defaults (gate1-design.md G1e)
+    # calibrator 4: draw-order items the mirror held at RS defaults
     ("canvas_item_set_z_as_relative_to_parent", ("canvas_item_set_z_as_relative_to_parent",)),
     ("canvas_item_set_draw_behind_parent", ("canvas_item_set_draw_behind_parent",)),
     # calibrator 5: textures -- placeholders, replacement, canvas textures and the
-    # three levels of texture filter/repeat (gate2-design.md Q2), plus the LCD
+    # three levels of texture filter/repeat, plus the LCD
     # text draw so a silent op becomes visible
     ("texture_2d_placeholder_create", ("texture_2d_placeholder_create",)),
     ("texture_replace", ("texture_replace",)),
@@ -119,9 +119,9 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("canvas_item_set_default_texture_filter", ("canvas_item_set_default_texture_filter",)),
     ("canvas_item_set_default_texture_repeat", ("canvas_item_set_default_texture_repeat",)),
     ("canvas_item_add_lcd_texture_rect_region", ("canvas_item_add_lcd_texture_rect_region",)),
-    # calibrator 6: clip_ignore refused, typed (gate3-design.md D4, Q2)
+    # calibrator 6: clip_ignore refused, typed
     ("canvas_item_add_clip_ignore", ("canvas_item_add_clip_ignore",)),
-    # calibrator 7: gate5-design.md Q2, D2 -- the two silent holes (draw_multiline /
+    # calibrator 7: -- the two silent holes (draw_multiline /
     # draw_dashed_line's canvas_item_add_multiline, and a loaded ArrayMesh's
     # mesh_create_from_surfaces), typed refusals (particles, animation slice, skeleton
     # attach), and the remaining mesh region/removal hooks.
@@ -133,7 +133,7 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("mesh_surface_update_skin_region", ("mesh_surface_update_skin_region",)),
     ("mesh_surface_update_index_region", ("mesh_surface_update_index_region",)),
     ("mesh_surface_remove", ("mesh_surface_remove",)),
-    # calibrator 8: gate5_5-design.md Q2, D2 -- three silent holes (every material's shader,
+    # calibrator 8: three silent holes (every material's shader,
     # every CanvasItemMaterial shader, inherited materials), a canvas field and two typed
     # refusals (an unknown shader, canvas_light_attach_to_canvas).
     ("shader_create", ("shader_create",)),
@@ -148,7 +148,7 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("canvas_item_set_instance_shader_parameter",),
     ),
     ("canvas_light_attach_to_canvas", ("canvas_light_attach_to_canvas",)),
-    # calibrator 9: gate6-design.md Q2 -- CanvasLayer attach/stacking/removal, canvas-item
+    # calibrator 9: -- CanvasLayer attach/stacking/removal, canvas-item
     # mirroring/repeat and the root's global canvas transform. Decode and hook-log only; no
     # mirror change (that lands in G6b).
     ("viewport_remove_canvas", ("viewport_remove_canvas",)),
@@ -157,12 +157,12 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("canvas_set_item_mirroring", ("canvas_set_item_mirroring",)),
     ("canvas_set_item_repeat", ("canvas_set_item_repeat",)),
     ("canvas_set_parent", ("canvas_set_parent",)),
-    # G8kc (texture-delivery-design.md D10) -- the res:// path the engine gives a texture right
+    # The res:// path the engine gives a texture right
     # after texture_2d_create. Hooked only under GRC_TEXTURE_CACHE_DIR, so it is neither planned
     # nor omitted without it. It adds no calibrator version: the version is echoed in every
     # session record, and a run with no cache directory must stay byte-identical to before.
     ("texture_set_path", ("texture_set_path",)),
-    # CG1 (render-stream-10.md, gate8-design.md "Calibration for /10") -- the back-buffer item
+    # CG1 (render-stream-10.md) -- the back-buffer item
     # state: canvas-group mode (`clip_children`, CanvasGroup) and copy-to-backbuffer
     # (BackBufferCopy). Hooked only by a /10 session (GRC_STREAM_VERSION=10), so like
     # texture_set_path they add no calibrator version: below /10 they are neither planned nor

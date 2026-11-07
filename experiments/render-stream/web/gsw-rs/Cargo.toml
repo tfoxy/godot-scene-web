@@ -3,7 +3,7 @@ name = "rs-gsw-wasm"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "The GSW browser receiver's wasm module (gate7-design.md Q14a, Q14c): render-stream-core and the canvas-items executor linked into one module, with bytes crossing in once per message and a fixed stats block out"
+description = "The GSW browser receiver's wasm module: render-stream-core and the canvas-items executor linked into one module, with bytes crossing in once per message and a fixed stats block out"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

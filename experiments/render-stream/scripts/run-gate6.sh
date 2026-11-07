@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Gate 6 runner: drives fixtures/gate6-scene through the legs of protocol/gate6-design.md
-# "Q7. Runner, legs, checks, report" for the groups that have landed, then runs check-gate6.ts.
+# Gate 6 runner: drives fixtures/gate6-scene through the legs
+# for the groups that have landed, then runs check-gate6.ts.
 #
 #   bash run-gate6.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
@@ -31,7 +31,7 @@
 # kept) and sabotage-live-stale-coalesce (the stall, stale-coalesce @420) -- then
 # reference-live-frames (the reference shooting every host frame a receiver shot, and every
 # stale_from frame) and reference-file (the animate reference on the file timeline).
-# G7u (gate 7's g7-lc, protocol/gate7/g7u-as-built.md): with G7U_LEGS=<csv> (browser
+# G7u (gate 7's g7-lc): with G7U_LEGS=<csv> (browser
 # receivers only, GATE7_LIVE_KIND) g6l runs ONLY those lifecycle legs under <out>/live/<leg>/,
 # then reference-live-frames with the run's largest quit frame; the g6l legs and reference-file
 # are skipped. Desktop legs (simulated suspension): sim-hidden-2s, sim-hidden-30s,
@@ -47,15 +47,14 @@
 # timeline (realtime, step 11 at game time 365 s, quit 370 s) with GRC_HOOK_LOG=off: four 370-s
 # legs -- soak-scene (fresh cache, the full 1 MiB/4 MiB memory/disk budgets), soak-inline (every
 # payload inline, no cache dir or store so eviction never runs -- a carried hash is never resent,
-# memory g6s-carried-set-resource-duplicate -- the host's carried-hash set checked for growing
+# the host's carried-hash set checked for growing
 # only as fast as genuinely novel content explains), sabotage-soak-no-evict
 # (RS_RECEIVER_SABOTAGE=no-evict) and sabotage-soak-retain-superseded
 # (GRC_SABOTAGE=retain-superseded) -- each with a runner-side `/proc` sampler on the host pid
 # (scripts/sample-proc.ts) and the receiver's own RS_RECEIVER_PERF_OUT timeline; then
 # reference-step11 (a rendered `animate` reference on the soak timeline itself: realtime pacing
-# makes the step-11 freeze land at a frame the file timeline cannot reproduce, gate6-design.md
-# "As built (G6s)").
-# G7k (gate7's g7-k, protocol/gate7/g7k.md): with G6S_LEGS=<csv> (a browser receiver only,
+# makes the step-11 freeze land at a frame the file timeline cannot reproduce).
+# G7k (gate7's g7-k): with G6S_LEGS=<csv> (a browser receiver only,
 # GATE7_LIVE_KIND) run_g6s runs only the named legs under <out>/g6s/, plus reference-step11
 # always. A fifth, GSW-only leg joins the vocabulary: sabotage-leak-gl-textures
 # (RS_RECEIVER_SABOTAGE=leak-gl-textures). The default (G6S_LEGS unset) is every native leg,
@@ -85,7 +84,7 @@
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
 # and WAYLAND_DISPLAY. Every launch strips every inherited GRC_* and RS_* variable and passes only
 # what its leg wants (env.txt records it). Every capture runs with GRC_ROOT_SIZE=enforce-min-size
-# (gate6-design.md D4: stretch `disabled`; for gate6-hd the logical 1920x1080 window) except g6b's
+# (stretch `disabled`; for gate6-hd the logical 1920x1080 window) except g6b's
 # half captures, GRC_ROOT_SIZE=presentation:960x540 (D2).
 
 set -euo pipefail
@@ -120,7 +119,7 @@ BINARY="$HOME/.cache/godot-render-stream/templates/4.5.1-stable/linux_release.x8
 OUT=""
 LEGS_ARG=""
 
-# The capture runs 400 frames so the /proc maps/fd sample has time to run (gate4-design.md G4a
+# The capture runs 400 frames so the /proc maps/fd sample has time to run (G4a
 # amendment); rendered legs and sabotage captures run the fixture's default file timeline (S=1,
 # N=10, step k at 1 + 10k, settle +7, quit S + 11N + 11 = 122).
 CAPTURE_QUIT_FRAME=400
@@ -489,11 +488,11 @@ source "$SCRIPT_DIR/lib/gate6c-legs.sh"
 source "$SCRIPT_DIR/lib/gate6p-legs.sh"
 
 # ---------------------------------------------------------------------------------------------
-# G6l (gate6-design.md "G6l", Q7c): live motion, the 2-s stall, reconnect and the warm cache on
+# G6l: live motion, the 2-s stall, reconnect and the warm cache on
 # fixtures/gate6-scene's `animate` variant with the live timeline (S=300, N=60, step k at 300 +
 # 60k, settled 7 frames later, quit at S + 13N = 1080) and `steps` time (D6: host frame f is
 # reference frame f whatever the wall clock does). Everything lives under <out>/live/:
-#   import/{fixture,receiver}/  editor --import passes (memory receiver-needs-import-before-script)
+#   import/{fixture,receiver}/  editor --import passes
 #   <leg>/host/       a live host (headless, armed, both sinks and the store, tap, --max-fps 60)
 #   <leg>/receiver/   its rendered live receiver (--max-fps 60, the shot windows of g6l_windows)
 #   reference-live-frames/   the rendered reference on the live timeline shooting every host frame
@@ -506,8 +505,8 @@ source "$SCRIPT_DIR/lib/gate6p-legs.sh"
 # GRC_SABOTAGE=stale-coalesce from step 2's frame 420).
 G6L_START_FRAME=300
 # G7u part D: a DEVICE lifecycle run may raise S (G7U_START_FRAME, set by run-gate7.sh --env
-# device per receiver kind: the web export's page needs ~9.5 s on the g31 to connect, past S=300's
-# 5 s at 60 fps). Every frame below derives from S, the lc hosts and the reference get
+# device per receiver kind: the web export's page on a phone needs longer than S=300's
+# 5 s at 60 fps to connect). Every frame below derives from S, the lc hosts and the reference get
 # RS_FIXTURE_START_FRAME, and the device daemon records it in lifecycle.json; a desktop run, or an
 # unset/300 value, is exactly S=300.
 G6L_START_OVERRIDE=""
@@ -719,14 +718,14 @@ print(",".join(str(f) for f in sorted(frames)))
 PY
 }
 
-# G7u lifecycle legs (header; g7u-as-built.md "Legs"): every lc receiver shoots its final
+# G7u lifecycle legs (header): every lc receiver shoots its final
 # state (RS_RECEIVER_SHOT_FINAL=1); RS_RECEIVER_LIFECYCLE and RS_RECEIVER_SHELL_SABOTAGE are
 # harness words (lib/gate7-live-legs.ts mapBrowserLeg drops them from the page env). The 30-s legs
 # run the host to frame 3180 (the suspension at step 2's shot, ~frame 427, ends ~frame 2230).
 G7U_LONG_QUIT_FRAME=$((3180 + G6L_START_FRAME - 300))
 G7U_LEGS="${G7U_LEGS:-}"
 
-# G7k startup legs (gate7-design.md Q10 "Startup", protocol/gate7/g7k.md): with
+# G7k startup legs: with
 # G7K_STARTUP_LEGS=<csv> (a browser receiver only, GATE7_LIVE_KIND) g6l runs ONLY the named
 # startup-cold-r<N>/startup-warm-r<N> legs (N 0..5, 0 the discarded warmup) against a plain
 # live-scene host; the g6l legs, reference-file and reference-live-frames are skipped (a startup
@@ -959,7 +958,7 @@ run_g6l() {
 }
 
 # ---------------------------------------------------------------------------------------------
-# G6s (gate6-design.md "G6s", Q5 "Resource budgets", Q7e "Stability (g6s)"): receiver cache
+# G6s: receiver cache
 # budgets and eviction over a 300-s soak (realtime, timeline `soak`, variant `animate`,
 # GRC_HOOK_LOG=off). No file sinks and no live tap: the soak has no use for either (the hook log
 # is off, and nothing here reads tap/*.jsonl), so each leg's only evidence is the host's
@@ -969,12 +968,12 @@ G6S_MEMORY_BUDGET_BYTES=1048576 # 1 MiB (Q7e: 64 TEXA payloads)
 G6S_CACHE_BUDGET_BYTES=4194304  # 4 MiB
 G6S_INLINE_MAX_BYTES=1048576    # soak-inline: every payload goes inline (live mode's own cap)
 
-# G7k (gate7-design.md Q10 "Soak", protocol/gate7/g7k.md): with G6S_LEGS=<csv> (a browser
+# G7k: with G6S_LEGS=<csv> (a browser
 # receiver only, GATE7_LIVE_KIND) run_g6s runs only the named legs under <out>/g6s/, in the order
 # below -- never reorders, never dedupes a caller's duplicate. The default is every native leg,
 # unchanged. `sabotage-leak-gl-textures` is GSW-only (RS_RECEIVER_SABOTAGE has no effect on the
 # native receiver or the web export's engine: the real leak lives in gsw-receiver's own WebGL
-# context wrapper, gate7-design.md Q10, gl-leak.ts) and is never selected by the default.
+# context wrapper, gl-leak.ts) and is never selected by the default.
 G6S_LEGS="${G6S_LEGS:-soak-scene,soak-inline,sabotage-soak-no-evict,sabotage-soak-retain-superseded}"
 g6s_leg_wanted() {
 	case ",$G6S_LEGS," in
@@ -989,7 +988,7 @@ g6s_leg_wanted() {
 # the achieved rate can only be at or below 60 fps, so any slower run only reduces how many
 # frames land inside the same 365 s of real time -- the actual trigger frame can therefore only be
 # <= 21900, never above it. Starting the last window there always lands at or after the freeze
-# (gate6-design.md "As built (G6s)"; a window starting at frame 1000+k*1850, as this used to do
+# (a window starting at frame 1000+k*1850, as this used to do
 # uniformly, could instead land its "first transaction" inside the window BEFORE the real trigger
 # fired -- measured, a 546-frame-early shot at frame 21350 against a real trigger at 21896, 15 347
 # mismatched pixels in exactly the continuous-formula regions step 11 freezes: SC, PB, SM, MS, AN,
@@ -1118,7 +1117,7 @@ run_g6s() {
 	gs_start 640 360 "$OUT/gamescope-g6s"
 
 	# Each leg (including this reference) runs the fixture's soak timeline to its own natural
-	# ~370-s quit. G7k (As built, protocol/gate7/g7k.md): a browser receiver's own launch, any
+	# ~370-s quit. G7k: a browser receiver's own launch, any
 	# quiet-lock wait before the leg's own 370 s even starts, AND a pre-existing gap in the web
 	# export's live shutdown after this long a connection all need slack native never needed.
 	# Measured twice, with and without gate7k-samplers.ts's memory sampler attached (ruling the
@@ -1142,11 +1141,9 @@ run_g6s() {
 	# `frozen` flag) stops every continuous per-frame update (MS, SM, AN, and the animate variant's
 	# SC/LB/CD/TEXA) exactly where it happened to be on the frame before the freeze fired, and that
 	# frame number depends on both the timeline (file: a deterministic frame count; soak: whatever
-	# frame real-time pacing reached when game time first hit 365 s -- measured 21895 here,
-	# consistently across --max-fps 60 runs on this host/build) and the achieved frame rate (an
-	# uncapped rendered reference ran at roughly 1650 fps, crossing game time 365 s around frame
-	# 500 000+ instead). Either mismatch alone is thousands of pixels (gate6-design.md
-	# "As built (G6s)").
+	# frame real-time pacing reached when game time first hit 365 s) and the achieved frame rate (an
+	# uncapped rendered reference crosses game time 365 s at a far later frame). Either mismatch
+	# alone is thousands of pixels.
 	echo "run-gate6: g6s: reference-step11 (soak timeline, animate variant, --max-fps 60: step 11's freeze)"
 	mkdir -p "$G6S/reference-step11/shots"
 	LEG_ENV=(
@@ -1165,7 +1162,7 @@ run_g6s() {
 
 	# No cache dir and no store (pure inline, G2c2's HTTP fetcher never starts): a hash evicted
 	# from memory under budget pressure could never be recovered (the host never resends a
-	# carried hash, memory g6s-carried-set-resource-duplicate), and MS's and SM's payloads
+	# carried hash), and MS's and SM's payloads
 	# legitimately recur. So this leg keeps the receiver's own generous default memory budget
 	# (268435456, which this fixture's whole payload footprint never approaches) rather than
 	# Q7e's tight one, and exercises only the carried-set growth check.

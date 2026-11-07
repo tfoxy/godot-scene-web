@@ -1,4 +1,4 @@
-// TRK5 (protocol/tracks-design.md "As built (TRK5)"): the capability golden vectors and the
+// TRK5: the capability golden vectors and the
 // reference minter (scripts/lib/track-cap.ts). Pure, no host.
 //
 // Checks:

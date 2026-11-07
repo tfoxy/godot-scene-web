@@ -1374,12 +1374,9 @@ function encodeRustRetainedPatchImpl(
       });
     }
   }
-  // A per-patch `Proxy` overlay was tried here and reverted: its `get` trap (a regex plus a `Map`
-  // lookup per property access, `.length` included) is cheap next to the `slice()` it replaces
-  // (~2.5us at 3,000 commands) but expensive next to what consumers actually do with the result —
-  // iterating or filtering the whole `commands` array, which every `get` now routes through the trap.
-  // A plain sliced array is the right tradeoff: the real per-patch cost was the `groups`/`owners`
-  // map copies above, which `OverlayMap` fixes without changing what `commands` is.
+  // A plain sliced array rather than a per-patch `Proxy` overlay: consumers iterate or filter the
+  // whole `commands` array, and a `get` trap on every access costs more than the `slice()`. The
+  // real per-patch cost is the `groups`/`owners` map copies above, which `OverlayMap` handles.
   const nextCommands = base.commands.slice();
   const changedIndexes: number[] = [];
   for (const [id, command] of staged) {

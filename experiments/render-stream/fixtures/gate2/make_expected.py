@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Write fixtures/gate2/expected.json (render-stream-gate2-expected/1).
 
-The derivation of every number below is by hand from the engine source
-(gate2-design.md Q1), written down as code so the eleven steps stay consistent
+The derivation of every number below is by hand from the engine source, written down as code so the eleven steps stay consistent
 with each other. Nothing here runs or reads the engine: the reference run has to
 agree with it (`expected-image-reference`, `census`), and a disagreement is a
 finding to explain from the source, never a number to copy.
@@ -167,8 +166,7 @@ VARIANT_TEXTURE_OBJECTS = {
         "PRE": {"kind": "image", "created_step": None, "thread": "main", "contents": [[0, "PRE"]], "unknown": True},
     },
     # G2d: step 11's CanvasTexture (diffuse A, nearest, repeat enabled). On a headless host it is
-    # never allocated and its draw is refused (canvas-texture-headless,
-    # protocol/canvas-texture-headless.md); on a rendered host it is a canvas table entry.
+    # never allocated and its draw is refused (canvas-texture-headless); on a rendered host it is a canvas table entry.
     "canvas": {"CT": {"kind": "canvas", "created_step": 11, "thread": "main", "contents": []}},
     "canvas-normal": {
         "CT": {"kind": "canvas", "created_step": 11, "thread": "main", "contents": [], "status": "unsupported", "reason": "canvas-texture-channel"},
@@ -314,7 +312,7 @@ def synth_exclude(step):
 # update_now (scene/resources/gradient_texture.cpp:220-225), which the first MessageQueue flush
 # after arming runs in frame 1. Nothing has asked for its RID yet, so it is a plain
 # texture_2d_create (:273-278), not a placeholder + replace. Measured in every gate 2 leg, headless
-# and rendered, and already in gate -1's spike counts (README "Gate -1 result").
+# and rendered, and already in gate -1's spike counts.
 ENGINE_TEXTURES = [
     {
         "name": "theme_color_hue",
@@ -419,7 +417,7 @@ def invariants(step):
         ]
     if step == 11:
         # The main fixture's SC; the canvas variants' CT is checked by checkCanvasTextureWire on
-        # the rendered canvas-host capture (gate2-design.md G2d).
+        # the rendered canvas-host capture.
         inv += [
             {"kind": "filter", "item": "SC", "value": "nearest"},
             {"kind": "repeat", "item": "SC", "value": "enabled"},
@@ -429,7 +427,7 @@ def invariants(step):
 
 def receiver_resources(step):
     """The file-mode receiver's texture traffic over the step's window, with a fresh cache
-    (gate2-design.md D5, Q5 step 2-3, G2b2 `upload-accounting`). A texture becomes resident when
+    (step 2-3, G2b2 `upload-accounting`). A texture becomes resident when
     a command first names it and is re-uploaded only when its hash or kind changes; a payload is
     fetched once per process (equal bytes share one fetch); a placeholder counts as created and
     uploads nothing; an entry that leaves the table or becomes a tombstone frees its RID. M is

@@ -1,5 +1,5 @@
 extends Control
-## Gate 8 size fixture (G8h, gate8-design.md Q4 "Fixture"). A 640x360 `canvas_items` / `expand`
+## Gate 8 size fixture. A 640x360 `canvas_items` / `expand`
 ## scene: a Panel with a feathered StyleBoxFlat (rounded, bordered, AA), a corner Panel and a Note
 ## Label anchored to the bottom-right corner, an Edge strip anchored to the right edge, and a
 ## Title Label. Under the headless host the root window is the 64x64 SceneTree minimum, so

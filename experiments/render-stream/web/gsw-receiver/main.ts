@@ -1,4 +1,4 @@
-// The GSW canvas receiver (gate7-design.md Q5, Q14c, D29/D30, G7a): a TypeScript shell over
+// The GSW canvas receiver: a TypeScript shell over
 // `rs-gsw-wasm`, the render-stream core and the canvas-items executor in ONE wasm module. Decode,
 // validation, resolve, D7's applier and the GL draws are Rust; this file owns the configuration,
 // the sources, the fetcher, the rAF loop, the timers and the evidence.
@@ -228,7 +228,7 @@ async function run(): Promise<void> {
           digest: "deferred",
           sabotage: cfg.sabotage,
           format: "rgb10a2",
-          // G8kp (texture-delivery-design.md D3): the delivery preference a /9 recording is read with.
+          // the delivery preference a /9 recording is read with.
           texture_encodings: cfg.textureEncodings ?? "",
           gpu_format_mask: cfg.gpuFormatMask ?? "",
           // G8kb: the bundle carries the KTX2 transcoder worker (transcode.ts), so the default

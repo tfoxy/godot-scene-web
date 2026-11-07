@@ -1,5 +1,5 @@
 extends SceneTree
-## IN9: what the injector vectors cannot see, against real Godot GUI dispatch in headless 4.5.1:
+## What the injector vectors cannot see, against real Godot GUI dispatch in headless 4.5.1:
 ##   - a Control's `gui_input` receives injected presses and releases at the injected position;
 ##   - right, middle, X1, X2 and the four wheel directions reach it with the right `button_index`,
 ##     `factor` and `button_mask`;

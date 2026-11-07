@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gate 6 group g6c (protocol/gate6-design.md "G6c", Q7b, Q7d): publication rates, rate mismatch,
+# Gate 6 group g6c: publication rates, rate mismatch,
 # two receivers on one host, an injected receiver delay kept apart from a GPU-limited receiver, and
 # a constrained transport, on render-stream/6. Sourced by run-gate6.sh after lib/legs.sh; it relies
 # on run-gate6.sh's OUT, BINARY, EXTENSION, CALIBRATION, SCENE_FIXTURE_DIR, HD_FIXTURE_DIR,
@@ -25,7 +25,7 @@
 # G6C_LEGS (runner environment, optional): a CSV of the legs to run (development); unset: all of
 # G6C_ALL_LEGS.
 #
-# G7r (protocol/gate7/g7r.md, gate7-design.md Q9): the same legs with receiver kinds, never forked.
+# G7r: the same legs with receiver kinds, never forked.
 #   - Under GATE7_LIVE_KIND=web|gsw (lib/legs.sh; run-gate7.sh --live --legs g7-r) every receiver
 #     of a leg is that browser (run_browser_receiver), unless the leg marks it native
 #     (G6C_RECEIVER_NATIVE=1: dual-native's /6 receiver). A browser is rAF-bound (Q9), so where a
@@ -42,7 +42,7 @@
 #   - `constrained` under GATE7_LIVE_KIND has bearer authorization (GRC_LIVE_AUTH=token), so the
 #     browser's payload GETs are preflighted and the proxy can time the preflights.
 #
-# G7v (protocol/gate7/g7v.md, gate7-design.md Q13d; run-gate7.sh --live --legs g7-dev): the phone
+# G7v (run-gate7.sh --live --legs g7-dev): the phone
 # legs `dev-<base>-r<N>` (r0 the discarded warmup), named only in G6C_LEGS, one receiver kind and
 # one credit window per run (GATE7_LIVE_KIND, GATE7_CREDIT_WINDOW). <base>:
 #   pace | scene | hd                  the Q13d workloads: fixtures/gate7-pace (realtime), gate6-scene
@@ -59,7 +59,7 @@
 #                                      G7k's profile copy, RS_RECEIVER_CACHE_MODE=warm)
 # Every scene and hd timeline is shifted G7V_TIME_OFFSET_S (default 12) later
 # (RS_FIXTURE_TIME_OFFSET_S), and pace quits at 30 + that, so a receiver that connects late (the
-# web export needs ~10 s on the g31) still streams the whole measured window, which check-gate7.ts
+# web export on a phone connects slowly) still streams the whole measured window, which check-gate7.ts
 # places at the connection's first host timeline line + 6 s (20 s; a soak 60 s + G7V_SOAK_S). The
 # receiver gets the harness words RS_RECEIVER_DEV_PROBE (`1`, or `fit` under G7V_ENV=device: the
 # keep-rule CSS fit, Q13a) and, on the device, RS_RECEIVER_DEV_SAMPLE (`light`; a soak `soak`).
@@ -76,8 +76,7 @@ G6C_BURN_START=8000
 G6C_CALIBRATION_ROUNDS=5
 G6C_CALIBRATION_QUIT_FRAME=480
 # The constrained sabotage: ignore-credit from game time ~15 s (after step 9 freed TEXA), and a
-# later quit so the backlog it builds in front of the 4 Mbit/s link drains after step 11's freeze
-# (gate6-design.md "As built (G6c)").
+# later quit so the backlog it builds in front of the 4 Mbit/s link drains after step 11's freeze.
 G6C_SABOTAGE_FRAME=900
 G6C_SABOTAGE_QUIT_S=75
 # Every payload inline on the sabotage leg: over HTTP, D7's pin ("the last transaction sent")
@@ -95,19 +94,15 @@ for g6c_run in $(seq 1 "$G6C_G7R_PHASE_RUNS"); do
 	G6C_G7R_LEGS+=("phase-60-late-poll-r$g6c_run")
 done
 G6C_G7R_LEGS+=(dual-native sabotage-ack-on-receipt)
-# G7q (gate7/g7q.md "Sabotage"): G6c's constrained sabotage with GRC_SABOTAGE=window-overrun at
+# G7q: G6c's constrained sabotage with GRC_SABOTAGE=window-overrun at
 # credit window 2 (GATE7_CREDIT_WINDOW=2; run-gate7.sh --credit-window 2 --receiver native).
 G6C_G7R_LEGS+=(sabotage-constrained-window-overrun)
 # LF2: that leg's link rate (throttle-proxy.ts --rate-bytes-per-s; the profile's burst and delay
-# stay) and quit time. Measured on the dev box: the overrunning host sends about 15.5 MB between
-# frame 900 and step 11's freeze (about 1 MB/s for 15 s), then about 42 KB/s. Through `constrained`'s
-# 500 KB/s the 8 MB backlog sat mostly in loopback socket buffers (tcp_wmem/tcp_rmem autotuning
-# hid 6-8 MB), so the host's own queue, which queue-bounded judges (bound 328 268 here), peaked
-# anywhere from 139 KB (the sabotage passed it once) to 2.97 MB. At 250 KB/s the backlog is about
-# 11.7 MB, more than the kernel held (max_queued_bytes 3.5 MB on the first run), and the link
-# delivers the host's last byte about 90 s in, so the leg quits at 110 s rather than 75 (at
-# 150 KB/s the 13 MB backlog outlived the 75 s quit: live-disconnected, a replay-failure class
-# instead of delivery-violation).
+# stay) and quit time. The overrunning host's backlog must exceed what loopback socket buffers can
+# hold (autotuning hides several MB there), or the host's own queue, which queue-bounded judges,
+# does not show it reliably. The rate is slow enough for that, and the link delivers the host's last
+# byte late enough that the leg quits at 110 s: at a slower rate the backlog outlives the quit
+# (live-disconnected, a replay-failure class instead of delivery-violation).
 G6C_OVERRUN_RATE_BYTES_PER_S=250000
 G6C_OVERRUN_QUIT_S=110
 G7V_PACE_DIR="$(cd "$SCENE_FIXTURE_DIR/../gate7-pace" && pwd)"
@@ -207,7 +202,7 @@ g6c_dev_leg() {
 	esac
 	recv_env+=(RS_RECEIVER_DEV_PROBE="$probe")
 	# G7k's soak cap on the received tap (both receivers): a phone's browser cannot hold an hd or
-	# soak leg's whole tap (GSW's blob read failed at ~30 MB on the g31), and no dev check reads it.
+	# soak leg's whole tap (GSW's blob read fails on a large tap in a phone's browser), and no dev check reads it.
 	recv_env+=(RS_RECEIVER_RECEIVED_MAX_BYTES=1048576)
 	[ -n "$sample" ] && recv_env+=(RS_RECEIVER_DEV_SAMPLE="$sample")
 	G6C_HOST_TIMEOUT_S=$((offset + 120))

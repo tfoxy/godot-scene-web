@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the shared Rust core (gate7-design.md D29, D30, Q14a):
+# Build the shared Rust core:
 #   - render-stream-core's native CLI, rs-core-check (goldens, diff, dump-pdl, bench);
 #   - rs-gsw-wasm, the core and the renderer's canvas-items executor in ONE wasm32-unknown-unknown
 #     module, with its wasm-bindgen (=0.2.129) `--target web` glue (the browser and Node load it).

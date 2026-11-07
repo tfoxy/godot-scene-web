@@ -1,5 +1,5 @@
-//! rs-net-lockstep: the hub's credit loop on the `wt` carrier, without a hub (CAR10,
-//! carrier-design.md "As built (CAR10)"). A test host for scripts/test/wt-impaired-chromium.ts:
+//! rs-net-lockstep: the hub's credit loop on the `wt` carrier, without a hub.
+//! A test host for scripts/test/wt-impaired-chromium.ts:
 //! it starts the carrier on loopback with a self-signed certificate, waits for one session, then
 //! sends a binary live message (`--size` bytes, the first four the u32le sequence number) every
 //! `--interval-ms` while fewer than `--window` are unacknowledged. A message is acknowledged by a

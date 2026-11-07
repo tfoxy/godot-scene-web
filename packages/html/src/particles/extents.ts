@@ -9,9 +9,7 @@
 // THE MARGIN USED TO BE ONE SYMMETRIC NUMBER: `spriteExtentPad + emissionExtentPad`, i.e. how big
 // one sprite is plus how far apart they are BORN. That is the whole of it — it models no movement
 // at all, so every system got a square canvas centred on its node origin, and anything that
-// TRAVELS was cropped at the square's edge. The visible symptom this was written for: a chest's
-// gold-coin burst (a ~700px square canvas over particles that fly ~1200px sideways and fall ~2500px)
-// looked as if a rectangle had been cut out of the screen.
+// TRAVELS was cropped at the square's edge, as if a rectangle had been cut out of the screen.
 //
 // SO THE MARGIN IS NOW FOUR NUMBERS, one per side, and it includes a BALLISTIC TRAVEL term derived
 // from the same fields `./simulate` integrates: initial velocity over the direction/spread arc,

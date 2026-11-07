@@ -1,4 +1,4 @@
-// A throwaway test PKI for the wss legs (protocol/carrier-design.md D11, D12; CAR4): a test CA and
+// A throwaway test PKI for the wss legs: a test CA and
 // a leaf it signs (SAN localhost, 127.0.0.1, ::1 and any extra IPs), a key that is not the leaf's,
 // all ECDSA P-256, generated with the `openssl` CLI into a fresh temporary directory at test time.
 // Nothing here is ever committed; the caller removes the directory.

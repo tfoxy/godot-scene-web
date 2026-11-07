@@ -1,6 +1,6 @@
 // @vitest-environment node
 //
-// G7s: THE RUST `canvas-items` EXECUTOR'S ITEM-SPACE PROGRAMS, ON A REAL GPU, AGAINST A HAND MODEL.
+// THE RUST `canvas-items` EXECUTOR'S ITEM-SPACE PROGRAMS, ON A REAL GPU, AGAINST A HAND MODEL.
 //
 // Every case of `../src/canvas-pixel/canvas-items-program-cases` is Godot `canvas_item` shader code
 // transpiled by `@godot-scene-web/effects` (`transpileGodotItemShader`), compiled by the executor
@@ -8,14 +8,14 @@
 // into Godot's non-transparent RGB10_A2 target. The TypeScript executor has no programs, so each
 // expected pixel is the shader's arithmetic by hand, converted as the target and its readback
 // convert; every pixel of each expectation's rect must match within its `maxDelta` (0 but for a
-// product in the blend unit), alpha included (memory pixelmatch-hides-alpha-errors). A program
+// product in the blend unit), alpha included (pixelmatch cannot see a wrong alpha convention). A program
 // that does not compile must be refused at definition, and its draws skipped.
 //
 // LAUNCH as canvasItemsRustPixel.test.ts: `--headless=new --enable-gpu --use-angle=vulkan`, DISPLAY
 // and WAYLAND_DISPLAY removed, never headed, never Xvfb. Opt in with GSW_CANVAS_ITEMS_PIXEL=1; the
 // wasm is the same `canvas-items-test` build.
 //
-// G7t: every case runs twice, in `executor-webgl.ts`'s y-down orientation and in Godot's
+// Every case runs twice, in `executor-webgl.ts`'s y-down orientation and in Godot's
 // (`ExecOptions::godot_orientation`, the GSW receiver's), against the same expectations.
 //
 // Artifacts (never committed): `artifacts/canvas-items-pixel/program-<case>[-godot].png`.
@@ -129,7 +129,7 @@ describe.skipIf(!ENABLED)(
       await browser?.close();
     });
 
-    // G7t: every case also in Godot's orientation (`ExecOptions::godot_orientation`, as the GSW
+    // Every case also in Godot's orientation (`ExecOptions::godot_orientation`, as the GSW
     // receiver draws): the same expectations, read back in design rows.
     it.each(
       CASES.flatMap((c) => [

@@ -1,13 +1,13 @@
-# track-input fixture (TRK2)
+# track-input fixture
 
 A GDScript receiver of the `input` track kind (`track_input.gd`, autoload `TrackInput`) binds the
 kind through the capture's `RenderStreamTrack` class before the capture arms, and wires it to the
-gsw-input/1 reference injector (`GswInputInjectorNode`) exactly as
-`../../protocol/tracks-design.md` Q6 shows: `message` goes to `injector.receive(source, text)`,
+gsw-input/1 reference injector (`GswInputInjectorNode`) exactly as follows:
+`message` goes to `injector.receive(source, text)`,
 `closed` to `injector.close_channel(source)`. The main scene holds one test Control (`Target`,
 120x60 at 100,80). Gate 8's `g8l/trk` legs run it (`scripts/run-gate8.sh run_g8l_trk`) under the
 Node track client `scripts/lib/track-input-client.ts`, and `scripts/lib/gate8-track-checks.ts`
-judges them (`g8l-trk-*`). See the design's "As built (TRK2)".
+judges them (`g8l-trk-*`).
 
 `addons/gsw_input` is a symbolic link to `packages/input/godot/addons/gsw_input`, so the fixture
 always runs the reference injector as committed. Import once with the editor (`--import`) before a

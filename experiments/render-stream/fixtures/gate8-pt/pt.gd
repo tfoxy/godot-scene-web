@@ -45,14 +45,14 @@ var _a: GPUParticles2D
 var _b_parent: Node2D
 var _c: GPUParticles2D
 var _d: GPUParticles2D
-## FRZ-P (results/p3/frz-p.md): RS_FIXTURE_FREEZE=1 freezes A_BOX (the looping burst) and
+## FRZ-P: RS_FIXTURE_FREEZE=1 freezes A_BOX (the looping burst) and
 ## D_ONESHOT (the one-shot burst) with ProcessMode.Disabled, as the couch suspender does, and
 ## applies the end-of-burst nudge (clear `emitting` at lifetime*(2-explosiveness)+margin) so the
 ## one-shot still ends on the wire. The restart/emit events keep firing: they are explicit calls
 ## from this root node's _process, not the emitters' own processing.
 var _freeze: bool = false
 var _d_nudge_frames: Array[int] = []
-## LATE-CMBT (results/p3/late-cmbt.md): RS_FIXTURE_LATE_SHADER=1 adds a post-arm cell whose process
+## LATE-CMBT: RS_FIXTURE_LATE_SHADER=1 adds a post-arm cell whose process
 ## material reuses a pre-arm shader (the orphan below): its material_set_shader names a pre-arm
 ## shader RID, so the material is unknown-shader until the capture keys it through the builtin.
 ## Under RS_FIXTURE_ARM=deferred (LAR4) the orphan's shader is created under the hooks, so it is
@@ -259,7 +259,7 @@ func _step_2() -> void:
 
 
 ## FRZ-P: schedule the end-of-burst nudge for D_ONESHOT, at Godot's active_time (lifetime*(2-
-## explosiveness)) plus a one-frame margin, the suspender's nudge (results/p3/frz-p.md).
+## explosiveness)) plus a one-frame margin, the suspender's nudge.
 func _d_schedule_nudge() -> void:
 	if not _freeze:
 		return

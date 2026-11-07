@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for G6t's measurement tooling (../../protocol/gate6-design.md "G6t"): the
+// Self-test for G6t's measurement tooling: the
 // render-stream-report/1 schema and validator (../lib/render-stream-report.ts), the throttle
 // proxy (../throttle-proxy.ts), the /proc sampler (../lib/proc-sampler.ts), provenance helpers
 // (../lib/provenance.ts) and the deltas analyzer (../analyze-deltas.ts), plus a build+validate

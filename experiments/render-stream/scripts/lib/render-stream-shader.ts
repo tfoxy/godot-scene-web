@@ -60,7 +60,7 @@ function hasExactKeys(
 
 const META_KEYS = ["type", "code_bytes"] as const;
 
-// gate7-design.md G7j/Q5: an injected hash, not a hard `node:crypto` import -- see
+// G7j/Q5: an injected hash, not a hard `node:crypto` import -- see
 // render-stream-2.ts's `hashImpl`/`setHashImpl` for why (browser-loadable decoder).
 let hashImpl: HashFn = sha256Hex;
 

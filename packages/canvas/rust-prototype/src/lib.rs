@@ -1,5 +1,5 @@
 // The wgpu renderer's browser backend is wgpu's `webgl` feature. A wasm32 build without it (a
-// `canvas-items`-only consumer, gate7-design.md D30) leaves the wgpu renderer and `RustRenderer`'s
+// `canvas-items`-only consumer) leaves the wgpu renderer and `RustRenderer`'s
 // wasm-bindgen exports out entirely; native builds and `build-web.sh` (`webgl,gl-backend`) are as
 // before.
 #[cfg(any(not(target_arch = "wasm32"), feature = "webgl"))]

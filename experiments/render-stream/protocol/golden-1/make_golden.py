@@ -286,8 +286,7 @@ def session_record(
 # {"origin","parent": (kind,id)|None,"children","xform","modulate","self_modulate","visible",
 # "draw_index","z_index","z_relative","behind","clip","custom_rect","crect","visibility_layer",
 # "content_version","commands"}. `unsupported`/`failures` are hand-computed per state (render-
-# stream-1.md's draw-index-tie detection is a *mirror* responsibility in production, per gate1-
-# design.md G1b2 -- this generator plays that role for its own fixed, by-hand-verified states).
+# stream-1.md's draw-index-tie detection is a *mirror* responsibility in production; this generator plays that role for its own fixed, by-hand-verified states).
 
 
 def item_differs(a: dict, b: dict) -> bool:

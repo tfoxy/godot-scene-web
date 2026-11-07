@@ -9,7 +9,7 @@
 // self-test-gate4.ts against the same `evaluate*` functions this file imports through
 // gate4d-checks.ts's re-exports; this file covers only what G4d adds: the per-span oracle
 // agreement (grouping an outlined span's two expanded entries by `key`, Q6c), and -- since G5d
-// (gate5-design.md Q6g, render-stream/4) -- the two class checks whose meaning changed:
+// (render-stream/4) -- the two class checks whose meaning changed:
 // `rich-leg-class-capture` (success, no unsupported op, RTL's per-glyph add_set_transform pairs
 // carried as identity commands) and `rich-underline-capture-class` (success, the [u] underline a
 // wide add_line). Until G5d both expected "unsupported" and the underline receiver's mismatch was

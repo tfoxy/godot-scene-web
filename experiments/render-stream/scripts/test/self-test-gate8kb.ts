@@ -1,6 +1,6 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 
-// Self-test for G8kb's GSW Basis pieces (texture-delivery-design.md D14, Q6 "GSW"), pure (no wasm,
+// Self-test for G8kb's GSW Basis pieces, pure (no wasm,
 // no browser), each with a passing and a failing case:
 //
 // 1. webglFamilies (web/basis-transcoder/client.ts): the BC families drop out for a KTX2 whose

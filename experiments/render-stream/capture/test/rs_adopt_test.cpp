@@ -1,5 +1,5 @@
-// G8a: the engine-free half of the arm-time adoption pass (src/rs_adopt.*, gate8-design.md D3-D5,
-// D13). Each scene is driven twice: once as a capture armed at birth sees it (the hooks' calls,
+// The engine-free half of the arm-time adoption pass (src/rs_adopt.*).
+// Each scene is driven twice: once as a capture armed at birth sees it (the hooks' calls,
 // in the order CanvasItem / CanvasLayer issue them on entering the tree) and once as the
 // adoption walk's AdoptPlan; the two mirrors' snapshots must agree on every field but `origin`.
 // Also: the three walk sabotages, the strict/skip handling of a canvas the plan leaves out, the
@@ -1016,7 +1016,7 @@ void test_fake_binds() {
   check(grc::rs::adopt_binds_ready(&missing), "fake: every bind resolves (" + missing + ")");
 }
 
-// LAR2 (late-arm-registry-design.md R2, O3, F1): a multimesh is adopted from the registry's
+// a multimesh is adopted from the registry's
 // recorded allocation, mesh, visible count and custom AABB, with only the buffer read back.
 //   - 2d + custom and 3d (both 12 floats an instance, which PM9's stride guess read as 2d +
 //     colors) reach the hook with their recorded format;
@@ -1372,7 +1372,7 @@ void test_refused_ppm_not_retried() {
   stream_end();
 }
 
-// LAR5 (late-arm-registry-design.md M19): a pre-arm emitter is adopted from the registry's record
+// a pre-arm emitter is adopted from the registry's record
 // alone -- no node, no getter, no draw note: the configuration, floats and trail poses as the
 // setters declared them, the recorded draw passes and process material. An unregistered emitter
 // is refused, typed preload-particles, once.

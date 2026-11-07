@@ -1,4 +1,4 @@
-// Gate 4e checks: MSDF text on render-stream/3 (protocol/gate4-design.md "G4e2", "Q6e", Q2-Q5).
+// Gate 4e checks: MSDF text on render-stream/3.
 //
 // Group g4e runs fixtures/gate4-msdf/ through G4a's and G4b's legs (capture, reference x3,
 // receiver x2, a headless receiver trace) plus three sabotages: sabotage-msdf-perturb-glyph (the
@@ -14,7 +14,7 @@
 // which the checker does not model. Check ids carry a "-msdf" suffix (or name the leg) so that
 // they never collide with g4a's. Nothing here launches a process.
 //
-// Evidence layout under <out>/msdf/ (see scripts/README.md "Gate 4"):
+// Evidence layout under <out>/msdf/:
 //   import/fonts.log, import/{fixture,receiver}/   provisioning and editor --import
 //   capture/                            leg capture-msdf: 400 frames, both sinks, store, strace
 //   reference/, reference-repeat/       legs reference-msdf and reference-msdf-repeat (oracle on)
@@ -744,7 +744,7 @@ export function evaluatePredictedRegions(
 
 /** perturb-glyph as recorded: at each settle step, a text node's glyph commands in the sabotage
  * capture equal the clean capture's with rect.x + 0.25 (float32) exactly when the node is in the
- * predicted set for that step, and equal them bit for bit otherwise (gate4-design.md Q3: the
+ * predicted set for that step, and equal them bit for bit otherwise (the
  * mirror moves what it records from the sabotage frame on; the engine gets the true arguments). */
 export function evaluatePerturbRecorded(
   expected: Gate4Expected,

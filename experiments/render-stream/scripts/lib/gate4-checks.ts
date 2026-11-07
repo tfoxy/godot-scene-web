@@ -1,4 +1,4 @@
-// Gate 4 checks and leg classification (protocol/gate4-design.md "Q7" and "G4a").
+// Gate 4 checks and leg classification.
 //
 // Everything here reads an evidence directory written by run-gate4.sh, or is pure over values
 // already read from one, so scripts/test/self-test-gate4.ts can drive each check with synthetic
@@ -14,7 +14,7 @@
 // (`atlas-census`). Pixels outside the text regions are exact; inside them ink presence and
 // freshness are checked (G4b adds synthesized ink).
 //
-// Evidence layout under <out>/ (see scripts/README.md "Gate 4"):
+// Evidence layout under <out>/:
 //   legs.json, binary.json
 //   import/fonts.log               provision-fonts.sh
 //   import/fixture/                editor --import of fixtures/gate4
@@ -118,7 +118,7 @@ export const LANDED_GROUPS: readonly string[] = [
 ];
 
 /** G4b: the unchanged receiver on the main capture's full and patch sinks, a headless openat
- * trace, and the three sabotage legs (gate4-design.md "G4b"). */
+ * trace, and the three sabotage legs. */
 export const G4B_RECEIVER_LEGS = ["receiver", "receiver-patch"] as const;
 export const G4B_SABOTAGE_KINDS = ["freeze", "perturb", "omit-atlas"] as const;
 export type G4bSabotageKind = (typeof G4B_SABOTAGE_KINDS)[number];
@@ -1531,16 +1531,16 @@ export function compareLegs(
 }
 
 // ---------------------------------------------------------------------------------------------
-// G4b: receiver legs, text synthesis, sabotages (gate4-design.md "G4b")
+// G4b: receiver legs, text synthesis, sabotages
 //
 // No receiver, mirror or fixture file changes: the receiver already uploads LA8 pages lazily and
-// replays add_texture_rect_region unchanged (gate4-design.md Q5). Everything here is new
+// replays add_texture_rect_region unchanged. Everything here is new
 // evidence and new checks over the unchanged receiver and the existing g4a capture/oracle.
 // ---------------------------------------------------------------------------------------------
 
 /** Step and "early" (Q6b "Intermediate shots") settle frames joined to the wire seq published at
  * that frame, from a capture's own recording -- the seq numbering a file-mode receiver (full or
- * patch sink) replays (both sinks share one seq space, gate1-design.md's receiver-patch leg). */
+ * patch sink) replays (both sinks share one seq space, gate 1's receiver-patch leg). */
 export interface ReceiverStepSeqs {
   settle: Map<number, number>;
   early: Map<number, number>;

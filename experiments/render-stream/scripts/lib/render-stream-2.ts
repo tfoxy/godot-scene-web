@@ -30,7 +30,7 @@
 // one draw command (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), /4 is /3
 // plus eleven new commands, a mesh table and the cmd_i32 block, and /5 is /4 plus a shader table,
 // a material table, canvas modulate, item material/use_parent_material/instance_params and the
-// param_f64 (f64) block -- too small a delta each (gate4-design.md G4e1: "Renaming files is not
+// param_f64 (f64) block -- too small a delta each (G4e1: "Renaming files is not
 // part of this contract") to justify duplicating this module. `version` selects the expected
 // magic (GRS2..GRS6) and the decoded/resolved schema strings. Since G6b the capture, the receiver
 // and every gate checker speak /6 (/5 from G55d to G6b, /4 from G5d to G55d, /3 from G4e2 to
@@ -62,7 +62,7 @@ import { type HashFn, sha256Hex } from "./sha256";
 // --------------------------------------------------------------------------------------- wire types
 
 /**
- * PRES-A (gate6-design.md "Amendment (PRES-A)"): the visible size a `canvas_items` root presents
+ * PRES-A: the visible size a `canvas_items` root presents
  * `logical` in a `window`-sized window -- Godot 4.5.1's aspect rule (`Window::_update_viewport_size`,
  * scene/main/window.cpp:1190-1250) in its own float32 arithmetic (Math.fround), floored. Only
  * `keep_width`, `keep_height` and `expand` widen or heighten the visible rect past the logical
@@ -155,7 +155,7 @@ export type UnsupportedReason =
   | "unknown-particles"
   | "unsupported-particles";
 /** canvas-texture-headless (G2d): a texture draw naming RID() on a headless host, whose dummy
- * storage never allocates a canvas texture (protocol/canvas-texture-headless.md).
+ * storage never allocates a canvas texture.
  * unknown-mesh/skinned-geometry: new at /4 (render-stream-4.md "Command"). */
 export type UnsupportedCmdReason =
   | "unsupported-op"
@@ -185,7 +185,7 @@ export type SabotageKind =
   | "perturb-vertex"
   | "perturb-shader"
   | "retain-superseded"
-  // new at /8 (gate8-design.md Q2-Q5; render-stream-8.md "Sabotage kinds")
+  // new at /8 (render-stream-8.md "Sabotage kinds")
   | "adopt-skip-state"
   | "adopt-no-redraw"
   | "adopt-skip-layers"
@@ -203,7 +203,7 @@ export type SabotageKind =
   // new at /12 (PM5, render-stream-12.md "Sabotages")
   | "perturb-seed"
   | "drop-restart"
-  // new at /12 (FRZ-P, results/p3/frz-p.md): legal in a /12 session only
+  // new at /12 (FRZ-P): legal in a /12 session only
   | "freeze-drop-events"
   | "freeze-send-positions";
 export type EndReason = "shutdown" | "disarm";
@@ -265,7 +265,7 @@ export type MeshReason =
   | "mesh-blend-shapes"
   | "payload-too-large";
 
-// --- new at /5 (render-stream-5.md "Shader table"/"Material table", gate5_5-design.md D8) -----
+// --- new at /5 (render-stream-5.md "Shader table"/"Material table") -----
 
 /** The Variant type names a material or instance-shader param may carry on the wire, plus the
  * numeric packed array types. As built (G55w): these wire spellings (snake_case, matching the
@@ -317,7 +317,7 @@ export type ShaderReason =
   | "payload-too-large"
   | "payload-unavailable"
   /** new at /8 (render-stream-8.md "Resource tables"): an adopted shader whose code could not be
-   * recovered (gate8-design.md Q5). */
+   * recovered. */
   | "shader-adopt-include";
 export type ShaderUse =
   | "global_uniform"
@@ -542,7 +542,7 @@ export interface SessionMeta {
     /** new at /6: Viewport.get_oversampling(), a float32 widened to a JSON number -- the only
      * JSON-embedded float this wire carries (render-stream-6.md "As built"). */
     font_oversampling?: number;
-    /** new at /6 (gate6-design.md D17): the root's snap-to-pixel project settings. */
+    /** new at /6: the root's snap-to-pixel project settings. */
     snap_2d?: { transforms: boolean; vertices: boolean };
   };
   resources: ResourcesMeta;
@@ -571,7 +571,7 @@ export interface SessionMeta {
     credit_window?: number;
   };
   sabotage: { kind: SabotageKind; frame: number; op: string | null } | null;
-  /** protocol/unknown-item-skip.md: present (always "skip") only in a session that opted into
+  /** : present (always "skip") only in a session that opted into
    * skipping unknown canvas/item RIDs, right after `sabotage`, at /4 and /5. Absent = strict. */
   unknown_item_policy?: "skip";
   /** render-stream-8.md "Session": always present at /8 (null = adoption off), right after
@@ -580,7 +580,7 @@ export interface SessionMeta {
   blocks: BlockDescriptor[];
 }
 
-/** protocol/unknown-item-skip.md "Transaction": what a skip session's transaction left out. */
+/** : what a skip session's transaction left out. */
 export interface UnknownItemsMeta {
   /** unknown canvas/item RIDs named since arming and not yet freed */
   unknown_rids: number;
@@ -592,7 +592,7 @@ export interface UnknownItemsMeta {
   unknown_calls: number;
 }
 
-/** protocol/unknown-item-skip.md "Classification": a transaction whose state is missing
+/** : a transaction whose state is missing
  * something (an unknown RID still live, or a withheld item) is `partial-unknown-items`, never
  * plain success. A strict transaction (no account) never is. */
 export function isPartialUnknownItems(meta: {
@@ -1005,7 +1005,7 @@ export interface TransactionMeta {
     item: number | null;
     reason: UnsupportedReason;
   }>;
-  /** protocol/unknown-item-skip.md: present exactly when the session declares
+  /** : present exactly when the session declares
    * `unknown_item_policy: "skip"` (/4 and /5), right after `unsupported`. */
   unknown_items?: UnknownItemsMeta;
   /** P3-TM (render-stream-10.md "Shader time"): /10 only, right after `materials`, present
@@ -1075,7 +1075,7 @@ export interface EndMeta {
   blocks: BlockDescriptor[];
 }
 
-/** TAG1 (client-extensions-design.md §2.4): a viewer's `item_meta` hello request, and (the same
+/** TAG1: a viewer's `item_meta` hello request, and (the same
  * shape) the grant a `full` item_meta record carries. */
 export interface ItemMetaRequest {
   /** A subset of class, script, scene, path, in that order. */
@@ -1297,8 +1297,7 @@ const SNAP_2D_KEYS = ["transforms", "vertices"];
 // render-stream-6.md "Publication" (a new top-level session key, distinct from
 // features.publication).
 const PUBLICATION_KEYS = ["mode", "target_fps"];
-// render-stream-7.md "Session": publication gains "credit_window", right after "target_fps"
-// (gate7-design.md D2/D4).
+// render-stream-7.md "Session": publication gains "credit_window", right after "target_fps".
 const PUBLICATION_KEYS_V7 = ["mode", "target_fps", "credit_window"];
 const RESOURCES_KEYS = [
   "hash",
@@ -1378,7 +1377,7 @@ const SABOTAGE_KINDS = [
   "perturb-vertex",
   "perturb-shader",
   "retain-superseded",
-  // new at /8 (gate8-design.md Q2-Q5): legal in a /8 session only (checkSessionSchema).
+  // new at /8: legal in a /8 session only (checkSessionSchema).
   "adopt-skip-state",
   "adopt-no-redraw",
   "adopt-skip-layers",
@@ -1396,7 +1395,7 @@ const SABOTAGE_KINDS = [
   // new at /12 (PM5, render-stream-12.md "Sabotages"): legal in a /12 session only.
   "perturb-seed",
   "drop-restart",
-  // new at /12 (FRZ-P, results/p3/frz-p.md): legal in a /12 session only.
+  // new at /12 (FRZ-P): legal in a /12 session only.
   "freeze-drop-events",
   "freeze-send-positions",
 ] as const;
@@ -1492,7 +1491,7 @@ const TRANSACTION_KEYS_V5 = [
   "blocks",
 ];
 const FAILURE_KEYS = ["reason", "detail"];
-// protocol/unknown-item-skip.md: the session key (after "sabotage") and the transaction key
+// The session key (after "sabotage") and the transaction key
 // (after "unsupported") a skip session adds, at /4 and /5 only.
 const UNKNOWN_ITEM_POLICY_KEY = "unknown_item_policy";
 // render-stream-8.md "Session": the late-join adoption declaration, at /8 only.
@@ -1671,7 +1670,7 @@ const TEXTURE_KEYS_V9 = [
 const VARIANT_KEYS = ["encoding", "hash", "payload_bytes", "format", "params"];
 const VARIANT_ENCODINGS = ["block", "uastc", "etc1s"] as const;
 const TEXTURE_DELIVERY_KEYS = ["mode", "encoder"];
-// texture-delivery-design.md D1: the variants each mode offers beside `decoded`.
+// The variants each mode offers beside `decoded`.
 const DELIVERY_MODE_ENCODINGS: Record<string, readonly string[]> = {
   rgba: [],
   passthrough: ["block"],
@@ -2032,7 +2031,7 @@ const ITEM_UNSUPPORTED_REASONS = [
 ] as const;
 // render-stream-5.md "Decoders accept 'unsupported-state' for canvas_item_attach_skeleton only at
 // /5": canvas_item_set_material's unsupported-state no longer occurs (superseded by item-level
-// material state), so /5 decoders reject it -- gate5_5-design.md Q4: "/5 decoders reject it."
+// material state), so /5 decoders reject it --: "/5 decoders reject it."
 const ITEM_UNSUPPORTED_REASONS_V5 = [
   "unsupported-op",
   "unsupported-state",
@@ -2059,7 +2058,7 @@ const ITEM_UNSUPPORTED_REASONS_V12 = [
   "unknown-particles",
   "unsupported-particles",
 ] as const;
-// new at /5: the session-level ("item": null) canvas-light entry (gate5_5-design.md D10, D16).
+// new at /5: the session-level ("item": null) canvas-light entry.
 const SESSION_UNSUPPORTED_REASONS_V5 = [
   "non-root-viewport",
   "extra-canvas",
@@ -2129,7 +2128,7 @@ const VARIANT_TYPES = [
   "packed_vector4_array",
   "packed_color_array",
 ] as const;
-// gate5_5-design.md D8: float64 components per element of a Variant type (0 for nil/rid).
+// Float64 components per element of a Variant type (0 for nil/rid).
 const VARIANT_COMPONENTS: Record<string, number> = {
   nil: 0,
   bool: 1,
@@ -2178,8 +2177,8 @@ const SHADER_REASONS = [
   "shader-excluded",
   "payload-too-large",
   "payload-unavailable",
-  // render-stream-8.md "Resource tables": an adopted shader whose code could not be recovered
-  // (gate8-design.md Q5); legal at /8 on an adopted entry only.
+  // render-stream-8.md "Resource tables": an adopted shader whose code could not be recovered;
+  // legal at /8 on an adopted entry only.
   "shader-adopt-include",
 ] as const;
 const SHADER_USES = [
@@ -2291,7 +2290,7 @@ function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// gate7-design.md G7j/Q5: an injected hash rather than a hard `node:crypto` import, so this
+// G7j/Q5: an injected hash rather than a hard `node:crypto` import, so this
 // module (and its two payload-format siblings) can be bundled for a browser. Defaults to the pure
 // `sha256Hex` -- what a browser gets -- and Node callers may inject a `node:crypto`-backed
 // function instead; `scripts/test/self-test-browser-decoder.ts` verifies the two give
@@ -2606,7 +2605,7 @@ function checkSessionSchema(
   // isV5 means "V5 or later": /6 is a delta on /5 that keeps everything /5 added unless
   // render-stream-6.md says otherwise.
   const isV5 = isV6 || version === 5;
-  // protocol/unknown-item-skip.md "Session": an optional key, legal only at /4 and later.
+  // An optional key, legal only at /4 and later.
   const skipDeclared = version >= 4 && UNKNOWN_ITEM_POLICY_KEY in meta;
   // /7 adds no new top-level session key (only publication's own shape changes), so SESSION_KEYS_V6
   // covers /6 and /7 alike.
@@ -2864,8 +2863,7 @@ function checkSessionSchema(
       ];
     }
     if (isV7) {
-      // render-stream-7.md "Session": credit_window is 1..2, and a "file" stream is always 1
-      // (gate7-design.md D2/D4).
+      // render-stream-7.md "Session": credit_window is 1..2, and a "file" stream is always 1.
       const creditWindow = publication.credit_window as number;
       if (creditWindow < 1 || creditWindow > 2) {
         return [
@@ -3502,7 +3500,7 @@ function checkTransactionSchema(
     : isV4
       ? TRANSACTION_KEYS_V4
       : TRANSACTION_KEYS;
-  // protocol/unknown-item-skip.md "Transaction": legal only at /4 and later; whether it must be
+  // Legal only at /4 and later; whether it must be
   // present is the session's call (validateRecording checks the coupling).
   const hasUnknownItems = isV4 && UNKNOWN_ITEMS_KEY in meta;
   // P3-TM (render-stream-10.md "Shader time"): /10's optional shader_time, right after materials.
@@ -4227,7 +4225,7 @@ function checkEndSchema(
 
 // --------------------------------------------------------------------------------------- item_meta (TAG1)
 //
-// client-extensions-design.md §2.4; rs-core's item_meta.rs is the same code, rule for rule, and
+// rs-core's item_meta.rs is the same code, rule for rule, and
 // protocol/golden-13/make_golden.py (`item_meta_check`) the reference. ID3 (render-stream-14.md):
 // /14's item_meta v2 columns, with protocol/golden-14/make_golden.py the reference.
 
@@ -4605,7 +4603,7 @@ export interface DecodedRecord {
 }
 
 /**
- * gate7-design.md D31/G7o1: the whole-record SHA-256 (`DecodedRecord.sha256`) is evidence only --
+ * /G7o1: the whole-record SHA-256 (`DecodedRecord.sha256`) is evidence only --
  * nothing compares it at receive time. "inline" (the default, byte-identical to before G7o1)
  * computes it eagerly, here. "deferred" skips that hash and leaves `sha256` as ""; the caller
  * (`createRecordingValidator`'s `digest()`) computes it later, off the frame path. Resource
@@ -8053,7 +8051,7 @@ function textureVersionRegressed(
   if (current.version < previous.version) return true;
   if (current.version > previous.version) return false;
   if (statesEqual(previous, current)) return false;
-  // render-stream-9.md (texture-delivery-design.md D6): at an equal version `variants` may grow --
+  // render-stream-9.md: at an equal version `variants` may grow --
   // every earlier variant stays identical and more may appear -- and nothing else changes.
   if (
     previous.status !== "freed" &&
@@ -8574,7 +8572,7 @@ function checkResolvedInvariants(
   // only (the referenced item exists, and -- for unknown-material -- its resolved "material" is
   // null) below, in the per-entry loop.
   const actualUnsupportedMaterial = new Set<string>();
-  // G55d (gate5_5-design.md D9, Q4 "Derived item-level entries"): the EFFECTIVE material, as the
+  // G55d: the EFFECTIVE material, as the
   // engine's _update_dirty_item walks it (renderer_canvas_cull.cpp:2514-2525): an item with
   // use_parent_material takes its item parent's material, continuing up while that parent also
   // has use_parent_material; a top-level item (parent a canvas or none) keeps its own.
@@ -8710,7 +8708,7 @@ function checkResolvedInvariants(
           `unsupported-mismatch: ${where}: session-level entry ${entry.op} follows an item-level entry`,
         ];
       }
-      // new at /5: the sticky canvas-light entry (gate5_5-design.md D10) has no independent
+      // new at /5: the sticky canvas-light entry has no independent
       // "actual" signal to cross-check against -- forward-only (well-formedness) is all this
       // validator can do.
       if (
@@ -8990,7 +8988,7 @@ function checkResolvedInvariants(
 // --------------------------------------------------------------------------------------- validateRecording
 
 /**
- * The incremental form of `validateRecording` (G7d, gate7-design.md Q13e: a receiver validates one
+ * The incremental form of `validateRecording` (G7d, : a receiver validates one
  * record per message, so the bench times validation per transaction). `records[0]` must be the
  * session record; `accept(i)` validates record `i` against everything accepted before it and
  * returns its first error, or undefined. Call it for i = 1, 2, ... in order, never twice for one
@@ -9051,7 +9049,7 @@ export interface RecordingValidatorOptions extends DecodeRecordOptions {
    */
   noPredictReset?: boolean;
   /**
-   * TAG1 (client-extensions-design.md §2.4, /13 only): the viewer's item_meta ask. Absent
+   * TAG1 (/13 only): the viewer's item_meta ask. Absent
    * (undefined: a recording) accepts and validates item_meta records; null (a live viewer whose
    * hello had no item_meta key) refuses them (`item-meta-unexpected`); a request checks each
    * grant against it (`item-meta-schema`).
@@ -9661,7 +9659,7 @@ export function checkRecordDigestComplete(
 }
 
 /**
- * G7d bench seam (gate7-design.md Q13e): when set, `RecordingValidator.accept` adds the time it
+ * G7d bench seam: when set, `RecordingValidator.accept` adds the time it
  * spends in `decodeRecord` (framing a record's meta and blocks, hashing included) to `decode_us`
  * and in `applyTransaction` (patch resolution) to `resolve_us`, read from `now()` (microseconds).
  * Null by default: then each phase costs one null check. The bench's validate time is accept's
@@ -9738,7 +9736,7 @@ export function createRecordingValidator(
     ]);
   }
   const inlineMaxBytes = sessionMeta.resources.inline_max_bytes;
-  // render-stream-6.md "Viewport"/gate6-design.md Q3a: host_size_status must be consistent with
+  // render-stream-6.md "Viewport"/: host_size_status must be consistent with
   // host_window_size, presentation_size and the host_visible_rect session block ("match" iff
   // host_window_size == presentation_size and the visible rect's size equals logical_size;
   // "degenerate-visible" iff the visible size differs from logical_size; "degenerate-window"
@@ -9754,7 +9752,7 @@ export function createRecordingValidator(
     const presentationSize =
       sessionMeta.viewport.presentation_size ??
       sessionMeta.viewport.logical_size;
-    // PRES-A (gate6-design.md "Amendment (PRES-A)"): the visible size the stretch gives the
+    // PRES-A: the visible size the stretch gives the
     // presentation, the logical size unless expand/keep_width/keep_height widen it.
     const expectedVisible = stretchVisibleSize(
       sessionMeta.viewport.stretch,
@@ -9839,7 +9837,7 @@ export function createRecordingValidator(
   // carried it.
   const lastSeenParticles = new Map<number, ResolvedParticles>();
   let endSeen = false;
-  // TAG1 (client-extensions-design.md §2.4): the item_meta table and the record awaiting its
+  // TAG1: the item_meta table and the record awaiting its
   // transaction. Untouched (one null check per transaction) by a stream without item_meta records.
   const itemMetaAsk = options?.itemMeta;
   const imTable: ItemMetaTable = { grant: null, strings: [], rows: new Map() };
@@ -10094,7 +10092,7 @@ export function createRecordingValidator(
         for (const h of carriedHashes)
           if (!baseNames.has(h)) carriedHashes.delete(h);
       }
-      // protocol/unknown-item-skip.md: the account is in every transaction of a skip session and
+      // The account is in every transaction of a skip session and
       // in no other.
       const skipSession = sessionMeta.unknown_item_policy === "skip";
       if ((meta.unknown_items !== undefined) !== skipSession) {
@@ -10302,7 +10300,7 @@ export function createRecordingValidator(
         );
         if (ptErrors.length > 0) return ptErrors;
       }
-      // param-offset (render-stream-5.md "Material table", gate5_5-design.md D8): a running
+      // param-offset (render-stream-5.md "Material table"): a running
       // offset into param_f64 over materials IN TABLE ORDER FIRST, then items' instance_params
       // in item order -- mirroring cmd-offset/mesh-offset, but spanning two different arrays.
       let totalParamFloats = 0;
@@ -10683,7 +10681,7 @@ export function createRecordingValidator(
         }
       }
       if (isV5) {
-        // shader source "withheld" (gate5_5-design.md D4) never has a resource record -- the
+        // shader source "withheld" never has a resource record -- the
         // policy deliberately keeps the code byte off the wire, the store and HTTP.
         for (const s of sortedResolvedShaders(nextState)) {
           if (s.status !== "ok" || s.hash === null || s.source !== "payload")
@@ -11136,7 +11134,7 @@ export interface ResolvedTransaction {
     status: TransactionStatus;
     failures: TransactionMeta["failures"];
     unsupported: TransactionMeta["unsupported"];
-    /** protocol/unknown-item-skip.md: present only in a skip session. */
+    /** : present only in a skip session. */
     unknown_items?: UnknownItemsMeta;
     /** P3-TM: /10's host shader time, present only when the state reads TIME. */
     shader_time?: number;

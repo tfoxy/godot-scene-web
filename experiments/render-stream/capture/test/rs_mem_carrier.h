@@ -1,5 +1,5 @@
-// rs_mem_carrier: a test-only in-memory consumer carrier (CAR6, protocol/carrier-design.md, CAR6
-// row). It implements grc_carrier_v1 the way a consumer would, from outside the capture: its own
+// rs_mem_carrier: a test-only in-memory consumer carrier.
+// It implements grc_carrier_v1 the way a consumer would, from outside the capture: its own
 // client thread opens `connections` connections (admit, opened, the hello as text), receives what
 // the hub sends (appending each message to that connection's bytes and releasing the buffer from
 // the client thread), answers a hub close with closed() after the messages queued before it, and

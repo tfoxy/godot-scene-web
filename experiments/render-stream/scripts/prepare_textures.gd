@@ -1,5 +1,5 @@
 extends SceneTree
-## The texture prepare step's headless script (texture-delivery-design.md D9b, G8kc), run by
+## The texture prepare step's headless script, run by
 ## scripts/prepare-textures.sh on the pinned stock 4.5.1 release template with the capture armed
 ## (GRC_EXTENSION), GRC_TEXTURE_CACHE_DIR set and a throwaway stream sink.
 ##

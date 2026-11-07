@@ -1,4 +1,4 @@
-// Gate 5.5's gsw legs, receiver checks and Q7 plan (gate7-design.md G7s, Q7, Q8). Kept beside
+// Gate 5.5's gsw legs, receiver checks and Q7 plan. Kept beside
 // lib/gate7-gsw.ts, which merges them into its per-gate tables (`gate55`), so the gate 4/5 and
 // gate 5.5 increments touch that file in one line each.
 //

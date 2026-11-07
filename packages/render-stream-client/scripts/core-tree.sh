@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The source tree id the render-stream client's core is built from (MIR-1, src/loader.ts): the
+# The source tree id the render-stream client's core is built from (src/loader.ts): the
 # first 12 hex of the SHA-256 over the git tree ids of the four Rust inputs of rs-gsw-wasm at HEAD,
 # plus `-dirty` when any of them differs from HEAD (build-rs-core.sh's dirty rule over the same
 # paths). It changes only when the wasm's sources change, unlike HEAD. build-web.sh writes it into

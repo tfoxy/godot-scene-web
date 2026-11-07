@@ -1,4 +1,4 @@
-// Receiver decode profile (2026-10-14), TypeScript side: the same recording through
+// Receiver decode profile, TypeScript side: the same recording through
 // lib/render-stream-2.ts, the decoder the GSW browser receiver loads (G7j). It mirrors
 // the GDScript receiver profile's stages (receiver/tests/decode_profile.gd, removed with the
 // GDScript core in G7gd) so the two could be compared per transaction:

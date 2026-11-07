@@ -1,5 +1,5 @@
 /**
- * LAR0 (protocol/late-arm-registry-design.md): the late-arm registry's evidence checks, judged in
+ * LAR0: the late-arm registry's evidence checks, judged in
  * g8a (lib/gate8-adopt-checks.ts runG8a).
  *
  *   registry-live-bound  evidence/registry.json (capture/src/rs_registry.h) against the hook
@@ -17,12 +17,10 @@
  *                        frame_callback_us mean), the median paired delta must stay within the
  *                        registry's budget: REGISTRY_CALL_BUDGET_NS per tracked call times the
  *                        tracked calls a churned frame makes. `on` against GRC_ADOPT=off is
- *                        reported, not judged: it folds in G8r adoption's own lookups (LAR0:
- *                        +18-58 µs of run-to-run noise), which is not the registry's cost and made
- *                        the old "within noise of off" judgement red on clean main (LAR6: +58.1
- *                        against 49.5). frame_us_p50 is kept in the samples but not judged: the
- *                        capture's low-processor sleep paces a headless host at ~6.9 ms a frame
- *                        whatever the CPU did (2026-11-04: 6898-6901 µs on all nine legs).
+ *                        reported, not judged: it folds in G8r adoption's own lookups, which is
+ *                        run-to-run noise, not the registry's cost. frame_us_p50 is kept in the
+ *                        samples but not judged: the capture's low-processor sleep paces a
+ *                        headless host at a fixed frame time whatever the CPU did.
  *
  * Pure functions over parsed JSON, so a unit test can drive them.
  */
@@ -241,16 +239,10 @@ export const PARAM_METRIC: keyof CostSample = "params_us";
 
 /**
  * The registry's budget per tracked call (create, free, setter), in situ, wherever its cost lands
- * (the hook path or the frame callback). Provenance (LAR7, results/p3/late-arm-registry.md
- * "registry-cost"): STS2's d12 seat makes about 27 tracked calls a frame (lar7-d12-1's counters
- * over 5,299 frames: 18.8 multimesh setters, 6.5 material_set_param, 0.9 frees, 0.6 creates, 0.5
- * particle setters; pm7-a12-1's are the same), so 1 µs a call bounds the registry near 27 µs a
- * frame, 0.16% of a 60 fps frame. The registry measured 46 ns a call at LAR0;
- * LAR7's three runs paired +35.9, +21.2 and +5.0 µs over 96 calls (50-375 ns a call, the spread
- * being run-to-run noise). The payload families LAR1-LAR5 added are legitimate work that a
- * "within noise" judgement does not allow for, and its spread-based allowance widened as the
- * machine got noisier (it failed only the quietest run). A runaway registry (a per-call
- * allocation storm, a scan per call) still fails the budget.
+ * (the hook path or the frame callback). A real scene makes tens of tracked calls a frame, so 1 µs a
+ * call bounds the registry at a fraction of a percent of a 60 fps frame. The payload families added
+ * since are legitimate work that a "within noise" judgement does not allow for. A runaway registry
+ * (a per-call allocation storm, a scan per call) still fails the budget.
  */
 export const REGISTRY_CALL_BUDGET_NS = 1000;
 /** registry-cost's churn: each triple (mesh, shader, material) is created and freed every frame. */
@@ -377,22 +369,14 @@ export function shaderClockOrigin(
 }
 
 /**
- * LS0 validation-log-cost (a timing group): capture-scale at STS2's redraw rate (1,532 hooked calls
- * a frame), loaded and unarmed, the main thread's CPU a frame (the scale report's cpu_us_mean) in
- * four configs interleaved over rounds: `a0` (GRC_MODE=validate: loaded, nothing patched), `b`
+ * LS0 validation-log-cost (a timing group): capture-scale at a game's redraw rate (~1,500 hooked
+ * calls a frame), loaded and unarmed, the main thread's CPU a frame (the scale report's cpu_us_mean)
+ * in four configs interleaved over rounds: `a0` (GRC_MODE=validate: loaded, nothing patched), `b`
  * (hooks patched, never armed, GRC_ADOPT=off), `c` (b plus GRC_ADOPT=arm, the registry recording)
  * and `cs` (c with the validation-log-ignored sabotage: the knob is read, the logs still run).
- * Provenance: results/p3/idle-capture-cost.md measured the same legs with the logs on: (b) +72 µs,
- * (c) +110 µs over no capture, K2 (the validation logs) 80 µs of it (paired c - d, 71-90 µs over 5
- * rounds). The bound is on the paired median of (config - a0), per round. LS0 measured (5 rounds,
- * machine at load 6-15, so noisy): b - a0 median -4 and c - a0 median +3 µs (means +26 and +19; the
- * main thread's CPU a frame ran 790-920 µs round to round), and the sabotage +183 µs. Through the
- * runner at load 3-5: b - a0 -22 and +17, c - a0 -2 and +35, the sabotage +98 and +114 µs over a0
- * (+73 over c). The bounds are 6% (b) and 7% (c) of a frame's 840 µs: above the remaining registry
- * work (creates and frees about 24 µs a frame at 96 calls, material_set_param about 4 µs at 8 calls)
- * plus a median's noise, and under what K2 puts back (80 µs quiet, more under load). Under a load
- * of 8 or more the numbers are not usable (one run read b - a0 +88, c - a0 +140): rerun on a quiet
- * machine.
+ * The bound is on the paired median of (config - a0), per round: above the remaining registry work
+ * plus a median's noise, and under what the validation logs add back. Under heavy machine load the
+ * numbers are not usable: rerun on a quiet machine.
  */
 export interface IdleSample {
   cpu_us_mean: number;
@@ -401,7 +385,7 @@ export interface IdleSample {
 }
 
 /**
- * LS1 idle-parity (live-swap-design.md D4, fork F1): GRC_MODE=standby (`s`) against no capture at
+ * LS1 idle-parity (fork F1): GRC_MODE=standby (`s`) against no capture at
  * all (`n`, the extension not loaded) on the same fixture, paired by round, with no exemption for
  * the registry. F1's bound: the paired median main-thread CPU delta at most 1% of no capture's
  * median CPU a frame, and the paired median RSS delta at most 10 MB.
@@ -486,7 +470,7 @@ export function validationLogCost(
 }
 
 /**
- * LS1 standby-hot-zero (live-swap-design.md D4): on a capture that published the standby table and
+ * LS1 standby-hot-zero: on a capture that published the standby table and
  * never armed (GRC_MODE=standby), every planned hook outside the standby set ran 0 times, and the
  * set the capture installed is exactly the expected one. `standbyHooks` is rs_standby.cpp's list
  * (STANDBY_HOOKS), not the capture's own report, so a capture that installs more fails. The caller

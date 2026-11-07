@@ -1,5 +1,5 @@
 /**
- * G7s: the cases of `test/canvasItemsProgramPixel.test.ts`. Each draws Godot `canvas_item` shader
+ * The cases of `test/canvasItemsProgramPixel.test.ts`. Each draws Godot `canvas_item` shader
  * code through the whole item-space path on the real GPU: `@godot-scene-web/effects`'
  * `transpileGodotItemShader` (in the page), the Rust `canvas-items` executor's program compile and
  * binding, and a `PDL1` list into Godot's non-transparent RGB10_A2 target (`Target::opaque`). The
@@ -9,7 +9,7 @@
  * `round(q·255/1023)`; alpha's 2 bits `round(a·3)`, read `round(q·255/3)`).
  *
  * The shader text is the code a Godot RenderingServer receives (whitespace runs collapsed,
- * includes expanded between `@@>`/`@@<` markers), including the gate 5.5c and gate 6 shaders the
+ * includes expanded between `@@>`/`@@<` markers), including the shaders the
  * render-stream fixtures use (`tint`, `phase`, `types`, `pal`, `inst`, `phase_tint`, `burn`),
  * written out here so the package needs nothing outside it.
  *
@@ -152,7 +152,7 @@ void fragment() {
 	COLOR = vec4(COLOR.rgb * 0.25, 1.0);
 }
 `);
-/** Halves the incoming colour and keeps its alpha (G7tm: the MSDF coverage enters as COLOR.a). */
+/** Halves the incoming colour and keeps its alpha (the MSDF coverage enters as COLOR.a). */
 const HALF_KEEP_ALPHA = server(`shader_type canvas_item;
 
 void fragment() {
@@ -238,7 +238,7 @@ function quadrants(
   ];
 }
 
-// ---- G7tm: the MSDF program (canvas.glsl:562-618) ------------------------------------------
+// ---- the MSDF program (canvas.glsl:562-618) ------------------------------------------
 
 /** A uniform MSDF texel: every sample of it is exact under either filter, so the hand model is
  * the shader's arithmetic on one texel. Distances r 0.6, g 0.45, b ~0.549 (median b, max r) and
@@ -383,7 +383,7 @@ function msdfCases(): ProgramCase[] {
   ];
 }
 
-// ---- P3-VX: programs with their own vertex stage (canvas.glsl:179-280) ----------------------
+// ---- programs with their own vertex stage (canvas.glsl:179-280) ----------------------
 
 const VERTEX_SHIFT = server(`shader_type canvas_item;
 varying vec4 c;

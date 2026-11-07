@@ -59,7 +59,7 @@ function fam(entries: number, creates: number, frees: number, extra: Partial<Rec
   };
 }
 
-// The shape the deferred leg produced (2026-11-04 manual run): 8 textures, 2 meshes, a shader, a
+// The shape the deferred leg produced (a manual run): 8 textures, 2 meshes, a shader, a
 // material created; the loader's churn freed at frame 6, before the arm at 12.
 function good(): { reg: RegistryEvidence; counts: Record<string, number | null> } {
   const row = (frame: number, e: number[], c: number[], f: number[]) => ({
@@ -492,7 +492,7 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1), s(1, 1, 1)], regoff: [
     expect(isDeferredLeg(leg) === want, `isDeferredLeg(${leg}) is ${want}`);
 }
 
-// LS1 (live-swap-design.md D4): registry-live-bound against the fixture's own create count, the
+// LS1: registry-live-bound against the fixture's own create count, the
 // standby-hot-zero judge, and the TS standby list against rs_standby.cpp's.
 {
   const churn = parseRegistryChurn(

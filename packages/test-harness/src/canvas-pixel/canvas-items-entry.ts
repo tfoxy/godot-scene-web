@@ -2,7 +2,7 @@
  * The page half of `test/canvasItemsRustPixel.test.ts`: draws one case of `./canvas-items-cases`
  * through BOTH executors on the real GPU and hands back every frame's bytes:
  *
- * - TypeScript: G7c's `@godot-scene-web/canvas` executor into a `StageTarget` (RGB10_A2 or RGBA8),
+ * - TypeScript: the `@godot-scene-web/canvas` executor into a `StageTarget` (RGB10_A2 or RGBA8),
  *   `readPixels` of the target, then `StageTarget.blit()` and a read of the canvas;
  * - Rust: the `canvas-items` executor through `CanvasItemsTestHarness` (the `canvas-items-test`
  *   wasm module, served by the test at `/rust/`), `read_target` and `read_canvas`.
@@ -108,7 +108,7 @@ function blendMode(blend: Blend): BlendMode {
   if (blend === "add") return BLEND_ADD;
   if (blend === "sub") return BLEND_SUB;
   if (blend === "mul") return BLEND_MUL;
-  // premul_alpha is MIX over premultiplied data (G7c); disabled is only ever used opaque.
+  // premul_alpha is MIX over premultiplied data; disabled is only ever used opaque.
   return BLEND_MIX;
 }
 

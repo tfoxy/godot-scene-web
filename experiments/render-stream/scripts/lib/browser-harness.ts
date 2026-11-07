@@ -1,10 +1,10 @@
-// Gate 7 browser harness (G7h; protocol/gate7-design.md "Q6. Browser harness", D9, D22). This is
+// Gate 7 browser harness. This is
 // the ONLY place that launches Chromium for gate 7 -- every later increment (G7e, G7a, G7b, G7l,
 // G7g, G7u, G7r, G7k) launches through `launchHarnessBrowser` / `HarnessServer` / `SuspensionController`
 // here, never raw Playwright, so the D9 flags, the stripped environment and the provenance guard
 // are never duplicated or drifted.
 //
-// NEVER headed, never Xvfb, never a desktop window (memory xvfb-does-not-isolate-on-wayland).
+// NEVER headed, never Xvfb, never a desktop window.
 // `headless: false` is deliberate: it is what stops Playwright adding its OWN old-headless
 // switches, while `--headless=new --enable-gpu --use-angle=vulkan` is what actually removes the
 // window and keeps the real GPU -- the exact pattern `packages/test-harness/test/canvasGlyphPixelXvfb.test.ts`
@@ -83,9 +83,9 @@ import {
 // anything else (viewport, user-data-dir, …) is per-call in `launchHarnessBrowser`'s options.
 // ---------------------------------------------------------------------------------------------
 
-/** D9's always-on flags: real GPU (RTX 2060) through ANGLE/Vulkan, no window, DPR 1, sRGB. Never
- * `--enable-features=Vulkan` (memory webgpu-parity-findings: that one breaks WebGL canvases here
- * by moving the whole GPU process -- `--use-angle=vulkan` is the narrow, correct flag). */
+/** D9's always-on flags: the local GPU through ANGLE/Vulkan, no window, DPR 1, sRGB. Never
+ * `--enable-features=Vulkan` (that one breaks WebGL canvases by moving the whole GPU process --
+ * `--use-angle=vulkan` is the narrow, correct flag). */
 export const D9_LAUNCH_ARGS = [
   "--headless=new",
   "--enable-gpu",
@@ -94,7 +94,7 @@ export const D9_LAUNCH_ARGS = [
   "--force-color-profile=srgb",
 ] as const;
 
-/** R3 (docs/remote-compute.md, Decision 10; lib/browser-renderer.ts): the CI-only software-renderer
+/** R3 (lib/browser-renderer.ts): the CI-only software-renderer
  * allowance, or null -- the default everywhere but a GitHub-hosted runner that sets
  * RS_BROWSER_PROVENANCE. Set anywhere else, RS_BROWSER_PROVENANCE throws here, at load. */
 export const CI_RENDERER_ALLOWANCE: RendererAllowance | null =
@@ -125,7 +125,7 @@ export const SABOTAGE_SWIFTSHADER_ARGS = [
 
 /**
  * chromium-1223 / "Google Chrome for Testing" 148.0.7778.96's `chrome` binary sha256, recorded
- * 2026-10-14 from the cache this repo's pinned `@playwright/test` (1.60.0, `browsers.json`
+ * from the cache this repo's pinned `@playwright/test` (1.60.0, `browsers.json`
  * revision 1223) resolves via `chromium.executablePath()`. `checkBrowserProvenance` refuses the
  * leg if a differently provisioned box's cache disagrees -- this is the "recorded one" D9 means.
  */
@@ -136,8 +136,8 @@ export const EXPECTED_CHROMIUM_VERSION = "148.0.7778.96";
 /**
  * GRT: where the pinned Chromium is launched from. Playwright's shared cache
  * (`~/.cache/ms-playwright/`, or PLAYWRIGHT_BROWSERS_PATH) is garbage-collected by ANY repo's
- * `playwright install` on this box -- at 03:56 on 2026-10-20 another repo's install deleted
- * `chromium-1223` and every browser leg failed at launch. So the harness launches a repo-private
+ * `playwright install` on the box (another repo's install can delete `chromium-1223` and fail
+ * every browser leg at launch). So the harness launches a repo-private
  * copy, `<RS_PRIVATE_BROWSERS_DIR or ~/.cache/godot-render-stream/ms-playwright>/chromium-1223/`,
  * which no other repo's Playwright knows about:
  *   1. the private copy, when its `chrome` matches EXPECTED_CHROMIUM_SHA256;
@@ -262,7 +262,7 @@ export interface LaunchedBrowser {
 /** Launches Chromium under D9. `headless: false` + `--headless=new` is the deliberate pairing
  * (see header); the environment is stripped of `DISPLAY`/`WAYLAND_DISPLAY` regardless of what
  * this process inherited, because a leaked `WAYLAND_DISPLAY` is exactly what let Ozone escape
- * Xvfb containment in the prior finding (memory xvfb-does-not-isolate-on-wayland). */
+ * Xvfb containment. */
 export async function launchHarnessBrowser(
   options: LaunchOptions = {},
 ): Promise<LaunchedBrowser> {
@@ -332,8 +332,7 @@ export async function collectChromiumProcesses(
 
 /** Counts `/proc/<pid>/fd` entries that resolve to a Wayland socket. Wayland sockets show a real
  * filesystem path (unlike X11's abstract sockets, which appear as `socket:[inode]` with no path
- * and are not evidence of anything) -- memory xvfb-does-not-isolate-on-wayland states the rule
- * this function implements: COUNT WAYLAND FDs, NEVER X11 ONES. */
+ * and are not evidence of anything) -- the rule this function implements: COUNT WAYLAND FDs, NEVER X11 ONES. */
 export function countWaylandFds(pid: number): number {
   let count = 0;
   let entries: string[];
@@ -752,7 +751,7 @@ export class HarnessServer {
   }
 
   /** G7d: a 60 Hz host stand-in at `path`: every connection gets a 16-byte message per tick,
-   * scheduled against `t0 + k H` (never "now + H", memory rate-schedule-anchor-not-now), for the
+   * scheduled against `t0 + k H` (never "now + H"), for the
    * device probes' panel-phase drift (hold p50 over time, Q13c). */
   enableTicker(path = "/tick"): void {
     this.tickPath = path;
@@ -1060,8 +1059,8 @@ function contentTypeFor(path: string): string {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Suspension controller (D14, Q6 "Suspension controller", Q1b). See the G7h "As built" note in
-// gate7-design.md: on this Chromium build (148.0.7778.96, headless=new) NONE of Q1b's three
+// Suspension controller (D14, Q6 "Suspension controller", Q1b). See the G7h "As built" note:
+// on this Chromium build (148.0.7778.96, headless=new) NONE of Q1b's three
 // candidate hide mechanisms change `document.visibilityState`, and `Page.setWebLifecycleState`
 // alone does not stop rAF callbacks or timers either -- every method below is still implemented
 // because later increments (G7u) need a controller to call, but each returns `tookEffect` from an
@@ -1227,7 +1226,7 @@ export class SuspensionController {
 }
 
 // ---------------------------------------------------------------------------------------------
-// G7d: `env: "device"` (gate7-design.md D24, D28, Q13b). Chrome on a phone is ATTACHED through
+// G7d: `env: "device"`. Chrome on a phone is ATTACHED through
 // perf-harness's `openDeviceBrowser` (adb forward to the DevTools socket, adb reverse for the
 // harness port, the flattened CDP attach, the lock and foreground rules), never launched, so D9's
 // flags, binary sha256 and Wayland guard cannot apply: `checkDeviceProvenance` replaces
@@ -1336,7 +1335,13 @@ export function resolveDeviceSelection(
     throw new HarnessUsageError(
       `--device ${deviceId} is not in the device table (known: ${Object.keys(table).join(", ")})`,
     );
-  return { env, id: deviceId as DeviceId, entry };
+  // The committed table carries placeholder serials; the operator names the attached phone.
+  const serial = process.env.ANDROID_SERIAL;
+  return {
+    env,
+    id: deviceId as DeviceId,
+    entry: serial ? { ...entry, serial } : entry,
+  };
 }
 
 /** What the page itself reports on a device leg, read by one `Runtime.evaluate`. */
@@ -1392,7 +1397,7 @@ export interface DeviceProvenance {
   /** The refusal class when not ok (`device-orientation` when only the orientation failed). */
   refusal: HarnessRefusalReason | null;
   reasons: string[];
-  /** Recorded, never refused: the ANGLE backend on the g31, a Chrome version change. */
+  /** Recorded, never refused: the ANGLE backend where the table does not require it, a Chrome version change. */
   notes: string[];
   angle: boolean;
   renderer: string | null;

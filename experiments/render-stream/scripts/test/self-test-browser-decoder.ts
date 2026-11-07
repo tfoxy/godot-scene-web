@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for gate7-design.md G7j: the render-stream TypeScript decoder (lib/render-stream-2.ts,
+// Self-test for G7j: the render-stream TypeScript decoder (lib/render-stream-2.ts,
 // lib/render-stream-mesh.ts, lib/render-stream-shader.ts) is loadable in a browser. G7j's change is
 // narrow: those three files no longer hard-import `node:crypto` -- each keeps its own injectable
 // `hashImpl` (lib/sha256.ts's pure, synchronous `sha256Hex` by default, swappable with
@@ -7,7 +7,7 @@
 //
 //   mise exec -- pnpm exec tsx --conditions=development scripts/test/self-test-browser-decoder.ts
 //
-// Checks (gate7-design.md G7j "Checks"):
+// Checks (G7j "Checks"):
 //   - Section A: lib/sha256.ts's pure `sha256Hex` equals `node:crypto` directly, at the FIPS
 //     180-4 padding boundary lengths (0, 55/56/57, 63/64/65, 119/120/121, ...) and over 10 000
 //     random lengths 0-70 000 B.
@@ -18,7 +18,7 @@
 //     valid vector.
 //   - Section C: every golden-2..golden-6 valid vector decodes, validates and resolves
 //     IDENTICALLY whether the pure default or an injected `node:crypto` wrapper is in use.
-//   - Section D (sabotage, gate7-design.md G7j "Sabotage"): injecting a hash that skips the
+//   - Section D (sabotage, G7j "Sabotage"): injecting a hash that skips the
 //     FIPS 180-4 length padding (`brokenSha256NoLengthPadding`) must make a clean golden vector
 //     fail with `resource-hash`, proving this harness would actually catch a broken pure
 //     implementation rather than passing on a stub.
@@ -26,7 +26,7 @@
 //     import (a metafile check) -- what actually makes them loadable in a browser, as opposed to
 //     merely producing the same hashes.
 //
-// golden-7 (G7w, protocol/gate7-design.md Q2) does not exist on this branch yet; the GOLDENS list
+// golden-7 does not exist on this branch yet; the GOLDENS list
 // below extends to it the same way /3 to /6 were added (memory
 // g4e1-rs3-version-switch-pattern) once it lands. This file does not add it itself -- G7w owns
 // render-stream/7's codecs and golden vectors.

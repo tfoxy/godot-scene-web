@@ -1,9 +1,8 @@
 extends Node
-## Gate 8 late-arm runtime CanvasTexture fixture (RT-CTX, the deferred follow-up in
-## results/p3/late-arm.md): every image is built in code at `_ready` and drawn ONLY through a
+## Gate 8 late-arm runtime CanvasTexture fixture (RT-CTX, the deferred follow-up): every image is built in code at `_ready` and drawn ONLY through a
 ## CanvasTexture assigned to the item's `texture` -- no .tres, no command names an image directly.
 ## Two arm modes (loader.gd, LAR1): `deferred` loads the capture before this scene exists and arms
-## it at frame 12, so every CanvasTexture is in the capture's registry (late-arm-registry-design.md)
+## it at frame 12, so every CanvasTexture is in the capture's registry
 ## and is adopted from its recorded channels; `late` loads it at frame 12, after everything exists
 ## (load-late, design F1): only the cached `.tres` (PM9, through the resource cache) can be adopted,
 ## and the three runtime-built CanvasTextures are refused, typed `no-image`. Four 64x64 cells:

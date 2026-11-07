@@ -10,9 +10,9 @@ extends Node
 ##                              items, hidden a subtree and changed a filter (the `late` leg: the
 ##                              capture adopts the scene, GRC_ADOPT=arm)
 ##   RS_FIXTURE_ARM=thread      at frame K too, but from a worker Thread (the `late-thread` leg:
-##                              adoption refuses `adopt-thread`, gate8-design.md D4)
+##                              adoption refuses `adopt-thread`)
 ##   RS_FIXTURE_ARM=deferred    in `_enter_tree`, as `born`, but with adopt.tscn as the main scene
-##                              (the `deferred` leg, late-arm-registry-design.md LAR0): the hooks
+##                              (the `deferred` leg, LAR0): the hooks
 ##                              see every object created, and the capture itself defers its arm to
 ##                              frame K (the runner sets GRC_ARM_DEFER_FRAMES=K-1: the arm runs in
 ##                              the frame callback ending iteration K-1, so the walk is dated K).
@@ -21,8 +21,8 @@ extends Node
 ##                              RenderingServer, before the arm and outside the scene: the registry
 ##                              must see pre-arm frees (registry-live-bound); nothing reaches the
 ##                              stream, so the leg still equals `born` from K on
-##   RS_FIXTURE_ARM=standby     as `deferred`, for a capture under GRC_MODE=standby (LS1,
-##                              live-swap-design.md D4): loaded at birth, the standby table
+##   RS_FIXTURE_ARM=standby     as `deferred`, for a capture under GRC_MODE=standby:
+## loaded at birth, the standby table
 ##                              published, never armed. The same frame-4 creates and frame-6 frees
 ##                              run, and the loader prints its own counts (`[fixture]
 ##                              registry-churn {...}`, also under `deferred`): the registry must
@@ -71,7 +71,7 @@ func _process(_delta: float) -> void:
 		_thread.wait_to_finish()
 
 
-## LAR0: tracked creates and frees before the deferred arm (late-arm-registry-design.md R5).
+## LAR0: tracked creates and frees before the deferred arm.
 func _registry_churn() -> void:
 	if _frame == 4:
 		var image: Image = Image.create(2, 2, false, Image.FORMAT_RGBA8)

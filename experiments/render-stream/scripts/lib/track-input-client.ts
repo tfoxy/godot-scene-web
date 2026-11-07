@@ -1,4 +1,4 @@
-// TRK2 (protocol/tracks-design.md, TRK2 row): the Node track client of gate 8's g8l/trk legs
+// TRK2: the Node track client of gate 8's g8l/trk legs
 // (run-gate8.sh run_g8l_trk). It drives fixtures/track-input, a GDScript RenderStreamTrack
 // receiver wired to the gsw-input/1 reference injector, through four phases against the real
 // capture's live listener, waiting on the fixture's event log (RS_TRACK_INPUT_LOG) between steps:

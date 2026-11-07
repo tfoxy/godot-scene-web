@@ -1,4 +1,4 @@
-// Gate 8 group g8kc (G8kc, protocol/texture-delivery-design.md D7-D10: the persisted host texture
+// Gate 8 group g8kc (G8kc, : the persisted host texture
 // cache, the prepare step and the texture_set_path hook): the checks over the evidence
 // run-gate8.sh's g8kc legs write. Pure functions of the evidence tree, so
 // scripts/test/self-test-gate8kc.ts can drive them against fabricated trees.
@@ -335,7 +335,7 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
     const c = counters[off];
     if (!c) problems.push("off/capture has no counters.json");
     else {
-      // LS1 (live-swap-design.md D5): texture_set_path is planned always (a standby slot); with
+      // LS1: texture_set_path is planned always (a standby slot); with
       // no directory it only counts and forwards, so no path list is kept.
       if (!c.hooks_planned.includes("texture_set_path"))
         problems.push("texture_set_path is not planned with no cache directory (LS1 plans it always)");

@@ -1,4 +1,4 @@
-// Unit test for src/rs_variant.cpp's D8 decode (gate5_5-design.md D8, Q2 "Decoding").
+// Unit test for src/rs_variant.cpp's Variant decode.
 //
 // No ctest here runs inside a live Godot process, so this test never calls the real
 // GDExtension interface: it builds its own fake implementation of the handful of interface

@@ -88,9 +88,9 @@ export interface ReportDevice extends ReportDeviceConditions {
  *
  * Recorded because it is not a cosmetic detail: raster and decode cost scale with the raster scale,
  * so **two runs at different `fitScale` are NOT directly comparable** on `decode.*`, `rasterMs` or
- * `paint.*`. Before this block existed a device run silently force-emulated a desktop viewport, and
- * nothing in the report said the phone had been measured at a size it never uses. Making the
- * geometry explicit is what turns that from an invisible assumption into a checkable field.
+ * `paint.*`. A device run that force-emulates a desktop viewport measures the phone at a size it
+ * never uses; making the geometry explicit turns that from an invisible assumption into a checkable
+ * field.
  */
 export interface ReportGeometry {
   /** The page's own viewport in CSS px, as `window.innerWidth/innerHeight` reported it. */
@@ -631,8 +631,8 @@ const ORIENTATIONS = ["portrait", "landscape", "square"];
  * `env.geometry`: required for `browser-render`, optional (but checked when present) elsewhere.
  *
  * Required, because a browser number whose raster scale is unknown cannot be compared with another
- * one — and for the whole first round of this harness a device run silently reported metrics taken
- * at a force-emulated desktop viewport with nothing in the file saying so.
+ * one — and a device run at a force-emulated desktop viewport would otherwise report its metrics
+ * with nothing in the file saying so.
  */
 export function validateGeometry(
   value: unknown,
@@ -810,11 +810,10 @@ function validateBrowserMetrics(
 
   // The invariant is `ratio === null <=> samples === 0`, enforced in both directions:
   //   * a NUMBER must be a real measurement, strictly > 0 — a severely parked main thread reads as a
-  //     small positive ratio (measured: 0.002989, i.e. 0.3% CPU across 585 ms of wall). An exact 0
-  //     means the ratio was never computed;
+  //     small positive ratio, never an exact 0. An exact 0 means the ratio was never computed;
   //   * `null` means no task met the long-task threshold, and is legal ONLY with 0 samples. Any
   //     placeholder number here would be legal, plausible and wrong: a `1` reads as
-  //     "fully compute-bound" and did exactly that for the region-blob arm for two rounds.
+  //     "fully compute-bound".
   const ratio = metrics.mainThreadCpuRatio;
   const samples = metrics.mainThreadCpuSamples;
   const samplesValid =

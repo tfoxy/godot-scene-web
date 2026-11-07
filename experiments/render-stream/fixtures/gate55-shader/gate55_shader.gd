@@ -1,5 +1,5 @@
 extends Node
-## Gate 5.5 ShaderMaterial fixture (../../protocol/gate5_5-design.md "Q6c", G55c).
+## Gate 5.5 ShaderMaterial fixture.
 ##
 ## The root is a plain `Node`. Every `CanvasItem`, `Shader`, `ShaderMaterial` and texture is
 ## created in `_ready()`, after `GrcLoader` armed the capture extension in its own `_enter_tree()`
@@ -266,7 +266,7 @@ func _process(_delta: float) -> void:
 		get_tree().quit(0)
 
 
-## gate5_5-design.md Q6c's timeline (as built: see README).
+## the contract's timeline (as built: see README).
 func _apply_step(step: int) -> void:
 	match step:
 		1:

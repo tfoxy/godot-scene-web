@@ -1,5 +1,5 @@
 extends Node
-## Gate 4 MSDF fixture (../../protocol/gate4-design.md "G4e2" and "Q6e"): MSDF text on
+## Gate 4 MSDF fixture: MSDF text on
 ## render-stream/3. Every Label draws from one runtime MSDF FontFile `FM` of the pinned bytes with
 ## the target game's parameters, msdf_size 48 and msdf_pixel_range 24 (D5), at 16, 24 and 40 px.
 ## One Label's outline is toggled on, one Label sits under a Node2D rotated by 20 degrees and

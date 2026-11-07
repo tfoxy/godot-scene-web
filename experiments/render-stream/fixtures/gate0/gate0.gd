@@ -1,22 +1,21 @@
 extends Node
 ## Gate 0 fixture main scene. The root is a plain `Node`, not a `CanvasItem`: `GrcLoader`
 ## (autoload, `loader.gd`) arms the capture extension in its own `_enter_tree()`, which runs before
-## this node's children enter the tree (see ../../protocol/gate0-design.md "Startup order on
-## 4.5.1" -- route (a)), so every `CanvasItem` created below in `_ready()` is created strictly
+## this node's children enter the tree, so every `CanvasItem` created below in `_ready()` is created strictly
 ## after arming and the mirror sees each one's `canvas_item_create`.
 ##
 ## `preexisting.tscn` reuses this same script on a scene that also declares a static
 ## `Preexisting` child node directly in the `.tscn`: that one is constructed while the scene is
 ## instantiated, which happens before arming, so it is deliberately NOT part of this script.
 ##
-## See fixtures/gate0/README.md and ../../protocol/gate0-design.md "Q2. Fixture" / "Timeline" for
+## See fixtures/gate0/README.md for
 ## the exact frames, positions and colours reproduced here; expected.json is the single source of
 ## truth for those numbers and this script's literals must match it exactly.
 
 ## A `Node2D` whose `_draw()` paints one axis-aligned rect and, when `circle` is set, one black
 ## circle on top -- the extra `canvas_item_add_circle` call the `unsupported` variant adds on the
 ## Marker (an op gate 0's mirror did not model; see render-stream-0.md). Since G5d
-## (render-stream/4, gate5-design.md) add_circle is a supported command, so the circle is wrapped
+## (render-stream/4) add_circle is a supported command, so the circle is wrapped
 ## in an animation slice spanning the whole period (`canvas_item_add_animation_slice`, still typed
 ## unsupported on /4): it draws every frame on a renderer, and the variant stays `unsupported`.
 class RectNode extends Node2D:
@@ -88,8 +87,7 @@ func _ready() -> void:
 	marker.position = MARKER_POSITION
 	add_child(marker)
 
-	# Step 0 is the `_ready` state: it is "applied" here, not in `_process` (see
-	# gate0-design.md "Timeline"), at the frame stamp the capture library assigns to everything
+	# Step 0 is the `_ready` state: it is "applied" here, not in `_process`, at the frame stamp the capture library assigns to everything
 	# that runs during `initialize()`.
 	_log_step(0, 1, 1 + SETTLE_OFFSET)
 

@@ -1,4 +1,4 @@
-// G8kb2 oracle (texture-delivery-design.md "As built (G8kb2)"): basisu 1.60's own transcode of one
+// G8kb2 oracle: basisu 1.60's own transcode of one
 // KTX2 to ASTC 4x4, called directly (no GSW wrapper, no target rule), natively. Writes every
 // level's blocks to <out>.astc and prints one JSON line with the ASTC decode's PSNR against (a) the
 // same file's UASTC decode (cTFRGBA32) and (b) a source pixel file when given (raw RGBA8/RGB8).

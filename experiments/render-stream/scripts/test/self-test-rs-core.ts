@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for render-stream-core (gate7-design.md Q14d "Real recordings"): the Rust decoder
+// Self-test for render-stream-core: the Rust decoder
 // (experiments/render-stream/rs-core) against the TypeScript decoder of record
 // (lib/render-stream-2.ts), transaction by transaction, over real recordings.
 //
@@ -20,7 +20,7 @@
 // 3. On a mismatch writes both canonical JSONs of the first mismatching transaction under
 //    artifacts/render-stream/gate7/g7x/self-test-rs-core/ and fails.
 // 4. --goldens: also runs `rs-core-check goldens` (golden-2 ... golden-8) and judges
-//    self-test-rs2.ts's unknown-item-skip cases (protocol/unknown-item-skip.md) with both decoders.
+//    self-test-rs2.ts's unknown-item-skip cases with both decoders.
 //
 // Exits non-zero on any mismatch or failure.
 
@@ -174,7 +174,7 @@ function resolvedTransaction(
   };
 }
 
-// protocol/unknown-item-skip.md: self-test-rs2.ts's unknownItemCases, judged by both decoders.
+// Self-test-rs2.ts's unknownItemCases, judged by both decoders.
 function unknownItemCases(cli: string): void {
   const account = (calls: number) => ({
     unknown_rids: 1,

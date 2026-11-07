@@ -1,5 +1,5 @@
 /**
- * The page half of `test/canvasItemsProgramPixel.test.ts` (G7s): draws one case of
+ * The page half of `test/canvasItemsProgramPixel.test.ts`: draws one case of
  * `./canvas-items-program-cases` through the Rust `canvas-items` executor's item-space program
  * path on the real GPU. Each program's Godot code is transpiled here by `@godot-scene-web/effects`
  * (`transpileGodotItemShader`), compiled by the executor (`define_program`), and its binding set
@@ -59,7 +59,7 @@ async function rustModule(): Promise<RustModule> {
   return loaded;
 }
 
-/** `godot`: draw in Godot's orientation (`ExecOptions::godot_orientation`, G7t); the target is
+/** `godot`: draw in Godot's orientation (`ExecOptions::godot_orientation`); the target is
  * read back in design rows either way, so a case's expectations hold in both. */
 async function run(name: string, godot = false): Promise<ProgramCaseResult> {
   const spec = programCaseByName(name);
@@ -82,7 +82,7 @@ async function run(name: string, godot = false): Promise<ProgramCaseResult> {
       const t = p.code === null ? null : transpileGodotItemShader(p.code);
       const glsl = t === null ? "this is not GLSL;" : t.glsl;
       try {
-        // P3-VX: a program with its own vertex stage.
+        // a program with its own vertex stage.
         if (t?.vertexGlsl)
           harness.define_program_vertex(p.id, glsl, t.vertexGlsl);
         else harness.define_program(p.id, glsl);

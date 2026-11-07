@@ -2,7 +2,7 @@
 // path, G8w).
 //
 // render-stream/8 is a protocol-version switch inside the SAME rs2_codec/rs2_diff modules /2-/7 use
-// (render-stream-8.md, gate8-design.md D1), so this file proves only /8's delta: the GRS8 magic and
+// (render-stream-8.md), so this file proves only /8's delta: the GRS8 magic and
 // the "render-stream/8" protocol string, the session keys `adoption` and `resources.decode`, the
 // "adopted" origin and `adopted_content` in the texture/mesh tables (origin alone in the
 // shader/material tables), the texture `source_format`, and the float payload formats -- by

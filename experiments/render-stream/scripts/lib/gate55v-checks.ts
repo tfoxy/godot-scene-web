@@ -1,4 +1,4 @@
-// Gate 5.5 group g55v (P3-VX, protocol/gate5_5-design.md "vertex() (P3-VX)"): canvas_item
+// Gate 5.5 group g55v: canvas_item
 // ShaderMaterials with a vertex() function or a vertex render mode over fixtures/gate55-vertex,
 // judged against the Godot reference and a hand model of Godot 4.5.1's canvas.glsl vertex stage
 // (drivers/gles3/shaders/canvas.glsl:179-280) at every solid or texel-exact item.

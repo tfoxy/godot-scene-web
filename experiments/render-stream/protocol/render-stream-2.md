@@ -1,24 +1,21 @@
 # render-stream/2 wire format
 
-Status: the format the capture library and the receiver speak since G2b2 (2026-10-09). Written
-with [gate2-design.md](gate2-design.md), which says what the capture puts into these records and
-what receivers do with them. Codecs (G2b1): C++ encoder/diff (`capture/src/rs2_codec.*`,
-`rs2_diff.*`), TypeScript decoder/validator/resolver (`scripts/lib/render-stream-2.ts`) and
-GDScript decoder (`receiver/rs2_decoder.gd`) plus the texture-payload reader
-(`receiver/rs_texture_payload.gd`), all checked byte-for-byte and state-for-state against
-`protocol/golden-2/`, per this text. G2b2 wired it in: the capture's texture mirror, publisher
+Status: the format the capture library and the receiver speak. Codecs: C++ encoder/diff
+(`capture/src/rs2_codec.*`, `rs2_diff.*`), TypeScript decoder/validator/resolver
+(`scripts/lib/render-stream-2.ts`) and GDScript decoder (`receiver/rs2_decoder.gd`) plus the
+texture-payload reader (`receiver/rs_texture_payload.gd`), all checked byte-for-byte and
+state-for-state against `protocol/golden-2/`, per this text. The capture's texture mirror, publisher
 (`rs_publish`, both file sinks, the store directory and inline resource records) and live hub
-(`rs_live`) emit /2, the receiver consumes it in both modes, and the gate 0, 1 and 2 runners
-check it. Since G2c2 live connections follow the configured policy and serve out-of-band payloads
-over "HTTP (live)" below (`ServedResources` in `capture/src/rs_resource_store.h`; the receiver's
-`RsResourceFetcher`). [render-stream-1.md](render-stream-1.md) is superseded; its codecs
-left the capture library, and its TypeScript decoder and goldens stay as frozen, verified history.
+(`rs_live`) emit /2, the receiver consumes it in both modes, and the gate 0, 1 and 2 runners check
+it. Live connections follow the configured policy and serve out-of-band payloads over "HTTP (live)"
+below (`ServedResources` in `capture/src/rs_resource_store.h`; the receiver's `RsResourceFetcher`).
+[render-stream-1.md](render-stream-1.md) is superseded; its codecs left the capture library, and its
+TypeScript decoder and goldens stay as frozen, verified history.
 
-One G2b1 reading was corrected by G2b2: a texture entry's `payload_bytes` is the length of the
-whole `render-stream-texture/1` payload (magic, meta, both lengths and data), the size the inline
-threshold, the store's index and the hook log compare. G2b1's vectors had carried the image's data
-size there; `golden-2/` was regenerated and both decoders' `resource-payload` rule now compares
-the resource record's whole payload length.
+A texture entry's `payload_bytes` is the length of the whole `render-stream-texture/1` payload
+(magic, meta, both lengths and data), the size the inline threshold, the store's index and the
+hook log compare; both decoders' `resource-payload` rule compares the resource record's whole
+payload length.
 
 render-stream/2 is render-stream/1 plus textures:
 
@@ -104,28 +101,28 @@ Key order (line breaks for reading only):
   recording: a content-addressed store directory that the operator hands to the receiver. It is
   `none` exactly when `delivery` is `inline`. `http_path` is non-null exactly for `http`.
 - `auth`: `bearer` when the host requires `Authorization: Bearer <token>` on the WebSocket upgrade
-  and on every resource GET (G2e). Otherwise `none`.
+  and on every resource GET. Otherwise `none`.
 
 `features` at gate 2, each array sorted ascending by byte value:
 
 - `ops`: `["add_rect","add_texture_rect","add_texture_rect_region"]`.
 - `item_state`: /1's list plus `"texture_filter"` and `"texture_repeat"`.
-- `resources` (new key): `["texture_2d","texture_2d_placeholder"]`, plus `"canvas_texture"` from
-  G2d on, on a host with a real renderer only.
-- `unsupported_resources` (new key, G2d): the resource kinds this host refuses, each
+- `resources` (new key): `["texture_2d","texture_2d_placeholder"]`, plus `"canvas_texture"` on a
+  host with a real renderer only.
+- `unsupported_resources` (new key): the resource kinds this host refuses, each
   `{"resource","reason"}`, sorted by `resource`. A headless host (`engine.display_server`
   `headless`) lists `{"resource":"canvas_texture","reason":"canvas-texture-headless"}`: its dummy
-  storage never allocates a canvas texture ([canvas-texture-headless.md](canvas-texture-headless.md)).
+  storage never allocates a canvas texture.
   Otherwise `[]`. The only reason so far is `canvas-texture-headless`.
 - `observed_unsupported_ops`: /1's list without `canvas_item_add_texture_rect` and
   `canvas_item_add_texture_rect_region`, plus `canvas_item_add_lcd_texture_rect_region` (hooked from
-  calibrator 5 on) and, from calibrator 6 on (gate3-design.md D4), `canvas_item_add_clip_ignore`.
+  calibrator 5 on) and, from calibrator 6 on, `canvas_item_add_clip_ignore`.
 - `unobserved`: /1's list without `canvas_item_set_default_texture_filter` and
   `canvas_item_set_default_texture_repeat`, plus `canvas_texture_set_shading_parameters`,
-  `texture_set_size_override` and (gate3-design.md D6) `canvas_item_set_visibility_notifier`.
+  `texture_set_size_override` and `canvas_item_set_visibility_notifier`.
 
 Sabotage kinds: /1's, plus `stale-texture`, `wrong-hash`, `spurious-texture-update`,
-`drop-resource` and `unpin` (gate2-design.md). `op` is non-null only for `omit-op`.
+`drop-resource` and `unpin`. `op` is non-null only for `omit-op`.
 
 ## Transaction record
 
@@ -172,7 +169,7 @@ is `default`.
 `clip` is the engine's clip flag at the end of the frame. `canvas_item_clear` resets it to false
 in the engine (`renderer_canvas_render.h:455`), and the capture models that. A receiver applies
 `clip` after rebuilding an item's commands, and treats its own `canvas_item_clear` as having reset
-it (gate3-design.md D3, G3b).
+it.
 
 ### Commands
 
@@ -197,9 +194,9 @@ it (gate3-design.md D3, G3b).
   texture, `drivers/gles3/rasterizer_canvas_gles3.cpp:2340-2342`).
 - `unsupported` with reason `unknown-texture` is a texture draw whose texture argument is a RID the
   capture never saw created: a texture that existed before arming, a proxy, layered or viewport
-  texture, or a canvas texture without the G2d hooks. It keeps its place in the command order and
-  uses no floats.
-- `unsupported` with reason `canvas-texture-headless` (G2d) is a texture draw naming `RID()` on a
+  texture, or a canvas texture without the canvas-texture hooks. It keeps its place in the command
+  order and uses no floats.
+- `unsupported` with reason `canvas-texture-headless` is a texture draw naming `RID()` on a
   host that declares `canvas_texture` in `unsupported_resources`: there a `CanvasTexture`'s RID is
   `RID()`, so such a draw cannot be told from a null texture, and it is refused rather than
   replayed as the white default. It keeps its place and uses no floats, like `unknown-texture`.
@@ -235,7 +232,7 @@ is never seen.
 
 Glyph atlas pages are ordinary `image` entries (LA8 or RGBA8). A page grows by whole-page
 `texture_2d_update`s, so a step that adds glyphs publishes a new version of each touched page and
-nothing else. (Informative, gate4-design.md Q4.)
+nothing else. (Informative.)
 
 Field rules, checked by `texture-entry`:
 
@@ -309,18 +306,17 @@ checks this.
 
 ### Design, not built: a carried set bounded by the resolved state (P3-SP, for `/11`)
 
-*Specified in [render-stream-11.md](render-stream-11.md) "Resource retention" (W11-D), which
+*Specified in [render-stream-11.md](render-stream-11.md) "Resource retention", which
 supersedes this note. One correction: every receiver accepts every record (folds, resyncs and
 superseded transactions act at apply, not at accept), so both ends prune identically, and
 `resource-duplicate` stays an exact error at /11. The "prunes less" case below does not arise.*
 
-Up to `/10`, `resource-duplicate` and the first-transaction rule make "carried" a lifelong,
-exact set on both ends: the host may never send a hash twice and may never skip one the receiver
-lacks, and the receiver checks every table entry at or under `inline_max_bytes` against it
-(`resource-missing`). Under content-addressed churn (a game's skeletal mesh poses: ~4,300 new
-hashes a second in STS2 combat) both sets grow with the session. P3-SP made the host's set compact
-and shared between connections (results/p3/p3-sp.md); bounding it needs this rule change, gated
-on the stream's version (every version below `/11` keeps the rule above):
+Up to `/10`, `resource-duplicate` and the first-transaction rule make "carried" a lifelong, exact
+set on both ends: the host may never send a hash twice and may never skip one the receiver lacks,
+and the receiver checks every table entry at or under `inline_max_bytes` against it
+(`resource-missing`). Under content-addressed churn (a game's skeletal mesh poses) both sets grow
+with the session. The host's set is compact and shared between connections; bounding it needs this
+rule change, gated on the stream's version (every version below `/11` keeps the rule above):
 
 - **Pruning.** After the transaction with seq S (the host: as it is sent; the receiver: as it is
   accepted), a stream's carried set becomes `carried ∩ hashes(S)`, where `hashes(S)` are the
@@ -334,12 +330,12 @@ on the stream's version (every version below `/11` keeps the rule above):
   held copy.
 - **`resource-missing` is unchanged**: the host still carries every inline-sized hash before the
   first transaction that names it, now "first since it last left the state".
-- **Cost.** A hash that recurs after leaving the state is sent again (a periodic pose: G6s's
-  gate 6 `MS` region every 90 frames). Its bytes are inline-sized by definition.
+- **Cost.** A hash that recurs after leaving the state is sent again (a periodic pose). Its bytes
+  are inline-sized by definition.
 - **What it removes.** The host's per-stream set and the receiver validator's carried map stop
   growing; a receiver's payload store can drop what the state no longer names without a GET when
-  the hash returns. With the dynamic mesh surfaces P3-LV designed for `/11`
-  ([p3-lv.md](../results/p3/p3-lv.md), "Design: dynamic mesh surfaces by id, inline"), poses stop
+  the hash returns. With `/11`'s dynamic mesh surfaces
+  ([render-stream-11.md](render-stream-11.md) "Dynamic mesh surfaces"), poses stop
   being hashes at all; this rule bounds what is left (textures, shaders, static meshes) and any
   other content-addressed churn.
 
@@ -412,17 +408,17 @@ ETag: "<hash>"
 - HTTP/1.1 keep-alive is the default and `Connection: close` is honoured. Requests are not
   pipelined: a client sends a request only after reading the previous response.
 - A host serves a hash at least while any transaction that names it is the last transaction it
-  sent on some connection, or while the hash belongs to its current captured state
-  (gate2-design.md D7). A receiver therefore fetches every payload of a transaction before it
+  sent on some connection, or while the hash belongs to its current captured state.
+  A receiver therefore fetches every payload of a transaction before it
   acknowledges `applied` for it.
 - `private` makes a shared cache drop responses to authorized requests. A browser's own HTTP cache
-  keeps them across sessions, which is the reuse the handoff asks for.
+  keeps them across sessions, which is the intended cross-session reuse.
 
 #### Content coding (G8kz)
 
 A host may answer a payload GET with an HTTP content coding. It is plain HTTP negotiation, not a
 change to framing, keys or payload bytes, so it applies at every live version >= /2 and needs no
-version of its own. Hosts: `GRC_HTTP_ENCODING=off|zstd|gzip` (default `zstd`; `off` is today's
+version of its own. Hosts: `GRC_HTTP_ENCODING=off|zstd|gzip` (default `zstd`; `off` sends identity
 bytes exactly).
 
 ```
@@ -448,7 +444,7 @@ Vary: Accept-Encoding
   match, is identity. A host that offers none (`off`) ignores the header and sends neither
   `Content-Encoding` nor `Vary`.
 - **Headers.** `Content-Length` is the coded length. `Vary: Accept-Encoding` is on every 200 and 304
-  of a host that offers a coding (a second `Vary: Origin` line is CORS's, G7n). The strong validator
+  of a host that offers a coding (a second `Vary: Origin` line is CORS's). The strong validator
   differs by coding (RFC 9110 8.8.3.3): `"<hash>"` for identity, `"<hash>-zstd"`, `"<hash>-gzip"`
   per coding. `If-None-Match` matches any of the three for the hash (a comma list is searched),
   and the 304 carries the validator that matched.

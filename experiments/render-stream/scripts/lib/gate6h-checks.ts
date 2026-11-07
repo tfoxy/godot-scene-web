@@ -1,4 +1,4 @@
-// Gate 6h checks (protocol/gate6-design.md "G6h", "Q6e", "Q7b"): fixtures/gate6-hd, nine copies
+// Gate 6h checks: fixtures/gate6-hd, nine copies
 // of the gate 6 scene in a 3x3 grid at logical 1920x1080 under `canvas_items` stretch, its
 // references at both presentations (native 1920x1080, half 960x540) and its native legs, on
 // render-stream/6 since G6b (render-stream/5 when G6h landed). G6b's half legs are

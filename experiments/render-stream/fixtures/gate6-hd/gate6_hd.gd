@@ -1,5 +1,5 @@
 extends Node
-## Gate 6 HD fixture (../../protocol/gate6-design.md "Q6e", G6h): nine copies of the gate 6 scene
+## Gate 6 HD fixture: nine copies of the gate 6 scene
 ## in a 3x3 `GridContainer` at logical 1920x1080 under `canvas_items` stretch (aspect `keep`). Cell
 ## c (row-major) is built by the synced `scene_builder.gd` with cell index c (TEXA content offset
 ## 100c, HUD layer 1 + c) and phase 7c frames, inside a `Cell` Control of minimum size 640x360 that

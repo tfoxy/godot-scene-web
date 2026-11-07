@@ -1,4 +1,4 @@
-// The late-arm resource registry (rs_registry.h; protocol/late-arm-registry-design.md LAR0).
+// The late-arm resource registry (rs_registry.h).
 #include "rs_registry.h"
 
 #include <algorithm>
@@ -29,9 +29,9 @@ struct State {
   bool configured = false;
   RegistryFault fault = RegistryFault::None;
   std::size_t cap = kRegistryDefaultCap;
-  // HC6's flat open-addressed map (rs_rid_map.h): one slot holds key and kind, so a create or a free
-  // costs one multiply and usually one cache line, and no node allocation. LAR0 measured
-  // std::unordered_map at ~250 ns a call in situ (a cold bucket array, a cold node, malloc/free).
+  // The flat open-addressed map (rs_rid_map.h): one slot holds key and kind, so a create or a free
+  // costs one multiply and usually one cache line, and no node allocation, where a
+  // std::unordered_map costs far more per call in situ (a cold bucket array, a cold node, malloc/free).
   RidMap<Entry> map;
   // The map's slot count, followed with RidMap's own growth rule (it doubles from 64 when an
   // insertion would make it more than half full, and never shrinks), for bytes_estimate.

@@ -2,7 +2,7 @@
 ; over nested clip_contents Controls, a non-clipping intermediate, a child in a higher z list,
 ; moving content, sliding and resized clip windows, clip toggles, raw-RS clear/custom-rect cases,
 ; a custom rect that culls, and an anchored clip that depends on the root size. See
-; fixtures/gate3/README.md and ../../protocol/gate3-design.md ("Q6b") for the contract.
+; fixtures/gate3/README.md for the contract.
 
 config_version=5
 

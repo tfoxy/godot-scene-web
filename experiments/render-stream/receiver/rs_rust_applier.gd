@@ -1,6 +1,6 @@
 class_name RsRustApplier
 extends RefCounted
-## The receiver's only core (gate7-design.md G7xn, D34, Q14e; G7gd): decode, validation, resolve
+## The receiver's only core: decode, validation, resolve
 ## and apply run in the shared Rust core (experiments/render-stream/rs-core) through the native
 ## GDExtension adapter `RsCore` (receiver/ext/: rs-core-capi plus a C++ shim over raw
 ## gdextension_interface.h; the web export loads the same adapter as a dlink side module). It was
@@ -126,7 +126,7 @@ func accept_session(data: PackedByteArray, offset: int, version: int) -> Diction
 	return out
 
 
-## G8kp (texture-delivery-design.md D3): the receiver's texture_encodings and gpu_formats; the core
+## the receiver's texture_encodings and gpu_formats; the core
 ## then fetches and uploads each ok image texture's chosen payload. "" when accepted, else why not.
 func set_delivery(texture_encodings: String, gpu_formats: String) -> String:
 	var refused: String = _core.call("set_delivery", texture_encodings, gpu_formats)
@@ -140,7 +140,7 @@ func set_webgl_rules(on: bool) -> void:
 	_core.call("set_webgl_rules", on)
 
 
-## G8ku (texture-delivery-design.md D6): `upgrade` (true) refetches when a preferred variant appears
+## `upgrade` (true) refetches when a preferred variant appears
 ## at an equal version; `keep` (false, the default) holds what is resident.
 func set_variant_upgrade(on: bool) -> void:
 	_core.call("set_variant_upgrade", on)
@@ -199,7 +199,7 @@ func begin_session() -> void:
 	_refresh_counters()
 
 
-## G8kf (texture-delivery-design.md Q3): transcodes ahead of the apply every uastc file the stream
+## transcodes ahead of the apply every uastc file the stream
 ## as it stands needs and this process holds (in memory; `load_from_directory` also reads the
 ## persisted cache's). A file Godot's KTX2 loader refuses is `delivery-transcode-failed`: the core
 ## refuses that variant, so D3 chooses the entry's next preference (`decoded` at last) and
@@ -271,7 +271,7 @@ func apply_state(cache: RsResourceCache) -> Dictionary:
 		return {"error": error}
 	var stats: Dictionary = result
 	# G8ku: the KTX2 transcodes this apply ran (Image.load_ktx_from_buffer, D14). A failed one is
-	# the typed `delivery-transcode-failed` (texture-delivery-design.md Q3).
+	# the typed `delivery-transcode-failed`.
 	var transcodes_text: String = _core.call("take_transcodes")
 	var transcodes: Variant = JSON.parse_string(transcodes_text)
 	var transcode_rows: Array = transcodes if transcodes is Array else []

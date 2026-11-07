@@ -1,4 +1,4 @@
-// Gate 8 group G8z (protocol/gate8-design.md "Increments" G8z): the per-receiver evidence map behind
+// Gate 8 group G8z: the per-receiver evidence map behind
 // protocol/features/render-stream-8/{native,web-export,gsw-canvas}.json. scripts/make-features.ts
 // --protocol 8 is the generator; lib/gate7z-checks.ts judges the files with this file's profile
 // (scripts/check-gate8z.ts).
@@ -652,7 +652,7 @@ interface Override8 {
 const FORMATS_NOTE =
   "Resolved at /8 by host decode (payload.host_decoded_block_textures), float payloads (payload.float_texture_formats) and the /9 block variant (delivery.texture_variant_block). Not proven at STS2 scale: wire and memory acceptability are the product leg's (P3).";
 
-/** P3-ST (gate5_5-design.md "Screen texture (P3-ST)"), then CG1/CG3 (render-stream-10.md): screen-reading
+/** P3-ST, then CG1/CG3 (render-stream-10.md): screen-reading
  * shaders are supported with GLES3's automatic copy points, and /10 carries `BackBufferCopy`. */
 const BACKBUFFER_NOTE =
   "Not carried on /8 or earlier (the gate 6 text said hooked: it never was). Since P3-ST hint_screen_texture shaders are ok on the wire and every receiver mirrors GLES3's automatic back-buffer copies (fixtures/gate55-screen, run-gate55.sh g55s). Since CG1 the opt-in render-stream/10 carries the setter as the item key `copy_to_backbuffer` and the native receiver and the web export re-issue it; since CG3 GSW composites it (delivery.canvas_group_state_10, g8cg). On a /8 stream a host's BackBufferCopy nodes are not carried, so their copy points replay as the automatic ones.";
@@ -660,7 +660,7 @@ const BACKBUFFER_NOTE =
 const CANVAS_GROUP_NOTE =
   "Not carried on /8 or earlier: no /8 fixture creates a CanvasGroup or clip_children item. Since CG1 the opt-in render-stream/10 carries the setter as the item key `canvas_group` and the native receiver and the web export re-issue it; since CG3 GSW composites it (delivery.canvas_group_state_10, fixtures/gate8-cg, g8cg).";
 
-/** P3-VX (gate5_5-design.md "vertex() (P3-VX)"): GSW's transpiler runs vertex() and varyings
+/** P3-VX: GSW's transpiler runs vertex() and varyings
  * since P3-VX, so the refusals left are narrower. */
 const OUTSIDE_TRANSPILE_NOTE =
   "P3-VX: vertex() with varyings (flat and smooth), skip_vertex_transform, world_vertex_coords, MODEL/CANVAS/SCREEN_MATRIX, TEXTURE_PIXEL_SIZE, AT_LIGHT_PASS and INSTANCE_CUSTOM transpile (fixtures/gate55-vertex, run-gate55.sh g55v). P3-TM: TIME (both stages, the host's shader time carried by /10) and the hint_default_black/transparent, hint_normal, hint_roughness_normal and hint_anisotropy sampler defaults transpile too (fixtures/gate55-time, g55t). Still typed gsw-shader-transpile (programs.ts): VERTEX_ID, INSTANCE_ID, CUSTOM0/1, fragment() VERTEX, SDF and light built-ins, global and matrix uniforms, other sampler hints, uvec/bvec and non-literal defaults. Every gate 5.5 shader the wire does not refuse transpiles (shader-transpile-set@gsw), so no leg observes the refusal.";

@@ -58,14 +58,14 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn);
 // lower_multimesh() on it themselves, so a /10 connection of a /11 host sees exactly what it saw
 // before PM1 (rule 7: "Below /11 ... the command is /10's unsupported/unsupported-op").
 
-// HC2 (host-cost-design.md D1, "An identical re-record is not a change (/11)"): true when two
+// True when two
 // command lists are equal field by field, every field of every command whatever its kind, every
 // float by its 32-bit pattern (so 0.0 and -0.0 differ, equal NaN patterns are equal). Equal lists
 // encode to equal bytes (rs2_codec.h encode_command_list), so they carry equal /11 digests; a
 // field the encoder ignores for a kind only makes the answer stricter (a digest more), never wrong.
 bool command_lists_equal_bits(const std::vector<Command> &a, const std::vector<Command> &b);
 
-// HC4a (host-cost-design.md D1, the shadow oracle): the first field in which two entries differ,
+// The shadow oracle: the first field in which two entries differ,
 // every field whatever the version, floats by bit pattern, commands by command_lists_equal_bits;
 // null when they are identical. The mirror republishes an item or canvas exactly when it differs.
 const char *item_state_difference(const ItemState &a, const ItemState &b);
@@ -138,7 +138,7 @@ void unobserve_particles_features(Features *features);
 
 // The host's inline decision, a function of the payload alone (L2's assumption): a name is inline
 // when its payload_bytes <= inline_max_bytes. `inline_variants` decides texture variants: the
-// capture never sends one inline (texture-delivery-design.md D12(c)), golden-11's recordings do.
+// capture never sends one inline , golden-11's recordings do.
 struct InlinePolicy {
   std::uint64_t inline_max_bytes = 0;
   bool inline_variants = false;

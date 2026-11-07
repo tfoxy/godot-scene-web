@@ -5,7 +5,7 @@
 //! struct-of-arrays form, so a wasm executor hands each array to WebGL as one typed-array view of
 //! linear memory with no copy, and a native consumer (a test, the `PDL1` dump) reads the same bytes.
 //!
-//! The model is Godot's 2D renderer after culling (gate7-design.md Q14b, D7):
+//! The model is Godot's 2D renderer after culling:
 //! - [`Item`]: the final transform (canvas × item, 2×3) and the composed straight modulate of one
 //!   canvas item. An executor keeps items in a float data texture and the vertex shader fetches its
 //!   item's row, so a transform-only change moves one 48-byte row and no vertex.
@@ -15,22 +15,22 @@
 //!   and a multi-channel signed distance field's parameters). Draws are in final paint order. An
 //!   executor may merge ADJACENT draws whose state is equal and whose index ranges touch, never
 //!   reorder them; an untextured draw's texture and sampler count as equal to anything
-//!   ([`DRAW_UNTEXTURED`], G7o4).
-//! - [`TextureOp`]s beside the list: uploads of straight RGBA8 pixels (or, from G8kp, of
+//!   ([`DRAW_UNTEXTURED`]).
+//! - [`TextureOp`]s beside the list: uploads of straight RGBA8 pixels (or of
 //!   block-compressed level-0 bytes, [`CompressedFormat`]) and frees. An upload's bytes are either
-//!   copied into the list's byte arena or (GLJ) shared with the producer by reference
+//!   copied into the list's byte arena or shared with the producer by reference
 //!   ([`TextureBytes`]), so a frame that uploads a large texture set needs no second copy of it.
 //! - [`Binding`]s: item-space programs (Godot's custom `canvas_item` shaders, registered with the
 //!   executor beside the list) with their uniform values, named by a draw's `program`.
 //!
-//! The colour contract (G7c's TypeScript executor, `packages/canvas/src/executor-webgl.ts`, is the
+//! The colour contract (the TypeScript executor, `packages/canvas/src/executor-webgl.ts`, is the
 //! specification of record): textures are stored straight and premultiplied after filtering;
 //! vertex colours are interpolated straight and premultiplied per fragment; the item modulate is
 //! premultiplied and multiplied last (`texel * colour * modulate`), and every blend but
 //! [`Blend::PremulAlpha`] composites premultiplied colour. A `PremulAlpha` draw uses the texel and
 //! the vertex colour as given and the modulate straight (Godot's `BLEND_MODE_PREMULT_ALPHA`).
 //!
-//! No render-stream concept (wire ids, sessions, records) belongs here (D6, D30).
+//! No render-stream concept (wire ids, sessions, records) belongs here.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -102,33 +102,33 @@ pub const DRAW_SCISSOR: u32 = 1;
 /// colour and the modulate, with the coverage multiplied into alpha. [`Draw::msdf`] holds the
 /// parameters.
 pub const DRAW_MSDF: u32 = 2;
-/// [`Draw::flags`] (G7o4): an untextured draw. Its `texture` is [`WHITE_TEXTURE`], its `program`
+/// [`Draw::flags`]: an untextured draw. Its `texture` is [`WHITE_TEXTURE`], its `program`
 /// [`BUILTIN_PROGRAM`], it is not [`DRAW_MSDF`], and its item's row carries [`ITEM_UNTEXTURED`],
 /// so the builtin program colours its fragments as the white texel would (`texel = 1`) whatever
 /// texture is bound. Its texture and sampler therefore never end a run: it merges with a textured
 /// neighbour of otherwise equal state ([`mergeable`], [`merged`]).
 pub const DRAW_UNTEXTURED: u32 = 4;
 
-/// [`Draw::flags`] (P3-ST, CG3): before this draw the executor runs, in order, every
+/// [`Draw::flags`]: before this draw the executor runs, in order, every
 /// [`DrawList::screen_ops`] entry whose `before` is this draw's index: the back-buffer copies,
 /// clears and mip chains Godot 4.5.1's GLES3 canvas renderer makes between two items
 /// (rasterizer_canvas_gles3.cpp:409-540). A producer sets it on the first non-empty draw after the
 /// operations' point; a flagged draw always starts a call ([`mergeable`]).
 pub const DRAW_SCREEN_OPS: u32 = 8;
-/// [`Draw::flags`] (CG3): the draw goes into the back buffer instead of the target, blended as GLES3
+/// [`Draw::flags`]: the draw goes into the back buffer instead of the target, blended as GLES3
 /// blends into it (`canvas_begin(.., p_to_backbuffer)`: a transparent target, whatever
 /// [`Target::opaque`] says), as the items of an open canvas group are drawn. A
 /// [`SCREEN_TEXTURE`] sampled by such a draw reads the white texel (canvas_begin binds white there).
 pub const DRAW_TO_BACK_BUFFER: u32 = 16;
-/// [`Draw::flags`] (CG3): a [`BUILTIN_PROGRAM`] draw that runs Godot's default clip-children shader
+/// [`Draw::flags`]: a [`BUILTIN_PROGRAM`] draw that runs Godot's default clip-children shader
 /// (rasterizer_canvas_gles3.cpp:2873-2883: `render_mode unshaded`, `COLOR.rgb` replaced by the back
 /// buffer at `SCREEN_UV`, level 0), the program of a `clip_children` group owner.
 pub const DRAW_GROUP_CLIP: u32 = 32;
-/// [`Draw::flags`] (CG3): a [`BUILTIN_PROGRAM`] draw that runs Godot's default `CanvasGroup` shader
+/// [`Draw::flags`]: a [`BUILTIN_PROGRAM`] draw that runs Godot's default `CanvasGroup` shader
 /// (rasterizer_canvas_gles3.cpp:2844-2860: unshaded, `COLOR *=` the un-premultiplied back buffer at
 /// `SCREEN_UV`, level 0).
 pub const DRAW_GROUP_COMPOSITE: u32 = 64;
-/// [`Draw::flags`] (PM3): an instanced draw, Godot's `TYPE_MULTIMESH` (rasterizer_canvas_gles3.cpp
+/// [`Draw::flags`]: an instanced draw, Godot's `TYPE_MULTIMESH` (rasterizer_canvas_gles3.cpp
 /// :1386-1530). [`DrawList::instanced`] names its instance range in [`DrawList::instances`]; the
 /// executor draws the index range once per instance, each instance's [`Instance`] composed into
 /// the vertex stage as canvas.glsl's `USE_INSTANCING` does: `MODEL_MATRIX = item × instance`, the
@@ -161,7 +161,7 @@ impl Instance {
     };
 }
 
-/// The instance range of one [`DRAW_INSTANCED`] draw (PM3). Part of the draw table, like
+/// The instance range of one [`DRAW_INSTANCED`] draw. Part of the draw table, like
 /// [`ScreenOp`]: a producer rewrites it with the draws, ascending by `draw`, one per flagged draw.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct InstancedDraw {
@@ -188,7 +188,7 @@ pub enum ScreenOpKind {
     Mipmaps,
 }
 
-/// One back-buffer operation between two draws (CG3; P3-ST's screen copies are ones too).
+/// One back-buffer operation between two draws (screen copies are ones too).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ScreenOp {
     /// The index in [`DrawList::draws`] of the draw it precedes (flagged [`DRAW_SCREEN_OPS`]).
@@ -205,11 +205,11 @@ pub struct ScreenOp {
     pub sample_mips: bool,
 }
 
-/// [`SamplerUniform::texture`] (P3-ST): the executor's screen texture (the back buffer as the last
+/// [`SamplerUniform::texture`]: the executor's screen texture (the back buffer as the last
 /// [`ScreenOp`] left it), sampled as GLES3 samples its back buffer whatever the shader's hints say:
 /// linear, linear-mipmap-linear, clamped. The sampler bits are ignored.
 pub const SCREEN_TEXTURE: u32 = u32::MAX;
-/// [`SamplerUniform::texture`] (P3-TM): Godot 4.5.1's GLES3 default textures, which it binds to a
+/// [`SamplerUniform::texture`]: Godot 4.5.1's GLES3 default textures, which it binds to a
 /// `sampler2D` the material leaves unset, by the sampler's hint (material_storage.cpp:928-953):
 /// `hint_default_black` (0,0,0,1), `hint_default_transparent` (0,0,0,0), `hint_normal` /
 /// `hint_roughness_normal` (0.5,0.5,1,1) stored as RGBA8 (127,127,255,255), `hint_anisotropy`
@@ -233,7 +233,7 @@ pub fn default_texture_texel(id: u32) -> Option<[u8; 4]> {
     }
 }
 
-/// [`Item::flags`] (G7o4): every fragment the builtin program draws for this item takes the white
+/// [`Item::flags`]: every fragment the builtin program draws for this item takes the white
 /// texel's value (`texel = 1`) instead of sampling the bound texture. Bit 30: the flags word reads
 /// as the normal float 2.0 through a float texel. A producer sets it only on items whose every draw
 /// is white, and marks those draws [`DRAW_UNTEXTURED`].
@@ -252,7 +252,7 @@ impl Sampler {
     pub const MIRROR: u32 = 2 << 1;
 }
 
-/// Godot `CanvasItemMaterial.BlendMode` (gate5_5-design.md D7).
+/// Godot `CanvasItemMaterial.BlendMode`.
 #[repr(u32)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Blend {
@@ -282,8 +282,8 @@ impl Blend {
 #[repr(u32)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Format {
-    /// Godot's non-transparent 2D render target (`GL_RGB10_A2`; D7). Shots read it back as
-    /// RGBA/UNSIGNED_BYTE, `round(v·255/1023)` (G7c).
+    /// Godot's non-transparent 2D render target (`GL_RGB10_A2`). Shots read it back as
+    /// RGBA/UNSIGNED_BYTE, `round(v·255/1023)`.
     Rgb10A2 = 0,
     Rgba8 = 1,
 }
@@ -378,7 +378,7 @@ pub struct Binding {
     pub samplers: Vec<SamplerUniform>,
 }
 
-/// Texel bytes shared with their producer, never copied into the list (GLJ). A producer that
+/// Texel bytes shared with their producer, never copied into the list. A producer that
 /// keeps a texture's pixels anyway (a receiver's payload store) queues them by reference: the list
 /// holds one more count on the same allocation until the executor consumed it, so a frame that
 /// uploads every texture at once (a viewer's first frame of a large scene) costs no second copy of
@@ -425,7 +425,7 @@ pub enum TextureOp {
     /// IEEE-754 binary16, little-endian), from `8·width·height` bytes at `bytes`. Godot's GLES3
     /// driver keeps a half-float image (`RH` to `RGBAH`) as `R16F` to `RGBA16F`
     /// (`texture_storage.cpp` `_get_gl_image_and_format`), so a shader reads its channels at half
-    /// precision, which straight RGBA8 cannot carry (P3-CK). The texture is then sampled exactly as
+    /// precision, which straight RGBA8 cannot carry. The texture is then sampled exactly as
     /// an RGBA8 one (level 0, the draw's own sampler; `RGBA16F` filters in WebGL 2 and GL ES 3).
     UploadHalf {
         id: u32,
@@ -590,7 +590,7 @@ pub struct Dirty {
     pub draws: bool,
     /// Changed [`DrawList::bindings`] slots (0-based slot indices).
     pub bindings: Ranges,
-    /// PM3: changed [`DrawList::instances`] elements.
+    /// Changed [`DrawList::instances`] elements.
     pub instances: Ranges,
 }
 
@@ -629,20 +629,20 @@ pub struct DrawList {
     pub texture_ops: Vec<TextureOp>,
     /// The byte arena: uploads queued by copy ([`TextureBytes::Arena`]).
     pub texture_bytes: Vec<u8>,
-    /// GLJ: uploads queued by reference ([`TextureBytes::Shared`]), released by [`Self::consumed`].
+    /// Uploads queued by reference ([`TextureBytes::Shared`]), released by [`Self::consumed`].
     pub texture_shared: Vec<SharedBytes>,
-    /// P3-TM: the host's shader time for this frame, which item-space programs whose code reads
+    /// The host's shader time for this frame, which item-space programs whose code reads
     /// `TIME` see (Godot's `RasterizerGLES3::time_total`, uploaded as a float: canvas.glsl's
     /// `time`). Zero when the producer has none.
     pub shader_time: f32,
-    /// P3-ST, CG3: the back-buffer operations, in paint order (each `before` names a draw flagged
+    /// The back-buffer operations, in paint order (each `before` names a draw flagged
     /// [`DRAW_SCREEN_OPS`]). Part of the draw table: a producer rewrites them with the draws. Not
     /// in a `PDL1` dump.
     pub screen_ops: Vec<ScreenOp>,
-    /// PM3: the instances [`DRAW_INSTANCED`] draws read (dirty ranges in [`Dirty::instances`]).
+    /// The instances [`DRAW_INSTANCED`] draws read (dirty ranges in [`Dirty::instances`]).
     /// Not in a `PDL1` dump.
     pub instances: Vec<Instance>,
-    /// PM3: each [`DRAW_INSTANCED`] draw's instance range, ascending by draw. Part of the draw
+    /// Each [`DRAW_INSTANCED`] draw's instance range, ascending by draw. Part of the draw
     /// table (a producer rewrites it with the draws). Not in a `PDL1` dump.
     pub instanced: Vec<InstancedDraw>,
 }
@@ -671,7 +671,7 @@ impl DrawList {
         });
     }
 
-    /// GLJ: queue an upload of straight RGBA8 pixels by reference (no copy; [`SharedBytes`]).
+    /// Queue an upload of straight RGBA8 pixels by reference (no copy; [`SharedBytes`]).
     pub fn upload_texture_shared(&mut self, id: u32, width: u32, height: u32, rgba: SharedBytes) {
         debug_assert_eq!(rgba.len(), 4 * width as usize * height as usize);
         let bytes = self.share(rgba);
@@ -712,7 +712,7 @@ impl DrawList {
         });
     }
 
-    /// GLJ: [`Self::upload_half_texture`] by reference (no copy).
+    /// [`Self::upload_half_texture`] by reference (no copy).
     pub fn upload_half_texture_shared(
         &mut self,
         id: u32,
@@ -752,7 +752,7 @@ impl DrawList {
         });
     }
 
-    /// GLJ: [`Self::upload_compressed_texture`] by reference (no copy).
+    /// [`Self::upload_compressed_texture`] by reference (no copy).
     pub fn upload_compressed_texture_shared(
         &mut self,
         id: u32,
@@ -802,7 +802,7 @@ impl DrawList {
         }
     }
 
-    /// GLJ: the queued uploads' bytes, `(copied into the arena, shared by reference)`.
+    /// The queued uploads' bytes, `(copied into the arena, shared by reference)`.
     pub fn queued_texture_bytes(&self) -> (u64, u64) {
         (
             self.texture_bytes.len() as u64,
@@ -861,7 +861,7 @@ impl DrawList {
 /// Whether `next` can extend the run `prev` (one draw, or a run's state from [`merged`]) into one
 /// draw call: touching index ranges and equal state, where a [`DRAW_UNTEXTURED`] side's texture and
 /// sampler match anything, and a [`DRAW_SCREEN_OPS`] `next` never joins (its operations run before
-/// it), nor does a [`DRAW_INSTANCED`] draw on either side (PM3). Without untextured, instanced draws
+/// it), nor does a [`DRAW_INSTANCED`] draw on either side. Without untextured, instanced draws
 /// or screen operations this is plain equality of adjacent draws.
 pub fn mergeable(prev: &Draw, next: &Draw) -> bool {
     let untextured = (prev.flags | next.flags) & DRAW_UNTEXTURED != 0;
@@ -892,7 +892,7 @@ pub fn merged(run: &Draw, next: &Draw) -> Draw {
 }
 
 /// `PDL1`: a byte dump of one frame's list for tests and evidence. Never on the frame path. It
-/// holds the POD arrays only: [`DrawList::bindings`] (G7s) are not in it.
+/// holds the POD arrays only: [`DrawList::bindings`] are not in it.
 ///
 /// ```text
 /// "PDL1" u32 version u32 width u32 height u32 format f32×4 clear
@@ -1280,7 +1280,7 @@ mod tests {
             ..DrawList::default()
         };
         assert_eq!(list.merged_draw_count(), 2);
-        // A white draw WITHOUT the flag still ends a textured run (the pre-G7o4 rule).
+        // A white draw WITHOUT the flag still ends a textured run.
         let list = DrawList {
             draws: vec![at(0, 3, 1, 0), at(6, WHITE_TEXTURE, 0, 0), at(12, 3, 1, 0)],
             ..DrawList::default()
@@ -1301,7 +1301,7 @@ mod tests {
         assert!(f32::from_bits(ITEM_UNTEXTURED).is_normal());
     }
 
-    /// GLJ: a shared upload copies nothing into the arena, reads back exactly its bytes, holds one
+    /// A shared upload copies nothing into the arena, reads back exactly its bytes, holds one
     /// count on the producer's allocation until the list is consumed, and refuses a length that is
     /// not its own.
     #[test]

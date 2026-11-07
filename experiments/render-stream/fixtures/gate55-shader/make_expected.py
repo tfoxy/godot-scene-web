@@ -2,7 +2,7 @@
 """Write fixtures/gate55-shader/expected.json (render-stream-gate55-expected/1).
 
 Every number below is derived from the fixture's own parameters and the engine's shader and
-material rules as read from the source (protocol/gate5_5-design.md Q1, Q6c-Q6e), written down as
+material rules as read from the source, written down as
 code. Nothing here runs or reads the engine: the capture's hook log, the reference's material
 oracle and the rendered reference have to agree with it, and a disagreement is a finding to explain
 from the source, never a number to copy.
@@ -18,7 +18,7 @@ The model (source lines are in ../godot-4.5.1-stable):
   and tabs collapsed to one space (Tokenizer::get_token, :192-210), and an `#include` replaced by
   `@@>path\\n`, the include's own output and `\\n@@<path\\n` (:766-768), with the directive line's
   newline re-emitted before the next token (Tokenizer::advance, :102-121). The GRP1 payload
-  (protocol/gate5_5-design.md Q4) and its SHA-256 follow, so the oracle's `shader_get_code` hash
+  and its SHA-256 follow, so the oracle's `shader_get_code` hash
   is predicted here.
 - Laziness. A shader's RID is made by its first `get_rid()` (shader.cpp:54-60, :207-212):
   `set_default_texture_parameter` or the assignment to a material. A ShaderMaterial's RID is made
@@ -95,7 +95,7 @@ REFUSED_REGIONS = {
     "SP": [16, 208, 104, 288],
 }
 REFUSED_SHADERS = {"TM": "time", "SC": "screen", "SD": "sdf", "GU": "global", "SP": "spatial"}
-# P3-ST (gate5_5-design.md D11 as amended): the screen-texture shader is no longer refused, so SC
+# P3-ST (as amended): the screen-texture shader is no longer refused, so SC
 # draws with its material on every receiver; the capture types the other four.
 CAPTURE_REFUSED = {k: v for k, v in REFUSED_SHADERS.items() if v != "screen"}
 

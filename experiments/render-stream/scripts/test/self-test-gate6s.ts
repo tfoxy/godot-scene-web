@@ -323,9 +323,8 @@ export function selfTestG6s(hooks: SelfTestHooks): void {
       checkResidencyBounded(HONEST, flat).passed,
     );
 
-    // Real G6s evidence (2026-10-11): an honest soak-scene run's host_retained ticked from a
-    // first-third max of 10 to a last-third max of 11 -- one transient pin during an ordinary
-    // retire/re-add, not a leak -- and a zero-slack "last third > first third" comparison flagged
+    // An honest soak-scene run's host_retained can tick up by one -- one transient pin during an
+    // ordinary retire/re-add, not a leak -- and a zero-slack "last third > first third" comparison flagged
     // it anyway. G6S_RESIDENCY_GROWTH_SLACK exists to absorb exactly this.
     const transientBlip = evidenceFor(HONEST, { hostShape: "flat" });
     for (const line of transientBlip.hostTimeline) {
@@ -351,8 +350,7 @@ export function selfTestG6s(hooks: SelfTestHooks): void {
     // NO_EVICT's named metric is the receiver's memory-cache entry count, not anything host-side,
     // so this case leaves the host flat and grows only that receiver series. Once a metric has a
     // budget-derived bound (this one does), that bound is the only signal checked -- entries
-    // climbing with bytes still flat is ordinary eviction noise (measured on a real honest run:
-    // entries swung 113->120 within budget), so this must push `cache_bytes_memory` over budget,
+    // climbing with bytes still flat is ordinary eviction noise (entries swing within budget), so this must push `cache_bytes_memory` over budget,
     // not just `cache_entries_memory`, to actually trip the check the way a real no-evict leg does.
     const noEvictGrown = evidenceFor(NO_EVICT, { hostShape: "flat" });
     for (const line of noEvictGrown.receiverPerf?.timeline ?? []) {
@@ -401,9 +399,9 @@ export function selfTestG6s(hooks: SelfTestHooks): void {
       "unexpectedly",
     );
 
-    // Real G6s evidence (2026-10-11): both sabotages' extra residency is already fully present by
+    // Both sabotages' extra residency is already fully present by
     // the window's own first sample (the burst that produces it is fixture setup, steps 0-10,
-    // finishing around game-time 15s -- well before the measured window starts at 60s) and stays
+    // finishing well before the measured window starts) and stays
     // perfectly flat afterward, so first-third-max-vs-last-third-max alone never sees it. These
     // cases reproduce that shape and prove the budget-derived-bound half catches it anyway.
     const retainFlatElevated = evidenceFor(RETAIN, { hostShape: "flat" });

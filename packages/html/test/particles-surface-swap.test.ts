@@ -3,8 +3,8 @@
 // The PARTICLE runtime wired to the generic frozen-surface image swap (`src/surface-image-swap.ts`)
 // through the opt-in `staticParticleImages` option. A frozen particle canvas is exactly the surface
 // that mechanism exists for — it never changes, yet it keeps a compositor layer, a blend render
-// surface and a per-frame GPU fill — and particles are the LARGER population downstream (33 of 45
-// effect canvases in one measured combat scene), so the shader-only wiring missed most of the win.
+// surface and a per-frame GPU fill — and particles are often the LARGER population of effect
+// canvases, so the shader-only wiring missed most of the win.
 //
 // What is pinned here:
 //   - OFF (the default) is byte-identical to the pre-swap runtime: no state, no `<img>`, no timer,

@@ -1,4 +1,4 @@
-// Gate 6 group g6c (protocol/gate6-design.md "G6c", Q7b, Q7d): publication rates (15, 30, 60,
+// Gate 6 group g6c: publication rates (15, 30, 60,
 // uncapped), rate mismatch, two receivers on one host, an injected receiver delay kept apart from
 // a GPU-limited receiver, and a constrained transport, on render-stream/6, plus one validated
 // single-repeat render-stream-report/1 per leg (the plumbing G6p reuses for its five repeats).
@@ -730,7 +730,7 @@ export function connRatesOf(
   return m.conns.length === 1 ? m.conns[0] : undefined;
 }
 
-/** The credit capacity of a connection over the window (gate6-design.md "As built (G6c)" 2): a
+/** The credit capacity of a connection over the window (2): a
  * host that sends only at frame callbacks, with one transaction in flight, can publish at most
  * one transaction per credit round trip counted in its own callbacks, so host frames per second
  * over the window's mean credit RTT in host frames. A prompt host (it sends at the callback that
@@ -1697,8 +1697,7 @@ export interface G6cResult {
   rates: Record<string, G6cRateRow>;
 }
 
-/** The part of a constrained leg's mean credit RTT the link adds (gate6-design.md "As built
- * (G6c)" 5): its window mean minus rate-60's (the same target and receiver on loopback), so the
+/** The part of a constrained leg's mean credit RTT the link adds: its window mean minus rate-60's (the same target and receiver on loopback), so the
  * fetches the receiver makes over the link count as transport too; 0 on loopback. Without
  * rate-60, the throttle proxy's measured one-way latencies summed. */
 export function linkRttUs(

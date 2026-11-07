@@ -1,4 +1,4 @@
-// Gate 4c checks: the layout fixture (protocol/gate4-design.md "G4c", "Q6e").
+// Gate 4c checks: the layout fixture.
 //
 // Group g4c runs fixtures/gate4-layout/ through G4a's and G4b's legs (capture, reference x3,
 // receiver x2, a headless receiver trace) plus the LCD variant (capture-lcd, reference-lcd,
@@ -10,7 +10,7 @@
 // Labels' clips. Check ids carry a "-layout" suffix (or name the leg) so that they never collide
 // with g4a's and g4b's. Nothing here launches a process.
 //
-// Evidence layout under <out>/layout/ (see scripts/README.md "Gate 4"):
+// Evidence layout under <out>/layout/:
 //   import/fonts.log, import/fixture/   provision-fonts.sh and editor --import of fixtures/gate4-layout
 //   capture/                            leg capture-layout: 400 frames, both sinks, store, strace
 //   reference/, reference-repeat/       legs reference-layout and reference-layout-repeat (oracle on)

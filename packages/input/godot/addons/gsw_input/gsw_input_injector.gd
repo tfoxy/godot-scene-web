@@ -19,15 +19,15 @@ extends RefCounted
 ## `bye`, a new epoch for the source, `close_channel`, `stale_timeout_ms` (from `tick`) and
 ## `release_all()`.
 ##
-## Scope: key, joypad_button, joypad_motion (IN7), the pointer kinds mouse_button, mouse_motion,
-## screen_touch and screen_drag (IN9, GswInputPointer: one mouse owner, per-source touch ranges)
-## and opt-in `action` (IN9) are injected. Gestures pass the gates and are counted
+## Scope: key, joypad_button, joypad_motion, the pointer kinds mouse_button, mouse_motion,
+## screen_touch and screen_drag (GswInputPointer: one mouse owner, per-source touch ranges)
+## and opt-in `action` are injected. Gestures pass the gates and are counted
 ## `kind-unsupported`. Target declarations fill each source's handle table; a targeted pointer
-## record is placed by GswInputTargets (IN12: `retarget`, `missing_target`, held-button binding,
+## record is placed by GswInputTargets (`retarget`, `missing_target`, held-button binding,
 ## `gsw_target` meta and the target signals). `install_event_filter` adds the physical-pointer
 ## filter (GswInputPointerFilter).
 ##
-## Joypads (IN8): a source's pad slots get virtual device ids from GswInputDevices on first use,
+## Joypads: a source's pad slots get virtual device ids from GswInputDevices on first use,
 ## leased to the source until `lease_ms` after it closes, so a reconnect keeps its devices.
 ## Godot never lists injected pads, so `joypad_attached`/`joypad_detached` and `remote_joypads()`
 ## stand in for `joy_connection_changed`/`get_connected_joypads()`. GswJoypadIsolation keeps

@@ -329,7 +329,7 @@ Mirror::Item *Mirror::item_for(std::uint64_t rid, const char *op, std::uint64_t 
 
 void Mirror::unknown(std::uint64_t rid, const char *op, std::uint64_t frame) {
   if (skip_unknown()) {
-    // protocol/unknown-item-skip.md: not a failure. The call is counted and not applied; the RID
+    // Not a failure. The call is counted and not applied; the RID
     // stays unknown until it is freed. Only the first one is logged (a late-joined game names
     // thousands).
     ++stats_.unknown_calls;
@@ -394,7 +394,7 @@ void Mirror::detach(Item *item) {
   item->unknown_parent = 0;
 }
 
-// --- unknown RIDs under Skip (protocol/unknown-item-skip.md) ------------------------------------
+// --- unknown RIDs under Skip ------------------------------------
 
 bool Mirror::is_withheld(const Item &item) const {
   const Item *cur = &item;
@@ -633,7 +633,7 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     return;
   }
   if (forget_unknown(rid)) {
-    // protocol/unknown-item-skip.md: a freed unknown RID is dropped silently; the known items
+    // A freed unknown RID is dropped silently; the known items
     // parented to it become orphans and are published again (under ids never shown before).
     ++epoch_;
     return;
@@ -662,7 +662,7 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
   }
   const auto texture_it = texture_by_rid_.find(rid);
   if (texture_it != texture_by_rid_.end()) {
-    // gate2-design.md Q3: a texture a command still names becomes a `freed`
+    // A texture a command still names becomes a `freed`
     // tombstone (version unchanged, payload released); otherwise its id
     // leaves the table.
     ++epoch_;
@@ -672,7 +672,7 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
   }
   const auto mesh_it = mesh_by_rid_.find(rid);
   if (mesh_it != mesh_by_rid_.end()) {
-    // G5e (gate5-design.md Q3b): a mesh an add_mesh still names becomes a `freed` tombstone
+    // a mesh an add_mesh still names becomes a `freed` tombstone
     // (version unchanged, payloads released); otherwise its id leaves the table.
     ++epoch_;
     const std::uint32_t id = mesh_it->second.id;
@@ -753,7 +753,7 @@ void Mirror::viewport_attach_canvas(std::uint64_t viewport, std::uint64_t canvas
   target.state.attached = true;
   // render-stream-6.md "Canvas": viewport_attach_canvas resets the stacking to (0,0)
   // (rv.cpp:1265-1266). Since G6b a canvas attached to the root viewport is supported: no
-  // extra-canvas entry (gate6-design.md D3, Q3b).
+  // extra-canvas entry.
   target.state.layer = 0;
   target.state.sublayer = 0;
 }
@@ -913,7 +913,7 @@ void Mirror::set_parent(std::uint64_t item_rid, std::uint64_t parent_rid, std::u
       if (!skip_unknown()) {
         return;
       }
-      // protocol/unknown-item-skip.md: the link is kept, so the item (and its subtree) is
+      // The link is kept, so the item (and its subtree) is
       // withheld until it is reparented to something known or the unknown RID is freed.
       unknown_parent = parent_rid;
     } else {
@@ -1066,7 +1066,7 @@ void Mirror::clear(std::uint64_t rid, std::uint64_t frame) {
     return;
   }
   if (Item *item = item_for(rid, "canvas_item_clear", frame)) {
-    // Gate 3 (gate3-design.md D3, Q1b): the engine's Item::clear() also resets the clip flag
+    // Gate 3: the engine's Item::clear() also resets the clip flag
     // (servers/rendering/renderer_canvas_render.h:455) but keeps custom_rect, so a Control's net
     // clip after a redraw is the set_clip that follows the clear, and a raw item that clears
     // without re-asserting it stops clipping.
@@ -1698,7 +1698,7 @@ void Mirror::add_msdf_texture_rect_region(std::uint64_t rid, const Rect4 &rect,
 Rect4 Mirror::perturbed_glyph(const Rect4 &rect, std::uint64_t frame) const {
   Rect4 out = rect;
   if (perturb_glyph_frame_ != 0 && frame >= perturb_glyph_frame_) {
-    out[0] += 0.25f;  // gate4-design.md Q3 "perturb-glyph": rect.x + 0.25, recorded only
+    out[0] += 0.25f;  // rect.x + 0.25, recorded only
   }
   return out;
 }
@@ -1708,7 +1708,7 @@ Rect4 Mirror::perturbed_glyph(const Rect4 &rect, std::uint64_t frame) const {
 Point2 Mirror::perturbed_vertex(const Point2 &point, std::uint64_t frame) const {
   Point2 out = point;
   if (perturb_vertex_frame_ != 0 && frame >= perturb_vertex_frame_) {
-    out[0] += 1.0f;  // gate5-design.md Q3c "perturb-vertex": first point's x + 1.0, recorded only
+    out[0] += 1.0f;  // First point's x + 1.0, recorded only
   }
   return out;
 }
@@ -1907,7 +1907,7 @@ void Mirror::add_clip_ignore(std::uint64_t rid, bool ignore, std::uint64_t frame
   command.clip_ignore = ignore;
 }
 
-// --- meshes (G5e; gate5-design.md D5-D8, Q3b) ------------------------------------------------
+// --- meshes ------------------------------------------------
 
 namespace {
 
@@ -2149,7 +2149,7 @@ void Mirror::retire_mesh(std::uint32_t id) {
     return;
   }
   // render-stream-4.md "Mesh table": a tombstone keeps its id and version, drops its surfaces;
-  // a command naming it draws nothing (gate5-design.md Q1d).
+  // a command naming it draws nothing.
   mesh.status = MeshStatus::Freed;
   mesh.has_reason = false;
   mesh.surfaces.clear();
@@ -2296,7 +2296,7 @@ MeshEntry Mirror::wire_mesh(Mesh *mesh_ptr,
   if (mesh.status == MeshStatus::Ok) {
     // W11b: a dynamic entry's surfaces also carry their bodies (render-stream-11.md).
     const bool dynamic = v11_.enabled && mesh.dynamic && !mesh.surfaces.empty();
-    // HC3 (host-cost-design.md D2): a static surface's hash names its payload on the wire, so it
+    // a static surface's hash names its payload on the wire, so it
     // is always computed (once per content); a dynamic one's only when something reads it.
     const bool hashed = !dynamic || dynamic_hashes_read();
     out.surfaces.reserve(mesh.surfaces.size());
@@ -4387,9 +4387,9 @@ void Mirror::canvas_texture_create(std::uint64_t rid, std::uint64_t frame) {
   if (dropped_identity("canvas_texture_create", frame)) {
     return;
   }
-  // D11 (gate5-design.md, G5d): only a create that handed back RID() -- the dummy storage's
+  // Only a create that handed back RID() -- the dummy storage's
   // answer -- makes RID() on the /4 geometry ops ambiguous. With the opt-in headless shim
-  // (protocol/canvas-texture-headless.md "Experiment (a) result") every create made while armed
+  // every create made while armed
   // carries a private, non-null RID, so RID() can only mean "no texture" and nothing is refused;
   // with the shim off every headless create is RID(), exactly as before.
   if (rid == 0) {
@@ -5490,7 +5490,7 @@ void Mirror::find_ties(const std::vector<std::uint32_t> &children,
   // draw_index; a group with at least two *drawing* members (non-empty
   // commands or non-empty children) gets exactly one entry, at the smallest
   // drawing id. The engine's order among equal indices depends on its sort
-  // history (gate1-design.md Q2c, D7), which a receiver cannot reproduce.
+  // history, which a receiver cannot reproduce.
   if (children.size() < 2) {
     return;  // P3-CAP: a tie needs two members
   }
@@ -5527,7 +5527,7 @@ void Mirror::find_ties(const std::vector<std::uint32_t> &children,
   }
 }
 
-// --- HC4a (host-cost-design.md D1): the persistent published item and canvas state ---------------
+// --- the persistent published item and canvas state ---------------
 
 namespace {
 
@@ -5737,8 +5737,8 @@ void Mirror::refresh_cv(Item *item) {
   if (!v11_.enabled || v11_.cv_churn) {
     return;
   }
-  // W11b: the stable content_version, recomputed only when the item recorded something since
-  // (its counter moved). HC2 (host-cost-design.md D1): a re-record equal to the published list
+  // The stable content_version, recomputed only when the item recorded something since
+  // (its counter moved). A re-record equal to the published list
   // is not a change -- it publishes that very list (shared with the snapshots that hold it) and
   // keeps its digest, with no encode and no SHA-256.
   Item &held = *item;
@@ -6908,11 +6908,11 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   Captured captured;
   Snapshot &out = captured.state;
-  // G55d (gate5_5-design.md D1): the capture speaks render-stream/5; the stamp makes make_full /
+  // the capture speaks render-stream/5; the stamp makes make_full /
   // make_patch carry the shader and material tables, the item material fields, the canvas
   // modulate and param_f64 (memory rs-g5d-rs4-switch-facts: Session V5 alone is not enough), on
   // top of /4's mesh table and cmd_i32 / mesh_f32 blocks.
-  // G6b (gate6-design.md D1): render-stream/6 -- canvases carry layer/sublayer and the /6
+  // render-stream/6 -- canvases carry layer/sublayer and the /6
   // session-level reasons; every table above is /5's.
   out.version = ProtocolVersion::V6;
   out.seq = seq;
@@ -6921,7 +6921,7 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   out.default_texture_filter = default_filter_;
   out.default_texture_repeat = default_repeat_;
 
-  // HC4b (host-cost-design.md D1 "The snapshot"): the resource tables are published state too.
+  // the resource tables are published state too.
   // A snapshot after reset() or after a setting the entries depend on rebuilds them; a change of
   // dynamic_hashes_read() rebuilds the mesh entries (their surface hashes or keys).
   if (!pub_valid_) {
@@ -7052,7 +7052,7 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   }
   std::set<std::uint32_t> referenced;  // the tombstone rule's texture references (see below)
 
-  // protocol/unknown-item-skip.md: under Skip, every known item whose parent chain reaches an
+  // Under Skip, every known item whose parent chain reaches an
   // unknown RID is left out of the published state -- its item entry, its item-level unsupported
   // entries and its draw-index groups. No published container lists one (a withheld item's parent
   // is unknown or withheld itself), so canvases and the remaining items need no filtering. The
@@ -7150,12 +7150,12 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   }
 
   // A tombstone leaves the table at the first snapshot in which nothing names it
-  // (gate2-design.md Q3). `referenced` gathers every texture id something names: the items'
-  // commands and rid instance parameters, a canvas texture's diffuse (G2d, gathered in the first
-  // textures walk above), material rid parameters and shader default textures (G55d);
-  // `meshes_named` every mesh an add_mesh names (G5e).
+  // `referenced` gathers every texture id something names: the items'
+  // commands and rid instance parameters, a canvas texture's diffuse (gathered in the first
+  // textures walk above), material rid parameters and shader default textures;
+  // `meshes_named` every mesh an add_mesh names.
   //
-  // HC4a (host-cost-design.md D1 "The snapshot"): the items' half of that walk visits every
+  // the items' half of that walk visits every
   // item's commands, so it runs only while some tombstone exists (a rare state); without one the
   // named sets are never read.
   std::set<std::uint32_t> meshes_named;

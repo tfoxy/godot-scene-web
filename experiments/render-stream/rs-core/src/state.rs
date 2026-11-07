@@ -236,7 +236,7 @@ wire_enum!(VariantType {
 });
 
 impl VariantType {
-    /// gate5_5-design.md D8: float64 components per element (0 for nil and rid).
+    /// Float64 components per element (0 for nil and rid).
     pub fn components(self) -> u32 {
         use VariantType::*;
         match self {
@@ -994,7 +994,7 @@ pub struct UnsupportedEntry {
     pub reason: &'static str,
 }
 
-/// protocol/unknown-item-skip.md: the per-transaction account of a skip session.
+/// The per-transaction account of a skip session.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct UnknownItems {
     pub unknown_rids: i64,

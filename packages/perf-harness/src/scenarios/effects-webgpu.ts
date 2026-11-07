@@ -1,17 +1,12 @@
 import { InstanceBuffer } from "@godot-scene-web/effects/particles";
 // S7 `effects-webgpu` — a QUARANTINED WebGPU probe, measured against the shipped WebGL pipeline.
 //
-// THE QUESTION. S6 `effects-runtime` took a live particle frame apart on the moto g86 5G and the
-// answer was NOT the CPU sim: the simulation costs 71.9 ms of a 2 507 ms window (under 3% of a
-// core), while the GPU PROCESS runs ~0.9 of a core inside that same window — identically for
-// `particles-live` and `shaders-live` — and both live pipelines drag whole-page activations from
-// the ~89 Hz the frozen arm proves the compositor can do down to ~47 Hz. The main-thread split was
-// simMs 71.9 / buildMs 15.6 / glMs 62.6 / blitMs 353.2. That verdict indicts the ARCHITECTURE, not
-// the workload: one shared offscreen WebGL canvas → a `ctx2d.drawImage` blit per node → N composited
-// canvases. So there are exactly two follow-up questions, and this scenario is built to separate
-// them:
+// THE QUESTION. S6 `effects-runtime` separates a live particle frame into sim, build, GL submit and
+// blit. If the cost is not the CPU sim, the suspect is the ARCHITECTURE rather than the workload:
+// one shared offscreen WebGL canvas → a `ctx2d.drawImage` blit per node → N composited canvases.
+// That leaves exactly two follow-up questions, and this scenario is built to separate them:
 //
-//   (a) does WebGPU cut the main-thread SUBMIT cost (`glMs`, 62.6 ms), and
+//   (a) does WebGPU cut the main-thread SUBMIT cost (`glMs`), and
 //   (b) does rendering DIRECTLY into N canvases — no blit at all — relieve the GPU process?
 //
 // PROBE, NOT PRODUCT. Every other scenario in this harness mounts shipped code, and re-deriving the
@@ -40,7 +35,7 @@ import { InstanceBuffer } from "@godot-scene-web/effects/particles";
 //   shaders-webgpu        the WGSL port of S6's `EFFECTS_SHADER_SOURCE`, direct per-node canvases,
 //                         TIME-driven every frame.
 //
-// The verdict arithmetic is in `docs/perf-harness.md`. Its shape: `webgpu-blit ≈ webgl` means the
+// How to read the arms: `webgpu-blit ≈ webgl` means the
 // API is not the lever; `webgpu-direct ≈ webgpu-blit` means the blit is not the lever;
 // `webgpu-direct ≫ both` means the win is skipping the blit. A win counts only if it shows in BOTH
 // `contentUpdateHz` and GPU-process CPU, on BOTH pairs, in the same session.

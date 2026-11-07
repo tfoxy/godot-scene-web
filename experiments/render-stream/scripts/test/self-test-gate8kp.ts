@@ -3,7 +3,7 @@
 // Self-test for gate 8's g8kp checks (lib/gate8-delivery-checks.ts, G8kp) and the GSW receiver's
 // /9 hello keys (web/gsw-receiver/hello.ts), each with a passing and a failing case:
 //
-// 1. predictD3 (texture-delivery-design.md D3): block only for a stated family, `decoded` last
+// 1. predictD3: block only for a stated family, `decoded` last
 //    whatever the list says, a non-ok entry has no choice.
 // 2. deliverySelectProblems: a receiver uploading D3's choice passes; one that uploads `block`
 //    while stating no family (the ignore-format-mask sabotage), one that names a masked family,

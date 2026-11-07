@@ -1,5 +1,4 @@
-// rs_net_module: the capture's side of the net module, librender_stream_net (protocol/
-// carrier-design.md D8, D13, D17, Q4; CAR3).
+// rs_net_module: the capture's side of the net module, librender_stream_net .
 //
 // The module is loaded only when GRC_LIVE_CARRIERS lists `wt` or (CAR4) GRC_LIVE_TLS_CERT is set: dlopen(RTLD_NOW | RTLD_LOCAL) of
 // GRC_LIVE_NET_MODULE, else of librender_stream_net.so beside the binary this code is linked

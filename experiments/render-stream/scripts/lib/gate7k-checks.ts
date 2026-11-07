@@ -1,5 +1,4 @@
-// G7k checks (gate7-design.md Q10 "Suspension, lifecycle, startup and memory" -- the startup and
-// soak halves; protocol/gate7/g7k.md). Two run-gate6.sh groups per receiver kind
+// G7k checks: the startup and soak halves. Two run-gate6.sh groups per receiver kind
 // (run-gate7.sh "Group landed (G7k)"):
 //
 //   soak     <out>/gate6/g6s-<kind>/: --legs g6s reused unforked. GSW's perf.json now carries the
@@ -126,13 +125,12 @@ async function loadMemTimeline(dir: string): Promise<MemSample[]> {
 /** G7kr: the page renderer's RSS grows by a fixed cost per payload `fetch()` GET that belongs to
  * the measurement harness, not to the receiver or to Chromium's fetch path: Playwright enables
  * CDP's Network domain on every page, and its DevTools Network agent keeps a record per request
- * for the page's lifetime. Measured post-GC (the check's own measure) in the pinned Chromium 1223:
- * a content-free cross-origin `fetch` loop (45 GET/s, unique URLs, 375-byte bodies, 16,842 GETs)
- * costs 3.9 KB/GET with `Network.enable` on its session and 0.23 KB/GET bare; the honest GSW soak
- * measures 3.6 KB/GET (16,539 GETs), in the same two places (V8's Oilpan cage and
- * PartitionAlloc), and a critical memory-pressure notification reclaims none of it. The bound is
- * Q10's 16 MiB and 2 MiB/min plus this allowance per payload GET (the control's 3.9 KB plus about
- * 28%). */
+ * for the page's lifetime. Measured post-GC (the check's own measure) in the pinned Chromium:
+ * a content-free cross-origin `fetch` loop costs several KB per GET with `Network.enable` on its
+ * session and a small fraction of that bare; the honest GSW soak shows the same cost, in the same
+ * two places (V8's Oilpan cage and PartitionAlloc), and a critical memory-pressure notification
+ * reclaims none of it. The bound is Q10's 16 MiB and 2 MiB/min plus this allowance per payload GET
+ * (the control's cost plus margin). */
 export const RSS_BYTES_PER_GET = 5 * 1024;
 
 /** `rss-bounded-renderer`'s budget: Q10's 16 MiB growth and 2 MiB/min slope, plus the per-GET

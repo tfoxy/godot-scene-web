@@ -13,8 +13,8 @@ import {
 // then stays as the fallback).
 //
 // Sizing: a binding's canvas is placed and sized from its self-layer's content box, and it is that
-// MEASUREMENT, not the drawing, that dominated this runtime's main-thread cost — a `clientWidth`
-// right after the writes the same pass just made is a forced style+layout flush. Two options bound
+// MEASUREMENT, not the drawing, that is the expensive part — a `clientWidth` right after the
+// writes the same pass just made is a forced style+layout flush. Two options bound
 // it. `particleRectCache` caches each binding's box so only a CREATE reads (one contiguous batched
 // run per reconcile, never a per-binding read/write interleave), and `particleObserverSizing` removes
 // even that: a new binding's canvas stays OUT of the DOM until the shared ResizeObserver hands over
@@ -34,8 +34,8 @@ import {
 //
 // Dormancy PARK: a suspended binding stops SIMULATING, but its `<canvas>` is an unconditionally
 // promoted compositor layer, so it kept costing a layer, a render surface and its GPU backing store
-// for as long as the node stayed mounted — measured as +340 net layers and a monotonic GPU-process
-// climb (148 → 276 MB) across a combat trace. So a suspended binding is also PARKED (see
+// for as long as the node stayed mounted, so layers and GPU-process memory grew with what was
+// mounted rather than what was visible. So a suspended binding is also PARKED (see
 // `../shader-dormant`, whose contract this is the particle sibling of): its canvas is hidden, every
 // `sizeCanvas` it is owed is deferred to the wake, and a binding parked longer than
 // `DORMANT_DISPOSE_SECONDS` is disposed for real by ONE per-runtime sweep. Kill switch:
@@ -167,8 +167,7 @@ export { lutTextureFor } from "./render-backend";
 
 // How many BAKE DONORS one runtime may hold at once (see `donateStill`). Small on purpose: a donor
 // pins a canvas backing store and a GPU buffer for a readback nobody is waiting on, and the
-// population this serves collapses onto a handful of distinct keys — a fleet of 70 nodes measured at
-// 2 — so a deep queue would only be holding duplicates of frames already in flight.
+// population this serves collapses onto a handful of distinct keys, so a deep queue would only be holding duplicates of frames already in flight.
 const MAX_STILL_DONORS = 4;
 
 // The pure sizing law — how big the overlay canvas has to be, per side — lives in `./extents`.
@@ -331,7 +330,7 @@ interface ParticleBinding {
    *  `attach` adopts that hide, as it does for a shader binding born dormant. */
   dormant: boolean;
   /** A `sizeCanvas` that was skipped while parked; run ONCE on wake (`../webgl/runtime`'s
-   *  `canvasSyncDeferred`). What is deferred, with WS-1's box cache in place, is mostly the WRITE
+   *  `canvasSyncDeferred`). What is deferred, with the box cache in place, is mostly the WRITE
    *  side — four inline style writes plus, whenever the density really moved, a `canvas.width`
    *  assignment that RE-ALLOCATES (and clears) the backing store of a canvas nobody can see, and
    *  with the image swap on a revert of its stand-in. However many of those pile up while parked (a
@@ -391,8 +390,8 @@ interface ParticleBinding {
 // surface — one offscreen render pass per composited frame — even when nothing under it ever
 // changes. In `staticParticles` mode the canvas is drawn once and parked, yet an additive VFX
 // node's `plus-lighter` (stamped by `material.ts`, or by a host's own style pipeline) kept that
-// per-frame pass alive; on a GPU-bound phone the parked particle fleet owned MOST of the scene's
-// blend surfaces. The canvas doesn't need the node blend for correctness: additive systems resolve
+// per-frame pass alive, and on a GPU-bound device a parked particle fleet can own most of the
+// scene's blend surfaces. The canvas doesn't need the node blend for correctness: additive systems resolve
 // to source-over-complete pixels inside the canvas (render-webgl.ts resolve pass). So while parked,
 // force the node's inline blend to `normal`; restore the saved value the moment the binding leaves
 // the parked world (live resume, dispose). Idempotent + re-assertable: a re-park after a host
@@ -449,8 +448,7 @@ export interface ParticleProfile {
    *  fully-transparent particle is skipped by the build loop). The denominator for both `buildMs`
    *  and `glMs`, and the number to compare against `particleMaxInstances`. */
   instances: number;
-  /** CPU simulation: `simulateParticles` (integrate + emit + curve sampling). The bucket the
-   *  mid-range-phone suspicion points at. */
+  /** CPU simulation: `simulateParticles` (integrate + emit + curve sampling). */
   simMs: number;
   /** Instance-buffer BUILD: the per-particle push loop in `drawBinding` that turns simulation state
    *  into the interleaved float array. Separate from `simMs` because it is a different fix — it
@@ -524,8 +522,8 @@ export interface ParticleRuntimeStats extends StaticImageSwapCounters {
   dormantDisposes: number;
   /** GAUGE — bindings parked RIGHT NOW, sampled on each `stats()` read (the `staticImagesLive`
    *  contract exactly, and re-derived from the binding set rather than trusted incrementally). This
-   *  is the "is the park actually engaged?" measurement a device probe reads — `28/33` — which the
-   *  monotonic counters above cannot answer. */
+   *  is the "is the park actually engaged?" reading a device probe takes, which the monotonic
+   *  counters above cannot answer. */
   dormantLive: number;
   /** Per-frame cost attribution (see `ParticleProfile`), or NULL when `effectsProfiling` is off —
    *  which is the default, and the no-op handle always. NULL rather than a zeroed object ON PURPOSE:
@@ -552,7 +550,7 @@ export interface ParticleRuntimeStats extends StaticImageSwapCounters {
    *  `effectsRenderer: "webgpu"` says something went wrong, and only this says what. */
   webgpuFallbackReason: WebgpuFallbackReason | null;
   /** COUNTER — `queue.submit` calls this runtime's WebGPU backend has made, sampled on read. ONE per
-   *  tick that drew anything, whatever the binding count: that batching is the measured win (S7), so
+   *  tick that drew anything, whatever the binding count: that batching is the point of the backend, so
    *  a probe that finds it climbing with N systems has found the win being given back. 0 on WebGL,
    *  where the question is meaningless. */
   webgpuSubmits: number;
@@ -647,8 +645,8 @@ interface ParticleEngine {
    *  instead of a create-time layout read (`particleObserverSizing`, default true). On: `reconcile`
    *  measures nothing for a create, the canvas stays out of the DOM until that delivery lands, and
    *  `boxReads` settles at 0 — the create path forces no layout at all. Off is the kill switch: the
-   *  measure pass reads every new binding exactly as it did before, i.e. WS-1's one-read-per-create
-   *  floor. Requires BOTH `rectCache` (the mechanism that lets a `contentRect` stand in for a read)
+   *  measure pass reads every new binding exactly as it did before, i.e. the box cache's
+   *  one-read-per-create floor. Requires BOTH `rectCache` (the mechanism that lets a `contentRect` stand in for a read)
    *  and a real `ResizeObserver`, so a jsdom/SSR environment always takes the read path. Read once at
    *  create — a code-path selector, not a live knob. */
   observerSizing: boolean;
@@ -724,7 +722,7 @@ interface ParticleEngine {
  * its own to read SCREEN_TEXTURE/SCREEN_UV with.
  *
  * A FRESH OBJECT PER FIRING, not one shared mutable record: a consumer is entitled
- * to KEEP the info it was handed (couch-coop's fx registry stores it on the
+ * to KEEP the info it was handed (an fx registry may store it on the
  * surface), and a shared one would silently re-point every stored reference at the
  * last binding to paint. It is a four-field literal behind a callback that only
  * fires when a canvas was actually written, which is the same trade the shader
@@ -1311,8 +1309,7 @@ function createBinding(
 // `onTextureLoaded` fires its listener SYNCHRONOUSLY when the texture is already decoded — the
 // common case, since every twin of a VFX family after the first hits the shared texture cache. From
 // inside the create that landed a second `sizeCanvas` per binding, in the middle of the mutate pass
-// and before anything had measured: a second forced layout, which a live trace put at 29% of this
-// runtime's box reads. Armed here, that synchronous re-size sizes from the box the measure pass just
+// and before anything had measured: a second forced layout. Armed here, that synchronous re-size sizes from the box the measure pass just
 // cached and reads no layout at all.
 function armBindingTextures(
   binding: ParticleBinding,
@@ -1529,7 +1526,7 @@ function staticFrameKeyBase(
 //  - NOT PRISTINE: the simulation has been stepped by the live loop, so `warmStaticParticles` will
 //    warm from a phase that depends on WHEN the freeze happened, not on the spec (see
 //    `ParticleBinding.pristine`). This is the mid-session `setStaticParticles(true)` downgrade; a
-//    runtime that is frozen from the start (the low tier a phone boots into) keeps every binding
+//    runtime that is frozen from the start (a low-end tier) keeps every binding
 //    pristine, including every burst re-created later by a spec/epoch change.
 //  - TEXTURE NOT DECODED: the sprite/mask are 1x1 placeholders until their image lands, so the frame
 //    would be a placeholder paint. Caching it would publish that placeholder to every twin, and the
@@ -1922,8 +1919,8 @@ export interface ParticleRuntime {
    *
    * WEBGL RETURNS NULL ON PURPOSE, and it is not a gap: that canvas holds readable 2D pixels, so a
    * caller who wants them uses `getImageData` on it. This exists because a WebGPU canvas has no such
-   * path — `drawImage`/`toDataURL` from one are blank under headless Chrome and pathological on
-   * Android (docs/perf-harness.md S7) — so the frame has to be produced a SECOND time, into a
+   * path — `drawImage`/`toDataURL` from one are blank under headless Chrome and slow on mobile —
+   * so the frame has to be produced a SECOND time, into a
    * texture that `copyTextureToBuffer` can reach (`../webgpu/readback`). It renders the binding's
    * CURRENT state, which for a frozen/static binding is exactly the frame on screen.
    *
@@ -2026,8 +2023,8 @@ export function createParticleRuntime(
   // TWO ENCODE SOURCES, and the choice is the BACKEND's, not the surface's. A 2D-backed (WebGL)
   // surface is read directly: the swap stands an `<img>` of the canvas's OWN pixels in for it, which
   // is the path that shipped first. A WebGPU surface cannot be read at all — `drawImage`/`toDataURL`/
-  // `toBlob` go through presentation, blank headless and pathological on Android (S7) — so v1 never
-  // registered one. v2 registers it with a CAPTURE HOOK: the backend re-renders the binding's current
+  // `toBlob` go through presentation, blank headless and slow on mobile — so it is registered
+  // with a CAPTURE HOOK instead: the backend re-renders the binding's current
   // frame into an offscreen texture and copies it back (`captureStillCanvas` below), and the swap
   // encodes that.
   //
@@ -2149,7 +2146,7 @@ export function createParticleRuntime(
                 // the canvas. Re-allocating the backing store of a hidden canvas is exactly the
                 // work the park exists to skip; the wake's one deferred sync does it, from here.
                 // A 0x0 delivery is cached like any other, exactly as the awake path caches it: a
-                // particle self-layer legitimately measures 0, which is why WS-1 gave "have we
+                // particle self-layer legitimately measures 0, which is why the box cache gives "have we
                 // measured?" its own flag instead of the shader runtime's `boxW > 0` (whose parked
                 // branch must therefore drop a 0 box).
                 binding.boxW = entry.contentRect.width;
@@ -2330,7 +2327,7 @@ export function createParticleRuntime(
   // ALL WRITES, NO READS: the one owed `sizeCanvas` is handed to `owed` instead of run here, so it
   // lands in the reconcile's WRITE pass, after the measure pass has batched whatever box read it
   // needs (a binding born parked has never been measured at all). Running it inline would put a
-  // forced layout back in the middle of the mutate pass — the exact interleave WS-1 removed.
+  // forced layout back in the middle of the mutate pass — the exact interleave the phasing removes.
   const syncDormant = (
     binding: ParticleBinding,
     owed: ParticleBinding[],
@@ -2431,8 +2428,7 @@ export function createParticleRuntime(
 
     // Creating N new systems in one reconcile is MUTATE → MEASURE → WRITE, in three passes, because
     // doing all three per binding interleaves DOM writes with layout reads and costs one forced
-    // layout flush per new system (a card shuffle / an enemy turn mounts many at once — measured at
-    // up to 19 reflows in a single 75 ms task). Phasing does not remove reads: each binding has its
+    // layout flush per new system (a scene change can mount many at once). Phasing does not remove reads: each binding has its
     // OWN self-layer, so N new bindings still take N `clientWidth` reads. What it buys is that those
     // reads sit in one contiguous run AFTER every write, so they cost ONE flush instead of N — the
     // flush is the cost, not the read.

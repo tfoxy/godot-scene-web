@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Gate 0 runner: drives fixtures/gate0/ and receiver/ through every leg of
-# protocol/gate0-design.md "Q6. Runner, legs and checker", then runs check-gate0.ts.
+# Gate 0 runner: drives fixtures/gate0/ and receiver/ through every leg, then runs check-gate0.ts.
 #
 #   bash run-gate0.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR]
@@ -14,14 +13,14 @@
 # legs strip DISPLAY and WAYLAND_DISPLAY. Every launch strips every inherited GRC_* and RS_*
 # variable and passes only what its leg wants (env.txt records it).
 #
-# Since G1b2 (protocol/gate1-design.md) every capture runs under GRC_ROOT_SIZE=enforce-min-size;
+# Since G1b2 every capture runs under GRC_ROOT_SIZE=enforce-min-size;
 # without the policy the 64x64 headless host would declare degenerate-host-size and classify
-# unsupported. Since G2b2 (protocol/gate2-design.md) every capture publishes render-stream/2 (since
-# G4e2 render-stream/3, gate4-design.md; since G5d render-stream/4, gate5-design.md)
+# unsupported. Since G2b2 every capture publishes render-stream/2 (since
+# G4e2 render-stream/3; since G5d render-stream/4)
 # (recording.rs2) with its out-of-band resource store at <capture>/store (GRC_RESOURCE_STORE_DIR),
 # and every file-mode receiver gets a fresh cache (<receiver>/cache) and that store.
 #
-# protocol/unknown-item-skip.md "Evidence": preexisting.tscn is captured twice -- `preexisting`
+# Preexisting.tscn is captured twice -- `preexisting`
 # under the default strict policy (capture-failure / pre-existing-object) and `preexisting-skip`
 # under GRC_UNKNOWN_ITEM=skip (partial-unknown-items, replayed by a rendered receiver) -- and
 # rendered once with the extension absent (`preexisting-reference`).

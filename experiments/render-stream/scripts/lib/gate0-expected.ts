@@ -1,6 +1,6 @@
 // Pure synthesis of the gate 0 fixture's expected per-step frame, straight from
 // fixtures/gate0/expected.json -- no file or network I/O, no Godot, no capture evidence. See
-// ../../protocol/gate0-design.md "Q2. Fixture" for the schema this reads and the checks
+// for the schema this reads and the checks
 // (`expected-image-reference`, `expected-image-receiver`) that compare a real screenshot against
 // this synthesized image.
 
@@ -21,7 +21,7 @@ export interface GateZeroExpectedStep {
   marker: GateZeroExpectedRegion;
 }
 
-/** One of preexisting.tscn's extra rects (protocol/unknown-item-skip.md "Evidence"). */
+/** One of preexisting.tscn's extra rects. */
 export interface GateZeroPreexistingItem {
   name: string;
   /** [x, y, w, h] in viewport pixels, fixed for the whole timeline. */

@@ -1847,9 +1847,7 @@ describe("encodeRustRetainedPatch", () => {
     // Exercises what the real implementation's `OverlayMap` does that the oracle's plain `Map`s never
     // need to: compaction (>=500 steps over ~260 owners/groups, so `own` crosses the 1/8-of-root
     // threshold many times over) and exact `Map`-order iteration (the group-move loop below iterates
-    // `owners` directly). `commands` itself is a plain array again — a per-patch `Proxy` overlay was
-    // tried and reverted for regressing every consumer that iterates the whole array — so nothing
-    // special is needed to exercise that part; it is simply `base.commands.slice()` either way. A
+    // `owners` directly). `commands` itself is a plain array, so nothing special is needed to exercise that part; it is simply `base.commands.slice()` either way. A
     // deliberately invalid update is mixed in to prove a rejected patch lands identically on both
     // sides, and a full `encodeRustPatch` diff against the heavily patched result closes the loop.
     const rng = mulberry32(7);
@@ -2008,7 +2006,7 @@ describe("encodeRustRetainedPatch", () => {
 
     // The full diff between the original admission and the heavily patched result agrees with the
     // chain of retained patches, read back off a `commands` array that came out of the retained-patch
-    // path — a plain array again, not the reverted `Proxy`.
+    // path — a plain array.
     const fullDiff = encodeRustPatch(admitted.scene, real);
     expect(fullDiff).not.toBeNull();
     const wire = JSON.parse(new TextDecoder().decode(fullDiff!));

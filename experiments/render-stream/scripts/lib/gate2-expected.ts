@@ -1,6 +1,6 @@
 // Pure synthesis of the gate 2 fixture's expected per-step frame, straight from
 // fixtures/gate2/expected.json (render-stream-gate2-expected/1) -- no file or network I/O, no
-// Godot, no capture evidence. See ../../protocol/gate2-design.md "Q6. Fixture" for the schema and
+// Godot, no capture evidence. See fixtures/gate2/README.md for the schema and
 // the checks (`expected-image-reference`, later `expected-image-receiver`) that compare real
 // screenshots with this synthesized image.
 //
@@ -107,7 +107,7 @@ export interface Gate2ExpectedStep {
   census: Record<string, number>;
   invariants: Gate2Invariant[];
   /** G2b2: a fresh-cache file-mode receiver's texture traffic summed over the step's window
-   * (fixtures/gate2/make_expected.py receiver_resources, derived from gate2-design.md D5) */
+   * (fixtures/gate2/make_expected.py receiver_resources, derived) */
   receiver_resources: Gate2ReceiverResources;
 }
 

@@ -1,4 +1,4 @@
-// The GSW canvas receiver's bundle (gate7-design.md Q5, Q8 `no-source-scene`, G7a):
+// The GSW canvas receiver's bundle (`no-source-scene`, G7a):
 // web/gsw-receiver/main.ts bundled by esbuild (platform browser, conditions ["development"], as
 // packages/perf-harness/src/serve.ts bundles), its page, and the rs-gsw-wasm build
 // (scripts/build-rs-core.sh) in one directory the harness serves at `/gsw-bundle/`. build.json

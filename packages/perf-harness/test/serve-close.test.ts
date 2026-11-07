@@ -5,8 +5,8 @@
 // This is not hypothetical: on a device run the phone reaches the harness server through
 // `adb reverse`, and Chrome parks the HTTP connection in its socket pool. The harness closes the
 // TAB, never the browser, so nothing on either side ends that socket — and `server.close()` waits
-// for every open connection before it calls back. Two device runs wrote their trace and screenshot
-// and then hung here, which is indistinguishable from a stalled capture.
+// for every open connection before it calls back. A device run that hangs here after writing its
+// trace and screenshot is indistinguishable from a stalled capture.
 
 import { Agent, get } from "node:http";
 import { connect } from "node:net";

@@ -1,4 +1,4 @@
-// G7v dev probe (gate7-design.md Q13b "Watchdog", Q13c "Measured per repeat", Q13d checks): the
+// G7v dev probe (checks): the
 // harness injects this before any page script on every g7-dev leg, desktop (`ctl-`) and device
 // (`dev-`), for both browser receivers alike (page.addInitScript /
 // Page.addScriptToEvaluateOnNewDocument). It changes no receiver behaviour; it only times what the

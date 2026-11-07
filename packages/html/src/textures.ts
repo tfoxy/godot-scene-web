@@ -1091,7 +1091,7 @@ function ninePatchMaskLayerSvg(options: {
 
 // Memo for the SVG `<image>` crop/tint URLs (module-scoped LRU, mirroring `atlas.ts`'s). WHY:
 // the same handful of sprites re-serialize the same SVG + `encodeURIComponent` on every render;
-// this is one of the repeated tint-URL builds phone traces showed inside a play-a-card burst.
+// a create burst would otherwise rebuild the same tint URLs many times.
 // Pure string→string, so a hit is byte-identical to a fresh build.
 const SVG_IMAGE_DATA_URL_CACHE_LIMIT = 200;
 const svgImageDataUrlCache = createStringLru<string>(

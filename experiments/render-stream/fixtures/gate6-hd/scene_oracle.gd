@@ -1,5 +1,5 @@
 extends RefCounted
-## The gate 6 scene oracle (../../protocol/gate6-design.md "Q6f", `render-stream-gate6-oracle/1`).
+## The gate 6 scene oracle (`render-stream-gate6-oracle/1`).
 ##
 ## Runs on reference legs only (gate6_scene.gd refuses it when a GRC_* capture variable is set). At
 ## each settle frame, at that frame's `frame_post_draw` (after its redraws rasterized their
@@ -7,7 +7,7 @@ extends RefCounted
 ##   - `oversampling`: the viewport's `get_oversampling()`;
 ##   - `pages`: every atlas page of every cache of every font the scene draws with (the theme's
 ##     default font, RichTextLabel's bold font and, in `refused`, the LCD copy), through
-##     `font_get_size_cache_info` (memory rs-g4c-layout-facts: it also lists draw-time caches) and
+##     `font_get_size_cache_info` (it also lists draw-time caches) and
 ##     `font_get_texture_image` (no side effects), as the `render-stream-texture/1` SHA-256 of the
 ##     live CPU image. Its own GRT1 encoder, deliberately not shared with the capture;
 ##   - `scroll`: `SC`'s `scroll_vertical` and its content Control's position;
@@ -200,7 +200,7 @@ static func variant_view(v: Variant) -> Dictionary:
 	return {"type": type_string(typeof(v)), "value": str(v)}
 
 
-## The render-stream-shader/1 payload of a code string (gate5_5-design.md Q4).
+## The render-stream-shader/1 payload of a code string.
 static func grp1(code: String) -> PackedByteArray:
 	var data: PackedByteArray = code.to_utf8_buffer()
 	var meta: PackedByteArray = ("{\"type\":\"shader-code\",\"code_bytes\":%d}" % data.size()).to_utf8_buffer()

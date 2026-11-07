@@ -1,4 +1,4 @@
-// Gate 7's GSW canvas receiver legs for gates 4 and 5 (gate7-design.md "G7t", Q5, Q7, Q8): text
+// Gate 7's GSW canvas receiver legs for gates 4 and 5: text
 // (glyph atlases, outlines, fallbacks, rich spans, i18n, MSDF), geometry (lines, polylines,
 // circles, polygons, primitives, triangle arrays, nine-patches, feathers, hairlines), meshes and
 // styleboxes. lib/gate7-gsw.ts runs these legs and judges them with each gate's own checker on a
@@ -50,7 +50,7 @@ export const G45_LEGS: Record<G45Gate, GswLegDef[]> = {
     { leg: "msdf/sabotage-perturb-glyph/receiver", replaces: true },
     { leg: "msdf/sabotage-receiver-drop/receiver", replaces: true },
     { leg: "msdf/sabotage-gray-perturb-glyph/receiver", replaces: true },
-    // G7tm's MSDF sabotages (protocol/gate7/g7tm.md "Sabotages"): each must change exactly the
+    // G7tm's MSDF sabotages: each must change exactly the
     // MSDF text regions drawn at each settle step, against the honest gsw leg.
     {
       leg: "msdf/sabotage-gsw-msdf-no-median",

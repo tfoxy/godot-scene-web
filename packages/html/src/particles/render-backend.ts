@@ -16,7 +16,7 @@
 //
 // `beginFrame`/`endFrame` bracket one tick's worth of draws. They are no-ops on WebGL, whose
 // submits are independent; a WebGPU backend records the tick into ONE command encoder and submits
-// it once at `endFrame` (the measured reason it is fast — see docs/perf-harness.md S7).
+// it once at `endFrame` (one submit per tick is what makes it fast).
 
 import {
   clearWebglSurface,
@@ -200,7 +200,7 @@ export function particleLutBake(
 
 /** The baked colour-LUT texture for a system on the WEBGL backend, or null when the spec carries no
  *  `colorLut`. Cached (by value, in shared-gl's texture cache) so the many nodes that share one VFX
- *  material — every hit-streak burst in a combat — share ONE 256x1 GL texture. Re-exported from
+ *  material — every burst of one effect — share ONE 256x1 GL texture. Re-exported from
  *  `./runtime`, where it used to live. */
 export function lutTextureFor(
   gl: WebGL2RenderingContext,

@@ -1,5 +1,5 @@
 extends Node
-## Gate 5 mesh fixture (../../protocol/gate5-design.md "Q6d", G5c).
+## Gate 5 mesh fixture.
 ##
 ## The root is a plain `Node`. Every `CanvasItem`, mesh and texture is created in `_ready()`, after
 ## `GrcLoader` armed the capture extension in its own `_enter_tree()` (gate 0 route (a)), so the
@@ -9,7 +9,7 @@ extends Node
 ## ids). make_expected.py models the same scene from its own copy of these numbers; the two must
 ## agree.
 ##
-## DF follows spine-godot's draw path (README "spine-godot's draw path"): built on frame 1, rebuilt
+## DF follows spine-godot's draw path: built on frame 1, rebuilt
 ## on step 5's frame (`free`, `mesh_create`, `mesh_add_surface`), and on every other frame
 ## `mesh_surface_update_vertex_region`, `mesh_surface_update_attribute_region` and
 ## `mesh_set_custom_aabb`; then the item redraws (`canvas_item_clear` + `canvas_item_add_mesh`).
@@ -242,7 +242,7 @@ func _process(_delta: float) -> void:
 		get_tree().quit(0)
 
 
-## gate5-design.md Q6d's timeline.
+## the contract's timeline.
 func _apply_step(step: int) -> void:
 	match step:
 		1:

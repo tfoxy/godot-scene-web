@@ -1,5 +1,5 @@
-// Gate 5.5 group g55b's checks and leg classification (protocol/gate5_5-design.md "Q7" and
-// "G55b"); check-gate55.ts merges runGate55b's result into the gate 5.5 report.
+// Gate 5.5 group g55b's checks and leg classification;
+// check-gate55.ts merges runGate55b's result into the gate 5.5 report.
 //
 // Everything here reads an evidence directory written by run-gate55.sh, or is pure over values
 // already read from one, so scripts/test/self-test-gate55b.ts can drive each check with synthetic
@@ -16,7 +16,7 @@
 // lib/geometry-raster.ts with its blend modes. A same-build reference repeat measures the budget
 // (expected 0). G55d's receiver legs and checks over the same scenes are lib/gate55d-checks.ts's.
 //
-// Evidence layout under <out>/ (see scripts/README.md "Gate 5.5"):
+// Evidence layout under <out>/:
 //   legs.json, binary.json
 //   cim/import/fixture/              editor --import of fixtures/gate55-cim
 //   cim/capture/                     400-frame capture host (base), GRC_ROOT_SIZE=enforce-min-size:

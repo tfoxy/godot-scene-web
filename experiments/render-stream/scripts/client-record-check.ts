@@ -1,4 +1,4 @@
-// REC1 live check driver (client-extensions-design.md §6, the REC1 row; results/p3/rec1.md):
+// REC1 live check driver:
 // drives web/client-record-check/ -- the render-stream client package with the recorder on -- in
 // the pinned headless Chromium against a live host that also writes a tap, then exports the
 // recording and replays it through rs-core-check. The byte-for-byte comparison to the host's tap

@@ -57,7 +57,7 @@ pub fn pixel_size(format: &str) -> Option<u64> {
 }
 
 /// The eight float payload formats' pixel sizes, legal at /8 only (render-stream-8.md "Texture
-/// payload", gate8-design.md D9).
+/// payload").
 pub fn float_pixel_size(format: &str) -> Option<u64> {
     Some(match format {
         "RF" => 4,

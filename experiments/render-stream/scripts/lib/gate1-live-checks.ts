@@ -1,8 +1,8 @@
-// Gate 1 live-delivery checks and leg classification (protocol/gate1-design.md "Q4", "Q7" and
-// "G1c2"): group g1c. Pure over an evidence directory written by run-gate1.sh, so
+// Gate 1 live-delivery checks and leg classification:
+// group g1c. Pure over an evidence directory written by run-gate1.sh, so
 // scripts/test/self-test-gate1.ts drives it with fabricated trees. Nothing launches a process.
 //
-// Evidence layout under <out>/ (see scripts/README.md "Gate 1"):
+// Evidence layout under <out>/:
 //   live/host/                 the capture host: evidence/{result,live,live-summary,root}.json,
 //                              recording.rs2, recording-patch.rs2, store/, steps.jsonl,
 //                              tap/stream-1.rs2 (every binary message formed, in order),
@@ -149,7 +149,7 @@ export function receivedFileName(dir: string, n = 1): string {
 export const SUBPROTOCOL = "render-stream.6";
 /** G7l: a browser receiver's subprotocol (render-stream-7.md). */
 export const SUBPROTOCOL_V7 = "render-stream.7";
-/** Queued bytes may exceed the largest credit window by this much (gate1-design.md Q7 class 4). */
+/** Queued bytes may exceed the largest credit window by this much (class 4). */
 export const QUEUED_SLACK_BYTES = 4096;
 
 // ---------------------------------------------------------------------------------------------
@@ -287,8 +287,8 @@ export function parseLiveLog(
   return out;
 }
 
-/** applied.json in live mode (render-stream-receiver-applied/3 since G2b2: gate1-design.md Q5's
- * /2 plus gate2-design.md Q5's resource keys). */
+/** applied.json in live mode (render-stream-receiver-applied/3 since G2b2: /2 plus
+ * the resource keys). */
 export interface AppliedLive extends AppliedJson {
   streams?: {
     stream_id?: string | null;
@@ -327,7 +327,7 @@ export interface AppliedLive extends AppliedJson {
     inbound_buffer_bytes?: number;
     presented?: string;
     acks_sent?: { received?: number; applied?: number; submitted?: number };
-    /** G1d (gate1-design.md Q5) */
+    /** G1d */
     stall?: {
       step?: number;
       ms?: number;
@@ -1770,7 +1770,7 @@ export function liveLegReport(e: LiveLegEvaluation): LiveLegReport {
 }
 
 // ---------------------------------------------------------------------------------------------
-// G6r self-test leg (gate6-design.md "G6r"): live-rate-30, added to g1c
+// G6r self-test leg: live-rate-30, added to g1c
 // ---------------------------------------------------------------------------------------------
 
 /** GRC_PUBLISH_FPS=30 on the gate 1 fixture's 60 fps host/receiver: the live connection's
@@ -1803,7 +1803,7 @@ export async function checkLiveRate30(outDir: string): Promise<Gate1Check> {
       `sent ${sent} over ${frames} streaming frames (~${achievedFps.toFixed(2)} fps)`,
     );
     // A generous bound for a real headless run with file-sink and scheduler noise alongside it
-    // (gate6-design.md Q7d's own rate-30 leg, measured under cleaner conditions with no
+    // (gate 6's own rate-30 leg, measured under cleaner conditions with no
     // concurrent file sink, uses a tighter [0.95, 1.02]).
     if (frames === 0 || achievedFps < 0.85 * 30 || achievedFps > 1.15 * 30) {
       problems.push(

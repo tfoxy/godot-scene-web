@@ -4,18 +4,12 @@
 // rotation, and thereafter blit. This bakes the OUTLINE instead. `hb_gpu_draw_encode` turns a
 // glyph's curves into a banded, quantized RGBA16I texel stream, and a fragment shader evaluates
 // exact coverage from it at whatever size, rotation and sub-pixel phase the frame asks for. There
-// is no atlas resolution to pick, no phase grid, and no rotation baked into anything — which is
-// the whole reason it is worth measuring against arms whose VRAM grows 12x with a phone's device
-// pixel ratio.
+// is no atlas resolution to pick, no phase grid, and no rotation baked into anything, so its
+// memory does not grow with the device pixel ratio the way a baked atlas does.
 //
-// IT SHAPES NOW, AND THAT IS WHY `heapBytes` GOT SMALLER BY GETTING BIGGER. This module used to
-// export no `hb_shape`: the perf-harness shaped with npm `harfbuzzjs` and this binary only read
-// outlines, so an `hb-gpu` arm beside a `harfbuzz` shaper held the same face bytes in TWO wasm
-// heaps — 4.19 MiB across the pair on the phone, every face resident twice. `hb-gpu.symbols` now
-// names the shaper (the engine was always compiled; only the symbol list kept `--gc-sections` from
-// throwing it away), which costs +190 KB of binary once and saves a whole second HarfBuzz and a
-// second copy of every face at runtime. `heapBytes` is still published so the caller can count
-// what is left, and a caller that shapes here should be counting ONE module, not two.
+// IT SHAPES TOO. `hb-gpu.symbols` names `hb_shape`, so a page that shapes here holds each face in
+// ONE wasm heap rather than also in a second HarfBuzz build (npm `harfbuzzjs`). `heapBytes` is
+// published so the caller can count it, and a caller that shapes here counts ONE module, not two.
 //
 // THE SHADER TEXT COMES OUT OF THE WASM. `hb_gpu_shader_source` / `hb_gpu_draw_shader_source`
 // return the GLSL that reads the blob format this same binary writes, so the two cannot drift.
@@ -245,7 +239,7 @@ export interface HbGpuFont {
    * byte-for-byte what `perf-harness/src/scenarios/text-hb.ts` runs over npm `harfbuzzjs`'s
    * output, whose pen positions are in turn proven identical to the independently written
    * `hb-atlas` arm's — so matching it is what makes a run shaped here land exactly where every
-   * other arm in that round puts it. `test/shape.test.ts` asserts the two agree, glyph for glyph.
+   * other arm puts it. `test/shape.test.ts` asserts the two agree, glyph for glyph.
    *
    * `[]` FOR EMPTY TEXT AND `null` FOR A FAILURE, which are different answers to different
    * questions. An empty run is legal; a run that could not be shaped is not, and it would
@@ -274,15 +268,11 @@ export interface HbGpu {
    * actually grown to, font copy and encoder scratch included, which is the number a consumer
    * weighs against the arm's other costs.
    *
-   * IT IS A CEILING, NOT A HIGH-WATER MARK, AND `build.sh` HAD TO BE CHANGED TO MAKE IT USEFUL.
-   * A wasm heap is only ever as small as its initial reservation, so this reads whatever
-   * `-sINITIAL_MEMORY` asked for until something exceeds it. At emscripten's default it read
-   * 16.19 MiB for an 826 KB face — about 8x the truth. The build asks for 2 MiB, re-measured when
-   * shaping landed: both S9 fixture faces, 2080 shaped runs and 340 encoded outlines high-water at
-   * 1.125 MiB and never reach the reservation. See `build.sh` for the whole ladder.
+   * IT IS A CEILING, NOT A HIGH-WATER MARK. A wasm heap is only ever as small as its initial
+   * reservation, so this reads whatever `-sINITIAL_MEMORY` asked for until something exceeds it;
+   * `build.sh` keeps that reservation small (2 MiB) so the number stays meaningful.
    *
-   * AND IT IS NOW ONE NUMBER RATHER THAN TWO. A caller that shapes here has no second wasm heap to
-   * add to it; the arrangement this replaces held every face in both.
+   * A caller that shapes here has no second wasm heap to add to it.
    */
   readonly heapBytes: number;
   /**
@@ -804,10 +794,8 @@ export async function createHbGpu(
 /**
  * Total and per-glyph encoded bytes for a set of glyphs.
  *
- * THE PREDICTION UNDER TEST, made directly measurable. `docs/text-rendering.md` records it as
- * "~5.4 KB per Han glyph against ~1.4 KB for a 38x38 R8 atlas cell", and that comparison decides
- * the VRAM half of whether this arm is worth shipping — so it should be one call, on the real
- * fixture face, rather than something reconstructed from a frame counter.
+ * The VRAM side of the outline-versus-atlas comparison, as one call on the real face rather than
+ * something reconstructed from a frame counter.
  *
  * DISTINCT glyph ids, because that is what the atlas pays for too: a Han run draws 12 glyphs and an
  * atlas stores as many outlines as the pool has distinct members.
@@ -834,9 +822,8 @@ export function measureBlobBytes(
     minBytes = Math.min(minBytes, encoded.texels.length);
     maxBytes = Math.max(maxBytes, encoded.texels.length);
   }
-  // MIN AND MAX, not just the mean, because the spread is the interesting part: measured on the
-  // fixture's Han pool the mean is 4.26 KiB and the range is 376 B to 9568 B, a factor of 25. A
-  // single average would suggest an atlas can be sized by multiplying it by a glyph count.
+  // MIN AND MAX, not just the mean, because the spread is wide (an order of magnitude across a Han
+  // pool). A single average would suggest an atlas can be sized by multiplying it by a glyph count.
   return {
     glyphs,
     totalBytes,

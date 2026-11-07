@@ -6,7 +6,7 @@ extends RefCounted
 ## capture, G55a; golden-5's vectors build theirs directly in Python).
 ##
 ## G7gd: the Rust core decodes every payload the stream carries. This one stays because the core
-## never reads an operator-local shader library (gate5_5-design.md D4): RsResourceCache.
+## never reads an operator-local shader library: RsResourceCache.
 ## library_code() reads, verifies and decodes the `.grp` file here and hands the core its code.
 ##
 ## GRP1 is magic, u32 meta_len, canonical JSON meta, then the shader's code as UTF-8: no

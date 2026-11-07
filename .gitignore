@@ -11,6 +11,10 @@
 .dsh/
 # MCP has local FS paths
 /.mcp.json
+# Private companion checkout (or, in a worktree, the installer's link to it; no trailing slash so
+# the symlink is ignored too) and the root files the installer links in from it.
+/private
+/.codex-orchestration.toml
 .vscode/
 .godot/
 

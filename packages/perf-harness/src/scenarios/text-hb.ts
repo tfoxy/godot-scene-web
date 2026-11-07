@@ -23,8 +23,8 @@
 // somewhere slightly else, and `alignmentPx` is what makes that a failed row rather than a
 // flattering `rmsVsReference`.
 //
-// NEVER `getImageData`. On the headed-Xvfb rung an accelerated 2D canvas reads back alpha 0
-// (docs/perf-harness.md, "WHAT IS ACTUALLY BROKEN ON THAT RUNG"), so a baker that round-tripped its
+// NEVER `getImageData`. On the headed-Xvfb rung an accelerated 2D canvas reads back alpha 0, so a
+// baker that round-tripped its
 // pages through bytes would upload blank atlases on the exact rung the GPU numbers come from. Page
 // canvases go to `texImage2D` as a `TexImageSource` and are never read back.
 
@@ -66,12 +66,12 @@ export interface ShapedGlyph {
 /**
  * Separates a glyph key's FACE from its glyph.
  *
- * Load-bearing since the round grew a second script. A HarfBuzz key is a glyph id and a `fillText`
+ * Load-bearing because a run can carry two scripts. A HarfBuzz key is a glyph id and a `fillText`
  * key is the character itself, and both are per-FACE: Noto Sans SC's gid 97 and Roboto's gid 97 are
  * unrelated outlines, and `"S"` means one thing in a Latin face and nothing at all in a Han subset.
  * One atlas now holds both, so an unqualified key would let one face's glyph silently render as the
  * other's — a bug that produces perfectly crisp, perfectly aligned, WRONG text, which nothing else
- * in this round measures.
+ * in this scenario measures.
  *
  * A slash rather than a hash: `bakeAtlas` appends `#<phase>` to every key and reads it back with
  * `lastIndexOf("#")`, and a `fillText` key really can be the character `#`.
@@ -98,8 +98,8 @@ function glyphIdOf(key: string): string {
  * The HarfBuzz glyph id inside a key, or `null` when the key did not come from a HarfBuzz shaper.
  *
  * ONE DEFINITION OF THE `g` PREFIX, because there are now two consumers of it. The prefix exists so
- * a bare number can never be read as a `fillText` shaper's character key (see {@link glyphKey}), and
- * `createHarfBuzzShaper` used to be the only code that knew that. `hb-gpu` shapes with the same
+ * a bare number can never be read as a `fillText` shaper's character key (see {@link glyphKey}).
+ * `hb-gpu` shapes with the same
  * shaper and then encodes the OUTLINE of the same gid out of a second module, so it has to get from
  * a key back to a glyph id too — and a second `Number(key.slice(...))` written beside this one would
  * be free to disagree the first time the format changed, which renders as one glyph's outline drawn
@@ -324,7 +324,7 @@ export function createCanvasShaper(
  * which face to use, because a run's script is a property of the run and not of its characters.
  *
  * THROWS on an unknown face rather than skipping the glyph. A missing shaper renders as absent
- * text, which every metric in this round reports as an unusually cheap and unusually crisp arm.
+ * text, which every metric in this scenario reports as an unusually cheap and unusually crisp arm.
  */
 export interface ShaperSet {
   readonly faces: readonly TextShaper[];
@@ -633,8 +633,8 @@ export function createAtlasRenderer(
     gl: stage.gl,
     white: cache.white(),
   });
-  // Compile and link NOW. Reading a shader's compile status blocks on the driver — 100-250 ms on a
-  // phone — and paying that inside the measured window would be charged to the first frame of the
+  // Compile and link NOW. Reading a shader's compile status blocks on the driver — for a long time
+  // on a phone — and paying that inside the measured window would be charged to the first frame of the
   // arm rather than to its setup.
   executor.warmUp();
 
@@ -714,7 +714,7 @@ export interface RunLayout {
   /** The un-rotated run box, CSS px. */
   width: number;
   height: number;
-  /** Run box top edge to alphabetic baseline, CSS px. Every arm in this round anchors here. */
+  /** Run box top edge to alphabetic baseline, CSS px. Every arm in this scenario anchors here. */
   baselinePx: number;
   dpr: number;
   radians: number;

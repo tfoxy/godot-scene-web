@@ -1,4 +1,4 @@
-// CAR10 (protocol/carrier-design.md "As built (CAR10)", closes CAR0's F4 gap for UDP): a UDP
+// CAR10 (closes CAR0's F4 gap for UDP): a UDP
 // forwarder that impairs a QUIC path the way Wi-Fi does: per-datagram loss, a base one-way delay
 // plus uniform jitter (which reorders), and optional loss bursts. One client at a time, as a
 // WebTransport session is one 4-tuple: the client sends to the proxy's port, the proxy forwards
@@ -53,7 +53,7 @@ function rng(seed: number): () => number {
 export const IMPAIR_PROFILES: Record<string, ImpairProfile> = {
   /** No impairment: the forwarder alone (the control leg). */
   clean: { loss: 0, delayMs: 0, jitterMs: 0 },
-  /** A busy home Wi-Fi link as the g31 sees one: 2% loss with short bursts, 3 ms +- 8 ms. */
+  /** A busy home Wi-Fi link as a phone sees one: 2% loss with short bursts, 3 ms +- 8 ms. */
   wifi: { loss: 0.02, delayMs: 3, jitterMs: 8, burst: 0.004, burstMs: 60 },
 };
 

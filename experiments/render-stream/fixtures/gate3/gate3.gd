@@ -1,5 +1,5 @@
 extends Node
-## Gate 3 axis-aligned clipping fixture (../../protocol/gate3-design.md "Q6b").
+## Gate 3 axis-aligned clipping fixture.
 ##
 ## The root is a plain `Node`; every `CanvasItem` is created in `_ready()`, after `GrcLoader`
 ## armed the capture extension in its own `_enter_tree()` (gate 0 route (a)), so the mirror sees
@@ -52,7 +52,7 @@ const MARKER_COLORS: Array[Color] = [
 const RC_RECT: Rect2 = Rect2(8, 8, 16, 16)
 const RC_COLOR: Color = Color(1, 1, 0.2, 1)
 
-## Variant `clip-ignore` (gate3-design.md Q6b, G3d): a raw item whose second rect's clip is
+## Variant `clip-ignore`: a raw item whose second rect's clip is
 ## ignored by the real GLES3 rasterizer between the two `add_clip_ignore` calls (Q1d). On
 ## render-stream/3 a receiver saw them only as unsupported commands and clipped both rects; since
 ## G5d (render-stream/4) they are real commands the receiver replays, so it draws what the

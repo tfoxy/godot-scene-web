@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the web-export receiver (gate7-design.md D5, Q4 "Bundle provenance", G7e).
+# Builds the web-export receiver.
 #
 #   bash build-web-receiver.sh [--out DIR] [--force] [--core rust]
 #

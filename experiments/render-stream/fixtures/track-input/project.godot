@@ -1,4 +1,4 @@
-; TRK2 track-input fixture (../../protocol/tracks-design.md Q6, TRK2 row): a GDScript receiver of the
+; TRK2 track-input fixture: a GDScript receiver of the
 ; `input` track kind, through the capture's RenderStreamTrack class, wired to the gsw-input/1
 ; reference injector (addons/gsw_input, a link to packages/input/godot/addons/gsw_input). Gate 8's
 ; g8l/trk legs drive it with a Node track client. See README.md.

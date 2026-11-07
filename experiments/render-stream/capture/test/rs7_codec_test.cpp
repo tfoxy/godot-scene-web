@@ -1,10 +1,10 @@
 // Unit tests for render-stream/7 (src/rs2_codec.cpp's Session::version == V7 path, G7w).
 //
 // render-stream/7 is implemented as a protocol-version switch inside the SAME rs2_codec module
-// /2-/6 use (render-stream-7.md, following gate4-design.md G4e1's precedent and
-// gate7-design.md D2), so this file does not duplicate rs2_codec_test.cpp's/rs3../rs4../rs5../
+// /2-/6 use (render-stream-7.md, following their precedent)
+// so this file does not duplicate rs2_codec_test.cpp's/rs3../rs4../rs5../
 // rs6_codec_test.cpp's framing checks. Unlike those, /7 changes NOTHING about the big
-// full/patch/inline state factory (gate7-design.md D2: "Records, transactions, payloads and HTTP
+// full/patch/inline state factory ("Records, transactions, payloads and HTTP
 // routes are byte-identical to /6"), so there is no full.rs7/patch.rs7/inline.rs7 to re-derive --
 // this proves only the /7 delta: Session::version == V7 selects the GRS7 magic and the
 // "render-stream/7" protocol string, and the session's top-level "publication" key gains
@@ -73,7 +73,7 @@ void check_against_golden(const std::string &file,
 
 // protocol/golden-7/make_golden.py's `state`: one root canvas (id 1, items [1]) with one item
 // (id 1, parented to the canvas) drawing one add_rect -- golden-6's own "rate" scene, reused
-// unchanged (gate7-design.md D2: records/transactions are byte-identical to /6).
+// unchanged (records/transactions are byte-identical to /6).
 ItemState scene_item() {
   ItemState it;
   it.id = 1;
@@ -109,7 +109,7 @@ ItemEntry full_entry(const ItemState &state) {
 }
 
 // Session::capture/features/viewport match golden-6's own golden_session_v6() exactly
-// (gate7-design.md D2: /7 changes only the magic/protocol/hello/publication.credit_window/two
+// (/7 changes only the magic/protocol/hello/publication.credit_window/two
 // error reasons/CORS -- nothing in those blocks). Hand-built here rather than pulled from
 // rs2_golden_states.h (which has no V7 helper), matching field for field what that header's
 // golden_session_v6() produces, since this test does not link rs2_golden_states.h's full
@@ -196,7 +196,7 @@ Session rate_session_template(const std::string &id32, Transport transport,
       "viewport_set_snap_2d_vertices_to_pixel"};
   session.features.publication = "snapshot-or-patch";
   // render-stream-7.md "Session": publication {"mode":"rate","target_fps":30,"credit_window":N}
-  // (gate7-design.md D2/D4), matching golden-6's own rate.rs6 mode/target_fps exactly.
+  // Matching golden-6's own rate.rs6 mode/target_fps exactly.
   session.publication.mode = PublicationMode::Rate;
   session.publication.has_target_fps = true;
   session.publication.target_fps = 30;

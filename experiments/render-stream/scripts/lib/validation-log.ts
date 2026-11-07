@@ -1,4 +1,4 @@
-// LS0 (live-swap-design.md D3, F2, K5): the capture's validation logs (counters.json `captured`,
+// LS0 (K5): the capture's validation logs (counters.json `captured`,
 // the gate -1 / calibration / hook-log-golden evidence) run only under GRC_VALIDATION_LOG=on, and
 // default off. counters.json carries `validation_log` ("on" | "off"). A checker that reads
 // `captured` calls this first and refuses evidence from a run that did not ask for the log: an

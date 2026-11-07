@@ -1,9 +1,9 @@
-// INP1 (client-extensions-design.md "As built (INP1)"): where the stream's picture sits on the page,
+// Where the stream's picture sits on the page,
 // and the points that cross between the page (client CSS px) and the presentation (the host
 // window's px, which is what the game's input takes). Pure functions over a box description, so
 // they are testable without a DOM; `client.ts` reads the canvas on demand, never per frame.
 //
-// The backing store is the presentation 1:1 (mirror-client-design.md, D12), and the product sizes
+// The backing store is the presentation 1:1, and the product sizes
 // the canvas's CSS box. A box of another aspect shows the picture by the canvas's `object-fit`
 // (`fill` stretches, `contain` letterboxes, `cover` crops, `none`, `scale-down`) at its
 // `object-position`; the bars (or the crop) map to null.

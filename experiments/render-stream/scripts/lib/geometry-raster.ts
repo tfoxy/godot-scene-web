@@ -1,4 +1,4 @@
-// A reference rasterizer for gate 5's geometry (protocol/gate5-design.md "Q6c", D9, D10, D13).
+// A reference rasterizer for gate 5's geometry.
 // Pure: it reads only the coverage model of fixtures/gate5/expected.json (make_expected.py's hand
 // lowering of every RenderingServer call), never a capture or the engine. Gate 7's browser
 // receivers inherit it as their conformance reference.
@@ -12,7 +12,7 @@
 //   - Flat colours are exact: float32 in polygons, binary16 in primitives (the model carries the
 //     rounded values), RGBA8 out with round-to-nearest. Per-vertex colours interpolate
 //     barycentrically (allowed delta 1), and straight-alpha blending (GL_SRC_ALPHA,
-//     GL_ONE_MINUS_SRC_ALPHA) runs in float with UNORM8 rounding (delta 1, gate4-design.md D8).
+//     GL_ONE_MINUS_SRC_ALPHA) runs in float with UNORM8 rounding (delta 1).
 //     A texel times a modulate that lands between two UNORM8 levels is delta 1 too (G5g).
 //   - Nearest texture sampling is floor(uv * size) at the pixel centre, decided only when every
 //     texel within 1/16 texel of that point has one colour. Nine-patches map each axis as
@@ -25,7 +25,7 @@
 //   - Band class (D13): an antialiased shape (`band_px`, FEATHER_SIZE + 1) marks every pixel
 //     within `band_px` of its boundary as band, and a thin GL line every pixel within `band_px`
 //     of its segment; those are never synthesized, only presence-checked and compared leg to leg.
-//   - Blend modes (gate 5.5, protocol/gate5_5-design.md Q1c, D13): a mesh's `blend` applies GL's
+//   - Blend modes (gate 5.5): a mesh's `blend` applies GL's
 //     equation for a non-transparent target (alpha factors ZERO, ONE: the target keeps its
 //     alpha): add `src*a + dst`, sub `dst - src*a`, mul `src*dst`, premul_alpha
 //     `src + dst*(1-a)`, each clamped; `disabled` writes the fragment, its alpha quantized to
@@ -97,7 +97,7 @@ export interface Gate5Raster {
   shapes: ShapeCoverage[];
 }
 
-/** A box the hand model leaves undecided (gate 6, protocol/gate6-design.md D7: text glyphs and
+/** A box the hand model leaves undecided (gate 6, : text glyphs and
  * whatever is drawn under them). `rect` is x, y, w, h in draw space; every pixel whose centre the
  * transformed box's AABB holds (inside the scissor) becomes undecided, and a later opaque paint
  * decides it again. `content` describes what is drawn there (gate 6's freshness and sabotage

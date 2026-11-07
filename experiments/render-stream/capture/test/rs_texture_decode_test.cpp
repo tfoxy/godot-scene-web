@@ -1,4 +1,4 @@
-// Unit tests for the host-decode seam (src/rs_texture_decode.*; gate8-design.md D8, Q3; G8t),
+// Unit tests for the host-decode seam (src/rs_texture_decode.*),
 // against a fake backend: the engine's Image::decompress runs only inside Godot (run-gate8.sh).
 
 #include <cstdint>

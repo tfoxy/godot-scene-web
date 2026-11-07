@@ -1,4 +1,4 @@
-// TRK4 live leg (protocol/tracks-design.md Q10, the TRK4 row): drives web/client-track-check/ (the
+// TRK4 live leg: drives web/client-track-check/ (the
 // client package's `./tracks` subpath alone) in the pinned headless Chromium against
 // capture/build/rs_live_host --tracks with an echo receiver, over ws (default) or, TRK3, the net
 // module's wt carrier. Legs and checks (written to <dir>/client-track.json; exit 1 when one fails):

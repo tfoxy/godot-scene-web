@@ -9,14 +9,8 @@
 // bounds the FRACTION of tolerated pixels (of compared pixels) and requires every expected shot
 // to have been compared.
 //
-// Calibration (2026-11-04), measured on passing evidence of the NVIDIA native source:
-//   artifacts/render-stream/source-cache/5e488685226cdd6d896bac1438ca6d4a/gate6--all
-//   (also /tmp/frz-hook-smoke/native-rust-gate6/run, identical): wide/reference-2340x1080 vs
-//   hd/reference-native, 15 shots, left 1920 columns = 31 104 000 px compared, 12 px at +-1 (3.9e-7);
-//   reference-2520x1080, 15 px (4.8e-7); 0 px beyond 1. `wide-composition@gsw` on the earlier GSW
-//   run (scratchpad pres-a-chk7.log): 12 / 15 / 0 px over 15 shots at 2340x1080 / 2520x1080 /
-//   1170x540 (about 3e-7 of the 37.9M px each wide leg compares).
-// The bound is 1e-4: about 200x the worst measured fraction, still ~100x tighter than "any number".
+// Calibration: a correct build shows only a few parts in 10^7 of the compared pixels at +-1 and none
+// beyond. The bound is 1e-4: far above that, still ~100x tighter than "any number".
 // UNCALIBRATED for llvmpipe/lavapipe (the remote runners), where interpolated mesh colours also move
 // by one level: no passing llvmpipe wide evidence existed on disk to measure. If a remote run trips
 // this on a correct build, measure its counts and raise the constant with that run's provenance.

@@ -1,5 +1,5 @@
 extends Node2D
-## Gate 8 material fixture (G8m, gate8-design.md Q5 "Fixture"). Every item is a box.gd rect, made in
+## Gate 8 material fixture. Every item is a box.gd rect, made in
 ## `_ready` (so before a late arm and after a born one), 48x40 at a fixed position:
 ##
 ##   A  (32,32)   ShaderMaterial MA on main.gdshader (which #includes res://inc/tint.gdshaderinc,

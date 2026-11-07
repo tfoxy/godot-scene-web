@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// G8g, gate8-design.md D14: the runner-side stand-in for a product's own server in front of the
+// G8g,: the runner-side stand-in for a product's own server in front of the
 // capture's listener. The listener stays loopback-only with its token (gate2-design D13); a product
 // that serves a phone on its LAN fronts the WebSocket and the resource GETs with its own server,
 // which owns TLS and exposure. Receivers fetch resources on the WebSocket's own host and port

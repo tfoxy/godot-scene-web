@@ -4,8 +4,8 @@
 // WHY: both loops are FPS-CAPPED (`shaderFps` / `particleFps`) but used to stay armed on a
 // per-DISPLAY-frame rAF chain: a capped tick that fired before its cap boundary re-armed rAF
 // and returned, so a 30fps cap on a 60Hz display cost TWO main-thread wakeups per rendered
-// frame — one that renders, one that only computes "too early". A phone trace showed that spin
-// as a measurable slice of sustained main-thread busy, paid on screens where nothing changes.
+// frame — one that renders, one that only computes "too early" — a main-thread cost paid even on
+// screens where nothing changes.
 //
 // CONTRACT
 //   A capped loop asks the pacer for its next wakeup with the SECONDS REMAINING until its cap

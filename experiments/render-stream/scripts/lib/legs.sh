@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Shared process plumbing for the render-stream gate runners (run-gate0.sh, run-gate1.sh).
-# Sourced, not executed; extracted from run-gate0.sh with no behaviour change
-# (protocol/gate1-design.md D9).
+# Sourced, not executed; extracted from run-gate0.sh with no behaviour change.
 #
 # The caller sets, before using any function:
 #   LEGS_LOG           log prefix, e.g. "run-gate0"
@@ -20,7 +19,7 @@
 
 # The recording file names: the full sink every capture writes (GRC_STREAM_OUT) and every receiver
 # copy uses, and the patch sink (GRC_STREAM_PATCH_OUT) a capture also writes when
-# CAPTURE_WITH_PATCH=1 (gate 1). Both are render-stream/2 since G2b2 (protocol/gate2-design.md).
+# CAPTURE_WITH_PATCH=1 (gate 1). Both are render-stream/2 since G2b2.
 RECORDING_NAME="${RECORDING_NAME:-recording.rs2}"
 PATCH_RECORDING_NAME="${PATCH_RECORDING_NAME:-recording-patch.rs2}"
 CAPTURE_WITH_PATCH="${CAPTURE_WITH_PATCH:-0}"
@@ -31,7 +30,7 @@ CURRENT_CHILD_PID=""
 LEG_ENV=()
 
 # --------------------------------------------------------------------------------------------
-# Measurement isolation (lib/quiet.sh; results/measurement-isolation.md): the machine-wide quiet
+# Measurement isolation (lib/quiet.sh): the machine-wide quiet
 # lock, taken here per leg, never around a whole run.
 #   - Every launch below (run_headless, run_rendered, start_headless_bg ... finish_bg) holds the
 #     SHARED lock while it runs; a live leg's background host and its receivers share one hold,
@@ -181,7 +180,7 @@ else:
 }
 
 # --------------------------------------------------------------------------------------------
-# G7l (gate7-design.md Q4 "Live client", Q8): browser receivers inside the gate's own runner.
+# G7l: browser receivers inside the gate's own runner.
 # With GATE7_LIVE_KIND=web|gsw in the runner's environment (never an RS_/GRC_ name: those are
 # stripped from launched processes):
 #   - a capture HOST launch (start_headless_bg with GRC_LIVE_LISTEN= in LEG_ENV) gets
@@ -351,7 +350,7 @@ run_browser_receiver() {
 	echo "$LEGS_LOG: ${dir#"$OUT"/} exit=$(cat "$dir/exit-code.txt") ($GATE7_LIVE_KIND browser receiver)"
 }
 
-# G7xn (gate7-design.md "G7xn", D34): the runner's own RS_RECEIVER_CORE_EXT picks the native
+# G7xn: the runner's own RS_RECEIVER_CORE_EXT picks the native
 # receiver's adapter (.gdextension) for every receiver launch of the run. Every launch strips
 # inherited RS_* variables, so receiver_core_env adds it back as a NAME=value word, to receiver
 # launches only (`--path "$RECEIVER_DIR"`), and only when it is set: a plain run's env.txt files
@@ -398,7 +397,7 @@ write_invocation() {
 }
 
 # --------------------------------------------------------------------------------------------
-# Fast frames (GRT3, results/grt.md "Part 3"; scripts/README.md "Fast frames (GRT3)"). Opt-in:
+# Fast frames. Opt-in:
 # RS_FAST_FRAMES=all|host|receiver (default off) runs the ALLOWLISTED live correctness legs below
 # faster than real time; validate-increment.sh's smoke and full tiers set it, milestone sweeps and
 # a plain runner do not. On every side, hosts only, or receivers only (`--path $RECEIVER_DIR`), an
@@ -762,7 +761,7 @@ run_capture() {
 		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
 		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
 		RS_FIXTURE_STEP_LOG="$dir/steps.jsonl"
-		# LS0 (live-swap-design.md F2, K5): run_capture's legs are validation legs; the capture
+		# LS0 (K5): run_capture's legs are validation legs; the capture
 		# defaults the validation logs off, and a timing leg that measures the default passes
 		# GRC_VALIDATION_LOG=off in CAPTURE_EXTRA_ENV (later words win).
 		GRC_VALIDATION_LOG=on
@@ -836,7 +835,7 @@ settle_seqs() {
 
 # run_rendered <dir> <project dir>: the template inside the private gamescope with LEG_ENV.
 # RENDERED_EXTRA_ARGS (reset after the call) are appended to the command line, e.g. --max-fps 60
-# for a live receiver (gate1-design.md Q5: live legs pass --max-fps 60 to the receiver).
+# for a live receiver (live legs pass --max-fps 60 to the receiver).
 RENDERED_EXTRA_ARGS=()
 legs__run_rendered() {
 	local dir="$1" project="$2"
@@ -939,7 +938,7 @@ run_rendered_receiver() {
 	run_rendered "$dir" "$RECEIVER_DIR"
 }
 
-# GRT smoke tier (scripts/validate-increment.sh, results/grt.md): two env switches skip a leg
+# GRT smoke tier (scripts/validate-increment.sh): two env switches skip a leg
 # without launching it; its directory gets skipped-by-tier.txt instead, and a receiver leg on a
 # skipped capture finds no recording and skips itself (prepare_recording). The checker then fails
 # the checks that needed that evidence; validate-increment.sh's tier verdict excuses exactly the
@@ -1060,7 +1059,7 @@ finish_bg() {
 }
 
 # --------------------------------------------------------------------------------------------
-# Parallel file-mode legs (GRT2b, results/grt.md "Part 2b", scripts/README.md "Sharded legs").
+# Parallel file-mode legs.
 # Opt-in: RS_LEG_SHARDS=N (`on` = 2; unset, 0, 1 or `off` = serial, the default) runs the launches
 # inside a runner's PARALLEL REGIONS on up to N workers at once, each a subshell with its own
 # private gamescope (slot 0 reuses the runner's; slots 1..N-1 start beside it, same size) and its

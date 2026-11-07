@@ -350,9 +350,8 @@ export interface StageTargetOptions {
  *
  * THE CANVAS HOLDS EXACTLY WHAT `readPixels` RETURNS. An `"rgb10_a2"` target is
  * not copied with `blitFramebuffer`: its 10 -> 8-bit conversion is the
- * implementation's, and on ANGLE/Vulkan over an RTX 2060 it MEASURES one level
- * low for 95 of 2048 ramp pixels whose exact value is 0.50-0.55 of a level
- * above a midpoint, which `readPixels` rounds to nearest. So the presented
+ * implementation's, and on ANGLE/Vulkan it can come out one level low for
+ * values just above a midpoint, which `readPixels` rounds to nearest. So the presented
  * frame and the frame read back for a shot would disagree, and a
  * compositor-equals-readback check could never pass. Instead `blit` draws one
  * triangle that `texelFetch`es each texel and writes `floor(c * 255 + 0.5) /

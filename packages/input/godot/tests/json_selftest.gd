@@ -1,5 +1,5 @@
 extends SceneTree
-## IN7: GswInputJson reads what ECMAScript `JSON.parse` reads, where Godot's own `JSON` does not:
+## GswInputJson reads what ECMAScript `JSON.parse` reads, where Godot's own `JSON` does not:
 ## exact integers up to 2^53-1, out-of-range exponents, lone surrogates, strict grammar, no depth
 ## limit. Expectations come from `JSON.parse` (Node 24).
 ##

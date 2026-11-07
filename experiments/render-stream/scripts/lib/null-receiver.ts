@@ -1,4 +1,4 @@
-// A live viewer that decodes nothing (P3-SP, results/p3/p3-sp.md): bench-live-scale.sh's
+// A live viewer that decodes nothing: bench-live-scale.sh's
 // `--receiver null`. It speaks the /8 hello (or, HC, the /11 hello offering `live_coding`
 // zstd-base,zstd), then acks every transaction at all three stages the moment it arrives, so the
 // host sends to it at every frame the credit allows and every viewer of a multi-viewer leg stays in

@@ -4,7 +4,7 @@
 render-stream/6 (../render-stream-6.md) is render-stream/5 (../render-stream-5.md) plus
 presentation stretch declarations (viewport.presentation_size/font_oversampling/snap_2d), a new
 top-level session key `publication` (rate control), canvas `layer`/`sublayer` and five new
-session-level unsupported reasons. Exactly as G6w did for /6 (gate6-design.md), this script
+session-level unsupported reasons. This script
 re-derives /5's fifteen states byte for byte under the GRS6 magic and the "render-stream/6"
 protocol string (presentation_size equal to logical_size, font_oversampling 1, snap_2d both false,
 publication "every-frame"/null, root canvas at layer 0/sublayer 0) and then adds four more:
@@ -119,7 +119,7 @@ ARRAY_FLAG_USE_2D_VERTICES = 1 << 25
 ARRAY_FLAG_USE_8_BONE_WEIGHTS = 1 << 27
 ARRAY_FLAG_COMPRESS_ATTRIBUTES = 1 << 29
 
-# gate5_5-design.md D8: float64 components per element of a Variant type, in Godot's own member
+# Float64 components per element of a Variant type, in Godot's own member
 # order. "nil"/"rid" never contribute floats. As built (G55w): wire spellings are this codec's own
 # decision (snake_case, matching the engine's own type names) -- see render-stream-5.md "As built".
 VARIANT_COMPONENTS = {
@@ -581,7 +581,7 @@ def shader_payload_sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-# Shader 1: the builtin CanvasItemMaterial "add" blend template (gate5_5-design.md Q1e). No
+# Shader 1: the builtin CanvasItemMaterial "add" blend template. No
 # particles block (particles_animation false); light_mode "normal" is the default and omitted.
 SHADER1_CIM_ADD_CODE = (
     "// NOTE: Shader automatically converted from Godot Engine v4.5.1.stable.official's "
@@ -606,7 +606,7 @@ SHADER2_TINT_CODE_V2 = (
 SHADER2_TINT_PAYLOAD_V2 = build_shader_payload(SHADER2_TINT_CODE_V2)
 HASH_SHADER2_V2 = shader_payload_sha256(SHADER2_TINT_PAYLOAD_V2)
 
-# Shader 3, state 15: uses TIME (gate5_5-design.md D11 -> shader-time).
+# Shader 3, state 15: uses TIME (-> shader-time).
 SHADER3_TIME_CODE = (
     "shader_type canvas_item;\nvoid fragment() {\n\tCOLOR = vec4(TIME, 0.0, 0.0, 1.0);\n}\n"
 )
@@ -971,8 +971,8 @@ def _mesh_json(mesh_id: int, m: dict, mesh_f32: list[float]) -> dict:
 
 def _param_json(p: dict, param_f64: list[float]) -> dict:
     """render-stream-5.md "Material table": one <param> object. "f" is a running offset into
-    param_f64 OVER MATERIALS IN TABLE ORDER FIRST, then items in item order (gate5_5-design.md D8
-    "param-offset") -- callers must therefore build every material's params (in table order)
+    param_f64 OVER MATERIALS IN TABLE ORDER FIRST, then items in item order
+    -- callers must therefore build every material's params (in table order)
     before any item's instance_params."""
     out = {"name": p["name"], "type": p["type"], "n": p["n"], "tex": p["tex"], "f": len(param_f64)}
     param_f64.extend(p["floats"])
@@ -1027,7 +1027,7 @@ def transaction_bytes(
     removed_shaders = removed_shaders or []
     removed_materials = removed_materials or []
 
-    # gate5_5-design.md D8 "param-offset": materials' params claim their param_f64 offsets FIRST
+    # materials' params claim their param_f64 offsets FIRST
     # (table order), so this must run before the items loop below.
     param_f64: list[float] = []
     materials_json = [_material_json(mid, m, param_f64)
@@ -1322,7 +1322,7 @@ def root_canvas(items_list: list[int], modulate: list[float] = WHITE, *, layer: 
 
 
 # render-stream-6.md "Canvas"/"Golden vectors": a non-root canvas attached to the root viewport
-# (state 16-19), a new /6 capability (gate6-design.md D3, Q2).
+# (state 16-19), a new /6 capability.
 def canvas_entry(items_list: list[int], *, attached: bool = True, xform: list[float] = IDENTITY,
                   modulate: list[float] = WHITE, layer: int = 0, sublayer: int = 0) -> dict:
     return {"origin": "created", "role": None, "attached": attached, "xform": xform,
@@ -1377,7 +1377,7 @@ STATE11_UNSUPPORTED = sorted(
 )
 # new at /5 (state 15): an item-level unsupported-material/unknown-material/param-type entry sorts
 # by item ascending like any other. As built (G55w): every session-level ("item": null) entry
-# (here, the sticky canvas-light one, gate5_5-design.md D10) sorts FIRST, before any item-level
+# (here, the sticky canvas-light one) sorts FIRST, before any item-level
 # entry -- /2's validator invariant already requires every session-level entry to precede every
 # item-level one (checked by every protocol version's decoder), so a sticky entry observed mid-
 # stream is still reported at the front of unsupported[], not at the position it was first
@@ -1567,7 +1567,7 @@ def item7_immediate_ops() -> dict:
                 [(0.0, 80.0), (10.0, 80.0), (10.0, 90.0), (0.0, 90.0)], [[1.0, 1.0, 1.0, 1.0]],
                 [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], tex=7, polygon=True,
             ),
-            # gate5-design.md "As built (G5d)" point 6: golden-4's own state 8 uses count=3 over
+            #  point 6: golden-4's own state 8 uses count=3 over
             # 6 indices, which the real engine refuses (count * 3 > indices.size(),
             # renderer_canvas_render.h Polygon::create) -- harmless to the codecs, but golden-5
             # must not carry the defect forward. count=1 still draws only the first triangle
@@ -1669,7 +1669,7 @@ def state11() -> dict:
 
 # --- state 12, new at /5: shaders, materials, canvas modulate, item material state ------------
 
-# Material 1: the builtin CIM's own three params (gate5_5-design.md Q1a: material_set_param x 3,
+# Material 1: the builtin CIM's own three params (material_set_param x 3,
 # particles_anim_h_frames 1, particles_anim_v_frames 1, particles_anim_loop false), sorted by name.
 MATERIAL1_PARAMS = [
     param("particles_anim_h_frames", "int", floats=[1.0]),
@@ -1677,7 +1677,7 @@ MATERIAL1_PARAMS = [
     param("particles_anim_v_frames", "int", floats=[1.0]),
 ]
 
-# Material 2: one param of every supported Variant type (gate5_5-design.md D8), sorted by name.
+# Material 2: one param of every supported Variant type, sorted by name.
 MATERIAL2_PARAMS_V1 = [
     param("p_aabb", "aabb", floats=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
     param("p_basis", "basis", floats=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]),
@@ -1826,7 +1826,7 @@ def item15_unsupported_material() -> dict:
 
 
 def item16_unknown_material() -> dict:
-    # render-stream-5.md "Item"/gate5_5-design.md Q3b: an unknown non-null material RID -> wire
+    # render-stream-5.md "Item"/: an unknown non-null material RID -> wire
     # "material": null, plus the derived unknown-material entry.
     return item(
         parent=("canvas", 1), children=[], xform=[1.0, 0.0, 0.0, 1.0, 300.0, 0.0],

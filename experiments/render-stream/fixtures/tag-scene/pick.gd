@@ -1,5 +1,5 @@
 extends Control
-## ID2's pick scene (client-extensions-design.md "Identity v2", the ID2 row; README.md "Pick
+## ID2's pick scene (README.md "Pick
 ## (ID2)"), loaded by tag.gd when RS_FIXTURE_TAG_PICK is set. It lays out one case per Godot GUI
 ## pick rule the stream must reproduce, tags every CanvasItem with its own name (meta `rs_pick`)
 ## and its effective filter (meta `rs_mf`: "stop", "pass" or "ignore"; "ignore" for a CanvasItem

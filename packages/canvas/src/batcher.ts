@@ -6,15 +6,12 @@ import { BLEND_MIX, type BlendMode } from "./draw-list";
  * GL in it, so the flush decisions — the thing that decides whether a frame is 20
  * draw calls or 200 — are unit-testable rather than inferred from a profiler.
  *
- * WHY MULTI-TEXTURE BATCHING IS THE WHOLE POINT. Probing recorded scenes for
- * batch runs (a run = a maximal span of consecutive painting nodes sharing
- * texture + blend + clip + colour-matrix state) found combat at 152 runs over 183
- * painting nodes — 1.2 nodes per batch, i.e. essentially no batching — and 151 of
- * those 152 breaks were the TEXTURE alone. The map is the same story: 174 runs
- * over 825 nodes, 173 texture breaks. But the number of DISTINCT textures per
- * screen is only 24-65. So a batch that can hold many textures at once collapses
- * the run count towards the number of times the state that a batch CANNOT hold
- * changes — blend (0-16 per screen) and clip (0-26) — plus one flush per
+ * WHY MULTI-TEXTURE BATCHING IS THE WHOLE POINT. In real game scenes almost
+ * every batch break (a run = a maximal span of consecutive painting nodes sharing
+ * texture + blend + clip + colour-matrix state) is the TEXTURE alone, while the
+ * number of DISTINCT textures per screen is small. So a batch that can hold many
+ * textures at once collapses the run count towards the number of times the state
+ * that a batch CANNOT hold changes — blend and clip — plus one flush per
  * texture-table refill. That is the difference between "tens of draws" and "one
  * draw per node", and it is why the slot table below is not an optimization to
  * add later.
@@ -28,11 +25,11 @@ import { BLEND_MIX, type BlendMode } from "./draw-list";
  * new table.
  *
  * COLOUR MATRICES GET THE SAME TREATMENT, for the same reason at a smaller scale:
- * the card screens carry 30-48 HSV-transformed quads, and one draw call each
+ * a screen can carry dozens of HSV-transformed quads, and one draw call each
  * would undo the texture win. A batch holds up to `maxColorMatrices` matrices in
  * a uniform array with the IDENTITY pinned at slot 0, so "no matrix" costs
  * nothing and needs no separate program. Identical matrices share a slot (the
- * table is deduped by value), which matters because those 30-48 quads are usually
+ * table is deduped by value), which matters because those quads are usually
  * a handful of distinct tints applied to many cards.
  *
  * ORDER IS NEVER REORDERED. Instances are drawn in the order they were pushed —
@@ -77,8 +74,8 @@ export const COLOR_MATRIX_FLOATS = 9;
 /** The most texture units this batcher will ever ask for, whatever the GPU
  *  reports. Sixteen is the WebGL2 (GLES 3.0) guaranteed minimum for
  *  `MAX_TEXTURE_IMAGE_UNITS`, so asking for more buys a shader that some
- *  conformant device cannot link, in exchange for a batch boundary the measured
- *  key counts (24-65 distinct textures per screen) would still hit. */
+ *  conformant device cannot link, in exchange for a batch boundary a typical
+ *  screen's distinct-texture count would still hit. */
 export const MAX_TEXTURE_SLOTS = 16;
 
 /** Default colour-matrix table size, including the identity at slot 0. */

@@ -1,5 +1,5 @@
 extends Node
-## Gate 8 texture fixture (G8t, gate8-design.md Q3 "Fixture"). Every drawn texture of
+## Gate 8 texture fixture. Every drawn texture of
 ## textures.gd's table is drawn four ways, one row each, in one column per texture:
 ##
 ##   row A (y 16)   Sprite2D, scale 1, the project's default filter (nearest)
@@ -10,7 +10,7 @@ extends Node
 ##
 ## Step 0 (`_ready`, frame 1) draws the desktop family (S3TC/BPTC imports); step 1 (frame S+N)
 ## swaps every drawer to the mobile family (ETC2/ASTC imports), so both families are created after
-## arm, as in the STS2 census (gate8-design.md Q1e). `hdr` (BPTC_RGBFU / ASTC_4x4_HDR) is created
+## arm, as in the STS2 census. `hdr` (BPTC_RGBFU / ASTC_4x4_HDR) is created
 ## in both steps and never drawn: G8t refuses it. A step is settled at its frame + 7.
 ##
 ## Environment (all optional):
@@ -206,8 +206,8 @@ func _load(texture: Dictionary, family: String) -> Texture2D:
 		var compressed := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE) as CompressedTexture2D
 		made = compressed
 		if compressed != null:
-			# Headless (the dummy renderer) returns the image texture_2d_create was given
-			# (gate8-design.md D6); a rendered run reads it back, format and shape included.
+			# Headless (the dummy renderer) returns the image texture_2d_create was given;
+			# a rendered run reads it back, format and shape included.
 			var image: Image = compressed.get_image()
 			if image != null:
 				described = {"format": Payload.format_name(image), "width": image.get_width(), "height": image.get_height(), "mipmaps": image.has_mipmaps()}

@@ -1,4 +1,4 @@
-// Gate 8 group g8f (G8f, protocol/gate8-design.md D9 and Q3 "Compressed and float textures"): the
+// Gate 8 group g8f: the
 // checks over the evidence run-gate8.sh's g8f legs write. Pure functions of the evidence tree, so
 // scripts/test/self-test-gate8f.ts can drive the helpers against fabricated data.
 //

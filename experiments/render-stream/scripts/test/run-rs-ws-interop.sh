@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# rs_ws interop tests: the WebSocket transport (protocol/gate1-design.md G1c1
-# "Pass criteria"), its HTTP GET resource serving (protocol/gate2-design.md
-# G2c1 "Pass criteria") and its bearer-token authorization (gate2-design.md
-# D13, G2e). Both the Node self-test and the two Godot self-tests drive the
+# rs_ws interop tests: the WebSocket transport, its HTTP GET
+# resource serving and its bearer-token authorization. Both the Node self-test and the two Godot self-tests drive the
 # same capture/test/rs_ws_echo.cpp binary built by build-capture.sh: a plain
 # instance for G1c1/G2c1, plus a second instance started here with
 # --token=<fixed test value> for G2e.

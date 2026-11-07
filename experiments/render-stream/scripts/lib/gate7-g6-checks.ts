@@ -1,4 +1,4 @@
-// G7g's gate-7 checks on gate 6's browser legs (protocol/gate7/g7g.md "Checks"), shared by both
+// G7g's gate-7 checks on gate 6's browser legs, shared by both
 // browser receivers and by the file (g6a/g6h/g6b) and live (g6l) legs:
 //
 //   presentation-check@<kind>  each browser's canvas backing store equals the session's
@@ -22,7 +22,7 @@ import type { Gate7Check } from "./gate7-adapters";
 import type { BackingStore } from "./gate7-web-legs";
 import { pm1Level, widePm1Problems } from "./wide-tolerance";
 
-/** Legs whose applied.json must say presentation_check `mismatch` (gate6-design.md G6b As built 2
+/** Legs whose applied.json must say presentation_check `mismatch` (G6b As built 2
  * and 3); the hazard is also the one leg whose backing store is its window, not the presentation. */
 const MISMATCH_LEGS = new Set([
   "hd/receiver-half-at-logical",

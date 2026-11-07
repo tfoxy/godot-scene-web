@@ -368,7 +368,7 @@ export async function launchChrome(
     webSocketDebuggerUrl?: string;
   }>(`${origin}/json/version`);
   // The stderr URL and /json/version agree, but /json/version is the documented discovery path and
-  // the only one available when attaching to a browser we did not spawn (the device workstream).
+  // the only one available when attaching to a browser we did not spawn (a device run).
   const wsUrl = version.webSocketDebuggerUrl ?? browserWsUrl;
   const client = await CdpClient.connect(wsUrl);
 

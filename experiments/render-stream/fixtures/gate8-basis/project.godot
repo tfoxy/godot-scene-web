@@ -1,4 +1,4 @@
-; Gate 8 Basis fixture (G8ku, ../../protocol/texture-delivery-design.md D6, D12, D16): procedural
+; Gate 8 Basis fixture: procedural
 ; textures created at runtime (RGBA8, RGB8, DXT1, L8, a mip chain, an updated one, a small one) and
 ; drawn 1:1, so a /9 basis-uastc capture offers lazy uastc variants exactly where D12 admits them.
 ; Nothing is imported or committed but code; see README.md.

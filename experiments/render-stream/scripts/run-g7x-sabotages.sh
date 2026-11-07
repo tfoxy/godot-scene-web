@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gate 7x page-level sabotages (gate7-design.md "G7x" "Sabotages"), on the desktop (D9), over the
+# Gate 7x page-level sabotages, on the desktop (D9), over the
 # pace input with the expected.json shots. Each run must FAIL gate7x-checks.ts:
 #   drop-draws      -> draw-count-parity and the pace shots
 #   stale-item-row  -> the pace shot at every step after the first

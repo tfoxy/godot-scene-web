@@ -3,9 +3,9 @@ extends RefCounted
 ## payload"): it builds the canonical GRT1 bytes of an `Image` and hashes them with
 ## `HashingContext` SHA-256, so oracle.gd computes an independent `payload_sha256` for every
 ## engine-decoded texture. check-gate8.ts compares those hashes with the ones the capture computed
-## at the hook (C++), which is the `decode-oracle` check (gate8-design.md Q3).
+## at the hook (C++), which is the `decode-oracle` check.
 ##
-## Deliberately not shared with the receiver (gate2-design.md Q6 "Fixture environment"): two
+## Deliberately not shared with the receiver: two
 ## encoders that agree are evidence; one encoder used twice is not.
 ##
 ##   magic      8 bytes   47 52 54 31 0D 0A 1A 0A

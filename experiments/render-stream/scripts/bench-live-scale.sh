@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Live throughput at a game's scale (P3-LV, results/p3/p3-lv.md): runs fixtures/capture-scale armed
+# Live throughput at a game's scale: runs fixtures/capture-scale armed
 # with the live listener on the stock release template (headless, --max-fps 60, real time) and ONE
 # live receiver subscribed to it (or --viewers N of them, P3-SP), then judges how fast that receiver
 # keeps up.
@@ -28,7 +28,7 @@
 # RS_BENCH_WS_URL, RS_BENCH_HTTP_ORIGIN, RS_BENCH_PAGE_PORT, RS_BENCH_RX_DIR, RS_BENCH_PROTOCOL,
 # RS_BENCH_WINDOW and, under GRC_LIVE_AUTH=token, RS_BENCH_TOKEN_FILE exported; its exit status is
 # the receiver's -- is judged from the host's own tap only). The host runs P3-CAP's armed config (bench-capture-scale.sh, the
-# product hand-off environment) with GRC_LIVE_LISTEN, the page origin allowed and a live tap.
+# streaming-host environment) with GRC_LIVE_LISTEN, the page origin allowed and a live tap.
 # NAME=value words after `--` go to the host when they start with GRC_ or RS_SCALE_ (for example
 # GRC_RESOURCE_INLINE_MAX_BYTES=4096, the hand-off's mesh setting) and to the receiver when they
 # start with RS_RECEIVER_ (for example RS_RECEIVER_FETCH_CONCURRENCY=6).

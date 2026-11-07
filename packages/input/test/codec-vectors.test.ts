@@ -1,5 +1,5 @@
 // Drives every conformance/v1/codec vector through the TypeScript codec. The GDScript validator
-// (IN7) reads the same files and must agree on `ok`, `code`, `path` and `skipped`; `canonical`
+// reads the same files and must agree on `ok`, `code`, `path` and `skipped`; `canonical`
 // is the TypeScript encoder's output and is checked here only.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";

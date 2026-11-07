@@ -1,4 +1,4 @@
-// G8kv: the Basis Universal host encoder wrapper (texture-delivery-design.md D13, D15).
+// the Basis Universal host encoder wrapper.
 //
 // RGBA8 mip levels in, one KTX2 file out: UASTC LDR 4x4 (level 0-4, default 1, no RDO) with Zstandard level 6
 // supercompression, `vkFormat` 0, a LINEAR DFD transfer, the levels given explicitly (basisu's
@@ -36,8 +36,8 @@ struct EncodeResult {
 	std::string params_id; // what produced `ktx2`; equals params_id()
 };
 
-// The UASTC pack level (basisu cPackUASTCLevelFastest 0 .. VerySlow 4). G8ku measured 0-2 for
-// speed against PSNR (results/gate8/g8ku.md "UASTC level") and chose the default below; the
+// The UASTC pack level (basisu cPackUASTCLevelFastest 0 .. VerySlow 4). The default below trades
+// speed against PSNR; the
 // capture's GRC_TEXTURE_UASTC_LEVEL overrides it per session.
 constexpr int kMinUastcLevel = 0;
 constexpr int kMaxUastcLevel = 4;

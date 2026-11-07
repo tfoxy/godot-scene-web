@@ -464,7 +464,7 @@ function pixiStep(kind: string) {
 }
 // Damage present exactness: two renderers receive the same randomized scene,
 // patch and upload sequence; one redraws only the damage, one redraws whole.
-// 349x209 over a 100x60 design: the phone's 3.49 device scale, so bounds round on fractional pixels.
+// 349x209 over a 100x60 design: a fractional 3.49 device scale, so bounds round on fractional pixels.
 let DAMAGE_W = 349,
   DAMAGE_H = 209;
 const DAMAGE_DESIGN_W = 100,

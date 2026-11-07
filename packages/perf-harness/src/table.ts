@@ -86,7 +86,7 @@ const ROWS: Row[] = [
     value: (r) => traceDecodeValue(r, r.metrics.decode.cacheFamily),
     // Only an alarm when NOTHING was decoded: "unknown" on its own is legitimate for a mechanism
     // that decodes outside cc's image-decode cache (createImageBitmap does). "unknown" WITH a zero
-    // decode count is the phone-workstream trap — unmeasured, not fast.
+    // decode count means the matchers missed — unmeasured, not fast.
     alarm: (r) =>
       !isCanvasTextureBridge(r) &&
       r.metrics.decode.cacheFamily === "unknown" &&

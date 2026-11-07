@@ -1,4 +1,4 @@
-// Gate 6a checks (protocol/gate6-design.md "G6a", "Q6", "Q7b"): fixtures/gate6-scene, its scene
+// Gate 6a checks: fixtures/gate6-scene, its scene
 // oracle and the file legs, on render-stream/6 since G6b (render-stream/5 when G6a landed).
 //
 // Everything here reads an evidence directory written by run-gate6.sh's g6a group, or is pure over
@@ -25,7 +25,7 @@
 // region, HU included (RF stays excluded in `refused`). Before G6b (render-stream/5) every leg was
 // `unsupported` with `extra-canvas` and HU was excluded.
 //
-// Evidence layout under <out>/ (see scripts/README.md "Gate 6"):
+// Evidence layout under <out>/:
 //   scene/import/{fixture,receiver}/  editor --import of fixtures/gate6-scene and receiver/
 //   scene/capture/, scene/capture-inline/           400-frame captures (inline: no store)
 //   scene/reference/, scene/reference-repeat/       rendered, oracle on: shots/<shot>.png,

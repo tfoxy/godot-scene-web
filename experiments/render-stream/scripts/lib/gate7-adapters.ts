@@ -1,4 +1,4 @@
-// Gate 7 adapters (gate7-design.md Q8, G7e): one per gate, mapping that gate's own checker onto a
+// Gate 7 adapters: one per gate, mapping that gate's own checker onto a
 // browser receiver's legs WITHOUT forking it. G7e lands the gate 0 adapter for the web export
 // (`web`); G7a adds `gsw`, and G7b the gates 1 to 6.
 //
@@ -214,7 +214,7 @@ export function appliedCore(doc: unknown): string {
 
 /** G7xw: across cores (a `rust` web leg against a `gdscript` native leg: since G7gd only an
  * older source run's evidence, such as G7b's preserved g7b-r1, can be one), a failure's prose
- * `detail` is each decoder's own wording (results/gate7/g7xn.md "Same-source replay": gate 0's
+ * `detail` is each decoder's own wording (gate 0's
  * `corrupt`), so only its `seq` and `reason` are compared. Mutates the normalized document. */
 export function dropCrossCoreDetail(normalized: Record<string, unknown>): void {
   const failure = normalized.failure as

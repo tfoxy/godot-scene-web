@@ -1,4 +1,4 @@
-// Gate 8 group g8kp (G8kp, protocol/texture-delivery-design.md D1 `passthrough`, D3, Q3, Q6): the
+// Gate 8 group g8kp (G8kp, `passthrough`): the
 // checks over the evidence run-gate8.sh's g8kp legs write. Pure functions of the evidence tree, so
 // scripts/test/self-test-gate8.ts can drive them against fabricated trees.
 //
@@ -92,7 +92,7 @@ export interface DeliveryRules {
 }
 
 /**
- * texture-delivery-design.md D3, written independently of the receivers' Rust (rs-core
+ * The delivery rule, written independently of the receivers' Rust (rs-core
  * `delivery.rs`): the first encoding of `encodings` that the entry lists, `block` only when its
  * format's family is in `gpuFormats`, `uastc` whenever listed (G8ku), `decoded` (the base entry)
  * always last. Null for anything

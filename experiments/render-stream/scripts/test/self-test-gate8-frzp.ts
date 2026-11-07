@@ -11,8 +11,8 @@
 // 3. frzp-frozen-burst fails when a frozen cell is dark or the leg is short.
 //
 // NOT covered, deliberately: a "frozen wire is smaller on the frozen cells" check. The frzp legs'
-// evidence cannot support it: frzp/capture's recording (8438176 B) is 40 B LARGER than the
-// unfrozen frzp-grant's (8438136 B) in the 2026-11-03 source-cache run (the nudge adds a record;
+// evidence cannot support it: frzp/capture's recording can be LARGER than the
+// unfrozen frzp-grant's (the nudge adds a record;
 // the receiver simulates emitters, so the unfrozen wire carries no per-frame positions either).
 //
 //   mise exec -- pnpm exec tsx --conditions=development \

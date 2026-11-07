@@ -1,5 +1,5 @@
-//! Mesh residency with the native receiver's semantics (the former GDScript applier, `rs_applier.gd`, removed in G7gd; `_apply_meshes`, gate5-design.md
-//! Q5 step 3b, G5e), so `mesh-upload-parity` can hold the GSW receiver to the native census (G7t).
+//! Mesh residency with the native receiver's semantics (the former GDScript applier, `rs_applier.gd`, removed; `_apply_meshes`)
+//! so `mesh-upload-parity` can hold the GSW receiver to the native census (G7t).
 //!
 //! A mesh becomes resident when an `add_mesh` first names it (create: every surface added). After
 //! that, a mesh whose surfaces' layouts (`_layout_key`) change is rebuilt, and one whose layouts

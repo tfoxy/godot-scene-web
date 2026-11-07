@@ -1,4 +1,4 @@
-// Gate 8's live group g8l (G8g, gate8-design.md "Increments" G8g, D14): one live leg per fixture
+// Gate 8's live group g8l: one live leg per fixture
 // at render-stream/8 plus D14's reverse-proxy leg (run-gate8.sh "g8l"). Every check reads only
 // g8l/<fixture>/ (host/, receiver/, replay/, proxy/), so the same checks judge a native run and a
 // browser run (run-gate7.sh --live --legs g7-8: lib/gate7-live.ts reports each check that reads a
@@ -19,7 +19,7 @@
 //                    native gate 8 run) the replay's checkpoints equal the file group's honest
 //                    receiver's, so g8l's host is the scene the file legs judged against the
 //                    reference
-//   g8l-basis-delivery  G8kb (texture-delivery-design.md Q3, Q6): the basis leg (gate8-basis at
+//   g8l-basis-delivery  G8kb: the basis leg (gate8-basis at
 //                    render-stream/9 under basis-uastc, the receiver at RS_RECEIVER_PROTOCOL=9 with
 //                    `upgrade`): the live /9 hello stated uastc in texture_encodings, the receiver
 //                    fetched at least one uastc variant over HTTP, transcoded every one it fetched
@@ -616,7 +616,7 @@ export async function runG8l(
       ),
     );
   }
-  // CAR2 (carrier-design.md D10, F6): the lan leg is tex served on 0.0.0.0 under
+  // CAR2: the lan leg is tex served on 0.0.0.0 under
   // GRC_LIVE_EXPOSE=lan, its receiver connected through this machine's non-loopback address with
   // the token. It exists only in a native run (run-gate8.sh run_g8l_lan); no directory, no check.
   // This is not a g8l fixture (the browsers' groups replay none), and it does not go through
@@ -741,7 +741,7 @@ export async function runG8l(
       }
     }
   }
-  // CAR6 (carrier-design.md, CAR6 row): fixtures/carrier-ext registers a GDScript carrier through
+  // CAR6: fixtures/carrier-ext registers a GDScript carrier through
   // the capture's RenderStreamCarrier class and carries one live session over it. Native only
   // (run-gate8.sh run_g8l_ext); no g8l/ext directory, no check. The honest leg's peer kept exactly
   // the bytes the hub's tap holds for the connection that opened on that carrier; the sabotage
@@ -852,11 +852,11 @@ export async function runG8l(
       );
     }
   }
-  // TRK2 (tracks-design.md, TRK2 row): fixtures/track-input's RenderStreamTrack receiver and the
+  // TRK2: fixtures/track-input's RenderStreamTrack receiver and the
   // reference injector under the track client, plus four sabotage legs (lib/gate8-track-checks.ts).
   // Native only (run-gate8.sh run_g8l_trk); no g8l/trk directory, no check.
   checks.push(...(await runTrkChecks(out)));
-  // CAR4 (carrier-design.md D11, D12): the wss leg is tex with a certificate pair, its receiver
+  // CAR4: the wss leg is tex with a certificate pair, its receiver
   // on plain ws from loopback (still served under a pair), and `openssl s_client` over TLS on the
   // same port while the host ran (run-gate8.sh run_g8l_wss). Native only; no directory, no check.
   {

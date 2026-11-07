@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Gate 6 group G6z (protocol/gate6-design.md "Q8. Supported-feature manifest"): generates
+// Gate 6 group G6z: generates
 // protocol/features/render-stream-6.json, schema render-stream-features/1.
 //
 //   mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/make-features.ts
@@ -8,7 +8,7 @@
 //   ... make-features.ts --receiver native|web-export|gsw-canvas|all [--check]   (G7z, /2)
 //   ... make-features.ts --collect [--evidence-root <dir>]                     (G7z, device targets)
 //
-// G7z (gate7-design.md Q11): `--receiver` writes protocol/features/render-stream-7/<kind>.json,
+// G7z: `--receiver` writes protocol/features/render-stream-7/<kind>.json,
 // schema render-stream-features/2, from lib/feature-evidence-7.ts and collected.json (the g31
 // device targets and the receiver blocks, which `--collect` derives from the evidence runs that
 // feature-evidence-7.ts quotes). Generation never reads the evidence tree, so `--check` stays
@@ -313,7 +313,7 @@ export function buildManifest(): FeatureManifest {
       // capture/src/entry.cpp: GRC_RESOURCE_MAX_PAYLOAD_BYTES default (64 MiB) and
       // GRC_RESOURCE_FORMATS default (L8,LA8,R8,RG8,RGB8,RGBA8); rs2_snapshot.h kMaxLiveItems;
       // GRC_LIVE_MAX_CONNECTIONS (1..4, D13); GRC_PUBLISH_FPS (1..240 or uncapped, D8);
-      // render-stream-2.ts SHADER_POLICIES (gate5_5-design.md D11).
+      // render-stream-2.ts SHADER_POLICIES.
       max_payload_bytes: 67108864,
       permitted_formats: ["L8", "LA8", "R8", "RG8", "RGB8", "RGBA8"],
       live_item_cap: 4096,

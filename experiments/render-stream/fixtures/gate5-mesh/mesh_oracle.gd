@@ -1,5 +1,5 @@
 extends RefCounted
-## The gate 5 mesh oracle (../../protocol/gate5-design.md "Q6e", `render-stream-gate5-meshes/1`).
+## The gate 5 mesh oracle (`render-stream-gate5-meshes/1`).
 ##
 ## Runs on reference legs only (gate5_mesh.gd refuses it when a GRC_* capture variable is set). At
 ## each settle frame, after the fixture's own mesh calls of that frame, it writes one JSON line:

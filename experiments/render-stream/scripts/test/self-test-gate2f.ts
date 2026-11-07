@@ -1,6 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for gate 2 group g2f (lib/gate2f-checks.ts, the opt-in headless CanvasTexture shim;
-// protocol/canvas-texture-headless.md "Experiment (a) result"). Proves every g2f check can fail
+// Self-test for gate 2 group g2f (lib/gate2f-checks.ts, the opt-in headless CanvasTexture shim). Proves every g2f check can fail
 // as well as pass, on small fabricated evidence (JSON files, stdout logs and PNGs synthesized from
 // fixtures/gate2/expected.json; object-literal captures where a check reads no files).
 //

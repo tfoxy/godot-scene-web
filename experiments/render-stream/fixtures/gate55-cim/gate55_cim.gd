@@ -1,5 +1,5 @@
 extends Node
-## Gate 5.5 CanvasItemMaterial fixture (../../protocol/gate5_5-design.md "Q6b", G55b).
+## Gate 5.5 CanvasItemMaterial fixture.
 ##
 ## The root is a plain `Node`. Every `CanvasItem` and every `CanvasItemMaterial` is created in
 ## `_ready()`, after `GrcLoader` armed the capture extension in its own `_enter_tree()` (gate 0
@@ -204,7 +204,7 @@ func _step_at(frame: int, offset: int) -> int:
 	return step if step <= LAST_STEP else -1
 
 
-## gate5_5-design.md Q6b's timeline. None of it redraws a region: only the marker re-records.
+## the contract's timeline. None of it redraws a region: only the marker re-records.
 func _apply_step(step: int) -> void:
 	match step:
 		1:

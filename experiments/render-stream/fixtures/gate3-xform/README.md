@@ -1,10 +1,9 @@
 # Gate 3 rotated/scaled fixture
 
-The reference rendering for gate 3's rotated and scaled clipping increment (G3c,
-[`../../protocol/gate3-design.md`](../../protocol/gate3-design.md) "Q6d"). Five steps (0..4) put
+The reference rendering for gate 3's rotated and scaled clipping increment. Five steps (0..4) put
 `clip_contents` Controls under rotated, scaled and flipped `Node2D` parents. The engine clips each
 to the rounded axis-aligned bounding box of its rect under the full transform, intersected with
-the nearest clipping ancestor's rounded scissor (Q1c). The fixture also carries six semantic
+the nearest clipping ancestor's rounded scissor. The fixture also carries six semantic
 probes where three plausible alternative models disagree with that. Like the other fixtures, the
 project does not know about the capture library and runs the same whether `GRC_EXTENSION` is set
 or not.
@@ -42,9 +41,8 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate3-xf
   contract's hand tables for the scissors and the semantic probes. It also asserts a rounding
   margin of at least 0.01 for every value that is not deliberately exact, that `RQF` and `RQ2F`
   cover their owner's bounding box, that no visible axis-aligned edge sits on a pixel centre,
-  that no probe lies in the band, and the decisive-coverage rule. Nothing in it is measured.
-- `expected.json` (`render-stream-gate3-expected/1`, `fixture: "gate3-xform"`, gate3-design.md
-  Q6c/Q6d) holds the following. Per step: the draws in paint order (`rect_px` when axis-aligned,
+  that no probe lies in the band, and the decisive-coverage rule.
+- `expected.json` (`render-stream-gate3-expected/1`, `fixture: "gate3-xform"`) holds the following. Per step: the draws in paint order (`rect_px` when axis-aligned,
   else `quad`, the four transformed corners) with each one's integer scissor, every owner's
   scissor (`clip_rects`), the band's size, the probes and the retained-state invariants. Across
   the run: the contract's hand table, the two listed non-decisive edges (`OA.left`/`OA.right`,

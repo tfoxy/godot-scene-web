@@ -1,11 +1,10 @@
 // The WebGPU implementation of `ShaderRenderBackend` — the peer of `../webgl/shader-backend`'s
 // WebGL one, rendering each Godot `ShaderMaterial` node STRAIGHT into its own canvas.
 //
-// WHY IT EXISTS (docs/perf-harness.md S6/S7, measured on a mid-range Android): the WebGL path draws
-// every node into one shared offscreen canvas and BLITS the result onto the node's 2D canvas. That
-// blit chain saturates Chrome's GPU process and halves whole-page update rates (89 → 47 Hz).
-// Presenting from a per-node WebGPU canvas — no shared canvas, no blit, ONE `queue.submit` per tick
-// — restored 87 Hz.
+// WHY IT EXISTS: the WebGL path draws every node into one shared offscreen canvas and BLITS the
+// result onto the node's 2D canvas. On mobile Chrome that blit chain can saturate the GPU process and
+// cut whole-page update rates; presenting from a per-node WebGPU canvas — no shared canvas, no blit,
+// ONE `queue.submit` per tick — avoids it.
 //
 // PER-SHADER, NOT PER-RUNTIME. Each Godot shader gets its own WGSL module, bind-group layout and
 // pipeline, cached at DEVICE scope and keyed by the same shader id the GL program cache uses. A
@@ -34,7 +33,7 @@
 // the shared `staticFrameKey`, which is all the swap's gate needs; the pixels themselves come from
 // `captureSurface` below — an offscreen re-render plus `copyTextureToBuffer`, never a read of the
 // canvas, because `drawImage`/`toDataURL`/`toBlob` on a WebGPU canvas is blank headless and
-// pathological on Android (S7).
+// pathologically slow on Android.
 
 import {
   compileModule,
@@ -102,7 +101,7 @@ import {
  * `blend_add` into `ADDITIVE_BLEND` here would additionally blend the shader against the canvas's own
  * cleared transparent black — a no-op that then double-applies once CSS does the real compositing.
  * (The identical constant in `../particles/render-webgpu` is a local copy for the same reason: it is
- * one line of measured law, and an import across the particle/shader seam would be the only edge
+ * one line of fixed law, and an import across the particle/shader seam would be the only edge
  * between two otherwise independent renderers.)
  */
 const PREMULTIPLIED_BLEND: GPUBlendState = {
@@ -806,10 +805,10 @@ function ensureBindGroup(
  * Re-render this binding's CURRENT frame into an offscreen texture and read it back.
  *
  * NEVER `drawImage`/`toDataURL` FROM THE CANVAS. Both read a WebGPU canvas through its presentation
- * path, which is blank under headless SwiftShader and pathological on Android Chrome (S7 measured
- * 23 Hz against 87 for direct presentation). `copyTextureToBuffer` + `mapAsync` — what `./readback`
- * does — is the one path verified to work fully headless, which is why this hook exists at all
- * rather than the parity harness simply reading the canvas.
+ * path, which is blank under headless SwiftShader and pathologically slow on Android Chrome.
+ * `copyTextureToBuffer` + `mapAsync` — what `./readback` does — is the one path verified to work
+ * fully headless, which is why this hook exists at all rather than the parity harness simply
+ * reading the canvas.
  *
  * The pipeline is the live one re-created against `rgba8unorm`: a pipeline's fragment target format
  * must match its attachment, and the canvas format is usually `bgra8unorm`. Everything else — module,

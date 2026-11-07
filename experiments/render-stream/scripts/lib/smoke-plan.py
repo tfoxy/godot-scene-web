@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GRT smoke tier planner (scripts/validate-increment.sh, results/grt.md): changed paths in, the
+"""GRT smoke tier planner (scripts/validate-increment.sh): changed paths in, the
 validation targets they can reach out, from scripts/smoke-map.json.
 
   smoke-plan.py --map smoke-map.json --repo ROOT [--milestone] [--tier smoke|full]

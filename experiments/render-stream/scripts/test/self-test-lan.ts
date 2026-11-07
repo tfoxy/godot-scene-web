@@ -1,4 +1,4 @@
-// CAR2 (protocol/carrier-design.md D10, F6, Security): opt-in LAN serving, end to end through the
+// CAR2 (Security): opt-in LAN serving, end to end through the
 // production hub, CarrierSet, rs_ws and the net module, with capture/build/rs_live_host (the same
 // functions as entry.cpp: capture/src/rs_expose.cpp; entry.cpp's own wiring is also judged by
 // run-gate8.sh's g8l/lan leg). Four parts:
@@ -633,7 +633,7 @@ async function main(): Promise<void> {
   await defaultRecordsLoopback();
   const lan = lanAddress();
   if (lan === null) {
-    // Typed unavailable: the runner has no non-loopback IPv4 address (carrier-design.md CAR2).
+    // Typed unavailable: the runner has no non-loopback IPv4 address.
     console.log(
       "unavailable: no non-loopback IPv4 address on this machine; the LAN connection parts are skipped",
     );

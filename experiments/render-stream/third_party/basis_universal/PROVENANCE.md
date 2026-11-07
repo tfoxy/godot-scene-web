@@ -1,7 +1,7 @@
 # basis_universal (vendored)
 
 Per this repository's rule, a vendored third-party tree is digest-pinned with its license and
-provenance beside it. Added by G8kv (texture-delivery-design.md D15, fork K1).
+provenance beside it. Added for the host-side Basis encoder and transcoder used by texture delivery.
 
 - **Upstream:** https://github.com/BinomialLLC/basis_universal, version 1.60, commit
   `323239a6a5ffa57d6570cfc403be99156e33a8b0`, Apache-2.0 (`LICENSE`, sha256

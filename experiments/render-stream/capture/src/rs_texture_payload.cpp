@@ -55,7 +55,7 @@ int payload_pixel_size(std::int64_t format) {
       return 3;
     case 5:  // RGBA8
       return 4;
-    // G8f (gate8-design.md D9): the float formats, Godot's pixel sizes (core/io/image.cpp:1700-1745).
+    // the float formats, Godot's pixel sizes (core/io/image.cpp:1700-1745).
     // They are payload formats at /8 only; the capture admits them solely through
     // GRC_RESOURCE_FORMATS, which a /6 file sink refuses (rs_gate8_policy).
     case 8:   // RF

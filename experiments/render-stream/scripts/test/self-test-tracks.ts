@@ -1,4 +1,4 @@
-// TRK1 (protocol/tracks-design.md, TRK1 row): render-stream-track/1 end to end through the
+// TRK1: render-stream-track/1 end to end through the
 // production TrackHub, CarrierSet and rs_ws, with capture/build/rs_live_host --tracks (the same
 // routing as entry.cpp's live_drain) and an independent Node track client over raw sockets.
 //

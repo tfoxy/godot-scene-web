@@ -27,7 +27,7 @@ export interface TranscodeReply {
   ms?: number;
 }
 
-/** transcoder.cpp's family bits, from Godot's feature names (texture-delivery-design.md Q3). */
+/** transcoder.cpp's family bits, from Godot's feature names. */
 export const FAMILY_BITS: Record<string, number> = {
   s3tc: 1,
   bptc: 2,

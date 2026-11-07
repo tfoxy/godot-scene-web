@@ -1,7 +1,6 @@
 # Gate 5.5 ShaderMaterial fixture
 
-The reference rendering for gate 5.5's `ShaderMaterial`s (G55c,
-[`../../protocol/gate5_5-design.md`](../../protocol/gate5_5-design.md) "Q6c" and "Q6e"). Ten steps
+The reference rendering for gate 5.5's `ShaderMaterial`s (G55c). Ten steps
 (0..9) cover live parameters (`content_version` unchanged), an instance parameter on a shared
 material, a code change through an include, a parameter erased, a material recreated, a texture
 parameter over a shader's default texture, bool, int and float-array parameters, a parameter
@@ -27,7 +26,7 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate55-s
   `policy-params` and `policy-exclude` variants are capture settings, `GRC_SHADER_POLICY`, not scene
   changes). Output lines start with `[fixture]`.
 - `shaders/*.gdshader`, `shaders/refused/*.gdshader`, `inc/common.gdshaderinc`: the synthetic
-  shaders, `fragment()` last in each (for Q3c's `perturb-shader`). `tint_b.gdshader` is never
+  shaders, `fragment()` last in each (for `perturb-shader`). `tint_b.gdshader` is never
   loaded as a resource: step 3 assigns its text to the `tint` `Shader`'s `code`.
 - `material_oracle.gd` (`render-stream-gate55-materials/1`): at each settle frame, per fixture
   shader its status and the GRP1 SHA-256 and size of `RenderingServer.shader_get_code`, per
@@ -39,7 +38,7 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate55-s
   preprocessor (so every GRP1 hash), a Python twin of every `fragment()`, the coverage model
   `geometry-raster.ts` rasterizes, freshness, the oracle's view per step, a per-frame census of
   every shader and material call, `counters.json`'s counts, the refused variant and G55e's sabotage
-  sets (the marker included). G55e added `receiver_views`: per step, what `receiver-refused` (the
+  sets (the marker included). It also holds `receiver_views`: per step, what `receiver-refused` (the
   five refused items with no material) and `receiver-params-nolib` (every item with no material)
   draw, with the two typed legs' region sets in `predictions`. Nothing in it is measured.
 

@@ -137,7 +137,7 @@ export function identityFit(viewport: FitSize): StageFit {
 /**
  * Stage-space CSS px -> viewport-space CSS px.
  *
- * Every scenario declares its sample points in ITS OWN stage coordinates (unchanged by this round);
+ * Every scenario declares its sample points in ITS OWN stage coordinates (unchanged by fitting);
  * the presence guard compares them against a screenshot of the VIEWPORT. This is the one conversion
  * between the two, so a fitted run's guard stays exactly as strict as an unfitted one's.
  */
@@ -232,10 +232,9 @@ export const DEFAULT_CI_VIEWPORT: FitSize = { width: 1280, height: 800 };
 /**
  * Viewport + fit policy, in one testable place.
  *
- *   ci     — the fixed 1280x800 emulated viewport, stage used 1:1. The desktop numbers are this
- *            round's measured record (`baselines/linux-chrome-148.json`, the S1-S4 tables in
- *            docs/perf-harness.md), and they only stay comparable if the geometry does not move.
- *            `--fit` opts in.
+ *   ci     — the fixed 1280x800 emulated viewport, stage used 1:1. The committed desktop baseline
+ *            (`baselines/linux-chrome-148.json`) only stays comparable if the geometry does not
+ *            move. `--fit` opts in.
  *   device — the phone's OWN viewport and orientation, with the stage fitted into it. Forcing a
  *            desktop viewport on a phone rasters at a scale the device never uses, and raster scale
  *            is what the decode numbers are about. `--viewport` re-enables emulation.

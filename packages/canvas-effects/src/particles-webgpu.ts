@@ -1,7 +1,7 @@
 // The WebGPU particle backend: the peer of `./render-webgl`, rendering STRAIGHT into each node's own
 // canvas. There is no shared canvas and no blit — the pixels are produced where the compositor
-// already reads them, which is the whole measured point (docs/perf-harness.md S7: 47 → 87 Hz on the
-// phone, and a blit-shaped WebGPU arm that collapsed to 23).
+// already reads them, which is the whole point (a blit-shaped WebGPU arm is far slower on mobile;
+// see the S7 scenario in docs/perf-harness.md).
 //
 // WHAT "PORT" MEANS HERE. The WGSL below is `render-webgl.ts`'s `VERTEX_SRC`/`FRAGMENT_SRC`
 // transcribed, not re-derived: same flipbook arithmetic, same polar remap, same PRE-LUT coverage
@@ -20,12 +20,10 @@
 //
 // `./render-webgl.ts` states the SAME contract — its shared canvas declares
 // `premultipliedAlpha: true`, its MIX fragment premultiplies, and `blendFactorsFor(0)` is this blend
-// in GL enum names. That is recent: the GL canvas used to declare itself straight-alpha, which made
-// this file's arrangement a translation rather than a restatement, and left the GL side free to
-// disagree with itself (it did — MIX composited at a²).
+// in GL enum names, so the two backends cannot disagree about the alpha convention.
 //
 // ONE ENCODER PER TICK. `beginFrame` opens a single `GPUCommandEncoder`, every `draw`/`clear` records
-// passes into it, and `endFrame` submits it ONCE. That is the shape S7 measured; a per-draw submit
+// passes into it, and `endFrame` submits it ONCE. That is the shape the S7 scenario runs; a per-draw submit
 // would make "WebGPU" mean "N submits" and give back the win.
 
 import { INSTANCE_STRIDE, type InstanceBuffer } from "@godot-scene-web/effects";
@@ -343,8 +341,7 @@ fn ${PARTICLE_FS_ADDITIVE_ENTRY}(in: VsOut) -> @location(0) vec4f {
  * to `light + dst*(1-cov)`, with no division at all — and therefore no `cov > 0` guard either, since
  * the division that would have needed one is gone (at cov = 0 the fragment is (0,0,0,0), which
  * composites to `dst` exactly). `RESOLVE_FRAGMENT_SRC` in `./render-webgl.ts` is now the same
- * expression, its canvas being premultiplied too; it used to divide by `cov` for a straight-alpha
- * canvas and rely on the blit into the node canvas to multiply it back.
+ * expression, its canvas being premultiplied too.
  *
  * `textureLoad` at integer pixel coordinates, like GL's `texelFetch`: the accumulate pass renders
  * into the top-left w×h rect of a grow-only accumulator, and WebGPU framebuffer coordinates are
@@ -973,8 +970,8 @@ function captureOrThrow(program: ParticleProgramGpu): {
  * Re-render this surface's CURRENT frame into an offscreen texture and read it back.
  *
  * NEVER `drawImage`/`toDataURL` FROM THE CANVAS. Both read a WebGPU canvas through its presentation
- * path, which is blank under headless SwiftShader and pathological on Android Chrome (S7 measured
- * 23 Hz against 87 for direct presentation). `copyTextureToBuffer` + `mapAsync` — what
+ * path, which is blank under headless SwiftShader and pathologically slow on Android Chrome.
+ * `copyTextureToBuffer` + `mapAsync` — what
  * `../webgpu/readback` does — is the one path verified to work fully headless, which is why this
  * hook exists at all rather than the parity harness simply reading the canvas.
  *

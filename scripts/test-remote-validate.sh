@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Synthetic self-test for scripts/remote-validate.sh and scripts/remote-run-branch.sh
-# (docs/remote-compute.md). Nothing here touches the network or the real origin: a temporary clone
-# pushes to a local bare repository, and a fake `gh` on PATH records every call, simulates the
-# dispatch, a failed dispatch and a hung watch, and deletes refs in that bare repository.
+# Synthetic self-test for scripts/remote-validate.sh and scripts/remote-run-branch.sh. Nothing here
+# touches the network or the real origin: a temporary clone pushes to a local bare repository, and
+# a fake `gh` on PATH records every call, simulates the dispatch, a failed dispatch and a hung
+# watch, and deletes refs in that bare repository.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 ROOT="$PWD"
@@ -28,7 +28,8 @@ git init -q -b main "$TMP/seed"
 	cp "$ROOT/experiments/render-stream/scripts/smoke-map.json" "$ROOT/experiments/render-stream/scripts/remote-jobs.json" \
 		"$ROOT/experiments/render-stream/scripts/run-gate7.sh" "$ROOT/experiments/render-stream/scripts/run-gate8.sh" experiments/render-stream/scripts/
 	mkdir -p experiments/render-stream/scripts/lib && cp "$ROOT/experiments/render-stream/scripts/lib/remote-matrix.py" experiments/render-stream/scripts/lib/
-	cp "$ROOT/scripts/remote-validate.sh" "$ROOT/scripts/remote-run-branch.sh" scripts/
+	cp "$ROOT/scripts/remote-validate.sh" "$ROOT/scripts/remote-run-branch.sh" "$ROOT/scripts/check-public-tree.py" \
+		"$ROOT/scripts/public-tree.conf" scripts/
 	git add -A && git commit -qm seed && git remote add origin "$BARE" && git push -q origin main
 )
 git clone -q "$BARE" "$CLONE"
@@ -47,6 +48,7 @@ case "$1 $2" in
 	$G ls-tree -r --name-only "refs/heads/$br" >"$FAKE_BARE/../snapshot-files.txt"
 	$G for-each-ref --format='%(refname)' >"$FAKE_BARE/../refs-at-dispatch.txt"
 	$G rev-parse "refs/heads/$br^" >"$FAKE_BARE/../snapshot-parent.txt"
+	$G log -1 --format=%B "refs/heads/$br" >"$FAKE_BARE/../snapshot-msg.txt"
 	;;
 "run list")
 	key="$(grep -o 'run_key=[^ ]*' "$FAKE_GH_LOG" | tail -1 | cut -d= -f2)"
@@ -170,13 +172,15 @@ check "snapshot has the modified tracked file" grep -qx 'a.txt' "$TMP/snapshot-f
 check "snapshot has the untracked file" grep -qx 'new.txt' "$TMP/snapshot-files.txt"
 check "snapshot omits the ignored file" bash -c "! grep -q '^ign/' '$TMP/snapshot-files.txt'"
 check "only main and the run branch exist on origin at dispatch" bash -c \
-	"[ \"\$(grep -vc '^refs/heads/remote-run/${CLONE##*/}-' '$TMP/refs-at-dispatch.txt')\" = 1 ] && grep -qx refs/heads/main '$TMP/refs-at-dispatch.txt'"
+	"[ \"\$(grep -vc '^refs/heads/remote-run/wt-[0-9a-f]\{10\}-' '$TMP/refs-at-dispatch.txt')\" = 1 ] && grep -qx refs/heads/main '$TMP/refs-at-dispatch.txt'"
 check "dispatch carried run_key, sha, base, tier and the run list" bash -c \
-	"grep -q 'workflow run remote-validate.yml --ref remote-run/clone-' '$FAKE_GH_LOG' && grep -q 'run_key=rv-' '$FAKE_GH_LOG' && grep -q 'sha=' '$FAKE_GH_LOG' && grep -q 'base=' '$FAKE_GH_LOG' && grep -q 'tier=full' '$FAKE_GH_LOG' && grep -q 'runs=\[\"pure\", \"cargo-rs-core\", \"pnpm-test\", \"native-rust-gate0\", \"native-rust-gate1\", \"g7-gsw\", \"g7live-gsw\"\]' '$FAKE_GH_LOG' && grep -q 'worktree=clone' '$FAKE_GH_LOG'"
+	"grep -q 'workflow run remote-validate.yml --ref remote-run/wt-' '$FAKE_GH_LOG' && grep -q 'run_key=rv-' '$FAKE_GH_LOG' && grep -q 'sha=' '$FAKE_GH_LOG' && grep -q 'base=' '$FAKE_GH_LOG' && grep -q 'tier=full' '$FAKE_GH_LOG' && grep -q 'runs=\[\"pure\", \"cargo-rs-core\", \"pnpm-test\", \"native-rust-gate0\", \"native-rust-gate1\", \"g7-gsw\", \"g7live-gsw\"\]' '$FAKE_GH_LOG' && grep -q 'worktree=wt-[0-9a-f]\{10\} ' '$FAKE_GH_LOG'"
 check "a plain dispatch carries no determinism input" bash -c "! grep -q 'determinism=' '$FAKE_GH_LOG'"
 check "a plain dispatch carries no browser_renderer input (the workflow default)" bash -c "! grep -q 'browser_renderer=' '$FAKE_GH_LOG'"
 check "a plain dispatch carries no leg_shards input (the workflow default, auto)" bash -c "! grep -q 'leg_shards=' '$FAKE_GH_LOG'"
 check "a multi-group gate 7 run is dispatched with its groups (one job per group)" grep -qF 'run_groups={"g7-gsw": ["g7-1", "g7-2"], "g7live-gsw": ["g7-2", "g7-5"]}' "$FAKE_GH_LOG"
+check "nothing pushed or dispatched names the worktree" bash -c \
+	"grep -q 'workflow run' '$FAKE_GH_LOG' && ! grep 'workflow run' '$FAKE_GH_LOG' | grep -q clone && grep -q '^remote-run snapshot wt-' '$TMP/snapshot-msg.txt' && ! grep -q clone '$TMP/snapshot-msg.txt'"
 check "the summary landed under artifacts/render-stream/remote/" bash -c "ls '$CLONE'/artifacts/render-stream/remote/*/validate-summary.json"
 check "the branch is deleted after a normal finish" test -z "$(remote_branches)"
 check "the output names the results directory" grep -q 'results in .*artifacts/render-stream/remote/' "$TMP/ok.out"
@@ -195,6 +199,15 @@ check "a disagreeing determinism run exits non-zero" bash -c "test $rc != 0 && g
 check "a disagreement across CPU vendors names the runner CPUs and says so (GRT6)" bash -c "grep -q 'runner CPUs: x-det1x2: AMD EPYC.*x-det2x1: INTEL' '$TMP/det.out' && grep -q 'different CPU vendors' '$TMP/det.out'"
 FAKE_GH_MODE=ok FAKE_GH_DET_REQ=3,1 bash "$WRAP" --only native-rust-gate0 --determinism 3,1 >"$TMP/det.out" 2>&1; rc=$?
 check "a requested determinism report that never came back exits non-zero" bash -c "test $rc != 0 && grep -q 'no determinism.json came back' '$TMP/det.out'"
+
+# ---- the public-tree check runs before the --no-verify push --------------------------------------------
+: >"$FAKE_GH_LOG"
+mkdir -p docs && echo x >docs/x-handoff.md
+FAKE_GH_MODE=ok bash "$WRAP" >"$TMP/ptc.out" 2>&1; rc=$?
+check "a snapshot failing check-public-tree aborts with exit 2" test "$rc" = 2
+check "…naming the denied file and saying nothing was pushed" bash -c "grep -q 'docs/x-handoff.md' '$TMP/ptc.out' && grep -q 'nothing was pushed' '$TMP/ptc.out'"
+check "…and pushes and dispatches nothing" bash -c "[ -z \"\$(git --git-dir='$BARE' for-each-ref refs/heads/remote-run/)\" ] && ! grep -q 'workflow run' '$FAKE_GH_LOG'"
+rm -rf docs
 
 # ---- failed dispatch, SIGINT, SIGTERM ---------------------------------------------------------------------
 FAKE_GH_MODE=dispatch-fail bash "$WRAP" >"$TMP/df.out" 2>&1; rc=$?
@@ -486,7 +499,7 @@ check "the seed workflow runs on main only, saves, and is cron plus dispatch" ba
 	"grep -q \"github.ref == 'refs/heads/main'\" '$ROOT/.github/workflows/remote-cache-seed.yml' && grep -q 'save: \"true\"' '$ROOT/.github/workflows/remote-cache-seed.yml' && grep -q 'cron:' '$ROOT/.github/workflows/remote-cache-seed.yml' && ! grep -q pull_request '$ROOT/.github/workflows/remote-cache-seed.yml'"
 check "only the cleanup job and the janitor may write contents" bash -c \
 	"[ \"\$(grep -c 'contents: write' '$ROOT/.github/workflows/remote-validate.yml')\" = 1 ]"
-# GRT6: the Trim artifact step must not follow symlinks (G8ku/G8kb: a run dir holds symlinks into
+# the Trim artifact step must not follow symlinks (a run dir holds symlinks into
 # itself and the source cache; python glob("**") looped on them and hung the job until cancelled).
 check "trim step: no recursive glob over the run dir" bash -c "! grep -n 'glob.glob(sys.argv\\[2\\]' '$ROOT/.github/workflows/remote-validate.yml'"
 check "trim step has a timeout-minutes" bash -c "grep -A3 'name: Trim artifact' '$ROOT/.github/workflows/remote-validate.yml' | grep -q 'timeout-minutes'"

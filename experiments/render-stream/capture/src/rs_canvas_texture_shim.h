@@ -1,7 +1,7 @@
-// The headless CanvasTexture shim (protocol/canvas-texture-headless.md, option (a), "Experiment
-// (a) result"). GRC_HEADLESS_CANVAS_TEXTURE=synthesize, or unset/`auto` on a headless host at
+// The headless CanvasTexture shim.
+// GRC_HEADLESS_CANVAS_TEXTURE=synthesize, or unset/`auto` on a headless host at
 // render-stream/12+ (HSD, headless_defaults_apply below). `off` or empty, or `auto` below /12, keeps
-// the G2d typed refusal (canvas-texture-headless) and leaves this module inert.
+// the typed refusal (canvas-texture-headless) and leaves this module inert.
 //
 // A headless host runs the dummy rasterizer, whose canvas_texture_allocate() returns RID()
 // (servers/rendering/dummy/storage/texture_storage.h:54), so every CanvasTexture shares the null

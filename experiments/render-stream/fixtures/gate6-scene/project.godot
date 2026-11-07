@@ -2,8 +2,8 @@
 ; Controls, a clipped ScrollContainer, text, a custom _draw, a texture that changes and is freed, a
 ; mesh deformed every frame, a CanvasItemMaterial, a ShaderMaterial driven by an AnimationPlayer, a
 ; Tween, a top_level escape and a HUD CanvasLayer, over twelve frame-indexed steps (0..11).
-; Variants `animate` and `refused`. See fixtures/gate6-scene/README.md and
-; ../../protocol/gate6-design.md ("Q6") for the contract.
+; Variants `animate` and `refused`. See fixtures/gate6-scene/README.md
+; for the contract.
 
 config_version=5
 

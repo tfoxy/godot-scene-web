@@ -9,8 +9,8 @@
 // the file can still be absent — a partial clone, a sparse checkout, or a `build.sh` interrupted
 // between writing the glue and finishing the binary.
 //
-// AND A `ready()` THROW ABORTS THE WHOLE RUN. That is S7's trap, recorded in
-// `docs/perf-harness.md`, and it is why this check is node-side rather than in the scenario: if the
+// AND A `ready()` THROW ABORTS THE WHOLE RUN (S7's trap), and that is why this check is node-side
+// rather than in the scenario: if the
 // page were left to discover the missing wasm, the DEFAULT five-arm invocation would fail outright
 // instead of printing a four-arm table. So the sweep drops the arm before a browser is launched,
 // and `runComparison` reports it as NOT MEASURED, naming the command that produces it.

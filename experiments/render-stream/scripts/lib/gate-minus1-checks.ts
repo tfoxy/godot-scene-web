@@ -1,11 +1,10 @@
 // Gate -1 pass-criteria checks, factored out of check-gate-minus1.ts so
-// scripts/test/self-test-checker.ts can exercise each one directly against fabricated evidence
-// (see scripts/README.md "Checker self-test"). Pure functions: every check reads files under a
+// scripts/test/self-test-checker.ts can exercise each one directly against fabricated evidence. Pure functions: every check reads files under a
 // given evidence directory and returns Criterion[] (or Promise<Criterion[]> for the pixel checks,
 // which decode PNGs); nothing here launches a process or mutates anything.
 //
 // The capture library's evidence shapes (result.json, counters.json, fingerprint.json,
-// disarm.json, armed.marker) are documented in ../../results/runtime-contract.md and read here
+// disarm.json, armed.marker) are read here
 // field for field. "unavailable" is reserved for evidence the HOST could not produce (strace not
 // installed); a missing or malformed capture-library field is a "fail".
 
@@ -1167,7 +1166,7 @@ interface ExpectedDrawPaths {
   visible_samples: { samples: Array<{ name: string; x: number; y: number }> };
 }
 
-/** Calibrator-9 (gate6-design.md Q2) constants spike.gd's _exercise_calibrator9_hooks passed,
+/** Calibrator-9 constants spike.gd's _exercise_calibrator9_hooks passed,
  * matched against evidence/resources.jsonl's kind:"canvas" lines (checkCanvasHookLog). */
 export interface ExpectedCanvas9 {
   layer: number;
@@ -1777,7 +1776,7 @@ export async function checkOlderRecord(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Calibrator 9 (gate6-design.md Q2, G6k): the spike's six new canvas hooks each decode and log
+// Calibrator 9: the spike's six new canvas hooks each decode and log
 // at least one line (kind:"canvas") carrying the constants _exercise_calibrator9_hooks passed --
 // evidence/resources.jsonl is the only place these six are checked at all before G6b's mirror.
 // ---------------------------------------------------------------------------------------------

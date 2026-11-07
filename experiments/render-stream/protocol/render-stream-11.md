@@ -1,20 +1,15 @@
 # render-stream/11 wire format
 
-Status: **design; codecs, validators and capture built** (W11-D, 2026-10-25; W11a, 2026-10-27:
-the C++ encoder, TypeScript and rs-core match `golden-11/`, see "As built (W11a): decisions"; W11b,
-2026-10-27: the capture emits /11 under `GRC_STREAM_VERSION=11`, see "As built (W11b): decisions";
-the receivers are W11c to W11e: GSW (W11c), the native receiver (W11d) and the web export (W11e)
-apply it; PM1, 2026-10-28: multimesh in the capture, the codecs, the validators and `golden-11/`,
-see "As built (PM1): decisions"). The measurements behind every number here are
-in [results/p3/w11-d.md](../results/p3/w11-d.md). /11 builds on render-stream/10
-([render-stream-10.md](render-stream-10.md): CG1's back-buffer item state and P3-TM's
-`shader_time`). Like /8 to /10 it is **opt-in**: nothing below /11 changes, and no default moves
+Status: frozen. The C++ encoder, TypeScript and rs-core match `golden-11/`; the capture emits /11
+under `GRC_STREAM_VERSION=11`; GSW, the native receiver and the web export apply it, multimesh
+included (see the "As built" sections). /11 builds on render-stream/10
+([render-stream-10.md](render-stream-10.md): the back-buffer item state and `shader_time`). Like /8 to /10 it is **opt-in**: nothing below /11 changes, and no default moves
 ("Opt-in and version policy").
 
 ## Why
 
 A browser viewer of a long STS2 session runs out of memory. GSW's wasm heap grows 5–7 MB a second
-in combat (P3-SP, `p3sp-new-3`), so it reaches wasm32's 4 GB after about ten minutes. Two rules
+in combat, so it reaches wasm32's 4 GB after about ten minutes. Two rules
 cause it, and they hold on both ends:
 
 - Every spine pose is a new content-addressed mesh payload: 102 new hashes per combat transaction
@@ -29,9 +24,8 @@ cause it, and they hold on both ends:
 
 - **P3-SP's prune rule** (render-stream-2.md, "Design, not built"): after each transaction, both
   ends prune the carried set to what the resolved state names.
-- **P3-LV's dynamic mesh surfaces** (results/p3/p3-lv.md, "Design: dynamic mesh surfaces by id,
-  inline"): a mesh that animates sends its bytes by mesh id, inside the transaction.
-- **P3-PM's multimesh tier** (particles-multimesh-design.md, "/11: multimesh"): a multimesh's
+- **P3-LV's dynamic mesh surfaces**: a mesh that animates sends its bytes by mesh id, inside the transaction.
+- **P3-PM's multimesh tier**: a multimesh's
   instance buffer goes inline in `mm_f32`, only when it changed.
 - **P3-SP's shared publication**: several viewers share each encode. Under /11 the resource
   records become a function of the transaction's base and target, so sharing covers them too.
@@ -50,9 +44,8 @@ cause it, and they hold on both ends:
 7. **a patched `unsupported`** (WB): `null` in a patch means "as the base".
 
 Everything else is /10's: record framing, the record sha256, canonical JSON, every other table and
-payload, out-of-band delivery, HTTP routes and D7's serving rule, and the hello (/9's fifteen keys,
-with `protocol` set to `"render-stream/11"`). Like /3 to /10 (memory
-`g4e1-rs3-version-switch-pattern`), /11 is not a forked module. The version-parameterized
+payload, out-of-band delivery, HTTP routes and render-stream-2.md's pinning and serving rule, and the hello (/9's fifteen keys,
+with `protocol` set to `"render-stream/11"`). Like /3 to /10, /11 is not a forked module. The version-parameterized
 C++/TypeScript/Rust modules gain the value 11: `ProtocolVersion::V11`, TypeScript `version` widens
 to `2..=11` (the default stays `6`), and the Rust `version: u8` widens likewise.
 
@@ -189,7 +182,7 @@ a constant:
 
 Both are at most w transactions' hashed churn, and under `auto` that churn is small: 48 B of
 records per combat transaction in `a8-2`, because the poses are no longer hashes. In `a8-2`
-combat the store held at most 876 entries against 778 names (results/p3/w11-d.md).
+combat the store held at most 876 entries against 778 names.
 
 The bound covers the protocol's state, not evidence sinks. `applied.json` and the browsers'
 received-stream copies are evidence, streamed since P3-HX, and a product receiver runs without
@@ -202,7 +195,7 @@ them. The acceptance leg below measures with them off or streamed.
 - counters.
 
 The snapshots are shared between connections (P3-SP). By L2 there is no carried set, so
-`rs_carried.h`'s host-wide index serves only /6–/10 connections. D7's served set pins the hashes
+`rs_carried.h`'s host-wide index serves only /6–/10 connections. The host's served set (render-stream-2.md's pinning rule) pins the hashes
 of each connection's in-flight transactions and of the current captured state. That is at most
 (viewers·w + 1) states, all shared. None of it grows with the session. P3-SP measured +0.2 MB a
 minute with the index. /11 also removes the index's 40 B a hash: 19 MB for 479,034 hashes in a
@@ -216,7 +209,7 @@ names(S_d)**. It drops the payload as soon as the hash leaves H. Nothing is kept
 - A dropped **inline-sized** hash that returns arrives inline again. The host pruned it too (L1),
   so it sends the record. A /11 receiver therefore **never fetches an inline-sized hash over HTTP**.
   Check `inline-fetch-zero` makes this visible.
-- A dropped **out-of-band** hash that returns is a GET, served under D7's unchanged rule. The
+- A dropped **out-of-band** hash that returns is a GET, served under render-stream-2.md's unchanged pinning rule. The
   browser's HTTP cache (`immutable`) usually answers it. The cost is bounded by the host's churn of
   large payloads. In `a8-2` that is 4 re-fetches in 1,152 menu transactions and none in combat.
 - An explicit `RS_RECEIVER_MEMORY_BUDGET_BYTES` (G7k) still evicts within H, oldest first, as
@@ -353,7 +346,7 @@ rules for the new entry.
 
 ## Multimesh (PM1)
 
-As particles-multimesh-design.md "/11: multimesh":
+/11 adds:
 
 - the `multimeshes` table (and `removed_multimeshes` on a patch), immediately after the material
   table's keys and before `shader_time`;
@@ -371,8 +364,7 @@ With one change to align it with dynamic meshes: `buffer_f` follows `u8`'s rule 
   4·custom.
 
 A multimesh buffer is state, one per entry, so T1 already covers it. The headless pre-draw pump
-and the particles RID shim stay **opt-in** (`GRC_PREDRAW_PUMP=1`, particles-multimesh-design.md
-"Headless shims"), and PM1 builds neither ("As built (PM1)" rule 14). Without the pump a headless host never calls `multimesh_set_buffer`, and its
+and the particles RID shim stay **opt-in** (`GRC_PREDRAW_PUMP=1`), and PM1 builds neither ("As built (PM1)" rule 14). Without the pump a headless host never calls `multimesh_set_buffer`, and its
 multimeshes publish their adopted or creation buffer only. That is typed in the hook census, not
 silently wrong. GPU particles stay `/12`.
 
@@ -400,7 +392,7 @@ meta.
   the stream. A fold applies the newest state once. Its dynamic bodies are the newest accepted
   ones, so a body a later folded transaction replaced is never uploaded. A record that arrived
   for a transaction not yet accepted is in R ⊆ C ⊆ H, so it is never dropped (the window the P3-SP
-  storm lived in). D7's pins over in-flight transactions are unchanged.
+  storm lived in). The host's pins over in-flight transactions are unchanged.
 - **Multiple viewers (P3-SP's shared encodes).** A connection's message batch for a target T is
   determined by (B, T, version): the records inline(T) \ inline(B), plus the transaction with its
   `mesh_u8` and `mm_f32` content. So P3-SP's re-stamp sharing extends from the transaction to the
@@ -427,7 +419,7 @@ meta.
 | prune | after every accepted transaction | C ← C ∩ names(S): one reference count per named hash, updated from the delta (each changed or removed entry's old hashes), so a transaction costs O(its delta), not O(state) |
 | `mesh-dynamic`, `mesh-u8-offset` | new | "Dynamic mesh surfaces" |
 | `payload-size` | body checks | also on `mesh_u8` bodies |
-| `multimesh-entry`, `multimesh-ref`, `multimesh-version`, `mm-offset` | new (PM1) | particles-multimesh-design.md |
+| `multimesh-entry`, `multimesh-ref`, `multimesh-version`, `mm-offset` | new (PM1) | "Multimesh (PM1)" |
 | `mesh-dynamic-policy` | session | "Session record" |
 | `bad-magic` | framing | `GRSB` only |
 | `content-version-stable` | new (WB) | a patch entry carries `commands` equal to the base's (JSON and floats, by bit pattern) under a moved `content_version` |
@@ -468,11 +460,10 @@ the receivers' default `inbound_buffer_bytes` of 16 MiB.
   - Every /2–/10 session is byte-identical to what it was. `golden-2/` to `golden-10/` pass
     unchanged, and `rs_live_window_test`'s window-1 transcripts stay pinned.
 - **Conditional hooks.** The multimesh slots (and UIT's `canvas_item_set_use_identity_transform`)
-  follow CG1's rule (gate8-design.md "Calibration for
-  /10 (CG1)"): installed only under `GRC_STREAM_VERSION=11`, and otherwise neither planned nor
+  follow /10's rule (render-stream-10.md "Capture"): installed only under `GRC_STREAM_VERSION=11`, and otherwise neither planned nor
   omitted. An older calibration record omits them and keeps the methods unobserved. The
   calibrator version does not move.
-- **The product hand-off** (gate8-product-handoff.md) names /11 for a long-session seat only after
+- **The streaming-host reference** (streaming-host.md) names /11 for a long-session seat only after
   W11z passes. Until then it keeps its current version.
 - /11 is unreleased until W11z, so increments may still extend it (PM1 adds its states to
   `golden-11/`, as P3-TM extended /10).
@@ -508,7 +499,7 @@ the receivers' default `inbound_buffer_bytes` of 16 MiB.
   bottleneck 3). The web export does the same through the same capi, with no JavaScriptBridge
   fetch for dynamic meshes.
 - Multimesh (PM2): re-issue the `multimesh_*` calls and `canvas_item_add_multimesh`
-  (particles-multimesh-design.md "Receivers"; as built: "As built (PM2)" below).
+  ("As built (PM2)" below).
 - Multimesh in GSW (PM3): an instanced draw per mesh surface from the buffers ingested at accept
   ("As built (PM3)").
 
@@ -568,7 +559,7 @@ detail wrong, these rules are now the wire. They are frozen with /11.
    function of (B, T), so shared encodes share it. golden-10 used a hand order. Index entries in
    `inline_resources` carry `before_seq`, because a hash may now be carried more than once. The
    golden's inline stream carries texture variants inline, which the format allows. The capture
-   never does (texture-delivery D12(c)), so its inline(S) has no variants: the C++ planner's
+   never does (small textures stay off Basis), so its inline(S) has no variants: the C++ planner's
    `InlinePolicy::inline_variants` is off by default and on only for the golden.
 3. **Multimesh before PM1.** Every /11 transaction carries the ninth block `mm_f32`. Until PM1
    adds the `multimeshes` table, it must be empty: a float in it is `mm-offset`, the code PM1's
@@ -615,7 +606,7 @@ detail wrong, these rules are now the wire. They are frozen with /11.
 
 ### As built (W11b): decisions
 
-W11b wired the capture ([results/p3/w11b.md](../results/p3/w11b.md)). Where the design left a
+W11b wired the capture. Where the design left a
 choice open, or could not hold as written, these rules are now the capture's. Only the first one
 touches what a validator sees; it is a refinement of WB's rule, not a new rule.
 
@@ -645,7 +636,7 @@ touches what a validator sees; it is a refinement of WB's rule, not a new rule.
    bodies total at most `max_bytes` (checked at promotion only). It is never demoted. A dynamic
    mesh that is empty at a snapshot is encoded like a static one (it has no surface to carry) and is
    dynamic again once refilled. The serial moves at every byte change.
-3. **Dynamic surfaces are hashed only when read** (HC3, `results/p3/hc3.md`; W11b deferred it).
+3. **Dynamic surfaces are hashed only when read**.
    A region update is written into the mirror's copy of the GRM1 payload (copied first when a
    snapshot published it) and compared by memcmp (rule 2); nothing is re-encoded or hashed at the
    hook unless the hook log is on. The snapshot computes a dynamic surface's SHA-256 only while
@@ -686,7 +677,7 @@ fixture shows it did not hold.
 
 ### As built (W11c): decisions
 
-W11c makes GSW apply /11 ([results/p3/w11c.md](../results/p3/w11c.md)). Nothing here changes the
+W11c makes GSW apply /11. Nothing here changes the
 wire; these rules are rs-core's receiver API, which W11d (`rs-core-capi`, the native receiver) and
 W11e (the web export) call too.
 
@@ -745,7 +736,7 @@ W11e (the web export) call too.
 
 ### As built (W11d): decisions
 
-W11d makes the native receiver apply /11 ([results/p3/w11d.md](../results/p3/w11d.md)): the
+W11d makes the native receiver apply /11: the
 Godot template with the Rust core through `rs-core-capi` (`receiver/ext/`). Nothing here changes
 the wire. Decisions 1 and 6 add to rs-core's receiver API, which the web export (W11e) reaches
 through the same capi.
@@ -803,7 +794,7 @@ through the same capi.
 
 ### As built (W11e): decisions
 
-W11e makes the web export apply /11 ([results/p3/w11e.md](../results/p3/w11e.md)): the 4.5.1
+W11e makes the web export apply /11: the 4.5.1
 `web_dlink_nothreads` template with W11d's `rs-core-capi` and shim built for wasm (G7xw's side
 module). Nothing here changes the wire or rs-core; the capi, the shim and W11d's receiver.gd paths
 are the native receiver's, so the web export needed only its own file and live paths opened.
@@ -841,9 +832,9 @@ are the native receiver's, so the web export needed only its own file and live p
 
 ### As built (PM1): decisions
 
-PM1 adds multimesh to /11 ([results/p3/pm1.md](../results/p3/pm1.md)), without a version bump:
+PM1 adds multimesh to /11, without a version bump:
 /11 is unreleased, and the magic stays `GRSB`. These rules are the wire; where they refine
-particles-multimesh-design.md "/11: multimesh" or "Multimesh (PM1)" above, they win.
+"Multimesh (PM1)" above, they win.
 
 1. **Optional keys.** A /11 transaction carries `multimeshes` only when it is non-empty, and
    `removed_multimeshes` only when it is non-empty (so a full transaction never carries
@@ -1000,8 +991,7 @@ particles-multimesh-design.md "/11: multimesh" or "Multimesh (PM1)" above, they 
 
 ### As built (PM2): decisions
 
-PM2 makes the native receiver and the web export draw /11 multimeshes
-([results/p3/pm2.md](../results/p3/pm2.md)). Nothing here changes the wire, rs-core or the capture.
+PM2 makes the native receiver and the web export draw /11 multimeshes. Nothing here changes the wire, rs-core or the capture.
 The capi and the C++ shim are shared, so the web export (the same side module for wasm) needed no
 code of its own.
 
@@ -1061,7 +1051,7 @@ code of its own.
 
 ### As built (PM3): decisions
 
-PM3 makes GSW draw /11 multimesh ([results/p3/pm3.md](../results/p3/pm3.md)). Nothing here changes
+PM3 makes GSW draw /11 multimesh. Nothing here changes
 the wire. Rule 16's calls are used as written.
 
 1. **Ingest at accept.** `MultimeshBuffers` (`rs-core` `apply::multimesh`, in `PayloadStore`)
@@ -1130,8 +1120,7 @@ the wire. Rule 16's calls are used as written.
 ### As built (UIT): decisions
 
 UIT closes PM2's capture gap (rule 8 of "As built (PM2)"): it carries
-`canvas_item_set_use_identity_transform` on /11 and every receiver honours it
-([results/p3/uit.md](../results/p3/uit.md)). /11 is unreleased, so the key is additive, as PM1's
+`canvas_item_set_use_identity_transform` on /11 and every receiver honours it. /11 is unreleased, so the key is additive, as PM1's
 table was: no version bump, the magic stays `GRSB`.
 
 1. **The engine** (`renderer_canvas_cull.cpp` 4.5.1). `_cull_canvas_item` always composes the item's
@@ -1165,7 +1154,7 @@ table was: no version bump, the magic stays `GRSB`.
    change (no feature list names the method), except that `capture.hooks_planned` gains
    `canvas_item_set_use_identity_transform` at /11.
 5. **Byte identity.** A stream whose host never sets the flag is byte-identical to before UIT,
-   transaction for transaction, at /11 and below (results/p3/uit.md "Byte identity").
+   transaction for transaction, at /11 and below.
 6. **Decoded and resolved forms** keep the key verbatim, in the same place and only when true
    (`render-stream-2.ts`, rs-core's `Item::use_identity_transform`, `canon.rs`, so the native and
    GSW state dumps carry it too).
@@ -1197,8 +1186,7 @@ GSW's coding resync stepped the wasm heap up for good (W11z: 561.5 -> 969.7 MB o
    no resident textures. Its first apply, the resync's full, therefore queued every texture's pixels
    into the draw list's byte arena (`texture_bytes`) in one transaction, to put back what the GPU
    already held. A viewer that had built its state transaction by transaction never held that much
-   at once, and wasm memory never shrinks. Heap attribution (a per-call page counter, STS2 combat,
-   `results/p3/grh.md`): `apply` +384.1 MB at the resync; a viewer joining at the same moment pays
+   at once, and wasm memory never shrinks. Heap attribution (a per-call page counter, STS2 combat): `apply` +384.1 MB at the resync; a viewer joining at the same moment pays
    the same in its first apply (+496 MB), which is a join's cost, not a defect. The decode buffers
    (`LiveCoding`, `rx`) are not the cause: a full transaction is 1.5 MB on STS2, and the resync's
    accept costs +24 MB.
@@ -1237,12 +1225,11 @@ A GSW viewer that joins a running scene paid its whole texture set twice in its 
    `first-apply-arena-*` (at most half of the first draw's texture bytes from the arena; any scale)
    and `first-apply-heap-*` (heap after the first draw within 32 MiB of the heap before the apply;
    game scale), and `first-apply-arena-caught` requires the sabotage leg (`arena-upload`, beside
-   `rebuild-reupload`) to fail the first. `results/p3/glj.md`.
+   `rebuild-reupload`) to fail the first.
 
 ## Predicted cost (STS2, from the kept recordings)
 
-One viewer that takes every transaction, `GRC_RESOURCE_INLINE_MAX_BYTES=4096`. Method and both
-recordings are in results/p3/w11-d.md. `a8-2`, combat (3,315 transactions):
+One viewer that takes every transaction, `GRC_RESOURCE_INLINE_MAX_BYTES=4096`. `a8-2`, combat (3,315 transactions):
 
 | | /10 | /11, prune only (`off`) | /11 (`auto`) |
 | - | -: | -: | -: |
@@ -1251,7 +1238,7 @@ recordings are in results/p3/w11-d.md. `a8-2`, combat (3,315 transactions):
 | new receiver store entries per transaction | 102.3 | 0 (bounded) | 0 (bounded) |
 | receiver store entries, maximum | 352,744 at the end, growing | 884 | 876 |
 | inline re-sends per transaction | — | 0.19 | 0.000 |
-| GSW heap growth at 49.6 applies/s | 6.6 MB/s (P3-SP measured 6.7) | ~0 | ~0 |
+| GSW heap growth at 49.6 applies/s | 6.6 MB/s | ~0 | ~0 |
 
 On the menu, prune-only re-sends 5.9 records a transaction: the looping menu animations' poses
 recur, and the bytes rise by 6 %. With `auto` those meshes are dynamic, and /11 is 8.8 % below /10.
@@ -1260,7 +1247,7 @@ the recordings cannot show (the hooks did not exist).
 
 ## Warm wire budget (WB)
 
-WB ([results/p3/wb.md](../results/p3/wb.md), `scripts/lib/wire-budget.py`) measured where a warm
+WB (`scripts/lib/wire-budget.py`) measured where a warm
 transaction's bytes go in both STS2 recordings, and what each candidate coding saves. Warm combat
 (`a8-2`, per transaction, at 60 fps):
 
@@ -1291,7 +1278,7 @@ Each measured win and where it belongs:
 | permessage-deflate (context takeover) | → 40,340 B (19.4 Mbps): the 32 KB window cannot reach the previous frame | not the default: Godot's `WebSocketPeer` has no extension support, so it is browser-only |
 | zstd-9 instead of 3 | −1 to −6 %, 5x the host time (2.2 ms) | not worth it |
 | delta-coded transforms and item floats by item id (XOR, then compress) | 12.5 KB + 24.5 KB of floats → 0.26 KB. Base-prefix zstd already gets them to the same size | **not worth it**: no wire change for item or command floats |
-| tween descriptors instead of per-frame item transforms and modulates (TW, 2026-10-28) | ceiling 12,477 → 12,345 B coded (−1.1 %), menu 0 | **not worth it**: no wire change ([tween-descriptors-design.md](tween-descriptors-design.md)) |
+| tween descriptors instead of per-frame item transforms and modulates (TW) | ceiling 12,477 → 12,345 B coded (−1.1 %), menu 0 | **not worth it**: no wire change |
 | XOR-delta mesh bodies against the base's body of the same mesh | lean base-prefix 12,471 → 10,322 B (−1 Mbps) | **final binary-structure swap**, with the quantized tier |
 | quantized mesh bodies: AABB-relative u16 positions, u16 UVs | with XOR: → 5,586 B (2.7 Mbps); max error 0.05 px | **final binary-structure swap** |
 | quantized item and command floats (fixed-point positions, u8 colours) | 25 KB raw, < 0.3 KB once compressed | final swap at most; transform linear parts and overbright colours stay f32 |
@@ -1361,7 +1348,7 @@ Each measured win and where it belongs:
 
 ### As built (W11t): decisions
 
-W11t built the transport ([results/p3/w11t.md](../results/p3/w11t.md)). Measured on W11b's STS2
+W11t built the transport. Measured on W11b's STS2
 recording through the capture's own encoder: warm combat **12,506 B a frame (6.0 Mbps)**, the map
 321 B and the menu 1,111 B, records included. These rules are now the coding's:
 
@@ -1443,39 +1430,13 @@ recording through the capture's own encoder: warm combat **12,506 B a frame (6.0
 video. The menu is 0.43 Mbps and the map 0.21. Uncompressed, the lean /11 message is still
 38 Mbps, so the transport coding is what meets the video comparison.
 
-What is still missing:
-
-- the zstd decoder in the receivers: **built (W11t)** in rs-core; each receiver still has to call
-  it ("As built (W11t)", 10);
-- the cold start's texture GETs;
-- the phone's decode cost: unmeasured; the projection is about 5 ms of `meta` per combat
-  transaction on the g31 before the lean rule;
-- the host's capture cost: 7–8 ms a frame against NVENC's 1–3 ms.
-
-The host cost is snapshot and diff (O(table)), not encoding (0.6 ms), so it is P3-CAP's dirty-set
-publication, not a wire question.
+The host's capture cost is snapshot and diff (O(table)), not encoding, so it is a capture
+question, not a wire question.
 
 ## Increments
 
-Each lands as one commit with its result doc. Timing legs stay real time and go to the milestone
-sweep.
-
-| Id | Scope | Stock-template fixture | Checks | Sabotages |
-| -- | ----- | ---------------------- | ------ | --------- |
-| **W11a** | codecs, goldens and validators: `ProtocolVersion::V11` in the C++ encoder (`rs2_codec`, `rs2_diff`: records from (B, T), `u8` from serials), `render-stream-2.ts` and `rs-core` (prune by reference count, `resource-unnamed`, `mesh-dynamic`, `mesh-u8-offset`, `body_sha256`; WB's `content-version-stable` and `unsupported: null`), `golden-11/`; `rs-core-capi` pin to /11 | `golden-11/` | the golden checks above. A property test (`cargo test`): over random state sequences with resyncs, folds and window 2, the validator's C equals inline(S) after every transaction (L2), and a hub serving N connections from different bases emits records that each connection's validator accepts (L1). `rs_live_test` gains `test_records_from_base_and_target` | `keep-carried` (codec flag: the encoder keeps /10's lifelong set at /11, so state 13 fails `resource-missing`); `early-prune` (prune before the transaction's checks fails `resource-missing` at the first transaction with records, decision 10) |
-| **W11b** | capture: mirror classification and serials, `mesh_u8` from the snapshot, `resources.mesh_dynamic`, `GRC_MESH_DYNAMIC*`, /11 file sinks and listener offer, `rs_carried` bypassed for /11 connections, `stale-dynamic`; WB's stable `content_version` and patched `unsupported` (sabotage `cv-churn`) | `fixtures/capture-scale` (P3-CAP; STS2's combat shape, every pose new); `fixtures/gate6-scene` `animate` (the `MS` mesh recurs every 90 frames); `gate5-mesh` (g5c, g5e) | `dyn-wire`: every body at every transaction, rebuilt into GRM1, hashes to the hook log's surface hash for that frame. `dyn-classify`: dynamic from the second change within K, never demoted. `carried-equals-names`: the host's per-connection records are inline(T) \ inline(B). `resend-on-return` (gate6-scene with `GRC_MESH_DYNAMIC=off`: each return of `MS`'s hash re-carried exactly once). `host-flat`: `bench-live-scale.sh --viewers 4` null, 10 min, host RSS ≤ +0.2 MB/min. Byte identity below /11 (`cmp-rec.ts`, gates 1, 2, 5 against `main`) | `perturb-vertex` fails `dyn-wire`; `stale-dynamic` fails `dyn-wire`; `keep-carried` (host) fails `resend-on-return` with the receiver's `resource-missing` |
-| **W11c** | GSW: rs-core retention (H, prune on accept), applier geometry by mesh id, `bufferSubData` uploads, `inline-fetch-zero`; GSW offers `.11` under `RS_RECEIVER_PROTOCOL=11` | `capture-scale` through `bench-live-scale.sh` with a GSW viewer; `gate6-scene` soak (`soak-inline`) at /11; g7-5 and g7-2 groups at /11 | `store-bounded`: 20 min on `capture-scale` with the payload store's entries ≤ \|names\| + window and a wasm-heap slope after warm-up ≤ 1 MB/min (at /10 the same leg grows about 280 MB/min, P3-SP `long-rx-before`). `inline-fetch-zero`. `resend-applied`: gate6-scene `MS` returns pixel-match the reference. `gsw-band` on gate 5 meshes at /11. Apply rate ≥ /10's on the same leg (real time, milestone) | `no-prune` (receiver keeps C lifelong) fails `resend-applied` with a typed `resource-duplicate`; `evict-carried` (drop a hash still in C) fails `inline-fetch-zero`; `stale-dynamic-rx` (ignore a body) fails `gsw-band` |
-| **W11d** | native receiver: capi maps prune, `RsResourceCache` drops on leave, dynamic region uploads | `capture-scale` with a native viewer; `gate5-mesh`; `gate6-scene` | `store-bounded` (RSS slope and cache entries); `records-per-tx` ≤ 1 + static churn (≈ 1 on `capture-scale`); `resend-applied`; g5c and g5e `reference` at /11 | `no-prune`, `evict-carried`, `stale-dynamic-rx` as W11c, failing the native checks |
-| **W11e** | web export: the same capi on wasm, the web leg of every W11d check | as W11d through the web export (g7-5 and g7-2 web groups at /11) | as W11d, plus `rss-bounded-renderer` (G7kr) on a 20-minute `capture-scale` leg | as W11d |
-| **W11t** | the live transport coding: base-prefix zstd ("Transport", "As built (W11t)"), `GRC_LIVE_CODING`, the hello's `live_coding`, rs-core's decoder (`ruzstd`), the capi and wasm calls | `golden-11/coding/`; g8w11's `coding/` legs (capture-scale, live, Node viewers on rs-core's wasm) | `coding-wire` (capture encoder to rs-core, byte-equal, golden-11 and g8w11 captures), `coding-negotiated`, `coding-lossless` (decoded = the host's tap), `coding-validates`, `coding-applies-as-off`, `coding-smaller`; `rs_live_test` (lockstep viewers share the coded bytes) | `drop-message` (a dropped base) and `coding-wrong-prefix`: `coding`, then resync |
-| **PM1** (in /11) | particles-multimesh-design.md's PM1, with `buffer_f` on W11a's (B, T) rule; adds multimesh states to `golden-11/` before /11 is released | `fixtures/gate8-mm` (hook-log legs), goldens | `mm-hook-census`, `mm-wire`, `mm-frame-pairing` (particles-multimesh-design.md) | `perturb-instance`, `stale-buffer` |
-| PM2, PM3 | receivers (native and web, then GSW), unchanged from particles-multimesh-design.md but on /11 | `gate8-mm` | as there | as there |
-| **UIT** (in /11) | `canvas_item_set_use_identity_transform`: a conditional /11 hook (slot 461), the item key `use_identity_transform`, the native, web and GSW receivers ("As built (UIT)") | `gate8-mm` (D_GLOBAL un-skipped, plus a rect on the identity item and on a child), `golden-11/` states 22-23 | `mm-reference` and `mm-gsw-band` over every cell; byte identity (`cmp-rec.ts`) | `ignore-identity-transform` fails `mm-reference-catches-ignore-identity-transform` and `mm-gsw-catches-ignore-identity-transform@gsw` |
-| **W11z** | STS2 acceptance | none (game leg) | **one GSW viewer, /11, window 2, inline 4096, in combat for ≥ 20 min** (the combat idles; spine keeps animating): wasm heap slope over minutes 2–20 ≤ 1 MB/min (/10: about 400 MB/min); payload store entries ≤ \|names\| + window; zero inline-sized GETs; applies/s and latency no worse than P3-SP's 49.6/s and 16.5 ms (load-gated); combat dB within 0.1 of P3-CT's replay; host RSS flat; `survivors: none` and hash sets unchanged. A 3-minute /10 leg first, as the "before" slope | none in game (the sabotages live on the fixtures) |
-
-Order: W11a → W11b → W11c → W11d and W11e in parallel → W11z. PM1 follows W11b (both touch the
-capture's mirror and encoder) and must land before W11z releases /11. PM2 and PM3 can follow
-W11z.
+/11 was built in increments (W11a to W11e, W11t, PM1 to PM3, UIT); each one's rules are its
+"As built" section above.
 
 ## Not proven by this design
 
@@ -1484,8 +1445,7 @@ W11z.
   stop being hashes. Prune-only on the menu re-sends 2.9 KB a transaction. The rule would cost N
   states of memory, and N = 1 is what /11 specifies.
 - **zstd on the WebSocket** (P3-LV) is no longer unproven: WB measured it, and "Warm wire budget
-  (WB)" specifies base-prefix zstd as a live transport option beside /11. The transport increment
-  itself (W11t) still has to land.
+  (WB)" specifies base-prefix zstd as a live transport option beside /11 ("As built (W11t)").
 - **Quantized multimesh encodings** and GPU particles (`/12`).
 - Whether STS2's product seat runs headless (the pre-draw pump's criterion 5).
 - Why the dropped P3-SP bound's LRU order reached the newest entries ("The P3-SP re-fetch storm").

@@ -1,4 +1,4 @@
-//! Lowering: one item's resolved commands to item-local triangles (gate7-design.md Q5's lowering
+//! Lowering: one item's resolved commands to item-local triangles ('s lowering
 //! table, G7x "Scope"). Every op ports Godot 4.5.1's own construction (`renderer_canvas_cull.cpp`
 //! `canvas_item_add_*`, `rasterizer_canvas_gles3.cpp` `_record_item_commands`, `canvas.glsl`), so
 //! the vertex counts are the engine's; the slice's approximations are named in [`Shortcut`] and
@@ -78,8 +78,8 @@ pub enum Shortcut {
     /// G7t lowers every feather as the engine builds it; this never fires since.
     AaFeatherOmitted,
     /// GL lines and points (width < 0 lines, polylines and multilines, 2-point primitives, mesh
-    /// `lines`/`line_strip`/`points` surfaces) drawn as 1-px quads. G7t measured them inside gate
-    /// 5b's thin-line band (D13) with every decided pixel exact, so this is counted, not typed.
+    /// `lines`/`line_strip`/`points` surfaces) drawn as 1-px quads. Their pixels fall inside the
+    /// thin-line band with every decided pixel exact, so this is counted, not typed.
     HairlineAsQuads,
     /// Nine-patch `tile`/`tile_fit` axes drawn as `stretch`: only past [`MAX_NINE_PATCH_CELLS`]
     /// tiles (G7t lowers the tile modes as repeated quads).
@@ -149,7 +149,7 @@ impl Shortcut {
 /// past it draws its middle as `stretch` and counts [`Shortcut::NinePatchTileAsStretch`].
 pub const MAX_NINE_PATCH_CELLS: usize = 16384;
 
-/// Receiver sabotages that act on the lowering (gate7-design.md Q5 "Sabotages"): the native
+/// Receiver sabotages that act on the lowering: the native
 /// receiver's, defined as the former GDScript applier (`rs_applier.gd`, removed in G7gd) defines them, plus G7t's GSW-only `polygon-winding`.
 /// Each exists only to fail a check.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -585,7 +585,7 @@ impl<'a> Builder<'a> {
     }
 
     /// A width-1 quad along a hairline segment: GL line rasterization stands in as the 1-px quad
-    /// centred on the segment (Q5; G7t measured it inside gate 5b's thin-line band).
+    /// centred on the segment (within the thin-line band).
     fn hairline(&mut self, a: [f32; 2], b: [f32; 2], ca: [f32; 4], cb: [f32; 4]) {
         let d = geom::normalized([b[0] - a[0], b[1] - a[1]]);
         let t = [d[1] * 0.5, -d[0] * 0.5];

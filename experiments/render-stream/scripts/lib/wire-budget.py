@@ -1464,7 +1464,7 @@ def cmd_measure(argv):
 
 # ---------------------------------------------------------------- WB-D: a /13 binary prototype
 #
-# `proto13` (WB-D, results/p3/wb-d.md, protocol/render-stream-13-binary-design.md) reads a /11 or
+# `proto13` (WB-D) reads a /11 or
 # /12 file recording and re-encodes every transaction record as the binary structure the /13 design
 # proposes, under several block codings, then measures each warm patch raw, zstd-3 per message and
 # zstd-3 with the previous message of the same coding as a raw prefix (W11t's base-prefix coding).
@@ -2447,7 +2447,7 @@ def cmd_proto13(argv):
 
 # ---------------------------------------------------------------- BIN-D: today's /13 wire
 
-# BIN-D (results/p3/bin-d.md) measures the /13 wire as built (W13a: /12's JSON meta and framing,
+# BIN-D measures the /13 wire as built (W13a: /12's JSON meta and framing,
 # the three predicted blocks) from a real /13 recording (`rs-core-check transcode --to 13`), and
 # what two further wire changes would do to it:
 #

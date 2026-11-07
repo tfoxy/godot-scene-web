@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for lib/remote-determinism.ts (docs/remote-compute.md R1): fabricated run directories
+// Self-test for lib/remote-determinism.ts: fabricated run directories
 // prove that identical runs agree (volatile ids, paths and timestamps masked; a float spelled two
 // ways is one value), and that each kind of disagreement is caught and reported: one changed pixel
 // (count, bbox, channel delta), a missing shot, a changed dump value, a missing dump, and runs on

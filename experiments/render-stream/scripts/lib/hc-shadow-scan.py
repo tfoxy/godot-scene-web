@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HC4a shadow-oracle account of one validate run (host-cost-design.md "Byte-identity proof method").
+"""HC4a shadow-oracle account of one validate run.
 
     python3 lib/hc-shadow-scan.py <run dir>
 

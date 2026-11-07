@@ -1,4 +1,4 @@
-# TRK6 (protocol/tracks-design.md Q6, "As built (TRK6)"): turns the gsw-input reference injector
+# Turns the gsw-input reference injector
 # (packages/input/godot/addons/gsw_input/*.gd) plus the capture's glue (src/track_inject_glue.gd)
 # into ONE GDScript source for GDScript.new() + source_code + reload(), and a header that embeds
 # it. Run as `cmake -P` by an add_custom_command (CMakeLists.txt).

@@ -292,7 +292,7 @@ export interface SelectDeviceOptions {
 
 /**
  * Pick the device to drive, or explain — in one message — exactly what to do about it. This is the
- * FIRST thing a device run does: a workstream that cannot see the phone should say so in a second,
+ * FIRST thing a device run does: a run that cannot see the phone should say so in a second,
  * not after building a 15 MB atlas.
  */
 export async function selectDevice(

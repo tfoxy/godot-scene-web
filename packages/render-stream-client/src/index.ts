@@ -1,4 +1,4 @@
-// @godot-scene-web/render-stream-client: a lean live render-stream client (mirror-client-design.md).
+// @godot-scene-web/render-stream-client: a lean live render-stream client.
 // Private until the wire freezes; consumers alias this source.
 
 export {

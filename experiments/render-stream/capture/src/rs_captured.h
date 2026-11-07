@@ -6,10 +6,9 @@
 // path.
 //
 // The payloads are the GRT1 byte sequences the texture hooks copied at the call
-// (rs_texture_payload.h, gate2-design.md D3), shared, never copied again: a snapshot keeps the
+// (rs_texture_payload.h), shared, never copied again: a snapshot keeps the
 // versions it names alive for as long as anything holds it (a publisher's patch base, a live
 // connection's base, a stale-coalesce copy). That is how payload pinning is implemented
-// (gate2-design.md D7, Q3 "Texture mirror").
 //
 // Engine-free, header-only.
 #ifndef GRC_RS_CAPTURED_H
@@ -27,7 +26,7 @@
 namespace grc {
 namespace rs {
 
-// TDR (live-swap-design.md Q5 "TDR"): the coding a payload body is held in. A GRT1 texture body
+// the coding a payload body is held in. A GRT1 texture body
 // is coded once where it is built (the texture worker, or the hook under GRC_TEXTURE_WORKERS=sync)
 // with the host's HTTP coding (GRC_HTTP_ENCODING, zstd by default) when that makes it smaller, and
 // the mirror, the served set and every snapshot then share only that coded body. The content hash
@@ -64,7 +63,7 @@ class PayloadBytes : public std::vector<std::uint8_t> {
 };
 using PayloadPtr = std::shared_ptr<const PayloadBytes>;
 // Content hash (64 lowercase hex) -> the complete render-stream-texture/1 or
-// render-stream-mesh/1 payload. HC4b (host-cost-design.md D1): a persistent, copy-on-write map
+// render-stream-mesh/1 payload. a persistent, copy-on-write map
 // (rs_shared_map.h), so a snapshot whose payloads did not move shares the previous one's map, and
 // the serving and budget code walks two maps over their differing chunks only. Its weight() is
 // payload_map_bytes().
@@ -76,7 +75,7 @@ struct SharedMapWeight<PayloadPtr> {
 };
 using PayloadMap = SharedStrMap<PayloadPtr>;
 
-// HC4b (host-cost-design.md D1 "The diff, record planning, serving and budget"): how many
+// how many
 // entries of a state name a payload hash, by the rule of rs2_diff.h payload_names() -- `main` as
 // an `ok` image's hash, a static `ok` mesh's surface or an `ok` payload-source shader's code,
 // `variant` as an `ok` image's texture variant -- and its payload_bytes. A hash no entry names has
@@ -126,7 +125,7 @@ void shader_entry_names(const rs2::ShaderEntry &sh, Add add) {
 
 class TextureJob;  // rs_texture_worker.h
 
-// G8kw (texture-delivery-design.md D11): one `ok` image entry of `state.textures` whose hash and
+// one `ok` image entry of `state.textures` whose hash and
 // payload a texture worker has not delivered yet. Its entry carries an empty hash until
 // resolve_captured() (rs_texture_worker.h) fills it.
 struct PendingTexture {
@@ -142,7 +141,7 @@ struct Captured {
   PayloadMap payloads;
   // Empty unless GRC_TEXTURE_WORKERS=<N> left a texture's content to a worker (G8kw).
   std::vector<PendingTexture> pending;
-  // HC3 (host-cost-design.md D2): some dynamic mesh surface of `state` carries a payload key, not
+  // some dynamic mesh surface of `state` carries a payload key, not
   // its SHA-256 (rs2::MeshSurface::hash_is_key): only a /11-or-later connection may be sent it.
   bool keyed_surfaces = false;
   // HC4b: the mirror's name index of `state` (NameIndex), valid only while `names_valid` (a

@@ -1,5 +1,5 @@
 //! `rs-core-capi`: the C ABI over `render-stream-core` for the Godot receiver's GDExtension
-//! adapter (gate7-design.md Q14e, G7xn). `receiver/ext/rs_core_ext.cpp` (C++ over the raw
+//! adapter. `receiver/ext/rs_core_ext.cpp` (C++ over the raw
 //! `gdextension_interface.h`, no godot-cpp) links this staticlib, registers the `RsCore` class, hands
 //! PackedByteArrays in, turns the Variant trees (`vt.rs`) into Variants and executes the
 //! RenderingServer call stream (`ops.rs`) as ptrcalls. GDScript keeps configuration, I/O,
@@ -115,7 +115,7 @@ pub unsafe extern "C" fn rsc_session(
     guard(h, 0, |c| c.session(data, offset, version))
 }
 
-/// G8kp (texture-delivery-design.md D3): the delivery preferences (`texture_encodings`,
+/// the delivery preferences (`texture_encodings`,
 /// `gpu_formats`). 1, or 0 with the error in text.
 ///
 /// # Safety
@@ -133,7 +133,7 @@ pub unsafe extern "C" fn rsc_set_delivery(
     guard(h, 0, |c| i32::from(c.set_delivery(encodings, gpu_formats)))
 }
 
-/// G8ku (texture-delivery-design.md D6): `keep` (0, the default) or `upgrade` (1) for a variant
+/// `keep` (0, the default) or `upgrade` (1) for a variant
 /// that appears at an equal version.
 #[no_mangle]
 pub extern "C" fn rsc_set_variant_upgrade(h: *mut RsCore, on: i32) {
@@ -149,7 +149,7 @@ pub extern "C" fn rsc_set_gl_compatibility(h: *mut RsCore, on: i32) {
     guard(h, (), |c| c.planner.gl_compatibility = on != 0);
 }
 
-/// G8kwh (texture-delivery-design.md "As built (G8kwh)"): WebGL's BC alignment rule (`on`: D3 skips
+/// WebGL's BC alignment rule (`on`: skips
 /// BC `block` variants, and `uastc` variants while a BC family is stated, of a texture whose level
 /// 0 is not 4-aligned). The web export sets it; the native receiver never does.
 #[no_mangle]
@@ -157,7 +157,7 @@ pub extern "C" fn rsc_set_bc_aligned_only(h: *mut RsCore, on: i32) {
     guard(h, (), |c| c.planner.delivery.bc_aligned_only = on != 0);
 }
 
-/// G8kf (texture-delivery-design.md Q3): the receiver could not transcode the variant whose hash is
+/// the receiver could not transcode the variant whose hash is
 /// the `hlen` hex bytes at `hash`; D3 skips it from now on. 1, or 0 for a malformed hash.
 ///
 /// # Safety

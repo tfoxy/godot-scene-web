@@ -85,7 +85,7 @@ function assert(name: string, ok: boolean, detail = ""): void {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The gate 0 timeline (gate0-design.md "Timeline"), in the render-stream-gate0-expected/1 shape.
+// The gate 0 timeline, in the render-stream-gate0-expected/1 shape.
 // ---------------------------------------------------------------------------------------------
 
 const to8 = (c: number): number => Math.round(c * 255);
@@ -136,7 +136,7 @@ const EXPECTED = {
     marker: shape([16, 16], MARKER_SIZE, t.marker),
   })),
   unsupported_variant: { from_step: 2, op: "canvas_item_add_animation_slice" },
-  // fixtures/gate0/expected.json "preexisting" (protocol/unknown-item-skip.md "Evidence").
+  // fixtures/gate0/expected.json "preexisting".
   preexisting: {
     scene: "res://preexisting.tscn",
     items: [
@@ -1391,7 +1391,7 @@ const scenarios: Scenario[] = [
     checks: { "leg-class-preexisting": false },
     classes: { preexisting: "success" },
   },
-  // protocol/unknown-item-skip.md "Evidence": the skip leg.
+  // The skip leg.
   {
     name: "a skip capture that never declared skip (a strict, complete recording) is success, failing its class and account",
     mutate: async (out, projects) => {
@@ -1740,7 +1740,7 @@ const TOGGLES: Record<Exclude<LegClass, "success">, Toggle> = {
     i.checkpoints[0].mismatched_pixels = 12;
     i.checkpoints[0].max_channel_delta = 255;
   },
-  // protocol/unknown-item-skip.md "Classification": a skip session's transaction that withholds.
+  // A skip session's transaction that withholds.
   "partial-unknown-items": (i) => {
     i.recording.transactions[0] = tx(1, {
       unknown_items: {

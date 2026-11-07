@@ -1,10 +1,8 @@
 // S2 `ancestor-rescale` — the harness's own ACCEPTANCE TEST.
 //
 // S1's scene, unchanged, under an ancestor whose `transform: scale()` is animated 1.0 -> 1.2 and
-// back, repeatedly. This is the card-focus / 1.2x hover-tip / view-scale shape that produced the
-// traced regression in the consuming project: 429 ms and 507 ms activation stalls, 1034.8 ms of
-// decode of which 97.6% fell inside the two focus/unfocus windows, and 40 of 68 images decoded twice
-// or more.
+// back, repeatedly. This is the card-focus / 1.2x hover-tip / view-scale shape that can make a
+// consuming page re-decode its images and stall activations around each focus/unfocus.
 //
 // WHY THE SCALE IS DRIVEN FROM JS, PER FRAME
 //
@@ -16,7 +14,7 @@
 // the entire point. `driver=css-transition` keeps the compositor-driven version available as a
 // control, so that claim is PROVED rather than asserted.
 //
-// THREE DRIVERS, AND WHAT MEASURING THEM ACTUALLY SHOWED
+// THREE DRIVERS
 //
 //   js-layout    (default) re-lays the subtree out in CSS px every frame: box sizes and positions
 //                change, so `regionBackgroundStyle` re-derives a new `background-size`. This is what
@@ -25,17 +23,11 @@
 //   js-transform             writes `transform: scale()` on an ancestor every frame from JS.
 //   css-transition           the same curve as a compositor-driven `@keyframes` animation.
 //
-// MEASURED NEGATIVE RESULT (Chrome for Testing 148, headless, SwiftShader, `cacheFamily: software`):
-// none of the three re-decodes the atlas. The scale genuinely reaches cc's decode cache — at
-// `focusScale=0.5` the cache keys' `target_size` moves from mip 1/2 (`382x406 -> 191x203`) to mip
-// 1/4 (`382x406 -> 96x102`) — but `SoftwareImageDecodeCache` satisfies the new mip by RE-SCALING an
-// existing decode instead of re-running the codec. Across every driver and both scales the page ran
-// the PNG codec exactly 4 times, `redecodeCount` stayed at 3 (the same 3 a completely static S1 run
-// produces), and no arm ever produced an activation gap over 100 ms.
-//
-// The traced regression (40 of 68 images decoded >= 2x, 429 ms and 507 ms activation stalls) is
-// therefore a `GpuImageDecodeCache` behaviour, on the decode path a real phone uses — precisely the
-// software/GPU split `docs/perf-harness.md` warns about. See that document for the full table.
+// ON THE SOFTWARE DECODE PATH (`cacheFamily: software`, e.g. headless SwiftShader) the scale reaches
+// cc's decode cache, but `SoftwareImageDecodeCache` satisfies a new mip by RE-SCALING an existing
+// decode instead of re-running the codec, so no driver re-decodes the atlas there. The re-decode is
+// a `GpuImageDecodeCache` behaviour, on the decode path a real phone uses — the software/GPU split
+// `docs/perf-harness.md` describes.
 
 import {
   applySpriteScale,

@@ -3,7 +3,7 @@
 // The screen-space shader paths (SCREEN_UV / SCREEN_TEXTURE / SCREEN_PIXEL_SIZE) need viewport
 // rects: the scene root's, and each such node's self-layer. Measuring those inside the rAF loop
 // is a FORCED LAYOUT every frame (and per SCREEN_UV node per frame) — a fixed main-thread cost
-// on a screen where nothing moves, which is what phone traces showed. The runtime now caches
+// on a screen where nothing moves. The runtime now caches
 // them and re-reads in ONE batch at tick start, only when something could have moved them:
 // `reconcile()`, a binding's ResizeObserver, a window resize, a new binding, or a conservative
 // TTL fallback (a CSS-transition-driven move fires none of the other four).

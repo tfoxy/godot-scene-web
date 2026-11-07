@@ -1,4 +1,4 @@
-// Gate 5 checks and leg classification (protocol/gate5-design.md "Q7", "G5b" and "G5d").
+// Gate 5 checks and leg classification.
 //
 // Everything here reads an evidence directory written by run-gate5.sh, or is pure over values
 // already read from one, so scripts/test/self-test-gate5.ts can drive each check with synthetic
@@ -13,7 +13,7 @@
 // blend), band pixels (antialiased feathers, thin GL lines) must show presence, and a same-build
 // reference repeat measures the budget every leg-to-leg comparison of a band uses (expected 0).
 //
-// Evidence layout under <out>/ (see scripts/README.md "Gate 5"):
+// Evidence layout under <out>/:
 //   legs.json, binary.json
 //   import/fixture/                editor --import of fixtures/gate5
 //   capture/                       400-frame capture host, GRC_ROOT_SIZE=enforce-min-size:

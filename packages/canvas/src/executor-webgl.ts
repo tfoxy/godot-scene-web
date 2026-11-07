@@ -85,8 +85,7 @@ import type { CanvasTextureHandle, TextureSampling } from "./textures";
  * box, and the rounded-clip uniforms. Everything else is per-instance data —
  * transform, source rect, tint, texture (an index into the batch's slot table),
  * colour matrix (an index into the batch's uniform table) — so it costs a few
- * floats instead of a draw call. See `./batcher`'s note for the measurement that
- * decided this.
+ * floats instead of a draw call. See `./batcher`'s note for why.
  *
  * ORDER OF OPERATIONS AROUND A STATE CHANGE, which is the one genuinely subtle
  * thing in this file. A flush DRAWS with whatever GL state is currently set, so
@@ -353,7 +352,7 @@ export interface CanvasExecutor {
   readonly maxTextureSlots: number;
   /** Build the program and buffers now, off whatever critical path the caller
    *  cares about. `execute` does it lazily otherwise — and reading a shader's
-   *  compile status BLOCKS on the driver (~100-250 ms on a phone), so paying it
+   *  compile status BLOCKS on the driver (for a long time on mobile GPUs), so paying it
    *  during the first frame is a visible hitch. */
   warmUp(): boolean;
   /** Draw one frame. Returns false when the program could not be built. */

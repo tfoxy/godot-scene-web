@@ -34,7 +34,7 @@ extends Node2D
 ##   RS_SCALE_NODES [0]           TAG1: ColorRect nodes in the scene tree under a Node2D child, each
 ##                                tagged as a game would (every other one in group scale_tagged,
 ##                                meta scale_tag "n<i>" and scale_slot <i>): items whose identity the
-##                                capture resolves (client-extensions-design.md §2.2)
+##                                capture resolves
 ##   RS_SCALE_NODE_BURST [0] at RS_SCALE_NODE_BURST_FRAME [warmup + 30]  that many more such nodes
 ##                                added in one frame (a screen load)
 ##   RS_SCALE_NODE_CHURN [0]      such nodes added, and as many of the oldest freed, every frame
@@ -53,8 +53,8 @@ extends Node2D
 ##                                /proc/thread-self/schedstat, read at the top of each _process:
 ##                                cpu_us_mean/_p50/_p95) and each per-frame block's wall time
 ##                                (section_us: movers, redraws, mesh_updates, params, churn, mean
-##                                us per frame), over the same window as the frame times
-##                                (results/p3/idle-capture-cost.md); LS1: and rss_kb/hwm_kb, VmRSS and VmHWM at quit
+##                                us per frame), over the same window as the frame times;
+##                               LS1: and rss_kb/hwm_kb, VmRSS and VmHWM at quit
 ##   RS_FIXTURE_QUIT_FRAME [600]  quit after this many frames
 ##   RS_SCALE_WARMUP [120]        frames before the frame-time window opens
 ##   RS_SCALE_REPORT              optional absolute path: the frame-time summary (JSON) at quit

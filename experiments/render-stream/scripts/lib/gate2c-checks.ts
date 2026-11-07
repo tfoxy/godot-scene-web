@@ -1,7 +1,7 @@
 // Gate 2 group g2c (G2c2): live resources over HTTP -- live hosts serving texture payloads by hash
 // with pins and retirement, live receivers fetching before they apply, and the unpin,
-// drop-resource and live wrong-hash sabotages, each leg classified with gate2-design.md Q7's
-// precedence (protocol/gate2-design.md "G2c2").
+// drop-resource and live wrong-hash sabotages, each leg classified with the contract's
+// precedence.
 //
 // Everything here reads an evidence directory written by run-gate2.sh, or is pure over values
 // already read from one, so scripts/test/self-test-gate2.ts can drive the pure parts with
@@ -262,7 +262,7 @@ export interface G2cApplied {
     stream?: number;
     seq?: number;
     step?: number | null;
-    // G6s (gate6-design.md Q7e): the wire frame this shot's transaction was published at (live
+    // G6s: the wire frame this shot's transaction was published at (live
     // shots only), so a realtime-timeline checker can pick the latest one without the
     // per-transaction array RS_RECEIVER_LOG=summary drops.
     frame?: number;
@@ -513,7 +513,7 @@ export interface ConnTimeline {
   sends: ResolvedTransaction[];
   closed: number | null;
   /** SWO: the frame of the connection's `hello` line, from which the host counts it a viewer
-   * (HC1, host-cost-design.md D6: the first hello's callback is a viewer callback). Absent when
+   * (HC1, : the first hello's callback is a viewer callback). Absent when
    * its log has no hello line (a synthesized timeline): a viewer from the start, as before HC1. */
   hello?: number;
   /** G7q (credit window 2): each frame line's `in_flight_seqs`, by frame (absent at window 1,
@@ -596,7 +596,7 @@ export interface PinsReport {
  * Pure. `hashesOf` extracts the resource kind's servable hashes from a resolved transaction
  * (default: image textures); G5f passes `okMeshHashes` for GRM1 mesh surfaces.
  *
- * SWO: D7's rule holds at viewer callbacks only. HC1 (host-cost-design.md D6) pins and retires
+ * SWO: D7's rule holds at viewer callbacks only. HC1 pins and retires
  * nothing while no connection is a viewer (from a close to the next hello, ConnTimeline.hello):
  * the served set stays as the last viewer callback left it, and the first viewer callback after
  * the gap brings it back to `current ∪ bases`. Those viewerless frames are not compared (a pin or
@@ -742,8 +742,7 @@ export function coldFetchedHashes(
 export function getsVsFetches(
   gets: readonly HookLine[],
   fetches: readonly G2cFetch[],
-  /** G7l: the receiver's applied.json cache.mode. `http-cache` (a browser receiver, gate7-design.md
-   * Q4) fetches through its browser's HTTP cache, which answers a repeated fetch itself: the
+  /** G7l: the receiver's applied.json cache.mode. `http-cache` (a browser receiver) fetches through its browser's HTTP cache, which answers a repeated fetch itself: the
    * host's GETs are then the receiver's fetches with every repeat of a hash dropped, and ETag,
    * which CORS hides from a cross-origin page (the host sends no Access-Control-Expose-Headers),
    * must be absent rather than right. Every other mode is unchanged. */
@@ -1684,7 +1683,7 @@ export function checkFetchBeforeApplied(evals: Evals): G2bCheck {
  * callback `state` line counts as open through that callback. The host retires to
  * `current ∪ bases` inside the callback, so at the quit frame (851) the previous send is still a
  * base when retirement runs and the end/close come after. Whether that matters is load-dependent:
- * when the credit loop phase-locks to every other frame (memory rs-g55d-rs5-switch-facts) and 851
+ * when the credit loop phase-locks to every other frame and 851
  * is a pending frame rather than a send, the last send's DF surface stays rightly pinned, and the
  * plain close frame (base null from 851) called it "servable, named by nothing". G7l: the same
  * race on gate 2's live-animate at its quit frame 971, where a browser receiver closes within
@@ -2059,7 +2058,7 @@ export function checkLiveTransformOnly(evals: Evals): G2bCheck {
 
 /** A warm receiver's own side of "the host served nothing": natively (cache mode `warm`) it
  * fetched nothing and hit its cache once per payload the cold leg fetched. G7l: a browser
- * receiver's cache is its profile's HTTP cache (`http-cache`, gate7-design.md Q4), which it cannot
+ * receiver's cache is its profile's HTTP cache (`http-cache`), which it cannot
  * see into: it fetches every payload the cold leg fetched, each answered 200 by that cache, and the
  * host's empty GET log (checked by the caller) is what proves the cache answered. */
 export function warmCacheProblems(

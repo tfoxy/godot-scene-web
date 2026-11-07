@@ -1,4 +1,4 @@
-// TRK2 (protocol/tracks-design.md, TRK2 row, "As built (TRK2)"): gate 8's g8l/trk checks. The legs
+// TRK2: gate 8's g8l/trk checks. The legs
 // (run-gate8.sh run_g8l_trk) run fixtures/track-input, a GDScript RenderStreamTrack receiver wired
 // to the gsw-input/1 reference injector, under scripts/lib/track-input-client.ts. Each leg leaves
 // events.jsonl (the fixture: signals, the class contract and every watched Input change, each with
@@ -320,7 +320,7 @@ export function judgeTrk(
     return [...problems, "RenderStreamTrack is not registered"];
   if (which === "delivered") {
     if (inject) problems.push(...injectContract(leg, inject));
-    // The class contract before the arm (tracks-design.md Q6 table, "As built (TRK2)").
+    // The class contract before the arm.
     const want: Record<string, unknown> = inject
       ? {}
       : {

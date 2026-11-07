@@ -383,7 +383,7 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
       pixels: g8ku.pixels,
     };
   }
-  // LAR6 resolve-queue-only (late-arm-registry-design.md, the LAR6 row): across the late groups
+  // LAR6 resolve-queue-only: across the late groups
   // that ran, every deferred capture's frame drains made no mirror scan.
   const lateRan = RESOLVE_QUEUE_GROUPS.filter((g) => run.includes(g));
   if (lateRan.length > 0) {

@@ -1,11 +1,11 @@
 extends SceneTree
-## Gate 8's decode oracle (gate8-design.md D15 (3), Q3 `decode-oracle`): a separate headless
+## Gate 8's decode oracle (`decode-oracle`): a separate headless
 ## process on the release template that loads every imported `.ctex` of the texture table (both
 ## families), decodes a duplicate with the engine's `Image.decompress()` and writes, per texture,
 ## the canonical GRT1 payload's SHA-256 (payload.gd, this fixture's own encoder) to
 ## `$RS_ORACLE_OUT/oracle.json`, and the payload itself to `$RS_ORACLE_OUT/<name>.<family>.grt1`
 ## (the `decoded` reference draws those). On the headless dummy renderer `get_image()` returns the
-## image `texture_2d_create` was given (gate8-design.md D6), i.e. the block-compressed bytes the
+## image `texture_2d_create` was given, i.e. the block-compressed bytes the
 ## capture's hook sees.
 ##
 ##   <template> --headless --path fixtures/gate8-tex --script res://oracle.gd
@@ -81,7 +81,7 @@ func _decode(texture: Dictionary, family: String, v: Dictionary, timed: bool, re
 	entry["height"] = source.get_height()
 	entry["mipmaps"] = source.has_mipmaps()
 	entry["source_data_bytes"] = source.get_data_size()
-	# G8kp (texture-delivery-design.md D1 `passthrough`): the .ctex's own block bytes as a GRT1
+	# G8kp (`passthrough`): the .ctex's own block bytes as a GRT1
 	# payload in their block format, what a `block` variant must equal byte for byte
 	# (`block-exact`); null for a format render-stream-9.md never offers as a variant.
 	var source_format: String = entry["source_format"]

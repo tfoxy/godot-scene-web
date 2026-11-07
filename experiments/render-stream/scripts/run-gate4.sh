@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Gate 4 runner: drives fixtures/gate4/ through the legs of protocol/gate4-design.md "Q7. Runner,
-# legs, checks, report" for the groups that have landed, then runs check-gate4.ts.
+# Gate 4 runner: drives fixtures/gate4/ through the legs
+# for the groups that have landed, then runs check-gate4.ts.
 #
 #   bash run-gate4.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
@@ -37,8 +37,8 @@
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
 # and WAYLAND_DISPLAY. Every launch strips every inherited GRC_* and RS_* variable and passes only
-# what its leg wants (env.txt records it). Every capture runs with GRC_ROOT_SIZE=enforce-min-size
-# (gate4-design.md D12). Fonts are provisioned (scripts/lib/provision-fonts.sh, Q6a) before the
+# what its leg wants (env.txt records it). Every capture runs with GRC_ROOT_SIZE=enforce-min-size.
+# Fonts are provisioned (scripts/lib/provision-fonts.sh, Q6a) before the
 # import; a mismatching or missing font stops the run.
 
 set -euo pipefail
@@ -79,7 +79,7 @@ OUT=""
 LEGS_ARG=""
 
 # The main capture runs 400 frames so the /proc maps/fd sample has time to run (as gates 0-3; the
-# contract's leg table said 102, see gate4-design.md "As built"); the rendered legs run the
+# contract's leg table said 102); the rendered legs run the
 # fixture's default quit frame (S + N*9 + 11 = 102).
 CAPTURE_QUIT_FRAME=400
 HEADLESS_TIMEOUT_S=180
@@ -290,7 +290,7 @@ run_reference() {
 }
 
 run_g4a() {
-	# Fonts first (gate4-design.md Q6a): the lock's bytes, verified, into the ignored fonts/.
+	# Fonts first: the lock's bytes, verified, into the ignored fonts/.
 	echo "run-gate4: provisioning fonts"
 	mkdir -p "$OUT/import"
 	if ! bash "$SCRIPT_DIR/lib/provision-fonts.sh" "$FIXTURE_DIR" >"$OUT/import/fonts.log" 2>&1; then
@@ -333,7 +333,7 @@ run_g4a() {
 }
 
 # early_shots_csv <recording>: CSV of the seqs published at the gate 4 fixture's early frames
-# (12, 42, 72 -- S+N*k+1 for k in {1,4,7}, gate4-design.md Q6b "Intermediate shots"; G4a's As-built
+# (12, 42, 72 -- S+N*k+1 for k in {1,4,7}; G4a's As-built
 # note: receivers must also shoot these, or a page published one frame late would be missed).
 early_shots_csv() {
 	local rec="$1" out="" sep="" seq
@@ -368,7 +368,7 @@ run_g4b() {
 
 	# Sabotage captures (headless, the fixture's default 102-frame run): freeze-frame at step 1's
 	# applied frame (11), perturb-transform at step 2's (21), omit-op texture_2d_update at step
-	# 4's (41) -- gate4-design.md "G4b" leg table; predictions are fixtures/gate4/expected.json
+	# 4's (41) -- leg table; predictions are fixtures/gate4/expected.json
 	# "predictions" (make_expected.py, never hand-edited).
 	echo "run-gate4: sabotage-freeze (capture, freeze-frame @$(step_frame4 1))"
 	g4_capture "$OUT/sabotage-freeze/capture" GRC_SABOTAGE=freeze-frame GRC_SABOTAGE_FRAME="$(step_frame4 1)"
@@ -400,7 +400,7 @@ run_g4b() {
 	GS_RUN_DIR=""
 }
 
-# --- g4c: fixtures/gate4-layout (gate4-design.md "G4c"), every leg under $OUT/layout/ ---
+# --- g4c: fixtures/gate4-layout, every leg under $OUT/layout/ ---
 
 LAYOUT_DIR="$EXPERIMENT_DIR/fixtures/gate4-layout"
 # The layout fixture's early shots (one frame after each step that uploads: its expected.json
@@ -537,7 +537,7 @@ run_rich_reference() {
 # (oracle on, oracle on again, extension-armed with oracle off) and two rendered receivers (full
 # and patch sinks) -- all under rich-*/ so they never collide with g4a/g4b's directories in the
 # same --out. The underline variant (RS_FIXTURE_VARIANT=underline) gets its own fresh capture,
-# rendered reference and rendered receiver under rich-underline/ (gate4-design.md "G4d": "capture-
+# rendered reference and rendered receiver under rich-underline/ ("capture-
 # underline and receiver-underline -> unsupported, mismatch only in its region" on /3; both
 # success, receiver equal to the reference, since G5d), which needs a rendered reference-underline
 # too, to know where the real stroke pixels are -- not named in the contract's leg list, added
@@ -596,7 +596,7 @@ run_g4d() {
 	GS_RUN_DIR=""
 }
 
-# --- g4f: fixtures/gate4-i18n (gate4-design.md "G4f"), every leg under $OUT/i18n/ ---
+# --- g4f: fixtures/gate4-i18n, every leg under $OUT/i18n/ ---
 
 I18N_DIR="$EXPERIMENT_DIR/fixtures/gate4-i18n"
 # The i18n fixture's early shots (one frame after each step that uploads: its expected.json
@@ -690,11 +690,11 @@ run_g4f() {
 	GS_RUN_DIR=""
 }
 
-# --- g4e: fixtures/gate4-msdf (gate4-design.md "G4e2"), every leg under $OUT/msdf/ ---
+# --- g4e: fixtures/gate4-msdf, every leg under $OUT/msdf/ ---
 
 MSDF_DIR="$EXPERIMENT_DIR/fixtures/gate4-msdf"
 # The MSDF fixture's upload steps (early shots at S+N*k+1, its expected.json early_shot_steps) and
-# the new-glyph step perturb-glyph starts at (gate4-design.md "G4e2" leg table). The gray twin
+# the new-glyph step perturb-glyph starts at (leg table). The gray twin
 # perturbs fixtures/gate4 from its step 1.
 MSDF_EARLY_STEPS=(1 7)
 MSDF_PERTURB_STEP=1

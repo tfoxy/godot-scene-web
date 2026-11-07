@@ -1,4 +1,4 @@
-// Gate 7 group g7-dev, live (G7v; protocol/gate7/g7v.md, gate7-design.md Q13c, Q13d, D25 to D28):
+// Gate 7 group g7-dev, live (G7v):
 // the phone acceptance legs. run-gate7.sh --live --legs g7-dev runs run-gate6.sh --legs g6c once
 // per browser kind and credit window with G6C_LEGS naming only `dev-` legs (lib/gate6c-legs.sh
 // "G7v") into <out>/gate6/<arm>-<kind>-w<w>/, <arm> `ctl` (desktop) or `dev-<id>` (a phone). This
@@ -6,7 +6,7 @@
 //
 // The measured window. Each repeat measures 20 s after 6 s, as G6c does, but anchored at the
 // receiver's connection rather than the fixture's step 1, so a receiver that connects late (the
-// web export needs ~10 s on the g31) is measured over the same span of its own stream:
+// web export on a phone connects slowly) is measured over the same span of its own stream:
 //   - host clock: the first perf-timeline line that carries the receiver's connection, + 6 s, for
 //     20 s (a soak: + 60 s, for G7V_SOAK_S); published and applied come from G6c's per-connection
 //     counters over it (connectionRates);
@@ -25,7 +25,7 @@
 // What is not measured here, and is named `unavailable`, never passed: the trace's
 // `contentUpdateHz`, activation gaps and `CrRendererMain` `tdur` (no repeat is traced in G7v; the
 // probe's page-script busy fraction is reported beside the clause instead), and GPU time per drawn
-// frame (no receiver reads EXT_disjoint_timer_query_webgl2; the g31 does not expose it, G7d).
+// frame (no receiver reads EXT_disjoint_timer_query_webgl2; a phone browser does not expose it).
 //
 // Pure over the run directories (no process launched); scripts/test/self-test-gate7v.ts drives
 // the measures with synthetic evidence.
@@ -64,7 +64,7 @@ export const CADENCE_LONG_FRACTION = 0.005;
 /** Q13b watchdog: a rAF gap above this the receiver did not cause invalidates a repeat. */
 export const WATCHDOG_GAP_MS = 250;
 /** dev-presence on a device: the final readback against the desktop reference, beyond Q7's band
- * on at most this fraction of pixels (a Mali rasterizes edges its own way; parity is desktop's). */
+ * on at most this fraction of pixels (a phone GPU rasterizes edges its own way; parity is desktop's). */
 export const DEVICE_PRESENCE_OTHER_FRACTION = 0.01;
 /** G7r's phase classes (Q9): mean credit RTT in host frames. */
 export const GOOD_MAX_FRAMES = 1.1;
@@ -1236,7 +1236,7 @@ export async function checkDevRun(
         .map(([c]) => c)
         .sort();
       const missing = want.filter((c) => !failing.includes(c));
-      // g7v.md: ack-on-receipt fails EXACTLY credit-from-paced-loop; draw-repeat-8 must fail
+      // ack-on-receipt fails EXACTLY credit-from-paced-loop; draw-repeat-8 must fail
       // dev-gpu-headroom and dev-rate (whatever else a GPU-bound receiver also misses).
       const exact = base === "sabotage-ack-on-receipt-scene";
       const extra = exact ? failing.filter((c) => !want.includes(c)) : [];

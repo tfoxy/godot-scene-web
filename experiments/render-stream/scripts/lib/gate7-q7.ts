@@ -1,4 +1,4 @@
-// Q7's pixel policy applied to a gate's own checker (gate7-design.md Q7, Q8, G7a): "each gate's
+// Q7's pixel policy applied to a gate's own checker: "each gate's
 // receiver checks @gsw under Q7". The gates' checkers compare a receiver's shots with the rendered
 // reference exactly, which is the native receiver's budget (0 almost everywhere). For the GSW
 // receiver Q7 allows, per step, channel <= 1 inside the gate's `delta1` masks and any difference

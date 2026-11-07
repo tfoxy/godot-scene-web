@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Gate 1 runner: drives fixtures/gate1/ and receiver/ through the legs of
-# protocol/gate1-design.md "Q7. Runner, legs, classification and report", then runs check-gate1.ts.
+# Gate 1 runner: drives fixtures/gate1/ and receiver/ through the legs, then runs check-gate1.ts.
 #
 #   bash run-gate1.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
@@ -89,7 +88,7 @@ tie_seqs_csv() {
 CAPTURE_WITH_PATCH=1
 
 # g1c (G1c2) live legs: the host paces at 60 frames per second and delays the timeline so the
-# receiver joins before step 0 settles (gate1-design.md D10, Q7): S = 300, N = 60. The quit frame
+# receiver joins before step 0 settles: S = 300, N = 60. The quit frame
 # is S + (LAST_STEP + 1) N = S + 13 N (>= the fixture's default S + 12 N + 11; S + 11 N before G1e
 # appended steps 11 and 12), so the last step's window is as long as the others; the receiver's
 # windows are [S + N k + 7, S + N (k + 1) - 1], the last ending at the quit frame. drop-message
@@ -102,18 +101,18 @@ DROP_MESSAGE_FRAME=$((LIVE_START_FRAME + LIVE_STEP_FRAMES * 4 + 20))
 LIVE_HOST_PID=""
 LIVE_PORT=""
 
-# g1d (G1d) legs, on the g1c host setup (gate1-design.md "G1d"): the receiver stalls 2000 ms after
+# g1d (G1d) legs, on the g1c host setup: the receiver stalls 2000 ms after
 # its step 1 shot (step 2 is applied inside the stall); reconnects after its step 4 shot; refuses
 # the first transaction of step 6's window and asks for a resync. The killed receiver is SIGKILLed
 # once the host's live log reaches frame S + 5 N. ignore-credit starts at S + 3 N; stale-coalesce
 # at S + N, with the same stall as live-stall.
 # GRT3: in host frames at 60 fps; legs_stall_spec converts them at the leg's own host rate
-# (exactly these milliseconds at 60 fps; scripts/README.md "Fast frames (GRT3)").
+# (exactly these milliseconds at 60 fps).
 STALL_STEP=1
 STALL_FRAMES=120 # 2000 ms
 STALL_SPEC=""
 # ignore-credit needs a receiver that holds its credit at some point after the sabotage frame:
-# measured (2026-10-09), a receiver that returns credit within one frame (p50 8.5 ms) makes a host
+# a receiver that returns credit within one frame makes a host
 # that ignores credit send exactly what a correct host sends, and the sabotage is unobservable. A
 # 500 ms stall after the step 3 shot (S+3N+7 = 487 on) ends before step 4's window (547), so no
 # shot is missed.
@@ -553,7 +552,7 @@ run_g1c() {
 	live_receiver "$OUT/sabotage-drop-message" rendered
 	finish_live_host "$OUT/sabotage-drop-message/host"
 
-	# G6r self-test (gate6-design.md "G6r"): rate control on the gate 1 fixture. GRC_PUBLISH_FPS=30
+	# G6r self-test: rate control on the gate 1 fixture. GRC_PUBLISH_FPS=30
 	# on a 60 fps host/receiver; file sinks (always on, start_live_host) must publish one
 	# transaction per frame exactly as every other g1c leg's, unaffected by the live connection's
 	# own pacing. check-gate1.ts's checkLiveRate30 verifies the published rate lands near 30 fps
@@ -587,7 +586,7 @@ live_frame() {
 
 # killed_receiver <leg dir> <frame>: a headless live receiver (credit stage applied) on the current
 # host's port, started in the background and SIGKILLed once the host's live log shows <frame>
-# (gate1-design.md G1d live-receiver-killed). Writes <leg>/receiver/killed.json.
+# (G1d live-receiver-killed). Writes <leg>/receiver/killed.json.
 KILL_RECEIVER_PID=""
 killed_receiver() {
 	local leg="$1" frame="$2" dir="$1/receiver" waited=0 seen=0 alive=0

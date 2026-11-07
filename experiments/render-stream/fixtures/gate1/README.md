@@ -1,10 +1,9 @@
 # Gate 1 fixture
 
-The reference rendering for gate 1's retained-state increment (G1a,
-[`../../protocol/gate1-design.md`](../../protocol/gate1-design.md) "Q6. Fixture (G1a)"). Thirteen
+The reference rendering for gate 1's retained-state increment. Thirteen
 steps each exercise one retained canvas behaviour: inherited modulate, transform-only moves, draw
 order by index and by z, reparenting, visibility, content replacement, frees, re-attachment, the
-canvas transform, and (G1e) `z_as_relative_to_parent` / `draw_behind_parent`. A bottom-right-anchored
+canvas transform, and `z_as_relative_to_parent` / `draw_behind_parent`. A bottom-right-anchored
 `ColorRect` exposes the headless root size. Like `fixtures/gate0/`, the project does not know about
 the capture library. It runs the same whether `GRC_EXTENSION` is set or not (`loader.gd` is gate 0's
 loader).
@@ -30,7 +29,7 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate1 --
 - `expected.json` (`render-stream-gate1-expected/1`): the only source of the numbers. It holds the
   regions, the creation order and, per step, the draws in paint order, the marker colour, the
   root canvas transform and the retained-state invariants. The draws were derived by hand from
-  gate1-design.md Q2. The reference and the receiver both have to match them exactly
+  the engine source. The reference and the receiver both have to match them exactly
   (`expected-image-*`).
 
 ## Timeline
@@ -41,21 +40,21 @@ frame `S + N·k`, and every step settles at `S + N·k + 7`. The fixture quits at
 (132 by default) unless `RS_FIXTURE_QUIT_FRAME` asks for later. Every step also recolours the
 `Marker`, with one distinct colour per step that no other item uses.
 
-| step | change                                                                                                                                 |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | creation, parenting, top-level draw indices                                                                                            |
-| 1    | `P.modulate = (1,0,1)`, `C.self_modulate = (0,1,1)`; new top-level `T` at (80,304) (G1b2)                                              |
-| 2    | `P` moved, `C` rotated 90° (transform only); `R1` recoloured                                                                           |
-| 3    | `Q.move_child(Q2, 0)`: the draw indices swap, so `Q1` is drawn over `Q2`                                                               |
-| 4    | `Q2.z_index = 1`: `Q2` on top again                                                                                                    |
-| 5    | `Q1` moved from `Q` to `R`, appended after `R1`, which it covers                                                                       |
-| 6    | `V` hidden (with `V1`); `K` redrawn with one rect                                                                                      |
-| 7    | `V` shown; `V1.visibility_layer = 0` (culled); `K` cleared                                                                             |
-| 8    | `L` and `M` (with `M1`) freed; raw `Y` freed, leaving `X` detached; `D` removed; `K` three rects                                       |
-| 9    | new `L2`; `D` added back with its old id; raw `X` freed; `R1` re-appended over `Q1`                                                    |
-| 10   | `get_viewport().canvas_transform` shifted by (8, 4)                                                                                    |
-| 11   | (G1e) new top-level `ZP` (z_index 1, empty); its child `ZC` (z_index -1, z_as_relative = false)                                        |
-| 12   | (G1e) new top-level `ZB` (effective z 0, overlaps `ZC`); new top-level `BP`/child `BC` (`BC.show_behind_parent = true`, overlaps `BP`) |
+| step | change                                                                                                                           |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | creation, parenting, top-level draw indices                                                                                      |
+| 1    | `P.modulate = (1,0,1)`, `C.self_modulate = (0,1,1)`; new top-level `T` at (80,304)                                               |
+| 2    | `P` moved, `C` rotated 90° (transform only); `R1` recoloured                                                                     |
+| 3    | `Q.move_child(Q2, 0)`: the draw indices swap, so `Q1` is drawn over `Q2`                                                         |
+| 4    | `Q2.z_index = 1`: `Q2` on top again                                                                                              |
+| 5    | `Q1` moved from `Q` to `R`, appended after `R1`, which it covers                                                                 |
+| 6    | `V` hidden (with `V1`); `K` redrawn with one rect                                                                                |
+| 7    | `V` shown; `V1.visibility_layer = 0` (culled); `K` cleared                                                                       |
+| 8    | `L` and `M` (with `M1`) freed; raw `Y` freed, leaving `X` detached; `D` removed; `K` three rects                                 |
+| 9    | new `L2`; `D` added back with its old id; raw `X` freed; `R1` re-appended over `Q1`                                              |
+| 10   | `get_viewport().canvas_transform` shifted by (8, 4)                                                                              |
+| 11   | new top-level `ZP` (z_index 1, empty); its child `ZC` (z_index -1, z_as_relative = false)                                        |
+| 12   | new top-level `ZB` (effective z 0, overlaps `ZC`); new top-level `BP`/child `BC` (`BC.show_behind_parent = true`, overlaps `BP`) |
 
 ## Environment
 
@@ -66,7 +65,7 @@ That includes gate 0's `RS_FIXTURE_VARIANT`; this fixture's only variant knob is
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `RS_FIXTURE_STEP_LOG`    | absolute path: `{"step","applied_frame","settle_frame"}` per step, written at the applied frame (step 0 in `_ready`)                                   |
 | `RS_FIXTURE_SHOT_DIR`    | absolute directory: `step-<k>.png` after the settle frame's `frame_post_draw` (rendered only)                                                          |
-| `RS_FIXTURE_ROOT_LOG`    | absolute path: one root-geometry line per settle frame (gate1-design.md Q1)                                                                            |
+| `RS_FIXTURE_ROOT_LOG`    | absolute path: one root-geometry line per settle frame                                                                                                 |
 | `RS_FIXTURE_START_FRAME` | `S`, at least 1                                                                                                                                        |
 | `RS_FIXTURE_STEP_FRAMES` | `N`, at least 8                                                                                                                                        |
 | `RS_FIXTURE_QUIT_FRAME`  | at least `S + N·12 + 11`                                                                                                                               |
@@ -83,14 +82,14 @@ That includes gate 0's `RS_FIXTURE_VARIANT`; this fixture's only variant knob is
   `_top_level_raise_self` runs. That is a deferred group call queued while the message queue
   flushes, after `SceneTree::process`'s last `_flush_ugc`
   (`scene/main/scene_tree.cpp:708-709`). It therefore runs at the next iteration's first
-  `_flush_ugc` (`:644`). Step 1 provokes it on purpose (G1b2): `T` enters with index 0 while `P`
+  `_flush_ugc` (`:644`). Step 1 provokes it on purpose: `T` enters with index 0 while `P`
   holds 0 from step 0's raise, so frame `S + N` has a tie on canvas 1 that the capture declares
   (`draw-index-tie`, render-stream-1.md invariant 9); at `S + N + 1` the raise gives `T` 10.
   `expected.json` `draw_index_ties` lists it, and `T` is placed so the tie is harmless (disjoint
   footprints; `RS_FIXTURE_TIE=overlap` makes it overlap). Step 8's `remove_child(D)` re-raises
   the top-level items to 11..18, so step 9's `L2`@0 and `D`@7 tie with nothing for that frame.
 - **A new top-level item always ties with P, so give it an empty-overlap partner, or none.**
-  Steps 11 and 12 (G1e) hit the same one-frame lag: `ZP` (step 11) and `ZB`/`BP` (step 12) each
+  Steps 11 and 12 hit the same one-frame lag: `ZP` (step 11) and `ZB`/`BP` (step 12) each
   tie with `P` at index 0 for one frame. A tie's harmlessness is a footprint check over every
   member's _whole subtree_ (`ZP`'s footprint is `ZC`'s rect, since `ZP` itself draws nothing), so
   two new top-level items that enter **in the same frame** and are meant to visually overlap (as

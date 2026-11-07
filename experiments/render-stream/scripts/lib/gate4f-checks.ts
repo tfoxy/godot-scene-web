@@ -1,4 +1,4 @@
-// Gate 4f checks: the multilingual fixture (protocol/gate4-design.md "G4f", "Q6e").
+// Gate 4f checks: the multilingual fixture.
 //
 // Group g4f runs fixtures/gate4-i18n/ through G4a's and G4b's legs (capture, reference x3,
 // receiver x2, a headless receiver trace) plus sabotage-i18n-omit-atlas. Its evidence lives under
@@ -9,7 +9,7 @@
 // four caches, and fallback-pages. Check ids carry an "-i18n" suffix (or name the leg) so that they
 // never collide with the other groups'. Nothing here launches a process.
 //
-// Evidence layout under <out>/i18n/ (see scripts/README.md "Gate 4"):
+// Evidence layout under <out>/i18n/:
 //   import/fonts.log, import/fixture/   provision-fonts.sh and editor --import of fixtures/gate4-i18n
 //   import/receiver/                    editor --import of receiver/
 //   capture/                            leg capture-i18n: 400 frames, both sinks, store, strace

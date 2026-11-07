@@ -1,5 +1,5 @@
-// Test-only live host for the G7n Node interop self-test (scripts/test/self-test-rs-ws.ts,
-// gate7-design.md G7n "Checks"). Not linked into render_stream_capture. It wires the production
+// Test-only live host for the Node interop self-test (scripts/test/self-test-rs-ws.ts).
+// Not linked into render_stream_capture. It wires the production
 // pieces exactly as entry.cpp does -- grc::live::Server (rs_ws) with both subprotocols and the
 // Origin allowlist, and grc::rs2::Hub (rs_live) with the /7 hello token check -- around a fixed
 // one-item scene instead of the mirror, so an independent client can drive /6 and /7 connections,
@@ -29,7 +29,7 @@
 //                     binds UDP --wt-port=N (default 0, ephemeral) with a self-signed certificate
 //   --tap-dir=DIR     the hub's tap (rs_live.h LiveConfig::tap_dir; absolute)
 //   --evidence-dir=DIR where wt writes live-cert-sha256, and live-carriers.json at stop
-//   CAR6 (carrier-design.md "Writing a carrier"): every other name in --carriers is an in-memory
+//   every other name in --carriers is an in-memory
 //   consumer carrier (rs_mem_carrier.h) registered through grc_carrier_register, found with
 //   dlsym(RTLD_DEFAULT) (this binary exports it, as the capture library does), before the set is
 //   built; `ws` starts only when listed. Also registered: `idle`, never listed, which must never
@@ -56,7 +56,7 @@
 //
 // The transport is the CarrierSet (rs_carrier_set.h) with `ws` at index 0, as in entry.cpp.
 //
-// TRK1 (protocol/tracks-design.md Q5): --tracks=<kinds> builds the same TrackHub entry.cpp builds
+// --tracks=<kinds> builds the same TrackHub entry.cpp builds
 // (rs_tracks.h, the kinds parsed by parse_kinds) and routes track connections to it before the
 // view Hub, exactly as live_drain does; its credentials are written to
 // <--evidence-dir>/live-track-<kind>-token (required) and stdout prints
@@ -331,7 +331,7 @@ int main(int argc, char **argv) {
   // entry.cpp's live configuration, from the same variables.
   LiveConfig live_config;
   std::string error;
-  // CAR2 (carrier-design.md D10): GRC_LIVE_EXPOSE, GRC_LIVE_LISTEN and GRC_LIVE_WT_LISTEN, through
+  // GRC_LIVE_EXPOSE, GRC_LIVE_LISTEN and GRC_LIVE_WT_LISTEN, through
   // the same functions entry.cpp calls (rs_expose.h).
   grc::live::Expose expose = grc::live::Expose::Loopback;
   std::string wt_host = "127.0.0.1";
@@ -375,7 +375,7 @@ int main(int argc, char **argv) {
     std::fprintf(stderr, "rs_live_host: %s\n", error.c_str());
     return 2;
   }
-  // CAR4 (carrier-design.md D11, D12): the consumer's pair, both or neither, through the module.
+  // the consumer's pair, both or neither, through the module.
   std::unique_ptr<grc::live::NetTlsContext> tls;
   {
     const char *cert = std::getenv("GRC_LIVE_TLS_CERT");

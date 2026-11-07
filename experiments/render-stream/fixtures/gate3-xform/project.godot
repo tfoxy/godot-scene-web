@@ -1,8 +1,8 @@
 ; Gate 3 rotated/scaled fixture for the render-stream capture experiment (G3c). Five steps (0..4)
 ; over clip_contents Controls under rotated, scaled and flipped Node2D parents: a rotated clip
 ; owner, a rotated owner nested in an axis-aligned one, half-pixel scissor rounding and a sub-pixel
-; sliver, and a negative scale. The engine clips to the rounded bounding box (gate3-design.md Q1c).
-; See fixtures/gate3-xform/README.md and ../../protocol/gate3-design.md ("Q6d") for the contract.
+; sliver, and a negative scale. The engine clips to the rounded bounding box.
+; See fixtures/gate3-xform/README.md for the contract.
 
 config_version=5
 

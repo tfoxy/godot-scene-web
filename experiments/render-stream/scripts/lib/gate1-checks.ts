@@ -1,4 +1,4 @@
-// Gate 1 checks and leg classification (protocol/gate1-design.md "Q7", "G1a" and "G1b2"; the
+// Gate 1 checks and leg classification (the
 // live legs of "G1c2" are in gate1-live-checks.ts, those of "G1d" in gate1-g1d-checks.ts, both
 // joined in by runGate1).
 //
@@ -14,7 +14,7 @@
 // viewport's default texture filter/repeat and the texture table, which in a gate 1 fixture holds
 // only the engine's own unreferenced hue strip.
 //
-// Evidence layout under <out>/ (see scripts/README.md "Gate 1"):
+// Evidence layout under <out>/:
 //   legs.json                     {"groups_run":[...],"groups_landed":[...]}
 //   capture/                      400-frame capture host, GRC_ROOT_SIZE=enforce-min-size:
 //                                 evidence/, recording.rs2, recording-patch.rs2, store/,
@@ -146,7 +146,7 @@ export type Gate1Class =
   | "pixel-mismatch"
   | "success";
 
-/** First match wins (gate1-design.md Q7 "Classes"). */
+/** First match wins. */
 export const GATE1_CLASS_PRECEDENCE: readonly Gate1Class[] = [
   "capture-failure",
   "unsupported",
@@ -171,7 +171,7 @@ export const G1A_CLASSIFIED_LEGS = [
 ] as const;
 export type G1aLeg = (typeof G1A_CLASSIFIED_LEGS)[number];
 
-/** G1b2's legs (gate1-design.md "G1b2"), plus `tie-overlap`: the fixture's one-frame
+/** G1b2's legs, plus `tie-overlap`: the fixture's one-frame
  * top-level draw-index tie made to overlap, which must classify `unsupported`. */
 export const G1B_CLASSIFIED_LEGS = [
   "receiver-patch",
@@ -203,8 +203,7 @@ export interface Gate1LegExpectation {
 const range = (from: number, to: number): number[] =>
   Array.from({ length: to - from + 1 }, (_, i) => from + i);
 
-/** The sabotage step sets are gate1-design.md's predictions, confirmed by running (README
- * "Gate 1a result", "Gate 1b result"). G1e (steps 11/12) extends the ranges that never recover
+/** The sabotage step sets are the contract's predictions, confirmed by running. G1e (steps 11/12) extends the ranges that never recover
  * (modulate, transform, visibility, free: nothing after the sabotaged step resets the dropped
  * state, so the mismatch persists into the two new steps too); order and visible converge again
  * before step 11, so their sets are unchanged. */
@@ -753,7 +752,7 @@ export function resolvedStateOf(
 
 /**
  * Differences between the patch sink's resolved states and the full sink's, frame by frame
- * (gate1-design.md Q7 class 1, `patch-divergence`): both recordings must be valid, cover the same
+ * (class 1, `patch-divergence`): both recordings must be valid, cover the same
  * frames, and resolve to bit-identical states at every one. Empty means equivalent.
  */
 export function patchDivergence(
@@ -1136,7 +1135,7 @@ function fromGate0(c: Gate0Check, criterion?: string): Gate1Check {
 
 const RGBA8_LEVELS = new Set([0, 51, 102, 153, 204, 255]);
 
-/** expected.json obeys its own rules (gate1-design.md Q6 "Colour rule", layout, timeline). */
+/** expected.json obeys its own rules (layout, timeline). */
 export function checkExpectedSelfConsistent(
   expected: Gate1Expected,
 ): Gate1Check {
@@ -2047,7 +2046,7 @@ export function checkPatchBytes(capture: Gate1LegEvaluation): {
 // Leg class
 // ---------------------------------------------------------------------------------------------
 
-/** tie-overlap's pixel measurements (gate1-design.md G1b2 "As built"): px differing between the
+/** tie-overlap's pixel measurements (G1b2 "As built"): px differing between the
  * receiver's and the variant reference's shots of the tie frame and of the frame after it, and
  * between the reference's two frames; null where a shot is missing. */
 export interface TieMeasurement {

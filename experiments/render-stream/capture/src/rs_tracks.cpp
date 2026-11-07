@@ -1,4 +1,4 @@
-// rs_tracks: TrackHub (rs_tracks.h; protocol/tracks-design.md Q1-Q5, Q9; TRK1).
+// rs_tracks: TrackHub (rs_tracks.h).
 #include "rs_tracks.h"
 
 #include <sys/random.h>

@@ -2,7 +2,7 @@
 """Write fixtures/gate5/expected.json (render-stream-gate5-expected/1).
 
 Every number below is derived from the fixture's own parameters and the engine's geometry rules as
-read from the source (protocol/gate5-design.md Q1), written down as code. Nothing here runs or
+read from the source, written down as code. Nothing here runs or
 reads the engine: the capture's hook census and the rendered reference have to agree with it, and
 a disagreement is a finding to explain from the source, never a number to copy.
 
@@ -163,7 +163,7 @@ HAND_CENSUS = {
 TYPED_OPS = sorted(op for op in HAND_CENSUS if op not in ("canvas_item_add_rect", "canvas_item_add_multiline"))
 CALIBRATOR7_OPS = ["canvas_item_add_multiline"]
 
-# The one texture the engine makes itself (memory rs-g2a-texture-census-facts), then TEX16, TEX9.
+# The one texture the engine makes itself, then TEX16, TEX9.
 ENGINE_TEXTURES = [{"frame": 1, "op": "texture_2d_create", "format": "RGBA8", "width": 800, "height": 6}]
 
 

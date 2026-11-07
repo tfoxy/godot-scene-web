@@ -233,7 +233,7 @@ describe("environments never share a column", () => {
       "godot-msdf",
     ]);
     // The browser group has NO godot column, and the godot group has no browser column: there is
-    // no cell in which a SwiftShader millisecond could be lined up against an RTX 2060 one.
+    // no cell in which a SwiftShader millisecond could be lined up against a real-GPU one.
     expect(groupOf(data, "browser").arms).toEqual(["dom", "canvas2d"]);
     expect(groupOf(data, "godot").arms).toEqual(["godot-msdf"]);
     for (const group of data.groups) {
@@ -305,10 +305,10 @@ describe("the reference is a ceiling, not a competitor", () => {
   });
 
   it("refuses to crown the arm that could not move", () => {
-    // `dom` scores a perfect 0.00000 edgeShimmer, and it is the WORST arm on that axis: its
-    // 0.270 px residual is the signature of snapping translation to whole pixels, so it cannot
-    // shimmer because it cannot move. A green cell there would recommend the arm this whole round
-    // exists to replace. Blur hides the crawl the same way, which is why the row has no winner at
+    // `dom` scores a perfect 0.00000 edgeShimmer, and it is the WORST arm on that axis: its travel
+    // residual is the signature of snapping translation to whole pixels, so it cannot shimmer
+    // because it cannot move. A green cell there would recommend the arm the GPU text path exists
+    // to replace. Blur hides the crawl the same way, which is why the row has no winner at
     // all rather than a cleverer one.
     const row = rowOf(data(), "fidelity", "edgeShimmer");
     expect(row.cells.dom).toBe("0.00000");
@@ -411,10 +411,10 @@ describe("headline numbers on the grid cards", () => {
 });
 
 describe("alignment — the licence for every per-pixel column", () => {
-  // The bug this guard exists for: the dom arm anchored its baseline by CSS half-leading while the
-  // canvas arms anchored the em top, so it drew 2.35 px low. Nothing in the table said so, and
-  // `rmsVsReference` (19.61 against canvas2d's 5.33) plus the whole diff view were scoring that
-  // translation as a rasterizer difference. Every assertion below is one way that could return.
+  // The bug this guard exists for: an arm that anchors its baseline by CSS half-leading while the
+  // canvas arms anchor the em top draws a couple of pixels low. Nothing in the table says so, and
+  // `rmsVsReference` plus the whole diff view score that translation as a rasterizer difference.
+  // Every assertion below is one way that could return.
   const misalignedInputs = (
     tolerance?: number,
     alignment: Record<string, number> = {
@@ -491,11 +491,10 @@ describe("alignment — the licence for every per-pixel column", () => {
   });
 
   it("prefers the arm's OWN allowance to the table-wide tolerance", () => {
-    // The allowance carries a measured correction for that arm's blur (the registration estimator
-    // reads ~0.65 px of spurious offset per unit of distortion), so a soft-but-aligned arm gets
-    // room and a sharp-but-displaced one does not. Judging both against one flat number flagged
-    // `dom` and `godot-default`, which are blurry, alongside `godot-msdf`, which is actually
-    // displaced — three warnings where one was true.
+    // The allowance carries a correction for that arm's blur (the registration estimator reads
+    // spurious offset in proportion to distortion), so a soft-but-aligned arm gets room and a
+    // sharp-but-displaced one does not. Judging both against one flat number flags blurry arms
+    // alongside the actually displaced one.
     const data = buildReportData(
       inputs({
         fidelity: {

@@ -24,7 +24,7 @@
 // capture's `hover()` / `click()` (couch: tap-to-focus, held-card peek, confirm tap).
 //
 // The capture owns every record and the one-mouse state; this module only decides when, through
-// the `MouseModeHost` primitives, so targets (IN12) and stats stay in one place.
+// the `MouseModeHost` primitives, so targets and stats stay in one place.
 
 import type { InputVec2 } from "./format";
 import { MouseButton } from "./godot-enums";
@@ -113,7 +113,7 @@ export interface MouseModeHost {
   ): void;
   capturePointer(pointerId: number): void;
   // Every primitive takes the DOM client point the record stands for (`client`), which the
-  // capture's pointer targets (IN12) resolve at; absent (a cancel), nothing is resolved.
+  // capture's pointer targets resolve at; absent (a cancel), nothing is resolved.
   /** One `mouse_motion` at `at` now (pending motion flushed first). */
   hover(at: Vec, client?: Vec): void;
   /** Coalesced drag motion to `at` (one per animation frame). */

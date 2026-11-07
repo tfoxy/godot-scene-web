@@ -287,7 +287,7 @@ function pureCases(): void {
     "validateResourceLine: unknown op",
     validateResourceLine({ ...good, op: "texture_3d_create" }) !== null,
   );
-  // G7n (gate7-design.md Q3): a preflight's http-get line ends with "method":"OPTIONS".
+  // G7n: a preflight's http-get line ends with "method":"OPTIONS".
   const preflight = {
     ...good,
     op: "http-get",
@@ -2004,7 +2004,7 @@ async function main(): Promise<void> {
       ["leg-class-sabotage-wrong-hash-live"],
     );
 
-    // ---- g2d: CanvasTexture (gate2-design.md G2d) ----------------------------------------
+    // ---- g2d: CanvasTexture ----------------------------------------
     await scenario(
       root,
       good,
@@ -2154,7 +2154,7 @@ async function main(): Promise<void> {
       ["leg-class-sabotage-omit-canvas-filter"],
     );
 
-    // ---- g2e: bearer-token authorization (gate2-design.md G2e) ---------------------------
+    // ---- g2e: bearer-token authorization ---------------------------
     await scenario(
       root,
       good,

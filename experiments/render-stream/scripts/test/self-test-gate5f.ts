@@ -1,8 +1,8 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 
 // Self-test for gate 5f's load-dependent judgements (lib/gate5f-checks.ts), on fabricated
-// evidence (never a real run). Added with the 2026-10-11 G5f flake fix: under CPU load the 60 Hz
-// credit loop phase-locks to every other frame (memory rs-g55d-rs5-switch-facts), and three
+// evidence (never a real run). Under CPU load the 60 Hz
+// credit loop phase-locks to every other frame, and three
 // checks had assumed every frame is sent. Each case below has a negative control: the tolerance
 // is derived from the wire, so a genuinely wrong receiver or host must still fail.
 //

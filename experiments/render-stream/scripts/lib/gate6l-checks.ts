@@ -1,4 +1,4 @@
-// Gate 6 group g6l (protocol/gate6-design.md "G6l", Q7c): live motion compared frame for frame,
+// Gate 6 group g6l: live motion compared frame for frame,
 // a 2-s receiver stall across a resource update, reconnect and a warm cache, on
 // fixtures/gate6-scene's `animate` variant with the live timeline (S=300, N=60, quit 1080) and
 // `steps` time (D6), on render-stream/6 since G6b (render-stream/5 when G6l landed).
@@ -327,7 +327,7 @@ export async function loadG6lLeg(
   const host = await loadHost(join(legDir, "host"));
   const receiverDir = join(legDir, "receiver");
   // loadHost reads the host's own evidence only; each connection's received copy is the
-  // receiver's (memory rs-g5f-live-mesh-facts fact 4).
+  // receiver's.
   for (const c of host.connections) {
     // G7l/G7g: a browser (/7) receiver writes received(-n).rs7.
     const name = receivedFileName(receiverDir, c.n);
@@ -635,8 +635,7 @@ export interface MotionReport {
  * one frame, G6L_FRAME_US, still counts, and is the only rule for evidence without the frame
  * fields). Both ends run at 60 fps and the host sends at the first callback after a
  * credit (checked from its log by `creditToSend`), so a gap of 3 or more needs the receiver to hold
- * the credit longer than a frame; what held it is reported (an HTTP fetch, which is frame-quantized
- * (memory rs-g2c2-live-resource-facts); a shot and its state dump; or the frame alone). A gap > 2
+ * the credit longer than a frame; what held it is reported (an HTTP fetch, which is frame-quantized; a shot and its state dump; or the frame alone). A gap > 2
  * with a receiver faster than a frame would be the host's or the wire's, and fails.
  */
 export function evaluateMotionMonotonic(
@@ -954,7 +953,7 @@ export function evaluateWarmFetches(
 }
 
 /** The regions a post-stall stale target differs in, derived from expected.json's per-step
- * `fresh` table (memory rs-g55f-stale-coalesce-region-set): every region fresh at a step applied
+ * `fresh` table: every region fresh at a step applied
  * during the stall, plus Q7c's per-frame regions; HU compared since G6b. */
 export function staleFreshRegions(
   steps: readonly { step: number; fresh: Record<string, boolean> }[],
@@ -1853,7 +1852,7 @@ export function checkWarmFetch(
     problems.push("live-scene-warm or live-scene not evaluated");
   else if (wa.cache?.mode === "http-cache") {
     // G7g (G7l's rule for g2c/g5f/g55f): a browser receiver's cache is the cold leg's profile's
-    // HTTP cache (gate7-design.md Q4), which it fetches through. So the warm receiver fetches what
+    // HTTP cache, which it fetches through. So the warm receiver fetches what
     // its wire names, and the host must serve exactly the ones live-scene never fetched: none it
     // cached, and none of the static payloads.
     const statics = new Set([

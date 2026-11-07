@@ -1,5 +1,4 @@
-// Gate 8 g8ctl checks (RT-CTX, results/p3/late-arm.md "Deferred"; GAP2-RX, results/p3/gap2-rx.md;
-// LAR1, protocol/late-arm-registry-design.md): CanvasTextures adopted at a late arm, three built in
+// Gate 8 g8ctl checks (RT-CTX; GAP2-RX; LAR1): CanvasTextures adopted at a late arm, three built in
 // code (no .tres) and one cached `.tres`. The fixture is fixtures/gate8-ct-late. Since LAR1 the
 // `deferred` leg (the capture loaded before the scene, the arm deferred to frame 12) adopts every
 // CanvasTexture from the registry's recorded channels, and its receivers are judged against the

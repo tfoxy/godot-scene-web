@@ -1,10 +1,10 @@
 class_name RsLiveClient
 extends RefCounted
-## The receiver's side of render-stream/6 live transport (render-stream-6.md, since G6b;
-## render-stream-5.md from G55d; render-stream-4.md "Live transport" from G5d; render-stream-3.md "Live transport" from G4e2;
-## render-stream-2.md "Live transport"; gate1-design.md "Q2f", "Q5. Receiver", "G1c2"): a WebSocketPeer client, the control messages it
-## sends (hello, ack, resync) and the one the host may send (error). Since G7l it also speaks
-## render-stream/7 (render-stream-7.md, gate7-design.md Q2/Q4): `open(..., wire_version = 7)` offers
+## The receiver's side of render-stream/6 live transport (render-stream-6.md;
+## render-stream-5.md; render-stream-4.md and render-stream-3.md "Live transport";
+## render-stream-2.md "Live transport"): a WebSocketPeer client, the control messages it
+## sends (hello, ack, resync) and the one the host may send (error). It also speaks
+## render-stream/7: `open(..., wire_version = 7)` offers
 ## subprotocol render-stream.7 and hello_v7 carries the token, the credit window, the manifest and
 ## the presentation integers. The receiver picks the version (RS_RECEIVER_PROTOCOL; a web export
 ## speaks only /7); every /6 byte is unchanged. G8g: `wire_version` 8 is render-stream/8's live
@@ -23,7 +23,7 @@ extends RefCounted
 
 const SUBPROTOCOL: String = "render-stream.6"
 const PROTOCOL: String = "render-stream/6"
-## render-stream/7 (G7l, gate7-design.md Q2/Q4 "Live client"): the subprotocol and the hello of a
+## render-stream/7: the subprotocol and the hello of a
 ## /7 connection. A /7 client offers only "render-stream.7" and carries its token in the hello,
 ## never in an Authorization header on the upgrade (a browser's WebSocket cannot set one).
 const SUBPROTOCOL_V7: String = "render-stream.7"
@@ -59,7 +59,7 @@ var inbound_buffer_bytes: int = 0
 var version: int = 6
 
 
-## Starts connecting. `token` (G2e, gate2-design.md D13), when non-empty, is sent as
+## Starts connecting. `token`, when non-empty, is sent as
 ## "Authorization: Bearer <token>" on the upgrade request (WebSocketPeer.handshake_headers,
 ## modules/websocket/wsl_peer.cpp:551-552), set before connect_to_url like inbound_buffer_size --
 ## both are fixed at handshake time. A missing or wrong token gets HTTP 401 from the host, which
@@ -162,7 +162,7 @@ static func hello(receiver: String, credit_stage: String, inbound_bytes: int) ->
 	}
 
 
-## The /7 hello (render-stream-7.md "Hello", gate7-design.md Q2), in the documented key order.
+## The /7 hello (render-stream-7.md "Hello"), in the documented key order.
 ## `token` and `manifest_sha256` are "" for JSON null.
 ## `protocol` (G8g) is PROTOCOL_V8 on a render-stream.8 connection; the keys are /7's.
 static func hello_v7(receiver: String, receiver_kind: String, credit_stage: String, credit_window: int, inbound_bytes: int, token: String, manifest_sha256: String, backing: Vector2i, css: Vector2i, dpr_milli: int, protocol: String = PROTOCOL_V7) -> Dictionary:
@@ -224,7 +224,7 @@ static func parse_host_text(text: String) -> Dictionary:
 
 
 ## G8kp: the /9 hello (render-stream-9.md "Live transport"): /7's fourteen keys under protocol
-## render-stream/9, then texture_encodings and gpu_formats (texture-delivery-design.md D3, Q3).
+## render-stream/9, then texture_encodings and gpu_formats.
 ## CG1: `protocol` "render-stream/10" gives /10's hello (render-stream-10.md "Live transport": /9's
 ## fifteen keys under protocol render-stream/10).
 static func hello_v9(v7: Dictionary, texture_encodings: String, gpu_formats: String, protocol: String = PROTOCOL_V9) -> Dictionary:

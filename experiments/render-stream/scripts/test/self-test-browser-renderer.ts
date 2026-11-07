@@ -1,6 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for R3's CI-only software-renderer allowance (lib/browser-renderer.ts; docs/remote-compute.md,
-// Decision 10). Pure: no browser, every environment injected. The real launch-time proof is the
+// Self-test for R3's CI-only software-renderer allowance (lib/browser-renderer.ts). Pure: no browser, every environment injected. The real launch-time proof is the
 // browser self-test (self-test-browser-harness.ts), whose sabotage case still refuses SwiftShader
 // locally; this one pins the rule that decides when the allowance applies.
 

@@ -40,16 +40,14 @@
 // design pair builds the design->clip projection, and the framebuffer pair is `u_viewport`, which
 // is what `hb_gpu_dilate` measures half a SCREEN pixel against.
 //
-// THE DAMAGE IS ASYMMETRIC, AND IT WAS MEASURED RATHER THAN REASONED — the reasoning was wrong.
-// Over-dilation is INVISIBLE: `hb_gpu_dilate` moves `position` and `texcoord` along the same
-// affine map, so `fwidth (renderCoord)` — where `hb_gpu_draw` gets its ppem — does not move with
-// it, and the extra fragments a too-large quad covers evaluate to coverage 0. Feeding the design
-// size on a 2x-DPR stage therefore changes nothing on screen; it was measured at zero differing
-// bytes on ANGLE/NVIDIA. UNDER-dilation is what bites: when the drawing buffer is SMALLER than
-// design space the quad is too tight and the antialiased rim is clipped off, which at a ratio of
-// 1/4 measures RMS 1.79 against a correct render. `packages/test-harness/test/canvasGlyphPixelXvfb.test.ts`
-// pins both directions and documents the calibration. Neither reads as a size error, which is why
-// the two are separate parameters here.
+// THE DAMAGE IS ASYMMETRIC. Over-dilation is INVISIBLE: `hb_gpu_dilate` moves `position` and
+// `texcoord` along the same affine map, so `fwidth (renderCoord)` — where `hb_gpu_draw` gets its
+// ppem — does not move with it, and the extra fragments a too-large quad covers evaluate to
+// coverage 0. Feeding the design size on a 2x-DPR stage therefore changes nothing on screen.
+// UNDER-dilation is what bites: when the drawing buffer is SMALLER than design space the quad is
+// too tight and the antialiased rim is clipped off. `packages/test-harness/test/canvasGlyphPixelXvfb.test.ts`
+// pins both directions. Neither reads as a size error, which is why the two are separate
+// parameters here.
 //
 // PREMULTIPLIED OUT, ALWAYS. The fragment writes `vec4 (rgb * a * cov, a * cov)`, so the borrowed
 // context MUST have been created with `premultipliedAlpha: true` — which is what
@@ -84,7 +82,7 @@ export const ATLAS_WIDTH = 4096;
  *
  * A 5 KB Han blob is ~675 texels: at 1024 wide the upload is at most a couple of `texSubImage2D`
  * calls, and narrower rows turn one glyph into dozens of them. A device reporting below WebGL2's
- * own guaranteed 2048 is broken or emulated, and is not one this renderer can be measured on.
+ * own guaranteed 2048 is broken or emulated, and is not one this renderer supports.
  */
 const MIN_ATLAS_WIDTH = 1024;
 
@@ -287,14 +285,14 @@ void main ()
 /**
  * OUR entry point for the fragment stage. Same ownership note as {@link VERTEX_MAIN}.
  *
- * STEM DARKENING AND GAMMA ARE HERE AND ON BY DEFAULT, and the thing that is now a MEASUREMENT
- * decision is switching them OFF — see {@link HbGpuRendererOptions.contrast} and
+ * STEM DARKENING AND GAMMA ARE HERE AND ON BY DEFAULT, and switching them OFF is a harness
+ * decision — see {@link HbGpuRendererOptions.contrast} and
  * {@link HB_GPU_CONTRAST_NONE}. Both are contrast corrections that move coverage AWAY from correct
  * area coverage, which is exactly what a fidelity arm grades against (`docs/text-rendering.md`: the
  * reference is an 8x render box-downsampled, "a ceiling, not a mechanism"), so a HARNESS that left
  * them on would be scoring its own contrast curve. A shipping consumer is not a harness: raw
  * coverage puts a sub-pixel stem at mid-grey where a browser puts it near the ink colour, which is
- * measurably why DOM text out-reads this path at small sizes.
+ * why DOM text out-reads raw coverage at small sizes.
  *
  * The block below is `util/gpu/demo-fragment.glsl`'s, with two differences that are ours:
  * `brightness` comes off per-instance `v_color.rgb` directly (which is STRAIGHT, so upstream's divide by the
@@ -991,8 +989,8 @@ export interface AtlasStats {
   /**
    * `width x height x 8` — the whole texture.
    *
-   * THE NUMBER THAT SITS NEXT TO `hb-atlas`'s 1.45 MiB. A driver allocates the texture, not the
-   * used part of it, so this is what is actually held whatever the occupancy says. Reported
+   * The number to compare with a baked atlas's texture size. A driver allocates the texture, not
+   * the used part of it, so this is what is actually held whatever the occupancy says. Reported
    * separately from `liveBytes` because quoting only the smaller one is how a renderer appears to
    * cost less than it does.
    */
@@ -1020,10 +1018,7 @@ export interface BlobStats {
   glyphs: number;
   /** Sum of every uploaded blob's length, in bytes. */
   totalBytes: number;
-  /**
-   * THE PREDICTION UNDER TEST. `docs/text-rendering.md` records "~5.4 KB per Han glyph against
-   * ~1.4 KB for a 38x38 R8 atlas cell". This is the left-hand side of it, self-counted.
-   */
+  /** Mean encoded bytes per glyph, self-counted: the outline side of the VRAM comparison. */
   bytesPerGlyph: number;
 }
 
@@ -1035,12 +1030,10 @@ export interface BlobStats {
  * {@link HbGpuContrast.stemDarkening}.
  *
  * WHY IT EXISTS, AND WHY THE DEFAULT IS ON. Raw analytic coverage is the AREA of the pixel the
- * outline covers, and compositing it linearly is not what a browser does: measured on one fixed
- * crop of the word "Breakthrough" at 1600x900 / DPR 1.25, the hb-gpu path and the DOM path agree on
- * peak darkness (51 vs 50), on mean luminance (120.5 vs 121.0) and on total ink (2736 vs 2744) —
- * and DOM still puts **66% more pixels** in the deep-dark end (1285 below luma 80 against 775).
- * That gap is entirely in the middle of the ramp: a sub-pixel stem lands mid-grey here and near the
- * ink colour there, which reads as washed out at exactly the sizes a UI uses. Every shipping
+ * outline covers, and compositing it linearly is not what a browser does: with the same total ink,
+ * DOM text puts noticeably more pixels in the deep-dark end. The gap is in the middle of the ramp:
+ * a sub-pixel stem lands mid-grey here and near the ink colour there, which reads as washed out at
+ * exactly the sizes a UI uses. Every shipping
  * consumer wants the correction; the exception is a harness.
  *
  * BOTH FIELDS ARE REQUIRED rather than optional, which is deliberate. A half-specified
@@ -1079,9 +1072,8 @@ export interface HbGpuContrast {
    * dilated fragment's coverage is not that number — the taps are an inside test, so the boundary
    * is nearly binary before any curve touches it. More decisively, Godot's outline is a plain
    * FreeType raster with no curve of its own, so an exponent on a dilated rim reads as a HALO
-   * against it: fattening for dark ink, thinning for light. Measured against the committed Godot
-   * golden, it took a 14 px outline's rim from 0.662 to 1.965 px of equivalent ramp where Godot's
-   * is 0.851 (`packages/hb-gpu/test/goldens/godot-outline-metrics.json`, `docs/text-rendering.md`).
+   * against it: fattening for dark ink, thinning for light, and moving the rim's ramp well away from
+   * Godot's (`packages/hb-gpu/test/goldens/godot-outline-metrics.json` is the reference).
    *
    * THE EDGE THAT LEAVES: a consumer drawing a spread run as the ONLY ink — an outline with no fill
    * composited over it — now gets uncorrected coverage for that text and no way to ask for
@@ -1103,8 +1095,8 @@ export const HB_GPU_CONTRAST_DEFAULT: HbGpuContrast = Object.freeze({
  *
  * FOR MEASUREMENT ARMS, and they should say so where they pass it. A fidelity probe that grades an
  * arm against an 8x area-coverage reference is grading the RASTERIZER, and an arm carrying a
- * contrast curve scores the curve instead — `docs/text-rendering.md`'s distortion figures (0.196
- * Han at ppem 14, 0.017 at ppem 49) only mean what they say against raw coverage.
+ * contrast curve scores the curve instead; distortion figures only mean what they say against raw
+ * coverage.
  */
 export const HB_GPU_CONTRAST_NONE: HbGpuContrast = Object.freeze({
   gamma: 1,
@@ -1148,41 +1140,28 @@ export interface HbGpuRendererOptions {
    * Atlas capacity in TEXELS. Rounded up to a whole number of {@link HbGpuRenderer.atlasWidth}-wide
    * rows.
    *
-   * Default 256 rows = 1 Mi texels = 8 MiB, which holds ~1500 Han outlines at the ~5.4 KB the
-   * prediction expects. Sized in texels rather than bytes because that is the unit the shader
+   * Default 256 rows = 1 Mi texels = 8 MiB, which holds on the order of 1500 Han outlines. Sized in
+   * texels rather than bytes because that is the unit the shader
    * indexes in and the unit the allocator wraps in.
    */
   atlasTexels?: number;
   /**
    * Give each DILATION TAP the same five-sample average `_hb_gpu_slug` gives a fill below ppem 16.
    *
-   * **Default `false`, and that default is a measured trade rather than an oversight.**
+   * **Default `false`, and that default is a deliberate cost trade rather than an oversight.**
    *
    * WHAT IT COSTS TO LEAVE ON. `hb_gpu_spread_tap` mirrors `_hb_gpu_slug`, so below ppem 16 one ring
-   * tap becomes FIVE `_hb_gpu_slug_single` evaluations — and a dilated fragment takes up to 65 taps.
-   * Measured on S9's `text-render` scenario (RTX 2060, 1280x800 at DPR 1, 40 outlined runs at 14 px,
-   * `outlinePx` 6): **12.27 Hz with it on, 70.47 Hz with it off**, 5.74x, and 8.05x at `outlinePx`
-   * 10. The font-size ladder isolates it — the same 3 px radius and the same tap set (47 steps when
-   * that was measured, 50 under the budget split that replaced the per-ring clamp) reads 17.44 Hz at
-   * `fontSize` 18 and 74.76 at 20, because 20 is where the ppem the shader computes crosses 16 and
-   * the branch stops firing. It is one branch, not the tap count: capping the rings and steps at
-   * 3x12 bought only 1.5x, and 2x8 bought 2.3x by punching holes through thin features.
+   * tap becomes FIVE `_hb_gpu_slug_single` evaluations — and a dilated fragment takes up to 65 taps,
+   * so outlined small text costs several times as much per frame. It is this one branch, not the
+   * tap count, that dominates.
    *
    * WHY IT IS DEFENSIBLE TO LEAVE OFF, which is a claim about pixels and is pinned by
    * `test/glyphPixelXvfb.test.ts`'s low-ppem pair. The outline is a solid silhouette that a fill is
-   * then drawn on top of, so the only thing the taps decide is its OUTER rim; a max over ~47 taps is
-   * itself a smoothing operator; and the rim of a thick outline is the least legible place in a
-   * glyph. Measured at 14 px, rotated 10 degrees, spread 3, both programs on one GPU in one frame:
-   * the two differ on **267 pixels, RMS 33.4 levels of 255, worst 85** — and the one WITHOUT the
-   * MSAA is the one closer to an 8x dilated reference (rim RMS 77.9 against 85.1, ink 36102 against
-   * 30192 where the ideal grown shape is 58081). The extra smoothing was deepening a shortfall, not
-   * repairing one: `max` over coverage cannot exceed the peak coverage near a fragment, and at
-   * ppem 14 a Han glyph's strokes never reach 1, so the outline is a translucent mottle at ~60% of
-   * the ideal either way. That is the honest shape of this trade — not "5.74x for a slightly
-   * coarser rim" but "5.74x for a differently-wrong outline at a size where the outline is already
-   * wrong". Above ppem 16 it is free in both directions: the blend weight is
-   * `smoothstep (16, 8, ppem)`, which is exactly 0 there, so NO pixel of text at or above ppem 16
-   * can change — measured, by widening the gate to `ppem < 200` and reading a byte-identical frame.
+   * then drawn on top of, so the only thing the taps decide is its OUTER rim; a max over many taps
+   * is itself a smoothing operator; and the rim of a thick outline is the least legible place in a
+   * glyph. Without the MSAA the rim is no further from an 8x dilated reference than with it.
+   * Above ppem 16 it is free in both directions: the blend weight is `smoothstep (16, 8, ppem)`,
+   * which is exactly 0 there, so NO pixel of text at or above ppem 16 can change.
    *
    * WHAT IT DOES NOT TOUCH, structurally. The FILL's coverage is `hb_gpu_draw` -> `_hb_gpu_slug`
    * inside the vendored library, guarded by the library's own `HB_GPU_NO_MSAA`. This flag defines
@@ -1245,10 +1224,9 @@ export interface HbGpuRenderer {
    * the same offsets — and the two ways to do that are to keep a copy of every uploaded blob or to
    * keep the encoder that produced them. This keeps the ENCODER: the embedder already holds the
    * `HbGpuFont` (it cannot encode without one), so the retained reference costs zero additional
-   * bytes, where retaining blobs would hold a second resident copy of the glyph data forever —
-   * 1.3 MB on S9's 300-glyph Han pool — to make a once-in-a-session event faster. The cost is paid
-   * on restore instead: `rebuild` re-runs `hb_gpu_draw_encode` for every resident glyph (~180 ms
-   * for that same pool).
+   * bytes, where retaining blobs would hold a second resident copy of the glyph data forever to
+   * make a once-in-a-session event faster. The cost is paid on restore instead: `rebuild` re-runs
+   * `hb_gpu_draw_encode` for every resident glyph.
    *
    * Consequence, stated because it is a lifetime rule and not a preference: the font must outlive
    * the renderer, or a rebuild silently drops that face's glyphs.
@@ -1277,8 +1255,8 @@ export interface HbGpuRenderer {
    * THE CHEAP HALF OF {@link HbGpuRenderer.upload}, AND THE REASON AN EMBEDDER CAN KEEP HANDLES
    * INSTEAD OF SLOTS. A retained draw list records a glyph as an id and has to turn it back into a
    * `GlyphSlot` every frame; the only way to do that used to be `upload`, which needs an
-   * {@link EncodedGlyph} — and encoding a Han working set costs ~180 ms, so a per-frame encode is
-   * not a path anybody can take. This is a map lookup and a touch.
+   * {@link EncodedGlyph} — and encoding a Han working set is far too slow to do per frame. This is
+   * a map lookup and a touch.
    *
    * `null` means "never uploaded, or evicted", and those are the same answer for a caller: encode
    * and `upload` again. It is NOT an error and nothing is reported — a ring allocator evicting is
@@ -1343,8 +1321,8 @@ export interface HbGpuRenderer {
    * COST. Bounded, but not free: a fragment that is neither solid ink nor near any evaluates up to
    * 65 coverage taps (and five times that below ppem 16), and the quad it does so over grows by
    * `spread` on every side. Beyond roughly 4 device pixels of radius the tap ceiling is reached —
-   * {@link HB_GPU_SPREAD_MAX_TAPS} — and the dilated rim starts to scallop: measured against a Godot
-   * 4.5.1 golden at radius 12, the 50% contour wobbles 0.17 px where the engine's wobbles 0.11. The
+   * {@link HB_GPU_SPREAD_MAX_TAPS} — and the dilated rim starts to scallop slightly more than
+   * Godot's own outline does (`test/glyphPixelXvfb.test.ts` pins the budget). The
    * cost does not grow past that point; only the scallop does. Negative and non-finite values are
    * clamped to 0 rather than reported: this is a per-run hot-path setter with no error channel.
    */
@@ -1452,7 +1430,7 @@ interface Allocation {
    * These six numbers used to be taken off the {@link EncodedGlyph} at every call, which meant the
    * only way to obtain a slot was to hold — or re-run — the encoder. {@link HbGpuRenderer.resolve}
    * exists precisely so a caller does not have to, and it can only exist if the allocation knows
-   * its own box. They are six floats per resident glyph against a blob that averages 5.4 KB.
+   * its own box. They are six floats per resident glyph against a blob of several kilobytes.
    */
   upem: number;
   minX: number;
@@ -2043,7 +2021,7 @@ export function createHbGpuRenderer(
     // requires `INVALID_OPERATION` when either is true for an `ArrayBufferView` source, which is
     // the overload below.
     //
-    // `packages/canvas/src/textures.ts:230` sets premultiply TRUE for its colour uploads and leaves
+    // `packages/canvas/src/textures.ts` sets premultiply TRUE for its colour uploads and leaves
     // it set, exactly as it is entitled to — so any embedder that has uploaded one texture before
     // the first glyph hands this function an illegal call. On ANGLE/Vulkan the observed result is
     // not the specified error: the renderer process EXITS, with no GL error, no exception and

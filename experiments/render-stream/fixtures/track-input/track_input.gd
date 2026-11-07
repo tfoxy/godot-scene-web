@@ -1,5 +1,5 @@
 extends Node
-## TRK2 track receiver autoload (`TrackInput`; tracks-design.md Q6, "As built (TRK2)"): binds the
+## TRK2 track receiver autoload (`TrackInput`): binds the
 ## `input` track kind through the capture's RenderStreamTrack class and wires it to the gsw-input/1
 ## reference injector, exactly as the design's example does:
 ##

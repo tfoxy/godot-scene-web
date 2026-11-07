@@ -1,14 +1,12 @@
 # render-stream/10 wire format
 
-Status: specified at CG1 (2026-10-25), from P3-NP's diagnosis (`results/p3/p3-np.md`, the HP bars
-are `clip_children`) and P3-ST's back-buffer note (gate5_5-design.md "Screen texture (P3-ST)",
-"Capture and wire"). /10 is **opt-in**, like /8 and /9: the capture's file sinks stay on /6
+Status: frozen. /10 carries `clip_children` canvas groups and back-buffer copies. /10 is **opt-in**, like /8 and /9: the capture's file sinks stay on /6
 unless asked (`GRC_STREAM_VERSION=10`), the live listener offers `render-stream.10` only under
 `GRC_STREAM_VERSION=10`, and a receiver offers it only under `RS_RECEIVER_PROTOCOL=10`. Nothing
 in /2 to /9 changes: `golden-2/` to `golden-9/` pass unchanged, and a session below /10 is
 byte-identical to what it was (the two new hooks are not even installed, "Capture" below).
 
-As with /3 to /9 (memory g4e1-rs3-version-switch-pattern), /10 is **not** a new forked module. The
+As with /3 to /9, /10 is **not** a new forked module. The
 version-parameterized C++/TypeScript/Rust modules grow a ninth value: C++'s `Session::version`
 gains `ProtocolVersion::V10`, and the TypeScript `version` parameter and the Rust `version: u8`
 widen to `2..=10` (the TypeScript default stays `6`). Every cascade that means "/9 or later" now
@@ -22,15 +20,14 @@ render-stream/10 is render-stream/9 plus exactly:
 - a seventh transaction block, `backbuffer_f32`, holding their floats;
 - `features.unobserved` loses `canvas_item_set_canvas_group_mode` and
   `canvas_item_set_copy_to_backbuffer` when the capture hooked them.
-- an optional transaction key, `shader_time`, with the host's canvas shader time (P3-TM, "Shader
+- an optional transaction key, `shader_time`, with the host's canvas shader time ("Shader
   time" below), and `TIME` no longer a shader reason.
 
 Everything else is exactly as in render-stream-9.md and, through it, render-stream-8.md to
 render-stream-0.md: record framing, the record sha256, canonical JSON, the session (but for the
 protocol string and the features list), every table, every payload, out-of-band delivery, the live
 transport and its hello (/9's fifteen keys, with `protocol` `"render-stream/10"`). Multimesh and GPU
-particles stay out of /10 (particles-multimesh-design.md "Fit with /10"); later versions are
-numbered by their own designs (render-stream-11.md, W11-D).
+particles stay out of /10; later versions carry them (render-stream-11.md, render-stream-12.md).
 
 ## File layout
 
@@ -80,8 +77,8 @@ same way. Recording files use the extension `.rs10`.
   whether it takes effect (an owner needs commands or `fit_empty`,
   `renderer_canvas_cull.cpp:452,462`), the subtree-first draw order, the group rect and GLES3's
   one-open-group rule (`rasterizer_canvas_gles3.cpp:463-516`) all follow from the state and the
-  rest of the item tree, which the wire already carries. results/p3/p3-np.md "Engine semantics"
-  has the rules a receiver that composites itself (GSW, CG3) must reproduce.
+  rest of the item tree, which the wire already carries. A receiver that composites itself (GSW)
+  must reproduce those engine rules.
 
 ## Transaction blocks
 
@@ -114,14 +111,14 @@ for that key, which the session has declared unobserved, not absent. Below /10 b
   `GRC_STREAM_VERSION=10`, which also makes the file sinks /10 and puts `.10` first in the
   listener's offer. Without it they are neither planned nor omitted, so
   `hooks_planned`, the counters and every /2-/9 session are what they were. The calibrator version
-  stays 9 (gate8-design.md "Calibration for /10 (CG1)").
+  stays 9.
 - **Mirror.** Each hook passes the call through, then sets the item's state as the engine does: a
   disabled mode (0) or `enable == false` clears it; anything else replaces it whole. A mode outside
   0-3 cannot come from scene code (`CanvasItem.set_clip_children_mode` refuses it,
   `canvas_item.cpp:1690`); the hook passes it through, leaves the mirror's state unchanged and
   counts it in `counters.json` `captured.canvas_group_mode_invalid`. A call on an item the mirror
   does not know is dropped like every other item setter's.
-- **Adoption** (`GRC_ADOPT=arm`, gate8-design.md D3/G8a): the state pass reads the same values from
+- **Adoption** (`GRC_ADOPT=arm`): the state pass reads the same values from
   the node a scene set them through: `CanvasItem.get_clip_children_mode` (any CanvasItem but a
   `CanvasGroup`, which ignores the property, `canvas_item.cpp:1699`), a `CanvasGroup`'s
   `get_clear_margin`, `get_fit_margin` and `is_using_mipmaps` (mode `transparent`, `fit_empty`
@@ -153,7 +150,7 @@ to a /9 one.
   differs from what the receiver last set (`null` re-issues mode 0), and
   `canvas_item_set_copy_to_backbuffer` (enable, rect) whenever `copy_to_backbuffer` does. The
   receiver's own Godot then does everything else.
-- **GSW** (CG3, `results/p3/cg3.md`): composites both keys itself, as GLES3's
+- **GSW**: composites both keys itself, as GLES3's
   `canvas_render_items` does (`rasterizer_canvas_gles3.cpp:409-540`, `:2844-2883`):
   - **The walk** (rs-core's applier): an item whose `canvas_group` is set and that has commands or
     `fit_empty` culls its whole subtree before it attaches; its range is what that subtree attached
@@ -219,12 +216,11 @@ byte for byte; /9 output ignores both keys), `rs-core-check goldens` / `cargo te
 
 ## Shader time (P3-TM)
 
-Added by P3-TM (2026-10-25, gate5_5-design.md "TIME and sampler defaults (P3-TM)"), before any
-release shipped /10. A canvas shader's `TIME` is Godot 4.5.1's GLES3 rasterizer's own
+Added before any release shipped /10. A canvas shader's `TIME` is Godot 4.5.1's GLES3 rasterizer's own
 `time_total`: every drawn frame adds the main loop's scaled step (`RenderingServer::draw(..,
 scaled_step)`, main.cpp:4825-4829) and wraps at `rendering/limits/time/time_rollover_secs`
 (`RasterizerGLES3::begin_frame`, rasterizer_gles3.cpp:97-107), and the canvas uploads it as a float
-(rasterizer_canvas_gles3.cpp:352). Gate 5.5 refused it (D11 `shader-time`) because a receiver's
+(rasterizer_canvas_gles3.cpp:352). Below /10 it is refused (reason `shader-time`) because a receiver's
 own clock is not the host's: a replay would not be exact and a live receiver would show another
 phase. /10 carries the host's value per transaction, so every receiver draws the host's `TIME`.
 
@@ -279,14 +275,13 @@ Receivers:
 - Receiver sabotage `shader-time-frozen` (native and GSW): the carried time is ignored, so every
   `TIME` reads 0.
 
-**P3-CK (2026-10-27, no wire change).** The capture's source is now the hooked
+**Clock source (no wire change).** The capture's source is now the hooked
 `RenderingServer::draw` (calibrated slot `draw`, /10 only): its `frame_step` is the step GLES3 adds,
 which the main loop takes before the physics clamp, so a rendered host that stalls longer than
 `max_physics_steps_per_frame` physics steps no longer falls behind (the tree's delta is clamped
 there, main.cpp:4710-4713). A host that never draws still advances by the tree's delta at every
 frame callback, and a calibration record without the slot keeps the frame-callback sum (the log
-names the `source`). The key, its place and its presence rule are unchanged
-(gate5_5-design.md "Shader clock under stalls and half-float samplers (P3-CK)").
+names the `source`). The key, its place and its presence rule are unchanged.
 
 ## Versioning
 

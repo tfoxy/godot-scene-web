@@ -1,5 +1,5 @@
 extends RefCounted
-## The gate 5 style fixture's custom nodes (../../protocol/gate5-design.md "Q6f", G5g). The
+## The gate 5 style fixture's custom nodes. The
 ## NinePatchRects, the default-theme Panel and the RichTextLabel are engine nodes configured by
 ## gate5_style.gd; these two classes draw what no engine node draws on its own terms.
 

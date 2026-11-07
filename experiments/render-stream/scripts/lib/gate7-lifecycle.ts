@@ -1,4 +1,4 @@
-// G7u (suspension and lifecycle; protocol/gate7/g7u.md, g7u-as-built.md): the harness half of a
+// G7u (suspension and lifecycle): the harness half of a
 // lifecycle leg. A native leg's RS_RECEIVER_LIFECYCLE word is a HARNESS word (mapBrowserLeg drops
 // it from the page env and returns it parsed here); on such a leg runBrowserLeg injects
 // browser-probes/lifecycle-shim.js before any page script and drives it through a LifecycleDriver:
@@ -15,7 +15,7 @@
 // (`simulated-suspension`, never a pass of hidden/frozen) and does reload and context loss itself;
 // the harness only closes. Device (GATE7_LIFECYCLE_ENV=device, GATE7_DEVICE=<id>): the shim posts
 // `hide`/`freeze` and the harness performs them for real through deviceLifecycleActions, on the
-// browser daemon's device mode (lib/gate7-device-legs.ts; g7u-as-built.md "As built, part D").
+// browser daemon's device mode (lib/gate7-device-legs.ts).
 
 import { readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -259,7 +259,7 @@ export function desktopLifecycleActions(page: Page): LifecycleActions {
   };
 }
 
-/** The device's actions (g7u-as-built.md "Device facts (g31 probe)"): hide via
+/** The device's actions: hide via
  * `Target.createTarget` about:blank in the receiver tab's browser context (it comes to the front by
  * itself; restore: `Target.activateTarget` + `Page.bringToFront` on the receiver session, then
  * `Target.closeTarget` on the aux tab) or `adb shell input keyevent KEYCODE_HOME` (restore:
@@ -365,7 +365,7 @@ export function deviceLifecycleActions(
     await adb.shell("input keyevent KEYCODE_HOME");
     steps.push(`input keyevent KEYCODE_HOME (+${Date.now() - t0} ms)`);
     await sleep(holdUntil !== null ? holdUntil - Date.now() : 1500);
-    // Device fact (device-gsw, 2026-10-18): the g31's portrait-only launcher rewrites
+    // Device fact: the g31's portrait-only launcher rewrites
     // `system user_rotation` to 0 under the harness's landscape lock, so the lock is re-applied
     // while the launcher is in front, before Chrome comes back.
     steps.push(
@@ -451,13 +451,12 @@ export function deviceLifecycleActions(
   };
 }
 
-/** A real hide's rAF callbacks inside the window, told apart (g31 probe: a new foreground tab runs
+/** A real hide's rAF callbacks inside the window, told apart (a new foreground tab runs
  * a few callbacks right after `hidden`): `inside` ran strictly after start_t + edge ms (and before
  * end_t, as `during` counts), `edge` within edge ms of start_t. Without `during_t` (a desktop
- * record) every callback counted in `during` is inside. Pure. The edge is 150 ms: on the g31 the
- * renderer keeps its 60-Hz frames for ~90 ms after `hidden` (6 callbacks over 87 ms, dev-d-gsw1
- * hidden-2s; ~80 ms in the probe), then none until `visible`; a page whose rAF never stops still
- * runs ~110 callbacks after the edge of a 2-s hide. */
+ * record) every callback counted in `during` is inside. Pure. The edge is 150 ms: on a phone the
+ * renderer keeps its 60-Hz frames for a short while after `hidden`, then none until `visible`; a
+ * page whose rAF never stops keeps running well past the edge of a 2-s hide. */
 export const REAL_HIDE_EDGE_MS = 150;
 export function rafInsideWindow(
   rec: Pick<LifecycleRecord, "raf" | "window">,

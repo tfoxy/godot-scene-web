@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Gate 5.5 runner: drives the gate 5.5 fixtures through the legs of protocol/gate5_5-design.md
-# "Q7. Runner, legs, checks, report" for the groups that have landed, then runs check-gate55.ts.
+# Gate 5.5 runner: drives the gate 5.5 fixtures through the legs
+# for the groups that have landed, then runs check-gate55.ts.
 #
 #   bash run-gate55.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
@@ -44,18 +44,17 @@
 # live-shader-warm (a new host + a new rendered receiver on live-shader's cache),
 # live-shader-stall (RS_RECEIVER_STALL=1:2000, step 1) and sabotage-shader-stale-coalesce (the
 # same stall, host GRC_SABOTAGE=stale-coalesce from step 1's frame); g55f imports both projects
-# itself and does not need g55c's own legs) and g55s (P3-ST, gate5_5-design.md "Screen texture
-# (P3-ST)": fixtures/gate55-screen under <out>/screen/ -- its import and the receiver's, a
+# itself and does not need g55c's own legs) and g55s (P3-ST,
+# fixtures/gate55-screen under <out>/screen/ -- its import and the receiver's, a
 # render-stream/8 capture, the rendered reference and a repeat, rendered receivers on the full and
 # patch sinks, and the receiver sabotage screen-copy-per-reader; self-contained) and g55v (P3-VX,
-# gate5_5-design.md "vertex() (P3-VX)": fixtures/gate55-vertex under <out>/vertex/, the same legs as
+# fixtures/gate55-vertex under <out>/vertex/, the same legs as
 # g55s with the receiver sabotage vertex-flat-varyings; self-contained).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
 # and WAYLAND_DISPLAY. Every launch strips every inherited GRC_* and RS_* variable and passes only
-# what its leg wants (env.txt records it). Every capture runs with GRC_ROOT_SIZE=enforce-min-size
-# (gate5_5-design.md Q6).
+# what its leg wants (env.txt records it). Every capture runs with GRC_ROOT_SIZE=enforce-min-size.
 
 set -euo pipefail
 
@@ -88,7 +87,7 @@ BINARY="$HOME/.cache/godot-render-stream/templates/4.5.1-stable/linux_release.x8
 OUT=""
 LEGS_ARG=""
 
-# The capture runs 400 frames so the /proc maps/fd sample has time to run (gate4-design.md G4a
+# The capture runs 400 frames so the /proc maps/fd sample has time to run (G4a
 # amendment); the rendered legs run the fixture's default quit frame (S + N*9 + 11 = 102).
 CAPTURE_QUIT_FRAME=400
 HEADLESS_TIMEOUT_S=180
@@ -97,17 +96,17 @@ RENDERED_TIMEOUT_S=180
 # G55f: the live timeline (gate 1's and gate 5f's pattern, memories rs-g1d-stall-facts and
 # rs-g5f-live-mesh-facts) on fixtures/gate55-shader's own step model (LAST_STEP 9, SETTLE_OFFSET
 # 7, QUIT_AFTER_LAST_SETTLE 4): S=300, N=60 so a 60 fps receiver has slack between steps, quit =
-# S + N*LAST_STEP + 7 + 4. Identical numbers to gate5-design.md G5f's G5F_* on purpose: the same
-# engine mechanics, measured there, carry over (gate5_5-design.md G55f).
+# S + N*LAST_STEP + 7 + 4. Identical numbers to G5f's G5F_* on purpose: the same
+# engine mechanics, measured there, carry over.
 G55F_LAST_STEP=9
 G55F_START_FRAME=300
 G55F_STEP_FRAMES=60
 G55F_QUIT_FRAME=$((G55F_START_FRAME + G55F_STEP_FRAMES * G55F_LAST_STEP + 11))
-# <step>:<ms> (gate1-design.md G1d): after step 1's shot, block the receiver long enough that PH
+# <step>:<ms>: after step 1's shot, block the receiver long enough that PH
 # (every-frame shader parameter) changes for well over 60 frames and step 3's code change (tint
 # -> tint_b, applied frame S+3N=480) lands inside the stall.
 # GRT3: in host frames at 60 fps; legs_stall_spec converts them at the leg's own host rate
-# (exactly these milliseconds at 60 fps; scripts/README.md "Fast frames (GRT3)").
+# (exactly these milliseconds at 60 fps).
 G55F_STALL_STEP=1
 G55F_STALL_FRAMES=120 # 2000 ms
 G55F_STALL_SPEC=""
@@ -199,8 +198,7 @@ else
 	done
 fi
 
-# g55d's receivers replay g55b's captures and compare with g55b's references (gate5_5-design.md
-# G55b amendment 8): requesting g55d without g55b runs g55b too. Groups run in LANDED order.
+# g55d's receivers replay g55b's captures and compare with g55b's references (G55b amendment 8): requesting g55d without g55b runs g55b too. Groups run in LANDED order.
 case " ${GROUPS_RUN[*]} " in
 *" g55d "*)
 	case " ${GROUPS_RUN[*]} " in
@@ -296,7 +294,7 @@ source "$SCRIPT_DIR/lib/legs.sh"
 # full-sink stream and its store. REFERENCE_VARIANT sets RS_FIXTURE_VARIANT. REFERENCE_FIXTURE_DIR
 # picks the project (default FIXTURE_DIR) and REFERENCE_MATERIAL_ORACLE=1 turns the material oracle
 # on (RS_FIXTURE_MATERIAL_LOG=<dir>/materials.jsonl, fixtures/gate55-shader only).
-# REFERENCE_START_FRAME / _STEP_FRAMES / _QUIT_FRAME (G55f, gate5-design.md G5f's identical
+# REFERENCE_START_FRAME / _STEP_FRAMES / _QUIT_FRAME (G55f, G5f's identical
 # pattern) override the fixture's own step timeline, so the shots land on the live timeline's own
 # frames (PH's per-frame phase only lines up with a live shot taken at the identical frame
 # number). All are reset after the call.
@@ -457,7 +455,7 @@ run_g55c() {
 	GS_RUN_DIR=""
 }
 
-# Step k's applied frame (S=1, N=10; gate5_5-design.md Q6).
+# Step k's applied frame (S=1, N=10).
 step_frame55() { echo $((1 + 10 * $1)); }
 
 # A headless sabotage capture of fixtures/gate55-cim's base scene on the fixture's own default run
@@ -471,7 +469,7 @@ cim_sabotage_capture() {
 }
 
 # One scene's all-inline capture: the 400-frame capture again with no store and both thresholds
-# raised so every payload, GRP1 included, is a resource record (memory rs-g2b2-texture-wire-facts).
+# raised so every payload, GRP1 included, is a resource record.
 run_cim_capture_inline() {
 	local scene="$1" variant="$2"
 	echo "run-gate55: g55d: capture-${scene##*/}-inline (every payload inline, no store)"
@@ -780,7 +778,7 @@ run_g55f() {
 	GS_RUN_DIR=""
 }
 
-# P3-ST (gate5_5-design.md "Screen texture (P3-ST)"): fixtures/gate55-screen under <out>/screen/.
+# P3-ST: fixtures/gate55-screen under <out>/screen/.
 # Its import and the receiver's; a headless capture on the fixture's own default run (62 frames)
 # with both sinks and the store; inside one gamescope the rendered reference and a same-build
 # repeat, rendered receivers on the full sink and the patch sink, and the receiver sabotage
@@ -829,7 +827,7 @@ run_g55s() {
 	GS_RUN_DIR=""
 }
 
-# P3-VX (gate5_5-design.md "vertex() (P3-VX)"): fixtures/gate55-vertex under <out>/vertex/, legs as
+# P3-VX: fixtures/gate55-vertex under <out>/vertex/, legs as
 # g55s's: imports, a render-stream/8 capture, inside one gamescope the rendered reference and a
 # repeat, rendered receivers on the full and patch sinks, and the receiver sabotage
 # vertex-flat-varyings (every varying made `flat` before the receiver compiles the code), which
@@ -875,7 +873,7 @@ run_g55v() {
 	GS_RUN_DIR=""
 }
 
-# P3-TM (gate5_5-design.md "TIME and sampler defaults (P3-TM)"): fixtures/gate55-time under
+# P3-TM: fixtures/gate55-time under
 # <out>/time/, legs as g55v's, but the capture is render-stream/10 (which carries the host's shader
 # time per transaction) and both the capture host and the rendered reference run --fixed-fps 60,
 # so TIME at frame F is the same F steps of 1/60 on both. The receiver sabotage
@@ -922,7 +920,7 @@ run_g55t() {
 	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=shader-time-frozen)
 	run_rendered_receiver "$D/capture" "$D/sabotage-receiver-time-frozen"
 
-	# P3-CK (gate5_5-design.md "Shader clock under stalls (P3-CK)"): the stall variant in real
+	# P3-CK: the stall variant in real
 	# time, captured by the rendered host itself (armed, /10, its own shots are the reference),
 	# so the host's GLES3 TIME after a clamped iteration is what its shots show.
 	local -a stall_env=(GRC_STREAM_VERSION=10 "GRC_RESOURCE_FORMATS=$G55T_FORMATS")

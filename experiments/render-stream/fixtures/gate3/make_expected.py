@@ -2,7 +2,7 @@
 """Write fixtures/gate3/expected.json (render-stream-gate3-expected/1).
 
 The derivation of every number below models the engine's clip semantics as read from the
-source (protocol/gate3-design.md Q1), written down as code over the fixture's own parameters.
+source, written down as code over the fixture's own parameters.
 Nothing here runs or reads the engine: the reference run has to agree with it
 (`expected-image-reference`, `probes-reference`, `clip-call-census`), and a disagreement is a
 finding to explain from the source, never a number to copy.
@@ -20,7 +20,7 @@ The model (source lines are in ../godot-4.5.1-stable):
   The fixture's raw RenderingServer calls are as scripted. The server-side setters only store
   (servers/rendering/renderer_canvas_cull.cpp:660-665, :674-680); clear resets clip, never the
   custom rect (servers/rendering/renderer_canvas_render.h:455). This is also the mirror's model
-  (capture/src/rs_mirror.cpp, gate3-design.md D3), which the sabotage predictions reuse.
+  (capture/src/rs_mirror.cpp), which the sabotage predictions reuse.
 - Cull (renderer_canvas_cull.cpp:296-418): an item's rect is its custom rect, else the union of
   its command rects (servers/rendering/renderer_canvas_render.cpp:36-132); final_xform = parent *
   self from the canvas transform down; global_rect is the axis-aligned bounding box of the rect
@@ -33,7 +33,7 @@ The model (source lines are in ../godot-4.5.1-stable):
   the visibility rect.
 - Paint order: z lists ascending; inside one, the cull's pre-order (children by draw index, the
   canvas's items by draw index). Top-level scene items take their tree index; RC is 1000.
-- Probes (gate3-design.md Q6c): for every non-null scissor, the quarter, half and three-quarter
+- Probes: for every non-null scissor, the quarter, half and three-quarter
   points of each edge give an inside/outside pixel pair, named after the innermost owner whose
   edge bounds the same pair; a pair is decisive when the outside pixel differs from the scene
   painted with every clip off.
@@ -89,7 +89,7 @@ CREATION_ORDER = ["A", "AF", "S1", "B", "BF", "N", "NF", "C", "CF", "BZ", "D", "
 OWNERS = ["A", "B", "C", "D", "RC", "AN"]
 CONTROLS = ["A", "AF", "S1", "B", "BF", "N", "NF", "C", "CF", "BZ", "D", "DF", "CU", "AN", "ANF"]
 
-# The hand-derived table of gate3-design.md Q6b ("Final scissors per step"), typed in from the
+# The hand-derived table, typed in from the
 # contract, never computed: expected-self-consistent checks the derivation against it.
 _A0 = [96, 88, 256, 208]
 _D0 = [344, 88, 408, 136]
@@ -122,11 +122,11 @@ def rgba8(r, g, b):
     return [round(r * 255), round(g * 255), round(b * 255), 255]
 
 
-# Variant clip-ignore (gate3-design.md Q6b "Variant clip-ignore", G3d): a raw item RI, present
+# Variant clip-ignore: a raw item RI, present
 # only under RS_FIXTURE_VARIANT=clip-ignore, static for the whole run. Its second rect is drawn
 # unclipped by the real engine between the two add_clip_ignore calls (Q1d). On render-stream/3 a
 # receiver only saw them as unsupported commands and clipped both rects to RI's own scissor, so
-# the images differed in region "ri". Since G5d (gate5-design.md D10 and Q6g, render-stream/4)
+# the images differed in region "ri". Since G5d (render-stream/4)
 # add_clip_ignore is a real command the receiver replays in order, so the receiver draws exactly
 # what the reference draws and the two images differ nowhere.
 RI_REGION_NAME = "ri"
@@ -143,7 +143,7 @@ RI_RECT_2 = ([32, 16, 32, 32], rgba8(1, 0.4, 0))
 
 
 def initial_scene():
-    """Scene-side parameters at step 0 (gate3-design.md Q6b's node table)."""
+    """Scene-side parameters at step 0 (the node table)."""
 
     def ctl(parent, pos, size, clip=False, color=None, z=0, index=0, draw=None):
         return {
@@ -233,7 +233,7 @@ def marker_redraw(step):
 
 
 # The Controls each step redraws (a size, clip_contents or colour change), and nothing else:
-# position changes and the canvas transform never redraw (gate3-design.md Q1a).
+# position changes and the canvas transform never redraw.
 REDRAWS = {0: CONTROLS, 3: ["B"], 4: ["A"], 5: ["A", "D"]}
 
 
@@ -692,12 +692,12 @@ def ri_clip_px_at(shift):
 
 
 def variant_clip_ignore():
-    """gate3-design.md Q6b "Variant clip-ignore": RI's two draws under the engine's real clip_ignore
+    """: RI's two draws under the engine's real clip_ignore
     semantics. RI is static, but the step-9 canvas shift (Q6b) still moves it like every other
     top-level item -- the shift is not gate 3b's D3 fix, it is RI simply inheriting the canvas
     transform, so both reference_draws and receiver_draws are per step.
 
-    Since G5d (gate5-design.md D10 and Q6g, render-stream/4), add_clip_ignore travels as a real
+    Since G5d (render-stream/4), add_clip_ignore travels as a real
     command ({"op": "add_clip_ignore", "ignore": bool}) that the receiver replays in order with the
     engine's own RenderingServer call, so receiver_draws equals reference_draws at every step (the
     second rect unclipped on both) and receiver-clip-ignore matches reference-clip-ignore in every

@@ -1,6 +1,6 @@
 // Pure synthesis of the gate 3 fixture's expected per-step frame, straight from
 // fixtures/gate3/expected.json (render-stream-gate3-expected/1) -- no file or network I/O, no
-// Godot, no capture evidence. See ../../protocol/gate3-design.md "Q6c" for the schema and the
+// Godot, no capture evidence. See fixtures/gate3/README.md for the schema and the
 // checks (`expected-image-reference`, `probes-reference`) that compare real screenshots with it.
 //
 // Every gate 3 draw is a non-antialiased add_rect with an opaque colour on the 0.2 grid, and every
@@ -28,7 +28,7 @@ export type ClipRectValue = Clip4 | null | "skipped";
 
 export type Edge = "left" | "right" | "top" | "bottom";
 
-/** One probe pixel (gate3-design.md Q6c "Probe rule"): `<owner>.<edge>.<side>.<i>`. */
+/** One probe pixel: `<owner>.<edge>.<side>.<i>`. */
 export interface Gate3Probe {
   name: string;
   owner: string;
@@ -73,7 +73,7 @@ export interface Gate3Prediction {
   probes?: string[];
 }
 
-/** Variant `clip-ignore` (gate3-design.md Q6b, G3d): a static raw item `RI`, present only under
+/** Variant `clip-ignore`: a static raw item `RI`, present only under
  * `RS_FIXTURE_VARIANT=clip-ignore`, whose second rect escapes its own clip in the real engine
  * (Q1d). Each draw list is in paint order (`RI`'s first rect, then its second), to append to a
  * step's `draws` before synthesis.
@@ -82,7 +82,7 @@ export interface Gate3Prediction {
  * step-9 canvas shift (Q6b) still moves it like every other top-level item -- that shift is not
  * gate 3b's D3 fix, just `RI` inheriting the canvas transform, so it applies on both sides.
  *
- * Since G5d (gate5-design.md D10 and Q6g, render-stream/4) `add_clip_ignore` is a real command the
+ * Since G5d (render-stream/4) `add_clip_ignore` is a real command the
  * receiver replays in order, so `receiver_draws` equals `reference_draws` at every step and
  * `receiver-clip-ignore` matches `reference-clip-ignore` in every region, `ri` included. On
  * render-stream/3 the receiver saw two unsupported commands and clipped the second rect to `RI`'s
@@ -116,7 +116,7 @@ export interface Gate3Expected {
   created_later: { name: string; step: number }[];
   /** every item whose clip is ever on */
   owners: string[];
-  /** gate3-design.md Q6b's hand table, by step ("0".."9") */
+  /** the contract's hand table, by step ("0".."9") */
   hand_clip_rects: Record<string, Record<string, ClipRectValue>>;
   non_decisive_edges: { owner: string; edge: Edge; reason: string }[];
   /** whole-run RS call totals at the hook (Q1a) */
@@ -206,8 +206,8 @@ export function synthesizeGate3(
   return { width, height, rgba };
 }
 
-/** `expected` with `extraDraws` appended to every step's `draws` (gate3-design.md Q6b "Variant
- * clip-ignore", G3d): a flat array broadcasts the same draws to every step (`RI` is static, but
+/** `expected` with `extraDraws` appended to every step's `draws`
+ * A flat array broadcasts the same draws to every step (`RI` is static, but
  * its global position still follows a step's canvas shift, Q6b); a `(step) => draws` callback
  * gives a different list per step. Lets `synthesizeGate3`/`compareShotsWithSynth` build the
  * reference or receiver image for a variant leg without a second synthesis path. */

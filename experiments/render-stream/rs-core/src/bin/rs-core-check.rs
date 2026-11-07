@@ -1,4 +1,4 @@
-//! `rs-core-check` (gate7-design.md Q14a/Q14d): the native front end of render-stream-core's decoder.
+//! `rs-core-check`: the native front end of render-stream-core's decoder.
 //!
 //!   rs-core-check goldens [--dir experiments/render-stream/protocol] [--only 6]
 //!                         [--sabotage skip-payload-hash|early-prune|no-predict-reset]
@@ -33,7 +33,7 @@
 //! rejected record and keeps going (the validator must leave its state untouched by a failed
 //! accept), printing the rejected and accepted record counts and a digest chaining the canonical
 //! JSON of every accepted transaction: a recording with a rejected record inserted must chain like
-//! the recording without it. TAG1 (client-extensions-design.md §2.4): `--item-meta-asked` validates
+//! the recording without it. `--item-meta-asked` validates
 //! as a live viewer whose hello asked for `{"fields":[..],"groups":[..],"meta_keys":[..]}` (each
 //! grant must be within it), or (`none`) asked for nothing (any item_meta record is
 //! `item-meta-unexpected`); absent, the recording's records are accepted and validated.
@@ -813,7 +813,7 @@ fn recover_chain(data: &[u8], version: u8) -> Result<(usize, usize, String), wir
 /// `apply-bench <recording> --store <dir>`: accept, provide (from the capture's store) and apply
 /// every transaction natively (no GL), timing `Applier::apply` and counting why each structural
 /// walk ran ([`render_stream_core::apply::Why`]). A diagnostic for the applier's paths.
-/// ID2 (client-extensions-design.md "As built (ID2)"): µs per pick, HIT1's draw order against the
+/// ID2 : µs per pick, HIT1's draw order against the
 /// tree order, on one transaction of a recording (`--seq`, default the one holding the most items):
 /// replays the recording through the applier to it, then picks at the centres of a 24x16 grid,
 /// `--repeats` times (default 20), under two filter tables: every item with a custom rect (a
@@ -1919,7 +1919,7 @@ fn sha_hex(b: &[u8]) -> String {
         .collect()
 }
 
-/// `scissors <recording> [--store <dir>]` (gate7-design.md G7a `clip-parity`, Q14d "Lowering"):
+/// `scissors <recording> [--store <dir>]` (`clip-parity`):
 /// replays every transaction through the applier (natively, no GL) and prints one JSON line per
 /// transaction, `{"seq":n,"items":[[id,[x0,y0,x1,y1]|null],...]}`: every item the walk visited,
 /// with the integer scissor it draws under (its own or its clip owner's, half-open) or null.
@@ -2000,7 +2000,7 @@ fn cmd_scissors(args: &Args) -> ExitCode {
     }
 }
 
-/// `lowered <recording> --seqs a,b,... [--store <dir>]` (gate7-design.md G7t, Q14d "Lowering"):
+/// `lowered <recording> --seqs a,b,... [--store <dir>]`:
 /// replays every transaction through the applier (natively, no GL) and, after each listed seq,
 /// prints one JSON line `{"seq":n,"items":[{"id":i,"pos":[x,y,...],"col":[r,g,b,a,...],
 /// "idx":[...]},...]}`: every item's lowered vertices (item-local, its draw transforms applied, f32

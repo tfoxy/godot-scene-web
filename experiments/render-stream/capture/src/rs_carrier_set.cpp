@@ -1,4 +1,4 @@
-// rs_carrier_set: see rs_carrier_set.h (protocol/carrier-design.md Q2, CAR1).
+// rs_carrier_set: see rs_carrier_set.h.
 #include "rs_carrier_set.h"
 
 #include <algorithm>
@@ -320,7 +320,7 @@ struct AbiCarrier::Thunks {
     return 1;
   }
 
-  // TRK1 (grc_carrier.h, tracks-design.md Q7): admit() from the pool `sp` belongs to.
+  // admit() (grc_carrier.h): from the pool `sp` belongs to.
   static int admit_subprotocol(void *host, std::uint32_t local, const char *sp, std::size_t sp_len) {
     AbiCarrier *c = self(host);
     std::lock_guard<std::mutex> lock(c->mu_);

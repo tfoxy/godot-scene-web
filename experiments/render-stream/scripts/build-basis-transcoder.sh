@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build GSW's KTX2 transcoder wasm (G8kb, protocol/texture-delivery-design.md D14, D15, Q6 "GSW"):
+# Build GSW's KTX2 transcoder wasm:
 # web/basis-transcoder/transcoder.cpp over the vendored basisu 1.60 transcoder
 # (third_party/basis_universal/transcoder, the revision every other receiver runs) and zstd 1.5.7's
 # decompressor (capture/vendor/zstd), compiled by the pinned emscripten 4.0.11

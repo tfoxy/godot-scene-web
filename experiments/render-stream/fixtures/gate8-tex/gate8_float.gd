@@ -1,5 +1,5 @@
 extends Node
-## Gate 8 float fixture (G8f, gate8-design.md D9 and Q3 "Compressed and float textures"). It models
+## Gate 8 float fixture. It models
 ## the STS2 census' float textures: small curve and gradient textures (at most 256 px wide), most of
 ## them made on a loader thread, used as shader inputs. Everything is created after arm.
 ##

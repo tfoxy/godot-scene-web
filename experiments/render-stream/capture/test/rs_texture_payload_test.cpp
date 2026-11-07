@@ -1,5 +1,5 @@
 // G2a: the GRT1 payload encoder (render-stream-2.md "Texture payload") on the
-// four shapes protocol/golden-2/ uses (gate2-design.md "G2a" files), with the
+// four shapes protocol/golden-2/ uses (files), with the
 // payload bytes written down here as literal expectations: the header in hex,
 // the total length and the SHA-256 of the whole payload. The pixel contents are
 // the gate 2 fixture's A0 (RGBA8 16x16 quadrants), the same pixels again (one
@@ -128,7 +128,7 @@ int main() {
   EXPECT(image_format_from_name("ETC2_RA_AS_RG") == 33);
   EXPECT(image_format_from_name("rgba8") == -1);
   EXPECT(payload_pixel_size(4) == 3);
-  // G8f: the float formats' sizes (gate8-design.md D9)
+  // the float formats' sizes
   EXPECT(payload_pixel_size(8) == 4);    // RF
   EXPECT(payload_pixel_size(9) == 8);    // RGF
   EXPECT(payload_pixel_size(10) == 12);  // RGBF

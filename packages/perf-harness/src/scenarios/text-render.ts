@@ -111,8 +111,8 @@ function isHbMechanism(mechanism: string): boolean {
  *
  * 2048 rather than the context's `MAX_TEXTURE_SIZE`, and deliberately not a query: the page size
  * decides `atlasPages`, and a limit that changed with the GPU would make that counter incomparable
- * between the SwiftShader rung (16384), the RTX rung (32768) and the phone (4096) — three different
- * page counts for identical work. 2048 is inside every one of them, and `packShelves` simply adds
+ * between a software rasterizer, a desktop GPU and a phone — three different page counts for
+ * identical work. 2048 is inside every one of them, and `packShelves` simply adds
  * pages when a workload needs more.
  */
 const MAX_ATLAS_PAGE_SIDE = 2048;
@@ -197,8 +197,7 @@ export const LATIN_RUN_EM_WIDTH = 18.40087890625;
  * Advance width of {@link LATIN_PANGRAM} alone, in ems — the fidelity probe's Latin run.
  *
  * The probe draws ONE run per script, so it needs neither the beacon (nothing samples it there) nor
- * the index (nothing would collide), and a narrower box means fewer pixels in an 8x reference that
- * is already 3.6x the area it was before this round.
+ * the index (nothing would collide), and a narrower box means fewer pixels in an 8x reference.
  */
 export const LATIN_PANGRAM_EM_WIDTH = 16.4248046875;
 
@@ -318,7 +317,7 @@ export function textParamsSpec(): Scenario["params"] {
     },
     // The isolation that runs the other way: the only arm here with an outline is `hb-gpu`, so this
     // one is REFUSED on all four of the others — see `textOutlineParamRefusal`. The default is 0,
-    // so every reading taken before the outline path existed still describes what this arm draws.
+    // so a default run draws no outline.
     outlinePx: {
       default: 0,
       describe:
@@ -601,7 +600,7 @@ export interface TextPlacedRun extends TextRunGeometry {
 /**
  * Every run the scenario mounts, in draw order: cell by cell, Han above Latin.
  *
- * ONE SOURCE OF TRUTH for the whole round. The DOM arm's authored scene, the canvas arms' draw
+ * ONE SOURCE OF TRUTH for the whole scenario. The DOM arm's authored scene, the canvas arms' draw
  * loops, the baked arms' bake items, the Godot manifest and the presence sample points are all
  * built from this list, so an arm cannot draw its text somewhere the others do not — which is the
  * premise the entire comparison rests on and which nothing in the metrics table would catch.
@@ -808,10 +807,8 @@ interface HbGpuArm {
    * ONE WASM MODULE'S HEAP, because this arm now has only one.
    *
    * `wasmHeapBytes` is documented on the baked arms as summed across FACES (`script=both` with
-   * `bakeShaper=harfbuzz` carries two harfbuzzjs heaps). This arm used to be summed across MODULES
-   * as well — it shaped with npm `harfbuzzjs` and encoded outlines with hb-gpu's own HarfBuzz, so
-   * both faces were resident twice — and that is exactly the cost the swap to `HbGpuFont.shape`
-   * removed. What is left is hb-gpu's heap, holding one copy of each face for both jobs.
+   * `bakeShaper=harfbuzz` carries two harfbuzzjs heaps). This arm shapes with `HbGpuFont.shape`, so
+   * hb-gpu's heap holds one copy of each face for both shaping and outline encoding.
    */
   wasmHeapBytes: number;
   quadsLastFrame: number;
@@ -1099,8 +1096,8 @@ export const textRender: Scenario = {
       // `outlineSpreadPx` is the DEVICE-px dilation radius — `outlinePx / 2 x dpr` — and it is the
       // one the cost is a function of, because the shader picks its ring and step counts from the
       // radius in device pixels. The design-px width the operator asked for is in `params`, and the
-      // two differ by `2 / dpr`: a `--param outlinePx=6` run reads 3 here on the desktop and 10.46
-      // on a dpr 3.4876 phone. Quoting the width as the radius would understate the phone by 3.5x.
+      // two differ by `2 / dpr`: a `--param outlinePx=6` run reads 3 here at dpr 1 and 9 at dpr 3.
+      // Quoting the width as the radius would misstate the cost at any dpr other than 2.
       counters.passesPerFrame = gpu.arm.passes.length;
       counters.outlineSpreadPx = Math.round(gpu.arm.spreadPx * 1000) / 1000;
 
@@ -1109,7 +1106,7 @@ export const textRender: Scenario = {
       // `atlasBytes` is the LIVE glyph data: resident texels x 8. `atlasReservationBytes` is the
       // whole 4096-wide texture the driver actually allocated. `hb-atlas`'s `atlasBytes` is the
       // second kind of number (its pages are only as tall as the shelves reached), so THE
-      // RESERVATION is the figure that belongs beside its 1.45 MiB — not the live bytes, which are
+      // RESERVATION is the figure that belongs beside it — not the live bytes, which are
       // smaller and describe a different thing. `atlasOccupancy` is published as the bridge between
       // them, in the same key `hb-atlas` reports its own occupancy under.
       counters.atlasBytes = gpu.arm.stats.atlasBytes;
@@ -1485,8 +1482,8 @@ function drawCanvas2d(state: State, frame: number): void {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, state.stage.width, state.stage.height);
   // The SHIPPED arm's anchor, measured off the shipped DOM at mount — see
-  // `measureShippedBaselinePx`. `"top"` here used to pin the em top while the dom arm pinned
-  // `half-leading + ascent`, so the two arms drew the same run a couple of px apart.
+  // `measureShippedBaselinePx`. `"top"` would pin the em top while the dom arm pins
+  // `half-leading + ascent`, so the two arms would draw the same run a couple of px apart.
   ctx.textBaseline = "alphabetic";
   ctx.fillStyle = "#ffffff";
   for (const run of state.runs) {
@@ -1779,10 +1776,8 @@ async function mountHbGpu(
         `text-render: no ${kind} font bytes for the hb-gpu arm — its run would silently not be drawn`,
       );
     }
-    // NO DEFENSIVE COPY HERE ANY MORE. `prepare` already hands this arm its own `slice(0)` of each
-    // face and hb-gpu copies what it is given into its heap, so nothing else holds these buffers.
-    // The extra copy that used to be taken existed because harfbuzzjs held the originals, and two
-    // modules must never share one detachable buffer.
+    // NO DEFENSIVE COPY HERE. `prepare` already hands this arm its own `slice(0)` of each face and
+    // hb-gpu copies what it is given into its heap, so nothing else holds these buffers.
     bytesByFace.set(kind, bytes);
   }
 
@@ -1838,8 +1833,8 @@ async function mountHbGpu(
  * and the coverage is evaluated in the fragment shader at whatever sub-pixel position the frame
  * asks for. That is the entire claim, and `quadsPerFrame` / `glDrawCalls` are what it costs.
  *
- * AT `outlinePx=0` THERE IS ONE PASS AND THIS LOOP RUNS ONCE, which is the frame every committed
- * reading of this arm was taken on. With an outline it runs twice — outline, then fill — and the
+ * AT `outlinePx=0` THERE IS ONE PASS AND THIS LOOP RUNS ONCE, which is the default frame. With an
+ * outline it runs twice — outline, then fill — and the
  * SECOND WALK IS DELIBERATE. `arm.passes` could have been served by redrawing the first pass's
  * instance buffer with two uniforms changed, which is cheaper and is not what a consumer does: an
  * outlined label reaches `packages/canvas`'s glyph pass as the same glyphs and pens recorded twice

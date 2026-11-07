@@ -3,8 +3,8 @@
 ; Vazirmatn, Hebrew with niqqud and mixed bidi on Noto Sans Hebrew, Devanagari conjuncts and
 ; i-matra reordering on Noto Sans Devanagari UI, and a hex box for a codepoint no pinned font has.
 ; Ten steps (0..9) over Labels on one runtime FontFile with three fallbacks. See
-; fixtures/gate4-i18n/README.md and ../../protocol/gate4-design.md ("G4f", "Q6e") for the
-; contract. Every font and text input is pinned here, as in fixtures/gate4 (gate4-design.md Q1e).
+; fixtures/gate4-i18n/README.md for the
+; contract. Every font and text input is pinned here, as in fixtures/gate4.
 
 config_version=5
 

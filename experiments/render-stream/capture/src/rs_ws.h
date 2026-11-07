@@ -1,8 +1,6 @@
 // rs_ws: a minimal, dependency-free RFC 6455 WebSocket server on its own I/O
-// thread (protocol/gate1-design.md D3, Q3, Q4 "Where the WebSocket server
-// lives" / "Live transport placement"), plus plain HTTP/1.1 GET serving on
-// the same loopback listener (protocol/gate2-design.md D6, Q4 "Live: server,
-// store and pins", G2c1; protocol/render-stream-2.md "HTTP (live)").
+// thread, plus plain HTTP/1.1 GET serving on
+// the same loopback listener (protocol/render-stream-2.md "HTTP (live)").
 //
 // Transport only: it moves opaque binary messages out and small text
 // messages in over the WebSocket path, and serves byte blobs by content hash
@@ -26,13 +24,13 @@
 // drains what the I/O thread observed since the last call. The I/O thread and
 // the caller's thread communicate only through the Server's internal mutex
 // and a self-pipe used to wake poll(2) -- never a callback, so encoding and
-// mirror access stay entirely on the caller's thread (gate1-design.md Q3,
-// "All encoding happens on the main thread"). ResourceSource::lookup() is
+// mirror access stay entirely on the caller's thread.
+// ResourceSource::lookup() is
 // the one exception: it is called directly from the I/O thread (never the
 // caller's thread), so it must be thread-safe and must not block on
-// anything slower than memory (gate2-design.md Q4).
+// anything slower than memory.
 //
-// Protocol subset implemented (gate1-design.md G1c1 "Protocol subset"):
+// Protocol subset implemented:
 //   - Handshake: GET <path> HTTP/1.1 with Upgrade: websocket, a Connection
 //     header containing the token "upgrade", Sec-WebSocket-Version: 13, a
 //     Sec-WebSocket-Key, and a Sec-WebSocket-Protocol listing
@@ -49,16 +47,16 @@
 //     ignored; a close is echoed and the connection shuts down.
 //   - max_queued_bytes is a safety net against an unresponsive peer: an
 //     enqueue that would exceed it is refused and the connection is closed
-//     with 1008. Real traffic under credit-based delivery (gate1-design.md
-//     Q4) never approaches it; a sabotage that ignores credit (G1d) is
+//     with 1008. Real traffic under credit-based delivery
+//     never approaches it; a sabotage that ignores credit is
 //     expected to.
 //   - Bind is loopback-only: ServerConfig::host must be exactly "127.0.0.1"
 //     or "::1"; start() refuses (error "non-loopback") for anything else, unless
-//     ServerConfig::allow_non_loopback (CAR2, carrier-design.md D10) also admits an IPv4 or
+//     ServerConfig::allow_non_loopback also admits an IPv4 or
 //     IPv6 literal ("0.0.0.0", "::", a host address). The caller decides that flag from
 //     GRC_LIVE_EXPOSE=lan plus the token and origin checks (rs_expose.h); this file never does.
 //
-// wss (CAR4, carrier-design.md D11, D12): with ServerConfig::tls set, the first byte a connection
+// wss: with ServerConfig::tls set, the first byte a connection
 // sends decides it. 0x16 (a TLS handshake record) runs the connection through a TlsSession, so
 // the WebSocket upgrade and every HTTP GET on it are wss/https, with every rule above unchanged.
 // Anything else is plaintext, served exactly as without TLS when the peer is a loopback address
@@ -70,7 +68,7 @@
 // and memory-speed (the TLS bytes live in the net module, rs_net_module.h), so the I/O thread
 // still never blocks.
 //
-// HTTP GET subset implemented (gate2-design.md G2c1, render-stream-2.md
+// HTTP GET subset implemented (render-stream-2.md
 // "HTTP (live)"):
 //   - `GET <resource_prefix><hash> HTTP/1.1` where <hash> is exactly 64
 //     lowercase hex characters. ResourceSource::lookup(hash) decides the
@@ -100,7 +98,7 @@
 //     503, connection closed. A WebSocket connection never counts against
 //     it, and vice versa.
 //
-// Bearer-token authorization (gate2-design.md D13, G2e): when
+// Bearer-token authorization: when
 // ServerConfig::auth_token is non-empty, every WebSocket upgrade and every
 // resource GET must carry `Authorization: Bearer <auth_token>` (RFC 6750).
 // Missing or wrong -> 401 ("Unauthorized"), never a close code -- the TCP
@@ -112,7 +110,7 @@
 // disables the check entirely: every request is treated as authorized,
 // exactly as before G2e.
 //
-// Two subprotocols, origin and CORS (gate7-design.md D2, D3, Q2, Q3; G7n):
+// Two subprotocols, origin and CORS:
 //   - ServerConfig::subprotocols lists every subprotocol the upgrade accepts, most preferred
 //     first; the upgrade chooses the first one of them the client offered (render-stream.7 over
 //     render-stream.6 when both are), echoes it, and reports it on the Opened event. A client
@@ -150,7 +148,7 @@
 namespace grc {
 namespace live {
 
-// G8kz (texture-delivery-design.md D2, render-stream-2.md "HTTP (live)"): an HTTP content coding a
+// (render-stream-2.md "HTTP (live)"): an HTTP content coding a
 // resource GET may be answered with.
 enum class Coding : std::uint8_t { Identity, Zstd, Gzip };
 const char *coding_token(Coding coding);  // "identity", "zstd" or "gzip"
@@ -161,10 +159,10 @@ const char *coding_token(Coding coding);  // "identity", "zstd" or "gzip"
 // passed as "".
 Coding negotiate_coding(std::string_view accept_encoding, const std::vector<Coding> &offered);
 
-// CAR1 (carrier-design.md D6): the connection-slot counter every live carrier shares. admit()
+// the connection-slot counter every live carrier shares. admit()
 // takes one slot (true) or refuses (false); release() returns one. Both are thread-safe and
 // memory-speed: the server calls them on its I/O thread with its own mutex held.
-// TRK1 (tracks-design.md Q3, T6): two pools. A view connection (render-stream.N) takes a View
+// two pools. A view connection (render-stream.N) takes a View
 // slot (GRC_LIVE_MAX_CONNECTIONS), a track connection (render-stream-track.1) a Track slot
 // (GRC_LIVE_MAX_TRACKS); neither ever takes the other's. A connection returns its slot to the pool
 // that granted it.
@@ -179,7 +177,7 @@ class Admission {
   void release() { release(AdmissionPool::View); }
 };
 
-// CAR4 (carrier-design.md D12): one connection's TLS server session, sans-IO. The I/O thread
+// one connection's TLS server session, sans-IO. The I/O thread
 // feeds it the ciphertext it read and writes the ciphertext it takes; every call returns at
 // memory speed (the handshake's one key exchange and signature are bounded CPU work) and never
 // blocks. rs_net_module.h implements it over the net module's grc_net_tls_v1.
@@ -231,13 +229,13 @@ struct ServerConfig {
   std::string auth_token;            // empty (default): no bearer-token check (G2e).
   // G7n: subprotocols whose upgrade skips the bearer check (the token travels in the hello).
   std::vector<std::string> hello_token_subprotocols;
-  // TRK1 (tracks-design.md Q1.1, Q3): track subprotocols (render-stream-track.1), matched after
+  // Track subprotocols (render-stream-track.1), matched after
   // every entry of `subprotocols`, never bearer-checked (the credential travels in track-hello),
   // admitted from the Track pool: `admission`'s, or `max_tracks` without one. Empty (default):
   // a track upgrade is today's 400 "missing subprotocol", byte for byte.
   std::vector<std::string> track_subprotocols;
   std::size_t max_tracks = 0;
-  // G7n (gate7-design.md D3): exact `Origin` values allowed; a request with any other Origin gets
+  // exact `Origin` values allowed; a request with any other Origin gets
   // 403. Empty (default): every request carrying an Origin is refused; one without is unaffected.
   std::vector<std::string> allowed_origins;
   bool enforce_origins = true;  // false: accept-any-origin sabotage (the allowlist is ignored).
@@ -260,11 +258,11 @@ struct ServerConfig {
 
 // True iff `a` and `b` hold the same bytes, compared in time that depends only on
 // max(a.size(), b.size()) -- never on where the two first differ or on whether their lengths
-// match (gate2-design.md D13). Exposed for its own unit test and used by the bearer-token check
+// match. Exposed for its own unit test and used by the bearer-token check
 // on both the WebSocket upgrade and the resource GET.
 bool constant_time_equals(std::string_view a, std::string_view b);
 
-// G7n (gate7-design.md Q3): parses GRC_LIVE_ALLOWED_ORIGINS, a comma list (spaces around an entry
+// parses GRC_LIVE_ALLOWED_ORIGINS, a comma list (spaces around an entry
 // are ignored; empty text is the empty list). Every entry must be exactly `scheme://host[:port]` as
 // a browser serializes an Origin (the port is absent for a scheme's default port, CAR8): a lowercase scheme ([a-z][a-z0-9+.-]*), a lowercase host
 // ([a-z0-9.-]+, or a bracketed IPv6 literal of [0-9a-f:.]) and, when present, a decimal port 1..65535 without a
@@ -361,7 +359,7 @@ struct Event {
   std::string origin;
   std::string method;
   std::string route;
-  // CAR1 (carrier-design.md D13): the carrier that observed the event ("ws", "wt" or a
+  // the carrier that observed the event ("ws", "wt" or a
   // registered name), set by the CarrierSet (rs_carrier_set.h); "" straight from a Server.
   std::string carrier;
   // steady_clock nanoseconds when the I/O thread observed the event (set by the server; G1c2

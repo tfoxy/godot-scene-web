@@ -293,7 +293,7 @@ describe("shader renderer gate — adopting WebGPU", () => {
 
     flushRaf();
     // THREE render passes, ONE submit. A submit count that climbed with the node count would be the
-    // batching win being given back (docs/perf-harness.md S7).
+    // batching win being given back.
     expect(callCount(handle, "encoder.beginRenderPass")).toBe(3);
     expect(callCount(handle, "queue.submit")).toBe(1);
     expect(rt.stats().draws).toBe(3);
@@ -500,7 +500,7 @@ describe("shader renderer gate — captureNodePixels", () => {
     expect(pixels).toBeInstanceOf(Uint8Array);
     expect(pixels?.length).toBe(100 * 50 * 4);
     // Through a COPY, not a canvas read: `drawImage`/`toDataURL` on a WebGPU canvas are blank
-    // headless and pathological on Android (S7), which is the whole reason this hook exists.
+    // headless and pathologically slow on Android, which is the whole reason this hook exists.
     expect(callCount(handle, "encoder.copyTextureToBuffer")).toBe(1);
     // An `rgba8unorm`-targeted TWIN of the live pipeline: a pipeline's fragment target format must
     // match its attachment, and the canvas here is bgra8unorm.

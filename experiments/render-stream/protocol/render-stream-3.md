@@ -1,28 +1,24 @@
 # render-stream/3 wire format
 
-Status: specified and golden-tested at G4e1 (2026-10-09); spoken by the capture library, the
-receiver and every gate runner and checker since G4e2 (2026-10-10, gate4-design.md "As built
-(G4e2)"). Written with
-[gate4-design.md](gate4-design.md) D1 and Q4, which this document implements. Codecs (G4e1): C++
-encoder/diff (`capture/src/rs2_codec.*`, `rs2_diff.*`, behind `Session::version`), TypeScript
-decoder/validator/resolver (`scripts/lib/render-stream-2.ts`, behind an explicit `version`
-parameter) and GDScript decoder (`receiver/rs2_decoder.gd`), all checked byte-for-byte and
-state-for-state against `protocol/golden-3/`, per this text. [render-stream-2.md](render-stream-2.md)
-is **not** superseded the way render-stream-1.md was at /2: grayscale text and every other /2
-capability stays on `render-stream/2` (gate4-design.md D1), and `golden-2/` keeps passing
-unchanged. G4e2 switched the capture, the receiver and every gate runner to /3; /2 decoding now
-remains only for `golden-2/`, as /1's did after G2b2.
+Status: frozen; spoken by the capture library, the receiver and every gate runner and checker.
+Codecs: C++ encoder/diff (`capture/src/rs2_codec.*`, `rs2_diff.*`, behind `Session::version`),
+TypeScript decoder/validator/resolver (`scripts/lib/render-stream-2.ts`, behind an explicit
+`version` parameter) and GDScript decoder (`receiver/rs2_decoder.gd`), all checked byte-for-byte and
+state-for-state against `protocol/golden-3/`, per this text.
+[render-stream-2.md](render-stream-2.md) is **not** superseded the way render-stream-1.md was at /2:
+grayscale text and every other /2 capability stays on `render-stream/2`, and `golden-2/` keeps
+passing unchanged. The capture, the receiver and every gate runner speak /3; /2 decoding remains
+only for `golden-2/`, as /1's did after /2.
 
 Unlike every version before it, /3 is **not** implemented as a new, forked module the way /1
-forked from /0 and /2 forked from /1 ("rs1 and rs2 are frozen-independent, as rs0 and rs1 were" --
-render-stream-2.md D1). /3 is one new draw command and one new host sabotage kind on top of /2
-(gate4-design.md D1: "/3 is /2 plus that op and one host sabotage kind... It adds nothing else"),
+forked from /0 and /2 forked from /1 (rs1 and rs2 are frozen-independent, as rs0 and rs1 were).
+/3 is one new draw command and one new host sabotage kind on top of /2, and adds nothing else,
 small enough that forking the ~600-line snapshot header, the ~650-line codec and the ~2800-line
 TypeScript module for one op was not worth the duplication. Instead, the existing /2 modules grew
 a protocol-version switch: C++'s `Session::version` (`ProtocolVersion::V2` default, so every
 existing /2 caller is unaffected), and an explicit `version: 2 | 3 = 2` parameter on the
 TypeScript and GDScript decode/validate/resolve entry points. Renaming `rs2_codec.*`/`rs2_diff.*`/
-`render-stream-2.ts`/`rs2_decoder.gd` is not part of this document. **As built (G4e2):** the
+`render-stream-2.ts`/`rs2_decoder.gd` is not part of this document. **As built:** the
 TypeScript and GDScript `version` parameters now default to 3, since everything but `golden-2/`
 speaks /3; `golden-2/`'s self-tests pass 2 explicitly. C++'s `Session::version` keeps its `V2`
 default (the golden-2 byte tests build sessions without it), and the capture's arm path sets
@@ -68,13 +64,12 @@ Key order, record framing and every field but `protocol` are exactly /2's. `prot
 
 - `ops`: /2's three plus `"add_msdf_texture_rect_region"`, all four sorted ascending by byte
   value: `["add_msdf_texture_rect_region","add_rect","add_texture_rect","add_texture_rect_region"]`.
-- `observed_unsupported_ops`: /2's list without `"canvas_item_add_msdf_texture_rect_region"` (it
-  is a supported op now, not a refused one). Since G5a (calibrator 7, gate5-design.md D2):
-  `observed_unsupported_ops` also gains `"canvas_item_add_animation_slice"`,
-  `"canvas_item_add_multiline"`, `"canvas_item_add_particles"` and `"canvas_item_attach_skeleton"`
-  -- four new typed refusals, hooked but not yet given a command on any wire version. `golden-2/`
-  and `golden-3/` keep their own frozen, pre-G5a feature lists (`make_golden.py`'s own copy),
-  unaffected.
+- `observed_unsupported_ops`: /2's list without `"canvas_item_add_msdf_texture_rect_region"` (it is
+  a supported op now, not a refused one). From calibrator 7 on: `observed_unsupported_ops` also
+  gains `"canvas_item_add_animation_slice"`, `"canvas_item_add_multiline"`,
+  `"canvas_item_add_particles"` and `"canvas_item_attach_skeleton"` -- four new typed refusals,
+  hooked but not yet given a command on any wire version. `golden-2/` and `golden-3/` keep their own
+  frozen, pre-calibrator-7 feature lists (`make_golden.py`'s own copy), unaffected.
 - Every other `features` key, and `resources`, are unchanged from /2.
 
 ### Sabotage
@@ -82,7 +77,7 @@ Key order, record framing and every field but `protocol` are exactly /2's. `prot
 Sabotage kinds: /2's, plus `perturb-glyph`. Like every other kind but `omit-op`, its `op` is
 `null`. `perturb-glyph` is a host sabotage (`GRC_SABOTAGE_FRAME` on, the mirror adds +0.25 to
 `rect.x` of every `add_texture_rect_region` and `add_msdf_texture_rect_region` it records; the
-engine still gets the true arguments), wired in at G4e2 (`rs_mirror` `set_perturb_glyph`). It
+engine still gets the true arguments), implemented by `rs_mirror` `set_perturb_glyph`. It
 moves only commands recorded from that frame on: an item that does not redraw keeps its
 unperturbed commands.
 
@@ -99,7 +94,7 @@ unperturbed commands.
 | `add_msdf_texture_rect_region` | 14                   | rect (x, y, w, h), source rect (x, y, w, h), modulate (r, g, b, a), `px_range`, `scale` |
 
 - Every float is the engine's argument exactly, negative sizes (flips) included, as for the other
-  texture-rect commands (gate4-design.md Q1g).
+  texture-rect commands.
 - `outline` is the engine's `int outline_size` (`RenderingServer.canvas_item_add_msdf_texture_
   rect_region`'s signature, `servers/rendering_server.h:1585`). It is always non-negative; a
   negative value is `meta-schema`.
@@ -112,8 +107,8 @@ unperturbed commands.
   by the same rule render-stream-2.md "Item-level unsupported entries" states for the other two
   texture-rect ops.
 
-No texture-table field changes: an msdf command's `tex` names an ordinary `image` entry (RGBA8,
-gate4-design.md Q1b), checked by /2's unchanged `texture-entry`/`texture-ref`/`texture-version`
+No texture-table field changes: an msdf command's `tex` names an ordinary `image` entry (RGBA8),
+checked by /2's unchanged `texture-entry`/`texture-ref`/`texture-version`
 rules.
 
 ## Decoded and resolved forms
@@ -134,7 +129,7 @@ byte for byte (same scene, same five items, same six textures, same `/2` command
 GRS3 magic and `"render-stream/3"` protocol, then adds a seventh:
 
 - state 7: a new item 6 (draw order after item 5) drawing three `add_msdf_texture_rect_region`
-  commands against a new texture 7 ("the page", 16x16 RGBA8 -- a stand-in; gate4-design.md D5's
+  commands against a new texture 7 ("the page", 16x16 RGBA8 -- a stand-in; the
   real atlas is 512x512 at `msdf_size` 48, but a codec-level golden only needs to exercise the
   wire shape, and 512x512 bloated `golden-3/` to 4.9 MB against `golden-2/`'s 0.8 MB, so this uses
   the same size already used for A/Atwin/N in the shared six-state scene) -- one with `outline` 0,
@@ -166,7 +161,7 @@ unchanged is already covered by `golden-2/invalid/`, and is not re-derived here)
 ## Live transport
 
 As /2, except the subprotocol is `render-stream.3` and the hello's `protocol` is
-`"render-stream/3"`. Wired at G4e2: the capture's listener negotiates `render-stream.3` and refuses
+`"render-stream/3"`. The capture's listener negotiates `render-stream.3` and refuses
 a `render-stream/2` hello as a protocol error, and the receiver's live client speaks /3.
 
 ## Versioning

@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// CLI and builder for `render-stream-report/2` (gate7-design.md Q12, G7p): `validate` checks a report
+// CLI and builder for `render-stream-report/2`: `validate` checks a report
 // file (either schema), `build` assembles a /2 report from a run-set directory that lib/gate7p-checks.ts
 // wrote.
 //

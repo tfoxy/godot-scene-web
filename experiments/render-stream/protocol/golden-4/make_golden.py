@@ -22,7 +22,7 @@ scene, same items/textures/commands, just re-encoded under the GRS4 magic and th
        texture 7) and mesh 2 (one surface: a coloured quad). Item 8 (new) draws mesh 1 with
        add_mesh, textured.
     10 (new) relative to state 9: ONLY mesh 2's surface changes (a new payload, same shape,
-       version 2) -- no item changes at all, proving gate5-design.md's "a mesh version change
+       version 2) -- no item changes at all, proving "a mesh version change
        with no item change" (the patch stream's seq 10 carries nothing but that one mesh entry).
     11 (new) relative to state 10: mesh 1 is freed with a surviving reference (item 8's add_mesh
        command still names it, unchanged -- a "freed" tombstone); item 9 (new) draws mesh 3,
@@ -30,7 +30,7 @@ scene, same items/textures/commands, just re-encoded under the GRS4 magic and th
        unsupported-mesh item-level entry; item 10 (new) draws add_mesh naming mesh id 999, which
        the capture never saw, becoming unsupported/unknown-mesh with its derived entry.
 
-As built (G5w): gate5-design.md's Q4 describes this as three new states (8, 9, 10), with state 9
+The plan was three new states (8, 9, 10), with state 9
 covering both the mesh-creation content AND "a mesh version change with no item change". Splitting
 that into two states (9 and 10, with the freed/unsupported/unknown-mesh content moved to a new
 state 11) keeps each proof point byte-isolated: state 9->10's patch is observably nothing but one
@@ -164,7 +164,7 @@ FEATURE_OBSERVED_UNSUPPORTED_OPS = sorted(
         "canvas_item_set_material",
     ]
 )
-# /3's list plus the two viewport snap settings (gate3-design.md "Deferred").
+# /3's list plus the two viewport snap settings.
 FEATURE_UNOBSERVED = sorted(
     [
         "canvas_item_set_canvas_group_mode",

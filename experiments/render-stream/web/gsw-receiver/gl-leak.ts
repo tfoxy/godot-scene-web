@@ -1,4 +1,4 @@
-// G7k sabotage `leak-gl-textures` (gsw only, gate7-design.md Q10 soak). It never touches the
+// G7k sabotage `leak-gl-textures` (gsw only, soak). It never touches the
 // canvas or WebGL2 context GSW draws into -- it leaks real GL objects on a throwaway, invisible
 // context of its own, so the real rendering pipeline (and every other check) is unaffected. The
 // leaked textures still cost real GPU memory (nvidia-smi sees it, `gpu-mem-bounded`) and the

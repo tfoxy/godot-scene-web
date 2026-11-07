@@ -19,7 +19,7 @@
 //                 to it
 //
 // Get any of them wrong and the shader still runs, still finds numbers where curves should be, and
-// still produces smooth antialiased ink. NOTHING ELSE IN THIS ROUND WOULD CATCH THAT — the perf
+// still produces smooth antialiased ink. NOTHING ELSE WOULD CATCH THAT — the perf
 // table would report a cheap arm and the fidelity probe would report a crisp one.
 //
 // WHAT IS SAMPLED. `gl.readPixels` on the stage's own drawing buffer, which holds PREMULTIPLIED
@@ -27,21 +27,20 @@
 // `preserveDrawingBuffer: false`). Never `getImageData` on a 2D canvas — alpha 0 on this rung.
 //
 // WINDOWLESS, ON THE REAL ADAPTER. Every case here is a claim about a GPU evaluating outlines per
-// fragment, so the surface has to be a GPU — and it used to cost a window to get one. Measured on
-// this box with `WEBGL_debug_renderer_info`, everything else held constant:
+// fragment, so the surface has to be a GPU. Checked with `WEBGL_debug_renderer_info`:
 //
 //   launch                                     unmasked renderer              window
 //   ----------------------------------------   ----------------------------   ------
-//   headed, default ozone                      ANGLE NVIDIA RTX 2060 (GL)     YES
+//   headed, default ozone                      ANGLE (hardware GPU, GL)       YES
 //   headed, --ozone-platform=x11               SwiftShader                    no
 //   --headless=new --enable-gpu
-//     --use-angle=vulkan                       ANGLE NVIDIA RTX 2060 Vulkan   no
+//     --use-angle=vulkan                       ANGLE (hardware GPU, Vulkan)   no
 //
-// The middle row is why this file was headed: OLD headless fell back to software here, and the arm's
-// whole premise is a GPU. `--headless=new` with ANGLE pointed at Vulkan keeps the adapter and drops
-// the window. That matters because Xvfb does NOT contain a headed Chromium on this Wayland box — its
-// Ozone layer reaches the session compositor — so "headed" means a window on whoever's desktop is
-// running the suite, not a window in a virtual display.
+// OLD headless can fall back to software, and the arm's whole premise is a GPU. `--headless=new`
+// with ANGLE pointed at Vulkan keeps the adapter and drops the window. That matters because Xvfb
+// does NOT contain a headed Chromium under a Wayland session — its Ozone layer reaches the session
+// compositor — so "headed" means a window on whoever's desktop is running the suite, not a window
+// in a virtual display.
 //
 // PLAYWRIGHT'S `headless` STAYS `false` while `--headless=new` does the work. `headless: true` makes
 // Playwright inject its own old-headless switches, which is the SwiftShader row.
@@ -50,39 +49,23 @@
 // IT OPENS A REAL WINDOW ON THE USER'S DESKTOP — use it only with their consent.
 //
 // AND THE ADAPTER IS ASSERTED RATHER THAN MERELY LOGGED (`assertHardwareRenderer`). A silent fall
-// back to SwiftShader fails nothing here — the software column used to agree with the hardware one
-// to 0.03 RMS — it just recalibrates every budget in this file to a software rasteriser.
+// back to SwiftShader fails nothing here — software agrees with hardware closely — it just
+// recalibrates every budget in this file to a software rasteriser.
 //
-// WHICH SURFACE EACH NUMBER BELOW CAME FROM, because a suite that changes its own surface owes a
-// reader that. Everything in this file was re-read on headless ANGLE/Vulkan when that became the
-// default, and every row still current with the shader came back BYTE-IDENTICAL to the headed
-// ANGLE/GL reading it replaced: the RMS/registration table, the low-ppem rim table, the Godot reach,
-// ramp and scallop tables, and the contrast block's ink and deep-end ratios. The three paragraphs
-// that DID move (`SPREAD_TOLERANCE_PX`, the thin case's rim, `LOWPPEM_MSAA_DIFF_RMS_BUDGET`) each
-// carry a row measured before a shader change that nobody re-read afterwards; each says so, and
-// none of them is attributed to the surface. The headed ANGLE/GL arm was NOT re-run for a live A/B
-// — it opens a window on the user's desktop — and `--use-angle=gl` under `--headless=new` is not a
-// substitute: it yields no WebGL2 context at all on this box.
+// The headed ANGLE/GL and headless ANGLE/Vulkan surfaces read byte-identical on every table in this
+// file. Rows labelled `6/13/19/26` against `4 x 16` are a SHADER A/B on one surface: the
+// dilation's 64-tap budget split in proportion to ring radius rather than equally.
 //
-// AND EVERY ROW LABELLED `6/13/19/26` IS ON THAT SAME HEADLESS ANGLE/VULKAN SURFACE, measured
-// against the `4 x 16` row beside it in the same session, one shader change apart — the dilation's
-// 64-tap budget split in proportion to ring radius rather than equally. Those pairs are a SHADER
-// A/B and nothing else moved between them; both readings reproduce to the digit across runs.
-//
-// FLAGS: `--use-angle=vulkan` IS NOT `--enable-features=Vulkan`, which is still not passed.
-// `webglCompositeXvfb.test.ts` measures that one moving Chrome's whole GPU stack and blanking
-// `drawImage(glCanvas)` on this driver; the same table records `gl.readPixels` returning the right
-// bytes underneath it, and readPixels is the only thing this file samples. `--use-angle=vulkan`
+// FLAGS: `--use-angle=vulkan` IS NOT `--enable-features=Vulkan`, which is not passed: that one
+// moves Chrome's whole GPU stack and can blank `drawImage(glCanvas)` (`webglCompositeXvfb.test.ts`),
+// while `gl.readPixels` — the only thing this file samples — stays correct. `--use-angle=vulkan`
 // picks ANGLE's backing API and nothing else.
 //
-// NOT PART OF ANY DEFAULT RUN, and it used to be. `DISPLAY` alone was the gate, and it only stayed
-// out of `pnpm test` by accident: the encoder lived in gitignored `dist/`, so the file-exists check
-// below skipped the suite before it could launch anything. Vendoring the wasm removed that accident
-// — on any box with a display, `pnpm test` would now launch a Chromium and sit on 120-180 s
-// timeouts. So it is gated on `GSW_HB_GPU_PIXEL` too, the way `canvasUploadBenchXvfb.test.ts` is
-// gated on `GSW_CANVAS_UPLOAD_BENCH`. `pnpm test:glyph-pixel` sets it; the script's `xvfb-run -a` is
-// no longer containment — the default launch needs no display at all — it is there to keep `DISPLAY`
-// set for that gate and to give the headed escape hatch somewhere to go.
+// NOT PART OF ANY DEFAULT RUN. With the wasm vendored, a display alone would make `pnpm test`
+// launch a Chromium and sit on 120-180 s timeouts, so it is gated on `GSW_HB_GPU_PIXEL` too, the
+// way `canvasUploadBenchXvfb.test.ts` is gated on `GSW_CANVAS_UPLOAD_BENCH`. `pnpm test:glyph-pixel`
+// sets it; the script's `xvfb-run -a` is not containment — the default launch needs no display at
+// all — it keeps `DISPLAY` set for that gate and gives the headed escape hatch somewhere to go.
 // `vendor.test.ts` is the part of this package's guard that a default run still gets.
 //
 // SKIPPED, NOT FAILED, when `vendor/hb-gpu.mjs` is absent. It should never be — `vendor/` is
@@ -151,12 +134,11 @@ const goldenFile = join(here, "goldens", "godot-outline-metrics.json");
  * Per-pixel RMS budget, in byte levels over the whole 96x96 frame.
  *
  * CALIBRATED BY BREAKING THE UPLOAD ON PURPOSE, four ways, and reading all three columns off each
- * run. Every number below is measured on this box; the correct row is quoted from BOTH drivers,
- * which agree to 0.03:
+ * run. The correct row is quoted from BOTH a hardware driver and SwiftShader, which agree to 0.03:
  *
  * | upload                        | ink (upright28) | registration px | rms 14 / 28 / rot |
  * | ----------------------------- | --------------- | --------------- | ----------------- |
- * | correct, NVIDIA ANGLE         | 18892           | 0.036           | 1.62 / 2.22 / 2.42 |
+ * | correct, hardware ANGLE       | 18892           | 0.036           | 1.62 / 2.22 / 2.42 |
  * | correct, SwiftShader          | 18547           | 0.010           | 1.63 / 2.21 / 2.45 |
  * | int16 byte pair swapped       | **0**           | 9.631 (limit)   | 6.74 / 17.18 / 17.77 |
  * | `srcOffset` in bytes          | **0**           | 9.631 (limit)   | 6.74 / 17.18 / 17.77 |
@@ -165,10 +147,8 @@ const goldenFile = join(here, "goldens", "godot-outline-metrics.json");
  *
  * (the reference reads 18443, so the correct row is within 2.4%.)
  *
- * THE `correct, NVIDIA ANGLE` ROW WAS FIRST READ HEADED ON ANGLE/GL AND IS REPRODUCED HERE DIGIT FOR
- * DIGIT ON HEADLESS ANGLE/VULKAN, this file's surface since. Two drivers and two ANGLE backends now
- * agree on it, which is more than this budget needs. The four fault rows have not been re-read and do
- * not need to be: they are a blank frame and a one-texel offset, not a rounding mode.
+ * The `correct, hardware ANGLE` row reads the same headed on ANGLE/GL and headless on
+ * ANGLE/Vulkan. The four fault rows are a blank frame and a one-texel offset, not a rounding mode.
  *
  * 6 sits 2.4x above the worst correct reading and just under the cheapest failure.
  *
@@ -184,8 +164,8 @@ const RMS_BUDGET = 6;
  * How far the drawn glyph may sit from where the reference puts it.
  *
  * The fidelity probe's own `ALIGNMENT_TOLERANCE_PX`, and the same number for the same reason: the
- * correlation estimator's measured noise floor is ~0.1 px worst case, and the smallest real
- * placement bug the round has found was 0.51 px. Restated as a literal rather than imported so
+ * correlation estimator's noise floor is ~0.1 px worst case, and a real placement bug is ~0.5 px.
+ * Restated as a literal rather than imported so
  * that a change to the probe's allowance — calibrated for arms compared over a whole text band —
  * cannot silently loosen a single-glyph geometry check.
  *
@@ -249,7 +229,7 @@ const TOLERANCE_LEVELS = 3;
  * RMS budget for the low-ppem outline's RIM, against an 8x reference grown by the same radius.
  *
  * THE ONLY ASSERTION IN THIS FILE THAT ENTERS `_hb_gpu_slug`'s `ppem < 16` BRANCH ON THE OUTLINE
- * PATH. Measured on this box, RTX 2060 / ANGLE, 中 at 14 px per em rotated 10 degrees, spread 3,
+ * PATH. Measured on hardware ANGLE, 中 at 14 px per em rotated 10 degrees, spread 3,
  * over the 62 pixels the grown reference reports as partially covered:
  *
  * | dilation taps                       | rim rms | worst rim | interior short | ink vs ideal |
@@ -304,27 +284,20 @@ const LOWPPEM_INTERIOR_SHORTFALL_BUDGET = 0.15;
  * coverage; what IS limited is the tap SET — and specifically its ARRANGEMENT, since the ceiling of
  * 65 taps a fragment may spend has not moved through any of the readings below.
  *
- * MEASURED HERE FIRST, THEN BUDGETED. On this box, RTX 2060, over the 112 pixels the grown reference
+ * MEASURED HERE FIRST, THEN BUDGETED, on hardware ANGLE, over the 112 pixels the grown reference
  * calls partially covered:
  *
- * | reading                                       | rim rms | worst rim | ink ratio |
+ * | tap allocation                                | rim rms | worst rim | ink ratio |
  * | --------------------------------------------- | ------- | --------- | --------- |
- * | headed ANGLE/GL, when this budget was set      | 80.90   | 203       | 0.965     |
- * | headless ANGLE/Vulkan, 4 rings x 16 steps      | 79.10   | 199       | 0.987     |
- * | **headless ANGLE/Vulkan, 6/13/19/26 (current)**| **52.26** | **137** | 1.012     |
+ * | 4 rings x 16 steps                            | 79.10   | 199       | 0.987     |
+ * | **6/13/19/26 (current)**                      | **52.26** | **137** | 1.012     |
  *
- * THE FIRST ROW WAS ALREADY SUPERSEDED BEFORE THE SURFACE MOVED, and the file said so in two places:
- * 79.10 was quoted in the case body below, measured on the headed surface a commit later, and it is
- * what the headless surface reproduced to the digit. So that 1.8-level delta was a shader change
- * nobody carried back into this paragraph, not a driver.
- *
- * THE THIRD ROW IS THE ONE THIS FIXTURE EXISTED TO PRODUCE. Every ring used to be clamped to the
- * same 16 steps, so at radius 12 the OUTERMOST ring — the only one that decides where the boundary
- * lands — had 4.71 px of arc between its taps while ring 1 sampled a 4.7 px circle with the same 16.
- * The budget is now split in proportion to ring radius (6/13/19/26 at four rings, the same 64), the
- * outer arc is 2.90 px, and the rim falls a third. The other two columns moved with it: the interior
- * shortfall this scallop used to cut is now exactly 0 (see THIN_INTERIOR_SHORTFALL_BUDGET) and the
- * ink ratio crossed 1.0 from below.
+ * WHY THE ALLOCATION MATTERS. With every ring clamped to the same 16 steps, at radius 12 the
+ * OUTERMOST ring — the only one that decides where the boundary lands — has 4.71 px of arc between
+ * its taps while ring 1 samples a 4.7 px circle with the same 16. Splitting the budget in proportion
+ * to ring radius (6/13/19/26 at four rings, the same 64) makes the outer arc 2.90 px, and the rim
+ * falls a third. The interior shortfall goes to exactly 0 (see THIN_INTERIOR_SHORTFALL_BUDGET) and
+ * the ink ratio crosses 1.0 from below.
  *
  * 65 IS THE MEASURED VALUE PLUS A QUARTER, the same headroom `GODOT_SCALLOP_BUDGET_PX` carries, and
  * it is chosen to be a budget the OLD ALLOCATION FAILS: 79.10 is 22% above it. That is the point of
@@ -381,10 +354,10 @@ const THIN_INTERIOR_SHORTFALL_BUDGET = 0.03;
  * have to survive: the statistic is a difference between two tap SETS, so any change to which taps
  * run moves it by construction. It moved 1.4 levels, toward zero, on 6 more pixels.
  *
- * 45 is the OLDEST measured value plus a third, and it stays there rather than being re-derived onto
+ * 45 is the first reading plus a third, and it stays there rather than being re-derived onto
  * 29.8. Re-deriving would ratchet a budget downward on every reading that happened to come in low,
  * and this one landed 34% below the budget rather than near it. It is not there to bless the trade —
- * 30 levels of 255 is a real difference and the images are in `docs/perf-harness.md` — it is there
+ * 30 levels of 255 is a real difference — it is there
  * so that a future change which makes the two variants diverge WILDLY (a tap set that stops sampling
  * the disk, a ppem that starts being computed differently) fails here rather than in a consumer's
  * screenshot.
@@ -394,7 +367,7 @@ const LOWPPEM_MSAA_DIFF_RMS_BUDGET = 45;
 /**
  * How far this package's dilation may reach from where GODOT's outline reaches, px.
  *
- * MEASURED ON THE THREE ROUND CASES, RTX 2060 / ANGLE, against the committed 4.5.1 golden:
+ * MEASURED ON THE THREE ROUND CASES, hardware ANGLE, against the committed 4.5.1 golden:
  *
  * | case                | ppem | radius | godot r50 | ours, 4x16 | ours, 6/13/19/26 | delta  |
  * | ------------------- | ---- | ------ | --------- | ---------- | ---------------- | ------ |
@@ -464,23 +437,10 @@ const GODOT_REACH_BUDGET_PX = 0.5;
  * resolve, which is a statement about the METRIC's floor and not about a zero-width rim. The
  * gradient form on the same frame, which shares none of that arithmetic, reads 0.304 px.
  *
- * WHAT CHANGED THE RIGHT-HAND COLUMNS: the fragment shader now gates stem darkening on the FILL
- * pass, so a dilated draw emits raw coverage. Before that, this is what the consumer's own frame
- * measured — the same rows, and the reason this table used to have five different numbers in it:
- *
- * | case            | ppem | ours (none) | default white | default black | white vs none | black vs none |
- * | --------------- | ---- | ----------- | ------------- | ------------- | ------------- | ------------- |
- * | han-desktop     | 14   | 0.662       | **1.965**     | 0.518         | 31 lv / 144px | 30 lv / 146px |
- * | han-phone       | 49   | 0.851       | 0.851         | 0.851         | 0             | 0             |
- * | latin-desktop   | 20   | 0.216       | 0.216         | 0.196         | 26 lv / 14 px | 25 lv / 12 px |
- * | dot-radial      | 49   | 0.518       | 0.518         | 0.518         | 0             | 0             |
- * | dot-radial-wide | 96   | 0.475       | 0.475         | 0.475         | 0             | 0             |
- *
- * It localised precisely: the columns were already identical at ppem 49 and 96 because
- * `smoothstep(8, 48, ppem)` had taken the correction to exactly 1 there, and differed only at ppem
- * 14 and 20 — the desktop cases, i.e. the sizes the consumer's own labels are drawn at. At
- * han-desktop, white read 1.965 px against the uncorrected 0.662: the shipped curve TRIPLED the rim
- * of a dilated frame while the graded column said the dilation was sharper than the engine's.
+ * WHY THE DEFAULT CONTRAST DOES NOT APPLY HERE: the fragment shader gates stem darkening on the FILL
+ * pass, so a dilated draw emits raw coverage. Applied to a dilated rim, the curve roughly tripled
+ * the rim width at ppem 14 (where `smoothstep(8, 48, ppem)` has not yet taken it to 1) while the
+ * graded column said the dilation was sharper than the engine's.
  *
  * 0.5 IS AN UPPER BOUND ONLY, AND STAYS ONE. The worst measured delta is now -0.399, so this carries
  * 0.9 px of headroom and fails any change that makes the rim half a pixel softer than the engine
@@ -494,7 +454,7 @@ const GODOT_RAMP_BUDGET_PX = 0.5;
 /**
  * How much the dilated boundary may wobble with angle, px, against Godot's own at the same radius.
  *
- * MEASURED ON BOTH ALLOCATIONS OF THE SAME 64-TAP BUDGET, headless ANGLE/Vulkan, RTX 2060:
+ * MEASURED ON BOTH ALLOCATIONS OF THE SAME 64-TAP BUDGET, headless ANGLE/Vulkan:
  *
  * | case                | radius | godot  | 4 x 16 | 6/13/19/26 |
  * | ------------------- | ------ | ------ | ------ | ---------- |
@@ -576,8 +536,8 @@ const SPREAD_OUTER_RING_STEPS = 26;
 /**
  * See {@link GODOT_SCALLOP_BUDGET_PX} — the same claim at the CURRENT tap count, PER PX OF RADIUS.
  *
- * THIS ONE PINS THE NEW SIGNATURE RATHER THAN THE OLD DEFECT, and it is the budget that stops the
- * next round of this from being circular. A redistribution that merely moved the scallop to a finer
+ * THIS ONE PINS THE NEW SIGNATURE RATHER THAN THE OLD DEFECT, and it is the budget that stops a
+ * future tap change from being circular. A redistribution that merely moved the scallop to a finer
  * pitch would leave `GODOT_HARMONIC_BUDGET_PX` green while looking exactly as ragged; only a bin at
  * the count the boundary is actually drawn by can say it did not.
  *
@@ -637,11 +597,11 @@ function outerHarmonicBudgetPx(spreadPx: number): number {
 const ENABLED = Boolean(process.env.GSW_HB_GPU_PIXEL && process.env.DISPLAY);
 
 /**
- * Chromium's launch options, windowless by default — see the header for the measured ladder.
+ * Chromium's launch options, windowless by default — see the header for the launch ladder.
  *
- * `GSW_PIXEL_HEADED=1` gives back the old surface (headed, default Ozone, ANGLE over desktop GL),
- * which is the only way to cross-check the two against each other. IT PUTS A WINDOW ON THE USER'S
- * DESKTOP: Xvfb does not contain a headed Chromium here, so that arm interrupts whoever is at the
+ * `GSW_PIXEL_HEADED=1` gives the headed surface (default Ozone, ANGLE over desktop GL), which is
+ * the only way to cross-check the two against each other. IT PUTS A WINDOW ON THE USER'S DESKTOP:
+ * Xvfb does not contain a headed Chromium under Wayland, so that arm interrupts whoever is at the
  * machine and is to be run only with their consent.
  */
 function launchOptions(): { headless: boolean; args: string[] } {
@@ -658,7 +618,7 @@ function launchOptions(): { headless: boolean; args: string[] } {
  * THE PROVENANCE GUARD ON THE WHOLE FILE: this ran on a GPU, and here is which one.
  *
  * Every budget below was calibrated against a discrete adapter, and a software rasteriser does not
- * fail them — the SwiftShader column of the RMS table agrees with the NVIDIA one to 0.03. So a
+ * fail them — the SwiftShader row of the RMS table agrees with the hardware one to 0.03. So a
  * surface that quietly fell back would keep this suite green while making its numbers describe
  * llvmpipe, and the next recalibration would fit budgets to that. Fail fast instead.
  *
@@ -1034,7 +994,7 @@ describe.skipIf(!ENABLED)("hb-gpu glyph pixels", () => {
       return;
     }
     // NO WEBGL2 IS A SKIP AND SOFTWARE IS A FAILURE, and the asymmetry is the point: the first says
-    // this box cannot run the suite, the second says it ran it on the wrong thing.
+    // this machine cannot run the suite, the second says it ran it on the wrong thing.
     assertHardwareRenderer(probe.renderer);
     const first = await caseResult("upright28");
     console.log(
@@ -1140,10 +1100,8 @@ describe.skipIf(!ENABLED)("hb-gpu glyph pixels", () => {
 
   it("measures Slug blob bytes per Han glyph", async (ctx) => {
     if (skipReason) return ctx.skip(skipReason);
-    // The prediction under test, on the round's own fixture pool: `docs/text-rendering.md` expects
-    // "~5.4 KB per Han glyph against ~1.4 KB for a 38x38 R8 atlas cell". Measured, not asserted at
-    // 5.4 — the point is to publish the real number, and a test that pinned it to the prediction
-    // would be asserting the guess.
+    // Logged, not asserted to a target — the point is to publish the real number on the fixture
+    // pool, and a test that pinned it to an estimate would be asserting the guess.
     const measured = await page.evaluate(
       () => window.__gswHbGpu.blobBytes(0x4e00, 300),
       undefined,
@@ -1185,7 +1143,7 @@ describe.skipIf(!ENABLED)("hb-gpu glyph pixels", () => {
     // THE OTHER HALF OF THE SAME FAILURE, and the one the in-use guard cannot see: slots HELD
     // across the eviction. A live app caches slots between frames while the ring wraps underneath
     // them; the perf harness never does, because it pre-sizes the atlas to the whole working set,
-    // which is exactly why this went a whole round undetected.
+    // so nothing else exercises this.
     expect(
       probe.staleSkips,
       "no held slot went stale — this probe is not exercising the generation guard at all",
@@ -1448,8 +1406,8 @@ describe.skipIf(!ENABLED)("hb-gpu glyph pixels", () => {
 
       // THE SAME RIM, SPLIT INTO THE THREE THINGS THAT CAN BE WRONG WITH IT — see
       // `outline-metrics.ts`. The rim RMS above is one number for "smeared", "notched" and
-      // "blurred" at once, and Stages 1 and 2 of this round are expected to move different ones of
-      // those. Reported here so the before/after can be attributed rather than merely observed.
+      // "blurred" at once, and different shader changes move different ones of those. Reported
+      // here so a before/after can be attributed rather than merely observed.
       const [inner, outer] = await Promise.all([
         dilatedReference(SPREAD_THIN_CASE, thin.glyphId, spreadPx - 1),
         dilatedReference(SPREAD_THIN_CASE, thin.glyphId, spreadPx + 1),
@@ -1808,7 +1766,7 @@ describe.skipIf(!ENABLED)("hb-gpu glyph pixels", () => {
         `${(100 * interiorShortfallFraction).toFixed(1)}% of the grown reference's solid interior is missing at ${low.pixelsPerEm} px/em (worst pixel ${interiorWorst} levels short) — a max over raw coverage taps reads 38.5% here, so anything past ${LOWPPEM_INTERIOR_SHORTFALL_BUDGET} is the mottle coming back`,
       ).toBeLessThan(LOWPPEM_INTERIOR_SHORTFALL_BUDGET);
 
-      // THE RIM BUDGET. Calibrated on this box against the 8x dilated reference — see the constant.
+      // THE RIM BUDGET. Calibrated against the 8x dilated reference — see the constant.
       expect(
         rimRms,
         `the outline's rim is ${rimRms.toFixed(2)} levels RMS from the true grown shape (worst ${rimWorst}, interior worst ${interiorWorst}) — above ${LOWPPEM_RIM_RMS_BUDGET} the dilation is no longer tracking the outline at this size`,
@@ -1824,9 +1782,8 @@ describe.skipIf(!ENABLED)("hb-gpu glyph pixels", () => {
       //   at 14 px per em  the two MUST differ   — the five-sample average is weighted in
       //   at 96 px per em  the two MUST be EQUAL — the define can change nothing there
       //
-      // Fail either way round and this fixture is not measuring what it says. Before it existed the
-      // whole suite was byte-identical with the branch deleted, which is how a 5.7x shader change
-      // reached a perf table before it reached a test.
+      // Fail either way round and this fixture is not measuring what it says. Without it the whole
+      // suite would be byte-identical with the branch deleted.
       //
       // WHAT THE HIGH-PPEM HALF ACTUALLY PINS, stated precisely because the obvious reading is
       // wrong and was checked: it is NOT the `if (ppem < 16.0)` constant. The blend is
@@ -2101,24 +2058,21 @@ describe.skipIf(!ENABLED)("hb-gpu glyph pixels", () => {
         `light text GAINED ink under the correction (${shippedWhite.ink} against ${plainWhite.ink}) — light-on-dark is supposed to be thinned, not fattened`,
       ).toBeLessThan(plainWhite.ink);
 
-      // 3. THE DEEP END IS THE POINT. This is the in-repo analogue of the measurement that started
-      //    the round: on a fixed crop of "Breakthrough" at DPR 1.25 the DOM path put 66% more
-      //    pixels below luma 80 than this one did, at the same peak darkness and the same total
-      //    ink. `deep` counts the top of the coverage ramp, which for dark text on a light page IS
-      //    the dark end. Asserted as "moved a real amount", not as a target: the exponent is
-      //    HarfBuzz's, the page is not this fixture, and a number tuned to hit 66% here would be a
-      //    number tuned to a 128 px transparent buffer.
+      // 3. THE DEEP END IS THE POINT. At the same peak darkness and total ink, DOM text puts
+      //    markedly more pixels in the dark end than raw coverage does. `deep` counts the top of
+      //    the coverage ramp, which for dark text on a light page IS the dark end. Asserted as
+      //    "moved a real amount", not as a target: the exponent is HarfBuzz's, and a number tuned
+      //    to a DOM page here would be a number tuned to a 128 px transparent buffer.
       expect(
         shippedBlack.deep,
         `dark text gained ${(100 * (shippedBlack.deep / plainBlack.deep - 1)).toFixed(1)}% deep-coverage pixels (${plainBlack.deep} -> ${shippedBlack.deep}) — under 10% the correction is present but too weak to be the thing that closes the gap to DOM`,
       ).toBeGreaterThan(plainBlack.deep * 1.1);
 
       // 4. AND IT IS A RESHAPE, NOT A BRIGHTNESS KNOB. This is the assertion that says the change
-      //    has the same SHAPE as the difference it exists to close: DOM put 66% more pixels in the
+      //    has the same SHAPE as the difference it exists to close: DOM puts more pixels in the
       //    deep end at the same total ink, so the deep count has to move a great deal further than
       //    the ink does. Multiplying every coverage by a constant — the thing a careless "make it
       //    darker" would be — moves the two together and fails here while passing everything above.
-      //    Measured on this box: ink +14.1%, deep +76.5%, a ratio of 5.4.
       const inkGain = shippedBlack.ink / plainBlack.ink - 1;
       const deepGain = shippedBlack.deep / plainBlack.deep - 1;
       expect(
@@ -2295,7 +2249,7 @@ describe.skipIf(!ENABLED)("hb-gpu glyph pixels", () => {
   //
   // WHY IT HAD TO EXIST. Everything above grades a frame against an 8x rasterisation of the same
   // outline, which answers "did the blob reach the shader intact" and "is the dilation the union of
-  // disks it claims to be" — and answers neither of the two questions this round is actually about.
+  // disks it claims to be" — and answers neither of the two questions about matching the engine.
   // "Is the rim as sharp as Godot's" has no answer inside this repo, because the reference is a
   // different engine's rasteriser and no amount of supersampling here reproduces it. So Godot draws
   // the same five cases once, `scripts/godot-outline-ref.ts` measures them with the same pure
@@ -2504,12 +2458,11 @@ describe.skipIf(!ENABLED)("hb-gpu glyph pixels", () => {
       if (skipReason) return ctx.skip(skipReason);
       // WHAT MAKES THE BUDGET BELOW A CLAIM ABOUT THE PRODUCT. Every other column in this block is
       // `HB_GPU_CONTRAST_NONE`, for the reason `GRADED_AGAINST_COVERAGE` gives — but a consumer
-      // does not pass that, and for a while the frame it did get was a different picture: the
-      // shipped stem-darkening curve ran on the FINAL coverage, after the dilation, so the outline
-      // carried a correction the engine being mirrored has no analogue for. Godot's outline is a
-      // plain FreeType raster; `outline_ref.gd` sets no gamma and no darkening and there is nothing
-      // to set. The shader now gates stem darkening on the fill pass, and the assertion is that the
-      // three columns are ONE frame.
+      // does not pass that. Stem darkening on the dilated coverage would carry a correction the
+      // engine being mirrored has no analogue for: Godot's outline is a plain FreeType raster;
+      // `outline_ref.gd` sets no gamma and no darkening and there is nothing to set. The shader
+      // gates stem darkening on the fill pass, and the assertion is that the three columns are ONE
+      // frame.
       //
       // EXACTLY ZERO, FOR THE SAME REASON THE CONTRAST BLOCK'S DILATED TEST IS. With darkening
       // skipped and `u_gamma` at 1 the contrast block is empty on both renderers — no `pow` is
@@ -2543,17 +2496,13 @@ describe.skipIf(!ENABLED)("hb-gpu glyph pixels", () => {
 
     it("carries a rim within a provisional distance of Godot's", async (ctx) => {
       if (skipReason) return ctx.skip(skipReason);
-      // PROVISIONAL, AND SAID SO IN THE NAME. Two of the three mechanisms behind this gap are
-      // being fixed in the next two stages of this round — the contrast curve running on the
-      // DILATED coverage, and the tap budget that stops tiling its own disk past ~2.7 px. So the
-      // budgets here are the measured values plus headroom, chosen so that today's shader passes
-      // and a REGRESSION fails, and they get tightened by the commits that earn it.
+      // PROVISIONAL, AND SAID SO IN THE NAME. The budgets here are the measured values plus
+      // headroom, chosen so that today's shader passes and a REGRESSION fails, and they get
+      // tightened by the changes that earn it.
       //
-      // The graded column is `none`, and it is now the SAME PIXELS as the two shipping columns —
-      // the test above asserts that byte for byte, which is what makes this budget a claim about
-      // what a consumer sees rather than about a measurement arm. Before stem darkening was gated
-      // off the dilated pass they were three different frames, and `defaultWhite` at han-desktop
-      // read 1.965 px against this column's 0.662.
+      // The graded column is `none`, and it is the SAME PIXELS as the two shipping columns — the
+      // test above asserts that byte for byte, which is what makes this budget a claim about what a
+      // consumer sees rather than about a measurement arm.
       for (const item of GODOT_OUTLINE_CASES) {
         const reference = godotCase(item.name);
         const columns = ours.get(item.name);

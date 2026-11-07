@@ -1,4 +1,4 @@
-# Seeds the Actions caches that remote-validate.yml's run branches restore (docs/remote-compute.md).
+# Seeds the Actions caches that remote-validate.yml's run branches restore.
 # A cache saved on a run branch is readable only by that branch, while main's caches are readable
 # by every branch, so every cache is saved here, on main, and the run branches only restore.
 # Weekly, on demand (gh workflow run remote-cache-seed.yml --ref main), and on every push to main
@@ -6,6 +6,8 @@
 # change every run job rebuilt it (~6 min each) until the next weekly seed. The paths below are the
 # hashFiles() and pin inputs of rs-setup's keys; keep them in step with action.yml.
 name: remote-cache-seed
+# neutral title: a push-triggered run would otherwise be titled with the head commit message
+run-name: remote-cache-seed
 
 on:
   workflow_dispatch:

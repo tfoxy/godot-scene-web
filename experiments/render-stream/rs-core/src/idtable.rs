@@ -2,8 +2,8 @@
 //!
 //! The resolved state keys every table by wire id and iterates it in ascending id order (the
 //! order the resolved form lists entries in), which a `BTreeMap` gives. But the applier and the
-//! validator look entries up by id thousands of times per transaction, and on the g31's in-order
-//! A55 cores a B-tree search (a branchy key scan per node, a cache miss per level) costs several
+//! validator look entries up by id thousands of times per transaction, and on in-order
+//! mobile cores a B-tree search (a branchy key scan per node, a cache miss per level) costs several
 //! times an array index. Wire ids are small and dense in practice (a capture numbers them from 1),
 //! so ids below [`DENSE_LIMIT`] index a slot array (4 bytes per id) that names the entry's place in
 //! a value arena, and only larger ids fall back to a `BTreeMap`. Iteration walks the slots in id

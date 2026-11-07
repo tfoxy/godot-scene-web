@@ -2,7 +2,7 @@
 """Write fixtures/gate6-hd/expected.json (render-stream-gate6-hd-expected/1).
 
 The HD fixture is nine copies of the gate 6 scene in a 3x3 GridContainer at logical 1920x1080
-under `canvas_items` stretch (protocol/gate6-design.md "Q6e", G6h). Its model is gate6-scene's
+under `canvas_items` stretch. Its model is gate6-scene's
 (../gate6-scene/make_expected.py, imported, never copied): every cell is that model's scene at
 the cell's phase, translated by the cell's origin, and the `half` presentation is the same scene
 under the stretch transform scale(0.5) with StyleBoxFlat's antialiasing feather widened to

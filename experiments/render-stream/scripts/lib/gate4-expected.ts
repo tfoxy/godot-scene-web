@@ -1,6 +1,6 @@
 // Pure helpers over the gate 4 fixture's expected.json (render-stream-gate4-expected/1) and the
 // glyph oracle's lines (render-stream-gate4-glyphs/1) -- no file or network I/O, no Godot, no
-// capture evidence. See ../../protocol/gate4-design.md "Q6c" and "Q6d".
+// capture evidence. See.
 //
 // Outside the text regions every gate 4 pixel is an opaque add_rect on the 0.2 grid (the clear
 // colour, the panel P and the marker), so synthesizeGate4 is exact there; a text region is
@@ -275,7 +275,7 @@ export function inkCodepoints(text: string): string[] {
 }
 
 /**
- * gate4-design.md Q1c's rules over expected.json's own texts and draws, independently of
+ * the contract's rules over expected.json's own texts and draws, independently of
  * make_expected.py: a draw of a visible Label that introduces codepoints into its cache uploads
  * that page once (the first upload creates it). Returns per step the new glyphs, uploads,
  * creates and hook versions per cache key, and each node's ink glyph count.
@@ -347,7 +347,7 @@ export interface AtlasPageImage {
  * node's `global_xform` places the glyph quad (already in Label-local pixel space) in root-canvas
  * pixels. A glyph naming a page not in `pages` is skipped and its key recorded in `missingPages`
  * (the caller decides whether that is itself a problem) rather than synthesizing a wrong pixel.
- * Backgrounds here are always fully opaque (gate4-design.md Q6: alpha 1 or the deliberate .6 is a
+ * Backgrounds here are always fully opaque (alpha 1 or the deliberate .6 is a
  * *text* colour, never a background), so the result stays opaque throughout.
  */
 export function synthesizeText(

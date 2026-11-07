@@ -120,8 +120,7 @@ void code_at_rest(PayloadPtr *bytes) {
     return;
   }
   // An exact-size copy: the coder's buffer has ZSTD_compressBound (about the identity size) of
-  // capacity, and keeping it would hold the identity's memory under a coded size (measured on the
-  // d12 route: RSS unchanged for a 7.4x smaller mirror until this copy).
+  // capacity, and keeping it would hold the identity's memory under a coded size.
   auto coded = std::make_shared<PayloadBytes>(out.begin(), out.end());
   out = std::vector<std::uint8_t>();
   coded->rest = coding;

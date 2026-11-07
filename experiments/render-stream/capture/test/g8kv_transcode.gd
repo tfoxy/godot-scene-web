@@ -5,7 +5,7 @@
 #
 # Always run under `timeout`: a headless script that errors can hang. Prints one line per case and
 # level, then "RESULT ok|fail". The PSNR floor is per case (manifest column 5), a smoke bound well below what UASTC L2
-# reaches on these colour-correlated images; the measured table is in results/gate8/g8kv.md.
+# reaches on these colour-correlated images.
 extends SceneTree
 
 

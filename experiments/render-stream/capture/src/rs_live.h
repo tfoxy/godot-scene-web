@@ -1,9 +1,9 @@
-// Live delivery (gate 1 G1c2 as rs1_live; render-stream/2 since gate 2 G2b2): per-connection
+// Live delivery (render-stream/2): per-connection
 // credit-based delivery over a WebSocket transport, the receiver control-message parser, the
-// per-connection live log and tap, and the live summary (protocol/gate1-design.md "Q4. Delivery
-// model" and "G1c2"; protocol/render-stream-2.md "Live transport").
+// per-connection live log and tap, and the live summary
+// (protocol/render-stream-2.md "Live transport").
 //
-// Resources (G2b2 inline, G2c2 over HTTP; gate2-design.md Q4): every live connection declares the
+// Resources (inline or over HTTP): every live connection declares the
 // configured policy (the caller's session template): payloads of at most `inline_max_bytes` go
 // in band as `resource` records -- before a transaction goes out, each `ok` image hash of its
 // snapshot that this connection has not carried yet and that is small enough is sent as one
@@ -13,7 +13,7 @@
 // larger payload is fetched by the receiver over HTTP (`fetch: "http"`) from the same listener.
 // `carried` is never pruned: render-stream-2.md's resource-duplicate rule ("each hash at most
 // once" per stream) makes that a correctness requirement, not an oversight (confirmed the hard
-// way, gate6-design.md G6s: a hash that recurs, such as a mesh surface's periodic pose, must
+// way: a hash that recurs, such as a mesh surface's periodic pose, must
 // never be carried a second time), so a long-running connection's set holds one entry per
 // distinct hash it has ever sent, for its whole life. Since P3-SP every connection's set lives in
 // one host-wide CarriedIndex (rs_carried.h: one compact entry per hash, a bit per connection).
@@ -25,7 +25,7 @@
 // host-wide CarriedIndex serves /6-/10 connections only. Dynamic mesh surfaces travel inside the
 // transaction (`mesh_u8`) and take no record.
 //
-// Shared publication (P3-SP, results/p3/p3-sp.md): the published snapshot is held once
+// Shared publication: the published snapshot is held once
 // (shared_ptr) by every connection whose base or pending target it is, never copied per
 // connection. Within one frame callback, connections that send the same transaction (the same
 // base snapshot, the same target, the same version) share its diff and encode: the first one forms
@@ -67,7 +67,7 @@
 // disarm) every streaming connection gets its end record whether or not it holds credit; the
 // receiver closes after reading it, and close_open() closes whatever is left with 1000.
 //
-// Rate control (gate6-design.md D8, Q3c, G6r): GRC_PUBLISH_FPS configures LiveConfig::
+// Rate control: GRC_PUBLISH_FPS configures LiveConfig::
 // publish_period_ns (0 = uncapped, today's behaviour: a transaction at every frame callback that
 // holds credit). With a target, connection c publishes at tick k, due at t0 + k*P (P = the
 // period, t0 the connection's first send). A due tick without credit stays due (never advances
@@ -91,10 +91,10 @@
 //                   once, so the next transaction reaches the receiver with a seq gap. (The
 //                   contract says "at exactly that frame"; a transaction is only formed at a
 //                   frame that holds credit, so "exactly" would make the sabotage depend on the
-//                   credit phase. See gate1-design.md G1c2 "As built".)
-//   ignore-credit   (G1d) from the sabotage frame on, a transaction is formed and sent at every
+//                   credit phase.)
+//   ignore-credit   from the sabotage frame on, a transaction is formed and sent at every
 //                   frame callback while streaming, credit or not: several in flight at once.
-//   stale-coalesce  (G1d) from the sabotage frame on, the first missed target (the snapshot of
+//   stale-coalesce  from the sabotage frame on, the first missed target (the snapshot of
 //                   the first callback that coalesced since the last send) is kept, and when
 //                   credit returns that copy is sent instead of the newest state, labelled with
 //                   the current frame. The next transaction patches from it to the newest state.
@@ -114,7 +114,7 @@
 //   live-<connection>.jsonl   one line per frame callback while the connection exists, plus
 //                             event lines (open, hello, ack, resync, close, error, resource and,
 //                             since G2c2, http-get).
-// render-stream/7 (gate7-design.md D2, D3, D4, Q2, Q3; G7n): every connection speaks the version
+// render-stream/7: every connection speaks the version
 // its WebSocket subprotocol chose (LiveEvent::subprotocol): `render-stream.7` makes it a /7
 // connection, anything else the template's version (/6 in production). Its version drives its
 // session record (magic, protocol string, `publication.credit_window`), the protocol its hello must
@@ -142,7 +142,7 @@
 //     byte for byte the delivery above (test/rs_live_window_test.cpp's pinned transcripts).
 // A /6 connection is byte for byte what it was before G7n.
 //
-// Formation (HC5, host-cost-design.md D4 "Moving work off the main thread"): the frame callback
+// Formation: the frame callback
 // decides everything that is frame-paired (which connections send, the target, the base, seq and
 // frame, credit, the window, rate ticks, pins, the below-/11 carried marks) and queues one job per
 // sending connection. A job forms what that decision implies -- the /11 record plan, the resource
@@ -205,8 +205,8 @@ struct ControlMessage {
   std::string receiver;
   AckStage credit_stage = AckStage::Submitted;  // received is never a valid credit stage
   std::uint64_t inbound_buffer_bytes = 0;
-  // hello, /7 only (render-stream-7.md "Hello", gate7-design.md Q2). Parsing only -- no Hub
-  // behaviour reads these yet (G7n).
+  // hello, /7 only (render-stream-7.md "Hello"). Parsing only -- no Hub
+  // behaviour reads these yet.
   std::string receiver_kind;  // "native" | "web-export" | "gsw-canvas"
   std::uint64_t credit_window = 1;
   bool has_token = false;  // false -> the hello's "token" was null
@@ -219,7 +219,7 @@ struct ControlMessage {
   std::uint64_t presentation_css_h = 0;
   std::uint64_t dpr_milli = 0;
   // hello, /9 only (render-stream-9.md "Hello"): comma lists matching ^[a-z0-9]+(,[a-z0-9]+)*$,
-  // at most 96 chars (texture-delivery-design.md Q3). Parsing only -- no Hub behaviour reads them
+  // at most 96 chars. Parsing only -- no Hub behaviour reads them
   // until a delivery increment does.
   std::string texture_encodings;
   std::string gpu_formats;
@@ -228,7 +228,7 @@ struct ControlMessage {
   // none, so the connection stays uncoded.
   bool has_live_coding = false;
   std::string live_coding;
-  // hello, /13 only, optional (TAG1, client-extensions-design.md §2.1): the identity the viewer
+  // hello, /13 only, optional: the identity the viewer
   // asks for. Absent: not asked (the hello is byte for byte a no-extension client's).
   bool has_item_meta = false;
   rs::item_meta::Request item_meta;
@@ -253,9 +253,9 @@ struct ControlMessage {
 // error. Returns false with *error set on anything else.
 // `version` (G4e2) selects the hello protocol a receiver must announce: "render-stream/2" (the
 // default, golden-2's control vectors), "render-stream/3" (render-stream-3.md "Live transport")
-// or "render-stream/4" (render-stream-4.md "Live transport"; what the capture speaks since G5d).
-// At ProtocolVersion::V7 (and V8, whose live transport is /7's) the hello has nine more keys (render-stream-7.md "Hello", gate7-design.md
-// Q2): `receiver_kind`, `credit_window`, `token`, `manifest_sha256` and five presentation
+// or "render-stream/4" (render-stream-4.md "Live transport").
+// At ProtocolVersion::V7 (and V8, whose live transport is /7's) the hello has nine more keys (render-stream-7.md "Hello"):
+// `receiver_kind`, `credit_window`, `token`, `manifest_sha256` and five presentation
 // integers; `token`/`manifest_sha256` may be JSON `null`, the only place this parser accepts it.
 // ID3: `v2_at_13` is the sabotage that accepts item_meta v2's fields below /14.
 bool parse_control(const std::string &text, ControlMessage *out, std::string *error,
@@ -302,11 +302,11 @@ inline constexpr std::uint64_t kHostCreditWindow = 2;
 
 // The subprotocol that makes a connection /7 (render-stream-7.md "Live transport").
 inline constexpr const char *kSubprotocolV7 = "render-stream.7";
-// The subprotocol that makes a connection /8 (render-stream-8.md "Live transport", gate8-design.md
-// D2): /7's live transport with /8's session and tables. Opt-in; no receiver offers it by default.
+// The subprotocol that makes a connection /8 (render-stream-8.md "Live transport"):
+// /7's live transport with /8's session and tables. Opt-in; no receiver offers it by default.
 inline constexpr const char *kSubprotocolV8 = "render-stream.8";
-// The subprotocol that makes a connection /9 (render-stream-9.md "Live transport",
-// texture-delivery-design.md D4): /8's live transport with /9's hello keys `texture_encodings` and
+// The subprotocol that makes a connection /9 (render-stream-9.md "Live transport"):
+// /8's live transport with /9's hello keys `texture_encodings` and
 // `gpu_formats`. Opt-in (GRC_STREAM_VERSION=9); no receiver offers it yet.
 inline constexpr const char *kSubprotocolV9 = "render-stream.9";
 // The subprotocol that makes a connection /10 (render-stream-10.md "Live transport"): /9's live
@@ -371,7 +371,7 @@ struct LiveConfig {
   // carries the writer sabotage's tokens (rs13::Predictor::zr_overrun, zr_short_run) instead of a
   // stale prediction. The receiver fails zr-length / zr-noncanonical and resyncs (reason coding).
   rs13::ZrSabotage predict_zr = rs13::ZrSabotage::None;
-  // TAG1 (client-extensions-design.md §2.1): GRC_ITEM_META, the operator's grant (item_meta::k*
+  // GRC_ITEM_META, the operator's grant (item_meta::k*
   // bits; 0: nobody gets identities, whatever a hello asks). `item_meta_sabotage` is
   // GRC_ITEM_META_SABOTAGE's formation half: in-shared, skip-full or id-off-by-one.
   std::uint32_t item_meta_grant = 0;
@@ -405,7 +405,7 @@ struct LiveEvent {
   // template's version) and the upgrade's Origin ("" when it carried none).
   std::string subprotocol;
   std::string origin;
-  // Opened only (CAR1, carrier-design.md D13): the carrier's name ("ws", ...), logged on the
+  // Opened only: the carrier's name ("ws", ...), logged on the
   // connection's `open` line; "" (tests, a bare Server) logs no `carrier` key.
   std::string carrier;
 };
@@ -421,7 +421,7 @@ struct LatencyStats {
 };
 LatencyStats latency_stats(std::vector<std::uint64_t> samples_us);
 
-// The per-connection summary (gate1-design.md Q7 report `live.connections[]`, plus the delivery
+// The per-connection summary (report `live.connections[]`, plus the delivery
 // counters gate 1c reports).
 struct ConnectionSummary {
   std::uint32_t connection = 0;
@@ -429,7 +429,7 @@ struct ConnectionSummary {
   std::string receiver;
   std::string credit_stage;  // "" until the hello
   std::uint64_t inbound_buffer_bytes = 0;
-  // G7n (gate7-design.md Q3 "Evidence"). `version`: the connection's protocol (2..7, from its
+  // `version`: the connection's protocol (2..7, from its
   // subprotocol). The rest come from a /7 hello and stay unset ("" / has_hello7 false) on a /6
   // connection or before the hello: receiver_kind, the requested and granted credit window,
   // manifest_sha256 ("" for null), the five presentation integers. `credit_window` is the grant
@@ -489,7 +489,7 @@ struct ConnectionSummary {
   std::uint64_t bytes_sent = 0;       // binary message bytes handed to the transport
   std::uint64_t resource_records = 0;  // G2b2: inline resource records sent (payloads carried)
   std::uint64_t resource_bytes = 0;    // G2b2: their payload bytes
-  // G6s (gate6-design.md Q7e "soak-inline"): the connection's carried-hash set's CURRENT size
+  // the connection's carried-hash set's CURRENT size
   // (not accumulated -- Hub::summaries() fills this fresh from Conn::carried each call), for the
   // perf timeline's first-third/last-third residency comparison.
   std::uint64_t carried_size = 0;
@@ -618,13 +618,13 @@ class Hub {
   // stream. A connection still awaiting its hello is not a viewer (it names no resource yet).
   bool has_viewer() const;
 
-  // HC3 (host-cost-design.md D2): true while an open connection speaks a version below /11, whose
+  // true while an open connection speaks a version below /11, whose
   // mesh tables name every surface by its SHA-256 (a /11 host then hashes its dynamic surfaces
   // too). Counted from the connection's open, before its hello, so the snapshot of its first
   // transaction already has them.
   bool has_connection_below_v11() const;
 
-  // TAG1 (client-extensions-design.md §2.2): the union of what the open, granted connections ask
+  // the union of what the open, granted connections ask
   // (empty: nobody, so the capture resolves nothing), and a counter that moves whenever it may
   // have changed, so the frame callback's check is one compare.
   std::uint64_t item_meta_version() const { return item_meta_version_; }
@@ -677,7 +677,7 @@ class Hub {
   std::string summary_json(const ServingSummary *resources = nullptr) const;
   std::size_t connections() const { return conns_.size(); }
 
-  // Cross-connection histograms for perf.json (Q3d, G6r): the diff and encode costs measured in
+  // Cross-connection histograms for perf.json: the diff and encode costs measured in
   // send_transaction(), and the credit round trip and host-clock staleness (index 1 = applied,
   // index 2 = submitted; index 0 is never populated -- received is never a credit stage).
   const Histogram &diff_histogram() const { return diff_hist_; }
@@ -690,7 +690,7 @@ class Hub {
     return staleness_hist_[static_cast<std::size_t>(stage)];
   }
 
-  // G2c2 pins (gate2-design.md D7): the payloads of the last transaction sent on every connection
+  // Pins: the payloads of the last transaction sent on every connection
   // that is not closed (its base), and of every stale-coalesce copy a connection may still send.
   std::vector<const rs::PayloadMap *> base_payloads() const;
   std::vector<const rs::PayloadMap *> held_payloads() const;

@@ -3,7 +3,7 @@
 // Building copies the live vtable (from two words before the address point, so that offset-to-top
 // and the typeinfo pointer come along) into two heap tables and replaces slots in each: the armed
 // table replaces every slot the calibration record names, the standby table only the ones marked
-// `standby` (LS1, live-swap-design.md D4: the registry's tracked slots, the shims' slots,
+// `standby` (the registry's tracked slots, the shims' slots,
 // texture_set_path and draw). Both share the same original function pointers. Publishing a table
 // is one aligned pointer-sized release store into the singleton object's first word: arm, standby
 // and restore are each that one store. No engine code, no engine data and no page protection is

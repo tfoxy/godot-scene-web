@@ -4,7 +4,7 @@
 // glow tier is downgraded, a panel closes). Today that means the binding is DISPOSED and, when the
 // node comes back, a fresh one is created — and every new binding pays a `syncCanvasSize`, whose
 // `clientWidth`/`clientHeight` read is a FORCED LAYOUT. A burst of them (playing a card re-keys a
-// whole hand) is a measurable main-thread spike on phones.
+// whole hand) is a main-thread spike.
 //
 // Dormancy is the cheap middle state: the host says "this shader node is off for now, but keep it",
 // and the runtime parks the binding instead of tearing it down. A wake is then free — no program

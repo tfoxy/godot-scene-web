@@ -121,11 +121,11 @@ interface CaptureResult {
 }
 
 /**
- * The WebGPU readback seam (WP-6/WP-7).
+ * The WebGPU readback seam.
  *
  * `captureNodePixels(node)` is an offscreen rgba8unorm re-render of the frozen frame plus
  * `copyTextureToBuffer` + `mapAsync`. It has to exist because a WebGPU canvas can never be read
- * through `drawImage`/`toDataURL` (measured: pathological on Android Chrome, blank on SwiftShader)
+ * through `drawImage`/`toDataURL` (pathologically slow on Android Chrome, blank on SwiftShader)
  * — the S7 "never blit from a WebGPU canvas" law.
  *
  * It returns BARE BYTES, tightly packed top-down premultiplied RGBA at the canvas BACKING-STORE
@@ -784,8 +784,8 @@ async function mountFixture(
 /**
  * Whether this browser can give us a real WebGPU DEVICE — the gate side B needs.
  *
- * Deliberately goes all the way to `requestDevice`, not just `requestAdapter`. Measured on this
- * box: an adapter can be handed out where the device request then fails ("A valid external Instance
+ * Deliberately goes all the way to `requestDevice`, not just `requestAdapter`. An adapter can be
+ * handed out where the device request then fails ("A valid external Instance
  * reference no longer exists"), and an adapter-only gate would let the suite run and then fail every
  * fixture with a fallback error rather than skipping honestly. Two other environment facts this
  * interacts with, both measured:
@@ -853,8 +853,8 @@ export interface WgslValidationResult {
  * instance, which is a whole-program dataflow property).
  *
  * Its own device, acquired straight from `navigator.gpu` rather than through the html package's
- * `acquireWebgpuDevice()`: that helper DECLINES software adapters by policy, and whether this box's
- * adapter is software has nothing to do with whether the WGSL is well-formed.
+ * `acquireWebgpuDevice()`: that helper DECLINES software adapters by policy, and whether this
+ * machine's adapter is software has nothing to do with whether the WGSL is well-formed.
  *
  * `getCompilationInfo()` is the reporting path; the error scope around `createShaderModule` is a
  * belt-and-braces catch for a validation error that never surfaces as a compilation message.

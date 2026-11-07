@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// wss in the pinned Chromium (protocol/carrier-design.md D12, CAR4): the browser proof beside the
+// wss in the pinned Chromium: the browser proof beside the
 // Node legs of self-test-wss.ts. A throwaway test CA and leaf (scripts/lib/test-pki.ts) serve
 // rs_live_host's `ws` carrier as ws+wss on one port; the repo-private pinned Chromium, headless,
 // trusts that leaf only through --ignore-certificate-errors-spki-list=<its SPKI hash>. The page is

@@ -1,5 +1,5 @@
-; Gate 8 late-arm pre-arm resources fixture (LATE-RES, ../../protocol/gate8-design.md "What gate 8
-; does not prove" -> fidelity gap #5): 640x360, a capture armed LATE at fixture frame 12, then a
+; Gate 8 late-arm pre-arm resources fixture (LATE-RES,
+; -> fidelity gap #5): 640x360, a capture armed LATE at fixture frame 12, then a
 ; post-arm draw referencing (a) a pre-arm texture, (b) a pre-arm ParticleProcessMaterial, and (c) a
 ; pre-arm item. See README.md.
 

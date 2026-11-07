@@ -1,0 +1,145 @@
+# AGENTS.md
+
+## Purpose
+
+`godot-scene-web` is a generic Godot scene-to-web toolkit. It parses Godot text resources, computes a documented Control layout subset, renders DOM/CSS, exposes Vue components, and validates browser geometry against live Godot inspection.
+
+## Godot References
+
+Prefer local, version-matched Godot references over internet documentation:
+
+- Use `../godot-4.5.1-stable` for Godot 4.5.1 engine source and implementation behavior.
+- Use `../godot-docs-4.5` for Godot 4.5 documentation.
+- Use internet documentation only when local source/docs are insufficient or when checking behavior outside Godot 4.5.
+
+## Architecture Rules
+
+- Keep the parser Unix-small: `.tscn` / `.tres` text in, Godot-like AST out.
+- Do not add CouchCoop, spirectl, Slay the Spire 2, catalog, runtime-state, browser-envelope, or product-specific DTO concepts to parser/core packages.
+- Preserve Godot property names in parser output: `layout_mode`, `anchors_preset`, `offset_left`, `horizontal_alignment`, etc.
+- Put interpretation in consumers:
+  - `layout` interprets Godot Control layout.
+  - `effects` owns portable simulation, instance packing, shader compilation and numeric easing.
+  - `canvas-effects` executes GPU effects in supplied contexts/devices; it depends on neither renderer.
+  - `html` turns layout boxes into DOM/CSS and owns DOM effect binding through `html/runtime`.
+  - `canvas` turns a Godot CanvasItem draw list into GPU draws, including a glyph path over `hb-gpu`. HTML and canvas are independent tracks with shared effects.
+  - `hb-gpu` renders HarfBuzz Slug glyph outlines in a borrowed GL context. It creates no context and depends on no other package — the edge runs `canvas` -> `hb-gpu`, never back.
+  - `vue` exposes Vue components over the HTML model.
+  - `test-harness` compares live Godot facts with browser DOM facts.
+- JSON from live Godot inspection is validation evidence, not a parser input contract.
+- Generated artifacts, screenshots, browser dumps, Godot temporary project files, and build outputs must stay ignored.
+- A build output stays ignored; a vendored third-party binary is committed — digest-pinned, with its license text and provenance beside it (`packages/hb-gpu/vendor/`).
+
+## Control Feature Coverage
+
+Some Godot properties are deliberately not modeled in the HTML/layout output. Treat these as intentional, not gaps to "fix" without a parity need:
+
+- `[editable path="..."]` is parsed but not enforced. Instance-scene child overrides are applied permissively (any override node under a mounted instance is merged), which is what consuming scenes rely on; enforcing editability would only restrict.
+- `mouse_filter` maps only `2` (IGNORE) to `pointer-events: none`. Values `0` (STOP) and `1` (PASS) are interaction-only and not visually meaningful in a static DOM render.
+- `fit_content` and `scroll_active` (both `RichTextLabel`) are deferred: faithful support needs text measurement that the layout package does not yet have (only `TextureRect` has content-driven sizing).
+- `layout_mode` (0–3) is parsed but not interpreted; container-managed vs free positioning is already derived from the parent container type.
+
+`canvas`'s glyph path shapes through hb-gpu's own wasm (`fillRun`), so a page needs ONE HarfBuzz — do not reach for npm `harfbuzzjs` alongside it, which is a second build holding the same faces in a second heap. It wants `pixelsPerEm × devicePixelRatio >= 16`: below that HarfBuzz's coverage shader is measurably blurrier than the DOM text path it would replace (`docs/text-rendering.md`), so small text at DPR 1 is a reason to keep using `html`, not a bug to file.
+
+Modeled behaviors worth noting: `bbcode_enabled` gates BBCode parsing for `RichTextLabel` (text renders literally unless the flag is set, matching Godot's default of `false`); the node header `index` attribute reorders siblings (append-then-`move_child`), affecting container flow and draw order; `anchors_preset` is expanded to explicit anchors when the scene did not serialize them.
+
+## Tooling
+
+Use mise-managed tools:
+
+```bash
+mise exec -- pnpm test
+mise exec -- pnpm build
+mise exec -- pnpm test:parity
+mise exec -- godot --version
+```
+
+Do not run package managers outside the repo root unless a package-specific command requires it.
+
+**TypeScript 7.** `tsc` (and therefore `pnpm typecheck`) is TypeScript 7.1 beta, the Go compiler. It has no
+in-process compiler API, so `import ts from "typescript"` does not work: code that needs to parse TypeScript uses
+`typescript/sync` (a tsgo child process) and `typescript/ast` (node guards, `SyntaxKind`), as
+`packages/core/test/package-boundaries.test.ts` does. tsdown's `.d.ts` emit runs on TS 7.1 too: rolldown-plugin-dts
+0.29 picks its `tsgo` generator by itself when `typescript` is 7.1, and reads compiler options from each package's
+`tsconfig.json` only (not from `tsdown.config.ts`). tsdown 0.23 still asks for ^0.28, so a `pnpm-workspace.yaml`
+`overrides` entry pins the beta; drop it once tsdown depends on a stable 0.29. TS 6 remains only as
+`@typescript/typescript6` (bin `tsc6`) for `pnpm typecheck:ts6`: downstream consumers typecheck our source with TS 6,
+so fixes must pass both. Run `pnpm typecheck:ts6` before landing a type-level change (the publish workflow runs it;
+`pnpm check` does not). Editors need the TypeScript Native Preview / TS 7 extension; the built-in tsserver cannot
+load 7.x.
+
+## Commits
+
+Full rules, and the release runbook, in [docs/commit-and-release.md](docs/commit-and-release.md).
+
+- **Commit your finished work** — don't leave it uncommitted or ask whether to. Never `git push`, and
+  never create a tag: both are the maintainer's call.
+- On `main`, `scripts/githooks/commit-msg` enforces the format. **Feature branches are unchecked**;
+  `main` gets one squash commit per change.
+
+  ```
+  type(scope)!: imperative subject, <=72 chars, no trailing period
+
+  Body: what changed and why, wrapped at <=100. Optional.
+
+  Changelog: one sentence an integrator would read — feat/fix/perf only, or `none`
+  ```
+
+- Types: `feat fix perf refactor docs test build ci chore`. Only the first three need a `Changelog:`
+  trailer, and internal work is almost always one of the other six. Retiring a flag or an experiment
+  is `refactor`, not `cleanup`. Package names make good scopes. Every package in `packages/` is
+  published on one tag, so a break needs `!` and a `BREAKING CHANGE:` footer.
+
+## Validation Expectations
+
+- Parser changes need parser golden tests that prove raw Godot values are preserved.
+- Layout changes need layout tests with rectangle-only fixtures where possible.
+- DOM/Vue changes need stable `data-godot-*` assertions.
+- Parity changes should preserve `artifacts/parity/<fixture>/godot-live-tree.json`, `browser-dom-tree.json`, and `comparison.json` for review, but those files must not be committed.
+- Rendering changes need a consumer check: golden tests prove a value survived the parser; they do not prove the thing looks right. Run the change in a page that renders a real scene (the playground under `apps/`, or a downstream consumer).
+
+## Consuming from source
+
+Every package export and subpath has a `development` condition that points to its TypeScript source. Source
+consumers should resolve that condition, rather than loading locally stale `dist/`; the HTML and canvas
+export-surface tests pin the public runtime and type-only names because consumers may mirror them in ambient
+declarations. Node's native TypeScript support cannot resolve this repository's extensionless source imports, so
+Node probes need a TypeScript-aware loader (such as `tsx`) and a resolver hook that maps package specifiers through
+the `development` condition.
+
+Downstream consumers (for example the Slay the Spire 2 couch co-op mod) alias these packages straight at
+`packages/*/src`, so a change here is what they run. `perf-report/1`
+([docs/perf-report-contract.md](docs/perf-report-contract.md)) and `packages/core`'s scene-state shape are
+shared contracts: change them deliberately, never as a side effect.
+
+Run `scripts/install-agent-config.sh` after cloning and in every new worktree. It links the agent config in
+for the supported harnesses and registers the PreToolUse guard `scripts/claude-guard-bash.sh` (self-tested by
+`scripts/test-claude-guard.sh`), which blocks nested `xvfb-run` and warns on a `git push`, a `tsx` call missing
+`--conditions=development` (that one silently tests `dist/` instead of your edit), and a package manager run
+from outside the repo root.
+
+## Worktrees
+
+Create linked worktrees with `scripts/create-worktree.sh <name>`. They live under the ignored `.worktrees/`
+directory, where shared links keep the sibling checkouts (`../godot-4.5.1-stable`, `../godot-docs-4.5`, ...)
+valid. `scripts/worktree-admin.py inventory` shows the registered checkouts; `migrate` and `prune` preview by
+default and require `--apply`.
+
+## Public and private material
+
+This repository is public. Internal R&D lives in the private companion `tfoxy/godot-scene-web-internal`, checked out at
+`private/` (gitignored; `scripts/install-agent-config.sh` links every worktree's `private` to the main checkout's).
+Maintainers with access: `git clone git@github.com:tfoxy/godot-scene-web-internal.git private`.
+
+- **Public:** code, tests, fixtures, wire and file-format specs, user, integration and contributor docs, and
+  benchmarks with instructions to run them.
+- **Private** (at `private/<original path>`): research reports and results, experiment write-ups, performance
+  investigations and ledgers, handoffs, plans and roadmaps, design explorations, agent definitions and skills that
+  encode project expertise, device and rig specifics.
+- Source comments state the contract and the reason, not the measurement log: no device numbers, round or gate tags,
+  or citations of private documents.
+- Public commits, PR bodies, release notes and CI logs never quote or cite `private/` content.
+- `scripts/check-public-tree.py` enforces a markdown allowlist and a denylist (`pnpm check`/validate, the pre-push
+  hook, CI). A new public `.md` file must be added to `scripts/public-tree.conf`.
+
+@private/AGENTS.md

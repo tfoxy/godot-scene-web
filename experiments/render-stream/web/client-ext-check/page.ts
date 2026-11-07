@@ -1,6 +1,6 @@
 // TAG2's live check page (scripts/client-ext-check.ts): mounts @godot-scene-web/render-stream-client
 // with one of the test extensions below -- each makes, by tag, the change fixtures/tag-scene's
-// variant makes in the game (client-extensions-design.md §6) -- counts what the transport carried,
+// variant makes in the game -- counts what the transport carried,
 // and reads the drawn canvas back. The package is all it loads.
 
 import {

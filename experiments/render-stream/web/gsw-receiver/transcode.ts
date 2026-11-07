@@ -1,4 +1,4 @@
-// G8kb (texture-delivery-design.md Q3, Q6 "GSW", D14): a KTX2 (`uastc`) payload's arrival in the
+// a KTX2 (`uastc`) payload's arrival in the
 // GSW receiver, shared by file mode (main.ts) and live mode (live.ts). In the payload's fetch
 // completion, between frames (G7o2's pattern, so the step transaction never transcodes):
 //

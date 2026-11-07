@@ -1,4 +1,4 @@
-// Gate 7 live groups (G7l; gate7-design.md "G7l", Q2, Q3, Q8, Q9): the live legs of gates 1, 2,
+// Gate 7 live groups: the live legs of gates 1, 2,
 // 5 (g5f) and 5.5 (g55f) delivered to a browser receiver over render-stream/7; G7g adds gate 6's
 // g6l (and its presentation-check, lib/gate7-g6-checks.ts).
 //

@@ -57,6 +57,21 @@ expect deny 'xvfb-run -a pnpm test:webgpu-composite'
 expect deny 'xvfb-run -a -s "-screen 0 2560x1440x24" pnpm bench:canvas-upload'
 expect deny '../sts2-couch-coop/scripts/run-gpu.sh pnpm test:canvas-pixel'
 
+echo "== must block: force-adding the private companion =="
+expect deny 'git add -f private'
+expect deny 'git add --force private/AGENTS.md'
+expect deny 'git add -fA ./private'
+expect deny 'git -C /tmp/x add -f -- private/docs'
+expect deny 'cd x && git add -f private/'
+expect deny "git add -f 'private/x y'"
+echo "== must allow: other adds =="
+expect allow 'git add private'
+expect allow 'git add -f privateer.md'
+expect allow 'git add -f docs/private/x'
+expect allow 'git -C private add -f .'
+expect allow 'git add -A'
+expect allow 'git commit -m "git add -f private"'
+
 echo "== must warn, not block =="
 expect warn 'tsx packages/perf-harness/src/cli.ts run S1'
 expect warn 'pnpm test' "$REPO/packages/canvas"

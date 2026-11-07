@@ -1,11 +1,11 @@
-// P3-SP (results/p3/p3-sp.md): every live connection's carried-hash set (rs_live.h, G2b2), held
+// every live connection's carried-hash set (rs_live.h), held
 // once for the whole host instead of once per connection.
 //
 // render-stream-2.md's resource rules make each set exact and lifelong: a connection carries a
 // hash at most once (resource-duplicate), and every hash at or under inline_max_bytes must have
 // been carried before a transaction names it (resource-missing). So nothing here may forget a hash
 // a connection still streams with, and nothing may report a hash carried that was not (G6s,
-// gate6-design.md: pruning to the base broke the first soak-inline run). What this changes is the
+// Pruning to the base broke the first soak-inline run). What this changes is the
 // cost of holding them, not what they hold:
 //   - one entry per distinct hash for the whole host, not one std::string node per connection:
 //     the hash's first 128 bits (an SHA-256 prefix; any other string goes to an exact side map)

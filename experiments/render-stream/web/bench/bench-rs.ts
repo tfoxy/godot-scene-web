@@ -1,4 +1,4 @@
-// Gate 7x Rust-arm bench page (G7x; protocol/gate7-design.md "G7x", Q14c). The `gsw-rs` and
+// Gate 7x Rust-arm bench page. The `gsw-rs` and
 // `gsw-rs-inline` arms of gate7-bench.ts: one recording replayed through `rs-gsw-wasm` (the
 // render-stream core and the canvas-items executor in ONE wasm module), one transaction per rAF,
 // exactly as web/bench/bench.ts replays it through the TypeScript decoder (`gsw-ts`).
@@ -35,7 +35,7 @@
 // every payload copy before staging (must be refused before use), `verify-in-frame` provides
 // through the in-frame path on a staging build.
 // Report-only: gpu_complete_ms, a fenceSync after the blit polled on later frames (no timer query
-// on the g31). Per repeat: T_p (rAF median), the wasm heap, the watchdog. shot-frames reads the
+// on phones). Per repeat: T_p (rAF median), the wasm heap, the watchdog. shot-frames reads the
 // RGB10_A2 target back (RGBA/UNSIGNED_BYTE) after the transaction of each listed host frame and
 // PUTs the raw bytes (`shot-<name>-f<frame>.rgba`, W×H×4, rows top-down) for the pace checks.
 

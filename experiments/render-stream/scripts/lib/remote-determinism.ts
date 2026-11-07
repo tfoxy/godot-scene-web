@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Run-to-run determinism of a gate's evidence (docs/remote-compute.md R1): given N run directories
+// Run-to-run determinism of a gate's evidence: given N run directories
 // of the same gate (a runner's --out, e.g. validate-increment's <out>/native-rust-gate0/run), it
 // reports, per shot PNG, whether every run's bytes are identical (sha256), and per dump JSON,
 // whether every run's value is equal under canonicalEqual (lib/gate1-checks.ts: keys sorted,

@@ -33,7 +33,7 @@
 // its material. `light()` is dropped: Godot runs it only per light, and an item-space renderer has
 // none.
 //
-// `vertex()` (P3-VX). Godot's canvas.glsl vertex stage (drivers/gles3/shaders/canvas.glsl:131-285),
+// `vertex()`. Godot's canvas.glsl vertex stage (drivers/gles3/shaders/canvas.glsl:131-285),
 // with the GLES3 compiler's renames (drivers/gles3/storage/material_storage.cpp:1150-1220):
 //
 //   vertex = <command-local position>; uv = <its UV>;
@@ -187,7 +187,7 @@ export interface TranspiledItemShader {
   time: boolean;
   blend: ItemShaderBlend;
   lightMode: ItemShaderLightMode;
-  /** P3-VX: the program needs its own vertex stage (a `vertex()`, or `skip_vertex_transform`):
+  /** The program needs its own vertex stage (a `vertex()`, or `skip_vertex_transform`):
    *  `vertexGlsl` is its module (see the file note). False: the renderer's plain vertex stage. */
   vertexStage: boolean;
   /** The vertex module, or null when `vertexStage` is false. Not part of the metadata a renderer

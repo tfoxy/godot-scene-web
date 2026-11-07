@@ -1677,7 +1677,7 @@ async function main(): Promise<void> {
       ptLateFaultProblems({ emitters: 0 }, [good()], late).length === 2,
       "ptLateFaultProblems: an adopted state fails it",
     );
-    // LATE-CMBT (results/p3/late-cmbt.md): ptLateCmbtProblems / ppmStats.
+    // LATE-CMBT: ptLateCmbtProblems / ppmStats.
     const lateShader = {
       amount: 14,
       seed: 1011,

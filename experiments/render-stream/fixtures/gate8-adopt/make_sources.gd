@@ -1,5 +1,5 @@
 extends SceneTree
-## Writes the adoption fixture's two imported textures (G8r, gate8-design.md D6) and their import
+## Writes the adoption fixture's two imported textures and their import
 ## settings into res://tex/ (gitignored), for the editor's `--import` to turn into
 ## CompressedTexture2D resources (release templates cannot import). Run by run-gate8.sh's g8a import
 ## leg with the pinned editor:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the render-stream client's core (MIR-1, mirror-client-design.md "The wasm"): the existing
+# Build the render-stream client's core: the existing
 # rs-gsw-wasm crate (experiments/render-stream/web/gsw-rs), `cargo --release --target
 # wasm32-unknown-unknown` offline and `wasm-bindgen =0.2.129 --target web`, into
 # $GSW_RENDER_STREAM_CLIENT_OUT (or the first argument):

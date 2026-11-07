@@ -411,7 +411,7 @@ async function evictionProbe(count: number): Promise<EvictionProbeResult> {
       // HELD ON PURPOSE. These are exactly the stale handles a live app accumulates: a glyph cache
       // that keeps slots between frames while the ring wraps underneath it. The perf harness never
       // has any, because it pre-sizes the atlas to the entire working set — which is the thing a
-      // live app cannot do, and the reason this failure survived a whole round undetected.
+      // live app cannot do, and the reason nothing else exercises this failure.
       heldSlots.push(slot);
     }
 
@@ -528,8 +528,8 @@ export interface SpreadProbeResult {
      * one context, one GPU, one glyph, one sub-pixel phase — so the only difference between
      * `frames` and these is the four extra `_hb_gpu_slug_single` evaluations inside each ring tap.
      * A comparison across two vitest runs, or across two perf runs at different frame counts, could
-     * not say that: the runs would differ in translation phase as well, which is the trap the
-     * screenshot comparison in `docs/perf-harness.md` had to be reported as qualitative for.
+     * not say that: the runs would differ in translation phase as well, which is what makes a
+     * cross-run screenshot comparison only qualitative.
      *
      * It is also how "the branch fires here" becomes an assertion instead of an assumption. These
      * frames MUST differ from `frames` at this ppem and MUST be byte-identical at ppem 96, which is
@@ -935,11 +935,10 @@ export interface ContrastProbeResult {
  * The gamma renderer is third and separate because gamma is polarity-BLIND where stem darkening is
  * not: its two colours must stay identical to each other while both move away from `plain`.
  *
- * AND A DILATED PAIR AT THE LOW SIZE, WHICH IS THE FRAME THIS PROBE USED TO BE MISSING. Every
- * capture here was drawn at spread 0, so nothing in this file could see that the correction was
- * also running on an OUTLINE's rim — where Godot applies none, and where the fattening exponent
- * reads as a halo rather than as a crisper stem (`docs/text-rendering.md`, and the Godot-graded
- * table on `GODOT_RAMP_BUDGET_PX`). `${label}OutlineLow{White,Black}` is the same twenty-five
+ * AND A DILATED PAIR AT THE LOW SIZE. Without it every capture here is drawn at spread 0, so
+ * nothing in this file could see the correction running on an OUTLINE's rim — where Godot applies
+ * none, and where the fattening exponent reads as a halo rather than as a crisper stem (see
+ * `GODOT_RAMP_BUDGET_PX`). `${label}OutlineLow{White,Black}` is the same twenty-five
  * glyphs at the same pens through the same renderers, dilated by {@link CONTRAST_OUTLINE_PX}: the
  * one variable between it and `${label}Low{White,Black}` is that the dilation ran.
  */
@@ -1163,7 +1162,7 @@ export interface GodotOutlineProbeResult {
  *                   the correction's THINNING direction.
  *   `defaultBlack`  the shipping default, black. Exponent 0.707: the FATTENING direction, and the
  *                   one that matters. A dark outline is what the consumer draws, and lifting rim
- *                   coverage 0.30 -> 0.43 on a dilated frame is the halo this round is chasing.
+ *                   coverage on a dilated frame is the halo this probe guards against.
  *
  * The alpha plane is the corrected coverage in all three — the fragment writes `u_color.a * cov`
  * and every colour here is opaque — so a black column is readable even though it composites to

@@ -2,9 +2,8 @@
 //
 // PROGRAM WARMING. `compileProgramAsync` yields to the driver before it asks a blocking question, which on a
 // device that exposes `KHR_parallel_shader_compile` makes a cold link nearly free. Without the extension —
-// and real Android hardware does not have it; a Moto G86 answers null — `ready()` reports true immediately and
-// `finish()` blocks on `LINK_STATUS` for as long as the driver needs. A consumer measured one such link at
-// 90.3 ms of main thread, landing mid-combat because that frame was the first to want the shader.
+// often absent on Android hardware — `ready()` reports true immediately and `finish()` blocks on `LINK_STATUS`
+// for as long as the driver needs, on whatever frame first wants the shader.
 //
 // `warmPrograms` cannot make that link cheaper. It lets a consumer choose WHEN to pay it, which is a different
 // claim and the one these tests pin: the cache the lazy create path consults is populated ahead of time, the
@@ -35,7 +34,8 @@ function fakeGl(): unknown {
     getProgramParameter: () => true,
     getUniformLocation: () => ({}),
     getActiveUniform: () => null,
-    // Null, like the phone: `ready()` then answers true immediately and `finish()` is the blocking query.
+    // Null, like a device without the extension: `ready()` then answers true immediately and `finish()` is the
+    // blocking query.
     getExtension: () => null,
     getParameter: () => "",
     createShader: () => ({}),

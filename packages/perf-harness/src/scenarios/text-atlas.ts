@@ -168,7 +168,7 @@ export function phaseIndexAt(fx: number, fy: number, grid: number): number {
  * Centre because the bucket covers `[i/grid, (i+1)/grid)` and the worst case is what matters: a
  * bucket baked at its left edge is up to `1/grid` px wrong, one baked at its centre at most
  * `0.5/grid`. At the default 2x2 that is the difference between a quarter-pixel and a half-pixel
- * of positional error, and half a pixel at 12 px is visible as the crawl this round exists to kill.
+ * of positional error, and half a pixel at 12 px is visible as crawl.
  */
 export function phaseOffsetAt(
   index: number,
@@ -257,11 +257,10 @@ export function cellGeometryFor(bounds: Bounds, slack = 1): CellGeometry {
  * differ by 3.5x, so `atlasPages` reads as "how much atlas did this workload need" rather than as
  * an artefact of a rounding rule that moved.
  *
- * `largestCellSide` IS LOAD-BEARING AND WAS NOT ALWAYS HERE. Total area alone can choose a page that
- * no single cell fits in, because area says nothing about the longest side: measured on the fidelity
- * probe at fontSize 16, `hb-run`'s baked Latin pangram is one 265x65 cell whose area-derived page
- * came out 256, and `packShelves` refused the whole bake. The refusal was correct and the page size
- * was not — 512 was available under the same ceiling. This is a `hb-run` failure mode by
+ * `largestCellSide` IS LOAD-BEARING. Total area alone can choose a page that no single cell fits in,
+ * because area says nothing about the longest side: a baked Latin pangram at fontSize 16 is one
+ * 265x65 cell whose area-derived page would be 256, and `packShelves` would refuse the whole bake
+ * although 512 is available under the same ceiling. This is a `hb-run` failure mode by
  * construction (it bakes a WHOLE RUN into one cell, so its cells grow with the text) and it gets
  * worse with the device pixel ratio, which is exactly the direction a phone run moves. Cells are
  * sorted by height for shelving, so nothing else in the packer would have caught it.

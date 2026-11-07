@@ -1,5 +1,5 @@
 extends Node
-## Built-in `input` track receiver (TRK6, protocol/tracks-design.md Q6 "Built-in injection").
+## Built-in `input` track receiver.
 ##
 ## GENERATED INTO ONE SCRIPT by cmake/embed_gsw_input.cmake: this file is the head, and the
 ## gsw-input/1 reference injector (packages/input/godot/addons/gsw_input/*.gd) follows as inner

@@ -1,7 +1,6 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// hc1-checks.ts -- judges run-hc1.sh's legs (HC1, results/p3/hc1.md; protocol/host-cost-design.md
-// D5, D6; HC2's re-record legs, results/p3/hc2.md, D1; HC3's lazy mesh surface legs, hc3.md, D2;
-// HC4a's shadow oracle and sabotages, hc4a.md, D1; HC5's reorder sabotage, hc5.md, D4).
+// hc1-checks.ts -- judges run-hc1.sh's legs (quiet-path legs, re-record legs, lazy mesh surface
+// legs, the shadow oracle and its sabotages, the reorder sabotage).
 // Writes <out>/result.json ({schema, checks:[{id, passed, detail}]}); exit 1 on a failure.
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -206,7 +205,7 @@ lateJoin(
   );
 }
 
-// HC2 (host-cost-design.md D1): the /11 re-record legs. Each patch transaction's items, with
+// HC2: the /11 re-record legs. Each patch transaction's items, with
 // whether they carry commands and their content_version against the last one published.
 interface RrTx {
   frame: number;
@@ -346,7 +345,7 @@ for (const [id, leg, fn] of [
   );
 }
 
-// HC3 (host-cost-design.md D2): lazy mesh surfaces. counters.json mesh_hashes (hooks.cpp) and
+// HC3: lazy mesh surfaces. counters.json mesh_hashes (hooks.cpp) and
 // result.json stream.gate8.mesh_dynamic (entry.cpp, /11 streams).
 const meshHashes = (leg: string) =>
   counters(leg)?.mesh_hashes as
@@ -490,7 +489,7 @@ if (!rrSkipped("sabotage-dyn-hash-unread")) {
   );
 }
 
-// HC4a (results/p3/hc4a.md): the shadow oracle agrees with the persistent tables on honest legs,
+// HC4a: the shadow oracle agrees with the persistent tables on honest legs,
 // and the two sabotages are caught by the oracle and by the gates' own checks.
 const shadowOf = (dir: string) =>
   json(join(dir, "evidence", "counters.json"))?.hc_shadow;

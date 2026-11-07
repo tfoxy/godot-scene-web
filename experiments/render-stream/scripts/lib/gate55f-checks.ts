@@ -1,4 +1,4 @@
-// Gate 5.5 group g55f (protocol/gate5_5-design.md "G55f"): live ShaderMaterial parameters and
+// Gate 5.5 group g55f: live ShaderMaterial parameters and
 // code through a stall. Live legs on fixtures/gate55-shader with gate 1's live timeline (S=300,
 // N=60, LAST_STEP=9, quit=851 -- G55F_* below), reusing gate 2's live-resource machinery
 // (G2cHost, pinsReport, the HTTP/pin/retire checks) generalized to GRP1 shader-code hashes, and
@@ -9,10 +9,9 @@
 //
 // PH (the fixture's every-frame `phase` shader parameter) is the one resource busy enough to
 // stress pins/retirement/coalescing continuously; every other shader/material is static between
-// its own step (gate5_5-design.md Q6c). A per-step reference image is only exactly right for a
+// its own step. A per-step reference image is only exactly right for a
 // shot taken at the SAME absolute frame as the reference's, and a live shot can land a frame or
-// two off its nominal settle frame from ordinary round-trip jitter (memory rs-g5f-live-mesh-facts
-// fact 2: even a healthy, unstalled leg's shot can land off-frame). A checkpoint whose only
+// two off its nominal settle frame from ordinary round-trip jitter (even a healthy, unstalled leg's shot can land off-frame). A checkpoint whose only
 // mismatching region is PH is therefore judged `benign` when the wire's own resolved state at the
 // shot's actual frame equals the host's full file recording at that frame
 // (wireStateEqualsFullAtFrame) -- the same newest-state proof `shader-fetches-latest-only` uses
@@ -22,11 +21,9 @@
 //
 // The sabotage is not confined to the stall, though: from its arm frame on, the host rewrites
 // EVERY coalesced send to carry the first missed target (`sent.stale_from` in its live log), and
-// under CPU load the 60 Hz credit loop phase-locks to every other frame (memory
-// rs-g55d-rs5-switch-facts), so ordinary sends outside the stall carry a one- or two-frame-old
+// under CPU load the 60 Hz credit loop phase-locks to every other frame, so ordinary sends outside the stall carry a one- or two-frame-old
 // snapshot too. A settle shot landing on one of those differs from reference-live in PH because
-// the wire deliberately holds an older PH, not because the receiver is wrong (the 2026-10-11 G5f
-// flake, same checker shape). On the sabotage leg only, receiver-vs-reference therefore judges
+// the wire deliberately holds an older PH, not because the receiver is wrong. On the sabotage leg only, receiver-vs-reference therefore judges
 // such a checkpoint against the frame the wire says it carries: `stale_exact` (PH-only, and the
 // tap's state at the shot's frame equals the host's full recording at `stale_from` exactly).
 //
@@ -99,10 +96,9 @@ import type { ResolvedTransaction } from "./render-stream-2";
 import { statesEqual } from "./render-stream-2";
 
 /** The fixture also serves TEX16/TEX16B over the same resource mechanism (Q6a's `PA` region, and
- * the engine's default-theme hue strip, memory rs-g2a-texture-census-facts): pins, retirement and
+ * the engine's default-theme hue strip): pins, retirement and
  * GET-advertising are keyed by hash regardless of resource kind, so the "servable" and
- * "advertised" sets g55f checks against must union both kinds, not shader code alone (memory
- * rs-g5f-live-mesh-facts fact 1, the same trap generalized from GRM1 to GRP1). */
+ * "advertised" sets g55f checks against must union both kinds, not shader code alone, the same trap generalized from GRM1 to GRP1). */
 function okResourceHashes(t: ResolvedTransaction | undefined): Set<string> {
   return new Set([...okImageHashes(t), ...okShaderHashes(t)]);
 }
@@ -260,8 +256,7 @@ export async function loadG55fLeg(
   const host = await loadHost(join(legDir, "host"));
   const receiverDir = join(legDir, "receiver");
   // loadHost (gate2c-checks.ts) loads the host's own evidence only; the receiver's copy of each
-  // connection's stream (received.rs2, received-<n>.rs2) is this leg's, not the host's (memory
-  // rs-g5f-live-mesh-facts fact 4).
+  // connection's stream (received.rs2, received-<n>.rs2) is this leg's, not the host's.
   for (const c of host.connections) {
     const name = receivedFileName(receiverDir, c.n);
     const r = await loadResolved(join(receiverDir, name));
@@ -977,10 +972,10 @@ export function checkShaderFetchesLatestOnly(evals: Evals): G2bCheck {
 /** The regions expected.json's `steps[].fresh` says change at any step applied during the stall
  * (steps_applied_during; the fixture's own per-step region table, make_expected.py's prediction,
  * never a diff of rendered shots): PH is in every step's `fresh` set (it changes every frame)
- * union the other regions the swallowed steps themselves touch (gate5_5-design.md Q6c -- step 2's
+ * union the other regions the swallowed steps themselves touch (step 2's
  * IN update and step 3's TI/RM/code change, both inside the 1:2000 stall, make those regions
- * stale too, not only PH). Generalizes gate5f-checks.ts's `regionsChangedDuringStall` (memory
- * rs-g5f-live-mesh-facts fact 3) from Gate5MeshStep to Gate55ShaderStep -- same shape
+ * stale too, not only PH). Generalizes gate5f-checks.ts's `regionsChangedDuringStall`
+ * from Gate5MeshStep to Gate55ShaderStep -- same shape
  * ({step, fresh}), same rule, a different fixture's table. */
 function regionsChangedDuringStall(
   steps: readonly Pick<Gate55ShaderStep, "step" | "fresh">[],
@@ -1061,7 +1056,7 @@ export function checkReceiverVsReferenceShader(evals: Evals): G2bCheck {
       problems.push(`${leg}: not evaluated`);
       continue;
     }
-    // Windows wholly inside a stall have no shot at all (expected, gate1-design.md G1d); the
+    // Windows wholly inside a stall have no shot at all (expected, G1d); the
     // sabotage leg's own post-stall shot is deliberately non-benign and is the "stale-coalesce"
     // check's job, not this one's.
     const expectedMissed = new Set(ev.stall?.expected_missed_steps ?? []);

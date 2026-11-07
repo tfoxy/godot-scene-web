@@ -1,6 +1,6 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Gate 8 groups g8kp's and g8ku's browser legs (G8kp, protocol/texture-delivery-design.md D3, Q3,
-// Q6 "GSW"; G8ku, Q6 "Web export"), called by run-gate8.sh after the native legs:
+// Gate 8 groups g8kp's and g8ku's browser legs (G8kp;
+// G8ku, Q6 "Web export"), called by run-gate8.sh after the native legs:
 //
 //   gate8-delivery-tool.ts gsw-legs --source <gate 8 run> [--mask s3tc,bptc,rgtc]
 //       [--rs-build <artifacts/render-stream/rs-core/<sha>>]

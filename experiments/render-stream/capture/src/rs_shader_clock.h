@@ -52,7 +52,7 @@ struct ShaderClock {
   bool tree_delta_fault = false;  // GRC_SHADER_CLOCK_FAULT=tree-delta: ignore the draw hook
   std::uint64_t draws = 0;    // hooked draws seen (counted even under the fault)
   // LS1: engine draws since the first tick that the draw hook did not see, as of the latest tick
-  // (the most it ever read): a standby table without draw shows here (live-swap-design.md D4).
+  // (the most it ever read): a standby table without draw shows here.
   std::int64_t later_missed = 0;
 };
 

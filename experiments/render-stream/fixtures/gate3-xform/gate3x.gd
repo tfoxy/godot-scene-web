@@ -1,5 +1,5 @@
 extends Node
-## Gate 3 rotated/scaled clipping fixture (../../protocol/gate3-design.md "Q6d", increment G3c).
+## Gate 3 rotated/scaled clipping fixture (increment G3c).
 ##
 ## The root is a plain `Node`; every `CanvasItem` is created in `_ready()`, after `GrcLoader`
 ## armed the capture extension in its own `_enter_tree()` (gate 0 route (a)), so the mirror sees

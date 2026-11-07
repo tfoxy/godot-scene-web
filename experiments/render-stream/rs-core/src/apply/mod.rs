@@ -70,14 +70,14 @@ pub struct Viewport {
     pub format: Format,
 }
 
-/// Receiver sabotages that live in the applier (gate7-design.md Q5 "Sabotages", G7a): each one exists
+/// Receiver sabotages that live in the applier: each one exists
 /// only to fail a check, and each is defined on the applied state so the native receiver's
 /// predicted (shot, region) sets apply unchanged.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ApplySabotage {
     /// Native `ignore-clip`: every item draws unclipped.
     pub ignore_clip: bool,
-    /// Native `clip-before-clear` (gate3-design.md G3b): an item's clip is set only when the wire
+    /// Native `clip-before-clear`: an item's clip is set only when the wire
     /// value changes, and a content change of the item resets it to unclipped.
     pub clip_before_clear: bool,
     /// Native `reupload`: every named image is uploaded again at every transaction.
@@ -337,7 +337,7 @@ type MaterialKey = (EntryStatus, Option<Id>);
 /// A custom shader's hash decides its program (blend, light mode, binding), so code changes walk.
 type ShaderKey = (EntryStatus, Option<crate::state::Builtin>, Option<Hash>);
 
-/// The effective material of an item as the walk sees it (gate5_5-design.md D7, G7s).
+/// The effective material of an item as the walk sees it.
 #[derive(Clone, Copy, Debug)]
 struct MaterialEff {
     blend: Blend,
@@ -348,7 +348,7 @@ struct MaterialEff {
     /// P3-ST: that program reads the screen (`Some(mipmaps)`, mipmaps being GLES3's
     /// `uses_screen_texture_mipmaps`): the applier marks GLES3's copy points.
     screen: Option<bool>,
-    /// P3-ST (gate5_5-design.md "Refused materials"): the effective material reads the screen but
+    /// the effective material reads the screen but
     /// is not drawn with its code (refused on the wire or here): the item's own draws are dropped,
     /// since a screen reader drawn plain covers what it would have read.
     skip: bool,
@@ -647,7 +647,7 @@ pub struct Applier {
     /// This transaction's texture accounting.
     pub account: residency::TextureAccount,
     pub sabotage: ApplySabotage,
-    /// G8kp (texture-delivery-design.md D3): which payload of an ok image texture is fetched and
+    /// which payload of an ok image texture is fetched and
     /// uploaded; the default is `decoded` alone (the base hash, as before /9).
     pub delivery: crate::delivery::DeliveryPrefs,
     /// G8kp: the stream's wire version; `uploads[]` name D3's encoding from /9 only.
@@ -764,7 +764,7 @@ pub struct Applier {
     pt_mesh: IdMap<Option<Id>>,
     /// PM6b: [`particles::ParticleBuffers::membership`] at the last apply.
     pt_membership: u64,
-    /// TAG2 (client-extensions-design.md §3.2): the client's override table, the ids changed
+    /// the client's override table, the ids changed
     /// since it was last composed, and whether a change needs the walk (visibility).
     overrides: IdMap<overrides::Override>,
     ov_changed: Vec<Id>,
@@ -779,7 +779,7 @@ pub struct Applier {
     pick_order: overrides::PickOrder,
     /// TAG2: inside `apply` (the sabotage `override-fast-path-miss` acts there only).
     in_apply: bool,
-    /// FRZ-HOOK (frz-d.md §5): the frozen membership -- every item under a frozen root, mapped to
+    /// Frozen subtree: the frozen membership -- every item under a frozen root, mapped to
     /// that root, kept across applies so a held subtree survives its own removal until its root
     /// is unfrozen (the root names which held records an unfreeze releases: a held record whose
     /// state entry is gone has no parent chain left). `apply` tests `frozen.is_empty()` once.
@@ -1917,7 +1917,7 @@ impl Applier {
         // G7q: every transaction prepared since the last apply, merged (one: the caller's).
         let merged = self.merged.take();
         let delta = merged.as_ref().unwrap_or(delta);
-        // FRZ-HOOK (frz-d.md §5): one membership sync per apply. `frozen` (the held items) is
+        // Frozen subtree: one membership sync per apply. `frozen` (the held items) is
         // tested once below; only when it is non-empty do the upsert/removal paths look it up.
         self.sync_frozen(state);
         // A fresh applier (a coding resync's rebuild) holds no records: a member the state no
@@ -3321,8 +3321,8 @@ impl Applier {
         stack.truncate(from);
     }
 
-    /// The effective material's blend, and whether it is unshaded or light-only (gate5_5-design.md
-    /// D7; no lights reach the wire, so `normal` draws unlit and `light_only` draws nothing).
+    /// The effective material's blend, and whether it is unshaded or light-only (
+    /// no lights reach the wire, so `normal` draws unlit and `light_only` draws nothing).
     fn material_of(&mut self, state: &ResolvedState, material: Option<Id>) -> MaterialEff {
         let mut eff = self.material_unswapped(state, material);
         if self.sabotage.blend_swap {
@@ -4133,7 +4133,7 @@ mod pick_tree_tests;
 mod gap2_rx_tests;
 
 /// G8kp: one texture's upload: RGBA8 pixels, or a `block` variant's level 0 in a format the list
-/// carries (texture-delivery-design.md Q6 "GSW"). A block format the list cannot carry would have
+/// carries. A block format the list cannot carry would have
 /// been refused by D3 (no gpu family names it), so it never reaches here; if one does, the texture
 /// is left undefined rather than drawn from the wrong bytes.
 /// D6 (G8ku; G8kb in the browser applier): the resident payload `keep` holds for entry `t` instead

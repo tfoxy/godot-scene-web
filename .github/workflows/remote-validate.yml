@@ -1,5 +1,10 @@
-# Remote validation runs (docs/remote-compute.md). Dispatched only by scripts/remote-validate.sh, on
-# its throwaway remote-run/<worktree>-<sha> branch; nothing triggers it otherwise. No secrets.
+# Remote validation runs. Dispatched only by scripts/remote-validate.sh, on its throwaway
+# remote-run/<id>-<sha> branch; nothing triggers it otherwise. No secrets.
+#
+# The repository is public, so its runs are too: the title carries only the wrapper's opaque run
+# key, <id> is an opaque hash of the worktree path, and artifacts live one day. The job-*, det-* and
+# determinism artifacts only carry data between jobs and are deleted once the merge has run; the
+# small `summary` is what the wrapper downloads; run evidence is uploaded only for a failing run.
 name: remote-validate
 run-name: remote-validate ${{ inputs.run_key }}
 
@@ -10,7 +15,7 @@ on:
         description: Unique key; the wrapper finds this run by it
         required: true
       worktree:
-        description: Worktree name (concurrency group)
+        description: Opaque worktree id (concurrency group)
         required: true
       sha:
         description: Snapshot commit to validate
@@ -45,14 +50,14 @@ on:
         default: ""
       run_groups:
         description: >-
-          JSON {run id: [groups]} for the gate 7 runs of several groups (R3): one job per group, each
+          JSON {run id: [groups]} for the gate 7 runs of several groups: one job per group, each
           with RS_VALIDATE_GROUPS; the merge folds them into the run's one row
         required: false
         default: "{}"
       browser_renderer:
         description: >-
           gate 7 browser legs' CI-only software renderer (RS_BROWSER_PROVENANCE, lib/browser-renderer.ts):
-          lavapipe, ANGLE-Vulkan on the llvmpipe the native sources render on (the only one, R3)
+          lavapipe, ANGLE-Vulkan on the llvmpipe the native sources render on (the only one)
         required: false
         default: lavapipe
       leg_shards:
@@ -76,14 +81,14 @@ env:
   # the validate matrix's concurrent jobs (the account runs 20 at once, shared by every agent). A
   # full tier is about 700 job-minutes, 60% of it rs-setup (8-11 min a job), so at 10 slots it was
   # throughput-bound (floor ~72 min) whatever the order; 16 leaves 4 slots to other agents' smoke
-  # runs, and agents do not dispatch a full tier over another one (agents/rs-increment.md)
+  # runs, and agents do not dispatch a full tier over another one
   MAX_PARALLEL: "16"
   # build-capture.sh defaults to /snap/bin/cmake
   CMAKE: cmake
-  # R3 watchdog: minutes per validate-increment invocation, a per-job value in the plan job's matrix
+  # Watchdog: minutes per validate-increment invocation, a per-job value in the plan job's matrix
   # (matrix.watchdog, lib/remote-matrix.py): 2x the job's expected validate minutes, clamped to
-  # [35, 60] (35 was about 2x the longest gate 7 group when the watchdog was set; G78 raised the
-  # unsharded g7-8 web-rust job to 60, which the rule keeps). It must stay well under the job's
+  # [35, 60] (35 was about 2x the longest gate 7 group when the watchdog was set; the
+  # unsharded g7-8 web-rust job was later raised to 60, which the rule keeps). It must stay well under the job's
   # 120-min timeout, so a hang leaves evidence and a failing row.
 
 jobs:
@@ -105,11 +110,11 @@ jobs:
             experiments/render-stream/scripts/run-gate7.sh
             experiments/render-stream/scripts/run-gate8.sh
           sparse-checkout-cone-mode: false
-      # lib/remote-matrix.py (docs/remote-compute.md "Scheduling and leg shards"): one job per run,
-      # per gate 7 group (R3, <id>@<group>), per pure shard, per determinism repeat count; leg shards
-      # of native gate 8 and g7-8 (<label>-<k>of<n>, matrix.legs) when they shorten the simulated
-      # makespan; ordered longest first, so the long poles start in the first wave; the merge folds
-      # every job of a run id into its one row (shards = jobs per id).
+      # lib/remote-matrix.py: one job per run, per gate 7 group (<id>@<group>), per pure shard,
+      # per determinism repeat count; leg shards of native gate 8 and g7-8 (<label>-<k>of<n>,
+      # matrix.legs) when they shorten the simulated makespan; ordered longest first, so the long
+      # poles start in the first wave; the merge folds every job of a run id into its one row
+      # (shards = jobs per id).
       - id: expand
         env:
           RUNS: ${{ inputs.runs }}
@@ -121,7 +126,7 @@ jobs:
         run: |
           python3 experiments/render-stream/scripts/lib/remote-matrix.py --runs "$RUNS" --run-groups "$RUN_GROUPS" \
             --determinism "$DETERMINISM" --pure-shards "$PURE_SHARDS" --max-parallel "$MAX_PARALLEL" \
-            --leg-shards "${LEG_SHARDS:-auto}" --tier "$TIER" --github-output "$GITHUB_OUTPUT" --explain | tee -a "$GITHUB_STEP_SUMMARY"
+            --leg-shards "${LEG_SHARDS:-auto}" --tier "$TIER" --github-output "$GITHUB_OUTPUT" --explain
 
   validate:
     name: ${{ matrix.label }}
@@ -148,7 +153,7 @@ jobs:
 
       - uses: ./.github/actions/rs-setup
         with:
-          # pnpm-test's browser tests use Playwright's own install; gate 7 (R3) needs the pinned
+          # pnpm-test's browser tests use Playwright's own install; gate 7 needs the pinned
           # chromium-1223, sha-checked against browser-harness.ts's EXPECTED_CHROMIUM_SHA256, and
           # so does native gate 8, whose g8kp group replays its /9 recording in the GSW receiver
           chromium: ${{ matrix.id == 'pnpm-test' || startsWith(matrix.id, 'g7') || matrix.id == 'native-rust-gate8' }}
@@ -159,7 +164,7 @@ jobs:
           # A native gate needs the capture extension too, and so does every gate 7 run: its sources
           # (--make-sources) and live hosts are native gate runs.
           capture-build: ${{ matrix.id == 'pure' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
-          # native-* runs (R1): rendered legs on Xvfb + llvmpipe, the rs-core GDExtension, the
+          # native-* runs: rendered legs on Xvfb + llvmpipe, the rs-core GDExtension, the
           # release template, the editor (imports, receiver self-test) and strace
           swrast: ${{ startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
           rs-core-ext: ${{ startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
@@ -170,10 +175,10 @@ jobs:
           fonts: ${{ matrix.id == 'native-rust-gate4' || startsWith(matrix.id, 'g7-') }}
           # toolchain-smoke (remote-validate.sh --toolchain-smoke) builds with every pinned input;
           # gate 7 builds the web receiver (web-rust) or the gsw bundle (build-rs-core.sh), and so
-          # does native gate 8, whose g8ku group replays its /9 recording in the web export (G8ku)
+          # does native gate 8, whose g8ku group replays its /9 recording in the web export
           godot: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
           templates: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
-          # every gate 7 run: the web receiver (web-rust), and since G8kb the gsw bundle's KTX2
+          # every gate 7 run: the web receiver (web-rust), and the gsw bundle's KTX2
           # transcoder wasm (build-basis-transcoder.sh)
           emsdk: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'g7') || matrix.id == 'native-rust-gate8' }}
           rust-nightly: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'g7') || matrix.id == 'native-rust-gate8' }}
@@ -204,13 +209,13 @@ jobs:
           # a leg shard (lib/remote-matrix.py): the gate 8 groups this job runs (native --legs, g7-8
           # GATE7_G8_LEGS); empty for every other job
           RS_VALIDATE_LEGS: ${{ matrix.legs }}
-          # G78: the per-shard watchdog, set in the plan job's matrix (matrix.watchdog).
+          # the per-shard watchdog, set in the plan job's matrix (matrix.watchdog).
           WATCHDOG_MIN: ${{ matrix.watchdog }}
-          # native gates (R2): 4 vCPU run two legs at once. The timing groups inside the correctness
+          # native gates: 4 vCPU run two legs at once. The timing groups inside the correctness
           # gates (g1c-rate, g1d, g2c-pins, g5f, g55f) are wall-clock legs a shared VM would only make
           # noisy: they are skipped here (skipped-remote.txt) and stay local. Never set locally.
           RS_LEG_SHARDS: ${{ (startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7')) && '2' || '' }}
-          # gate 7 (R3): a file run (g7-gsw, g7-web-rust) skips every timing group too: the gsw half
+          # gate 7: a file run (g7-gsw, g7-web-rust) skips every timing group too: the gsw half
           # makes FULL native sources (run-gate7.sh --make-sources: gates 1, 2 and 5 carry g1c-rate,
           # g1d, g2c-pins, g5f), and source-run-valid@gsw excuses exactly those by tier-verdict.py
           # (gate7-gsw.ts remoteSkipExcused); the web half's sources are file legs only. A live
@@ -232,8 +237,8 @@ jobs:
           esac
           [ -n "$CHANGED_PATHS" ] && args+=(--paths "$CHANGED_PATHS")
           mkdir -p "$RS_QUIET_LOCK_DIR"
-          # vi OUT ARGS...: validate-increment under the watchdog (R3: a gsw g7-2 job hung past 90 min
-          # and was cancelled with no log, run 39815482313). 45 s before the deadline it snapshots
+          # vi OUT ARGS...: validate-increment under the watchdog (a gsw g7-2 job once hung past 90 min
+          # and was cancelled with no log). 45 s before the deadline it snapshots
           # the process tree and the quiet lock; on the deadline timeout kills the run's process
           # group, and the newest logs' tails go to $RUNNER_TEMP/watchdog (Trim artifact uploads it).
           # The run's row then fails (rc missing) instead of the job dying silent.
@@ -271,7 +276,7 @@ jobs:
             args[5]="$o" # --out's value
             vi "$o" "${args[@]}" || rc=1
             outs+=("$o/")
-            # R3: only a digest of each repeat travels (every shot's sha256, every masked dump's
+            # only a digest of each repeat travels (every shot's sha256, every masked dump's
             # canonical hash, the live-set keys, the provenance): a gate 7 run dir is GBs
             mkdir -p "$RUNNER_TEMP/det/$LABEL"
             # the web builds' records: a web pck's build_sha256 is compared by content (its export
@@ -327,20 +332,20 @@ jobs:
           # shows a leg-sharded run judged the same checks as the whole run
           [ -d "$RUNNER_TEMP/v/$ID/run" ] && python3 -I experiments/render-stream/scripts/lib/check-census.py \
             --job "$RUNNER_TEMP/v/$ID/run" --id "$ID" --label "$LABEL" --group "$GROUP" --legs "$LEGS" --out "$art/checks-$LABEL.json"
-          # R4: bench-instr's per-case Ir, rustc, valgrind, CPU model and binary sha (a few KB)
+          # bench-instr's per-case Ir, rustc, valgrind, CPU model and binary sha (a few KB)
           for o in "$RUNNER_TEMP"/v "$RUNNER_TEMP"/v[0-9]*; do
             [ -f "$o/$ID/run/bench-instr.json" ] && cp "$o/$ID/run/bench-instr.json" "$art/bench-instr-$LABEL${o##*/v}.json"
           done
-          # GRT6: where the run dir holds symlinks (a walker that follows them can loop); find -P
+          # where the run dir holds symlinks (a walker that follows them can loop); find -P
           [ -d "$RUNNER_TEMP/v/$ID" ] && timeout 60 find "$RUNNER_TEMP/v/$ID" -type l -printf '%p -> %l\n' 2>/dev/null | head -200 >"$art/symlinks-$LABEL.txt"
-          # the watchdog's snapshot and log tails (R3), when it fired or got close
+          # the watchdog's snapshot and log tails, when it fired or got close
           [ -d "$RUNNER_TEMP/watchdog" ] && cp -r "$RUNNER_TEMP/watchdog" "$art/watchdog"
           # swrast provenance plus the GL renderer string the run's Godot printed (OpenGL API ... llvmpipe)
           [ -f "$RUNNER_TEMP/swrast-provenance.json" ] && python3 -I - "$RUNNER_TEMP/swrast-provenance.json" "$RUNNER_TEMP/v/$ID/run" "$art/swrast-provenance.json" <<'PY'
           import json, os, re, sys
-          # GRT6: never glob("**") here. glob follows directory symlinks, and a harness run dir
-          # holds symlinks into itself and into the source cache (G8ku: an endless walk hung the
-          # job for 2 h; G8kb added more). os.walk does not follow them.
+          # never glob("**") here. glob follows directory symlinks, and a harness run dir
+          # holds symlinks into itself and into the source cache (an endless walk once hung the
+          # job for 2 h). os.walk does not follow them.
           def walk_files(root, name):
               hits = []
               for d, dirs, files in os.walk(root, followlinks=False):
@@ -354,7 +359,7 @@ jobs:
               if m:
                   p["godot_gl"] = m.group(0)
                   break
-          # gate 7 (R3): the browser's WebGL renderer as a leg recorded it (browser-harness.ts
+          # gate 7: the browser's WebGL renderer as a leg recorded it (browser-harness.ts
           # checkBrowserProvenance), and the runner's Vulkan/Chromium facts (rs-setup)
           b = os.path.join(os.environ["RUNNER_TEMP"], "browser-provenance.json")
           if os.path.isfile(b):
@@ -371,7 +376,7 @@ jobs:
           PY
           # determinism mode: the enriched provenance (browser renderer included) beside the repeats
           [ -d "$RUNNER_TEMP/det/$LABEL" ] && [ -f "$art/swrast-provenance.json" ] && cp "$art/swrast-provenance.json" "$RUNNER_TEMP/det/$LABEL/"
-          # every failing repeat's evidence (determinism mode runs v, v2, ...; R3: a repeat-2 failure
+          # every failing repeat's evidence (determinism mode runs v, v2, ...; a repeat-2 failure
           # used to come back with no evidence): evidence/<label> for v, evidence/<label>-r<k> after
           for o in "$RUNNER_TEMP"/v "$RUNNER_TEMP"/v[0-9]*; do
             run="$o/$ID"
@@ -385,7 +390,7 @@ jobs:
             [ -f "$run/run/result.json" ] && cp "$run/run/result.json" "$ev/run/"
             [ -f "$run/run/bench-instr.json" ] && cp "$run/run/bench-instr.json" "$ev/run/"
             cp "$run"/*.log "$ev/" 2>/dev/null
-            # GRT6: the small per-leg files that explain a failing check (a leg's stdout, the
+            # the small per-leg files that explain a failing check (a leg's stdout, the
             # receiver's applied.json, the live host's summary), not the stores or recordings.
             # find -P (the default) lists symlinks without following them.
             ( cd "$run/run" 2>/dev/null &&
@@ -419,7 +424,7 @@ jobs:
         with:
           name: job-${{ matrix.label }}
           path: ${{ runner.temp }}/art
-          retention-days: 3
+          retention-days: 1
           if-no-files-found: ignore
 
       # determinism mode: every repeat's digest (plus provenance, builds, this runner's pixel report)
@@ -428,7 +433,7 @@ jobs:
         with:
           name: det-${{ matrix.label }}
           path: ${{ runner.temp }}/det
-          retention-days: 3
+          retention-days: 1
           if-no-files-found: ignore
 
   determinism:
@@ -487,7 +492,7 @@ jobs:
               "shots": {"total": tot("shots", "total"), "agree": tot("shots", "agree")},
               "dumps": {"total": tot("dumps", "total"), "agree": tot("dumps", "agree")},
               "live_sets": sum(len(r.get("live_sets", [])) for r in g.values()),
-              # GRT6: hosted runners are a CPU lottery (AMD EPYC 7763/9V45/9V74, Intel Xeon 8573C seen),
+              # hosted runners are a CPU lottery (AMD EPYC 7763/9V45/9V74, Intel Xeon 8573C seen),
               # and llvmpipe's output followed the CPU in one dispatch: record which job ran on what
               "cpu_models": cpus,
               "gates": {k: {"ok": r["ok"], "runs": r["runs"], "shots": r["shots"]["agree"], "shots_total": r["shots"]["total"],
@@ -508,7 +513,7 @@ jobs:
         with:
           name: determinism
           path: out
-          retention-days: 3
+          retention-days: 1
           if-no-files-found: ignore
 
   merge:
@@ -535,6 +540,7 @@ jobs:
           path: determinism
 
       - name: Merge summaries
+        id: merge
         env:
           RUNS: ${{ inputs.runs }}
           REFUSED: ${{ inputs.refused }}
@@ -566,24 +572,28 @@ jobs:
           python3 -I experiments/render-stream/scripts/lib/check-census.py --merge --out merged/checks.json jobs/*/checks-*.json || true
           cp determinism/*.json merged/ 2>/dev/null || true
           for ev in jobs/*/evidence/*; do [ -d "$ev" ] && cp -r "$ev" failing/; done
+          echo "failing=$(find failing -mindepth 1 -maxdepth 1 | wc -l)" >>"$GITHUB_OUTPUT"
           echo "merge rc=$rc (1 = some run failed; that is the summary's verdict, not a plumbing error)"
           # red only when the merge itself broke: no summary was written
           test -s merged/validate-summary.json
 
+      # the wrapper's verdict (validate-summary.json, check census, determinism report): needed on
+      # success too, and small
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: summary
           path: merged
-          retention-days: 3
+          retention-days: 1
           if-no-files-found: ignore
 
+      # evidence only for a failing run (the merge itself stays green when a run fails)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
+        if: failure() || (always() && steps.merge.outputs.failing != '0')
         with:
           name: failing-evidence
           path: failing
-          retention-days: 3
+          retention-days: 1
           if-no-files-found: ignore
 
   cleanup:
@@ -592,6 +602,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # deleting the between-job artifacts
+      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -604,3 +616,17 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RUN_REF: ${{ github.ref }}
         run: scripts/remote-run-branch.sh delete "$RUN_REF"
+
+      # job-*, det-* and determinism only fed the merge; once it ran, its summary and the failing
+      # runs' evidence are all that is kept. Best effort: they expire after a day anyway.
+      - name: Delete between-job artifacts
+        if: always() && needs.merge.result == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" --paginate \
+            --jq '.artifacts[] | select(.name | test("^(job-|det-)|^determinism$")) | .id' |
+            while read -r id; do gh api -X DELETE "repos/$GH_REPO/actions/artifacts/$id" >/dev/null || true; done
+          true

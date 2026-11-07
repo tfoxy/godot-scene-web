@@ -267,9 +267,7 @@ void main() {
 // approximation of Godot's pure `light + dst`, applied to the per-pixel TOTAL (not per particle).
 //
 // NO DIVISION, and therefore no `cov > 0` guard: a premultiplied canvas wants `(light, cov)`
-// directly. (It used to resolve `(light / cov, cov)` for a straight-alpha canvas, where the blit
-// into the node canvas multiplied by cov again and put `light` back -- correct, but only because
-// two mistakes cancelled. The same expression as render-webgpu.ts's fs_resolve.)
+// directly. (The same expression as render-webgpu.ts's fs_resolve.)
 const RESOLVE_VERTEX_SRC = `#version 300 es
 layout(location = 0) in vec2 a_pos;   // full-screen clip-space quad (shared-gl quad buffer)
 void main() {

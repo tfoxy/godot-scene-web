@@ -1,8 +1,8 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 // Self-test for G7u's harness half (never a browser, a host or a Godot run):
 //
-//  1. parseLifecycleSpec (lib/gate7-lifecycle.ts) reads every RS_RECEIVER_LIFECYCLE word of the
-//     g7u-as-built.md legs table and refuses malformed ones; lifecycleMechanism names the
+//  1. parseLifecycleSpec (lib/gate7-lifecycle.ts) reads every RS_RECEIVER_LIFECYCLE word of
+//     the legs table and refuses malformed ones; lifecycleMechanism names the
 //     desktop's simulated suspension and the device's real mechanisms; lifecycleEnvOf needs a
 //     device id on GATE7_LIFECYCLE_ENV=device.
 //  2. mapBrowserLeg (lib/gate7-live-legs.ts) drops RS_RECEIVER_LIFECYCLE and

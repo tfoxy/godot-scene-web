@@ -1,26 +1,23 @@
 # render-stream/4 wire format
 
-Status: specified and golden-tested at G5w (2026-10-10). Since G5d (2026-10-10) the capture, the
-receiver and every gate runner speak /4 (gate5-design.md D1, D17); /3 decoding remains only for
-`golden-3/`. The capture records every immediate geometry op, `add_set_transform` and
-`add_clip_ignore` as /4 commands; since G5e (2026-10-10) also `add_mesh` and the mesh table, with
-GRM1 surface payloads in the store (`.grm`), inline and over HTTP (gate5-design.md "As built
-(G5d)", "As built (G5e)"). Written with [gate5-design.md](gate5-design.md) D1-D16 and Q4, which
-this document implements. Codecs (G5w): C++ encoder/diff (`capture/src/rs2_codec.*`, `rs2_diff.*`,
-behind `Session::version`), TypeScript decoder/validator/resolver
+Status: frozen. The capture, the receiver and every gate runner speak /4; /3 decoding remains only
+for `golden-3/`. The capture records every immediate geometry op, `add_set_transform` and
+`add_clip_ignore` as /4 commands, and also `add_mesh` and the mesh table, with GRM1 surface payloads
+in the store (`.grm`), inline and over HTTP. Codecs: C++ encoder/diff (`capture/src/rs2_codec.*`,
+`rs2_diff.*`, behind `Session::version`), TypeScript decoder/validator/resolver
 (`scripts/lib/render-stream-2.ts`, behind an explicit `version` parameter) and GDScript decoder
 (`receiver/rs2_decoder.gd`), all checked byte-for-byte and state-for-state against
-`protocol/golden-4/`, per this text. The mesh payload format (`render-stream-mesh/1`, "Mesh
-payload" below) has its own read-side modules: `scripts/lib/render-stream-mesh.ts` and
+`protocol/golden-4/`, per this text. The mesh payload format (`render-stream-mesh/1`, "Mesh payload"
+below) has its own read-side modules: `scripts/lib/render-stream-mesh.ts` and
 `receiver/rs_mesh_payload.gd`, parallel to the texture payload's `rs_texture_payload.*`.
 [render-stream-3.md](render-stream-3.md) and [render-stream-2.md](render-stream-2.md) are not
-superseded: `golden-2/` and `golden-3/` keep passing unchanged (gate5-design.md D1).
+superseded: `golden-2/` and `golden-3/` keep passing unchanged.
 
-As with /3 (memory g4e1-rs3-version-switch-pattern), /4 is **not** a new forked module. The
+As with /3, /4 is **not** a new forked module. The
 version-parameterized C++/TypeScript/GDScript modules /3 already extended grow a third value:
 C++'s `Session::version` gains `ProtocolVersion::V4` (still defaulting to `V2`, so every existing
 /2/3 caller is unaffected), and the TypeScript/GDScript `version` parameter widens to `2 | 3 | 4`
-(defaulting to `3` until G5d, `4` since). Renaming
+(its default moved from `3` to `4` when the capture switched to /4). Renaming
 `rs2_codec.*`/`rs2_diff.*`/`render-stream-2.ts`/`rs2_decoder.gd` is not part of this document.
 
 render-stream/4 is render-stream/3 plus:
@@ -106,7 +103,7 @@ threshold, one store, one HTTP path.
 - `resources`: /3's `["texture_2d", "texture_2d_placeholder"]` plus `"mesh"`, sorted:
   `["mesh", "texture_2d", "texture_2d_placeholder"]`.
 - `unobserved`: /3's list plus `viewport_set_snap_2d_transforms_to_pixel` and
-  `viewport_set_snap_2d_vertices_to_pixel` (gate3-design.md "Deferred"), re-sorted.
+  `viewport_set_snap_2d_vertices_to_pixel`, re-sorted.
 - Every other `features` key is unchanged.
 
 ### Sabotage
@@ -116,7 +113,7 @@ Sabotage kinds: /3's, plus `perturb-vertex`. Its `op` is `null`, like every kind
 first point of every `add_line`/`add_polyline`/`add_multiline`/`add_primitive`/`add_polygon`/
 `add_triangle_array` it records, and to the first vertex's x of every mesh surface payload it
 creates or updates; the engine still gets the true arguments). It moves only commands recorded, or
-surface payloads built, from `GRC_SABOTAGE_FRAME` on (gate5-design.md Q3c, as `perturb-glyph`
+surface payloads built, from `GRC_SABOTAGE_FRAME` on (as `perturb-glyph`
 before it).
 
 ## Command
@@ -163,7 +160,7 @@ Notes:
 - `tex`, the `unknown-texture` and `canvas-texture-headless` refusal rules, and `f`'s `cmd-offset`
   accounting are exactly as render-stream-2.md's "Commands" states for the existing texture-rect
   ops, applied to every /4 op that carries a `tex` field (`add_primitive`, `add_polygon`,
-  `add_triangle_array`, `add_nine_patch`, `add_mesh`). gate5-design.md D11: while the session has
+  `add_triangle_array`, `add_nine_patch`, `add_mesh`). While the session has
   never created a canvas texture on a headless host, `RID()` is unambiguous and `tex` is simply
   `null`; once one exists, every later /4 op naming `RID()` is `unsupported`/
   `canvas-texture-headless` in place (using no floats). A rendered host always writes `tex: null`
@@ -199,7 +196,7 @@ entries on a patch, exactly as `textures[]`); `removed_meshes: [<int>]` in patch
 ```
 
 - `id` has its own per-session counter, starting at 1, never reused: a mesh id and a texture id
-  never collide, and creating meshes never perturbs the texture id sequence (gate5-design.md D5).
+  never collide, and creating meshes never perturbs the texture id sequence.
 - `status`/`reason` follow the texture table's shape (render-stream-2.md "Texture"): `reason` is
   non-null exactly for `status: "unsupported"`, and always null for `"ok"`/`"freed"`. Mesh reasons:
   `mesh-format`, `mesh-blend-shapes`, `payload-too-large`.
@@ -216,7 +213,7 @@ entries on a patch, exactly as `textures[]`); `removed_meshes: [<int>]` in patch
   section alone -- as `payload_bytes` already means for textures), `primitive`, `format`,
   `vertex_count` and `index_count`. `<primitive>` is one of `"points"`, `"lines"`, `"line_strip"`,
   `"triangles"`, `"triangle_strip"`. `format` is the engine's raw `ARRAY_FORMAT_*` bitmask (an
-  integer, uninterpreted on the wire -- gate5-design.md Q1e).
+  integer, uninterpreted on the wire).
 
 A mesh entry's shape rules (`mesh-entry`, mirroring `texture-entry`'s field table):
 
@@ -245,7 +242,7 @@ data       vertex, attribute, skin, index bytes, concatenated, exactly as Surfac
 
 The payload's hash is the SHA-256 of the whole payload (magic through the end of `data`), exactly
 as a texture payload's hash is. `payload-size` cross-checks the four buffer lengths against the
-declared shape (gate5-design.md D7, Q1e; `n` is `vertex_count`):
+declared shape (`n` is `vertex_count`):
 
 - `vertex_bytes` is always `8n` (two float32 per vertex; 2D positions are never compressed).
 - `attribute_bytes` is `n * (4 if format has ARRAY_FORMAT_COLOR (bit 3) else 0, plus 8 if format
@@ -322,7 +319,7 @@ textures and commands as golden-3, none of them touching a /4-only field), then 
   texture 7); mesh 2 has one surface. A new item draws mesh 1 with `add_mesh` (textured). Then,
   with no item redrawing, mesh 2's surface gets a region update: a new payload, mesh 2's version
   +1, nothing else in the transaction (the patch stream carries only the mesh table entry, proving
-  gate5-design.md's "a mesh version change with no item change").
+  a mesh version change with no item change).
 - state 10: mesh 2 (from state 9) is freed with a surviving reference, leaving a `"freed"`
   tombstone; a third mesh is created `"unsupported"` (`mesh-format`, a surface whose `format`
   carries `ARRAY_FLAG_COMPRESS_ATTRIBUTES`) and named by a new item's `add_mesh`, producing the
@@ -330,8 +327,8 @@ textures and commands as golden-3, none of them touching a /4-only field), then 
   becoming `unsupported`/`unknown-mesh`.
 
 `full.rs4`, `patch.rs4` and `inline.rs4` resolve to one `resolved.json` (gate 2's exceptions:
-`session_id`/`stream_id`/per-transaction `encoding` omitted, memory
-rs1-resolved-json-excepted-fields). Mesh surface payloads are kept small and synthetic (4-8
+`session_id`/`stream_id`/per-transaction `encoding` omitted, as in
+render-stream-1.md "Golden vectors"). Mesh surface payloads are kept small and synthetic (4-8
 vertices per surface) so `golden-4/` stays the same order of magnitude as `golden-3/` (hundreds of
 KB, not megabytes).
 
@@ -361,16 +358,24 @@ already covered by `golden-2/invalid/` and `golden-3/invalid/`):
 ## Live transport
 
 As /3, except the subprotocol is `render-stream.4` and the hello's `protocol` is
-`"render-stream/4"`. The capture's listener and the receiver's live client speak it since G5d.
+`"render-stream/4"`. The capture's listener and the receiver's live client speak it.
 
 ## Optional keys: unknown-item skip
 
 A capture armed with the opt-in `GRC_UNKNOWN_ITEM=skip` adds two keys that no other session or
 transaction carries: `"unknown_item_policy":"skip"` in the session, right after `sabotage`, and,
 in every one of that session's transactions, `"unknown_items":{…}` right after `unsupported`.
-[unknown-item-skip.md](unknown-item-skip.md) specifies both, with their validation (`meta-schema`
-otherwise) and the reason the version does not change. A strict recording, every golden vector
-included, never contains either key.
+`"skip"` is the policy's only legal value; an absent key is the only spelling of strict.
+`unknown_items` is exactly `{"unknown_rids","withheld_items","withheld_commands","unknown_calls"}`,
+four non-negative integers: the unknown canvas/item RIDs named since arming and not freed, the
+known items withheld at this transaction (their parent chain reaches an unknown RID), the commands
+those items hold, and the hook calls that named an unknown RID since arming (cumulative). Like
+`unsupported` it is complete and never patched. Each of these is `meta-schema`: either key at /2 or
+/3; a policy value other than `"skip"`; an `unknown_items` that is not exactly those four
+non-negative integers; `unknown_items` present when the session does not declare `skip`, or absent
+when it does. The version does not change: every strict recording stays byte-identical, and a
+decoder that predates the keys refuses a skip session with `meta-schema`, which fails closed. A
+strict recording, every golden vector included, never contains either key.
 
 ## Versioning
 
@@ -388,4 +393,4 @@ format is a new version.
   `resolve()`'s upsert/erase), with the mesh id space never shared with the texture id space.
 - `golden-4/`'s `make_golden.py` builds real (tiny) `GRM1` payloads byte for byte in Python,
   exactly as `golden-2/`'s builds `GRT1` ones; the C++/TS/GDScript sides only read and re-hash
-  them, never construct one, matching G2a/G2b1's division of labour for textures.
+  them, never construct one, matching the division of labour for textures.

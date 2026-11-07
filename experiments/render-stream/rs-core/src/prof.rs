@@ -1,4 +1,4 @@
-//! Opt-in phase timers (G7o2, `protocol/gate7/g7o2.md` "Profile"): where a step transaction's
+//! Opt-in phase timers: where a step transaction's
 //! time goes, per phase, on whatever clock the adapter installs. Off by default: with no clock
 //! every [`start`] returns `None` and every [`add`] is a no-op, so the bench arms that judge the
 //! budget pay one thread-local read per mark and nothing else.

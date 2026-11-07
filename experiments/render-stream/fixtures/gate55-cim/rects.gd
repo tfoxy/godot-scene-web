@@ -2,7 +2,7 @@ extends Node2D
 ## A region node of fixtures/gate55-cim: draws `rects[i]` filled in `colors[i]` from `_draw`, one
 ## `canvas_item_add_rect` each, in local coordinates. Only the marker ever redraws (`set_color`);
 ## every material, light-mode, inheritance and transform change of the timeline leaves the
-## recorded commands alone (gate5_5-design.md D9).
+## recorded commands alone.
 
 var rects: Array[Rect2] = []
 var colors: Array[Color] = []

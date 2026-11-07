@@ -1,4 +1,4 @@
-// Gate 5.5c checks (protocol/gate5_5-design.md "G55c", "Q6c", "Q6e"): the ShaderMaterial fixture
+// Gate 5.5c checks: the ShaderMaterial fixture
 // (fixtures/gate55-shader), its material oracle and the reference legs.
 //
 // Everything here reads an evidence directory written by run-gate55.sh's g55c group, or is pure
@@ -19,7 +19,7 @@
 //   - the capture's shader/material hook log (G55a, evidence/resources.jsonl kind shader,
 //     material and item-material lines): the census, hook-hash parity and the D11 scan.
 //
-// Evidence layout under <out>/ (see scripts/README.md "Gate 5.5"):
+// Evidence layout under <out>/:
 //   shader/import/fixture/       editor --import of fixtures/gate55-shader
 //   shader/capture/              400-frame capture host, GRC_ROOT_SIZE=enforce-min-size
 //   shader/reference/, shader/reference-repeat/

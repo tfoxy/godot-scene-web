@@ -1,4 +1,4 @@
-// CAR5 live leg (protocol/carrier-design.md Q5, the CAR5 row): drives web/client-carrier-check/ (the
+// CAR5 live leg: drives web/client-carrier-check/ (the
 // render-stream client package with the recorder on and a `carrier` option) in the pinned headless
 // Chromium against ONE live capture started with GRC_LIVE_CARRIERS=ws,wt and a token. In that one
 // run:

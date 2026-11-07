@@ -36,9 +36,8 @@ describe("godotEasingToCss", () => {
   });
 
   it("maps the polynomial/trig trans families to their cubic-bezier fits", () => {
-    // The reported STS2 case: the shop inventory's 700ms Quint/Out open slide used to get the generic `ease-out`,
-    // which lags Godot's easeOutQuint by up to 0.388 of the travel distance (measured) — the panel looked ~2× slower
-    // to arrive in the browser than in the game.
+    // Quint/Out used to get the generic `ease-out`, which lags Godot's easeOutQuint by up to 0.388 of the travel
+    // distance.
     expect(godotEasingToCss("Out", "Quint")).toBe(
       "cubic-bezier(0.22, 1, 0.36, 1)",
     );

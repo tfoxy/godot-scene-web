@@ -1,5 +1,5 @@
-// Gate 7 browser receivers inside the gates' OWN runners (G7l, gate7-design.md Q4 "Live client",
-// Q6, Q8; protocol/gate7/g7l.md). `lib/legs.sh` substitutes a browser for the
+// Gate 7 browser receivers inside the gates' OWN runners.
+// `lib/legs.sh` substitutes a browser for the
 // native receiver when the runner's environment has `GATE7_LIVE_KIND=web|gsw`: it writes the
 // native leg's words to `<dir>/native-env.txt` and `<dir>/native-argv.txt` and asks this module to
 // run the leg. Every live leg of gates 1, 2, 5 and 5.5 (host words, windows, stall, reconnect,
@@ -51,9 +51,8 @@
 //     SIGTERM SIGKILLs every Chromium process of the leg.
 //   - `browser-daemon` (serveBrowserDaemon; what legs.sh uses): one process per runner that keeps
 //     the NEXT leg's fresh browser launched and its provenance checked while the current leg runs,
-//     so a leg costs only its page load and engine start (measured 2026-10-16 under load: the
-//     one-shot launcher's node start-up, Chromium launch and provenance took about 7 s, which
-//     made the receiver join a live host after its S = 300 frame budget). A leg is one HTTP GET
+//     so a leg costs only its page load and engine start (the one-shot launcher's node
+//     start-up, Chromium launch and provenance take seconds, which made the receiver join a live host after its S = 300 frame budget). A leg is one HTTP GET
 //     `/run?dir=…&port=…&timeout_s=…` from `curl` that streams `exit=<code>` at the end. When that
 //     client goes away before the leg ends (the gate-1 `killed` leg SIGTERMs curl), every
 //     Chromium process of the leg is SIGKILLed at once, the browser analogue of a SIGKILLed native
@@ -217,7 +216,7 @@ const FIXED_ARGS_WITH_VALUE = new Set([
   "--rendering-driver",
   "--display-driver",
 ]);
-/** GRT2b part B (results/grt.md "Part 2b"; a measured prototype, never a default): with
+/** GRT2b part B (a measured prototype, never a default): with
  * GATE7_FAST_FRAMES=1 in the daemon's environment, Chromium's frame pacing is unthrottled so a
  * rAF-driven receiver can keep up with an RS_FAST_FRAMES host (lib/legs.sh). */
 export const FAST_FRAME_ARGS = [
@@ -420,8 +419,8 @@ function launchEnvOf(): Record<string, string> {
 
 /** D9's launch (browser-harness.ts launchHarnessBrowser's args, executable and stripped
  * environment) on a persistent profile directory: a fresh empty one for a cold leg (D9), or a copy
- * of a cold leg's for a warm one, whose HTTP cache is then the "disk cache" it starts warm on
- * (gate7-design.md Q4). Playwright refuses `--user-data-dir` in `launch()`'s args, so a profile
+ * of a cold leg's for a warm one, whose HTTP cache is then the "disk cache" it starts warm on.
+ * Playwright refuses `--user-data-dir` in `launch()`'s args, so a profile
  * needs launchPersistentContext; its context.browser() is the Browser provenance reads. */
 async function launchOnProfile(profileDir: string): Promise<{
   context: BrowserContext;

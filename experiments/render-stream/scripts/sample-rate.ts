@@ -1,6 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Wall-clock host frame rate sampler for gate 6 group g6p's `unarmed` arm (protocol/gate6-design.md
-// D11: "unarmed (no extension: host simulation alone)"). An unarmed host loads no capture
+// Wall-clock host frame rate sampler for gate 6 group g6p's `unarmed` arm ("unarmed (no extension: host simulation alone)"). An unarmed host loads no capture
 // extension, so it writes none of the perf-timeline.jsonl / perf.json evidence every other arm's
 // `host_frame` rate comes from (scripts/lib/gate6c-checks.ts hostWindow/connectionRates). It DOES
 // still write RS_FIXTURE_STEP_LOG (fixtures/gate6-scene/gate6_scene.gd: step logging is a fixture

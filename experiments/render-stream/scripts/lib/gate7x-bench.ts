@@ -1,5 +1,5 @@
-// Gate 7x bench protocol and pass rule (protocol/gate7-design.md "G7x" "Bench protocol" and "Pass
-// rule"). gate7-bench.ts drives the pages; this module plans the interleaved rounds, summarizes the
+// Gate 7x bench protocol and pass rule.
+// Gate7-bench.ts drives the pages; this module plans the interleaved rounds, summarizes the
 // Rust arms' raw JSON (web/bench/bench-rs.ts, `render-stream-gate7x-rs-bench/1`) and judges R2-R4.
 //
 // For each input: one warmup page per arm, then five rounds of (gsw-ts, gsw-rs, gsw-rs-inline), each
@@ -20,7 +20,7 @@ export const ARMS_7X: readonly Arm7x[] = [
   "gsw-rs-base",
 ];
 
-/** G7m's recorded TypeScript p95 (results/gate7/g7m.md), under the same (inline) digest policy:
+/** G7m's recorded TypeScript p95, under the same (inline) digest policy:
  * R2's thresholds, ms. */
 export const R2_THRESHOLDS_MS: Record<string, number> = {
   "scene-full": 12.99,

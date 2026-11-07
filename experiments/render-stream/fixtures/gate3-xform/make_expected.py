@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Write fixtures/gate3-xform/expected.json (render-stream-gate3-expected/1, fixture gate3-xform).
 
-The derivation models the engine's clip semantics as read from the source (protocol/gate3-design.md
-Q1c, Q6d), written down as code over the fixture's own parameters. Nothing here runs or reads the
+The derivation models the engine's clip semantics as read from the source, written down as code over the fixture's own parameters. Nothing here runs or reads the
 engine: the reference run has to agree with it (`expected-image-reference-xform`,
 `probes-reference-xform`, `semantic-probes`), and a disagreement is a finding to explain from the
 source, never a number to copy.
@@ -35,7 +34,7 @@ The model (source lines are in ../godot-4.5.1-stable):
 - Alternative models (D7), evaluated over the same scene at `semantic_probes`: `rotated-exact` clips
   to the transformed rects themselves (pixel centre), `edge-round` rounds x and x + w separately,
   `pixel-centre` keeps pixels whose centre lies inside the exact, unrounded intersection.
-- Probes (gate3-design.md Q6c), as fixtures/gate3: the quarter, half and three-quarter points of
+- Probes, as fixtures/gate3: the quarter, half and three-quarter points of
   every scissor edge give an inside/outside pixel pair, named after the innermost owner whose same
   edge bounds it; a pair is decisive when the outside pixel differs from the scene painted with
   every clip off.
@@ -89,7 +88,7 @@ NODE2DS = ["RP", "RP2", "SP", "FP", "Marker"]
 # rounding-margin assertion.
 EXACT_OWNERS = {"SQ", "SR"}
 
-# The engine-model scissors of gate3-design.md Q6d, typed in from the contract, never computed:
+# The engine-model scissors, typed in from the contract, never computed:
 # expected-self-consistent checks the derivation against it.
 _RQ0 = [83, 83, 172, 158]
 _RQ2S = [72, 73, 184, 166]
@@ -134,7 +133,7 @@ def rgba8(r, g, b):
 
 
 def initial_scene():
-    """Scene-side parameters at step 0 (gate3-design.md Q6d's group table, gate3x.gd)."""
+    """Scene-side parameters at step 0 (the group table, gate3x.gd)."""
 
     def n2d(parent, pos, rot=0.0, scale=(1.0, 1.0), index=0):
         return {"kind": "node2d", "parent": parent, "index": index, "pos": list(pos), "rot": rot, "scale": list(scale), "z": 0}

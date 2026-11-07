@@ -1,31 +1,31 @@
 import type { RenderStreamTransportFactory } from "./transport";
 
 // ------------------------------------------------------------------------------------------
-// CAR5: the WebTransport carrier (`render-stream-wt/1`, carrier-design.md Q4). The same messages,
+// The WebTransport carrier (`render-stream-wt/1`). The same messages,
 // byte for byte, on one QUIC session: stream type 0x00 is the live stream (length-prefixed
 // messages), 0x01 a resource GET (one stream per request). The hello, credit and records do not
 // change.
 
 const STREAM_LIVE = 0;
 const STREAM_RESOURCE = 1;
-/** CAR10 (Q4.3a): a client unidirectional stream holding one batch of client-to-host messages. */
+/** A client unidirectional stream holding one batch of client-to-host messages. */
 const STREAM_UPLINK = 0x10;
 const KIND_BINARY = 0;
 const KIND_TEXT = 1;
-/** Host to client: at most `max_queued_bytes` per message (Q4.3). */
+/** Host to client: at most `max_queued_bytes` per message. */
 const MAX_MESSAGE_BYTES = 64 * 1024 * 1024;
-/** WebSocket's close-reason limit, shared by both carriers (Q4.5). */
+/** WebSocket's close-reason limit, shared by both carriers. */
 const MAX_REASON_BYTES = 123;
 const MAX_PATH_BYTES = 1024;
-/** F3: the default bound of a client's in-memory resource cache. */
+/** The default bound of a client's in-memory resource cache. */
 const DEFAULT_CACHE_BYTES = 64 * 1024 * 1024;
 /** How long a reset live stream waits for the session's own close before it counts as 1006. */
 const STREAM_RESET_GRACE_MS = 100;
-/** CAR10: an uplink batch whose stream has not closed after this is sent again on a new stream;
+/** An uplink batch whose stream has not closed after this is sent again on a new stream;
  * the wait doubles per attempt (100, 200, 400, 800, 1600, 3200 ms), and a batch still
- * unconfirmed after the last one closes the session `uplink-stalled` (about 6.3 s). On the g31 a
- * healthy batch's close settles within ~60 ms (14 548 streams), and a wedged one never does. A
- * close that is merely slow costs a duplicate, which the host drops. */
+ * unconfirmed after the last one closes the session `uplink-stalled` (about 6.3 s). A healthy
+ * batch's close settles well inside the first wait, and a wedged one never does. A close that is
+ * merely slow costs a duplicate, which the host drops. */
 const UPLINK_RESEND_MS = 100;
 const UPLINK_ATTEMPTS = 6;
 /** The largest batch the client builds (the host accepts 64 KiB). */
@@ -33,23 +33,23 @@ const UPLINK_MAX_BATCH = 32 * 1024;
 /** transport.ts's `UPLINK_STALLED`, spelled out: importing a value from `./transport` would
  * split it into a chunk shared with the main entry (a cost to every WebSocket-only page). */
 const UPLINK_STALLED = "uplink-stalled";
-/** The stream error a host that predates uplink streams stops them with (Q4.2). */
+/** The stream error a host that predates uplink streams stops them with. */
 const UNKNOWN_STREAM_TYPE = 1;
 /** How long a client close waits for the live stream's FIN before closing the session anyway (a
  * wedged stream never finishes). */
 const CLOSE_FIN_WAIT_MS = 500;
 
 export interface WebTransportTransportOptions {
-  /** F3: the bound of the in-memory, content-addressed LRU of fetched resource bodies, owned by
+  /** The bound of the in-memory, content-addressed LRU of fetched resource bodies, owned by
    * the factory (so by one client). 0 turns it off. Default 64 MiB. */
   cacheBytes?: number;
-  /** F1: also offer the subprotocol through WebTransport protocol negotiation (the constructor's
+  /** Also offer the subprotocol through WebTransport protocol negotiation (the constructor's
    * `protocols`) and require the host to agree. Default false: the `?protocol=` query only. */
   negotiate?: boolean;
-  /** CAR10: how client-to-host messages after the hello travel. `streams` (default): one
-   * unidirectional uplink stream per batch (Q4.3a), confirmed by its close and sent again when
+  /** How client-to-host messages after the hello travel. `streams` (default): one
+   * unidirectional uplink stream per batch, confirmed by its close and sent again when
    * the close does not come, because Chrome on Android can wedge a long-lived stream's send side
-   * for good while its writes keep resolving. `live`: on the live stream, as before CAR10. A host
+   * for good while its writes keep resolving. `live`: on the live stream. A host
    * that refuses uplink streams (one that predates them) turns `streams` into `live` for the
    * session. */
   uplink?: "streams" | "live";
@@ -122,7 +122,7 @@ class FrameParser {
   }
 }
 
-/** One client-to-host live message (Q4.3): kind 1, length, UTF-8. */
+/** One client-to-host live message: kind 1, length, UTF-8. */
 function frameText(text: string): Uint8Array {
   const body = new TextEncoder().encode(text);
   const buf = new Uint8Array(5 + body.length);
@@ -187,7 +187,7 @@ async function gunzip(body: Uint8Array<ArrayBuffer>): Promise<ArrayBuffer> {
   return await new Response(ds.readable).arrayBuffer();
 }
 
-/** F3: a byte-bounded LRU of immutable, content-addressed bodies (a path names one hash). */
+/** A byte-bounded LRU of immutable, content-addressed bodies (a path names one hash). */
 class ResourceCache {
   private readonly map = new Map<string, ArrayBuffer>();
   private bytes = 0;
@@ -217,7 +217,7 @@ class ResourceCache {
   }
 }
 
-/** The WebTransport carrier as a transport factory (carrier-design.md Q4/Q5). It reads
+/** The WebTransport carrier as a transport factory. It reads
  * `endpoint.webTransport` (throws when absent), opens `url?protocol=<subprotocol>` with
  * `allowPooling: false` and the descriptor's `certificateHashes` as `serverCertificateHashes`,
  * and maps the session as the WebSocket would be: `open` once the live stream (type 0x00) is
@@ -225,7 +225,7 @@ class ResourceCache {
  * per session. A clean session close reports its code (0 becomes 1005); a transport error, idle
  * timeout or reset stream reports 1006; a framing violation by the host closes the session 1002
  * or 1009. `fetchResource` opens a resource stream per GET with the token in the request.
- * Each factory owns one resource cache (F3), so make one per client. */
+ * Each factory owns one resource cache, so make one per client. */
 export function createWebTransportTransport(
   options: WebTransportTransportOptions = {},
 ): RenderStreamTransportFactory {
@@ -255,7 +255,7 @@ export function createWebTransportTransport(
       wt.close({ closeCode: code, reason: truncateReason(reason) });
     };
 
-    // CAR10 uplink (Q4.3a). The first message (the hello) goes on the live stream; later ones are
+    // The uplink. The first message (the hello) goes on the live stream; later ones are
     // gathered per task and sent as numbered batches on uplink streams until confirmed.
     let helloSent = false;
     let inband = options.uplink === "live";
@@ -401,7 +401,7 @@ export function createWebTransportTransport(
     });
 
     // The session's end is the connection's end. Messages the live stream still had to deliver
-    // are read first: a host closes the session only after finishing the stream (Q4.5).
+    // are read first: a host closes the session only after finishing the stream.
     const ended = (code: number, reason: string): void => {
       if (emitted) return;
       emitted = true;

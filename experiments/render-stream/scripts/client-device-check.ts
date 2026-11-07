@@ -1,4 +1,4 @@
-// PHN (results/p3/phn.md): the render-stream client package as a REAL live viewer on a phone. The
+// PHN: the render-stream client package as a REAL live viewer on a phone. The
 // phone's Chrome (adb, the gate 7 device table's entry) opens web/client-phone/ -- a page that mounts
 // @godot-scene-web/render-stream-client full screen at the device pixel ratio and nothing of the
 // harness receiver -- served from this machine through `adb reverse`, against a live host on this
@@ -15,7 +15,7 @@
 //       [--credit-stage submitted|applied] [--apply-on frame|message]' \
 //     -- GRC_LIVE_AUTH=token
 //
-// --credit-stage and --apply-on (PH3, results/p3/ph3.md) pass the client's pacing options; omitted,
+// --credit-stage and --apply-on pass the client's pacing options; omitted,
 // the package's defaults.
 //
 // Mount 1 streams for --main-s after its first frame (the measured window: per-second stats(), the
@@ -34,7 +34,7 @@
 //                       first dispose's
 //   heap-baseline       every mount's wasm heap starts at the first mount's
 //   device-provenance   the tab's facts match the device table (model, GPU, orientation)
-//   rate-60 (reported)  main-window applies/s >= 58 (the 60 fps bar at the g31's 58.8 Hz panel)
+//   rate-60 (reported)  main-window applies/s >= 58 (the 60 fps bar at the panel's refresh rate)
 
 import { execFileSync } from "node:child_process";
 import {

@@ -1,4 +1,4 @@
-// CAR3 Chromium smoke (protocol/carrier-design.md Q4, Q4.6, "Validation gaps"): the pinned
+// CAR3 Chromium smoke (.6, "Validation gaps"): the pinned
 // headless Chromium (chromium-1223, the repo-private copy, lib/browser-harness.ts) opens a
 // WebTransport session to the `wt` carrier of capture/build/rs_live_host, pinning its
 // self-signed certificate through `serverCertificateHashes`, speaks render-stream-wt/1 from page

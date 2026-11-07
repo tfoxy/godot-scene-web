@@ -1,4 +1,4 @@
-// G7a's own checks for the GSW canvas receiver (gate7-design.md G7a "Checks" and "Sabotages",
+// G7a's own checks for the GSW canvas receiver (G7a "Checks" and "Sabotages",
 // Q7, Q14d), beside each gate's checks that lib/gate7-gsw.ts runs through the gate's own checker:
 //
 //   all     gsw-vs-native (report only: Q7's triangulation, G against N per shot) and

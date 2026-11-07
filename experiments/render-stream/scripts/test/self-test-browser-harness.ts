@@ -1,6 +1,6 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 // Self-test for G7h: launches the real pinned Chromium (D9) and runs every probe
-// protocol/gate7-design.md's "G7h" section lists, against `lib/browser-probes/index.html` and two
+// the contract's "G7h" section lists, against `lib/browser-probes/index.html` and two
 // local `HarnessServer` instances (a page origin and a cross-origin "resource" origin). This is
 // not a synthetic self-test over fabricated values the way `self-test-gate6.ts` is -- Q1b's
 // probes are explicitly about what THIS Chromium build actually does, so this script IS the
@@ -12,7 +12,7 @@
 //
 // Exits non-zero if any of G7h's four `Checks` fails, or if the sabotage case fails to refuse.
 // Probes 2-6 and the suspension candidates in probe 3/4 are RECORDED findings, not pass/fail --
-// a probe disagreeing with gate7-design.md's prediction is itself the point (D22, "Every browser
+// a probe disagreeing with the contract's prediction is itself the point (D22, "Every browser
 // statement ... is checked by G7h before any gate relies on it").
 
 import { createHash, randomBytes } from "node:crypto";

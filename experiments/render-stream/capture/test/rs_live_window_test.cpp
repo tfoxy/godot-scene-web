@@ -1,5 +1,5 @@
-// Credit window tests for the live hub (src/rs_live.cpp; gate7-design.md D4, Q2 "Credit with
-// window w", fork F1, G7q).
+// Credit window tests for the live hub (src/rs_live.cpp).
+//
 //
 // 1. Window-1 identity. Seeded scenarios drive the hub at credit window 1 through a modelled
 //    receiver (acks at every stage with random delays and stalls, stale and foreign acks,

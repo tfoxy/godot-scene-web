@@ -1,4 +1,4 @@
-// Gate 7 group g7-p (G7p; protocol/gate7/g7p.md, gate7-design.md Q12 "Matrix (G7p)"): the measurement
+// Gate 7 group g7-p: the measurement
 // matrix on the three receivers and one `render-stream-report/2` per receiver kind.
 //
 // G6p's group is reused unforked: run-gate7.sh --live --legs g7-p runs run-gate6.sh --legs g6p once

@@ -1,4 +1,4 @@
-; Gate 8 material fixture (G8m, ../../protocol/gate8-design.md "Q5. Pre-arm materials and shaders"): one scene,
+; Gate 8 material fixture: one scene,
 ; mat.tscn, run two ways by the same loader autoload as gate8-adopt. `late` (the default main scene) is built
 ; before the capture arms at fixture frame K; `born` (res://born.tscn) instantiates the same scene
 ; in _ready after the capture armed in _enter_tree. See README.md.

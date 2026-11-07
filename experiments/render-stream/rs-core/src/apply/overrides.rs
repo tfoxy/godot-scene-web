@@ -1,4 +1,4 @@
-//! TAG2 (client-extensions-design.md §3.2): the client's override table in the applier, and the
+//! the client's override table in the applier, and the
 //! read-only queries extensions make of the resolved state.
 //!
 //! An override is pre-multiplied in presentation space and inherited by the subtree:
@@ -86,7 +86,7 @@ fn push_siblings(state: &ResolvedState, ids: &[Id], parent_xf: Xform, stack: &mu
 
 /// A stable insertion sort: sibling lists arrive in (or near) `draw_index` order, so this is
 /// O(n) in practice, and it keeps the default wasm small (the std stable sort is several KB per
-/// instance; client-extensions-design.md "Identity v2", the 8 KB budget).
+/// instance; the 8 KB budget).
 fn insertion_sort_by_key<T, K: Ord>(v: &mut [T], key: impl Fn(&T) -> K) {
     for i in 1..v.len() {
         let mut j = i;
@@ -117,7 +117,7 @@ pub struct Override {
     pub xform: Xform,
     pub modulate: [f32; 4],
     pub visible: bool,
-    /// FRZ-HOOK (frz-d.md §5): hold the subtree. `apply` keeps the records of items whose nearest
+    /// Frozen subtree: hold the subtree. `apply` keeps the records of items whose nearest
     /// frozen ancestor has this flag, skipping their upserts and removals.
     pub frozen: bool,
 }
@@ -153,7 +153,7 @@ pub struct OverrideSabotage {
     pub pick_no_clip: bool,
 }
 
-/// ID2 (client-extensions-design.md "Identity v2", ID-D1, ID-D8): the order [`Applier::pick`]
+/// the order [`Applier::pick`]
 /// reads. `Drawn` (the default) is HIT1's topmost-drawn reading; `Tree` is Godot's GUI pick order
 /// ([`Applier::pick_tree`]). Either reads the mouse filters; with none set, both are
 /// [`Applier::hit_test`].
@@ -363,7 +363,7 @@ impl Applier {
         self.reconcile_frozen = old.reconcile_frozen;
     }
 
-    /// FRZ-HOOK (frz-d.md §5): recompute the frozen membership (every item under a frozen root)
+    /// Frozen subtree: recompute the frozen membership (every item under a frozen root)
     /// when the table's `frozen` flags changed, and mark a full item reconcile when a root was
     /// unfrozen. Called once at the top of `apply`; `set_overrides` (which has no state) only
     /// records the change. The membership persists across applies, so a frozen subtree whose root
@@ -690,7 +690,7 @@ impl Applier {
         self.pick_order
     }
 
-    /// ID2 (client-extensions-design.md "Identity v2", ID-D1, ID-D2): the item Godot 4.5.1's GUI
+    /// the item Godot 4.5.1's GUI
     /// picking chooses at the presentation-space point `(x, y)` (`Viewport::gui_find_control`,
     /// viewport.cpp:1793-1865), read from the client's own item tree:
     /// - attached canvases from the top of the stacking down (`(layer, sublayer)`, Godot's

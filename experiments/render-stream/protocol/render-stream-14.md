@@ -1,10 +1,8 @@
 # render-stream/14 wire format
 
-Status: **built** (ID3, 2026-11-06). /14 is render-stream/13 ([render-stream-13.md](render-stream-13.md))
+Status: **built**. /14 is render-stream/13 ([render-stream-13.md](render-stream-13.md))
 plus **item_meta v2**: two opt-in identity columns, `instance_id` and `mouse_filter`, and re-stamped
-rows. The design is Identity v2 in [client-extensions-design.md](client-extensions-design.md)
-("Identity v2 (ID1, 2026-11-06)", decisions ID-D3 to ID-D7 and ID-D9), and what was built is its
-"As built (ID3)". Everything this text does not list is /13's, byte for byte. /13 stays frozen and
+rows. Everything this text does not list is /13's, byte for byte. /13 stays frozen and
 stays the default everywhere.
 
 ## What differs from /13

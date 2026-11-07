@@ -2,10 +2,9 @@
 //
 // The particle runtime sizes each binding's overlay canvas from its self-layer content box, and that
 // box read (`clientWidth`/`clientHeight`) always follows DOM writes this runtime just made — the
-// canvas insert, the preview hide, the canvas style — so it is a FORCED SYNCHRONOUS LAYOUT. A live
-// combat trace put ~all of the document's `get clientWidth` self-time in here (468 forced layouts /
-// 332 ms over 9.6 s), split between the create path and a second, synchronous texture-loaded
-// re-size. These tests pin the cure the sibling shader runtime already had:
+// canvas insert, the preview hide, the canvas style — so it is a FORCED SYNCHRONOUS LAYOUT, on both
+// the create path and a second, synchronous texture-loaded re-size. These tests pin the cure the
+// sibling shader runtime already had:
 //
 //   - a binding is measured ONCE, in a contiguous pass AFTER every create-time DOM write;
 //   - every later size — an adaptive `setRenderScale`, a frozen-mode pin change, the frozen-mode
@@ -317,8 +316,8 @@ describe("particle runtime — self-layer box cache (particleRectCache)", () => 
     cached.dispose();
 
     // And the inline fire is really happening (this is not a listener that never ran): with the
-    // cache off, that same synchronous re-size is a SECOND read per binding — the trace's second
-    // forced layout, in the flesh.
+    // cache off, that same synchronous re-size is a SECOND read per binding — the second forced
+    // layout, in the flesh.
     const uncached = mountTextured({ particleRectCache: false });
     expect(uncached.stats().boxReads).toBe(6);
     uncached.dispose();
@@ -369,10 +368,9 @@ describe("particle runtime — self-layer box cache (particleRectCache)", () => 
 });
 
 // The box cache took this runtime's forced layouts to ONE PER BINDING CREATED. That floor was still
-// the largest remaining forced-layout cost in a live client (191 ms of `get clientWidth` on a phone
-// trace, essentially all of it in the measure pass), and it exists only because the runtime asked
-// the browser for a box on the main thread. The observer has already measured it during the
-// browser's own layout step, so a create can just wait for it — and `boxReads` goes to ZERO.
+// the largest remaining forced-layout cost in a live client, and it exists only because the
+// runtime asked the browser for a box on the main thread. The observer has already measured it
+// during the browser's own layout step, so a create can just wait for it — and `boxReads` goes to ZERO.
 describe("particle runtime — observer-first sizing (particleObserverSizing)", () => {
   it("creates force NO layout at all — the first box comes from the observer", () => {
     const { root, runtime } = mount(3);

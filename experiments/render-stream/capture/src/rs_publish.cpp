@@ -191,8 +191,8 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
       {"perturb-vertex", SabotageKind::PerturbVertex},
       {"perturb-shader", SabotageKind::PerturbShader},
       {"retain-superseded", SabotageKind::RetainSuperseded},
-      // New at /8 (G8w, gate8-design.md Q2-Q5); declared on the wire here, acted on by G8a/G8t/
-      // G8h/G8m (they need a /8 sink: rs_gate8_policy.h).
+      // New at /8; declared on the wire here, acted on by the adoption, decode and
+      // material sabotages (they need a /8 sink: rs_gate8_policy.h).
       {"adopt-skip-state", SabotageKind::AdoptSkipState},
       {"adopt-no-redraw", SabotageKind::AdoptNoRedraw},
       {"adopt-skip-layers", SabotageKind::AdoptSkipLayers},
@@ -211,7 +211,7 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
       // New at /12 (PM5, render-stream-12.md "Sabotages"; GRC_STREAM_VERSION=12).
       {"perturb-seed", SabotageKind::PerturbSeed},
       {"drop-restart", SabotageKind::DropRestart},
-      // New at /12 (FRZ-P, results/p3/frz-p.md); they need GRC_FREEZE_PARTICLES=on too.
+      // New at /12; they need GRC_FREEZE_PARTICLES=on too.
       {"freeze-drop-events", SabotageKind::FreezeDropEvents},
       {"freeze-send-positions", SabotageKind::FreezeSendPositions},
   };
@@ -381,7 +381,7 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
                                          "canvas_item_set_material"};
   } else if (v5_or_later) {
     // render-stream-5.md "Features": /4's six lose canvas_item_set_material (item state now) and
-    // gain canvas_light_attach_to_canvas (gate5_5-design.md D10, D16).
+    // gain canvas_light_attach_to_canvas.
     features.observed_unsupported_ops = {"canvas_item_add_animation_slice",
                                          "canvas_item_add_lcd_texture_rect_region",
                                          "canvas_item_add_multimesh",
@@ -389,8 +389,8 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
                                          "canvas_item_attach_skeleton",
                                          "canvas_light_attach_to_canvas"};
     if (version == ProtocolVersion::V6) {
-      // render-stream-6.md "Features": calibrator 9's three typed canvas ops (gate6-design.md
-      // D3), sorted by byte value.
+      // render-stream-6.md "Features": calibrator 9's three typed canvas ops,
+      // sorted by byte value.
       features.observed_unsupported_ops.push_back("canvas_set_item_mirroring");
       features.observed_unsupported_ops.push_back("canvas_set_item_repeat");
       features.observed_unsupported_ops.push_back("canvas_set_parent");
@@ -408,7 +408,7 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
                          "viewport_set_canvas_cull_mask",
                          "viewport_set_global_canvas_transform"};
   if (version == ProtocolVersion::V4 || v5_or_later) {
-    // render-stream-4.md "Features" (gate3-design.md "Deferred"): the two snap-to-pixel settings.
+    // render-stream-4.md "Features": the two snap-to-pixel settings.
     features.unobserved.push_back("viewport_set_snap_2d_transforms_to_pixel");
     features.unobserved.push_back("viewport_set_snap_2d_vertices_to_pixel");
   }
@@ -688,7 +688,7 @@ bool Publisher::form_lane(const LaneJob &job, bool direct) {
 bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t frame) {
   // W11b: a /11 stream's dynamic surfaces travel in its transactions, never in the store.
   const bool v11 = stamp_v8_ && is_v11_or_later(stamp_version_);
-  // HC4b (host-cost-design.md D1 "Store bookkeeping"): every payload the previous publication
+  // every payload the previous publication
   // named was stored (or, without a store, checked) when it was published, and the store only
   // grows, so only the entries this publication does not share with it can name a new payload.
   // They are visited in payload_refs()'s table order, so the store events keep their order.
@@ -795,7 +795,7 @@ bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t fram
   if (!ok) {
     return false;
   }
-  // G8kp (texture-delivery-design.md Q3 "File sink"): the store holds every variant produced, so a
+  // the store holds every variant produced, so a
   // replaying receiver picks by D3 as a live one does. A variant is never inline (D12(c), Q5) and
   // never required: without a store it is simply not carried.
   if (store_ == nullptr) {
@@ -841,7 +841,7 @@ void Publisher::apply_stale_texture(rs::Captured *captured, std::uint64_t frame)
   }
   if (stale_id_ == 0 && has_previous_) {
     // The lowest-id texture whose entry changed at or after the sabotage frame keeps the
-    // version, hash and payload it had before the change (gate2-design.md G2b2).
+    // version, hash and payload it had before the change.
     for (const TextureEntry &entry : captured->state.textures) {
       const auto before = std::find_if(
           previous_->state.textures.begin(), previous_->state.textures.end(),
@@ -919,7 +919,7 @@ bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_
   if (finished_) {
     return false;
   }
-  // The one published copy (gate0-design.md "Publication" sabotages, unchanged at gate 1).
+  // The one published copy (sabotages applied).
   const bool sabotage_frame_reached = frame >= sabotage_.frame;
   rs::Captured published;
   if (sabotage_.kind == SabotageKind::FreezeFrame && sabotage_frame_reached && has_frozen_) {
@@ -947,7 +947,7 @@ bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_
   }
 
   // Out of band first: every payload the transactions below name is in the store before any
-  // sink can be read (gate2-design.md Q4 "File sinks").
+  // sink can be read.
   if (!store_payloads(published, frame)) {
     return false;
   }

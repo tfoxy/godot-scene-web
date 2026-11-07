@@ -246,8 +246,8 @@ export function __resetStaticShaderFrameCacheForTest(): void {
 // IN-FLIGHT shader-source resolves, keyed by shader id (the `BAKED_CACHE` shape in `../tint-bake`).
 // WHY: `programCache` only dedupes AFTER a source has been fetched, expanded and transpiled, so a
 // cold cache with N nodes sharing one shader (a hand of cards) fired N identical fetches and N
-// identical `expandGodotShaderIncludes` passes concurrently — the create-burst cost we're paying on
-// phones. They now share ONE promise.
+// identical `expandGodotShaderIncludes` passes concurrently — a create-burst cost. They now share
+// ONE promise.
 //
 // The entry is dropped once it settles, so this is purely an in-flight window (a later create hits
 // `programCache` instead) — which also means a FAILED fetch is never cached as a verdict and the
@@ -715,7 +715,7 @@ export interface WebglShaderRuntimeStats extends StaticImageSwapCounters {
    *  `effectsRenderer: "webgpu"` says something went wrong, and only this says what. */
   webgpuFallbackReason: WebgpuFallbackReason | null;
   /** COUNTER — `queue.submit` calls this runtime's WebGPU backend has made, sampled on read. ONE per
-   *  tick that drew anything, whatever the binding count: that batching is the measured win (S7), so
+   *  tick that drew anything, whatever the binding count: that batching is the point of the backend, so
    *  a probe that finds it climbing with N nodes has found the win being given back. 0 on WebGL,
    *  where the question is meaningless. */
   webgpuSubmits: number;
@@ -830,8 +830,8 @@ export interface WebglShaderRuntime {
    *
    * WEBGL RETURNS NULL ON PURPOSE, and it is not a gap: that canvas holds readable 2D pixels, so a
    * caller who wants them uses `getImageData` on it. This exists because a WebGPU canvas has no such
-   * path — `drawImage`/`toDataURL` from one are blank under headless Chrome and pathological on
-   * Android (docs/perf-harness.md S7) — so the frame has to be produced a SECOND time, into a
+   * path — `drawImage`/`toDataURL` from one are blank under headless Chrome and pathologically slow on
+   * Android — so the frame has to be produced a SECOND time, into a
    * texture that `copyTextureToBuffer` can reach (`../webgpu/readback`). It renders the binding's
    * CURRENT state at the runtime's current TIME, which for a frozen binding is exactly the frame on
    * screen.
@@ -844,14 +844,12 @@ export interface WebglShaderRuntime {
    * Resolves to how many of `specs` ended with a usable program (cached ones included).
    *
    * WHY THIS EXISTS. `compileProgramAsync` yields to the driver before asking a blocking question, which on a
-   * device with `KHR_parallel_shader_compile` makes a cold link nearly free. WITHOUT that extension — and it is
-   * absent on real Android hardware; a Moto G86 answers null for it — `ready()` reports true immediately and
-   * `finish()` then blocks on `LINK_STATUS` for as long as the driver needs. One measured link cost 90.3 ms of
-   * main thread, and it landed mid-combat because that was the first frame a node asked for that shader.
+   * device with `KHR_parallel_shader_compile` makes a cold link nearly free. WITHOUT that extension — often
+   * absent on Android hardware — `ready()` reports true immediately and `finish()` then blocks on
+   * `LINK_STATUS` for as long as the driver needs, on whatever frame first asks for that shader.
    *
    * THIS CANNOT MAKE THE LINK FREE, and does not pretend to: the driver's work is the driver's work. It only
-   * lets a consumer choose WHEN to pay — behind a loading screen, where 90 ms is invisible, instead of on the
-   * frame a card is played. That is the whole claim, and it is the one to verify.
+   * lets a consumer choose WHEN to pay — behind a loading screen instead of mid-interaction.
    *
    * PURELY ADDITIVE. Nothing about the lazy create path changes; this only populates the cache it already
    * consults. A spec whose source will not resolve, or will not compile, is counted as a miss and leaves that
@@ -1049,10 +1047,7 @@ export function createWebglShaderRuntime(
   // What CAN be avoided is paying a style+layout FLUSH per node. A create finishes inside its own
   // microtask continuation (see `scheduleCreate`), so building + measuring in one step made a
   // reconcile that mounts N shader nodes interleave N writes with N reads — N forced layouts inside
-  // one task. Measured on a moto g86 5G combat trace: 53.6 ms of `get clientWidth` self time inside
-  // `UpdateLayoutTree`/`performLayout` across two ~12 s traces, 14.8 ms of it in a single 68.4 ms
-  // long task; and on this repo's own `effects-runtime --mechanism shaders-live` run, 12 of the
-  // trace's 14 `Layout` events were one per shader node, 0.16–0.35 ms apart.
+  // one task.
   //
   // So the create burst is phased, exactly as `../particles/runtime`'s reconcile is: every canvas is
   // built first (that is `createBinding`), then every box is read back-to-back with no write between
@@ -1112,7 +1107,7 @@ export function createWebglShaderRuntime(
   // The screen-space paths (SCREEN_UV, SCREEN_TEXTURE, SCREEN_PIXEL_SIZE) need viewport rects: the
   // scene root's, and each such node's self-layer. Measuring them inside the render loop is a
   // FORCED LAYOUT per frame (and, for the self-layer, per SCREEN_UV node per frame) — a fixed
-  // main-thread cost on screens where nothing moves, which is what phone traces showed. So the
+  // main-thread cost on screens where nothing moves. So the
   // rects are cached and re-read in ONE batch at tick start, and only when something could have
   // moved them:
   //   - `reconcile()` (the host re-rendered → the DOM may have moved),
@@ -1292,7 +1287,7 @@ export function createWebglShaderRuntime(
     let profBindings = 0;
     // The tick's frame bracket (see `ShaderRenderBackend`). A no-op on WebGL, where every draw is
     // submitted as it is issued; on WebGPU it opens the ONE command encoder whose single submit per
-    // tick is exactly the win measured in S7. BOTH backends are bracketed, always: under a WebGPU
+    // tick is the point of that backend. BOTH backends are bracketed, always: under a WebGPU
     // runtime some bindings are on WebGL (see `webgpuBindingFallbacks`), and either set may be the
     // one that draws this tick.
     glBackend.beginFrame();
@@ -1482,8 +1477,8 @@ export function createWebglShaderRuntime(
       revertStaticImage(binding, runtimeStats);
       // The canvas sub-rect changed → resize its backing to box×window. The box itself is UNCHANGED by a pure
       // window move, so syncCanvasSize reuses the cached box size (no forced reflow — this was the per-frame
-      // clientWidth read that showed up as the #1 main-thread symbol on phones when a large overflowing
-      // background's visible window animated). The resize CLEARS the canvas, so re-render synchronously to avoid
+      // clientWidth read a large overflowing background with an animated visible window would otherwise
+      // pay). The resize CLEARS the canvas, so re-render synchronously to avoid
       // a one-frame blank (flicker). Dormant ⇒ both are deferred to the wake.
       syncCanvasSizeOrDefer(binding);
       renderBindingNow(binding);
@@ -1689,8 +1684,8 @@ export function createWebglShaderRuntime(
       //
       // TWO ENCODE SOURCES. A WebGL binding's canvas holds readable 2D pixels, so the swap reads it
       // directly — the path that shipped first. A WebGPU binding's canvas cannot be read at all
-      // (`drawImage`/`toDataURL`/`toBlob` go through presentation: blank headless, pathological on
-      // Android — S7), which is why v1 simply never attached one. v2 attaches it with a CAPTURE HOOK
+      // (`drawImage`/`toDataURL`/`toBlob` go through presentation: blank headless, pathologically slow
+      // on Android), which is why v1 simply never attached one. v2 attaches it with a CAPTURE HOOK
       // instead: the backend re-renders this binding's current frame into an offscreen texture and
       // copies it back (`../webgpu/readback`), and the swap encodes THAT. The canvas is never read.
       //
@@ -2619,8 +2614,7 @@ function drawableSource(layer: HTMLElement): CanvasImageSource | null {
   for (const child of layer.children) {
     if (!(child instanceof HTMLCanvasElement)) continue;
     // …EXCEPT a WebGPU-backed one. `drawImage` from a WebGPU canvas is never a source here: it comes
-    // back BLANK on SwiftShader and is pathologically slow on Android Chrome (measured — S7 in
-    // docs/perf-harness.md, where the blit-shaped WebGPU arm collapsed 87 → 23 Hz). Skipping it
+    // back BLANK on SwiftShader and is pathologically slow on Android Chrome. Skipping it
     // falls through to the layer's texture image below: a worse approximation of an already
     // approximate composite, which beats a blank hole and a stalled GPU process. Only a WebGPU
     // backend ever stamps this attribute; the GL backend does not.

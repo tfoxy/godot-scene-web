@@ -1,4 +1,4 @@
-// HTR (results/gate8/htr.md, gate8-design.md Q1c "As built (HTR)"): the opt-in headless texture
+// HTR: the opt-in headless texture
 // release, GRC_HEADLESS_TEXTURE_RELEASE=off|on.
 //
 // On a `headless` display server the dummy rasterizer keeps `p_image->duplicate()` of every

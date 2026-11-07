@@ -1,4 +1,4 @@
-// GRT4b: the checker speed-ups change no verdict (results/grt.md "Part 4b"). Pure and synthetic:
+// GRT4b: the checker speed-ups change no verdict. Pure and synthetic:
 //   1. jsonKeyEqual(a, b) === (JSON.stringify(a, negZero) === JSON.stringify(b, negZero)) over
 //      fuzzed values (-0 and "-0", NaN, undefined, functions, holes, key order, toJSON);
 //   2. node:crypto's SHA-256 (lib/node-hash.ts) equals the decoders' pure one;

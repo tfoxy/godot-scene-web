@@ -522,7 +522,7 @@ describe("effects-webgpu: metric key sets", () => {
   it("keeps the WebGL arms reporting exactly S6's keys", () => {
     // The reference arms mount the shipped runtimes with `effectsProfiling` on, so their key set is
     // `particleCounters`/`shaderCounters` plus S6's two whole-life rows. If this drifts, the
-    // in-session reference stops being comparable with S6's published table.
+    // in-session reference stops being comparable with S6's table.
     expect(metricKeysFor("particles-webgl").sort()).toEqual(
       [
         "boxReads",

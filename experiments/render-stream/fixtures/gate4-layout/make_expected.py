@@ -2,7 +2,7 @@
 """Write fixtures/gate4-layout/expected.json (render-stream-gate4-expected/1, fixture gate4-layout).
 
 Every number below is derived from the fixture's strings, boxes and the engine's text rules as
-read from the source (protocol/gate4-design.md Q1, Q6e, G4c), written down as code over the
+read from the source, written down as code over the
 fixture's own parameters. Nothing here runs or reads the engine: the glyph oracle and the capture
 have to agree with it (`oracle-agrees`, `atlas-census`), and a disagreement is a finding to
 explain from the source, never a number to copy.
@@ -19,7 +19,7 @@ modules/text_server_adv/text_server_adv.cpp), G4a's plus:
   shaping happens, in tree order, before the first draw: each plain cache's page is uploaded once
   at step 0, by its first draw (`texture_2d_create`). At later steps a text or font change queues
   the redraw before the minimum-size update (label.cpp:1085-1099), so the Label shapes inside its
-  own draw (gate4-design.md Q1c).
+  own draw.
 - Draw passes. Per line Label draws the shadow, then the outline, then the text (label.cpp:821-875);
   a shadow glyph and a text glyph use the plain cache (size x 64, 0), an outline glyph the outline
   cache (size x 64, outline size) (ts_adv:4103-4106). A plain page made dirty by shaping is
@@ -129,7 +129,7 @@ INITIAL_TEXT = {
 LCD = {"name": "LC", "font": "FC", "size": 16, "pos": [448, 172], "colour": [0, 0, 0.2, 1], "region": [440, 168, 576, 248], "background": "panel", "text": "LCD text",
        "page": {"format": "RGBA8", "width": 256, "height": 256}, "op": "canvas_item_add_lcd_texture_rect_region", "reason": "unsupported-op"}
 
-# The timeline (gate4-design.md G4c, Q6e), in gate4_layout.gd's order per step.
+# The timeline, in gate4_layout.gd's order per step.
 # ("text", node, value) | ("size", node, px) | ("halign", node, a) | ("valign", node, a)
 # | ("hinting", font) | ("outline_colour", node, rgba)
 TIMELINE = {

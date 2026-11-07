@@ -513,7 +513,7 @@ const G3A_CHECKS = [
   "leg-class-capture",
 ];
 
-/** G3b (gate3-design.md "G3b"): the receiver leg's own checks, then one leg-class-* per
+/** G3b: the receiver leg's own checks, then one leg-class-* per
  * G3B_CLASSIFIED_LEGS (runGate3's exact push order), then the shared clip-rects-derived (moved
  * to the end, after both groups, since G3b also runs it over receiver-patch's resolved state). */
 const G3B_CHECKS = [
@@ -1013,7 +1013,7 @@ async function scenarios(root: string): Promise<void> {
   );
 
   // ---------------------------------------------------------------------------------------------
-  // G3b scenarios (gate3-design.md "G3b"): the receiver's own checks, then one leg-class-*
+  // G3b scenarios: the receiver's own checks, then one leg-class-*
   // perturbation per prediction shape (steps only, steps + regions, steps + probes).
   // ---------------------------------------------------------------------------------------------
 
@@ -1187,7 +1187,7 @@ async function scenarios(root: string): Promise<void> {
   );
 
   // -------------------------------------------------------------------------------------------
-  // Group g3d: calibrator 6, canvas_item_add_clip_ignore (gate3-design.md "G3d")
+  // Group g3d: calibrator 6, canvas_item_add_clip_ignore
   // -------------------------------------------------------------------------------------------
 
   await scenario(

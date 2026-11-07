@@ -1,8 +1,8 @@
 <!doctype html>
 <!--
-  Gate 7 GSW bench page (G7d, protocol/gate7-design.md Q13e). Served by scripts/gate7-bench.ts
+  Gate 7 GSW bench page. Served by scripts/gate7-bench.ts
   through browser-harness.ts's HarnessServer (cross-origin isolated, so performance.now() resolves
-  to 5 us), on desktop headless Chromium (D9) and on a phone's Chrome over adb reverse (D24).
+  to 5 us), on desktop headless Chromium and on a phone's Chrome over adb reverse.
   ?mode=bench: replay one recording, one record per rAF, timing decode / hash / validate / resolve.
   ?mode=probe: the Q13a/Q13b page probes (WebGL facts, RGB10_A2, rAF T_p, viewport, RTT, hold drift).
   Results are PUT to /evidence/<nonce>/ (D10); window.__bench reports progress.

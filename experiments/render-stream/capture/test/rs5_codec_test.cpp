@@ -1,13 +1,13 @@
 // Unit tests for render-stream/5 (src/rs2_codec.cpp's Session::version == V5 path, G55w).
 //
 // render-stream/5 is implemented as a protocol-version switch inside the SAME rs2_codec/rs2_diff
-// modules /2, /3 and /4 use (render-stream-5.md, following gate4-design.md G4e1's precedent and
-// gate5_5-design.md D1), so this file does not duplicate rs2_codec_test.cpp's/rs3_codec_test.cpp's/
+// modules /2, /3 and /4 use (render-stream-5.md, following their precedent)
+// so this file does not duplicate rs2_codec_test.cpp's/rs3_codec_test.cpp's/
 // rs4_codec_test.cpp's framing checks -- it only proves the /5 delta: Session::version == V5
 // selects the GRS5 magic and the "render-stream/5" protocol string, the shader and material
 // tables encode correctly, canvas_f32 grows to 10 floats (modulate), item material/
 // use_parent_material/instance_params encode correctly, and param_f64 carries every material's
-// and item's floats in the running offset order gate5_5-design.md D8 describes ("param-offset":
+// and item's floats in the running offset order describes ("param-offset":
 // materials in table order, then items in item order) -- by matching
 // protocol/golden-5/{full,patch,inline}.rs5 byte for byte. Ground truth is
 // rs2_golden_states.h's state(1..15), where state(12)..state(15) are new at /5 (G55w).
@@ -69,7 +69,7 @@ ItemEntry entry(const ItemState &state, bool commands_null) {
   return e;
 }
 
-// gate5-design.md "As built (G5d)" point 6: golden-4 state 8's add_triangle_array (item 7,
+// Golden-4 state 8's add_triangle_array (item 7,
 // triangle_count 3 over 6 indices) is one the real engine refuses
 // (triangle_count * 3 > indices.size(), renderer_canvas_render.h Polygon::create) -- harmless to
 // the codecs, but golden-5's own states must not carry the same defect forward (a later gate's

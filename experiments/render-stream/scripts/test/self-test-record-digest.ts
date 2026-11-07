@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// G7o1 self-test (protocol/gate7-design.md "G7o1", D31): the per-record whole-record SHA-256 is
+// G7o1 self-test: the per-record whole-record SHA-256 is
 // evidence only, and browser receivers may compute it off the frame path. Two checks named there:
 //
 //   record-digest-equal:    createRecordingValidator's digest(i) in "deferred" mode equals the
@@ -9,7 +9,7 @@
 //                            but never called digest() for it (the `digest-skip` sabotage), and
 //                            clears once digest() is called.
 //
-// Usage (the four G7x bench recordings, gate7-design.md "G7x" Inputs table -- real captures, not
+// Usage (the four G7x bench recordings -- real captures, not
 // committed; copy them locally and verify their sha256 first, per that table, as G7o1's own run
 // did under this worktree's artifacts/render-stream/gate7/g7o1-inputs/):
 //

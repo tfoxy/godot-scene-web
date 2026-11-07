@@ -1,6 +1,6 @@
 /* grc_net_module.h -- the entry of librender_stream_net, render-stream's net module.
  *
- * protocol/carrier-design.md D8, D11, D17, Q4 (CAR3). The module is a Rust cdylib (rs-net/) that
+ * The module is a Rust cdylib (rs-net/) that
  * holds every QUIC and TLS byte. The capture dlopen()s it (RTLD_NOW | RTLD_LOCAL) only when
  * GRC_LIVE_CARRIERS lists `wt` or GRC_LIVE_TLS_CERT is set (CAR4), from GRC_LIVE_NET_MODULE or
  * beside the capture's own .so, and never dlclose()s it. It exports exactly one symbol family,
@@ -56,7 +56,7 @@ typedef struct grc_net_module_table_v1 {
   uint32_t carrier_abi_version; /* the grc_carrier_v1 version its carriers implement */
   uint32_t reserved;
   const char *module_version;   /* NUL-terminated, e.g. "render-stream-net 0.1.0" */
-  /* Fills *out with a new, unstarted `wt` carrier (render-stream-wt/1, carrier-design.md Q4):
+  /* Fills *out with a new, unstarted `wt` carrier (render-stream-wt/1):
    * 1, or 0 with a NUL-terminated reason in error[0..error_cap). The carrier is driven through
    * grc_carrier_v1 like any other; its destroy() frees it. */
   int (*wt_create)(grc_carrier_v1 *out, char *error, size_t error_cap);
@@ -71,12 +71,12 @@ typedef struct grc_net_module_table_v1 {
 } grc_net_module_table_v1;
 
 /* Bit 0: the `wt` carrier admits track subprotocols through grc_carrier_host_v1.admit_subprotocol
- * (protocol/tracks-design.md Q7). Without it the capture does not report wt as serving tracks. */
+ * Without it the capture does not report wt as serving tracks. */
 #define GRC_NET_FEATURE_TRACKS 1u
 
 typedef const grc_net_module_table_v1 *(*grc_net_module_table_v1_fn)(void);
 
-/* ---- grc_net_tls_v1 (CAR4, carrier-design.md D11, D12): wss on the built-in `ws` carrier ----
+/* ---- grc_net_tls_v1: wss on the built-in `ws` carrier ----
  *
  * A sans-IO TLS server session. The capture's ws I/O thread owns the socket; it feeds the
  * ciphertext it read, reads the plaintext that yields, writes the plaintext it wants sent and

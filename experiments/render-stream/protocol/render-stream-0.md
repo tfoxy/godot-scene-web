@@ -1,6 +1,6 @@
 # render-stream/0 wire format
 
-**Superseded by [render-stream/1](render-stream-1.md)** (G1b2, 2026-10-09): the capture library,
+**Superseded by [render-stream/1](render-stream-1.md)**: the capture library,
 the receiver and the gate runners now produce and consume /1 only. The C++ encoder
 (`capture/src/rs0_codec.*`, `rs0_publish.*`, `rs0_snapshot.h`) and the GDScript decoder
 (`receiver/rs0_decoder.gd`) were removed. This document, the golden vectors in
@@ -8,16 +8,17 @@ the receiver and the gate runners now produce and consume /1 only. The C++ encod
 decoder `scripts/lib/render-stream-0.ts` with `scripts/test/self-test-rs0.ts` stay as frozen,
 still-verified history: render-stream/1 is defined as a delta against this text.
 
-Status (historical): gate 0 contract, experimental. This is not a stable public API. Gate 0's behaviour (what
-the capture puts into these records and what the receiver does with them) is in
-[gate0-design.md](gate0-design.md). This document fixes only the bytes. A C++ encoder
-(`capture/src/rs0_codec.cpp`, removed in G1b2), a TypeScript decoder (`scripts/lib/render-stream-0.ts`) and a
-GDScript decoder (`receiver/rs0_decoder.gd`, removed in G1b2) had to agree with it byte for byte. The reference
-encoder is [`golden/make_golden.py`](golden/make_golden.py). When this text and that script
-disagree, the disagreement is a bug to fix in both.
+Status (historical): gate 0 contract, experimental. This is not a stable public API. This document
+fixes only the bytes, not what the capture puts into these records or what the receiver does with
+them. A C++ encoder (`capture/src/rs0_codec.cpp`, since removed), a TypeScript decoder
+(`scripts/lib/render-stream-0.ts`) and a GDScript decoder (`receiver/rs0_decoder.gd`, since removed)
+had to agree with it byte for byte. The reference encoder is
+[`golden/make_golden.py`](golden/make_golden.py). When this text and that script disagree, the
+disagreement is a bug to fix in both.
 
-The C++ model of every value below was `capture/src/rs0_snapshot.h` (removed in G1b2; its /1
-successor is [`capture/src/rs1_snapshot.h`](../capture/src/rs1_snapshot.h)).
+The C++ model of every value below was `capture/src/rs0_snapshot.h` (since removed; so is its /1
+successor `capture/src/rs1_snapshot.h`, whose /2 successor is
+[`capture/src/rs2_snapshot.h`](../capture/src/rs2_snapshot.h)).
 
 ## File layout
 
@@ -155,7 +156,7 @@ Blocks, in this order:
 | `host_visible_rect` | 4     | root `Viewport.get_visible_rect()`: position.x, position.y, size.x, size.y |
 
 `host_visible_rect` is a block, not a JSON integer pair, because Godot's value is a float `Rect2`.
-Under `--headless` it is `0, 0, 64, 64`, measured at gate 0. `DisplayServerHeadless::window_get_size`
+Under `--headless` it is `0, 0, 64, 64`. `DisplayServerHeadless::window_get_size`
 returns `Size2i()` (`servers/display_server_headless.h:129`), and the root window takes its size
 from it (`scene/main/window.cpp:1531`), but `SceneTree` gives the root a 64×64 minimum size
 (`scene/main/scene_tree.cpp:2035`) and `Window::_update_window_size` clamps to it

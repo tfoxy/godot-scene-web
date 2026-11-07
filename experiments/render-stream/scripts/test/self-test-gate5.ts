@@ -6,7 +6,7 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate5.ts
 //
-// 1. The rasterizer on hand-computed cases (gate5-design.md Q6c): a tie-free triangle (coverage
+// 1. The rasterizer on hand-computed cases: a tie-free triangle (coverage
 //    and the 1/16 px decision rule from the edge equation, typed in here), a near-edge pixel, a
 //    set-transform that replaces rather than composes (D9), a clip-ignore span (D10), a gradient
 //    and a blend (delta 1), nine-patch axis mapping (stretch, tile, tile_fit, a hollow centre), a

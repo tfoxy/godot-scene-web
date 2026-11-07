@@ -2,8 +2,8 @@
 ; (0..9) over Labels on one runtime FontFile at 16 and 24 px and the default theme font: new
 ; glyphs after frame one, a transform-only move, a hidden Label that shapes nothing until shown,
 ; emptied and reordered text, two Labels filling one atlas page in one frame, a colour change and
-; the default font's own page. See fixtures/gate4/README.md and ../../protocol/gate4-design.md
-; ("Q6b") for the contract. Every font and text input is pinned here (gate4-design.md Q1e).
+; the default font's own page. See fixtures/gate4/README.md
+; for the contract. Every font and text input is pinned here.
 
 config_version=5
 

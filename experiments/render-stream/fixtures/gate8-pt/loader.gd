@@ -10,7 +10,7 @@ extends Node
 ##   RS_FIXTURE_ARM=deferred  in `_enter_tree` exactly as `born` (every create is registered under
 ##                         the hooks); the runner defers the arm to fixture frame K with
 ##                         GRC_ARM_DEFER_FRAMES=K-1, so every resource is adopted from the
-##                         registry at the arm (LAR4, late-arm-registry-design.md)
+##                         registry at the arm
 ##
 ## An autoload processes ahead of the main scene, so at frame K the capture arms before the scene's
 ## own `_process` of that frame. `GRC_EXTENSION` unset: nothing is loaded.

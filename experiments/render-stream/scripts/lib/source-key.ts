@@ -1,4 +1,4 @@
-// The content key of a gate 7 source run (D21 amended by GRT, results/grt.md): a digest of every
+// The content key of a gate 7 source run (D21 amended by GRT): a digest of every
 // INPUT that shapes a native gate run's recordings, references and verdict, and nothing else. Two
 // source runs with the same key are interchangeable whatever commit made them, so a source made
 // by one increment (or by the native, gsw or web half of one validation) serves the next; any real

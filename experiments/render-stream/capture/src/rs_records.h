@@ -1,4 +1,4 @@
-// HC4b (host-cost-design.md D1 "The diff, record planning, serving and budget"): the /11 record
+// the /11 record
 // plan of a transaction from base B to target T -- rs2_diff.h records_before(B, T), the names of
 // inline(T) not in inline(B) in table order, and |inline(T)| -- over the entries B and T do not
 // share.

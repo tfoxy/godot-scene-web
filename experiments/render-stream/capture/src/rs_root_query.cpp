@@ -36,13 +36,13 @@ constexpr int64_t kWindowGetContentScaleFactor = 1740695150LL;   // Window.get_c
 constexpr int64_t kWindowGetSize = 3690982128LL;                 // Window.get_size() -> Vector2i
 constexpr int64_t kViewportGetFinalTransform = 3814499831LL;     // Viewport.get_final_transform() -> Transform2D
 // Gate 2 (G2a): the root viewport's default canvas-item texture filter and repeat, read once at
-// arm because main.cpp sets them before the extension loads (gate2-design.md Q1d). Hashes from
+// arm because main.cpp sets them before the extension loads. Hashes from
 // the same dump. Evidence only in G2a; G2b2 makes them the transaction scalars.
 constexpr int64_t kViewportGetDefaultTextureFilter = 896601198LL;   // -> Viewport.DefaultCanvasItemTextureFilter
 constexpr int64_t kViewportGetDefaultTextureRepeat = 4049774160LL;  // -> Viewport.DefaultCanvasItemTextureRepeat
 // The one write (GRC_ROOT_SIZE=enforce-min-size only).
 constexpr int64_t kWindowSetMinSize = 1130785943LL;              // Window.set_min_size(Vector2i) -> void
-// Gate 6 (G6b, gate6-design.md Q3a), from the same dump (extension_api.json of 4.5.1-stable).
+// Gate 6, from the same dump (extension_api.json of 4.5.1-stable).
 constexpr int64_t kViewportGetOversampling = 1740695150LL;       // Viewport.get_oversampling() -> float (double on ptrcall)
 constexpr int64_t kViewportIsSnap2dTransforms = 36873697LL;      // Viewport.is_snap_2d_transforms_to_pixel_enabled() -> bool
 constexpr int64_t kViewportIsSnap2dVertices = 36873697LL;        // Viewport.is_snap_2d_vertices_to_pixel_enabled() -> bool

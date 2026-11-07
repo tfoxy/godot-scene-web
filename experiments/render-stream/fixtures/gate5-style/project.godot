@@ -3,7 +3,7 @@
 ; StyleBoxTexture with modulate and expand margins, StyleBoxFlat sharp, bordered, rounded,
 ; shadowed and skewed, the default theme's Panel, a stylebox flipped by draw_set_transform (the
 ; TabBar pattern) and a focused RichTextLabel whose focus box sits between clip_ignore commands.
-; See fixtures/gate5-style/README.md and ../../protocol/gate5-design.md ("Q6f") for the contract.
+; See fixtures/gate5-style/README.md for the contract.
 
 config_version=5
 

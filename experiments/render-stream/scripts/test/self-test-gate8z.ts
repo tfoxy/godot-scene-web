@@ -134,7 +134,7 @@ function walk(dir: string, out: string[] = []): string[] {
   }
   return out;
 }
-const handoff = join(EXP, "protocol", "gate8-product-handoff.md");
+const handoff = join(EXP, "protocol", "streaming-host.md");
 if (existsSync(handoff)) {
   const source = walk(join(EXP, "capture", "src"))
     .map((p) => readFileSync(p, "utf8"))

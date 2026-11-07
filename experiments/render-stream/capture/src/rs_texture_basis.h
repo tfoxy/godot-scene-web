@@ -1,4 +1,4 @@
-// G8ku: the lazy Basis encodes (texture-delivery-design.md D6, D11, D13; rs_texture_delivery.h).
+// The lazy Basis encodes (rs_texture_delivery.h).
 //
 // Encodes run on their own capture-owned pool, `GRC_TEXTURE_ENCODE_WORKERS` threads (default 2) at
 // nice +10, never on the RenderingServer caller and never on G8kw's copy/decode/hash pool: one

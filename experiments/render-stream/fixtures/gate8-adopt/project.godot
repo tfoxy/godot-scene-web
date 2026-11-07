@@ -1,4 +1,4 @@
-; Gate 8 adoption fixture (G8a, ../../protocol/gate8-design.md "Q2. Late-join adoption"): one scene,
+; Gate 8 adoption fixture: one scene,
 ; adopt.tscn, run two ways by the same loader autoload. `late` (the default main scene) is built
 ; before the capture arms at fixture frame K; `born` (res://born.tscn) instantiates the same scene
 ; in _ready after the capture armed in _enter_tree. See README.md.

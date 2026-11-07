@@ -1089,8 +1089,8 @@ describe("frozen-surface image swap — capture-hook encode sources", () => {
   // ---- blank captures --------------------------------------------------------------------------
   //
   // The failure that reads as a success: the readback completes, reports nothing wrong, and hands
-  // back an entirely transparent frame for a surface that was painting (measured headed on the
-  // default ANGLE backend — docs/perf-harness.md, S8). Publishing it hides a canvas that was drawing
+  // back an entirely transparent frame for a surface that was painting (headed Chrome on the
+  // default ANGLE backend can do this). Publishing it hides a canvas that was drawing
   // behind a PNG of nothing, with `staticImagesLive` and zero failures saying it all went well.
 
   it("a BLANK capture leaves the canvas mounted, publishes NO <img>, and books its own counter", async () => {

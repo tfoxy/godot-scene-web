@@ -1,5 +1,5 @@
-// Gate 7's GSW canvas receiver legs for gate 6 (G7g; protocol/gate7/g7g.md, gate7-design.md Q5,
-// Q7, Q8): the declared 2D scene (ScrollContainer, RichTextLabel, CanvasLayers, StyleBoxFlat,
+// Gate 7's GSW canvas receiver legs for gate 6:
+// the declared 2D scene (ScrollContainer, RichTextLabel, CanvasLayers, StyleBoxFlat,
 // ShaderMaterial, CanvasItemMaterial, a mesh, a moving sprite, top_level) at 640x360, and the HD
 // fixture's nine cells at the `native` (1920x1080, canvas_items identity) and `half` (960x540,
 // stretch 0.5, font oversampling 0.5) presentations. lib/gate7-gsw.ts runs these legs and judges

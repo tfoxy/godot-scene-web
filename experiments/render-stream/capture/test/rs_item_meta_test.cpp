@@ -1,4 +1,4 @@
-// ID3 (render-stream-14.md, client-extensions-design.md "As built (ID3)"): item_meta v2's pure
+// item_meta (render-stream-14.md): v2's pure
 // half -- the v2 field names (a hello error below /14), the grant bits, the inline instance_id and
 // int mouse_filter columns, and a re-stamped row replacing the held one in the next delta. TAG1's
 // /13 rows are pinned byte for byte beside them.

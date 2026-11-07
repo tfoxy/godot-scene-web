@@ -1,12 +1,10 @@
 # Gate 8 CanvasTexture fixture (`gate8-ct`, P3-CT)
 
-The fixture for images drawn **only** through a `CanvasTexture`'s diffuse channel
-([`../../protocol/gate8-design.md`](../../protocol/gate8-design.md) "As built (P3-CT)"). spine-godot
+The fixture for images drawn **only** through a `CanvasTexture`'s diffuse channel. spine-godot
 draws its atlas pages that way: an `add_mesh` whose texture is a `CanvasTexture`, the page itself
-named by no command. Before P3-CT both receivers kept such a diffuse non-resident (their lazy
-residency only counted textures a command, an instance parameter or a material names), so every
-spine drew as a white silhouette (C3, `results/p3/fidelity.md` gap 2). The scene does not know about
-the capture.
+named by no command. A receiver whose lazy residency only counts textures that a command, an
+instance parameter or a material names keeps such a diffuse non-resident, so every spine draws as a
+white silhouette. The scene does not know about the capture.
 
 ## Files
 
@@ -43,5 +41,6 @@ centre falls on a texel boundary.
 | 25 | quit |
 
 The capture must run on a rendered host: a headless host's dummy storage allocates no canvas
-texture (`../../protocol/canvas-texture-headless.md`). The reference is this project run unarmed in
+texture (`canvas_texture_allocate` returns `RID()` in
+`../godot-4.5.1-stable/servers/rendering/dummy/storage/texture_storage.h`). The reference is this project run unarmed in
 the same private 640x360 gamescope.

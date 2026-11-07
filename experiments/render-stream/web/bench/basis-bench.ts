@@ -1,4 +1,4 @@
-// G8kb's Basis bench page logic (protocol/texture-delivery-design.md Q6 "GSW"), bundled by
+// The Basis bench page logic, bundled by
 // scripts/gate7-bench.ts --arm gsw-basis. Inputs: inputs/basis/manifest.json, the KTX2 (uastc)
 // files of a gate 8 basis-uastc store (names are their hashes).
 //
@@ -90,7 +90,7 @@ async function transcodeMode(): Promise<void> {
   const files = await inputs();
   const t = transcoder();
   const initMs = await t.ready;
-  // `phone` is the g31's own gpu_formats (etc2, astc: G8kb2: ASTC 4x4 for RGBA and RGB).
+  // `phone` is a phone's gpu_formats (etc2, astc: ASTC 4x4 for RGBA and RGB).
   const sets: [string, string[]][] = [
     ["phone", ["etc2", "astc"]],
     ["etc2", ["etc2"]],

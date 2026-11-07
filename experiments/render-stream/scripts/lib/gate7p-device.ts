@@ -1,4 +1,4 @@
-// G7p: the g31's device rows (gate7-design.md Q12 "Device rows", Q13), read from G7v's run
+// G7p: the g31's device rows, read from G7v's run
 // directories (`run-gate7.sh --live --legs g7-dev --env device --device g31`, each holding
 // `g7v-summary.json` and the legs under `gate6/<run>/rates/dev-<base>-r<N>/receiver/`). Pure over
 // those files: nothing is launched and nothing under a G7v directory is written.

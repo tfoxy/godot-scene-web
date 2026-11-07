@@ -78,7 +78,7 @@ let cacheDevice: GPUDevice | null = null;
 let unsubscribeLost: (() => void) | null = null;
 
 /** The cache key for an image texture — byte-identical to `getImageTexture`'s in
- *  `../webgl/shared-gl.ts` (`${opts.repeat ? "repeat" : "clamp"}:${url}`, shared-gl.ts:318). If
+ *  `../webgl/shared-gl.ts` (`${opts.repeat ? "repeat" : "clamp"}:${url}`). If
  *  that line ever changes, this one must change with it. */
 export function imageTextureCacheKey(url: string, repeat: boolean): string {
   return `${repeat ? "repeat" : "clamp"}:${url}`;

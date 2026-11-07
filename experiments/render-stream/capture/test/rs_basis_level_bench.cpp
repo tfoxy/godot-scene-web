@@ -1,4 +1,4 @@
-// G8ku: UASTC pack level against speed and PSNR (results/gate8/g8ku.md "UASTC level").
+// UASTC pack level against speed and PSNR.
 //
 //   rs_basis_level_bench <manifest.tsv> [levels, default 0,1,2] [reps, default 1]
 //

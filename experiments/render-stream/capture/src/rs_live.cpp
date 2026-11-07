@@ -133,7 +133,7 @@ struct Value {
   bool is_null = false;
   std::string text;
   std::uint64_t number = 0;
-  // TAG1 (client-extensions-design.md §2.1): the one nested value of any control message, the
+  // the one nested value of any control message, the
   // /13 hello's `item_meta`: an object whose values are arrays of strings.
   bool is_object = false;
   std::vector<std::pair<std::string, std::vector<std::string>>> object;
@@ -517,7 +517,7 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
     message.type = ControlType::Hello;
     if (is_v7_or_later(version)) {
       // render-stream-7.md "Hello": /6's five keys plus receiver_kind, credit_window, token,
-      // manifest_sha256 and five presentation integers (gate7-design.md Q2).
+      // manifest_sha256 and five presentation integers.
       keys = {"type",
               "protocol",
               "receiver",
@@ -557,7 +557,7 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
   // optional key of any control message.
   const bool optional_live_coding =
       message.type == ControlType::Hello && is_v11_or_later(version);
-  // TAG1 (client-extensions-design.md §2.1): a /13 hello may also carry `item_meta`; below /13
+  // a /13 hello may also carry `item_meta`; below /13
   // the key is unknown (a hello error), as every other key is.
   const bool optional_item_meta =
       message.type == ControlType::Hello && is_v13_or_later(version);
@@ -851,7 +851,7 @@ struct Hub::Conn {
   AckStage credit_stage = AckStage::Submitted;
   Session session;
   std::uint64_t next_seq = 1;
-  // The credit window (G7q, gate7-design.md D4, Q2 "Credit with window w"): the sent seqs that
+  // The credit window: the sent seqs that
   // hold one of the connection's `window_slots` (its granted credit_window), oldest first. A send
   // takes a slot; its credit-stage ack, or a resync (which also frees every later slot), returns
   // it. `credit` is "a slot is free" (or the hello's credit for the session and seq 1). At window
@@ -978,7 +978,7 @@ struct Hub::FormState {
   // when their callback ends).
   std::shared_ptr<const std::vector<std::uint8_t>> spare_out;
   std::shared_ptr<const rs13::PredictMeta> spare_meta;
-  // TAG1 (client-extensions-design.md §2.4): what this connection's receiver holds of its grant's
+  // what this connection's receiver holds of its grant's
   // table: the rows stamped up to `meta_stamp` and the first `meta_strings` strings, and whether
   // a full record went out (sabotage skip-full skips every later one).
   std::uint64_t meta_stamp = 0;
@@ -1131,7 +1131,7 @@ struct Hub::Memo {
   std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> records_coded;
   // W13b: the callback's /13 codings.
   std::vector<std::unique_ptr<PredictedTx>> predicted;
-  // TAG1 (client-extensions-design.md §2.4 "Order and sharing"): the callback's item_meta
+  // the callback's item_meta
   // records, keyed by (grant, form, what the receiver holds, target): lockstep viewers of one
   // grant share the raw and coded bytes.
   struct MetaRecord {
@@ -1629,7 +1629,7 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
         open.str("origin", event.origin);
       }
       if (!event.carrier.empty()) {
-        open.str("carrier", event.carrier);  // CAR1 (carrier-design.md D13)
+        open.str("carrier", event.carrier);
       }
       log_line(c, open.take());
       return;
@@ -1704,7 +1704,7 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
           .num("max_message_bytes", c.s.max_message_bytes);
       bool refuse = false;
       if (is_v7_or_later(c.version)) {
-        // render-stream-7.md "Hello" (gate7-design.md Q2, Q3): record every key but `token`.
+        // render-stream-7.md "Hello": record every key but `token`.
         c.s.has_hello7 = true;
         c.s.receiver_kind = message.receiver_kind;
         c.s.credit_window_requested = message.credit_window;
@@ -1765,7 +1765,7 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
           hello.str("live_coding_chosen", c.s.live_coding);
         }
         if (message.has_item_meta) {
-          // TAG1 (client-extensions-design.md §2.1): the operator's grant caps what is asked; an
+          // the operator's grant caps what is asked; an
           // empty grant is a refusal (the viewer's fulls then arrive with no record before them).
           c.s.has_item_meta = true;
           c.s.item_meta_request = message.item_meta;
@@ -2517,7 +2517,7 @@ void Hub::run_job(Job &job) {
   }
   const TxMeta &meta = job.meta;
   const bool full = job.full;
-  // TAG1 (client-extensions-design.md §2.4): the item_meta record goes after the resource records,
+  // the item_meta record goes after the resource records,
   // immediately before the transaction it describes.
   std::shared_ptr<const std::vector<std::uint8_t>> meta_record;
   std::shared_ptr<const std::vector<std::uint8_t>> meta_wire;
@@ -2908,7 +2908,7 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
         c.session.stream.connection = c.s.connection;
         c.session.stream.transport = Transport::Websocket;
         c.session.stream.encoding = Encoding::Patch;
-        // render-stream-6.md "Publication" (G6b, gate6-design.md D8): a live connection declares
+        // render-stream-6.md "Publication": a live connection declares
         // GRC_PUBLISH_FPS; uncapped is every-frame/null, as every file sink.
         if (config_.publish_period_ns == 0) {
           c.session.publication.mode = PublicationMode::EveryFrame;
@@ -3300,7 +3300,7 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
     json.field_or_null("stream_id", s.stream_id);
     json.field_or_null("receiver", s.receiver);
     json.field_or_null("credit_stage", s.credit_stage);
-    // G7n (gate7-design.md Q3 "Evidence"): the connection's version and its /7 hello.
+    // the connection's version and its /7 hello.
     json.field("version", static_cast<int64_t>(s.version));
     json.field_or_null("receiver_kind", s.receiver_kind);
     json.field("credit_window", static_cast<int64_t>(s.credit_window));
@@ -3371,7 +3371,7 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
       json.object_end();
     }
     if (s.has_item_meta) {
-      // TAG1 (client-extensions-design.md "As built (TAG1)"): the hello's request, the grant
+      // The hello's request, the grant
       // (null: refused) and the records this connection got.
       json.field("item_meta_request", rs::item_meta::grant_json(s.item_meta_request));
       if (s.item_meta_grant.empty()) {

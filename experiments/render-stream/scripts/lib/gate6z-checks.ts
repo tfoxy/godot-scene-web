@@ -1,4 +1,4 @@
-// Gate 6 group G6z (protocol/gate6-design.md "G6z", "Q8"): the four supported-feature-manifest
+// Gate 6 group G6z: the four supported-feature-manifest
 // checks, run against an EXISTING gate 6 run directory (no capture of its own). Reuses whichever
 // of g6a's and g6b's recordings are present in `out` to verify the manifest's `features` lists
 // against the real wire, and g6a's `refused`/g6b's `snap` legs to verify `manifest-refused`.

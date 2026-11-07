@@ -1,4 +1,4 @@
-// BIN-D (results/p3/bin-d.md): host and receiver CPU of /13's message variants, through the
+// BIN-D: host and receiver CPU of /13's message variants, through the
 // capture's own vendored zstd 1.5.7 and W11t's live settings (level 3, checksum, content size,
 // the previous message as a raw prefix; rs_live_coding.cpp `compress_frame`).
 //

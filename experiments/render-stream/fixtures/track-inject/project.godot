@@ -1,4 +1,4 @@
-; TRK6 track-inject fixture (../../protocol/tracks-design.md Q6 "Built-in injection", TRK6 row): a stock
+; TRK6 track-inject fixture: a stock
 ; project with NO script receiver and NO gsw_input addon. With GRC_LIVE_TRACK_INPUT_INJECT=reference
 ; the capture itself receives the `input` track kind; this fixture only watches (Input, the test
 ; Control, the injector node's signals). Gate 8's g8l/inject legs drive it with the same Node track

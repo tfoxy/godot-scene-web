@@ -1,5 +1,5 @@
 extends Node
-## Gate 5 immediate-geometry fixture (../../protocol/gate5-design.md "Q6b", G5b).
+## Gate 5 immediate-geometry fixture.
 ##
 ## The root is a plain `Node`. Every `CanvasItem` and both textures are created in `_ready()`,
 ## after `GrcLoader` armed the capture extension in its own `_enter_tree()` (gate 0 route (a)), so
@@ -14,8 +14,7 @@ extends Node
 ##   RS_FIXTURE_START_FRAME S >= 1, default 1
 ##   RS_FIXTURE_STEP_FRAMES N >= 8, default 10 (step k >= 1 at S+N*k, settled at S+N*k+7)
 ##   RS_FIXTURE_QUIT_FRAME  >= S+N*9+11 (the default)
-##   RS_FIXTURE_VARIANT     unset (default) or "canvas" (one CanvasTexture created in `_ready`,
-##                          gate5-design.md D11); any other value exits 2
+##   RS_FIXTURE_VARIANT     unset (default) or "canvas" (one CanvasTexture created in `_ready`); any other value exits 2
 
 const Regions := preload("res://regions.gd")
 
@@ -196,7 +195,7 @@ func _step_at(frame: int, offset: int) -> int:
 	return step if step <= LAST_STEP else -1
 
 
-## gate5-design.md Q6b's timeline.
+## the contract's timeline.
 func _apply_step(step: int) -> void:
 	match step:
 		1:

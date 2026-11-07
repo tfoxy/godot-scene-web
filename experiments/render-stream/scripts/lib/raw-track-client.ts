@@ -1,4 +1,4 @@
-// A raw-socket render-stream-track/1 client (TRK1, protocol/tracks-design.md Q1): an upgrade
+// A raw-socket render-stream-track/1 client: an upgrade
 // offering any subprotocols, masked text/close frames, ping answers, and a socket that can be
 // destroyed mid-track or sent arbitrary frames, which Node's WebSocket cannot do. Shared by
 // scripts/test/self-test-tracks.ts (TRK1) and scripts/lib/track-input-client.ts (TRK2, gate 8's

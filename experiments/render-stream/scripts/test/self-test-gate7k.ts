@@ -159,7 +159,7 @@ expect(
 
 // 6 (G7kr): the page renderer's budget carries a per-GET allowance
 const hb = rssRendererBudget(16475, 385);
-// the honest GSW soak measured +48.5..50.1 MB and 10.8..10.9 MB/min with 16,475 GETs
+// the honest GSW soak's growth and slope with 16,475 GETs
 expect(
   "rss budget: honest GSW growth fits",
   50.1e6 < hb.growthBytes && 10.9e6 < hb.slopePerMinBytes,

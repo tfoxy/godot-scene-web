@@ -1,4 +1,4 @@
-// W11t (results/p3/w11t.md): rs-core's live-coding decode timed in wasm, in Node's V8. Loads
+// W11t: rs-core's live-coding decode timed in wasm, in Node's V8. Loads
 // rs-gsw-wasm's `--target web` glue (scripts/build-rs-core.sh) and runs `coding_bench` over a
 // coded-message file (capture/build/rs_live_coding_tool encode), writing one JSON line per message
 // ({index, decode_us}, the minimum over --repeats passes, each with a fresh decoder).

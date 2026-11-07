@@ -44,7 +44,7 @@ export class FakeCore implements StreamCore {
   missing: string[] = [];
   redrawResult: "ok" | "lost" = "ok";
   disposed = 0;
-  /** REC1: how many `receive` calls asked for a decoded copy (the pure client must be 0). */
+  /** How many `receive` calls asked for a decoded copy (the pure client must be 0). */
   copyDecoded = 0;
   private decoded: Uint8Array | null = null;
   beginConnection(): void {
@@ -309,13 +309,13 @@ export class FakeWebTransport {
   protocol = "";
   /** Set to make `createBidirectionalStream` reject. */
   streamError: unknown = null;
-  /** CAR10: client unidirectional (uplink) streams, in creation order. */
+  /** Client unidirectional (uplink) streams, in creation order. */
   readonly uniStreams: FakeUni[] = [];
   /** How the n-th unidirectional stream behaves: `ok` closes at once; `wedge` takes writes and
-   * never closes (Chrome on Android, CAR10); `refuse` rejects its close with stream error 1 (a
+   * never closes (Chrome on Android); `refuse` rejects its close with stream error 1 (a
    * host that predates uplink streams). */
   uniBehaviour: (n: number) => "ok" | "wedge" | "refuse" = () => "ok";
-  /** CAR10: a bidirectional stream's close never settles (a wedged live stream). */
+  /** A bidirectional stream's close never settles (a wedged live stream). */
   bidiCloseHangs = false;
   readonly ready: Promise<void>;
   readonly closed: Promise<{ closeCode?: number; reason?: string }>;

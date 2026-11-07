@@ -1,9 +1,9 @@
 // rs_carrier_set_test: the CarrierSet (rs_carrier_set.h) and the grc_carrier_v1 adapter
-// (grc_carrier.h), protocol/carrier-design.md Q1, Q2, D5, D6 and the CAR1 row: id namespacing,
+// (grc_carrier.h): id namespacing,
 // routing, close, queued bytes, per-connection order, the admission total across carriers
 // (including the real rs_ws server as `ws`), conn-id-overflow, no callback after stop, the owner
 // ledger, resource events and services, GRC_LIVE_CARRIERS parsing and live-carriers.json.
-// TRK1 (tracks-design.md Q3, Q7): the two admission pools, admit_subprotocol through the C ABI,
+// the two admission pools, admit_subprotocol through the C ABI,
 // the admit-pool-mismatch doom, `sessions` counting view connections only, and the host struct's
 // size covering admit_subprotocol.
 //

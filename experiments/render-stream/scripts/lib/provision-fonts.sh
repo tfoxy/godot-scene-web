@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Font provisioning for the render-stream gate 4 fixtures (protocol/gate4-design.md "Q6a").
+# Font provisioning for the render-stream gate 4 fixtures.
 #
 #   bash provision-fonts.sh <fixture dir>
 #

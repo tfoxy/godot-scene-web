@@ -7,12 +7,9 @@
 // Canvases were suspected of being expensive, and the standing proposal was to replace them with
 // `<img>` — bake the finished frame to a blob once and let the browser treat it as an ordinary image.
 //
-// THE ENCODE IN ISOLATION belongs in `probes/bake-probe.html`, which measured it on the target phone:
-// slicing 50 regions costs 5 ms, PNG-encoding them 1,789 ms and WebP 2,244 ms. (An earlier reading of
-// 49,305 ms for PNG was a THROTTLED TAB and was retracted — see the probe's watchdog.) That says the
-// `<img>` route is affordable at all; it says nothing about STEADY STATE. Setup appears here only as
-// `readyMs`, because the price turned out to be payable rather than fixed — see `serialBake` and
-// `bakeWorkers` below.
+// The encode cost in isolation is not this scenario's question. Setup appears here only as
+// `readyMs`, because the price is payable rather than fixed — see `serialBake` and `bakeWorkers`
+// below.
 //
 // Steady state is the actual question: once both a canvas surface and an `<img>` surface have
 // finished rendering, and the DOM has to render other things, which one holds frame rate? So this
@@ -24,18 +21,15 @@
 //   canvas-2d              per-node <canvas> + 2D context + drawImage — TODAY'S PATH
 //   canvas-bitmaprenderer  per-node <canvas> + ImageBitmapRenderingContext + transferFromImageBitmap
 //   img-webp               encode once -> blob URL -> <img>
-//   img-png                the same, PNG — what the shipped baker (`frontend/src/mirror/atlasBaker.ts`)
-//                          actually emits, kept so the production format is on the table
+//   img-png                the same, PNG — the format a consumer's baker typically emits, kept so
+//                          the production format is on the table
 //   img-worker-webp        the same again, with the encode moved to a POOL of workers (`bakeWorkers`,
-//                          default 4). The phone has 8 cores and the encode is what makes `<img>`
-//                          expensive to SET UP, so this arm asks whether that setup can be paid on
-//                          cores nobody is watching.
+//                          default 4). The encode is what makes `<img>` expensive to SET UP, so
+//                          this arm asks whether that setup can be paid on cores nobody is
+//                          watching.
 //
-// WHY A POOL AND NOT A WORKER. `bakeWorkers=1` was measured and LOSES — `readyMs` 1,831 ms against
-// `img-webp`'s 1,420 on the phone, matching the probe's `worker-webp x1`. `toBlob` is already partly
-// off the main thread, so one worker does not add a core, it adds a round trip. The probe's fan-out
-// sweep is where the win is (255 ms at four workers against 1,725 inline), and this arm carries that
-// into a real scenario rather than leaving it in a microbenchmark.
+// WHY A POOL AND NOT A WORKER. `toBlob` is already partly off the main thread, so one worker does
+// not add a core, it adds a round trip; only a fan-out can move the encode off the critical path.
 //
 // WHAT THE WORKER ARM HAS TO PROVE, and it is two numbers read TOGETHER. `readyMs` must fall toward
 // the canvas arms (the encode stopped blocking mount) while `layers` STAYS at the img arms' value
@@ -54,9 +48,8 @@
 // static only until game state changes them, and on that frame a canvas arm redraws while an `<img>`
 // arm must RE-ENCODE. Both are measured rather than argued about.
 //
-// NO `perf assert` GATE. There is no hypothesis here worth encoding as a relation. Writing one from
-// desktop intuition is exactly what S2's gate did, and a device run then contradicted three of its
-// five relations.
+// NO `perf assert` GATE. There is no hypothesis here worth encoding as a relation, and one written
+// from desktop intuition would not survive a device run.
 
 import { type GridShape, gridShapeFor } from "../fit";
 import type {
@@ -234,10 +227,9 @@ export function usesWorkerBake(mechanism: string): boolean {
 /**
  * The blob type an `<img>` arm encodes to.
  *
- * WebP is the LOSSLESS one here, which is the opposite of what everyone assumes: measured in
- * `probes/bake-probe.html`, `toBlob("image/webp")` with no quality argument round-trips rgb AND
- * alpha at exactly 0 error, in fewer bytes than PNG. `quality: 0.99` is the first value that
- * switches Chrome to its lossy encoder.
+ * WebP is the LOSSLESS one here, which is the opposite of what everyone assumes: at `quality: 1`
+ * (see `blobQualityFor`) Chrome round-trips rgb AND alpha at exactly 0 error, in fewer bytes than
+ * PNG. `quality: 0.99` is the first value that switches Chrome to its lossy encoder.
  */
 export function blobTypeFor(mechanism: string): string {
   return mechanism === "img-png" ? "image/png" : "image/webp";
@@ -247,9 +239,8 @@ export function blobTypeFor(mechanism: string): string {
  * The quality argument the webp arms MUST pass, and the reason they must.
  *
  * `HTMLCanvasElement.toBlob(cb, "image/webp")` and `OffscreenCanvas.convertToBlob({type:
- * "image/webp"})` have DIFFERENT defaults in Chrome, measured in `probes/bake-probe.html`: the first
- * is lossy at roughly quality 0.8 (41.9 KB/region, rgb error up to 71), the second is lossless
- * (185.3 KB, error 0). Left implicit, the inline arm and the worker arm — which use one call each —
+ * "image/webp"})` have DIFFERENT defaults in Chrome: the first is lossy (roughly quality 0.8), the
+ * second is lossless. Left implicit, the inline arm and the worker arm — which use one call each —
  * would be encoding different images at different sizes with different codecs, and the difference
  * between them would not be the thread. `quality: 1` makes both lossless and byte-identical.
  *
@@ -263,8 +254,7 @@ export function blobQualityFor(mechanism: string): number | undefined {
  * The encoder worker, as a source string behind a Blob URL.
  *
  * Inline rather than a second bundle entry because the scenario is one module served by
- * `src/serve.ts`, and a Blob URL keeps it that way — the same technique `probes/bake-probe.html`
- * uses, so there is one approach to this rather than two.
+ * `src/serve.ts`, and a Blob URL keeps it that way.
  *
  * `ImageBitmap` transfers in (the shared source's finished frame) and `Blob` comes back — and a Blob
  * structured-clones BY REFERENCE, so the return trip is not a copy of the encoded bytes.
@@ -297,12 +287,9 @@ interface EncoderPool {
 /**
  * A POOL, not a worker, and the size is the whole point.
  *
- * A single worker LOSES: the probe measured `worker-webp` at fan-out 1 as slower than encoding
- * inline (1,827 ms against 1,725 for 50 regions on the phone), and this scenario reproduced that
- * end-to-end (`readyMs` 1,831 against `img-webp`'s 1,420). The reason is that `toBlob` is already
- * partly off the main thread — roughly half of the inline arm's wall is not main-thread time — so one
- * worker does not add a core, it just adds a round trip. At fan-out 4 the same probe measured 255 ms
- * against 1,725, which is the result this arm exists to carry into a real scenario.
+ * A single worker is no faster than encoding inline: `toBlob` is already partly off the main
+ * thread, so one worker does not add a core, it just adds a round trip. Only a fan-out spreads the
+ * encode across cores.
  */
 function createEncoderPool(size: number): EncoderPool {
   const url = URL.createObjectURL(
@@ -344,7 +331,7 @@ function createEncoderPool(size: number): EncoderPool {
     ): Promise<Blob> {
       // The capture happens here and is asynchronous; what the main thread actually spends is one
       // `createImageBitmap` call and one `postMessage`. Which is exactly why this arm cannot be
-      // judged on "time spent before the first await" — see the probe's note on `sync`.
+      // judged on "time spent before the first await".
       const bitmap = await createImageBitmap(source);
       const worker = workers[cursor++ % workers.length];
       return new Promise<Blob>((resolve, reject) => {
@@ -872,8 +859,8 @@ export const staticSurfaces: Scenario = {
  * Bring every surface to its FINISHED state before the measured window opens.
  *
  * The img arms' encode is deliberately inside `readyMs` for exactly that reason. A scenario that
- * measured setup cost inside the window would answer a question this one is not asking — the probe
- * already measured encoding, and what is under measurement here is what happens AFTERWARDS.
+ * measured setup cost inside the window would answer a question this one is not asking — what is
+ * under measurement here is what happens AFTERWARDS.
  */
 async function prepareSurfaces(
   ctx: ScenarioContext,
@@ -886,8 +873,8 @@ async function prepareSurfaces(
   // starting the next leaves the main thread idle for the whole of every worker round trip, so a
   // serial prepare makes the worker arm strictly slower than the inline one BY CONSTRUCTION — a null
   // result the schedule manufactured rather than one the mechanism earned. The same schedule is
-  // applied to every arm, so the comparison stays like-for-like, and `serialBake=true` reproduces
-  // the previous rounds' one-at-a-time numbers.
+  // applied to every arm, so the comparison stays like-for-like, and `serialBake=true` restores the
+  // one-at-a-time schedule.
   //
   // Overlapping is safe because both capture paths snapshot the shared source at CALL time in Blink
   // — `HTMLCanvasElement.toBlob` hands `CanvasAsyncBlobCreator` a snapshot taken synchronously, and

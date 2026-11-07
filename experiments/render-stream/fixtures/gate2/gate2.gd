@@ -1,5 +1,5 @@
 extends Node
-## Gate 2 textures fixture (../../protocol/gate2-design.md "Q6. Fixture `fixtures/gate2/` (G2a)").
+## Gate 2 textures fixture.
 ##
 ## The root is a plain `Node`; every `CanvasItem` and every texture is created in `_ready()` or
 ## later, after `GrcLoader` armed the capture extension in its own `_enter_tree()` (gate 0 route
@@ -377,7 +377,7 @@ func _apply_step(step: int) -> void:
 			# while the item's own filter is LINEAR and its repeat DISABLED: the same pixels only
 			# if CT's own filter and repeat override the item's. Magnification is what makes
 			# nearest and linear differ here (sabotage-omit-canvas-filter). A headless host
-			# never allocates CT (protocol/canvas-texture-headless.md), so the main fixture keeps
+			# never allocates CT, so the main fixture keeps
 			# CanvasTexture out of every headless leg's path.
 			if _variant == "canvas" or _variant == "canvas-normal":
 				_ct = CanvasTexture.new()
@@ -552,7 +552,7 @@ func _log_step(step: int, applied_frame: int, settle_frame: int) -> void:
 	_step_log_file.flush()
 
 
-## One texture-log line (gate2-design.md Q6 "Fixture environment"). `description` comes from
+## One texture-log line. `description` comes from
 ## Payload.describe() for creates and updates; every other operation logs nulls.
 func _log_texture(op: String, texture_name: String, thread: String, description: Dictionary) -> void:
 	if _texture_log_file == null:

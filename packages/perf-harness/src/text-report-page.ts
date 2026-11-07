@@ -24,8 +24,8 @@
 // structure behave like the expensive one.
 //
 // FLIP AND DIFF CARRY THE SELECTED ARM'S NUMBERS BESIDE THE IMAGE. They show one arm at a time with
-// no table in view, which is how a 2.35 px vertical offset in the dom arm once read as a rasterizer
-// difference for a whole round. The panel is rendered from the same pre-formatted cells the grid
+// no table in view, where a sub-pixel offset in one arm reads exactly like a rasterizer
+// difference. The panel is rendered from the same pre-formatted cells the grid
 // tables use, so it can never disagree with them, and an arm whose alignment disqualifies its
 // per-pixel views says so where those views are.
 

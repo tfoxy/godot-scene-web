@@ -1,7 +1,6 @@
 # Gate 8 particle colour fixture (`gate8-ptc`, PFB)
 
-PFB ([render-stream-12.md](../../protocol/render-stream-12.md) "As built (PFB)",
-[results/p3/pfb.md](../../results/p3/pfb.md)): a RendererRD host (`forward_plus`, `mobile`) runs a
+PFB ([render-stream-12.md](../../protocol/render-stream-12.md) "As built (PFB)"): a RendererRD host (`forward_plus`, `mobile`) runs a
 particles material's `Color` uniforms through `Color::srgb_to_linear()` before its process shader
 reads them; gl_compatibility does not. This fixture shows it on the stock 4.5.1 template and is
 the g8pt `ptc/*` legs' scene.

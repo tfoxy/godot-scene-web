@@ -1,4 +1,4 @@
-// G5a: the GRM1 mesh payload encoder (gate5-design.md Q4 "Mesh payload render-stream-mesh/1")
+// the GRM1 mesh payload encoder
 // and D7's format classification, with one payload's bytes written down as a literal expectation
 // (header in hex, total length, SHA-256 of the whole payload), derived independently with
 // Python's struct + hashlib. G5w/G5e will assert byte equality with a committed golden once the

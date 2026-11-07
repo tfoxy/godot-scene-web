@@ -1,12 +1,11 @@
 // S4 `large-image-coexistence` — does one big background image survive its neighbours?
 //
-// The consuming project recently replaced a live-rendered combat background with a single
-// host-rendered 2520x1080 PNG. That image is now the largest thing on the page by a wide margin, and
-// the question it raises is not "how long does it take to decode" (once, at load) but "does anything
-// make us pay for it AGAIN". A trace of the real app showed a 275 ms decode running INSIDE a raster
-// task — an image that no longer fits the discardable decode cache, so its decode is re-paid on every
-// re-raster forever — and nothing in that trace said whether the culprit was an atlas page or the new
-// background.
+// A consumer can replace a live-rendered background with a single host-rendered 2520x1080 PNG. That
+// image is then the largest thing on the page by a wide margin, and the question it raises is not
+// "how long does it take to decode" (once, at load) but "does anything make us pay for it AGAIN". An
+// image that no longer fits the discardable decode cache has its decode re-paid INSIDE a raster task
+// on every re-raster forever, and a trace alone does not say whether the culprit is an atlas page or
+// the background.
 //
 // So: mount the background, put S1's sprite grid on top of it, and churn a strip of unrelated
 // content every frame. Then assert, from the trace, that the big image is neither re-decoded nor

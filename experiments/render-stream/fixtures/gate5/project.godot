@@ -2,8 +2,8 @@
 ; (0..9) over wide and thin lines, a dashed line, polylines with a miter corner and a hold-last
 ; colour list, concave, gradient and textured polygons, primitives, a raw triangle array with a
 ; count, circles, draw-transform commands, a clip-ignore span, raw nine-patches, an antialiased
-; rect, a translucent polygon and a Line2D. See fixtures/gate5/README.md and
-; ../../protocol/gate5-design.md ("Q6b") for the contract.
+; rect, a translucent polygon and a Line2D. See fixtures/gate5/README.md
+; for the contract.
 
 config_version=5
 

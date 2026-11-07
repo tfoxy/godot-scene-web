@@ -1,4 +1,4 @@
-//! `ordering-model` (gate7-design.md G7a "Checks"): the applier's walk against gate 1's hand
+//! `ordering-model`: the applier's walk against gate 1's hand
 //! model, from the resolved states and with no GPU. Gate 1's fixture (fixtures/gate1/) steps
 //! through draw order, z (relative and absolute), `draw_behind_parent`, `top_level` (items whose
 //! parent is the canvas), visibility and the cull mask, and its `expected.json` lists every

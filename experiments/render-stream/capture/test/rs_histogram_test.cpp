@@ -1,4 +1,4 @@
-// Unit tests for the fixed-size log-linear histogram (src/rs_histogram.h, gate6-design.md Q3d):
+// Unit tests for the fixed-size log-linear histogram (src/rs_histogram.h):
 // bucket boundaries, the 6.25% relative-error bound, exact count/sum/min/max, percentile
 // sanity, the top-bucket clamp for values beyond the covered range, and the JSON shape.
 

@@ -1,4 +1,4 @@
-// `text:report` — the text-rendering round, assembled into something you can look at.
+// `text:report` — the text-rendering measurements, assembled into something you can look at.
 //
 //   mise exec -- pnpm -w run text:report
 //   xdg-open artifacts/perf/text-report/index.html
@@ -53,9 +53,8 @@ export interface FidelityRowDocument {
   /**
    * Which run's rows this describes — `han` or `latin`.
    *
-   * Optional because this reader has to keep working against artifacts written before the round
-   * grew a second script; those become one unnamed band, which renders as one group exactly as it
-   * always did.
+   * Optional because this reader has to keep working against single-script artifacts; those become
+   * one unnamed band, which renders as one group.
    */
   band?: string;
   acutance?: number;
@@ -167,8 +166,7 @@ export interface TextReportArm {
    *
    * Carried on the ARM rather than only in the fidelity table because the diff view shows one arm
    * at a time with no table in sight, and a diff that is mostly a translation looks exactly like a
-   * diff that is mostly a rasterizer difference. That is precisely how a 2.35 px offset survived a
-   * whole round of measurement.
+   * diff that is mostly a rasterizer difference.
    */
   alignmentWarning: string | null;
 }
@@ -380,8 +378,8 @@ export function buildReportData(inputs: ReportInputs): TextReportData {
   const box = fidelity?.box ?? { width: 185, height: 81 };
   const tolerance =
     fidelity?.alignmentTolerancePx ?? DEFAULT_ALIGNMENT_TOLERANCE_PX;
-  // One band per script, in the order the probe stacked them. An artifact from before the round
-  // grew a second script has no `band` at all, which collapses to a single unnamed group.
+  // One band per script, in the order the probe stacked them. A single-script artifact has no
+  // `band` at all, which collapses to a single unnamed group.
   const bands = [...new Set(rows.map((row) => row.band ?? ""))];
 
   const byGodotArm = new Map<string, GodotDocument>();
@@ -623,8 +621,7 @@ function fidelityGroup(
         // GREEN, not a luma over all three channels. `dom` is the only arm Chrome draws with LCD
         // subpixel AA, and averaging its channels is a ~1 px horizontal blur charged to the
         // mechanism; green is bit-identical to luma on the other eight. The probe's `lumaOf` owns
-        // the decision — this hint only has to stop the viewer from describing it wrongly, which it
-        // did for one round after the probe changed.
+        // the decision — this hint only has to stop the viewer from describing it wrongly.
         hint: "mean |∇green| per unit ink — NOT higher-is-better",
       }),
       makeRow(

@@ -2,7 +2,7 @@
 """Write fixtures/gate4/expected.json (render-stream-gate4-expected/1).
 
 Every number below is derived from the fixture's strings and the engine's text rules as read
-from the source (protocol/gate4-design.md Q1), written down as code over the fixture's own
+from the source, written down as code over the fixture's own
 parameters. Nothing here runs or reads the engine: the glyph oracle and the capture have to agree
 with it (`oracle-agrees`, `atlas-census`), and a disagreement is a finding to explain from the
 source, never a number to copy.
@@ -20,7 +20,7 @@ modules/text_server_adv/text_server_adv.cpp):
   step 0 every Label draws in tree order. The redraw of a hidden Label stops before
   NOTIFICATION_DRAW (scene/main/canvas_item.cpp:142), and update_minimum_size returns early for
   it (scene/gui/control.cpp:1666-1668): a hidden Label never shapes.
-- Rasterize-then-upload (gate4-design.md Q1c). With subpixel positioning disabled, shaping
+- Rasterize-then-upload. With subpixel positioning disabled, shaping
   rasterizes every glyph the text needs (ts_adv:6870-6872) into the first page of its cache
   `(font, size)` (one page here: 256x256 LA8 up to 32 px, ts_adv:856-871). The first draw of a
   glyph on a dirty page uploads that page (ts_adv:4001-4019): `texture_2d_create` the first time,
@@ -96,7 +96,7 @@ TREE_ORDER = list(TEXT_NODES)
 INITIAL_TEXT = {"L1": "Hello", "L2": "Hello", "L3": "Sphinx", "LD": "Default", "LT": "Hole", "LA": "Hole", "LH": ""}
 INITIAL_VISIBLE = {name: name != "LH" for name in TEXT_NODES}
 
-# The timeline (gate4-design.md Q6b): per step, the changes in the order gate4.gd makes them.
+# The timeline: per step, the changes in the order gate4.gd makes them.
 # ("text", node, value) | ("move", node, dx) | ("show", node) | ("colour", node, rgba)
 TIMELINE = {
     1: [("text", "L1", "Hello Quartz")],
@@ -110,7 +110,7 @@ TIMELINE = {
     9: [("text", "LD", "Default 2")],
 }
 
-# The contract's hand table (gate4-design.md Q6b), typed in, never computed:
+# The contract's hand table, typed in, never computed:
 # step -> (ink glyphs L1/L2/L3/LD/LT/LA/LH, new F16 glyphs, F16 uploads, other pages).
 HAND_TABLE = {
     0: ([5, 5, 6, 7, 4, 4, 0], "Helo", "create", {"F@24": "create", "DF@16": "create"}),
@@ -130,7 +130,7 @@ HAND_ORDER = ["L1", "L2", "L3", "LD", "LT", "LA", "LH"]
 HAND_WIRE_VERSIONS = {"F@16": [1, 2, 2, 2, 3, 3, 3, 5, 5, 5], "F@24": [1] * 10, "DF@16": [1] * 9 + [2]}
 HAND_F16_GLYPHS = 21
 
-# The one texture the engine makes itself (memory rs-g2a-texture-census-facts): the default
+# The one texture the engine makes itself: the default
 # theme's ColorPicker hue strip, a GradientTexture2D whose deferred update runs in frame 1.
 ENGINE_TEXTURES = [{"frame": 1, "op": "texture_2d_create", "format": "RGBA8", "width": 800, "height": 6}]
 
@@ -276,7 +276,7 @@ def predictions(states, cen):
         if bad:
             parity[key] = bad
     pred["sabotage-omit-atlas"] = {"frame": frame_of(omit_from), "op": "texture_2d_update", "steps": mismatch(omit_views), "atlas_hash_parity_fails": parity}
-    # perturb-glyph from step 1's frame (G4e2, render-stream/3; gate4-design.md Q3): the mirror
+    # perturb-glyph from step 1's frame (G4e2, render-stream/3): the mirror
     # records rect.x + 0.25 on every glyph command from then on, so a node's region mismatches
     # once it redrew at or after step 1 and while it shows ink. A move (L3 at step 2) redraws
     # nothing.

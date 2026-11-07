@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# quiet.sh -- the machine-wide measurement-isolation lock for render-stream runs
-# (results/measurement-isolation.md). One lock, shared by every worktree and agent on the box:
+# quiet.sh -- the machine-wide measurement-isolation lock for render-stream runs.
+# One lock, shared by every worktree and agent on the box:
 #
 #   ${GSW_QUIET_LOCK:-${GSW_QUIET_DIR:-${XDG_RUNTIME_DIR:-/tmp}/godot-scene-web}/quiet.lock}
 #

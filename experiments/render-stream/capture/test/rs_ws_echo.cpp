@@ -9,7 +9,7 @@
 //   --port 0 (default) binds an ephemeral port. Either way, the chosen port
 //   is printed on its own stdout line: "RS_WS_ECHO_PORT <port>", flushed
 //   before anything else, so a driving script can capture it.
-//   --token VALUE (gate2-design.md G2e) requires `Authorization: Bearer VALUE`
+//   --token VALUE requires `Authorization: Bearer VALUE`
 //   on both the WebSocket upgrade and every resource GET; omitted (the
 //   default), neither is checked.
 //
@@ -21,7 +21,7 @@
 //     own bytes through the inbound-text-only transport;
 //   - anything else is echoed back verbatim as text.
 //
-// HTTP GET (gate2-design.md G2c1): this binary also registers a
+// HTTP GET: this binary also registers a
 // grc::live::ResourceSource (TestResourceSource, below) with the server, so
 // the same port serves `GET <resource_prefix><hash>` alongside the
 // WebSocket path. The source holds a handful of fixed, hash-named bodies

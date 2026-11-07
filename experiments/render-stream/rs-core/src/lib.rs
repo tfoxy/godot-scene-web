@@ -1,4 +1,4 @@
-//! `render-stream-core` (gate7-design.md D29, D30, Q14a): one crate that decodes, validates and
+//! `render-stream-core`: one crate that decodes, validates and
 //! resolves render-stream/2 to /6 behind one `version` parameter, keeps the retained state, and
 //! lowers it through D7's applier to `gsw-canvas-draw-list`'s packed list. It depends only on that
 //! list, `sha2` and a JSON parser, with no wasm-bindgen, web-sys, wgpu or Godot crate, so every

@@ -8,9 +8,9 @@
 // what makes the message so misleading: the controller outlives the session that started it.
 //
 // The lever is a BROWSER-LEVEL `Tracing.end` (`{ flat: true }`, no sessionId). Sending `Tracing.end`
-// on each attached page session answers "Tracing is not started" and clears nothing — that was
-// measured on the phone during this round, on Chrome 151, across all 6 page targets plus an iframe.
-// These tests pin exactly that, because a "defensive cleanup" that quietly sends the wrong thing
+// on each attached page session answers "Tracing is not started" and clears nothing, on every page
+// target and iframe alike. These tests pin exactly that, because a "defensive cleanup" that quietly
+// sends the wrong thing
 // looks identical in the code and fixes nothing.
 
 import { describe, expect, it, vi } from "vitest";
@@ -118,7 +118,7 @@ describe("startTracing", () => {
   });
 
   it("clears a stale controller and RETRIES once", async () => {
-    // The exact failure that bit this workstream twice in one session.
+    // The stale controller an interrupted run leaves behind.
     const client = fakeClient((method, call) => {
       if (method === "Tracing.start" && call === 1) {
         return new Error(

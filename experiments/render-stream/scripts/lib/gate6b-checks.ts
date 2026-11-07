@@ -1,4 +1,4 @@
-// Gate 6b checks (protocol/gate6-design.md "G6b", "Q3a", "Q3b", "Q5", "Q6h", "Q7b"): the
+// Gate 6b checks: the
 // render-stream/6 switch's own legs -- presentation (the HD fixture captured at
 // presentation:960x540 and replayed by 960x540 receivers that adopt the session's stretch), canvas
 // layers (the HUD CanvasLayer carried with its stacking), snap-to-pixel typed at arm, the

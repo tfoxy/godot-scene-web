@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # Private-gamescope lifecycle for Gate -1's RENDERED legs. Sourced (not executed) by
-# run-gate-minus1.sh. Modeled on ../../../../sts2-couch-coop/scripts/bring-up-gamescope-instance.sh
-# and the isolated-display rules in that repo's docs/agents/qa-recipes.md section 2.x.
+# run-gate-minus1.sh.
 #
-# WHY GAMESCOPE AND NOT XVFB: see qa-recipes.md section 2.x and the project memory
-# `xvfb-does-not-isolate-on-wayland` -- Xvfb does not reliably isolate a headed Godot/Chromium
-# process on this box, and this repo's own guard (scripts/claude-guard-bash.sh) blocks nested
+# WHY GAMESCOPE AND NOT XVFB: Xvfb does not reliably isolate a headed Godot/Chromium
+# process on a Wayland box, and this repo's own guard (scripts/claude-guard-bash.sh) blocks nested
 # xvfb-run outright. `gamescope --backend headless` gives a real GPU-backed X11 display with no
 # surface on the user's desktop. NEVER fall back to Xvfb or a desktop display from here: if
 # gamescope fails to start or dies, the caller's leg fails -- there is no second path.
@@ -18,7 +16,7 @@
 #   gs_verify_display_ownership "$GS_DISPLAY" "$GS_PID" "$GS_SID" "$GODOT_PID" "$RUN_DIR/display-ownership.json"
 #   gs_teardown "$RUN_DIR"
 #
-# RS_DISPLAY_MODE (docs/remote-compute.md, Decision 10): unset or `gamescope` is the only local
+# RS_DISPLAY_MODE: unset or `gamescope` is the only local
 # display. `xvfb-llvmpipe` is a CI-only display for GitHub-hosted runners, which have no GPU:
 # gamescope needs a DRM-backed Vulkan device (on lavapipe it stops at "physical device doesn't
 # support VK_EXT_physical_device_drm"), so there gs_start runs Xvfb, under the same setsid session
@@ -240,7 +238,7 @@ JSON
 # caller passes the ones a leg wants through GS_GODOT_ENV (an array of NAME=value words).
 GS_GODOT_ENV=()
 
-# The variables a launcher must never inherit (gate0-design.md "Environment"): gate -1's GRC_*
+# The variables a launcher must never inherit: gate -1's GRC_*
 # five plus its two spike screenshot variables, gate 0's stream and sabotage variables, and the
 # documented RS_* fixture/receiver variables. gs_strip_env_args adds every other inherited RS_* on
 # top, so a future fixture variable cannot leak in from the caller's shell either.
@@ -250,28 +248,28 @@ GS_STRIP_VARS=(
 	GRC_STREAM_OUT GRC_SABOTAGE GRC_SABOTAGE_FRAME
 	RS_FIXTURE_STEP_LOG RS_FIXTURE_SHOT_DIR RS_FIXTURE_VARIANT RS_FIXTURE_QUIT_FRAME
 	RS_RECEIVER_RECORDING RS_RECEIVER_OUT RS_RECEIVER_SHOT_SEQS RS_SELFTEST_GOLDEN_DIR
-	# gate 1 (protocol/gate1-design.md): every variable it introduces, landed or not
+	# gate 1: every variable it introduces, landed or not
 	GRC_ROOT_SIZE GRC_STREAM_PATCH_OUT GRC_SABOTAGE_OP
 	GRC_LIVE_LISTEN GRC_LIVE_TAP_DIR GRC_LIVE_MAX_MESSAGE_BYTES GRC_LIVE_HELLO_TIMEOUT_MS
 	RS_FIXTURE_ROOT_LOG RS_FIXTURE_START_FRAME RS_FIXTURE_STEP_FRAMES RS_FIXTURE_SHOT_FRAMES RS_FIXTURE_TIE
 	RS_RECEIVER_MODE RS_RECEIVER_STATE_SEQS RS_RECEIVER_URL RS_RECEIVER_SHOT_WINDOWS
 	RS_RECEIVER_RECEIVED_OUT RS_RECEIVER_INBOUND_BYTES RS_RECEIVER_CREDIT_STAGE
 	RS_RECEIVER_CONNECT_TIMEOUT RS_RECEIVER_STALL RS_RECEIVER_RECONNECT RS_RECEIVER_RESYNC
-	# gate 2 (protocol/gate2-design.md): every variable it introduces, landed or not
+	# gate 2: every variable it introduces, landed or not
 	GRC_RESOURCE_FORMATS GRC_RESOURCE_MAX_PAYLOAD_BYTES GRC_RESOURCE_STORE_DIR
 	GRC_RESOURCE_INLINE_MAX_BYTES GRC_RESOURCE_BUDGET_BYTES GRC_LIVE_AUTH
 	RS_FIXTURE_TEXTURE_LOG
 	RS_RECEIVER_CACHE_DIR RS_RECEIVER_CACHE_MODE RS_RECEIVER_STORE_DIR RS_RECEIVER_FETCH_TIMEOUT_MS
 	RS_RECEIVER_FETCH_DELAY_MS RS_RECEIVER_SABOTAGE RS_RECEIVER_TOKEN_FILE
-	# gate 4 (protocol/gate4-design.md Q7): the glyph oracle and the fixture environment log
+	# gate 4: the glyph oracle and the fixture environment log
 	RS_FIXTURE_GLYPH_LOG RS_FIXTURE_ENV_LOG
-	# gate 5 (protocol/gate5-design.md Q7): the mesh oracle
+	# gate 5: the mesh oracle
 	RS_FIXTURE_MESH_LOG
-	# gate 5.5 (protocol/gate5_5-design.md Q7): the material oracle, the shader policy and library
+	# gate 5.5: the material oracle, the shader policy and library
 	RS_FIXTURE_MATERIAL_LOG GRC_SHADER_POLICY RS_RECEIVER_SHADER_LIBRARY
-	# gate 6 (protocol/gate6-design.md Q3c, Q3d, Q5; G6r): rate control, admission and perf
+	# gate 6: rate control, admission and perf
 	GRC_PUBLISH_FPS GRC_LIVE_MAX_CONNECTIONS GRC_HOOK_LOG RS_RECEIVER_PERF_OUT RS_RECEIVER_LOG
-	# gate 7 (protocol/gate7-design.md Q3, G7n): the /7 listener's Origin allowlist and window cap
+	# gate 7: the /7 listener's Origin allowlist and window cap
 	GRC_LIVE_ALLOWED_ORIGINS GRC_LIVE_CREDIT_WINDOW_MAX
 )
 
@@ -291,7 +289,7 @@ gs_strip_env_args() {
 		*) GS_STRIP_ARGS+=(-u "$name") ;;
 		esac
 	done < <(compgen -e | grep -E '^(RS|GRC)_' || true)
-	# HC4a (protocol/host-cost-design.md "Byte-identity proof method"): HC_SHADOW=1 in a runner's
+	# HC4a: HC_SHADOW=1 in a runner's
 	# environment (never an RS_/GRC_ name: those are stripped) turns the capture's shadow oracle on
 	# in every launch (GRC_HC_SHADOW=1: each snapshot also built by the full walk and compared, the
 	# stream ended at the first difference). validate-increment.sh sets it for the full tier's
@@ -306,7 +304,7 @@ gs_strip_env_args() {
 	fi
 }
 
-# G7q/G7wd (gate7-design.md D4, fork F1 resolved 2026-10-22): GATE7_CREDIT_WINDOW=1|2 in a runner's
+# G7q/G7wd: GATE7_CREDIT_WINDOW=1|2 in a runner's
 # environment (never an RS_/GRC_ name: those are stripped) runs its live legs at that credit
 # window. A live host (an env word GRC_LIVE_LISTEN=) gets GRC_LIVE_CREDIT_WINDOW_MAX=<window>
 # unless the leg sets it; browser receivers ask for it (lib/legs.sh run_browser_receiver), and

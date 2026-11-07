@@ -1,4 +1,4 @@
-// CAR3 interop (protocol/carrier-design.md CAR3 "Checks", D2, D13, Q4): one live host, two
+// CAR3 interop (CAR3 "Checks", D2, D13, Q4): one live host, two
 // carriers, one scene. capture/build/rs_live_host runs the production Hub over the CarrierSet
 // with `ws` (rs_ws) and `wt` (the net module, librender_stream_net.so); a Node WebSocket client
 // and the wtransport probe (rs-net/target/release/rs-net-probe) each send a /7 hello and read
@@ -9,7 +9,7 @@
 //     record last, and the same close code (CLOSE_WEBTRANSPORT_SESSION maps 1:1, Q4.5);
 //   - a resource stream (gzip accepted) answers 200 with the served body;
 //   - live-carriers.json records both carriers, wt on udp with the certificate's SHA-256.
-// The track leg (TRK3, protocols/tracks-design.md Q7): the same host with --tracks=input, the
+// The track leg (TRK3, protocols/): the same host with --tracks=input, the
 // probe on `?protocol=render-stream-track.1` with a track-hello, `--send` texts on the live stream
 // and `--uplink` texts in an uplink batch: the host's test receiver records `opened` (carrier wt),
 // every payload in order and one `closed`; the probe reads track-ready and the echoes; a resource

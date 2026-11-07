@@ -7,9 +7,9 @@
 // one is the DRIVER's number for the process, so a claim like "hb-atlas costs 1.45 MiB of atlas" can
 // be checked against what the GPU is actually holding.
 //
-// THE TRAP THIS FILE EXISTS TO AVOID: `<fb_memory_usage><used>` is the BOX-WIDE total (measured on
-// this box: 981 MiB, carrying gnome-shell, VS Code, sunshine, nautilus and the developer's own
-// Chromium). It is never read here. The only number that leaves this module comes from a
+// THE TRAP THIS FILE EXISTS TO AVOID: `<fb_memory_usage><used>` is the BOX-WIDE total, carrying
+// every other process on the GPU (the desktop shell, editors, other browsers). It is never read
+// here. The only number that leaves this module comes from a
 // `<process_info>` whose pid is a DESCENDANT of the Chrome this run spawned and whose command line
 // carries `--type=gpu-process`. Anything else would publish other people's textures as ours.
 //

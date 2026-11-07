@@ -1,5 +1,5 @@
 extends RefCounted
-## The gate 6 combined scene (../../protocol/gate6-design.md "Q6b", "Q6c", "Q6d"), built under one
+## The gate 6 combined scene, built under one
 ## top-level `Scene` Control. One instance is one 640x360 copy: `gate6_scene.gd` builds one at the
 ## origin (cell 0, phase 0); G6h's `gate6-hd` builds nine, each with its own origin, cell index c
 ## (TEXA content offset 100c, HUD layer 1 + c) and phase phi (frames).
@@ -519,7 +519,7 @@ func build(parent: Node, at: Vector2, cell_index: int, phase_frames: int, varian
 	parent.add_child(scene)
 	# PB's minimum size first comes from the theme's 16 px font (100% at 16 px: 4 + 23); in the
 	# tree it is the override's 12 px, but a free Control never shrinks to a smaller minimum on
-	# its own (memory rs-g4c-layout-facts): set the box again.
+	# its own: set the box again.
 	pb.size = PB_SIZE
 	le.select(0, 4)
 	le.grab_focus()
@@ -809,7 +809,7 @@ func apply_step(step: int) -> void:
 	marker.set_color(MARKER_COLORS[step])
 
 
-## G6c (gate6-design.md "As built (G6c)"): what step 11's freeze leaves time-dependent -- the
+## G6c: what step 11's freeze leaves time-dependent -- the
 ## `animate` writes it does not reset (SC's scroll, LB's text, CD's k). A realtime host's freeze
 ## lands at whatever game frame the wall clock reached, and a game frame it skipped skips that
 ## frame's write too, so the owner logs these at step 11 and a reference reproduces them exactly

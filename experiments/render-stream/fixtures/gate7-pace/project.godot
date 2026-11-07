@@ -1,4 +1,4 @@
-; Gate 7 pace fixture for the render-stream capture experiment (G7d, gate7-design.md Q13d `pace`).
+; Gate 7 pace fixture for the render-stream capture experiment (G7d, `pace`).
 ; One 32x32 opaque texture on a 640x360 root, moving 1 px per host frame and wrapping, so every
 ; transaction after the first is one transform patch. See README.md.
 

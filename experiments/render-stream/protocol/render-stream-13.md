@@ -1,43 +1,28 @@
 # render-stream/13 wire format
 
-Status: **frozen** (2026-10-31). The wire is W13r, accepted by W13z after the milestone sweep
-(`scripts/remote-validate.sh --milestone --base bc709e08 --and-local`, run 41236343023). W13a
-(2026-10-29) built the predicted blocks under /12's JSON meta at the wire
-level (codecs, goldens, validators); "As built (W13a)" is the normative spec of what is built.
-W13b (2026-10-29) made the capture emit it ("As built (W13b): capture"), W13c (2026-10-29) made
+Status: **frozen**. The wire is W13r's. W13a built the predicted blocks under /12's JSON meta at
+the wire level (codecs, goldens, validators); "As built (W13a)" is the normative spec of what is
+built. W13b made the capture emit it ("As built (W13b): capture"), W13c made
 GSW and the render-stream client accept it ("As built (W13c): GSW"), W13d the native receiver and
 the web export ("As built (W13d): native and web"). The
 binary transaction syntax below is **deferred** ("Staging") and BIN-D declined it; BIN-D chose
-the compact residual (W13r) instead ("Decision (BIN-D)"). The rest of this text is WB-D's design
-(2026-10-29). The measurements behind every number are
-in [results/p3/wb-d.md](../results/p3/wb-d.md), made with `scripts/lib/wire-budget.py proto13`, a
+the compact residual (W13r) instead ("Decision (BIN-D)"). The rest of this text is WB-D's design.
+Its numbers were made with `scripts/lib/wire-budget.py proto13`, a
 Python prototype of this encoding that decodes every lossless message back to the recording.
 /13 builds on render-stream/12 ([render-stream-12.md](render-stream-12.md)). Like /8 to /12 it is
 **opt-in**. It is the format that freezes ("Versioning").
 
 ## Staging
 
-The orchestrator staged /13 after WB-D (2026-10-29): **W13a builds prediction only, under /12's
-existing JSON meta.** Prediction is the measured win (combat 13,311 → 6,412 B a frame coded with
-the JSON meta, 97 % of the full design's 6,171). The binary schema-driven transaction body
-("Binary transaction record", "The syntax", `schema.json`, the `binary-*` error codes) is deferred
-to a later, separate increment that is judged on its own merit (about 240 B a combat frame coded,
-the host's JSON formatting, three more writers and readers) before /13 freezes. Until then the
-sections that describe it are design text, not wire: where they and "As built (W13a)" disagree,
-"As built (W13a)" is the wire. If the binary body lands, it is a further change to /13 made before
-the freeze (W13z), not a new version, since no /13 stream is offered by default until then.
-
-TAG-D ([client-extensions-design.md](client-extensions-design.md) §4) adds an optional hello key
-(`item_meta`) and a JSON record type (`item_meta`) to /13 before the freeze. It reserves nothing in
-the transaction syntax beyond keeping item ids explicit; W13z waits for TAG1 and TAG2.
-
-The user lifted the hold on the binary syntax (2026-10-30). Whether to build it, together with the
-compact residual, is decided on its own long-term merit by BIN-D, before the freeze: see
-"Decision (BIN-D)".
+/13 is prediction under /12's existing JSON meta ("As built (W13a)"), with the compact residual
+("As built (W13r)") and item identity ("As built (TAG1)"). The binary schema-driven transaction
+body ("Binary transaction record", "The syntax", `schema.json`, the `binary-*` error codes) was
+declined ("Decision (BIN-D)"): the sections that describe it are design text, not wire. Where they
+and "As built (W13a)" disagree, "As built (W13a)" is the wire.
 
 ## Decision (BIN-D)
 
-BIN-D (2026-10-30, [results/p3/bin-d.md](../results/p3/bin-d.md)) decided: **build the compact
+BIN-D decided: **build the compact
 residual (W13r) as /13 before the freeze; don't build the binary syntax.** The measurements are on
 today's /13 (`pm7-a12-1` transcoded, W11t coding, warm patches):
 
@@ -47,20 +32,18 @@ today's /13 (`pm7-a12-1` transcoded, W11t coding, warm patches):
 | zstd input, raw B | 88,189 | 49,842 | 52,754 | 14,405 |
 | host zstd-3 encode µs (capture's zstd, desktop) | 98.0 | 69.3 | 70.1 | 44.9 |
 | receiver ruzstd decode µs (rs-core, native) | 132.8 | 69.5 | 119.1 | 61.8 |
-| the same on the g31, ms (≈ 13× native, estimated) | ~1.75 | ~0.92 | ~1.57 | ~0.82 |
 
 - **Why the compact residual.** zstd already codes the transposed residual's empty byte planes in
   a few bytes, so eliding them saves little wire (−180 B, −2.8 %). It does halve the input both
   ends' zstd must walk.
   - ruzstd decodes today's /13 combat 24 µs *slower* than /12 (109 µs). The compact residual
-    takes it to 70 µs, about −0.8 ms a combat message on the g31, on the receive-to-apply path.
+    takes it to 70 µs, on the receive-to-apply path.
   - The host's zstd falls by 29 µs a combat frame on HC5's encode thread. The scan is about 4 µs
     when fused into `code_words`, 16 µs as a naive byte loop.
   - It is one layout-free token format under the existing predictor. The meta stays JSON.
 - **Why not the binary syntax.** On top of the compact residual it would add:
   - −170 B a combat frame;
-  - −24 µs of host zstd and a projected ≤ 60 µs of JSON formatting, on the encode thread;
-  - about −0.25 ms a combat message on a g31 that is GPU-bound (PHV: main thread 40 % idle).
+  - −24 µs of host zstd and a projected ≤ 60 µs of JSON formatting, on the encode thread.
 
   Those gains would freeze a second syntax for the whole object model into four implementations
   and lose `jq` on every recording. The warm meta is 39 KB raw but 356 B coded, so its formatting
@@ -74,7 +57,7 @@ declined.
 
 ## Why
 
-WB ([results/p3/wb.md](../results/p3/wb.md)) left one item for "the final binary-structure swap":
+WB (render-stream-11.md "Warm wire budget (WB)") left one item for "the final binary-structure swap":
 mesh bodies coded against the previous pose, and a binary structure in place of canonical JSON. WB-D
 measured both on the newest STS2 recording, `pm7-a12-1` (/12, with multimesh and GPU particles),
 through W11t's base-prefix zstd-3. Warm combat, per frame:
@@ -84,7 +67,7 @@ through W11t's base-prefix zstd-3. Warm combat, per frame:
 | /12 as recorded | 88,154 | 13,311 | 6.39 |
 | /12 with JSON meta, /13's predicted blocks | 88,154 | 6,412 | 3.08 |
 | **/13 (binary structure + predicted blocks)** | **52,742** | **6,171** | **2.96** |
-| 1080p60 video (the user's baseline) | | 31,000–52,000 | 15–25 |
+| 1080p60 video (baseline) | | 31,000–52,000 | 15–25 |
 
 Three facts shape the design:
 
@@ -128,7 +111,7 @@ Everything else is /12's, and that is the design's main property: **/13 is a sec
 - Framing, the record sha256 (over the /13 record's own bytes), the carried-set rules, dynamic
   meshes, multimesh, particles, out-of-band delivery, HTTP routes, the hello (under `protocol`
   `"render-stream/13"`) and W11t's live coding are /12's.
-- Like /3 to /12 (memory `g4e1-rs3-version-switch-pattern`) /13 is not a forked module:
+- Like /3 to /12, /13 is not a forked module:
   `ProtocolVersion::V13`, TypeScript `version` widens to `2..=13`, the Rust `version: u8`
   likewise. The binary syntax is a parse/write layer under the existing decoders.
 
@@ -321,13 +304,13 @@ Why it stays out:
 
 - **No bound proves pixel identity.** The GPU snaps each vertex to its subpixel grid (8 bits on
   current hardware) and samples coverage at pixel centres. Any change to a position, however
-  small, can move a vertex across a snap boundary or an edge across a pixel centre (the tie that
-  memory `g7t-godot-y-up-tie-rule` describes). So a quantized stream is not pixel-identical to the
+  small, can move a vertex across a snap boundary or an edge across a pixel centre (Godot draws 2D
+  targets y-up, so a y-down receiver flips pixel-centre ties). So a quantized stream is not pixel-identical to the
   host. Its error can only be measured, as a band, by replay.
 - **The parity stream does not need it.** Lossless /13 is already 2.96 Mbps in warm combat,
   5–8× under the video baseline, and the rest of the gap belongs to the
   host (HC), not the wire.
-- **The user's rule** (memory `render-stream-pure-client-first`) puts anything that departs from
+- **The parity-first rule** puts anything that departs from
   parity into opt-in modules. A quantized tier would be one: a hello key
   (`"positions":"q64"`), its own encode per (T−2, T−1, T, tier), a `q-band` check (native and GSW
   replays of the lossless and quantized streams of one recording, max channel difference and
@@ -336,7 +319,7 @@ Why it stays out:
 
 ## Host cost
 
-All per-(T−2, T−1, T) formation, so it belongs on HC5's encode thread (host-cost-design.md D4). The
+All per-(T−2, T−1, T) formation, so it belongs on HC5's encode thread. The
 main thread gains only a reference count on T−2's state when it enqueues the job.
 
 | work, warm combat | /12 | /13 | basis |
@@ -358,9 +341,8 @@ HC5), which /13 does not touch.
 | un-predict + XXH64 | — | ~15–30 µs native | projected |
 | state | — | + ~90 KB (two poses a mesh) | from the recording |
 
-Natively the core's per-transaction work moves by about ±20 µs of 322 µs: a wash. On the g31
-(about 11× desktop wasm, memory `g7x-rust-core-phone-facts`) that is about ±0.2 ms a
-transaction. /13 is a network change, not a receiver speed-up. W13c measures it.
+Natively the core's per-transaction work moves by about ±20 µs of 322 µs: a wash. /13 is a
+network change, not a receiver speed-up.
 
 ## Validators and golden vectors (`golden-13/`, W13a)
 
@@ -407,7 +389,7 @@ byte.
 - **Receivers keep /11 and /12** (and everything below), as they keep /2 to /10: the decoders are
   version-parameterized, so an older stream costs nothing at runtime, and kept recordings stay
   replayable. A /12 and a /13 viewer on one host share snapshots, never encodes.
-- **The freeze.** The product hand-off (gate8-product-handoff.md) streams /13, and /13 is frozen:
+- **The freeze.** The streaming-host reference (streaming-host.md) streams /13, and /13 is frozen:
   any later change is a new version, as always, but no further syntax swap is planned. /11 and /12
   stay decodable and stop being offered by default.
 - The GDScript codec (`rs_wire.gd`) is not touched: the native receiver decodes in rs-core.
@@ -436,33 +418,8 @@ does and listed apart:
 
 ## Increments
 
-Each lands as one commit with its result doc. Timing legs stay real time and go to the milestone
-sweep.
-
-| Id | Scope | Fixture | Checks | Sabotages |
-| -- | ----- | ------- | ------ | --------- |
-| **W13a** | codecs, goldens, validators: `golden-13/` (schema.json, the generator, new states, invalid vectors); the C++ writer (`rs2_codec` V13: binary syntax, predictor, check) and reader for its tests; TypeScript (`render-stream-2.ts` version 13: binary reader to the /12 model, predictor history); rs-core (binary reader beside `fast.rs`, history in the `Validator`, `predict-check`); `rs-core-check transcode`; `rs-core-capi` `VERSIONS` gains 13 | `golden-13/`; the 13 kept recordings | "Validators and golden vectors": the three implementations byte-identical on every golden; decoded forms equal golden-12's; transcoded golden-12 invalid vectors keep their codes; the property test; `transcode` round trip on every kept recording, with its size report | `predict-stale` and `no-predict-reset` fail `predict-check` |
-| **W13b** | capture: /13 file sinks and listener offer under `GRC_STREAM_VERSION=13`; per-connection T−2 retention; the memo key (T−2, T−1, T, version); formation on HC5's encode thread if HC5 has landed, else where formation runs now | `fixtures/capture-scale`; `gate5-mesh` (g5c, g5e); `gate8-mm`; `gate8-pt` | `w13-equiv`: one host with a /12 and a /13 viewer; the /13 stream transcoded equals the /12 stream message for message. Byte identity below /13 (`cmp-rec.ts`, gates 1, 2, 5, 8 against `main`). `dyn-wire` at /13. `rs_live_test`: lockstep /13 viewers share coded bytes; a viewer after a resync forms its own. g8w11 `coding/` legs at /13 | `predict-stale` (host) fails `predict-check` in the Node viewer, which resyncs; `perturb-vertex` still fails `dyn-wire` |
-| **W13c** | GSW: offers `.13` under `RS_RECEIVER_PROTOCOL=13`; the accept path through rs-core's /13 reader | g7-5 and g7-2 groups at /13; gate 5 meshes; g8mm, g8pt | `gsw-band` on gate 5 meshes at /13; g8mm and g8pt GSW checks at /13; a `predict-check` resync leg; core profile (`profile-rs-core-wasm.mjs`) on `pm7-a12-1` transcoded: accept µs at /13 within +10 % of /12 | `no-predict-reset` (receiver) fails the resync leg's pixel check |
-| **W13d** | native receiver and web export: capi at /13, the shim unchanged (the planner sees the /12 model) | `gate5-mesh`, `gate8-mm`, `gate8-pt`, g7-5 web | g5c and g5e `reference` exact at /13; `mm-reference`, the g8pt checks; the web half of each | `no-predict-reset` as W13c |
-| **W13z** | STS2 acceptance | none (one game launch) | /13, window 2, W11t coding, GSW and native viewers, menu, map and combat: warm coded bytes within 10 % of the projection above; replay dB equal to /12's on the same recording (transcoded); a /12 and a /13 viewer of one host with equal resolved states at every shared frame; zero `predict-check` errors; host callback and formation split no worse than /12 (load-gated) | none in game |
-| **W13r** | the compact residual ("Decision (BIN-D)"), a /13 wire change before the freeze. Each of `mesh_f32`, `mesh_u8` and `mm_f32` carries its W13a coded bytes as zero runs: tokens `uvarint zeros, uvarint n, n literal bytes` until the plain length (descriptor `count` × width) is covered. The form is canonical: runs of 4 or more zero bytes are elided whole, shorter ones stay literal, and no empty token appears except a trailing zero run's. The record's block length is the token stream's; `count` stays /12's; `predict_check` stays over the reconstructed /12 blocks. New codes `zr-length` (a token passes the plain length, or the stream ends short or long) and `zr-noncanonical`. Writers: `make_golden.py` (the reference), C++ `rs13` (the scan fused into `code_words`, no second pass over the block), rs-core (expand into the un-predict's input), TypeScript `render-stream-2.ts` version 13; `rs-core-check transcode` both ways | `golden-13/` regenerated (every predicted-block vector) plus `invalid/zr-*.rs13`; the 13 kept recordings; `pm7-a12-1`; `fixtures/capture-scale`; `gate5-mesh`, `gate8-mm`, `gate8-pt` at /13 | Byte-identical across the four implementations on every golden, and the decoded forms equal golden-12's. The C++ typed coding equals `transcode --to 13` on all 4,955 `pm7-a12-1` transactions, and `wire-budget.py bin13`'s `j13_zr` bytes equal both. `transcode --roundtrip` holds on every kept recording. `cmp-rec.ts` capture-scale /12 identical, /13 changed only in the three blocks. `w13-equiv`, `rs_live_test`, the g8w11 /13 `coding/` legs, g8pt /13 and gate 5 meshes at /13 on GSW, native and web. `bin13-bench` and `examples/coded_decode` on `pm7-a12-1` combat: zstd encode ≤ 75 µs and ruzstd decode ≤ 80 µs p50 (desktop, from 98 and 133), the scan ≤ 6 µs. W13p's wasm `accept_us` at /13 not above today's 243 µs p50 in combat. STS2 replay of the new transcode byte-identical PNGs on GSW and native (no game launch) | `zr-overrun` (the writer emits one zero too many) fails `zr-length` in every decoder; `zr-short-run` (a 3-byte run elided) fails `zr-noncanonical`; `predict-stale` and `no-predict-reset` still fail `predict-check` |
-| **W13f** | capture only, wire unchanged: the live predictor reuses its history beside the memo; /13's state released on the encode thread; SIMD coding | `fixtures/capture-scale`; `pm7-a12-1` (a bench) | `rs_live_test`: a live predictor allocates no history state after its first three transactions; no prediction state is released on the main thread in a frame callback; byte identity (golden-13, `cmp-rec.ts` capture-scale /12 and /13 against `main`, `w13-equiv`); W13z's cost leg re-run | `predict-stale`, `reorder` still caught |
-
-**W13a as built** ("Staging", "As built (W13a)"): the predicted blocks under /12's JSON meta, with
-`predict_check` as a transaction key; no binary syntax, no `schema.json`, no `binary-*` vectors,
-no capi `VERSIONS` 13 (W13d's); results in [results/p3/w13a.md](../results/p3/w13a.md). W13b to
-W13z apply to that wire; the binary body, if it is built, is its own increment before W13z.
-
-Order: W13a → W13b → W13c and W13d in parallel → W13z. W13r (BIN-D) lands before the freeze,
-after TAG2 or beside it. The couch-coop seat already streams /13 (couch `7124aa83`), so the seat's
-capture and the client's core must come from the same GSW commit once W13r lands. A mismatch
-never draws wrong geometry, but it does not recover either:
-- A W13r client on a pre-W13r stream fails `zr-length` at the first transaction with a predicted
-  block. It resyncs with reason `coding`, and the resync's full fails the same way.
-- A pre-W13r client on a W13r stream fails `block-length` at framing. That is a hard stream
-  error, not a coding resync. W13b wants HC5 first (the encode thread
-is where formation goes), but does not need it: /13 formation is cheaper than /12's either way.
+/13 was built in increments (W13a to W13d, W13p, W13f, W13r, TAG1); each one's rules are its
+"As built" section below.
 
 ## Risks
 
@@ -618,7 +575,7 @@ emits it (W13b to W13d).
 
 ## As built (W13b): capture
 
-W13b makes the capture emit /13 (results in [results/p3/w13b.md](../results/p3/w13b.md)). The wire
+W13b makes the capture emit /13. The wire
 is "As built (W13a)"'s, unchanged; this section says what produces it.
 
 - **Opt-in.** `GRC_STREAM_VERSION=13` (`rs_gate8_policy`): file sinks write `.rs13` (`GRSD`,
@@ -659,7 +616,7 @@ is "As built (W13a)"'s, unchanged; this section says what produces it.
 - **The writer's cost.** `rs13::Predictor::encode` re-parses the meta it is given. Since W13b the
   writer (not the reader) skips the keys it does not read without validating them, and reads numbers
   with `from_chars`: about −23 % on capture-scale, the same bytes. It still costs more than the
-  design's projection (results/p3/w13b.md "Host cost").
+  design's projection.
 - **The Node viewer** (`scripts/lib/coding-receiver.ts --version 13`) un-predicts each transaction
   after W11t's decode (`createRs13Unpredictor`), resyncs with reason `coding` on `predict-check`,
   and drops the patches that arrive before the full unacked. It is W13b's receiver; GSW (W13c) and
@@ -669,13 +626,12 @@ is "As built (W13a)"'s, unchanged; this section says what produces it.
 ## As built (W13c): GSW
 
 W13c makes the GSW receiver (`web/gsw-receiver`, `web/gsw-rs`) and the private live client
-(`packages/render-stream-client`) accept /13 (results in [results/p3/w13c.md](../results/p3/w13c.md)).
+(`packages/render-stream-client`) accept /13.
 The wire is "As built (W13a)"'s; nothing a host sends changes.
 
 - **Opt-in.** `RS_RECEIVER_PROTOCOL=13` (file mode needs nothing: a `GRSD` recording is /13 by its
   magic) offers `render-stream.13` only, with /12's hello under `"protocol": "render-stream/13"`.
-  The client's endpoint takes `protocol: 13`; 12 stays what a product passes (couch-coop's seat
-  says `GRC_STREAM_VERSION=12`; switching it is W13z's call).
+  The client's endpoint takes `protocol: 13`.
 - **Accept.** rs-core's validator un-predicts (its /13 accept path, W13a); the module feeds
   `Validator::record_view(record)` (the reconstructed /12 record) to the dynamic-mesh and
   multimesh ingest, whose ranges index it. Nothing else in the module reads a transaction's blocks.
@@ -698,13 +654,12 @@ The wire is "As built (W13a)"'s; nothing a host sends changes.
 - **Cost** (`profile-rs-core-wasm.mjs`, pm7-a12-1 and its /13 transcode, wasm in Node, 5 repeats,
   exclusive lock): `accept_us` p50 216.7 µs at /12, 265.8 at /13 (+22.7 %, +49 µs: 38 in the
   un-predict, check and plain record, the rest the history); the core's per-transaction total p50
-  608.5 → 659.3 µs (+8.4 %). The design's +10 % on accept is missed (results/p3/w13c.md "Cost").
+  608.5 → 659.3 µs (+8.4 %). The design's +10 % on accept is missed.
 
 ## As built (W13d): native and web
 
 W13d makes the native receiver (`receiver/`, the Rust core through `rs-core-capi`) and the web
-export (the same receiver.gd and capi, built as the dlink side module) accept /13 (results in
-[results/p3/w13d.md](../results/p3/w13d.md)). The wire is "As built (W13a)"'s; the planner and the
+export (the same receiver.gd and capi, built as the dlink side module) accept /13. The wire is "As built (W13a)"'s; the planner and the
 C++ shim are unchanged: they see /12's model.
 
 - **Opt-in.** `RS_RECEIVER_PROTOCOL=13` offers `render-stream.13` only, with /12's hello under
@@ -739,8 +694,7 @@ C++ shim are unchanged: they see /12's model.
 
 ## As built (W13p): cost
 
-W13p cuts what W13b to W13d's prediction cost on the host and the receivers (results in
-[results/p3/w13p.md](../results/p3/w13p.md)). The wire is "As built (W13a)"'s, byte for byte: the
+W13p cuts what W13b to W13d's prediction cost on the host and the receivers. The wire is "As built (W13a)"'s, byte for byte: the
 goldens, the C++ writer against rs-core's transcode on every pm7-a12-1 transaction, and the
 `/12 → /13 → /12` round trips are unchanged.
 
@@ -771,11 +725,11 @@ goldens, the C++ writer against rs-core's transcode on every pm7-a12-1 transacti
   transaction at /13 against /12's 3.02 (1.08×; main's /13 was 4.55, 1.51×), the predictor 0.23 M
   of it (was 1.35), and 2.01 M cycles against /12's 1.60 (1.26×); the predictor alone on pm7-a12-1 5.19 → 0.88 M instructions and 383 → 70 µs a
   patch (p50). Receivers: wasm accept +13.4 % over /12 (was +23.2 %), native +15.2 % (was
-  +20.6 %). The design's +10 % on wasm accept is still missed (results/p3/w13p.md "Receivers").
+  +20.6 %). The design's +10 % on wasm accept is still missed.
 
 ## W13z: the STS2 acceptance
 
-Results are in [results/p3/w13z.md](../results/p3/w13z.md). Four of the five criteria pass:
+Four of the five criteria pass:
 
 - **Bytes.** Combat 5,992.5 coded B a patch (2.88 Mbps), map 315.5 B, menu 390.9 B. The menu sits
   below the band because that scene instance is lighter.
@@ -791,30 +745,25 @@ The host-cost criterion **fails**:
 - **Main thread.** /13's history is released there.
 
 So the product stays at /12 until **W13f** (capture-only, wire unchanged) brings formation to /12's
-or below and moves the release to the encode thread. The couch-coop switch is ready on a branch.
+or below and moves the release to the encode thread.
 
-**After W13f** ([results/p3/w13f.md](../results/p3/w13f.md)), the main-thread half passes: no /13
+**After W13f**, the main-thread half passes: no /13
 history is released there. The formation half still fails. Combat formation is +12 % over /12
 across four A/B pairs, about +0.25 M cycles (≈ 0.07 ms) a frame on the encode thread, down from
 +31 %; the menu is +13–48 %. The predictor stays at about 0.6 M cycles a combat frame in the game
-because its cost there is cold memory, and zstd saves only 0.15–0.3 M of that. The switch waited
-for the orchestrator's decision on that residual.
+because its cost there is cold memory, and zstd saves only 0.15–0.3 M of that.
 
-**Accepted (2026-10-30).** The orchestrator accepted the residual: W13z's bar guards the main
-thread, which now matches /12, and the remaining ~0.07 ms a frame sits on HC5's encode thread, where
-/13 halves the seat's combat wire (8.45 → 3.49 Mbps). The couch-coop seat streams /13 since couch
-`7124aa83`.
+**Accepted.** The residual is accepted: W13z's bar guards the main
+thread, which now matches /12, and the remaining ~0.07 ms a frame sits on the encode thread, where
+/13 halves the seat's combat wire (8.45 → 3.49 Mbps).
 
-W13z does not freeze /13. The freeze is a later step before any release, after TAG1/TAG2 (item
-identity lands at /13, [client-extensions-design.md](client-extensions-design.md)) and the
-binary-syntax decision. A compact residual, which would recover the projected zstd saving, belongs
-with that decision. BIN-D took it: W13r builds the compact residual, and the binary syntax is not
+W13z does not freeze /13. The freeze follows item identity ("As built (TAG1)") and the
+binary-syntax decision: W13r builds the compact residual, and the binary syntax is not
 built ("Decision (BIN-D)").
 
 ## As built (W13f): live formation cost
 
-W13f is capture-only, and the wire is byte for byte W13a's. Results are in
-[results/p3/w13f.md](../results/p3/w13f.md).
+W13f is capture-only, and the wire is byte for byte W13a's.
 
 - **History reuse beside the memo.** When a predictor cannot refill the H2 that leaves its history
   (a live hub's memo keys its coding on H1 and H2 until the callback ends, and lockstep connections
@@ -842,8 +791,7 @@ W13f is capture-only, and the wire is byte for byte W13a's. Results are in
 
 ## As built (W13r): the compact residual
 
-W13r (BIN-D, "Decision (BIN-D)") changes the /13 wire in place, before the freeze. Results are in
-[results/p3/w13r.md](../results/p3/w13r.md). `golden-13/make_golden.py` (`zr_encode`, `zr_decode`)
+W13r (BIN-D, "Decision (BIN-D)") changes the /13 wire in place, before the freeze. `golden-13/make_golden.py` (`zr_encode`, `zr_decode`)
 is the reference; this section is normative and supersedes W13a's "a coded block has its plain
 block's length".
 
@@ -874,7 +822,7 @@ block's length".
     the limit), so a plain length of 6e9 fails the same way on a 32-bit `usize` as on a 64-bit one.
   - Blocks go in descriptor order, and the first failing block reports (the limit is checked when
     that block is reached).
-  - *Post-freeze hardening amendment (2026-11-03, fix batch B2).* /13 is frozen and the wire is
+  - *Post-freeze hardening amendment.* /13 is frozen and the wire is
     unchanged; only the decoders' limit is new, and no valid stream reaches it. 2^28 is 16× the
     host's default live message ceiling (`GRC_LIVE_MAX_MESSAGE_BYTES`, 16 MiB) and 4× its default
     resource payload ceiling (64 MiB). It keeps every block length /12-representable (its u32
@@ -912,7 +860,7 @@ block's length".
 
 ## As built (TAG1): item identity
 
-TAG1 ([client-extensions-design.md](client-extensions-design.md) "As built (TAG1)") adds, before the
+TAG1 adds, before the
 freeze, two optional things to /13. Neither enters the transaction syntax.
 - **The hello key `item_meta`.** It is the second optional key after `live_coding`.
 - **The JSON record type `item_meta`.** It is the end record's framing with `"blocks":[]`. It goes

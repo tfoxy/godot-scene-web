@@ -1,4 +1,4 @@
-// The transport seam (mirror-client-design.md "Transport seam"): the protocol loop sees only this
+// The transport seam: the protocol loop sees only this
 // interface. The default is a WebSocket (binaryType arraybuffer) for the stream and `fetch` for the
 // resource GETs, with `Authorization: Bearer` when a token is set. A later WebTransport or WebRTC
 // data-channel transport implements the same interface; the hello, credit and records do not change.
@@ -6,7 +6,7 @@
 import { type RenderStreamEndpoint, webSocketUrl } from "./endpoint";
 
 export interface RenderStreamTransport {
-  /** Which carrier this transport is (CAR8); absent on a custom transport. */
+  /** Which carrier this transport is; absent on a custom transport. */
   readonly carrier?: "websocket" | "webtransport";
   /** One control message (JSON text: the hello, an ack, a resync). */
   send(text: string): void;
@@ -83,7 +83,7 @@ export const webSocketTransport: RenderStreamTransportFactory = (
 };
 
 // ------------------------------------------------------------------------------------------
-// CAR5: carrier selection. The WebTransport code (`./webtransport`: framing, resource streams,
+// Carrier selection. The WebTransport code (`./webtransport`: framing, resource streams,
 // the resource cache) is a separate chunk, loaded by dynamic import only when the descriptor
 // offers `webTransport` and the page can open one, so a WebSocket-only page never loads it.
 
@@ -100,8 +100,8 @@ export function webTransportAvailable(): boolean {
   );
 }
 
-/** CAR11: whether this page runs on Android (`navigator.userAgentData.platform`, else the UA
- * string). `auto` prefers WebSocket there (carrier-design.md "As built (CAR11)"). */
+/** Whether this page runs on Android (`navigator.userAgentData.platform`, else the UA
+ * string). `auto` prefers WebSocket there. */
 export function isAndroidPage(): boolean {
   const nav = (
     globalThis as {
@@ -119,8 +119,8 @@ export function isAndroidPage(): boolean {
 
 export type RenderStreamCarrier = "auto" | "websocket" | "webtransport";
 
-/** CAR10: the close reason (prefix) of a WebTransport session whose client-to-host uplink could
- * not deliver a batch (carrier-design.md "As built (CAR10)"). The loop reconnects as for any
+/** The close reason (prefix) of a WebTransport session whose client-to-host uplink could
+ * not deliver a batch. The loop reconnects as for any
  * loss; `auto` reconnects over WebSocket for the client's lifetime. */
 export const UPLINK_STALLED = "uplink-stalled";
 
@@ -131,18 +131,18 @@ export interface CarrierDeps {
   webtransport?: () => Promise<RenderStreamTransportFactory>;
   /** `auto`: ms a WebTransport attempt may take to open (default 3000). */
   openTimeoutMs?: number;
-  /** CAR11: `auto` uses WebSocket when this returns true (default: `isAndroidPage`). An explicit
+  /** `auto` uses WebSocket when this returns true (default: `isAndroidPage`). An explicit
    * `webtransport` ignores it. */
   isAndroid?: () => boolean;
 }
 
-/** CAR5 (D14): the transport factory for a `carrier` option, one per client (the sticky fallback
+/** The transport factory for a `carrier` option, one per client (the sticky fallback
  * and the WebTransport cache live in it). `auto` uses WebTransport when the descriptor offers it
- * and the page can open one, and WebSocket otherwise (always WebSocket on Android, CAR11); if the WebTransport attempt closes before
+ * and the page can open one, and WebSocket otherwise (always WebSocket on Android); if the WebTransport attempt closes before
  * `open` (or takes `openTimeoutMs`, or its chunk fails to load), the same connect attempt is
  * retried over WebSocket and every later connect of this factory stays on WebSocket. A failure
  * after `open` is an ordinary close, except that `auto` also sticks to WebSocket after a session
- * that closed `uplink-stalled` (CAR10). `webtransport` never falls back: a failure is a close
+ * that closed `uplink-stalled`. `webtransport` never falls back: a failure is a close
  * without `open`. */
 export function carrierTransport(
   carrier: RenderStreamCarrier,

@@ -1,4 +1,4 @@
-// Gate 7 adapters for gates 1 to 6 (G7b; gate7-design.md "G7b", Q4, Q7, Q8, D11, D21, D34): the
+// Gate 7 adapters for gates 1 to 6: the
 // web-export receiver replays EVERY file receiver leg of a native source run of each gate, and each
 // gate's OWN checker judges the result, unforked.
 //
@@ -217,7 +217,7 @@ export type ExcludedReason =
  * web half with W11e (GATE8_FILE_GROUPS). Entries are source leg-path prefixes. */
 export const GSW_ONLY_SOURCE_GROUPS: readonly string[] = ["g8ku", "g8l/basis"];
 
-/** G8kwh (texture-delivery-design.md D3, "As built (G8kwh)"): a /9 delivery leg whose native and
+/** G8kwh: a /9 delivery leg whose native and
  * web receivers state different gpu_formats (each its own context's: a CI runner's llvmpipe GL has
  * ASTC, its ANGLE-on-lavapipe WebGL does not) makes different D3 choices by design, so its
  * applied.json and the textures' pixels differ from native. A description, or null when both state
@@ -432,7 +432,7 @@ export function webLegSpecs(
   return { specs, discovered };
 }
 
-/** WRP (results/p3/wrp.md): the legs whose web replay pins the lazy store's wait. g8pt's
+/** WRP: the legs whose web replay pins the lazy store's wait. g8pt's
  * deferred-cmbt fetches a payload mid-stream (J_LATE_SHADER's shader, seq 4) while emitters made
  * earlier simulate on the receiver's own clock, so any frame drawn during that wait moves every
  * later shot. */
@@ -825,7 +825,7 @@ export interface Gate7bClassification {
   shots: LegShotClasses[];
 }
 
-// --- P-W1's mismatch classes (G7b finding; results/gate7/g7b.md) ----------------------------
+// --- P-W1's mismatch classes (G7b finding) ----------------------------
 //
 // The root viewport's render target is RGB10_A2 on both platforms (texture_storage.cpp:2144-2149),
 // but `texture_2d_get` reads it back two different ways (texture_storage.cpp:1104-1198):
@@ -838,7 +838,7 @@ export interface Gate7bClassification {
 // paths, so it must be equal. A pixel that is not readback-consistent but differs by at most 1 level
 // in every colour channel is `delta1` (Q7's band: translucent blends and AA-feather vertex-colour
 // interpolation, where ANGLE/Vulkan converts the source colour to the target's levels before
-// blending -- memory g7c-gpu-blend-conversion-facts -- so v itself can differ by one 10-bit level).
+// blending, so v itself can differ by one 10-bit level).
 // Anything else is `other`: unexplained, and it fails.
 
 const READBACK_CONSISTENT: Uint8Array = (() => {
@@ -911,8 +911,7 @@ export interface LegShotClasses {
 
 /** PM6a (render-stream-12.md "As built (PM6a)"): the regions of a leg's shots whose pixels are
  * declared approximate between two receivers, as [x0, y0, x1, y1] inclusive, or null. g8pt's GPU
- * particles simulate on each receiver's own GPU (particles-multimesh-design.md "What exact means
- * here"), so web and native agree there only within g8pt's own banded checks (pt-lifecycle@web,
+ * particles simulate on each receiver's own GPU, so web and native agree there only within g8pt's own banded checks (pt-lifecycle@web,
  * pt-coverage@web); everywhere else P-W1's classes still hold (pt-outside-exact@web judges the
  * rest exactly against the reference). */
 export function approximateRegions(

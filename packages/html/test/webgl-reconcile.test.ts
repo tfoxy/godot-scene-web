@@ -221,7 +221,7 @@ describe("webgl runtime reconcile (persist + reconcile, Phase J)", () => {
   it("compiles ONE program for a burst of nodes sharing a shader", async () => {
     // The compile is in flight across a microtask now, so both creates reach `getProgramAsync`
     // before either has a cached program to find. Without the in-flight request map that window is
-    // two compiles of the same GLSL — on a phone, two driver stalls.
+    // two compiles of the same GLSL — two driver stalls.
     const root = document.createElement("div");
     const nodes = [0, 1, 2].map(() => {
       const made = shaderNode("res://shared-burst.gdshader");

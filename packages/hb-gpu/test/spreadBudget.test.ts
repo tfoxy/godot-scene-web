@@ -110,8 +110,8 @@ describe("hb-gpu spread tap budget", () => {
   it("spends at most the budget at any radius, and gives the outer ring the most of it", () => {
     // THE SAME CLAIM THROUGH THE FUNCTION THE SHADER ACTUALLY EVALUATES, including the `ceil` that
     // keeps a small radius cheap. The radii span the fixtures and the consumer: 3 px is the
-    // low-ppem spread case, 4 the "L", 12 the thin/dot-radial-wide case, 17.4 the phone at
-    // `outlinePx` 10 and DPR 3.49.
+    // low-ppem spread case, 4 the "L", 12 the thin/dot-radial-wide case, 17.4 `outlinePx` 10 at a
+    // phone's DPR of ~3.5.
     for (const radiusPx of [0.5, 1, 2, 3, 4, 6, 10.5, 12, 17.4, 64]) {
       const steps = stepsFor(radiusPx);
       console.log(

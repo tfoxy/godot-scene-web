@@ -13,7 +13,7 @@
  * THE TRAP THIS FILE IS BUILT AROUND, twice over. Timing the upload call by
  * itself measures almost nothing: `texImage2D`/`texSubImage2D` from a canvas
  * RECORDS a pending copy and returns. Nor does `gl.finish()` help — in Chrome it
- * returns in under one clock tick whatever is outstanding, measured on this box,
+ * returns in under one clock tick whatever is outstanding,
  * so a bracket built around it reads the same single tick at 0.26 MB and at
  * 14 MB. That is not a fast upload; it is an upload that has not happened yet.
  * Even the 2D `fillRect` that PRODUCED the source is deferred the same way.
@@ -50,7 +50,7 @@
  * - FRESHNESS. `dirty` repaints the whole surface before every iteration, which
  *   is what an animating effect does; `clean` paints once and re-uploads the same
  *   pixels. The gap between them is not the copy — it is what it costs to
- *   re-snapshot a canvas that has just been drawn into, and on this box it is the
+ *   re-snapshot a canvas that has just been drawn into, and it can be the
  *   LARGER half of a small surface's upload. A budget derived from `clean` would
  *   be a budget for effects that are not moving.
  */

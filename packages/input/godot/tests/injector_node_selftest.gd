@@ -1,5 +1,5 @@
 extends SceneTree
-## IN8: GswInputInjectorNode wiring in headless Godot (headless never loses focus, so the test
+## GswInputInjectorNode wiring in headless Godot (headless never loses focus, so the test
 ## sends the signals and notifications a desktop display server would):
 ##   - the root window's `focus_exited` and the application FOCUS_OUT notification both reach
 ##     `on_focus_lost()`: after Godot's release (emulated with a direct release event, as

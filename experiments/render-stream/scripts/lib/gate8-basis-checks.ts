@@ -1,5 +1,4 @@
-// Gate 8 group g8ku (G8ku, protocol/texture-delivery-design.md D1 `basis-uastc`, D6, D12, D13,
-// D14, D16): the checks over the evidence run-gate8.sh's g8ku legs write. Pure functions of the
+// Gate 8 group g8ku (G8ku, `basis-uastc`): the checks over the evidence run-gate8.sh's g8ku legs write. Pure functions of the
 // evidence tree (fixtures/gate8-basis/expected.json names what each texture must get).
 //
 //   g8ku/capture/                       /9 basis-uastc, GRC_TEXTURE_ENCODE_WAIT_FRAME=12: recording.rs9,
@@ -140,7 +139,7 @@ export const BASIS_HALF_MIP: [number, number, number, number] = [
 ];
 
 /**
- * G8kwh (texture-delivery-design.md "As built (G8kwh)"): the uastc textures D3 leaves `decoded` on
+ * G8kwh: the uastc textures D3 leaves `decoded` on
  * a receiver stating WebGL's BC alignment rule without an aligning transcoder (the web export):
  * level 0 not 4-aligned while a BC family is stated. Independent of rs-core's delivery.rs.
  */

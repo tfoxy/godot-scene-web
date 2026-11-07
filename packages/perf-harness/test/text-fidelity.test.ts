@@ -2,12 +2,11 @@
 //
 // The alignment guard's own arithmetic, on synthetic images with a KNOWN answer.
 //
-// This is the metric every per-pixel column in the fidelity table is licensed by, and it has been
-// wrong twice. The first implementation compared ink CENTROIDS, which move when an arm is displaced
-// but ALSO when its ink is merely redistributed — it read 0.40 px for `canvas2d` and 0.54 px for
-// `hb-run`, two arms that are actually within 0.03 px. The second refined the correlation peak with
-// a parabola through its integer neighbours, which peak-locks onto whole and half pixels and was
-// 0.135 px wrong at the quarters, against a 0.25 px tolerance. Both failure modes are tests here.
+// This is the metric every per-pixel column in the fidelity table is licensed by, and two plausible
+// implementations get it wrong. Ink CENTROIDS move when an arm is displaced but ALSO when its ink
+// is merely redistributed, so aligned arms read as displaced. Refining the correlation peak with a
+// parabola through its integer neighbours peak-locks onto whole and half pixels and is badly wrong
+// at the quarters. Both failure modes are tests here.
 //
 // The CHANNEL those columns are read on is pinned here too. `lumaOf` takes GREEN, because `dom` is
 // the only arm Chrome draws with LCD subpixel antialiasing and averaging the three channels of a
@@ -47,8 +46,8 @@ interface Image {
  *
  * ALL INK WELL INSIDE THE CORRELATION WINDOW (which excludes an 8 px border). Normalized
  * correlation divides by the norm of the SHIFTED reference window, so ink crossing the window's
- * edge changes the normalizer with the shift and biases the peak — measured at 0.42 px on a
- * fixture whose bars touched the border. The probe's own stills satisfy this by construction: the
+ * edge changes the normalizer with the shift and biases the peak by a large fraction of a pixel.
+ * The probe's own stills satisfy this by construction: the
  * run is inset 20 px in a box padded by 40.
  */
 function strokes(width: number, height: number, dx: number, dy: number): Image {
@@ -148,8 +147,8 @@ describe("registrationPx", () => {
   });
 
   it("resolves a sub-pixel shift at all", () => {
-    // Integer-only registration would report 0.00 for a 0.4 px offset, and 0.4 px is the scale of
-    // every bug this guard has caught. Rounding to the nearest whole pixel would make it blind to
+    // Integer-only registration would report 0.00 for a 0.4 px offset, and sub-pixel is the scale
+    // of the bugs this guard exists for. Rounding to the nearest whole pixel would make it blind to
     // exactly the failures it exists for.
     const reference = strokes(SIZE, SIZE, 0, 0);
     for (const dx of [0.5, -0.75, 1.4]) {
@@ -159,9 +158,9 @@ describe("registrationPx", () => {
   });
 
   it("does not peak-lock onto whole and half pixels", () => {
-    // The quarters are where a parabola through the peak's integer neighbours fails: it was exact
-    // at 0, 0.5, 1.0 and 1.5 and 0.135 px wrong at 0.25 and 0.75, which is over half the tolerance
-    // this metric is read against. A test that only checked halves would have passed that version.
+    // The quarters are where a parabola through the peak's integer neighbours fails: exact at whole
+    // and half pixels, off by over half the tolerance at the quarters. A test that only checked
+    // halves would pass that version.
     const reference = strokes(SIZE, SIZE, 0, 0);
     for (const dx of [0.25, 0.75, -0.25, 1.25]) {
       expect(
@@ -171,8 +170,8 @@ describe("registrationPx", () => {
   });
 
   it("says WHICH axis, not just how far", () => {
-    // "2.35 px" is an alarm; "2.35 px, all of it vertical" is a diagnosis, and it is what pointed
-    // at a baseline convention rather than at a pen-position bug.
+    // "2 px" is an alarm; "2 px, all of it vertical" is a diagnosis, and it points at a baseline
+    // convention rather than at a pen-position bug.
     const found = registrationPx(
       strokes(SIZE, SIZE, 0, 2),
       strokes(SIZE, SIZE, 0, 0),
@@ -185,8 +184,7 @@ describe("registrationPx", () => {
     // The real difference between an arm and the 8x reference is not a shift: it is that the two
     // lay down slightly different amounts of ink in different places (different advance rounding,
     // different stem darkening, and for `hb-run` a bilinear resample). Modelled here as one half of
-    // the frame inking 30% lighter — nothing MOVES, but the centroid does, which is exactly how the
-    // centroid version came to report 0.40 px for `canvas2d` and 0.54 px for `hb-run`.
+    // the frame inking 30% lighter — nothing MOVES, but the centroid does.
     const reference = strokes(SIZE, SIZE, 0, 0);
     const heavier: Image = {
       data: Uint8Array.from(reference.data, (v, i) =>
@@ -312,7 +310,7 @@ describe("cropBand", () => {
   it("clamps to the image rather than reading past it", () => {
     // A band computed from the layout and an image captured at a different size would otherwise
     // hand `acutanceOf` a short buffer, and every pixel past the end reads as 0 — i.e. as ink-free,
-    // which is the one thing this round must never silently report.
+    // which is the one thing this probe must never silently report.
     const image = { data: new Uint8Array(4 * 4), width: 4, height: 4 };
     expect(cropBand(image, { y0: -5, y1: 99 })).toMatchObject({
       width: 4,

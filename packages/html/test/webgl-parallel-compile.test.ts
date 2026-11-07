@@ -2,9 +2,7 @@
 //
 // The compile/link STATUS QUERY is where a driver's asynchronous shader compile becomes synchronous:
 // the answer does not exist until the compile has finished, so asking blocks the main thread until
-// it has. On a moto g86 5G that was the worst task of a combat trace — 267 ms, 166 ms of it in
-// `getProgramParameter` and 71 ms in `getShaderParameter`, inside a microtask, almost all of it
-// WAIT rather than CPU.
+// it has — WAIT rather than CPU, and on mobile drivers potentially the worst task of a frame.
 //
 // These tests pin the three things the split into `startProgram` / `ready()` / `finish()` has to
 // keep true: nothing blocking is asked before `KHR_parallel_shader_compile` says it will not block;
@@ -173,8 +171,7 @@ describe("startProgram — the status query is separable from the compile", () =
   it("settles a batch of compiles in ONE task, on ONE timer", async () => {
     // Per-program timers fire at independent moments, so N programs kicked together settle in N
     // different tasks — and a caller that batches DOM work per settle (the shader runtime's create
-    // burst, which exists to cost ONE layout flush for the run) is handed N batches of one. Measured
-    // against a real GPU before this was shared: 13 forced layouts in the create window, vs 2 after.
+    // burst, which exists to cost ONE layout flush for the run) is handed N batches of one.
     const timers = vi.spyOn(globalThis, "setTimeout");
     const order: string[] = [];
     const contexts = [0, 1, 2].map(() =>

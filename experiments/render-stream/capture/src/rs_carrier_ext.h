@@ -1,5 +1,4 @@
 // rs_carrier_ext: consumer carriers registered through grc_carrier_register (CAR6,
-// protocol/carrier-design.md D4, D5, D7, Q1, Q3 and "Writing a carrier").
 //
 // A consumer (a game, a mod, a native library, or a script through the RenderStreamCarrier
 // class) registers a grc_carrier_v1 before live starts. The capture copies the struct, gives it
@@ -8,7 +7,7 @@
 // into the CarrierSet at its index (through AbiCarrier); every one it does not list is destroyed
 // there and then, unstarted. After the close, grc_carrier_register returns -1 (`carrier-late`).
 //
-// Registration timing (carrier-design.md "Writing a carrier", "Registration timing"): live starts
+// Registration timing: live starts
 // when the capture arms. A capture loaded at engine startup (the project's extension list) arms in
 // its startup callback, after every autoload's _init(); a capture loaded at run time with
 // GDExtensionManager.load_extension arms inside that call unless GRC_ARM_DEFER_FRAMES defers the

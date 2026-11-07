@@ -542,7 +542,7 @@ Value m_opened(Instance *self, const Args &a) {
     std::lock_guard<std::mutex> lock(s.mu);
     if (s.conns.count(local) != 0) return boolean(false);
   }
-  // TRK1 (tracks-design.md Q7): admits by subprotocol, so a track subprotocol takes a track slot.
+  // admits by subprotocol, so a track subprotocol takes a track slot.
   // A subprotocol outside the track list keeps admit()'s behaviour exactly.
   const bool track = is_track_subprotocol(host, a[1].s);
   if ((track ? host->admit_subprotocol(host->host, local, a[1].s.data(), a[1].s.size())

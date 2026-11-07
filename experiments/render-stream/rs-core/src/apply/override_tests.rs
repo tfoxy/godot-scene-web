@@ -1,4 +1,4 @@
-//! TAG2 (client-extensions-design.md §3.2, §6): the override table in the applier. The oracle is
+//! the override table in the applier. The oracle is
 //! the game making the same change: a base state plus an override paints exactly what the
 //! variant state paints (`paint_digest`), through the walk, the rows-only path and the redraw
 //! path; each sabotage must be caught.
@@ -576,7 +576,7 @@ fn sabotage_inverse_skip_is_caught() {
     assert!(!near(p, [32.0, 213.0]), "inverse-skip not caught");
 }
 
-// ------------------------------------------------------------- FRZ-HOOK (frz-d.md §5, §6)
+// ------------------------------------------------------------- Frozen subtree
 
 /// A packed table of one frozen override (identity, white, visible).
 fn frozen_table(id: Id) -> (Vec<u32>, Vec<f32>) {

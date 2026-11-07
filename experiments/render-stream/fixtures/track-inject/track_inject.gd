@@ -1,5 +1,5 @@
 extends Node
-## TRK6 observer autoload (`TrackInject`; tracks-design.md Q6 "Built-in injection"): a stock
+## TRK6 observer autoload (`TrackInject`): a stock
 ## project with no script receiver and no gsw_input addon. The capture binds `input` itself
 ## (GRC_LIVE_TRACK_INPUT_INJECT=reference) and adds a node named `RsTrackInputInjector` under the
 ## root; this script finds it and only watches. It never touches the injector.

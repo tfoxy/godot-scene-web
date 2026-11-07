@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gate 6 group g6b (protocol/gate6-design.md "G6b", "Q7b"): the render-stream/6 switch's own legs.
+# Gate 6 group g6b: the render-stream/6 switch's own legs.
 # Sourced by run-gate6.sh after lib/legs.sh and lib/gate6h-legs.sh; it relies on run-gate6.sh's OUT,
 # SCENE_FIXTURE_DIR, HD_FIXTURE_DIR, RECEIVER_DIR, RECORDING_NAME, PATCH_RECORDING_NAME,
 # scene_capture and scene_receiver. It reuses g6a's scene/capture (the ignore-canvas-stacking
@@ -27,7 +27,7 @@
 #                               rendering/2d/snap/snap_2d_transforms_to_pixel=true (Q6d `snap`)
 #   import/                     the editor's --import of the copy
 #   capture/                    capture-snap: a headless capture of the copy, both sinks, the store
-# Under <out>/wide/ (PRES-A, gate6-design.md "Amendment (PRES-A)": viewer-aspect presentation):
+# Under <out>/wide/ (PRES-A, : viewer-aspect presentation):
 #   project/, import/           a scratch copy of fixtures/gate6-hd with override.cfg setting
 #                               display/window/stretch/aspect="expand" (the HD fixture otherwise
 #                               unchanged: logical 1920x1080, canvas_items), and its --import

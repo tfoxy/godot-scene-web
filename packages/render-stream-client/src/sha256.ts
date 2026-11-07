@@ -1,10 +1,9 @@
 // Pure-JS SHA-256 (FIPS 180-4), the loader's fallback where `crypto.subtle` is missing: it exists
-// only in secure contexts, so a plain-http LAN page has none (CAR8). Used only then.
+// only in secure contexts, so a plain-http LAN page has none. Used only then.
 //
 // Incremental, so that the loader can hash the core in chunks as they download and yield between
-// them. On a moto g31 the 2.5 MB core took ~280 ms in one call (750 ms at 4x CPU throttle) with the
-// first, DataView-per-word port: a main-thread block no deadline could interrupt. This version takes
-// ~170 ms (~410 ms at 4x), median of 7 cold runs.
+// them: hashing the 2.5 MB core in one call is a main-thread block on a slow device that no
+// deadline could interrupt.
 //
 // Written for V8's int32 paths: words are built from bytes with shifts, the state lives in locals
 // across all the blocks of one `update()` call, and the 64 rounds run unrolled by eight so that the

@@ -136,8 +136,8 @@ const ADD_FIXTURE = compositeFixture("composite-dot-add", 1);
  * NO CHROME FLAGS AT ALL — and that is a measurement, not an omission.
  *
  * The sibling launches with `--enable-unsafe-webgpu --enable-features=Vulkan`, which it needs to get
- * a WebGPU adapter. Passing the same pair here BREAKS THE THING UNDER TEST. Measured on this box
- * (headed Chromium under Xvfb, real NVIDIA adapter), with everything else held constant:
+ * a WebGPU adapter. Passing the same pair here BREAKS THE THING UNDER TEST. Measured headed under
+ * Xvfb on a hardware adapter, with everything else held constant:
  *
  *   flags                                blit `drawImage(glCanvas)`   a WebGL canvas on the page
  *   ---------------------------------    --------------------------   --------------------------
@@ -150,9 +150,7 @@ const ADD_FIXTURE = compositeFixture("composite-dot-add", 1);
  * canvas then yields NOTHING to `drawImage` — not a wrong colour, a fully transparent destination,
  * while `gl.readPixels` on the same pixel in the same task returns the right bytes. Since the entire
  * shipped WebGL pipeline is "render into one shared GL canvas, blit onto per-node 2D canvases", that
- * flag makes every effect on the page blank. (This is almost certainly what
- * `webgpuParityBrowser.test.ts`'s launch ladder recorded as "headed: the WebGL side comes back
- * EMPTY" — its every rung carries the flag, so headed was blamed for what the flag did.)
+ * flag makes every effect on the page blank.
  *
  * `beforeAll` VERIFIES the blit round-trips before any assertion runs rather than trusting this
  * comment: a silently blank canvas is exactly the shape of failure this file would otherwise

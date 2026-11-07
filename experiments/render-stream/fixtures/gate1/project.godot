@@ -1,8 +1,8 @@
 ; Gate 1 fixture for the render-stream capture experiment: eleven steps, each exercising one
 ; retained canvas behaviour (inherited modulate, transform-only moves, draw order, z, reparenting,
 ; visibility, content replacement, frees, re-attachment, the canvas transform), plus a
-; size-anchored ColorRect that exposes the headless root size. See fixtures/gate1/README.md and
-; ../../protocol/gate1-design.md ("Q6. Fixture") for the contract this implements.
+; size-anchored ColorRect that exposes the headless root size. See fixtures/gate1/README.md
+; for the contract this implements.
 
 config_version=5
 

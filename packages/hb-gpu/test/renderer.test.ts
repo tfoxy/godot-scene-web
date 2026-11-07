@@ -759,7 +759,7 @@ describe("the pass in a borrowed context", () => {
     // ON SCREEN, AT 2x, THAT IS INVISIBLE, which is exactly why it is asserted HERE as a uniform
     // rather than only in pixels. `hb_gpu_dilate` moves `position` and `texcoord` together, so the
     // shader's own ppem does not move with the quad and the extra fragments evaluate to coverage
-    // 0 — measured at zero differing bytes on ANGLE/NVIDIA. It bites in the other direction, when
+    // 0. It bites in the other direction, when
     // the buffer is smaller than design space and the AA rim is clipped off;
     // `packages/test-harness/test/canvasGlyphPixelXvfb.test.ts` is where both directions are put
     // through real pixels.

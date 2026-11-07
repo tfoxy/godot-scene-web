@@ -1,4 +1,4 @@
-// Gate 8 g8h checks (G8h, protocol/gate8-design.md D10 and "Q4. Host size at a late arm"): the
+// Gate 8 g8h checks: the
 // declared presentation size applied after adoption, judged on fixtures/gate8-size. The group
 // reuses g8a's born-armed equivalence (lib/gate8-adopt-checks.ts) and adds the size reads. The
 // pure helpers (sizeProblems, probeProblems, atlasProblems) are exported so

@@ -2,8 +2,8 @@
 ; (0..5) cumulatively add a colour span, a font_size span, a bold span (its own FontVariation
 ; cache), an italic span (its own FontVariation cache), a bgcolor span (an add_rect) and an
 ; outlined span (its own bitmap-outline cache), then append_text adds one more coloured span on a
-; new line. See fixtures/gate4-rich/README.md and ../../protocol/gate4-design.md ("G4d") for the
-; contract. Every font and text input is pinned here (gate4-design.md Q1e), copied from
+; new line. See fixtures/gate4-rich/README.md for the
+; contract. Every font and text input is pinned here, copied from
 ; fixtures/gate4/project.godot.
 
 config_version=5

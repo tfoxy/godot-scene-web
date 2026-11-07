@@ -1,6 +1,6 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 
-// G8kb2 check (texture-delivery-design.md "As built (G8kb2)"): for every KTX2 of a gate 8 basis-uastc
+// G8kb2 check: for every KTX2 of a gate 8 basis-uastc
 // store, GSW's transcoder wasm (family set astc|etc2, the phone's) produces ASTC 4x4, RGB files
 // included, and its blocks equal basisu 1.60's own native transcode to ASTC 4x4 byte for byte
 // (scripts/test/basis-astc-oracle.cpp: ktx2_transcoder called directly, no GSW wrapper), every level;

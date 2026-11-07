@@ -2,7 +2,7 @@
 """Write fixtures/gate5-mesh/expected.json (render-stream-gate5-mesh-expected/1) and ld_mesh.tres.
 
 Every number below is derived from the fixture's own parameters and the engine's mesh rules as
-read from the source (protocol/gate5-design.md Q1d-Q1f, Q6d), written down as code. Nothing here
+read from the source, written down as code. Nothing here
 runs or reads the engine: the capture's hook log, the reference's mesh oracle and the rendered
 reference have to agree with it, and a disagreement is a finding to explain from the source, never
 a number to copy.
@@ -36,7 +36,7 @@ The model (source lines are in ../godot-4.5.1-stable; `rs` is servers/rendering_
   frame (`free` first); on every other frame `update_vertex_region`, `update_attribute_region` and
   `mesh_set_custom_aabb`, then the item redraws (`canvas_item_clear` + `canvas_item_add_mesh`).
 - Freshness. A region is fresh at a step exactly when its modelled pixels change.
-- The wire and the receiver (G5e, gate5-design.md Q3b, Q5). Every item's settle commands are its
+- The wire and the receiver. Every item's settle commands are its
   /4 add_mesh (mesh by name, identity transform, white modulate, TEXG for DF). Each mesh's wire
   lifetime (created, last live frame, the frames a `freed` tombstone stays named) follows from the
   timeline, and the rendered receiver's mesh uploads per frame from the byte model frame by frame:
@@ -451,7 +451,7 @@ def oracle_view(step, frame):
 
 def census():
     """Every mesh line the hook log must hold, frame by frame, except DF's per-frame updates, which
-    are the rule in `df_rule`. Versions are the hook log's (gate5-design.md Q3b/Q3d: +1 per accepted
+    are the rule in `df_rule`. Versions are the hook log's (+1 per accepted
     mutating call). Lines are [mesh, op, version, surface|null, buffer|null]."""
     v = {name: 0 for name in MESH_ORDER}
     frames = {}
@@ -871,7 +871,7 @@ def step_of(frame):
 
 
 def layout(s):
-    """A surface's layout (gate5-design.md Q5): everything but the buffer bytes."""
+    """A surface's layout: everything but the buffer bytes."""
     return [s["primitive"], s["format"], s["vertex_count"], s["index_count"], len(s["vertex"]), len(s["attribute"]), len(s["skin"]), len(s["index"]), [f32(v) for v in s["aabb"]], s["uv_scale"]]
 
 

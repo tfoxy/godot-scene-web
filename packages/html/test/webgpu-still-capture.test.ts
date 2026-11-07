@@ -17,7 +17,7 @@
 //   - the guards on the canvas conversion, each of which is a real environment: SSR (no `document`),
 //     a byte count that does not match the stated size, and jsdom (no 2D context).
 //   - THE BLANK GUARD. A readback can come back entirely transparent while the surface was painting
-//     (headed Chromium on the default ANGLE backend does exactly that — docs/perf-harness.md, S8),
+//     (headed Chromium on the default ANGLE backend can do exactly that),
 //     and publishing it stands a PNG of nothing over a hidden canvas with every counter reporting
 //     success. The scan rides the unpremultiply loop; the VERDICT is only reached when the caller
 //     asserts coverage, because an invisible frame is also what a system with nothing to draw
@@ -184,7 +184,7 @@ function stubImageData(): void {
 /** How the stub context answers the write-back check's 1×1 `getImageData`:
  *   - `"absent"` (default): no such method, which is jsdom and every other stub in this file;
  *   - `"written"`: a working canvas, answering with the alpha the conversion just wrote there;
- *   - `"zero"`: the ACCELERATED-canvas failure measured headed on the default ANGLE backend — the
+ *   - `"zero"`: the ACCELERATED-canvas failure seen headed on the default ANGLE backend — the
  *     write is accepted and the canvas holds nothing;
  *   - `"throw"`: a context that refuses the read at all. */
 type ReadBack = "absent" | "written" | "zero" | "throw";
@@ -337,9 +337,9 @@ describe("canvasFromPremultipliedRgba", () => {
 
   // ---- the write-back check --------------------------------------------------------------------
   //
-  // The OTHER way this function can produce a picture of nothing, and the one measured on this box:
-  // the readback is fine and the 2D canvas keeps none of it (headed, default ANGLE — `putImageData`
-  // then `getImageData` read back 0 of 4,096 px, and the PNG was 272 bytes of nothing).
+  // The OTHER way this function can produce a picture of nothing: the readback is fine and the 2D
+  // canvas keeps none of it (headed, default ANGLE — `putImageData` then `getImageData` reads back
+  // nothing).
 
   /** A 2×2 frame with one solid pixel at (1, 0) — the witness the check reads back. */
   function withSolidPixel(): Uint8Array {

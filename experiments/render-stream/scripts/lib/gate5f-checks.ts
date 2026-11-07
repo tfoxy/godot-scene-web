@@ -1,4 +1,4 @@
-// Gate 5 group g5f (protocol/gate5-design.md "G5f"): live meshes through dropped presentations.
+// Gate 5 group g5f: live meshes through dropped presentations.
 // Live legs on fixtures/gate5-mesh with gate 1's and gate 2's live timeline (S=300, N=60,
 // LAST_STEP=9, quit=851 -- G5F_* below), reusing gate 2's live-resource machinery (G2cHost,
 // pinsReport, the HTTP/pin/retire checks) generalized to GRM1 mesh surface hashes, and gate 1's
@@ -6,7 +6,7 @@
 //
 // DF (fixtures/gate5-mesh's every-frame deforming mesh) is the one resource busy enough to stress
 // pins/retirement/coalescing continuously; every other mesh is static between its own step. DF's
-// band nature (gate5-design.md Q6d: "compared leg to leg only") means a per-step reference image
+// band nature ("compared leg to leg only") means a per-step reference image
 // is only exactly right for a shot taken at the SAME absolute frame as the reference's, and a live
 // shot can land a frame or two off its nominal settle frame from ordinary round-trip jitter (not
 // only a stall: DF's step-5 rebuild measurably delays one send by a frame on its own). A
@@ -19,11 +19,9 @@
 //
 // The sabotage is not confined to the stall, though: from its arm frame on, the host rewrites
 // EVERY coalesced send to carry the first missed target (`sent.stale_from` in its live log), and
-// under CPU load the 60 Hz credit loop phase-locks to every other frame (memory
-// rs-g55d-rs5-switch-facts), so ordinary sends outside the stall carry a one- or two-frame-old
+// under CPU load the 60 Hz credit loop phase-locks to every other frame, so ordinary sends outside the stall carry a one- or two-frame-old
 // snapshot too. A settle shot landing on one of those differs from reference-live in DF because
-// the wire deliberately holds an older DF, not because the receiver is wrong (the 2026-10-11 G5f
-// flake). On the sabotage leg only, receiver-vs-reference therefore judges such a checkpoint
+// the wire deliberately holds an older DF, not because the receiver is wrong. On the sabotage leg only, receiver-vs-reference therefore judges such a checkpoint
 // against the frame the wire says it carries: `stale_exact` (DF-only, and the tap's state at the
 // shot's frame equals the host's full recording at `stale_from` exactly).
 //
@@ -96,7 +94,7 @@ import type { ResolvedTransaction } from "./render-stream-2";
 import { statesEqual } from "./render-stream-2";
 
 /** The fixture also serves two ordinary textures over the same resource mechanism (TEXG, Q6a,
- * and the engine's default-theme hue strip, memory rs-g2a-texture-census-facts): pins, retirement
+ * and the engine's default-theme hue strip): pins, retirement
  * and GET-advertising are keyed by hash regardless of resource kind, so the "servable" and
  * "advertised" sets g5f checks against must union both kinds, not meshes alone. */
 function okResourceHashes(t: ResolvedTransaction | undefined): Set<string> {
@@ -298,7 +296,7 @@ export interface G5fCheckpoint {
   /** true when the only region differing from reference-live is DF (G5F_CONTINUOUS_REGION) and
    * the wire's resolved state at this shot's actual frame equals the host's full file recording
    * at that same frame: a benign effect of the live timeline (a shot lands a frame or two off its
-   * nominal settle frame -- gate1-design.md's "first applied transaction in the window" rule,
+   * nominal settle frame -- gate 1's "first applied transaction in the window" rule,
    * exercised here by ordinary round-trip jitter around DF's step-5 rebuild, not only a stall) on
    * a region that changes every frame, not a correctness problem. Null when there is no shot to
    * judge (seq === null) or no wire transaction at that frame to check against. */
@@ -963,7 +961,7 @@ export function checkMeshFetchesLatestOnly(evals: Evals): G2bCheck {
 /** The regions expected.json's `steps[].fresh` says change at any step applied during the stall
  * (steps_applied_during; the fixture's own per-step region table, make_expected.py's prediction,
  * never a diff of rendered shots): DF is in every step's `fresh` set (it changes every frame)
- * union the other regions the swallowed steps themselves touch (gate5-design.md Q6d -- step 2's
+ * union the other regions the swallowed steps themselves touch (step 2's
  * RM update and step 3's RM/DF/Marker change, both inside the 1:2000 stall, make RM and Marker
  * stale too, not only DF). */
 function regionsChangedDuringStall(
@@ -1040,7 +1038,7 @@ export function checkReceiverVsReferenceMesh(evals: Evals): G2bCheck {
       problems.push(`${leg}: not evaluated`);
       continue;
     }
-    // Windows wholly inside a stall have no shot at all (expected, gate1-design.md G1d); the
+    // Windows wholly inside a stall have no shot at all (expected, G1d); the
     // sabotage leg's own post-stall shot is deliberately non-benign and is the "stale-coalesce"
     // check's job, not this one's.
     const expectedMissed = new Set(ev.stall?.expected_missed_steps ?? []);
@@ -1084,8 +1082,7 @@ export function checkReceiverVsReferenceMesh(evals: Evals): G2bCheck {
 }
 
 /** What live-mesh-warm's cache could and did serve, judged from its own wire rather than from
- * live-mesh's: under CPU load the 60 Hz credit loop phase-locks to every other frame (memory
- * rs-g55d-rs5-switch-facts), so each leg's wire carries a different subset of DF's per-frame
+ * live-mesh's: under CPU load the 60 Hz credit loop phase-locks to every other frame, so each leg's wire carries a different subset of DF's per-frame
  * surfaces, and the warm wire can name payloads live-mesh never fetched (it must then GET them)
  * or skip ones it did (fewer cache hits). `cachedNamed` counts the ok payload hashes the warm
  * tap ever named that live-mesh fetched (= its cache); `uncachedNamed` the ones it did not. */
@@ -1137,8 +1134,7 @@ export async function checkWarmHostNoGetsMesh(evals: Evals): Promise<G2bCheck> {
     const w = warmCacheReport(live, warm);
     detail = `${w.gets} GETs, ${w.hits} cache hits = ${w.cachedNamed} payloads its wire named that live-mesh's cache holds${w.uncachedNamed.length > 0 ? ` (${w.uncachedNamed.length} named, not cached: ${w.uncachedNamed.map((h) => h.slice(0, 12)).join(",")})` : ""}, shots equal reference-live's`;
     if (warm.e.applied?.cache?.mode === "http-cache") {
-      // G7l: a browser receiver's cache is the cold leg's profile's HTTP cache (gate7-design.md
-      // Q4), which it fetches through: it fetches every payload its wire names, and the host
+      // G7l: a browser receiver's cache is the cold leg's profile's HTTP cache, which it fetches through: it fetches every payload its wire names, and the host
       // must have answered a GET for exactly the ones live-mesh never fetched.
       const served = new Set(
         httpGets(host.hook.lines)

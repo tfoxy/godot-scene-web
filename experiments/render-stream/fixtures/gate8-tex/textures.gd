@@ -1,5 +1,5 @@
 extends RefCounted
-## The gate 8 texture fixture's texture table (gate8-design.md Q3 "Fixture"), shared by
+## The gate 8 texture fixture's texture table, shared by
 ## make_sources.gd (which writes each source image and its `.import` settings into res://tex/),
 ## gate8_tex.gd (which draws them) and oracle.gd (which decodes them). Every source is
 ## synthetic and generated: nothing under res://tex/ is committed.

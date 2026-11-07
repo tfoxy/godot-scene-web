@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Gate 8 runner: drives the gate 8 fixtures through the legs of protocol/gate8-design.md "Q7.
-# Runner, legs, smoke map" for the groups that have landed, then runs check-gate8.ts.
+# Gate 8 runner: drives the gate 8 fixtures through the legs
+# for the groups that have landed, then runs check-gate8.ts.
 #
 #   bash run-gate8.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
@@ -42,7 +42,7 @@
 #       `late-workers` (late at GRC_TEXTURE_WORKERS=2, every copy on a delayed worker) and the
 #       three GRC_ADOPT_FAULT captures (no-resources, atlas-from-dummy, claim-current), the first
 #       two also through the receiver.
-#       LS1 (live-swap-design.md D4): `standby` (GRC_MODE=standby, the loader's frame-4 churn, never
+#       LS1: `standby` (GRC_MODE=standby, the loader's frame-4 churn, never
 #       armed: standby-hot-zero, registry-live-bound against the loader's own creates) and its two
 #       sabotages, `sabotage-standby-full-table` and `sabotage-standby-drop-tracked`
 #       (GRC_STANDBY_FAULT); the validation-log-cost group adds `n` (no extension) and `s`
@@ -72,7 +72,7 @@
 #       the GRC_ADOPT_FAULT=no-include-path capture (the typed shader-adopt-include); then, rendered,
 #       the unarmed `reference` with gate 5.5's material oracle (RS_FIXTURE_MATERIAL_LOG) and the
 #       native receiver on born, late (full and patch sinks) and the no-include-path capture.
-#       LAR3 (late-arm-registry-design.md, the shader/material row): `deferred/capture` (mat.tscn,
+#       LAR3: `deferred/capture` (mat.tscn,
 #       the extension loaded in the loader's _enter_tree and armed at K=12 with
 #       GRC_ARM_DEFER_FRAMES=11: every shader and material adopted from the registry, no getter),
 #       the `sabotage-registry-off/capture` (GRC_ADOPT_FAULT=registry-off: nothing recorded, the
@@ -80,7 +80,7 @@
 #       `sabotage-registry-skip-params/capture` (registry-skip-params: material_set_param not
 #       recorded; fails param-parity), and the native `deferred/receiver` and
 #       `deferred/receiver-patch` beside the late ones.
-#   g8kp (G8kp, texture-delivery-design.md D1 `passthrough`, D3; fixtures/gate8-tex; every leg
+#   g8kp (G8kp, `passthrough`; fixtures/gate8-tex; every leg
 #       under g8kp/): the import and oracle (shared with g8t when both run; the oracle also writes
 #       each .ctex's block bytes as <name>.<family>.block.grt1), then headless /9 captures under
 #       GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=passthrough (`capture`, full and patch
@@ -95,7 +95,7 @@
 #       gate8-delivery-tool.ts (the rs-core wasm and the GSW bundle are built first); then the web
 #       export on the same launch (`g8kp-web/web`, G8kf), BC masked (`g8kp-web/web-masked`) and
 #       stating etc2 without its WebGL extension (`g8kp-web/sabotage-advertise-etc2/web`, G8kwh).
-#   g8kc (G8kc, texture-delivery-design.md D7-D10: the persisted host texture cache, the prepare step
+#   g8kc (G8kc, : the persisted host texture cache, the prepare step
 #       and the texture_set_path hook; fixtures/gate8-tex; every leg under g8kc/, all headless): the
 #       import and oracle (shared), then /9 passthrough captures with GRC_TEXTURE_DECODE=engine:
 #       `off/capture` (no cache directory: the control), `cold/capture` (an empty cache directory:
@@ -119,7 +119,7 @@
 #       inject (TRK6: GRC_LIVE_TRACK_INPUT_INJECT=reference on fixtures/track-inject and
 #       track-inject-addon, the same client and checks, plus config, refusal and two sabotage legs)
 #       and wss. G8L_ONLY=trk,inject runs just those two (a local iteration knob).
-#   g8ku (G8ku, texture-delivery-design.md D6, D12, D14, D16 `basis-uastc`; fixtures/gate8-basis;
+#   g8ku (G8ku, `basis-uastc`; fixtures/gate8-basis;
 #       every leg under g8ku/): the fixture import; headless /9 captures under
 #       GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=basis-uastc GRC_TEXTURE_ENCODE_WAIT_FRAME=12
 #       (`capture`: the lazy uastc variants publish at frame 12, full and patch sinks and the store),
@@ -135,11 +135,11 @@
 #       one KTX2 with Accept-Encoding: zstd, `live/host/ktx2-get.*`); last, in headless Chromium,
 #       the web export on `receiver-upgrade`'s own launch (`g8ku-web/web`, beside g8ku/) through
 #       gate8-delivery-tool.ts web-legs.
-#   g8c (P3-CT, gate8-design.md "As built (P3-CT)": images drawn only through a CanvasTexture's
+#   g8c (P3-CT, : images drawn only through a CanvasTexture's
 #       diffuse, fixtures/gate8-ct; every leg under g8c/): the fixture and receiver imports; then,
 #       in one private 640x360 gamescope, the unarmed `reference`, the /8 `capture` on that
-#       RENDERED host (a headless host's dummy storage allocates no canvas texture,
-#       canvas-texture-headless.md; both sinks and the store; its own shots too), and the native
+#       RENDERED host (a headless host's dummy storage allocates no canvas texture;
+# both sinks and the store; its own shots too), and the native
 #       receiver on the full and patch sinks (`receiver`, `receiver-patch`). HSD (render-stream-12.md
 #       "Headless defaults (HSD)"): before the gamescope, two HEADLESS /12 captures of the same
 #       fixture, the streaming seat's shape: `headless/capture` with the headless defaults (the
@@ -182,7 +182,7 @@
 #       `scale13/v12` and `mesh13/v12`, and the coding legs at /13 under `coding13/` (Node viewers
 #       un-predicting each transaction; `live` with a /12 viewer beside them; host sabotage
 #       `sabotage-predict-stale`), judged by lib/gate8-w13-checks.ts.
-#   g8tag (TAG1, client-extensions-design.md "As built (TAG1)": item identity, `item_meta` at /13,
+#   g8tag (TAG1, : item identity, `item_meta` at /13,
 #       fixtures/tag-scene; every leg under g8tag/): the fixture import; then headless hosts armed
 #       late with GRC_ADOPT=arm and GRC_UNKNOWN_ITEM=skip at /13 under GRC_ITEM_META (all six
 #       names), each writing the fixture's oracle (RS_FIXTURE_TAG_LOG) and the capture's id log
@@ -195,7 +195,7 @@
 #       grant set, nobody asks: the host resolves nothing) and the GRC_ITEM_META_SABOTAGE legs
 #       `sabotage-{in-shared,before-ready,skip-full,id-off-by-one}`. Judged by
 #       lib/gate8-tag-checks.ts.
-#   g8id14 (ID3, render-stream-14.md, client-extensions-design.md "Identity v2": item_meta v2, the
+#   g8id14 (ID3, render-stream-14.md, : item_meta v2, the
 #       `instance_id` and `mouse_filter` columns and re-stamped rows; every leg under g8id14/): the
 #       imports (tag-scene, gate6-scene); then fixtures/tag-scene hosts under RS_FIXTURE_TAG_V2 (filter
 #       flips at steps 40 and 50, a recursive disable at 60), armed late as g8tag at /13 with the
@@ -211,7 +211,7 @@
 #       and `sabotage-v2-at-13` (pure/scale-live-grant's config). G8ID14_ONLY_PURE=1 runs the imports
 #       and the pure legs only (the merge-base regression), G8ID14_ONLY_COST=1 the `id-cost` timing
 #       group only. Judged by lib/gate8-id14-checks.ts.
-#   g8tag2 (TAG2, client-extensions-design.md "As built (TAG2)": the GSW client's extension API and
+#   g8tag2 (TAG2, : the GSW client's extension API and
 #       override table; every leg under g8tag2/): the fixture import and the client core
 #       (packages/render-stream-client/scripts/build-web.sh into g8tag2/core); then per leg one headless
 #       fixtures/tag-scene host at /13 (armed late with GRC_ADOPT=arm and GRC_UNKNOWN_ITEM=skip, as g8tag;
@@ -222,7 +222,7 @@
 #       (a 20-frame animated lift while the host sleeps 3 s at step 100: no transaction), `dispose` (three mounts, RSS after each
 #       dispose) and the sabotage legs `sabotage-override-{no-inherit,fast-path-miss,no-damage}`
 #       (the core's start options carry the sabotage). Judged by lib/gate8-tag2-checks.ts.
-#   g8id (ID2, client-extensions-design.md "As built (ID2)": the client's Godot tree-order pick; every
+#   g8id (ID2, : the client's Godot tree-order pick; every
 #       leg under g8id/): the fixture import and the client core (build-web.sh into g8id/core); then per
 #       leg one headless tag-scene host as g8tag2's but with RS_FIXTURE_TAG_PICK (pick.gd: one case per
 #       pick rule, the fixture's own pick on a 24x16 grid as the oracle, RS_FIXTURE_TAG_PICK_LOG) and
@@ -245,7 +245,7 @@
 #       `sabotage-undrawn-multimesh/receiver` (the pre-PM2 planner),
 #       `sabotage-ignore-identity-transform/receiver` (UIT: the pre-UIT receiver) and
 #       `sabotage-{perturb-instance,stale-buffer}/receiver-patch` (PM1's sabotaged patch sinks).
-#       LAR2 (late-arm-registry-design.md, the multimesh row), in the same gamescope:
+#       LAR2, in the same gamescope:
 #       `deferred/capture` (loaded at birth, armed at frame 12: adopted from the registry),
 #       `fault-no-resources/capture`, `sabotage-registry-off/capture` and
 #       `sabotage-registry-mm-stride/capture` (deferred, GRC_ADOPT_FAULT), `late/capture` (load-late:
@@ -284,8 +284,7 @@
 #       preload-particles, so it equals the fault capture), `fault-no-particles/capture`
 #       (late, GRC_ADOPT_FAULT=no-particles: the pre-PM7 capture), and the native
 #       `fault-no-particles/receiver` (G8PT_ONLY_LATE=1
-#       runs only the late legs, LAR4's and LAR5's and the references, a development knob). LAR4
-#       (late-arm-registry-design.md, the process-material row), in the same gamescope:
+#       runs only the late legs, LAR4's and LAR5's and the references, a development knob). LAR4, in the same gamescope:
 #       `deferred/capture` (loaded at birth, armed at frame 12 by GRC_ARM_DEFER_FRAMES=11: every
 #       process material adopted from the registry with its real shader), `deferred-cmbt/capture`
 #       (RS_FIXTURE_LATE_SHADER=1), `sabotage-registry-drop-binding/capture` (deferred,
@@ -308,7 +307,7 @@
 #       lib/gate8-pt-checks.ts, lib/gate8-pt-receiver-checks.ts, lib/gate8-pt-late-checks.ts and
 #       lib/gate8-ptc-checks.ts; g7-8's web half replays the receiver legs (run-gate7.sh
 #       G8_FILE_LEGS).
-#   g8htr (HTR, results/gate8/htr.md: GRC_HEADLESS_TEXTURE_RELEASE=on, the dummy rasterizer gets a
+#   g8htr (HTR, : GRC_HEADLESS_TEXTURE_RELEASE=on, the dummy rasterizer gets a
 #       1x1 L8 placeholder for every captured VRAM-tier create; every leg under g8htr/): the
 #       gate8-tex and gate8-adopt imports; headless gate8-tex captures `tex-default` (unset),
 #       `tex-off`, `tex-on`, `tex-workers-on`, `tex-refused-on` (GRC_TEXTURE_DECODE=off), `tex-budget-on`
@@ -319,7 +318,7 @@
 #       `rendered-on` (the switch ignored, not-headless) and the native receivers of tex-off and
 #       tex-on; last the htr-cost timing group (`cost/{off,on}-<r>`, the g8t cost variant, each
 #       under the exclusive quiet lock). Judged by lib/gate8-htr-checks.ts.
-#   g8tdr (TDR, protocol/live-swap-design.md Q5 "served at rest": GRT1 texture bodies are zstd-coded
+#   g8tdr (TDR, : GRT1 texture bodies are zstd-coded
 #       where they are built and the mirror and the served set hold only the coded body; every leg
 #       under g8tdr/): the gate8-tex import; headless /9 captures with the stock delivery (block
 #       variants) `sync/capture` (coded on the hook thread) and `sync-off/capture`
@@ -502,7 +501,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# render-stream/8 file sinks (GRC_STREAM_VERSION=8, gate8-design.md D2): every gate 8 policy needs
+# render-stream/8 file sinks (GRC_STREAM_VERSION=8): every gate 8 policy needs
 # them. The decode-off control capture is the default /6 and names its recording accordingly.
 RECORDING_NAME=recording.rs8
 PATCH_RECORDING_NAME=recording-patch.rs8
@@ -513,7 +512,7 @@ source "$SCRIPT_DIR/lib/legs.sh"
 
 # The decode policy every g8t capture but decode-off runs with.
 G8T_DECODE_ENV=(GRC_STREAM_VERSION=8 GRC_TEXTURE_DECODE=engine)
-# G8kw (texture-delivery-design.md D11, Q7): the workers legs. Two workers take every copy
+# G8kw: the workers legs. Two workers take every copy
 # (MIN_BYTES=0: the fixture's textures are 64x64), each job delayed so publication is held back
 # for several frames whatever the machine's speed; worker-states-equal compares the result with
 # capture/, frame by frame. The cost leg keeps the default threshold (its textures are 2048x2048).
@@ -538,7 +537,7 @@ run_import_g8t() {
 	done
 }
 
-# run_oracle <dir> [timing]: oracle.gd on the release template, headless (gate8-design.md D15).
+# run_oracle <dir> [timing]: oracle.gd on the release template, headless.
 run_oracle() {
 	local dir="$1" timing="${2:-0}"
 	mkdir -p "$dir"
@@ -596,7 +595,7 @@ run_g8t() {
 	CAPTURE_EXTRA_ENV=("${G8T_DECODE_ENV[@]}" RS_FIXTURE_TEXTURE_LOG="$OUT/capture/textures.jsonl")
 	run_capture "$OUT/capture" "" none
 
-	# TDE (live-swap-design.md Q5, F3): the same /8 sink with GRC_TEXTURE_DECODE unset decodes like
+	# TDE: the same /8 sink with GRC_TEXTURE_DECODE unset decodes like
 	# `capture` above (tex-decode-default). Below /8 the unset variable stays off: decode-off.
 	echo "run-gate8: decode-default (GRC_STREAM_VERSION=8, GRC_TEXTURE_DECODE unset: engine)"
 	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=8 RS_FIXTURE_TEXTURE_LOG="$OUT/decode-default/capture/textures.jsonl")
@@ -631,7 +630,7 @@ run_g8t() {
 		RS_FIXTURE_TEXTURE_LOG="$OUT/workers/sabotage-publish-before-ready/capture/textures.jsonl")
 	run_capture "$OUT/workers/sabotage-publish-before-ready/capture" "" none
 
-	# G8k9 (texture-delivery-design.md D4, Q5): the same fixture through a /9 file sink with the delivery
+	# G8k9: the same fixture through a /9 file sink with the delivery
 	# mode declared. Mode rgba offers no variant (basis-uastc is group g8ku's since G8ku, and
 	# basis-etc1s is refused, g8kp/refused-basis), so the result must be the /8 capture's, state for state,
 	# with `variants: []` on every ok image and the session naming the mode.
@@ -642,7 +641,7 @@ run_g8t() {
 		RS_FIXTURE_TEXTURE_LOG="$OUT/delivery9/capture/textures.jsonl")
 	run_capture "$OUT/delivery9/capture" "" none
 
-	# TDP (live-swap-design.md Q5): GRC_TEXTURE_DELIVERY unset is `passthrough`, so the same /9 sink
+	# TDP: GRC_TEXTURE_DELIVERY unset is `passthrough`, so the same /9 sink
 	# declares it and offers a `block` variant for each block-compressed source. The /8 `capture` above
 	# is the "nothing below /9" half of tex-delivery-default.
 	# TDE (F3): GRC_TEXTURE_DECODE is unset here too, so the host decode and the block variant both
@@ -777,8 +776,7 @@ run_registry_cost_capture() {
 }
 
 # LS0 validation-log-cost (a timing group, local only): fixtures/capture-scale at STS2's redraw rate
-# (~1,530 hooked calls a frame), loaded and unarmed, for 2,400 frames at --max-fps 60 (real time;
-# results/p3/idle-capture-cost.md's fixture legs). The scale report's cpu_us_mean is the main
+# (~1,530 hooked calls a frame), loaded and unarmed, for 2,400 frames at --max-fps 60 (real time). The scale report's cpu_us_mean is the main
 # thread's CPU a frame. Four configs, rotated over G8A_VLC_ROUNDS rounds: `a0` (GRC_MODE=validate:
 # loaded, nothing patched), `b` (hooks patched, GRC_ARM_DEFER_FRAMES never reached, GRC_ADOPT=off),
 # `c` (b with GRC_ADOPT=arm) and the sabotage (c with GRC_VALIDATION_LOG_SABOTAGE=ignored). LS1: b, c
@@ -846,7 +844,7 @@ run_g8a() {
 	echo "run-gate8: g8a sabotage-registry-keep-freed (deferred, the free hook keeps registry entries)"
 	run_capture_g8a "$OUT/g8a/sabotage-registry-keep-freed/capture" deferred "${G8A_ENV[@]}" GRC_ADOPT=arm \
 		GRC_ADOPT_FAULT=registry-keep-freed
-	# LS1 (live-swap-design.md D4): GRC_MODE=standby (the standby table published, never armed;
+	# LS1: GRC_MODE=standby (the standby table published, never armed;
 	# GRC_ADOPT implied), judged by standby-hot-zero and registry-live-bound against the loader's own
 	# creates, and the two sabotages of those checks.
 	echo "run-gate8: g8a standby (GRC_MODE=standby: loaded at birth, never armed; LS1)"
@@ -1099,7 +1097,7 @@ run_g8c() {
 
 # ------------------------------------------------------------------------------------ g8ctl
 G8CTL_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-ct-late"
-# LAR1 (late-arm-registry-design.md): the `deferred` leg loads the capture in the loader's
+# LAR1: the `deferred` leg loads the capture in the loader's
 # `_enter_tree`, before any CanvasTexture exists, and defers the arm to frame 12
 # (GRC_ARM_DEFER_FRAMES=11), so every CanvasTexture is adopted from the registry's recorded channels;
 # its receivers are judged against the unarmed reference. The `late` leg loads the capture at frame
@@ -1384,7 +1382,7 @@ G8MM_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-mm"
 # cell is live by then, and steps 1 and 2 (frames 20 and 40) fall either side of it.
 G8MM_SABOTAGE_FRAME=30
 G8MM_SABOTAGES=(perturb-instance stale-buffer)
-# PM9, LAR2 (late-arm-registry-design.md, the multimesh row): the `deferred` arm loads the capture
+# PM9, LAR2: the `deferred` arm loads the capture
 # in the loader's _enter_tree and defers the arm to frame 12 (GRC_ARM_DEFER_FRAMES=11), so every
 # multimesh is adopted from the registry's recorded allocation; the `late` arm
 # (fixtures/gate8-mm/loader.gd RS_FIXTURE_ARM=late at frame 12, after every multimesh and draw
@@ -1781,7 +1779,7 @@ run_g8pt_late() {
 	echo "run-gate8: g8pt sabotage-registry-skip-particles/capture (deferred, GRC_ADOPT_FAULT=registry-skip-particles)"
 	run_capture_rendered_g8pt "$OUT/g8pt/sabotage-registry-skip-particles/capture" "${G8PT_DEFERRED_ENV[@]}" \
 		GRC_ADOPT_FAULT=registry-skip-particles
-	# LS1 (live-swap-design.md D4): the deferred arm without draw in its standby table; the shader
+	# LS1: the deferred arm without draw in its standby table; the shader
 	# clock then misses the standby frames' draws (fails standby-clock).
 	echo "run-gate8: g8pt sabotage-standby-no-draw/capture (deferred, GRC_STANDBY_FAULT=no-draw)"
 	run_capture_rendered_g8pt "$OUT/g8pt/sabotage-standby-no-draw/capture" "${G8PT_DEFERRED_ENV[@]}" \
@@ -1851,7 +1849,7 @@ run_g8pt() {
 		run_capture_rendered_g8pt "$OUT/g8pt/sabotage-$s/capture" GRC_STREAM_VERSION=12 \
 			GRC_SABOTAGE="$s" GRC_SABOTAGE_FRAME="$G8PT_SABOTAGE_FRAME"
 	done
-	# FRZ-P (results/p3/frz-p.md): the particle freeze. frzp is the frozen seat (the fixture freezes
+	# FRZ-P: the particle freeze. frzp is the frozen seat (the fixture freezes
 	# A_BOX and D_ONESHOT and nudges the one-shot); frzp-grant is the same scene unfrozen under the
 	# grant (the wire-byte-identity witness: the grant alone must not alter transaction bytes).
 	echo "run-gate8: g8pt frzp/capture (/12, frozen A_BOX+D_ONESHOT, GRC_FREEZE_PARTICLES=on)"
@@ -1946,7 +1944,7 @@ run_g8pt() {
 	echo "run-gate8: g8pt headless-pump/capture (gate8-mm, /12, headless, the pump by default)"
 	# The gate8-mm legs run without GRC_ADOPT, exactly as g8mm's headless/capture (/11) does, so
 	# headless-nopump is that leg at /12: the byte-identity witness of a /12 stream without particles
-	# (render-stream-12.md "Byte identity with /11"; results/p3/pm5.md).
+	# (render-stream-12.md "Byte identity with /11").
 	G8PT_ENV=()
 	run_capture_headless_g8pt "$OUT/g8pt/headless-pump/capture" "$G8MM_FIXTURE_DIR" GRC_STREAM_VERSION=12 \
 		RS_FIXTURE_MM_LOG="$OUT/g8pt/headless-pump/capture/mm-frames.jsonl"
@@ -2096,7 +2094,7 @@ run_g8w11_coding_leg() {
 	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
 }
 
-# TAG1 (client-extensions-design.md "As built (TAG1)"): item identity at /13 on fixtures/tag-scene.
+# TAG1: item identity at /13 on fixtures/tag-scene.
 # One headless host per leg (late arm at fixture frame 12, GRC_ADOPT=arm, GRC_UNKNOWN_ITEM=skip, the
 # fixture's steps 90 frames after the first hello so every viewer started beside the host is in),
 # writing the fixture's oracle and the capture's id log, and lib/coding-receiver.ts viewers at /13.
@@ -2208,7 +2206,7 @@ run_g8tag() {
 	run_g8tag_leg sabotage-id-off-by-one GRC_ITEM_META_SABOTAGE=id-off-by-one -- "a|$z|2|$r|"
 }
 
-# ID3 (client-extensions-design.md "Identity v2", render-stream-14.md): item_meta v2 (instance_id,
+# ID3 (render-stream-14.md): item_meta v2 (instance_id,
 # mouse_filter, re-stamped rows) on fixtures/tag-scene's RS_FIXTURE_TAG_V2 variant, the /14 file
 # sinks, the pure path on capture-scale and gate6-scene, and (G8ID14_ONLY_COST=1) the cost legs.
 # A viewer spec is name|offer|window|version|item_meta request ("" asks nothing)|extra
@@ -2320,7 +2318,7 @@ run_g8id14_leg() {
 		GRC_DISARM_AFTER_FRAMES="$ID_DISARM" "${henv[@]}" -- "$@"
 }
 
-# The pure path (client-extensions-design.md "Identity v2": the pure-path check), at /13 on
+# The pure path (the pure-path check), at /13 on
 # capture-scale (g8w11's scale shape) and gate6-scene (animate): file sinks with no grant and with
 # the v2 grant and nobody asking (run_capture, as g8w11), and live with a /13 viewer asking nothing
 # (no grant; the v2 grant), one asking /13 fields and one asking v2 fields at /13 (refused).
@@ -2516,7 +2514,7 @@ run_g8tag2() {
 	run_g8tag2_leg sabotage-override-no-inherit base moved 300 0 --sabotage override-no-inherit
 	run_g8tag2_leg sabotage-override-fast-path-miss base moved 300 0 --sabotage override-fast-path-miss
 	run_g8tag2_leg sabotage-override-no-damage base redraw 300 3000 --sabotage override-no-damage
-	# FRZ-HOOK (frz-d.md §6): freeze Hand -- the step-80 move is held -- and its sabotages.
+	# Freeze Hand -- the step-80 move is held -- and its sabotages.
 	echo "run-gate8: g8tag2 frz (freeze Hand: the step-80 move is held)"
 	run_g8tag2_leg ext-frz base frz 300 0
 	echo "run-gate8: g8tag2 frz sabotages (frozen-still-applies, frozen-sweeps)"
@@ -3139,9 +3137,9 @@ run_g8m() {
 }
 
 # ------------------------------------------------------------------------------------ g8kp
-# G8kp (texture-delivery-design.md D1, D3, Q3): `passthrough` at /9 end to end.
+# G8kp: `passthrough` at /9 end to end.
 G8KP_ENV=(GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=passthrough)
-# The families a desktop receiver masks to stand in for one without BC (the g31's view of BC).
+# The families a desktop receiver masks to stand in for one without BC (a phone's view of BC).
 G8KP_MASK="s3tc,bptc,rgtc"
 
 # run_g8kp_live: g8kp/live/{host,receiver} (inside g8kp's gamescope).
@@ -3241,7 +3239,7 @@ run_g8kp() {
 }
 
 # ------------------------------------------------------------------------------------ g8kc
-# G8kc (texture-delivery-design.md D7-D10): the persisted cache, the prepare step, the path hook.
+# G8kc: the persisted cache, the prepare step, the path hook.
 G8KC_ENV=(GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=passthrough)
 # Bound for the byte-budget leg: well under the fixture's decoded payloads (~190 kB).
 G8KC_BOUND_BYTES=60000
@@ -3387,7 +3385,7 @@ run_g8kc() {
 }
 
 # ------------------------------------------------------------------------------------- g8l
-# G8g (gate8-design.md "Increments" G8g, D14): one live leg per gate 8 fixture at render-stream/8,
+# G8g: one live leg per gate 8 fixture at render-stream/8,
 # the host's file sink beside it, the same receiver replaying that sink, and D14's reverse-proxy
 # leg. Every leg lives under g8l/<fixture>/ (host/, receiver/, replay/; proxy/ adds proxy/):
 #   tex    gate8-tex's main scene under g8t's decode policy (GRC_TEXTURE_DECODE=engine)
@@ -3408,7 +3406,7 @@ run_g8kc() {
 # GRC_LIVE_AWAIT_HELLO_MS (its timeline waits at the first armed frame for the receiver's hello, so
 # a slow browser misses nothing). It lingers to G8L_QUIT_FRAME so every payload GET is served
 # before it ends, and (LF2) holds that quit frame until its receiver applied it
-# (GRC_LIVE_HOLD_WINDOWS=q-q, scripts/README.md "The window hold (LF1)"): the hub sends no final
+# (GRC_LIVE_HOLD_WINDOWS=q-q): the hub sends no final
 # state at finish, so without the hold a leg ended on 299 or 300 by whether credit came back in the
 # last tick, and g8l-lan-served / g8l-wss-served compared two such coin flips with tex's (about 3
 # runs in 5 failed on hosted runners). No g8l receiver is a sabotage that never acks, so every host
@@ -3610,7 +3608,7 @@ run_g8l() {
 	GS_RUN_DIR=""
 }
 
-# CAR2 (protocol/carrier-design.md D10, F6): tex once more, served on the LAN. The host binds
+# CAR2: tex once more, served on the LAN. The host binds
 # 0.0.0.0 under GRC_LIVE_EXPOSE=lan with GRC_LIVE_AUTH=token and an Origin allow-list; its receiver
 # connects through this machine's non-loopback address with the token. No wss: F6 allows plain ws
 # on the LAN, recorded as `tls: none` in live-carriers.json (never in live.json, whose
@@ -3658,7 +3656,7 @@ run_g8l_lan() {
 	G8L_RECEIVER_EXTRA_ENV=()
 }
 
-# CAR6 (protocol/carrier-design.md, CAR6 row): fixtures/carrier-ext registers a GDScript carrier
+# CAR6: fixtures/carrier-ext registers a GDScript carrier
 # through the capture's RenderStreamCarrier class (GRC_LIVE_CARRIERS=ws,gdpeer) and carries one
 # live session over it: its peer opens connection 1, keeps the bytes the hub sends and writes
 # peer/peer.json and peer/received.bin, which the checker compares with the hub's tap of that
@@ -3697,7 +3695,7 @@ run_g8l_ext() {
 	run_g8l_ext_leg "$leg/sabotage-drop-one" RS_CARRIER_PEER_SABOTAGE=drop-one
 }
 
-# TRK2 (protocol/tracks-design.md, TRK2 row): fixtures/track-input binds the `input` track kind
+# TRK2: fixtures/track-input binds the `input` track kind
 # through the capture's RenderStreamTrack class (GRC_LIVE_TRACKS=input) and wires it to the
 # gsw-input/1 reference injector. scripts/lib/track-input-client.ts (a raw-socket track client)
 # runs four phases against the live listener while the host runs: delivered (a key and a left
@@ -3778,7 +3776,7 @@ run_g8l_trk() {
 	done
 }
 
-# TRK6 (protocol/tracks-design.md Q6 "Built-in injection", TRK6 row): GRC_LIVE_TRACK_INPUT_INJECT=
+# TRK6: GRC_LIVE_TRACK_INPUT_INJECT=
 # reference makes the capture itself the `input` receiver (an embedded copy of the gsw-input
 # reference injector), so a stock project gets input from a track with no script at all.
 # fixtures/track-inject is that project (an observer only, no addon, no RenderStreamTrack use);
@@ -3877,7 +3875,7 @@ run_g8l_inject() {
 	run_g8l_inject_refusal "$leg/refuse-sabotage" GRC_LIVE_TRACKS=input GRC_SABOTAGE=track-inject-no-release
 }
 
-# CAR4 (protocol/carrier-design.md D11, D12): tex once more with a certificate pair, so the real
+# CAR4: tex once more with a certificate pair, so the real
 # host's `ws` serves ws+wss on its one port through the net module (entry.cpp loads it for the pair,
 # without `wt`). The receiver connects over plain ws from loopback, which D12 still serves (the
 # Godot receiver has no wss client of its own here); while the host runs, `openssl s_client`
@@ -3917,7 +3915,7 @@ run_g8l_wss() {
 }
 
 # ------------------------------------------------------------------------------------ g8ku
-# G8ku (texture-delivery-design.md D6, D12, D14, D16): `basis-uastc` at /9 end to end.
+# G8ku: `basis-uastc` at /9 end to end.
 G8KU_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-basis"
 # The fixture's step-1 frame: the `updated` texture's in-place update, and the frame the capture
 # legs attach every lazy encode at (GRC_TEXTURE_ENCODE_WAIT_FRAME), so the recordings are exact.
@@ -4085,7 +4083,7 @@ run_g8ku() {
 }
 
 # ------------------------------------------------------------------------------------- g8htr
-# HTR (results/gate8/htr.md, rs_texture_release.h): GRC_HEADLESS_TEXTURE_RELEASE=on forwards a 1x1
+# HTR (rs_texture_release.h): GRC_HEADLESS_TEXTURE_RELEASE=on forwards a 1x1
 # L8 placeholder to the dummy rasterizer for every captured VRAM-tier create. Every leg under
 # g8htr/. The off twin of each pair sets the variable to `off` (so both are timed alike);
 # tex-default leaves it unset (the default path: no result.json key, no evidence file).
@@ -4253,7 +4251,7 @@ run_g8htr_cost() {
 }
 
 # ------------------------------------------------------------------------------------- g8tdr
-# TDR (live-swap-design.md Q5): GRT1 texture bodies are zstd-coded at rest where they are built.
+# TDR: GRT1 texture bodies are zstd-coded at rest where they are built.
 # Every leg under g8tdr/. The captures are /9 with the stock delivery (passthrough: a block variant
 # beside each host-decoded RGBA8 texture); the live host is /11 (the null receiver speaks /11 with
 # live_coding, and /11 keeps the /9 block variants), two texture workers (min bytes at its default).

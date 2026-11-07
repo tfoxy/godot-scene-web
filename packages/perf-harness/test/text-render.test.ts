@@ -7,8 +7,8 @@
 // glyph), a run whose beacon leaves the stage under motion (so the presence guard blames the
 // renderer for a geometry mistake), a `glyphs` parameter that does not actually change how many
 // distinct glyphs are drawn (so the atlas-VRAM axis measures nothing), an authored scene whose
-// Labels carry no rotation (so the whole round measures upright text), or — since the round grew a
-// second script — two runs whose boxes overlap, or a Latin run set in the Han face.
+// Labels carry no rotation (so the whole scenario measures upright text), or — with two scripts —
+// two runs whose boxes overlap, or a Latin run set in the Han face.
 
 import { resolveGodotSceneTree } from "@godot-scene-web/layout";
 import { deriveSceneGraph } from "@godot-scene-web/scene-graph";
@@ -37,7 +37,7 @@ import {
   translationAt,
 } from "../src/scenarios";
 
-/** The two viewports this round is measured at. */
+/** The two viewports the scenario runs at: a portrait phone and the desktop default. */
 const PHONE: StageLayout = { viewport: { width: 412, height: 883 }, fit: true };
 const DESKTOP: StageLayout = {
   viewport: { width: 1280, height: 800 },

@@ -5,10 +5,8 @@
 //
 // WHY that is the whole point: a `<canvas>` is an unconditionally promoted compositor layer, so a
 // suspended system kept its layer, its render surface and its GPU backing store for as long as the
-// node stayed mounted. A live combat trace put the client cost of a discard→draw shuffle at 95 ms
-// for an 85-BYTE delta — uncorrelated with what arrived, correlated with what was standing on
-// screen — with 401 layers created against 61 deleted and GPU-process memory climbing 148 → 276 MB.
-// Freezing the simulation cannot touch any of that; hiding the canvas is what hands it back.
+// node stayed mounted, so the client cost tracked what was standing on screen rather than what
+// changed. Freezing the simulation cannot touch any of that; hiding the canvas is what hands it back.
 //
 // What is pinned here:
 //   - park/resume keeps the SAME binding (same canvas element, same simulation), and only its
@@ -385,7 +383,7 @@ describe("particle runtime — a parked binding's deferred sizeCanvas", () => {
     const readsAtPark = parked.boxReads.count;
 
     // Everything that re-sizes a fleet, while parked: an observer delivery (a real box change), an
-    // adaptive density step, and a frozen-mode pin flip. With WS-1's box cache in place the cost
+    // adaptive density step, and a frozen-mode pin flip. With the box cache in place the cost
     // these skip is the WRITE side — four style writes plus a backing-store REALLOCATION of a canvas
     // nobody can see (and, with the swap on, a stand-in revert).
     deliverResize(parked.self, 240, 180);

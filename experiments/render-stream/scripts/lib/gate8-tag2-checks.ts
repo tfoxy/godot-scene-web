@@ -1,4 +1,4 @@
-// Gate 8 g8tag2's checks (TAG2, protocol/client-extensions-design.md §6 and "As built (TAG2)"):
+// Gate 8 g8tag2's checks:
 // the GSW client's extension API and override table, judged on run-gate8.sh run_g8tag2's legs
 // (under g8tag2/; each leg's page/ holds client-ext-check.ts's client-ext.json and shot.png, the
 // client's drawing buffer after the host ended):
@@ -163,7 +163,7 @@ function bbox(s: Shot, f: (i: number) => boolean, within?: Box): Box | null {
 }
 
 /**
- * `scaled`'s band (client-extensions-design.md §3.2 "Pixel meaning"): Godot re-rasterizes a scaled
+ * `scaled`'s band: Godot re-rasterizes a scaled
  * Label's glyphs at the new size, while an override resamples the atlas glyphs drawn at 1x, so the
  * glyph pixels themselves cannot match. Everything else must: every pixel beyond 1 lies inside the
  * text's ink box (the bright glyph pixels, grown by 1), and the two ink boxes -- where the text sits
@@ -336,7 +336,7 @@ export async function runG8tag2(g: string): Promise<G8aCheck[]> {
     );
   }
 
-  // frz-holds (FRZ-HOOK, frz-d.md §6)
+  // frz-holds
   const frzDiff = async (leg: string): Promise<string[]> => {
     const problems: string[] = [...health(leg, report(leg))];
     const c = report(leg)?.counters;

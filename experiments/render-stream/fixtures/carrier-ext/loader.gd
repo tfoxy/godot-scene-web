@@ -3,7 +3,7 @@ extends Node
 ## capture GDExtension through `GDExtensionManager` from `GRC_EXTENSION` in `_enter_tree()`, ahead
 ## of the next autoload (`CarrierPeer`, which needs the RenderStreamCarrier class it registers).
 ## The leg sets GRC_ARM_DEFER_FRAMES, so the capture arms -- and live starts -- in a later frame
-## callback, after `CarrierPeer` registered its carrier (carrier-design.md "Registration timing").
+## callback, after `CarrierPeer` registered its carrier.
 
 func _enter_tree() -> void:
 	if not OS.has_environment("GRC_EXTENSION"):

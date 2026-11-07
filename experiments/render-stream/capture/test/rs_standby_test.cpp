@@ -1,4 +1,4 @@
-// LS1 `standby-slot-census` (live-swap-design.md D4): the standby table's set (rs_standby.cpp)
+// LS1 `standby-slot-census`: the standby table's set (rs_standby.cpp)
 // against hooks.cpp itself, given as argv[1].
 //
 //   1. Every hook in hooks.cpp's kSpecs table whose body reaches the late-arm registry (a

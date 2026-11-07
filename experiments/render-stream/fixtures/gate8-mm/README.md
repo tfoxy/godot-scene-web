@@ -2,8 +2,7 @@
 
 The fixture for render-stream/11's multimesh table
 ([`../../protocol/render-stream-11.md`](../../protocol/render-stream-11.md) "As built (PM1):
-decisions"; [`../../protocol/particles-multimesh-design.md`](../../protocol/particles-multimesh-design.md)
-"Increments"). Every `CPUParticles2D` is a multimesh whose buffer it re-sets each frame from
+decisions"). Every `CPUParticles2D` is a multimesh whose buffer it re-sets each frame from
 `RenderingServer.frame_pre_draw`; a `MultiMeshInstance2D` is one the game fills itself. The scene
 does not know about the capture. Gate 8's group `g8mm` runs it (`scripts/run-gate8.sh`,
 `scripts/lib/gate8-mm-checks.ts`). PM1 runs captures only, judged against their own hook log; PM2
@@ -81,8 +80,8 @@ every drawn multimesh but H_FREE (its raw item is withheld at the arm and never 
 adopted from the registry's recorded allocation at its first `add_multimesh`, and must equal the
 born capture's (`mm-registry-exact`). On the headless host (`headless-deferred/capture`) the
 dummy renderer answers `multimesh_get_instance_count` 0, so only the registry gives the count;
-`A_XFORM` and `B_CUSTOM`, edited per instance, are refused there (design O3). The `late` leg loads
-the capture at frame 12, after every multimesh exists: under F1 each one is refused, typed
+`A_XFORM` and `B_CUSTOM`, edited per instance, are refused there. The `late` leg loads
+the capture at frame 12, after every multimesh exists: each one is refused, typed
 `preload-multimesh`.
 
 ## Teardown

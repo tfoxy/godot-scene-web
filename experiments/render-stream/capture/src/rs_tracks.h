@@ -1,5 +1,4 @@
-// rs_tracks: TrackHub, the host side of render-stream-track/1 (protocol/tracks-design.md Q1-Q5,
-// Q9; TRK1).
+// rs_tracks: TrackHub, the host side of render-stream-track/1.
 //
 // A track is an opt-in connection to the live listener that carries one opaque, separately
 // versioned payload format (the first kind is `input`, carrying gsw-input/1) beside the frozen

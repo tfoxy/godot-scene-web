@@ -1,4 +1,4 @@
-// The endpoint descriptor (mirror-client-design.md "API"): where a render-stream host's live
+// The endpoint descriptor: where a render-stream host's live
 // listener and its resource GETs are, the token, and the wire version the host streams. A product
 // receives it from its own control channel; the client validates it before it connects.
 
@@ -21,7 +21,7 @@ export interface RenderStreamEndpoint {
   /** The expected presentation size (the session confirms it). When set, the canvas's backing
    * store starts at this size before the hello. */
   presentation?: [number, number];
-  /** CAR5: where the host's WebTransport carrier (`render-stream-wt/1`, carrier-design.md Q4) is,
+  /** Where the host's WebTransport carrier (`render-stream-wt/1`) is,
    * when it offers one. `url` is the `https:` URL of `/render-stream` (the transport appends
    * `?protocol=render-stream.<N>`). `certificateHashes` (1..4 SHA-256 digests, 64 lowercase hex
    * each) pin a self-signed host certificate (`serverCertificateHashes`); omit them for a

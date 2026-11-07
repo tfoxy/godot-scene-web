@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Gate 3 runner: drives fixtures/gate3/ through the legs of protocol/gate3-design.md "Q7. Runner,
-# legs, checks, report" for the groups that have landed, then runs check-gate3.ts.
+# Gate 3 runner: drives fixtures/gate3/ through the legs
+# for the groups that have landed, then runs check-gate3.ts.
 #
 #   bash run-gate3.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
@@ -24,8 +24,7 @@
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
 # and WAYLAND_DISPLAY. Every launch strips every inherited GRC_* and RS_* variable and passes only
-# what its leg wants (env.txt records it). Every capture runs with GRC_ROOT_SIZE=enforce-min-size
-# (gate3-design.md D9).
+# what its leg wants (env.txt records it). Every capture runs with GRC_ROOT_SIZE=enforce-min-size.
 
 set -euo pipefail
 
@@ -426,8 +425,7 @@ run_g3c() {
 	GS_RUN_DIR=""
 }
 
-# group g3d: calibrator 6, canvas_item_add_clip_ignore (gate3-design.md "G3d"; refused and typed on
-# render-stream/3, a real command since G5d, gate5-design.md D10 and Q6g).
+# group g3d: calibrator 6, canvas_item_add_clip_ignore (refused and typed on render-stream/3, a real command since G5d).
 # RS_FIXTURE_VARIANT=clip-ignore adds the static raw item RI; it is disjoint from every other
 # fixture region, so the main (non-variant) legs of g3a are untouched. Now that g3b's receiver
 # apply-order fix has landed, receiver-clip-ignore replays and compares every one of the ten

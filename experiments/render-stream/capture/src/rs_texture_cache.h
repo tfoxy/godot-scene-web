@@ -1,4 +1,4 @@
-// The persisted host texture cache (texture-delivery-design.md D7, D8; G8kc).
+// The persisted host texture cache.
 //
 // GRC_TEXTURE_CACHE_DIR=<dir> (outside any repository) turns it on, GRC_TEXTURE_CACHE_MAX_BYTES
 // bounds the files it keeps (LRU by last use, 0 or unset: unbounded). The layout is the store

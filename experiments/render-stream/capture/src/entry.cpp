@@ -7,12 +7,10 @@
 //
 // With GRC_STREAM_OUT and/or GRC_STREAM_PATCH_OUT set and the library armed,
 // it also publishes render-stream/5 recordings (protocol/render-stream-5.md: /4 plus the shader
-// and material tables, item material state, canvas modulate and GRP1 shader payloads since
-// gate5_5-design.md "G55d"; /4 added the immediate geometry ops, add_set_transform,
-// add_clip_ignore and meshes at gate5-design.md "G5d"/"G5e"; /3 the msdf command at
-// gate4-design.md "G4e2"; protocol/gate1-design.md "G1b2", gate2-design.md "G2b2"). The shader
-// source policy GRC_SHADER_POLICY (source | params | exclude, default source; gate5_5-design.md
-// D4) is read at arm and declared in the session's `materials`: GRC_STREAM_OUT is
+// and material tables, item material state, canvas modulate and GRP1 shader payloads; /4 added the
+// immediate geometry ops, add_set_transform, add_clip_ignore and meshes; /3 the msdf command).
+// The shader source policy GRC_SHADER_POLICY (source | params | exclude, default source) is read
+// at arm and declared in the session's `materials`: GRC_STREAM_OUT is
 // the `full`-encoding file sink, GRC_STREAM_PATCH_OUT the `patch`-encoding
 // one; either or both.
 // The canvas mirror is enabled and the root viewport queried right after the
@@ -33,8 +31,8 @@
 // resource store and spurious-texture-update in the mirror at the frame
 // callback.
 //
-// The root-size policy GRC_ROOT_SIZE (observe | enforce-min-size; G1a,
-// gate1-design.md "Q1"; presentation:<W>x<H> since G6b, gate6-design.md Q3a) is applied at arm
+// The root-size policy GRC_ROOT_SIZE (observe | enforce-min-size;
+// presentation:<W>x<H>) is applied at arm
 // between the root query and the session record. What it saw and did goes on the wire -- the session's
 // `viewport` object and blocks, read after the policy; the session-level
 // `degenerate-host-size` entry whenever host_size_status != match; the sticky
@@ -42,9 +40,9 @@
 // match -- and, as at G1a, to evidence/root.json
 // (render-stream-root-geometry/1).
 //
-// Live delivery (G1c2, gate1-design.md Q3, Q4, "G1c2"): GRC_LIVE_LISTEN
+// Live delivery: GRC_LIVE_LISTEN
 // (127.0.0.1:<port> or [::1]:<port>; port 0 = ephemeral; with GRC_LIVE_EXPOSE=lan, CAR2,
-// carrier-design.md D10, also 0.0.0.0, :: or a host IP, which then requires GRC_LIVE_AUTH=token
+// Also 0.0.0.0, :: or a host IP, which then requires GRC_LIVE_AUTH=token
 // and a non-empty GRC_LIVE_ALLOWED_ORIGINS: expose-invalid, lan-needs-token, lan-needs-origins;
 // the exposure is recorded in evidence/live-carriers.json, never in live.json) also enables the
 // mirror and the root query, with or without file sinks, and starts the rs_ws
@@ -64,7 +62,7 @@
 // quitting); after a disarm it runs across the following frame callbacks, so
 // the simulation never waits on a socket.
 //
-// Carriers (CAR1, carrier-design.md D3-D7, D13): the hub's transport is a CarrierSet
+// Carriers: the hub's transport is a CarrierSet
 // (rs_carrier_set.h) whose `ws` carrier (index 0) is that rs_ws server, so connection ids, logs
 // and taps are unchanged. GRC_LIVE_CARRIERS (comma list, default `ws`) names the carriers to
 // start (`carriers-invalid` for a malformed list, `carrier-unregistered` for a name neither
@@ -73,7 +71,7 @@
 // atomically on every connection open or close (CAR8), and again at stop. The per-connection
 // `carrier` is a field of each `open` line in the live log, live.jsonl (rs_live.cpp).
 //
-// Tracks (TRK1, protocol/tracks-design.md): GRC_LIVE_TRACKS (a comma list of kinds; `/1` builds
+// Tracks: GRC_LIVE_TRACKS (a comma list of kinds; `/1` builds
 // `input`) opens render-stream-track.1 connections on the same listener, admitted from their own
 // pool (GRC_LIVE_MAX_TRACKS, 1..16, default 4), each authorized by its kind's credential in
 // evidence/live-track-<kind>-token (mode 0600, never the view token). live_drain hands every
@@ -90,7 +88,7 @@
 // signals are delivered at the end of each frame callback; with nothing bound every track is
 // refused track-no-receiver.
 //
-// WebTransport (CAR3, carrier-design.md D8, D9, D11, Q4): `wt` in GRC_LIVE_CARRIERS loads the net
+// WebTransport: `wt` in GRC_LIVE_CARRIERS loads the net
 // module (rs_net_module.h: GRC_LIVE_NET_MODULE, else librender_stream_net.so beside this .so;
 // `net-module-missing` / `net-module-abi` when it cannot) and starts carrier `wt` (index 1,
 // render-stream-wt/1) on GRC_LIVE_WT_LISTEN (UDP <host>:<port>, same syntax and exposure rule as
@@ -99,7 +97,7 @@
 // evidence/live-cert-sha256) or tls (GRC_LIVE_TLS_CERT/GRC_LIVE_TLS_KEY, PEM paths, both or
 // neither; `tls-config-invalid` otherwise). Without `wt` or a pair nothing new is loaded.
 //
-// wss (CAR4, carrier-design.md D11, D12): GRC_LIVE_TLS_CERT/GRC_LIVE_TLS_KEY also load the net
+// wss: GRC_LIVE_TLS_CERT/GRC_LIVE_TLS_KEY also load the net
 // module (with or without `wt`) and turn `ws` into ws+wss on its one port: a connection whose
 // first byte is a TLS handshake record runs through the module's TLS session (the upgrade and
 // every resource GET then are wss/https); plaintext is served only to loopback peers and refused
@@ -110,7 +108,7 @@
 // consumer's plain-http LAN pages beside its https ones; live-carriers.json records `ws`'s
 // `lan_plaintext`. Without a pair it changes nothing (nothing is sniffed).
 //
-// Textures (G2a, gate2-design.md D3, Q3): whenever a stream is enabled,
+// Textures: whenever a stream is enabled,
 // texture_2d_create and texture_2d_update copy the Image bytes into a GRT1
 // payload and hash it on the calling thread before forwarding, and every
 // texture-related call is written to evidence/resources.jsonl
@@ -120,7 +118,7 @@
 // value, or an engine without the Image binds and image_ptr
 // (image-access-unavailable), refuses to publish.
 //
-// Resources (G2b2, gate2-design.md Q3, Q4 "File sinks", render-stream-2.md):
+// Resources (render-stream-2.md):
 // the mirror keeps every texture's payload, and each published snapshot names
 // the versions it needs. GRC_RESOURCE_INLINE_MAX_BYTES (default 0) is the
 // largest payload a file sink carries in band as a `resource` record; every
@@ -131,8 +129,8 @@
 // payload than GRC_RESOURCE_BUDGET_BYTES (default 512 MiB;
 // resource-budget-exceeded): both land in result.json `stream.reason`.
 //
-// Live resources (G2c2, gate2-design.md D6, D7, Q4 "Live: server, store and
-// pins"): every live connection declares the configured policy with fetch
+// Live resources:
+// every live connection declares the configured policy with fetch
 // http (`/resources/sha256/`); GRC_RESOURCE_INLINE_MAX_BYTES above 1 MiB is
 // refused with GRC_LIVE_LISTEN. The server's ResourceSource is a
 // ServedResources (rs_resource_store.h): at each frame callback the published
@@ -144,7 +142,7 @@
 // budget. Sabotages unpin and drop-resource (both need GRC_LIVE_LISTEN) act
 // there, and wrong-hash serves the store's corrupted copy.
 //
-// Unknown items (protocol/unknown-item-skip.md): GRC_UNKNOWN_ITEM is `strict` (default, also
+// Unknown items: GRC_UNKNOWN_ITEM is `strict` (default, also
 // when unset or empty) or `skip`, read at arm with the other stream policies; any other value
 // refuses to publish, as an invalid GRC_ROOT_SIZE does. `skip` is a diagnostic opt-in for hosts
 // that arm late: the mirror withholds unknown canvas/item RIDs and the subtrees under them instead
@@ -152,7 +150,7 @@
 // `unknown_item_policy: "skip"`, every transaction carries `unknown_items`, and result.json
 // `stream.unknown_items` holds the final counters.
 //
-// Authorization (G2e, gate2-design.md D13): GRC_LIVE_AUTH is `none` (default) or `token`, read
+// Authorization: GRC_LIVE_AUTH is `none` (default) or `token`, read
 // only with GRC_LIVE_LISTEN. `token` generates 32 random bytes as 64 lowercase hex, writes them
 // to evidence/live-token (mode 0600, refused as resource-store-missing-equivalent
 // `live-token-unwritable` without GRC_EVIDENCE_DIR), declares the session's
@@ -161,7 +159,7 @@
 // AuthRejected event; a rejected GET is an ordinary HttpGet event with http_status 401, already
 // covered by the existing hook-log path.
 //
-// render-stream/7 (G7n, gate7-design.md D2, D3, D4, Q2, Q3): the listener accepts both
+// render-stream/7: the listener accepts both
 // subprotocols, render-stream.7 preferred, and each connection speaks the one it chose
 // (rs_live.h); file sinks stay on /6. On a /7 connection the token travels in the hello, never
 // in an upgrade header (rs_ws.h hello_token_subprotocols; rs_live.h checks it).
@@ -261,13 +259,13 @@ struct State {
   // set_channel, ...), which the adoption path then resolves. 0 (default): arm at load.
   uint64_t defer_arm_frames = 0;
   // LS0: the deferred arm's wait is logged once, not once a frame (an fprintf, an fflush and a
-  // write a frame, about 15 us on a standby seat; results/p3/idle-capture-cost.md).
+  // write a frame, about 15 us on a standby seat).
   bool defer_logged = false;
   // LS0: GRC_VALIDATION_LOG, read once at SCENE initialisation. A value that is neither `on` nor
   // `off` refuses at the first attempt, before the vtable is patched.
   std::string validation_log_error;
   bool evidence_ready = false;
-  // LS1 (live-swap-design.md D4): GRC_MODE=standby published the standby table and waits (until
+  // GRC_MODE=standby published the standby table and waits (until
   // LS2's arm()); every arm passes through standby first. GRC_STANDBY_FAULT is the test-only
   // sabotage of the standby table (rs_standby.h).
   bool standby = false;
@@ -309,7 +307,7 @@ struct State {
 
   // GRC_HEADLESS_CANVAS_TEXTURE as given (empty: unset), the parsed mode, and the shim's state:
   // "off" (not asked for), "armed", or "refused" with `ct_shim_reason`
-  // (protocol/canvas-texture-headless.md "Experiment (a) result"; rs_canvas_texture_shim.h).
+  // (rs_canvas_texture_shim.h).
   // HSD: unset or `auto` takes the headless default (rs::headless_defaults_apply), and the
   // resolved value lands here; `ct_shim_env_set` is then "reported" (asked for, or defaulted on),
   // `headless_defaults` whether the defaults applied to this host and stream.
@@ -350,11 +348,11 @@ struct Stream {
   std::string patch_path;  // GRC_STREAM_PATCH_OUT (patch sink); empty when unset
   std::string status = "off";
   std::string reason;  // empty -> null
-  // protocol/unknown-item-skip.md: GRC_UNKNOWN_ITEM, read at arm.
+  // GRC_UNKNOWN_ITEM, read at arm.
   rs2::UnknownItemPolicy unknown_item_policy = rs2::UnknownItemPolicy::Strict;
-  // gate5_5-design.md D4: GRC_SHADER_POLICY, read at arm (source | params | exclude).
+  // GRC_SHADER_POLICY, read at arm (source | params | exclude).
   rs2::ShaderPolicy shader_policy = rs2::ShaderPolicy::Source;
-  // gate8-design.md D2: GRC_STREAM_VERSION, GRC_ADOPT, GRC_TEXTURE_DECODE and the float-format
+  // GRC_STREAM_VERSION, GRC_ADOPT, GRC_TEXTURE_DECODE and the float-format
   // request, read at arm; and what the adoption seam reported (G8w: nothing).
   rs::Gate8Policy gate8;
   // W11b (render-stream-11.md): GRC_MESH_DYNAMIC*, read at arm; used at /11 only.
@@ -362,7 +360,7 @@ struct Stream {
   rs::AdoptStats adopt_stats;
   // G8r: GRC_ADOPT_FAULT (lazy resource adoption's fault knob), read at arm.
   rs::AdoptFault adopt_fault = rs::AdoptFault::None;
-  // G8kw (texture-delivery-design.md D11, Q7): GRC_TEXTURE_WORKERS and its knobs, read at arm,
+  // GRC_TEXTURE_WORKERS and its knobs, read at arm,
   // and the publication hold-back that waits for the workers' hashes (unused when sync).
   rs::TextureWorkerConfig workers;
   rs::RestConfig rest;  // TDR: the at-rest coding (rs_payload_rest.h)
@@ -400,7 +398,7 @@ struct Stream {
   // written, so a long run's buffer never grows unbounded. Counters, counters.json and the
   // mirror are unaffected either way: they do not read resources.jsonl.
   bool hook_log_on = true;
-  // FRZ-P (results/p3/frz-p.md): GRC_FREEZE_PARTICLES, read at arm. Empty/unset/off/0 = off (the
+  // GRC_FREEZE_PARTICLES, read at arm. Empty/unset/off/0 = off (the
   // pure stream, byte-identical to today); on/1 marks the seat particle-frozen. It changes nothing
   // on the wire: it is recorded in host evidence (result.json) and gates the two FRZ-P sabotages.
   bool freeze_particles = false;
@@ -419,7 +417,7 @@ struct Live {
   // G2c2: what the server serves over HTTP. Declared before `server`, which holds a pointer to
   // it, so it outlives the server.
   std::unique_ptr<rs::ServedResources> served;
-  // CAR4 (carrier-design.md D12): wss on `ws`, from the net module, when GRC_LIVE_TLS_CERT/KEY are
+  // wss on `ws`, from the net module, when GRC_LIVE_TLS_CERT/KEY are
   // set. Declared before `carriers`, whose `ws` server holds a pointer to it.
   std::unique_ptr<live::NetTlsContext> tls;
   bool lan_plaintext = false;  // D12: GRC_LIVE_LAN_PLAINTEXT=allow (plaintext from LAN peers too)
@@ -440,7 +438,7 @@ struct Live {
   std::string tls_cert;
   std::string tls_key;
   std::unique_ptr<rs2::Hub> hub;
-  // TRK1 (tracks-design.md Q5, T3): the track grant and its hub, built only when GRC_LIVE_TRACKS
+  // the track grant and its hub, built only when GRC_LIVE_TRACKS
   // grants a kind (null otherwise: live_drain's one extra null test). Declared after `carriers`,
   // whose set it sends through, so it is destroyed first.
   rs::tracks::TrackConfig track_config;
@@ -455,7 +453,7 @@ struct Live {
   // listener sabotage (no-cors | accept-any-origin | token-ignored | window-overrun; empty when
   // none).
   std::vector<std::string> allowed_origins;
-  // CAR2 (carrier-design.md D10): GRC_LIVE_EXPOSE. Recorded in live-carriers.json only.
+  // GRC_LIVE_EXPOSE. Recorded in live-carriers.json only.
   live::Expose expose = live::Expose::Loopback;
   uint64_t credit_window_max = 2;
   std::string listener_sabotage;
@@ -465,7 +463,7 @@ struct Live {
   bool http_coding_on = false;
 };
 
-// TAG1 (client-extensions-design.md §2.1, §2.2, "As built (TAG1)"): GRC_ITEM_META's grant (0:
+// Item identity: GRC_ITEM_META's grant (0:
 // nobody gets identities), the file sinks' request (GRC_ITEM_META_FILE*: off unless set), the
 // hub's union counter last seen, and the main thread's identity host. The frame callback tests
 // `grant` (one branch when off), then `on` (no viewer and no file asked: nothing per item).
@@ -499,7 +497,7 @@ std::vector<std::string> comma_names(const std::string &text) {
 }
 
 
-// G8kz (texture-delivery-design.md D2): GRC_HTTP_ENCODING = off | zstd | gzip, default zstd (the
+// GRC_HTTP_ENCODING = off | zstd | gzip, default zstd (the
 // default is safe because the coding is negotiated per request: a client that sends no
 // Accept-Encoding gets today's identity bytes).
 bool parse_http_encoding(const char *text, std::vector<live::Coding> *out, std::string *error) {
@@ -538,7 +536,7 @@ bool is_predict_sabotage(const std::string &kind) {
 // How long the host waits for receivers to close after their end record (rs_live.h, finish).
 constexpr uint64_t kLiveLingerNs = 1500ull * 1000ull * 1000ull;
 
-// G2c2 (gate2-design.md Q4): the largest inline threshold a live host accepts.
+// the largest inline threshold a live host accepts.
 constexpr uint64_t kLiveInlineMaxBytes = 1048576;
 
 bool is_lower_hex64(const std::string &text) {
@@ -555,7 +553,7 @@ bool is_lower_hex64(const std::string &text) {
 
 Live g_live;
 
-// Perf instrumentation (gate6-design.md Q3d, G6r): evidence/perf.json
+// Perf instrumentation: evidence/perf.json
 // (render-stream-capture-perf/1, written at disarm and shutdown) and evidence/perf-timeline.jsonl
 // (one line per second). Scoped to what capture/src/rs_live.cpp and entry.cpp can measure without
 // touching any other file (store_write_us, texture/mesh/shader copy_us and hash_us, param_decode_us
@@ -609,10 +607,10 @@ uint64_t read_rss_bytes() {
   return page_size > 0 ? resident_pages * static_cast<uint64_t>(page_size) : 0;
 }
 
-// GRC_ROOT_SIZE, read at arm (gate1-design.md Q1 "Policy").
+// GRC_ROOT_SIZE, read at arm.
 using rs2::RootSizePolicy;
 
-// GRC_SHADER_POLICY, read at arm (gate5_5-design.md D4): unset or empty is `source`.
+// GRC_SHADER_POLICY, read at arm: unset or empty is `source`.
 bool parse_shader_policy(const char *value, rs2::ShaderPolicy *out) {
   if (value == nullptr || std::strcmp(value, "") == 0 || std::strcmp(value, "source") == 0) {
     *out = rs2::ShaderPolicy::Source;
@@ -629,7 +627,7 @@ bool parse_shader_policy(const char *value, rs2::ShaderPolicy *out) {
   return false;
 }
 
-// GRC_UNKNOWN_ITEM, read at arm (protocol/unknown-item-skip.md).
+// GRC_UNKNOWN_ITEM, read at arm.
 bool parse_unknown_item_policy(const char *value, rs2::UnknownItemPolicy *out) {
   if (value == nullptr || std::strcmp(value, "") == 0 || std::strcmp(value, "strict") == 0) {
     *out = rs2::UnknownItemPolicy::Strict;
@@ -642,7 +640,7 @@ bool parse_unknown_item_policy(const char *value, rs2::UnknownItemPolicy *out) {
   return false;
 }
 
-// FRZ-P (results/p3/frz-p.md): GRC_FREEZE_PARTICLES, read at arm. off/0/empty (default) = off;
+// GRC_FREEZE_PARTICLES, read at arm. off/0/empty (default) = off;
 // on/1 = the seat is particle-frozen. Any other value refuses.
 bool parse_freeze_particles(const char *value, bool *out) {
   if (value == nullptr || std::strcmp(value, "") == 0 || std::strcmp(value, "off") == 0 ||
@@ -657,8 +655,8 @@ bool parse_freeze_particles(const char *value, bool *out) {
   return false;
 }
 
-// `presentation` receives W x H for presentation:<W>x<H> (decimal, 1..16384 each; G6b,
-// gate6-design.md Q3a) and is left untouched otherwise.
+// `presentation` receives W x H for presentation:<W>x<H> (decimal, 1..16384 each)
+// and is left untouched otherwise.
 bool parse_root_size_policy(const char *value, RootSizePolicy *out, int32_t presentation[2]) {
   if (value == nullptr || std::strcmp(value, "") == 0 || std::strcmp(value, "observe") == 0) {
     *out = RootSizePolicy::Observe;
@@ -724,7 +722,7 @@ std::string env_string(const char *name) {
   return value != nullptr ? std::string(value) : std::string();
 }
 
-// G2e (gate2-design.md D13, "Environment"): 32 random bytes as 64 lowercase hex characters, via
+// 32 random bytes as 64 lowercase hex characters, via
 // getrandom() -- independent of rs2::generate_id()'s 16-byte session/stream ids, which are not
 // secrets and need no particular length.
 std::string generate_live_token() {
@@ -815,7 +813,7 @@ std::string result_json() {
   json.field("disarmed", g_state.disarmed);
   json.field_or_null("unarmed_restore", g_state.unarmed_restore_phase);  // LS0
   if (g_state.shadow.built()) {
-    // LS1 (live-swap-design.md D4): the two tables and which one the singleton carries now.
+    // the two tables and which one the singleton carries now.
     const ShadowVtable::Table t = g_state.shadow.published();
     json.key("vtable").object_begin();
     json.field("published", std::string(t == ShadowVtable::Table::Armed     ? "armed"
@@ -843,7 +841,7 @@ std::string result_json() {
   json.field("status", g_stream.status);
   json.field_or_null("reason", g_stream.reason);
   json.field("transactions", stream_transactions());
-  // Additive (protocol/unknown-item-skip.md): the policy, and under skip the mirror's counters.
+  // Additive: the policy, and under skip the mirror's counters.
   const bool skip = g_stream.unknown_item_policy == rs2::UnknownItemPolicy::Skip;
   json.field("unknown_item_policy", std::string(skip ? "skip" : "strict"));
   if (skip) {
@@ -858,7 +856,7 @@ std::string result_json() {
   } else {
     json.field_null("unknown_items");
   }
-  // Additive (G8w, gate8-design.md D2): present only when a /8 sink or a gate 8 policy is in play,
+  // Additive: present only when a /8 sink or a gate 8 policy is in play,
   // so every run without them keeps its result.json unchanged.
   if (g_stream.gate8.speaks_v8()) {
     json.key("gate8").object_begin();
@@ -897,7 +895,7 @@ std::string result_json() {
       json.field("promotions", static_cast<int64_t>(ms.mesh_promotions));
       json.field("content_changes", static_cast<int64_t>(ms.mesh_content_changes));
       json.object_end();
-      // HC2 (host-cost-design.md D1): content_version digests made and identical re-records kept.
+      // content_version digests made and identical re-records kept.
       json.key("content_version").object_begin();
       json.field("digests", static_cast<int64_t>(ms.cv_digests));
       json.field("rerecords_kept", static_cast<int64_t>(ms.cv_rerecords_kept));
@@ -930,7 +928,7 @@ std::string result_json() {
         json.field("shim_synthesized", static_cast<int64_t>(rs::particles_shim().synthesized()));
         json.field("shim_engine_allocated",
                    static_cast<int64_t>(rs::particles_shim().engine_allocated()));
-        // FRZ-P (results/p3/frz-p.md): additive, written only under GRC_FREEZE_PARTICLES=on, so a
+        // additive, written only under GRC_FREEZE_PARTICLES=on, so a
         // live leg reads the grant from host evidence (the wire carries nothing about it).
         if (g_stream.freeze_particles) {
           json.field("frozen", true);
@@ -963,7 +961,6 @@ std::string result_json() {
     }
     if (g_stream.gate8.speaks_v9()) {
       json.field("texture_delivery", rs::texture_delivery_policy().mode);
-      // G8kp (texture-delivery-design.md Q3 "Fallbacks, all typed and counted").
       const rs::DeliveryStats delivery = rs::texture_delivery_stats();
       json.key("delivery_stats").object_begin();
       json.field("block_built", delivery.block_built);
@@ -1106,7 +1103,7 @@ std::string result_json() {
       json.object_end();
     }
     json.object_end();
-    // G8t (gate8-design.md Q3 `decode-cost`): the decode seam's totals since arm (per-texture
+    // The decode seam's totals since arm (per-texture
     // times are the hook log's `decode_ns`).
     const rs::DecodeStats decode = rs::texture_decode_stats();
     json.key("decode_stats").object_begin();
@@ -1306,7 +1303,7 @@ uint64_t monotonic_ns() {
                                    .count());
 }
 
-// --- perf instrumentation (gate6-design.md Q3d, G6r) --------------------------
+// --- perf instrumentation --------------------------
 
 // At arm: starts the clocks perf.json's deltas and perf-timeline.jsonl's seconds are measured
 // against.
@@ -1357,7 +1354,7 @@ void perf_timeline_tick(uint64_t now_ns) {
   // which would break the jsonl contract (one JSON object per line), so this stays a plain
   // string build, as rs_live.cpp's own per-connection log lines do.
   //
-  // G6s (gate6-design.md Q7e "residency-bounded"): mirror_stats()'s live table sizes and the
+  // mirror_stats()'s live table sizes and the
   // served resources' current (not max) retained count/bytes, so a soak's checker can compare a
   // window's first third against its last third -- the hook log is off for a soak (GRC_HOOK_LOG),
   // so this 1 Hz tick is the only host-side time series available for a long-running leg.
@@ -1548,7 +1545,7 @@ void write_geometry(JsonWriter *json, const std::string &name, const rs::RootInf
   json->object_end();
 }
 
-// evidence/root.json (render-stream-root-geometry/1, gate1-design.md G1a).
+// evidence/root.json (render-stream-root-geometry/1).
 std::string root_geometry_json(RootSizePolicy policy, const rs::RootInfo &before,
                                const rs::RootInfo &after, rs2::HostSizeStatus status,
                                bool enforce_called, bool enforce_ok,
@@ -1576,7 +1573,7 @@ std::string root_geometry_json(RootSizePolicy policy, const rs::RootInfo &before
   json.field_or_null("detail", enforce_detail);
   json.object_end();
   json.field_or_null("root_query_failed_step", after.ok ? std::string() : after.failed_step);
-  // Additive (G2a, gate2-design.md Q1d): the root's default canvas-item texture
+  // Additive: the root's default canvas-item texture
   // filter and repeat as read at arm, as Viewport scene enums (-1: unread).
   json.key("texture_defaults").object_begin();
   json.field("filter", before.default_texture_filter);
@@ -1681,8 +1678,8 @@ std::string sabotage_text(const rs2::SabotageConfig &config) {
   return text;
 }
 
-// GRC_LIVE_LISTEN: "127.0.0.1:<port>" or "[::1]:<port>" (gate1-design.md "G1c2"); with
-// GRC_LIVE_EXPOSE=lan (CAR2, carrier-design.md D10) also "0.0.0.0", "::" or a host IP literal.
+// GRC_LIVE_LISTEN: "127.0.0.1:<port>" or "[::1]:<port>"; with
+// GRC_LIVE_EXPOSE=lan also "0.0.0.0", "::" or a host IP literal.
 // Returns false with *reason "non-loopback" for any other host, or a description of the
 // malformation. The rule itself is rs_expose.cpp's, shared with rs_live_host.
 bool parse_listen(const std::string &text, live::Expose expose, const char *var, std::string *host,
@@ -1723,7 +1720,7 @@ void item_meta_configure() {
     g_meta.config_ok = false;
     why = "GRC_ITEM_META_BUDGET_US is not a positive number of microseconds";
   } else if (!env_non_negative("GRC_ITEM_META_SWEEP", 64, &g_meta.sweep)) {
-    // ID3 (client-extensions-design.md ID-D4): Controls whose mouse_filter is re-read a frame.
+    // Controls whose mouse_filter is re-read a frame.
     g_meta.config_ok = false;
     why = "GRC_ITEM_META_SWEEP is not a non-negative number of Controls";
   } else if (!sabotage.empty() && sabotage != "in-shared" && sabotage != "skip-full" &&
@@ -1836,7 +1833,6 @@ std::string live_json() {
     json.field("port", g_live.port);
   }
   json.field_or_null("reason", g_live.reason);
-  // G7n (gate7-design.md Q3).
   json.key("allowed_origins").array_begin();
   for (const std::string &origin : g_live.allowed_origins) {
     json.string(origin);
@@ -1859,7 +1855,7 @@ void live_decided(const std::string &status, const std::string &reason) {
            (reason.empty() ? std::string() : " (" + reason + ")"));
 }
 
-// CAR1/CAR3/CAR6 (carrier-design.md D7-D9, D11, Q3): GRC_LIVE_CARRIERS, default `ws`; `wt` loads
+// GRC_LIVE_CARRIERS, default `ws`; `wt` loads
 // the net module and reads GRC_LIVE_WT_LISTEN, GRC_LIVE_WT_CERT and GRC_LIVE_TLS_CERT/KEY (and,
 // for ws, GRC_LIVE_LAN_PLAINTEXT); any other name must be a consumer carrier registered before
 // the arm (g_live.registered), else it is `carrier-unregistered`; *why is the refusal. `ws` starts
@@ -1945,7 +1941,7 @@ bool live_carriers_ok(std::string *why) {
   return g_live.net_module != nullptr;
 }
 
-// CAR1 (carrier-design.md D13): evidence/live-carriers.json, beside live.json, whose shape it
+// evidence/live-carriers.json, beside live.json, whose shape it
 // leaves alone. Written at listen (or a failed start) and again at stop; never to the log.
 void emit_live_carriers() {
   if (g_state.evidence_ready && g_live.carriers != nullptr) {
@@ -1965,7 +1961,7 @@ void refresh_live_carriers() {
   }
 }
 
-// TRK1 (tracks-design.md Q9): evidence/live-tracks.json, only with tracks on; written at listen,
+// evidence/live-tracks.json, only with tracks on; written at listen,
 // atomically after any frame that opened or closed a track, and at stop.
 void refresh_live_tracks() {
   if (!g_state.evidence_ready || g_live.tracks == nullptr || g_live.carriers == nullptr) return;
@@ -1994,7 +1990,7 @@ void refresh_live_tracks() {
   }
 }
 
-// TRK1 (tracks-design.md Q8): GRC_LIVE_TRACKS and its knobs into g_live.track_config. True with
+// GRC_LIVE_TRACKS and its knobs into g_live.track_config. True with
 // tracks off (the pure path) or a valid grant; false with *why the typed refusal.
 bool tracks_configure(std::string *why) {
   g_live.track_config = rs::tracks::TrackConfig();
@@ -2091,7 +2087,7 @@ bool tracks_configure(std::string *why) {
   return true;
 }
 
-// TRK1 (tracks-design.md Q2, T5): one credential per granted kind, after every live and track
+// one credential per granted kind, after every live and track
 // setting passed and after the view token, never equal to it, mode 0600. TRK5: with
 // GRC_LIVE_TRACK_CAPS=hmac one key, evidence/live-track-cap-key (64 lowercase hex, never equal to
 // the view token), instead. The other mode's files are removed, so a consumer that finds a file
@@ -2155,7 +2151,7 @@ void ext_carriers_drop_unstarted() {
 }
 
 void stream_start() {
-  // CAR6 (carrier-design.md "Registration timing"): registration closes at the arm, whatever the
+  // registration closes at the arm, whatever the
   // stream and live do next; a later grc_carrier_register returns -1 (`carrier-late`). Whatever
   // the set does not take is destroyed when this returns.
   g_live.registered = live::carrier_registry().close();
@@ -2218,7 +2214,7 @@ void stream_start() {
     }
     return;
   }
-  // G8w (gate8-design.md D2): GRC_STREAM_VERSION, GRC_ADOPT, GRC_TEXTURE_DECODE and a float format
+  // GRC_STREAM_VERSION, GRC_ADOPT, GRC_TEXTURE_DECODE and a float format
   // in GRC_RESOURCE_FORMATS. A gate 8 policy needs /8, so a file sink that is not /8 refuses.
   {
     rs::Gate8Policy gate8;
@@ -2249,7 +2245,7 @@ void stream_start() {
       return;
     }
     g_stream.adopt_fault = adopt_fault;
-    // FRZ-P (results/p3/frz-p.md): GRC_FREEZE_PARTICLES marks the seat particle-frozen. Read at arm;
+    // GRC_FREEZE_PARTICLES marks the seat particle-frozen. Read at arm;
     // off (the default) changes nothing, on is recorded in host evidence and gates the FRZ-P
     // sabotages. It never alters the wire (a frozen emitter still sends its config + events).
     if (!parse_freeze_particles(std::getenv("GRC_FREEZE_PARTICLES"), &g_stream.freeze_particles)) {
@@ -2280,7 +2276,7 @@ void stream_start() {
       return;
     }
     g_stream.mesh_dynamic = mesh_dynamic;
-    // G8k9 (texture-delivery-design.md D1): GRC_TEXTURE_DELIVERY, declared by a /9 session only; at
+    // GRC_TEXTURE_DELIVERY, declared by a /9 session only; at
     // every other version the decoded payload is all there is, so it changes nothing there.
     rs::DeliveryPolicy delivery;
     if (!rs::parse_delivery_policy(std::getenv("GRC_TEXTURE_DELIVERY"), &delivery, &error)) {
@@ -2331,7 +2327,7 @@ void stream_start() {
     g_stream.policy.decode = gate8.decode_engine ? rs2::TextureDecode::Engine : rs2::TextureDecode::Off;
     rs::texture_decode_set_enabled(gate8.decode_engine);
   }
-  // G8kw (texture-delivery-design.md D11): GRC_TEXTURE_WORKERS, valid at every version (the
+  // GRC_TEXTURE_WORKERS, valid at every version (the
   // hold-back changes when a frame is published, never what a transaction says).
   {
     rs::TextureWorkerConfig workers;
@@ -2357,7 +2353,7 @@ void stream_start() {
     g_stream.holdback = rs::HoldBack();
     hooks_set_texture_workers(rs::TextureWorkerConfig());  // sync until the pool runs
   }
-  // TDR (live-swap-design.md Q5): GRT1 texture bodies are coded at rest with the host's HTTP
+  // GRT1 texture bodies are coded at rest with the host's HTTP
   // coding, GRC_HTTP_ENCODING (zstd by default, gzip, or off: nothing coded), where each is built
   // (rs_payload_rest.h). GRC_AT_REST_FAULT=keep-identity is served-at-rest's sabotage. Set here,
   // before any hook (or adoption) builds a body; never while no stream is armed.
@@ -2390,7 +2386,7 @@ void stream_start() {
     log_line(std::string("stream: at_rest=") + rs::rest_coding_token(rest.coding) +
              (rest.keep_identity ? " fault=keep-identity" : ""));
   }
-  // G8kc (texture-delivery-design.md D8): GRC_TEXTURE_CACHE_DIR and GRC_TEXTURE_CACHE_MAX_BYTES,
+  // GRC_TEXTURE_CACHE_DIR and GRC_TEXTURE_CACHE_MAX_BYTES,
   // valid at every version (the cache only stands in for a derivation, never changes a payload).
   // Unset, the cache is closed and nothing below it runs.
   {
@@ -2410,7 +2406,7 @@ void stream_start() {
     g_stream.texture_cache_max_bytes = cache.max_bytes;
     hooks_reset_texture_cache_notes();
   }
-  // G8a (gate8-design.md D13): the mirror's caps are configuration. No wire change: a cap that is
+  // the mirror's caps are configuration. No wire change: a cap that is
   // hit is the existing `mirror-capacity` failure. Defaults keep every other session unchanged.
   {
     uint64_t max_items = 0;
@@ -2438,7 +2434,7 @@ void stream_start() {
     g_stream.max_items = static_cast<size_t>(max_items);
     g_stream.max_commands = static_cast<size_t>(max_commands);
   }
-  // G8a (gate8-design.md D4): adoption reads the scene tree, so it runs on the main thread only
+  // adoption reads the scene tree, so it runs on the main thread only
   // (`adopt-thread`), and only when every method bind it needs exists at its 4.5.1 hash
   // (`adopt-unavailable`); both refuse before anything is published.
   if (g_stream.gate8.adopt) {
@@ -2472,7 +2468,7 @@ void stream_start() {
     return;
   }
   g_stream.hook_log_on = hook_log != "off";
-  // G6b (gate6-design.md D4, Q3a): presentation:<W>x<H> under stretch `disabled` with W x H other
+  // presentation:<W>x<H> under stretch `disabled` with W x H other
   // than the logical size would change layout, so the stream refuses to publish
   // (root-size-invalid) before anything is opened. One read-only root query decides it.
   if (policy == RootSizePolicy::Presentation) {
@@ -2492,8 +2488,8 @@ void stream_start() {
       return;
     }
   }
-  // Gate 2 (G2a): the resource policy and the payload copy capability
-  // (gate2-design.md D3, Q3). A stream never runs with texture copies it cannot
+  // The resource policy and the payload copy capability.
+  // A stream never runs with texture copies it cannot
   // make, so either failure refuses to publish, as an invalid GRC_ROOT_SIZE does.
   {
     rs::FormatPolicy formats;
@@ -2517,7 +2513,7 @@ void stream_start() {
       if (!g_stream.store_dir.empty() && g_stream.store_dir[0] != '/') {
         error = "GRC_RESOURCE_STORE_DIR must be absolute";
       } else if (files && !delivery_inline && g_stream.store_dir.empty()) {
-        // gate2-design.md Q4 "File sinks": a recording whose payloads have nowhere to go.
+        // A recording whose payloads have nowhere to go.
         error = "resource-store-missing";
       }
     }
@@ -2557,12 +2553,12 @@ void stream_start() {
   if (!sabotage.ok && !g_live.listen.empty()) {
     live_decided("refused", "sabotage refused: " + sabotage.error);
   }
-  // Live configuration, decided before anything is opened (gate1-design.md G1c2).
+  // Live configuration, decided before anything is opened.
   std::string live_host;
   uint16_t live_port = 0;
   rs2::LiveConfig live_config;
   // GRC_LIVE_MAX_CONNECTIONS (D13, G6r): the admission limit, since CAR1 a total across every
-  // carrier (carrier-design.md D6, the CarrierSet's counter); the Hub itself already tracks every
+  // carrier (the CarrierSet's counter); the Hub itself already tracks every
   // connection independently.
   uint64_t live_max_connections = 1;
   // G2e: empty/None unless GRC_LIVE_AUTH=token successfully generates and writes one below.
@@ -2578,7 +2574,7 @@ void stream_start() {
     live_config.tap_dir = tap != nullptr ? std::string(tap) : std::string();
     const std::string auth_mode = env_string("GRC_LIVE_AUTH");
     if (!live::parse_expose(std::getenv("GRC_LIVE_EXPOSE"), &g_live.expose, &why)) {
-      // CAR2 (carrier-design.md D10, Q3): expose-invalid.
+      // expose-invalid.
       live_ok = false;
     } else if (!parse_listen(g_live.listen, g_live.expose, "GRC_LIVE_LISTEN", &live_host, &live_port,
                              &why)) {
@@ -2602,7 +2598,7 @@ void stream_start() {
       live_ok = false;
       why = "GRC_LIVE_TAP_DIR must be absolute";
     } else if (g_stream.policy.inline_max_bytes > kLiveInlineMaxBytes) {
-      // gate2-design.md Q4: inline records over live share the credit window with the
+      // Inline records over live share the credit window with the
       // transaction, so the threshold is capped at 1 MiB; bigger payloads go over HTTP.
       live_ok = false;
       why = "GRC_RESOURCE_INLINE_MAX_BYTES above " + std::to_string(kLiveInlineMaxBytes) +
@@ -2612,7 +2608,7 @@ void stream_start() {
       why = "GRC_LIVE_AUTH must be none or token (got " + auth_mode + ")";
     } else if (!live::parse_allowed_origins(env_string("GRC_LIVE_ALLOWED_ORIGINS"),
                                             &g_live.allowed_origins, &why)) {
-      // G7n (gate7-design.md Q3): an allowlist entry that is not an exact origin refuses.
+      // an allowlist entry that is not an exact origin refuses.
       live_ok = false;
       why = "origin-config-invalid: GRC_LIVE_ALLOWED_ORIGINS " + why;
     } else if (!live::check_expose(g_live.expose, auth_mode == "token", g_live.allowed_origins.size(),
@@ -2620,7 +2616,7 @@ void stream_start() {
       // CAR2: lan-needs-token, lan-needs-origins.
       live_ok = false;
     } else if (!live_carriers_ok(&why)) {
-      // CAR1 (carrier-design.md D7, Q3): only `ws` exists until CAR3 (wt) and CAR6 (registered).
+      // only `ws` is built in; `wt` loads from the net module and registered carriers from the registry.
       live_ok = false;
     } else if (!env_positive("GRC_LIVE_CREDIT_WINDOW_MAX", 2, &live_config.credit_window_max) ||
                live_config.credit_window_max > 2) {
@@ -2662,11 +2658,11 @@ void stream_start() {
       why = "sabotage " + g_live.listener_sabotage +
             ": invalid GRC_SABOTAGE_FRAME (a positive frame)";
     } else if ((item_meta_configure(), !g_meta.config_ok)) {
-      // TAG1 (client-extensions-design.md §2.1): the operator's grant, empty by default.
+      // the operator's grant, empty by default.
       live_ok = false;
       why = g_meta.config_error;
     } else if (!tracks_configure(&why)) {
-      // TRK1 (tracks-design.md Q8): the track checks, after every other live check.
+      // the track checks, after every other live check.
       live_ok = false;
     }
     live_config.item_meta_grant = g_meta.grant;
@@ -2674,7 +2670,7 @@ void stream_start() {
                              : g_live.listener_sabotage == "zr-short-run" ? rs13::ZrSabotage::ShortRun
                                                                           : rs13::ZrSabotage::None;
     live_config.item_meta_sabotage = g_meta.sabotage;
-    // HC5 (host-cost-design.md D4): the hub's formation jobs run on one encode thread; the test
+    // the hub's formation jobs run on one encode thread; the test
     // knob GRC_HC_FORMATION=inline runs them on the frame callback's thread instead (the wire is
     // byte-identical either way). GRC_HC_SABOTAGE=reorder: every job sends its transaction before
     // its resource records (receivers refuse the stream with resource-missing).
@@ -2768,29 +2764,29 @@ void stream_start() {
     } else if ((kind == rs2::SabotageKind::FreezeDropEvents ||
                 kind == rs2::SabotageKind::FreezeSendPositions) &&
                !g_stream.freeze_particles) {
-      // FRZ-P (results/p3/frz-p.md): they act on a particle-frozen seat only.
+      // they act on a particle-frozen seat only.
       why = std::string(rs2::to_wire(kind)) +
             " acts on a particle-frozen seat; set GRC_FREEZE_PARTICLES=on";
     } else if (rs::sabotage_needs_v11(kind) && !g_stream.gate8.speaks_v11()) {
       // W11b (render-stream-11.md "Sabotage kinds"): declared by a /11 session only.
       why = std::string(rs2::to_wire(kind)) + " acts on render-stream/11; set GRC_STREAM_VERSION=11";
     } else if (kind == rs2::SabotageKind::PerturbDecode && !g_stream.gate8.decode_engine) {
-      // G8t (gate8-design.md Q3 "Sabotages"): it perturbs host-decoded payloads only.
+      // it perturbs host-decoded payloads only.
       why = "perturb-decode acts on host-decoded textures; set GRC_TEXTURE_DECODE=engine";    } else if (kind == rs2::SabotageKind::SizeBeforeAdopt &&
                (!g_stream.gate8.adopt || policy != RootSizePolicy::Presentation)) {
-      // G8h (gate8-design.md Q4 "Sabotage"): it reorders the late presentation against adoption.
+      // it reorders the late presentation against adoption.
       why = "size-before-adopt orders the presentation size against adoption; set GRC_ADOPT=arm "
             "and GRC_ROOT_SIZE=presentation:<W>x<H>";
     } else if ((kind == rs2::SabotageKind::AdoptSkipState ||
                 kind == rs2::SabotageKind::AdoptNoRedraw ||
                 kind == rs2::SabotageKind::AdoptSkipLayers) &&
                !g_stream.gate8.adopt) {
-      // G8a (gate8-design.md Q2 "Sabotages"): they act on the arm-time adoption walk.
+      // they act on the arm-time adoption walk.
       why = std::string(rs2::to_wire(kind)) + " acts on the adoption walk; set GRC_ADOPT=arm";
     } else if ((kind == rs2::SabotageKind::AdoptRawShaderCode ||
                 kind == rs2::SabotageKind::AdoptSkipParams) &&
                !g_stream.gate8.adopt) {
-      // G8m (gate8-design.md Q5 "Sabotages"): they act on adopted shaders and materials.
+      // they act on adopted shaders and materials.
       why = std::string(rs2::to_wire(kind)) + " acts on adopted materials; set GRC_ADOPT=arm";
     }
     if (!why.empty()) {
@@ -2831,9 +2827,8 @@ void stream_start() {
   }
 
   rs2::Session session;
-  // G6b (gate6-design.md D1, render-stream-6.md): the capture speaks render-stream/6 (/5 from
-  // G55d, /4 from G5d, /3 from G4e2). The mirror stamps its snapshots V6 to match.
-  // G8w (gate8-design.md D2): /8 only when a file sink asked for it (GRC_STREAM_VERSION=8) or a
+  // The capture speaks render-stream/6 (render-stream-6.md). The mirror stamps its snapshots V6 to match.
+  // /8 only when a file sink asked for it (GRC_STREAM_VERSION=8) or a
   // gate 8 policy needs it; /6 otherwise, and every /2-/7 byte stays as it was.
   // G8k9: GRC_STREAM_VERSION=9 selects /9 (render-stream-9.md); the seam declares the delivery mode.
   // CG1: GRC_STREAM_VERSION=10 selects /10 (render-stream-10.md).
@@ -2861,10 +2856,10 @@ void stream_start() {
       static_cast<uint32_t>(std::strtoul(g_state.calib.calibrator_version.c_str(), nullptr, 10));
   session.capture.hooks_planned = g_state.plan.planned;
   session.capture.hooks_omitted = g_state.plan.omitted;
-  // protocol/canvas-texture-headless.md: a headless host (RasterizerDummy,
+  // A headless host (RasterizerDummy,
   // servers/display_server_headless.h:51) declares canvas_texture unsupported -- unless the opt-in
-  // shim gives every CanvasTexture created while armed its own identity ("Experiment (a)
-  // result"), in which case it declares canvas_texture supported like a rendered host. The
+  // shim gives every CanvasTexture created while armed its own identity,
+  // in which case it declares canvas_texture supported like a rendered host. The
   // mirror's RID() refusal below stays on either way: RID() in a texture draw is still ambiguous
   // on a headless host (a CanvasTexture created before arming, or no texture).
   const bool headless_host = g_state.display_server == "headless";
@@ -2915,7 +2910,7 @@ void stream_start() {
       return;
     }
   }
-  // P3-CAP (results/p3/p3-cap.md): the file sinks' and the store's I/O leave the frame callback
+  // the file sinks' and the store's I/O leave the frame callback
   // for one writer thread, in submission order (the bytes on disk are unchanged).
   // GRC_FILE_WRITER=sync keeps it on the calling thread.
   if (files) {
@@ -2991,7 +2986,7 @@ void stream_start() {
   // min-size write causes is attributed to the root. A failure becomes the
   // sticky root-query-failed.
   rs::root_query_apply(before);
-  // G8w (gate8-design.md D4): adoption runs here, after the root query and before the size policy,
+  // adoption runs here, after the root query and before the size policy,
   // because the policy's relayout reaches the hooks as ordinary calls on adopted items. The seam
   // is empty until G8a; the session still declares `adoption` so the wire is honest about intent.
   bool size_applied_early = false;
@@ -3022,7 +3017,7 @@ void stream_start() {
     case rs2::SabotageKind::AdoptSkipLayers: adopt_config.sabotage = rs::AdoptSabotage::SkipLayers; break;
     default: break;
     }
-    // G8h (gate8-design.md Q4 "Sabotage"): size-before-adopt applies the presentation size ahead of
+    // size-before-adopt applies the presentation size ahead of
     // the walk, so the relayout, stretch and oversampling it causes name RIDs nothing has adopted.
     if (sabotage.config.kind == rs2::SabotageKind::SizeBeforeAdopt) {
       std::string early_detail;
@@ -3059,7 +3054,7 @@ void stream_start() {
   bool enforce_ok = true;
   std::string enforce_detail;
   // render-stream-6.md "Viewport": the declared presentation size -- the policy's W x H under
-  // presentation:, the logical size otherwise (gate6-design.md Q3a).
+  // presentation:, the logical size otherwise.
   int32_t presentation_size[2] = {before.logical_size[0], before.logical_size[1]};
   if (policy == RootSizePolicy::Presentation) {
     presentation_size[0] = presentation_wh[0];
@@ -3105,7 +3100,7 @@ void stream_start() {
     rs::mirror_set_degenerate_host_size(true);
   }
   if (!enforce_ok) {
-    // gate1-design.md Q1 "Policy": the operator asked for a guarantee the
+    // The operator asked for a guarantee the
     // library could not give.
     rs::mirror_fail_root_size_enforce(enforce_detail);
   }
@@ -3118,7 +3113,7 @@ void stream_start() {
            " status=" + rs2::to_wire(host_status) +
            (enforce_ok ? std::string() : " ENFORCE FAILED (" + enforce_detail + ")"));
   const rs::RootInfo &root = after;
-  // G2b2 (gate2-design.md D9, Q1d): the root viewport's default texture filter and repeat, read
+  // the root viewport's default texture filter and repeat, read
   // at arm as Viewport scene enums and mapped to the RenderingServer enums the setters use
   // (scene/main/viewport.cpp:3903-3925, :3934-3958). The hooks follow later changes.
   {
@@ -3162,7 +3157,7 @@ void stream_start() {
     rs::mirror_instance().set_v11(v11);
     // HC4a test knobs (never declared on the wire): the shadow oracle, GRC_HC_SHADOW=1 (every
     // snapshot also built by the full walk and compared, the stream ended at the first
-    // difference: host-cost-design.md "Byte-identity proof method"), and the sabotages
+    // difference), and the sabotages
     // GRC_HC_SABOTAGE=hc-skip-dirty / hc-stale-derived.
     const char *hc_shadow = std::getenv("GRC_HC_SHADOW");
     g_hc_shadow = hc_shadow != nullptr && std::string(hc_shadow) == "1";
@@ -3210,10 +3205,10 @@ void stream_start() {
     pt.param_arrays = g_stream.gate8.speaks_v12();
     rs::mirror_set_particles(pt);
   }
-  // G8t (gate8-design.md Q3): perturb-decode acts in the decode seam, before the hook hashes.
+  // perturb-decode acts in the decode seam, before the hook hashes.
   rs::texture_decode_set_perturb(
       sabotage.config.kind == rs2::SabotageKind::PerturbDecode ? sabotage.config.frame : 0);
-  // G55d (gate5_5-design.md D4): the declared shader-source policy.
+  // the declared shader-source policy.
   rs::mirror_set_shader_policy(g_stream.shader_policy);
   if (g_stream.shader_policy != rs2::ShaderPolicy::Source) {
     log_line(std::string("stream: shader_policy=") + rs2::to_wire(g_stream.shader_policy));
@@ -3270,7 +3265,7 @@ void stream_start() {
       ctx.main_thread = true;
       rs::resource_log().resource_event(ctx, op, hash, bytes, ok ? "ok" : "failed");
     });
-    // HC5 (host-cost-design.md D4 "File lanes"): with the P3-CAP writer, the lanes' records and
+    // with the P3-CAP writer, the lanes' records and
     // transactions are formed on it too (GRC_HC_FORMATION=inline keeps them here).
     const char *formation = std::getenv("GRC_HC_FORMATION");
     if (g_stream.writer != nullptr &&
@@ -3304,9 +3299,9 @@ void stream_start() {
     server_config.max_clients = static_cast<std::size_t>(live_max_connections);
     server_config.tls = g_live.tls.get();  // CAR4 (D12): wss beside ws when a pair is set
     server_config.lan_plaintext = g_live.lan_plaintext;  // D12: plain ws for LAN pages too
-    // G7n (gate7-design.md D2, Q3): /7 preferred when both are offered; the /7 token travels in
+    // /7 preferred when both are offered; the /7 token travels in
     // the hello (rs_live.h), so its upgrade is not bearer-checked.
-    // G8w (gate8-design.md D2): render-stream.8 is offered last by default (the default stays /7),
+    // render-stream.8 is offered last by default (the default stays /7),
     // first under GRC_STREAM_VERSION=8, and alone under a gate 8 policy. A /8 upgrade carries the
     // token in the hello like /7's.
     server_config.subprotocols = rs::gate8_live_subprotocols(g_stream.gate8);
@@ -3342,7 +3337,7 @@ void stream_start() {
     server_config.corrupt_coded_body = g_live.listener_sabotage == "corrupt-coded-body";
     const bool tracks_on = !g_live.track_config.kinds.empty();
     if (tracks_on) {
-      // TRK1 (tracks-design.md Q3, Q7): matched after every view subprotocol, admitted from the
+      // matched after every view subprotocol, admitted from the
       // track pool. Off: neither member is touched (T3).
       server_config.track_subprotocols = {rs::tracks::kTrackSubprotocolV1};
       server_config.max_tracks = static_cast<std::size_t>(g_live.max_tracks);
@@ -3367,7 +3362,7 @@ void stream_start() {
       g_live.served->set_retain_superseded_frame(sabotage.config.frame);
     }
     g_live.serving.budget_bytes = g_stream.budget_bytes;
-    // CAR1 (carrier-design.md Q2): the set owns the server as carrier `ws`, index 0; the
+    // the set owns the server as carrier `ws`, index 0; the
     // admission limit becomes the set's total (D6). The 2-second flush budget is the stop's.
     {
       live::CarrierServices services;
@@ -3419,7 +3414,7 @@ void stream_start() {
           g_live.ws = nullptr;
         }
       }
-      // CAR3 (carrier-design.md D8, D9, Q4): carrier `wt`, index 1, from the net module. A
+      // carrier `wt`, index 1, from the net module. A
       // failure to make it is recorded like a failed start; the others still serve.
       if (g_live.wt_enabled) {
         std::string wt_error;
@@ -3430,7 +3425,7 @@ void stream_start() {
           added = true;
         }
       }
-      // CAR6 (carrier-design.md D5, D7): every listed consumer carrier at its registered index
+      // every listed consumer carrier at its registered index
       // (2..255, registration order). Unlisted ones are destroyed when stream_start returns.
       {
         std::vector<std::string> listed;
@@ -3527,7 +3522,7 @@ void stream_start() {
   g_stream.status = "open";
   resources_start(root.viewport_rid);
   if (g_stream.gate8.adopt) {
-    // G8m (gate8-design.md D11, Q5): every adopted item's material, shader and instance
+    // every adopted item's material, shader and instance
     // parameters, through the hooks' own paths now that the hook log is open; still this
     // iteration, before the first transaction.
     rs::adopt_materials_at_arm();
@@ -3627,7 +3622,7 @@ void live_drain(uint64_t frame) {
       log_line("live: 401 unauthorized upgrade (missing or wrong bearer token)");
       continue;
     }
-    // TRK1 (tracks-design.md T7, Q5): a track connection never reaches the view Hub, which would
+    // a track connection never reaches the view Hub, which would
     // map its unknown subprotocol to a view version and send it a session.
     if (g_live.tracks != nullptr && g_live.tracks->claims(event)) {
       g_live.tracks->on_event(event, monotonic_ns());
@@ -3816,7 +3811,7 @@ void encoders_finish() {
   }
 }
 
-// TDR (live-swap-design.md Q5, served-at-rest): evidence/at-rest.json at stream end, with an
+// TDR (served-at-rest): evidence/at-rest.json at stream end, with an
 // evidence directory only. The coding and its counters (rs_payload_rest.h), and a census of what
 // the mirror and the served set hold: each distinct GRT1 body once, identity bytes held for coded
 // (or never tried) bodies, held and identity bytes.
@@ -3899,7 +3894,7 @@ void stream_finish(rs2::EndReason reason) {
   rs::adopt_resources_end();  // G8r
   live_drain(g_state.frames_total);  // G2c2: GETs answered so far reach the hook log first
   resources_finish();
-  // ID3 (client-extensions-design.md ID-D9): the disarm undoes every property_list_changed
+  // the disarm undoes every property_list_changed
   // connection and clears the change queue and the sweep (no frame forms a record after this);
   // live_close_and_stop then clears the rest of the union with g_meta, as TAG1 does.
   g_meta.host.v2_off();
@@ -3947,7 +3942,7 @@ void stream_finish(rs2::EndReason reason) {
   }
 }
 
-// GRT3 (results/grt.md "Part 3"; scripts/README.md "Fast frames"): GRC_LIVE_AWAIT_HELLO_MS=<ms>
+// GRC_LIVE_AWAIT_HELLO_MS=<ms>
 // holds the host's whole timeline -- this frame callback, so the main loop, the fixture's frame
 // counter and every capture frame stamp -- at the first armed publish until a receiver's hello has
 // arrived, or for at most <ms>. Off (unset) by default, so a real-time host is byte for byte what
@@ -4006,7 +4001,7 @@ void live_await_first_hello(uint64_t frame) {
            (hello ? std::string("a hello arrived") : std::string("timed out")));
 }
 
-// LF1 (scripts/README.md "Fast frames (GRT3)", "The window hold"): GRC_LIVE_HOLD_WINDOWS=
+// GRC_LIVE_HOLD_WINDOWS=
 // [<step>:]<from>-<to>,... (the receiver's RS_RECEIVER_SHOT_WINDOWS format, a test knob beside
 // GRC_LIVE_AWAIT_HELLO_MS) holds the host's whole timeline at each window's last frame `to` until
 // every streaming connection has applied (or submitted) a transaction from inside the window.
@@ -4259,7 +4254,7 @@ void particles_states_log() {
   }
 }
 
-// TAG1 (client-extensions-design.md §2.2): after the snapshot (so a new item's `published` says
+// after the snapshot (so a new item's `published` says
 // whether this snapshot carries it), the union the granted viewers ask, then the items created
 // since the watermark, within the budget, handed to the hub's formation side.
 void item_meta_frame(uint64_t frame) {
@@ -4319,7 +4314,7 @@ void stream_publish(uint64_t frame) {
   }();
   (void)hc_knob;
   if (g_stream.spurious_frame != 0 && frame == g_stream.spurious_frame) {
-    // spurious-texture-update (gate2-design.md G2b2): a version bump with identical bytes, and
+    // spurious-texture-update: a version bump with identical bytes, and
     // its own hook-log line marked "sabotage":true, so the log and the stream still agree.
     const uint64_t rid = rs::mirror_instance().spurious_texture_update(frame);
     if (rid != 0) {
@@ -4361,8 +4356,8 @@ void stream_publish(uint64_t frame) {
   // P3-TM: this iteration's shader time (a mirror change only while a TIME reader exists).
   rs::mirror_instance().set_shader_time(rs::shader_clock().total);
   const uint64_t epoch = rs::mirror_epoch();
-  // G2c2: with a live server the served set holds the current state's payloads (D7), pinned
-  // before a transaction naming them goes out. HC1 (host-cost-design.md D6): only while somebody
+  // With a live server the served set holds the current state's payloads, pinned
+  // before a transaction naming them goes out. only while somebody
   // reads the stream. A listener with no connection that has sent a hello takes no snapshot of
   // its own (a file sink's still runs), and the first hello's callback is a viewer callback, so
   // its snapshot is pinned before that connection's first transaction is sent, exactly as when
@@ -4378,7 +4373,7 @@ void stream_publish(uint64_t frame) {
     }
     return;
   }
-  // HC3 (host-cost-design.md D2): a /11 snapshot hashes its dynamic mesh surfaces only for a
+  // a /11 snapshot hashes its dynamic mesh surfaces only for a
   // reader of those hashes -- the hook log (its serve events name payloads) or a viewer below /11.
   rs::mirror_set_dynamic_hash_readers(
       rs::resource_log().wants_lines() ||
@@ -4408,7 +4403,7 @@ void stream_publish(uint64_t frame) {
   if (g_state.evidence_ready) {
     g_perf.snapshot_us.add(snapshot_ns / 1000);  // Q3d snapshot_us (G6r)
   }
-  // G8kw (texture-delivery-design.md Q7): the publication hold-back. A snapshot naming a texture
+  // the publication hold-back. A snapshot naming a texture
   // whose worker has not delivered its hash is held; the newest ready one is published, stamped
   // with its own frame for the file sinks, and the live hub gets it as this callback's state.
   uint64_t publish_frame = frame;
@@ -4441,7 +4436,7 @@ void stream_publish(uint64_t frame) {
     publish_epoch = ready.epoch;
     snapshot_ns = ready.snapshot_ns;
   }
-  // gate2-design.md Q3: the retained payloads -- the mirror's current ones, those the previous
+  // The retained payloads -- the mirror's current ones, those the previous
   // publication still pins and (G2c2) those still servable over HTTP -- stay within
   // GRC_RESOURCE_BUDGET_BYTES.
   {
@@ -4638,8 +4633,7 @@ bool attempt(const char *phase) {
     }
   }
 
-  // The headless CanvasTexture shim (protocol/canvas-texture-headless.md "Experiment (a)
-  // result"; HSD: the default on a headless host at /12+). It hands the engine RIDs the server never returned, which only the dummy rasterizer
+  // The headless CanvasTexture shim (the default on a headless host at /12+). It hands the engine RIDs the server never returned, which only the dummy rasterizer
   // of a `headless` display server ignores, so an opt-in on any other host refuses the whole
   // capture -- typed, before anything is hooked -- rather than arming without it. Decided in both
   // modes, so validate predicts arm.
@@ -4805,13 +4799,13 @@ bool attempt(const char *phase) {
       log_line("canvas texture shim: synthesize armed (display server " + g_state.display_server +
                ")");
     }
-    // LAR0 (late-arm-registry-design.md R1): the registry records from the vptr store on, so it
+    // the registry records from the vptr store on, so it
     // is configured here from GRC_ADOPT (and its two GRC_ADOPT_FAULT knobs), before the first
     // hooked create. The stream setup parses and validates both again at the arm; an invalid
     // value refuses the stream there, so here it only leaves the registry off.
     {
       const char *adopt_env = std::getenv("GRC_ADOPT");
-      // LS1 (live-swap-design.md D3): GRC_MODE=standby implies GRC_ADOPT=arm (an arm from standby
+      // GRC_MODE=standby implies GRC_ADOPT=arm (an arm from standby
       // adopts what the registry recorded); an explicit value is taken as given.
       const bool adopt = adopt_env != nullptr ? std::string(adopt_env) == "arm"
                                               : g_state.mode == "standby";
@@ -4837,7 +4831,7 @@ bool attempt(const char *phase) {
                  " (fault " + rs::registry_fault_name(registry_fault) + ")");
       }
     }
-    // LS1 (live-swap-design.md D4): both tables are built once, here; the standby table is
+    // both tables are built once, here; the standby table is
     // published first, whatever the mode, and an arm is one more store to the armed table.
     // GRC_STANDBY_FAULT edits only the standby table's membership.
     for (size_t i = 0; i < g_state.plan.replacements.size(); ++i) {
@@ -4912,7 +4906,7 @@ bool attempt(const char *phase) {
 // LS0: a capture that patched the vtable and never armed (a deferred arm that never came, a
 // standby seat) restores it at shutdown and at deinitialize too. do_disarm returns early when not
 // armed, so before this the hooks outlived the library's teardown; on a signal-driven exit that
-// turned SIGABRT into SIGSEGV (results/p3/idle-capture-cost.md "Other findings").
+// turned SIGABRT into SIGSEGV.
 void restore_unarmed(const char *phase) {
   if (g_state.armed || g_state.disarmed || !g_state.vptr_written ||
       !g_state.unarmed_restore_phase.empty()) {
@@ -4985,9 +4979,9 @@ void on_frame() {
     g_state.shader_clock_logged = true;
     log_line("shader-clock: unavailable (" + rs::shader_clock().unavailable + ")");
   }
-  // Q3d frame_interval_us (G6r): measured only while armed, from one armed callback to the
+  // frame_interval_us: measured only while armed, from one armed callback to the
   // next -- the unarmed/validate-mode callbacks before arming are not part of any measured arm
-  // (D11's `unarmed` arm is "no extension at all", so this code does not even run for it).
+  // (the `unarmed` arm is "no extension at all", so this code does not even run for it).
   if (g_state.armed && g_state.evidence_ready) {
     if (g_perf.last_frame_ns != 0) {
       g_perf.frame_interval_us.add((frame_start_ns - g_perf.last_frame_ns) / 1000);
@@ -5001,7 +4995,7 @@ void on_frame() {
     rs::registry_frame(g_state.frames_total);
   }
   if (g_state.standby) {
-    // LS1 (live-swap-design.md D4): a standby callback runs the shader clock, the registry's row
+    // a standby callback runs the shader clock, the registry's row
     // and the carriers' flush (one relaxed load with none registered), nothing else: no attempt, no
     // linger, no live or track work (no hub exists to feed a track receiver before an arm).
     hooks_set_frame(g_state.frames_total + 1);
@@ -5010,7 +5004,7 @@ void on_frame() {
   }
   live_linger(false);  // after a disarm: the receivers' closes, then the server stop
   if (g_state.armed && g_stream.gate8.adopt) {
-    // LAR6 (late-arm-registry-design.md R4): the queues this iteration's hooked calls filled drain
+    // the queues this iteration's hooked calls filled drain
     // now, dated this frame, before the transaction is formed: off-main references, then G8m's
     // material and shader references, then PM5's process-material keying.
     rs::adopt_frame_drain();
@@ -5079,7 +5073,7 @@ void on_shutdown() {
            std::to_string(hooks_total_calls()));
 }
 
-// GRT3 (results/grt.md "Part 3"): GRC_LOW_PROCESSOR_SLEEP_USEC=<usec> sets
+// GRC_LOW_PROCESSOR_SLEEP_USEC=<usec> sets
 // OS.low_processor_usage_mode_sleep_usec (the project default is 6900). A headless host cannot
 // draw, so OS::add_frame_delay sleeps at least that long per frame whatever --max-fps says, which
 // caps it near 145 fps; the fast-frame legs set 0 so `--max-fps N` alone paces the host. Unset,
@@ -5126,7 +5120,7 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   g_stream.path = env_string("GRC_STREAM_OUT");
   g_stream.patch_path = env_string("GRC_STREAM_PATCH_OUT");
   g_live.listen = env_string("GRC_LIVE_LISTEN");
-  // LS0 (live-swap-design.md D3, F2): GRC_VALIDATION_LOG=on|off, per load, default off. The
+  // GRC_VALIDATION_LOG=on|off, per load, default off. The
   // validation logs (hooks.cpp log_entry and its callers' pre-copies, the direct g_mutex sites and
   // read_image) feed counters.json `captured` and cost about 80 us a frame on capture-scale;
   // validation runners set `on` and assert counters.json `validation_log`.
@@ -5156,7 +5150,7 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
     if (!live::gd_carrier_class_register(&why)) {
       log_line("carrier class: " + why);
     }
-    // TRK2: RenderStreamTrack, a script receiver of one track kind (tracks-design.md Q6).
+    // RenderStreamTrack, a script receiver of one track kind.
     if (!live::gd_track_class_register(&why)) {
       log_line("track class: " + why);
     }

@@ -23,11 +23,11 @@
 // construction no case has one except where a case says so.
 //
 // Every comparison is `compareRgbaBuffers` with `maxChannelDelta: 0` AND
-// `maxDiffRatio: 0`, alpha included (memory pixelmatch-hides-alpha-errors:
-// pixelmatch alone cannot see an alpha-convention error).
+// `maxDiffRatio: 0`, alpha included (pixelmatch alone cannot see an
+// alpha-convention error).
 //
 // LAUNCH: `--headless=new --enable-gpu --use-angle=vulkan` (the real GPU, no
-// window), never headed and never under Xvfb on this box. Opt in with
+// window), never headed and never under Xvfb. Opt in with
 // GSW_CANVAS_MODES_PIXEL=1, as the glyph pixel suite does.
 //
 // Artifacts (never committed): `artifacts/canvas-modes-pixel/<case>-<frame>-{actual,expected}.png`.
@@ -96,11 +96,11 @@ const toLevel = (value: number, levels: number): number =>
 /**
  * How close to a `.5` (in target levels) a model value may come and still be
  * called decided. Constant-colour shading is float32-exact to ~1e-6 of a level.
- * INTERPOLATED vertex colours are not: measured on the RTX 2060 through
- * ANGLE/Vulkan, a gradient value of 55.5167 levels came back 55, so the
- * rasterizer's attribute interpolation is only good to a few hundredths of a
- * level. That is the contract's `delta1` class for vertex-colour interpolation
- * (gate7-design.md Q7, P-G3), and the gradient case uses the wider margin.
+ * INTERPOLATED vertex colours are not: on a hardware GPU through ANGLE/Vulkan,
+ * a gradient value of 55.5167 levels came back 55, so the rasterizer's
+ * attribute interpolation is only good to a few hundredths of a level. That is
+ * a `delta1` (one-level) class for vertex-colour interpolation, and the
+ * gradient case uses the wider margin.
  */
 const MARGIN = 0.01;
 const INTERPOLATED_MARGIN = 0.05;
@@ -138,8 +138,7 @@ const f32Rgba = (c: Rgba): Rgba => c.map(f32) as unknown as Rgba;
  * 0.2 layers composites as 0.2, not as its 2-bit 1/3). A source already on a
  * level, like every premultiplied-source band here, is unaffected.
  *
- * This is the one-level difference gate7-design.md Q7 pre-registers as `delta1`
- * for translucent blends: Godot multiplies by alpha in the blend unit, after
+ * This is the one-level (`delta1`) difference expected for translucent blends: Godot multiplies by alpha in the blend unit, after
  * that conversion; this executor multiplies in the shader, before it.
  */
 const mix = (src: Rgba, dst: Rgba, colourLevels = 255): Rgba => {

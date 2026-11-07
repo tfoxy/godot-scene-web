@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// wss on the built-in `ws` carrier (protocol/carrier-design.md D11, D12, CAR4), a pure self-test:
+// wss on the built-in `ws` carrier, a pure self-test:
 // no Godot, no browser. It builds the net module (scripts/build-rs-net.sh --no-test; a no-op when
 // fresh), makes a throwaway test CA and leaf with the `openssl` CLI (scripts/lib/test-pki.ts), and
 //

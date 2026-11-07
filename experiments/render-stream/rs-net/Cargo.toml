@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 autobins = false
-description = "render-stream's net module (carrier-design.md D8, CAR3): the `wt` WebTransport live carrier behind grc_carrier_v1"
+description = "render-stream's net module: the `wt` WebTransport live carrier behind grc_carrier_v1"
 
 [lib]
 name = "render_stream_net"
@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 wtransport = { version = "0.7.2", default-features = false, features = ["ring", "quinn"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 time = "0.3"
-# CAR4 (wss on ws, carrier-design.md D12): the sans-IO server session. Both are already in the tree
+# wss on ws: the sans-IO server session. Both are already in the tree
 # through wtransport (same versions, Cargo.lock); naming them adds no crate.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 ring = "0.17"

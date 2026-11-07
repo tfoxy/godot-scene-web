@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Capture cost at a game's scale (P3-CAP, results/p3/p3-cap.md): runs fixtures/capture-scale on the
+# Capture cost at a game's scale: runs fixtures/capture-scale on the
 # stock release template, headless at --max-fps 60, once unarmed (no extension) and once armed, and
 # compares the armed host with the unarmed one.
 #
@@ -7,7 +7,7 @@
 #     [--mode file|live] [--frames N] [--binary PATH] [--calibration PATH]
 #     [--budget-callback-ms MS] [--min-fps-ratio R] [--perf] [-- NAME=value ...]
 #
-# Armed config (the C3 game leg's, protocol/gate8-product-handoff.md): GRC_STREAM_VERSION=8,
+# Armed config (the C3 game leg's): GRC_STREAM_VERSION=8,
 # GRC_ADOPT=arm, GRC_UNKNOWN_ITEM=skip, GRC_TEXTURE_DECODE=engine, GRC_TEXTURE_WORKERS=2,
 # GRC_ROOT_SIZE=presentation:1920x1080, raised caps and budget, an evidence directory, and either
 # a patch file sink plus a resource store (--mode file, the default) or a live listener with no

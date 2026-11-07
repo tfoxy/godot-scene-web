@@ -1,6 +1,6 @@
 // @vitest-environment node
 //
-// WHAT AN EFFECT-CANVAS UPLOAD COSTS, on this box's real GPU.
+// WHAT AN EFFECT-CANVAS UPLOAD COSTS, on the real GPU.
 //
 // NOT PART OF ANY DEFAULT RUN. It is a measurement, not an assertion: the numbers
 // move with the driver, the display and what else the machine is doing, so a
@@ -39,7 +39,7 @@ function megapixels(row: UploadBenchRow): number {
   return (row.width * row.height) / 1e6;
 }
 
-/** The table, as markdown, so it can be pasted into a round note unchanged. */
+/** The table, as markdown, so it can be pasted into a note unchanged. */
 function formatTable(result: UploadBenchResult): string {
   const lines: string[] = [];
   lines.push(`renderer: ${result.renderer || "(masked)"}`);

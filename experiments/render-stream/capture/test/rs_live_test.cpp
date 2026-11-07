@@ -1,5 +1,5 @@
-// Unit tests for the live hub (src/rs_live.cpp; render-stream/2 since G2b2), protocol/gate1-design.md
-// "Q4. Delivery model" and "G1c2": credit (one in flight; credit only on the declared stage and
+// Unit tests for the live hub (src/rs_live.cpp; render-stream/2):
+// credit (one in flight; credit only on the declared stage and
 // the in-flight seq; stale and foreign acks ignored), resync, message-too-large, hello timeout,
 // protocol errors, the drop-message sabotage, finish (end record without credit), receiver
 // close, the live log, coalescing under a stalled receiver with its pending-target bookkeeping
@@ -485,8 +485,8 @@ void test_v4_hub_and_control() {
   }
 }
 
-// G7w (render-stream-7.md "Hello", gate7-design.md Q2): parse_control(V7) takes golden-7/
-// control/ and the hello's nine new keys (the Hub speaks /7 per connection since G7n:
+// render-stream-7.md "Hello": parse_control(V7) takes golden-7/
+// control/ and the hello's nine new keys (the Hub speaks /7 per connection:
 // test_v6_and_v7_on_one_hub, test_v7_hello_token).
 void test_v7_control_parser() {
   const std::string root = std::string(GRC_GOLDEN7_DIR) + "/control";
@@ -1333,7 +1333,7 @@ void test_inline_resources() {
         "an oversize resource record closes 1009 (message-too-large)");
 }
 
-// G6s (gate6-design.md Q7e "soak-inline"): `carried` is never pruned, even once a hash leaves the
+// `carried` is never pruned, even once a hash leaves the
 // connection's base -- render-stream-2.md's resource-duplicate rule ("each hash at most once" per
 // stream) makes a returning hash a correctness hazard, not a cache-efficiency question. Measured
 // the hard way: an earlier draft pruned `carried` to the base and re-sent a returning hash, which
@@ -1394,7 +1394,7 @@ void test_carried_bounded() {
 }
 
 
-// P3-SP (results/p3/p3-sp.md): shared publication. Every connection of a multi-connection hub gets
+// shared publication. Every connection of a multi-connection hub gets
 // exactly the bytes a hub serving that connection alone sends it -- transactions re-stamped from
 // another connection's encode, inline records encoded once, the carried sets in one index -- and
 // the sharing actually happens (shared_sends), including a full transaction after two resyncs.
@@ -1905,7 +1905,7 @@ void test_served_resources() {
   }
 }
 
-// SERVED-MAP: the served set's fixed-width binary key (results/p3/served-map.md).
+// SERVED-MAP: the served set's fixed-width binary key.
 void test_served_key() {
   using grc::rs::ServedKey;
   // A content hash decodes to its 32 bytes and spells back exactly.
@@ -2016,7 +2016,7 @@ std::vector<Sent> of_conn(const FakeTransport &t, Sent::Kind kind, std::uint32_t
   return out;
 }
 
-// gate7-design.md Q3 "Two subprotocols on one listener": a /6 and a /7 connection on one hub,
+// A /6 and a /7 connection on one hub,
 // served from one snapshot; each gets its own magic, protocol string and hello shape; a /7
 // connection's publication declares the grant (asked 2 under a maximum of 2: 2, since G7q).
 void test_v6_and_v7_on_one_hub() {
@@ -2092,7 +2092,7 @@ void test_v6_and_v7_on_one_hub() {
   }
 }
 
-// G8w (gate8-design.md D2, render-stream-8.md "Live transport"): render-stream.8 makes a connection
+// render-stream-8.md "Live transport": render-stream.8 makes a connection
 // /8 -- the GRS8 magic, the /8 session (adoption, resources.decode) and /7's hello shape under the
 // protocol string render-stream/8. A /6 connection on a /8-templated hub still speaks /6, and each
 // version's hello is a protocol error on the other's connection.
@@ -2390,7 +2390,7 @@ void test_v10_connection() {
   }
 }
 
-// gate7-design.md D3, Q2 "Host behaviour on the hello": on a bearer session a /7 hello whose
+// On a bearer session a /7 hello whose
 // token is null or wrong is `error` unauthorized + close 1008 "unauthorized", with nothing sent
 // before or after; the right token streams. token-ignored lets the wrong one through but still
 // records token_ok false. A /6 connection on a bearer session passed the upgrade check.
@@ -2477,7 +2477,7 @@ void test_v7_hello_token() {
   }
 }
 
-// gate7-design.md Q3 "Evidence": a preflight is counted in `preflights`, never `http_gets`.
+// A preflight is counted in `preflights`, never `http_gets`.
 void test_preflight_attribution() {
   FakeTransport transport;
   LiveConfig config;

@@ -239,7 +239,7 @@ describe("S9's two shapers place a glyph in the same px", () => {
     skip,
   }) => {
     if (skipReason) skip(skipReason);
-    // A missing face renders as absent text, which every metric in this round reports as an
+    // A missing face renders as absent text, which every fidelity metric reports as an
     // unusually cheap and unusually crisp arm.
     expect(() => shapeRunWithHbGpu(fonts, "greek", "abc", FONT_SIZE)).toThrow(
       /no hb-gpu font for face "greek"/,

@@ -1,4 +1,4 @@
-// PHN's phone page (scripts/client-device-check.ts, results/p3/phn.md): mounts the render-stream
+// PHN's phone page (scripts/client-device-check.ts): mounts the render-stream
 // client package as a full-screen phone viewer would -- the canvas fills the viewport at the
 // presentation's aspect, its backing store at the device pixel ratio -- and exposes
 // mount/dispose/stats plus the page-side probes (probe.ts) to the driver. Like web/client-check/,

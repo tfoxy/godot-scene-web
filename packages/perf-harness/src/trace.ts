@@ -106,7 +106,7 @@ function isNotStarted(error: unknown): boolean {
  * End a tracing session left running by an earlier capture — at BROWSER level (`{ flat: true }`, no
  * sessionId), because that is the only level the controller lives at.
  *
- * MEASURED ON THE PHONE (moto g86 5G, Chrome 151), rather than assumed, because "Tracing has already
+ * VERIFIED ON A PHONE (Chrome 151), rather than assumed, because "Tracing has already
  * been started (possibly in another tab)" is one message covering three different situations:
  *
  *   1. THIS connection started tracing and never ended it (a run wedged or errored between repeats).

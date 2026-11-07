@@ -2,7 +2,7 @@
 """Write fixtures/gate5-style/expected.json (render-stream-gate5-expected/1).
 
 Every number below is derived from the fixture's own parameters and the engine's drawing code as
-read from the source (protocol/gate5-design.md Q1h), written down as code. Nothing here runs or
+read from the source, written down as code. Nothing here runs or
 reads the engine: the capture's hook census and the rendered reference have to agree with it, and
 a disagreement is a finding to explain from the source, never a number to copy.
 

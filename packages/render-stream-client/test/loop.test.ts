@@ -8,7 +8,7 @@ import {
 import { flush, harness, msg, session, tx } from "./fakes";
 
 /** Connects and opens the first connection, then delivers its session. */
-/** The MIR-1 loop (credit at `submitted`, apply in the frame callback) unless `pacing` says. */
+/** The frame-paced loop (credit at `submitted`, apply in the frame callback) unless `pacing` says. */
 function streaming(
   window: 1 | 2 = 2,
   pacing: Pick<LoopOptions, "creditStage" | "applyOn"> = {

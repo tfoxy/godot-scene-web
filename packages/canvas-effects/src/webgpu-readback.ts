@@ -1,8 +1,7 @@
 // Reading WebGPU pixels back to the CPU.
 //
 // THE ONLY SANCTIONED WAY. The obvious alternatives do not work: `ctx2d.drawImage(webgpuCanvas)`
-// is blank under SwiftShader and pathologically slow on Android Chrome (S7 measured the blit-shaped
-// WebGPU arm at 23 Hz against 87 for direct presentation), and `toDataURL`/`toBlob` on a WebGPU
+// is blank under SwiftShader and pathologically slow on Android Chrome, and `toDataURL`/`toBlob` on a WebGPU
 // canvas reads the same presentation path. Headless Chrome never composites a WebGPU canvas at all,
 // so a canvas-sourced read there returns nothing regardless of the API used. Copying the TEXTURE —
 // `copyTextureToBuffer` + `mapAsync` — is the one path verified to work fully headless, and it is

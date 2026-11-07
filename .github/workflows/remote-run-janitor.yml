@@ -1,6 +1,7 @@
-# Backstop for remote-run/* branches (docs/remote-compute.md): a run's own cleanup job and the
+# Backstop for remote-run/* branches: a run's own cleanup job and the
 # wrapper's traps normally delete them; this deletes any that survived 24 h.
 name: remote-run-janitor
+run-name: remote-run-janitor
 
 on:
   schedule:

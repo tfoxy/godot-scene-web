@@ -1,4 +1,4 @@
-// G7v self-test (protocol/gate7/g7v.md): lib/gate7v-checks.ts's measures and Q13d's decided checks
+// G7v self-test: lib/gate7v-checks.ts's measures and Q13d's decided checks
 // over synthetic evidence, the harness words lib/gate7-live-legs.ts maps (RS_RECEIVER_DEV_*), the
 // dev probe's FIT switch, and the runner's leg family (lib/gate6c-legs.sh "G7v"). No phone, no
 // browser, no Godot.

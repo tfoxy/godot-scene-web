@@ -11,7 +11,7 @@
 //   - `onInvalidate: "retry"` vs the `"block"` default: an app that re-keys on `WxH` at every
 //     breakpoint must not disqualify its whole population after one rotation;
 //   - encode pacing: at most `slice` `toBlob`s per `intervalMs`, smallest-first — the thing that
-//     stops a mass freeze from parking the main thread (736 ms, measured downstream);
+//     stops a mass freeze from parking the main thread;
 //   - `canFreezeSurface`: the host veto that lets a second mechanism own an element's `display`;
 //   - retry-forever on a failed encode;
 //   - the WATCHDOG, without which the quiet-window gate has no correctness argument at all;
@@ -563,7 +563,7 @@ describe("surface image swap — encode pacing", () => {
 // ---- the host busy signal ------------------------------------------------------------------------
 //
 // `encode.busy` is a POLICY-level answer to a cost the clock cannot reach: the encode is a GPU→CPU
-// readback (~30 ms of wall time for 2.8 ms of CPU on a phone), so what hurts is WHEN it lands, not how
+// readback (mostly wall time, little CPU), so what hurts is WHEN it lands, not how
 // many land per window. These pin the contract a host writes against: nothing encodes while it says
 // busy — the inline head included — the deferral is BOUNDED, and every failure mode of the predicate
 // (throwing, stuck ON, absent) leaves the fleet freezing rather than stuck on its canvases.
@@ -1051,9 +1051,8 @@ describe("surface image swap — invalidate() and staticImagesLive", () => {
 
 // ---- encode.perTask: one readback per task ------------------------------------------------------
 //
-// `slice` bounds THROUGHPUT per window; it never bounded the PARK, and a device trace said so at
-// 1,163 ms — four ~4821x2156 readbacks back-to-back in one timer task on a saturated GPU, against
-// 6-13 ms each for the same surfaces once the load passed. `perTask` is the budget that bounds the
+// `slice` bounds THROUGHPUT per window; it never bounded the PARK — several large readbacks
+// back-to-back in one timer task on a saturated GPU. `perTask` is the budget that bounds the
 // block, and the reason it is scoped to a TASK rather than to a call is that surfaces become eligible
 // one at a time: `runSweep` reaches `pumpEncodes` once per surface, all on the same stack.
 
@@ -1232,8 +1231,8 @@ describe("surface image swap — encode.perTask (one readback per task)", () => 
 //
 // The belt to `encode.busy`'s braces, and it exists because of a specific trap: a host predicate is
 // usually derived from its FRAME LOOP, and a long readback suppresses the very frames that signal is
-// made of. The traced jam produced 362 ms and 674 ms gaps that a 250 ms frame-recency predicate read
-// as IDLE. The previous readback's measured cost cannot be faked that way.
+// made of, so a frame-recency predicate can read a jam as IDLE. The previous readback's measured
+// cost cannot be faked that way.
 
 describe("surface image swap — the adaptive slow-encode backoff", () => {
   async function burst(
@@ -2370,7 +2369,7 @@ describe("surface image swap — baking a still (bakeStill / queueLength)", () =
 
 // ---- priming unseen keys --------------------------------------------------------------------------
 //
-// The deferral apparatus is a judgement about BIG surfaces (a ~290 ms readback whose instant is the
+// The deferral apparatus is a judgement about BIG surfaces (a long readback whose instant is the
 // whole cost). For a fleet of small ones collapsing to a couple of distinct keys, holding the one
 // encode a key will ever need buys no park back and leaves the whole fleet in the composite. So the
 // FIRST encode of a key may skip the deferral check — and nothing else about the pacing moves.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gate 7x, report-only (gate7-design.md "G7x" R1): the native receiver's rendered shots of the
+# Gate 7x, report-only: the native receiver's rendered shots of the
 # gate 6 scene bench input, so the GSW Rust arm's desktop shots of the same transactions can be
 # compared per region. The receiver replays the capture's patch sink (scene-patch) inside a private
 # 640x360 gamescope (lib/gamescope.sh, the runners' own plumbing) and shoots the settle seqs of the

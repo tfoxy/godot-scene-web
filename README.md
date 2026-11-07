@@ -48,7 +48,10 @@ After every public package exists on npm, configure npm Trusted Publishing for e
 - [Layout](docs/layout.md)
 - [Parser](docs/parser.md)
 - [Parity validation](docs/parity.md)
+- [Text rendering](docs/text-rendering.md)
+- [Input protocol (`gsw-input/1`)](docs/input.md)
 - [Vue usage](docs/vue.md)
+- [Render-stream (Godot canvas streaming)](experiments/render-stream/README.md)
 
 ## Contributing
 

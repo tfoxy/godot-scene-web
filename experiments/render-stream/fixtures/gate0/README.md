@@ -1,6 +1,6 @@
 # Gate 0 fixture
 
-The reference rendering for gate 0 (`../../protocol/gate0-design.md`): one opaque `Subject` rect
+The reference rendering for gate 0: one opaque `Subject` rect
 and one `Marker` rect, both `Node2D`s drawn through `_draw()`, moved and recoloured through a
 fixed 5-step timeline. This project does not know about the capture library -- it runs
 identically whether `GRC_EXTENSION` is set or not (see `loader.gd`), exactly like
@@ -32,19 +32,18 @@ This is cheap and idempotent; re-run it whenever the fixture changes.
 - `gate0.tscn`: a root `Node` (NOT a `CanvasItem`) with script `gate0.gd`, and nothing else.
 - `gate0.gd`: an inner class `RectNode extends Node2D` with `rect: Rect2`, `color: Color`,
   `circle: bool`, and a `_draw()` that calls `draw_rect(rect, color)`, then (when `circle` is set)
-  `draw_circle(Vector2(16, 16), 8.0, Color(0, 0, 0, 1))` -- since G5d between
+  `draw_circle(Vector2(16, 16), 8.0, Color(0, 0, 0, 1))` -- between
   `draw_animation_slice(1.0, 0.0, 1.0)` and `draw_end_animation()`, because render-stream/4 carries
   `add_circle` and the variant needs an op that stays typed `unsupported`. `_ready()` creates `Subject`, then
   `Marker`, with `add_child` in that order -- both strictly after the capture extension would have
-  armed (see "Startup order on 4.5.1" in the design doc), so the mirror sees each one's
+  armed, so the mirror sees each one's
   `canvas_item_create`. `_process()` advances the timeline below. All output lines start with
   `[fixture]`.
 - `preexisting.tscn`: the same `gate0.gd` script, on a scene that also declares a
   `Preexisting` `Node2D` child directly in the `.tscn`, at `(32, 240)`. That node is constructed
   while the packed scene is instantiated, which happens before the extension arms, so its later
   `canvas_item_set_parent` names an item RID the mirror never saw created -- the fixture half of
-  the `preexisting` leg's `pre-existing-object` capture failure (gate0-design.md "Unknown-RID
-  policy"). Since the unknown-item skip mode (2026-10-10, ../../protocol/unknown-item-skip.md) it
+  the `preexisting` leg's `pre-existing-object` capture failure. For the unknown-item skip mode it
   carries `preexisting.gd`: it draws a 64x64 rect (recoloured at step 2, so the unknown RID keeps
   receiving calls) and, in `_ready()`, adds `PreChild` -- created after arming, parented to the
   unknown item -- drawing a 48x48 rect at `(128, 240)` (recoloured at step 3). Neither overlaps a
@@ -84,7 +83,7 @@ All optional:
 | `GRC_EXTENSION`         | absolute `.gdextension` path for `loader.gd` to load in `_enter_tree`                                                                                                                   |
 | `RS_FIXTURE_STEP_LOG`   | absolute path. At each step's applied frame, one JSONL line `{"step":k,"applied_frame":a,"settle_frame":s}` (keys in that order) is appended and flushed                                |
 | `RS_FIXTURE_SHOT_DIR`   | absolute directory. At each settle frame, if the display server is not `headless`, awaits `RenderingServer.frame_post_draw` then saves `step-<k>.png`. Under `headless`, logs and skips |
-| `RS_FIXTURE_VARIANT`    | unset/empty runs the normal fixture. `unsupported` makes the Marker also `draw_circle` (inside a whole-period animation slice since G5d) from step 2 on. Any other value prints an error and quits with code 2                            |
+| `RS_FIXTURE_VARIANT`    | unset/empty runs the normal fixture. `unsupported` makes the Marker also `draw_circle` (inside a whole-period animation slice) from step 2 on. Any other value prints an error and quits with code 2                            |
 | `RS_FIXTURE_QUIT_FRAME` | integer ≥ 52, default 52                                                                                                                                                                |
 
 ## expected.json schema
@@ -115,9 +114,9 @@ All optional:
     },
     // ... one entry per step, 0..4
   ],
-  "unsupported_variant": { "from_step": 2, "op": "canvas_item_add_animation_slice" }, // canvas_item_add_circle before G5d
+  "unsupported_variant": { "from_step": 2, "op": "canvas_item_add_animation_slice" },
   "preexisting": {
-    // preexisting.tscn's extra rects (2026-10-10), painted before Subject and Marker
+    // preexisting.tscn's extra rects, painted before Subject and Marker
     "scene": "res://preexisting.tscn",
     "items": [
       {
@@ -137,12 +136,12 @@ number): {width, height, rgba: Uint8Array}` (640x360 RGBA, alpha 255 everywhere)
 whole buffer with `clear_rgba8`, then paints the Subject's `rect_px` with its `rgba8`, then the
 Marker's `rect_px` with its `rgba8` -- the same bottom-to-top paint order the fixture itself uses
 (Subject added before Marker in `_ready()`). This is pure: no file I/O, no Godot. The checker
-(WP5) reads `expected.json` itself and passes the parsed object in. `synthesizePreexistingReference`
+reads `expected.json` itself and passes the parsed object in. `synthesizePreexistingReference`
 is the same with the `preexisting` rects painted between the clear colour and the Subject: the
 rendered reference of `preexisting.tscn`. A skip receiver of that scene must equal
 `synthesizeExpected` instead, and `preexistingRects` lists the rects the two differ in.
 
-## Verification run (this work package)
+## Verification run
 
 ```bash
 mise trust   # once per worktree

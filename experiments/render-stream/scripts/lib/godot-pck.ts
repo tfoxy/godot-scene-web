@@ -1,4 +1,4 @@
-// A Godot 4.5.1 `.pck` directory reader (G7e, gate7-design.md Q4 "Bundle provenance"): the file
+// A Godot 4.5.1 `.pck` directory reader: the file
 // list `build.json` records and `no-source-scene` checks. Read from the pinned engine source,
 // `core/io/file_access_pack.cpp` (PackedSourcePCK::try_open_pack) and `file_access_pack.h`:
 //

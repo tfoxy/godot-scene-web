@@ -1,5 +1,5 @@
 extends Node
-## Gate 1 retained-state fixture (../../protocol/gate1-design.md "Q6. Fixture (G1a)").
+## Gate 1 retained-state fixture.
 ##
 ## The root is a plain `Node`; every `CanvasItem` is created in `_ready()`, after `GrcLoader`
 ## armed the capture extension in its own `_enter_tree()` (gate 0 route (a)), so the mirror sees
@@ -196,7 +196,7 @@ func _apply_step(step: int) -> void:
 			c.self_modulate = Color(0, 1, 1, 1)
 			# A top-level item entering the canvas at runtime keeps the RenderingServer default
 			# draw index 0 until the deferred _top_level_raise_self runs next frame, so for this
-			# one frame it ties with P (index 0). README "Gate 1b result": the tie is reported.
+			# one frame it ties with P (index 0): the tie is reported.
 			# RS_FIXTURE_TIE=overlap: a 224x32 T over P and Q's children, so the tie frame (T drawn
 			# right after P, under Q) looks different from the next one (T raised over everything).
 			if _tie_overlap:
@@ -369,8 +369,7 @@ func _log_step(step: int, applied_frame: int, settle_frame: int) -> void:
 	_step_log_file.flush()
 
 
-## One root-geometry line per settle frame (gate1-design.md Q1 "What is compared with the
-## reference"), written the same way by the rendered reference and the headless host.
+## One root-geometry line per settle frame, written the same way by the rendered reference and the headless host.
 func _log_root(step: int) -> void:
 	if _root_log_file == null:
 		return

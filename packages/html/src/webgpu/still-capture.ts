@@ -5,7 +5,7 @@
 // WebGPU binding there is no canvas to call that on: reading a WebGPU canvas back — `drawImage`,
 // `toDataURL`, `toBlob` — goes through the PRESENTATION path, which is blank under SwiftShader,
 // returns nothing at all in headless Chrome (it never composites a WebGPU canvas), and is
-// pathologically slow on Android (S7 measured the blit-shaped arm at 23 Hz against 87). The
+// pathologically slow on Android. The
 // sanctioned path is `../webgpu/readback`: re-render the frame into an offscreen `rgba8unorm`
 // texture and `copyTextureToBuffer` it back. What comes out of that is a tightly packed, top-down,
 // PREMULTIPLIED RGBA byte array — and `putImageData` wants STRAIGHT alpha. These two functions are
@@ -38,28 +38,23 @@
 //
 // A frozen WebGPU surface publishes whatever comes out of here, and the canvas underneath it is
 // HIDDEN by then — so an invisible result is not a degraded image, it is a surface that has
-// disappeared with every counter in `../surface-image-swap` reporting success. That happened for
-// real on one launch mode of this box (headed Chromium under Xvfb on the default ANGLE backend,
-// NVIDIA RTX 2060; docs/perf-harness.md, S8), where all 12 WebGPU surfaces of both effect arms
-// swapped and the screenshot showed none of them. Two things can do it, and only one of them was:
+// disappeared with every counter in `../surface-image-swap` reporting success. Headed Chromium
+// under Xvfb on the default ANGLE backend is one environment where this happens. Two things can do
+// it:
 //
 //   1. THE READBACK CAME BACK EMPTY. The premise of everything below is that `pixels` are the frame.
 //      A device whose `copyTextureToBuffer` hands back zeros breaks it silently. Caught by a scan
 //      FOLDED INTO the unpremultiply loop, which is already walking every byte: a comparison per
-//      pixel, once per frozen surface. NOT what that rung does — measured 2026-08-21, the readback
-//      there is fine (827 painted px of 15,376 on the `textured` fixture).
-//   2. THE 2D CANVAS DID NOT TAKE THE PIXELS — what actually happens there, and the reason this
-//      second check exists at all. `putImageData` into an ACCELERATED 2D canvas does not land:
-//      reading any pixel of it back answers alpha 0, and the `toBlob` that follows encodes the
-//      nothing that is really in the canvas (in the more broken of the two launchers measured, a
-//      PNG decoded OUTSIDE the browser — the in-page read cannot be trusted to measure itself —
-//      holds 0 of 16,384 painted px). The same page's `willReadFrequently: true` canvas, which
-//      Chrome keeps on the CPU, takes the identical write and answers 255. Caught by reading ONE
+//      pixel, once per frozen surface.
+//   2. THE 2D CANVAS DID NOT TAKE THE PIXELS. In some environments `putImageData` into an
+//      ACCELERATED 2D canvas does not land: reading any pixel of it back answers alpha 0, and the
+//      `toBlob` that follows encodes nothing. A `willReadFrequently: true` canvas, which Chrome keeps
+//      on the CPU, takes the identical write and answers 255. Caught by reading ONE
 //      pixel back — the most opaque one, whose alpha this function knows — because a canvas that
 //      answers 0 where we just wrote 255 is answering about a write it lost.
 //      WHY THIS IS A FAIR TEST OF THE ENCODE, and why it does not generalise to a canvas painted by
 //      someone else: it exercises the same CPU→canvas→CPU trip the encode depends on, on the same
-//      canvas, with bytes this function chose. On the SAME rung, a canvas the host painted with
+//      canvas, with bytes this function chose. In the same environment, a canvas the host painted with
 //      `drawImage` still encodes correctly through `toBlob` — so the shipped WebGL swap, which reads
 //      such a canvas directly, is unaffected there and must not be judged by this check (see
 //      `../surface-image-swap`'s WHY THE DIRECT PATH IS NOT GUARDED).

@@ -1,5 +1,5 @@
 extends Node
-## Gate 4 multilingual fixture (../../protocol/gate4-design.md "G4f" and "Q6e"): shaping with the
+## Gate 4 multilingual fixture: shaping with the
 ## pinned fallback fonts. Every Label uses one runtime FontFile `OS` (Open Sans SemiBold) whose
 ## fallbacks are `VZ` (Vazirmatn), `DV` (Noto Sans Devanagari UI) and `HE` (Noto Sans Hebrew), in
 ## that order, so the TextServer picks each run's font by the fallback chain

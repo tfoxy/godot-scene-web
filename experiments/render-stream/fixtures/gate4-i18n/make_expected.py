@@ -2,7 +2,7 @@
 """Write fixtures/gate4-i18n/expected.json (render-stream-gate4-expected/1, fixture gate4-i18n).
 
 Every number below is derived from the fixture's strings, positions and the engine's text rules
-as read from the source (protocol/gate4-design.md Q1, Q6e, G4f), written down as code over the
+as read from the source, written down as code over the
 fixture's own parameters. Nothing here runs or reads the engine: the glyph oracle and the capture
 have to agree with it (`oracle-agrees-i18n`, `atlas-census-i18n`, `script-predictions`), and a
 disagreement is a finding to explain from the source, never a number to copy. For complex scripts

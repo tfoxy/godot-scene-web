@@ -137,7 +137,7 @@ static_assert(sizeof(AABB) == 24, "single-precision AABB");
 
 // core/math/transform_3d.h: struct Transform3D { Basis basis; Vector3 origin; }; Basis
 // (core/math/basis.h) is three Vector3 rows. Never used for anything but computing
-// SurfaceData's tail offsets (gate5-design.md Q2): its contents are not decoded.
+// SurfaceData's tail offsets: its contents are not decoded.
 struct Transform3D {
   float basis[9];
   Vector3 origin;
@@ -163,7 +163,7 @@ static_assert(sizeof(Vector4) == 16, "single-precision Vector4");
 // cross-checked by compiling `offsetof` probes against the pinned 4.5.1 header itself: primitive 0,
 // format 8, vertex_data 16, attribute_data 32, skin_data 48, vertex_count 64, index_data 72,
 // index_count 88, aabb 92, lods 120, bone_aabbs 136, mesh_to_skeleton_xform 152,
-// blend_shape_data 200, uv_scale 216, material 232, sizeof 240 (gate5-design.md Q2).
+// blend_shape_data 200, uv_scale 216, material 232, sizeof 240.
 //
 // `lods` (Vector<SurfaceData::LOD>) and `bone_aabbs` (Vector<AABB>) are reproduced as
 // Vector<uint8_t>: a Vector<T>'s own layout (two words: the write-proxy and the CowData pointer) is
@@ -204,7 +204,7 @@ static_assert(offsetof(SurfaceDataPrefix, uv_scale) == 216, "SurfaceData::uv_sca
 static_assert(offsetof(SurfaceDataPrefix, material) == 232, "SurfaceData::material");
 static_assert(sizeof(SurfaceDataPrefix) == 240, "SurfaceData is 240 bytes (gate5-design.md Q2)");
 
-// --- gate 5.5 (G55a): material parameter decode (gate5_5-design.md D8) -------
+// --- gate 5.5: material parameter decode -------
 //
 // The integer and extended-float math types `get_variant_to_type_constructor` can write a
 // material parameter into, reproduced the same way as the float ones above: a plain POD, laid

@@ -1,5 +1,5 @@
 extends Node
-## Gate 8 adoption fixture (G8a, gate8-design.md Q2 "Fixture"). The scene (adopt.tscn) holds nested
+## Gate 8 adoption fixture. The scene (adopt.tscn) holds nested
 ## Node2D/Control transforms, modulate and self-modulate, z and behind-parent, a subtree hidden
 ## before arm and shown after it, a clip_contents Control, two top-level items, a CanvasLayer
 ## (layer 2) with a CanvasModulate, texture filter/repeat inheritance, and one RS-only item

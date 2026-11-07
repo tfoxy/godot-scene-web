@@ -3,10 +3,10 @@
 // The `hb-gpu` arm's pure half: WHERE it puts a glyph, and which params it refuses.
 //
 // PLACEMENT IS THE ACCEPTANCE CRITERION FOR THIS ARM, and it is checkable without a browser. Every
-// arm in this round anchors the alphabetic baseline `baselinePx` below the run box's top and
-// rotates about the run box's centre; the fidelity probe's alignment guard is what proves it, and
-// `docs/text-rendering.md` records four separate rounds in which a fraction of a pixel of
-// disagreement WAS the finding. `hb-gpu` reaches that placement by a different route from every
+// arm anchors the alphabetic baseline `baselinePx` below the run box's top and rotates about the
+// run box's centre; the fidelity probe's alignment guard is what proves it, and a fraction of a
+// pixel of disagreement is enough to corrupt every per-pixel comparison. `hb-gpu` reaches that
+// placement by a different route from every
 // other arm — it cannot rotate its quads on the CPU (the shader's half-pixel dilation has to see
 // the same matrix), so the rotation lives in one shared model matrix and the per-run pivot is
 // folded into the object-space position instead.
@@ -79,7 +79,7 @@ function applyModel(
 describe("hb-gpu placement", () => {
   it("lands every glyph exactly where hb-atlas lands it, once the model is applied", () => {
     // Several pen positions across a run, several run centres across the stage, and both device
-    // pixel ratios the round is measured at. A sign error in the pivot fold survives one sample and
+    // pixel ratios the harness runs at. A sign error in the pivot fold survives one sample and
     // not a grid.
     for (const dpr of [1, 2, 3.4876]) {
       for (const centre of [

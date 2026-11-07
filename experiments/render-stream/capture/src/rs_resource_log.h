@@ -1,5 +1,5 @@
 // The texture hook log, `evidence/resources.jsonl`
-// (`render-stream-resource-log/1`; gate2-design.md Q3 "Hook log", G2a).
+// (`render-stream-resource-log/1`).
 //
 // One JSON line per texture-related RenderingServer call the capture saw while
 // a stream is enabled, written after the call was forwarded. It is the
@@ -37,14 +37,14 @@
 // names) and "http-get" (one resource GET the server answered: `hash` as
 // requested, `http_status`, `payload_bytes` the body size, `conn` the live
 // connection streaming at that time or null, `t_us` the I/O thread's time). A
-// drop-resource pin line carries "sabotage":true. G7n (gate7-design.md Q3): an http-get line
+// drop-resource pin line carries "sabotage":true. An http-get line
 // for a CORS preflight ends with "method":"OPTIONS", the only line that carries `method` (a GET
 // line is unchanged), so a host's preflights are counted from its hook log. G8kz: when the host
 // offers a content coding (GRC_HTTP_ENCODING), a 200 http-get line ends with "coding"
 // ("identity", "zstd" or "gzip") and "coded_bytes" (the Content-Length that crossed the wire;
 // `payload_bytes` stays the identity size).
 //
-// G55a (gate5_5-design.md Q3d) adds `kind: "shader"` lines (shader_create, shader_create_from_
+// Shader hooks add `kind: "shader"` lines (shader_create, shader_create_from_
 // code, shader_set_code, shader_set_default_texture_parameter, free) and `kind: "material"`
 // lines (material_create, material_create_from_shader, material_set_shader, material_set_param,
 // free), each with its own per-session id counter (D5), and `kind: "item-material"` lines for
@@ -71,7 +71,7 @@
 // recomputed from historical parameter values the way the future mirror will (D6) -- this log is
 // evidence for the census, never the stream.
 //
-// G5a (gate5-design.md Q3d) adds mesh lines, `kind: "mesh"`: one per mesh-related
+// Mesh hooks add lines, `kind: "mesh"`: one per mesh-related
 // RenderingServer call (mesh_create, mesh_create_from_surfaces, mesh_add_surface, the four region
 // updates, mesh_surface_remove, mesh_clear, mesh_set_custom_aabb, free). Independently of the
 // mirror's mesh table (G5e, rs_mirror.h: the checker compares the two, `mesh-versions-current`),
@@ -89,7 +89,7 @@
 // "applied"). omit-op on a mesh call writes its line with "sabotage":true,"omitted":true and
 // leaves the registry untouched, as the texture taps do.
 //
-// G6k (gate6-design.md Q2, calibrator 9) adds `kind: "canvas"` lines for the six new hooks:
+// Calibrator 9 adds `kind: "canvas"` lines for the six new hooks:
 // viewport_remove_canvas, viewport_set_global_canvas_transform, viewport_set_canvas_stacking,
 // canvas_set_item_mirroring, canvas_set_item_repeat and canvas_set_parent. This module keeps no
 // canvas registry of its own (no id/version: a canvas's identity and state are the mirror's
@@ -167,7 +167,7 @@ struct PayloadCopy {
   std::string hash;      // lowercase hex SHA-256 of the payload, empty unless ok
   std::int64_t copy_ns = -1;  // -1 when nothing was copied
   std::int64_t hash_ns = -1;
-  // G8t (gate8-design.md D8): a host decode. `source_format` is the Image::Format the payload was
+  // a host decode. `source_format` is the Image::Format the payload was
   // decoded from (-1 unless the copy is an ok decode; `format` is then the payload's); `decode_ns`
   // the seam's duplicate + decompress time, also on a decode that was tried and refused.
   std::int64_t source_format = -1;
@@ -184,7 +184,7 @@ struct PayloadCopy {
   std::int64_t release_ns = -1;
   std::int64_t hook_ns = -1;
   std::int64_t dup_ns = -1;
-  // G8kp (rs_texture_delivery.h, texture-delivery-design.md D1 `passthrough`): beside an ok host
+  // Passthrough delivery (rs_texture_delivery.h): beside an ok host
   // decode at /9, the hooked block bytes as a GRT1 payload in their own format (the `block`
   // variant). Empty hash and null bytes otherwise. Never logged, never part of a prediction's
   // facts: a worker fills them with the content (TextureJob::fill).
@@ -192,8 +192,8 @@ struct PayloadCopy {
   std::string block_format;
   std::int64_t block_payload_bytes = 0;
   std::shared_ptr<const PayloadBytes> block_bytes;  // TDR: coded at rest like the main body
-  // G8kc (rs_texture_cache.h, texture-delivery-design.md D7/D8): with GRC_TEXTURE_CACHE_DIR set,
-  // the D7 source key (SHA-256 of the hooked image as GRT1 in its own format) and what the cache
+  // Texture cache (rs_texture_cache.h): with GRC_TEXTURE_CACHE_DIR set,
+  // the source key (SHA-256 of the hooked image as GRT1 in its own format) and what the cache
   // made of the derivation: "hit" (the decoded payload came from a verified file), "miss"
   // (derived, then stored), "corrupt" (a file failed verify-against-name, deleted and derived
   // again), "source" (nothing to derive: the payload is the source itself) or "uncached" (the
@@ -213,7 +213,7 @@ struct TapContext {
 
 // What the hook read and copied from one surface of a mesh_add_surface /
 // mesh_create_from_surfaces call, or produced by re-hashing a surface after a region update
-// (gate5-design.md D6, D7, Q4). `format` is the raw ArrayFormat bitfield (rs_mesh_payload.h).
+// `format` is the raw ArrayFormat bitfield (rs_mesh_payload.h).
 struct MeshSurfaceCopy {
   std::string status = "unsupported";  // "ok" | "unsupported"
   std::string reason;                  // "" when ok; mesh-format, mesh-blend-shapes,
@@ -228,7 +228,7 @@ struct MeshSurfaceCopy {
 };
 
 // What the hook read, copied and classified from a shader_create_from_code / shader_set_code
-// call (gate5_5-design.md D7, D11, Q3a). A D11 reason never refuses the copy itself (the shader
+// call. A reason never refuses the copy itself (the shader
 // stays `status`:"ok" with that `reason`'s semantics carried in `mode`/`uses` only) -- only
 // `payload-too-large`/`payload-unavailable` leave `hash` empty. `code_bytes` is the decoded
 // UTF-8 length.
@@ -251,7 +251,7 @@ struct ShaderCopy {
 };
 
 // What the hook decoded from a material_set_param / canvas_item_set_instance_shader_parameter
-// call's Variant value (gate5_5-design.md D8, Q3a).
+// call's Variant value.
 // PM1: a multimesh hook line's own arguments, appended as `,"key":value` pairs in call order.
 class MultimeshArgs {
  public:
@@ -324,7 +324,7 @@ class ResourceLog {
                          int layer, bool omitted = false, std::shared_ptr<TextureJob> job = nullptr);
   void texture_2d_placeholder_create(const TapContext &ctx, std::uint64_t rid,
                                      bool omitted = false);
-  // G8r (gate8-design.md D6, D7): op "adopt", kind "image": a texture that existed before arm,
+  // op "adopt", kind "image": a texture that existed before arm,
   // registered at its first reference exactly as texture_2d_create registers one (a new id,
   // version 1, status from the copy). The line ends with the trailing keys `adopted_content`
   // ("current" | "creation") and `adopt_source` ("textserver", "cache", "dummy" or "update":
@@ -355,7 +355,7 @@ class ResourceLog {
   // registry is left unchanged and the line is marked "sabotage":true,"omitted":true.
   // A create returning RID(), or a set_* on RID() (a headless host, whose dummy storage never
   // allocates a canvas texture), spends no id and is logged with status "unsupported", reason
-  // "canvas-texture-headless" (protocol/canvas-texture-headless.md).
+  // "canvas-texture-headless".
   void canvas_texture_create(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
   void canvas_texture_set_channel(const TapContext &ctx, std::uint64_t canvas_texture,
                                   std::int32_t channel, std::uint64_t texture,
@@ -373,7 +373,7 @@ class ResourceLog {
   void viewport_set_default_texture_repeat(const TapContext &ctx, std::uint64_t viewport,
                                            std::int32_t repeat);
 
-  // --- meshes (gate5-design.md Q3d, G5a) -------------------------------------
+  // --- meshes -------------------------------------
   //
   // mesh_create: a new id, status ok, version 1, no surfaces.
   void mesh_create(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
@@ -388,7 +388,7 @@ class ResourceLog {
   // unsupported (the surface is still kept, so later indices still line up).
   void mesh_add_surface(const TapContext &ctx, std::uint64_t rid, const MeshSurfaceCopy &surface,
                         bool omitted = false);
-  // G8r (gate8-design.md D6): op "adopt", kind "mesh": a pre-arm mesh read back through
+  // op "adopt", kind "mesh": a pre-arm mesh read back through
   // mesh_get_surface, registered as mesh_create_from_surfaces registers one (its single surface
   // on the line, as G5c's), with `adopted_content` "creation" and `adopt_source` "dummy".
   void mesh_adopt(const TapContext &ctx, std::uint64_t rid,
@@ -410,10 +410,9 @@ class ResourceLog {
   // surfaces are gone too).
   void mesh_clear(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
   // mesh_set_custom_aabb: version + 1 (the AABB itself is not logged here: it is a mirror field,
-  // gate5-design.md Q3b).
   void mesh_set_custom_aabb(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
 
-  // --- shaders and materials (gate5_5-design.md Q3d, G55a) -------------------
+  // --- shaders and materials -------------------
   //
   // shader_create: a new id, ok, version 1, no code yet.
   void shader_create(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
@@ -461,7 +460,7 @@ class ResourceLog {
   void canvas_light_attach_to_canvas(const TapContext &ctx, std::uint64_t light,
                                      std::uint64_t canvas);
 
-  // --- canvases (gate6-design.md Q2, G6k, calibrator 9): decode and log only, no registry, no
+  // --- canvases (calibrator 9): decode and log only, no registry, no
   // classification (that is G6b's mirror). `transform`/`mirroring`/`repeat_size` point at 6/2/2
   // contiguous floats (a caller-owned Transform2D/Point2, valid only for the duration of the
   // call; the method reads and copies, never retains the pointer). -----------------------------
@@ -556,7 +555,7 @@ class ResourceLog {
   // refused surface's reason) if any, else ok.
   void recompute_mesh_status(MeshEntry *entry);
 
-  // G55a: one shader's registry entry (gate5_5-design.md Q3d). No code is retained (only the
+  // one shader's registry entry. No code is retained (only the
   // classification derived from it): a payload is never read back from this log.
   struct ShaderEntry {
     std::uint64_t id = 0;

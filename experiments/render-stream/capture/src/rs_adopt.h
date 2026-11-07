@@ -1,4 +1,4 @@
-// The arm-time late-join adoption pass (gate8-design.md D3-D5, D13; G8w seam, G8a body).
+// The arm-time late-join adoption pass.
 //
 // Under GRC_ADOPT=arm a capture that arms after the scene exists (a modder's runtime
 // `GDExtensionManager.load_extension`, or any route whose main scene drew before the extension
@@ -28,7 +28,7 @@
 // `RenderingServer.canvas_item_create`, an embedded subwindow's canvas), and every subtree of a
 // non-root viewport. Materials and shaders are G8m's (below).
 //
-// G8r (gate8-design.md D6, D7): pre-arm textures, meshes and glyph atlases are adopted lazily, at
+// pre-arm textures, meshes and glyph atlases are adopted lazily, at
 // their first reference by a hooked call (materialize, LAR6: called by every hook
 // that names a texture or mesh RID, before its mirror tap), with origin `adopted`:
 //
@@ -61,7 +61,7 @@
 // with no diffuse; a RID that is no mesh) stays the hooks' typed `unknown-texture` / `unknown-mesh`, counted once
 // per RID in AdoptResourceStats.
 //
-// G8m (gate8-design.md D11, D12, Q5): pre-arm materials and shaders are resolved through the
+// pre-arm materials and shaders are resolved through the
 // item's node, at arm (every adopted item's material, before the plan is applied, and its
 // instance parameters after) and lazily at the next frame boundary (a hooked call named an
 // unknown material or shader: a post-arm item given a pre-arm material, a post-arm material on a
@@ -97,7 +97,7 @@ namespace rs {
 
 class Mirror;
 
-// What the adoption walk found and did, for `result.json` (gate8-design.md Q2 "adopt-account").
+// What the adoption walk found and did, for `result.json`.
 struct AdoptStats {
   bool ran = false;
   std::string error;            // empty, or why the walk adopted nothing (a missing object)
@@ -121,7 +121,7 @@ struct AdoptStats {
   std::uint64_t total_ns = 0;
 };
 
-// The sabotages that act on the walk (gate8-design.md Q2 "Sabotages").
+// The sabotages that act on the walk.
 enum class AdoptSabotage : std::uint8_t {
   None,
   SkipState,   // adopt-skip-state: structure without transforms, modulate or self-modulate
@@ -242,13 +242,13 @@ enum class AdoptFault : std::uint8_t {
   AtlasFromDummy,  // atlas-from-dummy: atlas pages read from the dummy's stale copy, still
                    // declared `current`
   ClaimCurrent,    // claim-current: every adopted texture and mesh declared `current`
-  // G8m: no-include-path: the temporary Shader gets no path (gate8-design.md D11 as written), so
+  // no-include-path: the temporary Shader gets no path, so
   // a relative #include cannot resolve and its shader is the typed shader-adopt-include.
   NoIncludePath,
   // PM7: no-particles: no pre-arm emitter is adopted (the pre-PM7 capture: every draw of one is
   // unknown-particles).
   NoParticles,
-  // LAR0 (late-arm-registry-design.md): the registry's knobs, read before the vptr store
+  // the registry's knobs, read before the vptr store
   // (rs_registry.h RegistryFault); lazy adoption ignores them until LAR1-LAR5 read the registry.
   // registry-off: the registry records nothing (a deferred leg turns into a load-late one).
   RegistryOff,
@@ -330,7 +330,7 @@ void adopt_resources_end();
 bool adopt_resources_active();
 AdoptResourceStats adopt_resource_stats();
 
-// LAR6 (late-arm-registry-design.md R4): what a hooked call's argument names, for materialize().
+// what a hooked call's argument names, for materialize().
 enum class RefKind : std::uint8_t {
   Texture,          // a texture or CanvasTexture (a draw, a channel, a parameter, a replace)
   Mesh,             // a mesh (add_mesh, a multimesh's mesh, a draw pass)
@@ -400,7 +400,7 @@ struct AdoptParam {
   const void *variant = nullptr;
 };
 
-// The two G8m sabotages (render-stream-8.md "Sabotage kinds", gate8-design.md Q5).
+// The two material-adoption sabotages (render-stream-8.md "Sabotage kinds").
 enum class AdoptMaterialSabotage : std::uint8_t {
   None,
   RawShaderCode,  // adopt-raw-shader-code: an adopted shader publishes get_code() unpreprocessed
@@ -467,7 +467,7 @@ AdoptMaterialStats adopt_material_stats();
 // item's material and reads the adopted items' instance parameters.
 void adopt_materials_at_arm();
 
-// TAG1 (client-extensions-design.md §2.2, §2.3): item identity through the node map, which is
+// item identity through the node map, which is
 // reference-counted between adoption and TAG. node_map_acquire_tag() connects SceneTree.node_added
 // (unless adoption already has) and fills the map with one tree walk; node_map_release_tag()
 // disconnects and clears it unless adoption still holds it. Main thread only.
@@ -497,7 +497,7 @@ void tag_set_query(const IdentityQuery &query, bool before_ready);
 bool item_identity(std::uint64_t rid, Identity *out);
 void tag_prune_map();
 
-// ID3 (client-extensions-design.md ID-D4, ID-D9): the mouse_filter watch. Per resolved Control,
+// the mouse_filter watch. Per resolved Control,
 // one capture callable bound to the item's RID is connected to its `property_list_changed`
 // (set_mouse_filter emits it on an actual change, control.cpp:1888-1903); the callback, on any
 // thread, only queues the RID. Connected only while a granted viewer (or file sink) asks for
@@ -525,7 +525,7 @@ std::uint64_t filter_calls_while_off();
 // map. Cheap when nothing was queued (one atomic load).
 void adopt_materials_resolve();
 
-// LAR3 (late-arm-registry-design.md R4): the hooks' references to a material (canvas_item_set_
+// the hooks' references to a material (canvas_item_set_
 // material) or a shader (material_create_from_shader, material_set_shader) the mirror does not
 // know. A RID the registry holds is adopted there, on the calling thread (registry-only kinds need
 // no getter): a shader from its recorded code and default textures, a material from its recorded
@@ -560,7 +560,7 @@ struct PpmStats {
 };
 PpmStats adopt_particles_stats();
 
-// PM7 (render-stream-12.md "As built (PM7)"), LAR5 (late-arm-registry-design.md Q4 M19): a
+// A pre-arm particle emitter (render-stream-12.md): a
 // GPUParticles2D emitter created before arm is adopted lazily, at its first
 // canvas_item_add_particles (the walk's queue_redraw makes one for every visible adopted item; a
 // pre-arm emitter whose node enters the tree later draws on entry). RenderingServer has no

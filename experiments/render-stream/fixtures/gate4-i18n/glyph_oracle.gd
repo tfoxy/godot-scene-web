@@ -1,6 +1,5 @@
 extends RefCounted
-## The gate 4 glyph oracle, multilingual edition (../../protocol/gate4-design.md "Q6c" and "G4f",
-## `render-stream-gate4-glyphs/1`). fixtures/gate4-layout/glyph_oracle.gd reduced to what this
+## The gate 4 glyph oracle, multilingual edition (`render-stream-gate4-glyphs/1`). fixtures/gate4-layout/glyph_oracle.gd reduced to what this
 ## fixture draws (single-line, left/top-aligned Labels with only the text pass) and extended with
 ## the shaped clusters, the font each glyph came from through the fallback chain, and hex-code
 ## boxes for glyphs no font has.

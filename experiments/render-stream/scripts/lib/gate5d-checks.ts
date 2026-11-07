@@ -1,5 +1,5 @@
 // Gate 5d checks: render-stream/4 immediate geometry, add_set_transform and add_clip_ignore end to
-// end (protocol/gate5-design.md "G5d", D9-D11, Q3b/Q3c, Q5, Q6b, Q6c). Pure evaluators over values
+// end. Pure evaluators over values
 // already read from a run-gate5.sh evidence directory, plus small loaders; gate5-checks.ts's
 // runGate5 wires them into the report. Nothing here launches a process, and nothing here imports
 // gate5-checks.ts (that module imports this one).
@@ -9,7 +9,7 @@
 // calls; computed arguments flagged `ulp: 2`), every sabotage set from its `predictions`, every
 // scissor from its `items[].clip_px` -- never from the capture itself.
 //
-// Evidence layout added by group g5d under <out>/ (see scripts/README.md "Gate 5"):
+// Evidence layout added by group g5d under <out>/:
 //   import/receiver/                 editor --import of receiver/
 //   receiver/, receiver-patch/       rendered receiver on capture/'s full / patch sink: applied.json,
 //                                    shots/seq-<n>.png at the settle seqs (receiver-patch also

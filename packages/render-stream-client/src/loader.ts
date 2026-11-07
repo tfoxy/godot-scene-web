@@ -1,10 +1,9 @@
-// Loading the core (mirror-client-design.md "The wasm: build, serve, load", as built in MIR-1).
+// Loading the core.
 //
 // A fresh wasm instance per client, so that `dispose()` gives its `WebAssembly.Memory` back.
 // wasm-bindgen's `--target web` glue keeps its instance in a module-level variable, and a page's
-// module map keeps every module record it ever loaded, `?client=<n>` variants included: measured in
-// the pinned Chromium, each mount of a `?client=<n>` glue import kept its ~287 MB instance after
-// dispose and a forced GC. So `build-web.sh` wraps the glue's module body in a factory function
+// module map keeps every module record it ever loaded, `?client=<n>` variants included, so each mount
+// of a `?client=<n>` glue import would keep its instance alive after dispose and GC. So `build-web.sh` wraps the glue's module body in a factory function
 // (`rs_gsw_wasm_client.js`, `export default function createGlue()`), the client imports that module
 // ONCE, and every client calls the factory: a fresh closure holding its own instance, collectable
 // once the client drops it. The `.wasm` is compiled once per page into a cached
@@ -19,10 +18,9 @@
 //
 // Deadline. The whole load, build.json to the glue's init, runs under one deadline
 // (`coreLoadTimeoutMs`, default `CORE_LOAD_TIMEOUT_MS`): a step that stalls is `core-load-failed`
-// `timeout after <ms> ms in <steps>`, not a client stuck in `connecting`. Measured on a moto g31
-// over Wi-Fi from a plain-http page (pure-JS hash), five cold runs: at most 570 ms, 1068 ms at 4x
-// CPU throttle, the hash its slowest step (726 ms), so 30 s is ~28x that and still covers a slow
-// link's 2.5 MB fetch. Every await is raced against the load's abort (the deadline or the client's
+// `timeout after <ms> ms in <steps>`, not a client stuck in `connecting`. 30 s leaves a wide
+// margin over a slow device's cold load (the pure-JS hash is its slowest step) and still covers a
+// slow link's 2.5 MB fetch. Every await is raced against the load's abort (the deadline or the client's
 // dispose), so a compile or import that resolves late never reaches `createGlue` or init. The
 // per-page caches count their waiters: when the last one gives up on an entry still in flight,
 // its fetch is aborted, its hash stops at the next chunk and the entry is dropped (the next load
@@ -105,7 +103,7 @@ export interface LoadCoreOptions {
   env?: Partial<LoaderEnv>;
 }
 
-/** The pure-JS hash's chunk: ~30 ms each on a g31 (~70 ms at 4x throttle). */
+/** The pure-JS hash's chunk, small enough that a slow device yields between chunks. */
 const HASH_CHUNK = 256 * 1024;
 
 const nextTask = () => new Promise<void>((r) => setTimeout(r, 0));

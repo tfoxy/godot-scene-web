@@ -1,5 +1,5 @@
 extends Node
-## Gate 5.5 vertex() fixture (P3-VX, ../../protocol/gate5_5-design.md "vertex() (P3-VX)").
+## Gate 5.5 vertex() fixture.
 ##
 ## canvas_item ShaderMaterials with a vertex() function or a vertex render mode, so a receiver must
 ## run Godot 4.5.1's canvas.glsl vertex stage in its order (drivers/gles3/shaders/canvas.glsl:

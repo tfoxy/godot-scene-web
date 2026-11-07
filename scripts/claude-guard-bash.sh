@@ -43,6 +43,24 @@ Or, if you need a different display setup, put the wrapper around the INNER vite
   xvfb-run -a npx vitest run packages/test-harness/test/webgpuCompositeXvfb.test.ts"
 fi
 
+# --- private companion guard (begin) ----------------------------------------------------------
+# BLOCK: force-adding the private companion. private/ (a worktree's `private` link) is gitignored
+# because this repository is public; `git add -f` is the one way it gets committed anyway.
+# `git` in command position, global options, `add`, a -f/--force flag (alone or in a short-flag
+# cluster such as -fA) and a pathspec that is private or under it. `git -C private add -f …`
+# works inside the private repository itself and is not matched: its pathspec is not `private`.
+# ---------------------------------------------------------------------------------------------
+git_opt_pc='((-C|-c|--git-dir|--work-tree|--namespace|--exec-path)[[:space:]]+[^[:space:];&|()]+|--[A-Za-z-]+(=[^[:space:];&|()]+)?|-[pP])[[:space:]]+'
+git_add_re="(^|[[:space:];&|(])git[[:space:]]+(${git_opt_pc})*add([[:space:]][^;&|)]*)?"
+while IFS= read -r add_args; do
+  add_args=" ${add_args#*add}"
+  if printf '%s\n' "$add_args" | grep -Eq '[[:space:]](--force|-[A-Za-z]*f[A-Za-z]*)([[:space:]]|$)' \
+     && printf '%s\n' "$add_args" | grep -Eq "[[:space:]]['\"]?(\./|:/|:\(top\))?private(/[^[:space:]]*)?['\"]?([[:space:]]|\$)"; then
+    deny "Refusing \`git add --force\` of private/: it is the gitignored private companion (or a worktree's link to it), and this repository is public. Commit private material inside private/ itself (\`git -C private add …\`), never here."
+  fi
+done < <(printf '%s' "$cmd" | grep -Eo "$git_add_re")
+# --- private companion guard (end) ------------------------------------------------------------
+
 # ---------------------------------------------------------------------------------------------
 # 2. WARN: `git push`. The only sanctioned push path is scripts/remote-validate.sh, which pushes to
 #    refs/heads/remote-run/* as a child process (so this guard never sees it); any literal

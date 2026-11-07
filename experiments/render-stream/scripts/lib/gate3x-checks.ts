@@ -1,5 +1,5 @@
-// Gate 3c checks: the rotated/scaled fixture fixtures/gate3-xform (protocol/gate3-design.md "Q6d"
-// and "G3c"). Everything here reads an evidence directory written by run-gate3.sh, or is pure
+// Gate 3c checks: the rotated/scaled fixture fixtures/gate3-xform.
+// Everything here reads an evidence directory written by run-gate3.sh, or is pure
 // over values already read from one, so scripts/test/self-test-gate3.ts can drive it.
 //
 // The engine's clip model is checked against three plausible alternatives (`semantic-probes`).
@@ -8,7 +8,7 @@
 // receiver are compared under the budget that reference-xform vs reference-xform-repeat measures
 // (`band-budget`, D8).
 //
-// Evidence layout under <out>/ (scripts/README.md "Gate 3"):
+// Evidence layout under <out>/:
 //   import-xform/{fixture,receiver}/       editor --import of fixtures/gate3-xform and the receiver
 //   capture-xform/                         headless capture, both sinks, enforce-min-size, quit 52
 //   reference-xform{,-repeat,-armed}/      rendered fixture: shots/step-<k>.png, steps.jsonl
@@ -86,7 +86,7 @@ export const G3C_CLASSIFIED_LEGS = [
 ] as const;
 export type G3cLeg = (typeof G3C_CLASSIFIED_LEGS)[number];
 
-/** The contract's step sets (gate3-design.md "G3c" legs); make_expected.py's predictions must
+/** The contract's step sets (legs); make_expected.py's predictions must
  * say the same (expected-self-consistent-xform). */
 export const G3C_EXPECTATIONS: Record<
   G3cLeg,

@@ -13,7 +13,7 @@
  * - one triangle per interior vertex, filling the notch on the OUTSIDE of the
  *   turn.
  *
- * JOINS ARE BEVEL, CAPS ARE BUTT — the first pass the wave-1 brief allows, and a
+ * JOINS ARE BEVEL, CAPS ARE BUTT — a
  * deliberate choice rather than an oversight:
  *
  * - a MITER join needs the two segment edges extended to their intersection,
@@ -33,7 +33,7 @@
  * Self-overlap: at a sharp turn the two segment parallelograms overlap near the
  * vertex, so a translucent stroke double-composites there. Godot's own
  * `draw_polyline` has the same artefact; fixing it needs a stencil or a
- * single-pass SDF, neither of which belongs in wave 1.
+ * single-pass SDF, neither of which is warranted yet.
  */
 
 /** Floats per emitted quad: four `(x, y)` corners in draw-list local space. */

@@ -1,5 +1,4 @@
-// render-stream/5 recordings as gate 5.5's checks read them (protocol/gate5_5-design.md Q4,
-// render-stream-5.md): every transaction's wire form (a patch's partial lists, with
+// render-stream/5 recordings as gate 5.5's checks read them (render-stream-5.md): every transaction's wire form (a patch's partial lists, with
 // `shaders`/`materials`/`removed_*` and the `param_f64` block size) beside its resolved state
 // (the shader and material tables, items with `material`/`use_parent_material`/`instance_params`,
 // canvases with `modulate`). Always decoded at an explicit version -- 6 since G6b (the capture's

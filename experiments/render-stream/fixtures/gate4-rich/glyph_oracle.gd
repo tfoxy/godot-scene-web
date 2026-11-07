@@ -1,6 +1,5 @@
 extends RefCounted
-## The gate 4d RichTextLabel glyph oracle (../../protocol/gate4-design.md "Q6c", "G4d",
-## `render-stream-gate4-glyphs/1`). Its own copy, independent of `fixtures/gate4/glyph_oracle.gd`
+## The gate 4d RichTextLabel glyph oracle (`render-stream-gate4-glyphs/1`). Its own copy, independent of `fixtures/gate4/glyph_oracle.gd`
 ## and `fixtures/gate4-layout/glyph_oracle.gd` (concurrent increments each extend their own copy).
 ##
 ## Runs on reference legs only (gate4-rich.gd refuses it when a GRC_* capture variable is set). At

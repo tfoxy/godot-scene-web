@@ -1,4 +1,4 @@
-/* Fake net modules for rs_net_module_test (carrier-design.md CAR3, `net-module-abi`): with
+/* Fake net modules for rs_net_module_test (`net-module-abi`): with
  * GRC_FAKE_NO_ENTRY it exports no grc_net_module_v1 at all; without it, an entry whose table
  * claims a future module ABI. */
 #ifdef GRC_FAKE_NO_ENTRY

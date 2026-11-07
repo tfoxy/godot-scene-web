@@ -1,5 +1,5 @@
-// Unit tests for the persisted host texture cache (src/rs_texture_cache.*; texture-delivery-design.md
-// D7, D8; G8kc), with no engine: put/get across a reopen, verify-against-name, the delete of a
+// Unit tests for the persisted host texture cache (src/rs_texture_cache.*),
+// with no engine: put/get across a reopen, verify-against-name, the delete of a
 // corrupt file, the LRU byte budget (recency is the last use, a hit counts), hash sharing between
 // keys, key validation, parallel gets, the config parser.
 

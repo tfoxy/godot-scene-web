@@ -737,7 +737,7 @@ mod bind_cache_tests {
 
     /// Documents why `present` must skip `resolve_draw_binds` entirely for
     /// an empty present (nothing staged, no patch — the no-op `presentScene`
-    /// couch calls routinely, `createPixiMirrorRenderer.ts:1376`): calling
+    /// a consumer calls routinely): calling
     /// it anyway, even just to get an empty `Vec` back, wipes a populated
     /// cache for no reason, forcing every draw to rebuild on the next real
     /// patch.
@@ -1783,8 +1783,8 @@ impl<B: GpuBackend> Renderer<B> {
         } else {
             &[]
         };
-        // An empty present (nothing staged, no patch — couch's no-op
-        // `presentScene` calls, `createPixiMirrorRenderer.ts:1376`) renders
+        // An empty present (nothing staged, no patch — a consumer's no-op
+        // `presentScene` calls) renders
         // nothing and must leave the bind caches exactly as they were:
         // `resolve_draw_binds` resets `bind_cache` to the new (here, zero)
         // length whenever `incremental` is false, which this frame's always

@@ -52,7 +52,7 @@ async function writeText(path: string, text: string): Promise<void> {
   await writeFile(path, text);
 }
 
-// G6k (gate6-design.md Q2): a minimal, fully-shaped render-stream-resource-log/1 line (every key
+// G6k: a minimal, fully-shaped render-stream-resource-log/1 line (every key
 // RESOURCE_LINE_KEYS names, in order, most null), for checkCanvasHookLog's scenarios -- the only
 // gate -1 criterion that reads evidence/resources.jsonl, so buildGoodEvidence never writes one.
 const RESOURCE_LINE_DEFAULTS = {

@@ -36,9 +36,8 @@ export interface GodotHtmlRuntimeOptions
   //
   // That read is a FORCED SYNCHRONOUS LAYOUT: it follows the canvas insert, the preview hide and the
   // canvas style writes the same pass just made, so the browser must flush style+layout before it can
-  // answer. Measured on a live combat scene it was ~all of the document's `get clientWidth` self-time
-  // (468 forced layouts / 332 ms over 9.6 s), because a reconcile that mounts N new systems paid one
-  // flush per system and every fleet re-size loop paid one per binding. With the cache a binding reads
+  // answer, so a reconcile that mounts N new systems paid one flush per system and every fleet
+  // re-size loop paid one per binding. With the cache a binding reads
   // its box ONCE, at create, inside a batched measure pass; every later size — an adaptive
   // `renderScale` step, a frozen-mode pin change, a texture-load re-pad — reuses it, and the runtime's
   // shared ResizeObserver refreshes it for free from the `contentRect` it has already measured off the
@@ -55,10 +54,8 @@ export interface GodotHtmlRuntimeOptions
   // requires `particleRectCache` (the box cache is where a delivered `contentRect` lands) and a real
   // `ResizeObserver`, so a jsdom/SSR environment always takes the read path.
   //
-  // `particleRectCache` cut this runtime's forced layouts to one per binding CREATED — a floor, not a
-  // zero, and on a live phone trace that floor was the single largest remaining forced-layout cost in
-  // the client (191 ms of `get clientWidth`, essentially all of it in the create measure pass). The
-  // floor exists only because the runtime asked the browser for the box on the main thread. The
+  // `particleRectCache` cuts this runtime's forced layouts to one per binding CREATED — a floor, not a
+  // zero. The floor exists only because the runtime asked the browser for the box on the main thread. The
   // observer has already measured it during the browser's OWN layout step, so a create can simply
   // wait for it: `reconcile` measures nothing, and `stats().boxReads` settles at 0.
   //
@@ -84,10 +81,8 @@ export interface GodotHtmlRuntimeOptions
   //
   // WHY IT MATTERS. Suspending stopped the CPU cost but not the GPU one: every binding owns a
   // `<canvas>`, which is an UNCONDITIONALLY promoted compositor layer, so an occluded system kept
-  // its layer, its render surface and its backing store for as long as the node stayed mounted. In
-  // a live combat trace the discard→draw shuffle cost tracked what was standing on screen rather
-  // than what changed (an 85-byte delta costing 95 ms), with `Commit` self-time up 4.8x, 401
-  // layers created against 61 deleted, and GPU-process memory climbing monotonically 148 → 276 MB.
+  // its layer, its render surface and its backing store for as long as the node stayed mounted, so
+  // compositor cost and GPU-process memory tracked what was mounted rather than what was visible.
   // Hiding the canvas is what actually drops the layer and hands the memory back.
   //
   // WHY IT IS DEFAULT-ON. It needs no new signal and makes no guess of its own: the host has
@@ -113,10 +108,9 @@ export interface GodotHtmlRuntimeOptions
   // one sprite is and how far apart the particles are BORN — and nothing about where they GO. Every
   // system therefore got a SQUARE canvas centred on its node origin, and anything that travelled was
   // cropped at the square's edge, hard, with the backing store as the cut line (there is no CSS clip
-  // to relax). Measured on a chest's gold-coin burst: a 710x710 canvas over particles that fly
-  // ~1264px sideways and fall ~2500px — a rectangle visibly cut out of the screen. Velocity, spread,
-  // gravity, acceleration, damping, orbit and lifetime were all on the wire and none of them were
-  // read. `./particles/extents.ts` now reads them.
+  // to relax), so a burst that travels far showed a rectangle visibly cut out of the screen.
+  // `./particles/extents.ts` reads velocity, spread, gravity, acceleration, damping, orbit and
+  // lifetime to size it.
   //
   // THE VISIBLE RECT is how this stays affordable. Travel bounds alone are unbounded in principle, so
   // a host that knows which part of an element's local space can be seen stamps it as
@@ -147,9 +141,8 @@ export interface GodotHtmlRuntimeOptions
   // dies at `lifetime * (2 - explosiveness)` (Godot's own `active_time`), and the canvas ends BLANK. This
   // restores that same endpoint for the frozen path, so the two modes agree on what a finished burst looks
   // like. Without it the only thing that can ever retire the frame is the host's `emitting` flag, and a host
-  // can get it stuck: the case this was built for is a game-side visual freeze that left Godot's `Emitting`
-  // latched true on a cluster of one-shot VFX, so the browser drew a permanent burst over UI the game itself
-  // was showing bare.
+  // can get it stuck (a host-side freeze that leaves `Emitting` latched true on one-shot VFX would otherwise draw
+  // a permanent burst).
   //
   // MEASURED FROM FIRST SIGHT. The client cannot know when the host started the burst — it sees only "this
   // spec says one_shot + emitting". One full active window from the moment this runtime first saw the binding
@@ -172,8 +165,8 @@ export interface GodotHtmlRuntimeOptions
   // PARKED-canvas blend neutralization for `staticParticles` mode. A particle node commonly carries a
   // non-normal CSS `mix-blend-mode` (additive VFX → `plus-lighter`, via `material.ts` or a host's own
   // style pipeline), and each such element keeps a STANDING compositor blend render surface — an
-  // offscreen render pass per composited frame — even while the parked canvas never changes (measured
-  // dominant on a GPU-bound phone: parked particle fleets owned most of the scene's blend surfaces).
+  // offscreen render pass per composited frame — even while the parked canvas never changes, which on a
+  // GPU-bound device can dominate the scene's blend surfaces.
   // The live canvas does not need it for correctness: additive systems are resolved to source-over-
   // complete pixels in the canvas itself (core's `particles/render-webgl.ts` resolve pass — the accumulated
   // `light` premultiplied against peak-channel coverage, "the closest source-over approximation of
@@ -185,10 +178,9 @@ export interface GodotHtmlRuntimeOptions
   parkStaticParticleBlend?: boolean;
   // Show a FROZEN particle surface as an `<img>` of its own drawn frame instead of its `<canvas>` —
   // the particle sibling of `staticShaderImages`, running the same mechanism
-  // (`./surface-image-swap`) for the same measured reason: a canvas that never changes still costs
-  // a compositor layer, a blend render surface and per-frame GPU fill. Particles are usually the
-  // LARGER half of that population downstream (33 of 45 effect canvases in one measured combat
-  // scene), so a shader-only swap leaves most of the win on the table.
+  // (`./surface-image-swap`) for the same reason: a canvas that never changes still costs a
+  // compositor layer, a blend render surface and per-frame GPU fill. Particles are often the larger
+  // half of a scene's effect canvases, so a shader-only swap leaves much of the win on the table.
   //
   // DEFAULT FALSE — opt-in, unlike the shader option, and the mapping of `true` differs too:
   //
@@ -240,8 +232,8 @@ export interface GodotHtmlRuntimeOptions
   // `staticParticleImages` on AND `encode.stillCacheBytes` set (which is what keeps an encoded
   // frame alive after its last holder lets go), a binding whose key is already in hand mounts
   // straight to an `<img>`: nothing is simulated, drawn, allocated or encoded for it, and its
-  // canvas never gets a context. Measured shape of the population this is for: two emitters per
-  // card, 35 identical instances each, 2 distinct keys for 70 nodes.
+  // canvas never gets a context. The population this is for is many identical instances sharing a
+  // handful of distinct keys.
   //
   // A frozen-at-mount surface takes its canvas back the moment the swap can no longer vouch for it
   // (the watchdog, a host `invalidateStaticSurfaces`, a re-size, a dormancy wake) or the runtime
@@ -280,15 +272,14 @@ export interface GodotHtmlRuntimeOptions
   //              `renderer: "webgl"` has a `webgpuFallbackReason` to explain itself, whereas "auto"
   //              reporting the same thing is business as usual.
   //
-  // WHY WEBGPU. Measured on a mid-range Android (docs/perf-harness.md S6/S7): the shipped WebGL
-  // architecture renders every effect into one shared canvas and BLITS it onto each node's own 2D
-  // canvas, which saturates Chrome's GPU process and halves whole-page update rates (89 → 47 Hz).
-  // Rendering straight into each node's canvas — no shared canvas, no blit, one submit per frame —
-  // restored 87 Hz. WebGL stays as the fallback and as the Godot-parity reference.
+  // WHY WEBGPU. The WebGL architecture renders every effect into one shared canvas and BLITS it onto
+  // each node's own 2D canvas, which can saturate Chrome's GPU process on mobile devices. WebGPU
+  // renders straight into each node's canvas — no shared canvas, no blit, one submit per frame.
+  // WebGL stays as the fallback and as the Godot-parity reference.
   //
   // WHAT DIFFERS ON WEBGPU BINDINGS. Both of the mechanisms below are 2D-canvas ones, and a WebGPU
-  // canvas cannot be read back at all (`drawImage`/`toDataURL`/`toBlob` from one are blank headless
-  // and pathological on Android), so neither can work the way it does on WebGL:
+  // canvas cannot be read back reliably (`drawImage`/`toDataURL`/`toBlob` from one are blank headless
+  // and slow on mobile), so neither can work the way it does on WebGL:
   //   - `staticParticleImages` / `staticShaderImages` (the surface image swap) DOES run here, since
   //     v2. It never reads the canvas: a frozen WebGPU binding is given a CAPTURE HOOK that
   //     re-renders its current frame into an offscreen texture and copies the pixels back, and the
@@ -297,12 +288,11 @@ export interface GodotHtmlRuntimeOptions
   //     this path books: `staticImageCaptures` and `staticImageCaptureMs`/`MaxMs`, which are kept
   //     OUT of `staticImageEncodeMs` because a GPU readback does not park the main thread the way a
   //     canvas `toBlob` does. A third, `staticImageBlankCaptures`, counts the readbacks REFUSED
-  //     because they came back entirely transparent for a frame the renderer knew it had drawn —
-  //     measured on real hardware under one launch mode, and a surface that hits it keeps its live
-  //     canvas rather than publishing a picture of nothing (see the swap module's BLANK CAPTURES).
+  //     because they came back entirely transparent for a frame the renderer knew it had drawn; a
+  //     surface that hits it keeps its live canvas rather than publishing a picture of nothing (see the swap module's BLANK CAPTURES).
   //   - the frozen-frame cache that lets N identical frozen systems share one bitmap stays INERT
   //     here: it trades a redraw for a 2D blit, and there is no 2D canvas to blit into. Each WebGPU
-  //     binding re-warms and re-draws its own frozen frame (cheap — the simulation is <3% of a core)
+  //     binding re-warms and re-draws its own frozen frame (cheap — the simulation is a small CPU cost)
   //     and `cacheHits` stays 0.
   // Neither changes what is on screen. A runtime that falls back to WebGL gets the cache back too.
   effectsRenderer?: "auto" | "webgl" | "webgpu";
@@ -362,13 +352,10 @@ export interface GodotHtmlRuntimeOptions
   staticShaderPixelRatio?: number;
   // Show a frozen shader surface as an `<img>` of its own rendered frame instead of its `<canvas>`.
   // A canvas that never changes still costs a compositor layer, a blend render surface and
-  // per-frame GPU fill; measured on a phone for 24 never-changing surfaces, the `<img>` form is 6
-  // layers against 31, 0 render surfaces against 4, 29 ms of GPU clear/fill against 140, and a
-  // worst activation gap of 21 ms against 93.
+  // per-frame GPU fill; an `<img>` costs far fewer layers and no render surface or fill.
   //
   // A surface that CHANGES is worse as an image (every change is an encode plus a main-thread
-  // decode: at a 2 s update cadence the same measurement inverts to an 18.0 ms frame-cost p95
-  // against 4.9), so a surface is only swapped once a GATE says it is standing still.
+  // decode), so a surface is only swapped once a GATE says it is standing still.
   //
   //   `true` (the default) / unset ⇒ the gate that shipped first: FROZEN mode only, the
   //     static-frame key must be observed unchanged across several renders/reconciles, and any
@@ -385,7 +372,7 @@ export interface GodotHtmlRuntimeOptions
   // cost is visible as `staticImageCaptureMs`.
   staticShaderImages?: StaticSurfaceOption;
   // Cap (longest edge, source px) for GL texture UPLOADS in the shader runtime: an image larger than this is
-  // downscaled before `texImage2D`, so a huge full-screen background doesn't cost a ~250ms main-thread upload
+  // downscaled before `texImage2D`, so a huge full-screen background doesn't cost a long main-thread upload
   // spike when it loads. Aspect preserved (uvFit unchanged), shader samples at a lower internal resolution.
   // Unset/0 ⇒ upload at native size (back-compat default).
   maxTextureDimension?: number;

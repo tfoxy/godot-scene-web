@@ -1,4 +1,4 @@
-//! `wt`'s certificate (carrier-design.md Q4.6, D11).
+//! `wt`'s certificate.
 //!
 //! `self` (default): an ECDSA P-256 key and a certificate generated at carrier start, valid from
 //! one hour before start until 14 days after it minus that hour (14 days in total, the

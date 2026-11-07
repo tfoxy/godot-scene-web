@@ -1,9 +1,9 @@
-// TRK4 (protocol/tracks-design.md Q1, Q10): the client end of one `render-stream-track/1`
+// The client end of one `render-stream-track/1`
 // connection. One `openTrack` is one track: it connects through the same transport seam as the view
 // connection (transport.ts), says `track-hello`, waits for `track-ready` or `track-error`, then
-// carries payload texts both ways with keepalives, an idle watchdog and a reconnect policy that
-// follows Q1.4's last column. A refusal is a typed close, never a throw; only a mistake in the
-// options (including the view token passed as a static credential) throws. CRED1: the credential
+// carries payload texts both ways with keepalives, an idle watchdog and a reconnect policy keyed
+// on the close reason. A refusal is a typed close, never a throw; only a mistake in the
+// options (including the view token passed as a static credential) throws. The credential
 // may be a provider called before every connect attempt, so a reconnect after a capability's `exp`
 // carries a fresh one; what it throws or returns is a typed close too (never a throw out of here).
 //
@@ -24,15 +24,15 @@ export const TRACK_SUBPROTOCOL = "render-stream-track.1";
 /** The hello's and the ready's `protocol` member. */
 export const TRACK_PROTOCOL = "render-stream-track/1";
 
-/** The largest client text the host accepts (Q1.1), hence the hello's own cap. */
+/** The largest client text the host accepts, hence the hello's own cap. */
 const HELLO_MAX_BYTES = 4096;
-/** Q1.4: a `track-rate` close is retried after at least this long. */
+/** A `track-rate` close is retried after at least this long. */
 const RATE_RETRY_MIN_MS = 1000;
-/** Q1.3: nothing received for this many keepalive periods is `track-idle`. */
+/** Nothing received for this many keepalive periods is `track-idle`. */
 const IDLE_PERIODS = 3;
 const DEFAULT_READY_TIMEOUT_MS = 10_000;
 const DEFAULT_CREDENTIAL_TIMEOUT_MS = 10_000;
-/** CRED1: with a provider, `track-unauthorized`/`expired` is retried this many times in a row (each
+/** With a provider, `track-unauthorized`/`expired` is retried this many times in a row (each
  * time with a fresh call of the provider); one more ends the track. A provider whose capabilities
  * are always expired on arrival (clocks more than the host's 30 s skew apart) cannot be helped by
  * retrying, and an unbounded loop would hide that. */
@@ -75,9 +75,9 @@ export interface TrackReady {
 
 export type TrackState = "connecting" | "open" | "reconnecting" | "closed";
 
-/** Why a connection ended, typed. `reason` is the host's close reason (Q1.4) when `by` is `host`,
+/** Why a connection ended, typed. `reason` is the host's close reason when `by` is `host`,
  * the client's own token when `by` is `client` (`client-close`, `track-idle`, `track-protocol`,
- * `track-binary`, `track-ready-timeout`, and CRED1's `track-credential-failed` and
+ * `track-binary`, `track-ready-timeout`, and the provider's `track-credential-failed` and
  * `track-credential-invalid`, which end an attempt that never connected) and the transport's text
  * (or "") when `by` is `transport`. */
 export interface TrackCloseInfo {
@@ -114,7 +114,7 @@ export interface TrackCredentialContext {
   lastClose: TrackCloseInfo | null;
 }
 
-/** A per-connect credential (CRED1). Called before each attempt's transport is created, so no host
+/** A per-connect credential. Called before each attempt's transport is created, so no host
  * timer (hello, ready) runs while it works. It returns the credential, or a promise of it, and may
  * be slow (a fetch to the app's server): `credentialTimeoutMs` bounds it. */
 export type TrackCredentialProvider = (
@@ -205,7 +205,7 @@ export class RenderStreamTrackError extends Error {
 }
 
 // ------------------------------------------------------------------------------------------
-// Q1.4: what a close means for the next connection.
+// What a close means for the next connection.
 
 export interface TrackDisposition {
   retry: boolean;
@@ -227,18 +227,18 @@ const BY_REASON: Record<string, TrackDisposition> = {
   "track-rate": { retry: true, minDelayMs: RATE_RETRY_MIN_MS },
   "track-idle": RETRY,
   "track-receiver-gone": RETRY,
-  // CRED1: the provider's own failure (a fetch to the app's server, most likely) may pass; a value
+  // The provider's own failure (a fetch to the app's server, most likely) may pass; a value
   // it returned that no host would accept (empty, the view token) will not.
   "track-credential-failed": RETRY,
   "track-credential-invalid": NO_RETRY,
   "stream-ended": RETRY,
-  // The carrier's own inbound rules (Q1.4 last rows) are the client's fault.
+  // The carrier's own inbound rules are the client's fault.
   "message-too-large": NO_RETRY,
 };
 
-/** Q1.4's "Client reconnects" column. A reason this client does not know (the `/1` wire may add
+/** Whether a close reason reconnects. A reason this client does not know (the `/1` wire may add
  * one) falls back to its close code: a client-fault code is final, anything else is retried.
- * `refreshable` (CRED1) says the track has a credential provider that has not yet been retried too
+ * `refreshable` says the track has a credential provider that has not yet been retried too
  * often after `expired`: only then is `track-unauthorized` with detail `expired` retried, because
  * only a new call of the provider can produce what the host will accept. */
 export function trackDisposition(
@@ -250,7 +250,7 @@ export function trackDisposition(
   if (reason === "track-unauthorized")
     return refreshable && detail === "expired" ? RETRY : NO_RETRY;
   if (reason === "track-closed") return code === 1000 ? RETRY : NO_RETRY;
-  // A WebTransport session whose uplink stalled (CAR10) writes a reason with a detail suffix.
+  // A WebTransport session whose uplink stalled writes a reason with a detail suffix.
   if (reason.startsWith("uplink-stalled")) return RETRY;
   const known = BY_REASON[reason];
   if (known) return known;
@@ -459,7 +459,7 @@ interface Attempt {
   readyTimer: unknown;
   keepaliveTimer: unknown;
   idleTimer: unknown;
-  /** The provider call's timeout (CRED1); null once it answered, and for a string credential. */
+  /** The provider call's timeout; null once it answered, and for a string credential. */
   credTimer: unknown;
   /** The `track-error` text of this connection: its detail (and the reason if no close says it). */
   pending: { reason: string; detail: string | null } | null;
@@ -508,7 +508,7 @@ export function openTrack(
   let failures = 0;
   let retryTimer: unknown = null;
   let lastClose: TrackCloseInfo | null = null;
-  /** Consecutive `expired` refusals (CRED1); reset by any other end of an attempt. */
+  /** Consecutive `expired` refusals; reset by any other end of an attempt. */
   let expiredRun = 0;
   const stats: TrackStats = {
     sent: 0,
@@ -680,7 +680,7 @@ export function openTrack(
       return;
     }
     if (text === "") return;
-    // Q1.4: a host close of an open track writes `track-error` first. It is the one text of the
+    // A host close of an open track writes `track-error` first. It is the one text of the
     // payload phase this layer keeps back.
     if (text.startsWith(ERROR_PREFIX)) {
       const p = parseReady(text, options);
@@ -754,7 +754,7 @@ export function openTrack(
     }
   };
 
-  /** CRED1: a provided value reaches the transport only if it could be a credential. */
+  /** A provided value reaches the transport only if it could be a credential. */
   const useCredential = (a: Attempt, value: unknown): void => {
     const bad = badCredential(value);
     if (bad !== null) {

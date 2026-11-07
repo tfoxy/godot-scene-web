@@ -1,5 +1,5 @@
 extends SceneTree
-## G7u (gate7-design.md D14 as amended): RsResourceFetcher's suspension rule, natively. On the web
+## G7u (as amended): RsResourceFetcher's suspension rule, natively. On the web
 ## a GET's timeout counts only time while the page runs: a gap of more than SUSPEND_GAP_MS between
 ## two polls of a running GET moves its deadline by the gap; an idle or delaying fetcher, a short
 ## gap and a native fetcher (the rule off) leave the deadline alone.

@@ -1,4 +1,4 @@
-// Gate 6 group G6z (protocol/gate6-design.md "Q8. Supported-feature manifest"): the hand-maintained
+// Gate 6 group G6z: the hand-maintained
 // evidence map behind protocol/features/render-stream-6.json. scripts/make-features.ts is the
 // generator; this file is its editorial content -- one FeatureEntry per capability, each citing a
 // committed fixture, leg and check (for "supported"), or an owner (for every other status).
@@ -8,7 +8,7 @@
 // function emits must appear here with a matching status, and every entry of those kinds here
 // must name a real id from one of those lists. Every other entry (viewport, material, text,
 // control, delivery, payload) has no such external list to check against; its correctness rests
-// on gate6-design.md's Decisions/Q8/Deferred sections, cited in `notes`.
+// on the contract's Decisions/Q8/Deferred sections, cited in `notes`.
 //
 // Evidence entries naming `gate: "gate6"` are re-verified live by lib/gate6z-checks.ts's
 // `manifest-evidence` (the check id must appear with status "pass" in the same run). Evidence

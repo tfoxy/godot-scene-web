@@ -1,5 +1,5 @@
-// Gate 7 phone-target leg vocabulary (G7d; protocol/gate7-design.md Q13d "Legs (`g7-dev`)", Q13e
-// "Arms"). One pure function decides which legs a run selects, so the runner, the checker and
+// Gate 7 phone-target leg vocabulary.
+// One pure function decides which legs a run selects, so the runner, the checker and
 // self-test-device-harness.ts agree on it:
 //   - `dev-*` arms run only with `--env device --device <id>` (D28: "Runs without `--env device`
 //     never select `g7-dev`'s device arms"), and only that phone's legs;

@@ -1,5 +1,4 @@
 // The canonical mesh surface payload, `render-stream-mesh/1` (GRM1;
-// gate5-design.md Q4 "Mesh payload render-stream-mesh/1", D7 "Mesh format policy").
 //
 //   magic      8 bytes   47 52 4D 31 0D 0A 1A 0A   ("GRM1\r\n\x1a\n")
 //   u32le      meta_len

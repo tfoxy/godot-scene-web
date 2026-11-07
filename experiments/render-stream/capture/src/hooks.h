@@ -43,14 +43,14 @@ void hooks_release_placeholder_drop();
 
 // Gate 2 (G2a): true when, beyond those, Image.has_mipmaps and the image_ptr
 // interface function resolved, so texture_2d_create/_update can copy payload
-// bytes at the hook (gate2-design.md D3). A stream refuses at arm without it.
+// bytes at the hook. A stream refuses at arm without it.
 bool hooks_image_payload_available();
 
 // Records the calling thread as the main thread: the texture hook log marks
 // every other caller "other" (loader threads). Called at SCENE initialisation.
 void hooks_set_main_thread();
 
-// LS0 (live-swap-design.md D3, F2): GRC_VALIDATION_LOG, set once at SCENE initialisation before the
+// GRC_VALIDATION_LOG, set once at SCENE initialisation before the
 // vtable is patched. Off (the default) skips the validation logs that fill counters.json
 // `captured`; counters.json carries `validation_log` so a validation runner can assert it.
 void hooks_set_validation_log(bool on);
@@ -102,21 +102,21 @@ bool hooks_particles_planned();
 // shader hooks then classify `TIME` as a use, not the `shader-time` reason.
 void hooks_set_shader_time_carried(bool carried);
 
-// G8r (gate8-design.md D6, D7; rs_adopt.h): registers a texture that existed before arm in the
-// mirror and the hook log, through the hooks' own copy path (G8t's decode, G8kw's worker), as a
+// Adoption (rs_adopt.h): registers a texture that existed before arm in the
+// mirror and the hook log, through the hooks' own copy path (the host decode and the worker), as a
 // texture_2d_create of `image_object` (an Image the caller keeps alive for the call) with origin
 // `adopted`. False, registering nothing, when the RID is already known or nothing is streaming.
 // `decoded` (optional) reports a host-decoded payload.
 bool hooks_adopt_texture(uint64_t rid, void *image_object, rs2::AdoptedContent content,
                          const char *source, bool *decoded);
-// G8r: the same for a mesh read back through mesh_get_surface (its custom AABB, position xyz and
+// The same for a mesh read back through mesh_get_surface (its custom AABB, position xyz and
 // size xyz); the hook's retained-buffer cache takes its surfaces, so a later region update
 // re-hashes them as for any mesh.
 bool hooks_adopt_mesh(uint64_t rid, const std::vector<rs::AdoptSurface> &surfaces,
                       const float custom_aabb[6]);
 
-// G8m (gate8-design.md D4, D11, D12, Q5; rs_adopt.h): pre-arm shaders and materials.
-// hooks_internal_begin/end bracket the capture's own temporary objects on this thread (D4's
+// Adoption (rs_adopt.h): pre-arm shaders and materials.
+// hooks_internal_begin/end bracket the capture's own temporary objects on this thread (the
 // reentrancy flag): shader_create_from_code writes the code it receives into `code_out` and the
 // RID into `rid_out` instead of the mirror and the hook log; shader_set_code and free pass
 // straight through. The hooks_adopt_* calls register what rs_adopt.cpp read back, through the

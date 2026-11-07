@@ -3,7 +3,7 @@ name = "rs-core-capi"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "C ABI over render-stream-core for the Godot receiver's GDExtension adapter (gate7-design.md Q14e, G7xn)"
+description = "C ABI over render-stream-core for the Godot receiver's GDExtension adapter"
 
 [lib]
 # staticlib: linked by the C++ shim (receiver/ext/) into the native GDExtension (and, in G7xw, an

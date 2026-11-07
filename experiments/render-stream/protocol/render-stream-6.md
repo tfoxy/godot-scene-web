@@ -1,22 +1,20 @@
 # render-stream/6 wire format
 
-Status: specified and golden-tested at G6w (2026-10-11); since G6b (2026-10-11) the capture, the
-receiver and every gate runner speak render-stream/6 (gate6-design.md D1, D19, "As built (G6b)").
-Written with [gate6-design.md](gate6-design.md) Q4, which this document implements. Codecs (G6w): C++ encoder/diff (`capture/src/rs2_codec.*`, `rs2_diff.*`, behind
-`Session::version`), TypeScript decoder/validator/resolver (`scripts/lib/render-stream-2.ts`,
-behind an explicit `version` parameter) and GDScript decoder (`receiver/rs2_decoder.gd`), all
-checked byte-for-byte and state-for-state against `protocol/golden-6/`, per this text.
+Status: frozen. The capture, the receiver and every gate runner speak render-stream/6. Codecs: C++
+encoder/diff (`capture/src/rs2_codec.*`, `rs2_diff.*`, behind `Session::version`), TypeScript
+decoder/validator/resolver (`scripts/lib/render-stream-2.ts`, behind an explicit `version`
+parameter) and GDScript decoder (`receiver/rs2_decoder.gd`), all checked byte-for-byte and
+state-for-state against `protocol/golden-6/`, per this text.
 [render-stream-5.md](render-stream-5.md) and, through it, render-stream-4.md, render-stream-3.md,
 render-stream-2.md and render-stream-1.md are not superseded: `golden-2/` through `golden-5/` keep
-passing unchanged (gate6-design.md D1).
+passing unchanged.
 
-As with /3 to /5 (memory g4e1-rs3-version-switch-pattern), /6 is **not** a new forked module. The
-version-parameterized C++/TypeScript/GDScript modules /5 already extended grow a fifth value:
-C++'s `Session::version` gains `ProtocolVersion::V6` (still defaulting to `V2`, so every existing
-/2/3/4/5 caller is unaffected), and the TypeScript/GDScript `version` parameter widens to
-`2 | 3 | 4 | 5 | 6` (G6w carried /5's default forward; G6b made `6` the default in both, when the
-capture and the receiver switched). Renaming `rs2_codec.*`/`rs2_diff.*`/`render-stream-2.ts`/
-`rs2_decoder.gd` is not part of this document.
+As with /3 to /5, /6 is **not** a new forked module. The version-parameterized
+C++/TypeScript/GDScript modules /5 already extended grow a fifth value: C++'s `Session::version`
+gains `ProtocolVersion::V6` (still defaulting to `V2`, so every existing /2/3/4/5 caller is
+unaffected), and the TypeScript/GDScript `version` parameter widens to `2 | 3 | 4 | 5 | 6` (`6` is
+the default in both since the capture and the receiver switched). Renaming
+`rs2_codec.*`/`rs2_diff.*`/`render-stream-2.ts`/`rs2_decoder.gd` is not part of this document.
 
 render-stream/6 is render-stream/5 plus exactly:
 
@@ -81,37 +79,37 @@ Three keys are new, in this order: `presentation_size` (right after `root_size_p
 `host_size_status`), and `font_oversampling`/`snap_2d` (after `host_window_size`, at the end of the
 object). Every other key and value is exactly as render-stream-5.md's `viewport`.
 
-- `root_size_policy` gains the value `"presentation"` (gate6-design.md D2, Q3a):
+- `root_size_policy` gains the value `"presentation"`:
   `GRC_ROOT_SIZE=presentation:<W>x<H>` makes the headless root window W×H before the main scene
   lays out, so the engine itself computes the stretch transform, the font oversampling and the
   `StyleBoxFlat` antialiasing feather of a W×H window.
 - `presentation_size` equals `logical_size` unless the policy is `"presentation"`, in which case it
-  is the policy's declared W×H. `host_size_status` follows gate6-design.md Q3a: `"match"` iff
+  is the policy's declared W×H. `host_size_status` follows this rule: `"match"` iff
   `host_window_size == presentation_size` and the visible rect's size equals `logical_size`;
   `"degenerate-visible"` iff the visible size differs from `logical_size`; `"degenerate-window"`
   otherwise.
-  **PRES-A amendment (gate6-design.md Q3a):** "`logical_size`" in this rule reads "the stretch's
+  **Amendment:** "`logical_size`" in this rule reads "the stretch's
   visible size for `presentation_size`", which is `logical_size` except under `canvas_items` with
   aspect `expand`, `keep_width` or `keep_height` at another aspect (wider or taller, in the engine's
   float32). No byte of any session changes.
 - `font_oversampling` is `Viewport.get_oversampling()` (a float32, always positive) -- the ONLY
   JSON-embedded float this wire carries (see "As built" for its canonical decimal form).
-- `snap_2d` carries the root's `snap_2d_transforms_to_pixel`/`_vertices_to_pixel` project settings
-  (gate6-design.md D17), read once at arm; a runtime change to either stays `unobserved`
+- `snap_2d` carries the root's `snap_2d_transforms_to_pixel`/`_vertices_to_pixel` project settings,
+  read once at arm; a runtime change to either stays `unobserved`
   (`viewport_set_snap_2d_transforms_to_pixel`/`_vertices_to_pixel` are unhooked).
 
 New invariant, `viewport-entry`: `presentation_size` must equal `logical_size` unless
 `root_size_policy` is `"presentation"`; under `"presentation"` with `stretch.mode` `"disabled"`,
 `presentation_size` must still equal `logical_size` (a presentation declared under `disabled`
-stretch that differs from the logical size would change layout -- `root-size-invalid`,
-gate6-design.md D3, is the capture-side refusal for that case, never observed on the wire as a
+stretch that differs from the logical size would change layout -- `root-size-invalid`
+is the capture-side refusal for that case, never observed on the wire as a
 published session); `host_size_status` must be consistent with `host_window_size`,
 `presentation_size` and the `host_visible_rect` session block, per the rule above; and
 `font_oversampling` must be a positive number.
 
 ### Publication
 
-A new session key, right after `features` (gate6-design.md D8):
+A new session key, right after `features`:
 
 ```json
 "publication":{"mode":"every-frame"|"rate","target_fps":<int 1..240>|null}
@@ -143,8 +141,8 @@ floats: transform, modulate) -- `layer`/`sublayer` are plain JSON integers, neve
   canvas's stacking to `(0, 0)` (`rv.cpp:1265-1266`): a freshly (re)attached canvas's `layer`/
   `sublayer` are `0, 0` in that same transaction, whatever they were before detaching.
 - New invariant, `canvas-entry`: `layer` and `sublayer` must both be integers (any sign; the
-  renderer's own `stacking = sign(layer)·(|layer| << 32) + sublayer` ordering, gate6-design.md
-  Q1e, places no range limit on either on the wire).
+  renderer's own `stacking = sign(layer)·(|layer| << 32) + sublayer` ordering
+  places no range limit on either on the wire).
 
 ## Session-level unsupported reasons
 
@@ -161,12 +159,12 @@ still sorts before every item-level one):
  "item":null,"reason":"snap-2d"}
 ```
 
-- `canvas-stacking-tie` (gate6-design.md Q3b): derived whenever two *attached* canvases in this
+- `canvas-stacking-tie`: derived whenever two *attached* canvases in this
   transaction's resolved canvas table share `(layer, sublayer)` -- the renderer would order them by
   canvas RID (`rv.h:125-130`), which no receiver can reproduce. New invariant (`unsupported-mismatch`,
   extended): the entry must be present whenever such a pair exists in the resolved state, and
   absent otherwise -- checked both ways, like `draw-index-tie`.
-- `canvas-repeat` and `canvas-follow-viewport` are sticky (gate6-design.md Q3b: once observed, both
+- `canvas-repeat` and `canvas-follow-viewport` are sticky (once observed, both
   persist in every later transaction of the session, even if the underlying call is never repeated)
   -- like `canvas-light` at /5, forward-only: well-formedness (the `op` is one of the two/one
   spellings above) is all a decoder can check, since neither call's argument travels on the wire.
@@ -174,13 +172,13 @@ still sorts before every item-level one):
   global canvas transform differs (bitwise float32) from the session's arm-time
   `host_final_xform`, and absent once it matches again. Like `canvas-repeat`, this is forward-only
   -- the live transform itself is never wire-visible, only the session's one arm-time snapshot.
-- `snap-2d` (gate6-design.md Q3b, D17): present in every transaction of a session whose
-  `viewport.snap_2d.transforms` or `.vertices` is `true` (a session-level constant, not a per-frame
-  condition: D17's setters are unhooked, so only the arm-time value is ever known), and absent from
-  every transaction of a session where both are `false`. New invariant (`unsupported-mismatch`,
-  extended): checked against `session.viewport.snap_2d` for the whole stream, both ways.
+- `snap-2d`: present in every transaction of a session whose `viewport.snap_2d.transforms` or
+  `.vertices` is `true` (a session-level constant, not a per-frame condition: the snap setters are
+  unhooked, so only the arm-time value is ever known), and absent from every transaction of a
+  session where both are `false`. New invariant (`unsupported-mismatch`, extended): checked against
+  `session.viewport.snap_2d` for the whole stream, both ways.
 
-`extra-canvas` no longer occurs for a canvas attached to the root viewport (gate6-design.md Q2: the
+`extra-canvas` no longer occurs for a canvas attached to the root viewport (the
 hook `viewport_attach_canvas` refuses nothing for the root viewport at /6), and since that was its
 only occurrence at every earlier version, a /6 decoder rejects any `extra-canvas` entry outright
 (`unsupported-mismatch`), exactly as a /5 decoder rejects `unsupported-state` naming
@@ -219,8 +217,8 @@ field -- then adds four more:
   other field).
 
 `full.rs6`, `patch.rs6` and `inline.rs6` resolve to one `resolved.json` (gate 2's exceptions:
-`session_id`/`stream_id`/per-transaction `encoding` omitted, memory
-rs1-resolved-json-excepted-fields). Three dedicated small streams follow, each its own independent
+`session_id`/`stream_id`/per-transaction `encoding` omitted, as in
+render-stream-1.md "Golden vectors"). Three dedicated small streams follow, each its own independent
 recording (not part of the shared `full`/`patch`/`inline` streams), mirroring how `params.rs5` is
 independent of golden-5's shared streams:
 
@@ -254,7 +252,7 @@ already covered by `golden-2/invalid/` through `golden-5/invalid/`):
 ## Live transport
 
 As /5, except the subprotocol is `render-stream.6` and the hello's `protocol` is
-`"render-stream/6"`. Since G6b the capture's listener and the receiver's live client speak it, and a
+`"render-stream/6"`. The capture's listener and the receiver's live client speak it, and a
 live connection's session declares `publication` from `GRC_PUBLISH_FPS` (`rate`/target, or
 `every-frame`/null when uncapped).
 
@@ -267,8 +265,8 @@ format is a new version.
 
 - **Canonical JSON float, `font_oversampling`.** render-stream-0.md's "Floats never appear in
   JSON" rule holds for every value this wire has ever carried until now; `font_oversampling` is a
-  deliberate, contract-mandated exception (gate6-design.md Q4 marks it `(new, float32)` as a bare
-  JSON `<number>`, not a block entry). This codec's own canonical form: the shortest fixed-point
+  deliberate, contract-mandated exception (a bare JSON `<number>`, not a
+  block entry). This codec's own canonical form: the shortest fixed-point
   decimal (never scientific notation) whose round-trip through a standard JSON number parser
   recovers the exact float64 widening of the float32 value -- found by trying `%.0f`, `%.1f`, ...
   up to `%.17f` and stopping at the first that round-trips, then stripping any trailing zeros (and
@@ -284,7 +282,7 @@ format is a new version.
   (`1`, `0.5`) is chosen to make this trivial to verify by hand.
 - **`extra-canvas` stays a legal enum spelling, rejected only semantically.** Removing the string
   from the schema-level allowed-reasons list would report a malformed vector as a generic
-  `meta-schema` failure instead of the specific `unsupported-mismatch` gate6-design.md names for
+  `meta-schema` failure instead of the specific `unsupported-mismatch` named for
   it (`extra-canvas-on-root`); keeping the spelling schema-legal and rejecting it in the semantic
   consistency pass (alongside `unsupported-state`/`canvas_item_set_material`'s own /5 rejection)
   produces the named code instead.

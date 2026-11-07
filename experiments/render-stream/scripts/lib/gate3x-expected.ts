@@ -1,6 +1,6 @@
 // Pure synthesis of the gate 3 rotated/scaled fixture's expected per-step frame, straight from
 // fixtures/gate3-xform/expected.json (render-stream-gate3-expected/1, fixture "gate3-xform") -- no
-// file or network I/O, no Godot, no capture evidence. See ../../protocol/gate3-design.md "Q6d".
+// file or network I/O, no Godot, no capture evidence. See.
 //
 // Every draw is a non-antialiased add_rect with an opaque colour on the 0.2 grid, clipped by an
 // integer scissor (D8). A draw under a rotation is a quad: a pixel is covered when its centre
@@ -82,7 +82,7 @@ export interface Gate3xExpected {
   created_later: { name: string; step: number }[];
   owners: string[];
   models: ClipModel[];
-  /** gate3-design.md Q6d's engine-model scissors, by step ("0".."4") */
+  /** the contract's engine-model scissors, by step ("0".."4") */
   hand_clip_rects: Record<string, Record<string, ClipRectValue>>;
   non_decisive_edges: { owner: string; edge: Edge; reason: string }[];
   semantic_probes: Gate3xSemanticProbe[];

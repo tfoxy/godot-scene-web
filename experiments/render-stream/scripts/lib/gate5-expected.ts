@@ -1,5 +1,4 @@
-// Types and pure helpers for fixtures/gate5/expected.json (render-stream-gate5-expected/1,
-// protocol/gate5-design.md "Q6c"), written by fixtures/gate5/make_expected.py. No I/O, no Godot,
+// Types and pure helpers for fixtures/gate5/expected.json (render-stream-gate5-expected/1), written by fixtures/gate5/make_expected.py. No I/O, no Godot,
 // no capture evidence. scripts/lib/geometry-raster.ts rasterizes the coverage model below.
 
 export type Point = [number, number];
@@ -10,7 +9,7 @@ export type Box = [number, number, number, number];
 /** Godot Transform2D columns: x.x, x.y, y.x, y.y, origin.x, origin.y. */
 export type Affine = [number, number, number, number, number, number];
 
-/** A canvas material's blend mode (gate5_5-design.md Q1c, drivers/gles3/rasterizer_canvas_gles3.cpp
+/** A canvas material's blend mode (drivers/gles3/rasterizer_canvas_gles3.cpp
  * :741-799 on a non-transparent target). Absent means `mix`. */
 export type BlendMode =
   | "mix"

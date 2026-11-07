@@ -219,7 +219,7 @@ func _run(manifest: Dictionary) -> int:
 		# WALL TIME between consecutive frames is the honest cost here. `TIME_PROCESS` is reported
 		# beside it but must not be read as the frame cost: this script drives the loop from a
 		# coroutine resumed by `process_frame`, so the engine attributes the await to the process
-		# callback and the monitor reads tens of ms for work an RTX 2060 does in under one.
+		# callback and the monitor reads tens of ms for work a desktop GPU does in under one.
 		var now_usec := Time.get_ticks_usec()
 		frame_ms.append(float(now_usec - previous_usec) / 1000.0)
 		previous_usec = now_usec

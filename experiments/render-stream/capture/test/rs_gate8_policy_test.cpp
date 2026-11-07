@@ -59,7 +59,7 @@ void test_values() {
   }
 }
 
-// TDE (live-swap-design.md Q5, fork F3): an unset GRC_TEXTURE_DECODE is engine on a stream that
+// TDE (fork F3): an unset GRC_TEXTURE_DECODE is engine on a stream that
 // speaks /8 or later by other means, and off on a plain /6 stream. This is the pin.
 void test_decode_default() {
   Gate8Policy p;

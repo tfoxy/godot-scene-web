@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The texture prepare step (texture-delivery-design.md D9b, G8kc): fills the persisted host texture
+# The texture prepare step: fills the persisted host texture
 # cache (D8) from files, before any session runs, by loading each one exactly as a game would under
 # the capture, on the pinned stock 4.5.1 release template, headless (never a window).
 #

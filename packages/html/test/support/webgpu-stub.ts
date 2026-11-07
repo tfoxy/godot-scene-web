@@ -75,7 +75,7 @@ export interface WebgpuStubOptions {
    *  (`StubTexture.pixels`). Default `DEFAULT_RENDERED_PIXEL`: a device whose draws actually land,
    *  which is what the readback-driven surface image swap needs in order to encode anything at all.
    *
-   *  `null` models the OTHER device this project has measured (docs/perf-harness.md, S8): one whose
+   *  `null` models the OTHER kind of device: one whose
    *  readback completes, reports nothing wrong, and hands back an ENTIRELY TRANSPARENT frame. That
    *  is the case `../../src/webgpu/still-capture`'s blank guard exists for, and this is how a jsdom
    *  suite stands it up. */

@@ -1,4 +1,4 @@
-// G7t's own checks for the GSW canvas receiver on gates 4 and 5 (gate7-design.md "G7t" Checks and
+// G7t's own checks for the GSW canvas receiver on gates 4 and 5 (Checks and
 // Sabotages, Q7, Q14d), beside each gate's receiver checks that lib/gate7-gsw.ts keeps `@gsw`:
 //
 //   g7-4  atlas-upload-parity: every text leg's texture uploads (applied.json `uploads[]`: id, hash,

@@ -1,4 +1,4 @@
-// Gate 3 checks and leg classification (protocol/gate3-design.md "Q7" and "G3a").
+// Gate 3 checks and leg classification.
 //
 // Everything here reads an evidence directory written by run-gate3.sh, or is pure over values
 // already read from one, so scripts/test/self-test-gate3.ts can drive it with fabricated trees.
@@ -13,7 +13,7 @@
 // edge), the recording's retained clip state against expected.json's invariants, and every final
 // scissor recomputed from the recording (lib/clip-derive.ts) against expected.json's clip_rects.
 //
-// Evidence layout under <out>/ (see scripts/README.md "Gate 3"):
+// Evidence layout under <out>/:
 //   legs.json, binary.json
 //   import/fixture/                editor --import of fixtures/gate3
 //   capture/                       400-frame capture host, GRC_ROOT_SIZE=enforce-min-size:
@@ -159,7 +159,7 @@ function inside(r: readonly number[], outer: readonly number[]): boolean {
   );
 }
 
-/** expected.json obeys its own rules (gate3-design.md Q6a colour rule, Q6c probe rule). */
+/** expected.json obeys its own rules (colour rule, Q6c probe rule). */
 export function checkExpectedSelfConsistent(
   expected: Gate3Expected,
 ): Gate3Check {
@@ -344,10 +344,10 @@ export function checkExpectedSelfConsistent(
       n + s.probes.filter((p) => p.decisive && p.side === "outside").length,
     0,
   );
-  // Variant clip-ignore (gate3-design.md Q6b, G3d): RI's first draw clips to its own scissor and
+  // Variant clip-ignore: RI's first draw clips to its own scissor and
   // its second (between add_clip_ignore(true) and (false)) is unclipped, at every step. RI is
   // static, so every step's draws are the same shape, shifted only by that step's canvas
-  // transform (Q6b). Since G5d (gate5-design.md D10 and Q6g, render-stream/4) the receiver
+  // transform (Q6b). Since G5d (render-stream/4) the receiver
   // replays add_clip_ignore, so its draws equal the reference's exactly at every step; on
   // render-stream/3 its second draw clipped instead (the one predicted difference, region ri).
   const vci = expected.variant_clip_ignore;
@@ -1201,7 +1201,7 @@ export function checkCaptureLegClass(e: Gate3CaptureEvaluation): Gate3Check {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Group g3b: receiver apply order, receiver legs and sabotages (gate3-design.md "G3b")
+// Group g3b: receiver apply order, receiver legs and sabotages
 //
 // `receiver` and `receiver-patch` replay g3a's capture (full and patch); `receiver-headless-trace`
 // does too, under strace. `sabotage-freeze`, `sabotage-perturb`, `sabotage-omit-clip`,
@@ -1210,7 +1210,7 @@ export function checkCaptureLegClass(e: Gate3CaptureEvaluation): Gate3Check {
 // `sabotage-receiver-ignore-clip` and `sabotage-receiver-clip-before-clear` replay g3a's capture
 // through a receiver started with RS_RECEIVER_SABOTAGE. Every leg but the two plain receivers is
 // judged against expected.json `predictions[leg]` (steps, regions and/or probes), never a
-// hand-copied step set, so a disagreement with gate3-design.md Q7's tables is a finding (G3a's "As
+// hand-copied step set, so a disagreement with the contract's tables is a finding (G3a's "As
 // built"), not silently passed.
 // ---------------------------------------------------------------------------------------------
 
@@ -1288,8 +1288,7 @@ export interface G3bLegExpectation {
 }
 
 /** Only the class (and, for root-size-observe, the reason) is hand-typed here; the mismatching
- * steps, regions and probes of every other leg come from expected.json `predictions[leg]`
- * (gate3-design.md Q7), so a contradiction between this contract and the model is a finding. */
+ * steps, regions and probes of every other leg come from expected.json `predictions[leg]`, so a contradiction between this contract and the model is a finding. */
 export const G3B_LEG_EXPECTATIONS: Record<G3bLeg, G3bLegExpectation> = {
   receiver: { class: "success" },
   "receiver-patch": { class: "success" },
@@ -1644,7 +1643,7 @@ export async function checkProbesReceiver(
 /** `expected.json` `predictions[leg]` against one leg's classification and checkpoints: the
  * mismatching step set, the mismatching region set per step (when predicted, else every
  * non-predicted step and region must match exactly), and the failing-probe set, exactly
- * (gate3-design.md Q7; G3a's "As built" amendment to the ignore-clip row). */
+ * (G3a's "As built" amendment to the ignore-clip row). */
 export async function checkLegClass3(
   e: Gate3LegEvaluation,
   expected: Gate3Expected,
@@ -1801,8 +1800,8 @@ async function supportLegG3b(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Group g3d: calibrator 6, canvas_item_add_clip_ignore (gate3-design.md "G3d"): refused and typed
-// on render-stream/3; a real command, captured and replayed, since G5d (gate5-design.md D10, Q6g)
+// Group g3d: calibrator 6, canvas_item_add_clip_ignore: refused and typed
+// on render-stream/3; a real command, captured and replayed, since G5d
 // ---------------------------------------------------------------------------------------------
 
 /** `checkCaptureArmed` (gate0-checks.ts) hardcodes `<outDir>/capture/evidence/...`, which the g3a
@@ -1866,8 +1865,7 @@ export async function checkCaptureClipIgnoreArmed(
   );
 }
 
-/** `expected-image-reference` for the `reference-clip-ignore` leg (gate3-design.md "G3d"
- * Checks): every shot equals the main fixture's synthesis with RI's reference draws appended --
+/** `expected-image-reference` for the `reference-clip-ignore` leg: every shot equals the main fixture's synthesis with RI's reference draws appended --
  * the second rect drawn unclipped (Q1d). A separate check id from g3a's, over a separate leg. */
 export async function checkExpectedImageReferenceClipIgnore(
   outDir: string,
@@ -1915,7 +1913,7 @@ export function checkCaptureClipIgnoreLegClass(
   );
 }
 
-/** `clip-ignore-commands` (gate5-design.md D10 and Q6g, G5d): on render-stream/4 the recording
+/** `clip-ignore-commands`: on render-stream/4 the recording
  * carries RI's commands in order as real commands -- add_rect, add_clip_ignore(true), add_rect,
  * add_clip_ignore(false) -- in every full-sink transaction that names RI, and no unsupported entry
  * mentions canvas_item_add_clip_ignore or RI. Until G5d (render-stream/3, the check was
@@ -2040,8 +2038,7 @@ function arr<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
-/** `leg-class-receiver-clip-ignore` (gate3-design.md "G3d" Checks, as amended by gate5-design.md
- * Q6g): the receiver classifies as success, its step join is clean, and every one of
+/** `leg-class-receiver-clip-ignore`: the receiver classifies as success, its step join is clean, and every one of
  * receiver-clip-ignore's shots equals reference-clip-ignore's matching shot exactly -- full frame
  * and every region, "ri" included -- at every step. Since G5d (render-stream/4, D10) the receiver
  * replays add_clip_ignore with the engine's own call, so RI's second rect escapes its scissor on

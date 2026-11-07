@@ -1,4 +1,4 @@
-// Gate 4d checks: fixtures/gate4-rich/ (RichTextLabel spans, protocol/gate4-design.md "G4d").
+// Gate 4d checks: fixtures/gate4-rich/ (RichTextLabel spans).
 //
 // This is its own fixture (expected.json, schema render-stream-gate4-expected/1, fixture
 // "gate4-rich"), so every check id here is prefixed "rich-" to stay distinct from fixtures/gate4/
@@ -6,8 +6,8 @@
 // `--legs g4a,g4b,g4d` runs together. Evidence lives under its own `rich-*/` directories (never
 // `capture/`, `reference/`, ... which g4a/g4b already own in the same `--out`).
 //
-// Per gate4-design.md Q6c, "For RichTextLabel the oracle reports glyph sets and counts per span,
-// not quads": there is no exact-quad placement check here (no `rich-expected-text-*`, D8's exact
+// Per:
+// there is no exact-quad placement check here (no `rich-expected-text-*`, D8's exact
 // synthesis, which fundamentally needs quads). `rich-expected-image-reference`/`-receiver` and
 // `rich-ink-presence-*` are quad-independent (a flat mask / a pixel-count threshold) and apply
 // unchanged. `rich-glyph-commands` is a counts-and-pages check, not a quad check: it sums each
@@ -605,7 +605,7 @@ export async function evaluateRichCapture(
     // As built (G4d): RichTextLabel unconditionally emits canvas_item_add_set_transform while
     // drawing text, unrelated to any span this fixture chose, which render-stream/3 typed
     // unsupported, so every RichTextLabel capture classified "unsupported" then. Corrected since
-    // G5d (gate5-design.md D9, Q1g, Q6g): the emission is per glyph, not per line --
+    // G5d: the emission is per glyph, not per line --
     // _draw_line's text/outline passes call draw_set_transform_matrix(char_final_xform) before
     // each glyph and draw_set_transform_matrix(Transform2D()) after it
     // (scene/gui/rich_text_label.cpp:1358-1378, :1427), both identity without a [fx] effect --
@@ -634,8 +634,7 @@ export interface RichSetTransformStep {
   glyph_commands: number;
 }
 
-/** Per settle step, RTL's add_set_transform commands on `recording` (gate5-design.md Q1g's
- * measurement): RichTextLabel brackets every glyph of its text and outline passes with
+/** Per settle step, RTL's add_set_transform commands on `recording`: RichTextLabel brackets every glyph of its text and outline passes with
  * draw_set_transform_matrix(char_final_xform) and draw_set_transform_matrix(Transform2D())
  * (scene/gui/rich_text_label.cpp:1358-1378, :1427), both identity without a [fx] effect. */
 export function richSetTransformSteps(
@@ -670,7 +669,7 @@ export function richSetTransformSteps(
   return { steps, problems };
 }
 
-/** `rich-leg-class-capture` (as amended by gate5-design.md Q6g, G5d): the rich-capture leg
+/** `rich-leg-class-capture` (as amended by G5d): the rich-capture leg
  * classifies success with no unsupported op at all, and RTL's text pass reaches the wire as real
  * render-stream/4 add_set_transform commands -- at least two per settle step (one glyph's
  * set-and-reset), every one identity (this fixture uses no [fx] effect). Until G5d
@@ -862,7 +861,7 @@ export async function checkRichFixtureEnv(
 // ---------------------------------------------------------------------------------------------
 // Underline variant: capture-underline / receiver-underline. On render-stream/3 both classified
 // unsupported (canvas_item_add_line), the receiver's mismatch confined to RTL; since G5d
-// (gate5-design.md Q6g) both classify success and the receiver matches the reference exactly.
+// both classify success and the receiver matches the reference exactly.
 // ---------------------------------------------------------------------------------------------
 
 /** The underline [u] strokes on `recording`: every add_line command of any item at any
@@ -880,7 +879,7 @@ export function richUnderlineLines(
   return lines;
 }
 
-/** `rich-underline-capture-class` (as amended by gate5-design.md Q6g, G5d): rich-underline/capture
+/** `rich-underline-capture-class` (as amended by G5d): rich-underline/capture
  * classifies success purely from the recording's own content -- no unsupported op at all -- and
  * the [u] underline reaches the wire as at least one real add_line command, a wide line (width
  * >= 1, never the thin GL-line form). Until G5d (render-stream/3) add_line was an unsupported
@@ -1169,7 +1168,7 @@ export async function runGate4d(
 
   // As built (G4d): RichTextLabel's canvas_item_add_set_transform (evaluateRichCapture's note)
   // made every receiver leg here "unsupported" on render-stream/3, with no step's pixels
-  // mismatching. Since G5d (gate5-design.md Q6g, render-stream/4) the receiver replays the
+  // mismatching. Since G5d (render-stream/4) the receiver replays the
   // commands, so both receivers classify "success": no mismatch at any step.
   const g4dExp: Gate4LegExpectation = { class: "success" };
   checks.push(
@@ -1241,7 +1240,7 @@ export async function runGate4d(
 
   // Underline variant: capture-underline (classified alone, no receiver) and receiver-underline.
   // On render-stream/3 both were unsupported (canvas_item_add_line) and the receiver's mismatch
-  // was confined to RTL's region; since G5d (gate5-design.md Q6g) the underline is a replayed
+  // was confined to RTL's region; since G5d the underline is a replayed
   // wide add_line, so both classify success and the receiver equals the reference exactly.
   const ulCaptureResult = await readJson<CaptureResultJson>(
     join(outDir, "rich-underline", "capture", "evidence", "result.json"),

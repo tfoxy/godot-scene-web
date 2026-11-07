@@ -175,7 +175,7 @@ export interface SystemInfoGpu {
 }
 
 export interface GpuHardware {
-  /** Short label: `swiftshader`, `Mali-G615 MC2 (ANGLE)`, … `unknown` when CDP would not say. */
+  /** Short label: `swiftshader`, `<renderer> (ANGLE)`, … `unknown` when CDP would not say. */
   hardware: string;
   /** The raw renderer string it was derived from, driver version included. */
   hardwareDetail: string;
@@ -185,7 +185,7 @@ export interface GpuHardware {
  * Name the GPU from CDP `SystemInfo.getInfo`.
  *
  * WHY IT IS RECORDED AT ALL: this box has no hardware GPU — it is SwiftShader, a software rasteriser
- * — while the phone is a Mali behind ANGLE. GPU numbers are therefore comparable within an
+ * — while a phone is a mobile GPU behind ANGLE. GPU numbers are therefore comparable within an
  * environment only, and the report has to name the environment for that warning to mean anything.
  *
  * Both Chromes wrap the real renderer in ANGLE's `ANGLE (<vendor>, <renderer>, <api>)`, so the

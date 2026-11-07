@@ -1,5 +1,5 @@
 extends Node
-## CAR6 (protocol/carrier-design.md "The RenderStreamCarrier class"): a GDScript consumer carrier
+## CAR6: a GDScript consumer carrier
 ## and its one peer, in one script. It registers carrier RS_CARRIER_PEER_NAME (default `gdpeer`)
 ## before the capture arms, and once the carrier `started` it opens connection 1 with the hub's
 ## first subprotocol, sends the hello, and keeps every binary message the hub sends. A hub close

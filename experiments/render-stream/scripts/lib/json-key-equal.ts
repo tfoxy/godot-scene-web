@@ -1,8 +1,8 @@
 // GRT4b: `JSON.stringify(a, negZero) === JSON.stringify(b, negZero)` without building either
 // string. The checkers compared resolved states by their JSON (gate1-checks.ts stateKey: numbers
 // bit-exact, -0 written as "-0"), and that replacer-driven stringify of two whole states per
-// frame was the largest single cost of gate 6's checker and most of its garbage
-// (results/grt.md "Part 4b"). This walks both values once, in JSON.stringify's own order, and
+// frame was the largest single cost of gate 6's checker and most of its garbage.
+// This walks both values once, in JSON.stringify's own order, and
 // stops at the first token that differs; test/self-test-json-key-equal.ts fuzzes it against the
 // string comparison.
 

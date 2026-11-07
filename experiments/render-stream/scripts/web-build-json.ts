@@ -1,6 +1,6 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Writes <bundle>/build.json for build-web-receiver.sh (gate7-design.md Q4 "Bundle provenance",
-// G7e): the editor's and the template's paths and sha256, the committed preset's sha256 and the
+// Writes <bundle>/build.json for build-web-receiver.sh:
+// the editor's and the template's paths and sha256, the committed preset's sha256 and the
 // options the export used, the source digest, every bundle file's size and sha256, and the .pck's
 // file list (lib/godot-pck.ts), which no-source-scene checks.
 //

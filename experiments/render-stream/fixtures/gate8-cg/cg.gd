@@ -5,7 +5,7 @@ extends Node
 ## integer scales (or along a texture axis whose texels are all equal), so no pixel centre's
 ## colour depends on a texel-boundary tie.
 ##
-##   HPBAR   (40,32)   a full HP bar, the construction results/p3/p3-np.md found in the game: a
+##   HPBAR   (40,32)   a full HP bar, the construction found in the game: a
 ##                     background nine-patch, a command-less clip-only `ForegroundContainer`, a
 ##                     clip-only nine-patch `Mask` (12x10 pointed caps stretched to 232x10) and two
 ##                     18 px fills under it at y -4 (orange-modulated 229 wide, red self-modulated
@@ -83,7 +83,7 @@ func _ready() -> void:
 	print("[fixture] gate8-cg ready: quit=%d" % _quit_frame)
 
 
-## HPBAR / HPLOW: results/p3/p3-np.md's table, node for node.
+## HPBAR / HPLOW: the contract's table, node for node.
 func _hp_bar(bar_name: String, at: Vector2, bg_tex: Texture2D, mask_tex: Texture2D, fill_tex: Texture2D,
 		middle_width: float, fore_width: float) -> void:
 	var container: Control = Control.new()

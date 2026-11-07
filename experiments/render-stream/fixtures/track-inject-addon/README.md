@@ -1,4 +1,4 @@
-# track-inject-addon fixture (TRK6)
+# track-inject-addon fixture
 
 `../track-inject` beside a project copy of the gsw-input addon: `project.godot`, `loader.gd`,
 `track_inject.gd` and `track_inject.tscn` are symbolic links to that fixture's files, and

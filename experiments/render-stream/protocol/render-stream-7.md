@@ -1,13 +1,10 @@
 # render-stream/7 wire format
 
-Status: specified and golden-tested at G7w (2026-10-14). Served by the capture's live listener
-since G7n (2026-10-15): it accepts `render-stream.6` and `render-stream.7` side by side, and each
-connection speaks the one it chose ("As built (G7n)" below). File sinks still speak /6. Since G7l
-(2026-10-16) both browser receivers speak /7 live, with the token in the hello, and the native
-receiver speaks it under `RS_RECEIVER_PROTOCOL=7` (default 6; protocol/gate7/g7l.md "As
-built"). Since G7xwl both Godot receivers speak it on either core: `rs-core-capi` takes the
-stream's version (protocol/gate7/g7xwl.md). G7q is fork F1, credit window 2. Written with
-[gate7-design.md](gate7-design.md) Q2, which this document implements. Codecs (G7w): C++
+Status: frozen. Served by the capture's live listener: it accepts `render-stream.6` and
+`render-stream.7` side by side, and each connection speaks the one it chose ("As built (G7n)"
+below). File sinks still speak /6. Both browser receivers speak /7 live, with the token in the
+hello, and the native receiver speaks it under `RS_RECEIVER_PROTOCOL=7` (default 6). Both Godot
+receivers speak it on either core: `rs-core-capi` takes the stream's version. Codecs: C++
 encoder (`capture/src/rs2_codec.*`, `rs2_diff.*`, behind `Session::version`), TypeScript
 decoder/validator/resolver (`scripts/lib/render-stream-2.ts`, behind an explicit `version`
 parameter) and GDScript decoder (`receiver/rs2_decoder.gd`), plus the C++ control parser
@@ -15,17 +12,16 @@ parameter) and GDScript decoder (`receiver/rs2_decoder.gd`), plus the C++ contro
 against `protocol/golden-7/`, per this text.
 [render-stream-6.md](render-stream-6.md) and, through it, render-stream-5.md, render-stream-4.md,
 render-stream-3.md, render-stream-2.md and render-stream-1.md are not superseded: `golden-2/`
-through `golden-6/` keep passing unchanged (gate7-design.md D2).
+through `golden-6/` keep passing unchanged.
 
-As with /3 to /6 (memory g4e1-rs3-version-switch-pattern), /7 is **not** a new forked module. The
-version-parameterized C++/TypeScript/GDScript modules /6 already extended grow a sixth value:
-C++'s `Session::version` gains `ProtocolVersion::V7` (still defaulting to `V2`, so every existing
-/2-/6 caller is unaffected), and the TypeScript/GDScript `version` parameter widens to
-`2 | 3 | 4 | 5 | 6 | 7` (both still default to `6`, unlike every earlier switch -- /7 is a
-**live-transport-only** delta: nothing about the capture's file sinks or a recorded `.rs7` stream
-needs it to become the default, and G7n is the increment that makes the live listener/receiver
-negotiate it). Renaming `rs2_codec.*`/`rs2_diff.*`/`render-stream-2.ts`/`rs2_decoder.gd` is not
-part of this document.
+As with /3 to /6, /7 is **not** a new forked module. The version-parameterized
+C++/TypeScript/GDScript modules /6 already extended grow a sixth value: C++'s `Session::version`
+gains `ProtocolVersion::V7` (still defaulting to `V2`, so every existing /2-/6 caller is
+unaffected), and the TypeScript/GDScript `version` parameter widens to `2 | 3 | 4 | 5 | 6 | 7` (both
+still default to `6`, unlike every earlier switch -- /7 is a **live-transport-only** delta: nothing
+about the capture's file sinks or a recorded `.rs7` stream needs it to become the default, and the
+live listener/receiver negotiate it). Renaming
+`rs2_codec.*`/`rs2_diff.*`/`render-stream-2.ts`/`rs2_decoder.gd` is not part of this document.
 
 render-stream/7 is render-stream/6 plus exactly:
 
@@ -59,9 +55,8 @@ record       end           at most one, last; nothing may follow it
 A decoder configured for /7 refuses `GRS6` (or any other byte 3) with `bad-magic`. A decoder
 configured for /6 continues to refuse `GRS7` the same way it already refuses `GRS5`.
 
-A /7 stream exists only as a live connection and the receivers' `received.rs7` copy of it
-(gate7-design.md Q2): file sinks stay on /6 until a later cleanup increment chooses to switch them
-(gate7-design.md D2, "Deferred").
+A /7 stream exists only as a live connection and the receivers' `received.rs7` copy of it:
+file sinks stay on /6.
 
 ## Session record
 
@@ -76,20 +71,19 @@ Key order is exactly render-stream-6.md's: `type`, `protocol`, `session_id`, `st
 "publication":{"mode":"every-frame"|"rate","target_fps":<int 1..240>|null,"credit_window":<int 1..2>}
 ```
 
-`credit_window` is new, right after `target_fps` (gate7-design.md D2, D4): the granted live credit
+`credit_window` is new, right after `target_fps`: the granted live credit
 window, `1` or `2`. It is always `1` on a `file` stream (/7 has no file streams in practice, but
 the invariant holds the same way `publication.mode` is constrained on one). New invariant,
 `publication-entry` (extending render-stream-6.md's): `credit_window` is an integer in `1..2`, and
 it is `1` when `stream.transport` is `"file"`.
 
-Window 1 is render-stream-6.md/the handoff's rule, byte for byte: at most one transaction in
-flight per receiver. Window 2 (in-flight accounting over two bases, a resync of the earlier seq)
-is a host *behaviour*, not a wire shape -- it needs no further codec change, and is gated on fork
-F1 (gate7-design.md D4; G7q implements the host side only once approved). Before G7q lands, the
-host accepts a hello asking for `credit_window: 2` and grants `1`; this codec never enables
-window-2 behaviour itself.
+Window 1 is render-stream-6.md's rule, byte for byte: at most one transaction in flight per
+receiver. Window 2 (in-flight accounting over two bases, a resync of the earlier seq) is a host
+*behaviour*, not a wire shape -- it needs no further codec change. A host without window-2 support
+accepts a hello asking for `credit_window: 2` and grants `1`; this codec never enables window-2
+behaviour itself.
 
-*As built (G7q, F1 approved opt-in).* The host grants `min(credit_window,
+*As built (opt-in).* The host grants `min(credit_window,
 GRC_LIVE_CREDIT_WINDOW_MAX)`, the maximum defaulting to 1, so window 2 needs both the hello and
 the host to ask for it. At window w each sent transaction holds one of w slots. A slot returns on
 that seq's own credit-stage `ack` (acks stay per seq, as at window 1), or on a `resync` for it,
@@ -98,7 +92,7 @@ transaction the resync forces. The host pins the payloads of every in-flight tra
 receiver that accepts several transactions before one frame applies the newest resolved state
 once, draws it, and acks each folded seq `applied` and `submitted` with it, in seq order. The
 wire is unchanged. Window 1 stays byte for byte: `capture/test/rs_live_window_test.cpp` pins the
-hub's window-1 transcripts as recorded before G7q.
+hub's window-1 transcripts as recorded before window 2 existed.
 
 ## Live transport
 
@@ -121,26 +115,27 @@ integers -- fourteen keys total, every one required, flat (no nesting, no arrays
 be JSON `null`). `receiver_kind` is one of `"native"`, `"web-export"` or `"gsw-canvas"`.
 `credit_window` is `1` or `2`. `token`, when not `null`, is 64 lowercase hex, as is
 `manifest_sha256`. The five presentation integers are non-negative; headless native receivers send
-their logical size and `dpr_milli` 1000 (gate7-design.md Q2).
+their logical size and `dpr_milli` 1000.
 
 The subprotocol is `render-stream.7`. `parse_control(ProtocolVersion::V7)` (C++) and this gate's
 own TypeScript/GDScript self-test hello checkers accept exactly this shape and refuse: a missing
 key, an unknown key, `credit_window` outside `1..2`, a non-hex `token`, a hello whose `protocol` is
 not `"render-stream/7"`, and a non-integer (e.g. a JSON float) presentation value. This codec
 parses the hello; it does not yet *act* on it -- `GRC_LIVE_CREDIT_WINDOW_MAX`, the bearer-token
-check, the `Origin` allowlist and the window grant are `rs_live.cpp`'s Hub, landed by G7n.
+check, the `Origin` allowlist and the window grant are `rs_live.cpp`'s Hub ("As built (G7n)"
+below).
 
 ### Errors
 
 `error.reason` gains `unauthorized` (sent, with close code 1008, when a `resources.auth: "bearer"`
-session's hello carries a null or wrong `token` -- G7n). `error`'s own shape
+session's hello carries a null or wrong `token`). `error`'s own shape
 (`{"type":"error","reason":<str>,"detail":<str>}`) is unchanged; a decoder already accepts any
 string `reason` (render-stream-1.md), so no parser change was needed for the new reason itself.
 
 ### HTTP (CORS)
 
-For every request carrying an `Origin` header (gate7-design.md D3, Q2 -- G7n's work, specified
-here because it is part of /7's wire contract): an origin not in `GRC_LIVE_ALLOWED_ORIGINS` gets
+For every request carrying an `Origin` header (specified here because it is part of /7's wire
+contract): an origin not in `GRC_LIVE_ALLOWED_ORIGINS` gets
 403 on the upgrade, on GET and on `OPTIONS`; for an allowed origin, GETs add
 `Access-Control-Allow-Origin: <origin>` and `Vary: Origin`, and `OPTIONS
 /resources/sha256/<hash>` answers a 204 preflight
@@ -161,7 +156,7 @@ since `publication` is a session-level field the resolved form has never carried
 ## Golden vectors (`golden-7/`, G7w)
 
 Unlike /3 through /6, this gate's golden set does **not** re-derive the shared `full`/`patch`/
-`inline` states: gate7-design.md D2 says records/transactions/payloads are byte-identical to /6,
+`inline` states: records/transactions/payloads are byte-identical to /6,
 so there is no `full.rs7`/`patch.rs7`/`inline.rs7`. `make_golden.py` (stdlib only, deterministic,
 `--check` mode) instead re-encodes golden-6's own `rate.rs6` scene (one root canvas, one item, one
 `add_rect`) as two small, independent legs:
@@ -183,7 +178,7 @@ unchanged is already covered by `golden-2/invalid/` through `golden-6/invalid/`)
 | `publication-window`         | `publication-entry` | `publication.credit_window` is `3` (out of `1..2`)                    |
 | `publication-file-window`    | `publication-entry` | a `file` stream declaring `credit_window: 2` (always `1` on a file sink) |
 
-`control/` carries the hello vectors (gate7-design.md Q2): `control/valid/` has one hello per
+`control/` carries the hello vectors: `control/valid/` has one hello per
 `receiver_kind` (native twice, web-export once, gsw-canvas once), covering both `credit_window`
 values and both with and without a `token`; `control/invalid/` has a missing key, an unknown key,
 `credit_window` `0` and `3`, a non-hex `token`, and a `render-stream/6` `protocol` string on an
@@ -197,7 +192,7 @@ format is a new version.
 ## As built (G7w)
 
 - **`window2.rs7`'s three transactions compare against `resolved-rate.json`'s one.**
-  Gate7-design.md Q2 says "Both resolve to `resolved-rate.json`" without spelling out how a
+  "Both resolve to `resolved-rate.json`" does not by itself spell out how a
   three-transaction stream and a one-transaction stream can resolve to the same document byte for
   byte -- they can't, as whole documents. This gate's own reading (recorded here, not left
   implicit in test code): every transaction's resolved **state** (`seq`/`frame`/`encoding` aside,
@@ -217,17 +212,17 @@ format is a new version.
   parser gained a `null` literal (and `num()`'s existing "is this a string" rejection became "is
   this a string or null", so a stray `null` on an integer field still fails instead of silently
   decoding as `0`).
-- **G7w touches no Hub, socket or receiver-live-path file.** `parse_control`'s new branch is
-  parsing only (gate7-design.md Q2, G7w's own scope): no `ConnectionSummary` field, no
+- **The codec touches no Hub, socket or receiver-live-path file.** `parse_control`'s new branch
+  is parsing only: no `ConnectionSummary` field, no
   `GRC_LIVE_CREDIT_WINDOW_MAX`, no bearer check and no CORS header exist yet on the wire this
-  capture actually serves. Those land with G7n (`rs_live.cpp`'s Hub, rebased onto G6c) and are
+  capture actually serves. Those land with `rs_live.cpp`'s Hub ("As built (G7n)") and are
   specified above only because they are part of /7's *wire* contract, which this document owns in
   full regardless of which increment implements the runtime behaviour.
 
 ## As built (G7n)
 
 The capture's listener (`capture/src/rs_ws.*`, `rs_live.*`, `entry.cpp`) implements the live
-contract above. Where the text above left room, G7n decided:
+contract above. Where the text above left room, the listener settles it as follows:
 
 - **Subprotocol choice.** The upgrade takes the first of `render-stream.7`, `render-stream.6`
   that the client offered, whatever the client's order. A connection's version comes from that
@@ -248,9 +243,9 @@ contract above. Where the text above left room, G7n decided:
   `Connection`. It carries **no `Content-Length`**: RFC 9110 8.6 forbids one on a 204, and only
   browsers send preflights (Godot's `HTTPClient`, which needs an explicit length, never does).
   `OPTIONS` without `Origin` is still 405, exactly as at /6.
-- **Window.** The grant is `min(credit_window, GRC_LIVE_CREDIT_WINDOW_MAX, 1)` until G7q: the
-  host implements window 1 only, so a hello asking 2 under `GRC_LIVE_CREDIT_WINDOW_MAX=2` is still
-  granted 1.
+- **Window.** The grant is `min(credit_window, GRC_LIVE_CREDIT_WINDOW_MAX, 1)` without window-2
+  support: the host implements window 1 only, so a hello asking 2 under
+  `GRC_LIVE_CREDIT_WINDOW_MAX=2` is still granted 1.
 - **Listener sabotages are not on the wire.** `no-cors`, `accept-any-origin` and `token-ignored`
   act on the listener, never on a record. The session's `sabotage` key enumerates record-level
   kinds, and their spelling is part of the version, so adding three there would have changed

@@ -334,7 +334,7 @@ describe("validateReport: browser-render", () => {
   });
 
   it("accepts a severely parked main thread as a small POSITIVE ratio", () => {
-    // Measured on the page-crop arm: 614 ms of main-thread wall at 0.3% CPU — blocked on commit.
+    // A main thread blocked on commit: hundreds of ms of wall at a fraction of a percent of CPU.
     const metrics = browserMetrics({ mainThreadCpuRatio: 0.0029 });
     expect(validateReport(browserReport({ metrics, runs: [metrics] }))).toEqual(
       [],
@@ -793,8 +793,8 @@ describe("medianMetrics", () => {
   });
 
   it("drops null runs from the median instead of letting them poison it", () => {
-    // region-blob measured [null, 0.04849, null, null, 0.2028]: three repeats had no qualifying
-    // task. The median must come from the two that did, and the sample count must describe THOSE
+    // Three of five repeats with no qualifying task. The median must come from the two that did,
+    // and the sample count must describe THOSE
     // runs — otherwise the aggregate reads as a real ratio backed by n=0.
     const values: (number | null)[] = [null, 0.04849, null, null, 0.2028];
     const runs = values.map((ratio) =>
@@ -928,9 +928,9 @@ describe("metrics.scenario: counters the scenario reports about itself", () => {
 });
 
 describe("validateReport: env.geometry", () => {
-  // The geometry block is what makes two browser numbers comparable at all. For a whole round the
-  // device runner force-emulated a desktop viewport onto a phone and nothing in the report said so;
-  // requiring the block is what stops that from being possible again.
+  // The geometry block is what makes two browser numbers comparable at all. Without it a device
+  // runner could force-emulate a desktop viewport onto a phone and nothing in the report would say
+  // so; requiring the block makes that visible.
   it("REQUIRES geometry on a browser-render report", () => {
     const report = browserReport();
     const { geometry: _dropped, ...env } = report.env;

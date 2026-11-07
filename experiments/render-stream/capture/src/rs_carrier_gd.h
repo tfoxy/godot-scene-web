@@ -1,5 +1,4 @@
-// rs_carrier_gd: the RenderStreamCarrier engine class (CAR6, protocol/carrier-design.md "Writing a
-// carrier", "The RenderStreamCarrier class").
+// rs_carrier_gd: the RenderStreamCarrier engine class.
 //
 // A thin RefCounted class, registered with ClassDB by the capture, that turns a script (GDScript,
 // C#, any engine language) into a grc_carrier_v1 consumer carrier. Script code pushes events in

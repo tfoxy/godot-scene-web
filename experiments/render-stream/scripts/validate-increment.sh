@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# validate-increment.sh -- the GRT smoke tier (results/grt.md; gate7-design.md "Scoped re-runs and
-# milestone sweeps"): maps an increment's diff to the receivers, cores, gates and gate 7 groups it
+# validate-increment.sh -- the GRT smoke tier:
+# maps an increment's diff to the receivers, cores, gates and gate 7 groups it
 # can reach (scripts/smoke-map.json, through lib/smoke-plan.py) and runs only those.
 #
 #   bash experiments/render-stream/scripts/validate-increment.sh [--base main] [--out DIR] \
@@ -15,7 +15,7 @@
 #                every sabotage leg of those (a capture, wire or unmatched path still reaches
 #                every target)
 #   --fast-frames on|off
-#                GRT3 (scripts/README.md "Fast frames (GRT3)"): run the allowlisted live correctness
+#                GRT3: run the allowlisted live correctness
 #                legs faster than real time (RS_FAST_FRAMES=all, RS_FAST_FRAMES_MAX_FPS=--fast-fps,
 #                and GATE7_FAST_FRAMES=1 on the g7-1/g7-2/g7-5/g7-55/g7-8 live runs). Default on for every
 #                tier, --milestone included (GRT4a). Every timing leg and every denylisted leg stays
@@ -174,7 +174,7 @@ fi
 printf 'fast_frames=%s\nfast_fps=%s\n' "$FAST_FRAMES" "$FAST_FPS" >"$OUT/fast-frames.txt"
 FAST_ENV=()
 [ "$FAST_FRAMES" = on ] && FAST_ENV=(RS_FAST_FRAMES=all RS_FAST_FRAMES_MAX_FPS="$FAST_FPS")
-# HC4a (protocol/host-cost-design.md "Byte-identity proof method"): every gate leg of the full tier
+# HC4a: every gate leg of the full tier
 # and of a milestone sweep runs once with the capture's shadow oracle on (HC_SHADOW=1 reaches every
 # host as GRC_HC_SHADOW=1: lib/gamescope.sh gs_strip_env_args, run-hc1.sh). Never in the timing
 # phase, whose legs it would slow (it builds every snapshot twice). After each such run,

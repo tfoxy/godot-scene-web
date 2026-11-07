@@ -1,5 +1,5 @@
-// rs_net_module_test: the capture's net module loader (rs_net_module.h; carrier-design.md D8,
-// Q3, CAR3 "Checks": `net-module-missing` and `net-module-abi` refusals), and -- when the real
+// rs_net_module_test: the capture's net module loader (rs_net_module.h:
+// `net-module-missing` and `net-module-abi` refusals), and -- when the real
 // module has been built beside this test (scripts/build-rs-net.sh) -- a `wt` carrier through the
 // CarrierSet: start, live-carriers.json, stop.
 //

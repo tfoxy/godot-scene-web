@@ -25,7 +25,7 @@
 // 8. checkWarmHostNoGetsShader: zero GETs and matching cache-hit/fetch counts pass; any GET, any
 //    fetch, a cache-hit mismatch or a non-benign checkpoint on either leg fails.
 //
-// 9. The stale-coalesce sabotage outside its stall (2026-10-11 G5f flake fix): staleFromOfSeq
+// 9. The stale-coalesce sabotage outside its stall: staleFromOfSeq
 //    reads the host's `sent.stale_from`; wireStateEqualsFullAtFrame compares against another full
 //    frame; checkReceiverVsReferenceShader tolerates a `stale_exact` checkpoint on the sabotage
 //    leg only -- not on a good leg, and not one whose wire does not equal full at stale_from.

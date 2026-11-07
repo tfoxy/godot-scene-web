@@ -1,4 +1,4 @@
-// Gate 8 g8a checks (G8a, protocol/gate8-design.md "Q2. Late-join adoption"): the arm-time
+// Gate 8 g8a checks: the arm-time
 // adoption of canvases, layers and items, judged on fixtures/gate8-adopt. The pure helpers
 // (canonicalState, compareStates, ...) are exported so scripts/test/self-test-gate8-adopt.ts can
 // drive them on synthetic resolved states.
@@ -19,7 +19,7 @@
 // the born capture also saw the engine's frame-1 default-theme texture), one naming a mesh through
 // its surfaces' hashes.
 //
-// G8r (gate8-design.md D6, D7) adds lazily adopted textures and meshes, and two exceptions, each
+// G8r adds lazily adopted textures and meshes, and two exceptions, each
 // counted per resource and judged against expected.json `exceptions`:
 //   - creation: a command whose late texture is adopted with adopted_content "creation" may name
 //     other content than born's (the dummy's creation copy of a texture updated in place before
@@ -902,7 +902,7 @@ export async function runG8a(
     "late-workers/capture",
     "deferred/capture",
     "sabotage-registry-keep-freed/capture",
-    // LS1 (live-swap-design.md D4): GRC_MODE=standby, never armed, and its two sabotages.
+    // LS1: GRC_MODE=standby, never armed, and its two sabotages.
     "standby/capture",
     "sabotage-standby-full-table/capture",
     "sabotage-standby-drop-tracked/capture",

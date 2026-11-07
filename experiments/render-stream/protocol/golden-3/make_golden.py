@@ -3,7 +3,7 @@
 
 render-stream/3 (../render-stream-3.md) is render-stream/2 (../render-stream-2.md) plus exactly
 one new draw command, `add_msdf_texture_rect_region`, and one new host sabotage kind,
-`perturb-glyph` (gate4-design.md D1, G4e1). G4e1 implements /3 in the SAME codec modules as /2,
+`perturb-glyph`. /3 is implemented in the SAME codec modules as /2,
 behind a protocol-version switch, rather than forking a new module the way /1 forked from /0 and
 /2 forked from /1 -- so this script, too, re-derives /2's six states verbatim (byte for byte
 identical scene, just re-encoded with the GRS3 magic and the "render-stream/3" protocol string)
@@ -29,7 +29,7 @@ precedes the first transaction whose resolved texture table needs it. All three 
 same resolved.json (stream_id and per-transaction "encoding" excepted, as /2's and /1's goldens --
 memory: rs1-resolved-json-excepted-fields).
 
-invalid/ vectors cover exactly the five NEW failure modes gate4-design.md's G4e1 section lists
+invalid/ vectors cover exactly the five NEW failure modes render-stream-3.md lists
 (the five codes /2's own vectors already cover for every unchanged rule are not re-derived here):
 a GRS2 stream (bad-magic), an msdf command whose declared "f" treats it as 12 floats instead of
 14 (cmd-offset), a negative "outline" (meta-schema), an msdf command naming a texture id with no
@@ -106,7 +106,7 @@ FEATURE_ITEM_STATE = sorted(
 FEATURE_RESOURCES = sorted(["texture_2d", "texture_2d_placeholder"])
 FEATURE_UNSUPPORTED_RESOURCES = []
 # /2's observed_unsupported_ops, minus canvas_item_add_msdf_texture_rect_region (now a supported
-# op instead -- render-stream-3.md "Features"). canvas_item_add_clip_ignore (gate3-design.md D4,
+# op instead -- render-stream-3.md "Features"). canvas_item_add_clip_ignore (
 # calibrator 6) stays refused at /3 too: it is not one of the ops /3 adds support for.
 FEATURE_OBSERVED_UNSUPPORTED_OPS = sorted(
     [
@@ -118,7 +118,7 @@ FEATURE_OBSERVED_UNSUPPORTED_OPS = sorted(
     ]
 )
 # Unchanged from /2 (render-stream-3.md "Features": "every other features key... is unchanged
-# from /2"), including canvas_item_set_visibility_notifier (gate3-design.md D6, calibrator 6).
+# from /2"), including canvas_item_set_visibility_notifier (calibrator 6).
 FEATURE_UNOBSERVED = sorted(
     [
         "canvas_item_set_canvas_group_mode",
@@ -271,11 +271,11 @@ def mip_pattern_rgba8(width: int, height: int, mipmaps: bool) -> bytes:
 
 # Payloads #1-4: verbatim from golden-2 (A/Atwin's content, A's state-3 update, F, P's
 # replacement). Payload #5 ("the page", new at /3): a stand-in RGBA8 atlas page for the new item 6
-# at state 7. gate4-design.md's real MSDF atlas is 512x512 at msdf_size 48 (D5), but a codec-level
+# at state 7. The real MSDF atlas is 512x512 at msdf_size 48, but a codec-level
 # golden vector only needs to exercise the wire shape, not a realistic page -- a 512x512 page
 # bloated golden-3/ to 4.9 MB (its bytes are repeated inline in inline.rs3/.hex) against golden-2's
 # 0.8 MB, so this uses 16x16, the same size already used for textures A/Atwin/N in the shared
-# six-state scene (gate4-design.md G4e1, amended, "As built").
+# six-state scene (amended, "As built").
 PAYLOAD_A1 = build_payload("RGBA8", 16, 16,
                             False, quadrant_rgba8(16, 16, (255, 0, 0, 255), (0, 255, 0, 255),
                                                    (0, 0, 255, 255), (255, 255, 0, 255)))
@@ -856,9 +856,9 @@ def texture_page() -> dict:
 
 
 def state7() -> dict:
-    # /2's state 6 (frozen, unchanged) plus one new item and one new texture (gate4-design.md
-    # G4e1: "/2's six states re-encoded as /3, plus seq 7 with three msdf commands... a new
-    # RGBA8 page").
+    # /2's state 6 (frozen, unchanged) plus one new item and one new texture
+    # (/2's six states re-encoded as /3, plus seq 7 with three msdf commands... a new
+    # RGBA8 page).
     state = state6()
     items = dict(state["items"])
     items[6] = item6_msdf()
@@ -1017,8 +1017,8 @@ def mini_session(encoding: str) -> bytes:
 
 
 def build_invalid_vectors() -> dict[str, tuple[bytes, str, str]]:
-    """name -> (bytes, code, description). Exactly the five NEW failure modes G4e1 adds
-    (gate4-design.md "G4e1: render-stream/3", "Golden vectors"); every other code /2's own
+    """name -> (bytes, code, description). Exactly the five NEW failure modes /3 adds
+    every other code /2's own
     invalid/ vectors already cover for a rule /3 leaves unchanged."""
     out: dict[str, tuple[bytes, str, str]] = {}
 

@@ -1,8 +1,8 @@
 ; Gate 6 HD fixture for the render-stream capture experiment (G6h). Nine copies of the gate 6
 ; combined scene (../gate6-scene, built by the synced scene_builder.gd) in a 3x3 GridContainer at
 ; logical 1920x1080 under `canvas_items` stretch, aspect `keep`: presented at 1920x1080 (`native`)
-; and 960x540 (`half`). Variants `animate` and `gpu-heavy`. See fixtures/gate6-hd/README.md and
-; ../../protocol/gate6-design.md ("Q6e", "G6h") for the contract.
+; and 960x540 (`half`). Variants `animate` and `gpu-heavy`. See fixtures/gate6-hd/README.md
+; for the contract.
 
 config_version=5
 

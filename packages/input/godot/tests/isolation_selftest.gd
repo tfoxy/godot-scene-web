@@ -1,5 +1,5 @@
 extends SceneTree
-## IN8: the Godot 4.5.1 facts virtual joypad devices and GswJoypadIsolation rest on, against real
+## The Godot 4.5.1 facts virtual joypad devices and GswJoypadIsolation rest on, against real
 ## `Input` and `InputMap` in headless Godot (the test project's gsw_test_jump = joypad button 0
 ## + physical W, gsw_test_right = joypad axis 0 +, joypad bindings on all devices):
 ##   - an injected device >= 16 reads as pressed (buttons, axes, actions) yet is absent from

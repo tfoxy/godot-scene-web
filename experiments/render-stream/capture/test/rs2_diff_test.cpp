@@ -374,7 +374,7 @@ void test_make_patch_table_order() {
         "a texture leaves whatever the base table's order");
 }
 
-// HC4a (host-cost-design.md D1 "Shape"): SharedTable keeps entries ascending by id in chunks of
+// SharedTable keeps entries ascending by id in chunks of
 // 64 ids; a copy shares every chunk, a write copies one chunk; make_patch over shared chunks
 // equals make_patch over fresh tables.
 void test_shared_table() {
@@ -463,7 +463,7 @@ void test_shared_material_params() {
         "an empty SharedVector iterates nothing");
 }
 
-// HC2 (host-cost-design.md D1): item command lists are shared between snapshots, diverge copy-on-
+// item command lists are shared between snapshots, diverge copy-on-
 // write, and compare bit for bit (command_lists_equal_bits) for /11's identical re-record rule.
 void test_shared_command_lists() {
   Command rect;

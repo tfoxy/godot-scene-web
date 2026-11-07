@@ -30,7 +30,7 @@ bool arrays_equal_bits(const Arr &a, const Arr &b) {
 }
 
 // new at /5: param_f64 carries float64 (double), not float32, so Param values need their own
-// bit-exact comparison (gate5_5-design.md D8: "Float64 keeps FLOAT (a double) and INT exact").
+// bit-exact comparison (Float64 keeps FLOAT (a double) and INT exact).
 bool doubles_equal_bits(double a, double b) {
   std::uint64_t ba = 0;
   std::uint64_t bb = 0;
@@ -84,8 +84,8 @@ bool params_equal(const SharedVector<Param> &a, const SharedVector<Param> &b) {
 // value or any of its block floats differs; floats compare by their 32-bit pattern. `commands`
 // do not take part in the comparison; `content_version` stands for them." texture_filter/
 // texture_repeat are new JSON fields that participate like any other.
-// gate5_5-design.md D9: "material, use_parent_material and instance_params are item state, never
-// content_version" -- they participate here unconditionally, exactly like texture_filter/
+// material, use_parent_material and instance_params are item state, never part of
+// content_version, so they participate here unconditionally, exactly like texture_filter/
 // texture_repeat, never exempted by a content_version match the way `commands` is.
 //
 // render-stream-10.md "Item": canvas_group and copy_to_backbuffer are item state too, but they
@@ -349,7 +349,7 @@ void append_emits(const std::shared_ptr<const EmitTail> &tail, std::uint64_t aft
 }
 
 // render-stream-5.md "Shader table"/"Material table": exactly the texture/mesh table's full,
-// patch and resolve semantics (gate5_5-design.md D1), so every JSON field participates.
+// patch and resolve semantics, so every JSON field participates.
 bool default_texture_ref_equal(const DefaultTextureRef &a, const DefaultTextureRef &b) {
   return a.name == b.name && a.index == b.index && a.tex == b.tex;
 }
@@ -463,7 +463,7 @@ bool texture_entry_equal(const TextureEntry &a, const TextureEntry &b) {
     return false;
   }
   // new at /9: variants (empty below /9) take part in the entry's identity, so a variant that
-  // appears at an equal version is a patch entry (texture-delivery-design.md D6).
+  // appears at an equal version is a patch entry.
   if (a.variants.size() != b.variants.size()) {
     return false;
   }
@@ -593,7 +593,7 @@ class IdIndex {
   std::vector<Entry> entries_;
 };
 
-// HC4a (host-cost-design.md D1 "The diff"): walks two tables chunk by chunk, ascending by id.
+// walks two tables chunk by chunk, ascending by id.
 // `removed(id)` gets every id of `base` that `cur` does not hold, `changed(entry, prev)` every
 // entry of `cur` that is not the very entry `base` holds (prev: base's entry of that id, or null).
 // A chunk both tables share is skipped whole, an entry both share is skipped.
@@ -714,7 +714,7 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
         t.items.push_back(std::move(entry));
       });
 
-  // HC4b (host-cost-design.md D1): the resource tables by their shared chunks too; diff_tables
+  // the resource tables by their shared chunks too; diff_tables
   // walks ascending by id, so removed_* and mesh_bodies_held are ascending.
   diff_tables(
       base.textures, cur.textures, [&t](std::uint32_t id) { t.removed_textures.push_back(id); },

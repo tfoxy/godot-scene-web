@@ -52,7 +52,7 @@ import { buildManifest } from "./make-features";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
 
-/** Every group of protocol/gate6-design.md Q7b, and those whose increment landed. g6z (Q8) runs
+/** Every group, and those whose increment landed. g6z (Q8) runs
  * last: it has no capture of its own, only checks against the groups already run. */
 export const ALL_GROUPS = [
   "g6a",

@@ -1,4 +1,4 @@
-// Gate 6 group g6p (protocol/gate6-design.md "G6p", Q7g): the measurement matrix, deltas analysis
+// Gate 6 group g6p: the measurement matrix, deltas analysis
 // (D15) and a validated `render-stream-report/1` over every Q7g scenario.
 //
 // Pure over an evidence directory `run-gate6.sh`'s run_g6p (lib/gate6p-legs.sh) wrote, built from

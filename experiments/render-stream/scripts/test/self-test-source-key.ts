@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Self-test for GRT's input-keyed source validity and source cache (results/grt.md; D21 as
+// Self-test for GRT's input-keyed source validity and source cache (as
 // amended). Pure: a scratch git repository with the source roots' layout, a fake capture library,
 // template and calibration -- never a Godot run.
 //

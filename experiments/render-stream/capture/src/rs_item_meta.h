@@ -1,4 +1,4 @@
-// TAG1 (protocol/client-extensions-design.md §2, "As built (TAG1)"): the opt-in item identity
+// The opt-in item identity
 // layer's pure half. No engine calls, no I/O, no global state: the hello key's request and the
 // operator's grant, the formation-side store of resolved identities, and the `item_meta` record
 // (render-stream/13 only) formed from it for one grant.
@@ -32,7 +32,7 @@ constexpr std::uint32_t kScene = 4;
 constexpr std::uint32_t kPath = 8;
 constexpr std::uint32_t kGroups = 16;
 constexpr std::uint32_t kMeta = 32;
-// ID3 (render-stream-14.md, client-extensions-design.md ID-D3, ID-D6): item_meta v2, /14 only.
+// item_meta v2 (render-stream-14.md), /14 only.
 constexpr std::uint32_t kInstanceId = 64;
 constexpr std::uint32_t kMouseFilter = 128;
 constexpr std::uint32_t kV2Fields = kInstanceId | kMouseFilter;

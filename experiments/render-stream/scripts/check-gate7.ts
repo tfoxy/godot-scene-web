@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Gate 7 checker CLI -- SKELETON (G7h; protocol/gate7-design.md "G7h" increment). This mirrors
+// Gate 7 checker CLI -- SKELETON (G7h; increment). This mirrors
 // check-gate6.ts's shape (ALL_GROUPS/LANDED_GROUPS, a `render-stream-gate7-report/N` written to
 // <out>/result.json, one line per check, non-zero exit unless gate_passed) so each later
 // increment (G7a, G7e, G7b, G7t, G7s, G7l, G7g, G7u, G7r, G7k, G7p, G7z) extends this file with
@@ -8,8 +8,8 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/check-gate7.ts --out <evidence dir>
 //
-// `ALL_GROUPS` below is the FINAL vocabulary gate 7 passes against (protocol/gate7-design.md's
-// closing paragraph) plus G7d's phone groups. Landed: g7-dev and g7-bench (G7d), g7-0's web
+// `ALL_GROUPS` below is the FINAL vocabulary gate 7 passes against, plus
+// G7d's phone groups. Landed: g7-dev and g7-bench (G7d), g7-0's web
 // half (G7e: `--source gate0=<run> --bundle <web bundle> --extension <.gdextension>`,
 // lib/gate7-adapters.ts checkGate0Web, reported in `results`), the web half of g7-1 to g7-6
 // and g7-55 (G7b: `--source gate<N>=<run>` each, lib/gate7b-adapters.ts checkGateWeb), and the
@@ -108,7 +108,7 @@ const PINNED_LINUX_TEMPLATE = join(
   "linux_release.x86_64",
 );
 
-/** The final leg-group vocabulary (gate7-design.md "Gate 7 passes when…") plus G7d's phone groups
+/** The final leg-group vocabulary plus G7d's phone groups
  * (`g7-dev`, Q13d; `g7-bench`, Q13e). */
 export const ALL_GROUPS = [
   "g7-0",

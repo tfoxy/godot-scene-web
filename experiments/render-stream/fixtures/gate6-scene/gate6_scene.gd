@@ -1,5 +1,5 @@
 extends Node
-## Gate 6 combined scene (../../protocol/gate6-design.md "Q6b" to "Q6d", G6a): one 640x360 copy of
+## Gate 6 combined scene (to "Q6d", G6a): one 640x360 copy of
 ## `scene_builder.gd` at the origin (cell 0, phase 0), the timelines, the time modes, the variants,
 ## the shots, the step log and the reference-side oracle (`scene_oracle.gd`).
 ##

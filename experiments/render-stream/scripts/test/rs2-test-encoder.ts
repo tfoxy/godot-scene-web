@@ -141,7 +141,7 @@ export interface TState {
   default_texture_repeat?: TRepeat;
   /** the full texture table, ascending id (default [hueStrip()]) */
   textures?: TTexture[];
-  /** protocol/unknown-item-skip.md: a skip session's account, written right after
+  /** : a skip session's account, written right after
    * `unsupported` (omit it in a strict session) */
   unknown_items?: {
     unknown_rids: number;
@@ -174,7 +174,7 @@ export interface TSessionOptions {
   /** a rendered (GPU-backed) host: engine.display_server X11 and RS2_FEATURES_RENDERED, which
    * lists canvas_texture as supported (default: a headless host, RS2_FEATURES) */
   rendered?: boolean;
-  /** protocol/unknown-item-skip.md: declare `unknown_item_policy: "skip"` after `sabotage` */
+  /** : declare `unknown_item_policy: "skip"` after `sabotage` */
   unknownItemPolicy?: "skip";
 }
 

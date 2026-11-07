@@ -113,17 +113,17 @@ export interface RunOptions {
    * Defaults to ON for `device` and OFF for `ci`, and that asymmetry is deliberate:
    *   * a phone must render the scenario at ITS OWN size and orientation, because the raster scale
    *     is what the decode numbers are about;
-   *   * the desktop run is the round's measured record (`baselines/linux-chrome-148.json` and the
-   *     S1-S4 tables in docs/perf-harness.md), so it stays at its fixed 1280x800 viewport with the
-   *     stage used 1:1, and those numbers stay comparable. `--fit` opts a desktop run in.
+   *   * the desktop run is the committed baseline (`baselines/linux-chrome-148.json`), so it
+   *     stays at its fixed 1280x800 viewport with the stage used 1:1, and those numbers stay
+   *     comparable. `--fit` opts a desktop run in.
    */
   fit?: boolean;
   /**
    * Collect the GPU trace categories and emit the `gpu` metric block (default `true`).
    *
    * `--no-gpu` is PROTECTIVE, not cosmetic: `disabled-by-default-skia.gpu` emits one event per draw
-   * op, and a sibling repo has already had a capture silently truncated by trace-buffer overflow into
-   * something that read as an idle page. Turning it off shrinks the trace and leaves every CPU number
+   * op, and trace-buffer overflow can silently truncate a capture into something that reads as an
+   * idle page. Turning it off shrinks the trace and leaves every CPU number
    * untouched.
    */
   gpu?: boolean;
@@ -433,8 +433,8 @@ export async function runComparison(options: RunOptions): Promise<RunOutcome> {
 
   // VIEWPORT POLICY, in one place.
   //
-  // `ci` keeps the fixed 1280x800 emulated viewport it always had, so the committed baseline and the
-  // reference tables in docs/perf-harness.md stay comparable. `device` measures at the phone's OWN
+  // `ci` keeps the fixed 1280x800 emulated viewport it always had, so the committed baseline stays
+  // comparable. `device` measures at the phone's OWN
   // viewport and orientation — force-emulating a desktop size there rasters the page at a scale the
   // device never uses, and raster scale is what the decode numbers this harness exists for are made
   // of. Passing `--viewport` explicitly re-enables emulation on either.
@@ -906,7 +906,7 @@ export async function runComparison(options: RunOptions): Promise<RunOutcome> {
         isolation: device.targets.isolation,
         // What the scenario was ACTUALLY measured at — the phone's own viewport unless `--viewport`
         // forced an emulated one. Reporting the requested size here while the page rendered at
-        // another is precisely the mismatch this workstream removed.
+        // another would make the report lie about its own geometry.
         viewport: env.geometry
           ? `${env.geometry.viewport.width}x${env.geometry.viewport.height}@${env.geometry.devicePixelRatio}${emulate ? " (emulated)" : ""}`
           : `${viewport.width}x${viewport.height}@${deviceScaleFactor}`,

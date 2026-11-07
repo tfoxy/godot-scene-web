@@ -1,8 +1,8 @@
 // Unit tests for render-stream/6 (src/rs2_codec.cpp's Session::version == V6 path, G6w).
 //
 // render-stream/6 is implemented as a protocol-version switch inside the SAME rs2_codec/rs2_diff
-// modules /2-/5 use (render-stream-6.md, following gate4-design.md G4e1's precedent and
-// gate6-design.md D1), so this file does not duplicate rs2_codec_test.cpp's/rs3_codec_test.cpp's/
+// modules /2-/5 use (render-stream-6.md, following their precedent)
+// so this file does not duplicate rs2_codec_test.cpp's/rs3_codec_test.cpp's/
 // rs4_codec_test.cpp's/rs5_codec_test.cpp's framing checks -- it only proves the /6 delta:
 // Session::version == V6 selects the GRS6 magic and the "render-stream/6" protocol string, the
 // new viewport keys (presentation_size, font_oversampling, snap_2d), the new top-level
@@ -67,8 +67,8 @@ ItemEntry entry(const ItemState &state, bool commands_null) {
   return e;
 }
 
-// gate5-design.md "As built (G5d)" point 6, carried forward unchanged by every later golden (G55w,
-// now G6w): golden-4 state 8's add_triangle_array (item 7, triangle_count 3 over 6 indices) is one
+// Carried forward unchanged by every later golden:
+// golden-4 state 8's add_triangle_array (item 7, triangle_count 3 over 6 indices) is one
 // the real engine refuses -- harmless to the codecs, but no later golden may carry the same defect
 // forward. golden-4 itself, and rs4_codec_test.cpp's/rs5_codec_test.cpp's byte-for-byte match
 // against it, are UNCHANGED: this file-local fix-up patches only the copy golden-6 uses, lowering

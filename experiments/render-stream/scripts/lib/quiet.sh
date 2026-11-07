@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# quiet.sh -- the machine-wide measurement-isolation lock for render-stream runs
-# (results/measurement-isolation.md). One lock, shared by every worktree and agent on the box:
+# quiet.sh -- the machine-wide measurement-isolation lock for render-stream runs.
+# One lock, shared by every worktree and agent on the box:
 #
 #   ${GSW_QUIET_LOCK:-${GSW_QUIET_DIR:-${RS_QUIET_LOCK_DIR:-${XDG_RUNTIME_DIR:-/tmp}/godot-scene-web}}/quiet.lock}
 #
@@ -17,7 +17,7 @@
 # A marker is stale (removed by whoever sees it) once its holder process is gone, or after
 # GSW_QUIET_MARKER_MAX_S seconds (default 3600).
 #
-# Scheduling v2 (GRT, results/grt.md) changes only WHEN holders are admitted, never the exclusion.
+# Scheduling v2 changes only WHEN holders are admitted, never the exclusion.
 #
 # Share window: the marker alone let each concurrent runner run ONE shared leg per exclusive leg --
 # a runner's next leg always found the next timing leg's marker up -- so a series of 6-minute soaks

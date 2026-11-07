@@ -261,7 +261,7 @@ describe("particle renderer gate — adopting WebGPU", () => {
     const before = callCount(handle, "queue.submit");
 
     pumpTick();
-    // THE measured shape (docs/perf-harness.md S7): three bindings, three render passes, ONE submit.
+    // THE batching shape: three bindings, three render passes, ONE submit.
     // A per-draw submit would make "WebGPU" mean "N submits" and give the win back.
     expect(callCount(handle, "queue.submit") - before).toBe(1);
     expect(rt.stats().webgpuSubmits).toBe(1);

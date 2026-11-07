@@ -1,4 +1,4 @@
-// The TS twin of lib/quiet.sh (results/measurement-isolation.md): the machine-wide
+// The TS twin of lib/quiet.sh: the machine-wide
 // measurement-isolation lock, for runners written in TS (gate7-bench.ts, the gate 7 browser legs).
 //
 // It holds nothing itself: every hold is a `quiet.sh hold` HOLDER process, exactly as the bash

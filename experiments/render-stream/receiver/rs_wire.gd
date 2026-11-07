@@ -32,7 +32,7 @@ const MAGIC_V7_HEX: String = "475253370d0a1a0a"
 ## G8t: render-stream/8 files (gate 8 recordings, render-stream-8.md) replay at /8.
 const MAGIC_V8_HEX: String = "475253380d0a1a0a"
 ## G8kp: render-stream/9 files (texture delivery, render-stream-9.md) replay at /9: the core
-## picks each texture's payload by texture-delivery-design.md D3.
+## picks each texture's payload by the receiver's delivery preference.
 const MAGIC_V9_HEX: String = "475253390d0a1a0a"
 ## CG1: render-stream/10 files (back-buffer state, render-stream-10.md) replay at /10: the core
 ## re-issues each item's canvas_group and copy_to_backbuffer.

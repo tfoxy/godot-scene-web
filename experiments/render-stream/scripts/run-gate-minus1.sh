@@ -96,7 +96,7 @@ fi
 mkdir -p "$OUT"
 echo "run-gate-minus1: evidence directory: $OUT"
 
-# Measurement isolation (lib/quiet.sh, results/measurement-isolation.md): every leg below holds
+# Measurement isolation (lib/quiet.sh): every leg below holds
 # the machine-wide quiet lock SHARED (gate -1 has no timing leg), and the checker too.
 # shellcheck source=lib/quiet.sh
 source "$SCRIPT_DIR/lib/quiet.sh"
@@ -180,7 +180,7 @@ run_headless_leg() {
 	local -a cmd=(env -u DISPLAY -u WAYLAND_DISPLAY -u GRC_CALIBRATION -u GRC_DISARM_AFTER_FRAMES -u GRC_SCREENSHOT -u GRC_SCREENSHOT_FRAME -u GRC_STREAM_OUT -u GRC_RESOURCE_STORE_DIR GRC_EXTENSION="$EXTENSION" GRC_MODE="$grc_mode" GRC_EVIDENCE_DIR="$evidence_dir" GRC_VALIDATION_LOG=on)
 	[ -n "$calibration_path" ] && cmd+=(GRC_CALIBRATION="$calibration_path")
 	[ -n "$disarm_frames" ] && cmd+=(GRC_DISARM_AFTER_FRAMES="$disarm_frames")
-	# G6k (gate6-design.md Q2): a stream opens resources.jsonl (capture/src/entry.cpp's
+	# G6k: a stream opens resources.jsonl (capture/src/entry.cpp's
 	# resources_start, called only from the stream-open path, not merely on arm). No other
 	# headless leg sets this; only the canvas-hook-log criterion reads this leg's evidence.
 	if [ "$want_stream" = "1" ]; then
@@ -258,7 +258,7 @@ run_headless_leg "headless-armed" "arm" "$CALIBRATION" "$BINARY" "60"
 echo "run-gate-minus1: headless-validate"
 run_headless_leg "headless-validate" "validate" "$CALIBRATION" "$BINARY" ""
 
-# G6k (gate6-design.md Q2): the only gate -1 leg with a file sink open, so resources.jsonl exists
+# G6k: the only gate -1 leg with a file sink open, so resources.jsonl exists
 # to check the six calibrator-9 canvas lines against (canvas-hook-log). No other criterion reads
 # this leg; headless-armed (above) is untouched.
 echo "run-gate-minus1: headless-stream"
@@ -308,7 +308,7 @@ run_rendered_leg() {
 	gs_require_live
 
 	# "absent": the capture extension is not loaded at all (no GRC_* capture variables), the
-	# baseline the handoff's transparency check names: "with capture armed and with capture absent".
+	# baseline of the transparency check: "with capture armed and with capture absent".
 	local -a grc_env=(GRC_SCREENSHOT="$leg_dir/$screenshot_name" GRC_SCREENSHOT_FRAME="60")
 	if [ "$grc_mode" != "absent" ]; then
 		grc_env+=(GRC_EXTENSION="$EXTENSION" GRC_MODE="$grc_mode" GRC_EVIDENCE_DIR="$evidence_dir" GRC_CALIBRATION="$CALIBRATION" GRC_VALIDATION_LOG=on)

@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Gate 7x correctness checks over a gate7-bench.ts run of the Rust arm (gate7-design.md "G7x" R1).
+// Gate 7x correctness checks over a gate7-bench.ts run of the Rust arm.
 //
 //   gate7x-checks.ts --run <gate7-bench --out dir> [--reference <dir of step-<k>.png>] [--expect-fail]
 //                    [--scene-native <native receiver dir>]

@@ -249,7 +249,7 @@ describe("openTrack: handshake", () => {
 });
 
 describe("openTrack: refusals are typed closes, never throws", () => {
-  // Q1.4 rows: [reason, code, retried]
+  // Close-reason rows: [reason, code, retried]
   const rows: [string, number, boolean][] = [
     ["track-protocol", 1002, false],
     ["track-utf8", 1007, false],
@@ -841,7 +841,7 @@ describe("openTrack: options", () => {
   });
 });
 
-// CRED1 (tracks-design.md "As built (CRED1)"): `credential` may be a provider called before every
+// `credential` may be a provider called before every
 // connect attempt.
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 8; i++) await Promise.resolve();

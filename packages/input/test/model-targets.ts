@@ -1,4 +1,4 @@
-// Test-only model of the IN12 target half of the GDScript injector (gsw_input_targets.gd) plus
+// Test-only model of the target half of the GDScript injector (gsw_input_targets.gd) plus
 // the slice of Godot the target vectors observe: a scene of Nodes, Controls and Node2Ds under the
 // root (translation and Node2D scale only), `CanvasItem.is_visible_in_tree()`, and the GUI's
 // routing of mouse and touch events to `Control._gui_input` (viewport.cpp `_gui_input_event`:

@@ -1,5 +1,5 @@
 extends Node
-## Gate 4 Latin grayscale text fixture (../../protocol/gate4-design.md "Q6b").
+## Gate 4 Latin grayscale text fixture.
 ##
 ## The root is a plain `Node`. Every `CanvasItem` and the runtime `FontFile` are created in
 ## `_ready()`, after `GrcLoader` armed the capture extension in its own `_enter_tree()` (gate 0
@@ -220,7 +220,7 @@ func _apply_step(step: int) -> void:
 			# Transform only: no texture traffic, no content change.
 			l3.position = l3.position + Vector2(8, 0)
 		3:
-			# A hidden Label shapes nothing (gate4-design.md Q1c).
+			# A hidden Label shapes nothing.
 			lh.text = "Wyvern"
 		4:
 			# Shown: the deferred rasterization becomes one upload (W y v n).

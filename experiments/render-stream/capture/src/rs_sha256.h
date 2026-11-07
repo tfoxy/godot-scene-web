@@ -1,4 +1,4 @@
-// SHA-256 (FIPS 180-4), dependency-free (gate2-design.md G2a).
+// SHA-256 (FIPS 180-4), dependency-free.
 //
 // Texture payloads are content-addressed by the lowercase hex SHA-256 of their
 // canonical `render-stream-texture/1` bytes (render-stream-2.md "Texture

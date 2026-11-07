@@ -1,5 +1,5 @@
-//! Texture residency the way the native receiver keeps it (the former GDScript applier, `rs_applier.gd`, removed in G7gd "Textures", gate2-design.md
-//! Q5 step 3, D5's lazy residency), so GSW's upload accounting and needed set are the native ones:
+//! Texture residency the way the native receiver keeps it (the former GDScript applier, `rs_applier.gd`, removed),
+//! so GSW's upload accounting and needed set are the native ones:
 //!
 //! - a texture becomes resident only once something *names* it: a command of any item (visible or
 //!   not), an item's instance parameter, a named material's `rid` parameter or its shader's default
@@ -57,7 +57,7 @@ pub struct Upload {
     /// `create`, `update`, `replace`, `placeholder` or `canvas`.
     pub op: &'static str,
     pub data_bytes: u64,
-    /// G8kp (texture-delivery-design.md D3): the encoding chosen (`decoded` or `block`), from /9
+    /// the encoding chosen (`decoded` or `block`), from /9
     /// only; None below /9 and for placeholders and canvas textures.
     pub encoding: Option<&'static str>,
 }

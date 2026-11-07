@@ -30,7 +30,7 @@
 // page between the SIDES would let side B be served side A's cached BITMAP — a blit, not a render —
 // so parity would be perfect by construction while proving nothing.
 //
-// Sharing one page across FIXTURES was, until this suite measured it, just as dangerous: a WebGL
+// Sharing one page across FIXTURES was once just as dangerous: a WebGL
 // shader fixture rendered on a page where the particle fixtures had already run came out with
 // colour x0.67 and alpha x0.65 versus the same fixture on a fresh page, while the WebGPU side was
 // bit-identical either way. That was a state leak in the shipped WebGL path — the REFERENCE side of
@@ -157,7 +157,7 @@ const LAUNCH_ATTEMPTS: Array<{
 /**
  * A REAL ORIGIN, not `about:blank` and not `page.setContent`.
  *
- * Measured on this box, and the single most expensive thing to rediscover: a `setContent` page sits
+ * The single most expensive thing to rediscover: a `setContent` page sits
  * on an opaque origin, `isSecureContext` is false, and Chrome then does not expose `navigator.gpu`
  * AT ALL. The runtime's gate reads that as `no-navigator-gpu`, falls back to WebGL synchronously,
  * and side B silently becomes a second WebGL side. `http://localhost` is a trustworthy origin, and
@@ -173,7 +173,7 @@ let bundleText: string;
 /** Set when the suite cannot run the configured sides on this box (see `beforeAll`). */
 let skipReason: string | null = null;
 /** How the browser that ran this suite was launched — reported with the results, because the two
- *  modes reach DIFFERENT adapters on this box (headless: SwiftShader; headed: the real GPU) and a
+ *  modes can reach DIFFERENT adapters (headless: SwiftShader; headed: the real GPU) and a
  *  diff ratio means little without knowing which rasterizers produced it. */
 let launchMode = "unknown";
 
@@ -219,7 +219,7 @@ beforeAll(async () => {
  *
  * Renders one real fixture through the shipped runtimes exactly as the suite will, on each side, and
  * demands of each that it used the backend it was asked for AND painted something. Both halves are
- * load-bearing, and each caught a real failure on this box:
+ * load-bearing, and each has caught a real failure:
  *
  *  - side B can report a device, render, and be back on WebGL by the end of the frame (headless
  *    SwiftShader loses the device mid-render). Checking `renderer` and `capture` AFTER the frame is
@@ -333,8 +333,8 @@ async function openSidePage(target: Browser, bundle: string): Promise<Page> {
   // `webgpu/device.ts` DECLINES a fallback (software) adapter, exactly as `shared-gl.ts` declines
   // SwiftShader, and would then hand every binding to WebGL — which this suite would compare against
   // WebGL and call parity. This is the escape hatch that module documents for precisely this case.
-  // It makes the run CORRECTNESS-ONLY (a software adapter is never a performance reading, per S7);
-  // the phone is where the perf claim is settled. Set before navigation so it is in place when the
+  // It makes the run CORRECTNESS-ONLY (a software adapter is never a performance reading, per S7).
+  // Set before navigation so it is in place when the
   // bundle's first `acquireWebgpuDevice()` runs.
   await page.addInitScript(() => {
     (globalThis as Record<string, unknown>).__gswForceWebgpuEffects = true;
@@ -751,7 +751,7 @@ describe("the shipped WebGL path owns its blend state", () => {
  * offset is where it should be, but "is this string a legal WGSL program" is a whole-program
  * property of a compiler, and the corpus contains at least one case no regex could ever settle:
  * scry_reveal calls `fwidth` inside a loop whose bound is a uniform, which has to satisfy WGSL's
- * UNIFORMITY ANALYSIS — a dataflow rule with no textual signature. This block is where WP-5's open
+ * UNIFORMITY ANALYSIS — a dataflow rule with no textual signature. This block is where that
  * risk is closed.
  *
  * It also covers the tier ahead of the picture: a shader can compile here long before a parity

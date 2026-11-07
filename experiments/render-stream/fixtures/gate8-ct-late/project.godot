@@ -1,5 +1,5 @@
-; Gate 8 late-arm runtime CanvasTexture fixture (RT-CTX, ../../protocol/gate8-design.md "As built
-; (P3-CT)"'s deferred follow-up): 640x360, every image drawn only through a CanvasTexture built in
+; Gate 8 late-arm runtime CanvasTexture fixture (RT-CTX, P3-CT's
+; deferred follow-up): 640x360, every image drawn only through a CanvasTexture built in
 ; code at `_ready` (no .tres), the capture armed LATE at fixture frame 12. See README.md.
 
 config_version=5

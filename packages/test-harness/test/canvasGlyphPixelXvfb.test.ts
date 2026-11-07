@@ -35,12 +35,11 @@
 // enough, because "no ink anywhere" would otherwise pass all of them vacuously.
 //
 // WINDOWLESS, ON THE REAL ADAPTER — `--headless=new --enable-gpu --use-angle=vulkan`, and
-// `glyphPixelXvfb.test.ts`'s header carries the measured ladder behind that choice. The short form:
-// OLD headless falls back to SwiftShader on this box and the whole premise of the glyph path is a
-// GPU evaluating outlines per fragment, so this suite used to be headed — but Xvfb does NOT contain
-// a headed Chromium here (Ozone reaches the session compositor), so headed meant a window on
-// whoever's desktop was running it. `--headless=new` with ANGLE pointed at Vulkan keeps the NVIDIA
-// adapter and drops the window.
+// `glyphPixelXvfb.test.ts`'s header carries the launch ladder behind that choice. The short form:
+// OLD headless can fall back to SwiftShader and the whole premise of the glyph path is a GPU
+// evaluating outlines per fragment — but Xvfb does NOT contain a headed Chromium under Wayland
+// (Ozone reaches the session compositor), so headed means a window on whoever's desktop is running
+// it. `--headless=new` with ANGLE pointed at Vulkan keeps the hardware adapter and drops the window.
 //
 // PLAYWRIGHT'S `headless` STAYS `false` while `--headless=new` does the work: `headless: true` makes
 // Playwright inject its own old-headless switches, which is the SwiftShader arm.
@@ -107,10 +106,10 @@ const ENABLED = Boolean(
 
 /**
  * Chromium's launch options, windowless by default — see the header, and
- * `glyphPixelXvfb.test.ts`'s for the measured ladder the two suites share.
+ * `glyphPixelXvfb.test.ts`'s for the launch ladder the two suites share.
  *
- * `GSW_PIXEL_HEADED=1` gives back the old surface (headed, default Ozone, ANGLE over desktop GL).
- * IT PUTS A WINDOW ON THE USER'S DESKTOP: Xvfb does not contain a headed Chromium here, so that arm
+ * `GSW_PIXEL_HEADED=1` gives the headed surface (default Ozone, ANGLE over desktop GL).
+ * IT PUTS A WINDOW ON THE USER'S DESKTOP: Xvfb does not contain a headed Chromium under Wayland, so that arm
  * interrupts whoever is at the machine and is to be run only with their consent.
  */
 function launchOptions(): { headless: boolean; args: string[] } {
@@ -179,16 +178,15 @@ const DPR_REGISTRATION_BUDGET_PX = 0.25;
  * CALIBRATED BY BREAKING `u_viewport` ON PURPOSE — `drawRun` handing `setViewport` the design pair
  * where the framebuffer pair belongs — and reading every column off both drivers:
  *
- * | arm                              | correct (both drivers) | design-size u_viewport, NVIDIA | ... SwiftShader     |
+ * | arm                              | correct (both drivers) | design-size u_viewport, GPU   | ... SwiftShader     |
  * | -------------------------------- | ---------------------- | ----------------------------- | ------------------- |
  * | dprUp    320x240 -> 640x480      | rms 0.00, ink 0.00%    | rms 0.00, ink 0.00%           | rms 0.05, ink -0.02% |
  * | dprDown  1280x960 -> 320x240     | rms 0.00, ink 0.00%    | rms 1.79, ink -0.60%          | rms 1.73, ink -0.39% |
  *
- * THE `correct` COLUMN WAS FIRST READ HEADED ON ANGLE/GL AND REPRODUCES EXACTLY ON THIS FILE'S
- * CURRENT SURFACE, headless ANGLE/Vulkan: 0.00 RMS and 0.00% ink on both arms, and 0.000 px of
- * registration. It should — the paragraph above says the two arms are the same float32 — and a
- * surface change that had perturbed a bit-identity claim would show here first. The fault columns
- * have not been re-read on the new surface; they are a wrong uniform, not a rounding mode.
+ * THE `correct` COLUMN READS THE SAME headed on ANGLE/GL and headless on ANGLE/Vulkan: 0.00 RMS and
+ * 0.00% ink on both arms, and 0.000 px of registration. It should — the paragraph above says the
+ * two arms are the same float32 — and a surface change that had perturbed a bit-identity claim
+ * would show here first.
  *
  * READ THE `dprUp` ROW: AN OVER-DILATION IS INVISIBLE, AND SAYING SO IS THE POINT. `hb_gpu_dilate`
  * grows the quad outward and moves the texcoord along the SAME affine map (`jac` is exactly the

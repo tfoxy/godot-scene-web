@@ -1,4 +1,4 @@
-// Gate 7 web-export file legs (G7e, gate7-design.md Q4, Q6, Q8, D10, D21): replays a native
+// Gate 7 web-export file legs: replays a native
 // receiver leg of a source run in the web-export receiver, through `browser-harness.ts` only.
 //
 // A web leg is DERIVED from its native leg, never re-specified: the native leg's env.txt (what
@@ -70,7 +70,7 @@ export function legRecording(dir: string): string {
   return join(dir, "recording.rs2");
 }
 
-/** WX (results/p3/wx.md): `GATE7_WEB_STORE=staged` replays a web file leg with the pre-WX store
+/** WX: `GATE7_WEB_STORE=staged` replays a web file leg with the pre-WX store
  * (RS_RECEIVER_WEB_STORE=staged: the whole store fetched into memory before the session), for the
  * A/B; unset (or `lazy`) adds nothing, so the default page env is unchanged. A live receiver
  * ignores the word. */
@@ -345,7 +345,7 @@ export async function runWebLegs(
   return results.filter((r): r is WebLegResult => r !== undefined);
 }
 
-/** GRT2b (results/grt.md "Part 2b"): RS_LEG_SHARDS=N (`on` = 2) runs N file legs at once, each in
+/** GRT2b: RS_LEG_SHARDS=N (`on` = 2) runs N file legs at once, each in
  * its own browser, as lib/legs.sh's parallel regions do natively; unset, 0, 1 or `off` = serial. */
 export function legShards(env: NodeJS.ProcessEnv = process.env): number {
   const v = env.RS_LEG_SHARDS ?? "";

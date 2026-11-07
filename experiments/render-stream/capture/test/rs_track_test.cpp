@@ -1,5 +1,5 @@
 // rs_track_test: TrackHub (rs_tracks.h), the host side of render-stream-track/1
-// (protocol/tracks-design.md Q1.2-Q1.4, Q4, Q5; TRK1).
+//
 //
 // TrackHub runs over a recording fake rs2::LiveTransport and a recording TrackReceiver; events are
 // fed with explicit now_ns. Covers claims(); the hello grammar (every refusal is track-protocol

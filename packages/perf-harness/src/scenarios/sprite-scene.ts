@@ -22,8 +22,7 @@ export const GAP_PX = 8;
 export const PAD_PX = 16;
 /**
  * The AUTHORED grid width, used whenever the run is not fitted. Desktop stays exactly 10x5 for 50
- * sprites, which is what `baselines/linux-chrome-148.json` and the S1-S4 reference tables were
- * measured at.
+ * sprites, which is what `baselines/linux-chrome-148.json` was measured at.
  */
 export const COLUMNS = 10;
 

@@ -1,4 +1,4 @@
-// Gate 8 g8htr checks (HTR, results/gate8/htr.md, capture/src/rs_texture_release.h): the opt-in
+// Gate 8 g8htr checks (HTR, capture/src/rs_texture_release.h): the opt-in
 // headless texture release, GRC_HEADLESS_TEXTURE_RELEASE=on. run-gate8.sh run_g8htr writes every
 // leg under g8htr/:
 //
@@ -133,8 +133,7 @@ const sourceFormat = (h: HookLine) => h.source_format ?? h.format ?? "";
 const isOneByOne = (t: FixtureTexture) =>
   t.format === "L8" && t.width === 1 && t.height === 1;
 
-/** The port of C3's census `oneByOneLarge` (couch-coop
- * .sts2/research/render-stream-p3-20261025/c3/harness/analyze.mts): a command naming an image
+/** The census `oneByOneLarge`: a command naming an image
  * texture of at most 1x1 drawn into a rect wider or taller than 16 px. */
 export function oneByOneLarge(state: ResolvedTransaction["state"]): {
   count: number;

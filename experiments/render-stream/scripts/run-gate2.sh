@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Gate 2 runner: drives fixtures/gate2/ through the legs of protocol/gate2-design.md "Q7. Runner,
-# classes, report" for the groups that have landed, then runs check-gate2.ts.
+# Gate 2 runner: drives fixtures/gate2/ through the legs
+# for the groups that have landed, then runs check-gate2.ts.
 #
 #   bash run-gate2.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
@@ -25,8 +25,7 @@
 # needs none of them (three fresh live hosts of its own).
 #
 # g2f is OPT-IN (never in the default set, never reported not-run): the headless CanvasTexture
-# shim experiment (protocol/canvas-texture-headless.md "Experiment (a) result",
-# GRC_HEADLESS_CANVAS_TEXTURE=synthesize). It is standalone -- its own import (when g2a did not
+# shim experiment (GRC_HEADLESS_CANVAS_TEXTURE=synthesize). It is standalone -- its own import (when g2a did not
 # run), its own rendered `canvas` reference, headless shim captures with rendered receivers, an
 # omit-op sabotage, the explicit-off control, and the refusals on a rendered host and on an
 # invalid value. Pass it explicitly: --legs g2f, or with the others.
@@ -579,11 +578,11 @@ g2c_leg() {
 # g2c (G2c2): live resources over HTTP. Every host is the live timeline (S = 300, N = 60, quit 971)
 # with both file sinks, the store, GRC_LIVE_LISTEN and GRC_LIVE_TAP_DIR, and the configured
 # out-of-band policy (fetch http). The stall ends inside step 6's window, so step 6's texture
-# update lands inside it and the first post-stall transaction carries A1 (gate2-design.md G2c2
+# update lands inside it and the first post-stall transaction carries A1 (G2c2
 # "As built"); unpin is armed from frame 1, before the receiver's first fetch, because ANIM has
 # only six contents and a fresh cache holds all of them long before S + N.
 # GRT3: in host frames at 60 fps; legs_stall_spec converts them at the leg's own host rate
-# (exactly these milliseconds at 60 fps; scripts/README.md "Fast frames (GRT3)").
+# (exactly these milliseconds at 60 fps).
 G2C_STALL_STEP=5
 G2C_STALL_FRAMES=78 # 1300 ms
 G2C_STALL_SPEC=""
@@ -651,7 +650,7 @@ run_g2c() {
 	GS_RUN_DIR=""
 }
 
-# g2e (G2e): bearer-token authorization (gate2-design.md D13). Three fresh live hosts of its
+# g2e (G2e): bearer-token authorization. Three fresh live hosts of its
 # own (the live timeline, S=300, N=60, quit 971, as g2c's), each with GRC_LIVE_AUTH=token so it
 # generates and writes evidence/live-token: live-auth's receiver gets it
 # (RS_RECEIVER_TOKEN_FILE), sabotage-no-token's gets none at all, and
@@ -674,7 +673,7 @@ run_g2e() {
 	finish_bg "$OUT/sabotage-bad-http-token/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
 	LIVE_HOST_PID=""
 
-	# G7l (gate7-design.md Q8 g7-2): two legs only a browser receiver can run, under
+	# G7l (g7-2): two legs only a browser receiver can run, under
 	# GATE7_LIVE_KIND only. origin-refused: the page is served from a second harness port that no
 	# host allows, so the WebSocket upgrade gets 403 (OriginRejected, `live: 403 origin` in the
 	# host's stdout.log) and the receiver fails live-connect-failed. sabotage-no-cors: the host
@@ -696,7 +695,7 @@ run_g2e() {
 		LIVE_HOST_PID=""
 	fi
 
-	# G8kz (texture-delivery-design.md D2): the HTTP content-coding legs. live-auth above is the
+	# G8kz: the HTTP content-coding legs. live-auth above is the
 	# default host (GRC_HTTP_ENCODING unset = zstd); these pin the others. Headless receivers: the
 	# coding is on the wire, not in the pixels. coding-receiver-off is native only (a browser
 	# always sends Accept-Encoding).
@@ -745,7 +744,7 @@ run_g2e() {
 # step shots (<dir>/shots), at the fixture's default quit frame. HOST-RENDERER EVIDENCE, not
 # headless support: a headless host never allocates a CanvasTexture (the dummy storage's
 # canvas_texture_allocate returns RID(), servers/rendering/dummy/storage/texture_storage.h:54) and
-# refuses it typed (canvas-texture-headless; protocol/canvas-texture-headless.md), so the
+# refuses it typed (canvas-texture-headless), so the
 # CanvasTexture path itself can only be exercised on a host with a real renderer.
 g2_capture_rendered() {
 	local dir="$1"
@@ -807,8 +806,8 @@ run_g2d() {
 	GS_RUN_DIR=""
 }
 
-# g2f (opt-in): the headless CanvasTexture shim experiment (protocol/canvas-texture-headless.md
-# "Experiment (a) result"). Standalone: every leg is its own process, none replays another's
+# g2f (opt-in): the headless CanvasTexture shim experiment.
+# Standalone: every leg is its own process, none replays another's
 # capture.
 #   reference-canvas                  rendered fixture, `canvas` variant, extension absent: the
 #                                     pixels Godot itself draws for this variant

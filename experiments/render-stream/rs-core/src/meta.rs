@@ -166,7 +166,7 @@ const MESH_DYNAMIC_KEYS: &[&str] = &["mode", "frames", "max_bytes"];
 pub const MESH_DYNAMIC_MODES: &[&str] = &["auto", "off", "all"];
 const TEXTURE_DECODES: &[&str] = &["off", "engine"];
 const TEXTURE_DELIVERY_KEYS: &[&str] = &["mode", "encoder"];
-/// texture-delivery-design.md D1: the session's delivery modes, and (render-stream-9.md) the
+/// The session's delivery modes, and (render-stream-9.md) the
 /// variant encodings each offers beside `decoded`.
 pub const DELIVERY_MODES: &[&str] = &["rgba", "passthrough", "basis-uastc", "basis-etc1s"];
 pub fn mode_offers(mode: &str, encoding: VariantEncoding) -> bool {
@@ -218,7 +218,7 @@ pub const SABOTAGE_KINDS: &[&str] = &[
     "perturb-vertex",
     "perturb-shader",
     "retain-superseded",
-    // New at /8 (gate8-design.md Q2-Q5): legal in a /8 session only.
+    // New at /8: legal in a /8 session only.
     "adopt-skip-state",
     "adopt-no-redraw",
     "adopt-skip-layers",
@@ -236,7 +236,7 @@ pub const SABOTAGE_KINDS: &[&str] = &[
     // New at /12 (render-stream-12.md "Sabotages"): legal in a /12 session only.
     "perturb-seed",
     "drop-restart",
-    // New at /12 (FRZ-P, results/p3/frz-p.md): legal in a /12 session only.
+    // New at /12: legal in a /12 session only.
     "freeze-drop-events",
     "freeze-send-positions",
 ];
@@ -822,7 +822,7 @@ pub const SHADER_REASONS: &[&str] = &[
     "shader-excluded",
     "payload-too-large",
     "payload-unavailable",
-    // render-stream-8.md "Resource tables" (gate8-design.md Q5): /8, adopted entries only.
+    // render-stream-8.md "Resource tables": /8, adopted entries only.
     "shader-adopt-include",
 ];
 pub const MATERIAL_REASONS: &[&str] = &[
@@ -1183,7 +1183,7 @@ pub struct Capture {
     pub hooks_omitted: Vec<String>,
 }
 
-/// PRES-A (gate6-design.md "Amendment (PRES-A)"): the visible size a `canvas_items` root presents
+/// the visible size a `canvas_items` root presents
 /// `logical` in a `window`-sized window -- Godot 4.5.1's aspect rule
 /// (`Window::_update_viewport_size`, scene/main/window.cpp:1190-1250) in its own float32
 /// arithmetic, floored. Only `keep_width`, `keep_height` and `expand` widen or heighten the visible
@@ -1342,7 +1342,7 @@ pub struct Session {
     pub sabotage: Option<Sabotage>,
     /// /8 only: `Some` when the session declares adoption (null otherwise, and below /8).
     pub adoption: Option<Adoption>,
-    /// protocol/unknown-item-skip.md: the session declared `unknown_item_policy: "skip"`.
+    /// The session declared `unknown_item_policy: "skip"`.
     pub unknown_item_skip: bool,
     pub clear_color: [f32; 4],
     pub root_canvas_xform: [f32; 6],
@@ -4413,7 +4413,7 @@ mod stretch_visible_tests {
         assert_eq!(stretch_visible_size(&e, hd, [2340, 1080]), [2340.0, 1080.0]);
         assert_eq!(stretch_visible_size(&e, hd, [2520, 1080]), [2520.0, 1080.0]);
         assert_eq!(stretch_visible_size(&e, hd, [1170, 540]), [2340.0, 1080.0]);
-        // float32 floors these to W - 1 (PRES-A's measured list, 1920..2600 even).
+        // float32 floors these to W - 1 (1920..2600 even).
         for w in [1940, 2234, 2260, 2382, 2504, 2530] {
             assert_eq!(stretch_visible_size(&e, hd, [w, 1080])[0], (w - 1) as f64);
         }

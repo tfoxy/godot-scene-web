@@ -1,31 +1,31 @@
-// The client's protocol loop (mirror-client-design.md "The loop"): the harness receiver's live
+// The client's protocol loop: the harness receiver's live
 // order (web/gsw-receiver/live.ts `LiveReceiver`) minus everything evidence-only.
 //
 // 1. A message decodes and validates in its own event (one copy into wasm, W11t live coding
 //    first), is acked `received`, and queues.
-// 2. PH3 (`applyOn: "message"`, the default): while frame callbacks run, nothing waits ahead of
+// 2. With `applyOn: "message"` (the default): while frame callbacks run, nothing waits ahead of
 //    it and fewer than MESSAGE_APPLY_MAX_UNDRAWN applies wait for a draw, the same event applies
 //    it (ack `applied`) when it needs no payload, or starts its fetches.
 // 3. Otherwise one frame callback (rAF) runs the connection phases, then the pending
-//    transaction's fetches (each payload verified by wasm on arrival, G7o2), then apply, ack
+//    transaction's fetches (each payload verified by wasm on arrival), then apply, ack
 //    `applied`. Every frame callback with an apply since its last draw draws the newest applied
 //    state once and acks `submitted` for each of them.
-// Credit (`applied` by default, PH3; `submitted` before) never comes on receipt alone: a hidden
+// Credit (`applied` by default, or `submitted`) never comes on receipt alone: a hidden
 // page runs no frame callback, so after MESSAGE_APPLY_MAX_FRAME_GAP_MS arrivals wait for one, no
-// credit returns and the hub stops publishing to this connection (G7u).
+// credit returns and the hub stops publishing to this connection.
 //
-// Credit window 2 (G7q): a transaction that arrives while another waits for its payloads folds
+// Credit window 2: a transaction that arrives while another waits for its payloads folds
 // into it in place, and several queued transactions apply in one callback, drawing the newest;
 // each folded one is acked with it. Window 1 (the host's grant may be 1) keeps the superseded path:
 // the newest is applied by a fresh applier.
 //
 // Loss: a close without an end record, other than 1002/1008/1009, reconnects as a fresh session
-// (G1d's RECONNECT: the applier is reset, the payload store, the compiled module and the browser's
+// (the applier is reset, the payload store, the compiled module and the browser's
 // HTTP cache are kept), after 1, 2, 4, 8 s and then every 10 s; the count resets once a connection
 // draws. A coding failure asks a `coding` resync in place (W11t, GTS `transport_skip`), and the
 // full it forces is applied by a rebuilt applier that inherits the GPU residency (GRH). A WebGL
 // context loss holds the loop; after the restore, one callback redraws the last applied state
-// in place (G7u), refetching any resident payload the store no longer holds.
+// in place, refetching any resident payload the store no longer holds.
 
 import type { Needed, SessionMeta, StreamCore } from "./core";
 import { failWith, StreamFailure } from "./core";
@@ -65,14 +65,14 @@ export interface RenderStreamStats {
   applied: number;
   /** Applies (drawn frames) over the last second. */
   appliesPerSec: number;
-  /** Median ms from a credit-stage ack (`applied` by default, PH3) to the next transaction's
+  /** Median ms from a credit-stage ack (`applied` by default) to the next transaction's
    * arrival (the last 64), or null. */
   creditRttMsP50: number | null;
   /** The wasm instance's memory (0 after dispose). */
   heapBytes: number;
   /** The open connection's carrier, or null while not connected (or on a custom transport
    * that does not name one). `stats()` always sets it; it is optional so that code building a
-   * `RenderStreamStats` of its own (a consumer's test double) need not (CAR10). */
+   * `RenderStreamStats` of its own (a consumer's test double) need not. */
   carrier?: "websocket" | "webtransport" | null;
 }
 
@@ -98,9 +98,9 @@ export interface LoopOptions {
   transport: RenderStreamTransportFactory;
   endpoint: RenderStreamEndpoint;
   creditWindow: 1 | 2;
-  /** The hello's credit stage (PH3): the ack the host waits on. Default `applied`. */
+  /** The hello's credit stage: the ack the host waits on. Default `applied`. */
   creditStage?: CreditStage;
-  /** Where a transaction with every payload in is applied (PH3): `frame` (the next frame
+  /** Where a transaction with every payload in is applied: `frame` (the next frame
    * callback) or `message` (its own `onmessage`, while frames run; draw stays on the frame
    * callback). Default `message`. */
   applyOn?: ApplyOn;
@@ -109,31 +109,31 @@ export interface LoopOptions {
   clock: LoopClock;
   connectTimeoutMs?: number;
   fetchTimeoutMs?: number;
-  /** TAG2: the extension list's runtime; null (the pure client) costs one branch per frame. */
+  /** The extension list's runtime; null (the pure client) costs one branch per frame. */
   ext?: ExtensionHost | null;
-  /** INP1: the session record, once per session (the client keeps its presentation size). */
+  /** The session record, once per session (the client keeps its presentation size). */
   onSession?: (session: SessionMeta) => void;
-  /** REC1: the recorder (null: the pure client copies nothing). */
+  /** The recorder (null: the pure client copies nothing). */
   recorder?: RenderStreamRecorder | null;
 }
 
-/** PH3: the ack the host's credit waits on (render-stream-1.md hello `credit_stage`). */
+/** The ack the host's credit waits on (render-stream-1.md hello `credit_stage`). */
 export type CreditStage = "submitted" | "applied";
-/** PH3: where a ready transaction is applied. */
+/** Where a ready transaction is applied. */
 export type ApplyOn = "frame" | "message";
-/** PH3: the defaults (results/p3/ph3.md): crediting at `applied` and applying in `onmessage` take
+/** The defaults: crediting at `applied` and applying in `onmessage` take
  * the wait for the next vsync out of the credit round trip. */
 export const DEFAULT_CREDIT_STAGE: CreditStage = "applied";
 export const DEFAULT_APPLY_ON: ApplyOn = "message";
 
-/** PH3: `applyOn: "message"` applies in `onmessage` only while the frame callbacks run: no frame
- * callback for this long (a hidden page, G7u) and arrivals queue for the next one, so no credit
+/** `applyOn: "message"` applies in `onmessage` only while the frame callbacks run: no frame
+ * callback for this long (a hidden page) and arrivals queue for the next one, so no credit
  * returns from a page that draws nothing. */
 export const MESSAGE_APPLY_MAX_FRAME_GAP_MS = 100;
-/** PH3: `applyOn: "message"` applies in `onmessage` while fewer than this many applies wait for a
+/** `applyOn: "message"` applies in `onmessage` while fewer than this many applies wait for a
  * draw; past it, arrivals wait for the frame callback, so a client whose draws fall behind (a slow
  * GPU, a busy thread) is paced by its draws again and never applies far more than it shows. Two
- * absorbs a host frame rate a little above the panel's (60 against the g31's 58.8 Hz). */
+ * absorbs a host frame rate a little above the panel's (60 Hz against a panel just under it). */
 export const MESSAGE_APPLY_MAX_UNDRAWN = 2;
 
 /** Backoff before reconnect attempt n (1-based): 1, 2, 4, 8 s, then 10 s. */
@@ -154,7 +154,7 @@ interface Pending {
   stage: "fetch" | "ready";
   /** Fetched bodies by hash, with the refusal staging gave them (null: staged). */
   bodies: Map<string, string | null>;
-  /** G7q: the seq each payload was requested for (a folded one's failure is reported at it). */
+  /** The seq each payload was requested for (a folded one's failure is reported at it). */
   requester: Map<string, number>;
 }
 
@@ -204,10 +204,10 @@ export class StreamLoop {
   /** IN12: the transaction on screen (the last draw's), null before one in this session; a
    * pointer target's `frame`. */
   drawnSeq: number | null = null;
-  /** PH3: seqs applied (folded ones included) and not drawn yet; their `submitted` acks wait for
+  /** Seqs applied (folded ones included) and not drawn yet; their `submitted` acks wait for
    * the draw. */
   private undrawn: number[] = [];
-  /** PH3: the start of the last frame callback (null: none on this loop yet). */
+  /** The start of the last frame callback (null: none on this loop yet). */
   private lastFrameAt: number | null = null;
   // Stats: counters and two fixed rings, no per-frame allocation.
   private applied = 0;
@@ -427,7 +427,7 @@ export class StreamLoop {
     const rec = this.recorder;
     const m = this.o.core.receive(buf, conn.sessionSeen, rec !== null);
     if (rec) {
-      // REC1: the decoded record, in receipt order (the session carries the magic). `held` and
+      // The decoded record, in receipt order (the session carries the magic). `held` and
       // `coding-resync` are not records: nothing to record.
       const bytes = this.o.core.takeDecoded() as Uint8Array;
       if (m.kind === "session") rec.session(bytes);
@@ -439,7 +439,7 @@ export class StreamLoop {
     }
     switch (m.kind) {
       case "item_meta":
-        // TAG2: identities for the extensions, at receipt (no ext: skipped, as before).
+        // Identities for the extensions, at receipt (no ext: skipped).
         if (this.ext) this.ext.itemMeta();
         return;
       case "held":
@@ -447,7 +447,7 @@ export class StreamLoop {
         return;
       case "coding-resync":
         // W11t: the decoder skips based transactions until the full one, which a rebuilt
-        // applier applies (the applier is delta-driven); GTS: the full may jump the seq.
+        // applier applies (the applier is delta-driven); the full may jump the seq.
         this.rebuildDue = true;
         this.o.core.transportSkip();
         this.send({
@@ -497,7 +497,7 @@ export class StreamLoop {
       this.applyOnMessage(now);
   }
 
-  /** PH3 `applyOn: "message"`: the queued transactions go now, not at the next frame callback,
+  /** `applyOn: "message"`: the queued transactions go now, not at the next frame callback,
    * when nothing waits ahead of them and the frame callbacks run. A transaction that needs
    * payloads starts its fetches here and applies at the frame callback that finds them in. */
   private applyOnMessage(now: number): void {
@@ -734,12 +734,12 @@ export class StreamLoop {
 
   // ----------------------------------------------------------------------- transactions
 
-  /** G7q: the session granted credit window 2. */
+  /** The session granted credit window 2. */
   private windowTwo(): boolean {
     return this.grantedWindow >= 2;
   }
 
-  /** G7q: `next` folds into the pending transaction in place: the fetches it made are kept, and
+  /** `next` folds into the pending transaction in place: the fetches it made are kept, and
    * only the payloads neither fetched nor requested yet are queued. */
   private foldIntoPending(p: Pending, next: Queued): void {
     this.coalesced.push(p.item);
@@ -812,10 +812,10 @@ export class StreamLoop {
     }
   }
 
-  /** G7o2: a 200 body in its fetch completion (between frames): verified and decoded by wasm. */
+  /** A 200 body in its fetch completion (between frames): verified and decoded by wasm. */
   private stageFetched(r: FetchResult): void {
     if (this.phase === "disposed" || r.data === null) return;
-    // REC1: the recorder keeps the fetched body (before wasm takes ownership and it is dropped).
+    // The recorder keeps the fetched body (before wasm takes ownership and it is dropped).
     this.recorder?.resource(r.hash, r.data);
     r.stage_error = this.o.core.stage(r.hash, r.data);
     r.data = null; // in wasm now
@@ -842,7 +842,7 @@ export class StreamLoop {
       if (err !== null && err !== undefined)
         throw refusal(p.requester.get(n.hash) ?? seq, err);
     }
-    // G7q: a body fetched for a folded transaction the newest no longer needs goes to the store
+    // A body fetched for a folded transaction the newest no longer needs goes to the store
     // too, so it is never refetched. Empty at window 1.
     for (const [hash, stageError] of p.bodies) {
       if (p.item.needed.some((n) => n.hash === hash)) continue;
@@ -854,7 +854,7 @@ export class StreamLoop {
   }
 
   /** The pending transaction, every payload in: apply and ack applied; then, in a frame callback
-   * (`draw`), draw and ack submitted. From `onmessage` (PH3) the draw waits for the next frame
+   * (`draw`), draw and ack submitted. From `onmessage` the draw waits for the next frame
    * callback, which draws the newest applied state once for every apply since the last draw. */
   private applyReady(draw: boolean): void {
     const p = this.pending as Pending;
@@ -899,7 +899,7 @@ export class StreamLoop {
     }
   }
 
-  /** TAG2 (client-extensions-design.md §3.2 "Redraw"): an extension asked to draw again with no
+  /** An extension asked to draw again with no
    * transaction: `beforeDraw` (seq null), the table composed, one draw. Acks nothing, asks no
    * credit. */
   private extensionRedraw(now: number): void {
@@ -913,7 +913,7 @@ export class StreamLoop {
 
   // ----------------------------------------------------------------------- context loss
 
-  /** G7u: nothing while lost; once restored, refetch any evicted resident payload, then redraw
+  /** Nothing while lost; once restored, refetch any evicted resident payload, then redraw
    * the last applied state with no transaction. Credit resumes with the next transaction. */
   private stepContext(): void {
     if (this.ctx !== "restoring") return;
@@ -958,7 +958,7 @@ export class StreamLoop {
     this.restoreWant = null;
     this.ctx = "ok";
     this.drawnSeq = this.lastAppliedSeq;
-    // PH3: the redraw drew the newest applied state, so every apply waiting for a draw is in it.
+    // The redraw drew the newest applied state, so every apply waiting for a draw is in it.
     const now = this.o.clock.now();
     for (const s of this.undrawn) this.ack(s, "submitted", now);
     this.undrawn.length = 0;

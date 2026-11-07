@@ -1,4 +1,4 @@
-//! G7q (credit window 2, gate7-design.md Q2 "Credit with window w"): a receiver may accept
+//! G7q (credit window 2): a receiver may accept
 //! several transactions before one apply, drawing only the last. The applier is delta-driven, so
 //! `prepare` merges every prepared transaction's delta (`TxDelta::merge`). This checks the
 //! result against applying each transaction on its own: after every grouped apply the painted

@@ -1,6 +1,6 @@
 extends Node
-## Gate 4 RichTextLabel spans fixture (../../protocol/gate4-design.md "G4d", Q6e
-## "fixtures/gate4-rich/"). The root is a plain `Node` (not a `CanvasItem`). Every `CanvasItem`
+## Gate 4 RichTextLabel spans fixture.
+## The root is a plain `Node` (not a `CanvasItem`). Every `CanvasItem`
 ## and every runtime `Font` are created in `_ready()`, after `GrcLoader` armed the capture
 ## extension in its own `_enter_tree()` (gate 0 route (a)). Construction order is
 ## `expected.json` `creation_order` (wire ids 1, 2): `RTL`, then `Marker`.
@@ -22,8 +22,8 @@ extends Node
 ## ordinary fill glyphs on `F@16`). Step 5 is `append_text`, which appends a new paragraph without
 ## re-parsing the existing one. `RS_FIXTURE_VARIANT=underline` wraps the first span's word in
 ## `[u]...[/u]` (every step), which draws `canvas_item_add_line` inside `RTL`'s own region --
-## typed `unsupported` on render-stream/3 (gate4-design.md Q2), a wide line the receiver replays
-## since G5d (render-stream/4, gate5-design.md Q6g).
+## typed `unsupported` on render-stream/3, a wide line the receiver replays
+## since G5d (render-stream/4).
 ##
 ## Environment (all optional; an invalid value prints an error and quits 2):
 ##   RS_FIXTURE_STEP_LOG    absolute path: one JSONL line per step at its applied frame
@@ -252,8 +252,8 @@ func _set_text_through(step: int) -> void:
 	rtl.text = text
 
 
-## The cumulative span list active at `step` (gate4-design.md Q6c: "the oracle reports glyph sets
-## and counts per span, not quads"). Each entry names the Font resource and plain-text run a span
+## The cumulative span list active at `step` (the oracle reports glyph sets
+## and counts per span, not quads). Each entry names the Font resource and plain-text run a span
 ## shapes, independently of RichTextLabel's own BBCode parse -- this fixture builds both the
 ## BBCode string (_set_text_through/FRAG_*) and this list from the same literal words, so they
 ## cannot drift silently. `outline` > 0 asks the oracle to additionally look up the *outline*

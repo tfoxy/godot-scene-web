@@ -1,5 +1,5 @@
-// The canonical texture payload, `render-stream-texture/1` (GRT1;
-// render-stream-2.md "Texture payload", gate2-design.md D2, D3, Q3 "Copy").
+// The canonical texture payload, `render-stream-texture/1` (GRT1,
+// render-stream-2.md "Texture payload").
 //
 //   magic      8 bytes   47 52 54 31 0D 0A 1A 0A   ("GRT1\r\n\x1a\n")
 //   u32le      meta_len

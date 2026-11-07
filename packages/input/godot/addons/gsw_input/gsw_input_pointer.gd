@@ -27,7 +27,7 @@ extends RefCounted
 ## the host makes up (release all, a takeover, a sync that no longer lists a button or touch) is
 ## `canceled: true`, at the last position: a game must not read it as a completed click or tap.
 ##
-## Targets (IN12): with `targets` set, a record carrying a declared `target` (and every event of
+## Targets: with `targets` set, a record carrying a declared `target` (and every event of
 ## a press bound to one) is placed by GswInputTargets before its event is built, and the event
 ## is tagged with `gsw_target` meta. The mouse binding is the owner's first press's (until every
 ## button is up); each touch keeps its press's. A record without a target never reaches it.

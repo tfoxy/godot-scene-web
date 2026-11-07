@@ -1,5 +1,5 @@
 extends Node
-## Gate 4 layout fixture (../../protocol/gate4-design.md "G4c" and "Q6e"): font sizes and atlas
+## Gate 4 layout fixture: font sizes and atlas
 ## pages, word and arbitrary wrapping, horizontal and vertical alignment, `clip_text`, a bitmap
 ## outline, a shadow, subpixel positioning, an atlas page's lifetime and, as variant `lcd`, one LCD
 ## Label.

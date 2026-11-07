@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# HC1 quiet-path legs (results/p3/hc1.md, protocol/host-cost-design.md D5, D6): small capture-scale
+# HC1 quiet-path legs: small capture-scale
 # hosts (stock release template, headless) armed with a live listener, a viewer that joins late, and
 # the hook log on or off. Judged by scripts/lib/hc1-checks.ts:
 #   hook-log-off-formats-nothing   counters.json hook_log_lines_formatted is 0 with GRC_HOOK_LOG=off
@@ -8,14 +8,14 @@
 #   late-join-served               a viewer joining a running host gets the full state a file sink
 #                                  recorded and every GET it makes answers 200
 #   sabotage-pin-late              (pin-late: no pin before the first transaction) 404s fail the above
-# HC2's legs (results/p3/hc2.md; /11 file sinks, RS_SCALE_REDRAWS=40 of the 60 drawing items):
+# HC2's legs (/11 file sinks, RS_SCALE_REDRAWS=40 of the 60 drawing items):
 #   cv-stable-on-rerecord          identical re-records keep their content_version and stay out of
 #                                  every patch; result.json: one digest per item, none after
 #   rerecord-unequal-patched       RS_SCALE_REDRAW_VARY=8: the 8 re-records a frame that differ in one
 #                                  float are patched with their new list under a new content_version
 #   sabotage-rerecord-stale        (GRC_HC_SABOTAGE=rerecord-stale) fails rerecord-unequal-patched
 #   sabotage-cv-churn              (GRC_SABOTAGE=cv-churn) fails cv-stable-on-rerecord
-# HC3's legs (results/p3/hc3.md, host-cost-design.md D2; /11, mesh churn: 10 of the 20 meshes take
+# HC3's legs (/11, mesh churn: 10 of the 20 meshes take
 # region updates every frame, so they turn dynamic):
 #   dyn-hash-log-off               a hook-log-off /11 file leg's counters.json mesh_hashes shows no
 #                                  SHA-256 over a dynamic surface (mirror or hook) while meshes are
@@ -26,7 +26,7 @@
 #                                  with a body that hashes to its name
 #   sabotage-dyn-hash-unread       (GRC_HC_SABOTAGE=dyn-hash-unread: the /8 viewer is not counted as
 #                                  a hash reader) fails late-join-v8-on-v11
-# HC4a's (results/p3/hc4a.md, host-cost-design.md D1 and "Byte-identity proof method"; the
+# HC4a's (the
 # persistent item and canvas tables and their shadow oracle, GRC_HC_SHADOW=1):
 #   shadow-oracle-agrees           rr-vary and dyn-off run with the oracle on: every snapshot of
 #                                  theirs equals the full walk (counters.json hc_shadow)
@@ -41,7 +41,7 @@
 #   sabotage-hc-stale-derived-gate2 the same under --legs g2a,g2b fails gate 2's unsupported checks
 #                                  (recordings-decode-2 unsupported-mismatch,
 #                                  leg-class-unsupported-textures)
-# HC4b's (results/p3/hc4b.md; the persistent resource tables, payload map, record planning, serving
+# HC4b's (the persistent resource tables, payload map, record planning, serving
 # and budget over the differing entries; the oracle covers them all):
 #   sabotage-hc-skip-dirty-texture-oracle (GRC_HC_SABOTAGE=hc-skip-dirty-texture: a published
 #                                  texture loses every later dirty mark) under run-gate2.sh --legs
@@ -51,7 +51,7 @@
 #                                  pinned) 404s fail late-join-served
 #   sabotage-serve-skip-gate2      the same under run-gate2.sh --legs g2a,g2c fails gate 2's live
 #                                  GET checks
-# HC5's (results/p3/hc5.md; the hub's formation jobs on the encode thread):
+# HC5's (the hub's formation jobs on the encode thread):
 #   sabotage-reorder-gate2         (GRC_HC_SABOTAGE=reorder: every formation job sends its
 #                                  transaction before its resource records) under run-gate2.sh
 #                                  --legs g2a,g2b: the live-inline receiver (rs-core) fails

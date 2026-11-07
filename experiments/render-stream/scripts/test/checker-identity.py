@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checker byte-identity and cost harness (GRT4b, results/grt.md "Part 4b").
+"""Checker byte-identity and cost harness.
 
 Runs one checker over a fresh copy of preserved evidence and keeps every file the checker wrote,
 canonicalised, so two checker versions can be diffed. Timing fields are dropped; nothing else is.

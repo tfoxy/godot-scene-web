@@ -1,5 +1,5 @@
 extends Control
-## `CU`, the cull probe (../../protocol/gate3-design.md Q6b, Q1c step 7). A plain Control with no
+## `CU`, the cull probe (step 7). A plain Control with no
 ## clip whose own draw lies 56 px to the right of its rect. Control's NOTIFICATION_DRAW sets the
 ## item's custom rect to Rect2(0, size) (scene/gui/control.cpp:3900), and the canvas cull draws an
 ## item only when that rect touches the viewport (servers/rendering/renderer_canvas_cull.cpp:249),

@@ -1,4 +1,4 @@
-// LS1 (live-swap-design.md D4, fork F1): the standby table's slots.
+// The standby table's slots.
 //
 // A capture in standby (`GRC_MODE=standby`, and every arm's frames before it) publishes a sparse
 // shadow table: only the hooks that must see a call while nothing streams are installed, and every
@@ -6,7 +6,7 @@
 // hooks' code. The standby set is, by RenderingServer method name:
 //
 //   - the late-arm registry's tracked slots: every hook that records into the registry (creates,
-//     frees, the setters of late-arm-registry-design.md R2), so an arm finds every live resource;
+//     frees, the setters), so an arm finds every live resource;
 //   - the shims' slots (canvas_texture_create, particles_create and free), so a RID the shims hand
 //     out is the one the engine later names;
 //   - texture_set_path (D5: the reload path, recorded from LS4), planned always;

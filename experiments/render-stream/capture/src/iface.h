@@ -30,7 +30,7 @@ struct Iface {
   GDExtensionInterfaceStringToUtf8Chars string_to_utf8_chars = nullptr;
   GDExtensionInterfaceVariantGetPtrDestructor variant_get_ptr_destructor = nullptr;
   GDExtensionInterfaceRegisterMainLoopCallbacks register_main_loop_callbacks = nullptr;
-  // Gate 5.5 (G55a, gate5_5-design.md Q2 "Decoding"): a material parameter's Variant is read
+  // Gate 5.5: a material parameter's Variant is read
   // through its own type's constructor, never assumed to be any one C++ class; a StringName
   // (a param name) is read through the builtin String(StringName) constructor, constructor index
   // 2 in STRING's registration order (core/variant/variant_construct.cpp:79-82: no-args, from

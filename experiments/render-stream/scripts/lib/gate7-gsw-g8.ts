@@ -1,5 +1,5 @@
-// Gate 8's gsw legs, receiver checks and Q7 plan (G8g, gate8-design.md "Increments" G8g; gate7-design.md
-// Q7, Q8). Kept beside lib/gate7-gsw.ts, which merges them into its per-gate tables (`gate8`), as
+// Gate 8's gsw legs, receiver checks and Q7 plan.
+// Kept beside lib/gate7-gsw.ts, which merges them into its per-gate tables (`gate8`), as
 // gate 5.5's lib/gate7-gsw-55.ts is: a new gate 8 file leg (G8kp's and G8kb's delivery legs) is one
 // entry in GATE8_LEGS, plus its check ids in GATE8_RECEIVER_CHECKS when it adds a check.
 //
@@ -119,7 +119,7 @@ export const GATE8_LEGS: GswLegDef[] = [
   leg("g8pt/sabotage-undrawn-particles/receiver"),
   leg("g8pt/sabotage-ignore-particle-emits/receiver"),
   leg("g8pt/sabotage-drop-restart/receiver-patch"),
-  // FRZ-P (results/p3/frz-p.md): the frozen seat's bursts through the PM6b simulator, and the
+  // FRZ-P: the frozen seat's bursts through the PM6b simulator, and the
   // drop-events sabotage that must fail it.
   leg("g8pt/frzp/receiver"),
   leg("g8pt/sabotage-freeze-drop-events/receiver"),

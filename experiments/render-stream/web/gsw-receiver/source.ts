@@ -1,4 +1,4 @@
-// GSW receiver sources (gate7-design.md Q5, G7a): the recording (file mode) and the payload
+// GSW receiver sources: the recording (file mode) and the payload
 // fetcher. The fetcher is the native receiver's file-mode one: a payload the wire names and the
 // receiver does not hold is read from the store (`<store>/sha256/<hash>.<ext>`), one at a time, and
 // that read is a fetch (`source: "directory"`). Payload bytes cross into wasm once and are verified

@@ -120,7 +120,7 @@ describe("packShelves", () => {
 
 describe("glyph keys across two faces", () => {
   it("never lets two faces collide on one key", () => {
-    // The failure this prevents is the worst kind in this round: Roboto's gid 97 and Noto Sans SC's
+    // The failure this prevents is the worst kind: Roboto's gid 97 and Noto Sans SC's
     // gid 97 are unrelated outlines, and an unqualified key would put one of them where the other
     // belongs. The result is perfectly crisp, perfectly aligned, WRONG text — every metric here
     // stays green and only a human looking at the still would notice.
@@ -320,7 +320,7 @@ describe("atlasPageSideFor", () => {
 
   // The ceiling still wins: a cell too big for `maxSide` is the packer's refusal to make, and it
   // names the cell. Silently returning something larger than the caller's ceiling would put a page
-  // past `MAX_TEXTURE_SIZE` on the phone, where the ceiling is 4096 rather than this box's 32768.
+  // past `MAX_TEXTURE_SIZE` on a device whose ceiling is far lower than a desktop GPU's.
   it("does not exceed maxSide for an over-large cell", () => {
     expect(atlasPageSideFor(1, 512, undefined, 4000)).toBe(512);
   });

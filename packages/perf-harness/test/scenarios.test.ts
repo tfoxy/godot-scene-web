@@ -387,21 +387,19 @@ describe("static-surfaces geometry", () => {
     expect(usesImgElement("img-worker-webp")).toBe(true);
     expect(usesImgElement("canvas-2d")).toBe(false);
     expect(usesImgElement("canvas-bitmaprenderer")).toBe(false);
-    // WebP is the LOSSLESS format here — measured in probes/bake-probe.html, `toBlob("image/webp")`
-    // with no quality argument round-trips rgb and alpha at exactly 0 error, in fewer bytes than
-    // PNG. Getting this pair backwards would silently make the fast arm the lossy one.
+    // WebP is the LOSSLESS format here — `toBlob("image/webp")` with no quality argument round-trips
+    // rgb and alpha at exactly 0 error, in fewer bytes than PNG. Getting this pair backwards would silently
+    // make the fast arm the lossy one.
     expect(blobTypeFor("img-webp")).toBe("image/webp");
     expect(blobTypeFor("img-png")).toBe("image/png");
     expect(blobTypeFor("img-worker-webp")).toBe("image/webp");
   });
 
   it("pins BOTH webp arms to lossless, so the pair differs only in thread", () => {
-    // Measured in probes/bake-probe.html: `toBlob(cb, "image/webp")` and
-    // `convertToBlob({type:"image/webp"})` have DIFFERENT defaults in Chrome — 41.9 KB/region at rgb
-    // error 71 against 185.3 KB at error 0. The inline arm uses one call and the worker arm the
+    // `toBlob(cb, "image/webp")` and `convertToBlob({type:"image/webp"})` have DIFFERENT defaults
+    // in Chrome (one lossy, one lossless). The inline arm uses one call and the worker arm the
     // other, so without an explicit quality the two would encode different images with different
-    // codecs and the gap between them would not be the thread. `toBlob(..., 1)` was measured
-    // byte-identical to `convertToBlob`.
+    // codecs and the gap between them would not be the thread.
     expect(blobQualityFor("img-webp")).toBe(1);
     expect(blobQualityFor("img-worker-webp")).toBe(1);
     // PNG has no quality argument and needs none; passing one would be noise, not rigour.
@@ -447,8 +445,8 @@ describe("static-surfaces geometry", () => {
       // Off by default: a one-at-a-time prepare leaves the main thread idle across every worker
       // round trip, which would make the worker arm slower by construction rather than by measure.
       serialBake: false,
-      // FOUR, not one. A single worker was measured and lost to encoding inline on both the probe
-      // and this scenario; defaulting to it would publish the degenerate case as the proposal.
+      // FOUR, not one. A single worker loses to encoding inline, so defaulting to it would publish
+      // the degenerate case as the proposal.
       bakeWorkers: 4,
     });
   });

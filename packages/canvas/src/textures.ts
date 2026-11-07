@@ -263,8 +263,8 @@ export interface CanvasTextureCache {
    * is not enough for it. A page is one texture that many small sources are
    * written into over time; `update` can only replace the whole thing, so a
    * consumer holding a 1024x1024 page would have to re-upload all four megabytes
-   * every time one 40x18 label changed — which on a phone is tens of milliseconds
-   * for a few kilobytes of new pixels. Writing just the region is proportional to
+   * every time one small label changed — a full-page upload for a few kilobytes
+   * of new pixels. Writing just the region is proportional to
    * what actually changed.
    *
    * REFUSED, with `null` and no GL call at all, when the key is unknown or when

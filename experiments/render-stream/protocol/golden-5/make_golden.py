@@ -23,13 +23,13 @@ instance_params empty) and then adds four more:
     14 (new) relative to 13: ONE shader's code changes (shader 2 -- a new fragment body, so a new
        hash) -- the patch carries exactly one shaders[] entry, nothing else.
     15 (new) relative to 14: a `TIME`-using shader (3, unsupported/shader-time) bound to a new
-       material (4, status "ok" per gate5_5-design.md D6 "a material whose shader is unsupported
-       ... stays ok"); item 15 names it (-> derived unsupported-material); item 16 names an
+       material (4, status "ok": a material whose shader is unsupported
+       ... stays ok); item 15 names it (-> derived unsupported-material); item 16 names an
        unknown material id (-> wire material:null plus derived unknown-material); a fifth
        material (5, unsupported/param-type, no shader) exists with no params (the rejected
        set_param call left nothing representable); item 17 gets an unsupported-type instance
        parameter (-> wire instance_params:[] plus derived param-type). A session-level sticky
-       canvas-light entry is added too (gate5_5-design.md D10, D16).
+       canvas-light entry is added too.
 
 As built (G55w): the Variant type wire spellings (D8 lists the scalar names and the packed-array
 component words without committing to one concrete array spelling) and the sort order of a
@@ -50,12 +50,12 @@ same resolved.json (stream_id and per-transaction "encoding" excepted, as every 
 memory: rs1-resolved-json-excepted-fields).
 
 params.rs5 is a SEPARATE, small, single-transaction recording (its own session) proving the
-`params` shader-source policy (gate5_5-design.md D4): two items, a builtin-CIM material (whose
-code travels under every policy, D4) and a custom-shader material whose shader entry carries
+`params` shader-source policy: two items, a builtin-CIM material (whose
+code travels under every policy) and a custom-shader material whose shader entry carries
 `"source":"withheld"` and no GRP1 resource of any kind. It resolves to resolved-params.json.
 
 invalid/ vectors cover exactly the new failure modes render-stream-5.md's "Golden vectors" section
-lists, plus every new invariant gate5_5-design.md Q4 names (every code /2's-/4's own vectors
+lists, plus every new invariant /5 adds (every code /2's-/4's own vectors
 already cover for an unchanged rule is not re-derived here): a GRS4 stream (bad-magic); a shader
 entry whose "ok" status carries a non-null reason (shader-entry); a material entry the same way
 (material-entry); a param whose declared "n"/"tex" disagree with its type (param-entry); a
@@ -132,7 +132,7 @@ ARRAY_FLAG_USE_2D_VERTICES = 1 << 25
 ARRAY_FLAG_USE_8_BONE_WEIGHTS = 1 << 27
 ARRAY_FLAG_COMPRESS_ATTRIBUTES = 1 << 29
 
-# gate5_5-design.md D8: float64 components per element of a Variant type, in Godot's own member
+# Float64 components per element of a Variant type, in Godot's own member
 # order. "nil"/"rid" never contribute floats. As built (G55w): wire spellings are this codec's own
 # decision (snake_case, matching the engine's own type names) -- see render-stream-5.md "As built".
 VARIANT_COMPONENTS = {
@@ -189,7 +189,7 @@ FEATURE_RESOURCES = sorted(["texture_2d", "texture_2d_placeholder", "mesh", "mat
 FEATURE_UNSUPPORTED_RESOURCES = []
 # /4's six minus canvas_item_set_material (now item-level "material"/"use_parent_material" state,
 # never unsupported-state at /5: render-stream-5.md "Shader table"), plus canvas_light_attach_to_
-# canvas (gate5_5-design.md D10, D16).
+# canvas.
 FEATURE_OBSERVED_UNSUPPORTED_OPS = sorted(
     [
         "canvas_item_add_animation_slice", "canvas_item_add_lcd_texture_rect_region",
@@ -542,7 +542,7 @@ def shader_payload_sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-# Shader 1: the builtin CanvasItemMaterial "add" blend template (gate5_5-design.md Q1e). No
+# Shader 1: the builtin CanvasItemMaterial "add" blend template. No
 # particles block (particles_animation false); light_mode "normal" is the default and omitted.
 SHADER1_CIM_ADD_CODE = (
     "// NOTE: Shader automatically converted from Godot Engine v4.5.1.stable.official's "
@@ -567,7 +567,7 @@ SHADER2_TINT_CODE_V2 = (
 SHADER2_TINT_PAYLOAD_V2 = build_shader_payload(SHADER2_TINT_CODE_V2)
 HASH_SHADER2_V2 = shader_payload_sha256(SHADER2_TINT_PAYLOAD_V2)
 
-# Shader 3, state 15: uses TIME (gate5_5-design.md D11 -> shader-time).
+# Shader 3, state 15: uses TIME (-> shader-time).
 SHADER3_TIME_CODE = (
     "shader_type canvas_item;\nvoid fragment() {\n\tCOLOR = vec4(TIME, 0.0, 0.0, 1.0);\n}\n"
 )
@@ -908,8 +908,8 @@ def _mesh_json(mesh_id: int, m: dict, mesh_f32: list[float]) -> dict:
 
 def _param_json(p: dict, param_f64: list[float]) -> dict:
     """render-stream-5.md "Material table": one <param> object. "f" is a running offset into
-    param_f64 OVER MATERIALS IN TABLE ORDER FIRST, then items in item order (gate5_5-design.md D8
-    "param-offset") -- callers must therefore build every material's params (in table order)
+    param_f64 OVER MATERIALS IN TABLE ORDER FIRST, then items in item order
+    -- callers must therefore build every material's params (in table order)
     before any item's instance_params."""
     out = {"name": p["name"], "type": p["type"], "n": p["n"], "tex": p["tex"], "f": len(param_f64)}
     param_f64.extend(p["floats"])
@@ -964,7 +964,7 @@ def transaction_bytes(
     removed_shaders = removed_shaders or []
     removed_materials = removed_materials or []
 
-    # gate5_5-design.md D8 "param-offset": materials' params claim their param_f64 offsets FIRST
+    # materials' params claim their param_f64 offsets FIRST
     # (table order), so this must run before the items loop below.
     param_f64: list[float] = []
     materials_json = [_material_json(mid, m, param_f64)
@@ -1303,7 +1303,7 @@ STATE11_UNSUPPORTED = sorted(
 )
 # new at /5 (state 15): an item-level unsupported-material/unknown-material/param-type entry sorts
 # by item ascending like any other. As built (G55w): every session-level ("item": null) entry
-# (here, the sticky canvas-light one, gate5_5-design.md D10) sorts FIRST, before any item-level
+# (here, the sticky canvas-light one) sorts FIRST, before any item-level
 # entry -- /2's validator invariant already requires every session-level entry to precede every
 # item-level one (checked by every protocol version's decoder), so a sticky entry observed mid-
 # stream is still reported at the front of unsupported[], not at the position it was first
@@ -1493,7 +1493,7 @@ def item7_immediate_ops() -> dict:
                 [(0.0, 80.0), (10.0, 80.0), (10.0, 90.0), (0.0, 90.0)], [[1.0, 1.0, 1.0, 1.0]],
                 [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], tex=7, polygon=True,
             ),
-            # gate5-design.md "As built (G5d)" point 6: golden-4's own state 8 uses count=3 over
+            #  point 6: golden-4's own state 8 uses count=3 over
             # 6 indices, which the real engine refuses (count * 3 > indices.size(),
             # renderer_canvas_render.h Polygon::create) -- harmless to the codecs, but golden-5
             # must not carry the defect forward. count=1 still draws only the first triangle
@@ -1595,7 +1595,7 @@ def state11() -> dict:
 
 # --- state 12, new at /5: shaders, materials, canvas modulate, item material state ------------
 
-# Material 1: the builtin CIM's own three params (gate5_5-design.md Q1a: material_set_param x 3,
+# Material 1: the builtin CIM's own three params (material_set_param x 3,
 # particles_anim_h_frames 1, particles_anim_v_frames 1, particles_anim_loop false), sorted by name.
 MATERIAL1_PARAMS = [
     param("particles_anim_h_frames", "int", floats=[1.0]),
@@ -1603,7 +1603,7 @@ MATERIAL1_PARAMS = [
     param("particles_anim_v_frames", "int", floats=[1.0]),
 ]
 
-# Material 2: one param of every supported Variant type (gate5_5-design.md D8), sorted by name.
+# Material 2: one param of every supported Variant type, sorted by name.
 MATERIAL2_PARAMS_V1 = [
     param("p_aabb", "aabb", floats=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
     param("p_basis", "basis", floats=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]),
@@ -1752,7 +1752,7 @@ def item15_unsupported_material() -> dict:
 
 
 def item16_unknown_material() -> dict:
-    # render-stream-5.md "Item"/gate5_5-design.md Q3b: an unknown non-null material RID -> wire
+    # render-stream-5.md "Item"/: an unknown non-null material RID -> wire
     # "material": null, plus the derived unknown-material entry.
     return item(
         parent=("canvas", 1), children=[], xform=[1.0, 0.0, 0.0, 1.0, 300.0, 0.0],
@@ -2572,7 +2572,7 @@ def build() -> dict[str, bytes]:
                              resource_bytes=inline_resource_bytes)
     inline_rs5 = recording(inline_records, inline_end)
 
-    # params.rs5 (gate5_5-design.md D4): a small, independent single-transaction recording with
+    # params.rs5: a small, independent single-transaction recording with
     # shader_policy "params" -- the builtin CIM shader still travels as a payload (D4: engine-
     # generated code travels under every policy); the custom shader is withheld.
     params_items = {
@@ -2661,7 +2661,7 @@ def build() -> dict[str, bytes]:
              "sha256": hashlib.sha256(inline_rs5).hexdigest()},
         ],
         "resolved": "resolved.json",
-        # params.rs5 (gate5_5-design.md D4) is a SEPARATE, independent single-transaction
+        # params.rs5 is a SEPARATE, independent single-transaction
         # recording (its own session, its own scene) -- it does not resolve to the shared
         # resolved.json the way full/patch/inline do, so it is kept out of "valid" and given its
         # own leg here.

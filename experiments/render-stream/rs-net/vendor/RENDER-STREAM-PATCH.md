@@ -8,12 +8,12 @@ changes in `wtransport.patch` (a `diff -ru` against the pristine crate). `rs-net
 `rs-net/Cargo.lock`. `Cargo.lock`, `Cargo.toml.orig` and `.cargo_vcs_info.json` were dropped from
 the copy; `tokio`'s `time` feature was added to its manifest.
 
-What the patch adds, and why (protocol/carrier-design.md Q4.1, Q4.5, "As built (CAR3)"):
+What the patch adds, and why:
 
 1. **`Connection::close_session(code, reason)`**: CLOSE_WEBTRANSPORT_SESSION on the CONNECT
    stream, then FIN, acknowledged; the QUIC connection closes after. Upstream's only close is a QUIC
    CONNECTION_CLOSE, which a browser reports as a failed `closed` (1006 to our client) instead of
-   `{closeCode, reason}`, so every host close code would be lost (Q4.5: codes map 1:1).
+   `{closeCode, reason}`, so every host close code would be lost (host close codes map 1:1).
 2. **The CONNECT stream and the peer's control stream are read in tasks of their own.** Upstream
    polls both from futures re-created on every iteration of the driver loop, so a frame split
    across two reads can be lost half-read. Seen in the crate tests: a client close arriving as a
@@ -26,7 +26,7 @@ What the patch adds, and why (protocol/carrier-design.md Q4.1, Q4.5, "As built (
    waits (500 ms at most) for the CONNECT task's verdict.
 4. **`Connection::session_closed()`**: the session's close as `Some((code, reason))` when it ended
    with a capsule (either side) and `None` when only QUIC closed (`closed()` conflates both).
-5. **`SessionRequest::reject_with_status(u16)`**: any HTTP status (Q4.1's 400 and 503); upstream
+5. **`SessionRequest::reject_with_status(u16)`**: any HTTP status (400 and 503); upstream
    offers 403, 404 and 429 only.
 6. **`ConnectingError::SessionRejectedStatus(u16)`**: the client sees the status (the crate tests).
 

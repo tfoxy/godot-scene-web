@@ -1,4 +1,4 @@
-// G7n's interop checks (gate7-design.md "G7n", Q2, Q3, D2, D3, D4), driven by self-test-rs-ws.ts:
+// G7n's interop checks, driven by self-test-rs-ws.ts:
 // the render-stream/7 live listener -- two subprotocols on one listener, the hello token, the
 // Origin allowlist and CORS -- against a real host over loopback.
 //

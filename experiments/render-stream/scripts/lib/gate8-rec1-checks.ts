@@ -1,5 +1,5 @@
-// Gate 8 g8rec1's checks (REC1, protocol/client-extensions-design.md §6 "Increments", the REC1
-// row): the client recorder. run-gate8.sh run_g8rec1 runs one live leg (`live/`): a headless
+// Gate 8 g8rec1's checks:
+// the client recorder. run-gate8.sh run_g8rec1 runs one live leg (`live/`): a headless
 // fixtures/tag-scene host at /13 with a live tap, and scripts/client-record-check.ts driving
 // web/client-record-check/ (the client package with the recorder on). The driver exports the
 // recording to `live/page/recording.rs13`, replays it through rs-core-check, and writes

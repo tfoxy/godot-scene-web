@@ -1,7 +1,7 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 
 // A runner-side TCP proxy that constrains the transport between a receiver and the host's single
-// listener (D12, Q7d `constrained` leg, ../protocol/gate6-design.md). Node standard library only
+// listener (D12, Q7d `constrained` leg). Node standard library only
 // (`node:net`), so it needs no root and sits in front of both the WebSocket and every HTTP fetch
 // without being protocol-aware: it is an L4 byte-stream shaper, not an HTTP or WebSocket proxy.
 //
@@ -24,7 +24,7 @@
 // own self-test as a baseline and by anything that wants the stats.json bookkeeping without the
 // shaping.
 //
-// G7r (gate7-design.md Q9 `constrained-<kind>`: "plus preflight latency reported"): the proxy
+// G7r (`constrained-<kind>`: "plus preflight latency reported"): the proxy
 // also OBSERVES (never changes) each connection's HTTP/1.1 exchanges, because a browser's CORS
 // preflight is invisible to the page (resource timing folds it into the fetch) and the host's
 // timed legs log nothing. Per connection, a request is a client chunk that starts with a method

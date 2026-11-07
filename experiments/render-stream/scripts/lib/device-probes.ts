@@ -1,5 +1,5 @@
 // Gate 7 device probes, adb side (G7d implements and dry-runs them against a fake adb; G7m runs
-// them on each phone; protocol/gate7-design.md Q13a "*(device probe)*" items and Q13b). The page
+// them on each phone). The page
 // side (WebGL facts, timer queries, RGB10_A2, rAF T_p, the landscape viewport, adb-reverse RTT and
 // throughput, the 60 Hz hold drift) lives in web/bench/bench.ts `?mode=probe`. Every probe is
 // read-only: dumpsys, getprop-free `settings get`, `cat` of sysfs/procfs nodes. Nothing here
@@ -88,7 +88,7 @@ export function parseWm(text: string): {
   };
 }
 
-/** Q13a "unavailable unrooted" candidates on MediaTek Mali phones (the g86's list, re-probed). */
+/** Q13a "unavailable unrooted" candidates on some phones. */
 export const GPU_COUNTER_NODES = [
   "/sys/kernel/ged/hal/gpu_utilization",
   "/sys/class/misc/mali0/device/utilization",

@@ -1,4 +1,4 @@
-// G7u's page-side lifecycle shim (protocol/gate7/g7u-as-built.md "The shim"). Injected before
+// G7u's page-side lifecycle shim. Injected before
 // any page script, only on a leg with RS_RECEIVER_LIFECYCLE (lib/gate7-lifecycle.ts prepends
 // `window.__rsLifecycleSpec = {...}`; desktop: page.addInitScript, device:
 // Page.addScriptToEvaluateOnNewDocument; both run again on a reload). Plain ES2020, no imports.

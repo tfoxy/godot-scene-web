@@ -1,8 +1,7 @@
-// rs_carrier_set: the live hub's transport as a set of carriers (protocol/carrier-design.md Q2;
-// D3-D7, D13; CAR1).
+// rs_carrier_set: the live hub's transport as a set of carriers.
 //
 // A carrier moves the hub's messages over one transport: the built-in `ws` (rs_ws's
-// live::Server, index 0), the built-in `wt` (the net module, index 1, CAR3) or a consumer's own
+// live::Server, index 0), the built-in `wt` (the net module, index 1) or a consumer's own
 // (indexes 2..255, CAR6), the last two through the public C ABI in grc_carrier.h. The CarrierSet
 // implements rs2::LiveTransport, the hub's unchanged seam (D3), and merges every carrier's events
 // into the live::Event vector entry.cpp's live_drain consumes.
@@ -72,7 +71,7 @@ bool parse_carrier_list(const char *text, std::vector<std::string> *out, std::st
 bool carrier_name_ok(const std::string &name);
 
 // The D6 counter: at most `cap` slots held at once. Thread-safe, lock-free.
-// TRK1 (tracks-design.md Q3): two such counters, one per AdmissionPool; the track cap is 0 (every
+// two such counters, one per AdmissionPool; the track cap is 0 (every
 // track refused) unless tracks are on. held()/held_max()/cap() without a pool are the view pool's.
 class SharedAdmission final : public Admission {
  public:
@@ -102,7 +101,7 @@ class SharedAdmission final : public Admission {
   Pool pools_[2];
 };
 
-// TRK1 (tracks-design.md Q3, Q7): the pool a subprotocol belongs to, from the carrier config's
+// the pool a subprotocol belongs to, from the carrier config's
 // comma lists `subprotocols` and `track_subprotocols`. False when it is in neither.
 bool subprotocol_pool(const std::map<std::string, std::string> &config, const std::string &subprotocol,
                       AdmissionPool *pool);
@@ -256,7 +255,7 @@ class AbiCarrier final : public Carrier {
 
 class CarrierSet final : public rs2::LiveTransport {
  public:
-  // Test-only sabotages (carrier-design.md CAR1 "Sabotages"): each must fail rs_carrier_set_test.
+  // Test-only sabotages: each must fail rs_carrier_set_test.
   enum class Sabotage {
     None,
     RouteByLocal,         // routes on `local` alone (the index dropped): every call goes to 0

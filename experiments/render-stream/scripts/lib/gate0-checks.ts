@@ -1,5 +1,5 @@
-// Gate 0 checks and leg classification (protocol/gate0-design.md "Q6. Runner, legs and checker"),
-// on render-stream/2 since G2b2 (protocol/gate2-design.md "G2b2"; render-stream/1 from G1b2 to
+// Gate 0 checks and leg classification,
+// on render-stream/2 since G2b2 (render-stream/1 from G1b2 to
 // G2b2). The resolved-state recording summary and the draw-index-tie analysis here are shared
 // with gate1-checks.ts and gate2-checks.ts.
 //
@@ -7,7 +7,7 @@
 // already read from one, so scripts/test/self-test-gate0.ts can drive it with fabricated trees.
 // Nothing launches a process. `classifyLeg` is pure and never reads `session.sabotage`.
 //
-// Evidence layout under <out>/ (see scripts/README.md "Gate 0"):
+// Evidence layout under <out>/:
 //   capture/                   the 400-frame capture host: evidence/, recording.rs2, store/ (the
 //                              out-of-band resource store), steps.jsonl, strace.txt, maps.txt, fd.txt
 //   reference/                 rendered fixture, extension absent: shots/step-<k>.png, steps.jsonl
@@ -18,8 +18,7 @@
 //   sabotage-{freeze,omit,perturb}/{capture,receiver}/
 //   unsupported/{capture,receiver}/
 //   preexisting/               a capture-shaped leg (no receiver), strict: pre-existing-object
-//   preexisting-skip/{capture,receiver}/  preexisting.tscn captured with GRC_UNKNOWN_ITEM=skip
-//                              (protocol/unknown-item-skip.md), then a rendered receiver
+//   preexisting-skip/{capture,receiver}/  preexisting.tscn captured with GRC_UNKNOWN_ITEM=skip, then a rendered receiver
 //   preexisting-reference/     rendered preexisting.tscn, extension absent: shots/step-<k>.png
 //   corrupt/                   headless receiver on capture/recording.rs2 with seq 3's meta broken
 //   import/{fixture,receiver}/, receiver-typecheck/{selftest,minimal}/
@@ -94,11 +93,11 @@ export const STORE_DIR_NAME = "store";
 
 /** Every hook the committed calibration record installs, sorted by byte value
  * (render-stream-0.md, golden session): calibrator 3's 42, plus calibrator 4's
- * `canvas_item_set_draw_behind_parent` / `canvas_item_set_z_as_relative_to_parent` (gate1-design.md
- * G1e), calibrator 5's eleven texture hooks (gate2-design.md Q2), calibrator 6's
- * `canvas_item_add_clip_ignore` (gate3-design.md Q2), calibrator 7's eight hooks
- * (gate5-design.md Q2), calibrator 8's nine materials/canvas-shader hooks (gate5_5-design.md
- * Q2) and calibrator 9's six CanvasLayer/canvas-item hooks (gate6-design.md Q2) -- the record is
+ * `canvas_item_set_draw_behind_parent` / `canvas_item_set_z_as_relative_to_parent`,
+ * calibrator 5's eleven texture hooks, calibrator 6's
+ * `canvas_item_add_clip_ignore`, calibrator 7's eight hooks,
+ * calibrator 8's nine materials/canvas-shader hooks
+ * and calibrator 9's six CanvasLayer/canvas-item hooks -- the record is
  * shared by gate -1, gate 0, gate 1, gate 2, gate 3, gate 4 and gate 5, so every one of them
  * plans all 79. */
 export const GATE0_HOOKS: readonly string[] = [
@@ -174,7 +173,7 @@ export const GATE0_HOOKS: readonly string[] = [
   "texture_2d_placeholder_create",
   "texture_2d_update",
   "texture_replace",
-  // LS1 (live-swap-design.md D5): planned always since LS1 (a standby slot).
+  // LS1: planned always since LS1 (a standby slot).
   "texture_set_path",
   "viewport_attach_canvas",
   "viewport_remove_canvas",
@@ -191,15 +190,15 @@ export const GATE0_HOOKS: readonly string[] = [
  * `canvas_item_add_lcd_texture_rect_region` hooked (observed, unsupported), the default texture
  * filter/repeat hooked (they leave `unobserved` for `item_state`), the new `resources` key, and the
  * two texture calls nothing hooks yet added to `unobserved`. Since G2d a headless host refuses
- * canvas textures (protocol/canvas-texture-headless.md): `resources` omits `canvas_texture` and
+ * canvas textures: `resources` omits `canvas_texture` and
  * `unsupported_resources` lists it with reason `canvas-texture-headless`; a rendered host
  * (RS2_FEATURES_RENDERED) lists it in `resources` and refuses nothing. Every stream, not only
- * gate 2's. Since G3d (calibrator 6, gate3-design.md D4/D6): `observed_unsupported_ops` gains
+ * gate 2's. Since G3d (calibrator 6): `observed_unsupported_ops` gains
  * `canvas_item_add_clip_ignore` and `unobserved` gains `canvas_item_set_visibility_notifier`.
  * Since G4e2 every capture speaks render-stream/3 (render-stream-3.md "Features"): `ops` gains
  * `add_msdf_texture_rect_region` and `observed_unsupported_ops` loses
  * `canvas_item_add_msdf_texture_rect_region`. The name keeps its /2 spelling, as the rs2 modules
- * do (gate4-design.md G4e1). Since G5a (calibrator 7, gate5-design.md D2):
+ * do. Since G5a (calibrator 7):
  * `observed_unsupported_ops` also gains `canvas_item_add_animation_slice`,
  * `canvas_item_add_multiline`, `canvas_item_add_particles` and `canvas_item_attach_skeleton`.
  * Since G5d every capture speaks render-stream/4 (render-stream-4.md "Features"): fifteen `ops`
@@ -210,7 +209,7 @@ export const GATE0_HOOKS: readonly string[] = [
  * `use_parent_material`, the new `canvas_state` is `["modulate","transform"]`, `resources` gains
  * `material` and `shader`, `observed_unsupported_ops` swaps `canvas_item_set_material` for
  * `canvas_light_attach_to_canvas`, and `unobserved` loses the instance-parameter and
- * canvas-modulate setters and gains gate5_5-design.md D16's names. Since G6b every capture speaks
+ * canvas-modulate setters and gains the contract's names. Since G6b every capture speaks
  * render-stream/6 (render-stream-6.md "Features"): `canvas_state` gains `layer`,
  * `observed_unsupported_ops` gains `canvas_set_item_mirroring`, `canvas_set_item_repeat` and
  * `canvas_set_parent`, and `unobserved` loses `viewport_remove_canvas` and
@@ -317,7 +316,7 @@ export const RS2_FEATURES_RENDERED = {
   unsupported_resources: [],
 } as const;
 
-/** Session `resources` of a file capture (gate2-design.md Q4 "File sinks"): out-of-band through
+/** Session `resources` of a file capture: out-of-band through
  * the store directory, nothing inline, the gate 2 permitted formats. Since G5d (render-stream-4.md
  * "Resources") `payload` is `payloads`, the mesh and texture payload formats sharing one policy. */
 export const FILE_RESOURCES = {
@@ -336,7 +335,7 @@ export const FILE_RESOURCES = {
   auth: "none",
 } as const;
 
-/** Session `resources` of a live connection until G2c2 (gate2-design.md "G2b2"): every payload
+/** Session `resources` of a live connection until G2c2: every payload
  * inline as resource records, no fetch path. */
 export const LIVE_RESOURCES = {
   ...FILE_RESOURCES,
@@ -353,7 +352,7 @@ export type LegClass =
   | "partial-unknown-items"
   | "success";
 
-/** First match wins. `partial-unknown-items` (protocol/unknown-item-skip.md "Classification")
+/** First match wins. `partial-unknown-items`
  * ranks just above success: a partial capture is never plain success, and every real failure
  * still outranks it. */
 export const CLASS_PRECEDENCE: readonly LegClass[] = [
@@ -540,7 +539,7 @@ export interface TransactionMeta {
    * before /5 */
   shaders?: ResolvedShader[];
   materials?: ResolvedMaterial[];
-  /** protocol/unknown-item-skip.md: a skip session's per-transaction account */
+  /** : a skip session's per-transaction account */
   unknown_items?: UnknownItemsMeta;
 }
 export type SessionMeta = Partial<Omit<Rs2SessionMeta, "type">> & {
@@ -583,8 +582,8 @@ export interface AppliedJson {
   status?: string;
   failure?: { seq: number | null; reason: string; detail?: string } | null;
   end_seen?: boolean;
-  /** render-stream-receiver-applied/3 since G2b2 (gate2-design.md Q5: gate1-design.md Q5's /2
-   * plus the resource cache, fetches and uploads); /4 since G5e (gate5-design.md Q5: mesh
+  /** render-stream-receiver-applied/3 since G2b2 (/2's shape
+   * plus the resource cache, fetches and uploads); /4 since G5e (mesh
    * counters per transaction, mesh_uploads, mesh totals in resources_summary) */
   mode?: string;
   viewport?: {
@@ -643,7 +642,7 @@ export interface AppliedJson {
   };
 }
 
-/** applied.json /3: one applied transaction's resource counters (gate2-design.md Q5). */
+/** applied.json /3: one applied transaction's resource counters. */
 export interface AppliedResources {
   fetched?: number;
   fetched_bytes?: number;
@@ -658,10 +657,10 @@ export interface AppliedResources {
   skipped_commands?: number;
 }
 
-/** The applied.json schema the receivers write: /7 since G7e (gate7-design.md Q5: /6's shape
+/** The applied.json schema the receivers write: /7 since G7e (/6's shape
  * plus the top-level `receiver` block). */
 export const APPLIED_SCHEMA = "render-stream-receiver-applied/7";
-/** The applied.json schemas every checker accepts (gate7-design.md Q5: /6 and /7, so evidence
+/** The applied.json schemas every checker accepts (/6 and /7, so evidence
  * written before G7e and fixtures still on /6 keep checking). */
 export const APPLIED_SCHEMAS: readonly string[] = [
   "render-stream-receiver-applied/6",
@@ -987,7 +986,7 @@ export function drawIndexTies(
  * footprint disjoint from every other's). Classification ignores exactly these entries: the entry
  * stays on the wire and in applied.json, but no order of the group can change a pixel, so the
  * receiver cannot draw that frame differently from the engine. Every other tie is `unsupported`
- * (gate1-design.md D7, as amended by G1b2). */
+ * (as amended by G1b2). */
 export function harmlessTieKeys(
   transactions: readonly Pick<Transaction, "meta">[],
   cullMask = 0xffffffff,
@@ -1245,7 +1244,7 @@ export function classifyLeg(input: ClassifyInput): Classification {
       `recording carries unsupported ${[...unsupportedOps].sort().join(", ")}`,
     );
   }
-  // 5. partial-unknown-items (protocol/unknown-item-skip.md "Classification"): a skip session's
+  // 5. partial-unknown-items: a skip session's
   // transaction that withholds something. Fired here, ranked by CLASS_PRECEDENCE just above
   // success, so it only ever replaces success.
   const partial = rec.transactions.filter((t) => isPartialUnknownItems(t.meta));
@@ -2290,7 +2289,7 @@ export async function checkReceiverTypedClean(
 }
 
 // ---------------------------------------------------------------------------------------------
-// The skip leg (protocol/unknown-item-skip.md "Evidence")
+// The skip leg
 // ---------------------------------------------------------------------------------------------
 
 /** Every add_rect colour the published state of a transaction draws, as JSON (float32-rounded). */
@@ -2651,7 +2650,6 @@ export async function runGate0(
     checkReceiverConsumedStream(receiver),
     await checkReceiverNeverLoadedFixture(outDir, ctx),
     await checkReceiverTypedClean(outDir),
-    // protocol/unknown-item-skip.md "Evidence".
     checkPreexistingSkipAccount(
       evaluations.get("preexisting-skip") as LegEvaluation,
       ctx.expected,

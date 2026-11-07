@@ -144,7 +144,7 @@ describe("render-stream loop recorder hook (off is zero copies)", () => {
     t.on.message(tx(1));
     h.clock.frame();
     expect(core.calls).toContain("apply 1");
-    // REC1: no recorder means `receive` is never asked for a copy.
+    // No recorder means `receive` is never asked for a copy.
     expect(core.copyDecoded).toBe(0);
   });
 

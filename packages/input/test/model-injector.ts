@@ -11,7 +11,7 @@
 // (packages/input/godot/project.godot), whose joypad bindings GswJoypadIsolation can narrow, and
 // the mouse: button mask, position, `emulate_mouse_from_touch` (core/input/input.cpp:840-893) and
 // the buffer that accumulates consecutive motions and drags until the runner flushes
-// (input.cpp:1229-1263). The IN12 target half, the test scene and Godot's GUI routing live in
+// (input.cpp:1229-1263). The target half, the test scene and Godot's GUI routing live in
 // model-targets.ts.
 import { parseInputMessage } from "../src/index";
 import {
@@ -55,7 +55,7 @@ export type InjectorStep =
   | { reassert: true }
   /** `GswJoypadIsolation.isolate(devices)`; the runner restores the bindings after the vector. */
   | { isolate: number[] }
-  /** Scene edits (IN12 target vectors): set a node's position, free it, add one, hide or show. */
+  /** Scene edits (target vectors): set a node's position, free it, add one, hide or show. */
   | { move: string; position: [number, number] }
   | { free: string }
   | { add: SceneNodeSpec }
@@ -89,7 +89,7 @@ export interface InjectorVector {
   name: string;
   description: string;
   config: InjectorConfig;
-  /** Nodes created under the root before the first step, in order (IN12 target vectors). */
+  /** Nodes created under the root before the first step, in order (target vectors). */
   scene?: SceneNodeSpec[];
   steps: InjectorStep[];
   expect: InjectorExpect[];

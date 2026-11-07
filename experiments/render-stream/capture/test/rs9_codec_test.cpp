@@ -2,7 +2,7 @@
 // path, G8k9).
 //
 // render-stream/9 is a protocol-version switch inside the SAME rs2_codec/rs2_diff modules /2-/8 use
-// (render-stream-9.md, texture-delivery-design.md D4/Q5), so this file proves only /9's delta: the
+// (render-stream-9.md), so this file proves only /9's delta: the
 // GRS9 magic and the "render-stream/9" protocol string, the session key
 // `resources.texture_delivery`, and the texture-entry `variants` list (block and uastc, including
 // a variant appearing at an equal version, which the diff engine must carry as a patch entry) --
@@ -507,7 +507,7 @@ void test_fields_ignored_at_v8() {
   const std::string text(bytes.begin(), bytes.end());
   check(text.find("texture_delivery") == std::string::npos,
         "a /8 session never names texture_delivery");
-  // The one-patch-entry rule (texture-delivery-design.md D6): a variant appearing at an equal
+  // The one-patch-entry rule: a variant appearing at an equal
   // version is a changed entry, so the diff carries it.
   const Transaction patch = make_patch(state9(6), state9(7));
   bool carried = false;

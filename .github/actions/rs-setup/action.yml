@@ -1,6 +1,6 @@
 name: rs-setup
 description: >-
-  Toolchain for remote render-stream validation runs (docs/remote-compute.md). The base is node and
+  Toolchain for remote render-stream validation runs. The base is node and
   pnpm (versions from mise.toml), `pnpm install --frozen-lockfile`, Rust 1.95.0 and `cargo fetch` for
   the render-stream crates. Feature inputs (all off by default) add the pinned Godot editor, export
   templates, emsdk, the nightly toolchain, wasm-bindgen, the gate 4 fonts, apt tools and the capture
@@ -38,7 +38,7 @@ inputs:
     description: strace (cmake ships on the runner image)
     default: "false"
   valgrind:
-    description: valgrind from the runner image's apt archive (R4's bench-instr, cachegrind Ir counts)
+    description: valgrind from the runner image's apt archive (bench-instr's cachegrind Ir counts)
     default: "false"
   capture-build:
     description: Restore (or build) the capture library build tree that the pure self-tests need (rs_ws_echo)
@@ -46,22 +46,22 @@ inputs:
   chromium:
     description: >-
       Playwright's Chromium (the repo's pinned @playwright/test version) installed on the runner,
-      for pnpm-test's browser tests. R3 adds the sha check against the pinned build.
+      for pnpm-test's browser tests. Also checks the sha against the pinned build.
     default: "false"
   chromium-pinned:
     description: >-
-      Gate 7 (R3): install only the full chromium-1223 (no headless shell) and verify its `chrome`
+      Gate 7: install only the full chromium-1223 (no headless shell) and verify its `chrome`
       against browser-harness.ts's EXPECTED_CHROMIUM_SHA256 (148.0.7778.96); a mismatch fails setup
     default: "false"
   browser-renderer:
     description: >-
-      Gate 7 (R3): the CI-only software renderer the browser legs declare (RS_BROWSER_PROVENANCE,
+      Gate 7: the CI-only software renderer the browser legs declare (RS_BROWSER_PROVENANCE,
       lib/browser-renderer.ts): lavapipe (Mesa's Vulkan driver, mesa-vulkan-drivers), the only one.
       Writes $RUNNER_TEMP/browser-provenance.json.
     default: ""
   swrast:
     description: >-
-      Rendered legs on a software rasterizer (R1): Xvfb and Mesa llvmpipe, selected by
+      Rendered legs on a software rasterizer: Xvfb and Mesa llvmpipe, selected by
       RS_DISPLAY_MODE=xvfb-llvmpipe (lib/gamescope.sh, CI only). Writes
       $RUNNER_TEMP/swrast-provenance.json (CPU model, Mesa and LLVM package versions).
     default: "false"
@@ -135,7 +135,7 @@ runs:
       shell: bash
       run: pnpm exec playwright install --with-deps chromium
 
-    # Gate 7 (R3): the repo's pinned @playwright/test (1.60.0, browsers.json revision 1223) installs
+    # Gate 7: the repo's pinned @playwright/test (1.60.0, browsers.json revision 1223) installs
     # Chrome for Testing 148.0.7778.96 on the runner, and its binary must match the pin the harness
     # launches against (it refuses any other build). A developer box never runs this: there the
     # harness seeds its private copy from an existing cache and never downloads.
@@ -414,7 +414,7 @@ runs:
       shell: bash
       run: mise exec -- godot --headless --path experiments/render-stream/receiver --import
 
-    # Gate 7's browser renderer (R3, docs/remote-compute.md): ANGLE's Vulkan backend on Mesa's
+    # Gate 7's browser renderer: ANGLE's Vulkan backend on Mesa's
     # lavapipe (--use-angle=vulkan with mesa-vulkan-drivers, the only Vulkan device on a GPU-less
     # runner), the same llvmpipe rasterizer the native sources render on.
     - name: Browser renderer
@@ -454,11 +454,11 @@ runs:
         PY
         cat "$RUNNER_TEMP/browser-provenance.json"
 
-    # Software rasterizer (R1, docs/remote-compute.md). The runner has no GPU and no /dev/dri, so the
+    # Software rasterizer. The runner has no GPU and no /dev/dri, so the
     # rendered legs use lib/gamescope.sh's CI-only RS_DISPLAY_MODE=xvfb-llvmpipe: Xvfb, with Godot's
     # opengl3 on Mesa llvmpipe. gamescope itself cannot run here: on lavapipe (the only Vulkan device)
     # gamescope 3.16.19 stops at "physical device doesn't support VK_EXT_physical_device_drm" (its
-    # headless backend needs a DRM-backed device; R1 run 39764689493).
+    # headless backend needs a DRM-backed device).
     - name: Software-rasterizer display (Xvfb + llvmpipe)
       if: inputs.swrast == 'true'
       shell: bash

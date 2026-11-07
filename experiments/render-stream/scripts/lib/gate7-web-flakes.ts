@@ -1,4 +1,4 @@
-// SWO (results/p3/swo.md): typed known flakes of gate 7's web checks.
+// SWO: typed known flakes of gate 7's web checks.
 //
 // One today: on GitHub-hosted runners, where the browser renders through the CI lavapipe allowance
 // (ANGLE's Vulkan backend on Mesa's llvmpipe, lib/browser-renderer.ts), the Godot web export

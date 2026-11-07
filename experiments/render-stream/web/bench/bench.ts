@@ -1,4 +1,4 @@
-// Gate 7 GSW bench page logic (G7d; protocol/gate7-design.md Q13e "The bench", Q13a/Q13b device
+// Gate 7 GSW bench page logic (device
 // probes). Bundled for the browser by scripts/gate7-bench.ts (esbuild, platform "browser"), over
 // G7j's browser-loadable decoder: render-stream-2.ts's incremental RecordingValidator (decode,
 // validate and resolve per record, exactly what validateRecording does per record) with the pure
@@ -10,7 +10,7 @@
 //   through the injected hash), resolve_us (applyTransaction), and validate_us = total - decode -
 //   resolve. The applier does not exist before G7a, so nothing is drawn but one clear per frame
 //   (outside the timers) that keeps the page producing real frames.
-//   record-digest (gate7-design.md D31/G7o1, default "inline"): "deferred" moves the per-record
+//   record-digest (default "inline"): "deferred" moves the per-record
 //   whole-record SHA-256 off decode_us/hash_us/total_us. Its cost is measured right after, as
 //   evidence_hash_us, by timing createRecordingValidator's digest(i) -- still once per frame, just
 //   outside the frame's timed window. Resource payload hashes (texture/mesh/shader verification)

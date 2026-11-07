@@ -1,6 +1,6 @@
 class_name RsResourceCache
 extends RefCounted
-## The receiver's payload sources (gate2-design.md D8, Q5 "Apply order per transaction", G2b2):
+## The receiver's payload sources:
 ## an in-memory map of verified payloads (inline resource records and every payload this process
 ## already obtained), the content-addressed cache directory RS_RECEIVER_CACHE_DIR
 ## (`sha256/<hash>.grt`), and, in file mode, the capture's store directory RS_RECEIVER_STORE_DIR
@@ -23,14 +23,14 @@ extends RefCounted
 ## surface payloads: their files are `sha256/<hash>.grm` (here and in the store) and the callers
 ## say which kind a hash is (`mesh`).
 ##
-## Since G55d (render-stream-5.md "Shader payload", gate5_5-design.md Q5) it also holds
+## Since G55d (render-stream-5.md "Shader payload") it also holds
 ## render-stream-shader/1 (GRP1) code payloads: `sha256/<hash>.grp`, the callers say a hash is a
 ## shader (`shader`).
 ## `library_dir` (RS_RECEIVER_SHADER_LIBRARY, D4) is the operator-local library a `withheld`
 ## shader's code comes from: library_code() reads `<library>/sha256/<hash>.grp`, verifies it
 ## against its name and decodes it. A library read is never a fetch and never written to the cache.
 ##
-## Since G6s (gate6-design.md Q5 "Resource budgets", Q7e): both layers evict least-recently-used
+## Since both layers evict least-recently-used
 ## payloads once they grow past a byte budget (`memory_budget_bytes`, `cache_budget_bytes`; both
 ## default to unlimited -- off -- so every caller that never sets one keeps today's behaviour;
 ## receiver.gd's RS_RECEIVER_MEMORY_BUDGET_BYTES/_CACHE_BUDGET_BYTES are how a leg turns one on).
@@ -38,7 +38,7 @@ extends RefCounted
 ## shared in-process counter (`_access_counter`), bumped on every touch of either layer, so a
 ## warm disk cache's files are seeded from their mtimes (oldest first) before the first touch and
 ## stay ordered consistently with everything touched at runtime after. Eviction never drops a
-## hash in `set_needed()`'s current set (gate2-design.md Q5: every payload this transaction's
+## hash in `set_needed()`'s current set (every payload this transaction's
 ## resolved state needs, computed by the caller from RsRustApplier.needed() before it calls
 ## obtain() for any of them) -- callers never hold a hash mid-fetch across a call into this class
 ## (obtain() and add_fetched() each complete a fetch in one call), so no separate "pinned by an
@@ -100,13 +100,13 @@ var _memory_total: int = 0
 ## files (open()), updated on every write and cache-hit read.
 var _disk_order: Dictionary[String, int] = {}
 var _access_counter: int = 0
-## This transaction's needed set (set_needed(), gate2-design.md Q5): hashes eviction must not
+## This transaction's needed set (set_needed()): hashes eviction must not
 ## touch. Replaced, never accumulated, on every call.
 var _needed: Dictionary[String, bool] = {}
 ## Every hash ever evicted from memory or disk, so a later re-fetch from the origin can be
 ## counted as a refetch_after_evict (not just an ordinary first-time fetch).
 var _ever_evicted: Dictionary[String, bool] = {}
-## WX (the web export's lazy store, results/p3/wx.md): the payloads fetched from the store one
+## WX (the web export's lazy store): the payloads fetched from the store one
 ## transaction at a time (mark_droppable(): DROP_MIN_BYTES or larger), which drop_droppable()
 ## forgets once their apply has uploaded them, so memory holds what is in flight and the small
 ## payloads, never the whole store. `dropped` counts the
@@ -207,7 +207,7 @@ func memory_bytes() -> int:
 	return _memory_total
 
 
-## G6s (gate2-design.md Q5): the hashes `obtain()` must not evict for the rest of this
+## the hashes `obtain()` must not evict for the rest of this
 ## transaction -- every payload its resolved state needs, exactly RsRustApplier.needed()'s hashes.
 ## Callers (receiver.gd's _obtain_needed) set this once per transaction, before making any of
 ## those hashes available, so eviction pressure from adding one never drops another this same
@@ -359,7 +359,7 @@ func cache_has(hash: String, mesh: bool = false, shader: bool = false, ktx2: boo
 	return dir != "" and FileAccess.file_exists(dir.path_join(CACHE_SUBDIR).path_join(file_name(hash, mesh, shader, ktx2)))
 
 
-## A `withheld` shader's code from the operator-local library (gate5_5-design.md D4, Q5):
+## A `withheld` shader's code from the operator-local library:
 ## `<library_dir>/sha256/<hash>.grp`, verified against its name and decoded. Returns {ok: bool,
 ## code: String, detail: String ("" when ok)}. Never an error of the replay: a shader whose code
 ## is not in the library is skipped and recorded `shader-withheld` by the caller.

@@ -1,5 +1,5 @@
-// The GSW receiver's live mode (gate7-design.md Q2, Q5 "Credit and pacing", "Fetch", Q9
-// `credit-from-paced-loop`, Q14c, G7l): a render-stream/7 WebSocket client in front of the same
+// The GSW receiver's live mode:
+// a render-stream/7 WebSocket client in front of the same
 // wasm core as file mode, with the native receiver's live options and evidence (receiver.gd
 // `_ready_live` and everything it calls), so each gate's own checker judges this leg directory
 // exactly as a native one.
@@ -39,7 +39,7 @@
 // `ack-while-hidden`, which does so only while the page is suspended: hidden, or the lifecycle
 // shim's simulated suspension), CACHE_MODE.
 //
-// WebGL context loss (G7u, gate7-design.md D14 as amended by D29) is recovered in place. From
+// WebGL context loss is recovered in place. From
 // `webglcontextlost` the loop holds: it applies and draws nothing, so no credit returns, and what
 // arrives queues. After `webglcontextrestored` one callback redraws the last applied state with
 // no transaction: the executor recreates its GL objects, and `draw` re-uploads every resident
@@ -129,7 +129,7 @@ import { KtxStager } from "./transcode";
  * G8kp: 9, render-stream-9.md "Live transport", RS_RECEIVER_PROTOCOL=9 offers only this). */
 const SUBPROTOCOL = (v: LiveProtocol) => `render-stream.${v}`;
 const PROTOCOL = (v: LiveProtocol) => `render-stream/${v}` as const;
-/** G8kp (texture-delivery-design.md Q3): the compressed families a WebGL2 context on this page
+/** the compressed families a WebGL2 context on this page
  * exposes, probed on a throwaway canvas before the module's own context exists (the hello goes
  * out first), minus RS_RECEIVER_GPU_FORMAT_MASK; `none` when empty. The module re-derives the same
  * list from its own context at `start` (`delivery_json`), which the evidence records beside it. */
@@ -328,7 +328,7 @@ class LiveReceiver {
   private inlineSinceApplied = 0;
   private queue: Queued[] = [];
   /** G7q (credit window 2): the transactions folded into the next apply (in seq order), each
-   * acked `applied` and `submitted` with it (gate7-design.md Q2 "Credit with window w"). */
+   * acked `applied` and `submitted` with it. */
   private coalesced: Queued["entry"][] = [];
   private pending: Pending | null = null;
   private fetcher: LiveFetcher | null = null;
@@ -2119,7 +2119,7 @@ class LiveReceiver {
   }
 
   /**
-   * RS_RECEIVER_RECONNECT_ON_LOSS (G7u, gate7-design.md D14 as amended): the connection closed
+   * RS_RECEIVER_RECONNECT_ON_LOSS (as amended): the connection closed
    * without an end record and not by a host error (a frozen page's socket, 1006 on resume). The
    * recovery is gate 1d's reconnect, unscheduled: the closed connection's state is disposed, and
    * the next connection starts a fresh session whose first transaction is the host's newest

@@ -1,13 +1,13 @@
 // S8 `effects-webgpu-runtime` — the SHIPPED WebGPU path, held against the shipped WebGL one.
 //
 // THE QUESTION. S7 `effects-webgpu` priced a WebGPU renderer with a PROBE — its own WGSL, its own
-// loop, its own canvases — and the phone answered 47 → 87 Hz on both pairs, the whole win coming
-// from presenting directly into each node's canvas instead of blitting. That licensed writing the
-// thing. This scenario asks the only question left: **did the win survive productization?** The
+// loop, its own canvases — where the win came from presenting directly into each node's canvas
+// instead of blitting. This scenario asks the question that leaves: **did the win survive
+// productization?** The
 // shipped renderer is not the probe. It carries textures, flipbooks, LUTs, masks, erode, the
 // additive accumulate+resolve pass, a per-binding fallback path, a device-lost rebuild and the whole
-// 2000-line lifecycle machinery the probe never had — every one of which is a place for the 87 Hz to
-// leak away.
+// lifecycle machinery the probe never had — every one of which is a place for the win to leak
+// away.
 //
 // SO THIS SCENARIO MOUNTS SHIPPED CODE ONLY, and it is an S6-licence scenario for S6's reason:
 // measuring a re-derivation measures the wrong code. `createParticleRuntime` and
@@ -19,8 +19,8 @@
 //   shaders-webgl      createWebglShaderRuntime   + effectsRenderer: "webgl"     the reference
 //   shaders-webgpu     createWebglShaderRuntime   + effectsRenderer: "webgpu"    the confirmation
 //
-// THE PROBE STAYS WHERE IT IS. S7 is the historical record of what an unencumbered WebGPU pipeline
-// costs, and this scenario deliberately imports nothing from it — not its WGSL, not its packer, not
+// THE PROBE STAYS WHERE IT IS. S7 prices an unencumbered WebGPU pipeline, and this scenario
+// deliberately imports nothing from it — not its WGSL, not its packer, not
 // its renderer. If the two disagree, the difference is what productization cost, and that is a
 // reading rather than a bug in one of them.
 //

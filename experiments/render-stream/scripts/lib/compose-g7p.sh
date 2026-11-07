@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # compose-g7p.sh <out> <g7-p run dir>...: assembles one evidence directory from several
-# `run-gate7.sh --live --legs g7-p` runs (G7p, results/gate7/g7p.md). The runner refuses a non-empty
+# `run-gate7.sh --live --legs g7-p` runs. The runner refuses a non-empty
 # --out, so a matrix run in pieces (or resumed after a cut) leaves one directory per piece; this
 # links each piece's scenario directories into <out>/gate6/matrix-<kind>-w<window>/matrix/<scenario>/
 # (and its provenance-input.json and bundle links, from the first piece that has them), so one

@@ -2,7 +2,7 @@
 ; steps (0..9) over the six blend modes (mix, add, sub, mul, premul_alpha, disabled) over two
 ; backgrounds, the three light modes (normal, unshaded, light_only), an inherited material
 ; (use_parent_material) and a material recreated on an item; variant `modulate` adds a
-; CanvasModulate. See fixtures/gate55-cim/README.md and ../../protocol/gate5_5-design.md ("Q6b").
+; CanvasModulate. See fixtures/gate55-cim/README.md.
 
 config_version=5
 

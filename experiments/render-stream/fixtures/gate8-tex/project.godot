@@ -1,4 +1,4 @@
-; Gate 8 texture fixture (G8t, ../../protocol/gate8-design.md "Q3. Compressed and float textures"):
+; Gate 8 texture fixture:
 ; block-compressed textures imported by the pinned editor and drawn by sprites, a nine-patch and
 ; draw_texture_rect_region at nearest and linear filters, so the capture's host decode
 ; (GRC_TEXTURE_DECODE=engine) can be judged against the engine's own CPU decode. The sources are
@@ -41,8 +41,8 @@ viewport/hdr_2d=false
 environment/defaults/default_clear_color=Color(0.2, 0.2, 0.4, 1)
 textures/canvas_textures/default_texture_filter=0
 ; Both desktop (S3TC/BPTC) and mobile (ETC2/ASTC) variants of every VRAM-compressed import, so one
-; fixture covers the formats the STS2 census holds and the ones the g31 can sample
-; (gate8-design.md Q1d); CPU encoders only, so the import is the same on every host.
+; fixture covers the formats the STS2 census holds and the ones a phone GPU can sample;
+; CPU encoders only, so the import is the same on every host.
 textures/vram_compression/import_s3tc_bptc=true
 textures/vram_compression/import_etc2_astc=true
 textures/vram_compression/compress_with_gpu=false

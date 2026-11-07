@@ -1,5 +1,4 @@
-// The content-addressed resource store directory (gate 2, G2b2; gate2-design.md D6, Q4 "File
-// sinks"; render-stream-2.md "Store directory (file recordings)").
+// The content-addressed resource store directory (render-stream-2.md "Store directory (file recordings)").
 //
 //   <dir>/sha256/<hash>.grt     one render-stream-texture/1 payload per hash, written once
 //                               (temporary file + rename)
@@ -24,8 +23,8 @@
 //
 // Engine-free; main thread only (the frame callback), no lock.
 //
-// ServedResources (G2c2; gate2-design.md D7, Q4 "Live: server, store and pins", "Pinning bound,
-// checked from the log"; render-stream-2.md "HTTP (live)") is the live serving side: the set of
+// ServedResources (render-stream-2.md "HTTP (live)")
+// is the live serving side: the set of
 // payloads a live host answers `GET <http_path><hash>` with, as the rs_ws ResourceSource. A hash
 // is retained (servable) while it is in the current captured state (the published snapshot's
 // payloads) or in the last transaction sent on some connection (that connection's base); every
@@ -147,7 +146,7 @@ struct ServeEvent {
   bool sabotage = false;    // drop-resource's pin of the dropped hash
 };
 
-// SERVED-MAP (results/p3/served-map.md): the served set's key, fixed width and binary.
+// SERVED-MAP: the served set's key, fixed width and binary.
 //
 // The payload map's keys stay `std::string` (they are the wire hashes the mirror and its entries
 // name). The served set is probed by every HTTP GET, every pin, every retirement candidate and the
@@ -241,7 +240,7 @@ class ServedResources : public live::ResourceSource {
   // Sabotage frames (0: off).
   void set_unpin_frame(std::uint64_t frame) { unpin_frame_ = frame; }
   void set_drop_frame(std::uint64_t frame) { drop_frame_ = frame; }
-  // retain-superseded (G6s, gate6-design.md Q5, Q6h): from `frame` on, retire() stops retiring
+  // retain-superseded: from `frame` on, retire() stops retiring
   // superseded hashes (every hash it ever pinned stays servable, including `unpin`'s own
   // candidates), so the retained set and its bytes grow for as long as content keeps changing --
   // the host-side half of the soak's residency-bounded check.
@@ -301,7 +300,7 @@ class ServedResources : public live::ResourceSource {
   bool add_locked(const std::string &hash, const PayloadPtr &payload, std::uint64_t frame,
                   std::vector<ServeEvent> *events);
   void note_max_locked();
-  // HC4b (host-cost-design.md D1 "The diff, record planning, serving and budget"): every hash of
+  // every hash of
   // `map` is servable after this, added over its differences from the last retained current map.
   void add_map_locked(const PayloadMap &map, std::uint64_t frame, std::vector<ServeEvent> *events);
   bool known_locked(const PayloadMap &map) const;

@@ -1,5 +1,5 @@
 extends RefCounted
-## The gate 4 glyph oracle (../../protocol/gate4-design.md "Q6c", `render-stream-gate4-glyphs/1`).
+## The gate 4 glyph oracle (`render-stream-gate4-glyphs/1`).
 ##
 ## Runs on reference legs only (gate4.gd refuses it when a GRC_* capture variable is set). At each
 ## settle frame it writes one JSON line: every visible text node's glyphs in draw order, each with

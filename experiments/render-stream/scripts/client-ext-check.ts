@@ -1,4 +1,4 @@
-// TAG2 live leg driver (client-extensions-design.md §6, results/p3/tag2.md): drives
+// TAG2 live leg driver: drives
 // web/client-ext-check/ -- the render-stream client package with one test extension -- in the
 // pinned headless Chromium against a live fixtures/tag-scene host, and writes what it saw.
 //

@@ -1,7 +1,7 @@
 ; Gate 0 fixture for the render-stream capture experiment: one opaque Subject rect and a
 ; step-marker rect, replayed through the render-stream/0 wire format. See
-; fixtures/gate0/README.md for what this project proves and how it is run, and
-; ../../protocol/gate0-design.md ("Q2. Fixture") for the contract this implements.
+; fixtures/gate0/README.md for what this project proves and how it is run,
+; for the contract this implements.
 
 config_version=5
 

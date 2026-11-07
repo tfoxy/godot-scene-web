@@ -1,4 +1,4 @@
-// Gate 8 group g8t (G8t, protocol/gate8-design.md Q3 "Checks", "Sabotages"): the checks over the
+// Gate 8 group g8t: the checks over the
 // evidence run-gate8.sh's g8t legs write. Pure functions of the evidence tree, so
 // scripts/test/self-test-gate8.ts can drive them against fabricated trees.
 //
@@ -256,7 +256,7 @@ export interface WorkerCompare {
 }
 
 /**
- * G8kw (texture-delivery-design.md Q7): the hold-back's contract against the synchronous
+ * G8kw: the hold-back's contract against the synchronous
  * recording of the same run. Every async transaction is the synchronous transaction of the same
  * frame, state for state (seq aside: a held frame takes none); the last frames and states agree;
  * and both resolve. Pure, for the self-test.
@@ -926,7 +926,7 @@ export async function runG8t(
     );
   }
 
-  // --- G8kw: texture workers (texture-delivery-design.md D11, Q7) ----------------------------
+  // --- G8kw: texture workers ----------------------------
   const resolved = async (
     dir: string,
     name: string,
@@ -1082,7 +1082,7 @@ export async function runG8t(
     );
   }
 
-  // --- G8k9: the /9 wire with an empty delivery seam (texture-delivery-design.md D4, Q5) ------
+  // --- G8k9: the /9 wire with an empty delivery seam ------
   {
     const dir = join(out, "delivery9", "capture");
     const problems: string[] = [];
@@ -1186,7 +1186,7 @@ export async function runG8t(
   }
 
   // --- TDE: GRC_TEXTURE_DECODE unset is engine on a /8+ stream, off below it ------------------
-  // (live-swap-design.md Q5 "TDE", fork F3; the pin test is capture/test/rs_gate8_policy_test.cpp)
+  // (fork F3; the pin test is capture/test/rs_gate8_policy_test.cpp)
   {
     const dir = join(out, "decode-default", "capture");
     const problems: string[] = [];
@@ -1266,7 +1266,7 @@ export async function runG8t(
   }
 
   // --- TDP: GRC_TEXTURE_DELIVERY unset is passthrough at /9+ and declares nothing below -------
-  // (live-swap-design.md Q5 "TDP"; the pin test is capture/test/rs_gate8_policy_test.cpp)
+  // (the pin test is capture/test/rs_gate8_policy_test.cpp)
   {
     const dir = join(out, "delivery9", "default", "capture");
     const problems: string[] = [];

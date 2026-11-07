@@ -45,8 +45,7 @@
       // at one sub-pixel offset, with one mechanism, into a fixed box, and then stop. Every pixel
       // the node side reads comes from a compositor screenshot of this page, never from a canvas
       // readback, because `getImageData` on an accelerated 2D canvas returns alpha 0 on the
-      // headed-Xvfb rung this probe has to run on (docs/perf-harness.md, "WHAT IS ACTUALLY BROKEN
-      // ON THAT RUNG").
+      // headed-Xvfb rung this probe has to run on.
       //
       // TWO RUNS IN ONE IMAGE, MEASURED SEPARATELY. The node side crops the still into a band per
       // run, so the two scripts get their own acutance, their own reference and their own
@@ -58,8 +57,8 @@
       // normalised away rather than left to each mechanism's default — and the three defaults
       // disagree badly. `textBaseline: "top"` pins the em top; a CSS line box puts the baseline at
       // half-leading + ascent; Godot's Label uses its own ascent. Left alone they put the same run
-      // in three places (the dom arm sat 2.35 px low), which corrupts every per-pixel comparison:
-      // `rmsVsReference` and the viewer's diff images scored a translation, not a rasterizer.
+      // in three places, which corrupts every per-pixel comparison: `rmsVsReference` and the
+      // viewer's diff images would score a translation, not a rasterizer.
       // Scenario S9 remains the place the SHIPPED layout path is exercised.
       const stage = document.getElementById("stage");
 

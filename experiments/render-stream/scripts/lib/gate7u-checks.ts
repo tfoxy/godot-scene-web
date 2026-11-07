@@ -1,5 +1,4 @@
-// Gate 7 group g7-lc (G7u; protocol/gate7/g7u.md, gate7-design.md D14, Q10's suspension and
-// lifecycle bullets; the working contract is protocol/gate7/g7u-as-built.md): suspension,
+// Gate 7 group g7-lc (G7u): suspension,
 // reload, close and WebGL context loss on the two browser receivers (the GSW canvas receiver and
 // the Godot web export).
 //
@@ -84,7 +83,7 @@ import {
 } from "./gate7-live";
 
 // ---------------------------------------------------------------------------------------------
-// Legs (g7u-as-built.md "Legs"; run-gate6.sh's G7U_LEGS)
+// Legs (run-gate6.sh's G7U_LEGS)
 // ---------------------------------------------------------------------------------------------
 
 export type G7uKind = "gsw" | "web";
@@ -247,7 +246,7 @@ const G6L_LC_LEG: G6lLeg = {
 };
 
 // ---------------------------------------------------------------------------------------------
-// lifecycle.json (render-stream-lifecycle/1, g7u-as-built.md)
+// lifecycle.json (render-stream-lifecycle/1)
 // ---------------------------------------------------------------------------------------------
 
 export interface LcPage {
@@ -541,11 +540,9 @@ export function deviceHelloProblems(
   return out;
 }
 
-/** A real hide's start edge (g7u-as-built.md "Device facts"): Chrome on the g31 runs a few rAF
+/** A real hide's start edge: Chrome on a phone runs a few rAF
  * callbacks right after `hidden` when a new foreground tab hides the page. Callbacks within this
- * long of the window's start are reported as edge callbacks, never counted as run while hidden.
- * Measured on the g31: 6 callbacks at the 60-Hz cadence over 87 ms after `hidden` (dev-d-gsw1
- * hidden-2s; ~80 ms in the probe), then none until `visible`; so 150 ms. */
+ * long of the window's start are reported as edge callbacks, never counted as run while hidden. */
 export const REAL_EDGE_MS = 150;
 
 /** The window's rAF callbacks split into strictly inside (start_t + REAL_EDGE_MS, end_t) and the

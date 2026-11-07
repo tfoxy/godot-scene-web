@@ -9,19 +9,9 @@
 # (`tools/cmdline.py:parse_symbol_list_file`) drops `#` lines but keeps blank ones, which arrive
 # as an empty export name and fail the link with a message that does not mention this file.
 #
-# SHAPING IS EXPORTED. IT USED TO BE DELIBERATELY ABSENT, AND THE REASON EXPIRED. This file once
-# said `hb_shape` and `hb_buffer_*` were withheld on purpose, because the perf-harness already
-# shaped with npm `harfbuzzjs` and this module only needed an `hb_font_t` to read outlines out of.
-# That was the right call for a measurement arm and the wrong one for a shipped path: it made every
-# consumer load a SECOND HarfBuzz and hold every face in BOTH wasm heaps — 4.19 MiB across the pair
-# on the phone, with each face resident twice. `harfbuzz-world.cc` has always compiled the whole
-# OpenType shaping engine; only this file's silence let `-flto` and `--gc-sections` throw it away.
-#
-# THE TRADE, STATED HONESTLY: the binary grew 227 049 -> 417 263 bytes (+190 KB, 1.84x) and the
-# RUNTIME footprint fell, because a face stops being resident twice. A consumer that shapes here
-# drops npm `harfbuzzjs` — a ~420 KB wasm module plus its own heap — entirely. Measured on the
-# S9 fixtures: both faces (849 KB), 2080 shaped runs and 340 encoded outlines high-water at
-# 1.125 MiB in ONE heap, against the two heaps and two face copies the split arrangement paid for.
+# SHAPING IS EXPORTED (`hb_shape`, `hb_buffer_*`), so a consumer needs ONE HarfBuzz: shaping here
+# instead of with npm `harfbuzzjs` keeps each face resident in a single wasm heap. The binary is
+# larger for it; the runtime footprint is smaller, because no face is held twice.
 #
 # WHAT `HB_TINY` LEAVES OUT OF THAT SHAPER, so nobody reads "one HarfBuzz" as "the same HarfBuzz".
 # `util/gpu/web/config.h` is `HB_TINY`, whose closure defines HB_NO_AAT (no Apple layout),

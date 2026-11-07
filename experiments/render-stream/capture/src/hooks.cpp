@@ -221,10 +221,10 @@ using FnRidU32 = void (*)(void *, RID, uint32_t);
 //   1606: virtual void canvas_item_set_draw_index(RID p_item, int p_index) = 0;
 using FnRidInt = void (*)(void *, RID, int);
 //
-// --- calibrator 4 (optional): gate1-design.md G1e, the draw-order fields the
+// --- calibrator 4 (optional): the draw-order fields the
 // mirror held at RenderingServer defaults until now ---------------------------
 //
-// --- calibrator 5 (optional): gate2-design.md Q2, textures --------------------
+// --- calibrator 5 (optional): , textures --------------------
 //
 //    150: virtual RID texture_2d_placeholder_create() = 0;
 //   1534: virtual RID canvas_texture_create() = 0;
@@ -252,13 +252,13 @@ using FnCanvasTextureSetChannel = void (*)(void *, RID, int32_t, RID);
 using FnAddLcdTextureRectRegion = void (*)(void *, RID, const Rect2 *, RID, const Rect2 *,
                                            const Color *);
 //
-// --- calibrator 6 (optional): gate3-design.md Q2, clip_ignore (typed until G5d, a /4 command
+// --- calibrator 6 (optional): clip_ignore (typed until G5d, a /4 command
 // since) -----------------------------------------------------------------------------------
 //
 //   1595: virtual void canvas_item_add_clip_ignore(RID p_item, bool p_ignore) = 0;
 //         (FnRidBool: the same ABI as canvas_item_set_clip)
 //
-// --- calibrator 7 (optional): gate5-design.md Q2, D2 -- two silent holes closed
+// --- calibrator 7 (optional): -- two silent holes closed
 // (draw_multiline / draw_dashed_line's canvas_item_add_multiline, and a loaded ArrayMesh's
 // mesh_create_from_surfaces), typed refusals (particles, animation slice, skeleton attach), and
 // the remaining mesh region/removal hooks ---------------------------------------------------
@@ -280,7 +280,7 @@ using FnAddAnimationSlice = void (*)(void *, RID, double, double, double, double
 //   1603: virtual void canvas_item_attach_skeleton(RID, RID) = 0;
 //         (FnSetMaterial: the same ABI as canvas_item_set_material)
 //
-// --- calibrator 8 (optional): gate5_5-design.md Q2, D2 -- materials and canvas shaders: three
+// --- calibrator 8 (optional): -- materials and canvas shaders: three
 // silent holes closed (every material's shader, every CanvasItemMaterial shader, inherited
 // materials), a canvas field and two typed refusals -----------------------------------------
 //
@@ -303,12 +303,12 @@ using FnMaterialCreateFromShader = RID (*)(void *, RID, int32_t, RID);
 //                                                                const Variant &) = 0;
 //         (FnMaterialSetParam: the same ABI as material_set_param)
 //
-// --- calibrator 9 (optional): gate6-design.md Q2 -- CanvasLayer attach/stacking/removal,
-// canvas-item mirroring/repeat and the root's global canvas transform. G6k decoded and hook-logged
-// them; since G6b each also taps the mirror (render-stream/6, gate6-design.md Q3b). canvas_set_item_mirroring's REAL ABI takes two RIDs (p_canvas, p_item),
-// not the one gate6-design.md's Q2 shorthand describes -- confirmed against
-// ../../../godot-4.5.1-stable/servers/rendering_server.h:1526, trusted over the design doc per
-// AGENTS.md "Godot References" -----------------------------------------------------------------
+// --- calibrator 9 (optional): CanvasLayer attach/stacking/removal,
+// canvas-item mirroring/repeat and the root's global canvas transform. Decoded and hook-logged
+// them; each also taps the mirror (render-stream/6). canvas_set_item_mirroring's REAL ABI takes two RIDs (p_canvas, p_item),
+// not the one the protocol notes' shorthand describes -- confirmed against
+// ../../../godot-4.5.1-stable/servers/rendering_server.h:1526, trusted over a secondary description per
+// the repository rule to prefer the local Godot sources -----------------------------------------------------------------
 //
 //   1032: virtual void viewport_remove_canvas(RID p_viewport, RID p_canvas) = 0;
 //         (FnSetMaterial: the same ABI as viewport_attach_canvas)
@@ -515,7 +515,7 @@ Fn original(HookId id) {
 
 void bump(HookId id) { g_count[id].fetch_add(1, std::memory_order_relaxed); }
 
-// LAR0 (late-arm-registry-design.md R1): the registry's create tap, beside bump() in every tracked
+// the registry's create tap, beside bump() in every tracked
 // create hook and at the same guard level (t_internal creates are neither counted nor recorded).
 // GRC_ADOPT=off: one relaxed load and a predictable branch.
 void registry_create(uint64_t rid, rs::RegistryKind kind) {
@@ -797,7 +797,7 @@ constexpr size_t kMaxTextureRectEntries = 256;
 
 std::mutex g_mutex;
 
-// LS0 (live-swap-design.md D3, F2): GRC_VALIDATION_LOG. Off (the default) skips the validation
+// GRC_VALIDATION_LOG. Off (the default) skips the validation
 // logs: log_entry and the entries its callers build for it, the geometry pre-copies, the direct
 // g_mutex sites below (rects, polygons, texture creates and updates) and the image facts read for
 // them. They fill counters.json `captured`; validation runners set `on` and assert
@@ -1017,7 +1017,7 @@ struct ViewportCanvasTransformKey {
   Transform2D transform;
 };
 
-// Calibrator 9 (gate6-design.md Q2): CanvasLayer stacking/attachment and canvas-item
+// Calibrator 9: CanvasLayer stacking/attachment and canvas-item
 // mirroring/repeat.
 struct ViewportTransformKey {
   uint64_t viewport;
@@ -1049,7 +1049,7 @@ struct CanvasParentKey {
   float scale;
 };
 
-// Calibrator 5 (gate2-design.md Q2): the texture-rect draws' full arguments,
+// Calibrator 5: the texture-rect draws' full arguments,
 // and the new texture hooks' arguments.
 struct TextureRectKey {
   uint64_t item;
@@ -1070,7 +1070,7 @@ struct TextureRectRegionKey {
   bool clip_uv;
 };
 
-// G4e2 (gate4-design.md Q2): the msdf draw's full arguments, in _texture_rect_region's shape plus
+// the msdf draw's full arguments, in _texture_rect_region's shape plus
 // outline_size, px_range and scale.
 struct MsdfRectKey {
   uint64_t item;
@@ -1097,7 +1097,7 @@ struct ChannelKey {
   uint64_t texture;
 };
 
-// Calibrator 7 (gate5-design.md Q2): canvas_item_add_animation_slice's four doubles, narrowed to
+// Calibrator 7: canvas_item_add_animation_slice's four doubles, narrowed to
 // float32 for the capture log -- the op is permanently typed unsupported (D16), so nothing needs
 // it bit-exact.
 struct AnimationSliceKey {
@@ -1108,7 +1108,7 @@ struct AnimationSliceKey {
   float offset;
 };
 
-// Calibrator 8 (gate5_5-design.md Q2): the two new multi-field identities. Neither carries the
+// Calibrator 8: the two new multi-field identities. Neither carries the
 // decoded name/value counters.json must never show (Q2) -- only the RIDs and plain scalars every
 // other optional hook's capture log already carries.
 struct ShaderDefaultTextureKey {
@@ -1257,7 +1257,7 @@ void tap_unsupported(RID item, const char *op) {
   }
 }
 
-// render-stream/4 (G5d; gate5-design.md Q3a): every array argument of an immediate geometry op is
+// render-stream/4: every array argument of an immediate geometry op is
 // copied WHOLE here, on the calling thread, through the two-word Vector ABI (CoW-shared, so a
 // later caller write cannot change what was copied). counters.json keeps its own 64-element
 // truncation; the wire never does.
@@ -1369,7 +1369,7 @@ ImageCapture describe_image(const ImageFacts &facts, uint64_t rid, int64_t layer
           facts.width, facts.height,    facts.format, facts.data_size};
 }
 
-// --- texture payloads (gate2-design.md D3, Q3 "Copy") ------------------------
+// --- texture payloads ------------------------
 //
 // With a stream enabled, texture_2d_create and texture_2d_update copy the Image
 // bytes into a canonical GRT1 payload and hash it, on the calling thread
@@ -1425,7 +1425,7 @@ void build_payload(const std::string &meta, const uint8_t *data, int64_t size,
   *bytes = std::move(payload);
 }
 
-// G8t (gate8-design.md D8, Q3): the payload of a host-decoded image. `copy` holds the source's
+// the payload of a host-decoded image. `copy` holds the source's
 // facts; on success it becomes the decoded payload's (format, size), with `source_format` the
 // format the host decoded from and `decode_ns` the seam's duplicate + decompress time. A decoded
 // payload the policy still refuses (its format outside GRC_RESOURCE_FORMATS, or over
@@ -1462,7 +1462,7 @@ rs::PayloadCopy copy_decoded(rs::PayloadCopy copy, const rs::DecodeResult &decod
   return copy;
 }
 
-// G8kc (texture-delivery-design.md D7): the hooked image as a GRT1 payload in its own format. Its
+// the hooked image as a GRT1 payload in its own format. Its
 // hash is the cache's source key, and for a block source it is also the `block` variant.
 struct SourcePayload {
   bool built = false;
@@ -1485,7 +1485,7 @@ SourcePayload build_source_payload(int64_t source_format, int64_t width, int64_t
   return out;
 }
 
-// G8kp (texture-delivery-design.md D1 `passthrough`, rs_texture_delivery.h): beside an ok host
+// Passthrough delivery (rs_texture_delivery.h): beside an ok host
 // decode, the hooked block bytes as a GRT1 payload in their own block format, hashed here (the
 // calling thread, or the worker that made the decode). `data` is the source image's own buffer,
 // read only. Nothing happens unless a /9 stream runs a mode offering `block`, so every other
@@ -1521,7 +1521,7 @@ void attach_block_variant(rs::PayloadCopy *copy, int64_t source_format, int64_t 
   rs::texture_delivery_note_block(true, static_cast<uint64_t>(block.payload_bytes));
 }
 
-// G8kc (texture-delivery-design.md D7, D8): the host decode through the persisted cache. The
+// the host decode through the persisted cache. The
 // source key is the hash of the hooked image's own GRT1 payload; a verified file for (key,
 // decoded, params) stands in for the engine's decompress, and a derived payload is stored. The
 // cache is bypassed (outcome "uncached") while the perturb-decode sabotage is configured, so a
@@ -1608,7 +1608,7 @@ void note_source_payload(rs::PayloadCopy *copy) {
   }
 }
 
-// --- G8kw: the texture worker path (texture-delivery-design.md D11, rs_texture_worker.h) -------
+// --- The texture worker path (rs_texture_worker.h) -------
 //
 // The hook keeps every fact-based decision of copy_payload (status, reason, shape, payload size)
 // and hands only the content -- copy, decode, hash -- to a worker, on a copy-on-write duplicate of
@@ -1726,7 +1726,7 @@ rs::PayloadCopy copy_payload_identity(const ImageFacts &facts, const Ref *image,
   }
   if (!rs::format_permitted(g_resource_policy.formats, facts.format, facts.height)) {
     if (rs::texture_decode_enabled() && facts.format >= 0 && facts.format < rs::kImageFormatCount) {
-      // G8t (gate8-design.md D8): under GRC_TEXTURE_DECODE=engine the host-decode seam
+      // under GRC_TEXTURE_DECODE=engine the host-decode seam
       // (rs_texture_decode.cpp) turns a block-compressed image into an RGBA8/R8/RG8 payload with
       // the engine's own Image::decompress, on a duplicate; it declines everything else.
       const int64_t target = rs::decode_target_format(facts.format);
@@ -1746,7 +1746,7 @@ rs::PayloadCopy copy_payload_identity(const ImageFacts &facts, const Ref *image,
       request.image = image->object;
       request.frame = current_frame();
       if (target >= 0 && g_texture_workers.load(std::memory_order_acquire) > 0) {
-        // G8kw: the decode's outcome predicted from the D8 table, its content left to a worker. A
+        // The decode's outcome predicted from the decode table, its content left to a worker. A
         // decoded payload the policy would refuse stays synchronous (the refusal keeps the
         // source's facts and a measured decode_ns, as before).
         const int64_t expected =
@@ -1835,16 +1835,16 @@ rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::Payl
 // Whether the omit-op sabotage drops this texture call. The hook then leaves it
 // out of the mirror and of the hook log's registry alike (the log still writes
 // the line, marked omitted), so the two stay in agreement and the sabotage
-// shows as pixels, not as texture-log-divergence (gate2-design.md G2b2).
+// shows as pixels, not as texture-log-divergence.
 bool omitted(const char *op) { return streaming() && mirror().omits(op, current_frame()); }
 
 // The mirror and the hook log assign texture ids independently, each under its own lock, from
-// the same sequence of identity calls (gate2-design.md D2). Loader threads create textures too, so
+// the same sequence of identity calls. Loader threads create textures too, so
 // every texture identity tap holds this lock across both calls: the two see the calls in one
 // order and assign the same ids (`texture-versions-current` compares them).
 std::mutex g_texture_order;
 
-// --- gate 5 (G5a): mesh payload copy at the hook (gate5-design.md D6, D7, Q3a) ---------------
+// --- mesh payload copy at the hook ---------------
 //
 // mesh_add_surface and mesh_create_from_surfaces copy every buffer of the SurfaceData, exactly as
 // texture_2d_create copies an Image's bytes. Unlike a texture, a region update only ever carries
@@ -1852,8 +1852,8 @@ std::mutex g_texture_order;
 // (rs-gate5-geometry-engine-facts), so the hook's own retained copy of each surface's whole
 // buffers -- kept here, one entry per mesh RID the hook has seen created or added to, in creation
 // order -- is the only place a region update's result exists on a headless host. A refused
-// surface (D7) keeps its descriptive fields but no bytes: nothing will ever re-hash it (a region
-// update on it is "version + 1 only", gate5-design.md Q3b).
+// surface keeps its descriptive fields but no bytes: nothing will ever re-hash it (a region
+// update on it is "version + 1 only").
 struct MeshSurfaceBuffer {
   bool ok = false;
   int32_t primitive = -1;
@@ -1871,7 +1871,7 @@ struct MeshSurfaceBuffer {
 };
 
 std::map<uint64_t, std::vector<MeshSurfaceBuffer>> g_mesh_buffers;  // guarded by g_mutex
-// HC3 (host-cost-design.md D2): region updates the hook re-encoded and re-hashed for its own log
+// region updates the hook re-encoded and re-hashed for its own log
 // line (only while resources.jsonl is open; counters.json mesh_region_rehashes).
 std::atomic<uint64_t> g_mesh_region_rehashes{0};
 
@@ -1879,7 +1879,7 @@ std::atomic<uint64_t> g_mesh_region_rehashes{0};
 // time the GRM1 encode and the SHA-256 separately, as copy_payload does for textures. Nothing is
 // copied or hashed for a refused surface (D7) or one over GRC_RESOURCE_MAX_PAYLOAD_BYTES. Since
 // G5e the encoded payload is handed back in `payload` (null unless ok): the mirror's mesh table
-// keeps it, shared, never copied again (gate5-design.md D5, D6).
+// keeps it, shared, never copied again.
 // The fields copy_mesh_surface reads, whether from the engine's SurfaceData (a hook argument) or
 // from a mesh_get_surface read-back (G8r adoption): the same classification, encode and hash.
 struct SurfaceView {
@@ -2034,8 +2034,8 @@ rs::MeshSurfaceCopy rehash_mesh_surface(const MeshSurfaceBuffer &buffer,
   return copy;
 }
 
-// --- gate 5.5 (G55a): shader code and material parameter decode at the hook (gate5_5-design.md
-// D7, D8, D11, Q2 "Decoding", Q3a "Copy and classify at the hook") -----------------------------
+// --- shader code and material parameter decode at the hook
+// -----------------------------
 //
 // shader_create_from_code and shader_set_code copy the code as UTF-8, build the render-stream-
 // shader/1 (GRP1) payload and hash it, exactly as copy_payload does for a texture's Image bytes
@@ -2092,7 +2092,7 @@ rs::ShaderCopy copy_shader_code(const void *code_ptr, rs::PayloadPtr *payload_ou
   return copy_shader_code_text(rs::decode_string(code_ptr), t0, payload_out);
 }
 
-// G8m (gate8-design.md D4, D11): the capture's own temporary objects. While a thread is inside
+// the capture's own temporary objects. While a thread is inside
 // hooks_internal_begin/end, shader_create_from_code hands the code it receives to the caller
 // (rs_adopt.cpp's temporary Shader) instead of the mirror and the hook log, and every other
 // shader and free call passes straight to the engine: none of them is the game's.
@@ -2167,12 +2167,12 @@ void hook_add_texture_rect(void *self, RID item, const Rect2 *rect, RID texture,
   bump(kAddTextureRect);
   rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming() && rect != nullptr && modulate != nullptr) {
-    // A mirror tap since G2b2 (gate2-design.md Q3): the raw arguments, flips included.
+    // A mirror tap: the raw arguments, flips included.
     mirror().add_texture_rect(item.id, to_rect(*rect), texture.id, tile, to_color(*modulate),
                               transpose, current_frame());
   }
   if (rect != nullptr && modulate != nullptr) {
-    // Full capture since calibrator 5 (gate2-design.md Q2): the raw arguments,
+    // Full capture: the raw arguments,
     // negative sizes (flips) included.
     TextureRectKey key;
     zero(&key);
@@ -2218,7 +2218,7 @@ void hook_add_msdf_texture_rect_region(void *self, RID item, const Rect2 *rect, 
                                        int outline_size, float px_range, float scale) {
   bump(kAddMsdfTextureRectRegion);
   rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
-  // G4e2 (gate4-design.md Q3 "MSDF tap"): the /3 command, no longer a typed refusal.
+  // the /3 command, no longer a typed refusal.
   if (streaming() && rect != nullptr && source != nullptr && modulate != nullptr) {
     mirror().add_msdf_texture_rect_region(item.id, to_rect(*rect), texture.id, to_rect(*source),
                                           to_color(*modulate), outline_size, px_range, scale,
@@ -2276,7 +2276,7 @@ void hook_add_polygon(void *self, RID item, const Vector<Point2> *points,
   original<FnAddPolygon>(kAddPolygon)(self, item, points, colors, uvs, texture);
 }
 
-// --- G8kc: texture_set_path (texture-delivery-design.md D10) ----------------------------------
+// --- texture_set_path ----------------------------------
 //
 // The engine calls texture_set_path(rid, "res://...") right after texture_2d_create on the loading
 // thread (compressed_texture.cpp:91-96, :158-161), so the path of a texture is known to the hook.
@@ -2336,8 +2336,8 @@ void note_cache_texture(uint64_t id, const rs::PayloadCopy &copy, const rs::Text
   }
 }
 
-// LS1 (live-swap-design.md D5): the hook is planned always now (a standby slot; LS4 records the
-// path in the registry). The G8kc path notes are kept only under GRC_TEXTURE_CACHE_DIR, as before:
+// the hook is planned always now (a standby slot that records the
+// path in the registry). The path notes are kept only under GRC_TEXTURE_CACHE_DIR, as before:
 // without a cache directory the hook counts the call and forwards it.
 bool g_path_hook_records = false;
 
@@ -2477,7 +2477,7 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
   if (logging) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("texture_2d_update");
-    // G8r (gate8-design.md D6, D7): the first reference to a pre-arm texture is this whole-image
+    // the first reference to a pre-arm texture is this whole-image
     // update (an atlas page growing, an ImageTexture.update): adopt it with the update's own
     // image as its content, `current`; the update below then applies as for any known texture.
     if (rs::adopt_resources_active() && streaming() && !omit && layer == 0 &&
@@ -2603,7 +2603,7 @@ void hook_add_mesh(void *self, RID item, const RID *mesh, const Transform2D *tra
     rs::materialize(mesh->id, rs::RefKind::Mesh);  // G8r: a pre-arm mesh is adopted at first reference
   }
   rs::materialize(texture.id, rs::RefKind::Texture);
-  // G5e (gate5-design.md Q3b, render-stream-4.md "Command"): the /4 add_mesh command, naming the
+  // The /4 add_mesh (render-stream-4.md "Command") command, naming the
   // mirror's mesh table entry (an unknown mesh RID becomes `unsupported`/`unknown-mesh`).
   if (streaming()) {
     if (mesh != nullptr && transform != nullptr && modulate != nullptr) {
@@ -2827,8 +2827,8 @@ void hook_set_material(void *self, RID item, RID material) {
     // LAR3 (R4): a registered material, adopted here; the item now names a known one.
     mirror().set_material(item.id, material.id, current_frame());
   }
-  // Logged for the material census (gate5_5-design.md Q3d) alongside calibrator 8's own taps;
-  // since G55d the mirror keeps it as the item's `material` field (D9).
+  // Logged for the material census alongside calibrator 8's own taps;
+  // the mirror keeps it as the item's `material` field.
   // HC6: the log keeps no registry for this call, so with its lines off there is nothing to do.
   if (resources().active() && resources().wants_lines()) {
     resources().canvas_item_set_material(tap_context(), item.id, material.id);
@@ -2918,7 +2918,7 @@ PodEntry<RegionKey> region(RID mesh, int surface, int offset, const Vector<uint8
 // always the whole `p_data` applied in place, as D6 requires. Bounds are checked exactly as
 // GLES3 would (gles3m:536-594): out of range or empty is "rejected" and changes nothing; an
 // unknown mesh or surface index is "unknown"; a surface already `unsupported` (D7) only bumps the
-// version (gate5-design.md Q3b). The omit-op sabotage (G5d) leaves the retained bytes stale, as
+// version. The omit-op sabotage leaves the retained bytes stale, as
 // for a texture.
 enum class MeshBuffer { kVertex, kAttribute, kSkin, kIndex };
 
@@ -2995,7 +2995,7 @@ void handle_mesh_region_update(MeshBuffer which, RID mesh, int32_t surface, int3
         outcome = "applied";
         if (!omit) {
           std::memcpy(field->data() + offset, data->ptr(), static_cast<size_t>(bytes));
-          // HC3 (host-cost-design.md D2): the mirror writes the same bytes into its own copy of
+          // the mirror writes the same bytes into its own copy of
           // the payload; only the hook log's line needs the re-encoded surface's hash.
           size_t base = buffer.payload_data_offset;
           if (which != MeshBuffer::kVertex) {
@@ -3100,7 +3100,7 @@ void hook_mesh_set_custom_aabb(void *self, RID mesh, const AABB *aabb) {
   original<FnMeshSetCustomAabb>(kMeshSetCustomAabb)(self, mesh, aabb);
 }
 
-// --- calibrator 7 hooks (gate5-design.md Q2) --------------------------------
+// --- calibrator 7 hooks --------------------------------
 
 // mesh_create_from_surfaces: RenderingServerDefault allocates and adds every surface directly in
 // mesh storage (rsd.h:332-356), so neither mesh_create nor mesh_add_surface is called through the
@@ -3127,7 +3127,7 @@ RID hook_mesh_create_from_surfaces(void *self, const Vector<SurfaceDataPrefix> *
       inputs.push_back(std::move(input));
       buffers.push_back(std::move(buffer));
     }
-    // A loader thread may get here (gate5-design.md Q1j): the identity lock orders it against
+    // A loader thread may get here: the identity lock orders it against
     // the main thread's mesh taps for the mirror and the log alike.
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("mesh_create_from_surfaces");
@@ -3337,7 +3337,7 @@ void hook_material_set_param(void *self, RID material, const void *name, const v
   }
 }
 
-// --- calibrator 8 hooks (gate5_5-design.md Q2) --------------------------------
+// --- calibrator 8 hooks --------------------------------
 
 RID hook_shader_create(void *self) {
   bump(kShaderCreate);
@@ -3526,8 +3526,8 @@ void hook_canvas_light_attach_to_canvas(void *self, RID light, RID canvas) {
   original<FnSetMaterial>(kCanvasLightAttachToCanvas)(self, light, canvas);
 }
 
-// --- calibrator 9 hooks (gate6-design.md Q2): decoded and hook-logged since G6k, mirror taps
-// since G6b (Q3b). ----------------------------------------------------------------------------
+// --- calibrator 9 hooks: decoded, hook-logged and mirror-tapped
+// ----------------------------------------------------------------------------
 
 void hook_viewport_remove_canvas(void *self, RID viewport, RID canvas) {
   bump(kViewportRemoveCanvas);
@@ -4073,7 +4073,7 @@ void pt_record(HookId id, uint64_t rid, const rs::Mirror::ParticlesCall &r,
   }
 }
 
-// LAR5 (late-arm-registry-design.md R2): a particles setter the mirror taps, recorded in the
+// a particles setter the mirror taps, recorded in the
 // registry's form (RegistryParticlesOp), armed or not. Only when registry_on(). The float slots are
 // the mirror's own (Mirror::particles_float_slots); the events (restart, emit, request_process)
 // are simulation state and record nothing.
@@ -4551,13 +4551,13 @@ void hook_set_draw_behind_parent(void *self, RID item, bool behind) {
   original<FnRidBool>(kSetDrawBehindParent)(self, item, behind);
 }
 
-// --- calibrator 5 hooks (gate2-design.md Q2) -----------------------------------
+// --- calibrator 5 hooks -----------------------------------
 //
 // Counted, captured into counters.json and written to the texture hook log
 // (G2a); since G2b2 (render-stream/2) the texture, filter and repeat hooks are
 // mirror taps too, and canvas_item_add_lcd_texture_rect_region is an
 // unsupported command (/2 declares it in observed_unsupported_ops). Since G2d
-// the four canvas_texture_* hooks are mirror taps too (gate2-design.md Q3).
+// the four canvas_texture_* hooks are mirror taps too.
 
 RID hook_texture_2d_placeholder_create(void *self) {
   bump(kTexture2dPlaceholderCreate);
@@ -4723,10 +4723,10 @@ void hook_add_lcd_texture_rect_region(void *self, RID item, const Rect2 *rect, R
                                                                 modulate);
 }
 
-// --- calibrator 6 hook (gate3-design.md Q2, D4) ------------------------------
+// --- calibrator 6 hook ------------------------------
 //
 // canvas_item_add_clip_ignore was an unsupported command (reason unsupported-op) until G5d; it is
-// now the /4 add_clip_ignore command, replayed in order (gate5-design.md D10). The hook still logs
+// now the /4 add_clip_ignore command, replayed in order. The hook still logs
 // it (item, ignore) into counters.json's captured, deduplicated like every other optional setter,
 // so a calibration run can tell the two toggle directions apart.
 
@@ -5431,7 +5431,7 @@ bool hooks_adopt_mesh(uint64_t rid, const std::vector<rs::AdoptSurface> &surface
   return true;
 }
 
-// --- G8m (gate8-design.md D11, D12, Q5; rs_adopt.h): pre-arm shaders and materials ---------
+// --- Adoption (rs_adopt.h): pre-arm shaders and materials ---------
 
 void hooks_internal_begin(std::string *code_out, uint64_t *rid_out) {
   t_internal = true;
@@ -5643,7 +5643,7 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   *plan = HookPlan();
   g_planned_names.clear();
   g_omitted_names.clear();
-  // G8kc: the path notes are kept only under a cache directory. LS1 (live-swap-design.md D5): the
+  // the path notes are kept only under a cache directory. The
   // texture_set_path hook itself is planned always, so session.capture.hooks_planned names it.
   const char *cache_dir = std::getenv("GRC_TEXTURE_CACHE_DIR");
   g_path_hook_records = cache_dir != nullptr && cache_dir[0] != '\0';
@@ -5988,7 +5988,7 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
     write_geometry(&json, e, GeometryKind::kPolyline);
   }
   json.array_end();
-  // Calibrator 7 (gate5-design.md Q2): draw_multiline / draw_dashed_line.
+  // Calibrator 7: draw_multiline / draw_dashed_line.
   json.key("canvas_item_add_multiline").array_begin();
   for (const GeometryEntry &e : s.multilines.entries) {
     write_geometry(&json, e, GeometryKind::kMultiline);
@@ -6149,9 +6149,9 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
             item_bool_writer("z_relative"));
   write_log(&json, "canvas_item_set_draw_behind_parent", s.set_draw_behinds,
             item_bool_writer("behind"));
-  // Calibrator 5 (gate2-design.md Q2). The two texture-rect draws carry their
+  // Calibrator 5. The two texture-rect draws carry their
   // full arguments (negative sizes, that is flips, as the engine received them);
-  // since G4e2 (gate4-design.md Q2) so does the msdf draw.
+  // so does the msdf draw.
   write_log(&json, "canvas_item_add_texture_rect", s.texture_rects,
             [](JsonWriter *j, const PodEntry<TextureRectKey> &e) {
               write_rid(j, "item", e.key.item);
@@ -6223,10 +6223,10 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
               write_floats(j, "source", e.key.source);
               write_floats(j, "modulate", e.key.modulate);
             });
-  // Calibrator 6 (gate3-design.md Q2): the bool crosses only into counters.json's captured; the
+  // Calibrator 6: the bool crosses only into counters.json's captured; the
   // mirror tap (add_unsupported) ignores it.
   write_log(&json, "canvas_item_add_clip_ignore", s.clip_ignores, item_bool_writer("ignore"));
-  // Calibrator 7 (gate5-design.md Q2).
+  // Calibrator 7.
   write_log(&json, "mesh_create_from_surfaces", s.mesh_create_from_surfaces_calls,
             [](JsonWriter *j, const PodEntry<RidTripleKey> &e) {
               write_rid(j, "rid", e.key.a);
@@ -6256,7 +6256,7 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
               write_rid(j, "item", e.key.a);
               write_rid(j, "skeleton", e.key.b);
             });
-  // Calibrator 8 (gate5_5-design.md Q2). The decoded name/value never appear here (Q2); only
+  // Calibrator 8. The decoded name/value never appear here; only
   // RIDs and plain scalars, as material_set_param/shader_set_code already keep to RID only.
   write_log(&json, "shader_create", s.shader_create_calls,
             [](JsonWriter *j, const PodEntry<RidTripleKey> &e) { write_rid(j, "rid", e.key.a); });
@@ -6292,7 +6292,7 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
               write_rid(j, "light", e.key.a);
               write_rid(j, "canvas", e.key.b);
             });
-  // Calibrator 9 (gate6-design.md Q2): decode only, no classification (that is G6b's mirror).
+  // Calibrator 9: decode only, no classification (the mirror classifies).
   write_log(&json, "viewport_remove_canvas", s.viewport_remove_canvases,
             [](JsonWriter *j, const PodEntry<RidTripleKey> &e) {
               write_rid(j, "viewport", e.key.a);
@@ -6442,7 +6442,7 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
   // HC1: hook-log lines formatted since arm (0 while no resources.jsonl file is open).
   json.field("hook_log_lines_formatted",
              static_cast<int64_t>(rs::resource_log().lines_formatted()));
-  // HC3 (host-cost-design.md D2): mesh surface SHA-256s since arm -- the mirror's (all, and those
+  // mesh surface SHA-256s since arm -- the mirror's (all, and those
   // over dynamic meshes' surfaces), and the hook's re-hashes of region updates for its log -- and
   // the mirror's copy-on-write payload copies.
   {
@@ -6455,7 +6455,7 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
     json.field("mirror_payload_copies", static_cast<int64_t>(ms.mesh_payload_copies));
     json.object_end();
   }
-  // HC4a (host-cost-design.md D1): the persistent item table's account, and the shadow oracle's
+  // the persistent item table's account, and the shadow oracle's
   // (GRC_HC_SHADOW=1: `checked` snapshots compared with the full walk, `mismatches` of them).
   {
     const rs::MirrorStats ms = rs::mirror_stats();

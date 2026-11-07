@@ -1,4 +1,4 @@
-// Gate 7 group G7z (protocol/gate7-design.md Q11, protocol/gate7/g7z.md): evidence loading, the
+// Gate 7 group G7z: evidence loading, the
 // g31 device-target derivation behind make-features.ts --collect, and Q11's seven manifest checks
 // (`check-gate7.ts --legs g7-z`). Pure: it reads existing run directories, never runs a leg.
 //
@@ -539,7 +539,7 @@ export function collectDeviceTargets(
               ? "met"
               : "not-met"
             : "unverified",
-        // The g31 has one display mode, 60.00 Hz by dumpsys (Q13a); T_p is measured per repeat.
+        // The g31 has one display mode, 60 Hz; T_p is measured per repeat.
         panel_hz: 60,
         chrome,
         build_sha: runSha,

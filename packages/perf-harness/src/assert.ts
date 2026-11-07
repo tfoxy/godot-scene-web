@@ -180,16 +180,14 @@ const ancestorRescaleGate: ScenarioGate = {
           .join(""),
     });
 
-    // 4. The user-visible symptom the round set out to reproduce.
+    // 4. The user-visible symptom the scenario sets out to reproduce.
     //
-    //    MEASURED, and deliberately not asserted on the software decode path. On Chrome 148 headless
+    //    MEASURED, and deliberately not asserted on the software decode path. On headless
     //    (SwiftShader, `cacheFamily: software`) a re-scale DOES reach cc's decode cache — the cache
     //    keys' `target_size` moves between mip levels exactly as the scale changes — but
     //    `SoftwareImageDecodeCache` satisfies a new mip by RE-SCALING an existing decode instead of
-    //    re-running the codec. Across six measured runs (three drivers x scales 0.5 and 1.2) the
-    //    atlas page ran the codec 4 times in every single one, and no arm ever produced a gap over
-    //    100 ms. The traced regression is a `GpuImageDecodeCache` behaviour, which this environment
-    //    structurally cannot produce.
+    //    re-running the codec. The stall is a `GpuImageDecodeCache` behaviour, which this
+    //    environment structurally cannot produce.
     //
     //    So the relation is SKIPPED, loudly and with its reason, when the run's decode cache family
     //    is not the one the defect lives on — and enforced the moment a device run reports `gpu`.

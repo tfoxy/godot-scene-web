@@ -7,7 +7,7 @@ import * as tracks from "../src/tracks";
 import tracksSource from "../src/tracks.ts?raw";
 
 // Consumers alias this package's source and may mirror these names in ambient declarations, so
-// both runtime and erased type exports are pinned (mirror-client-design.md "The package").
+// both runtime and erased type exports are pinned.
 const VALUE_EXPORTS = `
 createRenderStreamClient RenderStreamEndpointError validateEndpoint clientHello CoreLoadError
 RECONNECT_BACKOFF_MS webSocketTransport
@@ -62,7 +62,7 @@ describe("RenderStreamStats", () => {
   });
 });
 
-// TRK4 (tracks-design.md Q10): the `./tracks` subpath. Names are pinned like the main entry's, and
+// The `./tracks` subpath. Names are pinned like the main entry's, and
 // the two entries stay apart: the pure client's source graph never reaches the track client, and
 // the track client reaches nothing but the endpoint validator and the transport seam.
 const TRACKS_VALUE_EXPORTS = `

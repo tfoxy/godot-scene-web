@@ -247,7 +247,7 @@ function nativeHist(
  * Godot-receiver repeats (warmup excluded by the caller): decode (= decode + validate +
  * resolve) and apply, from rs_perf.gd's histograms. `receiver` defaults to "native"; the
  * web-export arm (G7m) is the same receiver glue and the same perf.json shape (receiver.gd runs
- * unchanged on the web, gate7-design.md Q4), so it passes "web" here rather than a second copy
+ * unchanged on the web), so it passes "web" here rather than a second copy
  * of this function.
  */
 export function summarizeNativeBench(

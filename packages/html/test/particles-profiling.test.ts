@@ -2,7 +2,7 @@
 //
 // OPT-IN per-frame cost attribution for the particle runtime (`effectsProfiling`, see `../src/types`
 // and `ParticleProfile`): a live tick is split into CPU SIM / instance-buffer BUILD / GL SUBMIT /
-// GL→2D BLIT so a benchmark can say WHICH of them a slow phone is spending its frame in.
+// GL→2D BLIT so a benchmark can say WHICH of them a slow device is spending its frame in.
 //
 // Two properties are what these tests actually defend, and both are about the OFF state:
 //

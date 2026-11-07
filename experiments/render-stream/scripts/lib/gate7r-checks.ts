@@ -1,4 +1,4 @@
-// Gate 7 group g7-r (G7r; protocol/gate7/g7r.md, gate7-design.md D4, Q9, Q13c): publication
+// Gate 7 group g7-r: publication
 // rates, the 60/60 clock-phase study and dual receivers at credit window 1, on the three
 // receivers: the native Godot receiver, the Godot web export and the GSW canvas receiver.
 //
@@ -98,12 +98,12 @@ export const G7R_SABOTAGE_LEG = "sabotage-ack-on-receipt";
  * phase-free hold is about 1 ms, ten browser clock quanta (performance.now() is clamped to
  * 100 µs without cross-origin isolation), so 10 % of it is no measurement. */
 export const DUAL_HOLD_SLACK_US = 1000;
-/** Q9 + g7r.md: the sabotage fails exactly these (rate-mismatch on its upper bound). */
+/** Q9: the sabotage fails exactly these (rate-mismatch on its upper bound). */
 export const G7R_SABOTAGE_FAILS: readonly string[] = [
   "credit-from-paced-loop",
   "rate-mismatch",
 ];
-/** G7q (gate7/g7q.md "Sabotage"): at credit window 2 the host keeps sending past a full window
+/** G7q: at credit window 2 the host keeps sending past a full window
  * (GRC_SABOTAGE=window-overrun, a listener sabotage) through G6c's constrained link; it must fail
  * exactly these, as G6c's ignore-credit sabotage does at window 1. */
 export const G7Q_OVERRUN_LEG = "sabotage-constrained-window-overrun";
@@ -411,7 +411,7 @@ export async function bandedFinalState(
 // The sabotage
 // ---------------------------------------------------------------------------------------------
 
-/** g7r.md: the ack-on-receipt sabotage fails exactly credit-from-paced-loop and rate-mismatch,
+/** The ack-on-receipt sabotage fails exactly credit-from-paced-loop and rate-mismatch,
  * and rate-mismatch on its upper bound, never its lower one. `failing` maps each failing check
  * id to its problems. */
 export function sabotageProblems(

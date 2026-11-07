@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Self-test of scripts/lib/quiet.sh and its TS twin lib/quiet-lock.ts (the measurement-isolation
-# lock; results/measurement-isolation.md). Runs against a PRIVATE lock (GSW_QUIET_DIR under a
+# lock). Runs against a PRIVATE lock (GSW_QUIET_DIR under a
 # temporary directory), never the machine-wide one, so it is safe beside real runs. ~40 s.
 #
 #   bash experiments/render-stream/scripts/test/self-test-quiet.sh [--out DIR]

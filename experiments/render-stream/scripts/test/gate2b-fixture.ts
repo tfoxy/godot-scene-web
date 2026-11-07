@@ -688,7 +688,7 @@ export function buildModel(e: Gate2Expected, o: ModelOptions): Model {
           reason: l.reason as TTexture["reason"],
           version: l.version as number,
           hash: l.hash,
-          // A texture line's format is always a name string (gate5-design.md Q3d: a mesh line's
+          // A texture line's format is always a name string (a mesh line's
           // raw ArrayFormat number never shares this column with a texture's name).
           format: l.format as string | null,
           width: l.width ?? 0,
@@ -709,7 +709,7 @@ export function buildModel(e: Gate2Expected, o: ModelOptions): Model {
         const t = tex.get(l.id);
         if (t) tex.set(l.id, { ...t, status: "freed" });
       } else if (l.op === "canvas_texture_create") {
-        // Mirror::canvas_texture_create's rid==0 guard (gate2-design.md G2d): a headless
+        // Mirror::canvas_texture_create's rid==0 guard: a headless
         // (dummy-renderer) capture's hook log still fires with rid null, but never reaches the
         // texture table.
         if (l.rid !== null)

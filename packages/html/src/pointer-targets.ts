@@ -1,5 +1,5 @@
-// IN12 (docs/input.md "Pointer targets"): which Godot node a page point is over in a scene this
-// package rendered. `htmlPointerTargetResolver(model)` is the html resolver for
+// Pointer targets (docs/input.md "Pointer targets (opt-in)"): which Godot node a page point is
+// over in a scene this package rendered. `htmlPointerTargetResolver(model)` is the html resolver for
 // `@godot-scene-web/input/pointer`'s `resolveTarget`: `elementFromPoint`, the closest
 // `[data-godot-path]`, and `local` from that element's client rect scaled to the Control's size in
 // the model. It returns a structural hit and imports nothing from the input package.

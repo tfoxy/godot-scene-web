@@ -1,7 +1,7 @@
 // GRT4b: the checkers run under Node, so the decoders' hash seam (G7j: render-stream-2.ts,
 // render-stream-mesh.ts and render-stream-shader.ts each default to sha256.ts's pure-JS SHA-256,
 // which keeps them browser-loadable) gets node:crypto instead. The digests are the same bytes;
-// the pure one was a third of gate 2's checker time (results/grt.md "Part 4b"). Every
+// the pure one was a third of gate 2's checker time. Every
 // check-gate*.ts imports this module first, for its side effect.
 import { createHash } from "node:crypto";
 import { setHashImpl as setRs2HashImpl } from "./render-stream-2";

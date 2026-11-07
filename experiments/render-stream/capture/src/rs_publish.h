@@ -1,10 +1,8 @@
-// Version-neutral file publication (gate 1 G1b2 as rs1_publish; render-stream/2 since gate 2
-// G2b2): the record sinks, stream/session ids, the session features, the sabotage environment,
+// Version-neutral file publication (render-stream/2):
+// the record sinks, stream/session ids, the session features, the sabotage environment,
 // the session's resource policy, and a Publisher that writes one snapshot per frame to up to two
-// file sinks -- a `full` sink and a `patch` sink (protocol/gate1-design.md "G1b2" and Q4 "Frame
-// callback": "file sinks: full sink writes full(snap); patch sink writes patch(prev_file_snap,
-// snap)") -- plus, since G2b2, the payloads those snapshots name (gate2-design.md Q4 "File
-// sinks"):
+// file sinks -- a `full` sink (full(snap)) and a `patch` sink (patch(prev_file_snap, snap)) --
+// plus the payloads those snapshots name:
 //
 //   - out of band: every `ok` image hash of each published snapshot that the store directory
 //     (rs_resource_store.h, GRC_RESOURCE_STORE_DIR) lacks is written there before the
@@ -47,8 +45,7 @@ namespace rs2 {
 
 // Where published record bytes go. The sequencing a caller must follow is one or more write()
 // calls, then one flush() -- magic + session at start, any resource records and one transaction
-// record per frame callback, one end record at shutdown or disarm (gate0-design.md
-// "Publication": "One fwrite and one fflush per record").
+// record per frame callback, one end record at shutdown or disarm.
 class RecordSink {
  public:
   virtual ~RecordSink() = default;
@@ -147,7 +144,7 @@ std::string generate_id();
 // canvas_item_set_visibility_notifier. Each array sorted ascending by byte value; publication
 // "snapshot-or-patch". G2d: resources adds canvas_texture, except on a headless host
 // (`headless_host`), where unsupported_resources lists it with reason canvas-texture-headless
-// instead (protocol/canvas-texture-headless.md). `version` V3 (G4e2, render-stream-3.md
+// instead. `version` V3 (render-stream-3.md
 // "Features") adds add_msdf_texture_rect_region to ops and drops
 // canvas_item_add_msdf_texture_rect_region from observed_unsupported_ops. `version` V4 (G5d,
 // render-stream-4.md "Features"): fifteen ops, `resources` gains mesh, observed_unsupported_ops
@@ -206,7 +203,7 @@ class Publisher {
 
   void set_resource_events(ResourceEventFn fn) { events_ = std::move(fn); }
 
-  // HC5 (host-cost-design.md D4, "File lanes"): each publish() then forms each lane's records and
+  // each publish() then forms each lane's records and
   // transaction (make_full / make_patch, encode_resource, encode_transaction) in one task on
   // `writer`, queued behind that publication's store writes, and the task writes them with the
   // sinks' write_direct(). The record plan, the carried set, the resource events and every
@@ -214,7 +211,7 @@ class Publisher {
   // are then the writer's until finish() drains it. Every sink must write to `writer` (or not
   // queue at all). nullptr (the default): formation stays in publish().
   void set_former(rs::FileWriter *writer) { former_ = writer; }
-  // TAG1 (client-extensions-design.md §2.4 "File sinks"): GRC_ITEM_META_FILE's grant, the file
+  // GRC_ITEM_META_FILE's grant, the file
   // sinks' request capped by GRC_ITEM_META (a /13 stream only). Each lane then carries a `full`
   // item_meta record before each full transaction and deltas before its patches. Off by default:
   // a recording without it is unchanged.
@@ -265,7 +262,7 @@ class Publisher {
   const ResourcePolicy &policy() const { return policy_; }
   const std::string &error() const { return error_; }
   // The one published copy of the last publish() call (sabotages applied, seq and frame set), or
-  // null before the first. The live adapter delivers this same copy (gate1-design.md Q4: one
+  // null before the first. The live adapter delivers this same copy (one
   // snapshot per frame feeds every sink and every connection).
   const rs::Captured *last_published() const { return has_previous_ ? previous_.get() : nullptr; }
   // HC5: the same copy, shared (immutable once published), so the live hub holds it as is.

@@ -1,5 +1,4 @@
-//! librender_stream_net: render-stream's net module (carrier-design.md D8, D11, D16, D17, Q4;
-//! CAR3).
+//! librender_stream_net: render-stream's net module.
 //!
 //! The capture dlopen()s this cdylib only when GRC_LIVE_CARRIERS lists `wt`, and calls its one
 //! entry, `grc_net_module_v1()` (capture/src/grc_net_module.h), for a table whose `wt_create`

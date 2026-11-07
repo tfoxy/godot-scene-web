@@ -1,4 +1,4 @@
-// Gate 7 G7d checks (protocol/gate7-design.md "G7d" Checks): groups g7-dev and g7-bench of
+// Gate 7 G7d checks (Checks): groups g7-dev and g7-bench of
 // check-gate7.ts. Every check reads evidence run-gate7.sh wrote; none launches anything.
 //
 // g7-dev (desktop): the plan selects only `ctl-` arms; the pace fixture's native legs: the capture
@@ -445,8 +445,8 @@ export async function runGate7DevChecks(
 
 // ------------------------------------------------------------------------------------------ bench
 
-/** G6c README "Gate 6c result", "Receiver cost unchanged": the four unloaded 400-transaction replay
- * means (main and branch, two rounds against 02e6f4dc). */
+/** G6c: the four unloaded 400-transaction replay
+ * means (main and branch, two rounds). */
 export const G6C_REPLAY = {
   decode_means_us: [6193, 6479, 6247, 6212],
   apply_means_us: [885, 898, 897, 878],
@@ -454,8 +454,8 @@ export const G6C_REPLAY = {
 
 /** Since G7xd the native arm runs the Rust core (G7gd removed the GDScript one), so G6c's GDScript
  * means can no longer be matched: `bench-matches-g6c` bounds the Rust core's scene-full means at a
- * tenth (decode) and a quarter (apply) of them instead. G7xn measured 40x and 11x at p95, so this
- * holds at twice that cost and fails a bench that lost the Rust core or its transactions. */
+ * tenth (decode) and a quarter (apply) of them instead. The Rust core runs far inside that, so this
+ * holds with a wide margin and fails a bench that lost the Rust core or its transactions. */
 export const G6C_RUST_MAX_FRACTION = { decode: 0.1, apply: 0.25 };
 
 /** The leg directories gate7-bench.ts writes for one planned arm-leg (gate7-dev-legs.ts names the

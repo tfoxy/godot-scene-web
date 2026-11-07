@@ -4,9 +4,8 @@
 //
 // WHAT THE ENCODE SHAPE IS MEASURING. The shipped WebGL architecture is ONE offscreen canvas, one
 // draw per node into a viewport sub-rect of it, and then a `ctx2d.drawImage` blit of that sub-rect
-// onto each node's own 2D canvas, which the compositor then composites N of. S6 measured the phone
-// spending ~0.9 of a core inside the GPU PROCESS on that, identically for particles and shaders,
-// and dragging whole-page activations from 89 Hz to 47. Two different things could be responsible —
+// onto each node's own 2D canvas, which the compositor then composites N of. If that costs GPU-
+// process time and whole-page activation rate, two different things could be responsible —
 // the API's submit cost, or the blit — so this file offers exactly two encode shapes and the
 // scenario runs both:
 //

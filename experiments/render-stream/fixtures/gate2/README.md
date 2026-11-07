@@ -1,8 +1,6 @@
 # Gate 2 fixture
 
-The reference rendering for gate 2's texture increments (G2a,
-[`../../protocol/gate2-design.md`](../../protocol/gate2-design.md) "Q6. Fixture `fixtures/gate2/`").
-Eleven steps (0..10) exercise one procedural texture shared by four drawers, an identical twin,
+The reference rendering for gate 2's texture increments. Eleven steps (0..10) exercise one procedural texture shared by four drawers, an identical twin,
 binary LA8 alpha over two backgrounds, two raw placeholders, flips, regions, a transpose, a
 rotation, filter and repeat at the item and root-viewport levels, changing pixels, replacement
 (including a format change and a placeholder becoming an image), and lifetime: a free, a freed
@@ -38,7 +36,7 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate2 --
   and which content each shows from which step, and per step the regions (they follow `G` and the
   canvas transform), the draws in paint order (each a flat colour or a texture sample), the
   `synth_exclude` regions, the RenderingServer texture-call census and the texture invariants
-  G2b2 evaluates, and (G2b2) `receiver_resources`, the fresh-cache receiver's texture traffic per step; plus the two variants and the engine's own texture calls (`engine_textures`).
+  the check evaluates, and `receiver_resources`, the fresh-cache receiver's texture traffic per step; plus the two variants and the engine's own texture calls (`engine_textures`).
 
 ## Timeline
 
@@ -61,7 +59,7 @@ settles at `S + N·k + 7`. The fixture quits at `S + N·10 + 11` (112) unless
 | 9    | `texture_replace(P2, texture_2d_create(E))`; `MM` gets `M` with LINEAR_WITH_MIPMAPS                                                                          | 1 create, 1 replace, 1 item filter                                                            |
 | 10   | `G` moved; root canvas transform shifted by (8, 4)                                                                                                           | none (transform only)                                                                         |
 
-Two choices the contract left open, both recorded in README "Gate 2a result": every sprite is
+Two layout choices: every sprite is
 `centered = false` (the layout table's regions place each sprite's top-left at its position), and
 `DR`'s step-1 source is (4,0,8,8) rather than (8,0,8,8), because (8,0,8,8) lies wholly inside A0's
 green quadrant and would draw the same pixels with or without the transpose.

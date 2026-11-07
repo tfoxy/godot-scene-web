@@ -1,4 +1,4 @@
-// Gate 8 g8m checks (G8m, protocol/gate8-design.md "Q5. Pre-arm materials and shaders", D11, D12):
+// Gate 8 g8m checks:
 // pre-arm ShaderMaterials, CanvasItemMaterials and Shaders adopted at arm and at the next frame
 // boundary, judged on fixtures/gate8-mat. The pure evaluators (shaderHashParity, paramParity,
 // cimBuiltin, includeRefused) take resolved states and the oracle's lines, so

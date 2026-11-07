@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Generate the render-stream/9 golden vectors (stdlib only, deterministic).
 
-render-stream/9 (../render-stream-9.md) is render-stream/8 plus exactly texture-delivery-design.md
-Q5's list: the GRS9 magic and protocol string, the session key `resources.texture_delivery`,
+render-stream/9 (../render-stream-9.md) is render-stream/8 plus exactly
+the following: the GRS9 magic and protocol string, the session key `resources.texture_delivery`,
 texture-entry `variants`, `block` GRT1 payloads and `render-stream-texture/ktx2` payloads (both
 legal as variants only), the texture reason `delivery-pending`, and the hello keys
 `texture_encodings` and `gpu_formats`.
@@ -16,7 +16,7 @@ byte for byte except where Q5 says otherwise. The shared scene is golden-8's six
 
     7 (new) adds texture 11 (RGBA8 16x16 with a mip chain, version 1) with one variant (`block`,
        DXT5), item 9 drawing it, and gives texture 7 (the host-decoded DXT5 texture, version 1) its
-       `block` variant: a variant appearing at an equal version (texture-delivery-design.md D6).
+       `block` variant: a variant appearing at an equal version.
     8 (new) texture 11 and texture 7 each gain a `uastc` variant at the same version (the lazy
        encode finishing); texture 6's content changes (version 3, the old hash back) so its variants
        reset to []; texture 12 is an unsupported image with reason `delivery-pending`.

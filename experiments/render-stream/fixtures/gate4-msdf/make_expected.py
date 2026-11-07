@@ -2,7 +2,7 @@
 """Write fixtures/gate4-msdf/expected.json (render-stream-gate4-expected/1, the MSDF fixture).
 
 Every number below is derived from the fixture's strings and the engine's MSDF text rules as read
-from the source (protocol/gate4-design.md Q1, D5, Q6e "fixtures/gate4-msdf/", G4e2), written down
+from the source, written down
 as code over the fixture's own parameters. Nothing here runs or reads the engine: the glyph oracle
 and the capture have to agree with it (`oracle-agrees-msdf`, `atlas-census-msdf`), and a
 disagreement is a finding to explain from the source, never a number to copy.
@@ -102,7 +102,7 @@ TREE_ORDER = list(TEXT_NODES)
 INITIAL_TEXT = {"M16": "Hello", "M24": "Sphinx", "M40": "Quartz", "MT": "Jump", "MR": "Turn"}
 ROTOR = {"position": [400, 120], "rotation_degrees": 20, "scale": 1.5}
 
-# The timeline (gate4-design.md Q6e "fixtures/gate4-msdf/"): per step, the changes in the order
+# The timeline: per step, the changes in the order
 # gate4_msdf.gd makes them. ("text", node, value) | ("size", node, px) | ("outline", node, size,
 # rgba) | ("colour", node, rgba) | ("outline_colour", node, rgba) | ("rotate", degrees)
 TIMELINE = {
@@ -117,7 +117,7 @@ TIMELINE = {
     9: [("text", "M40", "Quartz Quiz")],
 }
 
-# The contract's predictions (gate4-design.md Q6e, G4e2), typed in, never computed:
+# The contract's predictions, typed in, never computed:
 # step -> (FM@48 uploads: "create" | n, what it proves).
 HAND_TABLE = {
     0: ("create", "every step-0 glyph in one 512x512 RGBA8 page, created once"),
@@ -134,7 +134,7 @@ HAND_TABLE = {
 HAND_WIRE_VERSIONS = [1, 2, 2, 2, 2, 2, 2, 4, 4, 4]
 HAND_GLYPHS = 24
 
-# The one texture the engine makes itself (memory rs-g2a-texture-census-facts).
+# The one texture the engine makes itself.
 ENGINE_TEXTURES = [{"frame": 1, "op": "texture_2d_create", "format": "RGBA8", "width": 800, "height": 6}]
 QUIET_STEPS = [2, 3, 4, 5, 6, 8, 9]
 

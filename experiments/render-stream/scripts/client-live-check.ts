@@ -1,4 +1,4 @@
-// MIR-1 live check (mirror-client-design.md "MIR-1 checks", results/p3/mir-1.md): drives
+// MIR-1 live check: drives
 // web/client-check/ -- a minimal page that mounts @godot-scene-web/render-stream-client and nothing
 // else -- in the pinned headless Chromium against a live host, then disposes and mounts it again,
 // measuring what each mount gives back.
@@ -24,7 +24,7 @@
 //   cold-rss (reported, not gating)  the renderer RSS after each dispose (and the purge) within
 //                      --rss-tolerance of the level before the first mount. It fails by a one-time
 //                      ~220 MiB of [anon:partition_alloc] that the first stream leaves in the
-//                      renderer and that never grows (results/p3/mir-1.md "Remount")
+//                      renderer and that never grows
 // --core: build-web.sh's output; built into <dir>/core when absent.
 
 import { execFileSync } from "node:child_process";

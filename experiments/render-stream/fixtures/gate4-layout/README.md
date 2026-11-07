@@ -1,7 +1,6 @@
 # Gate 4 layout fixture
 
-The reference rendering for gate 4's G4c ([`../../protocol/gate4-design.md`](../../protocol/gate4-design.md)
-"G4c" and "Q6e"): fourteen native `Label`s on runtime `FontFile`s of the pinned Open Sans
+The reference rendering for gate 4's text layout: fourteen native `Label`s on runtime `FontFile`s of the pinned Open Sans
 SemiBold bytes. Ten steps (0..9) cover font sizes and atlas pages, word and arbitrary wrapping,
 horizontal and vertical alignment, `clip_text`, a bitmap outline, a shadow, subpixel positioning
 and an atlas page's lifetime. Variant `lcd` adds one LCD Label. The project does not know about
@@ -14,11 +13,11 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate4-la
 
 ## Files
 
-- `project.godot`, `loader.gd`, `fonts.lock.json`, `fonts/`: as `fixtures/gate4` (Q1e's pins, the
+- `project.godot`, `loader.gd`, `fonts.lock.json`, `fonts/`: as `fixtures/gate4` (the pinned text inputs, the
   `GrcLoader` autoload, the one font).
 - `gate4_layout.tscn`, `gate4_layout.gd`: a root `Node`; builds the panel `P`, the Labels and the
   `Marker` in `_ready()` in `expected.json` `creation_order`; `_process()` applies the timeline.
-  Fonts: `F` (G4a's settings), `FX` (`F` with subpixel positioning auto), `FL` (`F`'s twin whose
+  Fonts: `F` (fixtures/gate4's settings), `FX` (`F` with subpixel positioning auto), `FL` (`F`'s twin whose
   cache step 8 clears) and, for variant `lcd`, `FC` (LCD antialiasing).
 - `glyph_oracle.gd`: fixtures/gate4's oracle extended to Label's full layout and draw: autowrap
   line breaks, fill justification, vertical and horizontal alignment, the shadow, outline and text
@@ -27,7 +26,7 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate4-la
   draw-time outline caches that `font_get_size_cache_list` hides). After step 8 it names FL's new
   cache `FL2`.
 - `make_expected.py`: writes `expected.json` (`--check` compares values). It derives the census
-  from the strings and Q1c's rules extended for G4c (its docstring lists them): step 0 shapes
+  from the strings and the engine's glyph-cache rules (its docstring lists them): step 0 shapes
   before drawing, outline glyphs upload per glyph, subpixel uploads are bounded, F@320 opens a
   second page at step 7. It asserts its own hand table, the word-wrap lines and the layout.
 - `expected.json`: per step the texts and their draw properties, draws, ink and command counts,

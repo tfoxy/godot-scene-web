@@ -1,5 +1,4 @@
-// Unit tests for the render-stream/2 publisher (src/rs_publish.cpp), protocol/gate1-design.md
-// "G1b2" and Q4 "Frame callback" (file sinks), gate2-design.md "G2b2" and Q4 "File sinks".
+// Unit tests for the render-stream/2 publisher (src/rs_publish.cpp).
 //
 // Drives Publisher against two MemoryRecordSinks with snapshots taken from a real rs::Mirror,
 // and checks every record byte for byte against rs2_codec/rs2_diff applied to the same
@@ -645,7 +644,7 @@ void test_gate2_features() {
                                                         "texture_2d_placeholder"};
   check(f.resources == expected_resources, "gate2_features().resources");
   // golden::kFeatureObservedUnsupported stays golden-2's frozen pre-G5a list (its bytes are
-  // committed); gate5-design.md D2's calibrator 7 adds four more typed refusals to the live
+  // committed); 's calibrator 7 adds four more typed refusals to the live
   // production list, checked against its own up-to-date literal, as `resources` above.
   const std::vector<std::string> expected_observed_unsupported = {
       "canvas_item_add_animation_slice",
@@ -671,7 +670,7 @@ void test_gate2_features() {
   check(f.unobserved == golden::kFeatureUnobserved, "gate2_features().unobserved");
   check(f.publication == "snapshot-or-patch", "gate2_features().publication");
   check(f.unsupported_resources.empty(), "gate2_features(): a rendered host refuses nothing");
-  // protocol/canvas-texture-headless.md: a headless host refuses canvas_texture, typed.
+  // A headless host refuses canvas_texture, typed.
   const Features h = gate2_features(true);
   check(h.resources == golden::kFeatureResources,
         "gate2_features(headless).resources: texture_2d and texture_2d_placeholder only");
@@ -1031,7 +1030,7 @@ void test_inline_records() {
         "an out-of-band payload with no store is resource-store-missing");
 }
 
-// G5e (gate5-design.md D5, Q3a; render-stream-4.md "Mesh payload"): GRM1 surface payloads share
+// (render-stream-4.md "Mesh payload"): GRM1 surface payloads share
 // the texture payloads' store, inline threshold and order. Frame 1 creates mesh 1 (one surface)
 // and draws it; frame 2 updates its vertices (a new payload, no redraw); frame 3 changes nothing.
 // HC3: a region write that turns a surface's payload into `to`'s (same size): the whole payload,

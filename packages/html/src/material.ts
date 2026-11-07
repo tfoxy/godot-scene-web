@@ -714,7 +714,7 @@ function resolveShaderIdentity(
 // Memo for `hsvColorMatrix` (module-scoped LRU, like `webgl/runtime`'s staticFrameCache).
 // WHY: the matrix is a 3× basis probe through `applyHsv` — 9 mat3 multiplies plus 9 `denoise`
 // rounds — and it is recomputed for EVERY hsv-adjust node on EVERY render, from a tiny set of
-// distinct (h,s,v) triples (phone traces put ~28% of a play-a-card burst inside this math).
+// distinct (h,s,v) triples, so a create burst would otherwise spend much of its time here.
 // Keyed on the EXACT inputs (no quantization) so a hit is byte-identical to a fresh compute;
 // the returned `ColorMatrix` has `readonly` rows, so sharing one instance is safe.
 const HSV_COLOR_MATRIX_CACHE_LIMIT = 64;

@@ -19,8 +19,7 @@
 // glyph id and a pen position, so a caller that already has them from anywhere can fill a
 // `GlyphsView` itself. But {@link HbGpuGlyphPass.fillRun} shapes a string through the SAME
 // `HbGpuFont` this pass encodes outlines from, which is what lets a page hold one HarfBuzz instead
-// of adding npm `harfbuzzjs` as a second build with the same faces in a second heap — measured at
-// 4.50 MiB against 2.00 for the perf harness's own arm (`docs/text-rendering.md`). It also removes
+// of adding npm `harfbuzzjs` as a second build with the same faces in a second heap. It also removes
 // a class of mismatch rather than making it unlikely: one `hb_font_t` cannot disagree with itself
 // about what gid 97 means.
 //
@@ -33,11 +32,9 @@
 // rather than as N offset copies of the run, which is the only way a TRANSLUCENT outline
 // composites once instead of N times.
 //
-// THE FIDELITY CAVEAT SHIPS WITH THE API, because it is measured and it is a constraint rather
-// than a bug: HarfBuzz's coverage shader takes a five-tap MSAA branch below ppem 16
-// (`src/hb-gpu-fragment.glsl:321`, `if (ppem < 16.0)`). Graded against an 8x-downsampled
-// reference, this path's distortion is 0.196 on Han at ppem 14 — BLURRIER than the shipped DOM
-// path's 0.132 — and 0.017 at ppem 49 (a phone rendering 14 px at DPR 3.5). So: use it when
+// THE FIDELITY CAVEAT SHIPS WITH THE API, because it is a constraint rather than a bug:
+// HarfBuzz's coverage shader takes a five-tap MSAA branch below ppem 16 (`if (ppem < 16.0)` in
+// hb-gpu's fragment shader), which is blurrier than the DOM text path. So: use it when
 // `pixelsPerEm * the scale in run.m * devicePixelRatio >= 16`, and below that a baked atlas or the
 // DOM path is crisper. THE MIDDLE FACTOR IS NOT DECORATION: a caller that scales a label through
 // its model matrix — which is where scale belongs, next to the rotation — is drawing at a ppem its
@@ -47,8 +44,7 @@
 // AND THE OTHER FIDELITY KNOB IS THE CONTRAST CURVE, WHICH IS NOT THE SAME QUESTION. The floor
 // above is about a size this path should not be asked to draw; {@link HbGpuGlyphPassOptions.contrast}
 // is about how it draws every size it does take. hb-gpu ships stem darkening ON, which is right
-// against the DOM text path and wrong against Godot — the A1 crossover sweep puts this path BEHIND
-// canvas2d at ppem 16 with the curve and ahead of every arm at every swept size without it. A
+// against the DOM text path and wrong against Godot, which applies no curve of its own. A
 // consumer mirroring a Godot scene passes `HB_GPU_CONTRAST_NONE`; omitting the option keeps the
 // shipped default, and therefore keeps every existing picture.
 
@@ -171,26 +167,15 @@ export interface HbGpuGlyphPassOptions {
    * defaulted here: `undefined` is forwarded as `undefined` and `createHbGpuRenderer` decides, so
    * every existing consumer and every committed pixel golden is byte-identical to before.
    *
-   * WHY A GODOT-PARITY CONSUMER PASSES `HB_GPU_CONTRAST_NONE`, AND IT IS MEASURED RATHER THAN
-   * PREFERRED. Stem darkening is not a tie-breaker inside this path's quality — it IS the quality
-   * crossover against the other text arms. Distortion against an 8x area-coverage reference, swept
-   * over ppem 16-52 by `packages/perf-harness/probes/text-crossover.ts`
-   * (`pnpm -w run text:crossover -- --hb-contrast default|none`):
-   *
-   *     ppem 16    default 0.1091    none 0.0258     canvas2d 0.0925
-   *     ppem 24    default 0.0537    none 0.0138
-   *
-   * So the shipped curve LOSES to a plain `ctx.fillText` at 16 and costs this path ~4x its own
-   * achievable distortion at 24, while with the curve off hb-gpu wins at every ppem swept, with
-   * the tightest edges of any arm. AND GODOT APPLIES NO CURVE OF ITS OWN — its grayscale and MSDF
-   * glyph interiors come out byte-uniform — so a consumer whose acceptance test is "does this look
-   * like the engine we are mirroring" is holding its text up against a rasterizer that never
+   * WHY A GODOT-PARITY CONSUMER PASSES `HB_GPU_CONTRAST_NONE`. Stem darkening widens edges
+   * against an area-coverage reference, and GODOT APPLIES NO CURVE OF ITS OWN — its grayscale and
+   * MSDF glyph interiors come out byte-uniform — so a consumer whose acceptance test is "does this
+   * look like the engine we are mirroring" is holding its text up against a rasterizer that never
    * darkened a stem, and the correction reads as a weight mismatch rather than as contrast.
    *
-   * THE DEFAULT STAYS ON, because the case it was measured for is real and is a different case:
-   * against the DOM text path, uncorrected coverage is washed out (`HbGpuContrast`'s own doc — DOM
-   * puts 66% more pixels in the deep-dark end of one fixed crop). Text that is not standing next
-   * to Godot's own output still wants it.
+   * THE DEFAULT STAYS ON, because the case it serves is real and is a different case: against the
+   * DOM text path, uncorrected coverage is washed out (`HbGpuContrast`'s own doc). Text that is not
+   * standing next to Godot's own output still wants it.
    *
    * IT MOVES EDGES, NOT INK, WHICHEVER WAY YOU SET IT. `hb_gpu_stem_darken` is gated on partial
    * coverage (`cov > 0 && cov < 1`), so a glyph INTERIOR is byte-identical either way and only the
@@ -252,8 +237,7 @@ export interface HbGpuGlyphPass extends GlyphPass {
    * ONE HARFBUZZ, WHICH IS THE WHOLE POINT OF HAVING THIS AT ALL. hb-gpu's wasm exports the
    * OpenType shaper as well as the Slug encoder, so a consumer that calls this loads one HarfBuzz
    * and holds each face once. Shaping elsewhere — npm `harfbuzzjs`, most likely — means a second
-   * build, a second heap and the same font bytes resident twice, which measured 4.19 MiB across
-   * the pair on a phone (`docs/text-rendering.md`). It is also the configuration in which glyph
+   * build, a second heap and the same font bytes resident twice. It is also the configuration in which glyph
    * ids and outlines can come from two DIFFERENT files, and gid 97 meaning two different things is
    * crisp, fluent, wrong text that no counter downstream can see.
    *

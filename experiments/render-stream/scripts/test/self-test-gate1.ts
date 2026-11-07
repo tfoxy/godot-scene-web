@@ -1912,7 +1912,7 @@ async function buildLiveLegs(
     if (leg === "live")
       await writeLiveReplay(out, projects, files.received, shots);
   }
-  // G6r self-test leg (gate6-design.md "G6r"): live-rate-30, host only (checkLiveRate30 reads no
+  // G6r self-test leg: live-rate-30, host only (checkLiveRate30 reads no
   // receiver evidence). Reuses "live"'s own files/opts: its sends are already modeled every 2
   // host frames (liveSends), which is already ~30 fps on this fixture's 60 fps host, and its
   // file sink (writeCaptureLeg's quit/start/stepFrames) is identical to every other leg's, so

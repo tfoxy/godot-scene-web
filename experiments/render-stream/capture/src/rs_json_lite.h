@@ -1,5 +1,5 @@
 // rs_json_lite: a small strict JSON reader for client texts the capture must parse (TRK1's
-// track-hello, TRK5's capability payloads and their golden vectors; protocol/tracks-design.md).
+// track-hello, TRK5's capability payloads and their golden vectors).
 //
 // Objects, arrays, strings, numbers, true/false/null, with a depth cap of 8. Strings are decoded
 // (escapes, \u surrogate pairs; a lone surrogate is refused) into UTF-8. Numbers keep their source

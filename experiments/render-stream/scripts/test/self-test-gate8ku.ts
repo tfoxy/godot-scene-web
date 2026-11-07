@@ -3,7 +3,7 @@
 // Self-test for gate 8's g8ku checks (lib/gate8-basis-checks.ts, G8ku) and predictD3's uastc rule
 // (lib/gate8-delivery-checks.ts), each with a passing and a failing case:
 //
-// 1. predictD3 (texture-delivery-design.md D3, G8ku): `uastc` wins when the receiver lists it and
+// 1. predictD3: `uastc` wins when the receiver lists it and
 //    the entry offers it, after `block` with a stated family, and never when the receiver does
 //    not list it.
 // 2. psnrRgba: identical buffers are 99 dB; a one-level error on every channel is 48.13 dB.

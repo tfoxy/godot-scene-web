@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// WX (results/p3/wx.md): the web export's file replay on a store bigger than its wasm heap.
+// WX: the web export's file replay on a store bigger than its wasm heap.
 //
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/bench-web-store.ts --bundle <web bundle> --out <dir> \

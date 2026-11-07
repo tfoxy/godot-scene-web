@@ -331,9 +331,7 @@ export function renderRichTextFontSize(
 // and does not move with `font_size`. `-webkit-text-stroke` is CENTRED on the glyph's contour, so a
 // width `W` reaches `W / 2` outward: `W = outline_size * 0.5` lands the browser's outer edge on
 // Godot's. `round` here is `css-values.ts`'s 3-decimal quantizer, NOT an integer snap — an odd
-// `outline_size` keeps its half pixel, and `outline_size` 3 emits `1.5px`. See
-// `docs/text-rendering.md` ("What `-webkit-text-stroke` has to be…") for the reach measured in a
-// browser against that arithmetic.
+// `outline_size` keeps its half pixel, and `outline_size` 3 emits `1.5px`.
 //
 // MSDF — the passthrough, and it rests on an ASSUMPTION NOTHING HERE CHECKS. An MSDF face is
 // rasterised once at `msdf_size` and its outline is a threshold shift in the canvas shader
@@ -711,7 +709,7 @@ function renderAlignParagraph(align: string, segments: string[][]): string {
 // Memo for the layered BBCode render (module-scoped LRU, like `atlas.ts`'s data-URL memo). WHY:
 // every RichTextLabel re-parses its whole BBCode string — tag scan, style stack, per-char effect
 // spans — and then stamps the result into FOUR layers, on every render, for text that almost never
-// changes. Phone traces showed these re-parses inside a play-a-card burst.
+// changes, so a create burst would otherwise repeat the same parses.
 //
 // CORRECTNESS: the key covers every input `richTextHtml` reads — the bbcode string, `ctx.textScale`
 // and `ctx.customTags` — EXCEPT `ctx.resolveImage`, which is an opaque host callback whose answer

@@ -9,15 +9,14 @@
 //
 // render-stream/3 (G4e1), /4 (G5w), /5 (G55w) and /6 (G6w) are implemented in render-stream-2.ts
 // itself, behind an explicit `version` parameter -- not forked render-stream-3.ts/-4.ts/-5.ts/
-// -6.ts modules (gate4-design.md G4e1: "Renaming files is not part of this contract").
+// -6.ts modules (G4e1: "Renaming files is not part of this contract").
 // runSuite() below runs the same checks against golden-2 (version 2, unchanged), golden-3
 // (version 3), golden-4 (version 4), golden-5 (version 5) and golden-6 (version 6); "renamed
 // tests are not required" means the per-check messages below still say "rs2"-flavoured things
 // like ".rs2"/".rs3"/".rs4"/".rs5"/".rs6" from `entry.file` itself, not from a hardcoded suffix.
 //
-// Checks, each required by gate2-design.md's G2b1 "Pass criteria" (and, for golden-3/-4/-5/-6, by
-// gate4-design.md's G4e1, render-stream-4.md's G5w, render-stream-5.md's G55w and
-// gate6-design.md's G6w "Pass criteria"):
+// Checks, each required by the contract's G2b1 "Pass criteria" (and, for golden-3/-4/-5/-6, by
+// G4e1, render-stream-4.md's G5w, render-stream-5.md's G55w and G6w):
 //   - decodeRecording() deep-equals each of full/patch/inline.decoded.json;
 //   - recordSha256() reproduces every record's sha256 in all three decoded forms;
 //   - validateRecording() of all three valid vectors is [];
@@ -25,10 +24,10 @@
 //     transaction "encoding" excepted, as /1), and its "resources" is [] for full/patch and
 //     index.json's "inline_resources" for inline (checked separately: unlike the other fields,
 //     this one is never shared ground truth -- it is genuinely stream-specific);
-//   - golden-5 only: params.rs5 (gate5_5-design.md D4's "params" shader-source policy) decodes,
+//   - golden-5 only: params.rs5 (the "params" shader-source policy) decodes,
 //     validates clean and resolves to resolved-params.json -- its own independent leg, since it
 //     is a separate small recording, not part of the shared resolved.json;
-//   - golden-6 only: presentation.rs6, snap.rs6 and rate.rs6 (gate6-design.md Q4's three
+//   - golden-6 only: presentation.rs6, snap.rs6 and rate.rs6 (three
 //     dedicated small streams) each decode, validate clean and resolve to their own
 //     resolved-*.json -- independent legs, mirroring params.rs5;
 //   - every invalid/*.rs2, .rs3, .rs4, .rs5 or .rs6 is rejected with exactly one error of the
@@ -43,7 +42,7 @@
 //     mesh_payloads/*.grm likewise against decodeMeshPayload()/meshPayloadSha256(); every
 //     golden-5 shader_payloads/*.grp likewise against decodeShaderPayload()/
 //     shaderPayloadSha256().
-//   - protocol/unknown-item-skip.md: a /4 skip session (unknown_item_policy after sabotage,
+//   -: a /4 skip session (unknown_item_policy after sabotage,
 //     unknown_items after unsupported in every transaction) validates and resolves with its
 //     account; the key in a strict session, a skip transaction without it and any policy value
 //     but "skip" are all meta-schema.
@@ -184,14 +183,14 @@ interface GoldenIndex {
   }>;
   // golden-5 only (render-stream-5.md "Shader payload").
   shader_payloads?: Array<{ file: string; hash: string; bytes: number }>;
-  // golden-5 only: params.rs5's own independent leg (gate5_5-design.md D4).
+  // golden-5 only: params.rs5's own independent leg.
   params_leg?: IndependentLeg;
   // golden-6 only: presentation.rs6/snap.rs6/rate.rs6's own independent legs (render-stream-6.md
   // "Golden vectors"), mirroring params_leg.
   presentation_leg?: IndependentLeg;
   snap_leg?: IndependentLeg;
   rate_leg?: IndependentLeg;
-  // golden-7 only (render-stream-7.md "Golden vectors", gate7-design.md Q2): window2.rs7, the
+  // golden-7 only (render-stream-7.md "Golden vectors"): window2.rs7, the
   // credit_window-2 leg with two chained patches.
   window2_leg?: IndependentLeg;
   // golden-8 only (render-stream-8.md "Golden vectors"): off.rs8, the adoption-null,
@@ -263,7 +262,7 @@ function stripExcepted(resolved: ReturnType<typeof resolveRecording>): unknown {
 }
 
 // Runs every check against one golden directory, decoding with the given protocol `version`
-// (2 for golden-2/, 3 for golden-3/ -- gate4-design.md G4e1; 4 for golden-4/ -- render-stream-4.md
+// (2 for golden-2/, 3 for golden-3/ -- G4e1; 4 for golden-4/ -- render-stream-4.md
 // G5w; 5 for golden-5/ -- render-stream-5.md G55w; 6 for golden-6/ -- render-stream-6.md G6w).
 // The checks themselves are the same for all five: only the directory and the `version` argument
 // threaded into decodeRecording()/validateRecording()/resolveRecording() differ.
@@ -559,7 +558,7 @@ async function runSuite(
     );
   }
 
-  // --- independent legs: golden-5's params.rs5 (gate5_5-design.md D4), golden-6's
+  // --- independent legs: golden-5's params.rs5, golden-6's
   // presentation.rs6/snap.rs6/rate.rs6 (render-stream-6.md "Golden vectors") and golden-7's
   // rate.rs7/window2.rs7 (render-stream-7.md "Golden vectors") -- each a separate, independent
   // small recording, not part of the shared full/patch/inline streams. ------------------------
@@ -965,7 +964,7 @@ async function version9Cases(full9: Uint8Array): Promise<void> {
   ok(threw, "expectedDataBytes() refuses a block format below /9");
 }
 
-// protocol/unknown-item-skip.md "Session"/"Transaction": the two optional keys, at /6 (the test encoder speaks /6 since G6b).
+// The two optional keys, at /6 (the test encoder speaks /6 since G6b).
 function unknownItemCases(): void {
   const account = (calls: number) => ({
     unknown_rids: 1,
@@ -1043,7 +1042,7 @@ function unknownItemCases(): void {
 
 // --------------------------------------------------------------------------------------- hello (G7w)
 //
-// render-stream-7.md "Hello" (gate7-design.md Q2): a minimal, self-contained hello checker for
+// render-stream-7.md "Hello": a minimal, self-contained hello checker for
 // the TypeScript self-test (G7w's own scope -- hello is a live-wire control message, never part
 // of a recording, so render-stream-2.ts's decoder never touches it; this mirrors
 // rs_live.cpp's parse_control(V7) independently, exercised against the SAME golden-7/control/

@@ -1,5 +1,5 @@
 extends Node
-## Gate 5.5 screen-texture fixture (P3-ST, ../../protocol/gate5_5-design.md "Screen texture (P3-ST)").
+## Gate 5.5 screen-texture fixture.
 ##
 ## Screen-reading `ShaderMaterial`s (`hint_screen_texture`) over textured content, so a receiver
 ## must take GLES3's back-buffer copies at the same points as the reference
@@ -13,7 +13,7 @@ extends Node
 ##   filter: the copy is cached without mips, so GLES3 builds the gaussian mip chain of that same
 ##   copy at RE (`material_screen_texture_mipmaps_cached`), still without RA, LC, RB or RF. RT
 ##   reads the screen and TIME: the capture refuses its shader (shader-time), and receivers drop
-##   the item (gate5_5-design.md "Refused materials"), so the back buffer itself shows there.
+##   the item, so the back buffer itself shows there.
 ## - Canvas 1 (a child `CanvasLayer`, layer 1): a new `canvas_render_items` call resets the cache,
 ##   so RC (invert) gets a fresh copy of everything canvas 0 drew (RA's and RB's outputs included).
 ##   RD (swizzle) is the second reader there, inside a clipping `Control` (`clip_contents`) over

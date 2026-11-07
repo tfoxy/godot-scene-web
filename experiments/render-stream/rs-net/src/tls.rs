@@ -1,4 +1,4 @@
-//! wss on the built-in `ws` carrier (carrier-design.md D11, D12; CAR4): a sans-IO rustls server
+//! wss on the built-in `ws` carrier: a sans-IO rustls server
 //! session behind `grc_net_tls_v1` (capture/src/grc_net_module.h, struct grc_net_tls_table_v1).
 //!
 //! The capture's `rs_ws` I/O thread owns the socket. It feeds the ciphertext it read

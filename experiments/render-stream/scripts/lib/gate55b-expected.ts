@@ -1,5 +1,4 @@
-// Types and pure helpers for fixtures/gate55-cim/expected.json (render-stream-gate55-expected/1,
-// protocol/gate5_5-design.md "Q6d"), written by fixtures/gate55-cim/make_expected.py. No I/O, no
+// Types and pure helpers for fixtures/gate55-cim/expected.json (render-stream-gate55-expected/1), written by fixtures/gate55-cim/make_expected.py. No I/O, no
 // Godot, no capture evidence. Each variant (`base`, `modulate`) is a gate 5 scene of its own:
 // `asGate5` views it as a Gate5Expected so gate 5's image, presence, freshness and leg checks and
 // lib/geometry-raster.ts (with its blend modes) apply unchanged.

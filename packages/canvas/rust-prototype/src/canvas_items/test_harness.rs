@@ -1,5 +1,5 @@
 //! `canvas-items-test` only: wasm-bindgen exports that drive a [`CanvasItemsExecutor`] from a page,
-//! for `packages/test-harness/test/canvasItemsRustPixel.test.ts` (byte-identical against G7c's
+//! for `packages/test-harness/test/canvasItemsRustPixel.test.ts` (byte-identical against the
 //! TypeScript executor). Lists arrive as `PDL1` dumps; texture uploads beside them. Never enable
 //! this feature in a module that ships: these exports would land in it.
 use super::{CanvasItemsExecutor, ExecOptions, FenceState, Sabotage, replace_marking_changes};
@@ -28,8 +28,8 @@ impl CanvasItemsTestHarness {
         Self::with_options(canvas, sabotage, false)
     }
 
-    /// [`CanvasItemsTestHarness::new`] with [`ExecOptions::godot_orientation`] set as given (G7t:
-    /// the item-space program cases run in both orientations, read back in design rows).
+    /// [`CanvasItemsTestHarness::new`] with [`ExecOptions::godot_orientation`] set as given (the
+    /// item-space program cases run in both orientations, read back in design rows).
     pub fn with_options(
         canvas: web_sys::HtmlCanvasElement,
         sabotage: &str,
@@ -92,13 +92,13 @@ impl CanvasItemsTestHarness {
         self.list.free_texture(id);
     }
 
-    /// G7s: register item-space program `id` from an `@godot-scene-web/effects`
+    /// Register item-space program `id` from an `@godot-scene-web/effects`
     /// `transpileGodotItemShader` module; a compile failure is the error (GL's log).
     pub fn define_program(&mut self, id: u32, module: &str) -> Result<(), JsValue> {
         self.executor.define_program(id, module).map_err(js)
     }
 
-    /// P3-VX: [`define_program`](Self::define_program) for a program with its own vertex stage
+    /// [`define_program`](Self::define_program) for a program with its own vertex stage
     /// (`vertex`: the transpiler's `vertexGlsl`).
     pub fn define_program_vertex(
         &mut self,
@@ -111,7 +111,7 @@ impl CanvasItemsTestHarness {
             .map_err(js)
     }
 
-    /// G7s: binding slot `slot` of the held list (draws name it `slot + 1`) from JSON
+    /// Binding slot `slot` of the held list (draws name it `slot + 1`) from JSON
     /// `{"program": n, "post_modulate": [r, g, b, a], "uniforms": [{"name": s, "float": [..]} |
     /// {"name": s, "int": [..]}], "samplers": [{"name": s, "texture": n, "sampler": bits}]}`.
     pub fn set_binding(&mut self, slot: u32, json: &str) -> Result<(), JsValue> {

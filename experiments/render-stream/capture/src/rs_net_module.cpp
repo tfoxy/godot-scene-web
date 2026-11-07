@@ -1,4 +1,4 @@
-// rs_net_module.cpp -- see rs_net_module.h (carrier-design.md D8, CAR3).
+// rs_net_module.cpp -- see rs_net_module.h.
 #include "rs_net_module.h"
 
 #include <dlfcn.h>

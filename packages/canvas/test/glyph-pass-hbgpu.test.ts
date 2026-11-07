@@ -368,8 +368,8 @@ describe("eviction", () => {
       glyphs: 2,
       drawCalls: 1,
     });
-    // `resolve` is a map lookup. If this ever encodes, the frame is paying ~180 ms for a Han
-    // working set it already has in VRAM.
+    // `resolve` is a map lookup. If this ever encodes, the frame is re-encoding a working set it
+    // already has in VRAM.
     expect(font.encodeCalls.length).toBe(before);
     expect(pass.stats.reuploads).toBe(0);
   });
@@ -555,8 +555,8 @@ describe("the projection", () => {
     // so handed the design size it dilates twice as far as it should.
     //
     // ASSERTED ON THE UNIFORM BECAUSE THE PIXELS CANNOT SEE IT at this ratio: over-dilation adds
-    // fragments whose coverage evaluates to 0, and it was measured at zero differing bytes on a
-    // real driver. The direction that does show up is a buffer SMALLER than design space, which
+    // fragments whose coverage evaluates to 0, so it changes no bytes on a real driver. The
+    // direction that does show up is a buffer SMALLER than design space, which
     // clips the AA rim — `packages/test-harness/test/canvasGlyphPixelXvfb.test.ts` covers both.
     const { fake, pass, face } = setup({ design: [640, 480] });
     const run = runOf([pass.slotFor(face, 1)]);
@@ -602,8 +602,7 @@ describe("the ppem fidelity floor", () => {
   });
 
   it("measures ppem in DEVICE pixels, so a 2x stage clears the floor at 14 design px", () => {
-    // The phone case the docs quote: 14 CSS px at DPR 3.5 is ppem 49, where this path's distortion
-    // is 0.017. The floor is about device pixels and nothing else.
+    // 14 CSS px at a high DPR clears the floor: it is about device pixels and nothing else.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const { pass, face } = setup({ design: [640, 480] });
@@ -781,9 +780,8 @@ describe("the contrast curve", () => {
   });
 
   it("forwards HB_GPU_CONTRAST_NONE — the Godot-parity setting — to the renderer", () => {
-    // What `../sts2-couch-coop`'s `frontend/src/mirror/canvas/glyphPass.ts` mounts with, and why:
-    // Godot applies no contrast curve of its own, and the A1 crossover sweep measures this path's
-    // distortion at 0.0258 against 0.1091 at ppem 16 with the curve off vs on. See the option's doc.
+    // What a Godot-mirroring consumer mounts with, and why: Godot applies no contrast curve of its
+    // own. See the option's doc.
     const { fake, failures } = setup({ contrast: HB_GPU_CONTRAST_NONE });
     expect(writes(fake, "u_stemDarken")).toEqual([0]);
     expect(writes(fake, "u_gamma")).toEqual([1]);

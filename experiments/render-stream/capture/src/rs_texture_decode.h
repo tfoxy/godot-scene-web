@@ -1,8 +1,8 @@
-// The host texture-decode seam (gate8-design.md D8, Q3; G8w landed the seam, G8t fills it).
+// The host texture-decode seam.
 //
 // Under GRC_TEXTURE_DECODE=engine, hooks.cpp's texture copy asks this seam about any image whose
 // format is outside GRC_RESOURCE_FORMATS. A block-compressed format the engine's own
-// `Image::decompress` turns into RGBA8, R8 or RG8 (the D8 table, `decode_target_format`) is
+// `Image::decompress` turns into RGBA8, R8 or RG8 (`decode_target_format`) is
 // decoded here, on the calling thread, on a duplicate of the hooked Image (`Resource.duplicate`,
 // which shares the bytes copy-on-write, then `Image.decompress`): the engine's image is never
 // touched. Everything else declines and the caller keeps its `unsupported-format` refusal:
@@ -42,7 +42,7 @@ struct DecodeResult {
   std::int64_t data_size = 0;
   std::shared_ptr<void> hold;  // keeps the decoded duplicate alive (released on reset)
   std::int64_t decode_ns = -1;  // duplicate + decompress, on the calling thread; -1 if not tried
-  bool perturbed = false;       // perturb-decode flipped texel 0 (gate8-design.md Q3 "Sabotages")
+  bool perturbed = false;       // perturb-decode flipped texel 0
 };
 
 // What a backend made of one request: the decoded image's shape and bytes, kept alive by `hold`.
@@ -79,7 +79,7 @@ bool texture_decode_perturb_active();
 // Decodes `request` into a payload-ready image (see the header comment).
 DecodeResult texture_decode(const DecodeRequest &request);
 
-// Totals since arm, for result.json's `stream.gate8.decode` (gate8-design.md Q3 `decode-cost`).
+// Totals since arm, for result.json's `stream.gate8.decode`.
 struct DecodeStats {
   std::int64_t decoded = 0;   // handled requests
   std::int64_t declined = 0;  // requests the table or the result check refused

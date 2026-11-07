@@ -1,6 +1,6 @@
 // Pure synthesis of the gate 1 fixture's expected per-step frame, straight from
 // fixtures/gate1/expected.json (render-stream-gate1-expected/1) -- no file or network I/O, no
-// Godot, no capture evidence. See ../../protocol/gate1-design.md "Q6. Fixture (G1a)" for the
+// Godot, no capture evidence. See fixtures/gate1/README.md for the
 // schema and the checks (`expected-image-reference`, `expected-image-receiver`) that compare real
 // screenshots with this synthesized image.
 
@@ -19,8 +19,8 @@ export interface Gate1Draw {
 /** A parent reference by name: the root canvas by wire id, an item by fixture name, or none. */
 export type Gate1ParentRef = { canvas: number } | { item: string } | null;
 
-/** One retained-state assertion on the step's settle transaction (gate1-design.md Q6
- * "invariants"). Item names map to wire ids through `creation_order` + `created_later`. */
+/** One retained-state assertion on the step's settle transaction
+ * Item names map to wire ids through `creation_order` + `created_later`. */
 export type Gate1Invariant =
   | {
       kind: "field";
@@ -85,7 +85,7 @@ export interface Gate1Expected {
   steps: Gate1ExpectedStep[];
   /** the draw-index ties (render-stream-1.md invariant 9) the capture must report, and no
    * others: at `step`'s applied frame + `frame_offset`, on canvas `canvas`, between `members`;
-   * `harmless` when their paint footprints are disjoint (G1b2, README "Gate 1b result") */
+   * `harmless` when their paint footprints are disjoint */
   draw_index_ties?: {
     step: number;
     frame_offset: number;

@@ -1,5 +1,5 @@
 // Gate 2 group g2e (G2e): bearer-token authorization on the WebSocket upgrade and on every
-// resource GET (protocol/gate2-design.md D13, G2e). Three legs, each a fresh live host (the live
+// resource GET. Three legs, each a fresh live host (the live
 // timeline, S = 300, N = 60, quit 971, as g2c's) plus one live receiver:
 //   live-auth                 GRC_LIVE_AUTH=token; the receiver gets the host's own
 //                             evidence/live-token (RS_RECEIVER_TOKEN_FILE) -> success
@@ -12,11 +12,11 @@
 //                             (resource-unavailable: every GET answers HTTP 401)
 //
 // Unlike g2c's live legs, g2e's own classification does not compare pixels or resource-traffic
-// counts against a per-step budget: gate2-design.md G2e's "Checks" list is exactly
+// counts against a per-step budget: G2e's "Checks" list is exactly
 // auth-required, token-not-logged and leg-class-*, nothing pixel- or fetch-count-specific.
 // classifyG2eLeg below is a narrower cousin of gate2b-checks.ts's classifyLive: host health
 // (armed, stream closed cleanly, no texture-log-divergence) and the receiver's own applied.json
-// status are enough to place a leg in gate2-design.md Q7's class precedence.
+// status are enough to place a leg the contract's class precedence.
 //
 // Evidence layout under <out>/ for g2e (run-gate2.sh "run_g2e"):
 //   <leg>/host/       a live host as g2c's, plus evidence/live-token (mode 0600) and, for the
@@ -99,7 +99,7 @@ export const G2E_LEGS: readonly G2eLegExpectation[] = [
   },
 ];
 
-/** G8kz (texture-delivery-design.md D2): the HTTP content-coding legs, each a fresh live host and
+/** G8kz: the HTTP content-coding legs, each a fresh live host and
  * a headless receiver on the live timeline. `coding-gzip`: GRC_HTTP_ENCODING=gzip. `coding-off`:
  * GRC_HTTP_ENCODING=off. `coding-receiver-off` (native receivers only; a browser always asks):
  * the default host, and a native receiver with RS_RECEIVER_ACCEPT_ENCODING=off.
@@ -127,7 +127,7 @@ export interface G2eClassification {
 }
 
 /** Host health plus the receiver's own applied.json status -- no pixel or resource-traffic
- * comparison (gate2-design.md G2e's "Checks" list does not ask for either). */
+ * comparison (G2e's "Checks" list does not ask for either). */
 export function classifyG2eLeg(
   host: CaptureEvidence,
   receiver: ReceiverEvidence,
@@ -446,7 +446,7 @@ export interface G2eLegReport {
   artifacts: string[];
 }
 
-/** G7l (gate7-design.md Q8 g7-2): the two legs only a browser receiver runs (run-gate2.sh under
+/** G7l (g7-2): the two legs only a browser receiver runs (run-gate2.sh under
  * GATE7_LIVE_KIND). Judged only when live-auth's connection spoke /7, so a native /6 run of gate 2
  * is unchanged. */
 export const G2E_V7_LEGS: readonly G2eLegExpectation[] = [
@@ -721,7 +721,7 @@ function codingProblems(
     problems.push(
       `${leg}: live-summary http_coded_bytes ${s?.http_coded_bytes} != http_bytes ${s?.http_bytes} while off`,
     );
-  // TDR (live-swap-design.md Q5): bodies are held in the host's coding; a receiver that takes it
+  // TDR: bodies are held in the host's coding; a receiver that takes it
   // is served the stored body and never makes the host inflate one, and one that asks for none is
   // served inflated identity bodies (counted). Off holds identity and inflates nothing.
   // Judged where the host reports it (a pre-TDR or synthesized summary has no `at_rest`).

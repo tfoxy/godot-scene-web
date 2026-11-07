@@ -1,4 +1,4 @@
-// Runner-side /proc sampler (G6t, Q3d/Q7e/Q5 of ../../protocol/gate6-design.md): reads
+// Runner-side /proc sampler (G6t, Q3d/Q7e/Q5): reads
 // `/proc/<pid>/status` (VmRSS, VmHWM, VmSize, Threads) and `/proc/<pid>/task/*/stat` (per-thread
 // utime/stime) for a process this runner already owns (the host or the receiver), at 1 Hz.
 //

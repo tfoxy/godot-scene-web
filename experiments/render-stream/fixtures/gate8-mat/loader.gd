@@ -14,7 +14,7 @@ extends Node
 ##                              every shader and material is created under the hooks and recorded
 ##                              by the registry before the arm, then adopted from it
 ##   RS_FIXTURE_ARM=thread      at frame K too, but from a worker Thread (the `late-thread` leg:
-##                              adoption refuses `adopt-thread`, gate8-design.md D4)
+##                              adoption refuses `adopt-thread`)
 ##
 ## An autoload enters the tree, and processes, ahead of the main scene, so at frame K the capture
 ## arms before the scene's own `_process` of that frame. `GRC_EXTENSION` unset: nothing is loaded

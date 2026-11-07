@@ -2,8 +2,8 @@
 ; render-stream/3. Labels on one runtime MSDF FontFile of the pinned bytes (msdf_size 48,
 ; msdf_pixel_range 24, the target game's import values) at 16, 24 and 40 px, one with an outline
 ; toggled on, one under a rotated and scaled Node2D. Ten steps (0..9). See
-; fixtures/gate4-msdf/README.md and ../../protocol/gate4-design.md ("G4e2", "Q6e") for the
-; contract. Every font and text input is pinned here, as in fixtures/gate4 (gate4-design.md Q1e).
+; fixtures/gate4-msdf/README.md for the
+; contract. Every font and text input is pinned here, as in fixtures/gate4.
 
 config_version=5
 

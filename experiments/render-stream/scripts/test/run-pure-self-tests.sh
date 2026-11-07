@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The pure self-tests (gate7-design.md "Re-runs": golden-1/ to golden-7/'s make_golden.py --check
-# and every self-test-*.ts), run in parallel OUTSIDE the quiet lock's blocking path (GRT,
-# results/grt.md): each runs as `quiet.sh light`, niced and holding nothing, so it never queues
+# The pure self-tests (golden-1/ to golden-7/'s make_golden.py --check
+# and every self-test-*.ts), run in parallel OUTSIDE the quiet lock's blocking path:
+# each runs as `quiet.sh light`, niced and holding nothing, so it never queues
 # behind another agent's timing leg. While a timing leg holds the machine lock, at most one
 # self-test runs at a time.
 #
@@ -16,7 +16,7 @@
 # one at a time). Prints one PASS/FAIL line per test and a summary; exits non-zero on any FAIL.
 #
 # RS_PURE_SHARD=i/n (1 <= i <= n) runs only shard i of n: the remote workflow splits `pure` across n
-# jobs (docs/remote-compute.md). The split is deterministic -- longest-processing-time-first over the
+# jobs. The split is deterministic -- longest-processing-time-first over the
 # per-test seconds in pure-shard-weights.json (a test missing there weighs 20 s), ties broken by
 # name -- and the n shards cover every test exactly once. Unset or empty means the whole suite,
 # exactly as before. --list prints the selected units and exits. A heavy test listed under "parts" in

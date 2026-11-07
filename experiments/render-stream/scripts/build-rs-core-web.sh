@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the web export's adapter over the shared Rust core as an emscripten dlink side module
-# (gate7-design.md G7xw, Q14e, D34, fork F4): rs-core-capi (the same Rust staticlib G7xn's native
+# (G7xw, Q14e, D34, fork F4): rs-core-capi (the same Rust staticlib G7xn's native
 # GDExtension links) for wasm32-unknown-emscripten with the pinned nightly's -Zbuild-std and
 # -C relocation-model=pic, linked with the same C++ shim receiver/ext/rs_core_ext.cpp by emcc
 # 4.0.11 into receiver/ext/build/web/librs_core_ext.wasm, the library rs_core.gdextension names

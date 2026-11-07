@@ -1,4 +1,4 @@
-// Gate 8 g8tdr checks (TDR, protocol/live-swap-design.md Q5 "served at rest", capture/src/
+// Gate 8 g8tdr checks (TDR, capture/src/
 // rs_payload_rest.h): GRT1 texture bodies are zstd-coded where they are built, and the mirror and
 // the live served set hold only the coded body. run-gate8.sh run_g8tdr writes, under g8tdr/:
 //

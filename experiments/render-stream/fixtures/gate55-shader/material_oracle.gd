@@ -1,6 +1,5 @@
 extends RefCounted
-## The gate 5.5 material oracle (../../protocol/gate5_5-design.md "Q6e",
-## `render-stream-gate55-materials/1`).
+## The gate 5.5 material oracle (`render-stream-gate55-materials/1`).
 ##
 ## Runs on reference legs only (gate55_shader.gd refuses it when a GRC_* capture variable is set).
 ## At each settle frame, after the fixture's own calls of that frame, it writes one JSON line:
@@ -146,7 +145,7 @@ static func variant_view(v: Variant, textures: Dictionary) -> Dictionary:
 	return {"type": type_string(typeof(v)), "value": str(v)}
 
 
-## The render-stream-shader/1 payload of a code string (protocol/gate5_5-design.md Q4).
+## The render-stream-shader/1 payload of a code string.
 static func grp1(code: String) -> PackedByteArray:
 	var data: PackedByteArray = code.to_utf8_buffer()
 	var meta: PackedByteArray = ("{\"type\":\"shader-code\",\"code_bytes\":%d}" % data.size()).to_utf8_buffer()

@@ -1,8 +1,7 @@
 ; Gate 5.5 screen-texture fixture for the render-stream capture experiment (P3-ST). Six steps
 ; (0..5) over hint_screen_texture ShaderMaterials: the automatic back-buffer copy, a second reader
 ; reusing it, a mip-chain reader, and a fresh copy in a child CanvasLayer with a clipped reader.
-; See fixtures/gate55-screen/README.md and ../../protocol/gate5_5-design.md
-; ("Screen texture (P3-ST)").
+; See fixtures/gate55-screen/README.md.
 
 config_version=5
 

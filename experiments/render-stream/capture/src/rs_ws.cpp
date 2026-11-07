@@ -420,7 +420,7 @@ bool parse_allowed_origins(std::string_view text, std::vector<std::string> *out,
 
 namespace {
 
-// True iff `req`'s Authorization header is "Bearer <expected>" (gate2-design.md D13). Always
+// True iff `req`'s Authorization header is "Bearer <expected>". Always
 // true when `expected` is empty (auth disabled). The "Bearer " prefix is a public constant (RFC
 // 6750), so checking it is allowed to short-circuit; only the secret itself is compared in
 // constant time, over `presented` (empty when the header is absent or malformed), so a
@@ -944,7 +944,7 @@ struct Server::Impl {
     return extra;
   }
 
-  // G7n (gate7-design.md D3): true when `origin` (non-empty) may use this listener.
+  // true when `origin` (non-empty) may use this listener.
   bool origin_allowed(const std::string &origin) const {
     return !config.enforce_origins || contains(config.allowed_origins, origin);
   }
@@ -957,7 +957,7 @@ struct Server::Impl {
     return {{"Access-Control-Allow-Origin", origin}, {"Vary", "Origin"}};
   }
 
-  // Handles one resource GET (gate2-design.md D6, Q4; render-stream-2.md "HTTP (live)"). The
+  // Handles one resource GET (render-stream-2.md "HTTP (live)"). The
   // path has already been confirmed to start with config.resource_prefix.
   void dispatch_resource_get(Conn &c, const ParsedRequest &req) {
     const bool keep_alive = !request_wants_close(req);
@@ -966,7 +966,7 @@ struct Server::Impl {
     const std::string hash = req.path.substr(config.resource_prefix.size());
     const std::string origin = header_value(req, "origin");
 
-    // G7n (gate7-design.md D3): a foreign Origin is refused before anything else is looked at.
+    // a foreign Origin is refused before anything else is looked at.
     if (!origin.empty() && !origin_allowed(origin)) {
       send_http_status(c, 403, {}, keep_alive);
       push_event_locked(make_origin_rejected_event(c.id, req, "resource", hash));
@@ -1066,7 +1066,7 @@ struct Server::Impl {
 
   void dispatch_ws_upgrade(Conn &c, const ParsedRequest &req) {
     const std::string origin = header_value(req, "origin");
-    // G7n (gate7-design.md D3): a foreign Origin is refused before anything else is looked at --
+    // a foreign Origin is refused before anything else is looked at --
     // the allowlist is the defence against any web page in the operator's browser opening this
     // socket. An allowed origin's upgrade is otherwise unchanged.
     if (!origin.empty() && !origin_allowed(origin)) {
@@ -1078,7 +1078,7 @@ struct Server::Impl {
       reject(c, 400, "expected GET");
       return;
     }
-    // TRK1 (tracks-design.md Q3): the track subprotocols are matched after every view one, so a
+    // the track subprotocols are matched after every view one, so a
     // client offering both gets the view subprotocol; with none configured the list is today's.
     const bool tracks_on = !config.track_subprotocols.empty();
     std::vector<std::string> with_tracks;
@@ -1111,7 +1111,7 @@ struct Server::Impl {
       return;
     }
     if (config.admission != nullptr) {
-      // CAR1 (carrier-design.md D6): the slot is shared with every other carrier.
+      // the slot is shared with every other carrier.
       if (!config.admission->admit(pool)) {
         reject(c, 503, "max_clients");
         return;
@@ -1526,7 +1526,7 @@ bool Server::start(const ServerConfig &config, ResourceSource *source, std::stri
     addr6.sin6_port = htons(config.port);
     addr6.sin6_addr = in6addr_loopback;
   } else if (config.allow_non_loopback && inet_pton(AF_INET, config.host.c_str(), &addr4.sin_addr) == 1) {
-    // CAR2 (carrier-design.md D10): 0.0.0.0 or a host address, only when the entry point has
+    // 0.0.0.0 or a host address, only when the entry point has
     // checked GRC_LIVE_EXPOSE=lan, the token and the origins.
     family = AF_INET;
     addr4.sin_family = AF_INET;

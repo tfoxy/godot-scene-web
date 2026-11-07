@@ -1,5 +1,5 @@
-// Unit tests for the texture worker pool and the publication hold-back (src/rs_texture_worker.*;
-// texture-delivery-design.md D11, Q7; G8kw), with no engine: a fake "worker" fills each job with
+// Unit tests for the texture worker pool and the publication hold-back (src/rs_texture_worker.*),
+// with no engine: a fake "worker" fills each job with
 // the bytes and hash the synchronous path would have produced. The engine half (the duplicate,
 // Image::decompress on a worker) runs only inside Godot (run-gate8.sh g8t, the workers legs).
 //

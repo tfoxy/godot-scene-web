@@ -81,6 +81,25 @@ git commit            # the .gitmessage template opens; this message is the one 
 The reason for squashing is legibility: `git log --oneline` on `main` should read as a list of
 changes, and `git blame` should land on a commit whose body explains the whole change.
 
+## Public tree check
+
+This repository is public, and `scripts/check-public-tree.py` keeps internal material out of it.
+It runs in `pnpm check` (alone: `pnpm check-public-tree`), in the `pre-push` hook that
+`scripts/install-agent-config.sh` wires up, in `scripts/remote-validate.sh` before its snapshot
+push, and in the publish workflow before anything is built. It refuses:
+
+- a tracked `*.md` / `*.mdx` file that is not on the allowlist in `scripts/public-tree.conf`;
+- a path on that file's denylist (research results, handoffs, design notes, ledgers, `private/`),
+  in the tree or added by any commit being pushed;
+- text matching its personal-data patterns (documented placeholders are allowed);
+- on push, a branch that still descends from history from before a rewrite of `main`.
+
+A new public document needs one `allow-md` line in `scripts/public-tree.conf`, in the same change.
+Material for maintainers only (investigations, results, plans, internal agent configuration)
+belongs in the private companion checked out at `private/`, which is gitignored; the installer
+links each worktree's `private` to the main checkout's. Run `bash scripts/test-check-public-tree.sh`
+after changing the check itself.
+
 ## Cutting a release
 
 1. Draft the notes from the trailers:
@@ -92,8 +111,8 @@ changes, and `git blame` should land on a commit whose body explains the whole c
    It prints the trailers grouped under Keep a Changelog headings, then lists every `feat`/`fix`/
    `perf` commit with **no** trailer. Decide about each of those before moving on.
 
-2. Rewrite the draft under a new `## [x.y.z] - YYYY-MM-DD` heading in `CHANGELOG.md`. The
-   `release-notes` skill does this step.
+2. Rewrite the draft under a new `## [x.y.z] - YYYY-MM-DD` heading in `CHANGELOG.md`, in words an
+   integrator would read.
 
 3. Bump **every** publishable package in `packages/` to the same version — `pnpm release:check-tag`
    refuses a tag unless they all agree — and commit that with the changelog:

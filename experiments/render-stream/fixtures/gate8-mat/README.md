@@ -1,8 +1,6 @@
 # Gate 8 material fixture
 
-Pre-arm materials and shaders (G8m,
-[`../../protocol/gate8-design.md`](../../protocol/gate8-design.md) "Q5. Pre-arm materials and
-shaders", D11, D12). One scene, `mat.tscn`, run two ways by gate8-adopt's loader autoload (copied
+Pre-arm materials and shaders (G8m). One scene, `mat.tscn`, run two ways by gate8-adopt's loader autoload (copied
 unchanged): `late` (the default main scene, built before the capture arms at fixture frame K) and
 `born` (`res://born.tscn` instantiates the same scene in `_ready`, after the loader armed the
 capture in `_enter_tree`). LAR3 adds `deferred`: the loader loads the capture in `_enter_tree`

@@ -1,5 +1,5 @@
 // C ABI of experiments/render-stream/rs-core-capi (Rust staticlib), mirrored by hand from its
-// src/lib.rs, src/ops.rs and src/vt.rs. gate7-design.md Q14e, G7xn.
+// src/lib.rs, src/ops.rs and src/vt.rs.
 //
 // Every answer lands in one of three per-handle buffers the caller reads right after the call:
 // rsc_vt (a Variant tree, vt.rs), rsc_text (bytes) and rsc_ops_words/rsc_ops_arena
@@ -19,7 +19,7 @@ void rsc_free(RsCore *h);
 uint32_t rsc_op_count();
 void rsc_set_sabotage(RsCore *h, const uint8_t *name, size_t len);
 void rsc_set_full_scan(RsCore *h, int32_t on);
-// G8kp (texture-delivery-design.md D3): the hello's texture_encodings and gpu_formats; 1, or 0
+// the hello's texture_encodings and gpu_formats; 1, or 0
 // with the error in text.
 int32_t rsc_set_delivery(RsCore *h, const uint8_t *encodings, size_t encodings_len,
                          const uint8_t *gpu_formats, size_t gpu_formats_len);

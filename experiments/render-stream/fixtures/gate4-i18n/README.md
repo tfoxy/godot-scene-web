@@ -1,7 +1,6 @@
 # Gate 4 multilingual fixture
 
-The reference rendering for gate 4's G4f ([`../../protocol/gate4-design.md`](../../protocol/gate4-design.md)
-"G4f" and "Q6e"): ten native `Label`s at 16 px on one runtime `FontFile` of Open Sans SemiBold
+The reference rendering for gate 4's multilingual text: ten native `Label`s at 16 px on one runtime `FontFile` of Open Sans SemiBold
 (`OS`) whose fallbacks are the engine's Vazirmatn (`VZ`), Noto Sans Devanagari UI (`DV`) and Noto
 Sans Hebrew (`HE`), in that order. Ten steps (0..9) bring in Greek, Cyrillic and NFD Vietnamese
 (OS), Arabic with lam-alef and Persian with ZWNJ (VZ), Hebrew with niqqud and a mixed bidi string
@@ -16,13 +15,13 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate4-i1
 
 ## Files
 
-- `project.godot`, `loader.gd`, `fonts/`: as `fixtures/gate4` (Q1e's pins, the `GrcLoader`
+- `project.godot`, `loader.gd`, `fonts/`: as `fixtures/gate4` (the pinned text inputs, the `GrcLoader`
   autoload, the ignored font copies).
-- `fonts.lock.json`: four entries. Open Sans comes from `packages/html/vendor/` (D2); the three
+- `fonts.lock.json`: four entries. Open Sans comes from `packages/html/vendor/`; the three
   OFL-1.1 fallbacks come from the engine checkout's `thirdparty/fonts/` with their sizes, SHA-256
   and licence files. `scripts/lib/provision-fonts.sh` copies and verifies them; no font binary is
   committed here.
-- `gate4_i18n.tscn`, `gate4_i18n.gd`: a root `Node`; builds the four fonts (D3's pins, then OS's
+- `gate4_i18n.tscn`, `gate4_i18n.gd`: a root `Node`; builds the four fonts (the pinned font properties, then OS's
   fallbacks), the panel `P`, the Labels and the `Marker` in `_ready()` in `expected.json`
   `creation_order`; `_process()` applies the timeline. At startup it checks, through
   `TextServer.font_has_char`, that the fallback order picks each string's expected font, that OS

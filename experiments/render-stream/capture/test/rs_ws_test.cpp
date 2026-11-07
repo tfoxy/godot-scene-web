@@ -1,6 +1,5 @@
 // Unit test for rs_ws (src/rs_ws.h), the dependency-free RFC 6455 server
-// (protocol/gate1-design.md G1c1) and its HTTP GET resource serving
-// (protocol/gate2-design.md G2c1).
+// and its HTTP GET resource serving
 //
 // Covers:
 //   - SHA-1 vectors (FIPS 180, "" and "abc").
@@ -21,21 +20,21 @@
 //     keep-alive across two requests, Connection: close honoured, a
 //     WebSocket session alongside HTTP fetches on the same port, and that
 //     the built test binary imports neither mmap nor mprotect.
-//   - Bearer-token authorization (gate2-design.md D13, G2e): constant_time_equals's own
+//   - Bearer-token authorization: constant_time_equals's own
 //     correctness (equal, unequal, differing lengths, empty), a missing or wrong token on the WS
 //     upgrade and on a resource GET both -> 401 (an AuthRejected event for the former, an
 //     HttpGet 401 event for the latter), a correct token succeeds on both, and no auth_token
 //     configured leaves every request unauthenticated-but-accepted as before G2e.
-//   - G7n (gate7-design.md D2, D3, Q3): the subprotocol choice (render-stream.7 preferred), the
+//   - The subprotocol choice (render-stream.7 preferred), the
 //     /7 upgrade without a bearer header while /6 keeps it, the Origin allowlist (403 and one
 //     OriginRejected event on the upgrade, GET and OPTIONS; exact matching), CORS headers on an
 //     allowed GET (200, 404, 401), the exact 204 preflight for any hash, the accept-any-origin and
 //     no-cors switches, and parse_allowed_origins.
-//   - TRK1 (tracks-design.md Q1.1, Q3): with no track_subprotocols a track upgrade is answered
+//   - Track subprotocols: with no track_subprotocols a track upgrade is answered
 //     byte for byte as an unknown subprotocol; with them, a track upgrade is 101 without the
 //     bearer check, has its own max_tracks pool (503 past it while a view upgrade still succeeds),
 //     and a client offering both a view and a track subprotocol gets the view one.
-//   - CAR2 (carrier-design.md D10, Security): allow_non_loopback binds 0.0.0.0, "::" and a host
+//   - CAR2 (Security): allow_non_loopback binds 0.0.0.0, "::" and a host
 //     address and serves through a non-loopback address; a hostname still refuses; the Origin
 //     allow-list holds there; and a malformed-input set (headers over 8 KiB, bad lengths,
 //     reserved bits, unmasked and non-UTF-8 frames) is answered with the right status or close
@@ -761,7 +760,7 @@ void test_stop_closes_open_connections() {
   ::close(fd);
 }
 
-// --- HTTP GET resource serving (gate2-design.md G2c1). ---
+// --- HTTP GET resource serving. ---
 
 void test_http_get_sizes_byte_exact() {
   FakeResourceSource source;
@@ -862,7 +861,7 @@ void test_http_405_wrong_method() {
   server.stop(1000);
 }
 
-// --- G8kz: HTTP content coding (texture-delivery-design.md D2, Q5). ---
+// --- HTTP content coding. ---
 
 void test_negotiate_coding() {
   using grc::live::Coding;
@@ -1170,7 +1169,7 @@ void test_http_coexists_with_websocket() {
   server.stop(1000);
 }
 
-// --- Bearer-token authorization (gate2-design.md D13, G2e). ---
+// --- Bearer-token authorization. ---
 
 void test_constant_time_equals() {
   using grc::live::constant_time_equals;
@@ -1331,7 +1330,7 @@ void test_no_mmap_mprotect_imports() {
 }
 
 // ---------------------------------------------------------------------------
-// G7n (gate7-design.md D2, D3, Q2, Q3): two subprotocols, the /7 upgrade without a bearer
+// two subprotocols, the /7 upgrade without a bearer
 // header, the Origin allowlist (403 on every route), CORS on GET, the preflight, and the
 // no-cors / accept-any-origin sabotage switches.
 
@@ -1645,7 +1644,7 @@ int connect_ipv4(const std::string &host, std::uint16_t port) {
 }
 
 // CAR2 (D10): ServerConfig::allow_non_loopback is the one switch; without it nothing changes.
-// ---- TRK1: track subprotocols (tracks-design.md Q1.1, Q3) ----
+// ---- track subprotocols ----
 
 const char *const kTrackSp = "render-stream-track.1";
 
@@ -1844,7 +1843,7 @@ std::uint16_t close_code_of(const ServerFrame &f) {
              : 0;
 }
 
-// Security (carrier-design.md): the parser the LAN can now reach. Each case gets its own
+// Security: the parser the LAN can now reach. Each case gets its own
 // connection; after all of them a fresh handshake still gets a 101.
 void test_malformed_inputs_on_lan_listener() {
   grc::live::Server server;
@@ -1955,7 +1954,7 @@ void test_malformed_inputs_on_lan_listener() {
 }
 
 // ---------------------------------------------------------------------------
-// CAR4 (carrier-design.md D11, D12): wss and https on the same port, through the real net
+// wss and https on the same port, through the real net
 // module's TLS session (librender_stream_net.so beside this binary, or GRC_LIVE_NET_MODULE),
 // with an OpenSSL client and a P-256 certificate generated here at test time (never committed).
 // Without OpenSSL at build time or the module at run time these cases print `skip`; with
@@ -2497,7 +2496,7 @@ void test_wss_bad_records(const TestPki &pki, grc::live::TlsContext *ctx) {
 }
 
 // Not a check: handshake time and send throughput, TLS against plaintext on one server
-// (--tls-bench; the numbers in carrier-design.md "As built (CAR4)" came from it).
+// (--tls-bench; the numbers came from it).
 void tls_bench(const TestPki &pki, grc::live::TlsContext *ctx) {
   grc::live::Server server;
   std::string error;

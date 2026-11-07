@@ -1,5 +1,5 @@
 extends SceneTree
-## IN7: the GDScript validator against every packages/input/conformance/v1/codec vector. It must
+## The GDScript validator against every packages/input/conformance/v1/codec vector. It must
 ## agree with the TypeScript codec on `ok`, `code`, `path` (when the vector gives one; none when
 ## it does not) and `skipped`.
 ##

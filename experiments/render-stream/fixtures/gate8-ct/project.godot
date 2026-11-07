@@ -1,4 +1,4 @@
-; Gate 8 CanvasTexture fixture (P3-CT, ../../protocol/gate8-design.md "As built (P3-CT)"): 640x360,
+; Gate 8 CanvasTexture fixture: 640x360,
 ; every texture drawn only through a CanvasTexture. See README.md.
 
 config_version=5

@@ -1,5 +1,5 @@
-// RsCore: the native receiver's GDExtension adapter over the shared Rust core (gate7-design.md
-// G7xn, Q14e, D34). C++ over the raw gdextension_interface.h (the capture extension's vendored
+// RsCore: the native receiver's GDExtension adapter over the shared Rust core.
+// C++ over the raw gdextension_interface.h (the capture extension's vendored
 // copy, ../../capture/vendor), no godot-cpp.
 //
 // It registers one class, RsCore (RefCounted), whose methods receiver.gd reaches through
@@ -603,7 +603,7 @@ void particles_set_seed(uint64_t particles, uint32_t seed) {
 }
 
 #ifdef __EMSCRIPTEN__
-// The web export's index-region guard (G7xw; results/gate7/g7b.md Finding 2). Godot 4.5.1's
+// The web export's index-region guard. Godot 4.5.1's
 // mesh_surface_update_index_region binds the index buffer to GL_ARRAY_BUFFER
 // (drivers/gles3/storage/mesh_storage.cpp:591-593), which WebGL 2 forbids for a buffer first bound
 // as an element array buffer, so the engine's own update is dropped there. While the guard is
@@ -674,8 +674,8 @@ struct Instance {
   int64_t apply_plan_us = 0;
   int64_t apply_execute_us = 0;
   int64_t apply_stats_us = 0;
-  // G8ku: one JSON object per KTX2 the executor transcoded since the last take_transcodes()
-  // (texture-delivery-design.md D16 `transcode-oracle`); `hash_uploads` (set_transcode_log) adds
+  // One JSON object per KTX2 the executor transcoded since the last take_transcodes();
+  // `hash_uploads` (set_transcode_log) adds
   // the uploaded blocks' SHA-256, off by default (it hashes every transcoded texture).
   std::string transcodes;
   bool hash_uploads = false;
@@ -1009,12 +1009,12 @@ struct OpReader {
 
 // Image.create_from_data(w, h, mipmaps, format, data) as an owned Object* (nullptr for a format
 // the core did not code: -1, i.e. none of the six 8-bit formats and, from /8, the eight float
-// formats RF RGF RGBF RGBAF RH RGH RGBH RGBAH, whose Image.Format values 8-15 the core sends as is
-// (G8f, gate8-design.md D9). The engine's own GLES3 upload then applies its float rules: 32-bit
+// formats RF RGF RGBF RGBAF RH RGH RGBH RGBAH, whose Image.Format values 8-15 the core sends as is.
+// The engine's own GLES3 upload then applies its float rules: 32-bit
 // floats become halves where OES_texture_float_linear is missing.)
 GDExtensionObjectPtr make_image(OpReader &r, Instance *inst);
 
-// G8kwh: the family Godot's Image.Format `format` uploads as (texture-delivery-design.md Q3's
+// the family Godot's Image.Format `format` uploads as (its
 // feature names), or nullptr for an uncompressed format.
 const char *image_format_family(int64_t format) {
   if ((format >= 17 && format <= 19) || format == 34) return "s3tc";  // DXT1/3/5, DXT5_RA_AS_RG
@@ -1045,7 +1045,7 @@ const char *webgl_refused_target(const Instance *inst, int64_t format, int64_t w
   return nullptr;
 }
 
-// G8ku (texture-delivery-design.md Q6 "Native receiver", D14): a `uastc` variant's KTX2 file
+// a `uastc` variant's KTX2 file
 // (rs-core verified its hash and checked its shape) through Image.load_ktx_from_buffer, which
 // transcodes to the first target Godot's KTX2 loader finds in RenderingServer.has_os_feature
 // (with 4 channels ASTC_4x4, BC7, BC3, ETC2_RGBA, then RGBA8). The transcode is logged.

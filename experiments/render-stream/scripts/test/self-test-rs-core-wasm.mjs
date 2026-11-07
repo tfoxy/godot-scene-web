@@ -1,4 +1,4 @@
-// Q14d "Goldens" under the wasm build (gate7-design.md G7x R1: "golden-6 passes through the core
+// Q14d "Goldens" under the wasm build (G7x R1: "golden-6 passes through the core
 // natively and as wasm"): loads rs-gsw-wasm's `--target web` glue in Node (the very module the
 // browser loads, built by scripts/build-rs-core.sh) and runs `run_goldens`, the same Rust function
 // `rs-core-check goldens` runs natively.

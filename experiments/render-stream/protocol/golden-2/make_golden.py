@@ -15,8 +15,8 @@ resolved.json.
 Every float is a whole number with an exact float32 encoding, so a float never depends on a
 decimal parser (as in protocol/golden-1/make_golden.py).
 
-One scene, six logical states (STATE 1..6), same as /1's shape but with textures (gate2-design.md
-Q6's fixture, scaled down to a handful of items/textures for a protocol-level golden):
+One scene, six logical states (STATE 1..6), same as /1's shape but with textures
+(scaled down to a handful of items/textures for a protocol-level golden):
 
     canvas 1 (root) holds five top-level items, never reparented or reordered:
       item 1  draws add_texture_rect(A, tile, transpose), texture_filter=linear, repeat=enabled
@@ -135,7 +135,7 @@ FEATURE_RESOURCES = sorted(["texture_2d", "texture_2d_placeholder"])
 FEATURE_UNSUPPORTED_RESOURCES = []
 # /1's observed_unsupported_ops without the two texture-rect hooks (now fully captured), plus
 # canvas_item_add_lcd_texture_rect_region (hooked from calibrator 5 on) and
-# canvas_item_add_clip_ignore (hooked from calibrator 6 on, gate3-design.md D4).
+# canvas_item_add_clip_ignore (hooked from calibrator 6 on).
 FEATURE_OBSERVED_UNSUPPORTED_OPS = sorted(
     [
         "canvas_item_add_circle", "canvas_item_add_line", "canvas_item_add_mesh",
@@ -151,7 +151,7 @@ FEATURE_OBSERVED_UNSUPPORTED_OPS = sorted(
 # canvas_item_set_z_as_relative_to_parent -- G1e hooks both), without
 # canvas_item_set_default_texture_filter and canvas_item_set_default_texture_repeat (now hooked,
 # calibrator-5 slots 448/449), plus canvas_texture_set_shading_parameters and
-# texture_set_size_override, plus canvas_item_set_visibility_notifier (gate3-design.md D6).
+# texture_set_size_override, plus canvas_item_set_visibility_notifier.
 FEATURE_UNOBSERVED = sorted(
     [
         "canvas_item_set_canvas_group_mode",
@@ -835,7 +835,7 @@ def state4() -> dict:
     freed["height"] = 0
     freed["mipmaps"] = False
     freed["payload_bytes"] = 0
-    # version is UNCHANGED while freed with a surviving reference (gate2-design.md Q3 "free(rid)").
+    # version is UNCHANGED while freed with a surviving reference.
     textures[5] = freed
     textures[6] = texture(kind="image", version=1, hash=HASH_A1, format="RGBA8", width=16,
                           height=16, payload_bytes=len(PAYLOAD_A1))

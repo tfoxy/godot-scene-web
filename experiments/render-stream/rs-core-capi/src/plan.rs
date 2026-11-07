@@ -4,7 +4,7 @@
 //! (`apply_state()`'s return value, `vt.rs`). The C++ shim executes the calls as ptrcalls.
 //!
 //! Every rule, ordering and sabotage below is rs_applier.gd's; read its class documentation for
-//! the why. What differs is the cost model (gate7-design.md D29, D34): rs_applier.gd re-walks the
+//! the why. What differs is the cost model: rs_applier.gd re-walks the
 //! whole resolved state every transaction, this planner visits only what the accepted
 //! transactions touched since the last apply (`Touched`, the union of `TxDelta`s), plus the few
 //! things whose RenderingServer argument depends on another resource's residency (an item's
@@ -188,7 +188,7 @@ impl Payloads<'_> {
         payload::decode_texture_v(bytes, self.version)
             .map_err(|e| format!("resource-invalid: {} {}", h.to_hex(), e))
     }
-    /// G8ku (texture-delivery-design.md Q6 "Native receiver"): a `uastc` variant's KTX2, checked
+    /// a `uastc` variant's KTX2, checked
     /// against its entry's shape (`ktx2-shape`; the transcode is the engine's), as a
     /// TexturePayload whose `format` is "KTX2" and whose `data` is the whole file: the executor
     /// hands it to `Image.load_ktx_from_buffer` (D14) instead of `Image.create_from_data`.
@@ -403,7 +403,7 @@ struct ItemM {
     canvas_group: Option<CanvasGroup>,
     /// UIT: the /11 `use_identity_transform` this receiver last set on the item (RS default false).
     use_identity_transform: bool,
-    /// P3-ST (gate5_5-design.md "Refused materials"): the effective material reads the screen but
+    /// the effective material reads the screen but
     /// is refused, so the item's own commands are not replayed.
     screen_skip: bool,
     use_parent_material: bool,
@@ -742,7 +742,7 @@ struct Upload {
     hash: Option<Hash>,
     op: &'static str,
     data_bytes: i64,
-    /// G8kp (texture-delivery-design.md D3): the encoding D3 chose (`decoded` or `block`), written
+    /// the encoding chosen (`decoded` or `block`), written
     /// to `uploads[]` at /9 only, so every older stream's report is unchanged.
     encoding: Option<&'static str>,
 }
@@ -783,7 +783,7 @@ pub struct Planner {
     pub freed_by_apply: i64,
     pub disposed_frees: i64,
     pub touched: Touched,
-    /// G8kp (texture-delivery-design.md D3): which payload of an ok image texture is fetched and
+    /// which payload of an ok image texture is fetched and
     /// uploaded. The default is `decoded` alone, exactly the base hash, as before /9.
     pub delivery: DeliveryPrefs,
     /// PFB (render-stream-12.md "As built (PFB)"): the receiver renders with gl_compatibility

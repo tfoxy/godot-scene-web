@@ -1,5 +1,5 @@
 extends SceneTree
-## IN7-IN9: GswInputInjector against every packages/input/conformance/v1/injector vector,
+## GswInputInjector against every packages/input/conformance/v1/injector vector,
 ## asserting real `Input` state in headless Godot: the three key sets, joypad buttons and axes,
 ## the test project's actions, the mouse button mask and position, the events `_input` actually
 ## received (Godot's emulated mouse from touch included), `remote_joypads()`, the joypad
@@ -15,7 +15,7 @@ extends SceneTree
 ## `Input.action_release()` (what the engine call does, input.cpp:1290-1294), then calls
 ## on_focus_lost().
 ## `isolate` runs GswJoypadIsolation.isolate(); the bindings are restored after the vector.
-## IN12 target vectors: a vector's `scene` lists nodes created under the root before its first
+## Target vectors: a vector's `scene` lists nodes created under the root before its first
 ## step ({path, class: Node|Control|Node2D, position, size, scale, visible, scene_file_path});
 ## Controls record their `_gui_input` as `gui` lines (control-local positions, ` meta=` with the
 ## `gsw_target` meta). Scene steps: {move: path, position}, {free: path}, {add: node},

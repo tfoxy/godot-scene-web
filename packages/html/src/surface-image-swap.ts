@@ -6,368 +6,78 @@
 // staticImage}` and imports nothing — no WebGL, no scene graph — so any runtime that owns a
 // per-node `<canvas>` can use it (`./webgl/runtime` is the first).
 //
-// WHY. A canvas that never changes is not free: it keeps a compositor layer, and (with a blend) a
-// render surface, and it is re-filled on the GPU every composited frame. Measured on a phone by the
-// perf harness's `static-surfaces` scenario (`docs/perf-harness.md`, S5), for 24 surfaces that
-// really never change:
+// WHY. A canvas that never changes still keeps a compositor layer (and, with a blend, a render
+// surface) and is re-filled every composited frame; an `<img>` is far cheaper. A surface that DOES
+// change is strictly worse as an image (every change is an encode plus a decode on the frame
+// thread), so a surface is only swapped after a GATE says it is standing still, and any post-swap
+// movement puts it back on its canvas.
 //
-//   canvas: 31 layers, 4 render surfaces, 140 ms GPU clear/fill, worst activation gap 93 ms
-//   <img>:   6 layers, 0 render surfaces,  29 ms GPU clear/fill, worst activation gap 21 ms
+// GATES (`StaticSurfacePolicy.gate`):
+//   - `content-key` (default): the host names each painted frame with a content key; the surface
+//     swaps once that key is observed unchanged `observations` times. Correct by construction: a key
+//     change is reported, so the swap is undone before the image is ever wrong.
+//   - `quiet-window`: for surfaces with no usable key. Eligible once `now() - lastDrawAt >= quietMs`
+//     — clocked by `noteStaticFrame`, never by `reconcile()`, which a host may gate on its own dirty
+//     flag — and thawed the instant it draws again. It gives up the content-key invariant, so it is
+//     paired with the WATCHDOG (on by default for it).
+//   KEYED-OR-QUIET (`keyedQuietMs`). A quiet-window host may report a key for some paints; a key is
+//   then a promise that the frame is a pure function of it, so a repaint under the SAME key is a
+//   re-statement of the frame and does not revert. A key the host cannot honour (same key, different
+//   pixels) yields a stale `<img>` that only the watchdog's proxies can catch.
 //
-// THE TRAP, and why this file is mostly a gate rather than an encoder. The SAME scenario INVERTS
-// when the surfaces are regenerated every 2 s: the `<img>` arms go to a frame-cost p95 of 18.0 ms
-// against the canvas arms' 4.9, main-thread busy 2,934 ms against 1,792, and 70-86 image re-decodes
-// against zero. A surface that changes is strictly WORSE as an image, because every change is an
-// encode plus a decode on the thread that produces frames. So a surface is only ever swapped after a
-// GATE has produced evidence that it is standing still, and any post-swap movement puts it back on
-// its canvas.
+// INVALIDATION (`onInvalidate`): `"block"` disqualifies a surface whose key changed after a swap;
+// `"retry"` reverts and resets the gate (and reschedules failed encodes). Runtime-wide changes never
+// block. THE WATCHDOG (`watchdogMs`) reverts a swapped surface whose canvas left the DOM, has a
+// re-render pending, was re-allocated or drew since the freeze, and re-syncs a moved stand-in. It
+// cannot see a silent same-size pixel write; that would need a readback per surface per poll.
 //
-// THE TWO GATES (`StaticSurfacePolicy.gate`):
-//   - `content-key` (the default, and what shipped first): the host names each painted frame with a
-//     CONTENT KEY, and the surface swaps once that key has been observed unchanged `observations`
-//     times (default 3). An observation is either a re-render that produced the same key, or a
-//     `reconcile()` in which the surface came out clean. Correct BY CONSTRUCTION: a key change is
-//     reported, so the swap can be undone before the stale image is ever wrong. A churn bench over
-//     recorded consumer sessions found 93.6% of 1,258 shader nodes never change any component of
-//     that key, which is the population this exists for; the other 6.4% pay at most one wasted
-//     encode each, once.
-//   - `quiet-window`: for surfaces with NO usable content key (a `SCREEN_UV` vignette, a CRT
-//     overlay, a particle system — anything whose output is not a pure function of node-local
-//     inputs). A surface becomes eligible when `now() - lastDrawAt >= quietMs`, and thaws the
-//     INSTANT it draws again.
+// ENCODE PACING (`encode`). `toBlob` on a GPU-resident canvas is a synchronous GPU→CPU readback, so
+// a mass freeze must not park the main thread: at most `slice` encodes per `intervalMs` window,
+// queued smallest-first; `perTask`/`taskGapMs` bound how many readbacks share one task; `deferHead`
+// keeps even the first encode off the caller's stack; `busy` lets the host say "not now", bounded by
+// `busyMaxDeferMs`; `maxDim` trades fidelity for a smaller readback. A single readback is
+// unsplittable; these levers only decide WHEN and HOW MANY.
+//   The stale-signal trap: a host `busy` predicate derived from its frame loop reads "idle" exactly
+//   when a long readback is suppressing those frames. Hosts should signal ARMED work rather than
+//   recent frames; `slowEncodeMs` backs off on the module's own timing of the previous readback,
+//   which cannot be fooled that way.
 //
-//     The clock is this module's own per-draw signal (`noteStaticFrame`, called from the render path
-//     after the pixels land — cache-hit blits included), NEVER `reconcile()`. A host is free to gate
-//     `reconcile()` on its own dirty flag, so counting reconciles would stretch a "3 observations"
-//     gate into seconds of latency and, worse, would call a surface quiet that had just repainted.
+// CAPTURE-HOOK SOURCES (WebGPU). A WebGPU canvas cannot be read through `toBlob`, so a binding may
+// supply an async `captureCanvas` that returns a 2D canvas holding the current frame at its
+// backing-store size, or null (a failure, handled like any failed encode). Everything downstream is
+// the ordinary canvas path. Capture wall time and synchronous encode time are booked separately.
+//   BLANK CAPTURES. A hook may answer `STATIC_CAPTURE_BLANK` — "I drew something and captured
+//   nothing visible" — which is terminal for that surface (even under `"retry"`) and keeps its live
+//   canvas. Only the producer can know a frame should have pixels, so only it may say this; this
+//   module never inspects pixels.
+//   WHY THE DIRECT PATH IS NOT GUARDED. No cheap in-page probe distinguishes a dead 2D readback from
+//   a healthy one, so a device whose `toBlob` yields empty PNGs would publish a blank still for a
+//   2D-backed surface unnoticed. That hole is accepted rather than refusing working surfaces.
 //
-//     Because a keyless surface can repaint without telling us anything, the quiet-window gate gives
-//     up the content-key invariant — so it MUST be paired with the WATCHDOG below, which is why
-//     `watchdogMs` defaults ON for it and OFF for `content-key`.
+// SHARING. One encode and object URL per content key, refcounted; a keyless surface encodes under a
+// private synthetic key and is never shared.
+//   PARKED STILLS (`parkedStillBytes`, off by default): a revert that is not a repaint parks the
+//   encoded still, fingerprinted by `drawSeq` and backing size, so the same surface re-freezes with
+//   no readback.
+//   RETAINED STILLS (`stillCacheBytes`, off by default): a keyed entry whose last holder lets go is
+//   kept for the next surface on that key. Parked and retained stills share one byte-budgeted LRU;
+//   solo keys are never retained; a swapper's `dispose()` revokes what it retained.
+//   CLAIMING A STILL (`claimStaticStill`): attach an already-encoded key with no gate, paint or encode.
+//   BAKING A STILL (`bakeStill`): encode a key with no waiting surface into the retained pool.
+//   PRIMING UNSEEN KEYS (`primeUnseenKeys`, off by default): a never-encoded key skips the deferral
+//   check (never the slice/task bounds). Whether that pays depends on surface size, which only the
+//   host knows.
+//   Encodes are inline PNG `toBlob`: lossless through every call, and a readback is the cost, not
+//   the codec, so there is no worker.
 //
-//     KEYED-OR-QUIET (`keyedQuietMs`, default = `quietMs`, i.e. inert). A quiet-window host may
-//     report a NON-NULL key for SOME of its paints, and where it does, that key is content evidence
-//     and not merely a share key. Two things then change for that surface, and only for it:
-//       - it becomes eligible `keyedQuietMs` after its last draw instead of `quietMs`, so a host
-//         that pins `0` freezes it the instant it paints;
-//       - a repaint reporting the SAME key does NOT revert a live swap. The pixels are identical by
-//         the key's own contract — that is what the key MEANS — so the repaint is a RE-STATEMENT of
-//         the frame the `<img>` is already showing, not movement. A DIFFERENT key, or a null one,
-//         reverts exactly as before.
-//     A null key keeps the plain quiet window, unchanged, which is what a surface that cannot name
-//     its frames still gets.
+// LIFETIME. A leaked object URL pins its bytes for the document's life, so an entry exists only
+// while held (or retained in the bounded pool) and is revoked when released; a host frame-cache
+// eviction retires an entry from lookup without revoking it under a live `<img>`.
 //
-//     THIS OVERTURNS HALF OF AN EARLIER ARGUMENT, and the half it leaves standing is the important
-//     one. The particle runtime's `notePaint` used to withhold its static-frame key from this module
-//     deliberately, on the grounds that the key answers "do these two systems render the same
-//     bitmap?" and NOT "is this surface standing still" — a system can re-blit one cached frame
-//     forever and still be a moving target. That is still true as an argument about STILLNESS, and
-//     it is why the quiet window is still the fallback and why `keyedQuietMs` defaults to inert.
-//     What is new is the weaker claim this contract actually needs: a host only ever reports a key
-//     where the frame is a PURE FUNCTION of it, so two paints under one key are the same pixels
-//     whatever else moved. Re-blitting a cached frame under its own key is exactly that case.
-//     IF A HOST REPORTS A KEY IT CANNOT HONOUR — the same key over genuinely different pixels — the
-//     result is a stale `<img>` standing over a canvas that has moved on, and nothing here will
-//     notice: the `drawSeq`/size proxies all say "explained", because a paint WAS explained. Only
-//     the watchdog's remaining proxies (the canvas leaving the DOM, a re-allocation, a pending
-//     re-render) can catch it, and none of them is a pixel compare. The key is a promise; this is
-//     what it costs to break it.
-//
-// INVALIDATION (`StaticSurfacePolicy.onInvalidate`):
-//   - `"block"` (default, today's behavior): a key change after a swap disqualifies that surface for
-//     the life of its binding. The right default when a key IS available: a key that moved once is
-//     evidence about that node's content.
-//   - `"retry"`: revert, reset the gate, do NOT block. Any app with a resizable canvas re-keys on
-//     `WxH` at every breakpoint, so "block forever" would disqualify its entire population after one
-//     rotation. `retry` also covers a FAILED encode/decode: instead of blocking the surface it is
-//     rescheduled on the encode pacing cadence, forever.
-//   Runtime-WIDE deliberate changes (a re-size, a mode flip, the kill switch, a host `invalidate`)
-//   never block under EITHER setting: they say nothing about this surface's content.
-//
-// THE WATCHDOG (`StaticSurfacePolicy.watchdogMs`). A standing check over the swapped set that each
-// one is still legitimately frozen: its canvas is still in the DOM, has no re-render pending, has
-// not been re-allocated (a `width`/`height` write CLEARS a canvas), and has drawn nothing since the
-// freeze. Anything else reverts it. It also re-syncs a stand-in whose canvas MOVED (the box is
-// copied at freeze time, so a later placement write would leave the image at the old box).
-//   HONEST LIMIT: it detects unexplained REPAINTS through those observable proxies. It cannot detect
-//   an arbitrary pixel write into a same-size canvas that reports nothing — that would need a
-//   readback per surface per poll. The content-key gate does not have this hole (the key is
-//   reported); the quiet-window gate does, and the proxies are the mitigation.
-//
-// ENCODE PACING (`StaticSurfacePolicy.encode`). A mass freeze must not park the main thread:
-// downstream, an unbatched `toBlob` across 72 surfaces measured a 736 ms park. So at most `slice`
-// encodes (default 4) are kicked per `intervalMs` WINDOW (default 120) — the head of a burst inline,
-// the remainder queued `smallest-first` by backing-store area, so the bulk of a fleet of small
-// surfaces swaps early and the handful of room-sized monsters go last, one late slice each. See
-// `pumpEncodes` for why the budget is on the clock rather than per queue flush, and for the one
-// thing that costs: the inline head of a burst is unsorted.
-//
-// `slice` bounds THROUGHPUT, not the park. That distinction was learned the expensive way: a slice of
-// four drains back-to-back inside ONE timer task, so on a device whose GPU was already saturated the
-// same four readbacks that cost 6-13 ms each when the screen was calm cost ~290 ms each, and the task
-// that held all four measured 1,163 ms with 97% self-time inside native `toBlob` (Moto G86, 30-card
-// shuffle). `encode.perTask` is the lever that bounds the PARK: at most `perTask` readbacks per TASK,
-// with at least `taskGapMs` between two tasks of the same window. The window budget is untouched —
-// with `perTask: 1` a window's four encodes land in four tasks 16 ms apart instead of one task of
-// four — so throughput is identical and only the GRANULARITY moves. Two consequences follow and are
-// the point: the longest main-thread park this mechanism can cause falls to ONE readback, and `busy`
-// (consulted once per PASS) is now consulted once per ENCODE, so a host that becomes busy after the
-// first readback stops the second. `staticImageBusyDeferrals` therefore RISES for an identical
-// workload — it counts passes, and there are now more of them; the diagnosis pair below is a ratio
-// and stays valid. `perTask` defaults to `slice`, i.e. inert, so no existing consumer's pacing moves.
-//
-// `encode.deferHead` (default `false`, i.e. today's behavior above) trades that inline head away: a
-// caller that reaches `maybeSwap` from its OWN hot path (a `reconcile()`, a `TimerFire`) pays the
-// head's `toBlob` on its own stack. Setting `deferHead: true` routes every encode — including the
-// head — through the timer seam, so the caller that made a surface eligible never itself blocks; the
-// trade is a lone surface waiting one scheduler tick instead of swapping the instant it qualifies.
-// See `pumpEncodes`'s `allowInline` parameter.
-//
-// `encode.busy` — WHY THE CLOCK ALONE IS NOT ENOUGH. Pacing decides HOW MANY encodes run per window;
-// it cannot decide WHEN in that window they land, and for this encode the "when" is the whole cost. A
-// per-node canvas is GPU-accelerated, so `toBlob` is a GPU→CPU READBACK that blocks until the driver
-// hands the pixels over: a device trace of a consumer's fleet measured 2.8 ms of encoder CPU against
-// ~30 ms of WALL time per surface (52.8 ms of `toBlob` plus 17.1 ms of `createObjectURL` inside ONE
-// `TimerFire` on a Moto G86). One such block dropped into the middle of the host's own draw burst
-// costs frames however small the slice was. `busy` is the host's "not now": a predicate consulted
-// ONCE per drain pass — including the `deferHead` pass — and a pass that defers just re-arms at
-// `intervalMs` instead of encoding.
-//   BOUNDED, ALWAYS. `busyMaxDeferMs` (default `DEFAULT_ENCODE_BUSY_MAX_DEFER_MS`) caps one unbroken
-//   run of deferrals, so a host that is busy forever still drains a slice per bound. Deferring is a
-//   SLOWDOWN, never a stop: a surface that has not swapped yet is still a live canvas being re-filled
-//   every composited frame, which is the cost this entire file exists to remove. The probe for a stuck
-//   predicate is `staticImageBusyForcedEncodes` ≈ `staticImageBusyDeferrals`.
-//   WHY THE HOST OWNS THE SIGNAL. gsw cannot see the host's frame loop, and every self-detecting
-//   proxy costs something this module refuses to spend: a rAF probe would arm a timer under the
-//   DEFAULT policy, which today arms exactly zero (see `nextSweepAt`'s fast path), and there is no rAF
-//   at all in jsdom, where this module's own tests run. The host already knows when it is mid-burst.
-//   THE STALE-SIGNAL TRAP, and why `busy` alone is not enough either. A host predicate is usually
-//   derived from its FRAME LOOP ("a frame was produced in the last N ms"), and a long readback
-//   SUPPRESSES exactly the frames that signal is made of: the jam manufactures its own "idle" reading
-//   at the instant the system is most overloaded. Measured: two recovery gaps of 362 ms and 674 ms in
-//   the middle of the 1,163 ms stall above, both of which a 250 ms frame-recency predicate reported as
-//   quiet, releasing the drain back into the hole. Two mitigations, and they are not equals. HOST
-//   side: make the predicate say "work is ARMED" (a booked rAF, a live animation) rather than "a frame
-//   HAPPENED" — a missing frame then reads as a starved loop instead of a finished animation. gsw
-//   side: `encode.slowEncodeMs`, the module's own measurement of the PREVIOUS readback, which cannot
-//   be faked by a suppressed frame and self-clears the instant the load passes.
-//   REJECTED: an AREA budget per window (encode at most N pixels rather than N surfaces). It answers
-//   the wrong question — one 2520×1080 readback is a single unsplittable ~30 ms block whatever budget
-//   it is charged against — and `smallest-first` already keeps the room-sized monsters out of the
-//   early slices, which is the only thing an area rule would have bought.
-//   REJECTED: a fixed not-busy COOL-DOWN (hold N ms, or N consecutive quiet passes, after the
-//   predicate goes quiet). The measured jank gaps were 362 ms and 674 ms, so a cool-down long enough
-//   to cover them is a guess at one device's number that also delays every legitimate freeze on every
-//   other device. The previous readback's MEASURED cost answers the same question with evidence this
-//   module already has in hand, for free.
-//
-// CAPTURE-HOOK SOURCES (WebGPU). Everything above assumes the surface's own canvas can be READ — it
-// is what `toBlob` is called on. A WebGPU canvas cannot: `drawImage`/`toDataURL`/`toBlob` all go
-// through the presentation path, which is blank under SwiftShader, produces nothing in headless
-// Chrome (it never composites a WebGPU canvas) and is pathological on Android (S7: the blit-shaped
-// arm ran at 23 Hz against 87 for direct presentation). v1 therefore simply never attached such a
-// binding, and every counter here stayed 0 for it.
-//
-// A binding may now instead supply `captureCanvas` — an ASYNC hook that returns a fresh 2D canvas
-// holding the surface's current frame, produced however that renderer can produce it. Both gsw
-// runtimes implement it the one sanctioned way: re-render the frozen frame into an offscreen
-// `rgba8unorm` texture and `copyTextureToBuffer` it back (`../webgpu/readback`), then unpremultiply
-// into a 2D canvas (`../webgpu/still-capture`). The canvas that reaches `toBlob` is therefore an
-// ORDINARY CPU one, and every path below it — dedup, pacing, parked stills, the watchdog, the
-// stand-in — is byte-identical to the canvas-sourced case. Absent hook ⇒ the canvas is read
-// directly, exactly as v1.
-//
-// THE CONTRACT the hook has to keep: return the pixels of the frame the surface is CURRENTLY
-// showing, at its backing-store size, or null. Null (or a throw, or a degenerate canvas) is a
-// FAILURE, not a wedge — it books `staticImageCaptureFailures`, feeds the ordinary `fail()`
-// semantics (retry on the encode cadence, or block), and leaves the surface on its canvas.
-//
-// BLANK CAPTURES — THE FAILURE THAT LOOKS LIKE A SUCCESS (`STATIC_CAPTURE_BLANK`,
-// `staticImageBlankCaptures`). A capture can complete, throw nothing, report nothing, and produce a
-// frame with no visible pixels in it for a surface that was visibly painting. Measured on this box
-// (docs/perf-harness.md, S8's traps): headed under Xvfb on Chrome's DEFAULT ANGLE backend, all 12
-// WebGPU surfaces of both effect arms swapped perfectly — `staticImagesLive 12/12`, zero capture
-// failures, zero encode failures — and every stand-in was a PNG of nothing. The systems vanished
-// from the screenshot, because the canvas is hidden by then and the `<img>` over it is empty, and
-// every counter in this file said the mechanism had worked. That is a SHIPPED risk, not a harness
-// one: any device on which a capture cannot produce pixels blanks a frozen surface in production the
-// same way. (On that rung the readback itself was FINE and the accelerated 2D canvas was the broken
-// link — `../webgpu/still-capture` records both failures and the evidence for each.)
-//
-// So a hook may answer `STATIC_CAPTURE_BLANK` instead of a canvas: "I captured this surface and got
-// nothing visible, for a frame I know I drew". It is treated as a capture failure — the surface
-// keeps its live canvas, which is exactly the state it was in before the mechanism existed — and it
-// books `staticImageBlankCaptures` beside `staticImageCaptureFailures`, so the condition is a NUMBER
-// rather than a hole in the numbers.
-//
-// WHO MAY SAY IT is the whole judgement, and it is the PRODUCER's, never this module's. A genuinely
-// empty surface — a particle system that has emitted nothing, one whose particles have all faded to
-// alpha 0, a shader that outputs transparent — is legitimately all-transparent, and rejecting its
-// capture would leave a live canvas up forever and defeat the swap. This module therefore never
-// inspects pixels; it takes a verdict from the one place that knows what it just drew. gsw's own
-// producers answer it from the draw they encoded for THAT capture (`../webgpu/still-capture`'s
-// `expectCoverage`): the particle runtime from its packed instance count — which is exactly the
-// number its live path uses to decide between DRAWING and CLEARING, so a zero-count frame is blank
-// on the canvas too — and the shader runtime from a full-viewport quad whose node modulate is not
-// zero (a fragment program's output is not knowable from outside it; the residual is stated at the
-// call site).
-//
-// TERMINAL FOR THAT SURFACE, whatever `onInvalidate` says — the one place a `"retry"` policy does
-// not retry. A blank capture is a statement about the DEVICE (or the launch mode), not about this
-// frame: retrying it costs a full GPU re-render plus a `copyTextureToBuffer` per surface per encode
-// interval, forever, and cannot succeed while the cause holds. The surface it holds on its canvas is
-// already correct, so being terminal costs an optimization and never a pixel.
-//
-// WHY THE DIRECT PATH IS NOT GUARDED — a documented hole, on evidence, rather than a guess in either
-// direction. The obvious symmetry ("a `toBlob` is a canvas read, so a canvas that cannot be read
-// publishes a blank still whatever put the pixels there") is FALSE on the very rung that motivated
-// all of this, and the measurements are these (this box, 2026-08-21, headed under Xvfb, default
-// ANGLE, RTX 2060; docs/perf-harness.md, S8):
-//   - the WebGL arms of the swap perf scenario, on that rung, publish CORRECT stills: 12/12 surfaces
-//     swapped, all 12 presence samples hit, `nonEmptyRatio` identical to the healthy rung. `toBlob`
-//     on a host-painted canvas works there.
-//   - and yet a FRESH canvas in that same page, written with `putImageData`, reads back alpha 0 —
-//     which is exactly what the capture path's guard catches, and it is right to: the WebGPU arms on
-//     that rung really did publish PNGs of nothing.
-// So the only cheap probe available for the direct path — paint a scratch canvas, read a pixel of it
-// back — reports BROKEN in an environment where the direct path is demonstrably FINE. Shipping it
-// would have refused every WebGL surface on a rung where the mechanism works, which is worse than
-// the hole it closes. The per-surface variant is no better: reading a witness pixel out of the
-// surface's own canvas uses the same instrument, and there is no third instrument — inspecting the
-// encoded PNG means decoding it, and the only in-page way to look at a decoded image is the canvas
-// read that is broken.
-// WHAT REMAINS UNCOVERED, stated plainly: on a device where `toBlob` over a host-painted canvas
-// yields an empty PNG (one launcher on this box does exactly that — every 2D canvas is dead there,
-// `drawImage` included), a 2D-backed surface still publishes a blank `<img>` and nothing here
-// notices. `staticImageBlankCaptures` stays 0, because no capture hook was involved.
-//
-// CAPTURE TIME AND ENCODE TIME ARE MEASURED SEPARATELY, and that split is the point.
-// `staticImageEncodeMs`/`MaxMs` mean one thing — SYNCHRONOUS main-thread park — and a GPU
-// `mapAsync` readback does not park the main thread at all; folding its wall time in would corrupt
-// the one number that answers "what did this mechanism cost the frame loop?". So the capture's WALL
-// time books `staticImageCaptureMs`/`MaxMs` and only the `toBlob` tail books encode-ms. The adaptive
-// backoff (`encode.slowEncodeMs`) does read the capture wall time, because there it is measuring the
-// GPU's willingness to hand pixels over, which is exactly the condition the backoff exists for.
-//
-// NO WORKER, still — for the same reason as below, and one more: the readback here is already off
-// the main thread, so the only thing a worker could take is the PNG encode, which the harness
-// measured as the cheap half.
-//
-// ONE ENCODE PER KEY, NOT PER SURFACE. When the host names a content key, identical surfaces share
-// one encode and one object URL, refcounted (on a real device 7 shader canvases were only 3 distinct
-// keys). A keyless (quiet-window) surface gets a private synthetic key, so it is never shared —
-// there is no identity to share on.
-//
-// PARKED STILLS (`encode.parkedStillBytes`, default 0 = off). Key dedup buys nothing for a KEYLESS
-// surface, and the quiet-window population reverts constantly for reasons that are not repaints: a
-// host `invalidate`, a dormancy wake, a watchdog proxy tripping. Every one of those revokes the URL,
-// so the next freeze pays a full readback for pixels the canvas is still holding — `state.drawSeq`
-// counts actual PAINTS, and it did not move. So a revert PARKS its entry instead of revoking it,
-// stamped with the `drawSeq` and backing-store size it was encoded at, and the next freeze of that
-// same surface RE-ATTACHES it for zero readback when the stamp still matches and the binding is not
-// dirty (`staticImageReuseHits`). Anything else — a paint, a re-allocation, a decode failure — is a
-// disqualification, and a disqualified still is revoked on the spot rather than kept on a hunch.
-//   BOUNDED BY BYTES, not by count: the pool is module-wide and evicts least-recently-parked first
-//   once `parkedStillBytes` is exceeded, because what is at stake is retained pixel memory (the
-//   blob's own `size`, recorded at publish). Parking is exactly a memory-for-readback trade, which is
-//   why it is opt-in with a host-chosen budget rather than a default: the module cannot know whether
-//   a consumer's device has 24 MB to spend on stills it may never reclaim.
-//
-// RETAINED STILLS (`encode.stillCacheBytes`, default 0 = off). A parked still is claimable by ONE
-// surface — the one that parked it — and dies with it. That is right for the KEYLESS population it
-// was written for (there is no identity to share on, so the fingerprint IS the claim) and wrong for
-// a KEYED one, where the pixels belong to the key rather than to whoever happened to hold it last.
-// So an entry whose last holder lets go — a revert OR a dispose — under a real (non-solo) key is
-// RETAINED instead of revoked: it stays in `entriesByKey`, held by nobody, and the next surface to
-// reach that key attaches to it for zero readback. That is what makes a surface's SECOND-EVER
-// appearance free, which is the whole point (see `claimStaticStill`).
-//   ONE POOL, not two. Parked and retained stills are the same commodity — retained blob bytes with
-//   no holder — so they share one module-wide LRU (`stillPool`), one running byte total and one
-//   eviction walk, budgeted at `parkedStillBytes + stillCacheBytes`. The alternative, two pools with
-//   two fixed budgets, is a worse allocator for the same memory: each would starve on its own while
-//   the other sat half empty, and an eviction walk would have to guess which one to raid. What the
-//   two options still mean SEPARATELY is admission — a keyless entry needs `parkedStillBytes`, a
-//   keyed one needs `stillCacheBytes` — so a host can switch either mechanism off without touching
-//   the other, and a host that sets neither has no pool at all.
-//   NEVER A SOLO KEY. A keyless surface encodes under a private synthetic key (`\0solo:N`, below);
-//   retaining one would pin bytes no lookup can ever hit. Those still park, by fingerprint, or are
-//   revoked.
-//   The retention is per SWAPPER, for teardown only: an entry is retained on behalf of the swapper
-//   whose surface last released it, and that swapper's `dispose()` revokes it. Module-wide sharing
-//   is unaffected while both live (`entriesByKey` is document-wide, as it always was), but the leak
-//   contract does not bend — `staticImageUrlsLive` still returns to 0 once the last runtime is gone.
-//
-// CLAIMING A STILL (`claimStaticStill`). Everything above is a GATE: a surface paints, waits, is
-// measured, is encoded, and only then becomes an `<img>`. For a surface whose frame has ALREADY been
-// encoded under a key this document has seen, every one of those steps is redundant — the pixels are
-// in hand before the surface exists. `claimStaticStill` is the shortcut: no gate, no paint, no
-// encode, just refcount the entry and attach the stand-in. A host that can name a frame before
-// rendering it can therefore mount the second, third and thirty-fifth copy of that frame as an
-// `<img>` and never configure their canvases at all.
-//
-// BAKING A STILL (`bakeStill`). The other half of the same trade: a surface that is about to
-// DISAPPEAR still holds pixels, and if its key has never been encoded, those pixels are the only
-// copy anyone will ever have cheaply. `bakeStill` enqueues an encode for a key with NO waiting
-// surface, through the identical pacing/capture/publish tail, and publishes an entry held by nobody
-// straight into the retained pool. The host decides when to spend that readback;
-// `StaticSurfaceSwapper.queueLength()` exists so it can hold speculative bakes until the surfaces
-// that actually need a still have drained.
-//
-// PRIMING UNSEEN KEYS (`encode.primeUnseenKeys`, default false). The deferral apparatus above
-// (`busy`, `slowEncodeMs`, `busyMaxDeferMs`) was tuned by a consumer against ~4821×2156 surfaces
-// measured at ~290 ms per readback on a loaded phone: at that size, WHEN a readback lands is the
-// whole cost. A different population — ~320 px canvases whose entire fleet is ~2 distinct keys — is
-// three orders of magnitude off that: the first encode of each key is the ONLY encode that key will
-// ever need (35 surfaces share it), and deferring it does not shave a park, it just leaves 35 live
-// canvases in the composite for another window. On a CAPTURE-HOOK source the argument is stronger
-// still — the readback is asynchronous and parks the main thread not at all. So a queued job whose
-// key has never been encoded in this document may SKIP the deferral check. It bypasses WHEN, never
-// HOW MANY: `slice`, `perTask` and `taskGapMs` all still bind, so no pass can turn into a burst of
-// readbacks. OFF by default precisely because the trade above is a per-consumer judgement about
-// surface size, and this module cannot see a surface's cost from here.
-//
-// NO WORKER. The encode is inline `HTMLCanvasElement.toBlob`. gsw has no `Worker`/`OffscreenCanvas`
-// anywhere, key-dedup keeps the encode count at a handful, and the harness's own fan-out sweep says
-// ONE worker is slower than inline (1,827 ms vs 1,725) — a pool is what wins, and a pool is a lot of
-// machinery to add on speculation. It would not even address the cost measured since: handing the
-// pixels to another thread means capturing them first, and on a GPU-resident source
-// `createImageBitmap` captures SYNCHRONOUSLY on the calling thread (576 ms measured), so the transfer
-// pays exactly what the `toBlob` pays. The readback is the cost, not the codec — which is why the
-// lever this file grew is `encode.busy` (WHEN), not a thread.
-//   A single readback is UNSPLITTABLE, and no lever here pretends otherwise: `encode.perTask` cannot
-//   make one readback shorter, it only stops four of them sharing a task. `encode.maxDim` is the one
-//   lever that shrinks a readback itself, and it does so by reading back fewer PIXELS — which is a
-//   fidelity decision, hence off by default.
-//
-// PNG, NOT WEBP. Both are lossless here, so this is decided on cost and on trap-avoidance:
-//   - the harness's bake probe measures PNG as the FASTEST codec on the phone (1,789 ms for 50
-//     regions from a 4096² page, against 2,244 for lossless webp — webp is ~25% SLOWER, not faster),
-//   - `HTMLCanvasElement.toBlob(cb, "image/webp")` with no quality argument is LOSSY (4.4x smaller,
-//     up to 71 levels of channel error), while `OffscreenCanvas.convertToBlob` with the same
-//     omission is lossless. That difference has already been sprung once in this project's ecosystem.
-//     PNG is byte-identical through BOTH calls, so there is no quality argument to get wrong.
-//   WebP's only win is size (185 KB vs 201 KB per region), and these blobs are held in memory in
-//   ones and twos, not shipped over a wire.
-//
-// LIFETIME. A leaked object URL pins its bytes for the life of the document, so the refcount is the
-// contract: an entry exists only while at least one surface holds it, and the URL is revoked the
-// moment the last one lets go (revert, block, dispose, runtime teardown, kill switch). An eviction
-// from the host's own frame cache RETIRES the entry (`onStaticFrameEvicted`) — it leaves the shared
-// lookup so no NEW surface attaches to it — but does not revoke under a surface that is still
-// showing it: the pixels for a key are immutable, and revoking a URL whose `<img>` has not finished
-// loading blanks the surface.
-//
-// DISPLAY OWNERSHIP. This module is the SINGLE writer of a swapped surface's `display`
-// (`applySurfaceVisibility`): it composes "dormant" (the host's park) with "swapped", and when it
-// un-hides it restores EXACTLY the value the host had before it first hid — never a blanket `""`,
-// which would resurrect a canvas the host itself had hidden. A surface with no swap state is
-// untouched beyond the byte-identical dormant park.
-//
-// The `<img>` REPLACES the canvas visually but not structurally: the canvas stays in the DOM,
-// hidden with `display: none` (no box, no paint, no layer), and the `<img>` is inserted immediately
-// before it so it takes the canvas's exact place in paint order. That keeps two things working for
-// free: a SCREEN_TEXTURE-style capture path that reads an earlier layer's pixels straight off its
-// `<canvas>` child, and the revert, which just unhides a canvas that still holds the right frame.
+// DISPLAY OWNERSHIP. This module is the single writer of a swapped surface's `display`
+// (`applySurfaceVisibility`) and restores exactly the host's prior value. The canvas stays in the
+// DOM, hidden, with the `<img>` inserted immediately before it, so paint order, earlier-layer canvas
+// reads and the revert all keep working.
 
 /** The DOM attribute stamped on the `<img>` that stands in for a frozen surface's canvas. */
 export const STATIC_SURFACE_IMAGE_ATTR = "data-godot-shader-image";
@@ -413,8 +123,8 @@ export const DEFAULT_ENCODE_SLOW_BACKOFF_MS = 1000;
 export const DEFAULT_ENCODE_MAX_DIM = 0;
 /** Default `encode.parkedStillBytes`: `0` = parked stills are OFF and a revert revokes immediately,
  *  which is what every consumer has today. The trade is retained pixel memory for skipped readbacks
- *  (see the module doc's "PARKED STILLS"), so the budget is the host's to choose — 24 MB is the
- *  measured shape of one fleet's worth of quiet-window stills, not a number this module may assume. */
+ *  (see the module doc's "PARKED STILLS"), so the budget is the host's to choose; this module cannot
+ *  know how much memory a device has to spend on stills. */
 export const DEFAULT_PARKED_STILL_BYTES = 0;
 /** Default `encode.stillCacheBytes`: `0` = KEYED retention is off, so an entry whose last holder
  *  lets go is revoked exactly as it always has been. Same reasoning as `parkedStillBytes` — the
@@ -488,7 +198,7 @@ export interface StaticSurfaceEncodePacing {
    *  the caller's stack (see the module doc's "ENCODE PACING" section). Default `false` — the head
    *  stays inline, which is today's behavior and every existing consumer's default. */
   deferHead?: boolean;
-  /** HOST BUSY SIGNAL: "is this a bad instant to spend ~30 ms on a GPU readback?". Consulted ONCE per
+  /** HOST BUSY SIGNAL: "is this a bad instant to spend a GPU readback?". Consulted ONCE per
    *  drain pass (never per queued surface), and a pass that it defers re-arms at `intervalMs` rather
    *  than encoding — the head included, `deferHead` or not. The host owns this because only the host
    *  can see its own frame loop; absent, nothing about the pacing changes. A predicate that THROWS
@@ -505,8 +215,7 @@ export interface StaticSurfaceEncodePacing {
   /** Readbacks allowed in ONE task. Default: `slice` (today: the whole slice drains back-to-back).
    *  `1` is the setting for a host whose surfaces are GPU-resident and big: `toBlob` on such a canvas
    *  is a SYNCHRONOUS GPU→CPU readback, so N of them in one task is one unsplittable park of
-   *  N × readback — measured downstream at 1,163 ms for four ~4821×2156 surfaces on a phone whose GPU
-   *  was already saturated, against 6-13 ms each for the SAME surfaces once the load passed. `slice`
+   *  N × readback, and a readback's cost grows sharply when the GPU is already saturated. `slice`
    *  still bounds THROUGHPUT per `intervalMs`; this bounds the BLOCK. Setting it below `slice` costs
    *  `taskGapMs` per extra task and buys back the ability to be interrupted. */
   perTask?: number;
@@ -522,14 +231,14 @@ export interface StaticSurfaceEncodePacing {
    *  `DEFAULT_ENCODE_SLOW_MS` (0 = off). This exists because a host's `busy` predicate is usually
    *  derived from its frame loop, and a long readback SUPPRESSES the frames that signal is made of:
    *  the jam manufactures a stale "idle" reading exactly when the system is most overloaded (the
-   *  module doc's stale-signal trap). The measured cost of the previous readback cannot be faked that
+   *  module doc's stale-signal trap). The timed cost of the previous readback cannot be faked that
    *  way. Bounded by `busyMaxDeferMs` like every other deferral. */
   slowEncodeMs?: number;
   /** How long a slow readback holds the next one, ms. Default `DEFAULT_ENCODE_SLOW_BACKOFF_MS`. */
   slowBackoffMs?: number;
   /** READBACK CLAMP: longest edge (backing-store px) the encode may read. Over it, the surface is
    *  blitted into a scratch canvas at the clamped, ASPECT-PRESERVED size and that is what `toBlob`
-   *  reads — a GPU-side downscale, so a 4821×2156 surface reads back 5.5× fewer pixels. Default
+   *  reads — a GPU-side downscale, so a large surface reads back far fewer pixels. Default
    *  `DEFAULT_ENCODE_MAX_DIM` (0 = no clamp).
    *  FIDELITY: the stand-in is presented at the canvas's CSS box with `object-fit: fill`, so a clamp
    *  is a resampling, not a re-layout — but it IS visible on a surface whose backing store was denser
@@ -559,11 +268,10 @@ export interface StaticSurfaceEncodePacing {
   stillCacheBytes?: number;
   /** Exempt the FIRST encode of each key from the deferral apparatus (`busy`, `slowEncodeMs`), not
    *  from the pacing (see the module doc's "PRIMING UNSEEN KEYS"). Default `false`.
-   *  The judgement it encodes is about SURFACE SIZE: deferral was tuned against ~4821×2156 readbacks
-   *  measured at ~290 ms on a loaded phone, and a fleet of ~320 px canvases collapsing to ~2 distinct
-   *  keys is three orders off that — there, holding the one encode a key will ever need buys no park
-   *  back and leaves the whole fleet in the composite for another window. A host with big surfaces
-   *  must leave this off. */
+   *  The judgement it encodes is about SURFACE SIZE: deferral exists for large, expensive readbacks.
+   *  For a fleet of small canvases collapsing to a few distinct keys, holding the one encode a key
+   *  will ever need buys no park back and leaves the whole fleet in the composite for another
+   *  window. A host with big surfaces must leave this off. */
   primeUnseenKeys?: boolean;
 }
 
@@ -1040,7 +748,7 @@ interface SwapperContext {
    *  boundary is actually observable — inside a timer callback — because the module is handed the
    *  thread many times per task: one `runSweep` calls `maybeSwap` for every eligible surface, and
    *  each of those reaches `pumpEncodes` on the SAME stack. A per-call counter would therefore bound
-   *  nothing at all on the path that produced the measured 1,163 ms park. */
+   *  nothing at all on the path where back-to-back readbacks park the main thread. */
   taskKicks: number;
   /** `now()` the CURRENT unbroken run of deferrals started, or `NOT_DEFERRING`. The bound is measured
    *  from here and restarts on every forced pass, so it caps a RUN rather than the queue's total wait
@@ -1484,7 +1192,7 @@ export function noteStaticFrame(
     maybeSwap(binding, counters);
     return;
   }
-  // CHURN. After (or during) a swap this is the case the whole gate exists to catch — the 6.4% — so
+  // CHURN. After (or during) a swap this is the case the whole gate exists to catch, so
   // the surface goes back to its canvas, and under the default policy is never offered again.
   if (state.entry) revert(binding, counters, !policy.retry, "key-change");
   state.key = key;
@@ -2133,7 +1841,7 @@ function enqueueEncode(ctx: SwapperContext, job: EncodeJob): void {
  * At most `slice` encodes per `intervalMs` WINDOW, counted on the clock rather than per queue
  * flush. That is what actually bounds the synchronous block: surfaces become eligible one at a time
  * (one `reconcile()` can walk a whole set), so a queue-length rule would let every one of them
- * encode inline — which is precisely the 736 ms park this exists to prevent.
+ * encode inline — which is precisely the park this exists to prevent.
  *
  * The head of a burst — up to `slice` surfaces — is therefore encoded INLINE by default
  * (`allowInline`, default `true`), before the queue has anything to sort, so `smallest-first` orders
@@ -2161,7 +1869,7 @@ function enqueueEncode(ctx: SwapperContext, job: EncodeJob): void {
  * CALLER's stack, so a budget scoped to a single call would let one `runSweep` spend the whole slice
  * back-to-back exactly as before. The cost of being conservative is that a lone surface arriving in
  * some later task may wait `taskGapMs` on a timer instead of encoding inline; the cost of being
- * optimistic is the 1,163 ms park.
+ * optimistic is a whole slice of readbacks parked in one task.
  */
 function pumpEncodes(ctx: SwapperContext, allowInline = true): void {
   if (ctx.disposed) return;
@@ -2568,7 +2276,7 @@ function fail(
 
 /** Point the (possibly new) `<img>` at the entry's URL and, once it can actually paint, put it in
  *  the canvas's place. The decode gate is what keeps the surface from blinking: showing an `<img>`
- *  that has not decoded yet while hiding the canvas is one blank frame on a phone. */
+ *  that has not decoded yet while hiding the canvas is one blank frame. */
 function attach(
   binding: StaticImageSwapBinding,
   entry: StaticImageEntry,

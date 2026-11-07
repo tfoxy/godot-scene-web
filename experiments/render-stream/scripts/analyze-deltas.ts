@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// D15, Q7g of ../protocol/gate6-design.md: reads gate 6's resource hook log (`evidence/
+// D15, Q7g: reads gate 6's resource hook log (`evidence/
 // resources.jsonl`, `render-stream-resource-log/1`, capture/src/rs_resource_log.h) and reports
 // what hash-at-publish and delta encoding would have saved against the whole-version costs gate 6
 // actually measures. Measured offline, never implemented here (D15): nothing this file computes

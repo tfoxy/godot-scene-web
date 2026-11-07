@@ -3,7 +3,7 @@ name = "render-stream-core"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "render-stream decode, validation, resolve and D7's applier to a packed CanvasItem draw list (gate7-design.md D29, Q14)"
+description = "render-stream decode, validation, resolve and an applier to a packed CanvasItem draw list"
 
 [lib]
 crate-type = ["rlib"]

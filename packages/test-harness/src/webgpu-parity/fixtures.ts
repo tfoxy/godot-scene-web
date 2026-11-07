@@ -32,9 +32,9 @@ export const FIXTURE_CELL_PX = 96;
  *
  * ============================= CALIBRATION, AND WHAT IT FOUND =============================
  *
- * Every number below is backed by a MEASUREMENT recorded beside it, taken on this box, WebGL vs
- * WebGPU, both backends on the same real adapter (`chromium headless --use-angle=vulkan`,
- * nvidia/turing), each fixture on its own page. The suite is bit-for-bit reproducible across runs,
+ * Every number below is backed by a MEASUREMENT recorded beside it, WebGL vs WebGPU, both
+ * backends on the same hardware adapter (`chromium headless --use-angle=vulkan`), each fixture on
+ * its own page. The suite is bit-for-bit reproducible across runs,
  * so these are constants, not samples.
  *
  * TWO METRICS, BECAUSE ONE OF THEM CANNOT SEE THE THING THAT WAS WRONG. Each fixture carries a
@@ -85,13 +85,10 @@ export const FIXTURE_CELL_PX = 96;
  */
 export const PARITY_PIXELMATCH_THRESHOLD = 0.12;
 
-/** Every particle fixture. Observed 0.0000 on all ten, stable over consecutive suite runs
- *  (previous worst, before the separate-alpha fix: `polar-uv` 0.0815, `alpha-from-red` 0.0540,
- *  `lut-recolor` 0.0305, `mask` 0.0273, `textured` 0.0207, `modulate-tint` 0.0203,
- *  `untextured-mix` 0.0185, `erode` 0.0115, `flipbook` 0.0095).
+/** Every particle fixture. Observed 0.0000 on all ten, stable over consecutive suite runs.
  *
  *  Held at the SHADER tier's floor rather than at zero, and for the same reason: these fixtures
- *  rasterize instanced geometry, and the zero above is measured on ONE adapter (this box's, through
+ *  rasterize instanced geometry, and the zero above is measured on ONE adapter (through
  *  ANGLE-Vulkan and Dawn). A different rasterizer is entitled to disagree on a sprite's edge samples
  *  without anything being wrong, and 0.002 of a 96x96 cell is about 18 px — an edge, not a picture.
  *  Anything a feature could actually change is orders of magnitude above it. */
@@ -267,7 +264,7 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
  *
  * Every shape is edged with a `smoothstep` ramp rather than a binary alpha. A hard edge is a run of
  * pixels that flips fully on/off across one texel, and it is exactly where two different
- * rasterizers (WP-8b compares SwiftShader GL against SwiftShader Vulkan) disagree — a binary-alpha
+ * rasterizers (e.g. SwiftShader GL against SwiftShader Vulkan) disagree — a binary-alpha
  * sheet would spend the whole cross-backend tolerance budget on cell outlines.
  */
 export const FLIPBOOK_TEXTURE_URL = pngDataUrl(
@@ -502,8 +499,8 @@ function texturedSpec(
  *
  * WHY A COPY. `@godot-scene-web/perf-harness` is a devDependency of nothing here, and importing a
  * perf SCENARIO into a correctness test would couple this suite's fixtures to a file whose whole
- * purpose is to be re-tuned for measurement (its `systems`/`amount`/`blend` defaults move with the
- * phone). The parity of these two strings is not load-bearing — what matters is that this suite
+ * purpose is to be re-tuned for measurement (its `systems`/`amount`/`blend` defaults move). The
+ * parity of these two strings is not load-bearing — what matters is that this suite
  * renders the same source on both sides — so a copy with an attribution is the honest shape.
  * It reads TIME, which is what `staticShaderTime` pins.
  */

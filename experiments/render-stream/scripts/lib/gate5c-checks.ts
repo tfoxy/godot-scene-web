@@ -1,4 +1,4 @@
-// Gate 5c checks (protocol/gate5-design.md "G5c", "Q6d", "Q6e"): the mesh fixture
+// Gate 5c checks: the mesh fixture
 // (fixtures/gate5-mesh), its mesh oracle and the mesh census.
 //
 // Everything here reads an evidence directory written by run-gate5.sh's g5c group, or is pure over
@@ -18,7 +18,7 @@
 // on /3 and on /4 from G5d to G5e); lib/gate5e-checks.ts takes the wire and the receivers from
 // there.
 //
-// Evidence layout under <out>/mesh/ (see scripts/README.md "Gate 5"):
+// Evidence layout under <out>/mesh/:
 //   import/fixture/                editor --import of fixtures/gate5-mesh
 //   capture/                       400-frame capture host, GRC_ROOT_SIZE=enforce-min-size:
 //                                  evidence/ (result, counters, resources.jsonl, ...),

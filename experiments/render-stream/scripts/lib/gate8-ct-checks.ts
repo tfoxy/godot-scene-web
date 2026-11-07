@@ -1,4 +1,4 @@
-// Gate 8 g8c checks (P3-CT, protocol/gate8-design.md "As built (P3-CT)"): images drawn only
+// Gate 8 g8c checks: images drawn only
 // through a CanvasTexture's diffuse, judged on fixtures/gate8-ct. The pure helpers (premiseProblems,
 // regionProblems, uploadProblems) are exported so scripts/test/self-test-gate8-ct.ts can drive them
 // on synthetic input.

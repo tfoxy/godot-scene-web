@@ -1,4 +1,4 @@
-//! ID2 (client-extensions-design.md "Identity v2", ID-D1, ID-D2, ID-D8): `Applier::pick_tree`,
+//! `Applier::pick_tree`,
 //! Godot 4.5.1's GUI pick order (`Viewport::gui_find_control`), over hand-built states. Each test
 //! names the Godot rule it reproduces; the sabotages must each change an answer.
 

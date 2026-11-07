@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Gate 6 group g6p (protocol/gate6-design.md "G6p", Q7g): the measurement matrix -- one discarded
+# Gate 6 group g6p: the measurement matrix -- one discarded
 # warmup plus five measured repeats per scenario, cold and warm caches kept apart, on
 # render-stream/6. Sourced by run-gate6.sh after lib/gate6c-legs.sh, which it reuses heavily:
 # g6c_start_host, g6c_start_receiver, g6c_start_proxy/g6c_stop_proxy, g6c_wait_receiver,
 # g6c_finish_host, g6c_reference and g6c_sampler all run the SAME `rate` timeline window
-# (gate6-design.md Q6c/Q7d) this group's lib/gate6p-checks.ts measures with gate6c-checks.ts's own
+# this group's lib/gate6p-checks.ts measures with gate6c-checks.ts's own
 # `loadG6cLeg`/`measureLeg`/`repeatOf`. Relies on run-gate6.sh's OUT, BINARY, EXTENSION,
 # CALIBRATION, SCENE_FIXTURE_DIR, HD_FIXTURE_DIR, RECEIVER_DIR, SCRIPT_DIR, REPO_ROOT,
 # ACTUAL_BINARY_SHA256 and EXTRA_CHILD_PIDS, and gate6c-legs.sh's g6c_* helpers.
@@ -336,7 +336,7 @@ run_g6p() {
 }
 
 # ---------------------------------------------------------------------------------------------
-# G7p (protocol/gate7/g7p.md, gate7-design.md Q12 "Matrix (G7p)"): the same matrix machinery on a
+# G7p: the same matrix machinery on a
 # browser receiver or the native receiver speaking render-stream/7, selected by the runner
 # (run-gate7.sh --live --legs g7-p sets G7P_MATRIX=1, GATE7_LIVE_KIND=web|gsw or unset for native,
 # GATE7_CREDIT_WINDOW=1|2). Scenario ids are g6p's own; G7P_SCENARIOS (a CSV) replaces the kind's

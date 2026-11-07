@@ -1,5 +1,5 @@
 extends Node
-## Gate 8 CanvasTexture fixture (P3-CT, gate8-design.md "As built (P3-CT)", README.md). Every image
+## Gate 8 CanvasTexture fixture (P3-CT, README.md). Every image
 ## texture here is drawn ONLY through a CanvasTexture's diffuse channel: no command names an image
 ## directly, which is how spine-godot draws its atlas pages (a MeshInstance2D-style add_mesh whose
 ## texture is a CanvasTexture). Eight 64x64 regions, nearest sampling at integer scales so no pixel

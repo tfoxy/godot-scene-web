@@ -20,7 +20,7 @@
 // instance_id and/or mouse_filter (a client offers /14 only to ask for a v2 field). It writes
 // decoded.rs14.
 //
-// TAG1 (client-extensions-design.md §2.1, §2.4): --item-meta '<json request>' (/13 on) adds the
+// TAG1: --item-meta '<json request>' (/13 on) adds the
 // hello's optional `item_meta` key. An item_meta record is held until the transaction after it is
 // accepted, and dropped with it (a predict-check failure, a patch dropped awaiting the full), so
 // decoded.rs13 stays a stream rs-core-check validates with --item-meta-asked. --connect-delay-ms D

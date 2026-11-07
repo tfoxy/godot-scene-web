@@ -27,7 +27,7 @@ export type Primitive =
   | "triangles"
   | "triangle_strip";
 
-// gate5-design.md Q1e / render-stream-4.md "Mesh payload": the ARRAY_FORMAT_*/ARRAY_FLAG_* bits
+// / render-stream-4.md "Mesh payload": the ARRAY_FORMAT_*/ARRAY_FLAG_* bits
 // this module needs to compute a surface's expected buffer sizes. Carried as plain numbers,
 // never as a Mesh.ArrayFormat enum -- `format` on the wire is an uninterpreted integer.
 export const ARRAY_FORMAT_COLOR = 1 << 3;
@@ -136,7 +136,7 @@ export function expectedMeshBufferBytes(
   return { vertex_bytes, attribute_bytes, skin_bytes, index_bytes };
 }
 
-// gate7-design.md G7j/Q5: an injected hash, not a hard `node:crypto` import -- see
+// G7j/Q5: an injected hash, not a hard `node:crypto` import -- see
 // render-stream-2.ts's `hashImpl`/`setHashImpl` for why (browser-loadable decoder).
 let hashImpl: HashFn = sha256Hex;
 

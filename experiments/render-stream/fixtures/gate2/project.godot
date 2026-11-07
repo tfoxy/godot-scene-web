@@ -1,8 +1,8 @@
 ; Gate 2 fixture for the render-stream capture experiment: textures. Eleven steps (0..10) over one
 ; procedural texture shared by four drawers, an identical twin, binary LA8 alpha, placeholders,
 ; flips, regions, transposes, filter and repeat at the item and viewport levels, changing pixels,
-; replacement and lifetime (main- and worker-thread creates). See fixtures/gate2/README.md and
-; ../../protocol/gate2-design.md ("Q6. Fixture") for the contract this implements.
+; replacement and lifetime (main- and worker-thread creates). See fixtures/gate2/README.md
+; for the contract this implements.
 
 config_version=5
 

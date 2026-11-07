@@ -1,7 +1,6 @@
 // Gate 8 g8pt receiver checks (PM6a, protocol/render-stream-12.md "As built (PM6a)"): the native
 // receiver (and, through g7-8's web half, the web export) re-issues every /12 emitter on its own
-// RenderingServer and its own GPU simulates them. Particle pixels are declared approximate
-// (particles-multimesh-design.md "What exact means here"), so these checks are structural and
+// RenderingServer and its own GPU simulates them. Particle pixels are declared approximate, so these checks are structural and
 // banded; only the space outside every emitter's region is judged exactly.
 //
 //   pt-premise              the unarmed reference: every emitting cell inks its region at every
@@ -532,7 +531,7 @@ export async function runG8ptReceivers(
   );
 }
 
-/** The two burst cells FRZ-P freezes (results/p3/frz-p.md): A_BOX (looping) and D_ONESHOT (one-shot). */
+/** The two burst cells FRZ-P freezes: A_BOX (looping) and D_ONESHOT (one-shot). */
 const FRZP_CELLS = ["A_BOX", "D_ONESHOT"];
 
 /** FRZ-P: a frozen seat's one-shot and looping bursts must replay shot-equal to the reference (the

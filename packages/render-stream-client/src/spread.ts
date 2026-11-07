@@ -1,6 +1,6 @@
-// PRES-C (client-extensions-design.md §6, results/p3/pres-c.md): the client-side route of the
+// The client-side route of the
 // widescreen "spread" -- keep the game 16:9 and widen the layout in the browser with a generic
-// module over TAG2's override table. This is a port of the old mirror's `computeSpread` GENERIC
+// module over the extension override table. This is a port of the old mirror's `computeSpread` GENERIC
 // rules only (`sts2-couch-coop` `mirror/spreadLayout.ts`); the scene-identity re-centres and any
 // STS2-specific tweaks live in the product's shape resolver, never here ("never in GSW").
 //
@@ -13,7 +13,7 @@
 //   * pass-through groups pass the budget through to each child;
 //   * owner-anchored floaters ride their owner's shift; remote followers stay exact.
 //
-// The only rule TAG2's override table cannot express is the WIDEN: the table composes an affine
+// The only rule the override table cannot express is the WIDEN: the table composes an affine
 // (translate/scale), and scaling a box's paint also scales its flattened children (E composes down
 // the tree), which is exactly the "no internal tearing" the mirror forbids. So the module computes
 // `width` for the widened box and reports it, but writes only the translate shift. A product that

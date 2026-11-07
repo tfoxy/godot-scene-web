@@ -2,7 +2,7 @@
 """Write fixtures/gate4-rich/expected.json (render-stream-gate4-expected/1).
 
 Every number below is derived from the fixture's own BBCode fragments and the engine's text rules
-as read from the source (protocol/gate4-design.md Q1, Q6c, "G4d"), written down as code over the
+as read from the source, written down as code over the
 fixture's own parameters. Nothing here runs or reads the engine: the glyph oracle
 (fixtures/gate4-rich/glyph_oracle.gd) and the capture have to agree with it (`rich-oracle-agrees`,
 `atlas-census`), and a disagreement is a finding to explain from the source, never a number to
@@ -17,7 +17,7 @@ The model:
   text at steps 0-4 (`_set_text_through`) and appends a new paragraph at step 5 (`append_text`).
   Either way the *entire* control re-validates its line caches every step (`_process_line_caches`),
   which re-shapes every span, including ones whose text did not change -- but rasterize-then-upload
-  (gate4-design.md Q1c) means a glyph already in its cache is never rasterized or uploaded again.
+  means a glyph already in its cache is never rasterized or uploaded again.
   So, exactly as for Label, a cache's new-glyph set each step is only the codepoints across that
   step's *active* spans that were never rasterized into that cache before, regardless of whether
   the span carrying them is itself new that step.
@@ -75,7 +75,7 @@ RTL_REGION = [RTL_RECT[0], RTL_RECT[1], RTL_RECT[0] + RTL_RECT[2], RTL_RECT[1] +
 # RichTextLabel's constructor always adds an internal VScrollBar child (scene/gui/
 # rich_text_label.cpp:8064-8068), its own CanvasItem created right after RTL's own and before
 # Marker's -- present regardless of `scroll_active`, invisible and drawing nothing here (measured
-# against the rendered reference: "As built (G4d)" in ../../protocol/gate4-design.md).
+# against the rendered reference: "As built (G4d)").
 CREATION_ORDER = ["RTL", "RTL_VScrollBar", "Marker"]
 
 # gate4-rich.gd `_spans_upto`: (key, font_key, size, text, colour, bgcolor, outline), cumulative
@@ -112,7 +112,7 @@ def outline_cache_key(span):
     return f"{font_key}O@{size}" if outline > 0 else None
 
 
-# The one texture the engine makes itself (memory rs-g2a-texture-census-facts).
+# The one texture the engine makes itself.
 ENGINE_TEXTURES = [{"frame": 1, "op": "texture_2d_create", "format": "RGBA8", "width": 800, "height": 6}]
 
 
@@ -136,7 +136,7 @@ def census():
 
     As built (G4d), measured against the rendered reference and confirmed from source: a *fill*
     cache's new glyphs across every span active that step are rasterized together during RTL's
-    one shaping pass (gate4-design.md Q1c: "shaping rasterizes every glyph the text needs"), so
+    one shaping pass (shaping rasterizes every glyph the text needs), so
     they are ONE hook-level event (one `texture_2d_create`/`_update`) no matter how many spans or
     distinct fresh codepoints contributed -- RichTextLabel is one CanvasItem with one redraw, not
     one Label per span. An *outline* cache does not: `_font_draw_glyph_outline`

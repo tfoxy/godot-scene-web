@@ -1,8 +1,7 @@
 extends SceneTree
 ## WebSocketPeer interop self-test for rs_ws (capture/src/rs_ws.h), against the
-## test-only echo server capture/test/rs_ws_echo.cpp (protocol/gate1-design.md
-## G1c1 "Pass criteria", Godot interop), plus its bearer-token authorization
-## (protocol/gate2-design.md D13, G2e).
+## test-only echo server capture/test/rs_ws_echo.cpp (Godot interop), plus its bearer-token
+## authorization
 ##
 ##   RS_WS_ECHO_PORT=<port> RS_WS_ECHO_AUTH_PORT=<port> RS_WS_ECHO_AUTH_TOKEN=<token> \
 ##     mise exec -- godot --headless \

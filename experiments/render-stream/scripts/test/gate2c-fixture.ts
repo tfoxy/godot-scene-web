@@ -4,7 +4,7 @@
 // host's own steps.jsonl, so the real S=300, N=60 is not needed here).
 //
 // Every live leg gets a host directory -- both file sinks, the store, the hook log with the
-// serving lines (pin and retire computed by gate2-design.md D7 from the model's tables and the
+// serving lines (pin and retire computed from the model's tables and the
 // connection's sends, http-get from the receiver's fetches), evidence/live.json and
 // live-summary.json, a tap and a live log per connection -- and a receiver directory: the
 // received stream(s), applied.json (mode live, http fetches with their headers, per-transaction

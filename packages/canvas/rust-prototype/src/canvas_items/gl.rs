@@ -37,7 +37,7 @@ use gsw_canvas_draw_list::{
 use std::cell::Cell;
 use std::collections::HashMap;
 
-/// P3-TM: the default-texture ids beside [`WHITE_TEXTURE`], in `Objects::defaults` order.
+/// The default-texture ids beside [`WHITE_TEXTURE`], in `Objects::defaults` order.
 const DEFAULT_TEXTURE_IDS: [u32; 4] =
     [BLACK_TEXTURE, TRANSPARENT_TEXTURE, NORMAL_TEXTURE, ANISOTROPY_TEXTURE];
 
@@ -50,7 +50,7 @@ const UNIT_ITEMS: u32 = 1;
 const UNIT_TARGET: u32 = 2;
 const VERTEX_BYTES: usize = std::mem::size_of::<Vertex>();
 const INITIAL_VERTICES: usize = 1024;
-/// PM3: the instance attributes (`a_inst0`, `a_inst1`, `a_inst_color`, `a_inst_custom`).
+/// The instance attributes (`a_inst0`, `a_inst1`, `a_inst_color`, `a_inst_custom`).
 const INSTANCE_ATTRIBUTES: u32 = 4;
 const INSTANCE_BYTES: usize = std::mem::size_of::<Instance>();
 const INITIAL_INSTANCES: usize = 64;
@@ -250,9 +250,9 @@ struct Cache {
     /// their own in [`CompiledItem`]).
     premultiply: Option<bool>,
     projection: Option<(u32, u32, bool)>,
-    /// The present program's `u_flip_rows` (G7t: Godot's orientation).
+    /// The present program's `u_flip_rows` (Godot's orientation).
     flip_rows: Option<i32>,
-    /// The builtin MSDF program's projection and [`MsdfState`] (G7tm).
+    /// The builtin MSDF program's projection and [`MsdfState`].
     msdf_projection: Option<(u32, u32, bool)>,
     msdf_state: Option<MsdfState>,
     /// Texture and sampler object on each item-space sampler unit.
@@ -269,12 +269,12 @@ struct CompiledItem {
     u_premultiply_out: Option<glow::UniformLocation>,
     /// Active non-sampler uniforms by declared name: location, GL type, array size.
     uniforms: HashMap<String, (glow::UniformLocation, u32, i32)>,
-    /// PH2: the active uniforms by their position in a binding's uniform list: (position, name,
+    /// The active uniforms by their position in a binding's uniform list: (position, name,
     /// location, GL type, array size), and the list's length. Every binding of a program lists
     /// the program's declared uniforms in the same order, so one plan serves them all; a binding
     /// whose length differs, or whose name at a planned position differs, re-plans it. A binding
     /// upload then touches the active uniforms only (a program declares many more than the
-    /// compiler keeps, and every upload used to hash every declared name).
+    /// compiler keeps).
     uniform_plan: Vec<(usize, Box<str>, glow::UniformLocation, u32, i32)>,
     uniform_plan_len: Option<usize>,
     /// Active `sampler2D` uniforms (beyond `TEXTURE`) and the unit each samples.
@@ -284,16 +284,16 @@ struct CompiledItem {
     premultiply_out: Option<bool>,
     /// The (binding slot, version) whose values GL holds.
     applied: Option<(u32, u64)>,
-    /// `gsw_msdf_on`, `gsw_msdf`, `gsw_msdf_no_median` (G7tm).
+    /// `gsw_msdf_on`, `gsw_msdf`, `gsw_msdf_no_median`.
     u_msdf_on: Option<glow::UniformLocation>,
     u_msdf: Option<glow::UniformLocation>,
     u_msdf_no_median: Option<glow::UniformLocation>,
     msdf_state: Option<(bool, MsdfState)>,
-    /// P3-ST: `SCREEN_PIXEL_SIZE` (declared by a module that reads SCREEN_UV or it) and the target
+    /// `SCREEN_PIXEL_SIZE` (declared by a module that reads SCREEN_UV or it) and the target
     /// size it was set for.
     u_screen_pixel_size: Option<glow::UniformLocation>,
     screen_pixel_size: Option<(u32, u32)>,
-    /// P3-TM: `TIME` (declared by a module whose code reads it) and the bits of the
+    /// `TIME` (declared by a module whose code reads it) and the bits of the
     /// [`DrawList::shader_time`] it was set to.
     u_time: Option<glow::UniformLocation>,
     time: Option<u32>,
@@ -316,7 +316,7 @@ impl MsdfState {
     }
 }
 
-/// The builtin program's MSDF variant: [`VERT`] with [`msdf_fragment`] (G7tm).
+/// The builtin program's MSDF variant: [`VERT`] with [`msdf_fragment`].
 struct MsdfProgram {
     program: glow::Program,
     u_projection: Option<glow::UniformLocation>,
@@ -332,7 +332,7 @@ struct MsdfProgram {
 /// A registered item-space program: its module (kept to recompile after a restored context).
 struct ItemProgram {
     module: String,
-    /// P3-VX: the vertex module, for a program with its own vertex stage.
+    /// The vertex module, for a program with its own vertex stage.
     vertex: Option<String>,
     compiled: Option<CompiledItem>,
 }
@@ -360,7 +360,7 @@ struct Objects {
     vertex_array: glow::VertexArray,
     vertex_buffer: glow::Buffer,
     index_buffer: glow::Buffer,
-    /// PM3: `DrawList::instances`, read by DRAW_INSTANCED draws.
+    /// `DrawList::instances`, read by DRAW_INSTANCED draws.
     instance_buffer: glow::Buffer,
     /// Capacities in vertices, indices and instances.
     vertex_capacity: usize,
@@ -369,17 +369,17 @@ struct Objects {
     item_texture: glow::Texture,
     item_rows: u32,
     white: glow::Texture,
-    /// P3-TM: GLES3's other default textures, in [`DEFAULT_TEXTURE_IDS`] order (1x1, nearest, as
+    /// GLES3's other default textures, in [`DEFAULT_TEXTURE_IDS`] order (1x1, nearest, as
     /// `white`).
     defaults: [glow::Texture; 4],
     /// Index `wrap · 2 + linear` (wrap 0 clamp, 1 repeat, 2 mirror).
     samplers: [glow::Sampler; 6],
     target: Option<TargetObjects>,
-    /// P3-ST: the back buffer, made at the first screen copy for the target's size and format.
+    /// The back buffer, made at the first screen copy for the target's size and format.
     screen: Option<ScreenObjects>,
 }
 
-/// P3-ST: Godot 4.5.1's GLES3 render-target back buffer (`_create_render_target_backbuffer`,
+/// Godot 4.5.1's GLES3 render-target back buffer (`_create_render_target_backbuffer`,
 /// texture_storage.cpp:2290-2337): the target's internal format, `max(1, mips(w, h) - 4)` levels
 /// (the smallest no smaller than about 32 px), each half the previous (floor, at least 1), sampled
 /// linear / linear-mipmap-linear / clamp-to-edge, with MAX_LEVEL 0 until a mip chain is built.
@@ -400,11 +400,11 @@ struct ScreenObjects {
     u_source_section: Option<glow::UniformLocation>,
     /// The level attached to `framebuffer` (a mip chain leaves its last one there).
     attached: u32,
-    /// CG3: the group owners' program ([`DRAW_GROUP_CLIP`], [`DRAW_GROUP_COMPOSITE`]).
+    /// The group owners' program ([`DRAW_GROUP_CLIP`], [`DRAW_GROUP_COMPOSITE`]).
     group: GroupProgram,
 }
 
-/// CG3: [`VERT`] with [`GROUP_FRAG`]: Godot's default clip-children and canvas-group shaders over
+/// [`VERT`] with [`GROUP_FRAG`]: Godot's default clip-children and canvas-group shaders over
 /// the builtin draw.
 struct GroupProgram {
     program: glow::Program,
@@ -446,7 +446,7 @@ void main() {
   uv_interp = source_section.xy + uv_interp * source_section.zw;
 }"#;
 
-/// CG3: the fragment stage of a group owner's draw: the builtin draw's colour (straight: the
+/// The fragment stage of a group owner's draw: the builtin draw's colour (straight: the
 /// vertex stage runs with `u_premultiply` off), then Godot's default shader for the owner
 /// (rasterizer_canvas_gles3.cpp:2844-2883), both `render_mode unshaded`, reading the back buffer
 /// at canvas.glsl's `SCREEN_UV` (`gl_FragCoord.xy * screen_pixel_size`) at level 0:
@@ -598,7 +598,7 @@ fn ensure_screen<'o>(
             let u_pixel_size = c.get_uniform_location(program, "pixel_size");
             let u_copy_section = c.get_uniform_location(program, "copy_section");
             let u_source_section = c.get_uniform_location(program, "source_section");
-            // CG3: the group program's fixed uniforms (the back buffer is this target's size).
+            // The group program's fixed uniforms (the back buffer is this target's size).
             c.use_program(Some(group_program));
             cache.program = Some(group_program);
             let at = |name: &str| c.get_uniform_location(group_program, name);
@@ -747,7 +747,7 @@ fn gaussian_chain(
     }
 }
 
-/// P3-ST, CG3: one [`ScreenOp`] before a draw (Godot's `render_target_copy_to_back_buffer`,
+/// One [`ScreenOp`] before a draw (Godot's `render_target_copy_to_back_buffer`,
 /// `render_target_clear_back_buffer` and `render_target_gen_back_buffer_mipmaps`), then the back
 /// buffer's sampled levels as the operation leaves them. Leaves the target bound for drawing; the
 /// caller rebinds its vertex array.
@@ -880,7 +880,7 @@ fn sampler_index(bits: u32) -> usize {
 }
 
 /// Compile an item-space program: the builtin vertex stage (its modulate passed straight), or
-/// [`item_program_vertex`] around `vertex` (P3-VX), and [`item_program_fragment`] around `module`.
+/// [`item_program_vertex`] around `vertex`, and [`item_program_fragment`] around `module`.
 /// Leaves no program bound.
 fn compile_item(
     gl: &glow::Context,
@@ -913,7 +913,7 @@ fn compile_item(
                 continue;
             };
             let name = active.name.trim_end_matches("[0]").to_string();
-            // P3-VX: the vertex stage's canvas matrices are binding values like any uniform.
+            // The vertex stage's canvas matrices are binding values like any uniform.
             let canvas = name == CANVAS_MATRIX_UNIFORM || name == CANVAS_INVERSE_UNIFORM;
             if !canvas
                 && (name == "TEXTURE"
@@ -1059,7 +1059,7 @@ impl Objects {
                 gl.get_uniform_location(program, "u_items").as_ref(),
                 UNIT_ITEMS as i32,
             );
-            // G7tm: the MSDF variant. Its vertex stage passes the modulate straight; the fragment
+            // The MSDF variant. Its vertex stage passes the modulate straight; the fragment
             // stage premultiplies last.
             let msdf_program = compile(gl, VERT, &msdf_fragment())?;
             gl.use_program(Some(msdf_program));
@@ -1119,7 +1119,7 @@ impl Objects {
                 glow::DYNAMIC_DRAW,
             );
             gl.bind_vertex_array(None);
-            // PM3: the instance buffer; attributes 4-7 hold the identity instance as constants
+            // The instance buffer; attributes 4-7 hold the identity instance as constants
             // except during an instanced call.
             let instance_buffer = gl.create_buffer()?;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
@@ -1250,7 +1250,7 @@ impl Objects {
     }
 }
 
-/// PM3: the identity instance as the constant values of attributes 4-7 (their arrays disabled):
+/// The identity instance as the constant values of attributes 4-7 (their arrays disabled):
 /// what every draw that is not DRAW_INSTANCED reads.
 fn identity_instance(gl: &glow::Context) {
     let i = Instance::IDENTITY;
@@ -1320,7 +1320,7 @@ pub const CONTEXT_ATTRIBUTES: ContextAttributes = ContextAttributes {
 };
 
 impl CanvasItemsExecutor {
-    /// G8kp: the compressed families this context exposes ([`gpu_families`]), the `gpu_formats` a
+    /// The compressed families this context exposes ([`gpu_families`]), the `gpu_formats` a
     /// GSW receiver states before any mask.
     pub fn gpu_families(&self) -> Vec<&'static str> {
         let extensions = self.gl.raw.supported_extensions();
@@ -1364,7 +1364,7 @@ impl CanvasItemsExecutor {
         self.define_program_with_vertex(id, module, None)
     }
 
-    /// [`define_program`](Self::define_program) for a program with its own vertex stage (P3-VX):
+    /// [`define_program`](Self::define_program) for a program with its own vertex stage:
     /// `vertex` is the transpiler's `vertexGlsl`, compiled around [`item_program_vertex`]; `None`
     /// keeps the builtin vertex stage.
     pub fn define_program_with_vertex(
@@ -1545,7 +1545,7 @@ impl CanvasItemsExecutor {
     }
 
     /// Poll the outstanding fence without blocking. WebGL updates a sync's status only between
-    /// tasks, so poll on a later frame (the g31 has no timer query; G7x's `gpu_complete_ms`).
+    /// tasks, so poll on a later frame (many mobile GPUs have no timer query).
     pub fn poll_fence(&mut self) -> FenceState {
         let Some((fence, frame)) = self.fence else {
             return FenceState::None;
@@ -1563,7 +1563,7 @@ impl CanvasItemsExecutor {
         }
     }
 
-    /// The shot: `readPixels` RGBA/UNSIGNED_BYTE of the target (G7c's `StageTarget.readPixels`:
+    /// The shot: `readPixels` RGBA/UNSIGNED_BYTE of the target (the TypeScript `StageTarget.readPixels`:
     /// each 10- or 2-bit channel rounded to the nearest 8-bit level), rows TOP-DOWN, into
     /// `out[..4·w·h]`.
     pub fn read_target(&mut self, out: &mut [u8]) -> Result<(), ExecError> {
@@ -1670,7 +1670,7 @@ impl CanvasItemsExecutor {
                     if id == WHITE_TEXTURE {
                         return Err(ExecError::Invalid("texture id 0 is the white texel".into()));
                     }
-                    // PHV: an image over MAX_TEXTURE_SIZE is reduced at upload (`downscale_factor`).
+                    // An image over MAX_TEXTURE_SIZE is reduced at upload (`downscale_factor`).
                     if width == 0 || height == 0 {
                         return Err(ExecError::Invalid(format!(
                             "texture {id}: size {width}x{height}"
@@ -1806,7 +1806,7 @@ impl CanvasItemsExecutor {
                     stats.texture_upload_bytes += bytes.len() as u32;
                 }
                 TextureOp::UploadHalf { id, width, height, .. } => {
-                    // P3-CK: a half-float image as GLES3 keeps it (RGBA16F), sampled as RGBA8 is.
+                    // A half-float image as GLES3 keeps it (RGBA16F), sampled as RGBA8 is.
                     let texture = match self.textures.get(&id) {
                         Some(texture) => *texture,
                         None => match unsafe { self.gl.c().create_texture() } {
@@ -1855,7 +1855,7 @@ impl CanvasItemsExecutor {
                     len,
                     ..
                 } => {
-                    // G8kp (texture-delivery-design.md Q6 "GSW"): a `block` variant's level 0, in
+                    // A `block` variant's level 0, in
                     // the GL internal format Godot's GLES3 driver uses for it; the texture is then
                     // sampled exactly as an RGBA8 one (level 0, the draw's own sampler).
                     let texture = match self.textures.get(&id) {
@@ -2111,7 +2111,7 @@ impl CanvasItemsExecutor {
             stats.upload_calls += 1;
         }
 
-        // PM3: instances (ARRAY_BUFFER, like the vertices).
+        // Instances (ARRAY_BUFFER, like the vertices).
         let mut instances_all = all;
         if list.instances.len() > objects.instance_capacity {
             objects.instance_capacity = list.instances.len().next_power_of_two();
@@ -2186,7 +2186,7 @@ impl CanvasItemsExecutor {
             -1.0,
             1.0,
         ];
-        // ExecOptions::godot_orientation: Godot's screen_transform instead (G7t).
+        // ExecOptions::godot_orientation: Godot's screen_transform instead.
         let godot = self.options.godot_orientation;
         let screen = godot_screen_transform(width, height);
         bind_vertex_array(gl, cache, objects.vertex_array);
@@ -2194,7 +2194,7 @@ impl CanvasItemsExecutor {
             return;
         };
 
-        // P3-ST, CG3: the next screen operation to run (operations precede the draw they name).
+        // The next screen operation to run (operations precede the draw they name).
         let mut next_op = 0usize;
         for call in calls.iter() {
             // The back-buffer operations GLES3 makes before this call's first draw (those of a
@@ -2218,7 +2218,7 @@ impl CanvasItemsExecutor {
                 continue;
             }
             let draw = &list.draws[call.draw as usize];
-            // CG3: an open canvas group's draws go into the back buffer, blended as into a
+            // An open canvas group's draws go into the back buffer, blended as into a
             // transparent target; every other draw into the target.
             let to_back_buffer = draw.flags & DRAW_TO_BACK_BUFFER != 0;
             let opaque = list.target.opaque && !to_back_buffer;
@@ -2246,7 +2246,7 @@ impl CanvasItemsExecutor {
             let blend = Blend::from_u32(draw.blend).unwrap_or(Blend::Mix);
             let msdf = draw.flags & DRAW_MSDF != 0;
             if group_mode != 0 {
-                // CG3: a group owner through Godot's default clip-children or canvas-group shader.
+                // A group owner through Godot's default clip-children or canvas-group shader.
                 let Some(bb) = objects.screen.as_mut() else {
                     stats.calls_dropped += 1;
                     continue;
@@ -2281,7 +2281,7 @@ impl CanvasItemsExecutor {
                     stats.texture_binds += 1;
                 }
             } else if draw.program == BUILTIN_PROGRAM && msdf {
-                // G7tm: the builtin's MSDF variant.
+                // The builtin's MSDF variant.
                 let m = &mut objects.msdf;
                 if cache.program != Some(m.program) {
                     unsafe { gl.c().use_program(Some(m.program)) };
@@ -2363,7 +2363,7 @@ impl CanvasItemsExecutor {
                     };
                     item.premultiply_out = Some(premultiply_out);
                 }
-                // G7tm: an MSDF draw through an item-space program (canvas.glsl's MSDF branch
+                // An MSDF draw through an item-space program (canvas.glsl's MSDF branch
                 // runs before the shader's fragment code).
                 let state = MsdfState::of(draw, sabotage);
                 if msdf && item.msdf_state != Some((true, state)) {
@@ -2432,13 +2432,13 @@ impl CanvasItemsExecutor {
                 for (name, unit) in &item.sampler_units {
                     let bound = binding.samplers.iter().find(|s| &*s.name == name.as_str());
                     let (texture, sampler) = match bound {
-                        // P3-ST: the back buffer, with its own fixed sampler; CG3: white for a draw
+                        // The back buffer, with its own fixed sampler; white for a draw
                         // into the back buffer (canvas_begin binds white there).
                         Some(s) if s.texture == SCREEN_TEXTURE => match objects.screen.as_ref() {
                             Some(screen) if !to_back_buffer => (screen.texture, screen.sampler),
                             _ => (objects.white, objects.samplers[0]),
                         },
-                        // P3-TM: GLES3's default for an unset hinted sampler.
+                        // GLES3's default for an unset hinted sampler.
                         Some(s) if DEFAULT_TEXTURE_IDS.contains(&s.texture) => {
                             let at = DEFAULT_TEXTURE_IDS
                                 .iter()
@@ -2503,11 +2503,11 @@ impl CanvasItemsExecutor {
                 };
                 cache.premultiply = Some(premultiply);
             }
-            // G7o4: the texture and sampler are the run's first textured draw's.
+            // The texture and sampler are the run's first textured draw's.
             let tex_draw = &list.draws[call.texture_draw as usize];
             // An all-untextured call binds the white texel too: its fragments ignore the texture,
-            // but leaving a stale binding in place (the cache is not the whole GL state) dropped
-            // a gate 4e MSDF frame's draws after an atlas re-upload (G7o4's g7-4 run).
+            // but leaving a stale binding in place (the cache is not the whole GL state) can drop
+            // an MSDF frame's draws after an atlas re-upload.
             if tex_draw.flags & DRAW_UNTEXTURED != 0 || tex_draw.texture == WHITE_TEXTURE {
                 // A 1×1 white texel samples white under every filter and wrap: keep the sampler.
                 bind_draw_texture_with(gl, cache, objects.white, stats);
@@ -2521,7 +2521,7 @@ impl CanvasItemsExecutor {
                 }
             }
             if draw.flags & DRAW_INSTANCED != 0 {
-                // PM3: Godot's TYPE_MULTIMESH call (rasterizer_canvas_gles3.cpp:1478-1513): the
+                // Godot's TYPE_MULTIMESH call (rasterizer_canvas_gles3.cpp:1478-1513): the
                 // instance attributes from the range's first instance, divisor 1, then
                 // `glDrawElementsInstanced`; the identity constants again after it.
                 let range = list
@@ -2578,7 +2578,7 @@ impl CanvasItemsExecutor {
         }
     }
 
-    /// G7c's `StageTarget.blit()`: RGB10_A2 through the rounding `texelFetch` draw, RGBA8 through
+    /// The TypeScript `StageTarget.blit()`: RGB10_A2 through the rounding `texelFetch` draw, RGBA8 through
     /// `blitFramebuffer`. Leaves the canvas bound for drawing.
     fn blit(&mut self, format: Format) {
         let Some(objects) = self.objects.as_ref() else {
@@ -2870,7 +2870,7 @@ fn set_blend(gl: &Gl, cache: &mut Cache, blend: Blend, opaque: bool, stats: &mut
     }
 }
 
-/// An upload's bytes in the list (arena or shared, GLJ), or an `Invalid` naming texture `id`.
+/// An upload's bytes in the list (arena or shared), or an `Invalid` naming texture `id`.
 fn check_texture_bytes(list: &DrawList, op: &TextureOp, id: u32) -> Result<(), ExecError> {
     match op.byte_len() {
         Some((bytes, len)) if list.texture_data(bytes, len).is_none() => Err(ExecError::Invalid(
@@ -2887,7 +2887,7 @@ fn op_bytes<'a>(list: &'a DrawList, op: &TextureOp) -> &'a [u8] {
         .expect("validated texture bytes")
 }
 
-/// G8kp: the GL internal format of a block-compressed upload, as Godot's GLES3 driver picks it
+/// The GL internal format of a block-compressed upload, as Godot's GLES3 driver picks it
 /// (`texture_storage.cpp` `_get_gl_image_and_format`).
 fn compressed_internal_format(format: CompressedFormat) -> u32 {
     match format {
@@ -2909,7 +2909,7 @@ fn compressed_internal_format(format: CompressedFormat) -> u32 {
     }
 }
 
-/// G8kp (texture-delivery-design.md Q3): Godot's feature names for the compressed families a
+/// Godot's feature names for the compressed families a
 /// WebGL context exposes, from its extension list: `s3tc` (`WEBGL_compressed_texture_s3tc`),
 /// `bptc` (`EXT_texture_compression_bptc`), `rgtc` (`EXT_texture_compression_rgtc`), `etc2`
 /// (`WEBGL_compressed_texture_etc`), `astc` (`WEBGL_compressed_texture_astc`), in that order.

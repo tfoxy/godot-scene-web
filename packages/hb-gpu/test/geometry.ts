@@ -25,17 +25,17 @@ export interface GlyphCase {
 /**
  * WHOLE-PIXEL ORIGINS, and not by accident.
  *
- * `docs/text-rendering.md` records a whole round in which every arm read 0.51 px out because
- * stacking two runs put their rest positions on half-pixels. A rest position on a fraction is a
+ * Stacking two runs can put their rest positions on half-pixels, and then every arm reads ~0.5 px
+ * out. A rest position on a fraction is a
  * fraction that every estimator downstream has to model exactly; a rest position on a whole pixel
  * is one that both sides get right or neither does. Sub-pixel behaviour is a sweep's job, not a
  * fixture's.
  */
 export const GLYPH_CASES: Record<string, GlyphCase> = {
-  // 14 px is the round's size and, crucially, is INSIDE `_hb_gpu_slug`'s `ppem < 16` branch, where
-  // the shader runs `_hb_gpu_slug_single` five times (one centre tap plus four MSAA taps). That
-  // branch is the one `docs/text-rendering.md` names as this arm's per-fragment cost, so a pixel
-  // guard that never entered it would be testing the cheaper half of the shader.
+  // 14 px is the benchmark's size and, crucially, is INSIDE `_hb_gpu_slug`'s `ppem < 16` branch,
+  // where the shader runs `_hb_gpu_slug_single` five times (one centre tap plus four MSAA taps).
+  // That branch is this arm's per-fragment cost, so a pixel guard that never entered it would be
+  // testing the cheaper half of the shader.
   upright14: {
     text: "中",
     size: 96,
@@ -55,7 +55,7 @@ export const GLYPH_CASES: Record<string, GlyphCase> = {
     originY: 60,
     degrees: 0,
   },
-  // The round's actual geometry. Rotation goes through `u_matViewProjection`, so this is also the
+  // The benchmark's actual geometry. Rotation goes through `u_matViewProjection`, so this is also the
   // only case in which `hb_gpu_dilate` is asked for half a pixel along an axis that is neither of
   // the glyph's own.
   rotated28: {
@@ -140,13 +140,13 @@ export const SPREAD_THIN_PX = 12;
  *
  * WHY IT HAD TO EXIST. Both cases above draw at 96 px per em, so neither takes that branch — and
  * `hb_gpu_spread_tap` mirrors it, which means every ring tap below ppem 16 is FIVE
- * `_hb_gpu_slug_single` evaluations instead of one. Measured: disabling the branch inside the tap
- * left all thirteen assertions in `glyphPixelXvfb.test.ts` byte-identical (ink 314860, thin 0/600
- * reachable pixels short, darkest 255) while taking S9's `hb-gpu` arm from 12.27 to 70.47 Hz. The
- * suite was blind to a 5.7x change in the shader it exists to guard. `upright14` covers the same
- * branch on the FILL path; nothing covered it on the OUTLINE path.
+ * `_hb_gpu_slug_single` evaluations instead of one. Without this case, disabling the branch inside
+ * the tap left every other assertion in `glyphPixelXvfb.test.ts` byte-identical while changing the
+ * shader's cost several-fold. `upright14` covers the same branch on the FILL path; nothing else
+ * covers it on the OUTLINE path.
  *
- * THE GEOMETRY IS S9's, NOT A CONVENIENT ONE: 中 at 14 px per em, rotated 10 degrees, dilated by 3 —
+ * THE GEOMETRY IS THE BENCHMARK'S, NOT A CONVENIENT ONE: 中 at 14 px per em, rotated 10 degrees,
+ * dilated by 3 —
  * which is the consumer's modal `outlinePx` of 6 halved. Rotation is load-bearing twice over. It is
  * what the arm actually draws, and it is what puts ink on edges that are neither horizontal nor
  * vertical: MSAA changes a coverage ESTIMATE, and on an axis-aligned edge the estimate and the
@@ -171,25 +171,23 @@ export const SPREAD_LOWPPEM_CASE: GlyphCase = {
   degrees: 10,
 };
 
-/** The spread the low-ppem case is drawn at: S9's modal `outlinePx` of 6, halved. */
+/** The spread the low-ppem case is drawn at: the consumer's modal `outlinePx` of 6, halved. */
 export const SPREAD_LOWPPEM_PX = 3;
 
 /**
  * The geometry the CONTRAST probe draws: a Latin "B" at 20 px per em, twenty-five times.
  *
- * IT IS THE CONSUMER'S CASE, NOT A CONVENIENT ONE. The measurement that opened this round was a
- * fixed crop of the word "Breakthrough" at 1600x900 and DPR 1.25, where 16 CSS px of body text is
- * exactly **20 device px per em**. `smoothstep (8, 48, ppem)` still weights the correction at ~78%
- * of full strength there, and 20 px is where the gap being closed was measured — a fixture at some
- * other size would be a different claim wearing this one's numbers.
+ * IT IS THE CONSUMER'S CASE, NOT A CONVENIENT ONE: 16 CSS px of body text at DPR 1.25 is exactly
+ * **20 device px per em**. `smoothstep (8, 48, ppem)` still weights the correction at ~78% of full
+ * strength there — a fixture at some other size would be a different claim.
  *
- * LATIN, NOT THE HAN THE REST OF THIS FILE USES, and it was measured before it was chosen. The
+ * LATIN, NOT THE HAN THE REST OF THIS FILE USES. The
  * assertions are about the TOP of the coverage ramp, and 中 does not have one at these sizes: at 14
  * px per em its peak coverage over 2000 partially covered pixels is **106 of 255**, so a Han
  * fixture would be asserting about a distribution that never reaches the region under test. That is
  * a real finding about the mechanism and it is why `upright14` exists; it just makes 中 the wrong
  * glyph here. A "B" at 20 px per em has stems near two device pixels wide, so it has both a genuine
- * saturated core and a genuine ramp: measured, 1750 ramp pixels peaking at 223.
+ * saturated core and a genuine ramp.
  *
  * TWENTY-FIVE OF THEM BECAUSE THE ASSERTIONS ARE COUNTS. `hb_gpu_stem_darken` is the identity at
  * coverage 0 and 1, so the only pixels it can move are the ramp — about seventy per glyph. A claim
@@ -214,7 +212,7 @@ export const CONTRAST_CASE: GlyphCase = {
 };
 
 /**
- * The spread the contrast probe's OUTLINE frames are drawn at: S9's modal `outlinePx` of 6, halved,
+ * The spread the contrast probe's OUTLINE frames are drawn at: the modal `outlinePx` of 6, halved,
  * exactly as {@link SPREAD_LOWPPEM_PX} is.
  *
  * IT IS THE SAME NUMBER AS `SPREAD_LOWPPEM_PX` AND IT IS STATED SEPARATELY ON PURPOSE. That one is
@@ -223,10 +221,9 @@ export const CONTRAST_CASE: GlyphCase = {
  * because one is the other — and a future case that needed a different radius here should not have
  * to move a constant the MSAA fixture reads.
  *
- * WHY THE CONTRAST PROBE NEEDED ONE AT ALL. Every frame this probe captured used to be drawn at
- * spread 0, so the shipped contrast curve had NO fixture on a dilated frame — the gap that let a
- * correction calibrated for a fill's coverage ramp ship on an outline's rim, where Godot has no
- * curve at all. `CONTRAST_CASE`'s pitch (22 px, for a ~13x14 px glyph) still clears a 3 px dilation
+ * WHY THE CONTRAST PROBE NEEDS ONE AT ALL. Without it the shipped contrast curve has NO fixture on
+ * a dilated frame, and a correction calibrated for a fill's coverage ramp could ship on an
+ * outline's rim, where Godot has no curve at all. `CONTRAST_CASE`'s pitch (22 px, for a ~13x14 px glyph) still clears a 3 px dilation
  * on every side with a pixel to spare, so the outline frames stay one glyph per cell.
  */
 export const CONTRAST_OUTLINE_PX = 3;
@@ -310,20 +307,15 @@ export interface GodotOutlineCase {
 /**
  * The six cases the Godot golden is built from, and where their sizes come from.
  *
- * MEASURED ON THE LIVE PRODUCT, not chosen. `window.__mirrorCanvasStats()` on the deployed game at
- * `:13337` (`?stage=canvas&textCanvas=plain`, DPR 1) reports the glyph pass drawing 3870 glyphs
- * with 567 of 1314 runs under the ppem-16 fidelity floor, and `packages/canvas`'s own once-per-page
- * warning names the sizes exactly: runs at **12.8 and 15.0 device ppem** on a 1280 px stage whose
- * fit scale the client logs as 0.534. That makes the scene's two modal label sizes 24 and 28 DESIGN
- * px, and device ppem is `designPx * fitScale * DPR`:
+ * TAKEN FROM A REAL CONSUMER SCENE, not chosen. Its two modal label sizes are 24 and 28 DESIGN px,
+ * and device ppem is `designPx * fitScale * DPR`:
  *
  *   1280 px window, DPR 1   fit 0.534   -> 12.8 and 15.0   (han-desktop, at 14, sits between them)
  *   1920 px window, DPR 1   fit 0.80    -> 19.2 and 22.5   (latin-desktop, at 20)
- *   the phone, DPR 3.49     fit*DPR 1.75 -> 43 and 49      (han-phone, at 49)
+ *   a high-DPR phone        fit*DPR 1.75 -> 43 and 49      (han-phone, at 49)
  *
  * That last product is the same 1.75 that turns the consumer's modal `outlinePx` of 6 into the
- * ~10.5 device px radius `han-phone` carries, so the two halves of the phone row are one
- * measurement rather than two guesses.
+ * ~10.5 device px radius `han-phone` carries.
  *
  * UPRIGHT, EVERY ONE, unlike `SPREAD_LOWPPEM_CASE`. Rotation is load-bearing there because MSAA
  * changes a coverage estimate and an axis-aligned edge under-reports it. Here the arms are two
@@ -332,9 +324,9 @@ export interface GodotOutlineCase {
  *
  * THE THREE DOTS ARE THE ONLY CASES THAT CAN ANSWER "HOW ROUND IS THE DILATION". `dot-radial` at
  * radius 4 is inside what the shader's tap set tiles; `dot-radial-wide` at radius 12 is the
- * sparse-covering regime `SPREAD_THIN_CASE` records as an open defect, and it is the one whose
- * 16-cycle amplitude Stage 2 has to move. `dot-radial-live-max` at radius 14 is the LIVE WORST CASE
- * and it is the one a two-pass decision is made on — see its own comment.
+ * sparse-covering regime `SPREAD_THIN_CASE` exercises, and it is the one whose 16-cycle amplitude
+ * the tap allocation moves. `dot-radial-live-max` at radius 14 is the LIVE WORST CASE — see its own
+ * comment.
  *
  * PENS PUT EACH GLYPH IN THE MIDDLE OF ITS OWN CELL, at whole pixels, computed once from the face's
  * real extents (upem 1000; 中 spans x 0.105-0.890 em and y -0.068-0.831 em, "B" x 0.110-0.582 and y
@@ -401,17 +393,16 @@ export const GODOT_OUTLINE_CASES: readonly GodotOutlineCase[] = [
   /**
    * THE LIVE WORST CASE, AND IT SITS OUTSIDE EVERY OTHER ROW OF THIS GOLDEN.
    *
-   * MEASURED ON THE RUNNING GAME, not extrapolated. Its outline strokes are three CSS widths —
-   * `outlinePx` **6, 7.5 and 8** — and the phone renders them at DPR 3.4876, so the DEVICE radii the
+   * TAKEN FROM A REAL CONSUMER SCENE, not extrapolated. Its outline strokes are three CSS widths —
+   * `outlinePx` **6, 7.5 and 8** — and at a phone's DPR of ~3.5 the DEVICE radii the
    * dilation is actually asked for are **10.5, 13.1 and 14.0 px**. `han-phone` covers the first of
    * those and `dot-radial-wide` at 12 sits between the first and the second; NOTHING covered the
    * third. A tap set is judged by the arc between its outermost taps, which grows with the radius,
    * so grading the redistribution at 12 and shipping it at 14 is grading the easier end of the
    * range. This case is the hard end: 14.0 device px, the largest radius the product asks for.
    *
-   * AND IT IS THE ROW A TWO-PASS DECISION TURNS ON. "Is the redistributed single-pass tap set good
-   * enough at live radii, or does the product need a second dilation pass" is a question about the
-   * scallop at the radius the phone draws — not about the one this file happened to fixture first.
+   * It answers whether a single-pass tap set is good enough at the largest radius a consumer
+   * draws, or a second dilation pass is needed.
    *
    * GEOMETRY IS `dot-radial-wide`'s, AND DELIBERATELY SO: same glyph, same ppem, same cell, same
    * pen, and only `spreadPx` moves. That makes the pair a controlled comparison in the radius alone

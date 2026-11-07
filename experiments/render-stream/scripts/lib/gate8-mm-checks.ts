@@ -142,7 +142,7 @@ export interface G8mmExpected {
   /** The adopted multimesh the late legs free after the adoption (mm.gd LATE_FREE_FRAME): the
    * capture records it freed and the late receivers release it. */
   late_free: { frame: number; count: number; cell: string };
-  /** LAR2: the deferred arm's frame (late-arm-registry-design.md, the multimesh row). */
+  /** LAR2: the deferred arm's frame. */
   late_arm?: { doc?: string; arm_frame: number };
   /** PM2: the shot's cell grid (README.md, expected.json `pixels.doc`). */
   pixels: MmPixels;
@@ -907,7 +907,7 @@ export function mmBytes(trace: MmTrace): MmBytes {
 // --------------------------------------------------------------------------------- the runner
 
 export const MM_SABOTAGES = ["perturb-instance", "stale-buffer"] as const;
-/** LAR2: the deferred-arm captures (late-arm-registry-design.md, the multimesh row). */
+/** LAR2: the deferred-arm captures. */
 const MM_DEFERRED_CAPTURES = [
   "deferred/capture",
   "fault-no-resources/capture",
@@ -1670,7 +1670,7 @@ export function mmExpectedProblems(expected: G8mmExpected): string[] {
   return problems;
 }
 
-/** PM9, LAR2 (late-arm-registry-design.md, the multimesh row): the late-armed captures. The
+/** PM9, LAR2: the late-armed captures. The
  * `deferred` captures load the capture at birth and arm at frame 12: every drawn cell is adopted
  * from the registry's recorded allocation (mmAdoptedCells), judged against the born capture
  * (`capture`, `headless/capture`); the `late` capture loads at frame 12 (load-late) and, under F1,

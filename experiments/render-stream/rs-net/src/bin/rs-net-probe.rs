@@ -1,4 +1,4 @@
-//! rs-net-probe: a render-stream-wt/1 client (carrier-design.md Q4) for the interop leg
+//! rs-net-probe: a render-stream-wt/1 client for the interop leg
 //! (scripts/test/self-test-wt-interop.ts) and by hand.
 //!
 //! It opens a session to `--url` (the full `https://.../render-stream?protocol=render-stream.<N>`)

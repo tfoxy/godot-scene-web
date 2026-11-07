@@ -1,4 +1,4 @@
-// CAR2 (protocol/carrier-design.md D10, Q3): the refusal matrix of the LAN exposure policy
+// the refusal matrix of the LAN exposure policy
 // (src/rs_expose.h), the rule entry.cpp and rs_live_host share. entry.cpp's own wiring is judged
 // by scripts/test/self-test-lan.ts, which launches rs_live_host through the same functions.
 #include <cstdio>

@@ -1,14 +1,14 @@
 // Unit tests for render-stream/4 (src/rs2_codec.cpp's Session::version == V4 path, G5w).
 //
 // render-stream/4 is implemented as a protocol-version switch inside the SAME rs2_codec/rs2_diff
-// modules /2 and /3 use (render-stream-4.md, following gate4-design.md G4e1's precedent), so this
+// modules /2 and /3 use (render-stream-4.md, following their precedent), so this
 // file does not duplicate rs2_codec_test.cpp's/rs3_codec_test.cpp's framing checks -- it only
 // proves the /4 delta: Session::version == V4 selects the GRS4 magic and the "render-stream/4"
 // protocol string, the eleven new CommandKind values encode correctly, the mesh table
 // (meshes/removed_meshes/mesh_f32) encodes correctly, and cmd_i32 carries add_triangle_array's
 // indices -- by matching protocol/golden-4/{full,patch,inline}.rs4 byte for byte. Ground truth is
 // rs2_golden_states.h's state(1..11), where state(8)..state(11) are new at /4 (G5w, "As built":
-// gate5-design.md's Q4 predicted three new states; this implementation uses four, splitting the
+// The original plan predicted three new states; this implementation uses four, splitting the
 // mesh version-change proof from the freed/unsupported/unknown-mesh content so neither is ever
 // conflated with the other in one transaction).
 //
@@ -389,7 +389,7 @@ bool contains(const std::vector<std::uint8_t> &bytes, const std::string &needle)
   return std::search(bytes.begin(), bytes.end(), needle.begin(), needle.end()) != bytes.end();
 }
 
-// protocol/unknown-item-skip.md: the opt-in Skip policy's two keys. A strict session/transaction
+// The opt-in Skip policy's two keys. A strict session/transaction
 // is byte-identical to one encoded before the policy existed (the golden matches above prove
 // that); a skip one gains `unknown_item_policy` right after `sabotage` and `unknown_items` right
 // after `unsupported`, at /4 and /5 only, in full and patch transactions alike.

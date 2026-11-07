@@ -1,4 +1,4 @@
-//! Texture delivery, receiver side (texture-delivery-design.md D3, Q3; G8kp): which payload of an
+//! Texture delivery, receiver side: which payload of an
 //! `ok` image texture a receiver fetches and uploads.
 //!
 //! **D3's fixed rule.** The receiver's own hello lists `texture_encodings` (its preference, from
@@ -22,8 +22,8 @@
 
 use crate::state::{EntryStatus, Hash, Texture, TextureKind, VariantEncoding};
 
-/// Godot's feature name for a block format (`RenderingServer.has_os_feature`, texture-delivery-
-/// design.md Q3): the family a `block` variant needs in `gpu_formats`. None for every format
+/// Godot's feature name for a block format (`RenderingServer.has_os_feature`):
+/// the family a `block` variant needs in `gpu_formats`. None for every format
 /// render-stream-9.md never offers as a variant.
 pub fn block_family(format: &str) -> Option<&'static str> {
     Some(match format {
@@ -70,7 +70,7 @@ pub struct DeliveryPrefs {
     /// it prefers appears at that same version. False is `keep` (the desktop default: no refetch);
     /// true is `upgrade` (refetch and re-upload). Not part of the hello.
     pub upgrade: bool,
-    /// G8kb (texture-delivery-design.md Q3 "Transcode or upload failure"): variant hashes this
+    /// variant hashes this
     /// receiver could not transcode or upload (`delivery-transcode-failed`). D3 skips them, so the
     /// entry falls through to its next choice, at worst `decoded` (always servable). Not part of
     /// the hello; never cleared within a session (the same bytes fail the same way).

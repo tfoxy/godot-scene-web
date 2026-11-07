@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Instruction-count bench for the Rust core's decode + apply path (R4, docs/remote-compute.md
-# "Consistent benchmarks"): a CPU-regression signal machine load cannot disturb, so it also runs on
+# Instruction-count bench for the Rust core's decode + apply path: a CPU-regression signal machine load cannot disturb, so it also runs on
 # GitHub-hosted runners (run id `bench-instr`).
 #
 #   bash experiments/render-stream/scripts/bench-instr.sh [--out DIR] [--baseline FILE]

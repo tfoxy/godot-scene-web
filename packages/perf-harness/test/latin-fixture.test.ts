@@ -1,6 +1,6 @@
 // @vitest-environment node
 //
-// The Latin fixture font, against the REAL file — the one place the round's Latin geometry is not
+// The Latin fixture font, against the REAL file — the one place the harness's Latin geometry is not
 // taken on trust.
 //
 // `LATIN_RUN_EM_WIDTH` and `LATIN_PANGRAM_EM_WIDTH` are constants in a browser-safe module, and

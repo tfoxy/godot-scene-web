@@ -1538,8 +1538,7 @@ export function validateRecording(data: Uint8Array): string[] {
       if (idOrderErrors.length > 0) return idOrderErrors;
 
       // A missing seq is reported as itself, before the patch rules: a patch after a lost
-      // transaction also names the lost seq as its base, and the gap is the cause (gate1-design.md
-      // G1c2 "As built", the drop-message sabotage).
+      // transaction also names the lost seq as its base, and the gap is the cause (the drop-message sabotage).
       if (meta.seq !== prevSeq + 1) {
         return [
           `seq-gap: record at offset ${offset}: seq ${meta.seq}, expected ${prevSeq + 1}`,

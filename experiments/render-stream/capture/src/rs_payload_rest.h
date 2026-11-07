@@ -1,4 +1,4 @@
-// TDR: payload bodies compressed at rest (live-swap-design.md Q5 "TDR", Q4 "armed: GET").
+// payload bodies compressed at rest.
 //
 // A GRT1 texture body (the decoded variant, and a `block` variant) is coded once, where it is
 // built: on the texture worker under GRC_TEXTURE_WORKERS=<N> (every copy, small ones included),

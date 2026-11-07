@@ -1,6 +1,6 @@
 extends Node2D
-## The `Preexisting` node of `preexisting.tscn` (../../protocol/gate0-design.md "Unknown-RID
-## policy", ../../protocol/unknown-item-skip.md "Evidence"). It is declared in the `.tscn`, so it
+## The `Preexisting` node of `preexisting.tscn`.
+## It is declared in the `.tscn`, so it
 ## is constructed while the packed scene is instantiated -- before `GrcLoader` arms the capture --
 ## and its canvas item is a RID the mirror never saw created. Everything it does afterwards names
 ## that unknown RID: entering the tree (`canvas_item_set_parent`), every redraw

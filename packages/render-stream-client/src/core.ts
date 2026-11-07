@@ -59,7 +59,7 @@ export type CoreMessage =
   | { kind: "end" }
   /** W11t: a based transaction while a coding resync is pending (no apply, no ack). */
   | { kind: "held" }
-  /** TAG1: an item_meta record (identities for extensions): nothing to apply, no ack. */
+  /** An item_meta record (identities for extensions): nothing to apply, no ack. */
   | { kind: "item_meta" }
   /** W11t: a based message that did not decode: ask the host for a `coding` resync. */
   | { kind: "coding-resync"; seq: number; error: string };
@@ -80,24 +80,24 @@ export interface StreamCore {
   /** A fresh connection: a fresh live-coding decoder (W11c: one per connection). */
   beginConnection(): void;
   /** One binary message: decoded (W11t), then the session (a connection's first) or one record.
-   * Throws `StreamFailure`. `copyDecoded` (REC1, only when a recorder is on) copies the decoded
+   * Throws `StreamFailure`. `copyDecoded` (only when a recorder is on) copies the decoded
    * bytes out of wasm so `takeDecoded` can hand them to the recorder. */
   receive(
     data: ArrayBuffer,
     sessionSeen: boolean,
     copyDecoded?: boolean,
   ): CoreMessage;
-  /** REC1: a copy of the last decoded message's bytes (`receive` with `copyDecoded` true), or
+  /** A copy of the last decoded message's bytes (`receive` with `copyDecoded` true), or
    * null. The pure client never asks, so it never copies. */
   takeDecoded(): Uint8Array | null;
-  /** GTS: the coding skipped transactions; the next full may jump the seq. */
+  /** The coding skipped transactions; the next full may jump the seq. */
   transportSkip(): void;
-  /** A fresh applier over the whole resolved state (inheriting the GPU residency, GRH); returns
+  /** A fresh applier over the whole resolved state (inheriting the GPU residency); returns
    * the newest transaction's needed set. */
   rebuild(seq: number): Needed[];
   /** W11c `inline-fetch-zero`: "" when a GET of `hash` is allowed, else the refusal. */
   checkFetch(hash: string): string;
-  /** G7o2: a fetched body, verified and decoded on arrival; the refusal, or null. */
+  /** A fetched body, verified and decoded on arrival; the refusal, or null. */
   stage(hash: string, bytes: Uint8Array): string | null;
   isStaged(hash: string): boolean;
   /** The next needed payload from the stage into the store; the refusal, or null. */
@@ -108,9 +108,9 @@ export interface StreamCore {
   prepareApply(seq: number): void;
   apply(seq: number): void;
   draw(seq: number): void;
-  /** G7u: the redraw after a context restore; "lost" when the context was lost again. */
+  /** The redraw after a context restore; "lost" when the context was lost again. */
   redraw(seq: number): "ok" | "lost";
-  /** G7u: resident payloads the store no longer holds (to refetch before the redraw). */
+  /** Resident payloads the store no longer holds (to refetch before the redraw). */
   restoreMissing(): string[];
   /** A fresh session on the next message (a reconnect); payloads kept when `keepPayloads`. */
   reset(keepPayloads: boolean): void;
@@ -140,7 +140,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   private lastAcceptedSeq = 0;
   private statsView: Uint32Array | null = null;
   private disposed = false;
-  /** REC1: the decoded bytes of the last `receive`, only when `copyDecoded` asked. */
+  /** The decoded bytes of the last `receive`, only when `copyDecoded` asked. */
   private decoded: Uint8Array | null = null;
 
   constructor(
@@ -168,7 +168,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   ): CoreMessage {
     const g = this.g;
     let len = data.byteLength;
-    // Q14c step 1: one copy into wasm's receive buffer (the pointer after rx(), which may grow).
+    // One copy into wasm's receive buffer (the pointer after rx(), which may grow).
     const p = g.rx(len);
     new Uint8Array(this.memory.buffer, p, len).set(new Uint8Array(data));
     this.decoded = null;
@@ -183,7 +183,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       }
       len = n;
     }
-    // REC1: a recorder copies the decoded record out of wasm (decode may have grown rx, so read
+    // A recorder copies the decoded record out of wasm (decode may have grown rx, so read
     // the pointer again). The pure client passes `copyDecoded` false and copies nothing.
     if (copyDecoded) {
       this.decoded = new Uint8Array(
@@ -306,13 +306,13 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     return this.disposed ? 0 : this.memory.buffer.byteLength;
   }
 
-  // REC1: the recorder's one copy per received message, made only when asked (`copyDecoded`).
+  // The recorder's one copy per received message, made only when asked (`copyDecoded`).
 
   takeDecoded(): Uint8Array | null {
     return this.decoded;
   }
 
-  // TAG2: the extension host's calls (never made by a client with no extension).
+  // The extension host's calls (never made by a client with no extension).
 
   itemMetaJson(): string {
     return this.g.item_meta_json();
@@ -347,20 +347,20 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     return this.g.query_children(id);
   }
 
-  // INP1: on demand only; nothing here runs per frame.
+  // On demand only; nothing here runs per frame.
 
   hitTest(x: number, y: number): number | null {
     const id = this.g.hit_test(x, y);
     return id < 0 ? null : id;
   }
 
-  /** HIT1: the mouse filters `hitTest` / `toGame` pick by, whole (1 STOP/PASS, 2 IGNORE). */
+  /** The mouse filters `hitTest` / `toGame` pick by, whole (1 STOP/PASS, 2 IGNORE). */
   setHitFilters(ids: Uint32Array, filters: Uint8Array): void {
     if (this.g.set_hit_filters(ids, filters) < 0)
       throw failWith(this.seqOrNull(), this.g.error());
   }
 
-  /** ID2: the order `hitTest` / `toGame` pick by: HIT1's draw order, or Godot's GUI tree order. */
+  /** The order `hitTest` / `toGame` pick by: topmost-drawn order, or Godot's GUI tree order. */
   setPickOrder(order: "drawn" | "tree"): void {
     if (this.g.set_pick_order(order === "tree" ? 1 : 0) < 0)
       throw failWith(this.seqOrNull(), this.g.error());
@@ -385,7 +385,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     return this.lastAcceptedSeq > 0 ? this.lastAcceptedSeq : null;
   }
 
-  /** The stats block (lib.rs `Stats`), its view re-derived whenever memory grew (Q14c step 5). */
+  /** The stats block (lib.rs `Stats`), its view re-derived whenever memory grew. */
   private stats(): Uint32Array {
     if (this.statsView === null || this.statsView.buffer !== this.memory.buffer)
       this.statsView = new Uint32Array(

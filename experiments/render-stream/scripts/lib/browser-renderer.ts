@@ -1,10 +1,10 @@
-// The CI-only software-renderer allowance for gate 7's browser legs (docs/remote-compute.md R3,
-// Decision 10). Dependency-free: browser-harness.ts uses it to pick the launch flags and to judge
+// The CI-only software-renderer allowance for gate 7's browser legs.
+// Dependency-free: browser-harness.ts uses it to pick the launch flags and to judge
 // the renderer string, and the checkers' browser-provenance echoes (gate7-adapters.ts,
 // gate7b-adapters.ts, gate7-gsw.ts) use it to re-judge each leg's provenance.json.
 //
-// The default is the D9 refusal: a browser leg must render on ANGLE + NVIDIA + Vulkan (this box's
-// RTX 2060). GitHub-hosted runners have no GPU, so there, and only there, an explicit
+// The default is the D9 refusal: a browser leg must render on ANGLE + NVIDIA + Vulkan (the local
+// GPU). GitHub-hosted runners have no GPU, so there, and only there, an explicit
 // RS_BROWSER_PROVENANCE names the software renderer a run declares:
 //
 //   lavapipe     ANGLE's Vulkan backend on Mesa's lavapipe (`--use-angle=vulkan`, mesa-vulkan-drivers)

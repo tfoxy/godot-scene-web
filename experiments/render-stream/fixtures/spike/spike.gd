@@ -97,7 +97,7 @@ const MESH_CUSTOM_AABB: AABB = AABB(Vector3(20.25, 310.5, 0), Vector3(90, 39.75,
 # canvas_item_add_multimesh: one 2D instance of the same mesh, shifted right.
 const MULTIMESH_OFFSET: Vector2 = Vector2(260.5, 0)
 
-# Calibrator-7 hooks (gate5-design.md Q2), closing two previously-silent holes.
+# Calibrator-7 hooks, closing two previously-silent holes.
 # draw_dashed_line with a dash shorter than the segment goes through canvas_item_add_multiline,
 # not canvas_item_add_line (scene/main/canvas_item.cpp:697-731); alpha 0 so it changes no pixel
 # wherever it lands.
@@ -121,7 +121,7 @@ const PANEL_MODULATE: Color = Color(0.875, 1, 1, 1)
 const LATE_Z_INDEX: int = 1
 const LATE_SELF_MODULATE: Color = Color(0.5, 0.75, 1, 1)
 
-# Calibrator-9 hooks (gate6-design.md Q2): a CanvasLayer's stacking/follow_viewport/removal, a
+# Calibrator-9 hooks: a CanvasLayer's stacking/follow_viewport/removal, a
 # raw canvas_set_item_mirroring/_repeat, and a Viewport.global_canvas_transform write that is
 # reset to identity again before anything draws (see _exercise_calibrator9_hooks).
 const CANVAS9_LAYER: int = 2
@@ -151,7 +151,7 @@ var _vertex_update: PackedByteArray
 var _attribute_update: PackedByteArray = PackedByteArray(MESH_NEW_COLOR_BYTES)
 var _multimesh: MultiMesh = MultiMesh.new()
 var _canvas_texture: CanvasTexture
-# Calibrator-8 (gate5_5-design.md Q2): kept alive as a field, not a local in
+# Calibrator-8: kept alive as a field, not a local in
 # _exercise_calibrator8_hooks(). CanvasItemMaterial::_update_shader() runs on a LATER idle
 # callback (scene/register_scene_types.cpp:855), not the frame that queues it; a local variable
 # is refcounted to zero (and its SelfList dirty-list entry dropped with it) the moment that
@@ -193,14 +193,14 @@ func _ready() -> void:
 	# not white, and z_as_relative/show_behind_parent are not left at their defaults (true/false),
 	# because CanvasItem's setters return early on an unchanged value and would never reach the
 	# RenderingServer (scene/main/canvas_item.cpp:556, :655-661, :1155-1161; calibrator 4,
-	# gate1-design.md G1e).
+	# G1e).
 	var late: Node2D = Node2D.new()
 	late.z_index = LATE_Z_INDEX
 	late.self_modulate = LATE_SELF_MODULATE
 	late.z_as_relative = false
 	late.show_behind_parent = true
 	add_child(late)
-	# Calibrator-5 texture hooks (gate2-design.md Q2), on the same post-arm Node2D and on objects
+	# Calibrator-5 texture hooks, on the same post-arm Node2D and on objects
 	# nothing draws, so the pixels do not change. The item's own filter/repeat are set to
 	# non-default values (canvas_item_set_default_texture_filter/_repeat; its tree entry above
 	# already called both with DEFAULT): CanvasItem's setters return early on an unchanged value
@@ -228,7 +228,7 @@ func _ready() -> void:
 	shader.code = TINT_SHADER_A
 	var _created: RID = shader.get_rid()
 	shader.code = TINT_SHADER_B
-	# Calibrator-8 (gate5_5-design.md Q2): shader_set_default_texture_parameter, on the same
+	# Calibrator-8: shader_set_default_texture_parameter, on the same
 	# Shader. "pal" names no uniform TINT_SHADER_B declares, so this changes no pixel; it only
 	# needs to reach the RenderingServer.
 	shader.set_default_texture_parameter("pal", _nine_texture)
@@ -274,7 +274,7 @@ func _exercise_texture_hooks() -> void:
 	RenderingServer.free_rid(orphan_item)
 
 
-## The calibrator-6 hook (gate3-design.md Q2, D4): another orphan item with no parent canvas, so
+## The calibrator-6 hook: another orphan item with no parent canvas, so
 ## it never draws either -- armed and unarmed pixels stay identical, as the texture hooks above.
 ## The bool crosses the toggle both ways (true then false) so the census sees both values.
 func _exercise_clip_ignore_hook() -> void:
@@ -285,7 +285,7 @@ func _exercise_clip_ignore_hook() -> void:
 	RenderingServer.free_rid(orphan_item)
 
 
-## Calibrator-7 hooks that are not scene draws (gate5-design.md Q2), on an orphan item (never
+## Calibrator-7 hooks that are not scene draws, on an orphan item (never
 ## drawn, so armed/unarmed pixels stay identical, as the calibrator-5/6 hooks above): particles
 ## and a null skeleton attach; a loaded-mesh path (mesh_create_from_surfaces, rsd.h:332-356, the
 ## only place a loaded ArrayMesh's surfaces are seen); and a mesh with bones, weights and an index
@@ -338,7 +338,7 @@ func _exercise_calibrator7_hooks() -> void:
 	RenderingServer.free_rid(skin_mesh)
 
 
-## Calibrator-8 hooks that are not scene draws (gate5_5-design.md Q2), on orphan items (never
+## Calibrator-8 hooks that are not scene draws, on orphan items (never
 ## drawn, so armed/unarmed pixels stay identical): a CanvasItemMaterial, recognized by D7
 ## (shader_create, material_create -- its own constructor's -- and material_set_shader;
 ## material_create_from_shader is already exercised by the Panel's ShaderMaterial above),
@@ -367,7 +367,7 @@ func _exercise_calibrator8_hooks() -> void:
 	RenderingServer.free_rid(scratch_canvas)
 
 
-## Calibrator-9 hooks (gate6-design.md Q2): a CanvasLayer's stacking (set_layer), attachment to
+## Calibrator-9 hooks: a CanvasLayer's stacking (set_layer), attachment to
 ## the viewport, follow_viewport (canvas_set_parent with a non-null parent) and removal
 ## (viewport_remove_canvas); a raw canvas_set_item_mirroring/_repeat on an orphan item parented to
 ## the world canvas (canvas_set_item_mirroring looks the item up on that canvas,

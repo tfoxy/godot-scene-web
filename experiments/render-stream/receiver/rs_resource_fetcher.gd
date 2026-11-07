@@ -1,6 +1,6 @@
 class_name RsResourceFetcher
 extends RefCounted
-## The live receiver's HTTP fetcher for out-of-band texture payloads (gate2-design.md Q5 "Apply
+## The live receiver's HTTP fetcher for out-of-band texture payloads ("Apply
 ## order per transaction" step 2, G2c2; render-stream-2.md "HTTP (live)"): `GET <http_path><hash>`
 ## on the WebSocket's own loopback host and port, sequentially, on ONE keep-alive HTTPClient
 ## (core/io/http_client_tcp.h:73, read chunk 65536), polled from the receiver's _process so the
@@ -15,7 +15,7 @@ extends RefCounted
 ## `resource-unavailable` errors; the first error stops the queue. Verification, decoding and the
 ## cache are RsResourceCache's (add_fetched), never this class's.
 ##
-## G8kz (render-stream-2.md "HTTP (live)", texture-delivery-design.md D2): a native fetcher sends
+## G8kz (render-stream-2.md "HTTP (live)"): a native fetcher sends
 ## `Accept-Encoding: <accept_encoding>` ("zstd, gzip" by default; "" sends none) and decodes a
 ## 200 whose `Content-Encoding` is zstd or gzip with PackedByteArray.decompress_dynamic
 ## (FileAccess.COMPRESSION_ZSTD / COMPRESSION_GZIP; core/io/compression.cpp). Godot's HTTPClient
@@ -35,15 +35,15 @@ extends RefCounted
 ## `delay_ms` (RS_RECEIVER_FETCH_DELAY_MS) is an injected wait before each fetch, timed against
 ## Time.get_ticks_msec(), never a blocked main loop. Nothing here touches the RenderingServer.
 ##
-## `auth_token` (G2e, gate2-design.md D13), when non-empty, is sent as
+## `auth_token`, when non-empty, is sent as
 ## "Authorization: Bearer <auth_token>" on every GET. A missing or wrong token gets HTTP 401 from
 ## the host, which falls straight through the existing "non-200 status" rule above into
 ## resource-unavailable -- no separate handling needed.
 ##
-## G7wf (protocol/gate7/g7wf.md): with `web_fetch` (the web export's default, RS_RECEIVER_WEB_FETCH
+## With `web_fetch` (the web export's default, RS_RECEIVER_WEB_FETCH
 ## unset or `fetch`) each GET is the browser's own fetch() through JavaScriptBridge instead of
 ## HTTPClient: Godot's web HTTPClient resolves each of its states on a later main-loop iteration
-## (about 66 ms, four frames, per GET; G7r). The request is the one HTTPClientWeb made (GET, the
+## (several frames per GET). The request is the one HTTPClientWeb made (GET, the
 ## same URL, `Authorization: Bearer` only with a token, so a token-less GET stays a CORS simple
 ## request; default credentials and cache). The page's promise callback records the result between
 ## frames (`end_us` is the body's arrival) and issues the next queued GET at once; poll() only
@@ -51,11 +51,11 @@ extends RefCounted
 ## copied straight from the response's ArrayBuffer (JavaScriptBridge.js_buffer_to_packed_byte_array),
 ## with no chunk appends. Results, errors and the queue rules are the HTTPClient path's.
 ##
-## G7u (gate7-design.md D14 as amended): on the web the timeout counts only time while the page
+## On the web the timeout counts only time while the page
 ## runs. The web main loop is rAF-driven, so a hidden or frozen page polls nothing; a gap between
 ## two polls of a running GET longer than SUSPEND_GAP_MS is a suspension, and the deadline moves
 ## by that gap. Without this a GET in flight across a 30-s freeze timed out on the first poll after
-## `resume`, before its promise callback ran (the g31's frozen-30s leg). Native receivers keep the
+## `resume`, before its promise callback ran. Native receivers keep the
 ## wall-clock deadline.
 
 const READ_CHUNK: int = 65536

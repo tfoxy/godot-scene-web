@@ -12,7 +12,7 @@
 //                    `receiver.float_quantized` names exactly the float formats the source carried
 //                    (check-gate8.ts g8f.carried_formats); a leg with no float payload (g8t's
 //                    `receiver`) has no caveat.
-//   G8kb (texture-delivery-design.md D6, D14, D16, Q3, Q6 "GSW"; GSW-only legs of g8ku, from the
+//   G8kb (GSW-only legs of g8ku, from the
 //   native receiver-upgrade and receiver legs; the oracle is g8ku/reference-oracle's
 //   Image.load_ktx_from_buffer on the native GPU):
 //   gsw-transcode-oracle@gsw   g8ku/gsw-upgrade transcodes exactly the KTX2s the native upgrade

@@ -1,8 +1,7 @@
 /**
- * A synthetic draw list shaped like the COMBAT row of the offline batch-run probe
- * (`sts2-couch-coop/docs/agents/canvas-stage-probes-aug26.md`, P4), so the
- * executor's batching can be measured against the number the design was sized on
- * instead of against a list invented to flatter it.
+ * A synthetic draw list shaped like a recorded combat screen's batch-run profile,
+ * so the executor's batching is checked against the number the design was sized
+ * on instead of against a list invented to flatter it.
  *
  * The row: 183 painting nodes, 152 naive runs, 65 distinct paint sources, and
  * breaks attributed to source 151, blend 16, clip 26, HSV 30. The builder below

@@ -1,5 +1,5 @@
-// Unit test for src/rs_shader_payload.cpp: the GRP1 payload encoder, the D11 token scan and the
-// D7 CanvasItemMaterial template recognizer (gate5_5-design.md Q3a, Q4). Engine-free, as
+// Unit test for src/rs_shader_payload.cpp: the GRP1 payload encoder, the token scan and the
+// CanvasItemMaterial template recognizer. Engine-free, as
 // rs_mesh_payload_test.cpp is for GRM1.
 
 #include <cstdint>
@@ -89,7 +89,7 @@ void test_scan_screen_texture() {
   const grc::rs::ShaderScan scan = grc::rs::scan_shader_code(
       "shader_type canvas_item;\nuniform sampler2D screen : hint_screen_texture;\n"
       "void fragment() { COLOR = texture(screen, UV); }\n");
-  // P3-ST (gate5_5-design.md D11 as amended): supported, listed in uses only.
+  // Supported, listed in uses only.
   check(scan.reason.empty(), "hint_screen_texture alone is not a reason");
   check(scan.uses.size() == 1 && scan.uses[0] == "screen_texture", "uses lists screen_texture");
   const grc::rs::ShaderScan both = grc::rs::scan_shader_code(

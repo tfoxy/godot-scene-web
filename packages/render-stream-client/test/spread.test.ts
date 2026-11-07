@@ -1,4 +1,4 @@
-// PRES-C: the spread module's generic math (results/p3/pres-c.md). The rules are tested as pure
+// The spread module's generic math. The rules are tested as pure
 // functions of `computeSpreadItem` -- no wasm, no extension host -- so the algebra is pinned before
 // it is wired into the override table. Scene-identity re-centres stay out of these tests by design.
 

@@ -1,9 +1,9 @@
-// REC1 (client-extensions-design.md §6 "Increments", the REC1 row): the client recorder.
+// The client recorder.
 //
 // A bounded ring of the decoded messages a live client received since its last full transaction,
 // plus the resource payloads it fetched, exported as a recording. A client that never asks builds
 // no recorder: `createRenderStreamClient` without `recorder` takes the pure-client path (no ring,
-// no copies), exactly as before.
+// no copies).
 //
 // The recording is the wire's own format: the first message (the decoded session, which already
 // carries the magic) followed by every later record, in receipt order. The decoder has already

@@ -1,5 +1,5 @@
 extends Node
-## Gate 5 nine-patch and stylebox fixture (../../protocol/gate5-design.md "Q6f", G5g).
+## Gate 5 nine-patch and stylebox fixture.
 ##
 ## The root is a plain `Node`. Every `CanvasItem` and the texture are created in `_ready()`, after
 ## `GrcLoader` armed the capture extension in its own `_enter_tree()` (gate 0 route (a)), so the

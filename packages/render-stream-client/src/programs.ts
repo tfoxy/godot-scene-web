@@ -1,4 +1,4 @@
-// G7s (gate7-design.md Q5 "Materials", Q14c): custom ShaderMaterial code to item-space programs.
+// Custom ShaderMaterial code to item-space programs.
 //
 // After a transaction is accepted and its payloads provided, every custom shader its named
 // materials name that has no program yet is transpiled to an item-space module by
@@ -9,7 +9,7 @@
 // `gsw-shader-transpile` with its message, a GL compile failure the same with GL's log, and missing
 // library code `shader-withheld`: each draws its items without their material, as the native
 // receiver draws a shaderless one. Shared by the client (client.ts), the harness receiver page
-// (experiments/render-stream/web/gsw-receiver) and the bench page (MIR-1 moved it here).
+// (experiments/render-stream/web/gsw-receiver) and the bench page.
 
 import {
   transpileGodotItemShader,
@@ -65,7 +65,7 @@ export async function resolvePrograms(
 }
 
 /** Whether any pending shader still needs its code from the library (an async read): live mode
- * (G7l) does those reads before the rAF callback that applies the transaction. */
+ * does those reads before the rAF callback that applies the transaction. */
 export function needsLibrary(g: ProgramHost, library: string | null): boolean {
   if (library === null) return false;
   const n = g.pending_shaders();
@@ -170,7 +170,7 @@ export function definePrograms(
       out.refused++;
       continue;
     }
-    // P3-VX: the vertex module (null: the plain vertex stage) travels beside the fragment one.
+    // The vertex module (null: the plain vertex stage) travels beside the fragment one.
     const { glsl, vertexGlsl, ...meta } = transpiled;
     const r = g.define_program(i, glsl, JSON.stringify(meta), vertexGlsl ?? "");
     if (r < 0) throw new ProgramError("receiver-error", g.error());

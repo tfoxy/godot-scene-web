@@ -1,4 +1,4 @@
-// The late-arm resource registry (rs_registry.h, late-arm-registry-design.md LAR0): the off gate,
+// The late-arm resource registry (rs_registry.h): the off gate,
 // kinds and families, erase on free and texture_replace, recreate, null creates, the per-family
 // cap and overflow, the accounting identity registry-live-bound judges (entries == creates - frees
 // - replaced - recreated, on every timeline row), the timeline, both fault knobs, the evidence

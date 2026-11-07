@@ -1,5 +1,5 @@
 // The WebGPU device gate: ONE page-wide `GPUDevice` for every WebGPU surface both runtimes
-// create, acquired at most once. Ported from the S7 probe
+// create, acquired at most once. Ported from the perf harness's WebGPU probe
 // (`packages/perf-harness/src/scenarios/webgpu/renderer.ts`, `acquireGpu`) with its FAIL-LOUD
 // contract inverted: a probe that cannot measure must abort the run, but a PRODUCT that cannot
 // render on WebGPU must fall back to WebGL and say nothing to the user. So nothing here ever

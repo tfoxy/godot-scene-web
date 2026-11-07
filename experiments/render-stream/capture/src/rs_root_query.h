@@ -1,5 +1,5 @@
-// Arm-time root viewport query (gate 0, WP1; protocol/gate0-design.md
-// "Root adoption"). Version-neutral since G1b2: it fills render-stream/2
+// Arm-time root viewport query (render-stream-0.md
+// "Root adoption"). Version-neutral: it fills render-stream/2
 // (rs2_snapshot.h) values.
 //
 // The root viewport and its canvas exist before the capture library loads, so
@@ -16,7 +16,7 @@
 //   7. Viewport.get_visible_rect()       -> session host_visible_rect (64x64 under --headless)
 //   8. RenderingServer.get_default_clear_color() -> session clear_color
 //
-// Gate 1 (G1a, protocol/gate1-design.md "Q1") adds the root geometry the
+// Gate 1 adds the root geometry the
 // session will declare, read through more read-only binds on the root Window:
 //
 //   9. Window.get_content_scale_size()     -> logical size (the project's viewport size)
@@ -33,7 +33,7 @@
 // are the session's `viewport` object and its `host_*` / `content_scale_factor`
 // blocks (render-stream-1.md "Session record").
 //
-// Gate 6 (G6b, gate6-design.md Q3a) adds, for render-stream/6's `viewport`:
+// Gate 6 adds, for render-stream/6's `viewport`:
 //
 //  14. Viewport.get_oversampling()                      -> viewport.font_oversampling
 //  15. Viewport.is_snap_2d_transforms_to_pixel_enabled() / _vertices_ -> viewport.snap_2d
@@ -95,7 +95,7 @@ struct RootInfo {
 };
 
 // The visible size a `canvas_items` root presents `logical` in a `window`-sized window
-// (PRES-A, gate6-design.md "Amendment (PRES-A)"): Godot 4.5.1's aspect rule
+// Godot 4.5.1's aspect rule
 // (Window::_update_viewport_size, scene/main/window.cpp:1190-1250) in its own float32 arithmetic,
 // floored. Only `keep_width`, `keep_height` and `expand` widen or heighten the visible rect past
 // the logical size, and only when the window's aspect differs (Math::is_equal_approx); every
@@ -139,7 +139,7 @@ inline void stretch_visible_size(std::int64_t mode, std::int64_t aspect,
   }
 }
 
-// host_size_status (gate1-design.md Q1 "Policy"; render-stream/6, gate6-design.md Q3a, amended
+// host_size_status (render-stream/6, amended
 // by PRES-A): match: window size == presentation size and visible rect size == the stretch's
 // visible size for the presentation (stretch_visible_size: the logical size unless `expand`,
 // `keep_width` or `keep_height` widen it); degenerate-visible: the visible rect size differs from
@@ -190,7 +190,7 @@ bool root_enforce_min_size(const RootInfo &info, std::string *detail);
 
 // GRC_ROOT_SIZE=presentation:<W>x<H> (G6b, Q3a): Window.set_min_size(W, H) on the root window.
 // Under canvas_items the engine then computes the stretch, oversampling and StyleBoxFlat feather
-// of a W x H window (gate6-design.md Q1a, Q1b). Same contract as root_enforce_min_size.
+// of a W x H window. Same contract as root_enforce_min_size.
 bool root_set_min_size(const RootInfo &info, std::int32_t width, std::int32_t height,
                        std::string *detail);
 

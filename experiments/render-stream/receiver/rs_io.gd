@@ -1,6 +1,6 @@
 class_name RsIo
 extends RefCounted
-## The receiver's sources and sinks (gate7-design.md Q4 "rs_io.gd", G7e). Natively both are
+## The receiver's sources and sinks. Natively both are
 ## no-ops: the recording, the store and the shader library are read from their paths, and
 ## applied.json, shots, state dumps, perf.json and received.rs2 are written to theirs, exactly as
 ## before G7e. On a web export (RsConfig.is_web()):
@@ -20,7 +20,7 @@ extends RefCounted
 ##   PNG upload ever runs inside a timed window (D10), and a sink path outside the sink root
 ##   (RS_RECEIVER_PERF_OUT, RS_RECEIVER_RECEIVED_OUT) is refused by check_sink_paths().
 ##
-## WX (results/p3/wx.md): file replay's store is lazy by default on the web (RS_RECEIVER_WEB_STORE
+## WX: file replay's store is lazy by default on the web (RS_RECEIVER_WEB_STORE
 ## unset or `lazy`). prepare_sources() then neither lists nor stages RS_RECEIVER_STORE_DIR: the
 ## receiver fetches each payload a transaction needs when that transaction needs it
 ## (start_store_fetch()/poll_store_fetch(): `GET <store>/sha256/<file>`, the browser's own fetch()
@@ -33,7 +33,7 @@ extends RefCounted
 ## unchanged (it has no recording or store).
 ##
 ## The cache directory (RS_RECEIVER_CACHE_DIR) is native only: on the web the "disk cache" is the
-## browser's HTTP cache (gate7-design.md Q4), which receiver.gd declares as cache mode
+## browser's HTTP cache, which receiver.gd declares as cache mode
 ## `http-cache`.
 
 ## How many fetches or PUTs run at once on the web (each one is one fetch() in the page).

@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 
 // What a Godot 4.5.1 RenderingServer receives for a `.gdshader` (the scene layer's preprocessor:
 // every run of spaces/tabs is one space, an `#include` becomes `@@>path`, the include's output and
-// `@@<path`). The synthetic shaders are a render-stream fixture's (gate 5.5 and 6); they are
+// `@@<path`). The synthetic shaders are render-stream fixtures'; they are
 // written out here so this package test needs nothing outside the package.
 const server = (text: string) => text.replace(/[ \t]+/g, " ");
 
@@ -297,7 +297,7 @@ describe("transpileGodotItemShader (item-space module)", () => {
   });
 });
 
-// P3-VX: vertex() and varyings. The STS2 settings gear's shape (COLOR copied into a varying that
+// vertex() and varyings. The STS2 settings gear's shape (COLOR copied into a varying that
 // the fragment multiplies back in), written out synthetically.
 const HSV_GEAR = server(`shader_type canvas_item;
 uniform float v = 1;

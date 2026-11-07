@@ -1,4 +1,4 @@
-// PRES-A (gate6-design.md "Amendment (PRES-A)"; client-extensions-design.md §6 PRES-A): g6b's
+// PRES-A (PRES-A): g6b's
 // viewer-aspect presentation legs under <out>/wide/ (lib/gate6b-legs.sh run_g6b_wide). The HD
 // fixture (logical 1920x1080, canvas_items) with display/window/stretch/aspect="expand" is captured
 // at GRC_ROOT_SIZE=presentation:<P> for P = 1920x1080 (16:9), 2340x1080 and 2520x1080 (stretch

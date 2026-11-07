@@ -783,7 +783,7 @@ export function createPointerCapture(
   // ---- mouse buttons ----
 
   function doubleClick(event: PointerEventLike, button: number, at: Vec) {
-    // Browsers report `detail` 0 on pointerdown (Chromium 148 measured); use it when one does not.
+    // Browsers report `detail` 0 on pointerdown (as Chromium does); use it when one does not.
     if (typeof event.detail === "number" && event.detail > 0) {
       lastClick = null;
       return event.detail === 2;

@@ -1,4 +1,4 @@
-// Gate 5g checks: nine-patch and stylebox coverage (protocol/gate5-design.md "G5g", "Q6f").
+// Gate 5g checks: nine-patch and stylebox coverage.
 //
 // Group g5g runs fixtures/gate5-style/ through G5b's and G5d's legs: an import, a 400-frame
 // headless capture with both sinks and the store (`success` on render-stream/4), a rendered
@@ -13,7 +13,7 @@
 // recomputed from the raster. Check ids carry a "-style" suffix so that they never collide with
 // g5b's and g5d's. Nothing here launches a process.
 //
-// Evidence layout under <out>/style/ (see scripts/README.md "Gate 5"):
+// Evidence layout under <out>/style/:
 //   import/fixture/                   editor --import of fixtures/gate5-style
 //   capture/                          leg capture-style: 400 frames, both sinks, store, strace
 //   reference/, reference-repeat/     legs reference-style and reference-style-repeat

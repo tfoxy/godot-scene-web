@@ -1,18 +1,18 @@
 extends SceneTree
 ## HTTPClient interop self-test for rs_ws's HTTP GET resource serving
-## (capture/src/rs_ws.h, protocol/gate2-design.md G2c1), against the same
+## (capture/src/rs_ws.h), against the same
 ## test-only echo server capture/test/rs_ws_echo.cpp that ws_selftest.gd
 ## drives (its header documents the fixed test hashes used below -- labels
 ## for a handful of deterministic bodies, not real content hashes of them),
-## plus its bearer-token authorization (gate2-design.md D13, G2e).
+## plus its bearer-token authorization.
 ##
 ##   RS_WS_ECHO_PORT=<port> RS_WS_ECHO_AUTH_PORT=<port> RS_WS_ECHO_AUTH_TOKEN=<token> \
 ##     mise exec -- godot --headless \
 ##     --path experiments/render-stream/receiver --script res://tests/http_selftest.gd
 ##
 ## Three sequential GETs on one HTTPClient connection to the plain
-## (RS_WS_ECHO_PORT) instance (proving keep-alive, gate2-design.md G2c1
-## "Pass criteria"): the 1 MiB resource, the 8 MiB one, then a well-formed
+## (RS_WS_ECHO_PORT) instance (proving keep-alive):
+## the 1 MiB resource, the 8 MiB one, then a well-formed
 ## but unregistered hash. For each 200, checks Content-Type, Cache-Control,
 ## ETag, that the body arrives byte-exact against rs_ws_echo's
 ## byte[i] = i % 251 pattern, and that the body's own SHA-256 (via
@@ -173,8 +173,8 @@ func _on_body_complete() -> void:
 	else:
 		# Same HTTPClient instance, same TCP connection: status is STATUS_CONNECTED right now
 		# (that is why this branch runs), and HTTPClient.request() only accepts that status --
-		# this is the keep-alive proof (gate2-design.md G2c1 "two requests on one keep-alive
-		# connection"), run here across all three steps rather than just two.
+		# this is the keep-alive proof (two requests on one keep-alive
+		# connection), run here across all three steps rather than just two.
 		_begin_request()
 
 

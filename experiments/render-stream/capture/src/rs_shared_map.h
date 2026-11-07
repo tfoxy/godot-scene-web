@@ -1,4 +1,4 @@
-// HC4b (host-cost-design.md D1 "Shape", "The diff, record planning, serving and budget"): a
+// a
 // persistent, copy-on-write map from a string key to a value, kept sorted by key (byte order), as
 // `std::map<std::string, V>` iterates.
 //

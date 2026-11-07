@@ -1,4 +1,4 @@
-// Gate 7 device sampler (G7d; protocol/gate7-design.md Q13b "Samplers"). Everything goes through
+// Gate 7 device sampler. Everything goes through
 // perf-harness's `Adb` (packages/perf-harness/src/device.ts), so a fake `adb` binary drives it in
 // self-test-device-harness.ts exactly as the phone does:
 //   - `sampleConditions` every 30 s (thermal status and hottest sensor, battery % and temperature);

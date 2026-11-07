@@ -1,4 +1,4 @@
-// GSW receiver evidence (gate7-design.md Q5 "Evidence", D10, G7a): applied.json in the native
+// GSW receiver evidence: applied.json in the native
 // receiver's file-mode shape (`render-stream-receiver-applied/7`, receiver.gd `_init_report`) and,
 // since G7l, its live-mode shape (`_ready_live`, `_live_report`, per-transaction receipt entries),
 // shots as 8-bit RGBA PNGs read back from the RGB10_A2 target, state dumps as the native receiver

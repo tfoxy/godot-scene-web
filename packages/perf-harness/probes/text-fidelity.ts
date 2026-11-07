@@ -8,11 +8,11 @@ import {
 //
 //   xvfb-run -a mise exec -- pnpm -w run text:fidelity -- --headed
 //   mise exec -- pnpm -w run text:fidelity                       # headless, SwiftShader
-//   mise exec -- pnpm -w run text:fidelity -- --dpr 3.4876        # the phone's raster scale
+//   mise exec -- pnpm -w run text:fidelity -- --dpr 3.4876        # a phone-class raster scale
 //
-// A PROBE, NOT A SCENARIO. No trace, no frame rate, no `perf-report/1` envelope — the same rule
-// the bake probe states. It answers a question the perf table structurally cannot: the table can
-// say an arm is cheap, and an arm that renders mush is very cheap indeed.
+// A PROBE, NOT A SCENARIO. No trace, no frame rate, no `perf-report/1` envelope. It answers a
+// question the perf table structurally cannot: the table can say an arm is cheap, and an arm
+// that renders mush is very cheap indeed.
 //
 // THE TWO METRICS THAT MATTER, and why they need no cross-arm reference:
 //
@@ -28,10 +28,9 @@ import {
 //
 // EVERY METRIC READS ONE CHANNEL, AND THAT CHANNEL IS GREEN — not a luma over all three. `dom` is
 // the only arm Chrome draws with LCD subpixel antialiasing, so it is the only arm whose stills are
-// coloured, and averaging R, G and B on such a still is a ~1 px horizontal box blur that was being
+// coloured, and averaging R, G and B on such a still is a ~1 px horizontal box blur that would be
 // charged to the `dom` MECHANISM. Green samples coverage at the pixel centre for every arm on the
-// same terms, and is bit-identical to luma on the seven greyscale arms. See {@link lumaOf} for the
-// measurements, and for the fix that was rejected.
+// same terms, and is bit-identical to luma on the seven greyscale arms. See {@link lumaOf}.
 //
 // A per-pixel diff against the reference is computed too, and reported LAST and hedged: two
 // rasterizers disagree about hinting and stem darkening long before they disagree about blur, so
@@ -39,7 +38,7 @@ import {
 // `maxDiffRatio: 0.12` for exactly that reason.
 //
 // EVERY PIXEL COMES FROM A COMPOSITOR SCREENSHOT. Never a canvas readback: `getImageData` on an
-// accelerated 2D canvas returns alpha 0 on the headed-Xvfb rung (docs/perf-harness.md), which would
+// accelerated 2D canvas returns alpha 0 on the headed-Xvfb rung, which would
 // silently score every canvas arm as a blank page.
 //
 // EVERY OFFSET IS KEPT, not just the first: `<arm>-<0..7>.png` beside `<arm>.png`, and the
@@ -148,8 +147,8 @@ export interface FidelitySpec {
    * Not a cosmetic choice — the number that makes the per-pixel columns mean anything. Left to
    * their own conventions the arms drew the same run in three different places: canvas
    * `textBaseline: "top"` pins the em top, a CSS line box puts the baseline at half-leading +
-   * ascent, and Godot's Label uses its own ascent. The dom arm landed 2.35 px low, which is a
-   * translation, and `rmsVsReference` and the viewer's diff images scored it as a rasterizer
+   * ascent, and Godot's Label uses its own ascent. A run drawn low by its anchor is a
+   * translation, and `rmsVsReference` and the viewer's diff images would score it as a rasterizer
    * difference. See {@link ArmFidelity.alignmentPx}, which exists so this cannot silently return.
    *
    * The value is `fontSize`: one documented rule, checkable by hand, leaving 4.9 px of the 18.9 px
@@ -300,11 +299,10 @@ export function probeLayout(options: {
   };
 
   // EVERY RUN BOX STARTS ON A WHOLE PIXEL. Not cosmetic: the `dom` arm snaps its text origin to
-  // whole device pixels (its 0.27 px centroid residual is that snap), so a run parked at a
-  // half-pixel rest position picks up a systematic half-pixel offset from the reference — measured
-  // at 0.51 px in both bands, which the alignment guard correctly flagged and which has nothing to
-  // do with the mechanism. The SWEEP is where sub-pixel phases are exercised; the rest position is
-  // not the place to introduce one.
+  // whole device pixels, so a run parked at a half-pixel rest position picks up a systematic
+  // half-pixel offset from the reference that the alignment guard flags and that has nothing to do
+  // with the mechanism. The SWEEP is where sub-pixel phases are exercised; the rest position is not
+  // the place to introduce one.
   const runs: FidelityRun[] = [];
   const spans: { top: number; bottom: number }[] = [];
   let cursor = PROBE_MARGIN;
@@ -423,46 +421,28 @@ export function centroidFit(centroids: readonly number[]): {
 /**
  * How far an arm may sit from the reference before its per-pixel columns stop meaning anything.
  *
- * Calibrated from both ends, on measurements, not picked:
+ * Chosen between two ends:
  *
- *   * THE FLOOR IS THE REGISTRATION NOISE. Re-measured at 14 px on both bands, over the 56 ordered
- *     pairs of independently rendered reference stills: mean |error| 0.056 px and worst 0.106 px in
- *     the Han band, 0.017 / 0.036 in the Latin one. A threshold near that would flag arms that are
- *     provably aligned.
- *   * THE CEILING IS THE BUGS IT EXISTS TO CATCH: the dom arm's CSS half-leading anchor (2.35 px),
- *     Godot's clamped-`size` pivot (4.20 px), the baked atlas's phase-offset-on-an-unsnapped draw
- *     (0.71 px) and a run parked at a half-pixel rest position (0.51 px). All four are well clear.
- *
- * 0.25 px is more than twice the worst noise and a third of the smallest bug found so far. At 14 px
- * it passes the shipped `dom` path at 0.314 px against its own blur allowance of 0.361 — CSS
- * whole-pixel snapping, real but not a defect — and flags `godot-msdf` at 0.634 px in the Han band,
- * whose distortion of 0.030 buys it almost no allowance.
+ *   * THE FLOOR IS THE REGISTRATION NOISE between independently rendered reference stills. A
+ *     threshold near it would flag arms that are provably aligned.
+ *   * THE CEILING IS THE BUGS IT EXISTS TO CATCH: a CSS half-leading baseline anchor, a clamped
+ *     `size` rotation pivot, a phase offset on an unsnapped atlas draw, a run parked at a
+ *     half-pixel rest position. Each displaces the run by half a pixel or more.
  */
 export const ALIGNMENT_TOLERANCE_PX = 0.25;
 
 /**
  * Extra allowance per unit of `distortion`, for arms BLURRIER than the reference.
  *
- * Not a fudge factor — a measured correction for the one bias {@link registrationPx} has. Softening
- * a band of a reference still with a separable gaussian, to known distortions, at 14 px:
- *
- *   Han   0.311 -> 0.212 px (0.68)   0.571 -> 0.431 px (0.76)   0.728 -> 0.580 px (0.80)
- *   Latin 0.228 -> 0.170 px (0.74)   0.440 -> 0.347 px (0.79)   0.622 -> 0.502 px (0.81)
- *
- * The ratio rises with the distortion, so a single slope has to be chosen for the range the arms
- * actually occupy (0.015-0.40). 0.65 is the low end of that, deliberately: this is an ALLOWANCE, and
- * an over-generous one silences the guard on exactly the soft arms it is watching.
- *
- * Without it the guard flags the wrong arms. At a flat 0.25 px it flagged `dom` (0.306) and
- * `godot-default` (0.330), whose distortions of 0.158 and 0.264 account for 0.10 and 0.17 px of
- * that on their own, while the arm that is genuinely displaced — `godot-msdf`, 0.517 px at a
- * distortion of 0.016, so essentially no allowance — sat in the same list. A guard that cries wolf
- * on two arms out of three is a guard that gets ignored.
+ * Not a fudge factor — a correction for the one bias {@link registrationPx} has: a softened copy of
+ * a reference still registers away from it in proportion to how soft it is. The ratio rises with
+ * the distortion, so one slope is chosen at the low end of the range the arms occupy, deliberately:
+ * this is an ALLOWANCE, and an over-generous one silences the guard on exactly the soft arms it is
+ * watching. Without it the guard flags soft-but-aligned arms in the same list as displaced ones.
  *
  * ONLY FOR BLURRIER ARMS. The bias comes from normalized correlation preferring the smoothing that
- * fractional sampling introduces, which only helps an arm that is already soft. `godot-oversample`
- * is SHARPER than the reference (acutance 2.23 against 1.87) and registers at 0.007 px — no
- * allowance is warranted and none is given.
+ * fractional sampling introduces, which only helps an arm that is already soft. An arm SHARPER than
+ * the reference gets no allowance.
  */
 export const ALIGNMENT_BLUR_ALLOWANCE_PER_DISTORTION = 0.65;
 
@@ -574,30 +554,19 @@ export function subtractBackground(luma: Uint8Array): {
 /**
  * The single channel every metric in this file is computed on: GREEN, background already removed.
  *
- * THE NAME IS HISTORICAL, THE CHANNEL IS NOT. `luma` is kept because ~40 locals and call sites read
- * it and renaming them buys nothing, but what this returns is band 1 of the still.
+ * THE NAME IS HISTORICAL, THE CHANNEL IS NOT: what this returns is band 1 of the still.
  *
  * ONE ARM CARRIES SUBPIXEL ANTIALIASING AND SEVEN DO NOT. Chrome draws the `dom` arm — the shipped
- * CSS-box path — with LCD subpixel AA, so its stills are genuinely coloured: `dom-0.png` has 2980
- * pixels whose channels spread by more than 8, worst 143, e.g. rgba(75,157,218). Every other arm
- * emits greyscale coverage; `canvas2d-0.png`, `hb-atlas-0.png`, `reference-0.png` and the three
- * `godot-*` stills each have 0 such pixels, worst spread 4. Alpha is a uniform 255 throughout, so
- * this is the rasterizer's own output and not a compositing artefact.
+ * CSS-box path — with LCD subpixel AA, so its stills are genuinely coloured; every other arm emits
+ * greyscale coverage. Averaging R, G and B on a subpixel-AA still is a ~1 px horizontal box blur,
+ * because the three channels sample the glyph a third of a pixel apart, and that blur would land in
+ * the column that grades the MECHANISM.
  *
- * AVERAGING R, G AND B ON A SUBPIXEL-AA STILL IS A ~1 PX HORIZONTAL BOX BLUR, because the three
- * channels sample the glyph a third of a pixel apart. `sharp().greyscale()` did exactly that, to
- * the one arm that could feel it, and the blur landed in the column that grades the MECHANISM: at
- * offset 0 it published `dom` at a distortion of 0.155 in the Han band where green reads 0.130, and
- * 0.141 in the Latin band where green reads 0.120. ~0.02 of a ~0.17 reading was the measurement.
+ * GREEN SAMPLES COVERAGE AT THE PIXEL CENTRE, which is the same question asked of every arm, and
+ * for greyscale stills it is bit-identical to `greyscale()`.
  *
- * GREEN SAMPLES COVERAGE AT THE PIXEL CENTRE, which is the same question asked of every arm. For
- * the seven greyscale arms it is BIT-IDENTICAL to `greyscale()` — verified over all 256 neutral
- * values, 0 mismatches — so nothing already published moves except the rows that were wrong.
- *
- * REJECTED: disabling subpixel AA on the probe page (`-webkit-font-smoothing: antialiased`). It
- * would make all eight arms greyscale and the choice of channel moot, and it would grade a `dom`
- * arm that gsw does not ship — measuring the shipped CSS-box path is the entire point of the arm.
- * The mechanism keeps its antialiasing; the METRIC stops averaging across it.
+ * Subpixel AA stays on in the probe page: disabling it would grade a `dom` arm that gsw does not
+ * ship. The mechanism keeps its antialiasing; the METRIC stops averaging across it.
  *
  * `extractChannel` yields one band for RGB and RGBA alike, so the returned buffer is
  * `width * height` and every consumer below indexes it unchanged.
@@ -763,12 +732,9 @@ async function main(): Promise<void> {
     height: box.height * SUPER_SAMPLE,
   });
   const client = browser.client;
-  // NO `{ sessionId }` OPTION HERE, and there used to be one. `CdpClient.send`'s `SendOptions` has
-  // only `timeoutMs` and `flat`; a `sessionId` key was an excess property that TypeScript never
-  // saw (nothing typechecked `probes/` until `packages/hb-gpu`'s tsconfig started pulling this file
-  // in) and that `send` never read. Routing is `client.sessionId`, which `targets.acquire` has
-  // already set to this lease's session and restores on `release()` — so dropping the key changes
-  // nothing at runtime and stops the code claiming a per-call routing it never had.
+  // NO `{ sessionId }` OPTION HERE: `CdpClient.send`'s `SendOptions` has only `timeoutMs` and
+  // `flat`. Routing is `client.sessionId`, which `targets.acquire` has already set to this lease's
+  // session and restores on `release()`.
   const send = <T = unknown>(
     method: string,
     params: Record<string, unknown> = {},
@@ -881,8 +847,8 @@ async function main(): Promise<void> {
     // reference at the SAME offset — against a still reference it would render a picture of the
     // translation rather than of the rasterizer. `rmsVsReference` becomes a mean over the sweep
     // instead of one sample. And the reference row earns the same shimmer and travel columns as
-    // every other arm, which is the honest floor to read `canvas2d`'s 0.005 edgeShimmer against;
-    // its old 0 was structural (one sample cannot vary) and invited being read as a result.
+    // every other arm, which is the honest floor to read the other arms' edgeShimmer against; a
+    // single still sample would give a structural 0 (one sample cannot vary).
     const referenceStills: string[] = [];
     for (const [index, offset] of SHIMMER_OFFSETS.entries()) {
       const png = await shoot(
@@ -1103,7 +1069,7 @@ export function formatFidelityTable(results: readonly ArmFidelity[]): string {
   }
   // Loud, above the metric glossary rather than buried under it. A misaligned arm does not produce
   // a WRONG-LOOKING table — it produces a plausible one whose per-pixel columns quietly rank a
-  // translation, which is exactly how the dom arm's 2.35 px offset survived a full round.
+  // translation.
   const misaligned = results.filter(
     (r) =>
       r.alignmentPx !== undefined &&

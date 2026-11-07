@@ -1588,7 +1588,7 @@ const LEGS = [
   "sabotage-undrawn-particles/receiver",
   "sabotage-ignore-particle-emits/receiver",
   "sabotage-drop-restart/receiver-patch",
-  // FRZ-P (results/p3/frz-p.md)
+  // FRZ-P
   "frzp/capture",
   "frzp-grant/capture",
   "sabotage-freeze-drop-events/capture",
@@ -2058,7 +2058,7 @@ export async function runG8pt(
     );
   }
 
-  // FRZ-P (results/p3/frz-p.md): the particle freeze. frzp's frozen bursts replay shot-equal
+  // FRZ-P: the particle freeze. frzp's frozen bursts replay shot-equal
   // (gate8-pt-receiver-checks.ts runG8ptFrzp), the grant alone leaves the wire byte-identical, and
   // the two sabotages fail (freeze-drop-events the burst, freeze-send-positions the wire identity).
   {

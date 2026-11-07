@@ -1,4 +1,4 @@
-//! `rs-gsw-wasm`: the GSW browser receiver's one wasm module (gate7-design.md Q14a, Q14c, D30):
+//! `rs-gsw-wasm`: the GSW browser receiver's one wasm module:
 //! `render-stream-core` (decode, validation, resolve, D7's applier) and the renderer's
 //! `canvas-items` executor, behind the per-transaction boundary of Q14c.
 //!
@@ -53,7 +53,7 @@ pub const ACCEPT_NEEDS_PAYLOADS: i32 = 3;
 /// W13c: `live_accept` dropped a /13 patch that arrived while a `predict-check` resync awaits its
 /// full transaction (render-stream-13.md "As built (W13c)"): no apply, no ack.
 pub const ACCEPT_HELD: i32 = 4;
-/// TAG1 (client-extensions-design.md §2.4): a /13 `item_meta` record. The validator holds it for
+/// a /13 `item_meta` record. The validator holds it for
 /// the transaction it describes; nothing to apply, nothing to ack, not a transaction. GSW's
 /// receivers do not opt in, so this only keeps a stream that carries the records playable.
 pub const ACCEPT_ITEM_META: i32 = 5;
@@ -132,7 +132,7 @@ struct Opts {
     /// Sabotage `no-evict`: the budget above is parsed (so it is still reported) but
     /// [`PayloadStore::evict_unreferenced`] is simply never called.
     no_evict: bool,
-    /// G8kp (texture-delivery-design.md D3, Q3): `RS_RECEIVER_TEXTURE_ENCODINGS` (default
+    /// `RS_RECEIVER_TEXTURE_ENCODINGS` (default
     /// `block,decoded`) and `RS_RECEIVER_GPU_FORMAT_MASK` (families left out of `gpu_formats`).
     texture_encodings: Option<String>,
     gpu_format_mask: Vec<String>,
@@ -147,7 +147,7 @@ struct Opts {
     /// 10 the same for render-stream.10 (W11c: 11, PM5: 12, likewise). 0 when the options carry no
     /// `live_protocol` (7 or 8).
     live_protocol: u8,
-    /// G8kb (texture-delivery-design.md Q6 "GSW"): the shell runs the KTX2 transcoder worker, so
+    /// the shell runs the KTX2 transcoder worker, so
     /// the default `texture_encodings` lists `uastc` (`block,uastc,decoded`).
     transcoder: bool,
     /// G8kb (D6): `RS_RECEIVER_VARIANT_POLICY=keep|upgrade`; None is this receiver's default
@@ -204,7 +204,7 @@ fn find_str(json: &str, key: &str) -> Option<String> {
 }
 
 /// `RS_RECEIVER_SABOTAGE` values the TypeScript shell, not this module, acts on, or that have no
-/// effect on a file-mode GSW receiver (gate7-design.md Q5; each is typed in the leg's evidence).
+/// effect on a file-mode GSW receiver (each is typed in the leg's evidence).
 /// G7k: `no-evict` moved out of this list (parsed below, into `Opts.no_evict`); `leak-gl-textures`
 /// stays here, since it leaks real GL objects by wrapping the canvas's WebGL2 context in
 /// `live.ts`, not by changing anything this module uploads or deletes.
@@ -307,16 +307,16 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "ignore-canvas-modulate" => o.apply.ignore_canvas_modulate = true,
                 "ignore-canvas-stacking" => o.apply.ignore_canvas_stacking = true,
                 "ignore-z" => o.apply.ignore_z = true,
-                // TAG2 (client-extensions-design.md §6): the override table's sabotages.
+                // the override table's sabotages.
                 "override-no-inherit" => o.ov.no_inherit = true,
                 "override-no-damage" => o.ov.no_damage = true,
                 "override-fast-path-miss" => o.ov.fast_path_miss = true,
                 "inverse-skip" => o.ov.inverse_skip = true,
-                // ID2 (client-extensions-design.md "Identity v2"): the tree pick's sabotages.
+                // the tree pick's sabotages.
                 "pick-draw-order" => o.ov.pick_draw_order = true,
                 "pick-no-rect" => o.ov.pick_no_rect = true,
                 "pick-no-clip" => o.ov.pick_no_clip = true,
-                // FRZ-HOOK (frz-d.md §6): the freeze-subtree hook's sabotages.
+                // The freeze-subtree hook's sabotages.
                 "frozen-still-applies" => o.ov.frozen_still_applies = true,
                 "frozen-sweeps" => o.ov.frozen_sweeps = true,
                 "stale-param" => o.apply.stale_param = true,
@@ -671,7 +671,7 @@ pub struct GswRs {
 }
 
 /// G7g: the session's presentation as this receiver adopted it (receiver.gd
-/// `_adopt_presentation`, protocol/gate6-design.md Q5).
+/// `_adopt_presentation`).
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Presentation {
     window: [u32; 2],
@@ -746,12 +746,12 @@ struct ParamLogEntry {
     binding: Binding,
 }
 
-/// The receiver-typed `unsupported` reason of a GSW shortcut (gate7-design.md Q5, Q7, D22), or
+/// The receiver-typed `unsupported` reason of a GSW shortcut, or
 /// `None` for one the wire already types (an unsupported op, texture, mesh or material, a tie) or
 /// whose pixels Q7 already classes `undecided` (`slice-mipmaps-level0`: a mipmapped texture drawn
-/// minified samples level 0; G7a measured max delta 1 against gate 2's reference, inside its mask;
-/// `slice-hairline-as-quads`: GL lines and points as 1-px quads, which G7t measured inside gate
-/// 5b's thin-line band with every decided pixel exact, so `gsw-hairline` is not typed).
+/// minified samples level 0, inside its mask;
+/// `slice-hairline-as-quads`: GL lines and points as 1-px quads, which land inside the
+/// thin-line band with every decided pixel exact, so `gsw-hairline` is not typed).
 pub fn typed_reason(shortcut: &str) -> Option<&'static str> {
     Some(match shortcut {
         "slice-shader-builtin" => "gsw-shader-builtin",
@@ -1232,7 +1232,7 @@ impl GswRs {
         applier.set_pick_order(self.pick_order);
         // PM3: GLES3 stores multimesh colours and custom data as half floats.
         applier.half_instances = s.engine.rendering_method == "gl_compatibility";
-        // G8kp (texture-delivery-design.md D3, Q3): gpu_formats from this context's extensions,
+        // gpu_formats from this context's extensions,
         // minus the mask; the selection uses the stated list unless `ignore-format-mask`.
         let detected = self
             .executor
@@ -1267,7 +1267,7 @@ impl GswRs {
         };
         applier.delivery =
             render_stream_core::delivery::DeliveryPrefs::parse(&encodings, &selection)?;
-        // G8kb (D6): `upgrade` is the phone default (texture-delivery-design.md D6): a context
+        // `upgrade` is the phone default: a context
         // with neither BC family holds `decoded` at 4 B/px until a uastc variant appears, and
         // upgrading to its ASTC/ETC2 transcode trades one refetch for a quarter of the GPU memory.
         // Desktop contexts keep (a block variant, or the decoded copy, is already resident).
@@ -1816,7 +1816,7 @@ impl GswRs {
         uastc_hashes(v.state()).contains(&h)
     }
 
-    /// G8kb (texture-delivery-design.md Q6 "GSW"): step 1 of a KTX2 payload's arrival. Verify the
+    /// step 1 of a KTX2 payload's arrival. Verify the
     /// bytes just written through `alloc_payload` (SHA-256 against `hash_hex`, then rs-core's KTX2
     /// header and shape checks against the entry listing it) before the shell posts them to its
     /// transcoder worker; nothing is staged yet. A mismatch is refused here (`resource-hash`), as
@@ -1902,7 +1902,7 @@ impl GswRs {
         }
     }
 
-    /// G8kb (texture-delivery-design.md Q3 "Transcode or upload failure"): the transcode of KTX2
+    /// the transcode of KTX2
     /// `hash_hex` failed (`delivery-transcode-failed`). The variant is refused for the session, so
     /// D3 falls through to the entry's next choice (at worst `decoded`, always servable), and the
     /// needed set is recomputed for the transaction being fetched: the shell re-reads it and
@@ -2288,7 +2288,7 @@ impl GswRs {
 
     // ------------------------------------------------------------- TAG2: client extensions
 
-    /// TAG2 (client-extensions-design.md §2.4): the `item_meta` record `live_accept` just
+    /// the `item_meta` record `live_accept` just
     /// returned `ACCEPT_ITEM_META` for: its meta JSON, read from the receive buffer (valid until
     /// the next `rx`). Empty when the buffer holds no record.
     pub fn item_meta_json(&self) -> String {
@@ -2642,7 +2642,7 @@ impl GswRs {
 
     /// The session record's meta, as the wire carries it (the shell reads the viewport, stream and
     /// resources blocks from it once, at start).
-    /// G8kp (texture-delivery-design.md D3, Q3): `{texture_encodings, gpu_formats,
+    /// `{texture_encodings, gpu_formats,
     /// gpu_formats_detected, gpu_format_mask}` as this receiver states them (after `start`).
     pub fn delivery_json(&self) -> String {
         let d = &self.delivery;

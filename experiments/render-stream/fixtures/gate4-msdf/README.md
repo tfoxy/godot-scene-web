@@ -1,9 +1,8 @@
 # Gate 4 MSDF fixture
 
-The reference rendering for gate 4's G4e2 ([`../../protocol/gate4-design.md`](../../protocol/gate4-design.md)
-"G4e2" and "Q6e"): five native `Label`s on one runtime MSDF `FontFile` `FM` of the pinned Open
+The reference rendering for gate 4's MSDF text: five native `Label`s on one runtime MSDF `FontFile` `FM` of the pinned Open
 Sans SemiBold bytes, with the target game's import values `msdf_size` 48 and `msdf_pixel_range` 24
-(D5; a `FontFile.new()` would default to 128 and 14). Their glyphs reach the RenderingServer as
+(a `FontFile.new()` would default to 128 and 14). Their glyphs reach the RenderingServer as
 `canvas_item_add_msdf_texture_rect_region`, which render-stream/3 carries. Ten steps (0..9) cover
 new glyphs, a size change, an outline toggle, colour changes and a parent rotation. The project
 does not know about the capture library and runs the same whether `GRC_EXTENSION` is set or not.
@@ -15,7 +14,7 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate4-ms
 
 ## Files
 
-- `project.godot`, `loader.gd`, `fonts.lock.json`, `fonts/`: as `fixtures/gate4` (Q1e's pins, the
+- `project.godot`, `loader.gd`, `fonts.lock.json`, `fonts/`: as `fixtures/gate4` (the pinned text inputs, the
   `GrcLoader` autoload, the one font).
 - `gate4_msdf.tscn`, `gate4_msdf.gd`: a root `Node`; builds the panel `P`, the Labels, the
   `Node2D` `R` (rotated 20°, scaled 1.5) holding `MR`, and the `Marker` in `_ready()` in

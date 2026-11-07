@@ -1,9 +1,9 @@
 ; Gate 4 layout fixture for the render-stream capture experiment (G4c): font sizes and atlas pages,
 ; wrapping, alignment, clip_text, a bitmap outline and a shadow, subpixel positioning, page
 ; lifetime and (RS_FIXTURE_VARIANT=lcd) one LCD Label. Ten steps (0..9) over Labels on runtime
-; FontFiles of the pinned bytes. See fixtures/gate4-layout/README.md and
-; ../../protocol/gate4-design.md ("G4c", "Q6e") for the contract. Every font and text input is
-; pinned here, as in fixtures/gate4 (gate4-design.md Q1e).
+; FontFiles of the pinned bytes. See fixtures/gate4-layout/README.md
+; for the contract. Every font and text input is
+; pinned here, as in fixtures/gate4.
 
 config_version=5
 

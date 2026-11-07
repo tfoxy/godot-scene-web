@@ -1,7 +1,7 @@
 //! The incremental recording validator (`createRecordingValidator` in `render-stream-2.ts`), with
 //! the resolve engine (`applyTransaction`) and the resolved-state invariants
 //! (`checkResolvedInvariants`, `checkPatchRules`, the version/resource/id-reuse sweeps) made
-//! delta-driven (gate7-design.md D29):
+//! delta-driven:
 //!
 //! * a patch mutates the retained [`ResolvedState`] in place, logging every replaced entry, so a
 //!   failed `accept` rolls back exactly and leaves the state as it was;
@@ -79,7 +79,7 @@ pub struct Options {
     /// reset the prediction history (it is un-predicted against H1 and H2 like a patch). `false`
     /// always, except in the sabotage.
     pub no_predict_reset: bool,
-    /// TAG1 (client-extensions-design.md §2.4, /13 only): what the stream's viewer asked for.
+    /// TAG1 (/13 only): what the stream's viewer asked for.
     /// `Unknown` (the default: a recording) accepts and validates `item_meta` records; `NotAsked`
     /// refuses them (`item-meta-unexpected`); `Asked` checks each grant against the request.
     pub item_meta: ItemMetaAsk,
@@ -704,7 +704,7 @@ pub struct Validator {
     /// The last accepted record is a /13 transaction whose /12 record
     /// ([`Validator::plain_record`]) the prediction history holds.
     plain_ok: bool,
-    // ---- TAG1 (client-extensions-design.md §2.4); empty unless the stream has item_meta records.
+    // ---- TAG1; empty unless the stream has item_meta records.
     /// The identity table as of the newest accepted transaction.
     item_meta: ItemMetaTable,
     /// The accepted `item_meta` record awaiting its transaction.
@@ -749,7 +749,7 @@ fn variants_equal(a: &[TextureVariant], b: &[TextureVariant]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| variant_equal(x, y))
 }
 
-/// render-stream-9.md (texture-delivery-design.md D6): at an equal version `variants` may grow --
+/// render-stream-9.md: at an equal version `variants` may grow --
 /// every earlier variant stays identical and more may appear -- and nothing else changes.
 fn variants_only_grew(prev: &Texture, cur: &Texture) -> bool {
     prev.status != EntryStatus::Freed
@@ -1735,7 +1735,7 @@ impl Validator {
                 session.host_visible_rect[3] as f64,
             ];
             let presentation = v.presentation_size.unwrap_or(v.logical_size);
-            // PRES-A (gate6-design.md "Amendment (PRES-A)"): the visible size the stretch gives
+            // the visible size the stretch gives
             // the presentation; the logical size unless expand/keep_width/keep_height widen it.
             let expected_visible = crate::meta::stretch_visible_size(
                 &v.stretch,

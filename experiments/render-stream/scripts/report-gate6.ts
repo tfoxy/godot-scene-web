@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// CLI for `render-stream-report/1` (D10, Q7a/Q7f of ../protocol/gate6-design.md): `validate` checks
+// CLI for `render-stream-report/1` (D10, Q7a/Q7f): `validate` checks
 // an existing report file, `build` assembles one from a run-set directory a measurement increment
 // (G6r/G6l/G6c/G6p) wrote.
 //

@@ -1,7 +1,6 @@
 # Gate 6 combined scene
 
-The 640×360 combined scene of gate 6 (G6a, [`../../protocol/gate6-design.md`](../../protocol/gate6-design.md)
-"Q6a" to "Q6h"): native Controls, a clipped `ScrollContainer` that scrolls, a `Label` and a
+The 640×360 combined scene of gate 6 (G6a): native Controls, a clipped `ScrollContainer` that scrolls, a `Label` and a
 scrolling `RichTextLabel` with an inline image, a custom `_draw`, a texture that changes and is then
 freed, a mesh deformed every frame, a `CanvasItemMaterial`, a `ShaderMaterial` whose parameter an
 `AnimationPlayer` drives, a `Tween`, a `top_level` escape and a HUD `CanvasLayer`, over twelve
@@ -18,7 +17,7 @@ python3 experiments/render-stream/fixtures/gate6-scene/make_expected.py --check
 
 - `project.godot`, `loader.gd`: gate 5.5's settings and loader, gate 4's font settings (grayscale
   antialiasing, light hinting, no subpixel positioning, no MSDF, no mipmaps) and
-  `application/run/low_processor_mode_sleep_usec=0` (Q1g).
+  `application/run/low_processor_mode_sleep_usec=0`.
 - `gate6_scene.tscn`, `gate6_scene.gd`: a plain root `Node`. `_ready()` builds one copy of the scene
   (cell 0, phase 0) and `_process()` drives the timeline, the shots, the step log and the oracle.
   Variables: `RS_FIXTURE_VARIANT` (`animate`, `refused`), `RS_FIXTURE_TIME` (`steps`, `realtime`),
@@ -26,7 +25,7 @@ python3 experiments/render-stream/fixtures/gate6-scene/make_expected.py --check
   `RS_FIXTURE_STEP_FRAMES`, `RS_FIXTURE_QUIT_FRAME`, `RS_FIXTURE_STEP_LOG`, `RS_FIXTURE_SHOT_DIR`
   (`step-<k>.png` at each settle frame, `frame-<f>.png` at each extra frame), `RS_FIXTURE_SHOT_FRAMES`
   (extra frames; the file timeline always adds 13, 53 and 93) and `RS_FIXTURE_ORACLE_LOG` (refused,
-  exit 2, when a `GRC_*` capture variable is set). G6c adds `RS_FIXTURE_QUIT_TIME` (rate and soak
+  exit 2, when a `GRC_*` capture variable is set). It also reads `RS_FIXTURE_QUIT_TIME` (rate and soak
   only: a later quit, in seconds of game time) and `RS_FIXTURE_FREEZE_STATE` (a JSON array of one
   `freeze_state()` object, applied right after step 11); rate and soak step logs carry step 11's
   `freeze` leftovers (SC's scroll, LB's text, CD's k: what the freeze does not reset, and what a
@@ -81,9 +80,9 @@ scrolled to line 4, `SC.v_scroll` 76; 6 CD `k` 1, BT text; 7 HB width 496, LE `s
 `TEXB`, HUD hidden; 9 row 2 freed, row 8 appended, RT text without the image (`TEXA` freed), HUD
 visible at layer −1; 10 HUD layer 1, root canvas transform (8, 4); 11 freeze. Continuous: MS every
 frame, SM's phase (a key every 4 frames, period 24), AN (period 88), PB (0 → 100 over 300 frames).
-`live`: S = 300, N = 60, quit 1080. `rate` and `soak` run on game time (Q6c).
+`live`: S = 300, N = 60, quit 1080. `rate` and `soak` run on game time.
 
-## Time (D6, as built)
+## Time
 
 Every animation is driven a quarter frame off the frame grid: both `AnimationPlayer`s are seeked to
 (φ + ¼)/60 s and advanced by 1/60 s per frame, the `Tween` is paused and custom-stepped by the same

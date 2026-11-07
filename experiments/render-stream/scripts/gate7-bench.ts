@@ -1,5 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Gate 7 decode/apply microbench driver (G7d; protocol/gate7-design.md Q13e "The bench"). One
+// Gate 7 decode/apply microbench driver. One
 // command per receiver arm and environment, called by run-gate7.sh's g7-bench group (and directly
 // by G7m):
 //
@@ -17,7 +17,7 @@
 //   gate7-bench.ts --arm gsw-basis --basis-store <store> --out <dir> [--env device --device g31]
 //       [--basis-copies K]   # G8kb: GSW's KTX2 transcoder worker (ms/Mpx per D14 target) and the
 //                            # GPU memory of K copies of each texture as decoded RGBA8 vs its
-//                            # transcode (web/bench/basis.html; texture-delivery-design.md G8kb)
+//                            # transcode (web/bench/basis.html; G8kb)
 //   gate7-bench.ts --interleave gsw-ts,gsw-rs,gsw-rs-inline --rounds 5 ...  # G7x's bench protocol
 //   gate7-bench.ts --interleave gsw-rs-base,gsw-rs --rs-build-base <dir> ...  # G7o2: before/after
 //       [--profile]   # G7o2: the core's phase timers on in every Rust page (diagnostics only)
@@ -129,7 +129,7 @@ interface Args {
   basisCopies: number;
   /** The gpu arms, in order (default none,decoded,uastc,decoded,uastc). A driver's freed texture
    * memory is pooled for the page's GPU process, so a clean per-delivery delta needs the arm first
-   * on a fresh Chrome: one invocation per delivery (G8kb's g31 runs). */
+   * on a fresh Chrome: one invocation per delivery. */
   basisDeliveries: string[];
   /** A native gate 8 basis receiver leg (g8ku/receiver-upgrade): its recording, store and shot
    * seqs replayed by the real GSW receiver on this browser, under upgrade and under decoded. */
@@ -161,7 +161,7 @@ interface Args {
   holdSeconds: number;
   adbBin: string | undefined;
   only: string[];
-  /** gate7-design.md D31/G7o1; `gsw` only, ignored by `native` and `web` (the Godot receiver
+  /** /G7o1; `gsw` only, ignored by `native` and `web` (the Godot receiver
    * decides: inline natively, deferred on the web export). */
   recordDigest: "inline" | "deferred";
   /** G7xn: the native arm's receiver core; its legs are `native-rs-bench-*`. G7xw: also the web
@@ -424,7 +424,7 @@ function loadInputs(path: string, only: string[]): BenchInput[] {
 
 // ------------------------------------------------------------------------------------------ native
 
-/** One bench arm's exclusive quiet hold (lib/quiet-lock.ts; results/measurement-isolation.md):
+/** One bench arm's exclusive quiet hold (lib/quiet-lock.ts):
  * nested, and so free, when run-gate7.sh or `quiet.sh exclusive --` already holds it. */
 function benchQuietHold(args: Args): Promise<QuietHold> {
   return quietAcquire(
@@ -784,7 +784,7 @@ function pageUrl(
 }
 
 /**
- * G7x's bench protocol (gate7-design.md "G7x"): per input, a warmup page per arm, then
+ * G7x's bench protocol: per input, a warmup page per arm, then
  * `rounds` rounds of every arm, each on a fresh page (each page runs one in-page warmup pass,
  * then one measured pass). A single `--arm gsw-rs`/`gsw-rs-inline` run is one page with
  * `--warmup`/`--repeats`. Writes `<out>/g7x-bench.json` (every measured round and R2-R4).
@@ -1244,7 +1244,7 @@ async function runGswArm(
 // receiver.gd:771-775 (Q4 "Shell" item 6): a browser is never DisplayServer "headless", so the
 // hard viewport-mismatch check applies there, unlike native/GSW -- the canvas must equal the
 // session's logical_size. Every bench input but gate6-hd's own fixture (run-gate7.sh
-// HD_FIXTURE_DIR, gate6-design.md D4: 1920x1080) replays at the receiver project's 640x360
+// HD_FIXTURE_DIR, : 1920x1080) replays at the receiver project's 640x360
 // default.
 const WEB_CANVAS_SIZE: Readonly<Record<string, [number, number]>> = {
   "hd-patch": [1920, 1080],
@@ -1697,8 +1697,8 @@ async function gpuMemory(
       ),
     )
     .map((l) => l.trim());
-  // The driver's own allocations are not in a process's memtrack on every phone (the g31's Mali
-  // reports only EGL surfaces there), so the system's view too: /proc/meminfo and dumpsys meminfo's
+  // The driver's own allocations are not in a process's memtrack on every phone (some GPU drivers
+  // report only EGL surfaces there), so the system's view too: /proc/meminfo and dumpsys meminfo's
   // RAM summary (Used RAM's kernel share holds GPU buffers).
   const proc = await adb.shell("cat /proc/meminfo").catch(() => "");
   const kb = (name: string) => {
@@ -1732,7 +1732,7 @@ async function gpuMemory(
 }
 
 /**
- * G8kb's bench (texture-delivery-design.md "As built (G8kb)"): basis.html's transcode mode once
+ * G8kb's bench: basis.html's transcode mode once
  * (warmup + repeats per D14 target), then its gpu mode per delivery (none, decoded, uastc, none
  * again), each held resident while the GPU process's graphics memory is sampled (device only).
  * Real time: nothing here is a fast-frames leg.

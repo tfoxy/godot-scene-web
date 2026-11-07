@@ -1,9 +1,9 @@
-// Gate 1 G1d checks and leg classification (protocol/gate1-design.md "G1d", "Q4", "Q7"): group
+// Gate 1 G1d checks and leg classification: group
 // g1d, a receiver stall with coalescing and newest-state recovery, resync, reconnect, a killed
 // receiver, and the ignore-credit and stale-coalesce sabotages. Pure over an evidence directory
 // written by run-gate1.sh, so scripts/test/self-test-gate1.ts drives it with fabricated trees.
 //
-// Evidence layout under <out>/ (scripts/README.md "Gate 1"), every leg with the g1c host setup:
+// Evidence layout under <out>/, every leg with the g1c host setup:
 //   <leg>/host/       evidence/{result,live,live-summary}.json, recording.rs2,
 //                     recording-patch.rs2, store/, steps.jsonl, tap/stream-<n>.rs2,
 //                     tap/live-<n>.jsonl (n = 1, and 2 after a reconnect)
@@ -112,10 +112,10 @@ export const STALL_LEGS: readonly G1dLeg[] = [
 ];
 
 /** sim-kept-running: frames advanced >= this share of the nominal 60 fps over the stall, at an
- * average frame interval <= 1.25 x 1/60 s (gate1-design.md G1d). */
+ * average frame interval <= 1.25 x 1/60 s. */
 export const NOMINAL_FPS = 60;
 
-/** GRT3 (scripts/README.md "Fast frames (GRT3)"): the host's nominal frame rate, its argv.txt's
+/** GRT3: the host's nominal frame rate, its argv.txt's
  * `--max-fps` (one word per line; 60 when absent). A fast-frame leg's host runs at
  * RS_FAST_FRAMES_MAX_FPS, and the runner's stall milliseconds are the stall's frames at that rate,
  * so every frame count below is the same at any rate. */

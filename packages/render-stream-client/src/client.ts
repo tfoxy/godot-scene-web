@@ -1,4 +1,4 @@
-// createRenderStreamClient (mirror-client-design.md "API"): one canvas, one live stream, one wasm
+// createRenderStreamClient: one canvas, one live stream, one wasm
 // instance, released by `dispose()`.
 
 import type { GswRs } from "./abi";
@@ -64,42 +64,40 @@ export interface RenderStreamClientOptions {
   endpoint: RenderStreamEndpoint;
   /** Default: the `carrier` below. An explicit factory overrides it. */
   transport?: RenderStreamTransportFactory;
-  /** CAR5: which live carrier to use. `auto` (default): WebTransport when the descriptor has
+  /** Which live carrier to use. `auto` (default): WebTransport when the descriptor has
    * `webTransport`, `globalThis.WebTransport` exists and the page is a secure context, else
-   * WebSocket + fetch. CAR11: `auto` also uses WebSocket on Android (`userAgentData.platform`
-   * or the UA string), without loading the WebTransport chunk: on a CPU-throttled moto g31
-   * WebTransport delivered 47.8 frames/s against 57.4 for WebSocket (back to back, CAR10
-   * per-batch uplink), and gives the mirror no benefit yet. Revisit when WebTransport matches
-   * WebSocket on a throttled g31, or a feature (audio) needs it; an explicit `webtransport`
-   * still uses it on Android; a WebTransport attempt that fails before `open` is retried over WebSocket
+   * WebSocket + fetch. `auto` also uses WebSocket on Android (`userAgentData.platform` or the UA
+   * string), without loading the WebTransport chunk, because WebTransport delivers fewer frames
+   * than WebSocket on throttled Android devices and gives the mirror no benefit yet; an explicit
+   * `webtransport` still uses it on Android; a WebTransport attempt that fails before `open` is retried over WebSocket
    * and the client then stays on WebSocket. `websocket`: always WebSocket. `webtransport`: never
    * falls back (a failure is `live-connect-failed`). */
   carrier?: RenderStreamCarrier;
-  /** TAG2: product modules, composed in this order (client-extensions-design.md §3). Default
+  /** Product modules, composed in this order. Default
    * `[]`: the pure client (no `item_meta` hello key, nothing loaded, one branch per frame). An
    * extension that `wants` identities needs protocol 13. */
   extensions?: readonly RenderStreamExtension[];
   /** The credit window asked in the hello (the session grants it); default 2. */
   creditWindow?: 1 | 2;
-  /** PH3: the hello's credit stage, the ack the host's credit waits on; default `applied`. */
+  /** The hello's credit stage, the ack the host's credit waits on; default `applied`. */
   creditStage?: CreditStage;
-  /** PH3: where a ready transaction is applied: the next frame callback (`frame`) or its own
+  /** Where a ready transaction is applied: the next frame callback (`frame`) or its own
    * `onmessage` while frames run (`message`, the default; the draw stays on the frame callback). */
   applyOn?: ApplyOn;
-  /** REC1: when set, the client records the decoded messages since the last full and the fetched
+  /** When set, the client records the decoded messages since the last full and the fetched
    * payloads, exported by `RenderStreamClient.recording()`. Absent: the pure client (no ring, no
    * copies). */
   recorder?: RecorderOptions;
   /** The deadline of the whole core load (build.json to the glue's init), in ms; default 30000.
    * A load that has not finished is `failed` `core-load-failed`, detail `timeout after <ms> ms in
    * <steps>` (the steps still pending: `build fetch`, `wasm fetch`, `wasm hash`, `wasm compile`,
-   * `glue import`, `core init`), and nothing of it runs on. A moto g31 on Wi-Fi took at most 1.1 s
-   * at 4x CPU throttle (loader.ts). The connect deadline starts only once the core is up. */
+   * `glue import`, `core init`), and nothing of it runs on. The connect deadline starts only once
+   * the core is up. */
   coreLoadTimeoutMs?: number;
   onStatus?: (s: RenderStreamStatus) => void;
 }
 
-/** INP1: a point in the game's input space (the host window's px) and the item drawn there. */
+/** A point in the game's input space (the host window's px) and the item drawn there. */
 export interface GamePoint {
   readonly point: Point;
   /** The topmost drawn item at the point (a card's child, say: `query.parent` climbs); null on
@@ -117,24 +115,24 @@ export interface RenderStreamClient {
    * next `connect`). Throws `RenderStreamEndpointError` for an invalid one. */
   setEndpoint(e: RenderStreamEndpoint): void;
   stats(): Readonly<RenderStreamStats>;
-  /** INP1: the page point `(clientX, clientY)` (an event's, CSS px) as a presentation-space
+  /** The page point `(clientX, clientY)` (an event's, CSS px) as a presentation-space
    * point (the host window's px), or null where the picture is not: a letterbox bar, outside the
    * canvas's box, or no session yet. Reads the canvas's layout on demand. */
   cssToPresentation(clientX: number, clientY: number): Point | null;
-  /** INP1: a presentation-space rect (an item's `query.rect`, say) in page px, for a DOM overlay
+  /** A presentation-space rect (an item's `query.rect`, say) in page px, for a DOM overlay
    * anchored to it. Canvas-local: subtract `canvas.getBoundingClientRect()`. */
   presentationToCss(r: Rect): Rect;
-  /** INP1: a presentation-space point as the game sees it: the topmost drawn item under it, and
+  /** A presentation-space point as the game sees it: the topmost drawn item under it, and
    * the point through the inverse of that item's effective override (so a tap on a raised card
    * is where the game has the card). With no item under it the point is unchanged and `item` is
    * null. Null before the core is up. */
   toGame(x: number, y: number): GamePoint | null;
-  /** INP1: `cssToPresentation` then `toGame`: null on a letterbox bar. */
+  /** `cssToPresentation` then `toGame`: null on a letterbox bar. */
   clientToGame(clientX: number, clientY: number): GamePoint | null;
   /** Stops the frame loop, closes the connection (1000), aborts a core load and in-flight GETs,
    * frees every wasm-bindgen object, loses the WebGL context and drops the instance. Idempotent. */
   dispose(): void;
-  /** REC1: the recording so far (null when the client was built without `recorder`). */
+  /** The recording so far (null when the client was built without `recorder`). */
   recording(): Recording | null;
 }
 
@@ -185,7 +183,7 @@ export function createRenderStreamClient(
     throw new TypeError(
       "render-stream client: an extension that wants item identities needs protocol 13",
     );
-  // REC1: absent the option there is no recorder (and no per-message copy); present, one ring.
+  // Absent the option there is no recorder (and no per-message copy); present, one ring.
   const recorder = options.recorder ? createRecorder(options.recorder) : null;
   return new Client(
     options,
@@ -214,10 +212,10 @@ class Client implements RenderStreamClient {
   /** One factory per client: the sticky fallback and the WebTransport cache live in it. */
   private readonly carrierFactory: RenderStreamTransportFactory;
   private disposed = false;
-  /** INP1: the session's presentation size (null before its record). */
+  /** The session's presentation size (null before its record). */
   private presentation: [number, number] | null = null;
   private readonly onLost = (e: Event) => {
-    // Q5 "Context loss": keep the context restorable; the loop holds until the restore.
+    // Keep the context restorable; the loop holds until the restore.
     e.preventDefault();
     this.loop?.contextLost();
   };

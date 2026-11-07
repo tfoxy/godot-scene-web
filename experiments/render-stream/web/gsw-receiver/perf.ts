@@ -1,9 +1,9 @@
-// GSW receiver perf (gate7-design.md Q5 "Evidence", Q12, D13, G7a): per drawn frame, the Q14c
+// GSW receiver perf: per drawn frame, the
 // timers (`decode_us` = accept, `provide_us`, `apply_us`, `draw_us`, `total_us` one wall timer
 // over all of them, the boundary included) and, after the frame, `evidence_hash_us` (D31's
 // deferred record digest) and `payload_verify_us` (G7o2: the needed payloads' SHA-256 and decode
 // in their fetch completion, between frames). GPU completion is a fence polled on later frames (`gpu_complete_ms`,
-// measured, report-only); presentation is `unavailable` (D13). Written as
+// measured, report-only); presentation is `unavailable`. Written as
 // `render-stream-receiver-perf/1`'s shape plus the browser keys when RS_RECEIVER_PERF_OUT is set,
 // and `perf-timeline.jsonl` (one line per drawn frame) beside it.
 
@@ -107,7 +107,7 @@ export class Perf {
       shaders: number;
       materials: number;
     } | null;
-    /** Sabotage `leak-gl-textures` only (gate7-design.md Q10, not part of the native shape):
+    /** Sabotage `leak-gl-textures` only (not part of the native shape):
      * real WebGL textures leaked on a throwaway context, never drawn with (gl-leak.ts). 0
      * otherwise, never null, so a soak checker can add it to `live_rids.textures` for one "GL
      * textures" number that is flat honestly and grows under the sabotage. */

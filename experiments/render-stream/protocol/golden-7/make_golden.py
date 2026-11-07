@@ -2,7 +2,7 @@
 """Generate the render-stream/7 golden vectors (stdlib only, deterministic).
 
 render-stream/7 (../render-stream-7.md) is a LIVE-TRANSPORT delta on render-stream/6
-(../render-stream-6.md), per gate7-design.md D2/Q2: the magic and protocol string change, the
+(../render-stream-6.md): the magic and protocol string change, the
 hello gains nine keys (receiver_kind/credit_window/token/manifest_sha256/five presentation
 integers), the session's top-level `publication` key gains `credit_window`, `error.reason` gains
 `unauthorized`, and HTTP gains CORS. Records, transactions, payloads and HTTP routes are
@@ -23,12 +23,12 @@ arrays (a legitimate "idle frame", the simplest possible chained-patch pair). Bo
 to resolved-rate.json: window2.rs7's three transactions each carry the identical state rate.rs7's
 single transaction does (As built, below).
 
-invalid/ (gate7-design.md Q2 "Golden vectors"): bad-magic (golden-6's rate.rs6 verbatim -- a real
+invalid/: bad-magic (golden-6's rate.rs6 verbatim -- a real
 GRS6 stream handed to a /7 decoder); publication-window (credit_window 3, out of 1..2); and
 publication-file-window (a "file" stream declaring credit_window 2, which must always be 1 on a
 file sink).
 
-control/ (gate7-design.md Q2 "Control vectors", used by rs_live_test.cpp's parse_control and the
+control/ (used by rs_live_test.cpp's parse_control and the
 TypeScript/GDScript self-test hello parsers): valid hellos covering every receiver_kind, both
 credit_window values and with/without a token; invalid hellos covering a missing key, an unknown
 key, credit_window 0 and 3, a non-hex token, a /6 protocol string and a float dpr_milli.
@@ -126,7 +126,7 @@ PUBLICATION = "snapshot-or-patch"
 
 
 # --------------------------------------------------------------------------- encoding (framing)
-# Framing and canonical JSON are unchanged from /2-/6 (gate7-design.md D2: /7 changes only the
+# Framing and canonical JSON are unchanged from /2-/6 (/7 changes only the
 # magic/protocol/hello/publication.credit_window/two error reasons/CORS).
 
 
@@ -277,8 +277,8 @@ def session_record(
             "unobserved": FEATURE_UNOBSERVED,
             "publication": PUBLICATION,
         },
-        # render-stream-7.md "Session": publication gains credit_window, right after target_fps
-        # (gate7-design.md D2/D4). mode "rate"/target_fps 30 matches golden-6's rate.rs6 exactly.
+        # render-stream-7.md "Session": publication gains credit_window, right after target_fps.
+        # Mode "rate"/target_fps 30 matches golden-6's rate.rs6 exactly.
         "publication": {"mode": "rate", "target_fps": 30, "credit_window": credit_window},
         "sabotage": None,
     }
@@ -325,8 +325,8 @@ def full_transaction_bytes(seq: int, frame: int, state: dict) -> bytes:
 
 
 def empty_patch_bytes(seq: int, frame: int, base_seq: int, state: dict) -> bytes:
-    """A patch against `base_seq` that changes nothing (gate7-design.md Q2's window2.rs7: "two
-    consecutive patches whose bases chain") -- the simplest legitimate patch, an idle frame."""
+    """A patch against `base_seq` that changes nothing (window2.rs7: two
+    consecutive patches whose bases chain) -- the simplest legitimate patch, an idle frame."""
     meta = {
         "type": "transaction", "seq": seq, "frame": frame, "encoding": "patch",
         "base_seq": base_seq, "status": "ok", "failures": [], "unsupported": [],
@@ -336,7 +336,7 @@ def empty_patch_bytes(seq: int, frame: int, base_seq: int, state: dict) -> bytes
         "removed_meshes": [], "removed_shaders": [], "removed_materials": [],
         "canvases": [], "items": [], "textures": [], "meshes": [], "shaders": [], "materials": [],
     }
-    # render-stream-5.md "Transaction": six blocks at /5 and later (gate7-design.md D2: /7's
+    # render-stream-5.md "Transaction": six blocks at /5 and later (/7's
     # transactions are byte-identical to /6/5) -- cmd_i32/mesh_f32/param_f64 stay empty, this
     # scene has no mesh, triangle-array or material entries.
     blocks = [f32block("item_f32", []), f32block("canvas_f32", []), f32block("cmd_f32", []),
@@ -589,7 +589,7 @@ def build() -> dict[str, bytes]:
     rate_rs7 = recording(rate_records, rate_end)
 
     # window2.rs7: the same scene, credit_window 2, a full transaction plus two chained
-    # no-op patches (gate7-design.md Q2: "two consecutive patches whose bases chain").
+    # no-op patches.
     window2_session = session_record(window2_stream_id, "websocket", "patch", window2_session_id,
                                       credit_window=2)
     window2_records = [
@@ -612,7 +612,7 @@ def build() -> dict[str, bytes]:
     invalid: dict[str, tuple[bytes, str, str]] = {}
 
     # bad-magic: a real GRS6 stream (golden-6's own rate.rs6, byte for byte) handed to a /7
-    # decoder (gate7-design.md Q2: "invalid/ holds bad-magic (GRS6)").
+    # decoder ("invalid/ holds bad-magic (GRS6)").
     rate_rs6_bytes = (GOLDEN6 / "rate.rs6").read_bytes()
     invalid["bad-magic"] = (
         rate_rs6_bytes, "bad-magic", "magic byte 3 is '6' (GRS6), not '7'",

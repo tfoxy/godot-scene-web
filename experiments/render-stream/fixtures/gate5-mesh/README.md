@@ -1,7 +1,6 @@
 # Gate 5 mesh fixture
 
-The reference rendering for gate 5's persistent mutable meshes (G5c,
-[`../../protocol/gate5-design.md`](../../protocol/gate5-design.md) "Q6d" and "Q6e"). Ten steps
+The reference rendering for gate 5's persistent mutable meshes. Ten steps
 (0..9) cover an `ArrayMesh` in a `MeshInstance2D` (redrawn on `changed`), a raw mesh drawn once
 whose pixels then change through vertex, attribute and index region updates alone, a two-surface
 mesh losing its first surface, a geoclip-like grid deformed every frame in spine-godot's order and
@@ -32,8 +31,8 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate5-me
   truncated RGBA8 colours, float32 UVs, u16 indices, the float32 AABB of
   `mesh_create_surface_data_from_arrays`, Godot's ear clipper for `Polygon2D`) and so predicts
   every GRM1 hash, the hook census of every mesh call per frame, each item's commands, the
-  coverage model `geometry-raster.ts` rasterizes, freshness, the `counters.json` totals and G5e's
-  sabotage sets. Nothing in it is measured.
+  coverage model `geometry-raster.ts` rasterizes, freshness, the `counters.json` totals and the
+  sabotage sets.
 - `ld_mesh.tres`: generated; the `ArrayMesh` resource `LD` loads.
 
 ## Layout (640×360; regions `[x0,y0,x1,y1)`)
@@ -49,5 +48,5 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate5-me
 | `FR`     | raw item (288,160), drawn once  | `FM`: 56×48 quad (1,.4,.6); freed at 7 (draws nothing), the item cleared at 8                                     |
 | `Marker` | `Node2D` (592,16)               | 32×32 rect in gate 3's marker colour of the step                                                                   |
 
-Step 9 sets the canvas transform to a translation by (8,4). `DF` is band (D13); every other region
+Step 9 sets the canvas transform to a translation by (8,4). `DF` is a band region; every other region
 is exact.

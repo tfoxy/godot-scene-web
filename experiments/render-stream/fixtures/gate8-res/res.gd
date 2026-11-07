@@ -15,7 +15,7 @@ extends Node
 ## adopted TEX sprite and texture, the PPM emitter and the ITEM node (the capture must record them
 ## freed, res-free). Timeline: quit at 30.
 ##
-## LAR6 (late-arm-registry-design.md R4 "Off-main references"): at frame 16 a worker `Thread` draws
+## LAR6: at frame 16 a worker `Thread` draws
 ## a fifth pre-arm ImageTexture (`_pre_tex_thread`) into an RS-only canvas item and clears it again,
 ## inside one `_process` (the main thread waits for it), so no transaction ever holds the draw. The
 ## thread's reference is the texture's only one: the capture must queue it and adopt it at the frame

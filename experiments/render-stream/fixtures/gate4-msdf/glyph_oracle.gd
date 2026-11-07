@@ -1,6 +1,5 @@
 extends RefCounted
-## The gate 4 glyph oracle, MSDF edition (../../protocol/gate4-design.md "Q6c", "Q1g" and "G4e2",
-## `render-stream-gate4-glyphs/1`). fixtures/gate4-layout/glyph_oracle.gd with the glyph
+## The gate 4 glyph oracle, MSDF edition (`render-stream-gate4-glyphs/1`). fixtures/gate4-layout/glyph_oracle.gd with the glyph
 ## arithmetic of the MSDF branch of `_font_draw_glyph` / `_font_draw_glyph_outline`
 ## (modules/text_server_adv/text_server_adv.cpp:4021-4025, :4167-4171): no subpixel shift, no
 ## floor, and the glyph's rect scaled by size / msdf_size.

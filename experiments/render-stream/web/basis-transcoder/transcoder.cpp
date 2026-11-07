@@ -1,4 +1,4 @@
-// GSW's KTX2 transcoder (G8kb, protocol/texture-delivery-design.md D14, D15, Q6 "GSW"): basisu
+// GSW's KTX2 transcoder: basisu
 // 1.60's ktx2_transcoder from the vendored third_party/basis_universal (the revision the capture's
 // encoder, the native receiver and the web export run), built by scripts/build-basis-transcoder.sh
 // with the pinned emscripten 4.0.11 into a standalone wasm with no JS glue, which

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Node interop self-test for rs_ws (protocol/gate1-design.md G1c1), its
-// HTTP GET resource serving (protocol/gate2-design.md G2c1) and its
-// bearer-token authorization (gate2-design.md D13, G2e), against the
+// Node interop self-test for rs_ws, its
+// HTTP GET resource serving and its
+// bearer-token authorization, against the
 // test-only capture/test/rs_ws_echo.cpp binary built by
 // scripts/build-capture.sh. Uses Node's built-in WebSocket and fetch
 // (stable since Node 22; this repo pins Node 24, see mise.toml) rather than
@@ -19,14 +19,14 @@
 // Defaults to capture/build/rs_ws_echo (the path scripts/build-capture.sh
 // prints), or RS_WS_ECHO_BINARY if set.
 //
-// Checks (gate1-design.md G1c1 "Pass criteria", Node interop): the
+// Checks (G1c1 "Pass criteria", Node interop): the
 // subprotocol is negotiated, text sent by this client is echoed back
 // verbatim, a 1 MiB and an 8 MiB binary push (rs_ws_echo's tiny test
 // protocol: a decimal-text request for N bytes) arrive byte-exact against
 // the deterministic pattern byte[i] = i % 256, and the server closes
 // cleanly (code 1000) when this client closes.
 //
-// Also (gate2-design.md G2c1 "Pass criteria", Node interop), while the
+// Also (G2c1 "Pass criteria", Node interop), while the
 // WebSocket connection above is still open: `fetch` of rs_ws_echo's two
 // fixed test resources (1 MiB and 8 MiB, see capture/test/rs_ws_echo.cpp's
 // header for the hash strings and why they are test fixtures, not real
@@ -34,14 +34,14 @@
 // render-stream-2.md "HTTP (live)" specifies; a third, well-formed but
 // unregistered hash gets 404.
 //
-// Also (gate2-design.md D13 "Pass criteria", Node interop), against a
+// Also (Node interop), against a
 // second rs_ws_echo instance started with --token=<value>: a WebSocket
 // upgrade with no Authorization header, or with the wrong bearer token,
 // never receives a 101 (a plain HTTP response instead, status 401); the
 // correct token does upgrade. The same three cases over `fetch` for a
 // resource GET: 401, 401, 200 byte-exact.
 //
-// Also (gate7-design.md G7n "Checks", render-stream/7; test/rs-ws-g7n.ts has the details), against
+// Also (G7n "Checks", render-stream/7; test/rs-ws-g7n.ts has the details), against
 // capture/build/rs_live_host (the production rs_ws listener and rs_live hub around a fixed scene;
 // RS_LIVE_HOST_BINARY overrides): /6 and /7 on one listener at once, each stream validating as its
 // own version; then, on a bearer host with an Origin allowlist, the /7 hello token (`unauthorized`

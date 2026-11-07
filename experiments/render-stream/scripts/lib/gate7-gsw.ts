@@ -1,4 +1,4 @@
-// Gate 7's GSW canvas receiver legs and adapters for gates 0 to 3 (gate7-design.md Q8, Q7, G7a).
+// Gate 7's GSW canvas receiver legs and adapters for gates 0 to 3.
 //
 // A gsw leg is derived from a native file-mode receiver leg of a source run (D21), exactly as a web
 // leg is (lib/gate7-web-legs.ts mapNativeLeg, `kind: "gsw"`), and written to

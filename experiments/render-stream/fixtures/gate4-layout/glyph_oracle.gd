@@ -1,6 +1,5 @@
 extends RefCounted
-## The gate 4 glyph oracle, layout edition (../../protocol/gate4-design.md "Q6c" and "G4c",
-## `render-stream-gate4-glyphs/1`). fixtures/gate4/glyph_oracle.gd extended with line breaks,
+## The gate 4 glyph oracle, layout edition (`render-stream-gate4-glyphs/1`). fixtures/gate4/glyph_oracle.gd extended with line breaks,
 ## autowrap, horizontal and vertical alignment, fill justification, `clip_text`, the shadow and
 ## outline passes with their caches, and subpixel variant indices.
 ##

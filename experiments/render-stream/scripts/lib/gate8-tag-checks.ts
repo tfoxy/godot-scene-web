@@ -1,4 +1,4 @@
-// Gate 8 g8tag's checks (TAG1, protocol/client-extensions-design.md "As built (TAG1)"): item
+// Gate 8 g8tag's checks: item
 // identity at /13 on fixtures/tag-scene, judged on run-gate8.sh run_g8tag's legs (under g8tag/):
 //
 //   tag-validate         every viewer's decoded stream passes rs-core-check and the TypeScript

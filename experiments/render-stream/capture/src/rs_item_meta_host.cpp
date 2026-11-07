@@ -434,7 +434,7 @@ std::string Host::stats_json() const {
   num("max_pass_items", s.max_pass_items);
   num("strings", s.strings);
   if (s.v2_ever) {
-    // ID3: the mouse_filter watch's cost (results/p3/id3.md).
+    // the mouse_filter watch's cost.
     std::vector<std::uint32_t> sorted = s.sweep_frame_ns;
     std::sort(sorted.begin(), sorted.end());
     const auto pct = [&sorted](double q) -> std::uint64_t {

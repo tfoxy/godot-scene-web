@@ -1,4 +1,4 @@
-// Gate 8 policy parsing and the D2 refusals (gate8-design.md D2, D4, D8, D9, Q6; G8w).
+// Gate 8 policy parsing and its refusals.
 //
 // Pure C++17, no engine types, so it is unit-testable without a Godot process (the ctest
 // rs_gate8_policy_test). The environment variables it reads:

@@ -1,4 +1,4 @@
-// TAG2 (client-extensions-design.md §3): the client's extension API. A product module asks for
+// The client's extension API. A product module asks for
 // item identities (Godot's own scene, path, class, script, groups and meta) in the hello, receives
 // them as `item_meta` records, reads the resolved state through `ItemQuery`, and changes what is
 // drawn through a retained override table that the core composes in presentation space.
@@ -51,7 +51,7 @@ export interface ExtensionSession {
    * `beforeDraw` with seq null, as `ExtensionFrame.requestRedraw` does. */
   requestRedraw(): void;
   /**
-   * HIT1: the item's Godot `mouse_filter`, as the extension knows it (the stream does not carry
+   * The item's Godot `mouse_filter`, as the extension knows it (the stream does not carry
    * it), so `ItemQuery.hitTest`, `client.toGame` / `clientToGame` and `pointerTargetResolver`
    * pick the item Godot's GUI picking would, as far as drawn items tell: `"stop"` / `"pass"`
    * (the node takes pointer input), `"ignore"` (an IGNORE Control, or a CanvasItem that is not a
@@ -64,7 +64,7 @@ export interface ExtensionSession {
    */
   mouseFilter(id: number, filter: "stop" | "pass" | "ignore" | null): void;
   /**
-   * ID2: the order the stated filters are read in. `"drawn"` (the default) is the topmost-drawn
+   * The order the stated filters are read in. `"drawn"` (the default) is the topmost-drawn
    * reading above. `"tree"` is Godot's own GUI pick order (`Viewport::gui_find_control`): canvas
    * layers top first, then each root's subtree depth first, last child first and children before
    * their parent, `z_index`, `show_behind_parent` and modulate ignored, a clipping Control's
@@ -72,7 +72,7 @@ export interface ExtensionSession {
    * (a Control's `Rect2(0, size)`, which the stream carries even when the Control draws nothing,
    * so an undrawn hitbox is found); `"ignore"` and unstated items are passed through. With no
    * filter stated either order is the bare topmost-drawn hit test. Per session: a new session
-   * starts at `"drawn"`. Limits: client-extensions-design.md "As built (ID2)".
+   * starts at `"drawn"`.
    */
   pickOrder(order: "tree" | "drawn"): void;
 }
@@ -103,7 +103,7 @@ export interface OverrideValues {
   modulate?: RGBA;
   /** false hides the subtree. */
   visible?: boolean;
-  /** FRZ-HOOK (frz-d.md §5): hold the subtree. `apply` keeps its records and skips its upserts
+  /** Hold the subtree. `apply` keeps its records and skips its upserts
    * and removals until it is cleared. */
   frozen?: boolean;
 }
@@ -132,7 +132,7 @@ export interface OverrideTable {
   setGlobal(id: number, xf: Affine2D): void;
   /** The item's own override, or null. */
   get(id: number): Readonly<Required<OverrideValues>> | null;
-  /** INP1: the composed override transform of the item and its ancestors (`E`, identity when
+  /** The composed override transform of the item and its ancestors (`E`, identity when
    * none): the item draws at `E · query.transform(id)`, and `E⁻¹` maps a drawn point back to
    * the game's. */
   effective(id: number): Affine2D;
@@ -158,7 +158,7 @@ export interface ItemQuery {
   visible(id: number): boolean;
   /** The item's identity, or null. */
   meta(id: number): ItemMeta | null;
-  /** INP1: the topmost item drawn under the presentation-space point, in the last draw order,
+  /** The topmost item drawn under the presentation-space point, in the last draw order,
    * as it is drawn (overrides included); null where only the clear colour shows. The hit is the
    * item whose own commands cover the point, so for a card it is one of the card's children:
    * `parent` climbs to the card. Computed on demand, never per frame. */
@@ -221,15 +221,15 @@ export interface ExtensionCore {
   queryItem(id: number): ArrayLike<number>;
   querySubtreeRect(id: number): ArrayLike<number>;
   queryChildren(id: number): Uint32Array;
-  /** INP1: the topmost drawn item under a presentation-space point, or null. */
+  /** The topmost drawn item under a presentation-space point, or null. */
   hitTest(x: number, y: number): number | null;
-  /** HIT1: the mouse filters, whole (1 STOP/PASS, 2 IGNORE or not a Control). */
+  /** The mouse filters, whole (1 STOP/PASS, 2 IGNORE or not a Control). */
   setHitFilters(ids: Uint32Array, filters: Uint8Array): void;
-  /** ID2: the order the hit test reads the filters in. */
+  /** The order the hit test reads the filters in. */
   setPickOrder(order: "drawn" | "tree"): void;
 }
 
-/** The hello's `item_meta` value (render-stream-13.md, TAG1's parser: exactly these keys). */
+/** The hello's `item_meta` value (render-stream-13.md; the host's parser takes exactly these keys). */
 export interface ItemMetaRequestJson {
   fields: ItemMetaField[];
   groups: string[];
@@ -237,7 +237,7 @@ export interface ItemMetaRequestJson {
 }
 
 export const IDENTITY: Affine2D = [1, 0, 0, 1, 0, 0];
-/** HIT1 filter codes (rs-core `HIT_INPUT` / `HIT_IGNORE`). */
+/** Mouse-filter codes (rs-core `HIT_INPUT` / `HIT_IGNORE`). */
 const HIT_INPUT = 1;
 const HIT_IGNORE = 2;
 const EMPTY: ArrayLike<number> = new Float64Array(0);
@@ -484,7 +484,7 @@ interface RecordJson {
   items: (number | null)[][];
 }
 
-/** The extension list's runtime: one per client (TAG2). Every callback's error is caught: a
+/** The extension list's runtime: one per client. Every callback's error is caught: a
  * module's error is not the stream's. */
 export class ExtensionHost {
   readonly request: ItemMetaRequestJson | null;
@@ -499,11 +499,11 @@ export class ExtensionHost {
   private readonly table: Table;
   readonly query: ItemQuery;
   private listensRemoved: boolean;
-  /** HIT1: the session's mouse filters (1 STOP/PASS, 2 IGNORE), copied into the core lazily
+  /** The session's mouse filters (1 STOP/PASS, 2 IGNORE), copied into the core lazily
    * (before a hit test). */
   private readonly hitFilters = new Map<number, number>();
   private hitFiltersDirty = false;
-  /** ID2: the session's pick order (Godot's tree order when true), copied with the filters. */
+  /** The session's pick order (Godot's tree order when true), copied with the filters. */
   private pickTree = false;
   private pickOrderDirty = false;
   private readonly drawers: RenderStreamExtension[];
@@ -583,7 +583,7 @@ export class ExtensionHost {
     this.pickOrderDirty = this.pickTree;
   }
 
-  /** HIT1: copy changed mouse filters into the core (before any hit test or `toGame`). */
+  /** Copy changed mouse filters into the core (before any hit test or `toGame`). */
   flushHitFilters(): void {
     if (this.core === null) return;
     if (this.pickOrderDirty) {

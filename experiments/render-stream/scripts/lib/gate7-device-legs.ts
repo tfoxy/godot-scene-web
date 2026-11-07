@@ -1,4 +1,4 @@
-// G7u part D (g7u-as-built.md "As built, part D"): the browser daemon's DEVICE mode. Under
+// G7u part D: the browser daemon's DEVICE mode. Under
 // GATE7_LIFECYCLE_ENV=device / GATE7_DEVICE=<id> (run-gate7.sh --live --legs g7-lc --env device
 // --device <id>), `gate7-tool.ts browser-daemon` runs each lifecycle leg on the phone's real Chrome
 // instead of a desktop headless Chromium:

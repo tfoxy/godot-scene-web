@@ -3,8 +3,7 @@
 `canvas_item` `ShaderMaterial`s that read `TIME`, and samplers left unset under each default hint.
 A receiver has to draw `TIME` as the host's shader time, which a render-stream/10 capture carries
 per transaction, and bind Godot 4.5.1's GLES3 default texture for an unset sampler's hint.
-([`../../protocol/gate5_5-design.md`](../../protocol/gate5_5-design.md) "TIME and sampler defaults
-(P3-TM)", [`../../protocol/render-stream-10.md`](../../protocol/render-stream-10.md) "Shader
+([`../../protocol/render-stream-10.md`](../../protocol/render-stream-10.md) "Shader
 time".)
 
 Five steps (0..4, S=1, N=10, settle +7, quit at frame 52). Run the capture host and the rendered
@@ -49,7 +48,7 @@ transparent included, is a distinct opaque colour.
 Steps: 1 sets TP's `tint`, 2 sets DS's texture (a 4x4 (200,100,50)), 3 clears it, 4 changes nothing
 (`TIME` alone moves).
 
-**Variant `stall`** (`RS_FIXTURE_VARIANT=stall`, P3-CK): adds TC and stalls the main loop for 300 ms
+**Variant `stall`** (`RS_FIXTURE_VARIANT=stall`): adds TC and stalls the main loop for 300 ms
 (`OS.delay_msec`) in `_process` at frames 12, 22, 32 and 42, printing `[fixture] stall frame=..
 ms=300 next_frame=.. next_delta=..` with the next iteration's tree delta. Run it in real time (no
 `--fixed-fps`: a fixed rate disables the physics clamp the stall exercises), rendered, with the

@@ -1042,7 +1042,7 @@ fn accept_bench() {
     );
 }
 
-/// TAG1 (client-extensions-design.md §2.4): item-meta.rs13's records are accepted as
+/// item-meta.rs13's records are accepted as
 /// `KIND_ITEM_META` (kind "item_meta"), and a patch held after a `predict-check` failure drops the
 /// delta record before it, so the full record before the resync's full transaction is no orphan.
 #[test]

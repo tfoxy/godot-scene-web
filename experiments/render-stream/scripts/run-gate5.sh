@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Gate 5 runner: drives fixtures/gate5/ through the legs of protocol/gate5-design.md "Q7. Runner,
-# legs, checks, report" for the groups that have landed, then runs check-gate5.ts.
+# Gate 5 runner: drives fixtures/gate5/ through the legs
+# for the groups that have landed, then runs check-gate5.ts.
 #
 #   bash run-gate5.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
@@ -41,8 +41,7 @@
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
 # and WAYLAND_DISPLAY. Every launch strips every inherited GRC_* and RS_* variable and passes only
-# what its leg wants (env.txt records it). Every capture runs with GRC_ROOT_SIZE=enforce-min-size
-# (gate5-design.md Q6).
+# what its leg wants (env.txt records it). Every capture runs with GRC_ROOT_SIZE=enforce-min-size.
 
 set -euo pipefail
 
@@ -70,7 +69,7 @@ BINARY="$HOME/.cache/godot-render-stream/templates/4.5.1-stable/linux_release.x8
 OUT=""
 LEGS_ARG=""
 
-# The capture runs 400 frames so the /proc maps/fd sample has time to run (gate4-design.md G4a
+# The capture runs 400 frames so the /proc maps/fd sample has time to run (G4a
 # amendment); the rendered legs run the fixture's default quit frame (S + N*9 + 11 = 102).
 CAPTURE_QUIT_FRAME=400
 HEADLESS_TIMEOUT_S=180
@@ -83,11 +82,11 @@ G5F_LAST_STEP=9
 G5F_START_FRAME=300
 G5F_STEP_FRAMES=60
 G5F_QUIT_FRAME=$((G5F_START_FRAME + G5F_STEP_FRAMES * G5F_LAST_STEP + 11))
-# <step>:<ms> (gate1-design.md G1d, memory rs-g1d-stall-facts): after step 1's shot, block the
+# <step>:<ms>: after step 1's shot, block the
 # receiver long enough that DF (every-frame geometry) changes for well over 60 frames and step 2's
 # applied change (frame S+2N) lands inside the stall.
 # GRT3: in host frames at 60 fps; legs_stall_spec converts them at the leg's own host rate
-# (exactly these milliseconds at 60 fps; scripts/README.md "Fast frames (GRT3)").
+# (exactly these milliseconds at 60 fps).
 G5F_STALL_STEP=1
 G5F_STALL_FRAMES=120 # 2000 ms
 G5F_STALL_SPEC=""
@@ -363,7 +362,7 @@ run_g5c() {
 	GS_RUN_DIR=""
 }
 
-# Step k's applied frame (S=1, N=10; gate5-design.md Q6).
+# Step k's applied frame (S=1, N=10).
 step_frame5() { echo $((1 + 10 * $1)); }
 
 # A headless sabotage or variant capture on the fixture's own default run (102 frames), both sinks
@@ -456,7 +455,7 @@ run_g5e() {
 	fi
 
 	# Every payload in band (no store): the 400-frame capture again with both thresholds raised
-	# (memory rs-g2b2-texture-wire-facts: the inline capture also raises the max payload size).
+	# (the inline capture also raises the max payload size).
 	echo "run-gate5: g5e: capture-inline (every payload inline, no store)"
 	CAPTURE_FIXTURE_DIR="$MESH_FIXTURE_DIR"
 	CAPTURE_STORE_DIR=none

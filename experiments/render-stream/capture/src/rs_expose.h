@@ -1,4 +1,4 @@
-// CAR2 (protocol/carrier-design.md D10, Q3): LAN exposure policy for the live listeners, pure
+// LAN exposure policy for the live listeners, pure
 // so the entry point, the test host and the unit test share one rule.
 //
 //   GRC_LIVE_EXPOSE      loopback (default) | lan; anything else is `expose-invalid`

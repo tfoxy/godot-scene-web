@@ -1,11 +1,9 @@
 # render-stream/12 wire format
 
-Status: **specified and built at PM5** (2026-10-28): the capture emits /12; the C++ encoder, the
+Status: frozen. The capture emits /12; the C++ encoder, the
 TypeScript library and rs-core encode, decode, validate and resolve it, and match `golden-12/`. The receivers accept
-/12 and type every particle draw as undrawn until PM6. The governing design is
-[particles-multimesh-design.md](particles-multimesh-design.md) ("/12: GPU particles", "Capture
-policy", "Headless (dummy) hosts"); "As built (PM5)" below records where the build refined it.
-/12 builds on render-stream/11 ([render-stream-11.md](render-stream-11.md)). Like /8 to /11 it is
+/12 and simulate its emitters ("As built (PM6a)", "As built (PM6b)"). "As built (PM5)" below
+records where the build refined the design. /12 builds on render-stream/11 ([render-stream-11.md](render-stream-11.md)). Like /8 to /11 it is
 **opt-in**: nothing below /12 changes, and no default moves ("Opt-in and version policy").
 
 ## Why
@@ -229,7 +227,7 @@ A shader entry's `builtin` may now also be:
   `ParticleProcessMaterial` whose RID is the emitter's material. The generated shader is shared
   per key (`shader_map`), so every material on it has the same key.
 - **Effect.** A `particles`-mode shader with this builtin is `ok`: `shader-mode` does not apply,
-  and `uses` still lists `time`. Like `canvas_item_material` (D4), the shader policy never withholds
+  and `uses` still lists `time`. Like `canvas_item_material`, the shader policy never withholds
   or excludes its code. A `particles`-mode shader the capture could not key (no node map, a
   hand-written particles shader, a material class other than `ParticleProcessMaterial`) stays
   `unsupported`/`shader-mode`, as below /12.
@@ -300,7 +298,7 @@ unobserved. The calibrator version does not move, so every /2–/11 session reco
 
 ## Headless shims (opt-in until HSD)
 
-Both follow canvas-texture-headless.md's fence: armed only on a `headless` display server (the
+Both follow the headless-only fence: armed only on a `headless` display server (the
 capture refuses to arm otherwise), engine-free modules a ctest drives. Off by default before HSD;
 see "Headless defaults (HSD)" for the default since.
 
@@ -332,7 +330,7 @@ seat's environment did not ask for them. On STS2 that streamed no spine at all: 
 combat, and a black character-select background (the room is one big spine). Every spine draws
 an `add_mesh` through a `CanvasTexture`. On the dummy every `CanvasTexture` is `RID()`
 (`canvas_texture_allocate`, dummy `texture_storage.h:54`), so every such draw was refused
-`canvas-texture-headless` (D11 and the G2d rule). The C3 legs never saw it, because they capture a
+`canvas-texture-headless`. The C3 legs never saw it, because they capture a
 GPU-rendered game. Nothing else about a headless seat was missing for spines: the dummy keeps
 mesh surfaces (`mesh_storage.h` `mesh_add_surface`), the capture takes every surface and region
 update from the hook arguments, not from storage, and spine-godot writes its own vertex buffers.
@@ -518,8 +516,7 @@ Sabotages (`session.sabotage.kind`, legal only at /12):
 
 ## As built (PM5): decisions
 
-PM5 built /12 in the capture, the three codecs, rs-core-capi, the native receiver and GSW
-([results/p3/pm5.md](../results/p3/pm5.md)). Where the sections above left a choice open, or the
+PM5 built /12 in the capture, the three codecs, rs-core-capi, the native receiver and GSW. Where the sections above left a choice open, or the
 build refined them, these rules are now the wire and the capture. They are frozen with /12.
 
 1. **The goldens.** `golden-12/make_golden.py`'s docstring is the exact list of states 22–26 and
@@ -541,7 +538,7 @@ build refined them, these rules are now the wire and the capture. They are froze
    `particles-entry`'s trail rule.
 5. **The `param-type` refusal was an `Array`.** STS2's engine build (MegaDot 4.5.1.m.12) passes
    two process-material parameters, `particle_flags` and `use_tex_param`, as a plain `Array`
-   (330 materials at menu-1 receive both, matching p3-pm.md's 330). Stock 4.5.1 never does. The
+   (330 materials at menu-1 receive both). Stock 4.5.1 never does. The
    capture's decoder still logs an `Array` as `"array"`/`param-type`, as before, and at /12 only it
    also carries the packed array Godot converts it to for a uniform array: `int32` for bool and
    int elements (in range), `float64`, `vector2/3/4` or `color`. An empty or mixed `Array` stays
@@ -594,8 +591,7 @@ build refined them, these rules are now the wire and the capture. They are froze
 
 ## As built (PM6a): decisions
 
-PM6a makes the native receiver and the web export replay /12 emitters
-([results/p3/pm6a.md](../results/p3/pm6a.md)). Nothing changes on the wire, in rs-core or in the
+PM6a makes the native receiver and the web export replay /12 emitters. Nothing changes on the wire, in rs-core or in the
 capture. The capi and the C++ shim are shared, so the web export (the same side module for wasm)
 needed no code of its own. GSW is PM6b's.
 
@@ -674,8 +670,7 @@ needed no code of its own. GSW is PM6b's.
 
 ## As built (PM6b): decisions
 
-PM6b makes GSW draw /12 emitters ([results/p3/pm6b.md](../results/p3/pm6b.md)): the approximate
-tier of "What exact means here" in particles-multimesh-design.md. Nothing changes on the wire, in
+PM6b makes GSW draw /12 emitters at the approximate (emitter-exact) tier of "Why". Nothing changes on the wire, in
 the capture or in the native and web receivers.
 
 1. **Where the simulation runs.** In the shell, in `packages/effects` (`GodotGpuEmitter`,
@@ -738,8 +733,7 @@ the capture or in the native and web receivers.
 
 ## As built (PM7): decisions
 
-PM7 adopts the GPU emitters that exist before a late arm
-([results/p3/pm7.md](../results/p3/pm7.md)). Before it, every draw of such an emitter was
+PM7 adopts the GPU emitters that exist before a late arm. Before it, every draw of such an emitter was
 `unknown-particles` (PM5 rule 9), so an STS2 arm after the main menu existed could not show the
 menu's stars and fog. The capture, the two validators and the hook log change; the receivers
 (native, web and GSW) do not: none reads `origin`.
@@ -795,7 +789,7 @@ menu's stars and fog. The capture, the two validators and the hook log change; t
    `unknown-material` (`ppm_refused_code`). An engine build whose `ParticleProcessMaterial`
    assigns its shader outside `get_rid()` names none to the temporary (`ppm_refused_no_shader`):
    its emitters are adopted `unsupported`/`unknown-material`, as before PM7 they were
-   `unknown-particles` (results/p3/pm7.md: MegaDot 4.5.1.m.12 does this). The builtin is then
+   `unknown-particles` (MegaDot 4.5.1.m.12 does this). The builtin is then
    keyed at the frame boundary as for any process shader (PM5 rule 6).
 7. **Evidence.** `result.json` `stream.gate8.particles.adoption` (under GRC_ADOPT=arm): emitters,
    the refusals by reason (the process material's too), meshes, process materials, their shaders
@@ -821,8 +815,7 @@ menu's stars and fog. The capture, the two validators and the hook log change; t
 ## As built (PFB): decisions
 
 PFB makes the gl_compatibility-style receivers (the native receiver on opengl3, the web export on
-WebGL 2, and GSW) draw a RendererRD host's particle colours as the host does
-([results/p3/pfb.md](../results/p3/pfb.md)). Before it, GSW drew STS2's menu fog about four times
+WebGL 2, and GSW) draw a RendererRD host's particle colours as the host does. Before it, GSW drew STS2's menu fog about four times
 too bright (menu 31.4 to 23.2 dB), and so did a GLES3 receiver made to compile the shader.
 
 1. **The cause is the host's backend, not the simulation.** RendererRD (`forward_plus`, `mobile`)
@@ -872,7 +865,7 @@ too bright (menu 31.4 to 23.2 dB), and so did a GLES3 receiver made to compile t
 
 ## As built (PSE): decisions
 
-PSE closes the two particle-shader gaps PM7 and PFB left ([results/p3/pse.md](../results/p3/pse.md)):
+PSE closes the two particle-shader gaps PM7 and PFB left:
 the native and web receivers could not compile a RendererRD host's process shader, and GSW keyed
 every material on a shared process shader by the first one. Nothing changes on the wire or in the
 capture.
@@ -933,8 +926,7 @@ capture.
 
 ## As built (FRZ-P): decisions
 
-FRZ-P negotiates and verifies the GPU-particle freeze ([results/p3/frz-p.md](../results/p3/frz-p.md),
-`frz-d.md` §2/§6). Nothing changes on the wire, in the codecs, or in the receivers. The capture
+FRZ-P negotiates and verifies the GPU-particle freeze. Nothing changes on the wire, in the codecs, or in the receivers. The capture
 gains one host grant and two /12 sabotage kinds.
 
 1. **`GRC_FREEZE_PARTICLES` is a host grant, not a wire feature.** Read once at arm: empty/`off`/`0`

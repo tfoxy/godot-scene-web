@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the native receiver's GDExtension adapter over the shared Rust core (gate7-design.md G7xn,
-# Q14e, D34): rs-core-capi (a Rust staticlib on the stable toolchain, every crate from the local
+# Build the native receiver's GDExtension adapter over the shared Rust core:
+# rs-core-capi (a Rust staticlib on the stable toolchain, every crate from the local
 # registry) linked with the C++ shim receiver/ext/rs_core_ext.cpp (raw gdextension_interface.h,
 # the capture's vendored copy; no godot-cpp) into receiver/ext/build/librs_core_ext.so, the
 # library receiver/ext/rs_core.gdextension names. Also builds rs-core-capi-check, the

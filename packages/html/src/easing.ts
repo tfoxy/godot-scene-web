@@ -16,10 +16,8 @@ export const ELASTIC_OUT_LINEAR =
 // Penner equations, and each one has a cubic-bezier fit that is accurate to ~1-2% of the travel distance. They used
 // to fall through to the generic `ease-in`/`ease-out`/`ease-in-out` curves, which is NOT a small error: Godot's
 // QuintOut has covered 97% of the distance at the half-way point where CSS `ease-out` has covered 68% — a max
-// deviation of 0.388 (measured), i.e. the browser visibly lags the game through the whole second half of every such
-// tween. STS2's shop-inventory open slide (`SlotsContainer`, position:y, 700ms, Quint/Out — captured live in
-// couch-coop's `.sts2/bench/audit-shop-open.ndjson`) is the reported case: the panel looked ~2× slower to arrive in
-// the mirror than in the game. Max |error| against the exact Godot curve, sampled at 201 points:
+// deviation of 0.388, i.e. the browser visibly lags the game through the whole second half of every such tween.
+// Max |error| against the exact Godot curve, sampled at 201 points:
 //   sine   in/out 0.0076  inout 0.0020        quad  in/out 0.0019  inout 0.0053
 //   cubic  in/out 0.0028  inout 0.0095        quart in/out 0.0056  inout 0.0217
 //   quint  in/out 0.0113  inout 0.0322        circ  in/out 0.0018  inout 0.0387

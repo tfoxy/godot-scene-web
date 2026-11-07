@@ -2,7 +2,7 @@
 """Write fixtures/gate6-scene/expected.json (render-stream-gate6-expected/1).
 
 Every number below is derived from the fixture's own parameters (scene_builder.gd, gate6_scene.gd)
-and the engine's drawing code as read from the source (protocol/gate6-design.md Q1, Q6), written
+and the engine's drawing code as read from the source, written
 down as code. Nothing here runs or reads the engine: the rendered reference, the scene oracle and
 the capture's hook log have to agree with it, and a disagreement is a finding to explain from the
 source, never a number to copy. The three measured font metrics it needs (MEASURED_*) are named as
@@ -637,7 +637,7 @@ def hook_census():
             {"frame": applied(3), "op": "texture_2d_update", "texture": "TEXA", "hash": TEXTURE_HASHES["TEXA1"]},
             {"frame": applied(9), "op": "free", "texture": "TEXA", "hash": None},
         ],
-        # the default theme's ColorPicker hue strip (memory rs-g2a-texture-census-facts), and font
+        # the default theme's ColorPicker hue strip, and font
         # atlas pages: LA8 (grayscale antialiasing), any number, any frame
         "engine_textures": [{"frame": 1, "op": "texture_2d_create", "format": "RGBA8", "width": 800, "height": 6}],
         "atlas_format": "LA8",

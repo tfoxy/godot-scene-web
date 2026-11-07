@@ -1,7 +1,6 @@
 // D8 decode: a material parameter's or instance parameter's Variant value, and a parameter
 // name's StringName, read through the GDExtension interface alone -- never assumed to be any
 // particular C++ class, and never calling into the RenderingServer or taking an engine lock
-// (gate5_5-design.md Q2 "Decoding", D8 "Parameter values on the wire").
 //
 // Each decode is read-only: the Variant/StringName/String argument is the engine's own, owned by
 // the caller for the hook's duration, and nothing here holds a reference to it afterwards.

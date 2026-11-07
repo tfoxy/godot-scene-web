@@ -1,6 +1,5 @@
 // Gate 2 group g2f (OPT-IN): the headless CanvasTexture shim experiment
-// (protocol/canvas-texture-headless.md "Recommendation and next experiment" (a), and its
-// "Experiment (a) result"; GRC_HEADLESS_CANVAS_TEXTURE=synthesize). Its legs (run-gate2.sh
+// (GRC_HEADLESS_CANVAS_TEXTURE=synthesize). Its legs (run-gate2.sh
 // "run_g2f"), every one its own process:
 //   reference-canvas                  rendered fixture, `canvas` variant, extension absent
 //   shim-headless                     headless capture (strace), `canvas`, the opt-in, + a

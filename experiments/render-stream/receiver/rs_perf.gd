@@ -1,6 +1,6 @@
 class_name RsPerf
 extends RefCounted
-## Receiver perf instrumentation (gate6-design.md Q3d, Q5 "Perf (G6r)"), gated by
+## Receiver perf instrumentation, gated by
 ## RS_RECEIVER_PERF_OUT: writes `render-stream-receiver-perf/1` -- histograms for `decode_us`
 ## (RsRustApplier.accept: the core's decode and patch resolution, combined; `resolve_us` is not
 ## split out), `apply_us` (RsRustApplier.apply_state: apply and upload, combined; `upload_us` is likewise not split, though upload
@@ -13,14 +13,14 @@ extends RefCounted
 ## vocabulary at _viewport_report.size_check); and a one-line-per-second timeline carrying RSS
 ## (read directly from /proc/self/statm through FileAccess, D9: process RSS, never an engine
 ## counter), RenderingServer.get_rendering_info's texture/buffer/video memory, the disk cache's
-## entry count and bytes (RsResourceCache.entries()/bytes()) and, since G6s (gate6-design.md Q7e
-## "residency-bounded"), the memory cache's entry count and bytes (RsResourceCache.
+## entry count and bytes() (RsResourceCache.entries()/bytes) and,
+## the memory cache's entry count and bytes (RsResourceCache.
 ## memory_entries()/memory_bytes()) and live RIDs per kind (RsRustApplier.resident_items()/
 ## resident_textures()/resident_meshes()/resident_shaders()/resident_materials(), all pre-existing
 ## read accessors no increment needed to add).
 ##
-## G6c adds, still only with RS_RECEIVER_PERF_OUT: per-frame `gpu_render_us`/`cpu_render_us`
-## histograms (the measured render time sampled every frame, for Q7d's `separation`), `frames`
+## Also adds, still only with RS_RECEIVER_PERF_OUT: per-frame `gpu_render_us`/`cpu_render_us`
+## histograms (the measured render time sampled every frame, for `separation`), `frames`
 ## (frames drawn) on every timeline line (the receiver frame rate of any window), and the video
 ## adapter and rendering method (render-stream-report/1's provenance.receiver).
 ##
@@ -111,9 +111,9 @@ var decode_us := Histogram.new()
 var apply_us := Histogram.new()
 var fetch_us := Histogram.new()
 var frame_interval_us := Histogram.new()
-## G6c (gate6-design.md Q7d `separation`): the viewport's measured render time, sampled once per
+## The viewport's measured render time, sampled once per
 ## frame (microseconds of RenderingServer.viewport_get_measured_render_time_gpu/_cpu, which read
-## the GL timer queries two frames late, g3u.cpp:324-358); rendered receivers only, frames whose
+## the GL timer queries two frames late); rendered receivers only, frames whose
 ## value is still 0 (nothing measured yet) skipped.
 var gpu_render_us := Histogram.new()
 var cpu_render_us := Histogram.new()
@@ -191,7 +191,7 @@ func render_time(viewport_rid: RID, headless: bool, gpu: bool) -> Dictionary:
 		return {"status": "skipped-headless", "value": null}
 	var ms: float = (RenderingServer.viewport_get_measured_render_time_gpu(viewport_rid) if gpu
 		else RenderingServer.viewport_get_measured_render_time_cpu(viewport_rid))
-	# G7e (gate7-design.md Q4 "rs_perf.gd on the web"): WebGL 2 reports whatever the engine
+	# WebGL 2 reports whatever the engine
 	# measures there; a nonzero value is `measured`, zero is `unavailable`, never a guessed 0 ms.
 	if RsConfig.is_web() and ms <= 0.0:
 		return {"status": "unavailable", "value": null}
@@ -220,7 +220,7 @@ static func read_rss_bytes() -> int:
 ## memory_bytes()) default to -1 (recorded as null) for a caller that does not pass them, so an
 ## older call site keeps today's "unavailable" shape rather than silently reporting 0.
 ## `live_rids` (G6s, RsRustApplier.resident_items()/resident_textures()/resident_meshes()/
-## resident_shaders()/resident_materials(), gate6-design.md Q7e "residency-bounded"): null for a
+## resident_shaders()/resident_materials()): null for a
 ## caller with no applier yet (before the session record).
 func sample_timeline(cache_entries_disk: int, cache_bytes_disk: int, cache_entries_memory: int = -1, cache_bytes_memory: int = -1, live_rids: Variant = null) -> void:
 	var elapsed_s: int = (Time.get_ticks_msec() - _start_ms) / 1000
@@ -232,7 +232,7 @@ func sample_timeline(cache_entries_disk: int, cache_bytes_disk: int, cache_entri
 		"t_us": Time.get_ticks_usec(),
 		# G6c: frames drawn so far (D9's receiver frame rate counts frame_post_draw).
 		"frames": Engine.get_frames_drawn(),
-		# G7e: /proc is absent on the web (gate7-design.md Q1a "Files"), so RSS is null there and
+		# /proc is absent on the web, so RSS is null there and
 		# D16 measures the browser's processes from outside instead.
 		"rss_bytes": null if RsConfig.is_web() else read_rss_bytes(),
 		"texture_mem_bytes": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TEXTURE_MEM_USED),

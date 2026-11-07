@@ -1,4 +1,4 @@
-; CAR6 consumer-carrier fixture (../../protocol/carrier-design.md "Writing a carrier"): a GDScript
+; CAR6 consumer-carrier fixture: a GDScript
 ; consumer carrier, through the capture's RenderStreamCarrier class, carries one live session of a
 ; small animated scene; gate 8's g8l/ext leg compares its bytes with the hub's tap. See README.md.
 

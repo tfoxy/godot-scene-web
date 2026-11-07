@@ -1,7 +1,7 @@
 // Unit tests for render-stream/3 (src/rs2_codec.cpp's Session::version == V3 path, G4e1).
 //
 // render-stream/3 is implemented as a protocol-version switch inside the SAME rs2_codec/rs2_diff
-// modules /2 uses (gate4-design.md G4e1: "Renaming files is not part of this contract"), so this
+// modules /2 uses, so this
 // file does not duplicate rs2_codec_test.cpp's framing checks -- it only proves the /3 delta:
 // Session::version == V3 selects the GRS3 magic and the "render-stream/3" protocol string, and
 // CommandKind::AddMsdfTextureRectRegion encodes correctly, by matching protocol/golden-3/

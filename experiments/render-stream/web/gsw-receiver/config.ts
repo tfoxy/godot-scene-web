@@ -1,4 +1,4 @@
-// GSW receiver configuration (gate7-design.md Q5, G7a): the native receiver's RS_RECEIVER_* names,
+// GSW receiver configuration: the native receiver's RS_RECEIVER_* names,
 // read from the page URL. The harness maps a native leg's env.txt to this page exactly as it maps
 // one for the web export (scripts/lib/gate7-web-legs.ts mapNativeLeg): `?env=<base64url JSON>` of
 // `{env: {RS_RECEIVER_*: value}, canvas: [w, h], sabotage: "css-opacity" | null}`. Paths are
@@ -41,12 +41,12 @@ export interface ReceiverConfig {
   evidenceUrl: string;
   /** The harness's own sabotage (Q7 `css-opacity`): the shell's, not the receiver's. */
   shellSabotage: string | null;
-  /** G8kp (texture-delivery-design.md D3): RS_RECEIVER_TEXTURE_ENCODINGS (null: the module's
+  /** RS_RECEIVER_TEXTURE_ENCODINGS (null: the module's
    * default `block,decoded`) and RS_RECEIVER_GPU_FORMAT_MASK (families left out of gpu_formats);
    * the module checks both against render-stream-9.md's grammar. */
   textureEncodings: string | null;
   gpuFormatMask: string | null;
-  /** G8kb (texture-delivery-design.md D6, Q6 "GSW"): RS_RECEIVER_VARIANT_POLICY (`keep` or
+  /** RS_RECEIVER_VARIANT_POLICY (`keep` or
    * `upgrade`; null: the module's default, upgrade on a context with neither bptc nor s3tc),
    * RS_RECEIVER_TRANSCODE_LOG=1 (each transcode's blocks SHA-256 in applied.json `transcodes[]`,
    * as the native receiver logs them) and the test fault RS_RECEIVER_TRANSCODE_FAULT=fail (every
@@ -113,7 +113,7 @@ export interface LiveConfig {
   maxFps: number;
   /** The bearer token from the fragment, or null. Never logged or written. */
   token: string | null;
-  /** RS_RECEIVER_DRAW_REPEAT (G7v, gate7-design.md Q13d `dev-gpu-headroom`): each drawing callback
+  /** RS_RECEIVER_DRAW_REPEAT: each drawing callback
    * draws the frame this many times into the stage target, every draw but the last overwritten
    * (default 1). The headroom leg's GPU load with no GPU counter. */
   drawRepeat: number;

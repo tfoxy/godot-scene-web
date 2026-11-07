@@ -1,7 +1,7 @@
 // A fixed-size log-linear histogram for non-negative integer samples (microsecond latencies and
-// similar; gate6-design.md Q3d "Instrumentation and the evidence switch"): "log-linear
+// similar): log-linear
 // histograms (16 sub-buckets per octave, at most 6.25% relative error, 400 fixed counters each,
-// so nothing grows)".
+// so nothing grows).
 //
 // An octave k covers the value range [2^k, 2^(k+1)); its 16 sub-buckets are equal-width
 // (2^k / 16), so a value's bucket identifies it to within 1/16 = 6.25% of its own magnitude (the

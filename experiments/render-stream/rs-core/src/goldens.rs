@@ -1049,7 +1049,7 @@ pub fn item_meta_dump(data: &[u8], opts: Options) -> Result<J, Error> {
 }
 
 impl Suite<'_> {
-    /// TAG1 (client-extensions-design.md §2.4): golden-13's `item_meta_valid` lanes validate
+    /// golden-13's `item_meta_valid` lanes validate
     /// clean under their ask and as a recording, dump to their `dump`, and transcode to their
     /// `rs12` (the item_meta records dropped).
     fn run_item_meta(&mut self, index: &J) {

@@ -1,6 +1,6 @@
 {
   "schema": "render-stream-gate7-devices/1",
-  "comment": "gate7-design.md Q13a/Q13b device table (G7d). browser-harness.ts --env device --device <id> resolves the id to its serial here and passes it to perf-harness selectDevice (D24); device-provenance checks the model, GPU and ANGLE rule below (Q13b). The serials are adb's USB serial numbers of the two test phones, required because both may be attached at once. Facts: g31 from read-only adb queries on 2026-10-15; g86 from packages/perf-harness/baselines/moto-g86-5g-effects-webgpu-runtime.json env.device and docs/perf-harness.md. Null means not measured (the g86 has not been queried over adb by gate 7).",
+  "comment": "Device table for the browser harness. browser-harness.ts --env device --device <id> resolves the id to an entry here and passes its serial to perf-harness selectDevice; device-provenance checks the model, GPU and ANGLE rule below. The serial fields are placeholders: set ANDROID_SERIAL to the attached phone's adb serial for the selected device (required when more than one phone is attached). Null means not recorded.",
   "devices": {
     "g31": {
       "label": "moto g31 (baseline)",

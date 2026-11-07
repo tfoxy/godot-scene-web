@@ -10,29 +10,24 @@
 //
 // A tap on the RenderingServer hooks that keeps the canvas state a receiver
 // needs to rebuild the frame: canvases, canvas items, their parenting and
-// append order, per-item state and draw commands, and (G2b2) the texture
+// append order, per-item state and draw commands, and the texture
 // table: every texture the capture saw created, with its wire id, version,
-// status and the payload bytes the hook copied (gate2-design.md Q3 "Texture
-// mirror"). The frame callback copies it into an rs::Captured (rs_captured.h:
+// status and the payload bytes the hook copied.
+// The frame callback copies it into an rs::Captured (rs_captured.h:
 // an rs2::Snapshot plus the payloads it names) under the lock and encodes it
-// outside. Behaviour is specified in protocol/gate0-design.md "Q1" (root
-// adoption, unknown-RID policy, viewport hooks) and "Q3" (operations, ids,
-// snapshot ordering, omit-update sabotage), and in protocol/gate1-design.md
-// "Q1" (root geometry), "Q2c" (draw order), "Q4" (mutation epoch) and "G1b2"
-// (draw-index ties, omit-op), with the wire rules of render-stream-1.md
-// ("Invariant 9", "Unsupported reasons").
+// outside. The wire rules are in render-stream-1.md ("Invariant 9", "Unsupported reasons").
 //
 // The mirror is engine-free: RIDs are plain uint64 values and every value is
 // already in wire form (Xform/Color4/Rect4), so the unit test drives it without
 // an engine. Engine RIDs never leave this module; snapshots carry wire ids.
 //
-// Canvas textures (gate2-design.md Q3, G2d): `canvas_texture_create` is a
+// Canvas textures: `canvas_texture_create` is a
 // texture-table entry like any other (same id counter), kind Canvas, with its
 // own diffuse/filter/repeat instead of a payload. A command naming a canvas
 // texture resolves exactly like one naming an image (texture_ref): the engine
 // never distinguishes them at the draw call.
 //
-// Texture identity follows gate2-design.md D2 exactly as the texture hook log
+// Texture identity follows exactly as the texture hook log
 // (rs_resource_log.h) does, independently: one per-session id counter shared
 // by images and placeholders, never reused; version 1 at creation, +1 per
 // content or kind change. The checker compares the two
@@ -49,11 +44,11 @@
 // `frame` arguments are the hook stamp (hooks.cpp current_frame()): the
 // 1-based main-loop iteration the call arrived in.
 //
-// `z_relative` and `behind` (gate1-design.md G1e) are mutated by
+// `z_relative` and `behind` are mutated by
 // canvas_item_set_z_as_relative_to_parent and canvas_item_set_draw_behind_parent;
 // a new item still starts at the RenderingServer defaults (true, false).
 //
-// Unknown RIDs (protocol/unknown-item-skip.md): under the default policy (Strict) a canvas or
+// Unknown RIDs: under the default policy (Strict) a canvas or
 // item RID the mirror never saw created is gate 0's sticky `pre-existing-object` failure. Under
 // Skip (GRC_UNKNOWN_ITEM=skip) the call is counted and not applied, the RID is remembered as
 // unknown until it is freed, and every known item whose parent chain reaches an unknown RID is
@@ -108,12 +103,12 @@ struct MirrorStats {
   std::uint64_t meshes_dynamic = 0;        // dynamic mesh entries now
   std::uint64_t mesh_promotions = 0;       // meshes made dynamic so far
   std::uint64_t mesh_content_changes = 0;  // content changes counted (hook calls)
-  // HC2 (host-cost-design.md D1): /11 content_version digests computed (an item's list really
+  // /11 content_version digests computed (an item's list really
   // changed, or its first publication) and re-records whose list matched the published one (no
   // digest; the published list is kept).
   std::uint64_t cv_digests = 0;
   std::uint64_t cv_rerecords_kept = 0;
-  // HC3 (host-cost-design.md D2, lazy mesh surfaces): SHA-256s the mirror computed over mesh
+  // Lazy mesh surfaces: SHA-256s the mirror computed over mesh
   // surface payloads (a hash is computed only when something reads it, then kept until the bytes
   // change), the share of them over surfaces of dynamic meshes (0 on a /11 host whose hook log is
   // off and that has no viewer below /11), and the payload copies region updates made (one per
@@ -135,13 +130,13 @@ struct MirrorStats {
   std::uint64_t live_materials = 0;
   std::uint64_t shader_payload_bytes = 0;  // distinct GRP1 payload bytes the table holds now
   std::uint64_t material_unknown = 0;      // a shader/material tap naming a RID the table lacks
-  // protocol/unknown-item-skip.md (Skip only; all zero under Strict).
+  //  (Skip only; all zero under Strict).
   std::uint64_t unknown_calls = 0;       // hook calls that named an unknown canvas/item RID
   std::uint64_t unknown_rids_named = 0;  // distinct unknown RIDs ever named (freed ones included)
   std::uint64_t unknown_rids = 0;        // unknown RIDs named and not freed, now
   std::uint64_t withheld_items = 0;      // known items withheld from publication, now
   std::uint64_t rekeyed_items = 0;       // published items given a fresh id on entering a withheld subtree
-  // HC4a (host-cost-design.md D1, persistent item and canvas tables): items a snapshot visited
+  // Persistent item and canvas tables: items a snapshot visited
   // because something marked them (dirty, gone, or entering or leaving a withheld subtree), the
   // entries it replaced because their published state really changed, the snapshots that rebuilt
   // every item (the first, or a whole-table change), those whose derived item-level entries were
@@ -161,7 +156,7 @@ struct MirrorStats {
   std::uint64_t hc_shadow_mismatches = 0;
 };
 
-// What a mesh hook hands the mirror for one surface (G5e; gate5-design.md Q3a, Q3b): the hook
+// What a mesh hook hands the mirror for one surface: the hook
 // log's description of it (rs_resource_log.h: status, reason, primitive, format, counts, hash)
 // and, when its status is "ok", the render-stream-mesh/1 payload the hook encoded from the whole
 // SurfaceData (or, after a region update, from its own retained buffers with the update applied).
@@ -170,7 +165,7 @@ struct MeshSurfaceInput {
   PayloadPtr bytes;
 };
 
-// HC3 (host-cost-design.md D2): one applied region update as the hook hands it to the mirror --
+// one applied region update as the hook hands it to the mirror --
 // `size` bytes at `data`, to be written at byte `offset` of the surface's GRM1 payload (the hook
 // adds the header, the meta and the geometry block to the buffer's own offset). The mirror applies
 // it to its own copy of the payload; nothing is re-encoded or hashed at the hook.
@@ -180,7 +175,7 @@ struct MeshRegionWrite {
   std::size_t size = 0;
 };
 
-// What a shader-code hook hands the mirror (G55d; gate5_5-design.md Q3a, Q3b): the hook log's
+// What a shader-code hook hands the mirror: the hook log's
 // classification of the code (rs_resource_log.h ShaderCopy: status, reason, mode, uses, builtin,
 // hash, payload_bytes) and, whenever the hook built one (copy.hash non-empty), the whole GRP1
 // payload, shared like a texture's.
@@ -209,7 +204,7 @@ class Mirror {
   void fail_root_query(const std::string &detail);
 
   // Sticky capture failure `root-size-enforce-failed` with `detail`
-  // (gate1-design.md Q1 "Policy": enforce-min-size could not make the host
+  // (enforce-min-size could not make the host
   // size match).
   void fail_root_size_enforce(const std::string &detail);
 
@@ -220,12 +215,12 @@ class Mirror {
   // until reset().
   void set_degenerate_host_size(bool on);
 
-  // protocol/unknown-item-skip.md: Strict (the reset() default) or Skip. Set once at arm, before
+  // Strict (the reset() default) or Skip. Set once at arm, before
   // the first hook call is expected; survives until reset(). Under Skip every snapshot carries
   // Snapshot::unknown_items (present, zeros included).
   void set_unknown_item_policy(rs2::UnknownItemPolicy policy);
 
-  // A headless host (G2d; protocol/canvas-texture-headless.md): the dummy storage's
+  // A headless host: the dummy storage's
   // canvas_texture_allocate() returns RID() (servers/rendering/dummy/storage/texture_storage.h:54),
   // so a CanvasTexture's draws name RID(). While on, a texture-rect draw naming RID() becomes an
   // `unsupported` command with reason `canvas-texture-headless` instead of `tex: null` (which would
@@ -237,18 +232,18 @@ class Mirror {
   // is). 0 disables it.
   void set_drop_frame(std::uint64_t frame);
 
-  // omit-op sabotage (gate1-design.md G1b2): every tap whose RenderingServer
+  // omit-op sabotage: every tap whose RenderingServer
   // method name equals `op` and whose frame is >= `from_frame` is not applied,
   // identity ops included (`free`, `canvas_item_create`, `canvas_create`).
   // An empty `op` disables it. The names are those listed on each tap below.
   void set_omit_op(const std::string &op, std::uint64_t from_frame);
 
-  // perturb-glyph sabotage (gate4-design.md Q3, render-stream-3.md "Sabotage"): from
+  // perturb-glyph sabotage (render-stream-3.md "Sabotage"): from
   // `from_frame` on, every add_texture_rect_region and add_msdf_texture_rect_region the mirror
   // records gets +0.25 on rect.x; the engine still gets the true arguments. 0 disables it.
   void set_perturb_glyph(std::uint64_t from_frame);
 
-  // Mutation epoch (gate1-design.md Q4 "Per-connection state"): advanced by
+  // Mutation epoch: advanced by
   // every tap call that passes the sabotage checks (not by dropped ones;
   // also not by a free() of a RID the mirror does not track, which changes
   // nothing), and by every session-level setter above. "Changed since a
@@ -268,7 +263,7 @@ class Mirror {
   void canvas_item_create(std::uint64_t rid, std::uint64_t frame);
   void free_rid(std::uint64_t rid, std::uint64_t frame);
 
-  // G8a (gate8-design.md D3-D5): the arm-time adoption walk's entry points. Each registers an
+  // the arm-time adoption walk's entry points. Each registers an
   // object that already existed when the capture armed, exactly as canvas_create /
   // canvas_item_create would, but with origin `adopted`; its state then arrives through the same
   // setters the hooks call (rs_adopt.cpp), so adoption declares exactly what the hooks would have.
@@ -295,19 +290,19 @@ class Mirror {
   void set_visibility_layer(std::uint64_t item, std::uint32_t layer, std::uint64_t frame);
   void set_z_index(std::uint64_t item, std::int32_t z, std::uint64_t frame);
   void set_draw_index(std::uint64_t item, std::int32_t index, std::uint64_t frame);
-  // gate1-design.md G1e: canvas_item_set_z_as_relative_to_parent / _draw_behind_parent.
+  // canvas_item_set_z_as_relative_to_parent / _draw_behind_parent.
   void set_z_relative(std::uint64_t item, bool relative, std::uint64_t frame);
   void set_behind(std::uint64_t item, bool behind, std::uint64_t frame);
   // LAR3: true when the call left the item naming a material RID the table does not know (the
   // hooks then adopt a registered one and repeat the call).
   bool set_material(std::uint64_t item, std::uint64_t material, std::uint64_t frame);
-  // canvas_item_attach_skeleton (gate5-design.md D2, D16, calibrator 7): a non-null skeleton is
+  // canvas_item_attach_skeleton (calibrator 7): a non-null skeleton is
   // reported in Snapshot::unsupported only, as a non-null material is -- its own op name,
   // {"op":"canvas_item_attach_skeleton","reason":"unsupported-state"} -- never content_version.
   void attach_skeleton(std::uint64_t item, std::uint64_t skeleton, std::uint64_t frame);
 
   // canvas_item_clear: empties the commands, bumps content_version and resets
-  // `clip` to false, as the engine's Item::clear() does (gate3-design.md D3);
+  // `clip` to false, as the engine's Item::clear() does;
   // `custom_rect` is kept.
   void clear(std::uint64_t item, std::uint64_t frame);
   void add_rect(std::uint64_t item, const rs2::Rect4 &rect, const rs2::Color4 &color,
@@ -316,7 +311,7 @@ class Mirror {
   // (stored by value), which is also its omit-op name.
   void add_unsupported(std::uint64_t item, const char *op, std::uint64_t frame);
 
-  // --- textures (gate 2, G2b2; gate2-design.md Q3 "Texture mirror") ----------
+  // --- textures ----------
   //
   // canvas_item_add_texture_rect(_region): `texture` is the engine RID the
   // command names. A RID the mirror knows becomes its wire id; RID() becomes
@@ -331,8 +326,8 @@ class Mirror {
   void add_texture_rect_region(std::uint64_t item, const rs2::Rect4 &rect, std::uint64_t texture,
                                const rs2::Rect4 &src, const rs2::Color4 &modulate,
                                bool transpose, bool clip_uv, std::uint64_t frame);
-  // canvas_item_add_msdf_texture_rect_region (G4e2; gate4-design.md Q3 "MSDF tap",
-  // render-stream-3.md "Command"): the /3 command with the engine's int outline_size, px_range
+  // canvas_item_add_msdf_texture_rect_region
+  // (render-stream-3.md "Command"): the /3 command with the engine's int outline_size, px_range
   // and scale; the same texture, unknown-texture, canvas-texture-headless, omit-op and
   // pre-existing-object rules as add_texture_rect_region.
   void add_msdf_texture_rect_region(std::uint64_t item, const rs2::Rect4 &rect,
@@ -340,7 +335,7 @@ class Mirror {
                                     const rs2::Color4 &modulate, std::int32_t outline_size,
                                     float px_range, float scale, std::uint64_t frame);
 
-  // --- render-stream/4 immediate geometry (G5d; gate5-design.md Q3b, render-stream-4.md
+  // --- render-stream/4 immediate geometry (render-stream-4.md
   // "Command") --------------------------------------------------------------------------------
   //
   // Each tap records the RenderingServer call argument for argument (every array whole, copied
@@ -384,8 +379,8 @@ class Mirror {
   void add_set_transform(std::uint64_t item, const rs2::Xform &transform, std::uint64_t frame);
   void add_clip_ignore(std::uint64_t item, bool ignore, std::uint64_t frame);
 
-  // perturb-vertex sabotage (gate5-design.md Q3c, render-stream-4.md "Sabotage"); 0 disables it.
-  // From G5e it also moves the first vertex's x of every mesh surface payload the mirror takes
+  // perturb-vertex sabotage (render-stream-4.md "Sabotage"); 0 disables it.
+  // It also moves the first vertex's x of every mesh surface payload the mirror takes
   // from its frame on (a new copy, re-hashed); the hook log keeps the true hash.
   void set_perturb_vertex(std::uint64_t from_frame);
 
@@ -430,7 +425,7 @@ class Mirror {
   };
   void set_v11(const V11Options &options);
 
-  // HC3 (host-cost-design.md D2): whether anything outside a /11 connection reads the SHA-256 of a
+  // whether anything outside a /11 connection reads the SHA-256 of a
   // dynamic mesh's surfaces -- a viewer below /11 (its tables name them by hash) or the hook log
   // (its serve events name the payloads). Set before each snapshot; true by default and after
   // reset(). False, a /11 snapshot leaves those hashes uncomputed: the surface's `hash` is then a
@@ -683,7 +678,7 @@ class Mirror {
   };
   // Every live emitter's needs (a diagnostic, and the unit tests' oracle for the queue below).
   PpmResolveCandidates ppm_resolve_candidates() const;
-  // LAR4 (late-arm-registry-design.md R4 "Builtin keying", Q4 M18): a queue replaces the ppm epoch
+  // a queue replaces the ppm epoch
   // and its walk of every emitter on most frames. While it is on (adoption's arm turns it on with
   // the material queue), the calls that can change what an emitter needs append it: its process
   // material set (particles_set_process_material, an adopted emitter), a shader binding of a
@@ -700,7 +695,7 @@ class Mirror {
   std::uint64_t ppm_scans() const;
   void set_shader_ppm(std::uint64_t shader_rid, const rs2::BuiltinParticleProcessMaterial &key);
 
-  // --- meshes (G5e; gate5-design.md D5-D8, Q3b, render-stream-4.md "Mesh table") ------------
+  // --- meshes (render-stream-4.md "Mesh table") ------------
   //
   // The mesh table: its own per-session id counter (from 1, never reused), `version` 1 at
   // creation and + 1 per accepted mutating call -- exactly the hook log's counting
@@ -716,7 +711,7 @@ class Mirror {
   // entry `unsupported` with its reason (its slot is kept so later indices line up).
   void mesh_create_from_surfaces(std::uint64_t rid, const std::vector<MeshSurfaceInput> &surfaces,
                                  std::uint64_t frame);
-  // G8r (gate8-design.md D6): a mesh that already existed when the capture armed, read back
+  // a mesh that already existed when the capture armed, read back
   // through mesh_get_surface at its first reference. Exactly mesh_create_from_surfaces plus its
   // custom AABB, with origin `adopted` and adopted_content `creation` (the dummy keeps the
   // creation-time surfaces; region updates it dropped are not recoverable). Never dropped.
@@ -728,7 +723,7 @@ class Mirror {
   // hook's verdict (D8: GLES3's bounds; a rejected or unknown update changes nothing). Applied:
   // version + 1 and, when `write` is non-null (an `ok` surface's bytes), the region is written
   // into the surface's payload; a null `write` (an already-refused surface, an omitted update) is
-  // version + 1 only. HC3 (host-cost-design.md D2): the write lands in the mirror's own copy of the
+  // version + 1 only. The write lands in the mirror's own copy of the
   // GRM1 payload (copied first when a snapshot published it), the change is the memcmp of those
   // bytes, and the surface's hash and /11 body are dropped, to be rebuilt by the next snapshot
   // that reads them.
@@ -748,8 +743,8 @@ class Mirror {
   void add_mesh(std::uint64_t item, std::uint64_t mesh, const rs2::Xform &transform,
                 const rs2::Color4 &modulate, std::uint64_t texture, std::uint64_t frame);
 
-  // --- shaders, materials, item and canvas material state (G55d; gate5_5-design.md D4-D10, Q3b,
-  // render-stream-5.md) ----------------------------------------------------------------------
+  // --- shaders, materials, item and canvas material state
+  // (render-stream-5.md) ----------------------------------------------------------------------
   //
   // Two tables, each with its own per-session id counter (from 1, never reused) and `version` 1
   // at creation, + 1 per accepted mutating call -- the hook log's counting (rs_resource_log.h),
@@ -825,7 +820,7 @@ class Mirror {
   void canvas_light_attach_to_canvas(std::uint64_t light, std::uint64_t canvas,
                                      std::uint64_t frame);
 
-  // --- canvases on render-stream/6 (G6b; gate6-design.md D3, Q3b), calibrator 9 ---------------
+  // --- canvases on render-stream/6, calibrator 9 ---------------
   // viewport_attach_canvas (above) sets `attached` and resets the stacking to (0,0)
   // (rv.cpp:1265-1266); a canvas attached to the root viewport is supported (no extra-canvas).
   // viewport_remove_canvas: `attached = false`; the canvas and its items stay in the table.
@@ -862,7 +857,7 @@ class Mirror {
   void set_texture_repeat(std::uint64_t item, std::int32_t repeat, std::uint64_t frame);
 
   // The root viewport's default texture filter and repeat, read at arm
-  // through the Viewport binds (gate2-design.md Q1d), as RenderingServer
+  // through the Viewport binds, as RenderingServer
   // enums. Never `default` (the server refuses it).
   void set_texture_defaults(rs2::Filter filter, rs2::Repeat repeat);
   // viewport_set_default_canvas_item_texture_filter / _repeat: on the root
@@ -880,7 +875,7 @@ class Mirror {
   // and bytes the job delivers; the entry is `ok` and pending until a snapshot settles it.
   void texture_2d_create(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
                          std::uint64_t frame, std::shared_ptr<TextureJob> job = nullptr);
-  // G8r (gate8-design.md D6, D7): a texture that already existed when the capture armed, met at
+  // a texture that already existed when the capture armed, met at
   // its first reference by a hooked call. Exactly texture_2d_create (a new id, kind image, version
   // 1, status from the copy, G8kw's job) but with origin `adopted` and `content` (Current or
   // Creation) as its adopted_content. Identity bookkeeping: no omit-op name, never dropped.
@@ -893,7 +888,7 @@ class Mirror {
   // LATE-RES (gap #5): whether `rid` names a live canvas item the mirror tracks.
   bool knows_item(std::uint64_t rid) const;
 
-  // --- G8m (gate8-design.md D11, D12, Q5): pre-arm shaders and materials, adopted with origin
+  // --- pre-arm shaders and materials, adopted with origin
   // `adopted` through the same tables. Identity bookkeeping: no omit-op name, never dropped.
   // shader_adopt: exactly shader_create_from_code (the code the capture recovered: a temporary
   // Shader's preprocessed code, or a CanvasItemMaterial template), origin adopted.
@@ -916,7 +911,7 @@ class Mirror {
   // materials whose last shader named an unknown shader, each with the items that draw with it
   // as their own material.
   //
-  // LAR3 (late-arm-registry-design.md Q4 M14): a pending queue replaces G8m's epoch and its scan of
+  // a pending queue replaces the adoption epoch and its scan of
   // every material and item. While it is on (adoption's arm turns it on), the three calls that can
   // leave such a reference -- set_material naming an unknown material or giving an item a material
   // whose shader is unknown, material_create_from_shader and material_set_shader naming an unknown
@@ -941,7 +936,7 @@ class Mirror {
   PendingMaterialRefs take_pending_material_refs();
   // The scans take_pending_material_refs() made over the items (LAR6's resolve-queue-only reads it).
   std::uint64_t material_refs_scans() const;
-  // TAG1 (client-extensions-design.md §2.2): item ids are dense and never reused, so the ids
+  // item ids are dense and never reused, so the ids
   // from a watermark to next_item_id() - 1 are the items created since; item_info() reads one
   // (false once it is gone: freed, or re-keyed away) without marking it.
   std::uint32_t next_item_id() const { return next_item_id_; }
@@ -968,13 +963,13 @@ class Mirror {
   // unknown: b's id leaves the table. t == b: nothing.
   void texture_replace(std::uint64_t texture, std::uint64_t by_texture, std::uint64_t frame);
 
-  // spurious-texture-update sabotage (gate2-design.md G2b2): bumps the version of
+  // spurious-texture-update sabotage: bumps the version of
   // the lowest-id `ok` image and re-copies its identical bytes. Returns that
   // texture's RID (0 when there is none) so the caller can write the matching
   // hook-log line.
   std::uint64_t spurious_texture_update(std::uint64_t frame);
 
-  // --- canvas textures (gate 2, G2d; gate2-design.md Q3 "Texture mirror") ---
+  // --- canvas textures  ---
   //
   // canvas_texture_create: a new id, kind canvas, status ok, version 1,
   // {diffuse: null, filter: default, repeat: default} (identity tap: only
@@ -1031,7 +1026,7 @@ class Mirror {
   // every `ok` mesh's surface payloads (Captured::payloads holds both kinds).
   Captured snapshot(std::uint64_t seq, std::uint64_t frame);
 
-  // --- G8ku: lazy Basis variants (texture-delivery-design.md D6, D12; rs_texture_delivery.h) --
+  // --- lazy Basis variants (rs_texture_delivery.h) --
   //
   // `submit` queues an encode (rs_texture_basis.h submit_basis_job); null (the default, and every
   // stream but /9 basis-uastc) means no encode is ever started. Survives reset().
@@ -1058,7 +1053,7 @@ class Mirror {
   // jobs' bodies), each distinct body once across `seen`.
   void at_rest_census(RestCensus *out, std::unordered_set<const void *> *seen) const;
 
-  // HC4a (host-cost-design.md "Byte-identity proof method", the shadow oracle; GRC_HC_SHADOW=1, a
+  // The shadow oracle ( GRC_HC_SHADOW=1, a
   // test knob, never the product default): every snapshot is also built by the full walk the
   // persistent tables replaced, and the two must agree entry by entry (items, canvases, the
   // item-level unsupported entries, the multimesh and particles tables' item references and
@@ -1112,7 +1107,7 @@ class Mirror {
     // had an unsupported type (the derived `param-type` entry while non-empty).
     std::map<std::string, rs2::Param> instance_params;
     std::set<std::string> instance_param_unsupported;
-    // Non-null skeleton (gate5-design.md D2, calibrator 7): same idea, its own op name.
+    // Non-null skeleton (calibrator 7): same idea, its own op name.
     bool unsupported_skeleton = false;
     // Skip policy only: the unknown RID this item was parented to (state.parent is then None and
     // the item is in no child list); 0 otherwise.
@@ -1157,7 +1152,7 @@ class Mirror {
     std::string uastc_params;
     PayloadPtr uastc_bytes;
     bool basis_decided = false;
-    // Canvas fields (kind == Canvas only; gate2-design.md Q3, G2d).
+    // Canvas fields (kind == Canvas only).
     bool has_diffuse = false;
     std::uint32_t diffuse_id = 0;
     // A non-null diffuse RID the mirror never saw created (unknown-texture);
@@ -1170,7 +1165,7 @@ class Mirror {
   };
   // One mesh surface (G5e): `ok` with its payload, or refused (D7) with its reason only.
   //
-  // HC3 (host-cost-design.md D2): `bytes` is the surface's true GRM1 payload, which region updates
+  // `bytes` is the surface's true GRM1 payload, which region updates
   // write into (`writable` is the same buffer while no snapshot has published it; a write after a
   // publication copies it first). `hash`, the perturb-vertex copy and the /11 body are derived
   // from it on demand and dropped when it changes.
@@ -1448,7 +1443,7 @@ class Mirror {
   void find_ties(const std::vector<std::uint32_t> &children,
                  std::vector<rs2::UnsupportedRef> *out) const;
 
-  // --- HC4a (host-cost-design.md D1): the persistent published item and canvas state -----------
+  // --- the persistent published item and canvas state -----------
   // What the item references of a snapshot's tables and flags read (the multimesh and particles
   // tables' item half, PM1/PM5's lowering flags).
   struct ItemsPublished {
@@ -1547,7 +1542,7 @@ class Mirror {
   std::uint32_t next_item_id_ = 1;
   std::uint64_t root_viewport_rid_ = 0;
   std::map<std::uint32_t, Canvas> canvases_;  // ordered by id
-  // HC4a (host-cost-design.md D1 "Dirty sets"): the items, ordered by id. Every mutable access
+  // the items, ordered by id. Every mutable access
   // marks the item dirty, so the next snapshot revisits exactly the items a hook touched: read
   // through find()/all(), write through mut()/emplace()/erase(), and mut_all() marks every item
   // (a rare whole-table change: a material freed, a recycled unknown RID).
@@ -1614,7 +1609,7 @@ class Mirror {
     Map map_;
   };
   ItemMap items_;
-  // HC4b (host-cost-design.md D1 "Dirty sets"): a resource table (textures, meshes, shaders,
+  // a resource table (textures, meshes, shaders,
   // materials), ordered by id, with ItemMap's discipline: read through find()/at()/all(), write
   // through mut()/emplace()/erase()/mut_all(), each of which marks what it touches, so the next
   // snapshot revisits exactly those entries. unmarked() is the snapshot's own bookkeeping.
@@ -1760,7 +1755,7 @@ class Mirror {
   std::map<std::uint32_t, bool> mm_verdicts_;
   std::map<std::uint32_t, bool> pt_verdicts_;
   std::map<std::uint32_t, bool> material_verdicts_;
-  // --- HC4b (host-cost-design.md D1): the published resource tables and what they derive ---
+  // --- the published resource tables and what they derive ---
   // One resource entry's share of the payload map and the name index: the (hash, bytes) pairs it
   // puts in the map, and the names it adds (rs_captured.h *_entry_names).
   struct ResName {
@@ -1921,7 +1916,7 @@ class Mirror {
   rs2::Filter default_filter_ = rs2::Filter::Linear;   // the server's initial values
   rs2::Repeat default_repeat_ = rs2::Repeat::Disabled;  // (renderer_viewport.h:114-115)
   RidMap<std::uint32_t> canvas_by_rid_;
-  // HC6 (host-cost-design.md D5.5): the item's id and its node in items_ (a std::map node, stable
+  // The item's id and its node in items_ (a std::map node, stable
   // until erased), so a hooked call reaches the item with one flat-table probe. Kept in step with
   // items_ by create_item, rekey_subtree, free_rid and reset.
   struct ItemRef {

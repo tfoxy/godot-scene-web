@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gate 7x desktop correctness (gate7-design.md "G7x" R1), on D9's harness, against the built
+# Gate 7x desktop correctness, on D9's harness, against the built
 # rs-gsw-wasm (scripts/build-rs-core.sh):
 #   1. every input through the Rust arm once (draw-count-parity, record-digest-complete);
 #   2. the pace input with expected.json's shots: 0 px against the model and the native reference;

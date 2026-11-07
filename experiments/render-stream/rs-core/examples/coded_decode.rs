@@ -1,4 +1,4 @@
-//! BIN-D (results/p3/bin-d.md): rs-core's W11t decoder (`coding::LiveDecoder`, ruzstd) on the
+//! BIN-D: rs-core's W11t decoder (`coding::LiveDecoder`, ruzstd) on the
 //! messages of one /13 variant, per message, natively.
 //! `cargo run --release --example coded_decode -- <frames> <plain.msgs> [passes]`
 //! (`bin13-bench frames` writes <frames> from `wire-budget.py bin13 --dump`'s <plain.msgs>).

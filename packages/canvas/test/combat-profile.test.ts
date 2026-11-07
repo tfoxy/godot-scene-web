@@ -11,9 +11,9 @@ import {
 import { createFakeGl, fakeProjection } from "./fake-gl";
 
 /**
- * The batch-count bound the wave-1 design was signed off against.
+ * The batch-count bound the batcher design was signed off against.
  *
- * The offline probe measured combat at 152 runs from 183 painting nodes with 65
+ * The recorded combat profile has 152 runs from 183 painting nodes with 65
  * distinct paint sources — 1.20 nodes per batch, i.e. essentially no batching —
  * and attributed 151 of those 152 breaks to the TEXTURE alone. The design claim
  * is that multi-texture batching removes almost all of them, leaving roughly the

@@ -1,7 +1,6 @@
 # Gate 5 fixture
 
-The reference rendering for gate 5's immediate geometry (G5b,
-[`../../protocol/gate5-design.md`](../../protocol/gate5-design.md) "Q6b" and "Q6c"). Ten steps
+The reference rendering for gate 5's immediate geometry. Ten steps
 (0..9) cover wide lines at integer and half-integer coordinates, a thin GL line, a dashed line
 (`canvas_item_add_multiline`), an antialiased diagonal, a polyline with a miter corner, an
 unfilled rect (a closed 5-point polyline), a polyline with a hold-last colour list, a concave
@@ -25,16 +24,15 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate5 --
 - `gate5.tscn`, `gate5.gd`: a root `Node`. `_ready()` makes `TEX16` and `TEX9`
   (`ImageTexture.create_from_image`), then every item in `expected.json` `creation_order` (wire ids
   in that order), and `_process()` applies the timeline. `RS_FIXTURE_VARIANT` is unset or `canvas`
-  (one `CanvasTexture` made in `_ready`, D11; G5d's `capture-canvas` leg uses it); anything else
+  (one `CanvasTexture` made in `_ready`; the `capture-canvas` leg uses it); anything else
   exits 2. All output lines start with `[fixture]`.
 - `regions.gd`: the region nodes, one class per region, each issuing its calls in local
   coordinates from `_draw`. A property a step changes queues its own node's redraw.
 - `make_expected.py`: writes `expected.json` (`--check` compares values). It models every call
   and its server lowering from the source (its docstring cites the lines), in float32, and asserts
-  the colour rule, disjoint regions, tie-freeness, the hand census of calls per op, Q6b's
-  freshness rows, the Line2D and dashed-line lowering counts, and Q6b's sabotage sets. Nothing in
-  it is measured.
-- `expected.json` (`render-stream-gate5-expected/1`, gate5-design.md Q6c). Per step: the applied
+  the colour rule, disjoint regions, tie-freeness, the hand census of calls per op, the
+  freshness rows, the Line2D and dashed-line lowering counts, and the sabotage sets.
+- `expected.json` (`render-stream-gate5-expected/1`). Per step: the applied
   and settle frames, the marker colour, the canvas transform, the items that redraw, `calls` (per
   region, every RenderingServer call with its float32 arguments; computed ones carry `ulp: 2`),
   `items` (paint order, each with its final transform, scissor and an `op_lists` key) and `fresh`.
@@ -42,7 +40,7 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate5 --
   vertices, triangles, one or per-vertex colours, optional uvs and texture, and `band_px` when
   antialiased; `thin_line`; `nine_patch`), `set_transform` and `clip_ignore` entries in order.
   Also `textures` (TEX16 and TEX9 texels), `hook_census`, `typed_ops` (what a pre-/4 capture types
-  `unsupported`), `calibrator7_ops`, `lowering_predictions` and `predictions` (G5d's sabotage
+  `unsupported`), `calibrator7_ops`, `lowering_predictions` and `predictions` (the sabotage
   sets). Regions are `[x0, y0, x1, y1)`.
 
 ## Layout (640×360; regions `[x0,y0,x1,y1)`)

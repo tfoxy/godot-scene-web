@@ -104,32 +104,13 @@ REL_PKG="packages/hb-gpu"
 
 # `-sINITIAL_MEMORY=2097152` because the DEFAULT MAKES `heapBytes` A LIE. Emscripten reserves
 # 16 MiB up front, and `HEAPU8.byteLength` — which is what this package publishes as its wasm-heap
-# cost, to be read next to `hb-atlas`'s "two 1.25 MiB wasm heaps" — then reports 16.19 MiB whatever
-# the font is. Measured at 2 MiB instead: the heap holds the 826 KB Noto Sans SC subset, encodes
-# 300 distinct Han glyphs, and NEVER GROWS, so the real footprint is under 2 MiB and the default was
-# overstating this arm's memory by about 8x. `ALLOW_MEMORY_GROWTH` is still on, so a larger face
-# simply grows and reports the truth.
-#
-# RE-MEASURED WHEN THE SHAPER LANDED, BECAUSE THE OLD NUMBER WAS TUNED TO ONE FACE AND NO SHAPING.
-# Shaping allocates a buffer whose arrays are sized by the LONGEST RUN — roughly 80 bytes a glyph,
-# `hb_glyph_info_t` plus `hb_glyph_position_t`, doubled for the output buffer — plus a shape plan
-# per (face, script, direction). Both were measured rather than guessed, on a probe build with
-# `-sMEMORY_GROWTH_LINEAR_STEP=65536` so that `heapBytes` tracks the high-water mark to a 64 KiB
-# page instead of overshooting by emscripten's geometric step:
-#
-#   0.500 MiB  module instantiated, no font
-#   1.000 MiB  + Noto Sans SC bench face (826 KB)
-#   1.063 MiB  + Roboto bench face (23 KB) — S9 loads both
-#   1.063 MiB  + 80 runs shaped (2080 more made no difference)
-#   1.125 MiB  + 340 outlines encoded — the ENCODER's blob buffer, not the shaper's
-#   1.438 MiB  + one pathological 4000-glyph run in a single buffer
-#
-# So the realistic two-face workload high-waters at 1.125 MiB and shaping's own contribution at S9
-# run lengths is below one 64 KiB page. AT THE SHIPPED 2 MiB NOTHING ABOVE GROWS THE HEAP AT ALL,
-# and neither does a single run of up to 8000 glyphs; 16 000 in one buffer is the first thing that
-# does (2.438 MiB). 2 MiB therefore stays: it still bounds the truth rather than inventing it, with
-# 0.875 MiB of headroom over the measured workload, and raising it would put `heapBytes` back to
-# reporting a reservation instead of a cost.
+# cost — then reports that reservation whatever the font is. A CJK subset face plus a Latin face,
+# a few hundred encoded outlines and shaped runs fit inside 2 MiB without growing, so 2 MiB bounds
+# the real footprint rather than inventing one. `ALLOW_MEMORY_GROWTH` is still on, so a larger face
+# or a pathological run simply grows and reports the truth. Shaping allocates a buffer sized by the
+# LONGEST RUN (roughly 80 bytes a glyph, doubled for the output buffer) plus a shape plan per
+# (face, script, direction). Raising the reservation would put `heapBytes` back to reporting a
+# reservation instead of a cost.
 #
 # `HEAPU8,HEAP32,HEAPU16` in the runtime methods, and they are NOT optional. `UTF8ToString` alone is
 # what the shader-source getters need, but without the heap views the glue creates only

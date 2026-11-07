@@ -1,4 +1,4 @@
-// TAG2 (client-extensions-design.md §3): the extension API over the loop, against a scripted core.
+// The extension API over the loop, against a scripted core.
 
 import { describe, expect, it } from "vitest";
 import type { CoreMessage } from "../src/core";
@@ -26,10 +26,10 @@ class ExtCore extends FakeCore implements ExtensionCore {
   removed: number[] = [];
   logRemoved = false;
   tables: { ids: number[]; vals: number[] }[] = [];
-  /** HIT1: the mouse filters as last copied in (id → code), and how often. */
+  /** The mouse filters as last copied in (id → code), and how often. */
   hitFilters = new Map<number, number>();
   hitFilterCopies = 0;
-  /** ID2: the pick orders copied in, in order. */
+  /** The pick orders copied in, in order. */
   pickOrders: string[] = [];
   refreshes = 0;
   override receive(data: ArrayBuffer, sessionSeen: boolean): CoreMessage {
@@ -78,7 +78,7 @@ class ExtCore extends FakeCore implements ExtensionCore {
     if (x < 10 || x >= 14 || y < 20 || y >= 24) return null;
     // Item 3 is drawn over item 2 (same rect); an IGNORE item lets the point through (the
     // core's pick is rs-core's, tested there; this fake only shows the filters arrived).
-    // ID2: under "tree" (with filters) only an input item answers, children first.
+    // Under "tree" (with filters) only an input item answers, children first.
     if (this.pickOrders.at(-1) === "tree" && this.hitFilters.size > 0) {
       for (const id of [3, 2, 1]) if (this.hitFilters.get(id) === 1) return id;
       return null;
@@ -588,7 +588,7 @@ describe("render-stream client extensions (TAG2)", () => {
     t.on.message(meta(full));
     t.on.message(tx(1));
     h.clock.frame();
-    // ID-D8: no pickOrder call, no copy: the session keeps HIT1's draw reading.
+    // No pickOrder call, no copy: the session keeps the topmost-drawn reading.
     session!.mouseFilter(3, "pass");
     expect(h.ext.query.hitTest(11, 21)).toBe(3);
     expect(h.core.pickOrders).toEqual([]);

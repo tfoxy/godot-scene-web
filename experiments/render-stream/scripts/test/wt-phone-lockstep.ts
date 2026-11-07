@@ -1,4 +1,4 @@
-// CAR10 device leg (protocol/carrier-design.md "As built (CAR10)"): the credit loop of
+// CAR10 device leg: the credit loop of
 // wt-impaired-chromium.ts on a real phone over Wi-Fi. rs-net-lockstep serves `wt` on the LAN
 // (expose=lan, self-signed, pinned by hash); the page is served on loopback and reaches the
 // phone through `adb reverse` (TCP), so it is a secure context at http://localhost:<port>; its
@@ -8,9 +8,9 @@
 //
 // Usage: mise exec -- pnpm exec tsx --conditions=development \
 //          experiments/render-stream/scripts/test/wt-phone-lockstep.ts --lan 192.168.1.50 \
-//          [--serial PHONESERIAL31] [--seconds 300] [--stats-ms 1000] [--out DIR] [--cdp-port 9232]
+//          [--serial <serial>] [--seconds 300] [--stats-ms 1000] [--out DIR] [--cdp-port 9232]
 //          [--uplink streams|live] [--size B] [--trace FILE]
-// --uplink live is the pre-CAR10 client (acks on the live stream): on the g31 it stalls within
+// --uplink live is the pre-CAR10 client (acks on the live stream): on a phone it stalls within
 // seconds to a minute. --trace FILE writes the host's quinn trace (a diagnosis aid).
 // Exit 0 when every message was acknowledged, 1 on a stall or a missing result.
 import { execFileSync } from "node:child_process";
@@ -32,7 +32,9 @@ const opt = (name: string, d: string | null = null): string | null => {
   const i = argv.indexOf(name);
   return i >= 0 ? (argv[i + 1] ?? d) : d;
 };
-const SERIAL = opt("--serial", "PHONESERIAL31") as string;
+const SERIAL = opt("--serial", process.env.ANDROID_SERIAL ?? null) as string;
+if (!SERIAL)
+  throw new Error("--serial <adb serial> (or ANDROID_SERIAL) is required");
 const LAN = opt("--lan");
 const SECONDS = Number(opt("--seconds", "300"));
 const STATS_MS = opt("--stats-ms", "1000") as string;
