@@ -108,7 +108,9 @@
     "defer": ["g7-k"],
     "defer_doc": "Groups smoke never runs (the full tier and --milestone run them whole, listed in smoke_deferred): g7-k's soak legs hold the exclusive quiet lock for 300 s each (about 11 min per browser with startup), and run-gate7.sh has no leg filter for them that tier-verdict.py would accept. Run a g7-k change with --tier full --only g7live-<r>-timing.",
     "collapse_at": 3,
-    "g7": { "legs": ["@first"] }
+    "g7": {
+      "legs": ["@first"]
+    }
   },
   "timing_doc": "GRT4a: targets whose runs go in validate-increment.sh's last phase, after every correctness run: their exclusive quiet-lock legs (gate 6's g6l/g6s/g6c/g6p, the timing live groups, the bench and device-control arms) starved the browser groups sharing a tier with them (G7q: 11.9-13.8 ks of summed lock wait). A receiver's live groups split into a correctness run and a -timing run.",
   "local_cost_doc": "Idle-machine wall seconds per local timing-phase run id, for validate-increment.sh's cost block (printed before the [timing] phase). Starting values are CAR1's idle-equivalent (wall minus quiet-lock wait, 2026-11-04). An id not listed prints 'unknown': measure it from a validate-summary.json (wall_s - lock_wait_s) and add it, never guess.",
@@ -944,6 +946,124 @@
         "experiments/render-stream/fixtures/gate7-*/**"
       ],
       "reach": ["g7x:*"]
+    },
+    {
+      "why": "repo metadata, playground and maintenance tooling: no gate leg or package test runs them (agent config, hooks, changelog, public-tree and worktree tools have separate scripts/test-* self-tests); .gitignore changes tracking, not execution",
+      "paths": [
+        ".gitignore",
+        ".gitmessage",
+        ".prettierignore",
+        "LICENSE",
+        "biome.json",
+        "apps/playground/**",
+        "scripts/agent_config.py",
+        "scripts/changelog-section.sh",
+        "scripts/check-public-tree.py",
+        "scripts/claude-guard-bash.sh",
+        "scripts/collect-changelog.sh",
+        "scripts/dsh",
+        "scripts/gen-codex-config.py",
+        "scripts/gen-dsh-config.py",
+        "scripts/githooks/**",
+        "scripts/install-agent-config.sh",
+        "scripts/public-tree.conf",
+        "scripts/test-check-public-tree.sh",
+        "scripts/test-claude-guard.sh",
+        "scripts/test-commit-msg-hook.sh",
+        "scripts/test-gen-dsh-config.py",
+        "scripts/test-install-agent-config.sh",
+        "scripts/test-pre-commit-hook.sh",
+        "scripts/test-pre-push-hook.sh",
+        "scripts/test-support/dsh-standard.patch.yml",
+        "scripts/test-worktree-tools.py",
+        "scripts/worktree-admin.py"
+      ],
+      "reach": ["none"],
+      "exclusive": true
+    },
+    {
+      "why": "by-hand diagnostics, fixture generators and reference refreshers: no gate leg or package test executes these entry points; package.json's test:default-font-parity, godot:outline-ref and test:input-godot are separate commands; compose-g7p.sh and live-log-schema.py only read kept runs",
+      "paths": [
+        "scripts/default-font-parity.ts",
+        "scripts/generate-fixture-textures.ts",
+        "scripts/godot-outline-ref.ts",
+        "scripts/inline-default-font.mjs",
+        "scripts/test-godot.sh",
+        "scripts/test_update_wgpu_reference.py",
+        "scripts/update-wgpu-reference.sh",
+        "scripts/update_wgpu_reference.py",
+        "experiments/render-stream/scripts/lib/compose-g7p.sh",
+        "experiments/render-stream/scripts/lib/live-log-schema.py",
+        "experiments/render-stream/scripts/profile-decode.ts",
+        "experiments/render-stream/scripts/profile-rs-core-wasm.mjs"
+      ],
+      "reach": ["none"],
+      "exclusive": true
+    },
+    {
+      "why": "toolkit fixtures and test helpers: html/test/fixtures.test.ts and layout/test/membership.test.ts walk fixtures; perf-harness/test/text-shaper-agreement.test.ts and latin-fixture.test.ts load the font helpers; core/test/release-tag.test.ts, html/canvas/input/render-stream-client export-surface tests, project/test/package-resolution.test.ts, tscn-parser/test/package-smoke.test.ts and perf-harness/test/{text-fidelity,rust-mark-health}.test.ts import the remaining helpers",
+      "paths": [
+        "fixtures/**",
+        "scripts/ensure-cjk-font.ts",
+        "scripts/ensure-latin-font.ts",
+        "scripts/ensure-roboto-fonts.ts",
+        "scripts/parse-barrel-exports.ts",
+        "scripts/profile-canvas-rust.mjs",
+        "scripts/test-build-lock.ts",
+        "scripts/test-support/text-image-metrics.ts",
+        "scripts/validate-release-tag.ts",
+        "vitest.config.ts"
+      ],
+      "reach": ["pnpm-test"]
+    },
+    {
+      "why": "workspace and TypeScript configuration: pnpm-workspace.yaml governs package resolution and builds; package tsconfig.json files extend tsconfig.base.json, as does experiments/render-stream/tsconfig.json for the TS runners; shared toolchain inputs plausibly affect every native/live leg, so keep the conservative '*' reach",
+      "paths": [
+        "pnpm-workspace.yaml",
+        "tsconfig.base.json",
+        "experiments/render-stream/tsconfig.json"
+      ],
+      "reach": ["*"]
+    },
+    {
+      "why": "Godot reference project and calibration generator: test-harness/src/parity.ts runs godot/project's inspect_scene.gd, perf-harness/src/godot-text-bench.ts runs bench_text.gd, and calibrate.sh writes the calibration record consumed by validate-increment.sh and native runners; a narrower native/live reach is not established, so keep '*'",
+      "paths": [
+        "godot/project/**",
+        "experiments/render-stream/scripts/calibrate.sh"
+      ],
+      "reach": ["*"]
+    },
+    {
+      "why": "gate 7x desktop bench correctness: run-g7x-desktop-checks.sh calls gate7x-checks.ts and run-g7x-sabotages.sh over gate7-bench.ts inputs; run-g7x-scene-native.sh supplies its optional native comparison shots; these are the g7-bench group, not g7-dev's device-session checks; the run-g7x-*.sh scripts are run by hand, not by run-gate7.sh",
+      "paths": [
+        "experiments/render-stream/scripts/gate7x-checks.ts",
+        "experiments/render-stream/scripts/run-g7x-desktop-checks.sh",
+        "experiments/render-stream/scripts/run-g7x-sabotages.sh",
+        "experiments/render-stream/scripts/run-g7x-scene-native.sh"
+      ],
+      "reach": ["g7x:g7-bench"]
+    },
+    {
+      "why": "gate -1's refusal evidence: run-gate-minus1.sh invokes tamper-calibration.mjs for refuse-sha, refuse-prefix and old-record",
+      "paths": ["experiments/render-stream/scripts/lib/tamper-calibration.mjs"],
+      "reach": ["native:gate-minus1@*"]
+    },
+    {
+      "why": "gate 6 sampling and report attribution: run-gate6.sh and lib/gate6c-legs.sh invoke sample-proc.ts; lib/gate6p-legs.sh invokes sample-rate.ts; report-gate6.ts imports analyze-deltas.ts and is read by lib/gate6c-checks.ts and lib/gate6p-checks.ts; run-gate7.sh reuses gate 6 for its file/live g7-6, g7-r, g7-k and g7-lc groups; self-test-report.ts and self-test-gate6p.ts import the analyzer and rate sampler",
+      "paths": [
+        "experiments/render-stream/scripts/analyze-deltas.ts",
+        "experiments/render-stream/scripts/sample-proc.ts",
+        "experiments/render-stream/scripts/sample-rate.ts"
+      ],
+      "reach": [
+        "pure",
+        "native:gate6@*",
+        "g7:g7-6@*",
+        "g7live:g7-6@*",
+        "g7live:g7-r@*",
+        "g7live:g7-k@*",
+        "g7live:g7-lc@*"
+      ]
     }
   ]
 }
