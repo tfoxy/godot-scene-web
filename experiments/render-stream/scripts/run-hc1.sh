@@ -88,7 +88,8 @@ EXTENSION="$(realpath "$EXTENSION")"
 [ -n "$OUT" ] || OUT="$REPO_ROOT/artifacts/render-stream/hc1/$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT" && OUT="$(realpath "$OUT")"
 
-SMALL=(RS_SCALE_ITEMS=400 RS_SCALE_TEXTURES=60 RS_SCALE_TEX_W=64 RS_SCALE_TEX_H=48 RS_SCALE_DRAWN_TEXTURES=40
+SCALE_MIRROR_ENV=(GRC_MIRROR_MAX_ITEMS=32768 GRC_MIRROR_MAX_COMMANDS=16384)
+SMALL=("${SCALE_MIRROR_ENV[@]}" RS_SCALE_ITEMS=400 RS_SCALE_TEXTURES=60 RS_SCALE_TEX_W=64 RS_SCALE_TEX_H=48 RS_SCALE_DRAWN_TEXTURES=40
 	RS_SCALE_MESHES=20 RS_SCALE_MATERIALS=40 RS_SCALE_SHADERS=4 RS_SCALE_FLOAT_TEXTURES=20 RS_SCALE_PARAMS=8)
 STATIC=(RS_SCALE_MESH_UPDATES=0 RS_SCALE_MOVERS=0 RS_SCALE_PARAM_UPDATES=0)
 CHURN=(RS_SCALE_MESH_UPDATES=10 RS_SCALE_MOVERS=10 RS_SCALE_PARAM_UPDATES=2 RS_SCALE_REDRAWS=20)
@@ -113,10 +114,12 @@ leg() {
 	# HC4a: the shadow oracle under HC_SHADOW=1 (lib/gamescope.sh gs_strip_env_args)
 	if [ "${HC_SHADOW:-}" = 1 ]; then env+=(GRC_HC_SHADOW=1); fi
 	if [ "$sink" = 1 ]; then env+=(GRC_STREAM_OUT="$dir/recording-full.rs8"); fi
-	if [ "$viewer" != x ]; then env+=(GRC_LIVE_LISTEN="127.0.0.1:$PORT" GRC_LIVE_TAP_DIR="$dir/tap"); fi
+	if [ "$viewer" != x ]; then env+=(GRC_LIVE_LISTEN="127.0.0.1:$PORT"); fi
+	[ "$viewer" = 1 ] && env+=(GRC_LIVE_TAP_DIR="$dir/tap")
 	[ "${#extra[@]}" -gt 0 ] && env+=("${extra[@]}")
 	mkdir -p "$dir/tap"
 	printf '%s\n' "${env[@]}" >"$dir/env.txt"
+	printf '%s\n' "$BINARY" --headless --path "$FIXTURE" >"$dir/argv.txt"
 	echo "run-hc1: $name (viewer=$viewer sink=$sink hook_log=$hook, $frames frames)"
 	local rx_pid=""
 	if [ "$viewer" = 1 ]; then

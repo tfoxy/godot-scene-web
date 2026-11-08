@@ -211,7 +211,8 @@
 #       fields and one asking v2 names at /13, refused); and the GRC_ITEM_META_SABOTAGE legs
 #       `sabotage-{restamp-skip (SWEEP=0),raw-filter (SWEEP=4),instance-of-root,leak-connections}`
 #       and `sabotage-v2-at-13` (pure/scale-live-grant's config). G8ID14_ONLY_PURE=1 runs the imports
-#       and the pure legs only (the merge-base regression), G8ID14_ONLY_COST=1 the `id-cost` timing
+#       and the pure legs only (the merge-base regression), G8ID14_ONLY_BURST=1 the non-timing
+#       tag-burst and sabotage-mirror-cap-default pair, G8ID14_ONLY_COST=1 the `id-cost` timing
 #       group only. Judged by lib/gate8-id14-checks.ts.
 #   g8tag2 (TAG2, : the GSW client's extension API and
 #       override table; every leg under g8tag2/): the fixture import and the client core
@@ -772,10 +773,11 @@ run_capture_g8a() {
 # `on` (GRC_ADOPT=arm: the registry records) and `regoff` (GRC_ADOPT=arm,
 # GRC_ADOPT_FAULT=registry-off: adoption on, the registry off, so on-regoff isolates the registry
 # from lazy adoption's own lookups).
+SCALE_MIRROR_ENV=(GRC_MIRROR_MAX_ITEMS=32768 GRC_MIRROR_MAX_COMMANDS=16384)
 G8A_COST_DIR="$EXPERIMENT_DIR/fixtures/capture-scale"
 G8A_COST_ROUNDS=5
 G8A_COST_CONFIGS=(off on regoff)
-G8A_COST_ENV=(RS_FIXTURE_ARM=born GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip
+G8A_COST_ENV=("${SCALE_MIRROR_ENV[@]}" RS_FIXTURE_ARM=born GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip
 	GRC_ROOT_SIZE=presentation:1920x1080 RS_SCALE_ITEMS=600 RS_SCALE_TEXTURES=24 RS_SCALE_TEX_W=64
 	RS_SCALE_TEX_H=64 RS_SCALE_DRAWN_TEXTURES=24 RS_SCALE_FLOAT_TEXTURES=16 RS_SCALE_SHADERS=8
 	RS_SCALE_MATERIALS=80 RS_SCALE_WARMUP=60 RS_SCALE_RESOURCE_CHURN=16
@@ -802,6 +804,7 @@ run_registry_cost_capture() {
 	CAPTURE_WITH_PATCH=1
 	# Only the scale report and evidence/perf.json are judged: the recording, the store and the
 	# hook log (~145 MB a leg) go.
+	"$REPO_ROOT/node_modules/.bin/tsx" --conditions=development "$SCRIPT_DIR/lib/gate8-scale-checks.ts" --capture "$dir"
 	rm -rf "${dir:?}/$RECORDING_NAME" "${dir:?}/store" "${dir:?}/evidence/resources.jsonl"
 }
 
@@ -818,7 +821,7 @@ run_registry_cost_capture() {
 # hook bodies with the registry not recording.
 G8A_VLC_ROUNDS="${G8A_VLC_ROUNDS:-5}"
 read -r -a G8A_VLC_CONFIGS <<<"${G8A_VLC_CONFIGS:-a0 b c sabotage-validation-log-ignored n s}"
-G8A_VLC_ENV=(RS_FIXTURE_ARM=born GRC_STREAM_VERSION=12 GRC_UNKNOWN_ITEM=skip
+G8A_VLC_ENV=("${SCALE_MIRROR_ENV[@]}" RS_FIXTURE_ARM=born GRC_STREAM_VERSION=12 GRC_UNKNOWN_ITEM=skip
 	GRC_ROOT_SIZE=presentation:1920x1080 RS_SCALE_REDRAWS=170 RS_SCALE_REDRAW_VARY=11
 	RS_SCALE_RESOURCE_CHURN=16 RS_SCALE_CPU_REPORT=1 RS_SCALE_WARMUP=300 GRC_VALIDATION_LOG=off)
 G8A_VLC_QUIT=2400
@@ -846,6 +849,7 @@ run_validation_log_cost_capture() {
 	CAPTURE_WITH_PATCH=0
 	run_capture "$dir" "$G8A_VLC_QUIT" none
 	CAPTURE_WITH_PATCH=1
+	"$REPO_ROOT/node_modules/.bin/tsx" --conditions=development "$SCRIPT_DIR/lib/gate8-scale-checks.ts" --capture "$dir"
 	rm -rf "${dir:?}/$RECORDING_NAME" "${dir:?}/store" "${dir:?}/evidence/resources.jsonl"
 }
 
@@ -2044,7 +2048,7 @@ G8W11_ENV=(GRC_STREAM_VERSION=11 GRC_RESOURCE_INLINE_MAX_BYTES=4096)
 # capture-scale (P3-CAP) at a tenth of its items and small textures: STS2's combat shape for the
 # meshes (187, 76 updated a frame, every pose new) and its identical redraws (150 items a frame,
 # RS_SCALE_REDRAWS), cheap enough for a correctness leg.
-G8W11_SCALE_ENV=(RS_FIXTURE_ARM=born GRC_ROOT_SIZE=presentation:1920x1080 RS_SCALE_ITEMS=600
+G8W11_SCALE_ENV=("${SCALE_MIRROR_ENV[@]}" RS_FIXTURE_ARM=born GRC_ROOT_SIZE=presentation:1920x1080 RS_SCALE_ITEMS=600
 	RS_SCALE_TEXTURES=24 RS_SCALE_TEX_W=64 RS_SCALE_TEX_H=64 RS_SCALE_DRAWN_TEXTURES=24
 	RS_SCALE_FLOAT_TEXTURES=16 RS_SCALE_SHADERS=8 RS_SCALE_MATERIALS=80 RS_SCALE_WARMUP=10 RS_SCALE_REDRAWS=150)
 G8W11_SCALE_QUIT=60
@@ -2263,6 +2267,8 @@ ID_DISARM=450
 # id-cost timing group (capture-scale, real time, exclusive quiet lock): read only id-cost from it.
 G8ID14_ONLY_PURE="${G8ID14_ONLY_PURE:-0}"
 G8ID14_ONLY_COST="${G8ID14_ONLY_COST:-0}"
+# Local correctness iteration: only the burst leg and its default-cap sabotage.
+G8ID14_ONLY_BURST="${G8ID14_ONLY_BURST:-0}"
 G8ID14_PURE_GRANT="${G8ID14_PURE_GRANT:-$ID_GRANT}"
 
 # run_g8id14_viewers <dir> <port> <spec...>: the viewers, started together, waited for.
@@ -2411,11 +2417,25 @@ run_g8id14_pure() {
 # 1,700-node burst at frame 500, 4 filter flips a frame from frame 700, 900 frames. Configs: the v2
 # grant with the viewers asking TAG1's fields (`fields13`) or those plus the v2 fields (`v2`), the
 # grant with a viewer asking nothing (`grant-off`), and no grant (`no-grant`).
-ID_COST_ENV=(RS_FIXTURE_ARM=born GRC_ROOT_SIZE=presentation:1920x1080 RS_FIXTURE_QUIT_FRAME=900
+ID_BURST_ENV=(RS_FIXTURE_ARM=born GRC_ROOT_SIZE=presentation:1920x1080 RS_FIXTURE_QUIT_FRAME=900
 	RS_SCALE_NODES=2000 RS_SCALE_NODE_BURST=1700 RS_SCALE_NODE_BURST_FRAME=500 RS_SCALE_FILTER_FLIPS=4
 	RS_SCALE_FILTER_FLIP_FRAME=700 GRC_VALIDATION_LOG=off)
+ID_COST_ENV=("${SCALE_MIRROR_ENV[@]}" "${ID_BURST_ENV[@]}")
 ID_COST_REQ13='{"fields":["class","script","scene","path"],"groups":["scale_tagged"],"meta_keys":["scale_tag","scale_slot"]}'
 ID_COST_REQV2='{"fields":["class","script","scene","path","instance_id","mouse_filter"],"groups":["scale_tagged"],"meta_keys":["scale_tag","scale_slot"]}'
+# Correctness twin of fields13: no timing group, host row log enabled.
+run_g8id14_burst() {
+	local leg host z="zstd-base,zstd"
+	for leg in tag-burst sabotage-mirror-cap-default; do
+		host="$OUT/g8id14/$leg/host"
+		local -a mirror=()
+		[ "$leg" = tag-burst ] && mirror=("${SCALE_MIRROR_ENV[@]}")
+		echo "run-gate8: g8id14 $leg (scale_slot 2000–3699, frame 500)"
+		run_g8id14_host "$OUT/g8id14/$leg" "$G8W11_SCALE_DIR" "${ID_BURST_ENV[@]}" "${mirror[@]}" \
+			GRC_ITEM_META="$ID_GRANT" GRC_ITEM_META_LOG="$host/ids.jsonl" -- "a|$z|2|13|$ID_COST_REQ13|"
+	done
+}
+
 run_g8id14_cost() {
 	local -a dirs=()
 	local c z="zstd-base,zstd"
@@ -2451,6 +2471,10 @@ run_g8id14() {
 		echo "run-gate8: build-rs-core.sh failed, see $OUT/g8id14/build-rs-core.log" >&2
 		exit 1
 	}
+	if [ "$G8ID14_ONLY_BURST" = 1 ]; then
+		run_g8id14_burst
+		return
+	fi
 	if [ "$G8ID14_ONLY_COST" = 1 ]; then
 		run_g8id14_cost
 		return
@@ -2477,6 +2501,7 @@ run_g8id14() {
 		GRC_ITEM_META_FILE=class,script,scene,path,instance_id,mouse_filter \
 		GRC_ITEM_META_FILE_GROUPS=rs_hand,rs_text,rs_none GRC_ITEM_META_FILE_KEYS=rs_tag,rs_slot,rs_missing --
 	run_g8id14_pure
+	run_g8id14_burst
 	echo "run-gate8: g8id14 sabotages (restamp-skip, raw-filter, instance-of-root, leak-connections)"
 	run_g8id14_leg sabotage-restamp-skip GRC_ITEM_META_SWEEP=0 GRC_ITEM_META_SABOTAGE=restamp-skip -- "a|$z|2|14|$r|"
 	run_g8id14_leg sabotage-raw-filter GRC_ITEM_META_SWEEP=4 GRC_ITEM_META_SABOTAGE=raw-filter -- "a|$z|2|14|$r|"
@@ -4308,6 +4333,7 @@ run_cost_capture_g8htr() {
 	CAPTURE_WITH_PATCH=0
 	run_capture "$dir" "$G8HTR_COST_QUIT" none
 	CAPTURE_WITH_PATCH=1
+	"$REPO_ROOT/node_modules/.bin/tsx" --conditions=development "$SCRIPT_DIR/lib/gate8-scale-checks.ts" --capture "$dir"
 	rm -rf "${dir:?}/$RECORDING_NAME" "${dir:?}/store"
 }
 

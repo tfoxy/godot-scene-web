@@ -43,6 +43,7 @@ import { type G8mmExpected, runG8mm } from "./lib/gate8-mm-checks";
 import { type G8ptExpected, runG8pt } from "./lib/gate8-pt-checks";
 import { runG8rec1 } from "./lib/gate8-rec1-checks";
 import { type G8resExpected, runG8res } from "./lib/gate8-res-checks";
+import { runScaleMirrorChecks } from "./lib/gate8-scale-checks";
 import { type G8hExpected, runG8h } from "./lib/gate8-size-checks";
 import { runG8tag } from "./lib/gate8-tag-checks";
 import { runG8tag2 } from "./lib/gate8-tag2-checks";
@@ -421,6 +422,7 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
       ),
     );
   }
+  checks.push(...runScaleMirrorChecks(out));
   const gating = checks.filter((c) => c.gating !== false);
   report.gate_passed = gating.length > 0 && gating.every((c) => c.passed);
   report.checks = checks;

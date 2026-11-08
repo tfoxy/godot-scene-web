@@ -167,6 +167,7 @@
           [
             "g8w11",
             "g8tag2",
+            "g8id14",
             "g8id",
             "g8id2",
             "g8ctl",
@@ -178,12 +179,21 @@
         ],
         "3": [
           ["g8w11", "g8ctl", "g8ctsp", "g8res", "g8rec1"],
-          ["g8tag2", "g8id", "g8id2", "g8tag", "g8kp", "g8kc"],
+          ["g8tag2", "g8id14", "g8id", "g8id2", "g8tag", "g8kp", "g8kc"],
           ["*"]
         ],
         "4": [
           ["g8w11"],
-          ["g8tag2", "g8id", "g8id2", "g8tag", "g8ctl", "g8ctsp", "g8res"],
+          [
+            "g8tag2",
+            "g8id14",
+            "g8id",
+            "g8id2",
+            "g8tag",
+            "g8ctl",
+            "g8ctsp",
+            "g8res"
+          ],
           ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp", "g8kc", "g8l"],
           ["*"]
         ]

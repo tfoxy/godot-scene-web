@@ -41,9 +41,9 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
 import { type G8aCheck, skipped } from "./gate8-adopt-checks";
+import { captureMirrorProblems } from "./gate8-scale-checks";
 import {
   createRecordingValidator,
   type ItemMetaRequest,
@@ -1135,6 +1135,54 @@ export function pureProblems(g: string): {
   return { problems: problems.slice(0, 8), detail: details.join("; ") };
 }
 
+export function tagBurstProblems(
+  rows: Array<{ slot: string | null | undefined; stamps: number[] }>,
+): string[] {
+  const resolved = new Set<number>();
+  for (const row of rows) {
+    if (row.slot === null || row.slot === undefined) continue;
+    const slot = Number(row.slot);
+    if (
+      slot >= 2000 &&
+      slot < 3700 &&
+      Number.isInteger(slot) &&
+      row.stamps.some((f) => f >= 500 && f <= 620)
+    )
+      resolved.add(slot);
+  }
+  const missing = Array.from({ length: 1700 }, (_, i) => 2000 + i).filter(
+    (s) => !resolved.has(s),
+  );
+  return missing.length === 0
+    ? []
+    : [
+        `${missing.length}/1700 burst scale_slot identities lack node:true within frames 500–620 (first ${missing.slice(0, 5).join(",")})`,
+      ];
+}
+
+function burstProblems(leg: string): string[] {
+  const request: ItemMetaRequest = {
+    fields: ["class", "script", "scene", "path"],
+    groups: ["scale_tagged"],
+    meta_keys: ["scale_tag", "scale_slot"],
+  };
+  const { dump, validate } = dumpOf(leg, "a/decoded.rs13", 13, request);
+  if (dump === null || validate !== "ok")
+    return [
+      `burst stream: ${validate}; dump ${dump === null ? "missing" : "present"}`,
+    ];
+  const ids = idsOf(leg);
+  if (ids.length === 0) return ["missing host identity row log"];
+  return tagBurstProblems(
+    Object.entries(dump.seen).map(([id, row]) => ({
+      slot: fromDump(row, request)?.meta.scale_slot,
+      stamps: ids
+        .filter((l) => l.id === Number(id) && l.node)
+        .map((l) => l.stamp),
+    })),
+  );
+}
+
 // ------------------------------------------------------------------------------------ id-cost
 
 function costDetail(g: string): string {
@@ -1448,6 +1496,16 @@ export async function runG8id14(g: string): Promise<G8aCheck[]> {
     () => pureProblems(g),
   );
 
+  push(
+    "tag-burst-resolves",
+    "all 1700 frame-500 burst identities (scale_slot 2000–3699) have a node:true host row by frame 620",
+    ["tag-burst"],
+    () => ({
+      problems: burstProblems(join(g, "tag-burst")),
+      detail: "1700 scale_slot identities; deadline 120 frames",
+    }),
+  );
+
   // id-cost (informative)
   checks.push({
     id: "id-cost",
@@ -1473,6 +1531,20 @@ export async function runG8id14(g: string): Promise<G8aCheck[]> {
     const why = caught();
     checks.push(check(id, what, why !== null, why ?? "not caught"));
   };
+  sabotage(
+    "id-sabotage-mirror-cap-default-caught",
+    "sabotage-mirror-cap-default",
+    "mirror-cap-default fails both scale-mirror-whole and tag-burst-resolves",
+    () => {
+      const leg = join(g, "sabotage-mirror-cap-default");
+      const mirror = captureMirrorProblems(join(leg, "host"));
+      const burst = burstProblems(leg);
+      return mirror.some((p) => p.includes("mirror-capacity")) &&
+        burst.some((p) => p.includes("burst scale_slot"))
+        ? `scale-mirror-whole: ${mirror[0]}; tag-burst-resolves: ${burst[0]}`
+        : null;
+    },
+  );
   sabotage(
     "id-sabotage-restamp-skip-caught",
     "sabotage-restamp-skip",

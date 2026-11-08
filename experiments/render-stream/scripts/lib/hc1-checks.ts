@@ -6,6 +6,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { summarizeRecording } from "./gate0-checks";
 import { stateKey } from "./gate1-live-checks";
+import { runScaleMirrorChecks } from "./gate8-scale-checks";
 import { decodeRecord, splitRecords } from "./render-stream-2";
 
 const out = process.argv[2];
@@ -674,6 +675,8 @@ if (!rrSkipped("sabotage-reorder-gate2")) {
     `caught: ${caught.join(" | ")}`,
   );
 }
+
+checks.push(...runScaleMirrorChecks(out));
 
 writeFileSync(
   join(out, "result.json"),
