@@ -3,7 +3,7 @@ extends Control
 ## (ID2)"), loaded by tag.gd when RS_FIXTURE_TAG_PICK is set. It lays out one case per Godot GUI
 ## pick rule the stream must reproduce, tags every CanvasItem with its own name (meta `rs_pick`)
 ## and its effective filter (meta `rs_mf`: "stop", "pass" or "ignore"; "ignore" for a CanvasItem
-## that is not a Control), and at frame start + 20 records Godot's own pick on a 24x16 grid:
+## that is not a Control), and at frame start + 170 records Godot's own pick on a 24x16 grid:
 ## `Viewport.push_input` of a mouse motion at each point, then `gui_get_hovered_control()`.
 ##
 ##   Back         full-width PASS ColorRect, the bottom half (what empty points there hit)
@@ -21,7 +21,7 @@ extends Control
 ##   Ghost        a STOP ColorRect at modulate alpha 0 (the walk culls it, Godot picks it) over UnderGhost
 ##   Veil         a transparent IGNORE ColorRect drawn over VeilButton
 ##
-## RS_FIXTURE_TAG_START (default 0) delays the steps; RS_FIXTURE_QUIT_FRAME (default start + 60)
+## RS_FIXTURE_TAG_START (default 0) delays the steps; RS_FIXTURE_QUIT_FRAME (default start + 200)
 ## quits; RS_FIXTURE_TAG_PICK_LOG names the oracle file, one JSON line:
 ## {"frame", "size": [w, h], "grid": [24, 16], "filters": {name: rs_mf}, "points": [name|null]},
 ## points row by row, top first, each at the cell's centre.
@@ -33,15 +33,16 @@ const IGNORE: Control.MouseFilter = Control.MOUSE_FILTER_IGNORE
 
 var _frame: int = 0
 var _start: int = 0
-var _quit_frame: int = 60
+var _quit_frame: int = 200
 var _card: Control = null
 var _raw: RID = RID()
+var _pool_holder: Control = null
 
 
 func _ready() -> void:
 	if OS.has_environment("RS_FIXTURE_TAG_START"):
 		_start = OS.get_environment("RS_FIXTURE_TAG_START").to_int()
-	_quit_frame = 60 + _start
+	_quit_frame = 200 + _start
 	if OS.has_environment("RS_FIXTURE_QUIT_FRAME"):
 		_quit_frame = OS.get_environment("RS_FIXTURE_QUIT_FRAME").to_int()
 	_rect(self, "Back", Vector2(0, 175), Vector2(640, 185), PASS, Color(0.15, 0.15, 0.2))
@@ -141,13 +142,28 @@ func _tag(n: Node) -> void:
 func _process(_delta: float) -> void:
 	_frame += 1
 	match _frame - _start:
+		2:
+			# Constructed post-arm, but pooled outside the tree beyond the identity retry window.
+			_pool_holder = Control.new()
+			_pool_holder.name = "PoolHolder"
+			_pool_holder.mouse_filter = IGNORE
+			_pool_holder.position = Vector2(150, 135)
+			_pool_holder.size = Vector2.ZERO
+			_pool_holder.scale = Vector2(0.8, 0.8)
+			_control(_pool_holder, "PoolHitbox", Vector2(-100, -30), Vector2(200, 60), STOP)
+			_pool_holder.set_meta("rs_pick", "PoolHolder")
+			_pool_holder.set_meta("rs_mf", "ignore")
+			_tag(_pool_holder)
+		150:
+			add_child(_pool_holder)
+			_tag(self)
 		5:
 			# A drawn item with no node over the card (STS2 draws its cards' art this way), made
 			# after the capture armed so that a late arm streams it.
 			_raw = RenderingServer.canvas_item_create()
 			RenderingServer.canvas_item_set_parent(_raw, _card.get_canvas_item())
 			RenderingServer.canvas_item_add_rect(_raw, Rect2(0, 0, 110, 150), Color(0.9, 0.7, 0.3))
-		20:
+		170:
 			_oracle()
 	if _frame >= _quit_frame:
 		get_tree().quit()
@@ -156,6 +172,9 @@ func _process(_delta: float) -> void:
 func _exit_tree() -> void:
 	# Freed at teardown, after the last frame: the stream's last transaction still holds it (a free
 	# at the quit frame would reach the client's last frame).
+	if is_instance_valid(_pool_holder):
+		_pool_holder.free()
+		_pool_holder = null
 	if _raw.is_valid():
 		RenderingServer.free_rid(_raw)
 		_raw = RID()

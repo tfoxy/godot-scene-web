@@ -161,7 +161,7 @@
         ["g8mm", "g8pt"],
         ["g8t", "g8a", "g8h", "g8f", "g8m", "g8l"]
       ],
-      "why_together": "g8pt's W13c/W13d checks read g8mm's capture and reference (lib/gate8-w13-*-checks.ts); g8l's g8l-<f>-replay-equals-file checks compare its replays with the file groups' receivers (lib/gate8-live-checks.ts FILE_RECEIVER: g8t's receiver/, g8f, g8a, g8h, g8m) and are only emitted when those ran in the same run (test/gate8-build-deps.py)",
+      "why_together": "g8id includes its capture sabotage-no-reentry leg in every shard that selects the group. g8pt's W13c/W13d checks read g8mm's capture and reference (lib/gate8-w13-*-checks.ts); g8l's g8l-<f>-replay-equals-file checks compare its replays with the file groups' receivers (lib/gate8-live-checks.ts FILE_RECEIVER: g8t's receiver/, g8f, g8a, g8h, g8m) and are only emitted when those ran in the same run (test/gate8-build-deps.py)",
       "partitions": {
         "2": [
           [

@@ -53,7 +53,10 @@ Entry node(std::uint32_t id, std::uint64_t stamp, std::int32_t cls, std::uint64_
 
 }  // namespace
 
+int item_meta_host_tests();
+
 int main() {
+  g_failures += item_meta_host_tests();
   // Names and grants.
   Request v2;
   v2.fields = {"class", "instance_id", "mouse_filter"};

@@ -180,6 +180,14 @@
   },
   "rules": [
     {
+      "why": "Item identity re-entry host unit tests and callback lifetime source checks",
+      "paths": [
+        "experiments/render-stream/capture/test/rs_item_meta_host_test.cpp",
+        "experiments/render-stream/capture/test/reentry-source-test.py"
+      ],
+      "reach": ["capture-build", "pure"]
+    },
+    {
       "why": "G7z/G8z manifests (gate7-design.md Q11): generation and the g7-z / check-gate8z.ts checks are pure (self-test-gate7z, self-test-gate8z)",
       "paths": [
         "experiments/render-stream/protocol/features/**",

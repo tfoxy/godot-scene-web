@@ -45,9 +45,10 @@ stays the default everywhere.
     `_has_point`, which makes the item's rect an upper bound of its pick area.
   - `groups` and the meta columns follow, as at /13. A no-node item is still `[id]`.
 - **Re-stamped rows.** At /14 a `delta` may carry a row for an id the receiver already holds. The
-  row replaces the held row, applied at receipt as at /13. Only a `mouse_filter` change re-stamps
-  a row; every other column of a re-stamped row repeats its value. A re-stamp introduces no
-  strings. Rows stay sorted by id, without duplicates, within one record.
+  row replaces the held row, applied at receipt as at /13. A host may re-send a row for an id it
+  already sent when that item's node becomes known later or its identity changed at a tree
+  re-entry. For a `mouse_filter` re-stamp, every other column repeats its value and no strings
+  are introduced. Rows stay sorted by id, without duplicates, within one record.
 - **When a change arrives.** The host re-reads a Control's filter on its `property_list_changed`
   (which `set_mouse_filter` emits on an actual change) and in a round-robin sweep of
   `GRC_ITEM_META_SWEEP` Controls a frame (default 64; `mouse_behavior_recursive` emits nothing). A

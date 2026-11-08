@@ -19,8 +19,12 @@ import {
   PICKED,
   type PickOracle,
   pointAt,
+  poolIdFromStream,
+  poolTransitionProblem,
   runG8id,
 } from "../lib/gate8-id-checks";
+
+import { MAGIC_V13 } from "../lib/render-stream-2";
 
 let failures = 0;
 let assertions = 0;
@@ -47,6 +51,7 @@ const inRot = (x: number, y: number) => {
 /** pick.gd's pickable rects in Godot's order: layer 1, TopKid (a root after Pick), Pick's
  * children last first (each child's children first), layer -1. */
 const ORDER: [string, (x: number, y: number) => boolean][] = [
+  ["PoolHitbox", (x, y) => inside(x, y, [70, 111, 160, 48])],
   ["Over", (x, y) => inside(x, y, [385, 110, 70, 60])],
   ["TopKid", (x, y) => inside(x, y, [65, 225, 90, 60])],
   ["VeilButton", (x, y) => inside(x, y, [470, 290, 100, 50])],
@@ -80,6 +85,8 @@ const FILTERS: Record<string, string> = Object.fromEntries([
 ]);
 /** HIT1's reading on the fixture (the no-node art is item #77). */
 const DEFAULT = grid((x, y, k) => {
+  // Pool has no drawn commands; pin this independently of the expected-answer helper.
+  if (ORACLE[k] === "PoolHitbox") return null;
   const e = hit1Expected(ORACLE[k], x, y);
   return e.want === "nodeless" ? "#77" : e.want;
 });
@@ -99,11 +106,16 @@ interface Tree {
     page?: (string | null)[] | null;
     filters?: Record<string, string>;
     skip?: boolean;
+    rows?: { id: number; node: boolean; stamp: number }[];
+    poolTag?: string;
   };
 }
 const healthy = (): Tree => ({
   pick: { page: ORACLE },
   "pick-default": { page: DEFAULT },
+  "sabotage-no-reentry": {
+    page: ORACLE.map((n) => (n === "PoolHitbox" ? null : n)),
+  },
   "sabotage-pick-draw-order": { page: DEFAULT },
   "sabotage-pick-no-rect": {
     page: ORACLE.map((n) => (n === "Hitbox" ? null : n)),
@@ -116,6 +128,38 @@ function write(root: string, tree: Tree): void {
     const d = join(root, leg);
     mkdirSync(join(d, "host"), { recursive: true });
     mkdirSync(join(d, "page"), { recursive: true });
+    const meta = Buffer.from(
+      JSON.stringify({
+        type: "item_meta",
+        form: "full",
+        grant: {
+          fields: ["path"],
+          groups: [],
+          meta_keys: ["rs_pick", "rs_mf"],
+        },
+        strings_from: 0,
+        strings: ["path", t.poolTag ?? "PoolHitbox", "stop"],
+        items: [[42, 0, 1, 2]],
+        blocks: [],
+      }),
+    );
+    const rec = Buffer.alloc(meta.length + 12);
+    rec.writeUInt32LE(meta.length + 8, 0);
+    rec.writeUInt32LE(meta.length, 4);
+    meta.copy(rec, 8);
+    mkdirSync(join(d, "host", "tap"), { recursive: true });
+    writeFileSync(
+      join(d, "host", "tap", "stream-1.rs2"),
+      Buffer.concat([MAGIC_V13, rec]),
+    );
+    const rows = t.rows ?? [
+      { id: 42, node: false, stamp: 182 },
+      { id: 42, node: true, stamp: 210 },
+    ];
+    writeFileSync(
+      join(d, "host", "ids.jsonl"),
+      `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+    );
     if (t.skip) writeFileSync(join(d, "skipped-by-tier.txt"), "smoke\n");
     const oracle = t.oracle === undefined ? ORACLE : t.oracle;
     if (oracle !== null) {
@@ -154,6 +198,8 @@ function write(root: string, tree: Tree): void {
 
 const IDS = [
   "pick-oracle",
+  "pick-pool-renode",
+  "sabotage-no-reentry-caught",
   "pick-drawn-default",
   "sabotage-pick-draw-order-caught",
   "sabotage-pick-no-rect-caught",
@@ -194,6 +240,44 @@ async function main(): Promise<void> {
       `${what}: ${id} fails (${c?.status})`,
     );
   };
+  await fails("missing null-node history", "pick-pool-renode", (t) => {
+    t.pick.rows = [{ id: 42, node: true, stamp: 210 }];
+  });
+  await fails("history belongs to another id", "pick-pool-renode", (t) => {
+    t.pick.rows = [
+      { id: 43, node: false, stamp: 182 },
+      { id: 43, node: true, stamp: 210 },
+    ];
+  });
+  await fails("reversed identity history", "pick-pool-renode", (t) => {
+    t.pick.rows = [
+      { id: 42, node: true, stamp: 182 },
+      { id: 42, node: false, stamp: 210 },
+    ];
+  });
+  await fails("wrong stream meta tag", "pick-pool-renode", (t) => {
+    t.pick.poolTag = "Other";
+  });
+  await fails("no-reentry not caught", "sabotage-no-reentry-caught", (t) => {
+    t["sabotage-no-reentry"].page = ORACLE;
+  });
+  expect(
+    poolTransitionProblem(
+      [
+        { id: 42, node: false, stamp: 1 },
+        { id: 42, node: true, stamp: 1 },
+      ],
+      42,
+    ) !== null,
+    "same-frame history cannot prove a pooled wait",
+  );
+  let rejected = false;
+  try {
+    poolIdFromStream(new Uint8Array());
+  } catch {
+    rejected = true;
+  }
+  expect(rejected, "missing stream is rejected");
   const flip = (pts: (string | null)[], from: string, to: string | null) =>
     pts.map((n) => (n === from ? to : n));
   await fails("one point wrong", "pick-oracle", (t) => {
@@ -221,6 +305,19 @@ async function main(): Promise<void> {
   await fails("default flipped to tree", "pick-drawn-default", (t) => {
     t["pick-default"].page = ORACLE;
   });
+  expect(
+    hit1Expected("PoolHitbox", 120, 123.75).want === null,
+    "the undrawn Pool has no HIT1 draw-order answer",
+  );
+  await fails(
+    "default wrongly picks the undrawn Pool",
+    "pick-drawn-default",
+    (t) => {
+      t["pick-default"].page = DEFAULT.map((n, k) =>
+        ORACLE[k] === "PoolHitbox" ? "PoolHitbox" : n,
+      );
+    },
+  );
   await fails("default wrong at a ghost point", "pick-drawn-default", (t) => {
     t["pick-default"].page = DEFAULT.map((n, k) =>
       ORACLE[k] === "Ghost" ? "Ghost" : n,

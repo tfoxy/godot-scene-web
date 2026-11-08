@@ -31,6 +31,10 @@ struct HostStats {
   std::uint64_t union_resets = 0;   // the union grew: every live item re-resolved
   std::uint64_t passes = 0;         // passes that had work
   std::uint64_t resolved = 0;       // entries made (node or not)
+  std::uint64_t reentry_queued = 0;
+  std::uint64_t reentry_same = 0;
+  std::uint64_t reentry_rows = 0;
+  std::uint64_t reentry_max_batch = 0;
   std::uint64_t no_node = 0;        // of which `node: null` (120 frames without a node)
   std::uint64_t rekey_copies = 0;
   std::uint64_t unpublished_waits = 0;
@@ -110,6 +114,7 @@ class Host {
     std::uint32_t id;
     std::uint64_t first_frame;
     std::uint64_t next_frame;  // a node wait backs off: retried at +1, +2, +4, ... frames
+    bool reentry = false;
   };
   std::int32_t intern(const std::string &raw, Batch *batch);
   // ID3: the watched Controls, in sweep order (swap-removed when freed), indexed by RID.
@@ -131,6 +136,7 @@ class Host {
   Request union_;
   std::uint32_t watermark_ = 0;
   std::deque<Work> work_;
+  std::unordered_set<std::uint64_t> entered_;
   std::vector<std::string> strings_;
   std::unordered_map<std::string, std::int32_t> string_index_;
   std::vector<std::string> group_names_;

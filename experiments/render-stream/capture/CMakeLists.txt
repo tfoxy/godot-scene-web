@@ -569,10 +569,15 @@ add_test(NAME rs_gate8_policy COMMAND rs_gate8_policy_test)
 
 # ID3 (render-stream-14.md): item_meta v2's pure half -- the v2 names, grant bits, columns and
 # re-stamped rows -- beside TAG1's /13 rows.
-add_executable(rs_item_meta_test test/rs_item_meta_test.cpp src/rs_item_meta.cpp)
+add_executable(rs_item_meta_test test/rs_item_meta_test.cpp test/rs_item_meta_host_test.cpp
+  src/rs_item_meta.cpp src/rs_item_meta_host.cpp src/rs_mirror.cpp src/rs_texture_delivery.cpp
+  src/rs_shader_payload.cpp src/rs_texture_payload.cpp src/rs_mesh_payload.cpp src/rs_sha256.cpp
+  src/rs2_diff.cpp src/rs2_codec.cpp)
 target_include_directories(rs_item_meta_test PRIVATE src)
-target_link_libraries(rs_item_meta_test PRIVATE grc_warnings)
+target_link_libraries(rs_item_meta_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_item_meta COMMAND rs_item_meta_test)
+add_test(NAME rs_item_meta_reentry_source
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test/reentry-source-test.py)
 
 # G8kw: the texture worker pool, the publication hold-back and the held hook-log lines
 # Async predictions plus jobs resolve to the synchronous

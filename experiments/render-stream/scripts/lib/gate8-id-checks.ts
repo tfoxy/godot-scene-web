@@ -8,18 +8,27 @@
 //   pick-oracle               `pick` (the fixture's filters stated, pickOrder("tree")): every grid
 //                             point names what Godot picked. The oracle itself must reach every case
 //                             (each pickable name appears, no IGNORE, hidden or non-Control name does)
+//   pick-pool-renode          `pick`: PoolHitbox's meta-joined id changes from node:false to node:true
+//                             after its pooled wait; the client picks it at every oracle Pool point
 //   pick-drawn-default        `pick-default` (the same filters, no pickOrder: ID-D8's no-flip): every
 //                             point is HIT1's draw-order answer, modelled from the fixture: the oracle's
 //                             name except ZHigh over ZLow (z_index 5), BParent over BChild (behind),
 //                             the card's no-node art inside the card and UnderGhost under Ghost (alpha
-//                             0, culled from the draw); each of those four differs at one point at least
+//                             0, culled from the draw), and no drawn hit at PoolHitbox; each of those
+//                             five differs at one point at least
 //   sabotage-pick-*-caught    pick-draw-order (HIT1's reading under "tree") fails pick-oracle at the
 //                             z_index and behind points; pick-no-rect (drawn content rects only) at the
 //                             Hitbox points; pick-no-clip (children outside a clip) at the clipped points
+//   sabotage-no-reentry-caught capture withholds pooled identity updates, missing the PoolHitbox points
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type G8aCheck, skipped } from "./gate8-adopt-checks";
+import {
+  type ItemMetaRecordMeta,
+  type ItemMetaRequest,
+  splitRecords,
+} from "./render-stream-2";
 
 export const PICK_GRID = [24, 16] as const;
 
@@ -60,6 +69,7 @@ export const PICKED = [
   "BParent",
   "BChild",
   "Hitbox",
+  "PoolHitbox",
   "ClipBox",
   "Spill",
   "Under",
@@ -79,6 +89,7 @@ export const NEVER = [
   "Pick",
   "ZRoot",
   "Card",
+  "PoolHolder",
   "Face",
   "Decor",
   "Hidden",
@@ -104,7 +115,7 @@ const OVER: [number, number, number, number] = [385, 110, 70, 60];
 const ZHIGH: [number, number, number, number] = [5, 5, 90, 90];
 
 /** The answer class HIT1's draw-order reading gives at a point, from the oracle's name. */
-export type Hit1Case = "z" | "behind" | "card" | "ghost" | null;
+export type Hit1Case = "z" | "behind" | "card" | "ghost" | "pool" | null;
 
 export function hit1Expected(
   oracle: string | null,
@@ -119,6 +130,8 @@ export function hit1Expected(
   if (oracle === "ZLow" && inside(x, y, ZHIGH))
     return { want: "ZHigh", case: "z" };
   if (oracle === "BChild") return { want: "BParent", case: "behind" };
+  // The pooled holder and hitbox draw nothing: tree picking alone uses their custom rect.
+  if (oracle === "PoolHitbox") return { want: null, case: "pool" };
   // Ghost (modulate alpha 0) is culled from the draw.
   if (oracle === "Ghost") return { want: "UnderGhost", case: "ghost" };
   return { want: oracle, case: null };
@@ -141,6 +154,71 @@ export function mismatches(
     );
   }
   return out;
+}
+
+/** Join a named item through item_meta strings, without consulting engine RID maps. */
+export function poolIdFromStream(data: Uint8Array): number {
+  const split = splitRecords(data, 13);
+  if (split.errors.length > 0) throw new Error(split.errors[0]);
+  const strings: string[] = [];
+  const names = new Map<number, string>();
+  let grant: ItemMetaRequest | null = null;
+  for (const record of split.records) {
+    const b = record.bytes;
+    if (b.byteLength < 12) throw new Error("short stream record");
+    const length = new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(
+      4,
+      true,
+    );
+    const meta = JSON.parse(
+      new TextDecoder().decode(b.subarray(8, 8 + length)),
+    ) as ItemMetaRecordMeta;
+    if (meta.type !== "item_meta") continue;
+    if (meta.form === "full") {
+      grant = meta.grant;
+      strings.length = 0;
+      names.clear();
+    }
+    if (grant === null) throw new Error("item_meta without a grant");
+    if (meta.strings_from !== strings.length)
+      throw new Error("non-contiguous item_meta strings");
+    strings.push(...meta.strings);
+    const key = grant.meta_keys.indexOf("rs_pick");
+    if (key < 0) throw new Error("item_meta grant has no rs_pick");
+    const column =
+      1 + grant.fields.length + (grant.groups.length > 0 ? 1 : 0) + key;
+    for (const row of meta.items) {
+      const id = row[0] as number;
+      const index = row[column];
+      if (typeof index === "number") names.set(id, strings[index]);
+      else names.delete(id);
+    }
+  }
+  const ids = [...names]
+    .filter(([, name]) => name === "PoolHitbox")
+    .map(([id]) => id);
+  if (ids.length !== 1)
+    throw new Error(`expected one PoolHitbox id by rs_pick, got ${ids.length}`);
+  return ids[0];
+}
+
+export interface IdentityLogRow {
+  id: number;
+  node: boolean;
+  stamp: number;
+}
+export function poolTransitionProblem(
+  rows: IdentityLogRow[],
+  id: number,
+): string | null {
+  const own = rows.filter((row) => row.id === id);
+  const noNode = own.findIndex((row) => row.node === false);
+  const known = own.findIndex(
+    (row, index) => index > noNode && row.node === true,
+  );
+  return noNode >= 0 && known > noNode && own[known].stamp > own[noNode].stamp
+    ? null
+    : `PoolHitbox id ${id} needs a node:false row followed by node:true at a later frame`;
 }
 
 export async function runG8id(g: string): Promise<G8aCheck[]> {
@@ -190,7 +268,15 @@ export async function runG8id(g: string): Promise<G8aCheck[]> {
           `${leg}: the oracle's viewport ${o.size.join("x")} is not the presentation ${p.size.join("x")}`,
         );
       const names = Object.keys(o.filters);
-      const missing = names.filter((n) => p.filters[n] !== o.filters[n]);
+      const missing = names.filter(
+        (n) =>
+          // This sabotage deliberately withholds both Pool identities. Other filters still prove
+          // the page and fixture are healthy; Pool points below must expose the missing rows.
+          !(
+            leg === "sabotage-no-reentry" &&
+            (n === "PoolHolder" || n === "PoolHitbox")
+          ) && p.filters[n] !== o.filters[n],
+      );
       if (missing.length > 0)
         problems.push(
           `${leg}: the client did not state the fixture's filters for ${missing.join(", ")}`,
@@ -234,7 +320,7 @@ export async function runG8id(g: string): Promise<G8aCheck[]> {
     if (why !== null) notRun(id, criterion, why);
     else {
       const { problems, o, p } = health("pick");
-      if (o !== null && p !== null && problems.length === 0) {
+      if (o !== null && p !== null) {
         const seen = new Set(o.points);
         const unreached = PICKED.filter((n) => !seen.has(n));
         if (unreached.length > 0)
@@ -255,11 +341,55 @@ export async function runG8id(g: string): Promise<G8aCheck[]> {
     }
   }
 
+  // Pool: prove the 120-frame null-node shape occurred, then a row replaced it.
+  {
+    const id = "pick-pool-renode";
+    const criterion =
+      "A pooled PoolHitbox first resolves node:false, then node:true for the same meta-joined id, and client picks match Godot at its points";
+    const why = skipped(legDir("pick"));
+    if (why !== null) notRun(id, criterion, why);
+    else {
+      const { problems, o, p } = health("pick");
+      try {
+        const poolId = poolIdFromStream(
+          new Uint8Array(
+            readFileSync(join(legDir("pick"), "host", "tap", "stream-1.rs2")),
+          ),
+        );
+        const rows = readFileSync(
+          join(legDir("pick"), "host", "ids.jsonl"),
+          "utf8",
+        )
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as IdentityLogRow);
+        const problem = poolTransitionProblem(rows, poolId);
+        if (problem !== null) problems.push(problem);
+      } catch (error) {
+        problems.push(String(error));
+      }
+      if (o !== null && p !== null) {
+        if (!o.points.includes("PoolHitbox"))
+          problems.push("oracle never picks PoolHitbox");
+        problems.push(
+          ...cap(mismatches(o, p.points, (k) => o.points[k] === "PoolHitbox")),
+        );
+      }
+      mk(
+        id,
+        criterion,
+        problems,
+        "PoolHitbox node:false -> node:true, joined by rs_pick; pool grid agrees",
+      );
+    }
+  }
+
   // pick-drawn-default
   {
     const id = "pick-drawn-default";
     const criterion =
-      "ID2 (ID-D8): with the same filters and no pickOrder call, every point is HIT1's draw-order answer (the oracle's, except ZHigh over ZLow, BParent over BChild, the no-node art inside the card and UnderGhost under the alpha-0 Ghost), and each of those four cases differs from Godot's pick at a point at least";
+      "ID2 (ID-D8): with the same filters and no pickOrder call, every point is HIT1's draw-order answer (the oracle's, except ZHigh over ZLow, BParent over BChild, the no-node art inside the card, UnderGhost under the alpha-0 Ghost, and no drawn hit at PoolHitbox), and each of those five cases differs from Godot's pick at a point at least";
     const why = skipped(legDir("pick-default"));
     if (why !== null) notRun(id, criterion, why);
     else {
@@ -283,7 +413,7 @@ export async function runG8id(g: string): Promise<G8aCheck[]> {
             counts[e.case] = (counts[e.case] ?? 0) + 1;
         }
         problems.push(...cap(bad));
-        const quiet = ["z", "behind", "card", "ghost"].filter(
+        const quiet = ["z", "behind", "card", "ghost", "pool"].filter(
           (c) => (counts[c] ?? 0) === 0,
         );
         if (quiet.length > 0)
@@ -349,6 +479,11 @@ export async function runG8id(g: string): Promise<G8aCheck[]> {
     "pick-no-clip",
     "ID2 sabotage pick-no-clip (a clipping Control's children visited outside it): fails pick-oracle where Spill reaches outside ClipBox",
     (o, p, k) => p.points[k] === "Spill" && o.points[k] !== "Spill",
+  );
+  sab(
+    "no-reentry",
+    "Capture sabotage no-reentry withholds the pooled identity update and fails pick-oracle at PoolHitbox points",
+    (o, _p, k) => o.points[k] === "PoolHitbox",
   );
   return checks;
 }

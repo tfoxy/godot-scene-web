@@ -88,6 +88,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "rs2_snapshot.h"
@@ -494,8 +495,13 @@ void node_map_release_tag();
 // meta-before-ready (identities resolved in node_added, before the node's _ready).
 void tag_set_query(const IdentityQuery &query, bool before_ready);
 // False when the map has no live node for `rid` (not in the tree yet, or none at all).
-bool item_identity(std::uint64_t rid, Identity *out);
+// Re-entry reads also require the node to remain in the tree.
+bool item_identity(std::uint64_t rid, Identity *out, bool reentry = false);
 void tag_prune_map();
+// Main-thread configuration; the node_added hook queues only while TAG is active.
+void tag_set_no_reentry(bool sabotage);
+// Drains entered RIDs under the node-map lock, reusing the caller's cleared set.
+void tag_take_entered(std::unordered_set<std::uint64_t> *out);
 
 // the mouse_filter watch. Per resolved Control,
 // one capture callable bound to the item's RID is connected to its `property_list_changed`

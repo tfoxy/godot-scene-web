@@ -1779,11 +1779,11 @@ void item_meta_configure() {
              sabotage != "id-off-by-one" && sabotage != "before-ready" &&
              sabotage != "restamp-skip" && sabotage != "raw-filter" &&
              sabotage != "instance-of-root" && sabotage != "leak-connections" &&
-             sabotage != "v2-at-13") {
+             sabotage != "v2-at-13" && sabotage != "no-reentry") {
     g_meta.config_ok = false;
     why = "GRC_ITEM_META_SABOTAGE \"" + sabotage +
           "\" is not in-shared, skip-full, id-off-by-one, before-ready, restamp-skip, raw-filter, "
-          "instance-of-root, leak-connections or v2-at-13";
+          "instance-of-root, leak-connections, v2-at-13 or no-reentry";
   }
   rs::item_meta::Request file;
   file.fields = comma_names(env_string("GRC_ITEM_META_FILE"));
@@ -1807,6 +1807,7 @@ void item_meta_configure() {
     return;
   }
   g_meta.sabotage = sabotage;
+  rs::tag_set_no_reentry(sabotage == "no-reentry");
   g_meta.host.configure(g_meta.budget_us, sabotage == "before-ready");
   rs::item_meta::Host::V2Options v2;
   v2.sweep = g_meta.sweep;

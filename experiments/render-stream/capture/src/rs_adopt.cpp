@@ -171,6 +171,7 @@ enum BindId : int {
   kNodeGetIndex,
   kNodeGetParent,
   kNodeGetViewport,
+  kNodeIsInsideTree,
   kObjectGetInstanceId,
   kViewportGetViewportRid,
   kViewportFindWorld2d,
@@ -291,6 +292,7 @@ const BindSpec kBinds[kBindCount] = {
     {"Node", "get_index", 894402480LL},           // (bool include_internal) -> int
     {"Node", "get_parent", 3160264692LL},         // -> Node (LATE-RES: the item's node parent)
     {"Node", "get_viewport", 3596683776LL},       // -> Viewport
+    {"Node", "is_inside_tree", 36873697LL},
     {"Object", "get_instance_id", 3905245786LL},
     {"Viewport", "get_viewport_rid", 2944877500LL},
     {"Viewport", "find_world_2d", 2339128592LL},  // -> World2D
@@ -400,6 +402,9 @@ const BindSpec kBinds[kBindCount] = {
 GDExtensionMethodBindPtr g_bind[kBindCount] = {};
 bool g_binds_resolved = false;
 std::unordered_map<std::uint64_t, std::uint64_t> g_item_nodes;
+// Entered RIDs are always a subset of the node map, even while no viewer asks for a pass.
+std::unordered_set<std::uint64_t> g_tag_entered;
+bool g_tag_no_reentry = false;
 // G8m: the walk's items that draw with a material (own or inherited), for their instance params.
 std::vector<std::uint64_t> g_walk_material_items;
 // G8m: guards g_item_nodes once SceneTree.node_added can write it (any thread that adds a node).
@@ -811,6 +816,7 @@ AdoptStats adopt_at_arm(const AdoptConfig &config) {
   {
     std::lock_guard<std::mutex> lock(g_node_mutex);
     g_item_nodes.clear();
+    g_tag_entered.clear();
   }
   g_walk_material_items.clear();
   const std::uint64_t t0 = now_ns();
@@ -2240,6 +2246,9 @@ void node_added_call(void * /*userdata*/, const GDExtensionConstVariantPtr *args
   {
     std::lock_guard<std::mutex> lock(g_node_mutex);
     g_item_nodes[rid] = id;
+    if (g_tag_active.load(std::memory_order_acquire) && !g_tag_no_reentry) {
+      g_tag_entered.insert(rid);
+    }
   }
   // LATE-RES (gap #5): a pre-arm item not in the tree at arm (a pooled node) is adopted at its
   // first node_added after the arm, so its enter-tree and draw calls land on a known item.
@@ -2308,8 +2317,15 @@ void node_map_prune() {
     return;
   }
   for (auto it = g_item_nodes.begin(); it != g_item_nodes.end();) {
-    it = g_iface.object_get_instance_from_id(it->second) == nullptr ? g_item_nodes.erase(it)
-                                                                    : std::next(it);
+    if (g_iface.object_get_instance_from_id(it->second) == nullptr) {
+      g_tag_entered.erase(it->first);
+      it = g_item_nodes.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  for (auto it = g_tag_entered.begin(); it != g_tag_entered.end();) {
+    it = g_item_nodes.count(*it) == 0 ? g_tag_entered.erase(it) : std::next(it);
   }
   g_node_prune_at = std::max<std::size_t>(4096, g_item_nodes.size() * 2);
 }
@@ -4007,12 +4023,25 @@ void node_map_release_tag() {
     return;
   }
   g_tag_active.store(false, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lock(g_node_mutex);
+    g_tag_entered.clear();
+  }
   g_tag_early.clear();
   if (!g_res_active.load(std::memory_order_acquire)) {
     node_map_disconnect_now();
     std::lock_guard<std::mutex> lock(g_node_mutex);
     g_item_nodes.clear();
+    g_tag_entered.clear();
   }
+}
+
+void tag_set_no_reentry(bool sabotage) { g_tag_no_reentry = sabotage; }
+
+void tag_take_entered(std::unordered_set<std::uint64_t> *out) {
+  out->clear();
+  std::lock_guard<std::mutex> lock(g_node_mutex);
+  out->swap(g_tag_entered);
 }
 
 void tag_set_query(const IdentityQuery &query, bool before_ready) {
@@ -4029,7 +4058,7 @@ void tag_set_query(const IdentityQuery &query, bool before_ready) {
   g_tag_early.clear();
 }
 
-bool item_identity(std::uint64_t rid, Identity *out) {
+bool item_identity(std::uint64_t rid, Identity *out, bool reentry) {
   if (g_tag_before_ready) {
     const auto early = g_tag_early.find(rid);
     if (early != g_tag_early.end()) {
@@ -4041,6 +4070,13 @@ bool item_identity(std::uint64_t rid, Identity *out) {
   void *node = node_of(rid);
   if (node == nullptr) {
     return false;
+  }
+  if (reentry) {
+    std::uint8_t inside = 0;
+    ptrcall(kNodeIsInsideTree, node, nullptr, &inside);
+    if (inside == 0) {
+      return false;  // detached again while still alive: preserve the held identity
+    }
   }
   resolve_node(node, out);
   return true;

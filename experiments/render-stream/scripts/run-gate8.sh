@@ -2599,18 +2599,22 @@ run_g8tag2() {
 run_g8id_leg() {
 	local dir="$OUT/g8id/$1" ext="$2" waited=0 port="" page pid rc
 	shift 2
-	local host="$dir/host"
+	local host="$dir/host" tsx="$REPO_ROOT/node_modules/.bin/tsx"
+	[ -x "$tsx" ] || tsx="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)/../node_modules/.bin/tsx"
 	mkdir -p "$host/evidence" "$host/tap"
 	page="$(legs_free_port)"
 	LEG_ENV=(
 		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
 		GRC_EVIDENCE_DIR="$host/evidence" GRC_STREAM_VERSION=13 GRC_ROOT_SIZE="presentation:640x360"
-		GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip RS_FIXTURE_ARM=late RS_FIXTURE_QUIT_FRAME=150
+		GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip RS_FIXTURE_ARM=late RS_FIXTURE_QUIT_FRAME=260
 		RS_FIXTURE_TAG_PICK=1 RS_FIXTURE_TAG_PICK_LOG="$host/pick-oracle.json"
-		RS_FIXTURE_TAG_START=60 GRC_ITEM_META=scene,path,meta GRC_LIVE_LISTEN=127.0.0.1:0
+		RS_FIXTURE_TAG_START=60 GRC_ITEM_META=scene,path,meta GRC_ITEM_META_LOG="$host/ids.jsonl" GRC_LIVE_LISTEN=127.0.0.1:0
 		GRC_LIVE_TAP_DIR="$host/tap" GRC_LIVE_MAX_CONNECTIONS=3 GRC_LIVE_AWAIT_HELLO_MS=30000
 		GRC_LIVE_ALLOWED_ORIGINS="http://127.0.0.1:$page"
 	)
+	if [ "$dir" = "$OUT/g8id/sabotage-no-reentry" ]; then
+		LEG_ENV+=(GRC_ITEM_META_SABOTAGE=no-reentry)
+	fi
 	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$TAG_DIR"
 	pid="$BG_PID"
 	[ -z "$pid" ] && return 0
@@ -2625,7 +2629,7 @@ run_g8id_leg() {
 		echo "the live host is not listening (see $host/evidence/live.json)" >"$dir/skipped.txt"
 	else
 		mkdir -p "$dir/page"
-		(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/client-ext-check.ts" \
+		(cd "$REPO_ROOT" && mise exec -- "$tsx" --conditions=development "$SCRIPT_DIR/client-ext-check.ts" \
 			--dir "$dir/page" --port "$page" --ws "ws://127.0.0.1:$port/render-stream" \
 			--http "http://127.0.0.1:$port" --core "$OUT/g8id/core" --extension "$ext" --pres 640x360 "$@") \
 			>"$dir/page/stdout.log" 2>&1 && rc=0 || rc=$?
@@ -2644,8 +2648,9 @@ run_g8id() {
 	echo "run-gate8: g8id pick (the fixture's filters, pickOrder(\"tree\")) and pick-default (no pickOrder)"
 	run_g8id_leg pick pick
 	run_g8id_leg pick-default pick-default
-	echo "run-gate8: g8id sabotages (pick-draw-order, pick-no-rect, pick-no-clip)"
+	echo "run-gate8: g8id sabotages (no-reentry, pick-draw-order, pick-no-rect, pick-no-clip)"
 	local sab
+	run_g8id_leg sabotage-no-reentry pick
 	for sab in pick-draw-order pick-no-rect pick-no-clip; do
 		run_g8id_leg "sabotage-$sab" pick --sabotage "$sab"
 	done
@@ -2661,7 +2666,7 @@ run_g8id2_leg() {
 	mkdir -p "$host/evidence" "$dir/page"
 	LEG_ENV=(GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
 		GRC_EVIDENCE_DIR="$host/evidence" GRC_STREAM_VERSION=13 GRC_ROOT_SIZE=presentation:640x360
-		GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip RS_FIXTURE_ARM=late RS_FIXTURE_QUIT_FRAME=240
+		GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip RS_FIXTURE_ARM=late RS_FIXTURE_QUIT_FRAME=260
 		RS_FIXTURE_TAG_START=60 GRC_ITEM_META="$ID_GRANT" GRC_ITEM_META_LOG="$host/ids.jsonl"
 		GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_AWAIT_HELLO_MS=30000
 		GRC_LIVE_ALLOWED_ORIGINS="http://127.0.0.1:$page" RS_FIXTURE_TAG_LOG="$host/oracle.jsonl")

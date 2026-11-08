@@ -153,6 +153,16 @@ std::shared_ptr<const Batch> Host::pass(const Mirror &mirror, std::uint64_t fram
     ++watermark_;
     work_.push_back({watermark_, frame, frame});
   }
+  tag_take_entered(&entered_);
+  stats_.reentry_max_batch = std::max<std::uint64_t>(stats_.reentry_max_batch, entered_.size());
+  for (const std::uint64_t rid : entered_) {
+    const auto old = by_rid_.find(rid);
+    if (old != by_rid_.end()) {
+      work_.push_back({old->second.id, frame, frame, true});
+      ++stats_.reentry_queued;
+    }
+  }
+  entered_.clear();
   if (v2_filter_) {
     filter_pass(mirror, frame, batch.get());  // ID3: re-stamps before the new items' rows
   }
@@ -178,6 +188,8 @@ std::shared_ptr<const Batch> Host::pass(const Mirror &mirror, std::uint64_t fram
     std::uint64_t rid = 0;
     bool published = false;
     if (!mirror.item_info(w.id, &rid, &published)) {
+      // Under GRC_UNKNOWN_ITEM=skip, a re-entry queued with the pre-rekey id is dropped here;
+      // the fresh id keeps its copied identity until the next tree entry.
       continue;  // freed (or re-keyed away) before it was resolved: no row is ever needed
     }
     if (!published) {
@@ -189,7 +201,7 @@ std::shared_ptr<const Batch> Host::pass(const Mirror &mirror, std::uint64_t fram
     entry.id = w.id;
     entry.stamp = frame;
     const auto old = by_rid_.find(rid);
-    if (old != by_rid_.end() && old->second.id != w.id) {
+    if (!w.reentry && old != by_rid_.end() && old->second.id != w.id) {
       // 4. A rekey (GRC_UNKNOWN_ITEM=skip) gave the item a fresh id: its row is copied.
       entry = old->second;
       entry.id = w.id;
@@ -198,10 +210,13 @@ std::shared_ptr<const Batch> Host::pass(const Mirror &mirror, std::uint64_t fram
     } else {
       Identity identity;
       const std::uint64_t r0 = now_ns();
-      const bool found = item_identity(rid, &identity);
+      const bool found = item_identity(rid, &identity, w.reentry);
       stats_.resolve_ns += now_ns() - r0;
       ++items;
       if (!found) {
+        if (w.reentry) {
+          continue;  // gone again: keep the held row, without a retry or a no_node count
+        }
         if (frame - w.first_frame < kPendingFrames) {
           // 2. not in the tree yet: retried, backing off (+1, +2, +4, ... frames), until 120
           // frames after its creation.
@@ -238,6 +253,17 @@ std::shared_ptr<const Batch> Host::pass(const Mirror &mirror, std::uint64_t fram
         }
       }
     }
+    if (w.reentry) {
+      if (old != by_rid_.end() && entry.node == old->second.node &&
+          std::equal(std::begin(entry.field), std::end(entry.field), std::begin(old->second.field)) &&
+          entry.instance_id == old->second.instance_id &&
+          entry.mouse_filter == old->second.mouse_filter && entry.groups == old->second.groups &&
+          entry.meta == old->second.meta) {
+        ++stats_.reentry_same;
+        continue;
+      }
+      ++stats_.reentry_rows;
+    }
     ++stats_.resolved;
     ++made;
     if (log_ != nullptr) {
@@ -246,8 +272,19 @@ std::shared_ptr<const Batch> Host::pass(const Mirror &mirror, std::uint64_t fram
                    static_cast<unsigned long long>(frame), entry.node ? "true" : "false",
                    old != by_rid_.end() && old->second.id != w.id ? "true" : "false");
     }
+    auto restamped = batch->entries.rend();
+    if (w.reentry && old != by_rid_.end() && old->second.id == entry.id &&
+        old->second.stamp == frame) {
+      // A filter restamp already emitted this id in this pass: replace it with the full identity.
+      restamped = std::find_if(batch->entries.rbegin(), batch->entries.rend(),
+                               [&](const Entry &row) { return row.id == entry.id; });
+    }
     by_rid_[rid] = entry;
-    batch->entries.push_back(std::move(entry));
+    if (restamped != batch->entries.rend()) {
+      *restamped = std::move(entry);
+    } else {
+      batch->entries.push_back(std::move(entry));
+    }
   }
   for (auto it = retry.rbegin(); it != retry.rend(); ++it) {
     work_.push_front(*it);  // the retries first next frame, in id order
@@ -421,6 +458,10 @@ std::string Host::stats_json() const {
   num("union_resets", s.union_resets);
   num("passes", s.passes);
   num("resolved", s.resolved);
+  num("reentry_queued", s.reentry_queued);
+  num("reentry_same", s.reentry_same);
+  num("reentry_rows", s.reentry_rows);
+  num("reentry_max_batch", s.reentry_max_batch);
   num("no_node", s.no_node);
   num("rekey_copies", s.rekey_copies);
   num("unpublished_waits", s.unpublished_waits);
