@@ -164,6 +164,8 @@ export interface TargetDeclarationRecord {
   scene?: string;
   /** The node's Godot class, informational. */
   class?: string;
+  /** The Godot ObjectID as nonzero unsigned 64-bit decimal text. */
+  instance_id?: string;
   /** An opaque renderer item id. */
   item?: number;
 }

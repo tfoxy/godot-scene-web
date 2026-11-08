@@ -28,6 +28,7 @@ func _initialize() -> void:
 	var a: Dictionary = _value('{"a":9007199254740991}')
 	var safe: float = a["a"]
 	_expect("2^53-1 is exact (Godot's JSON reads 2^53)", safe == float(9007199254740991) and safe != float(9007199254740992))
+	_expect("u64 ObjectID text keeps every digit", _value('{"instance_id":"18446744073709551615"}') == {"instance_id": "18446744073709551615"})
 	var extremes: Array = _value("[1e400,-1e999,1e-400]")
 	var big: float = extremes[0]
 	var small: float = extremes[1]

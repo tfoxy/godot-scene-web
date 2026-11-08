@@ -442,6 +442,20 @@ else
 	done
 fi
 
+G8L_SELECTED=()
+if [ -n "${G8L_ONLY:-}" ]; then
+	IFS=',' read -r -a G8L_SELECTED <<<"$G8L_ONLY"
+	for selected in "${G8L_SELECTED[@]}"; do
+		case "$selected" in
+		trk | inject) ;;
+		*)
+			echo "run-gate8: unknown G8L_ONLY leg: $selected (expected trk or inject)" >&2
+			exit 2
+			;;
+		esac
+	done
+fi
+
 ACTUAL_BINARY_SHA256="$(sha256sum "$BINARY" | awk '{print $1}')"
 if [ "$ACTUAL_BINARY_SHA256" != "$EXPECTED_BINARY_SHA256" ]; then
 	echo "run-gate8: WARNING: $BINARY sha256 is $ACTUAL_BINARY_SHA256, expected $EXPECTED_BINARY_SHA256 (continuing: --binary may intentionally point at a different build)" >&2
@@ -471,7 +485,17 @@ printf '{"path": "%s", "sha256": "%s"}\n' "$BINARY" "$ACTUAL_BINARY_SHA256" >"$O
 		printf '%s"%s"' "$sep" "$group"
 		sep=", "
 	done
-	printf ']}\n'
+	printf ']'
+	if [ "${#G8L_SELECTED[@]}" -gt 0 ]; then
+		printf ', "g8l_only": ['
+		sep=""
+		for selected in "${G8L_SELECTED[@]}"; do
+			printf '%s"%s"' "$sep" "$selected"
+			sep=", "
+		done
+		printf ']'
+	fi
+	printf '}\n'
 } >"$OUT/legs.json"
 
 HAVE_STRACE=0

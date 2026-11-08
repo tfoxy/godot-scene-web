@@ -422,6 +422,70 @@ describe("pointer targets: all", () => {
 });
 
 describe("pointer targets: interning", () => {
+  it("passes through instance ids and re-declares a changed id under one key", () => {
+    let instanceId: string | undefined = "9007199254740993";
+    const h = harness({
+      targets: "all",
+      resolveTarget: () => ({
+        key: "same-node",
+        identity: {
+          item: 5,
+          ...(instanceId === undefined ? {} : { instanceId }),
+        },
+        local: { x: 0, y: 0 },
+      }),
+    });
+    let x = 10;
+    const move = () => {
+      h.fire("pointermove", at(x++, 10));
+      h.frame();
+    };
+    move();
+    move();
+    instanceId = "18446744073709551615";
+    move();
+    instanceId = undefined;
+    move();
+    const records = h.take();
+    expectEncodable(records);
+    expect(records.filter((r) => r.event === "target")).toEqual([
+      { event: "target", handle: 1, item: 5, instance_id: "9007199254740993" },
+      {
+        event: "target",
+        handle: 1,
+        item: 5,
+        instance_id: "18446744073709551615",
+      },
+      { event: "target", handle: 1, item: 5 },
+    ]);
+  });
+
+  it.each([
+    "01",
+    "0",
+    "100000000000000000000",
+    "18446744073709551616",
+    "12x",
+    "",
+    "1\n",
+    "１２",
+    123,
+  ])("drops invalid instance id %j without losing the hit", (instanceId) => {
+    const h = harness({
+      targets: "press",
+      resolveTarget: () => ({
+        key: "k",
+        identity: { path: "Main/A", instanceId: instanceId as string },
+        local: { x: 0, y: 0 },
+      }),
+    });
+    h.fire("pointerdown", press(10, 10));
+    const records = h.take();
+    expectEncodable(records);
+    expect(records[0]).toEqual({ event: "target", handle: 1, path: "Main/A" });
+    expect(records[1]).toMatchObject({ target: 1 });
+  });
+
   it("drops invalid identity fields, and a hit without path or item", () => {
     const hits: (PointerTargetHit | null)[] = [
       {

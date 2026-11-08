@@ -18,7 +18,9 @@ extends SceneTree
 ## Target vectors: a vector's `scene` lists nodes created under the root before its first
 ## step ({path, class: Node|Control|Node2D, position, size, scale, visible, scene_file_path});
 ## Controls record their `_gui_input` as `gui` lines (control-local positions, ` meta=` with the
-## `gsw_target` meta). Scene steps: {move: path, position}, {free: path}, {add: node},
+## `gsw_target` meta). Optional scene `instance_id` assigns a synthetic decimal id, substituted
+## with the node's real ObjectID in target declarations (even after the node is freed).
+## Scene steps: {move: path, position}, {free: path}, {add: node},
 ## {hide: path}, {show: path}. `target_signals` lists the injector's pointer_target,
 ## target_missing and target_mismatch signals. The scene is freed after the vector. Hover only
 ## reaches `_gui_input` inside the headless root's 64x64 visible rect (viewport.cpp:2064).
@@ -183,6 +185,8 @@ var _failures: int = 0
 var _signals: Array[String] = []
 ## Target signals since the previous expect entry.
 var _target_signals: Array[String] = []
+## Synthetic scene instance_id -> real ObjectID; retain freed ids to test stale declarations.
+var _instance_ids: Dictionary = {}
 ## `_gui_input` lines of the vector's Controls since the previous expect entry (shared by every
 ## GuiProbe of the vector).
 var _gui: Array[String] = []
@@ -238,6 +242,7 @@ func _run(file: String, vector: Dictionary) -> void:
 	_probe.got.clear()
 	_signals.clear()
 	_target_signals.clear()
+	_instance_ids.clear()
 	_gui.clear()
 	var injector := GswInputInjector.new()
 	injector.joypad_attached.connect(_on_joypad.bind("attached"))
@@ -309,6 +314,9 @@ func _add_node(spec: Dictionary) -> bool:
 		canvas.visible = spec.get("visible", true)
 	node.scene_file_path = spec.get("scene_file_path", "")
 	parent.add_child(node)
+	if spec.has("instance_id"):
+		var synthetic: String = spec["instance_id"]
+		_instance_ids[synthetic] = str(node.get_instance_id())
 	if parent == root:
 		_scene.append(node)
 	return true
@@ -327,6 +335,19 @@ func _on_joypad(device: int, source: String, slot: int, what: String) -> void:
 	_signals.append("%s %d %s %d" % [what, device, source, slot])
 
 
+## Only test messages use synthetic ids; the injector always receives real decimal ObjectIDs.
+func _with_instance_ids(message: Dictionary) -> Dictionary:
+	var out: Dictionary = message.duplicate(true)
+	var records: Array = out.get("events", out.get("held", []))
+	for value: Variant in records:
+		var record: Dictionary = value
+		if record.get("event") == "target" and typeof(record.get("instance_id")) == TYPE_STRING:
+			var synthetic: String = record["instance_id"]
+			if _instance_ids.has(synthetic):
+				record["instance_id"] = _instance_ids[synthetic]
+	return out
+
+
 func _steps(file: String, vector: Dictionary, injector: GswInputInjector, isolation: Dictionary) -> void:
 	var steps: Array = vector["steps"]
 	var expects: Array = vector["expect"]
@@ -341,6 +362,9 @@ func _steps(file: String, vector: Dictionary, injector: GswInputInjector, isolat
 			now = int(at)
 		if step.has("recv"):
 			var payload: Variant = step["recv"]
+			if typeof(payload) == TYPE_DICTIONARY:
+				var message: Dictionary = payload
+				payload = _with_instance_ids(message)
 			var text: String = payload if typeof(payload) == TYPE_STRING else JSON.stringify(payload, "", false, true)
 			var channel: String = step.get("channel", "a")
 			var got: String = injector.receive(channel, text, now)

@@ -34,6 +34,8 @@ const _VEC2: int = 3
 const _PATTERN: int = 4
 ## Free text: UTF-8 length 1..max bytes, no C0 control characters or DEL.
 const _TEXT: int = 5
+## Nonzero u64 ObjectID carried as decimal text, never converted to float.
+const _INSTANCE_ID: int = 6
 
 # Patterns (the TypeScript regexes, spelled out as character classes).
 const _PAT_SOURCE: int = 0 # [A-Za-z0-9._:-]{1,64}
@@ -126,6 +128,7 @@ const _TARGET: Array = [
 	["scene", _TEXT, 0, 512, false],
 	["class", _PATTERN, _PAT_CLASS, 0, false],
 	["item", _INT, 0, _MAX_SAFE, false],
+	["instance_id", _INSTANCE_ID, 0, 0, false],
 ]
 
 const _EPOCH: Array = ["epoch", _INT, 0, _U32_MAX, true]
@@ -297,6 +300,20 @@ static func _has_control(text: String) -> bool:
 	return false
 
 
+static func _is_instance_id(value: Variant) -> bool:
+	if typeof(value) != TYPE_STRING:
+		return false
+	var text: String = value
+	var n: int = text.length()
+	if n < 1 or n > 20 or text.unicode_at(0) == 0x30:
+		return false
+	for i: int in n:
+		var c: int = text.unicode_at(i)
+		if c < 0x30 or c > 0x39:
+			return false
+	return n < 20 or text <= "18446744073709551615"
+
+
 ## Check one present field; returns the value to keep.
 func _check_field(value: Variant, field: Array, path: String) -> Variant:
 	var type: int = field[1]
@@ -319,6 +336,11 @@ func _check_field(value: Variant, field: Array, path: String) -> Variant:
 				return null
 			var number: float = value
 			return number
+		_INSTANCE_ID:
+			if not _is_instance_id(value):
+				_bad(path, "nonzero u64 decimal string expected")
+				return null
+			return value
 		_BOOL:
 			if typeof(value) != TYPE_BOOL:
 				_bad(path, "boolean expected")

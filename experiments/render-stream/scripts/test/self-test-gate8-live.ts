@@ -12,12 +12,13 @@
 //    rewritten Host and logged 200; an upgrade gets the upstream's 101 and its bytes both ways and
 //    is logged 101; a dead upstream answers 502.
 // 3. runG8l on an empty run: every g8l check fails with "evidence missing" or a problem, none passes.
-// 4. gate8BandRegions: g8t's legs get rows B, C and D of all 7 columns (undecided), g8f's the two
+// 4. G8L_ONLY persists its selection, keeps strict checks and rejects missing or invalid selections.
+// 5. gate8BandRegions: g8t's legs get rows B, C and D of all 7 columns (undecided), g8f's the two
 //    float-gain strips (excluded), every other gate 8 leg none.
 //
 // Exits non-zero if any assertion fails.
 
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -232,6 +233,60 @@ async function main(): Promise<void> {
   }
 
   // 4.
+  {
+    const tracks = mkdtempSync(join(tmpdir(), "g8g-tracks-only-"));
+    writeFileSync(
+      join(tracks, "legs.json"),
+      JSON.stringify({ g8l_only: ["trk", "inject"] }),
+    );
+    for (const name of ["trk", "inject"])
+      mkdirSync(join(tracks, "g8l", name), { recursive: true });
+    const { checks, report } = await runG8l(tracks);
+    assert(
+      checks.length > 0 && checks.every((c) => c.id.startsWith("g8l-trk-")),
+      "G8L_ONLY judges only the declared track legs",
+    );
+    assert(
+      checks.some((c) => c.id === "g8l-trk-inject-strict-compile"),
+      "G8L_ONLY retains the strict compile check",
+    );
+    assert(
+      checks.some((c) => !c.passed),
+      "G8L_ONLY still fails when selected evidence is missing",
+    );
+    assert(
+      report.not_applicable?.tex?.includes("G8L_ONLY") === true,
+      "G8L_ONLY records why the rendered legs did not run",
+    );
+    for (const only of [["invalid"], [], "trk", ["trk", "missing"]]) {
+      writeFileSync(
+        join(tracks, "legs.json"),
+        JSON.stringify({ g8l_only: only }),
+      );
+      let rejected = false;
+      try {
+        await runG8l(tracks);
+      } catch {
+        rejected = true;
+      }
+      assert(rejected, `invalid g8l_only ${JSON.stringify(only)} is rejected`);
+    }
+    const missing = mkdtempSync(join(tmpdir(), "g8g-missing-selection-"));
+    writeFileSync(
+      join(missing, "legs.json"),
+      JSON.stringify({ g8l_only: ["trk", "inject"] }),
+    );
+    mkdirSync(join(missing, "g8l", "trk"), { recursive: true });
+    let rejected = false;
+    try {
+      await runG8l(missing);
+    } catch {
+      rejected = true;
+    }
+    assert(rejected, "a selected leg with no directory is rejected");
+  }
+
+  // 5.
   {
     const tex = gate8BandRegions("receiver");
     assert(

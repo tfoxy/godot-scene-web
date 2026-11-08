@@ -10,6 +10,7 @@
 // `PointerTargetHit`; nothing here imports them, and they import nothing from this package.
 
 import type { TargetDeclarationRecord } from "./format";
+import { isInstanceId } from "./instance-id";
 import type { PointerPoint } from "./pointer-map";
 
 /**
@@ -22,6 +23,8 @@ export interface PointerTargetIdentity {
   scene?: string;
   class?: string;
   item?: number;
+  /** The Godot ObjectID as nonzero unsigned 64-bit decimal text. */
+  instanceId?: string;
 }
 
 /** What a resolver returns for a point over a node. */
@@ -104,6 +107,7 @@ function cleanIdentity(
   }
   if (typeof identity.class === "string" && CLASS_PATTERN.test(identity.class))
     out.class = identity.class;
+  if (isInstanceId(identity.instanceId)) out.instance_id = identity.instanceId;
   const item = identity.item;
   if (
     Number.isInteger(item) &&
@@ -122,7 +126,8 @@ function sameIdentity(
     a.path === b.path &&
     a.scene === b.scene &&
     a.class === b.class &&
-    a.item === b.item
+    a.item === b.item &&
+    a.instance_id === b.instance_id
   );
 }
 
@@ -220,7 +225,8 @@ export function createPointerTargetTable(
           given.path !== raw.path ||
           given.scene !== raw.scene ||
           given.class !== raw.class ||
-          given.item !== raw.item
+          given.item !== raw.item ||
+          given.instanceId !== raw.instanceId
         ) {
           const fresh = cleanIdentity(given);
           if (!fresh) return null;

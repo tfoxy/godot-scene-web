@@ -283,13 +283,14 @@ A host MUST refuse an `action` whose name is not in its allow-list (default: emp
 Not a Godot event and never injected. Binds `handle` to a node identity for the rest of the epoch;
 a later declaration of the same handle replaces the binding.
 
-| Field    | Type    | Range                          | Notes                                                                                    |
-| -------- | ------- | ------------------------------ | ---------------------------------------------------------------------------------------- |
-| `handle` | integer | 1..1023, _req_                 |                                                                                          |
-| `path`   | string  | 1..1024 UTF-8 bytes, no C0/DEL | Godot `NodePath`; relative to `scene`'s instance when `scene` is present, else absolute. |
-| `scene`  | string  | 1..512 UTF-8 bytes, no C0/DEL  | The scene file (`res://…`) the path is relative to, as in render-stream `item_meta`.     |
-| `class`  | string  | `[A-Za-z_][A-Za-z0-9_]{0,63}`  | The node's class; informational.                                                         |
-| `item`   | integer | 0..2^53-1                      | Opaque renderer item id (render-stream item).                                            |
+| Field         | Type    | Range                                       | Notes                                                                                    |
+| ------------- | ------- | ------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `handle`      | integer | 1..1023, _req_                              |                                                                                          |
+| `path`        | string  | 1..1024 UTF-8 bytes, no C0/DEL              | Godot `NodePath`; relative to `scene`'s instance when `scene` is present, else absolute. |
+| `scene`       | string  | 1..512 UTF-8 bytes, no C0/DEL               | The scene file (`res://…`) the path is relative to, as in render-stream `item_meta`.     |
+| `class`       | string  | `[A-Za-z_][A-Za-z0-9_]{0,63}`               | The node's class; informational.                                                         |
+| `item`        | integer | 0..2^53-1                                   | Opaque renderer item id (render-stream item).                                            |
+| `instance_id` | string  | 1..20 ASCII digits, 1..18446744073709551615 | Godot ObjectID in decimal, with no leading zero; a string to preserve values above 2^53. |
 
 Cross-field, in order: `scene` needs `path` (path `scene`); `path` or `item` is present (path
 `path`).
@@ -908,7 +909,7 @@ Cost and opt-in (capture `targets` option):
   (`drag-start` and `long-press`: the finger's down point).
 - Nothing is resolved while the pointer is locked.
 - The resolver is caller-supplied: `resolveTarget(clientX, clientY, point)` returns a
-  `PointerTargetHit` `{key, identity: {path?, scene?, class?, item?}, local: {x, y}, frame?}`
+  `PointerTargetHit` `{key, identity: {path?, scene?, class?, item?, instanceId?}, local: {x, y}, frame?}`
   or `null` (over no node: the record carries no target fields; the capture never sends
   `target: 0`). `key` is any value compared as a `Map` key (the same node, the same key). A hit
   without a valid `path` or `item` counts as none; invalid fields are dropped, so a resolver
@@ -972,12 +973,17 @@ Host semantics (the injector, `gsw_input_targets.gd`):
 - Zero work when a record has no `target` (or `target` 0) and nothing is bound.
 - Handles resolve once to live nodes and are kept as weak refs, re-resolved when a node is freed
   or leaves the tree (or the handle is re-declared):
-  - with `scene`: under every instance root whose `scene_file_path` is `scene` (one tree walk
-    per resolution), `path` relative to it (`.` is the root). Several live instances make the
+  - with `instance_id`: first resolve the exact ObjectID via `instance_from_id`. It must be a
+    valid `CanvasItem` inside the tree; values at or above 2^63 cannot name a Node. When it
+    resolves, ignore `path` and `scene`. When it does not, emit `target_missing` and use the
+    coordinate (or the configured `missing_target` policy); **never fall back to `path` or
+    `scene`**, since a stale id must not select a different node;
+  - absent `instance_id`, with `scene`: under every instance root whose `scene_file_path` is
+    `scene` (one tree walk per resolution), `path` relative to it (`.` is the root). Several live instances make the
     path ambiguous: the one the coordinate lands on wins, else the target is missing (counted
     `target-ambiguous`), never a guess;
-  - without `scene`: an absolute NodePath (`/root/…`) from the tree root, a relative one from
-    the current scene (the tree root when there is none);
+  - absent `instance_id` and `scene`: an absolute NodePath (`/root/…`) from the tree root, a
+    relative one from the current scene (the tree root when there is none);
   - an identity with only `item` (a renderer id) names no node here: missing.
 - Every targeted event gets `event.set_meta("gsw_target", {path, local, handle})` (the declared
   path, `""` when only `item` was declared), whether or not its node resolved: the meta is the

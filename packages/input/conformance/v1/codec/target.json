@@ -223,6 +223,106 @@
       "ok": false,
       "code": "bad-field",
       "path": "reason"
+    },
+    {
+      "name": "instance_id minimum",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"1\"}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"1\"}]}"
+    },
+    {
+      "name": "instance_id above safe integer",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"9007199254740993\"}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"9007199254740993\"}]}"
+    },
+    {
+      "name": "instance_id signed maximum",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"9223372036854775807\"}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"9223372036854775807\"}]}"
+    },
+    {
+      "name": "instance_id signed overflow",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"9223372036854775808\"}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"9223372036854775808\"}]}"
+    },
+    {
+      "name": "instance_id u64 maximum",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"18446744073709551615\"}]}",
+      "ok": true,
+      "canonical": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"18446744073709551615\"}]}"
+    },
+    {
+      "name": "instance_id leading zero",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"01\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].instance_id"
+    },
+    {
+      "name": "instance_id zero",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"0\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].instance_id"
+    },
+    {
+      "name": "instance_id 21 digits",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"100000000000000000000\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].instance_id"
+    },
+    {
+      "name": "instance_id u64 overflow",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"18446744073709551616\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].instance_id"
+    },
+    {
+      "name": "instance_id non-digits",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"12x\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].instance_id"
+    },
+    {
+      "name": "instance_id empty",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].instance_id"
+    },
+    {
+      "name": "instance_id number",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":123}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].instance_id"
+    },
+    {
+      "name": "instance_id newline",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"1\\n\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].instance_id"
+    },
+    {
+      "name": "instance_id non-ASCII digits",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"path\":\"Main/A\",\"instance_id\":\"１２\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].instance_id"
+    },
+    {
+      "name": "instance_id still needs path or item",
+      "text": "{\"type\":\"events\",\"epoch\":7,\"seq\":3,\"events\":[{\"event\":\"target\",\"handle\":1,\"instance_id\":\"1\"}]}",
+      "ok": false,
+      "code": "bad-field",
+      "path": "events[0].path"
     }
   ]
 }

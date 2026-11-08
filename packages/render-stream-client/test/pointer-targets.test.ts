@@ -2,6 +2,12 @@
 // through the inverse of the drawn transform (override included), the drawn transaction as
 // `frame`, and the pure-client fallbacks (no identity grant, no extension host).
 
+import {
+  encodeInputMessage,
+  type InputRecord,
+  parseInputMessage,
+} from "@godot-scene-web/input";
+import { createPointerCapture } from "@godot-scene-web/input/pointer";
 import { describe, expect, it } from "vitest";
 import {
   type Affine2D,
@@ -96,6 +102,64 @@ describe("pointerTargetResolver", () => {
       source(query({ 2: { ...card, instanceId: null }, 3: quadrant })),
     );
     expect(noInstance(60, 30)?.identity).not.toHaveProperty("instanceId");
+  });
+
+  it("carries a resolver's instanceId through pointer capture into gsw-input/1", () => {
+    const instanceId = "18446744073709551615";
+    const resolveTarget = resolverFor(
+      source(query({ 2: { ...card, instanceId }, 3: quadrant })),
+    );
+    const stage = document.createElement("div");
+    const records: InputRecord[] = [];
+    const capture = createPointerCapture({
+      stage,
+      map: (x, y) => ({ x: x * 2, y: y * 2 }),
+      sink: { push: (record) => records.push(record) },
+      targets: "press",
+      resolveTarget,
+    });
+    try {
+      stage.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          pointerId: 1,
+          pointerType: "mouse",
+          clientX: 60,
+          clientY: 30,
+          button: 0,
+          buttons: 1,
+        }),
+      );
+      const events: InputRecord[] = [
+        {
+          event: "target",
+          handle: 1,
+          item: 2,
+          path: ".",
+          scene: "res://card.tscn",
+          class: "Control",
+          instance_id: instanceId,
+        },
+        {
+          event: "mouse_button",
+          button_index: 1,
+          pressed: true,
+          position: [120, 60],
+          button_mask: 1,
+          target: 1,
+          local: [10, 5],
+          frame: 1907,
+        },
+      ];
+      expect(records).toEqual(events);
+      const message = { type: "events" as const, epoch: 1, seq: 1, events };
+      const [wire] = encodeInputMessage({ ...message, events: records });
+      expect(parseInputMessage(wire)).toMatchObject({
+        ok: true,
+        message,
+      });
+    } finally {
+      capture.dispose();
+    }
   });
 
   it("measures local against the override the user saw", () => {

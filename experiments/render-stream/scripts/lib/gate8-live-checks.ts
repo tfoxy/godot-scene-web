@@ -289,6 +289,27 @@ export async function runG8l(
 ): Promise<{ checks: G8aCheck[]; report: G8lReport }> {
   const checks: G8aCheck[] = [];
   const report: G8lReport = { legs: {}, proxy: null };
+  // Persist the runner's local selection so a later checker invocation judges the same legs.
+  const only = (await readJson<{ g8l_only?: unknown }>(join(out, "legs.json")))
+    ?.g8l_only;
+  if (only !== undefined) {
+    if (
+      !Array.isArray(only) ||
+      only.length === 0 ||
+      only.some((name) => name !== "trk" && name !== "inject")
+    )
+      throw new Error("legs.json g8l_only must select trk and/or inject");
+    for (const name of only)
+      if (!existsSync(join(out, "g8l", name)))
+        throw new Error(
+          `G8L_ONLY selected ${name}, but its evidence is missing`,
+        );
+    report.not_applicable = Object.fromEntries(
+      G8L_FIXTURES.map((f) => [f, `G8L_ONLY=${only.join(",")}`]),
+    );
+    checks.push(...(await runTrkChecks(out)));
+    return { checks, report };
+  }
   const finalShot = (dir: string) => join(dir, "shots", "final.png");
 
   for (const f of G8L_FIXTURES) {

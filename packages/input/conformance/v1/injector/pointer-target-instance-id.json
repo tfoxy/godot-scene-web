@@ -1,0 +1,235 @@
+{
+  "name": "pointer-target-instance-id",
+  "description": "The exact instance wins over an ambiguous scene path. Freed ids never fall back to live paths, non-CanvasItems and unsigned-only ids are missing, and absent ids keep path resolution.",
+  "config": {},
+  "scene": [
+    {
+      "path": "A",
+      "class": "Node",
+      "scene_file_path": "res://same.tscn",
+      "instance_id": "103"
+    },
+    {
+      "path": "A/Pad",
+      "class": "Node2D",
+      "position": [10, 10],
+      "instance_id": "101"
+    },
+    {
+      "path": "B",
+      "class": "Node",
+      "scene_file_path": "res://same.tscn"
+    },
+    {
+      "path": "B/Pad",
+      "class": "Node2D",
+      "position": [30, 30],
+      "instance_id": "102"
+    }
+  ],
+  "steps": [
+    {
+      "recv": {
+        "type": "hello",
+        "format": "gsw-input/1",
+        "source": "a",
+        "epoch": 1
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 1,
+        "events": [
+          {
+            "event": "target",
+            "handle": 1,
+            "path": "Pad",
+            "scene": "res://same.tscn",
+            "instance_id": "102"
+          },
+          {
+            "event": "mouse_motion",
+            "position": [1, 1],
+            "target": 1,
+            "local": [2, 3]
+          }
+        ]
+      }
+    },
+    {
+      "free": "B/Pad"
+    },
+    {
+      "add": {
+        "path": "B/Pad",
+        "class": "Node2D",
+        "position": [50, 50]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 2,
+        "events": [
+          {
+            "event": "mouse_motion",
+            "position": [1, 1],
+            "target": 1,
+            "local": [2, 3]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 3,
+        "events": [
+          {
+            "event": "target",
+            "handle": 2,
+            "path": "A/Pad",
+            "instance_id": "103"
+          },
+          {
+            "event": "mouse_motion",
+            "position": [1, 1],
+            "target": 2,
+            "local": [2, 3]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 4,
+        "events": [
+          {
+            "event": "target",
+            "handle": 3,
+            "path": "A/Pad"
+          },
+          {
+            "event": "mouse_motion",
+            "position": [1, 1],
+            "target": 3,
+            "local": [2, 3]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 5,
+        "events": [
+          {
+            "event": "target",
+            "handle": 4,
+            "path": "A/Pad",
+            "instance_id": "9223372036854775808"
+          },
+          {
+            "event": "mouse_motion",
+            "position": [1, 1],
+            "target": 4,
+            "local": [2, 3]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 6,
+        "events": [
+          {
+            "event": "target",
+            "handle": 5,
+            "path": "A/Pad",
+            "instance_id": "18446744073709551615"
+          },
+          {
+            "event": "mouse_motion",
+            "position": [1, 1],
+            "target": 5,
+            "local": [2, 3]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "events",
+        "epoch": 1,
+        "seq": 7,
+        "events": [
+          {
+            "event": "target",
+            "handle": 6,
+            "path": "A/Pad",
+            "instance_id": "102"
+          },
+          {
+            "event": "mouse_motion",
+            "position": [1, 1],
+            "target": 6,
+            "local": [2, 3]
+          }
+        ]
+      }
+    },
+    {
+      "recv": {
+        "type": "bye",
+        "epoch": 1,
+        "seq": 8
+      }
+    }
+  ],
+  "expect": [
+    {
+      "after": 1,
+      "dispatched": ["mouse_motion 64 32.00,33.00 rel=0.00,0.00 mask=0 meta=1"],
+      "target_signals": ["pointer_target a B/Pad 2.00,3.00"]
+    },
+    {
+      "after": 4,
+      "dispatched": ["mouse_motion 64 1.00,1.00 rel=0.00,0.00 mask=0 meta=1"],
+      "target_signals": ["target_missing a 1"]
+    },
+    {
+      "after": 5,
+      "dispatched": ["mouse_motion 64 1.00,1.00 rel=0.00,0.00 mask=0 meta=2"],
+      "target_signals": ["target_missing a 2"]
+    },
+    {
+      "after": 6,
+      "dispatched": ["mouse_motion 64 12.00,13.00 rel=0.00,0.00 mask=0 meta=3"],
+      "target_signals": ["pointer_target a A/Pad 2.00,3.00"]
+    },
+    {
+      "after": 7,
+      "dispatched": ["mouse_motion 64 1.00,1.00 rel=0.00,0.00 mask=0 meta=4"],
+      "target_signals": ["target_missing a 4"]
+    },
+    {
+      "after": 8,
+      "dispatched": ["mouse_motion 64 1.00,1.00 rel=0.00,0.00 mask=0 meta=5"],
+      "target_signals": ["target_missing a 5"]
+    },
+    {
+      "after": 9,
+      "dispatched": ["mouse_motion 64 1.00,1.00 rel=0.00,0.00 mask=0 meta=6"],
+      "target_signals": ["target_missing a 6"]
+    }
+  ]
+}

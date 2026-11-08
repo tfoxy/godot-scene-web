@@ -27,9 +27,12 @@ export interface SceneNodeSpec {
   scale?: [number, number];
   visible?: boolean;
   scene_file_path?: string;
+  /** Synthetic decimal id; Godot vectors substitute the node's real ObjectID on receive. */
+  instance_id?: string;
 }
 
 export class SceneNode {
+  instanceId?: string;
   freed = false;
   children: SceneNode[] = [];
   constructor(
@@ -73,6 +76,7 @@ export class ModelScene {
       spec.visible ?? true,
       spec.scene_file_path ?? "",
     );
+    if (spec.instance_id !== undefined) node.instanceId = spec.instance_id;
     parent.children.push(node);
     return node;
   }
@@ -412,6 +416,13 @@ export class ModelTargets {
   }
 
   private find(declaration: Json): SceneNode[] {
+    if (typeof declaration.instance_id === "string") {
+      if (BigInt(declaration.instance_id) >= 1n << 63n) return [];
+      const node = this.scene
+        .order()
+        .find((n) => n.instanceId === declaration.instance_id);
+      return node && this.scene.isCanvas(node) ? [node] : [];
+    }
     const path = (declaration.path as string | undefined) ?? "";
     if (path === "") return [];
     if (typeof declaration.scene === "string") {

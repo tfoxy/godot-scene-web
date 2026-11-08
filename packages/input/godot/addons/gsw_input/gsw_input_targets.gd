@@ -206,6 +206,17 @@ func _resolve(handles: Dictionary, resolved: Dictionary, handle: int, position: 
 
 static func _find(declaration: Dictionary) -> Array[Node]:
 	var out: Array[Node] = []
+	if declaration.has("instance_id"):
+		var id_text: String = declaration["instance_id"]
+		# Node ObjectIDs fit in signed 64 bits; avoid overflowing String.to_int().
+		if id_text.length() > 19 or (id_text.length() == 19 and id_text > "9223372036854775807"):
+			return out
+		var instance: Object = instance_from_id(id_text.to_int())
+		var canvas: CanvasItem = instance as CanvasItem
+		if is_instance_valid(canvas) and canvas.is_inside_tree():
+			out.append(canvas)
+		# A stale id must never select another node via its path or scene.
+		return out
 	var path_text: String = declaration.get("path", "")
 	var tree: SceneTree = Engine.get_main_loop() as SceneTree
 	if path_text == "" or tree == null:

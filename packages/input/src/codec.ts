@@ -19,6 +19,7 @@ import {
   type InputRecord,
   type InputSyncScope,
 } from "./format";
+import { isInstanceId } from "./instance-id";
 
 /** Largest absolute value of a position, relative motion, pan delta or target-local point. */
 const MAX_COORD = 1_000_000;
@@ -37,6 +38,7 @@ type FieldType =
   | { t: "int"; min: number; max: number }
   | { t: "num"; min: number; max: number }
   | { t: "bool" }
+  | { t: "instance_id" }
   | { t: "vec2"; min: number; max: number }
   | { t: "pattern"; re: RegExp }
   /** Free text: UTF-8 length 1..maxBytes, no C0 control characters or DEL. */
@@ -168,6 +170,7 @@ const RECORD_FIELDS: Record<InputRecord["event"], Field[]> = {
     { name: "scene", type: { t: "text", maxBytes: 512 } },
     { name: "class", type: { t: "pattern", re: CLASS_PATTERN } },
     { name: "item", type: int(0, MAX_SAFE) },
+    { name: "instance_id", type: { t: "instance_id" } },
   ],
 };
 
@@ -261,6 +264,10 @@ function checkField(value: unknown, field: Field, path: string): unknown {
     case "num":
       if (!finiteIn(value, type.min, type.max))
         throw bad(path, `number ${type.min}..${type.max} expected`);
+      return value;
+    case "instance_id":
+      if (!isInstanceId(value))
+        throw bad(path, "nonzero u64 decimal string expected");
       return value;
     case "bool":
       if (typeof value !== "boolean") throw bad(path, "boolean expected");
