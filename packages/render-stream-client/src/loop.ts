@@ -327,7 +327,20 @@ export class StreamLoop {
     this.conn = conn;
     this.firstFrameSent = false;
     const protocol = clientProtocol(this.endpoint.protocol, this.ext?.request);
-    core.beginConnection(protocol);
+    try {
+      core.beginConnection(protocol);
+    } catch (e) {
+      this.fail(
+        e instanceof StreamFailure
+          ? e
+          : new StreamFailure(
+              null,
+              "core-load-failed",
+              e instanceof Error ? e.message : String(e),
+            ),
+      );
+      return;
+    }
     try {
       conn.transport = this.o.transport(
         this.endpoint,

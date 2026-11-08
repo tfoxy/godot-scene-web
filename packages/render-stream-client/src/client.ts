@@ -2,9 +2,10 @@
 // instance, released by `dispose()`.
 
 import type { GswRs } from "./abi";
-import { WasmStreamCore } from "./core";
+import { StreamFailure, WasmStreamCore } from "./core";
 import {
   type RenderStreamEndpoint,
+  type RenderStreamProtocol,
   sameEndpoint,
   validateEndpoint,
 } from "./endpoint";
@@ -113,7 +114,8 @@ export interface RenderStreamClient {
    * `ended` (a failed load is retried). */
   connect(): void;
   /** A changed descriptor reconnects with it (an idle, failed or ended client keeps it for the
-   * next `connect`). Throws `RenderStreamEndpointError` for an invalid one. */
+   * next `connect`). Throws `RenderStreamEndpointError` for an invalid one.
+   * A change in effective protocol rebuilds the core at the next connection. */
   setEndpoint(e: RenderStreamEndpoint): void;
   stats(): Readonly<RenderStreamStats>;
   /** The page point `(clientX, clientY)` (an event's, CSS px) as a presentation-space
@@ -353,26 +355,34 @@ class Client implements RenderStreamClient {
     if (this.disposed) return;
     const canvas = this.o.canvas;
     const protocol = clientProtocol(this.endpoint.protocol, this.ext?.request);
-    const presentation = this.endpoint.presentation;
-    if (presentation) {
-      canvas.width = presentation[0];
-      canvas.height = presentation[1];
-    }
-    let g: GswRs;
-    try {
-      g = new mod.GswRs(canvas, coreStartOptions(protocol));
-    } catch (e) {
-      const probe = document.createElement("canvas").getContext("webgl2");
-      probe?.getExtension("WEBGL_lose_context")?.loseContext();
-      if (probe === null)
-        throw new NoWebgl2("this browser gives no WebGL2 context");
-      throw new CoreLoadError(`the core refused the canvas: ${String(e)}`);
-    }
-    if (presentation) g.set_window(presentation[0], presentation[1]);
+    const build = (protocol: RenderStreamProtocol): GswRs => {
+      const presentation = this.endpoint.presentation;
+      if (presentation) {
+        canvas.width = presentation[0];
+        canvas.height = presentation[1];
+      }
+      let g: GswRs;
+      try {
+        g = new mod.GswRs(canvas, coreStartOptions(protocol));
+      } catch (e) {
+        const probe = document.createElement("canvas").getContext("webgl2");
+        probe?.getExtension("WEBGL_lose_context")?.loseContext();
+        if (probe === null)
+          throw new NoWebgl2("this browser gives no WebGL2 context");
+        throw new CoreLoadError(`the core refused the canvas: ${String(e)}`);
+      }
+      try {
+        if (presentation) g.set_window(presentation[0], presentation[1]);
+      } catch (e) {
+        g.free();
+        throw e;
+      }
+      return g;
+    };
     this.core = new WasmStreamCore(
       mod,
       memory,
-      g,
+      build,
       protocol,
       CLIENT_LIVE_CODING,
       CLIENT_INBOUND_BYTES,
@@ -413,4 +423,8 @@ class Client implements RenderStreamClient {
   }
 }
 
-class NoWebgl2 extends Error {}
+class NoWebgl2 extends StreamFailure {
+  constructor(detail: string) {
+    super(null, "no-webgl2", detail);
+  }
+}

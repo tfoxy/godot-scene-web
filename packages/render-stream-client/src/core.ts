@@ -129,8 +129,10 @@ const hex = (bytes: Uint8Array): string => {
   return s;
 };
 
-/** `StreamCore` over one `GswRs` instance and its memory. */
+/** `StreamCore` over a replaceable `GswRs` instance and its module memory. */
 export class WasmStreamCore implements StreamCore, ExtensionCore {
+  private instance: GswRs | null = null;
+  private logRemoved = false;
   private coding: LiveCoding | null = null;
   private particles = new GswParticles();
   private readonly programs: ProgramCounts = {
@@ -147,15 +149,45 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   constructor(
     private readonly mod: GswRsModule,
     private readonly memory: WebAssembly.Memory,
-    private readonly g: GswRs,
+    private readonly build: (protocol: RenderStreamProtocol) => GswRs,
     private protocol: RenderStreamProtocol,
     private readonly liveCoding: string,
     private readonly inboundBytes: number,
-  ) {}
+  ) {
+    this.instance = build(protocol);
+  }
+
+  private get g(): GswRs {
+    if (this.instance === null)
+      throw new Error("the stream core is unavailable");
+    return this.instance;
+  }
 
   beginConnection(protocol = this.protocol): void {
-    this.protocol = protocol;
+    if (this.disposed) throw new Error("the stream core is disposed");
     this.coding?.free();
+    this.coding = null;
+    if (this.instance === null || protocol !== this.protocol) {
+      const old = this.instance;
+      this.instance = null;
+      old?.free();
+      this.statsView = null;
+      this.decoded = null;
+      this.lastAcceptedSeq = 0;
+      this.particles = new GswParticles();
+      this.programs.defined = 0;
+      this.programs.refused = 0;
+      this.programs.library_reads = 0;
+      const next = this.build(protocol);
+      try {
+        if (this.logRemoved) next.set_log_removed(true);
+      } catch (e) {
+        next.free();
+        throw e;
+      }
+      this.instance = next;
+      this.protocol = protocol;
+    }
     this.coding =
       this.liveCoding !== ""
         ? new this.mod.LiveCoding(this.liveCoding, this.inboundBytes)
@@ -300,12 +332,12 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   }
 
   reset(keepPayloads: boolean): void {
-    this.g.live_reset(keepPayloads);
+    this.instance?.live_reset(keepPayloads);
     this.lastAcceptedSeq = 0;
   }
 
   heapBytes(): number {
-    return this.disposed ? 0 : this.memory.buffer.byteLength;
+    return this.instance === null ? 0 : this.memory.buffer.byteLength;
   }
 
   // The recorder's one copy per received message, made only when asked (`copyDecoded`).
@@ -321,7 +353,8 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   }
 
   setLogRemoved(on: boolean): void {
-    this.g.set_log_removed(on);
+    this.logRemoved = on;
+    this.instance?.set_log_removed(on);
   }
 
   takeRemoved(): Uint32Array {
@@ -338,40 +371,42 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   }
 
   queryItem(id: number): ArrayLike<number> {
-    return this.g.query_item(id);
+    return this.instance?.query_item(id) ?? [];
   }
 
   querySubtreeRect(id: number): ArrayLike<number> {
-    return this.g.query_subtree_rect(id);
+    return this.instance?.query_subtree_rect(id) ?? [];
   }
 
   queryChildren(id: number): Uint32Array {
-    return this.g.query_children(id);
+    return this.instance?.query_children(id) ?? new Uint32Array(0);
   }
 
-  // On demand only; nothing here runs per frame.
+  // On demand only; nothing here runs per frame. A failed rebuild has no instance to query.
 
   hitTest(x: number, y: number): number | null {
-    const id = this.g.hit_test(x, y);
+    const id = this.instance?.hit_test(x, y) ?? -1;
     return id < 0 ? null : id;
   }
 
   /** The mouse filters `hitTest` / `toGame` pick by, whole (1 STOP/PASS, 2 IGNORE). */
   setHitFilters(ids: Uint32Array, filters: Uint8Array): void {
-    if (this.g.set_hit_filters(ids, filters) < 0)
-      throw failWith(this.seqOrNull(), this.g.error());
+    const g = this.instance;
+    if (g && g.set_hit_filters(ids, filters) < 0)
+      throw failWith(this.seqOrNull(), g.error());
   }
 
   /** The order `hitTest` / `toGame` pick by: topmost-drawn order, or Godot's GUI tree order. */
   setPickOrder(order: "drawn" | "tree"): void {
-    if (this.g.set_pick_order(order === "tree" ? 1 : 0) < 0)
-      throw failWith(this.seqOrNull(), this.g.error());
+    const g = this.instance;
+    if (g && g.set_pick_order(order === "tree" ? 1 : 0) < 0)
+      throw failWith(this.seqOrNull(), g.error());
   }
 
   /** `[item (-1: none), x, y]` of the drawn point mapped to the game's, or empty (a singular
    * override). */
   toGame(x: number, y: number): ArrayLike<number> {
-    return this.g.to_game(x, y);
+    return this.instance?.to_game(x, y) ?? [];
   }
 
   dispose(): void {
@@ -379,8 +414,10 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     this.disposed = true;
     this.coding?.free();
     this.coding = null;
-    this.g.free();
+    this.instance?.free();
+    this.instance = null;
     this.statsView = null;
+    this.decoded = null;
   }
 
   private seqOrNull(): number | null {
