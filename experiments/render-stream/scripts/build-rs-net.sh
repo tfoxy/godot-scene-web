@@ -54,8 +54,10 @@ if [ "${exported}" != "grc_net_module_v1 grc_net_tls_v1 " ]; then
 fi
 
 mkdir -p "${OUT}"
-cp "${lib}" "${OUT}/librender_stream_net.so.tmp"
-mv "${OUT}/librender_stream_net.so.tmp" "${OUT}/librender_stream_net.so"
+install_tmp="$(mktemp "${OUT}/librender_stream_net.so.XXXXXX")"
+trap 'rm -f "${install_tmp}"' EXIT
+cp "${lib}" "${install_tmp}"
+mv -f "${install_tmp}" "${OUT}/librender_stream_net.so"
 
 cat >"${OUT}/rs-net-build.json" <<JSON
 {

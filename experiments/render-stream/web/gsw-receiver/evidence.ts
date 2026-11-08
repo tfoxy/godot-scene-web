@@ -24,14 +24,36 @@ export const APPLIED_SCHEMA = "render-stream-receiver-applied/7";
  * file is complete. */
 export const PUT_PART_BYTES = 8 * 1024 * 1024;
 
+export interface EvidencePutFailure {
+  target: string;
+  status: number | null;
+  error: string;
+}
+
 export async function put(
   cfg: ReceiverConfig,
   rel: string,
   body: BodyInit | string[],
+  failures?: EvidencePutFailure[],
 ): Promise<void> {
   const send = async (url: string, b: BodyInit): Promise<void> => {
-    const res = await fetch(url, { method: "PUT", body: b });
-    if (!res.ok) throw new Error(`PUT ${rel}: HTTP ${res.status}`);
+    let status: number | null = null;
+    console.log(`evidence PUT ${url}: started`);
+    try {
+      const res = await fetch(url, { method: "PUT", body: b });
+      status = res.status;
+      console.log(`evidence PUT ${url}: HTTP ${status}`);
+      if (!res.ok) throw new Error(`PUT ${rel}: HTTP ${res.status}`);
+    } catch (error) {
+      const failure = {
+        target: rel,
+        status,
+        error: error instanceof Error ? error.message : String(error),
+      };
+      failures?.push(failure);
+      console.error(`evidence PUT ${url}: ${JSON.stringify(failure)}`);
+      throw error;
+    }
   };
   const url = `${cfg.evidenceUrl}/${rel}`;
   if (typeof body === "string" && body.length <= PUT_PART_BYTES / 4)
@@ -355,6 +377,7 @@ export interface LiveEntry {
 }
 
 export interface Report {
+  evidencePutFailures?: EvidencePutFailure[];
   cfg: ReceiverConfig;
   mode: "file" | "live";
   recording: { path: string; sha256: string | null; bytes: number | null };
@@ -519,6 +542,9 @@ export function appliedJson(r: Report): Record<string, unknown> {
   const counted = rust.uploads.filter((u) => u.op !== "placeholder");
   return {
     schema: APPLIED_SCHEMA,
+    ...(r.evidencePutFailures?.length
+      ? { evidence_put_failures: r.evidencePutFailures }
+      : {}),
     receiver: {
       kind: "gsw-canvas",
       build_sha256: r.cfg.buildSha256,

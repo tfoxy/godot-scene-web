@@ -6,7 +6,11 @@
 // part is sent as ordered `?part=k&of=n` PUTs whose concatenation is the original bytes.
 
 import type { ReceiverConfig } from "../../web/gsw-receiver/config";
-import { prettyJsonParts, put } from "../../web/gsw-receiver/evidence";
+import {
+  type EvidencePutFailure,
+  prettyJsonParts,
+  put,
+} from "../../web/gsw-receiver/evidence";
 
 let failed = 0;
 const check = (id: string, ok: boolean, detail = ""): void => {
@@ -83,4 +87,64 @@ check(
   calls.length === 1 && calls[0].url === "http://h/evidence/n/small.json",
 );
 globalThis.fetch = realFetch;
+// Attribution must preserve the original rejection and include the failing part's status.
+const realLog = console.log;
+const realError = console.error;
+const logs: string[] = [];
+const errors: string[] = [];
+const failures: EvidencePutFailure[] = [];
+try {
+  console.log = (message: string) => logs.push(message);
+  console.error = (message: string) => errors.push(message);
+  globalThis.fetch = async () => new Response(null, { status: 201 });
+  await put(cfg, "ok.json", "{}", failures);
+  globalThis.fetch = async () => new Response(null, { status: 503 });
+  let httpError: unknown;
+  try {
+    await put(cfg, "unavailable.json", "{}", failures);
+  } catch (error) {
+    httpError = error;
+  }
+  const networkError = new Error("connection interrupted");
+  globalThis.fetch = (async () => {
+    throw networkError;
+  }) as typeof fetch;
+  let caught: unknown;
+  try {
+    await put(cfg, "interrupted.json", "{}", failures);
+  } catch (error) {
+    caught = error;
+  }
+  console.log = realLog;
+  console.error = realError;
+  check(
+    "put-logs-http-target-and-status",
+    logs.some((l) => l.includes("ok.json: HTTP 201")) &&
+      logs.some((l) => l.includes("unavailable.json: HTTP 503")),
+  );
+  check(
+    "put-failures-retain-status-and-error",
+    JSON.stringify(failures) ===
+      JSON.stringify([
+        {
+          target: "unavailable.json",
+          status: 503,
+          error: "PUT unavailable.json: HTTP 503",
+        },
+        {
+          target: "interrupted.json",
+          status: null,
+          error: networkError.message,
+        },
+      ]) && errors.length === 2,
+  );
+  check(
+    "put-failures-still-reject",
+    httpError instanceof Error && caught === networkError,
+  );
+} finally {
+  globalThis.fetch = realFetch;
+  console.log = realLog;
+  console.error = realError;
+}
 process.exit(failed === 0 ? 0 : 1);

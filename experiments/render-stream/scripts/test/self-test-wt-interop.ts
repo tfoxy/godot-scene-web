@@ -12,8 +12,9 @@
 // The track leg (TRK3, protocols/): the same host with --tracks=input, the
 // probe on `?protocol=render-stream-track.1` with a track-hello, `--send` texts on the live stream
 // and `--uplink` texts in an uplink batch: the host's test receiver records `opened` (carrier wt),
-// every payload in order and one `closed`; the probe reads track-ready and the echoes; a resource
-// stream on the track session is reset; a view probe beside it still gets its stream; and
+// every payload once, in each stream's order, and one `closed`; the probe reads track-ready and
+// the echoes; a resource stream on the track session is reset; a view probe beside it still gets
+// its stream; and
 // live-tracks.json says `wt` serves tracks and counts the session. Its sabotage: the same track
 // probe against a host with tracks off is refused at CONNECT (400).
 // Sabotages, each of which must fail its check: a wrong certificate hash (the handshake fails),
@@ -35,6 +36,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { trackPayloadsMatch } from "../lib/wt-track-order";
 
 const RS = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const HOST = join(RS, "capture/build/rs_live_host");
@@ -442,8 +444,8 @@ async function trackLeg(): Promise<void> {
       `the track probe read track-ready (${texts[0] ?? "none"})`,
     );
     ok(
-      JSON.stringify(texts.slice(1)) === JSON.stringify([...live, ...up]),
-      `the echoes are the payloads in order (${texts.length - 1} of ${live.length + up.length})`,
+      trackPayloadsMatch(texts.slice(1), live, [up]),
+      `the echoes contain each payload once in its stream's order (${texts.length - 1} of ${live.length + up.length})`,
     );
     const res = tr.summary?.resources[0];
     ok(
@@ -470,10 +472,12 @@ async function trackLeg(): Promise<void> {
       `the receiver saw one opened (carrier wt) and one closed (${mine.map((r) => r.event).join(",")})`,
     );
     ok(
-      JSON.stringify(
-        mine.filter((r) => r.event === "message").map((r) => r.text),
-      ) === JSON.stringify([...live, ...up]),
-      "the receiver recorded every payload, live stream then uplink batch, in order",
+      trackPayloadsMatch(
+        mine.filter((r) => r.event === "message").map((r) => r.text ?? ""),
+        live,
+        [up],
+      ),
+      "the receiver recorded each payload once in its stream's order (hello accepted first)",
     );
     const last = mine[mine.length - 1];
     ok(

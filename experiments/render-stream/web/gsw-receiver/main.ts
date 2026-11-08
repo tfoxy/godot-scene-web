@@ -54,7 +54,7 @@ import {
   appliedJson,
   encodePng,
   prettyJsonParts,
-  put,
+  put as putEvidence,
   type Report,
   type RustParts,
   type ShellTx,
@@ -115,7 +115,14 @@ async function run(): Promise<void> {
     entries: null,
     protocol: "render-stream/6",
     creditWindow: null,
+    evidencePutFailures: [],
   };
+  const put = (
+    config: ReceiverConfig,
+    target: string,
+    body: BodyInit | string[],
+  ): Promise<void> =>
+    putEvidence(config, target, body, report.evidencePutFailures);
   let fileStream: Record<string, unknown> | null = null;
   if (cfg.cacheBudgetBytes !== null && cfg.cacheBudgetBytes > 0)
     report.sessionUnsupported.push({
