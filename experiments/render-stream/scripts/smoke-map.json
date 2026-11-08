@@ -48,7 +48,14 @@
       "experiments/render-stream/decode-proto-rs",
       "experiments/render-stream/rs-net"
     ],
-    "other": ["pure", "lock-tests", "capture-build", "pnpm-test", "bench-instr"]
+    "other": [
+      "pure",
+      "lock-tests",
+      "capture-build",
+      "pnpm-test",
+      "bench-instr",
+      "windows"
+    ]
   },
   "sabotage_paths": [
     "experiments/render-stream/scripts/check-gate*.ts",
@@ -156,7 +163,8 @@
       "g7live-web-rust-g7-1",
       "g7live-web-rust-g7-2",
       "g7live-web-rust-g7-5",
-      "g7live-web-rust-g7-55"
+      "g7live-web-rust-g7-55",
+      "windows"
     ],
     "capable_doc": "G8g: gate 8's browser group g7-8 (its file legs in g7-gsw/g7-web-rust and its live g8l legs in g7live-gsw/g7live-web-rust) is remote-capable: --determinism 2,1 (run 40088061009) agreed over 12 runs, 205/205 shots and 70/70 dumps. R4: bench-instr (cachegrind Ir per golden case; load-insensitive, so not a timing run). R3: gate 7's browser correctness runs on the CI-only lavapipe renderer (lib/browser-renderer.ts): the file groups (every timing group of their native sources skipped by RS_SKIP_TIMING_GROUPS) and the live correctness groups g7-5 and g7-55 (refuse.groups keeps only live g7-1 local: GSW live-resync shots disagree across runners, see its reason. Live g7-2 became remote-capable in GRT5, df52bcff). Every -timing run (g7-6, g7-lc, g7-r, g7-k) is refused by phase, g7x by id, device legs by match; the native receiver has no live correctness run (run-gate7.sh runs g7-r only there).",
     "refuse": {
@@ -427,6 +435,26 @@
         "experiments/render-stream/scripts/test/self-test-track-caps.ts"
       ],
       "reach": ["capture-build", "pure", "native:gate8@*"],
+      "exclusive": true
+    },
+    {
+      "why": "Windows toolchain, imports gate and bundle runner: pure self-tests and the Windows bundle only",
+      "paths": [
+        "experiments/render-stream/capture/cmake/llvm-mingw-x86_64.cmake",
+        "experiments/render-stream/capture/cmake/windows.cmake",
+        "experiments/render-stream/scripts/lib/llvm-mingw.sh",
+        "experiments/render-stream/scripts/w-imports.py",
+        "experiments/render-stream/scripts/lib/w-run.py",
+        "experiments/render-stream/scripts/test/self-test-w-imports.ts",
+        "experiments/render-stream/scripts/test/self-test-w-run.ts"
+      ],
+      "reach": ["pure", "windows"],
+      "exclusive": true
+    },
+    {
+      "why": "Shared platform tests: Linux capture build, pure self-tests and the Windows bundle",
+      "paths": ["experiments/render-stream/capture/cmake/platform-tests.cmake"],
+      "reach": ["capture-build", "pure", "windows"],
       "exclusive": true
     },
     {

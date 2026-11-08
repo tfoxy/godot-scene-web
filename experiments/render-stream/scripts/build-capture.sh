@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Configure, build and unit-test the gate -1 capture library.
 #
-# Usage: experiments/render-stream/scripts/build-capture.sh [cmake build type]
+# Usage: experiments/render-stream/scripts/build-capture.sh [--target linux|windows] [cmake build type]
 set -euo pipefail
 
 # Measurement isolation: the build holds the machine-wide quiet lock SHARED (lib/quiet.sh), so it
@@ -11,10 +11,74 @@ if [ -z "${RS_QUIET_BUILD_WRAPPED:-}" ]; then
 		--label "$(basename "${BASH_SOURCE[0]}")" -- bash "${BASH_SOURCE[0]}" "$@"
 fi
 
+TARGET=linux
+if [ "${1:-}" = --target ]; then
+	[ "$#" -ge 2 ] || { echo 'build-capture: --target requires linux or windows' >&2; exit 2; }
+	TARGET="$2"
+	shift 2
+fi
+if [ "$#" -gt 1 ] || [[ "${1:-}" = --* ]] || [[ "$TARGET" != linux && "$TARGET" != windows ]]; then
+	echo 'usage: build-capture.sh [--target linux|windows] [cmake build type]' >&2
+	exit 2
+fi
 BUILD_TYPE="${1:-RelWithDebInfo}"
 CMAKE="${CMAKE:-/snap/bin/cmake}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CAPTURE="$(cd "${HERE}/../capture" && pwd)"
+
+if [ "$TARGET" = windows ]; then
+	. "$HERE/lib/llvm-mingw.sh"
+	llvm_mingw_ensure
+	B="$CAPTURE/build-windows"
+	"${CMAKE}" -S "$CAPTURE" -B "$B" \
+		-DCMAKE_TOOLCHAIN_FILE="$CAPTURE/cmake/llvm-mingw-x86_64.cmake" \
+		-DGRC_LLVM_MINGW_ROOT="$LLVM_MINGW_ROOT" -DGRC_WINDOWS_SCOPE=tests \
+		-DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+	"${CMAKE}" --build "$B" -j"$(nproc)"
+	rm -rf "$B/bundle"
+	python3 -I - "$B" "$HERE/.." "$LLVM_MINGW_ROOT/bin/llvm-strip" <<'PYBUNDLE'
+import json, shutil, subprocess, sys
+from pathlib import Path
+build, rs = map(Path, sys.argv[1:3])
+bundle = build / "bundle"
+bundle.mkdir()
+manifest = json.loads((build / "w-manifest.json").read_text())
+exes = {entry["exe"] for key in ("tests", "imports_only", "sabotage") for entry in manifest[key]}
+for exe in sorted(exes):
+    dest = bundle / exe
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([sys.argv[3], "--strip-debug", "-o", str(dest), str(build / exe)], check=True)
+for directory in manifest["data"]:
+    shutil.copytree(rs / directory, bundle / directory)
+shutil.copyfile(build / "w-manifest.json", bundle / "manifest.json")
+PYBUNDLE
+	llvm_mingw_record "$B/bundle/toolchain.json"
+	python3 -I - "$B" "$HERE/w-imports.py" "$LLVM_MINGW_ROOT/bin/llvm-objdump" <<'PYIMPORTS'
+import json, subprocess, sys
+from pathlib import Path
+build = Path(sys.argv[1])
+bundle = build / "bundle"
+m = json.loads((bundle / "manifest.json").read_text())
+checker = [sys.executable, "-I", sys.argv[2], "--objdump", sys.argv[3]]
+exes = [str(bundle / entry["exe"]) for key in ("tests", "imports_only") for entry in m[key]]
+commands = [checker + ["--json", str(build / "w-imports.json"), *exes]]
+for entry in m["sabotage"]:
+    commands.append(checker + ["--expect-disallowed", ",".join(entry["expect_disallowed"]),
+                               str(bundle / entry["exe"])])
+for command in commands:
+    result = subprocess.run(command)
+    if result.returncode:
+        sys.exit(result.returncode)
+PYIMPORTS
+	python3 -I - "$B/bundle" <<'PYCOUNT'
+import json, sys
+from pathlib import Path
+bundle = Path(sys.argv[1])
+m = json.loads((bundle / "manifest.json").read_text())
+print(f"windows bundle: {bundle}: {len(m['tests'])} tests, {len(m['imports_only'])} imports-only")
+PYCOUNT
+	exit 0
+fi
 
 "${CMAKE}" -S "${CAPTURE}" -B "${CAPTURE}/build" -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
 "${CMAKE}" --build "${CAPTURE}/build" -j"$(nproc)"

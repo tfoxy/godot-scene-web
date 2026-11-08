@@ -227,7 +227,8 @@ def merge_mode(argv):
             s = json.load(open(p))
         except (OSError, ValueError):
             continue
-        first = first or s
+        if s.get("partial") is not True:
+            first = first or s
         rows.extend(s.get("runs", []))
         try:
             setup_s.append(float(open(os.path.join(j, "setup_s")).read().strip()))

@@ -333,6 +333,45 @@ PY"
 python3 "$VS" --merge --out "$TMP/merged00" --expect native-rust-gate1 >/dev/null 2>&1; rc=$?
 check "no job summary at all (every job died) is still a failed run, never an empty pass" bash -c "[ $rc = 1 ]"
 
+# A partial Windows row must never supply the plan metadata, even when it arrives first.
+mkdir -p "$TMP/wjobs/win" "$TMP/wjobs/linux"
+mk "$TMP/wjobs/win" windows setup 0 0
+mk "$TMP/wjobs/linux" windows setup 0 1
+python3 - "$TMP/wjobs/win/validate-summary.json" <<'PYTEST'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s.update(partial=True, base=None, milestone=None, sabotage=None, skipped_targets=0)
+json.dump(s, open(p, "w"))
+PYTEST
+echo '{"shards":{"windows":2}}' >"$TMP/wjobs/remote.json"
+python3 "$VS" --merge --out "$TMP/wmerged" --expect windows --remote-json "$TMP/wjobs/remote.json" \
+    "$TMP/wjobs/win" "$TMP/wjobs/linux" >/dev/null 2>&1; rc=$?
+check "Windows partial rows fold without replacing the full plan header" python3 - "$TMP/wmerged/validate-summary.json" "$rc" <<'PYTEST'
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert sys.argv[2] == "0" and s["failed"] == 0
+assert s["base"] == "abc" and s["skipped_targets"] == 7
+assert s["sabotage"] == {"run": False, "why": []}
+assert "partial" not in s
+assert len(s["runs"]) == 1 and len(s["runs"][0]["shards"]) == 2
+PYTEST
+python3 "$VS" --merge --out "$TMP/wmissing" --expect windows --remote-json "$TMP/wjobs/remote.json" \
+    "$TMP/wjobs/linux" >/dev/null 2>&1; rc=$?
+check "a missing hosted Windows job fails the combined windows row" python3 - "$TMP/wmissing/validate-summary.json" "$rc" <<'PYTEST'
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert sys.argv[2] == "1" and s["failed"] == 1 and s["runs"][0]["rc"] == "missing"
+PYTEST
+python3 "$VS" --merge --out "$TMP/wpartial" --expect windows --remote-json "$TMP/wjobs/remote.json" \
+    "$TMP/wjobs/win" >/dev/null 2>&1; rc=$?
+check "a lone partial summary supplies no plan header and fails the missing build shard" python3 - "$TMP/wpartial/validate-summary.json" "$rc" <<'PYTEST'
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert sys.argv[2] == "1" and s["base"] is None and s["sabotage"] is None
+assert s["skipped_targets"] == 0 and s["runs"][0]["rc"] == "missing"
+PYTEST
+
 # ---- pure shards: the fold in --merge ------------------------------------------------------------------------------------------------
 mkdir -p "$TMP/sh"
 mks() { # mks <dir> <rc> <wall> <failing-json> <lock-hold>
@@ -490,6 +529,27 @@ except ImportError:
 for f in glob.glob(sys.argv[1] + "/.github/workflows/remote-*.yml") + [sys.argv[1] + "/.github/actions/rs-setup/action.yml"]:
     yaml.safe_load(open(f))
 PY
+check "Windows job runs only the bundle, with sparse checkout and no setup or build" python3 - "$ROOT/.github/workflows/remote-validate.yml" <<'PYTEST'
+import sys, yaml
+w = yaml.safe_load(open(sys.argv[1]))
+j = w["jobs"]["windows"]
+assert j["runs-on"] == "windows-latest" and j["needs"] == ["plan", "validate"]
+assert "!cancelled()" in j["if"] and "'windows'" in j["if"]
+steps = j["steps"]
+assert not any("rs-setup" in s.get("uses", "") or "setup-python" in s.get("uses", "") or "cmake" in s.get("run", "") for s in steps)
+checkout = steps[0]["with"]
+assert checkout["persist-credentials"] is False and checkout["sparse-checkout-cone-mode"] is False
+assert checkout["sparse-checkout"].splitlines() == ["experiments/render-stream/scripts/lib/w-run.py", "experiments/render-stream/scripts/w-imports.py"]
+run = next(s for s in steps if s.get("name") == "Windows tests")
+assert run["shell"] == "pwsh" and "python -I" in run["run"] and "--imports-tool" in run["run"]
+assert "windows" in w["jobs"]["merge"]["needs"]
+assert "^wbundle$" in w["jobs"]["cleanup"]["steps"][-1]["run"]
+validate = w["jobs"]["validate"]["steps"]
+assert next(s for s in validate if s.get("uses", "").endswith("rs-setup"))["with"]["llvm-mingw"] == "${{ matrix.id == 'windows' }}"
+artifact = next(s for s in validate if s.get("with", {}).get("name") == "wbundle")
+assert artifact["if"] == "always() && matrix.label == 'windows'"
+assert artifact["with"]["path"].endswith("build-windows/bundle")
+PYTEST
 check "every action is pinned to a full commit sha" bash -c "! grep -hE '^\s*-?\s*uses: ' '$ROOT'/.github/workflows/remote-*.yml '$ROOT'/.github/actions/rs-setup/action.yml | grep -v '\./' | grep -vE 'uses: [^@]+@[0-9a-f]{40} # v'"
 check "run branches only restore caches: the setup action saves behind inputs.save and nothing else saves" bash -c \
 	"! grep -qE 'uses: actions/cache@' '$ROOT'/.github/actions/rs-setup/action.yml '$ROOT'/.github/workflows/remote-*.yml \

@@ -40,6 +40,9 @@ inputs:
   valgrind:
     description: valgrind from the runner image's apt archive (bench-instr's cachegrind Ir counts)
     default: "false"
+  llvm-mingw:
+    description: Pinned Linux-hosted llvm-mingw for the Windows test bundle
+    default: "false"
   capture-build:
     description: Restore (or build) the capture library build tree that the pure self-tests need (rs_ws_echo)
     default: "false"
@@ -197,6 +200,30 @@ runs:
           ~/.cargo/registry
           ~/.cargo/git
         key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+    - name: llvm-mingw pin
+      id: llvm-mingw-pin
+      if: inputs.llvm-mingw == 'true'
+      shell: bash
+      run: bash experiments/render-stream/scripts/lib/llvm-mingw.sh --print-pin >>"$GITHUB_OUTPUT"
+
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: llvm-mingw-cache
+      if: inputs.llvm-mingw == 'true'
+      with:
+        path: ~/.cache/godot-render-stream/llvm-mingw/${{ steps.llvm-mingw-pin.outputs.tag }}/${{ steps.llvm-mingw-pin.outputs.asset }}
+        key: llvm-mingw-${{ runner.os }}-${{ steps.llvm-mingw-pin.outputs.tag }}-${{ steps.llvm-mingw-pin.outputs.sha256 }}
+
+    - name: llvm-mingw
+      if: inputs.llvm-mingw == 'true'
+      shell: bash
+      run: bash experiments/render-stream/scripts/lib/llvm-mingw.sh --ensure
+
+    - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: inputs.llvm-mingw == 'true' && inputs.save == 'true' && steps.llvm-mingw-cache.outputs.cache-hit != 'true'
+      with:
+        path: ~/.cache/godot-render-stream/llvm-mingw/${{ steps.llvm-mingw-pin.outputs.tag }}/${{ steps.llvm-mingw-pin.outputs.asset }}
+        key: ${{ steps.llvm-mingw-cache.outputs.cache-primary-key }}
 
     # ---- features ----------------------------------------------------------------------------------
 

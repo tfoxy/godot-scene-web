@@ -226,6 +226,9 @@ run_one() {
 		launch "$dir" -- bash -c 'rc=0; bash "$1" --out "$3/quiet" || rc=$?; bash "$2" --out "$3/sched" || rc=$?; exit $rc' _ \
 			"$SCRIPT_DIR/test/self-test-quiet.sh" "$SCRIPT_DIR/test/self-test-quiet-sched.sh" "$dir" >"$dir/run.log" 2>&1 || rc=$?
 		;;
+	windows)
+		launch "$dir" -- bash "$SCRIPT_DIR/build-capture.sh" --target windows >"$dir/run.log" 2>&1 || rc=$?
+		;;
 	capture-build)
 		launch "$dir" -- bash "$SCRIPT_DIR/build-capture.sh" >"$dir/run.log" 2>&1 || rc=$?
 		;;

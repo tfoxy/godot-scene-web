@@ -163,6 +163,7 @@ jobs:
           # worktree runs build-capture.sh once for the same reason): restored from the seeded cache.
           # A native gate needs the capture extension too, and so does every gate 7 run: its sources
           # (--make-sources) and live hosts are native gate runs.
+          llvm-mingw: ${{ matrix.id == 'windows' }}
           capture-build: ${{ matrix.id == 'pure' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
           # native-* runs: rendered legs on Xvfb + llvmpipe, the rs-core GDExtension, the
           # release template, the editor (imports, receiver self-test) and strace
@@ -309,6 +310,14 @@ jobs:
           cp "$RUNNER_TEMP/vmerged/validate-summary.json" "$RUNNER_TEMP/v/validate-summary.json"
           exit $rc
 
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && matrix.label == 'windows'
+        with:
+          name: wbundle
+          path: experiments/render-stream/capture/build-windows/bundle
+          retention-days: 1
+          if-no-files-found: ignore
+
       - name: Trim artifact
         if: always()
         timeout-minutes: 10
@@ -436,6 +445,40 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
+  windows:
+    name: windows-win
+    needs: [plan, validate]
+    if: ${{ !cancelled() && contains(fromJSON(inputs.runs), 'windows') }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            experiments/render-stream/scripts/lib/w-run.py
+            experiments/render-stream/scripts/w-imports.py
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: wbundle
+          path: ${{ runner.temp }}/wbundle
+
+      - name: Windows tests
+        shell: pwsh
+        run: python -I experiments/render-stream/scripts/lib/w-run.py --bundle "$env:RUNNER_TEMP/wbundle" --out "$env:RUNNER_TEMP/art" --id windows --label windows-win --imports-tool experiments/render-stream/scripts/w-imports.py
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: job-windows-win
+          path: ${{ runner.temp }}/art
+          retention-days: 1
+          if-no-files-found: ignore
+
   determinism:
     if: always() && inputs.determinism != ''
     needs: [plan, validate]
@@ -518,7 +561,7 @@ jobs:
 
   merge:
     if: always()
-    needs: [plan, validate, determinism]
+    needs: [plan, validate, determinism, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -627,6 +670,6 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" --paginate \
-            --jq '.artifacts[] | select(.name | test("^(job-|det-)|^determinism$")) | .id' |
+            --jq '.artifacts[] | select(.name | test("^(job-|det-)|^determinism$|^wbundle$")) | .id' |
             while read -r id; do gh api -X DELETE "repos/$GH_REPO/actions/artifacts/$id" >/dev/null || true; done
           true

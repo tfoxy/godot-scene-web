@@ -229,6 +229,8 @@ def runs(targets, m, sabotage, tier="smoke"):
     out.append({"id": "pure", "kind": "pure"})
     if "capture-build" in targets:
         out.append({"id": "capture-build", "kind": "capture-build"})
+    if "windows" in targets:
+        out.append({"id": "windows", "kind": "windows"})
     for c in u["cargo"]:
         if f"cargo:{c}" in targets:
             out.append({"id": f"cargo-{os.path.basename(c)}", "kind": "cargo", "crate": c})
@@ -388,6 +390,11 @@ def self_test(m):
     P = lambda *ps, ms=False: plan(m, list(ps), repo, ms)
     a = P("experiments/render-stream/results/grt.md")
     check("a doc reaches nothing but the pure self-tests", a["targets"] == ["pure"])
+    pin = P("experiments/render-stream/scripts/lib/llvm-mingw.sh")
+    check("the Windows pin reaches only pure and windows", set(pin["targets"]) == {"pure", "windows"})
+    platform = P("experiments/render-stream/capture/src/rs_platform.h")
+    check("shared capture source reaches windows in setup", "windows" in platform["targets"]
+          and {"id": "windows", "kind": "windows", "phase": "setup"} in platform["runs"])
     b = P("experiments/render-stream/some/new/thing.xyz")
     check("an unknown path reaches every target", set(b["targets"]) == uni and b["unmatched"])
     c = P("experiments/render-stream/scripts/lib/quiet.sh")
@@ -565,6 +572,8 @@ def main():
     if print_paths:  # the diff validate-increment.sh plans against (default base: main)
         print("\n".join(changed_paths(repo, base or "main")))
         return
+    if st and mp is None:
+        mp = os.path.join(os.path.dirname(__file__), "..", "smoke-map.json")
     m = json.load(open(mp))
     if st:
         sys.exit(0 if self_test(m) else 1)

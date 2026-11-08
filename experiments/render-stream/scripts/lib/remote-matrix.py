@@ -148,7 +148,10 @@ def expand(runs, run_groups=None, determinism=(), pure_shards=6, max_parallel=16
     jobs = []  # one per matrix entry, before leg shards: {"base": label, "entry": {...}, "est": m}
     for i in runs:
         gs = rg.get(i) or [""]
-        if det:
+        if i == "windows":
+            jobs.append({"base": i, "est": expected_minutes(table, i),
+                         "entry": {"id": i, "shard": "", "legs": "", "label": i}})
+        elif det:
             for g in gs:
                 for k, r in enumerate(det, 1):
                     base = f"{i}{'@' + g if g else ''}"
@@ -215,6 +218,8 @@ def expand(runs, run_groups=None, determinism=(), pure_shards=6, max_parallel=16
         e["est_min"] = j["est"]
         include.append(e)
         shards[e["id"]] = shards.get(e["id"], 0) + 1
+    if "windows" in runs:
+        shards["windows"] = shards.get("windows", 1) + 1
     shards = {i: n for i, n in shards.items() if n > 1}
     est = {"makespan_min": round(sim(final, max_parallel), 1), "job_minutes": round(sum(j["est"] for j in final), 1),
            "longest_min": round(max([j["est"] for j in final] + [0]), 1), "max_parallel": max_parallel,
@@ -264,6 +269,13 @@ def self_test():
         if not ok:
             fails.append(name)
 
+    for det in ([], [3, 1]):
+        win = expand(["windows"], determinism=det)
+        check(f"windows: one build job and two expected shards, determinism={det}",
+              len(win["include"]) == 1 and win["shards"] == {"windows": 2}
+              and all(win["include"][0].get(k) == v for k, v in
+                      {"id": "windows", "shard": "", "legs": "", "label": "windows"}.items())
+              and "repeat" not in win["include"][0])
     real = json.load(open(DEFAULT_TABLE))
     warns = []
     w = warns.append

@@ -5,8 +5,14 @@ project(render_stream_capture LANGUAGES C CXX)
 # seam for an unmodified official Godot Linux x86-64 template. The library
 # depends on nothing but libc/libstdc++ and the vendored GDExtension header.
 
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  message(FATAL_ERROR "render_stream_capture is Linux-only (got ${CMAKE_SYSTEM_NAME})")
+if(MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+  message(FATAL_ERROR "render_stream_capture: the MSVC C++ ABI (cl.exe, clang-cl) is not supported; build for Windows with cmake/llvm-mingw-x86_64.cmake")
+endif()
+set(GRC_WINDOWS OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  set(GRC_WINDOWS ON)
+elseif(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  message(FATAL_ERROR "render_stream_capture builds for Linux x86-64, or Windows x86-64 with llvm-mingw (cmake/llvm-mingw-x86_64.cmake); got ${CMAKE_SYSTEM_NAME} ${CMAKE_CXX_COMPILER_ID}")
 endif()
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "render_stream_capture is 64-bit only")
@@ -47,6 +53,14 @@ set_source_files_properties(src/rs_http_coding.cpp src/rs_live_coding.cpp src/rs
   COMPILE_OPTIONS "-Wall;-Wextra;-Werror")
 set_target_properties(grc_codecs PROPERTIES
   POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
+
+# Windows: the platform layer, the ABI convention probe and the engine-free ctests only, until the
+# capture library is ported.
+if(GRC_WINDOWS)
+  include(cmake/windows.cmake)
+  return()
+endif()
+include(cmake/platform-tests.cmake)
 
 # G8kv: basisu 1.60 (the copy Godot 4.5.1 vendors, third_party/basis_universal/PROVENANCE.md), the
 # encoder and the transcoder, hidden-visibility static library on the zstd above. No OpenCL; the

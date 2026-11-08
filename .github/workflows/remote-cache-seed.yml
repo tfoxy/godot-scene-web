@@ -21,6 +21,7 @@ on:
       - experiments/render-stream/web/*/Cargo.lock
       - experiments/render-stream/capture/**
       - experiments/render-stream/scripts/build-capture.sh
+      - experiments/render-stream/scripts/lib/llvm-mingw.sh
       - packages/input/godot/addons/gsw_input/*.gd
       - experiments/render-stream/rs-core/**
       - experiments/render-stream/rs-core-capi/**
@@ -65,6 +66,7 @@ jobs:
           fonts: "true"
           apt: "true"
           capture-build: "true"
+          llvm-mingw: "true"
           rs-core-ext: "true"
 
       - name: Report

@@ -1031,6 +1031,8 @@ bool command_equal_bits(const Command &a, const Command &b) {
 // keep a stale /11 digest and command list). Update the size here once it does.
 #if defined(__x86_64__) && defined(__GLIBCXX__)
 static_assert(sizeof(Command) == 328, "Command changed: update command_equal_bits, then this size");
+#elif defined(__x86_64__) && defined(_LIBCPP_VERSION) && defined(_WIN32)
+static_assert(sizeof(Command) == 320, "Command changed: update command_equal_bits, then this size");
 #endif
 
 bool command_lists_equal_bits(const std::vector<Command> &a, const std::vector<Command> &b) {
@@ -1066,6 +1068,9 @@ bool param_identical(const Param &a, const Param &b) {
 #if defined(__x86_64__) && defined(__GLIBCXX__)
 static_assert(sizeof(ItemState) == 264, "ItemState changed: update item_state_difference, then this size");
 static_assert(sizeof(CanvasState) == 80, "CanvasState changed: update canvas_state_difference, then this size");
+#elif defined(__x86_64__) && defined(_LIBCPP_VERSION) && defined(_WIN32)
+static_assert(sizeof(ItemState) == 264, "ItemState changed: update item_state_difference, then this size");
+static_assert(sizeof(CanvasState) == 80, "CanvasState changed: update canvas_state_difference, then this size");
 #endif
 
 // HC4b: the resource entries' difference functions below compare every field; a field added to
@@ -1076,6 +1081,13 @@ static_assert(sizeof(TextureVariant) == 128, "TextureVariant changed: update tex
 static_assert(sizeof(MeshEntry) == 96, "MeshEntry changed: update mesh_entry_difference");
 static_assert(sizeof(MeshSurface) == 88, "MeshSurface changed: update mesh_entry_difference");
 static_assert(sizeof(ShaderEntry) == 160, "ShaderEntry changed: update shader_entry_difference");
+static_assert(sizeof(MaterialEntry) == 56, "MaterialEntry changed: update material_entry_difference");
+#elif defined(__x86_64__) && defined(_LIBCPP_VERSION) && defined(_WIN32)
+static_assert(sizeof(TextureEntry) == 184, "TextureEntry changed: update texture_entry_difference");
+static_assert(sizeof(TextureVariant) == 104, "TextureVariant changed: update texture_entry_difference");
+static_assert(sizeof(MeshEntry) == 96, "MeshEntry changed: update mesh_entry_difference");
+static_assert(sizeof(MeshSurface) == 80, "MeshSurface changed: update mesh_entry_difference");
+static_assert(sizeof(ShaderEntry) == 152, "ShaderEntry changed: update shader_entry_difference");
 static_assert(sizeof(MaterialEntry) == 56, "MaterialEntry changed: update material_entry_difference");
 #endif
 

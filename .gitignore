@@ -68,3 +68,4 @@ apps/playground/public/recovered
 # Gate -1 render-stream capture library: CMake build tree and the .gdextension
 # file CMake generates into it with absolute paths.
 experiments/render-stream/capture/build/
+experiments/render-stream/capture/build-windows/
