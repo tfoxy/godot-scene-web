@@ -1,6 +1,7 @@
 #include "rs_mirror.h"
 
 #include "rs_texture_delivery.h"
+#include "rs_texture_release.h"
 #include "rs_texture_worker.h"
 
 #include <algorithm>
@@ -54,6 +55,11 @@ Mirror::Mirror() {
   hc_shadow_ = g_default_hc_shadow.load();  // HC4a: tests only (set_default_hc_shadow)
 }
 
+Mirror::Mirror(ProcessWide) : process_wide_(true) {
+  reset();
+  hc_shadow_ = g_default_hc_shadow.load();
+}
+
 void Mirror::reset() {
   std::lock_guard<std::mutex> lock(mutex_);
   ++epoch_;
@@ -67,6 +73,9 @@ void Mirror::reset() {
   drop_frame_ = 0;
   omit_op_.clear();
   omit_armed_.store(false, std::memory_order_release);
+  if (process_wide_) {
+    texture_release_set_mirror_bit(kMirrorOmitArmed, false);  // after the disarm
+  }
   omit_from_frame_ = 0;
   perturb_glyph_frame_ = 0;
   perturb_vertex_frame_ = 0;
@@ -197,9 +206,18 @@ void Mirror::set_drop_frame(std::uint64_t frame) {
 
 void Mirror::set_omit_op(const std::string &op, std::uint64_t from_frame) {
   std::lock_guard<std::mutex> lock(mutex_);
+  const bool armed = !op.empty();
+  // kMirrorOmitArmed is never clear while the sabotage is armed: set before arming, cleared after
+  // disarming (rs_texture_release.h).
+  if (process_wide_ && armed) {
+    texture_release_set_mirror_bit(kMirrorOmitArmed, true);
+  }
   omit_op_ = op;
-  omit_armed_.store(!op.empty(), std::memory_order_release);
+  omit_armed_.store(armed, std::memory_order_release);
   omit_from_frame_ = from_frame;
+  if (process_wide_ && !armed) {
+    texture_release_set_mirror_bit(kMirrorOmitArmed, false);
+  }
 }
 
 void Mirror::set_perturb_glyph(std::uint64_t from_frame) {
@@ -7490,15 +7508,19 @@ std::atomic<bool> g_enabled{false};
 }  // namespace
 
 Mirror &mirror_instance() {
-  static Mirror mirror;
+  static Mirror mirror{Mirror::ProcessWide{}};
   return mirror;
 }
 
 void mirror_enable(bool enabled) {
-  const bool was = g_enabled.exchange(enabled);
-  if (enabled && !was) {
-    mirror_instance().reset();
-  }
+  // kMirrorStreaming implies g_enabled: set after the enable and its reset, cleared before the
+  // disable (rs_texture_release.h).
+  texture_release_mirror_edge(enabled, [enabled] {
+    const bool was = g_enabled.exchange(enabled);
+    if (enabled && !was) {
+      mirror_instance().reset();
+    }
+  });
 }
 
 bool mirror_enabled() { return g_enabled.load(std::memory_order_acquire); }

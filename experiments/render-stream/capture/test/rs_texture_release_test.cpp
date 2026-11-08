@@ -1,7 +1,9 @@
 // HTR (rs_texture_release.h): GRC_HEADLESS_TEXTURE_RELEASE and its fault knob parse, the
 // headless-only decision (ignored elsewhere, typed), the VRAM tier against 4.5.1's Image::Format,
-// the predicate's order, the counters, and the off path's cost (one relaxed load and a branch).
+// the predicate's order (spelled out and exhaustively), the hot line's mirror bits and their edge
+// order, the counters, and the off path's cost (one relaxed load and a branch).
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -20,6 +22,31 @@ void expect(bool ok, const std::string &what) {
     ++g_failures;
   }
 }
+
+// The predicate as the header comment states it, written independently of release_decision.
+grc::rs::ReleaseSkip reference_decision(bool logging, bool streaming, bool omitted,
+                                        std::int64_t format, bool copy_ok, bool has_content,
+                                        bool ignore_predicate) {
+  using grc::rs::ReleaseSkip;
+  const bool tier = format >= 17 && format <= 38;  // DXT1 .. ASTC_8x8_HDR
+  if (ignore_predicate) return tier ? ReleaseSkip::None : ReleaseSkip::Format;
+  if (!(logging && streaming)) return ReleaseSkip::Inactive;
+  if (omitted) return ReleaseSkip::Omitted;
+  if (!tier) return ReleaseSkip::Format;
+  if (!(copy_ok && has_content)) return ReleaseSkip::Refused;
+  return ReleaseSkip::None;
+}
+
+// release_decision is constexpr (inline in the hook): it folds at compile time.
+constexpr grc::rs::ReleaseInputs kReleasable{true, true, false, 19, true, true};
+static_assert(grc::rs::release_decision(kReleasable, grc::rs::TextureReleaseFault::None) ==
+              grc::rs::ReleaseSkip::None);
+static_assert(!grc::rs::release_tier(16) && grc::rs::release_tier(17) &&
+              grc::rs::release_tier(38) && !grc::rs::release_tier(39));
+
+// The mirror bits share the line the hook already reads for the flags and the placeholder.
+static_assert(sizeof(grc::rs::detail::ReleaseHot) == 64);
+static_assert(offsetof(grc::rs::detail::ReleaseHot, mirror) < 64);
 
 }  // namespace
 
@@ -126,6 +153,72 @@ int main() {
     expect(release_decision(in, ignore) == ReleaseSkip::None, "fault: inactive DXT5 released");
     in.format = 5;
     expect(release_decision(in, ignore) == ReleaseSkip::Format, "fault: RGBA8 still kept");
+  }
+
+  // The predicate, exhaustively: every input combination over the tier's edges, both faults.
+  {
+    const std::int64_t formats[] = {-1, 0, 5, 16, 17, 19, 25, 38, 39, 40};
+    int cases = 0;
+    for (int bits = 0; bits < 32; ++bits) {
+      for (const std::int64_t format : formats) {
+        for (const bool ignore : {false, true}) {
+          ReleaseInputs in;
+          in.logging = (bits & 1) != 0;
+          in.streaming = (bits & 2) != 0;
+          in.omitted = (bits & 4) != 0;
+          in.copy_ok = (bits & 8) != 0;
+          in.has_content = (bits & 16) != 0;
+          in.format = format;
+          const ReleaseSkip got = release_decision(
+              in, ignore ? TextureReleaseFault::IgnorePredicate : TextureReleaseFault::None);
+          const ReleaseSkip want = reference_decision(in.logging, in.streaming, in.omitted, format,
+                                                      in.copy_ok, in.has_content, ignore);
+          expect(got == want, "predicate matrix bits=" + std::to_string(bits) +
+                                  " format=" + std::to_string(format) +
+                                  " ignore=" + std::to_string(ignore));
+          ++cases;
+        }
+      }
+    }
+    expect(cases == 640, "predicate matrix covers every case");
+  }
+
+  // The mirror bits: set and cleared one at a time, untouched by configure.
+  {
+    expect(texture_release_mirror_bits() == 0, "mirror bits start clear");
+    texture_release_set_mirror_bit(kMirrorOmitArmed, true);
+    texture_release_set_mirror_bit(kMirrorStreaming, true);
+    expect(texture_release_mirror_bits() == (kMirrorStreaming | kMirrorOmitArmed), "both set");
+    texture_release_configure(kReleaseActive);
+    expect(texture_release_mirror_bits() == (kMirrorStreaming | kMirrorOmitArmed),
+           "configure keeps the mirror bits");
+    texture_release_set_mirror_bit(kMirrorStreaming, false);
+    expect(texture_release_mirror_bits() == kMirrorOmitArmed, "streaming cleared alone");
+    texture_release_set_mirror_bit(kMirrorOmitArmed, false);
+    expect(texture_release_mirror_bits() == 0, "omit cleared alone");
+    texture_release_configure(0);
+  }
+
+  // The stream edge order: enabling sets kMirrorStreaming after the flip, disabling clears it
+  // before, so the bit is clear whenever the flip runs, and the omit bit is not touched.
+  {
+    std::vector<std::uint32_t> at_flip;
+    const auto flip = [&at_flip] { at_flip.push_back(texture_release_mirror_bits()); };
+    texture_release_mirror_edge(true, flip);
+    expect(texture_release_mirror_bits() == kMirrorStreaming, "enable: set after the flip");
+    texture_release_set_mirror_bit(kMirrorOmitArmed, true);
+    texture_release_mirror_edge(false, flip);
+    expect(texture_release_mirror_bits() == kMirrorOmitArmed, "disable: cleared, omit kept");
+    texture_release_set_mirror_bit(kMirrorOmitArmed, false);
+    texture_release_mirror_edge(true, flip);
+    texture_release_mirror_edge(true, flip);  // already enabled: the bit stays set
+    expect(texture_release_mirror_bits() == kMirrorStreaming, "re-enable keeps the bit");
+    texture_release_mirror_edge(false, flip);
+    expect(at_flip.size() == 5, "every edge flips once");
+    expect(at_flip.size() == 5 && at_flip[0] == 0 && at_flip[1] == kMirrorOmitArmed &&
+               at_flip[2] == 0 && at_flip[3] == kMirrorStreaming && at_flip[4] == 0,
+           "kMirrorStreaming is clear at every flip but a re-enable's");
+    expect(texture_release_mirror_bits() == 0, "edges leave the bits clear");
   }
 
   // Counters: reset by configure, summed across threads.

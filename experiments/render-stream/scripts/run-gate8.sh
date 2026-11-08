@@ -317,7 +317,8 @@
 #       (the budget ends the stream before step 1), `invalid` (=maybe), the /9 passthrough pair
 #       `tex-passthrough-{off,on}`; gate8-adopt `adopt-{born,late,deferred}-{off,on}`; the gate8-tex
 #       deferred arm (GRC_ARM_DEFER_FRAMES=5, GRC_ADOPT=arm) `tex-deferred-{off,on}` and its fault
-#       leg `sabotage-ignore-predicate` (GRC_HEADLESS_TEXTURE_RELEASE_FAULT); rendered,
+#       leg `sabotage-ignore-predicate` (GRC_HEADLESS_TEXTURE_RELEASE_FAULT), the omit-op leg
+#       `sabotage-omit-create-on` (an armed omit-op on texture_2d_create); rendered,
 #       `rendered-on` (the switch ignored, not-headless) and the native receivers of tex-off and
 #       tex-on; last the htr-cost timing group (`cost/{off,on}-<r>`, the g8t cost variant, each
 #       under the exclusive quiet lock). Judged by lib/gate8-htr-checks.ts.
@@ -4400,6 +4401,9 @@ run_g8htr() {
 	echo "run-gate8: g8htr sabotage-ignore-predicate (tex-deferred-on, GRC_HEADLESS_TEXTURE_RELEASE_FAULT=ignore-predicate)"
 	run_capture_g8htr_tex "$g/sabotage-ignore-predicate/capture" "${G8HTR_DEFER_ENV[@]}" "${G8HTR_ARM[@]}" \
 		GRC_HEADLESS_TEXTURE_RELEASE_FAULT=ignore-predicate
+	echo "run-gate8: g8htr sabotage-omit-create-on (tex-on, GRC_SABOTAGE=omit-op texture_2d_create from frame 1)"
+	run_capture_g8htr_tex "$g/sabotage-omit-create-on/capture" "${G8T_DECODE_ENV[@]}" "${G8HTR_ARM[@]}" \
+		GRC_SABOTAGE=omit-op GRC_SABOTAGE_OP=texture_2d_create GRC_SABOTAGE_FRAME=1
 
 	echo "run-gate8: bringing up private gamescope for g8htr's rendered legs"
 	gs_start 640 360 "$OUT/gamescope-g8htr"

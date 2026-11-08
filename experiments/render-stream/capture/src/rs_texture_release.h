@@ -55,8 +55,10 @@ TextureReleaseDecision resolve_texture_release(TextureReleaseMode mode,
                                                const std::string &display_server);
 
 // Whether `format` (an Image::Format) is in the release tier: a VRAM-compressed format, as the
-// product's HeadlessTextureImageEvictor's tier.
-bool release_tier(std::int64_t format);
+// product's HeadlessTextureImageEvictor's tier. Image::Format (core/io/image.h, 4.5.1):
+// FORMAT_RGBE9995 = 16; Image::is_format_compressed is `format > FORMAT_RGBE9995`, FORMAT_MAX = 39
+// (DXT1 = 17 .. ASTC_8x8_HDR = 38).
+constexpr bool release_tier(std::int64_t format) { return format > 16 && format < 39; }
 
 // Why a create was not released (None: it was).
 enum class ReleaseSkip { None, Inactive, Omitted, Format, Refused };
@@ -70,8 +72,27 @@ struct ReleaseInputs {
   bool has_content = false;  // bytes or a worker job
 };
 
-// The predicate (header comment). With IgnorePredicate only the tier is asked.
-ReleaseSkip release_decision(const ReleaseInputs &in, TextureReleaseFault fault);
+// The predicate (header comment). With IgnorePredicate only the tier is asked. Inline: the hook
+// runs it right after a texture's copy and hash, when its caches are cold, so it must not cost
+// a call into another page of the library.
+constexpr ReleaseSkip release_decision(const ReleaseInputs &in, TextureReleaseFault fault) {
+  if (fault == TextureReleaseFault::IgnorePredicate) {
+    return release_tier(in.format) ? ReleaseSkip::None : ReleaseSkip::Format;
+  }
+  if (!in.logging || !in.streaming) {
+    return ReleaseSkip::Inactive;
+  }
+  if (in.omitted) {
+    return ReleaseSkip::Omitted;
+  }
+  if (!release_tier(in.format)) {
+    return ReleaseSkip::Format;
+  }
+  if (!in.copy_ok || !in.has_content) {
+    return ReleaseSkip::Refused;
+  }
+  return ReleaseSkip::None;
+}
 
 // Flags read by the hook with one load: kReleaseActive arms the predicate; kReleaseTimed (the
 // variable is set, whatever its value) adds the hook and forward times to the counters, so an
@@ -80,14 +101,29 @@ constexpr std::uint32_t kReleaseActive = 1u;
 constexpr std::uint32_t kReleaseTimed = 2u;
 constexpr std::uint32_t kReleaseFaultIgnorePredicate = 4u;
 
+// The mirror's half of the predicate's inputs, copied into the hot line (`ReleaseHot::mirror`) by
+// rs_mirror.cpp, which owns the state they copy:
+//   - kMirrorStreaming: the process-wide mirror is enabled (mirror_enabled()). It is set only after
+//     the enable (and its reset) and cleared before the disable, so it implies mirror_enabled():
+//     a create racing either edge reads it clear and keeps its image (Inactive).
+//   - kMirrorOmitArmed: the process-wide mirror's omit-op sabotage is armed. It is set before the
+//     sabotage is armed and cleared after it is disarmed, so it is never clear while the sabotage
+//     is armed; when it is set the hook still asks the mirror itself (omitted()), which decides.
+constexpr std::uint32_t kMirrorStreaming = 1u;
+constexpr std::uint32_t kMirrorOmitArmed = 2u;
+
 namespace detail {
 // What the hook reads on every create, in one cache line: a create that follows a multi-ms decode
-// finds its caches cold, so each separate line the predicate touches is a miss.
+// finds its caches cold, so each separate line the predicate touches is a miss. `mirror` puts the
+// stream and omit-op state there too, read inside the timed predicate like the rest. Inline (one
+// definition per binary, no translation unit to link): rs_mirror.cpp writes it, and a binary that
+// links the mirror without this file's counters still gets it.
 struct alignas(64) ReleaseHot {
   std::atomic<std::uint32_t> flags{0};
   std::atomic<void *> placeholder{nullptr};  // the engine Image (hooks.cpp owns its reference)
+  std::atomic<std::uint32_t> mirror{0};      // kMirrorStreaming | kMirrorOmitArmed
 };
-extern ReleaseHot g_release_hot;
+inline ReleaseHot g_release_hot;
 }  // namespace detail
 
 // Set once on the main thread before the vptr store (entry.cpp); stats are reset.
@@ -100,6 +136,33 @@ inline void *texture_release_placeholder() {
   return detail::g_release_hot.placeholder.load(std::memory_order_acquire);
 }
 void texture_release_set_placeholder(void *object);
+
+// The mirror bits, one load (acquire: pairs with the writers' acq_rel updates below).
+inline std::uint32_t texture_release_mirror_bits() {
+  return detail::g_release_hot.mirror.load(std::memory_order_acquire);
+}
+// The writers (rs_mirror.cpp, for the process-wide mirror only). acq_rel keeps each update ordered
+// against the mirror state change it brackets: the enable, the reset and the disable.
+inline void texture_release_set_mirror_bit(std::uint32_t bit, bool on) {
+  if (on) {
+    detail::g_release_hot.mirror.fetch_or(bit, std::memory_order_acq_rel);
+  } else {
+    detail::g_release_hot.mirror.fetch_and(~bit, std::memory_order_acq_rel);
+  }
+}
+// The stream edge in the order the kMirrorStreaming contract needs: `flip` changes the mirror's
+// enabled state (and on enable resets the session). Enabling sets the bit after `flip`; disabling
+// clears it before. A template, so the order is the code's and a test can watch it.
+template <typename Flip>
+void texture_release_mirror_edge(bool enabled, Flip &&flip) {
+  if (!enabled) {
+    texture_release_set_mirror_bit(kMirrorStreaming, false);
+  }
+  flip();
+  if (enabled) {
+    texture_release_set_mirror_bit(kMirrorStreaming, true);
+  }
+}
 
 // Totals since configure, for result.json's `headless_texture_release`.
 struct ReleaseStats {

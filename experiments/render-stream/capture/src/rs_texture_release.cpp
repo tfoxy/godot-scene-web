@@ -6,20 +6,11 @@
 namespace grc {
 namespace rs {
 
-namespace detail {
-ReleaseHot g_release_hot;
-}
-
 void texture_release_set_placeholder(void *object) {
   detail::g_release_hot.placeholder.store(object, std::memory_order_release);
 }
 
 namespace {
-
-// Image::Format (core/io/image.h, 4.5.1): FORMAT_RGBE9995 = 16; Image::is_format_compressed is
-// `format > FORMAT_RGBE9995`, FORMAT_MAX = 39 (DXT1 = 17 .. ASTC_8x8_HDR = 38).
-constexpr std::int64_t kFormatRgbe9995 = 16;
-constexpr std::int64_t kFormatMax = 39;
 
 std::atomic<std::int64_t> g_released{0};
 std::atomic<std::int64_t> g_released_bytes{0};
@@ -95,27 +86,6 @@ TextureReleaseDecision resolve_texture_release(TextureReleaseMode mode,
   }
   d.state = "active";
   return d;
-}
-
-bool release_tier(std::int64_t format) { return format > kFormatRgbe9995 && format < kFormatMax; }
-
-ReleaseSkip release_decision(const ReleaseInputs &in, TextureReleaseFault fault) {
-  if (fault == TextureReleaseFault::IgnorePredicate) {
-    return release_tier(in.format) ? ReleaseSkip::None : ReleaseSkip::Format;
-  }
-  if (!in.logging || !in.streaming) {
-    return ReleaseSkip::Inactive;
-  }
-  if (in.omitted) {
-    return ReleaseSkip::Omitted;
-  }
-  if (!release_tier(in.format)) {
-    return ReleaseSkip::Format;
-  }
-  if (!in.copy_ok || !in.has_content) {
-    return ReleaseSkip::Refused;
-  }
-  return ReleaseSkip::None;
 }
 
 void texture_release_configure(std::uint32_t flags) {

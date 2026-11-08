@@ -2391,8 +2391,13 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
     t_release = now_ns();
     rs::ReleaseInputs in;
     in.logging = logging;
-    in.streaming = streaming();
-    in.omitted = in.streaming && omitted("texture_2d_create");
+    // The stream and omit-op state from the hot line (rs_texture_release.h kMirrorStreaming,
+    // kMirrorOmitArmed), read here, inside the timed predicate. Only an armed omit-op sabotage
+    // reaches the mirror, which decides.
+    const uint32_t mirror_bits = rs::texture_release_mirror_bits();
+    in.streaming = (mirror_bits & rs::kMirrorStreaming) != 0;
+    in.omitted = in.streaming && (mirror_bits & rs::kMirrorOmitArmed) != 0 &&
+                 omitted("texture_2d_create");
     in.format = facts.format;  // the source's (a host decode's payload format is copy.format)
     in.copy_ok = copy.status == "ok";
     in.has_content = bytes != nullptr || job != nullptr;

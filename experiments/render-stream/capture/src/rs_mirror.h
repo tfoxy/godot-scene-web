@@ -187,6 +187,11 @@ struct ShaderCodeInput {
 class Mirror {
  public:
   Mirror();
+  // The process-wide mirror (mirror_instance()). Only it copies its omit-op state into the
+  // texture-release hot line (rs_texture_release.h kMirrorOmitArmed), so a scratch or test Mirror
+  // never clears the bit under the live one.
+  struct ProcessWide {};
+  explicit Mirror(ProcessWide);
 
   // Forgets everything and starts a new session: canvas 1 (the root, origin
   // root-query, attached) exists with no RIDs bound, ids restart, failures and
@@ -1513,6 +1518,7 @@ class Mirror {
   std::uint64_t drop_frame_ = 0;
   std::string omit_op_;
   std::atomic<bool> omit_armed_{false};  // HC6: !omit_op_.empty(), readable without mutex_
+  bool process_wide_ = false;  // Mirror(ProcessWide): set before the first reset(), then fixed
   std::uint64_t omit_from_frame_ = 0;
   std::uint64_t perturb_glyph_frame_ = 0;
   std::uint64_t perturb_vertex_frame_ = 0;

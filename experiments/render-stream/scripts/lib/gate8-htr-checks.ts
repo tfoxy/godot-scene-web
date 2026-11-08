@@ -11,13 +11,14 @@
 //   adopt-{born,late,deferred}-{off,on} gate8-adopt (G8a's born, late, LAR0's deferred arms)
 //   tex-deferred-{off,on}              gate8-tex armed at frame 6 (GRC_ARM_DEFER_FRAMES=5), adopted
 //   sabotage-ignore-predicate          tex-deferred-on with GRC_HEADLESS_TEXTURE_RELEASE_FAULT
+//   sabotage-omit-create-on            tex-on with the omit-op sabotage on texture_2d_create
 //   rendered-on                        a rendered gate8-tex capture with the switch on
 //   tex-{off,on}/receiver              the rendered native receiver on tex-off's and tex-on's sinks
 //   cost/{off,on}-<r>                  the htr-cost timing group (the g8t cost variant)
 //
 // Checks: htr-legs, htr-default-unreported, htr-stream-identical, htr-released,
 // htr-replay-identical, htr-workers, htr-adopt, htr-adopt-equivalence, htr-refused, htr-budget,
-// htr-census-1x1, htr-sabotage, htr-rendered-ignored, htr-invalid, htr-cost (timing) and
+// htr-census-1x1, htr-sabotage, htr-omit-op, htr-rendered-ignored, htr-invalid, htr-cost (timing) and
 // htr-lever (measured, no budget).
 
 import { spawnSync } from "node:child_process";
@@ -260,6 +261,7 @@ const TEX_LEGS = [
   "tex-deferred-off",
   "tex-deferred-on",
   "sabotage-ignore-predicate",
+  "sabotage-omit-create-on",
   "rendered-on",
 ];
 const ADOPT_LEGS = ["born", "late", "deferred"].flatMap((a) => [
@@ -802,6 +804,51 @@ export async function runG8htr(
       check(
         "htr-sabotage",
         "GRC_HEADLESS_TEXTURE_RELEASE_FAULT=ignore-predicate (every VRAM texture released, pre-arm ones included) fails htr-census-1x1 (adoption reads the 1x1 back and the stream draws it at 64 px) and htr-stream-identical against the honest deferred twin",
+        problems,
+        detail,
+      ),
+    );
+  }
+
+  // --- htr-omit-op -------------------------------------------------------------------------
+  // The predicate reads the omit-op state from the release hot line (rs_texture_release.h
+  // kMirrorOmitArmed) and asks the mirror only when it is set. With the sabotage armed on
+  // texture_2d_create, every create it drops must be decided `omitted` (its image kept), never
+  // released and then dropped at the mirror tap (`released_then_unheld`).
+  {
+    let problems: string[] | null = null;
+    let detail = "";
+    const leg = "sabotage-omit-create-on";
+    if (ran(`${leg}/capture`) && ran("tex-on/capture")) {
+      problems = [];
+      const s = await stats(leg);
+      const on = await stats("tex-on");
+      if (!s || !on) problems.push("no headless_texture_release stats");
+      else {
+        if (s.skipped.omitted < 1) problems.push("no create decided omitted");
+        if (s.released_then_unheld !== 0)
+          problems.push(
+            `${s.released_then_unheld} released then dropped by the mirror`,
+          );
+        // The omit-op is asked before the tier, so every create tex-on decided past the stream
+        // gate (released, format or refused) is omitted here, and none is released.
+        const past =
+          on.released +
+          on.skipped.format +
+          on.skipped.refused +
+          on.skipped.omitted;
+        if (s.released !== 0) problems.push(`${s.released} released`);
+        if (s.skipped.omitted !== past)
+          problems.push(
+            `omitted ${s.skipped.omitted} != tex-on's ${past} creates past the stream gate`,
+          );
+        detail = `${s.skipped.omitted} omitted (tex-on: ${on.released} released, ${on.skipped.format} format, ${on.skipped.refused} refused), ${s.released} released, ${s.released_then_unheld} released then unheld`;
+      }
+    }
+    checks.push(
+      check(
+        "htr-omit-op",
+        "GRC_SABOTAGE=omit-op on texture_2d_create with the switch on: every create tex-on decides past the stream gate is decided omitted instead (its image kept), none is released, and none is released and then dropped by the mirror",
         problems,
         detail,
       ),

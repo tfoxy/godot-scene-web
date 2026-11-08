@@ -13,11 +13,13 @@
 // subtree with re-keying, free of an unknown RID) and patch/full equivalence over them.
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "rs2_codec.h"
@@ -28,6 +30,7 @@
 #include "rs_records.h"
 #include "rs_sha256.h"
 #include "rs_shader_payload.h"
+#include "rs_texture_release.h"
 #include "rs_texture_payload.h"
 
 namespace {
@@ -606,6 +609,83 @@ void test_process_wide_gate() {
   check(mirror_snapshot(5, 5).state.failures.size() == 1, "mirror_fail_root_query");
   check(mirror_stats().live_canvases == 1, "mirror_stats");
   mirror_enable(false);
+}
+
+// HTR: the texture-release hot line's mirror bits (rs_texture_release.h kMirrorStreaming,
+// kMirrorOmitArmed) follow the process-wide mirror through its three writers (mirror_enable, the
+// omit-op setter, reset), and only it writes them.
+void test_release_hot_bits_follow_mirror() {
+  using namespace grc::rs;
+  const auto bits = [] { return texture_release_mirror_bits(); };
+  check(!mirror_enabled() && bits() == 0, "disabled: no mirror bits");
+  mirror_enable(true);
+  check(bits() == kMirrorStreaming, "enable sets kMirrorStreaming");
+  mirror_set_omit_op("texture_2d_create", 0);
+  check(bits() == (kMirrorStreaming | kMirrorOmitArmed) &&
+            mirror_instance().omits("texture_2d_create", 0),
+        "arming the omit-op sets kMirrorOmitArmed, and the mirror still decides");
+  {
+    Mirror scratch;  // not the process-wide mirror: neither its reset nor its setter writes
+    scratch.set_omit_op("", 0);
+    scratch.reset();
+    check(bits() == (kMirrorStreaming | kMirrorOmitArmed), "a scratch mirror never clears it");
+  }
+  mirror_set_omit_op("", 0);
+  check(bits() == kMirrorStreaming && !mirror_instance().omits("texture_2d_create", 0),
+        "disarming clears kMirrorOmitArmed");
+  {
+    Mirror scratch;
+    scratch.set_omit_op("texture_2d_create", 0);
+    check(bits() == kMirrorStreaming, "a scratch mirror never sets it");
+  }
+  mirror_set_omit_op("texture_2d_create", 3);
+  mirror_enable(false);
+  check(bits() == kMirrorOmitArmed && !mirror_enabled(),
+        "disable clears kMirrorStreaming; the omit-op stays armed, so its bit stays");
+  mirror_enable(true);  // off -> on resets the session, the sabotage with it
+  check(bits() == kMirrorStreaming && !mirror_instance().omits("texture_2d_create", 5),
+        "the enable's reset clears kMirrorOmitArmed");
+  mirror_set_omit_op("texture_2d_create", 0);
+  mirror_instance().reset();
+  check(bits() == kMirrorStreaming, "reset clears kMirrorOmitArmed");
+  mirror_enable(false);
+  check(bits() == 0, "disabled again: no mirror bits");
+
+  // The disable order, watched from another thread: once it reads the mirror disabled it must
+  // read kMirrorStreaming clear too (cleared before the flag flips), so a create racing the
+  // disable keeps its image. Each round enables with the watcher parked, then disables under it.
+  std::atomic<int> round{0};
+  std::atomic<bool> watching{false};
+  std::atomic<int> violations{0};
+  constexpr int kRounds = 2000;
+  std::thread watcher([&] {
+    for (int r = 1; r <= kRounds; ++r) {
+      while (round.load(std::memory_order_acquire) != r) {
+      }
+      watching.store(true, std::memory_order_release);
+      for (;;) {
+        const bool enabled = mirror_enabled();
+        const std::uint32_t b = texture_release_mirror_bits();
+        if (!enabled) {
+          if ((b & kMirrorStreaming) != 0) violations.fetch_add(1);
+          break;
+        }
+      }
+      watching.store(false, std::memory_order_release);
+    }
+  });
+  for (int r = 1; r <= kRounds; ++r) {
+    while (watching.load(std::memory_order_acquire)) {
+    }
+    mirror_enable(true);
+    round.store(r, std::memory_order_release);
+    while (!watching.load(std::memory_order_acquire)) {
+    }
+    mirror_enable(false);
+  }
+  watcher.join();
+  check(violations.load() == 0, "no reader sees the mirror disabled with kMirrorStreaming set");
+  check(!mirror_enabled() && bits() == 0, "the race rounds end disabled");
 }
 
 // the persistent item and canvas tables. A static snapshot shares
@@ -4716,6 +4796,7 @@ int main() {
   test_omit_update();
   test_capacity();
   test_process_wide_gate();
+  test_release_hot_bits_follow_mirror();
   test_detach_reattach_keeps_id();
   test_raw_parent_free_leaves_detached_child();
   test_rs_defaults();
