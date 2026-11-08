@@ -21,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <thread>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -3875,6 +3876,54 @@ void test_hc5_formation_thread() {
         "HC5: the honest encode thread's /11 stream passes the receiver model " + why);
 }
 
+void test_connection_observer() {
+  const auto main = std::this_thread::get_id();
+  LiveConfig config;
+  config.hello_timeout_ms = 50;
+  Rig rig(config);
+  std::vector<ConnEvent> events;
+  rig.hub.set_observer([&](const ConnEvent &event) {
+    check(std::this_thread::get_id() == main, "observer: main thread");
+    events.push_back(event);
+  });
+  auto first = opened(7);
+  first.carrier = "gdswap";
+  first.origin = "https://example.test";
+  first.subprotocol = "render-stream.8";
+  rig.hub.on_event(first, 0);
+  check(events.size() == 1 && events[0].kind == ConnEvent::Connected &&
+      events[0].connection == 1 && events[0].version == 8 && events[0].carrier == "gdswap" &&
+      events[0].origin == first.origin, "observer: open uses public id, version, carrier and origin");
+  rig.step(1, 60001000);
+  check(events.size() == 2 && events[1].kind == ConnEvent::Left &&
+      events[1].connection == 1 && events[1].reason == "hello-timeout" && events[1].code == 1002,
+      "observer: hello timeout exactly one left");
+  rig.hub.on_event(closed(7, 1002), 2);
+  rig.hub.on_event(closed(7, 1002), 2);
+  check(events.size() == 2, "observer: already host-closed produces no duplicate");
+  rig.hub.on_event(opened(42), 2);
+  rig.hub.on_event(closed(42, 1000), 2);
+  check(events.size() == 4 && events[2].connection == 2 && events[3].connection == 2 &&
+      events[3].kind == ConnEvent::Left && events[3].reason == "bye", "observer: receiver close once");
+  rig.hub.on_event(closed(42, 1000), 2);
+  rig.hub.on_event(closed(999, 1000), 2);
+  check(events.size() == 4, "observer: duplicate and unknown receiver close ignored");
+  rig.hub.on_event(opened(43), 2);
+  auto empty_reason = closed(43, 1001);
+  empty_reason.reason.clear();
+  rig.hub.on_event(empty_reason, 2);
+  check(events.size() == 6 && events.back().reason == "closed-1001", "observer: empty receiver reason");
+  rig.hub.on_event(opened(44), 2);
+  rig.hub.finish(EndReason::Disarm, 3, 100000000);
+  check(events.size() == 8 && events.back().kind == ConnEvent::Left &&
+      events.back().connection == 4, "observer: finish awaiting hello closes once");
+  rig.hub.on_event(opened(45), 3);
+  rig.hub.on_event(closed(45, 1000), 3);
+  rig.hub.close_open(4);
+  check(events.size() == 8, "observer: after-finish open untracked, no signal");
+  rig.hub.set_observer({});
+}
+
 int main(int argc, char **argv) {
   grc::rs13::set_verify_meta(true);  // W13p: predict_meta() == the meta JSON
   // HC5: `--formation=thread` runs every hub here through the encode thread (each frame callback
@@ -3884,6 +3933,7 @@ int main(int argc, char **argv) {
       grc::rs2::set_default_formation(grc::rs2::Formation::Thread, true);
     }
   }
+  test_connection_observer();
   test_pm1_multimesh_buffer_f();
   test_pm5_v11_viewer_of_v12_host();
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/drop");

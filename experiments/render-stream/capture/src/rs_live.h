@@ -165,6 +165,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -590,12 +591,27 @@ struct ServingSummary {
   std::string corrupted_hash;
 };
 
+// Connection lifecycle notifications run on the hub's main thread. Observers must only queue
+// owned data: they must not re-enter the hub, emit engine signals or acquire another lock.
+struct ConnEvent {
+  enum Kind { Connected, Left } kind = Connected;
+  std::uint32_t connection = 0;
+  std::uint32_t version = 0;
+  std::string carrier;
+  std::string origin;
+  std::uint16_t code = 0;
+  std::string reason;
+};
+
 class Hub {
  public:
   // `session_template` is the session every connection's stream starts with; the hub fills
   // `stream` (fresh stream_id, connection n, transport websocket, encoding patch).
   Hub(LiveTransport *transport, LiveConfig config, Session session_template);
   ~Hub();
+  void set_observer(std::function<void(const ConnEvent &)> observer) {
+    observer_ = std::move(observer);
+  }
   Hub(const Hub &) = delete;
   Hub &operator=(const Hub &) = delete;
 
@@ -785,6 +801,7 @@ class Hub {
 
   LiveTransport *transport_;
   LiveConfig config_;
+  std::function<void(const ConnEvent &)> observer_;
   Session template_;
   Histogram diff_hist_;
   Histogram encode_hist_;

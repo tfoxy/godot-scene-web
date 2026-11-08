@@ -107,8 +107,11 @@ add_library(render_stream_capture SHARED
   src/rs_texture_basis.cpp
   src/rs_canvas_texture_shim.cpp
   src/rs_carrier_ext.cpp
+  src/rs_capture_gd.cpp
   src/rs_carrier_gd.cpp
   src/rs_carrier_set.cpp
+  src/rs_capture_api.cpp
+  src/rs_setting.cpp
   src/rs_expose.cpp
   src/rs_net_module.cpp
   src/rs_particles_shim.cpp
@@ -750,3 +753,13 @@ add_executable(rs_texture_cache_test test/rs_texture_cache_test.cpp src/rs_textu
 target_include_directories(rs_texture_cache_test PRIVATE src)
 target_link_libraries(rs_texture_cache_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_texture_cache COMMAND rs_texture_cache_test)
+
+# Engine-free capture control and per-arm settings.
+add_executable(rs_setting_test test/rs_setting_test.cpp src/rs_setting.cpp)
+target_include_directories(rs_setting_test PRIVATE src)
+target_link_libraries(rs_setting_test PRIVATE grc_warnings)
+add_test(NAME rs_setting COMMAND rs_setting_test)
+add_executable(rs_capture_api_test test/rs_capture_api_test.cpp src/rs_capture_api.cpp)
+target_include_directories(rs_capture_api_test PRIVATE src)
+target_link_libraries(rs_capture_api_test PRIVATE grc_warnings Threads::Threads)
+add_test(NAME rs_capture_api COMMAND rs_capture_api_test)

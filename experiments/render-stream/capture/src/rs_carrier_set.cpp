@@ -818,6 +818,24 @@ void CarrierSet::stop() {
   }
 }
 
+void CarrierSet::stop_consumers() {
+  for (std::size_t i = 2; i < slots_.size(); ++i) {
+    const auto &slot = slots_[i];
+    if (slot == nullptr || slot->state != Slot::State::Listening) continue;
+    slot->carrier->stop();
+    slot->state = Slot::State::Stopped;
+  }
+}
+
+void CarrierSet::stop_builtin() {
+  for (std::size_t i = 0; i < 2; ++i) {
+    const auto &slot = slots_[i];
+    if (slot == nullptr || slot->state != Slot::State::Listening) continue;
+    slot->carrier->stop();
+    slot->state = Slot::State::Stopped;
+  }
+}
+
 std::vector<Event> CarrierSet::take_events() {
   std::vector<Event> out;
   for (const auto &slot : slots_) {

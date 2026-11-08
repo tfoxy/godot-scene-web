@@ -76,6 +76,7 @@ struct Fake {
   bool fail_start = false;
   bool started = false;
   bool stopped = false;
+  std::function<void()> on_stop;
   int destroyed = 0;
   bool hold = false;  // keep sent buffers (queued) until flush()
   std::set<std::uint32_t> open;
@@ -101,6 +102,7 @@ struct Fake {
     Fake *f = me(self);
     f->flush();
     f->stopped = true;
+    if (f->on_stop) f->on_stop();
   }
   static int send(Fake *f, std::uint32_t local, grc_buf m, const char *tag) {
     if (f->open.count(local) == 0) {
@@ -740,9 +742,57 @@ void test_admit_pool_mismatch() {
   set.stop();
 }
 
+void test_split_stop() {
+  const auto main = std::this_thread::get_id();
+  for (int mode : {0, 1, 2, 3}) {
+    Fake ws("ws"), wt("wt"), a("a"), b("b"), failed("failed");
+    failed.fail_start = true;
+    std::vector<int> order;
+    std::vector<std::thread::id> threads;
+    auto record = [&](Fake &f, int index) {
+      f.on_stop = [&, index] { order.push_back(index); threads.push_back(std::this_thread::get_id()); };
+    };
+    record(ws, 0); record(wt, 1); record(a, 2); record(b, 255); record(failed, 3);
+    CarrierSet set(2, {});
+    std::string error;
+    check(set.add(0, adopt(ws), &error) && set.add(1, adopt(wt), &error) &&
+        set.add(2, adopt(a), &error) && set.add(255, adopt(b), &error) &&
+        set.add(3, adopt(failed), &error) && set.start(&error), "split stop: start mixed slots");
+    if (mode == 0) {
+      set.stop();
+      check(order == std::vector<int>({0, 1, 2, 255}), "stop retains original index order");
+    } else if (mode == 1) {
+      set.stop_consumers();
+      check(order == std::vector<int>({2, 255}) && !ws.stopped && !wt.stopped,
+          "split stop: only consumers on main");
+      std::thread worker([&] { set.stop_builtin(); });
+      worker.join();
+      check(order == std::vector<int>({2, 255, 0, 1}) && threads[0] == main && threads[1] == main &&
+          threads[2] != main && threads[3] != main, "split stop: built-ins alone on worker");
+    } else if (mode == 2) {
+      set.stop_consumers();
+      set.stop();
+      check(order == std::vector<int>({2, 255, 0, 1}), "split stop: blocking stop completes remaining");
+    } else {
+      set.stop_builtin();
+      set.stop_consumers();
+      check(order == std::vector<int>({0, 1, 2, 255}), "split stop: either half may run first");
+    }
+    const auto before = order;
+    set.stop_consumers(); set.stop_builtin(); set.stop(); set.stop();
+    check(order == before && !failed.stopped, "split stop: idempotent, failed slots untouched");
+    check(ws.stopped && wt.stopped && a.stopped && b.stopped && set.started(0) &&
+        set.take_events().empty(), "split stop: stopped carriers retain started history, no events");
+  }
+  CarrierSet empty(1, {});
+  empty.stop_consumers(); empty.stop_builtin(); empty.stop();
+  check(empty.take_events().empty(), "split stop: absent slots safe");
+}
+
 }  // namespace
 
 int main() {
+  test_split_stop();
   test_routing_and_sabotage();
   test_admission_and_sabotage();
   test_unknown_index();

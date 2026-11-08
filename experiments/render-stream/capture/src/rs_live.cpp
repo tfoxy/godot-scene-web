@@ -1536,6 +1536,8 @@ void Hub::host_close(Conn &c, std::uint16_t code, const std::string &reason) {
                   .str("closed_by", "host")
                   .take());
   close_files(c);
+  if (observer_) observer_(ConnEvent{ConnEvent::Left, c.s.connection, c.s.version,
+      "", "", code, reason.empty() ? "closed-" + std::to_string(code) : reason});
 }
 
 void Hub::protocol_error(Conn &c, const std::string &detail, std::uint64_t frame,
@@ -1616,6 +1618,8 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       c.form->id = c.id;
       c.form->tap = c.tap;
       conns_[event.conn] = std::move(conn);
+      if (observer_) observer_(ConnEvent{ConnEvent::Connected, c.s.connection, c.s.version,
+          event.carrier, event.origin, 0, ""});
       Line open;
       open.num("frame", frame)
           .num("t_us", event.t_ns / 1000)
@@ -1661,6 +1665,8 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
                        .str("closed_by", "receiver")
                        .take());
       close_files(*c);
+      if (observer_) observer_(ConnEvent{ConnEvent::Left, c->s.connection, c->s.version,
+          "", "", event.code, event.reason.empty() ? "closed-" + std::to_string(event.code) : event.reason});
       return;
     }
   }

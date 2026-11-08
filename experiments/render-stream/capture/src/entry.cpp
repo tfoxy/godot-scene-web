@@ -219,6 +219,7 @@
 #include "rs_histogram.h"
 #include "rs_carrier_ext.h"
 #include "rs_carrier_gd.h"
+#include "rs_capture_gd.h"
 #include "rs_carrier_set.h"
 #include "rs_net_module.h"
 #include "rs_expose.h"
@@ -232,6 +233,7 @@
 #include "rs_root_query.h"
 #include "rs_shader_clock.h"
 #include "rs_standby.h"
+#include "rs_setting.h"
 #include "rs_texture_cache.h"
 #include "rs_texture_decode.h"
 #include "rs_texture_payload.h"
@@ -269,6 +271,7 @@ struct State {
   // LS2's arm()); every arm passes through standby first. GRC_STANDBY_FAULT is the test-only
   // sabotage of the standby table (rs_standby.h).
   bool standby = false;
+  bool api_pending_arm = false;
   rs::StandbyFault standby_fault = rs::StandbyFault::None;
 
   Calibration calib;
@@ -406,6 +409,9 @@ struct Stream {
 
 Stream g_stream;
 
+// How long the host waits for receivers to close after their end record (rs_live.h, finish).
+constexpr uint64_t kLiveLingerNs = 1500ull * 1000ull * 1000ull;
+
 // The live adapter (G1c2). `status` is evidence/live.json and result.json
 // `live.status`: off | listening | refused | failed, then closed.
 struct Live {
@@ -448,6 +454,9 @@ struct Live {
   // (rs2::Hub::finish).
   bool ending = false;
   bool stopped = false;
+  uint64_t linger_ns = kLiveLingerNs;
+  bool close_async = false;
+  bool closing = false;
   uint64_t linger_deadline_ns = 0;
   // G7n (live.json): GRC_LIVE_ALLOWED_ORIGINS as parsed, GRC_LIVE_CREDIT_WINDOW_MAX, and the
   // listener sabotage (no-cors | accept-any-origin | token-ignored | window-overrun; empty when
@@ -532,9 +541,6 @@ bool is_listener_sabotage(const char *kind) {
 bool is_predict_sabotage(const std::string &kind) {
   return kind == "predict-stale" || kind == "zr-overrun" || kind == "zr-short-run";
 }
-
-// How long the host waits for receivers to close after their end record (rs_live.h, finish).
-constexpr uint64_t kLiveLingerNs = 1500ull * 1000ull * 1000ull;
 
 // the largest inline threshold a live host accepts.
 constexpr uint64_t kLiveInlineMaxBytes = 1048576;
@@ -1284,7 +1290,53 @@ void collect_environment_description() {
                                               "get_current_rendering_method", 201670096LL);
 }
 
+namespace cap = rs::capture;
+std::unique_ptr<cap::Api> g_api;
+std::thread::id g_api_main;
+std::string g_api_fault;
+struct ApiArmInfo {
+  std::string session_id, token, root_size;
+  int stream_version = 0;
+  uint64_t frame = 0;
+  double ms = 0;
+  uint64_t published = 0;
+} g_api_arm;
+struct ApiTeardown {
+  cap::TeardownThread pool, carriers;
+  bool active = false;
+  bool pool_pending = false;
+  bool carrier_pending = false;
+  bool evidence_done = false;
+  uint64_t first_frame = 0, last_frame = 0, callbacks = 0, max_callback_us = 0;
+  struct Callback { uint64_t frame, us; std::string phase; };
+  std::vector<Callback> top;
+  std::string callback_phase;
+} g_api_teardown;
+void api_evidence();
+void live_close_async_begin();
+
+cap::Value::Object api_arm_info() {
+  const auto &a = g_stream.adopt_stats;
+  std::string cert;
+  if (g_live.carriers && g_live.carriers->started(live::kCarrierWt)) {
+    cert = g_live.carriers->carrier(live::kCarrierWt)->info().cert_sha256;
+  }
+  return {{"arm_index", std::int64_t(g_api->arm_count())}, {"session_id", g_api_arm.session_id},
+      {"listen", g_live.port > 0 ? g_live.address + ":" + std::to_string(g_live.port) : ""},
+      {"token", g_api_arm.token}, {"wt_cert_hash", cert}, {"root_size", g_api_arm.root_size},
+      {"stream_version", g_api_arm.stream_version}, {"arm_ms", g_api_arm.ms},
+      {"arm_frame", std::int64_t(g_api_arm.frame)},
+      {"adopted", cap::Value::Object{{"canvases", std::int64_t(a.canvases)},
+          {"layers", std::int64_t(a.layers)}, {"items", std::int64_t(a.items)},
+          {"materials", std::int64_t(a.materials)}, {"lights", std::int64_t(a.lights)}}}};
+}
+
 void decide(const std::string &status, const std::string &reason) {
+  if (g_api) {
+    if (status == "standby") g_api->loaded(cap::State::Standby, reason);
+    else if (status == "refused") g_api->loaded(cap::State::Refused, reason);
+    else if (status == "armed") g_api->loaded(cap::State::Armed, reason);
+  }
   g_state.status = status;
   g_state.reason = reason;
   g_state.decided = true;
@@ -1690,7 +1742,7 @@ bool parse_listen(const std::string &text, live::Expose expose, const char *var,
 // A positive decimal environment value, or `fallback` when unset. False when
 // set and malformed.
 bool env_positive(const char *name, uint64_t fallback, uint64_t *out) {
-  const char *value = std::getenv(name);
+  const char *value = rs::setting(name);
   if (value == nullptr || *value == '\0') {
     *out = fallback;
     return true;
@@ -1786,7 +1838,7 @@ void item_meta_configure() {
 // A non-negative decimal environment value, or `fallback` when unset. False
 // when set and malformed.
 bool env_non_negative(const char *name, uint64_t fallback, uint64_t *out) {
-  const char *value = std::getenv(name);
+  const char *value = rs::setting(name);
   if (value == nullptr || *value == '\0') {
     *out = fallback;
     return true;
@@ -2174,7 +2226,7 @@ void stream_start() {
   const rs2::ParseResult sabotage =
       rs2::parse_sabotage(sabotage_kind, sabotage_kind != nullptr ? sabotage_frame : nullptr,
                           sabotage_kind != nullptr ? sabotage_op : nullptr);
-  const char *root_size = std::getenv("GRC_ROOT_SIZE");
+  const char *root_size = rs::setting("GRC_ROOT_SIZE");
   RootSizePolicy policy = RootSizePolicy::Observe;
   int32_t presentation_wh[2] = {0, 0};
   if (!parse_root_size_policy(root_size, &policy, presentation_wh)) {
@@ -2279,7 +2331,7 @@ void stream_start() {
     // GRC_TEXTURE_DELIVERY, declared by a /9 session only; at
     // every other version the decoded payload is all there is, so it changes nothing there.
     rs::DeliveryPolicy delivery;
-    if (!rs::parse_delivery_policy(std::getenv("GRC_TEXTURE_DELIVERY"), &delivery, &error)) {
+    if (!rs::parse_delivery_policy(rs::setting("GRC_TEXTURE_DELIVERY"), &delivery, &error)) {
       log_line("stream: refused texture delivery policy (" + error + ")");
       g_stream.status = "refused";
       g_stream.reason = error;
@@ -2335,7 +2387,7 @@ void stream_start() {
     bool workers_ok = rs::parse_texture_workers(
         std::getenv("GRC_TEXTURE_WORKERS"), std::getenv("GRC_TEXTURE_WORKER_MIN_BYTES"),
         std::getenv("GRC_TEXTURE_WORKER_DELAY_MS"), std::getenv("GRC_TEXTURE_WORKER_FAULT"), &workers,
-        &error, std::getenv("GRC_TEXTURE_PENDING"));
+        &error, rs::setting("GRC_TEXTURE_PENDING"));
     if (workers_ok && workers.publish_pending && !g_stream.gate8.speaks_v9()) {
       error = "GRC_TEXTURE_PENDING=publish needs render-stream/9 (delivery-pending is a /9 reason)";
       workers_ok = false;
@@ -2636,7 +2688,7 @@ void stream_start() {
       // G7q: the frame the overrun starts at (default 1, from the first send).
       live_ok = false;
       why = "sabotage window-overrun: invalid GRC_SABOTAGE_FRAME (a positive frame)";
-    } else if (!rs::live_coding::parse_env(std::getenv("GRC_LIVE_CODING"),
+    } else if (!rs::live_coding::parse_env(rs::setting("GRC_LIVE_CODING"),
                                            &live_config.live_coding, &why)) {
       // W11t (render-stream-11.md "As built (W11t)"): the /11 live coding, default zstd-base.
       live_ok = false;
@@ -2847,6 +2899,9 @@ void stream_start() {
                                                  : rs2::ProtocolVersion::V6;
   session.materials.shader_policy = g_stream.shader_policy;
   session.session_id = rs2::generate_id();
+  g_api_arm.session_id = session.session_id;
+  g_api_arm.token = live_auth_token;
+  g_api_arm.stream_version = 2 + static_cast<int>(session.version);
   session.engine.version_string = g_state.fp.version_string;
   session.engine.sha256 = g_state.fp.exe_sha256;
   session.engine.display_server = g_state.display_server;
@@ -3218,6 +3273,8 @@ void stream_start() {
   session.viewport.canvas_cull_mask = root.canvas_cull_mask;
   session.viewport.root_canvas = rs2::kRootCanvasId;
   session.viewport.logical_size = {root.logical_size[0], root.logical_size[1]};
+  g_api_arm.root_size = std::to_string(presentation_size[0]) + "x" +
+                        std::to_string(presentation_size[1]);
   if (!rs::stretch_from_window(root, &session.viewport.stretch)) {
     log_line("root size: content scale enum out of range (mode=" +
              std::to_string(root.content_scale_mode) +
@@ -3483,6 +3540,14 @@ void stream_start() {
       tmpl.resources.auth = live_auth;  // G2e: "bearer" exactly when GRC_LIVE_AUTH=token.
       tmpl.resources.mesh_dynamic = g_stream.mesh_dynamic;  // W11b: encoded at /11 only
       g_live.hub = std::make_unique<rs2::Hub>(g_live.carriers.get(), live_config, tmpl);
+      g_live.hub->set_observer([](const rs2::ConnEvent &e) {
+        if (e.kind == rs2::ConnEvent::Connected) {
+          g_api->client_connected(e.connection, {{"carrier", e.carrier},
+              {"version", std::int64_t(e.version)}, {"origin", e.origin}});
+        } else {
+          g_api->client_left(e.connection, e.reason);
+        }
+      });
       if (tracks_on) {
         // TRK1: the view Hub's hello timeout and the carrier's text cap apply to tracks too.
         rs::tracks::TrackConfig tc = g_live.track_config;
@@ -3559,7 +3624,7 @@ void stream_start() {
 
 // Drains the server's events into the hub (frame callback, main thread).
 void live_drain(uint64_t frame) {
-  if (g_live.hub == nullptr || g_live.carriers == nullptr || g_live.stopped) {
+  if (g_live.hub == nullptr || g_live.carriers == nullptr || g_live.stopped || g_live.closing) {
     return;
   }
   g_live.hub->sync();  // HC5: the previous callback's formation jobs, completed first
@@ -3637,20 +3702,19 @@ void live_drain(uint64_t frame) {
   }
 }
 
-// The end of the linger: close whatever is still open with 1000, stop the
-// server with a 2-second flush budget, write evidence/live-summary.json.
-void live_close_and_stop() {
-  if (g_live.hub == nullptr || g_live.stopped) {
-    return;
-  }
+// Close the remaining connections before stopping the carriers. Runs on main.
+void live_close_begin() {
   live_drain(g_state.frames_total);
   g_live.hub->close_open(g_state.frames_total);
   if (g_live.tracks != nullptr) {
     // TRK1 (Q5): a track that opened during the linger ends before the carriers stop.
     g_live.tracks->close_all(1001, "stream-ended");
   }
+}
+
+// Write the final carrier and connection evidence after all carrier stops have completed.
+void live_close_finish() {
   if (g_live.carriers != nullptr) {
-    g_live.carriers->stop();  // ws: the 2-second flush budget
     emit_live_carriers();
   }
   refresh_live_tracks();
@@ -3709,11 +3773,23 @@ void live_close_and_stop() {
   g_live.status = "closed";
 }
 
+// Blocking teardown retains the carrier index order and the original evidence order.
+void live_close_and_stop() {
+  if (g_live.hub == nullptr || g_live.stopped) {
+    return;
+  }
+  live_close_begin();
+  if (g_live.carriers != nullptr) {
+    g_live.carriers->stop();  // ws: the 2-second flush budget
+  }
+  live_close_finish();
+}
+
 // One linger step: drain closes; stop once every receiver closed or the
 // linger ran out. `blocking` waits here (shutdown); otherwise the next frame
 // callback continues (disarm).
 void live_linger(bool blocking) {
-  if (!g_live.ending || g_live.stopped) {
+  if (!g_live.ending || g_live.stopped || g_live.closing) {
     return;
   }
   for (;;) {
@@ -3723,7 +3799,8 @@ void live_linger(bool blocking) {
     live::gd_tracks_flush();  // TRK2: and track receivers their closed signals
     live_drain(g_state.frames_total);
     if (g_live.hub->open_connections() == 0 || monotonic_ns() >= g_live.linger_deadline_ns) {
-      live_close_and_stop();
+      if (g_live.close_async) live_close_async_begin();
+      else live_close_and_stop();
       return;
     }
     if (!blocking) {
@@ -3747,7 +3824,7 @@ void live_finish(rs2::EndReason reason, bool blocking) {
   }
   g_live.hub->finish(reason, g_state.frames_total, monotonic_ns());
   g_live.ending = true;
-  g_live.linger_deadline_ns = monotonic_ns() + kLiveLingerNs;
+  g_live.linger_deadline_ns = monotonic_ns() + g_live.linger_ns;
   live_linger(blocking);
 }
 
@@ -4306,6 +4383,7 @@ void stream_publish(uint64_t frame) {
   if (g_stream.status != "open") {
     return;
   }
+  ++g_api_arm.published;
   static const bool hc_knob = [] {
     const char *v = std::getenv("GRC_HC_SABOTAGE");
     g_hc_pin_late = v != nullptr && std::string(v) == "pin-late";
@@ -4530,6 +4608,75 @@ void stream_publish(uint64_t frame) {
   }
 }
 
+void do_disarm(const char *phase);
+
+std::string api_arm_failure() {
+  if (g_live.status == "failed") return "listen-bind";
+  if (g_live.status == "listening" && !g_live.listen.empty() &&
+      (g_live.carriers == nullptr || !g_live.carriers->started(live::kCarrierWs) ||
+       g_live.port == 0)) return "listen-bind";
+  if (g_live.status == "refused") return "listen-refused";
+  if (g_stream.status == "off") return "no-sink";
+  if (g_stream.status == "open-failed") return "stream-open-failed";
+  return "stream-refused";
+}
+
+void api_arm_rollback(const std::string &reason) {
+  const bool opened = g_stream.status == "open";
+  stream_finish(rs2::EndReason::Disarm);
+  if (!opened) {
+    // Startup can begin resource work before a sink opens; stream_finish only closes open streams.
+    workers_finish();
+    encoders_finish();
+    if (rs::adopt_resources_active()) rs::adopt_resources_end();
+  }
+  do_disarm("api");
+  g_state.standby = true;
+  decide("standby", "arm-failed: " + reason);
+  g_api->arm_failed(reason);
+}
+
+// Environment arms remain inline; API arms arrive at the same frame boundary as deferred arms.
+void arm_now(const char *source) {
+  const bool api = std::string(source) == "api";
+  const uint64_t start_ns = monotonic_ns();
+  g_api_arm.frame = g_state.frames_total;
+  if (!api) g_api->arm_point();
+  if (!g_state.shadow.publish(ShadowVtable::Table::Armed)) {
+    log_line("arm: the singleton's vptr is not ours to replace");
+    if (api) api_arm_rollback("vtable-replaced");
+    else refuse("arm-failed");
+    return;
+  }
+  g_state.armed = true;
+  perf_arm();
+  stream_start();
+  // API clients need a usable ws descriptor even when another carrier started successfully.
+  const bool api_listener_ready = !api ||
+      (g_live.carriers != nullptr && g_live.carriers->started(live::kCarrierWs) &&
+       g_live.port > 0);
+  const bool ok = g_stream.status == "open" &&
+                  (g_live.listen.empty() || (g_live.status == "listening" && api_listener_ready));
+  if (api && !ok) {
+    api_arm_rollback(api_arm_failure());
+    return;
+  }
+  if (g_state.evidence_ready) {
+    touch_file(path_join(g_state.evidence_dir, "armed.marker"));
+  }
+  decide("armed", std::string());
+  g_api_arm.ms = double(monotonic_ns() - start_ns) / 1e6;
+  g_api->armed(api_arm_info(), !api || g_api_fault != "api-early-armed");
+  if (!ok) g_api->stream_ended(api_arm_failure());
+}
+
+void api_arm_point() {
+  g_state.api_pending_arm = false;
+  g_state.standby = false;
+  rs::settings_install(g_api->arm_point());
+  arm_now("api");
+}
+
 // Runs the full check pipeline, and arms when asked to. `phase` names the
 // callback it runs from, for the log. Returns true once a decision was made.
 bool attempt(const char *phase) {
@@ -4736,6 +4883,12 @@ bool attempt(const char *phase) {
     }
   }
 
+  g_api_fault = env_string("GRC_API_FAULT");
+  if (!g_api_fault.empty() && g_api_fault != "api-early-armed" &&
+      g_api_fault != "disarm-joins-on-main") {
+    refuse("api-fault-invalid");
+    return true;
+  }
   // LS1: GRC_STANDBY_FAULT, parsed in every mode so validate predicts arm and standby.
   {
     std::string why;
@@ -4880,6 +5033,7 @@ bool attempt(const char *phase) {
   // (adoption/snapshot/publish) is deferred; the frame callback retries and completes it once the
   // defer frame passes.
   if (g_state.defer_arm_frames != 0 && g_state.frames_total < g_state.defer_arm_frames) {
+    if (g_api) g_api->loaded(cap::State::Arming);
     if (!g_state.defer_logged) {
       g_state.defer_logged = true;
       log_line("arm deferred until frame " + std::to_string(g_state.defer_arm_frames) +
@@ -4887,19 +5041,7 @@ bool attempt(const char *phase) {
     }
     return false;
   }
-  // LS1: the arm is one store, standby table -> armed table (the armed table is the pre-LS1 one).
-  if (!g_state.shadow.publish(ShadowVtable::Table::Armed)) {
-    log_line("arm: the singleton's vptr is not ours to replace");
-    refuse("arm-failed");
-    return true;
-  }
-  g_state.armed = true;
-  perf_arm();
-  stream_start();
-  if (g_state.evidence_ready) {
-    touch_file(path_join(g_state.evidence_dir, "armed.marker"));
-  }
-  decide("armed", std::string());
+  arm_now(phase);
   return true;
 }
 
@@ -4925,10 +5067,10 @@ void restore_unarmed(const char *phase) {
            (was_shadow ? "true" : "false") + " restored=" + (restored ? "true" : "false"));
 }
 
-void do_disarm(const char *phase) {
+bool disarm_hooks(const char *phase) {
   if (!g_state.armed) {
     restore_unarmed(phase);
-    return;
+    return false;
   }
   bool was_shadow = false;
   bool restored = false;
@@ -4945,6 +5087,10 @@ void do_disarm(const char *phase) {
   log_line(std::string("disarmed from ") + phase + " callback at frame " +
            std::to_string(g_state.frames_total) + " was_shadow=" + (was_shadow ? "true" : "false") +
            " restored=" + (restored ? "true" : "false"));
+  return true;
+}
+
+void disarm_evidence() {
   if (rs::shader_clock().draw_hooked) {
     // P3-CK: what the hooked clock summed (render-stream-10.md "Shader time").
     const rs::ShaderClock &clock = rs::shader_clock();
@@ -4968,6 +5114,208 @@ void do_disarm(const char *phase) {
   emit_headless_texture_release();
   perf_finish();
   emit("result.json", result_json());
+}
+
+void do_disarm(const char *phase) {
+  if (disarm_hooks(phase)) {
+    disarm_evidence();
+  }
+}
+
+// Only the built-in carrier joins leave main. Consumer stops may emit script signals.
+void live_close_async_begin() {
+  live_close_begin();
+  if (g_live.carriers != nullptr) g_live.carriers->stop_consumers();
+  g_live.closing = true;
+  g_api_teardown.callback_phase = "carrier-stop";
+  g_api_teardown.carrier_pending = true;
+  g_api_teardown.carriers.run([] {
+    if (g_live.carriers != nullptr) g_live.carriers->stop_builtin();
+  }, g_api_fault == "disarm-joins-on-main");
+}
+
+void api_disarm_post() {
+  g_api_teardown.active = false;
+  g_api_teardown.last_frame = g_state.frames_total;
+  g_live.close_async = false;
+  g_state.standby = true;
+  g_api->disarmed(g_api_arm.published);
+  api_evidence();
+}
+
+void api_disarm_p1() {
+  g_api_teardown.callback_phase = "stream-finish";
+  stream_finish(rs2::EndReason::Disarm);
+  disarm_evidence();
+  g_api_teardown.evidence_done = true;
+}
+
+// P0 runs at the frame boundary. With no workers the established finish/disarm order is kept.
+void api_disarm_point(const char *phase) {
+  g_api->disarm_point();
+  g_api_teardown.active = true;
+  g_api_teardown.first_frame = g_state.frames_total;
+  g_api_teardown.callback_phase = "disarm";
+  g_live.close_async = true;
+  g_live.linger_ns = uint64_t(g_api->pending_disarm().linger_ms) * 1000000;
+  if (!g_stream.workers_started) {
+    stream_finish(rs2::EndReason::Disarm);
+    do_disarm(phase);
+    g_api_teardown.evidence_done = true;
+  } else {
+    disarm_hooks(phase);
+    g_api_teardown.pool_pending = true;
+    g_api_teardown.pool.run([] { rs::texture_worker_pool().stop(); },
+                           g_api_fault == "disarm-joins-on-main");
+  }
+}
+
+void api_disarm_poll() {
+  if (!g_api_teardown.active) return;
+  if (g_api_teardown.pool_pending && g_api_teardown.pool.done()) {
+    g_api_teardown.pool.join();
+    g_api_teardown.pool_pending = false;
+    api_disarm_p1();
+  }
+  if (g_api_teardown.carrier_pending && g_api_teardown.carriers.done()) {
+    g_api_teardown.carriers.join();
+    g_api_teardown.carrier_pending = false;
+    g_api_teardown.callback_phase = "close-finish";
+    live_close_finish();
+  }
+  if (g_api_teardown.evidence_done &&
+      (g_live.hub == nullptr || g_live.stopped)) api_disarm_post();
+}
+
+// Shutdown/unload cannot leave a worker owning extension code or an engine Image.
+void api_teardown_finish_blocking() {
+  g_live.close_async = false;
+  if (!g_api_teardown.active) return;
+  if (g_api_teardown.pool_pending) {
+    g_api_teardown.pool.join();
+    g_api_teardown.pool_pending = false;
+    api_disarm_p1();
+  }
+  if (g_api_teardown.carrier_pending) {
+    g_api_teardown.carriers.join();
+    g_api_teardown.carrier_pending = false;
+    live_close_finish();
+  } else {
+    live_linger(true);
+  }
+  api_disarm_post();
+}
+
+void api_callback_record(uint64_t start_ns) {
+  if (g_api_teardown.first_frame == 0 ||
+      (g_api_teardown.last_frame != 0 && g_state.frames_total > g_api_teardown.last_frame)) return;
+  const uint64_t us = (monotonic_ns() - start_ns) / 1000;
+  ++g_api_teardown.callbacks;
+  g_api_teardown.max_callback_us = std::max(g_api_teardown.max_callback_us, us);
+  g_api_teardown.top.push_back({g_state.frames_total, us, g_api_teardown.callback_phase});
+  std::stable_sort(g_api_teardown.top.begin(), g_api_teardown.top.end(),
+                   [](const auto &a, const auto &b) { return a.us > b.us; });
+  if (g_api_teardown.top.size() > 8) g_api_teardown.top.resize(8);
+}
+
+// Validate only the per-arm values here. The existing stream parsers still own policy.
+bool api_validate(const rs::Settings &settings, std::string *detail) {
+  for (const auto &[key, value] : settings) {
+    bool ok = true;
+    if (key == "GRC_ROOT_SIZE") {
+      RootSizePolicy policy; int32_t wh[2]{};
+      ok = parse_root_size_policy(value.c_str(), &policy, wh);
+    } else if (key == "GRC_TEXTURE_DELIVERY") {
+      rs::DeliveryPolicy policy;
+      ok = rs::parse_delivery_policy(value.c_str(), &policy, detail);
+    } else if (key == "GRC_TEXTURE_PENDING") {
+      ok = value.empty() || value == "hold" || value == "publish";
+    } else if (key == "GRC_LIVE_CODING") {
+      rs::live_coding::Coding coding;
+      ok = rs::live_coding::parse_env(value.c_str(), &coding, detail);
+    } else if (!value.empty()) {
+      ok = value.size() <= 15 && std::all_of(value.begin(), value.end(),
+                                            [](char c) { return c >= '0' && c <= '9'; });
+      if (ok) {
+        const auto n = std::strtoull(value.c_str(), nullptr, 10);
+        ok = n > 0 && (key != "GRC_LIVE_MAX_CONNECTIONS" || n <= 4);
+      }
+    }
+    if (!ok) { *detail = "invalid " + key; return false; }
+  }
+  return true;
+}
+
+cap::Value::Object api_state() {
+  if (std::this_thread::get_id() != g_api_main) return g_api->state();
+  const auto stats = rs::registry_stats();
+  cap::Value::Object registry;
+  for (std::size_t i = 0; i < rs::kRegistryFamilies; ++i) {
+    registry[rs::registry_family_name(static_cast<rs::RegistryFamily>(i))] =
+        cap::Value::Object{{"entries", std::int64_t(stats.family[i].entries)}};
+  }
+  return g_api->state(g_state.frames_total, std::move(registry));
+}
+void api_json_value(JsonWriter &j, const cap::Value &v) {
+  if (auto p = std::get_if<std::string>(&v.data)) j.string(*p);
+  else if (auto p = std::get_if<std::int64_t>(&v.data)) j.integer(*p);
+  else if (auto p = std::get_if<bool>(&v.data)) j.boolean(*p);
+  else if (auto p = std::get_if<double>(&v.data)) j.float32(static_cast<float>(*p));
+  else if (auto p = std::get_if<cap::Value::Object>(&v.data)) {
+    j.object_begin();
+    for (const auto &[key, value] : *p) { j.key(key); api_json_value(j, value); }
+    j.object_end();
+  } else if (auto p = std::get_if<cap::Value::Array>(&v.data)) {
+    j.array_begin(); for (const auto &value : *p) api_json_value(j, value); j.array_end();
+  } else j.null();
+}
+void api_evidence() {
+  if (!g_api || !g_api->called()) return;
+  JsonWriter j;
+  auto snapshot = api_state();
+  snapshot["arm_frame"] = std::int64_t(g_api_arm.frame);
+  snapshot["published"] = std::int64_t(g_api_arm.published);
+  snapshot["texture_workers_running"] = rs::texture_worker_pool().running();
+  snapshot["max_callback_us"] = std::int64_t(g_api_teardown.max_callback_us);
+  snapshot["callbacks"] = std::int64_t(g_api_teardown.callbacks);
+  const auto join_info = [](const cap::TeardownThread &t, bool pending) {
+    // Read worker-owned timing only after the main-thread poll has joined.
+    return cap::Value::Object{{"ran", t.ran}, {"on_main", t.on_main},
+        {"ms", pending ? 0.0 : t.ms}};
+  };
+  snapshot["pool_join"] = join_info(g_api_teardown.pool, g_api_teardown.pool_pending);
+  snapshot["carrier_join"] = join_info(g_api_teardown.carriers, g_api_teardown.carrier_pending);
+  cap::Value::Array top;
+  for (const auto &c : g_api_teardown.top) top.emplace_back(cap::Value::Object{
+      {"frame", std::int64_t(c.frame)}, {"us", std::int64_t(c.us)}, {"phase", c.phase}});
+  snapshot["top_callbacks"] = std::move(top);
+  api_json_value(j, snapshot);
+  emit("capture-api.json", j.take());
+}
+cap::Value api_invoke(const std::string &method, const cap::Value::Object &options) {
+  cap::Value result;
+  if (method == "state") result = api_state();
+  else if (method == "arm") result = g_api->arm(options, api_validate);
+  else result = g_api->disarm(options);
+  if (std::this_thread::get_id() == g_api_main) {
+    g_state.api_pending_arm = g_api->arm_pending();
+    const bool accepted = method != "state" && std::get<std::int64_t>(result.data) == 0;
+    if (accepted && method == "arm" && g_api_fault == "api-early-armed") {
+      cap::gd_capture_emit({"armed", {api_arm_info()}});
+    }
+    if (accepted && method == "disarm" && g_api->phase() == cap::State::Standby &&
+        !g_state.decided) {
+      g_state.standby = true;
+      decide("standby", std::string());
+    }
+    api_evidence();
+  }
+  return result;
+}
+void api_flush() {
+  if (!g_api->any()) return;
+  for (const auto &signal : g_api->take_signals()) cap::gd_capture_emit(signal);
+  api_evidence();
 }
 
 void on_startup() { attempt("startup"); }
@@ -4994,14 +5342,17 @@ void on_frame() {
   if (rs::registry_on()) {
     rs::registry_frame(g_state.frames_total);
   }
-  if (g_state.standby) {
+  if (g_state.standby && !g_state.api_pending_arm) {
     // a standby callback runs the shader clock, the registry's row
     // and the carriers' flush (one relaxed load with none registered), nothing else: no attempt, no
     // linger, no live or track work (no hub exists to feed a track receiver before an arm).
     hooks_set_frame(g_state.frames_total + 1);
     live::gd_carriers_flush();
+    api_flush();
     return;
   }
+  g_api_teardown.callback_phase = g_api_teardown.pool_pending ? "pool-wait" :
+      g_api_teardown.carrier_pending ? "carrier-wait" : "linger";
   live_linger(false);  // after a disarm: the receivers' closes, then the server stop
   if (g_state.armed && g_stream.gate8.adopt) {
     // the queues this iteration's hooked calls filled drain
@@ -5024,9 +5375,14 @@ void on_frame() {
   const bool armed_at_start = g_state.armed;
   if (!g_state.decided) {
     attempt("frame");
+  } else if (g_state.api_pending_arm) {
+    api_arm_point();
   }
   if (armed_at_start) {
     stream_publish(g_state.frames_total);
+    if (g_stream.status == "closed" && g_api->phase() == cap::State::Armed) {
+      g_api->stream_ended(g_stream.reason);
+    }
     const uint64_t frame = g_state.frames_total;
     if (const uint64_t hold_from = live_hold_after_publish(frame)) {  // LF1: the window's apply
       const bool quit_window = live_hold_from(frame) == frame;  // a `q-q` window: the last frame
@@ -5037,15 +5393,18 @@ void on_frame() {
     ++g_state.frames_armed;
     if (g_state.disarm_after_frames >= 0 &&
         static_cast<int64_t>(g_state.frames_armed) >= g_state.disarm_after_frames) {
-      stream_finish(rs2::EndReason::Disarm);
-      do_disarm("frame");
+      if (!g_api->disarm_pending()) g_api->schedule_disarm({"frame", 1500});
+      api_disarm_point("frame");
     }
   }
+  if (g_api->disarm_pending()) api_disarm_point("api");
+  api_disarm_poll();
   if (armed_at_start && g_state.evidence_ready) {
     const uint64_t now_ns = monotonic_ns();
     g_perf.frame_callback_us.add((now_ns - frame_start_ns) / 1000);  // Q3d frame_callback_us
     perf_timeline_tick(now_ns);
   }
+  api_callback_record(frame_start_ns);
   // CAR6 (rs_carrier_gd.h): the hub's calls to script carriers this iteration, delivered as
   // signals now, outside every hub call. One relaxed load when no RenderStreamCarrier registered.
   live::gd_carriers_flush();
@@ -5053,9 +5412,11 @@ void on_frame() {
   // input receiver's parse_input_event() here is applied at the next iteration's flush, before
   // its process step. One relaxed load when no receiver was ever bound.
   live::gd_tracks_flush();
+  api_flush();
 }
 
 void on_shutdown() {
+  api_teardown_finish_blocking();
   stream_finish(rs2::EndReason::Shutdown);
   rs::texture_worker_pool().stop();  // G8kw: also when the stream never opened after the pool ran
   live_linger(true);  // a linger still running after a disarm ends here
@@ -5107,6 +5468,8 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   if (level != GDEXTENSION_INITIALIZATION_SCENE) {
     return;
   }
+  g_api_main = std::this_thread::get_id();
+  g_api = std::make_unique<cap::Api>(g_api_main);
   apply_low_processor_sleep();
   g_state.calibration_path = env_string("GRC_CALIBRATION");
   g_state.evidence_dir = env_string("GRC_EVIDENCE_DIR");
@@ -5150,6 +5513,9 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
     if (!live::gd_carrier_class_register(&why)) {
       log_line("carrier class: " + why);
     }
+    if (!cap::gd_capture_register(api_invoke, g_state.mode == "standby" || g_state.mode == "arm", &why)) {
+      log_line("capture class: " + why);
+    }
     // RenderStreamTrack, a script receiver of one track kind.
     if (!live::gd_track_class_register(&why)) {
       log_line("track class: " + why);
@@ -5175,6 +5541,7 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   if (level != GDEXTENSION_INITIALIZATION_SCENE) {
     return;
   }
+  api_teardown_finish_blocking();
   // The shutdown callback normally gets here first; this is the backstop for an
   // unload that happens without it.
   stream_finish(rs2::EndReason::Shutdown);
@@ -5187,6 +5554,8 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   for (live::RegisteredCarrier &r : live::carrier_registry().close()) {
     r.vtable.destroy(r.vtable.self);
   }
+  api_evidence();
+  cap::gd_capture_unregister();
   live::gd_carrier_class_unregister();
   live::gd_track_class_unregister();
 }

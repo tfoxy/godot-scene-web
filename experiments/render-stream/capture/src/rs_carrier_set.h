@@ -279,6 +279,11 @@ class CarrierSet final : public rs2::LiveTransport {
 
   // Stops every started carrier, in index order. Idempotent.
   void stop();
+  // Split teardown: consumers (indices >= 2) stop on main because their callbacks may enter
+  // the engine. Built-ins (ws/wt, indices 0/1) can join on a worker after event draining ends.
+  // Each half is idempotent; stop() retains its original index order.
+  void stop_consumers();
+  void stop_builtin();
 
   // Every carrier's events since the last call, carrier by carrier in index order, with `conn`
   // namespaced (D5) and `carrier` set to the carrier's name.

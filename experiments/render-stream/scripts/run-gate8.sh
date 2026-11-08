@@ -118,7 +118,9 @@
 #       receiver and the gsw-input injector under lib/track-input-client.ts, four sabotage legs),
 #       inject (TRK6: GRC_LIVE_TRACK_INPUT_INJECT=reference on fixtures/track-inject and
 #       track-inject-addon, the same client and checks, plus config, refusal and two sabotage legs)
-#       and wss. G8L_ONLY=trk,inject runs just those two (a local iteration knob).
+#       api (fixtures/live-swap: scheduled singleton arm/disarm, bind failure and two API faults),
+#       and wss. G8L_ONLY=ext,api,trk,inject selects headless legs (a local iteration knob).
+#       The api legs run in real time; they are never fast-frame eligible.
 #   g8ku (G8ku, `basis-uastc`; fixtures/gate8-basis;
 #       every leg under g8ku/): the fixture import; headless /9 captures under
 #       GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=basis-uastc GRC_TEXTURE_ENCODE_WAIT_FRAME=12
@@ -447,9 +449,9 @@ if [ -n "${G8L_ONLY:-}" ]; then
 	IFS=',' read -r -a G8L_SELECTED <<<"$G8L_ONLY"
 	for selected in "${G8L_SELECTED[@]}"; do
 		case "$selected" in
-		trk | inject) ;;
+		ext | api | trk | inject) ;;
 		*)
-			echo "run-gate8: unknown G8L_ONLY leg: $selected (expected trk or inject)" >&2
+			echo "run-gate8: unknown G8L_ONLY leg: $selected (expected ext, api, trk or inject)" >&2
 			exit 2
 			;;
 		esac
@@ -502,6 +504,10 @@ HAVE_STRACE=0
 command -v strace >/dev/null 2>&1 && HAVE_STRACE=1
 
 cleanup() {
+	if [ -n "${G8L_API_PORT_PID:-}" ]; then
+		kill "$G8L_API_PORT_PID" 2>/dev/null || true
+		wait "$G8L_API_PORT_PID" 2>/dev/null || true
+	fi
 	if [ -n "${G8KC_CACHE_ROOT:-}" ]; then
 		rm -rf "$G8KC_CACHE_ROOT"
 	fi
@@ -3641,9 +3647,15 @@ stop_g8l_proxy() {
 }
 
 run_g8l() {
-	# G8L_ONLY=trk,inject (a local iteration knob, not a tier): only those native headless legs,
+	# G8L_ONLY=ext,api,trk,inject (a local iteration knob, not a tier): only those native headless legs,
 	# none of the rendered fixtures and no gamescope.
 	if [ -n "${G8L_ONLY:-}" ]; then
+		case ",$G8L_ONLY," in *,ext,*) run_g8l_ext ;; esac
+		case ",$G8L_ONLY," in
+		*,api,*)
+			run_g8l_api
+			;;
+		esac
 		case ",$G8L_ONLY," in *,trk,*) run_g8l_trk ;; esac
 		case ",$G8L_ONLY," in *,inject,*) run_g8l_inject ;; esac
 		return 0
@@ -3688,6 +3700,7 @@ run_g8l() {
 	done
 	run_g8l_lan
 	run_g8l_ext
+	run_g8l_api
 	run_g8l_trk
 	run_g8l_inject
 	run_g8l_wss
@@ -3780,6 +3793,60 @@ run_g8l_ext() {
 	run_g8l_ext_leg "$leg/host"
 	echo "run-gate8: g8l ext sabotage-drop-one (the peer drops its second binary message)"
 	run_g8l_ext_leg "$leg/sabotage-drop-one" RS_CARRIER_PEER_SABOTAGE=drop-one
+}
+
+# Singleton API: native headless, real-time driver. No receiver extension is needed.
+G8L_API_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/live-swap"
+run_g8l_api_leg() {
+	local dir="$1"
+	shift
+	mkdir -p "$dir/evidence" "$dir/tap" "$dir/driver"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=standby
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_VERSION=8 GRC_LIVE_LISTEN=127.0.0.1:0
+		GRC_LIVE_TAP_DIR="$dir/tap" GRC_LIVE_CARRIERS=ws,gdswap
+		GRC_LIVE_HELLO_TIMEOUT_MS=500 GRC_TEXTURE_WORKERS=2 GRC_TEXTURE_WORKER_DELAY_MS=250
+		RS_SWAP_OUT="$dir/driver" RS_FIXTURE_QUIT_FRAME=900 "$@"
+	)
+	run_headless "$dir" none -- "$BINARY" --headless --max-fps 60 --path "$G8L_API_FIXTURE_DIR"
+}
+
+run_g8l_api() {
+	[ -z "${GATE7_LIVE_KIND:-}" ] || return 0
+	local leg="$OUT/g8l/api" port waited=0
+	LEG_ENV=()
+	run_headless "$leg/import/fixture" none -- mise exec -- godot --headless --path "$G8L_API_FIXTURE_DIR" --import
+	if [ "$(cat "$leg/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate8: g8l api import failed, see $leg/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+	echo "run-gate8: g8l api host (scheduled singleton arm and disarm)"
+	run_g8l_api_leg "$leg/host"
+	# Keep the socket owned until the failure leg ends: choosing a free port and closing it races.
+	mkdir -p "$leg/arm-failed"
+	python3 -u -c 'import socket, time; s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(); print(s.getsockname()[1], flush=True); time.sleep(120)' \
+		>"$leg/arm-failed/held-port.txt" 2>"$leg/arm-failed/held-port.log" &
+	G8L_API_PORT_PID=$!
+	while [ ! -s "$leg/arm-failed/held-port.txt" ] && kill -0 "$G8L_API_PORT_PID" 2>/dev/null && [ "$waited" -lt 100 ]; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	port="$(cat "$leg/arm-failed/held-port.txt")"
+	if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+		echo "run-gate8: g8l api could not hold a port" >&2
+		exit 1
+	fi
+	echo "run-gate8: g8l api arm-failed (listener port already bound)"
+	run_g8l_api_leg "$leg/arm-failed" RS_SWAP_EXPECT=arm-failed "GRC_LIVE_LISTEN=127.0.0.1:$port"
+	echo "run-gate8: g8l api arm-failed-ws (ws-only listener port already bound)"
+	run_g8l_api_leg "$leg/arm-failed-ws" RS_SWAP_EXPECT=arm-failed "GRC_LIVE_LISTEN=127.0.0.1:$port" GRC_LIVE_CARRIERS=ws
+	kill "$G8L_API_PORT_PID" 2>/dev/null || true
+	wait "$G8L_API_PORT_PID" 2>/dev/null || true
+	G8L_API_PORT_PID=""
+	echo "run-gate8: g8l api sabotage-api-early-armed"
+	run_g8l_api_leg "$leg/sabotage-api-early-armed" GRC_API_FAULT=api-early-armed
+	echo "run-gate8: g8l api sabotage-disarm-joins-on-main"
+	run_g8l_api_leg "$leg/sabotage-disarm-joins-on-main" GRC_API_FAULT=disarm-joins-on-main
 }
 
 # TRK2: fixtures/track-input binds the `input` track kind
