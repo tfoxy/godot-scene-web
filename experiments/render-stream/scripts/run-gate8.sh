@@ -347,11 +347,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8rec1 g8htr g8tdr)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr)
 # GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
 # is not in the default run: g8w11 already runs the native half of those legs.
-DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8rec1 g8htr g8tdr)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8rec1 g8htr g8tdr)
+DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr)
 
 EXTENSION=""
 CALIBRATION=""
@@ -2596,6 +2596,59 @@ run_g8id() {
 	done
 }
 
+# ID4: real public-client probes with host-fed filters, no explicit pickOrder.
+run_g8id2_leg() {
+	local leg="$1" mode="$2" dir="$OUT/g8id2/$1" waited=0 port="" pid page rc
+	shift 2
+	local host="$dir/host" tsx="$REPO_ROOT/node_modules/.bin/tsx"
+	[ -x "$tsx" ] || tsx="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)/../node_modules/.bin/tsx"
+	page="$(legs_free_port)"
+	mkdir -p "$host/evidence" "$dir/page"
+	LEG_ENV=(GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$host/evidence" GRC_STREAM_VERSION=13 GRC_ROOT_SIZE=presentation:640x360
+		GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip RS_FIXTURE_ARM=late RS_FIXTURE_QUIT_FRAME=240
+		RS_FIXTURE_TAG_START=60 GRC_ITEM_META="$ID_GRANT" GRC_ITEM_META_LOG="$host/ids.jsonl"
+		GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_AWAIT_HELLO_MS=30000
+		GRC_LIVE_ALLOWED_ORIGINS="http://127.0.0.1:$page" RS_FIXTURE_TAG_LOG="$host/oracle.jsonl")
+	if [ "$mode" = pick ]; then
+		LEG_ENV+=(RS_FIXTURE_TAG_PICK=1 RS_FIXTURE_TAG_PICK_LOG="$host/pick-oracle.json")
+	else
+		LEG_ENV+=(RS_FIXTURE_TAG_V2=1)
+	fi
+	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$TAG_DIR"
+	pid="$BG_PID"
+	[ -z "$pid" ] && return 0
+	while [ "$waited" -lt 400 ] && [ ! -s "$host/evidence/live.json" ] && kill -0 "$pid" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	port="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$host/evidence/live.json")"
+	if [ -z "$port" ]; then
+		echo "the live host is not listening" >"$dir/skipped.txt"
+	else
+		(mise exec -- "$tsx" --conditions=development \
+			"$REPO_ROOT/packages/render-stream-client/scripts/id2-check/driver.ts" \
+			--dir "$dir/page" --port "$page" --ws "ws://127.0.0.1:$port/render-stream" \
+			--http "http://127.0.0.1:$port" --core "$OUT/g8id2/core" --mode "$mode" "$@") \
+			>"$dir/page/stdout.log" 2>&1 && rc=0 || rc=$?
+		echo "$rc" >"$dir/page/exit-code.txt"
+	fi
+	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
+}
+
+run_g8id2() {
+	LEG_ENV=()
+	run_headless "$OUT/g8id2/import" none -- mise exec -- godot --headless --path "$TAG_DIR" --import
+	mkdir -p "$OUT/g8id2"
+	bash "$REPO_ROOT/packages/render-stream-client/scripts/build-web.sh" "$OUT/g8id2/core" \
+		>"$OUT/g8id2/core-build.log" 2>&1
+	run_g8id2_leg pick pick
+	run_g8id2_leg restamp restamp
+	run_g8id2_leg pure pure
+	run_g8id2_leg tag1 tag1
+	run_g8id2_leg sabotage-ignore-host-filter restamp --sabotage ignore-host-filter
+}
+
 # REC1: one headless tag-scene host at /13 with a live tap, and client-record-check.ts (the client
 # package with the recorder on) against it; the driver exports the recording, replays it through
 # rs-core-check, and the checker byte-compares it to the host's tap (lib/gate8-rec1-checks.ts).
@@ -4397,6 +4450,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g8id14) run_g8id14 ;;
 	g8tag2) run_g8tag2 ;;
 	g8id) run_g8id ;;
+	g8id2) run_g8id2 ;;
 	g8rec1) run_g8rec1 ;;
 	esac
 done

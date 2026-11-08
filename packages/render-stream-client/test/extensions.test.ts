@@ -178,6 +178,62 @@ describe("render-stream client extensions (TAG2)", () => {
     ).toThrow(/13/);
   });
 
+  it.each([
+    [[], "render-stream.13", []],
+    [
+      [{ id: "tag1", wants: { fields: ["path"] } }],
+      "render-stream.13",
+      ["path"],
+    ],
+    [
+      [{ id: "v2", wants: { fields: ["instance_id"] } }],
+      "render-stream.14",
+      ["instance_id"],
+    ],
+    [
+      [{ id: "v2", wants: { fields: ["mouse_filter"] } }],
+      "render-stream.14",
+      ["mouse_filter"],
+    ],
+    [
+      [
+        {
+          id: "v2",
+          wants: { fields: ["mouse_filter", "path", "instance_id", "class"] },
+        },
+      ],
+      "render-stream.14",
+      ["class", "path", "instance_id", "mouse_filter"],
+    ],
+  ] as const)("offers one protocol for extensions %j", (extensions, offer, fields) => {
+    const h = setup([...extensions]);
+    expect(h.last().subprotocol).toBe(offer);
+    expect(h.last().sent[0].protocol).toBe(offer.replace(".", "/"));
+    expect(h.last().sent[0].item_meta).toEqual(
+      fields.length
+        ? {
+            fields,
+            groups: [],
+            meta_keys: [],
+          }
+        : undefined,
+    );
+    h.loop.dispose();
+  });
+
+  it("offers an explicit /14 endpoint even without wants", () => {
+    const h = harness(2, {}, new FakeCore(), { ...E13, protocol: 14 });
+    h.loop.connect();
+    h.last().on.open();
+    expect(h.last().subprotocol).toBe("render-stream.14");
+    expect(h.last().sent[0].protocol).toBe("render-stream/14");
+    h.last().on.message(session());
+    h.last().on.message(tx(1));
+    h.clock.frame();
+    expect(h.core.calls).toContain("draw 1");
+    h.loop.dispose();
+  });
+
   it("receipt: onSession with the grant, rows resolved, deltas appended, groups shared", () => {
     const sessions: ExtensionSession[] = [];
     const batches: ItemMetaBatch[] = [];
@@ -618,6 +674,332 @@ describe("render-stream client extensions (TAG2)", () => {
     h.ext.beginSession("s2", "st2");
     h.ext.query.hitTest(11, 21);
     expect(fresh.pickOrders).toEqual(["tree", "drawn"]);
+  });
+
+  describe("item_meta v2 host filters", () => {
+    const fullV2 = {
+      type: "item_meta",
+      form: "full",
+      grant: {
+        fields: ["instance_id", "mouse_filter"],
+        groups: [],
+        meta_keys: [],
+      },
+      strings_from: 0,
+      strings: [],
+      items: [
+        [2, "18446744073709551615", 0],
+        [3, "9007199254740993", 2],
+      ],
+    };
+    const restamp = (items: (number | string | null)[][]) => ({
+      ...fullV2,
+      form: "delta",
+      grant: null,
+      items,
+    });
+
+    it("decodes inline ObjectIDs, all filter bits, nulls and no-node rows only when granted", () => {
+      const h = setup([
+        { id: "v2", wants: { fields: ["instance_id", "mouse_filter"] } },
+      ]);
+      h.last().on.message(
+        meta({
+          ...fullV2,
+          items: [
+            ...[0, 1, 2, 4, 5, 6].map((v) => [
+              v + 10,
+              "18446744073709551615",
+              v,
+            ]),
+            [20, null, null],
+            [21],
+          ],
+        }),
+      );
+      for (const v of [0, 1, 2, 4, 5, 6]) {
+        expect(h.ext.query.meta(v + 10)).toMatchObject({
+          instanceId: "18446744073709551615",
+          mouseFilter: ["stop", "pass", "ignore"][v & 3],
+          hasPointOverride: v >= 4,
+        });
+      }
+      expect(h.ext.query.meta(20)).toMatchObject({
+        instanceId: null,
+        mouseFilter: null,
+        hasPointOverride: false,
+      });
+      expect(h.ext.query.meta(21)).toEqual({
+        id: 21,
+        node: false,
+        groups: [],
+        meta: {},
+      });
+      h.last().on.message(meta(full));
+      expect(h.ext.query.meta(2)).not.toHaveProperty("instanceId");
+      expect(h.ext.query.meta(2)).not.toHaveProperty("mouseFilter");
+      expect(h.ext.query.meta(2)).not.toHaveProperty("hasPointOverride");
+    });
+
+    it("keeps interned fields, groups and meta aligned around the inline v2 columns", () => {
+      const h = setup([
+        {
+          id: "v2",
+          wants: {
+            fields: [
+              "class",
+              "script",
+              "scene",
+              "path",
+              "instance_id",
+              "mouse_filter",
+            ],
+            groups: ["input"],
+            metaKeys: ["key"],
+          },
+        },
+      ]);
+      h.last().on.message(
+        meta({
+          ...fullV2,
+          grant: {
+            fields: [
+              "class",
+              "script",
+              "scene",
+              "path",
+              "instance_id",
+              "mouse_filter",
+            ],
+            groups: ["input"],
+            meta_keys: ["key"],
+          },
+          strings: [
+            "Control",
+            "res://input.gd",
+            "res://scene.tscn",
+            "Button",
+            "value",
+          ],
+          items: [[2, 0, 1, 2, 3, "18446744073709551615", 5, 1, 4]],
+        }),
+      );
+      expect(h.ext.query.meta(2)).toEqual({
+        id: 2,
+        node: true,
+        class: "Control",
+        script: "res://input.gd",
+        scene: "res://scene.tscn",
+        path: "Button",
+        instanceId: "18446744073709551615",
+        mouseFilter: "pass",
+        hasPointOverride: true,
+        groups: ["input"],
+        meta: { key: "value" },
+      });
+    });
+
+    it("host values override statements; statements still apply without a v2 row", () => {
+      let session!: ExtensionSession;
+      const h = setup([
+        {
+          id: "v2",
+          wants: { fields: ["mouse_filter"] },
+          onSession: (s) => {
+            session = s;
+            s.mouseFilter(2, "ignore");
+            s.mouseFilter(3, "stop");
+            s.mouseFilter(1, "pass");
+            s.mouseFilter(4, "stop");
+            s.mouseFilter(5, "stop");
+          },
+        },
+      ]);
+      h.last().on.message(
+        meta({ ...fullV2, items: [...fullV2.items, [4, null, null], [5]] }),
+      );
+      h.last().on.message(tx(1));
+      h.clock.frame();
+      expect(h.core.hitFilters).toEqual(
+        new Map([
+          [1, 1],
+          [2, 1],
+          [3, 2],
+          [4, 2],
+          [5, 2],
+        ]),
+      );
+      expect(h.ext.query.hitTest(11, 21)).toBe(2);
+      expect(h.core.hitFilterCopies).toBe(1);
+      // Later consumer statements cannot displace a host value either.
+      session.mouseFilter(2, "pass");
+      session.mouseFilter(3, "ignore");
+      h.clock.frame();
+      h.ext.query.hitTest(11, 21);
+      expect(h.core.hitFilterCopies).toBe(1);
+      expect(h.core.logRemoved).toBe(true);
+    });
+
+    it("restamps reach the next frame and rebuild at most once in a frame", () => {
+      const h = setup([{ id: "v2", wants: { fields: ["mouse_filter"] } }]);
+      const t = h.last();
+      t.on.message(meta(fullV2));
+      t.on.message(tx(1));
+      h.clock.frame();
+      expect(h.ext.query.hitTest(11, 21)).toBe(2);
+      expect(h.core.hitFilterCopies).toBe(1);
+      t.on.message(
+        meta(
+          restamp([
+            [2, "18446744073709551615", 2],
+            [3, "9007199254740993", 1],
+          ]),
+        ),
+      );
+      t.on.message(tx(2));
+      // Hit tests between frames use the table already copied for this frame.
+      h.ext.query.hitTest(11, 21);
+      h.ext.flushHitFilters();
+      expect(h.core.hitFilterCopies).toBe(1);
+      h.clock.frame();
+      expect(h.ext.query.hitTest(11, 21)).toBe(3);
+      expect(h.core.hitFilterCopies).toBe(2);
+      expect(h.ext.query.meta(2)?.mouseFilter).toBe("ignore");
+      expect(h.ext.query.meta(3)?.mouseFilter).toBe("pass");
+      // An unchanged restamp, a clean redraw and repeated hit tests copy nothing.
+      t.on.message(meta(restamp([[3, "9007199254740993", 1]])));
+      t.on.message(tx(3));
+      h.clock.frame();
+      h.ext.beforeDraw(null, 50);
+      h.ext.query.hitTest(11, 21);
+      expect(h.core.hitFilterCopies).toBe(2);
+    });
+
+    it("resumes dirty host-fed copies on idle frame callbacks without a redraw", () => {
+      let session!: ExtensionSession;
+      const h = setup([
+        {
+          id: "v2",
+          wants: { fields: ["mouse_filter"] },
+          onSession: (s) => {
+            session = s;
+          },
+        },
+      ]);
+      h.last().on.message(meta(fullV2));
+      h.last().on.message(tx(1));
+      h.clock.frame();
+      session.mouseFilter(1, "stop");
+      h.ext.query.hitTest(11, 21);
+      expect(h.core.hitFilterCopies).toBe(1);
+      h.clock.frame(); // no transaction and no requested redraw
+      h.ext.query.hitTest(11, 21);
+      expect(h.core.hitFilterCopies).toBe(2);
+      expect(h.core.hitFilters.get(1)).toBe(1);
+      expect(h.core.calls.filter((c) => c.startsWith("draw "))).toEqual([
+        "draw 1",
+      ]);
+    });
+
+    it("defaults to tree order before onSession; drawn explicitly overrides it", () => {
+      const h = setup([
+        {
+          id: "v2",
+          wants: { fields: ["mouse_filter"] },
+          onSession: (s) => s.pickOrder("drawn"),
+        },
+      ]);
+      h.last().on.message(
+        meta({ ...fullV2, items: [[2, "18446744073709551615", 0]] }),
+      );
+      h.last().on.message(tx(1));
+      h.clock.frame();
+      expect(h.ext.query.hitTest(11, 21)).toBe(3); // unstated child still counts as drawn
+      expect(h.core.pickOrders).not.toContain("tree");
+      h.last().on.message(
+        meta({ ...fullV2, items: [[2, "18446744073709551615", 0]] }),
+      );
+      h.last().on.message(tx(2, [], true));
+      h.clock.frame();
+      expect(h.ext.query.hitTest(11, 21)).toBe(3);
+      expect(h.core.pickOrders).not.toContain("tree");
+      expect(h.core.hitFilterCopies).toBe(1); // an identical full leaves the filter table clean
+      const tree = setup([{ id: "v2", wants: { fields: ["mouse_filter"] } }]);
+      tree
+        .last()
+        .on.message(
+          meta({ ...fullV2, items: [[2, "18446744073709551615", 0]] }),
+        );
+      tree.last().on.message(tx(1));
+      tree.clock.frame();
+      expect(tree.ext.query.hitTest(11, 21)).toBe(2);
+      expect(tree.core.pickOrders).toEqual(["tree"]);
+      tree.ext.beginSession("s2", "st2");
+      tree.ext.transaction();
+      expect(tree.ext.query.hitTest(11, 21)).toBe(3);
+      expect(tree.core.pickOrders).toEqual(["tree", "drawn"]);
+      expect(tree.core.hitFilters.size).toBe(0);
+    });
+
+    it("full replaces host filters, removals drop both sources and a new session resets them", () => {
+      const h = setup([
+        {
+          id: "v2",
+          wants: { fields: ["mouse_filter"] },
+          onSession: (s) => {
+            s.mouseFilter(2, "ignore");
+            s.mouseFilter(1, "stop");
+          },
+        },
+      ]);
+      h.last().on.message(meta(fullV2));
+      h.last().on.message(tx(1));
+      h.clock.frame();
+      h.last().on.message(
+        meta({ ...fullV2, items: [[3, "9007199254740993", 0]] }),
+      );
+      h.last().on.message(tx(2, [], true));
+      h.clock.frame();
+      expect(h.core.hitFilters).toEqual(
+        new Map([
+          [1, 1],
+          [2, 2],
+          [3, 1],
+        ]),
+      );
+      h.core.removed = [1, 2, 3];
+      h.last().on.message(tx(3));
+      h.clock.frame();
+      expect(h.core.hitFilters.size).toBe(0);
+      expect(h.ext.query.meta(3)).toBeNull();
+      h.ext.beginSession("s2", "st2");
+      h.ext.flushHitFilters();
+      expect(h.core.hitFilters.size).toBe(0);
+      expect(h.core.pickOrders.at(-1)).toBe("drawn");
+    });
+
+    it("an instance-only grant keeps drawn order and consumer filter behavior", () => {
+      const h = setup([
+        {
+          id: "instance",
+          wants: { fields: ["instance_id"] },
+          onSession: (s) => s.mouseFilter(2, "stop"),
+        },
+      ]);
+      h.last().on.message(
+        meta({
+          ...fullV2,
+          grant: { fields: ["instance_id"], groups: [], meta_keys: [] },
+          items: [[2, "18446744073709551615"]],
+        }),
+      );
+      h.last().on.message(tx(1));
+      h.clock.frame();
+      expect(h.ext.query.hitTest(11, 21)).toBe(3);
+      expect(h.ext.query.meta(2)?.instanceId).toBe("18446744073709551615");
+      expect(h.ext.query.meta(2)).not.toHaveProperty("mouseFilter");
+      expect(h.core.pickOrders).toEqual([]);
+    });
   });
 
   it("query.hitTest asks the core on demand and is null before it is bound", () => {

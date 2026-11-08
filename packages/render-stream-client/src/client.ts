@@ -19,6 +19,7 @@ import {
 import {
   CLIENT_INBOUND_BYTES,
   CLIENT_LIVE_CODING,
+  clientProtocol,
   coreStartOptions,
   gpuFormatsOf,
 } from "./hello";
@@ -75,7 +76,7 @@ export interface RenderStreamClientOptions {
   carrier?: RenderStreamCarrier;
   /** Product modules, composed in this order. Default
    * `[]`: the pure client (no `item_meta` hello key, nothing loaded, one branch per frame). An
-   * extension that `wants` identities needs protocol 13. */
+   * extension that `wants` identities needs protocol 13 or 14; v2 wants upgrade /13 to /14. */
   extensions?: readonly RenderStreamExtension[];
   /** The credit window asked in the hello (the session grants it); default 2. */
   creditWindow?: 1 | 2;
@@ -179,10 +180,7 @@ export function createRenderStreamClient(
     ids.add(e.id);
   }
   const ext = exts.length > 0 ? new ExtensionHost(exts) : null;
-  if (ext?.request && endpoint.protocol < 13)
-    throw new TypeError(
-      "render-stream client: an extension that wants item identities needs protocol 13",
-    );
+  clientProtocol(endpoint.protocol, ext?.request);
   // Absent the option there is no recorder (and no per-message copy); present, one ring.
   const recorder = options.recorder ? createRecorder(options.recorder) : null;
   return new Client(
@@ -255,10 +253,7 @@ class Client implements RenderStreamClient {
 
   setEndpoint(e: RenderStreamEndpoint): void {
     const next = validateEndpoint(e);
-    if (this.ext?.request && next.protocol < 13)
-      throw new TypeError(
-        "render-stream client: an extension that wants item identities needs protocol 13",
-      );
+    clientProtocol(next.protocol, this.ext?.request);
     if (sameEndpoint(next, this.endpoint)) return;
     this.endpoint = next;
     this.loop?.setEndpoint(next);
@@ -357,7 +352,7 @@ class Client implements RenderStreamClient {
     this.loadAbort = null;
     if (this.disposed) return;
     const canvas = this.o.canvas;
-    const protocol = this.endpoint.protocol;
+    const protocol = clientProtocol(this.endpoint.protocol, this.ext?.request);
     const presentation = this.endpoint.presentation;
     if (presentation) {
       canvas.width = presentation[0];

@@ -96,6 +96,21 @@ describe("createRenderStreamClient", () => {
       createRenderStreamClient({ canvas, core, endpoint, carrier }).dispose();
   });
 
+  it.each([
+    11, 12,
+  ] as const)("refuses v2 wants on /%i at construction", (protocol) => {
+    for (const field of ["instance_id", "mouse_filter"] as const) {
+      expect(() =>
+        createRenderStreamClient({
+          canvas: document.createElement("canvas"),
+          core,
+          endpoint: { ...endpoint, protocol },
+          extensions: [{ id: "v2", wants: { fields: [field] } }],
+        }),
+      ).toThrow(TypeError);
+    }
+  });
+
   it("dispose is idempotent, before or after connect, and silences the client", async () => {
     const canvas = document.createElement("canvas");
     const statuses: RenderStreamStatus[] = [];

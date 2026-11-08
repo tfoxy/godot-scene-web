@@ -1,3 +1,5 @@
+import type { RenderStreamProtocol } from "./endpoint";
+
 // The GSW receiver's texture-delivery hello keys (render-stream-9.md "Live transport"), pure so
 // scripts/test/self-test-gate8kp.ts can pin them, and the client's whole hello.
 
@@ -28,7 +30,8 @@ export function gpuFormatsOf(
  * texture_encodings and gpu_formats. CG1: `protocol` "render-stream/10" is /10's hello
  * (render-stream-10.md "Live transport"); W11c: "render-stream/11" is /10's again
  * (render-stream-11.md, golden-11's control hello); PM5: "render-stream/12" is /11's (golden-12's
- * control hello); W13c: "render-stream/13" is /12's (render-stream-13.md "As built (W13a)"). */
+ * control hello); W13c: "render-stream/13" is /12's (render-stream-13.md "As built (W13a)");
+ * /14 adds the v2 identity fields. */
 export function helloV9(
   v7: Record<string, unknown>,
   textureEncodings: string,
@@ -38,7 +41,8 @@ export function helloV9(
     | "render-stream/10"
     | "render-stream/11"
     | "render-stream/12"
-    | "render-stream/13" = "render-stream/9",
+    | "render-stream/13"
+    | "render-stream/14" = "render-stream/9",
   liveCoding = "",
 ): Record<string, unknown> {
   return {
@@ -77,7 +81,7 @@ export function coreStartOptions(protocol: number): string {
 
 /** What the client's hello states about itself. */
 export interface ClientHelloFacts {
-  protocol: 11 | 12 | 13;
+  protocol: RenderStreamProtocol;
   creditWindow: 1 | 2;
   /** The credit stage; default `submitted`. */
   creditStage?: "submitted" | "applied";
@@ -88,7 +92,7 @@ export interface ClientHelloFacts {
   dprMilli: number;
   /** gpuFormatsOf the canvas's own context (`none` when empty). */
   gpuFormats: string;
-  /** The extensions' merged `item_meta` request (/13); absent or null: no key, the pure
+  /** The extensions' merged `item_meta` request (/13 or /14); absent or null: no key, the pure
    * hello byte for byte. */
   itemMeta?: {
     fields: readonly string[];
@@ -97,7 +101,27 @@ export interface ClientHelloFacts {
   } | null;
 }
 
-/** The client's /11, /12 or (W13c) /13 hello: the GSW receiver's keys in their order (golden-11/12's control
+/** The one version offered on the transport and in the hello. A v2 request relies on /14
+ * picking semantics, so it never falls back to an older protocol. */
+export function clientProtocol(
+  protocol: RenderStreamProtocol,
+  itemMeta: ClientHelloFacts["itemMeta"],
+): RenderStreamProtocol {
+  if (itemMeta && protocol < 13)
+    throw new TypeError(
+      "render-stream client: item_meta (an extension's wants) needs protocol 13 or 14",
+    );
+  return protocol === 13 && hasV2(itemMeta) ? 14 : protocol;
+}
+
+function hasV2(itemMeta: ClientHelloFacts["itemMeta"]): boolean {
+  return (
+    itemMeta?.fields.some((f) => f === "instance_id" || f === "mouse_filter") ??
+    false
+  );
+}
+
+/** The client's /11 through /14 hello: the GSW receiver's keys in their order (golden-11/12's control
  * hello), `receiver_kind` `gsw-canvas` (the same executor), credit stage `submitted`, texture
  * encodings `decoded` (until the client carries the KTX2 transcoder), no manifest, and the
  * `zstd-base,zstd` live coding offer last. */
@@ -130,6 +154,10 @@ export function clientHello(f: ClientHelloFacts): Record<string, unknown> {
     if (f.protocol < 13)
       throw new TypeError(
         "render-stream client: item_meta (an extension's wants) needs protocol 13",
+      );
+    if (f.protocol < 14 && hasV2(f.itemMeta))
+      throw new TypeError(
+        "render-stream client: item_meta v2 fields need protocol 14",
       );
     hello.item_meta = {
       fields: [...f.itemMeta.fields],

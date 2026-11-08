@@ -76,6 +76,28 @@ describe("pointerTargetResolver", () => {
     });
   });
 
+  it("includes the target's exact decimal instanceId only when its row has one", () => {
+    const resolve = resolverFor(
+      source(
+        query({
+          2: { ...card, instanceId: "18446744073709551615" },
+          3: quadrant,
+        }),
+      ),
+    );
+    expect(resolve(60, 30)?.identity).toEqual({
+      item: 2,
+      class: "Control",
+      scene: "res://card.tscn",
+      path: ".",
+      instanceId: "18446744073709551615",
+    });
+    const noInstance = resolverFor(
+      source(query({ 2: { ...card, instanceId: null }, 3: quadrant })),
+    );
+    expect(noInstance(60, 30)?.identity).not.toHaveProperty("instanceId");
+  });
+
   it("measures local against the override the user saw", () => {
     // The card is drawn shifted 20 px right: the same drawn point is 10 local px further left.
     const resolve = resolverFor(

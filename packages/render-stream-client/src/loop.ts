@@ -32,7 +32,7 @@ import { failWith, StreamFailure } from "./core";
 import type { RenderStreamEndpoint } from "./endpoint";
 import type { ExtensionHost } from "./extensions";
 import { type FetchResult, LiveFetcher } from "./fetcher";
-import { clientHello } from "./hello";
+import { clientHello, clientProtocol } from "./hello";
 import type { RenderStreamRecorder } from "./recorder";
 import type {
   RenderStreamTransport,
@@ -326,11 +326,12 @@ export class StreamLoop {
     };
     this.conn = conn;
     this.firstFrameSent = false;
-    core.beginConnection();
+    const protocol = clientProtocol(this.endpoint.protocol, this.ext?.request);
+    core.beginConnection(protocol);
     try {
       conn.transport = this.o.transport(
         this.endpoint,
-        `render-stream.${this.endpoint.protocol}`,
+        `render-stream.${protocol}`,
         {
           open: () => this.onOpen(conn),
           message: (d) => this.onMessage(conn, d),
@@ -352,7 +353,7 @@ export class StreamLoop {
     const c = this.o.canvas();
     this.send(
       clientHello({
-        protocol: this.endpoint.protocol,
+        protocol: clientProtocol(this.endpoint.protocol, this.ext?.request),
         creditWindow: this.o.creditWindow,
         creditStage: this.creditStage,
         token: this.endpoint.token,
@@ -572,6 +573,7 @@ export class StreamLoop {
     this.frameId = null;
     this.lastFrameAt = this.o.clock.now();
     try {
+      if (this.ext) this.ext.beginFrame();
       this.step();
     } catch (e) {
       this.fail(e);

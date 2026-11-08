@@ -782,6 +782,15 @@
       "reach": ["native:gate55@*", "g7:g7-55@*", "g7live:g7-55@*"]
     },
     {
+      "why": "ID4's host-fed item_meta v2 client picks, restamp precedence and /13 hello checks are exercised by gate 8 group g8id2 and its pure checker self-test",
+      "paths": [
+        "packages/render-stream-client/scripts/id2-check/**",
+        "experiments/render-stream/scripts/lib/gate8-id2-checks.ts",
+        "experiments/render-stream/scripts/test/self-test-gate8-id2.ts"
+      ],
+      "reach": ["pure", "native:gate8@*"]
+    },
+    {
       "why": "gate 8 (G8t: runner, checker, its libs and fixtures; gate8-design.md Q7; G8kp: the g8kp group's GSW leg tool). G8g: the browsers' g7-8 file and live groups replay and rerun them, and g8l's D14 proxy",
       "paths": [
         "experiments/render-stream/scripts/run-gate8.sh",

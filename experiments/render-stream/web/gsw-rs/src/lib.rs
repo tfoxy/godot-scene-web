@@ -264,7 +264,9 @@ fn parse_options(json: &str) -> Result<Opts, String> {
         o.gpu_format_mask = mask.split(',').map(str::to_string).collect();
     }
     o.summary_log = json.contains("\"log\":\"summary\"");
-    o.live_protocol = if json.contains("\"live_protocol\":13") {
+    o.live_protocol = if json.contains("\"live_protocol\":14") {
+        14
+    } else if json.contains("\"live_protocol\":13") {
         13
     } else if json.contains("\"live_protocol\":12") {
         12

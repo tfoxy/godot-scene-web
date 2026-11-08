@@ -928,17 +928,44 @@ Cost and opt-in (capture `targets` option):
     under its composed override `E`), `frame` the drawn transaction. Identities need the host's
     `GRC_ITEM_META` grant for the fields `pointerTargetIdentity()` (an extension) asks; without
     it a hit is `{item}` only. On demand only: the client does no per-frame work for it, and the
-    pure client's hello and wire are unchanged. The hit test picks by the mouse filters an
-    extension states with `ExtensionSession.mouseFilter` (Godot's `mouse_filter`, which the stream
-    cannot see), as `clientToGame` does, in draw
-    order by default, or in Godot's own GUI pick order after `ExtensionSession.pickOrder("tree")`
-    (tree order, `z_index` ignored, undrawn Controls found by their rect).
+    pure client's hello and wire are unchanged. When an extension asks for `instance_id` or
+    `mouse_filter`, a /13 endpoint offers exactly `render-stream.14`; TAG1-only wants and an empty
+    extension list keep `render-stream.13`. An explicit /14 endpoint always offers /14. V2 wants
+    against /11 or /12 throw the client's typed bad-option error at construction. A host without
+    the v2 grant refuses the handshake through the existing failure/reconnect path; there is no
+    downgrade offer. The v2 fields arrive only when granted: `instanceId` is a decimal string
+    (ObjectIDs can exceed JavaScript's safe integer range), and `mouseFilter` is `"stop"`, `"pass"`,
+    `"ignore"`, or `null` for a non-Control. `hasPointOverride` reports a scripted `_has_point`;
+    the resolver still uses the streamed rect. A resolved target includes `identity.instanceId`
+    when its row carries one.
+
+    Host-carried filters win over `ExtensionSession.mouseFilter` statements for the same item,
+    including a host `null` (non-Control, treated as IGNORE). Statements still apply to items
+    without a v2 row. Full metadata replaces the host table, deltas restamp rows, and removals
+    drop them; changed filters are copied to the core at most once per frame. With a
+    `mouse_filter` grant, picking defaults to Godot's tree order (`z_index` ignored, undrawn
+    Controls found by their rect). `ExtensionSession.pickOrder("drawn")` overrides that default.
+    Sessions with consumer statements alone keep draw order unless they call `pickOrder("tree")`.
+    The default resets with each session. `clientToGame` uses the same filters and order.
+
   - html `htmlPointerTargetResolver(model | () => model, {scene, root, document})`:
     `elementFromPoint` (which skips `mouse_filter = IGNORE` Controls, rendered
     `pointer-events: none`, as Godot's picking does), the closest `[data-godot-path]`, `local`
     from that element's client rect scaled to the Control's model size (exact unrotated; a
     rotated Control is measured against its bounding box). `scene` is the `res://` file the
     model's paths are relative to; `key` is the node path.
+
+The client's desktop metadata cost probe runs from the repository root:
+
+```bash
+experiments/render-stream/scripts/lib/quiet.sh exclusive -- mise exec -- pnpm exec tsx \
+  --conditions=development packages/render-stream-client/scripts/bench-item-meta.ts
+```
+
+It compares TAG1 and v2 parsing of a synthetic 4,202-row full record and measures the TypeScript
+filter-table rebuild separately. It discards one warmup and reports medians of five repeats in
+microseconds per full record or whole filter table. The filter sink validates the packed table;
+the probe does not measure the wasm transfer. An optional output path writes the JSON report.
 
 Host semantics (the injector, `gsw_input_targets.gd`):
 

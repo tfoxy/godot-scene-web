@@ -31,8 +31,21 @@ export interface Rect {
   readonly h: number;
 }
 
-export type ItemMetaField = "class" | "script" | "scene" | "path";
-const FIELDS: readonly ItemMetaField[] = ["class", "script", "scene", "path"];
+export type ItemMetaField =
+  | "class"
+  | "script"
+  | "scene"
+  | "path"
+  | "instance_id"
+  | "mouse_filter";
+const FIELDS: readonly ItemMetaField[] = [
+  "class",
+  "script",
+  "scene",
+  "path",
+  "instance_id",
+  "mouse_filter",
+];
 
 /** A hello request, or the host's grant (the request's subset the host operator allows). */
 export interface ItemMetaGrant {
@@ -51,8 +64,8 @@ export interface ExtensionSession {
    * `beforeDraw` with seq null, as `ExtensionFrame.requestRedraw` does. */
   requestRedraw(): void;
   /**
-   * The item's Godot `mouse_filter`, as the extension knows it (the stream does not carry
-   * it), so `ItemQuery.hitTest`, `client.toGame` / `clientToGame` and `pointerTargetResolver`
+   * The item's Godot `mouse_filter`, as the extension knows it, when no host-carried v2 row
+   * supplies it. A host value (including null for a non-Control) wins over this statement, so `ItemQuery.hitTest`, `client.toGame` / `clientToGame` and `pointerTargetResolver`
    * pick the item Godot's GUI picking would, as far as drawn items tell: `"stop"` / `"pass"`
    * (the node takes pointer input), `"ignore"` (an IGNORE Control, or a CanvasItem that is not a
    * Control: Godot never stops there), `null` (not known: the item counts as drawn, today's
@@ -64,15 +77,15 @@ export interface ExtensionSession {
    */
   mouseFilter(id: number, filter: "stop" | "pass" | "ignore" | null): void;
   /**
-   * The order the stated filters are read in. `"drawn"` (the default) is the topmost-drawn
-   * reading above. `"tree"` is Godot's own GUI pick order (`Viewport::gui_find_control`): canvas
+   * The order the filters are read in. `"drawn"` (the default for consumer statements) is the
+   * topmost-drawn reading above. A `mouse_filter` grant defaults to `"tree"`; an explicit
+   * `pickOrder("drawn")` overrides that default. `"tree"` is Godot's own GUI pick order (`Viewport::gui_find_control`): canvas
    * layers top first, then each root's subtree depth first, last child first and children before
    * their parent, `z_index`, `show_behind_parent` and modulate ignored, a clipping Control's
    * children only inside it. Only a `"stop"`/`"pass"` item answers, tested against its own rect
    * (a Control's `Rect2(0, size)`, which the stream carries even when the Control draws nothing,
    * so an undrawn hitbox is found); `"ignore"` and unstated items are passed through. With no
-   * filter stated either order is the bare topmost-drawn hit test. Per session: a new session
-   * starts at `"drawn"`.
+   * filter stated either order is the bare topmost-drawn hit test. The choice resets per session.
    */
   pickOrder(order: "tree" | "drawn"): void;
 }
@@ -85,6 +98,12 @@ export interface ItemMeta {
   readonly script?: string | null;
   readonly scene?: string | null;
   readonly path?: string | null;
+  /** The node's Godot ObjectID, kept as decimal text because it can exceed 2^53. */
+  readonly instanceId?: string | null;
+  /** The host's effective filter; null means the node is not a Control. */
+  readonly mouseFilter?: "stop" | "pass" | "ignore" | null;
+  /** The host reported a script `_has_point` override (the rect is only an upper bound). */
+  readonly hasPointOverride?: boolean;
   /** The granted group names this item is in (shared frozen arrays). */
   readonly groups: readonly string[];
   readonly meta: Readonly<Record<string, string | null>>;
@@ -481,7 +500,7 @@ interface RecordJson {
   } | null;
   strings_from: number;
   strings: string[];
-  items: (number | null)[][];
+  items: (number | string | null)[][];
 }
 
 /** The extension list's runtime: one per client. Every callback's error is caught: a
@@ -503,6 +522,10 @@ export class ExtensionHost {
    * (before a hit test). */
   private readonly hitFilters = new Map<number, number>();
   private hitFiltersDirty = false;
+  /** A row with a host filter wins over any consumer statement, including a null/no-node row. */
+  private hostHitFilters = new Map<number, number>();
+  private hostFed = false;
+  private hitFiltersFlushed = false;
   /** The session's pick order (Godot's tree order when true), copied with the filters. */
   private pickTree = false;
   private pickOrderDirty = false;
@@ -579,11 +602,19 @@ export class ExtensionHost {
   bind(core: ExtensionCore): void {
     this.core = core;
     if (this.listensRemoved) core.setLogRemoved(true);
-    this.hitFiltersDirty = this.hitFilters.size > 0;
+    this.hitFiltersDirty =
+      this.hitFilters.size > 0 || this.hostHitFilters.size > 0;
+    this.hitFiltersFlushed = false;
     this.pickOrderDirty = this.pickTree;
   }
 
-  /** Copy changed mouse filters into the core (before any hit test or `toGame`). */
+  /** A frame callback starts, even when no transaction or extension redraw will draw. */
+  beginFrame(): void {
+    this.hitFiltersFlushed = false;
+  }
+
+  /** Copy changed filters before a hit test or `toGame`. Host-fed updates are coalesced to
+   * one table per frame; changes after a copy stay dirty until the next callback. */
   flushHitFilters(): void {
     if (this.core === null) return;
     if (this.pickOrderDirty) {
@@ -591,16 +622,26 @@ export class ExtensionHost {
       const order = this.pickTree ? "tree" : "drawn";
       this.call(() => this.core?.setPickOrder(order));
     }
-    if (!this.hitFiltersDirty) return;
+    if (!this.hitFiltersDirty || (this.hostFed && this.hitFiltersFlushed))
+      return;
     this.hitFiltersDirty = false;
-    const ids = new Uint32Array(this.hitFilters.size);
-    const filters = new Uint8Array(this.hitFilters.size);
+    this.hitFiltersFlushed = true;
+    const capacity = this.hitFilters.size + this.hostHitFilters.size;
+    const ids = new Uint32Array(capacity);
+    const filters = new Uint8Array(capacity);
     let k = 0;
     for (const [id, f] of this.hitFilters) {
+      if (this.hostHitFilters.has(id)) continue;
       ids[k] = id;
       filters[k++] = f;
     }
-    this.call(() => this.core?.setHitFilters(ids, filters));
+    for (const [id, f] of this.hostHitFilters) {
+      ids[k] = id;
+      filters[k++] = f;
+    }
+    this.call(() =>
+      this.core?.setHitFilters(ids.subarray(0, k), filters.subarray(0, k)),
+    );
   }
 
   private mouseFilter(
@@ -618,14 +659,15 @@ export class ExtensionHost {
     if (f === 0) this.hitFilters.delete(id);
     else {
       this.hitFilters.set(id, f);
-      // A removed item must lose its filter (ids are not the game's to keep), so the core logs
-      // removals from the first filter on.
-      if (!this.listensRemoved) {
-        this.listensRemoved = true;
-        this.core?.setLogRemoved(true);
-      }
+      this.watchRemoved();
     }
-    this.hitFiltersDirty = true;
+    if (!this.hostHitFilters.has(id)) this.hitFiltersDirty = true;
+  }
+
+  private watchRemoved(): void {
+    if (this.listensRemoved) return;
+    this.listensRemoved = true;
+    this.core?.setLogRemoved(true);
   }
 
   private pickOrder(order: "tree" | "drawn"): void {
@@ -647,10 +689,13 @@ export class ExtensionHost {
     this.table.resetOwners();
     this.table.dirty = false;
     this.redrawWanted = false;
-    if (this.hitFilters.size > 0) {
+    if (this.hitFilters.size > 0 || this.hostHitFilters.size > 0) {
       this.hitFilters.clear();
+      this.hostHitFilters.clear();
       this.hitFiltersDirty = true;
     }
+    this.hostFed = false;
+    this.hitFiltersFlushed = false;
     if (this.pickTree) {
       this.pickTree = false;
       this.pickOrderDirty = true;
@@ -681,7 +726,9 @@ export class ExtensionHost {
   /** An `item_meta` record arrived: into the table, then `onItemMeta`. */
   itemMeta(): void {
     const r = JSON.parse(this.core?.itemMetaJson() ?? "{}") as RecordJson;
+    const previousHostFilters = r.form === "full" ? this.hostHitFilters : null;
     if (r.form === "full") {
+      this.hostHitFilters = new Map();
       const g = r.grant;
       this.grant = g
         ? Object.freeze({
@@ -693,6 +740,9 @@ export class ExtensionHost {
       this.strings = [];
       this.metas.clear();
       this.groupArrays.clear();
+      this.hostFed = this.grant?.fields.includes("mouse_filter") ?? false;
+      if (this.hostFed) this.watchRemoved();
+      if (!this.announced && this.hostFed) this.pickOrder("tree");
       this.announce(this.grant);
     }
     this.strings.length = r.strings_from;
@@ -710,19 +760,44 @@ export class ExtensionHost {
         } else {
           const o: Record<string, unknown> = { id, node: true };
           let c = 1;
-          for (const f of g.fields) o[f] = str(row[c++]);
+          for (const f of g.fields) {
+            const value = row[c++];
+            if (f === "instance_id") o.instanceId = value;
+            else if (f === "mouse_filter") {
+              const v = value as number | null;
+              o.mouseFilter =
+                v === null ? null : ["stop", "pass", "ignore"][v & 3];
+              o.hasPointOverride = v !== null && v >= 4;
+            } else o[f] = str(value as number | null | undefined);
+          }
           let groups: readonly string[] = [];
-          if (g.groups.length > 0) groups = this.groupsOf(row[c++] ?? 0);
+          if (g.groups.length > 0)
+            groups = this.groupsOf((row[c++] as number | null) ?? 0);
           const meta: Record<string, string | null> = {};
-          for (const k of g.metaKeys) meta[k] = str(row[c++]);
+          for (const k of g.metaKeys)
+            meta[k] = str(row[c++] as number | null | undefined);
           o.groups = groups;
           o.meta = Object.freeze(meta);
           m = Object.freeze(o) as unknown as ItemMeta;
         }
         this.metas.set(id, m);
+        if (this.hostFed) {
+          const filter =
+            m.mouseFilter === "stop" || m.mouseFilter === "pass"
+              ? HIT_INPUT
+              : HIT_IGNORE;
+          if ((previousHostFilters ?? this.hostHitFilters).get(id) !== filter)
+            this.hitFiltersDirty = true;
+          this.hostHitFilters.set(id, filter);
+        }
         items.push(m);
       }
     }
+    if (
+      previousHostFilters !== null &&
+      previousHostFilters.size !== this.hostHitFilters.size
+    )
+      this.hitFiltersDirty = true;
     const batch: ItemMetaBatch = Object.freeze({ form: r.form, items });
     for (const e of this.exts) this.call(() => e.onItemMeta?.(batch));
   }
@@ -744,7 +819,9 @@ export class ExtensionHost {
     if (ids.length === 0) return;
     for (const id of ids) {
       this.metas.delete(id);
-      if (this.hitFilters.delete(id)) this.hitFiltersDirty = true;
+      const consumer = this.hitFilters.delete(id);
+      const host = this.hostHitFilters.delete(id);
+      if (consumer || host) this.hitFiltersDirty = true;
     }
     this.table.drop(ids);
     for (const e of this.exts) this.call(() => e.onItemsRemoved?.(ids));
@@ -781,6 +858,7 @@ export class ExtensionHost {
       this.core.refreshOverrides();
       this.copies++;
     }
+    if (this.hostFed) this.flushHitFilters();
   }
 
   /** Whether the last `beforeDraw` asked for a redraw. */
@@ -792,6 +870,8 @@ export class ExtensionHost {
     for (const e of this.exts) this.call(() => e.dispose?.());
     this.core = null;
     this.metas.clear();
+    this.hitFilters.clear();
+    this.hostHitFilters.clear();
     this.table.entries.clear();
     this.table.resetOwners();
   }

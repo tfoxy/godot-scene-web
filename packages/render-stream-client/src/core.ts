@@ -14,6 +14,7 @@ import {
   type LiveCoding,
   STAT_FIELDS,
 } from "./abi";
+import type { RenderStreamProtocol } from "./endpoint";
 import type { ExtensionCore } from "./extensions";
 import { GswParticles } from "./particles";
 import { definePrograms, type ProgramCounts, ProgramError } from "./programs";
@@ -78,7 +79,7 @@ export interface SessionMeta {
 
 export interface StreamCore {
   /** A fresh connection: a fresh live-coding decoder (W11c: one per connection). */
-  beginConnection(): void;
+  beginConnection(protocol: RenderStreamProtocol): void;
   /** One binary message: decoded (W11t), then the session (a connection's first) or one record.
    * Throws `StreamFailure`. `copyDecoded` (only when a recorder is on) copies the decoded
    * bytes out of wasm so `takeDecoded` can hand them to the recorder. */
@@ -147,12 +148,13 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     private readonly mod: GswRsModule,
     private readonly memory: WebAssembly.Memory,
     private readonly g: GswRs,
-    private readonly protocol: 11 | 12 | 13,
+    private protocol: RenderStreamProtocol,
     private readonly liveCoding: string,
     private readonly inboundBytes: number,
   ) {}
 
-  beginConnection(): void {
+  beginConnection(protocol = this.protocol): void {
+    this.protocol = protocol;
     this.coding?.free();
     this.coding =
       this.liveCoding !== ""

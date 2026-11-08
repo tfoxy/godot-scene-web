@@ -5,13 +5,21 @@
 //
 // On demand only: nothing here runs per frame, and a client nobody resolves on pays nothing. A
 // resolve is one `hitTest` (the core's pick, overrides included: the topmost drawn item read by
-// the session's mouse filters, or, after `ExtensionSession.pickOrder("tree")`, Godot's own GUI
-// pick order, which also finds a Control that draws nothing), a `parent` climb
-// to the first item with a node identity, and one inverse of that item's drawn transform:
+// the session's mouse filters, or Godot's own GUI pick order, which also finds a Control that
+// draws nothing), a `parent` climb to the first item with a node identity, and one inverse
+// of that item's drawn transform:
 // `local = (E · T)⁻¹ · drawn point`, where `T` is the game's transform and `E` the composed
 // override, so `local` is measured against what the user saw. Identities need the host's
 // `GRC_ITEM_META` grant for the fields asked by an extension (`pointerTargetIdentity()`); without
 // it a hit names only its `item`.
+//
+// A /13 endpoint offers only render-stream.14 when an extension wants `instance_id` or
+// `mouse_filter`; TAG1 wants and an empty extension list keep .13. An explicit /14 endpoint
+// always offers .14. A host without the v2 grant refuses the handshake through the client's
+// existing failure/reconnect path; there is no protocol downgrade. Host-carried filters win
+// over consumer `mouseFilter` statements, including null for non-Controls (IGNORE). With a
+// `mouse_filter` grant the default order is tree; `pickOrder("drawn")` overrides it. Sessions
+// with consumer statements alone keep drawn order unless they opt into tree order.
 
 import type { RenderStreamClient } from "./client";
 import {
@@ -36,6 +44,7 @@ export interface RenderStreamPointerTarget {
     readonly path?: string;
     readonly scene?: string;
     readonly class?: string;
+    readonly instanceId?: string;
   };
   /** The drawn point in the target's own coordinates. */
   readonly local: Point;
@@ -144,12 +153,19 @@ function identityOf(
   meta: ItemMeta | null,
 ): RenderStreamPointerTarget["identity"] {
   if (!meta?.node) return { item };
-  const out: { item: number; path?: string; scene?: string; class?: string } = {
+  const out: {
+    item: number;
+    path?: string;
+    scene?: string;
+    class?: string;
+    instanceId?: string;
+  } = {
     item,
   };
   if (typeof meta.path === "string") out.path = meta.path;
   if (typeof meta.scene === "string") out.scene = meta.scene;
   if (typeof meta.class === "string") out.class = meta.class;
+  if (typeof meta.instanceId === "string") out.instanceId = meta.instanceId;
   return out;
 }
 

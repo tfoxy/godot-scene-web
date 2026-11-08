@@ -2,9 +2,9 @@
 // listener and its resource GETs are, the token, and the wire version the host streams. A product
 // receives it from its own control channel; the client validates it before it connects.
 
-/** The live protocol versions this client speaks (render-stream/11, /12 and, W13c, /13 with its
- * predicted mesh and multimesh blocks; W11t live coding on each). */
-export type RenderStreamProtocol = 11 | 12 | 13;
+/** The live protocol versions this client speaks (render-stream/11 through /14, including
+ * /13 prediction and /14 item_meta v2; W11t live coding on each). */
+export type RenderStreamProtocol = 11 | 12 | 13 | 14;
 
 export interface RenderStreamEndpoint {
   /** ws(s) URL of the host's `/render-stream`, absolute or page-relative (an http(s) page URL's
@@ -16,7 +16,7 @@ export interface RenderStreamEndpoint {
   /** 64 lowercase hex, or null for a host with `GRC_LIVE_AUTH=none`. Sent in the hello and as
    * `Authorization: Bearer` on every GET; never logged. */
   token: string | null;
-  /** The host's `GRC_STREAM_VERSION`; the only subprotocol offered. */
+  /** The host's `GRC_STREAM_VERSION`; v2 identity wants upgrade /13 to /14. */
   protocol: RenderStreamProtocol;
   /** The expected presentation size (the session confirms it). When set, the canvas's backing
    * store starts at this size before the hello. */
@@ -70,8 +70,15 @@ export function validateEndpoint(value: unknown): RenderStreamEndpoint {
     (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token))
   )
     fail("token must be 64 lowercase hex or null");
-  if (e.protocol !== 11 && e.protocol !== 12 && e.protocol !== 13)
-    fail(`protocol must be 11, 12 or 13 (got ${JSON.stringify(e.protocol)})`);
+  if (
+    e.protocol !== 11 &&
+    e.protocol !== 12 &&
+    e.protocol !== 13 &&
+    e.protocol !== 14
+  )
+    fail(
+      `protocol must be 11, 12, 13 or 14 (got ${JSON.stringify(e.protocol)})`,
+    );
   let presentation: [number, number] | undefined;
   if (e.presentation !== undefined) {
     const p = e.presentation;
