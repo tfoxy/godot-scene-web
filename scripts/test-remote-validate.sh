@@ -550,6 +550,28 @@ artifact = next(s for s in validate if s.get("with", {}).get("name") == "wbundle
 assert artifact["if"] == "always() && matrix.label == 'windows'"
 assert artifact["with"]["path"].endswith("build-windows/bundle")
 PYTEST
+check "llvm-mingw setup installs gnullvm on the pinned Rust toolchain before fetching crates" python3 - "$ROOT/.github/actions/rs-setup/action.yml" <<'PYTEST'
+import os, subprocess, sys, tempfile, yaml
+action = yaml.safe_load(open(sys.argv[1]))
+assert str(action["inputs"]["rust-version"]["default"]) == "1.95.0"
+steps = action["runs"]["steps"]
+target_steps = [s for s in steps if "x86_64-pc-windows-gnullvm" in s.get("run", "")]
+assert len(target_steps) == 1
+target = target_steps[0]
+assert target["if"] == "inputs.llvm-mingw == 'true'" and target["shell"] == "bash"
+assert target["env"]["RUST_VERSION"] == "${{ inputs.rust-version }}"
+names = [s.get("name") for s in steps]
+assert names.index("Rust toolchain") < steps.index(target) < names.index("cargo fetch")
+with tempfile.TemporaryDirectory() as tmp:
+    stub = os.path.join(tmp, "rustup")
+    with open(stub, "w") as f:
+        f.write('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    os.chmod(stub, 0o755)
+    env = dict(os.environ, PATH=tmp + os.pathsep + os.environ["PATH"], RUST_VERSION="1.95.0")
+    result = subprocess.run(["bash", "-eu", "-c", target["run"]], env=env,
+                            text=True, capture_output=True, check=True)
+    assert result.stdout.splitlines() == ["target", "add", "--toolchain", "1.95.0", "x86_64-pc-windows-gnullvm"]
+PYTEST
 check "every action is pinned to a full commit sha" bash -c "! grep -hE '^\s*-?\s*uses: ' '$ROOT'/.github/workflows/remote-*.yml '$ROOT'/.github/actions/rs-setup/action.yml | grep -v '\./' | grep -vE 'uses: [^@]+@[0-9a-f]{40} # v'"
 check "run branches only restore caches: the setup action saves behind inputs.save and nothing else saves" bash -c \
 	"! grep -qE 'uses: actions/cache@' '$ROOT'/.github/actions/rs-setup/action.yml '$ROOT'/.github/workflows/remote-*.yml \

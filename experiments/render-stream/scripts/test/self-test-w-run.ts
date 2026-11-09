@@ -1,6 +1,7 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 import { spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -141,6 +142,116 @@ function json(out: string, name: string) {
   return JSON.parse(readFileSync(join(out, name), "utf8"));
 }
 try {
+  // Exercise the build's manifest producer without invoking Cargo or the cross toolchain.
+  const buildScript = readFileSync(
+    fileURLToPath(new URL("../build-rs-net.sh", import.meta.url)),
+    "utf8",
+  );
+  const producer = buildScript
+    .split("<<'PYWINDOWS'\n")[1]
+    .split("\nPYWINDOWS")[0];
+  const build = join(scratch, "build with spaces");
+  const net = join(build, "rs-net");
+  mkdirSync(net, { recursive: true });
+  const library = join(net, "render_stream_net.dll");
+  writeFileSync(library, "synthetic-dll");
+  writeFileSync(join(net, "toolchain.json"), JSON.stringify(toolchain));
+  writeFileSync(
+    join(net, "w-imports.json"),
+    JSON.stringify({
+      binaries: [{ exports: [], imports: [], delay_imports: [] }],
+    }),
+  );
+  const netTests = [
+    "abi_layout",
+    "render_stream_net",
+    "rs-net-lockstep",
+    "rs-net-probe",
+    "tls",
+    "wt",
+  ];
+  const artifacts = netTests.map((name) => {
+    const path = join(scratch, `${name}-hash.exe`);
+    writeFileSync(path, `synthetic-test-${name}`);
+    return {
+      reason: "compiler-artifact",
+      profile: { test: true },
+      executable: path,
+      target: { name, kind: ["test"] },
+    };
+  });
+  writeFileSync(
+    join(net, "test-artifacts.jsonl"),
+    artifacts.map((a) => JSON.stringify(a)).join("\n"),
+  );
+  const template = {
+    schema: "render-stream-w-manifest/1",
+    tests: [context],
+    imports_only: [],
+    sabotage: [{ exe: "sabotage/dynamic.exe" }],
+    data: ["protocol/golden-2"],
+  };
+  const templatePath = join(build, "w-capture-manifest.json");
+  writeFileSync(templatePath, JSON.stringify(template));
+  function produceManifest() {
+    return spawnSync(
+      "python3",
+      [
+        "-I",
+        "-c",
+        producer,
+        net,
+        "x86_64-pc-windows-gnullvm",
+        "synthetic-rustc",
+        "synthetic-cargo",
+        templatePath,
+      ],
+      { encoding: "utf8" },
+    );
+  }
+  const produced = produceManifest();
+  const manifestPath = join(build, "w-manifest.json");
+  check(
+    "net-manifest-produced",
+    produced.status === 0 && existsSync(manifestPath),
+    produced.stdout + produced.stderr,
+  );
+  if (existsSync(manifestPath)) {
+    const combined = json(build, "w-manifest.json");
+    check(
+      "net-manifest-preserves-capture",
+      JSON.stringify(combined.tests[0]) === JSON.stringify(context) &&
+        JSON.stringify(combined.data) === JSON.stringify(template.data) &&
+        JSON.stringify(combined.sabotage) === JSON.stringify(template.sabotage),
+    );
+    check(
+      "net-manifest-all-tests-run",
+      combined.tests.length === 7 &&
+        netTests.every((name) =>
+          combined.tests.some(
+            (t: { name: string; args: string[]; env: object; exe: string }) =>
+              t.name === `rs-net-${name}` &&
+              t.args.length === 0 &&
+              Object.keys(t.env).length === 0 &&
+              readFileSync(join(build, t.exe), "utf8") ===
+                `synthetic-test-${name}`,
+          ),
+        ),
+    );
+    check(
+      "net-manifest-dll-imports-only",
+      combined.imports_only.length === 1 &&
+        combined.imports_only[0].exe === "rs-net/render_stream_net.dll" &&
+        combined.imports_only[0].why.length > 0,
+    );
+    const again = produceManifest();
+    check(
+      "net-manifest-rebuild-no-duplicates",
+      again.status === 0 &&
+        JSON.stringify(json(build, "w-manifest.json")) ===
+          JSON.stringify(combined),
+    );
+  }
   manifest(
     [pass, context],
     [{ name: "only", exe: "bin/only", why: "built only" }],

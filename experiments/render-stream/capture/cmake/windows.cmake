@@ -171,5 +171,12 @@ foreach(path IN LISTS data)
   grc_w_quote(value "${path}")
   string(JSON data_json SET "${data_json}" ${n} "${value}")
 endforeach()
-file(GENERATE OUTPUT ${CMAKE_BINARY_DIR}/w-manifest.json CONTENT
+file(GENERATE OUTPUT ${CMAKE_BINARY_DIR}/w-capture-manifest.json CONTENT
   "{\"schema\":\"render-stream-w-manifest/1\",\"tests\":[${tests_json}],\"imports_only\":[],\"sabotage\":[{\"exe\":\"sabotage/$<TARGET_FILE_NAME:w_imports_sabotage_dynamic>\",\"expect_disallowed\":[\"libc++.dll\"]}],\"data\":${data_json}}\n")
+
+# Build the net module and Cargo test harnesses before the shell runner assembles the bundle.
+# Start from the generated capture template on every build so entries cannot accumulate.
+add_custom_target(rs_net ALL
+  COMMAND bash ${CMAKE_CURRENT_LIST_DIR}/../../scripts/build-rs-net.sh --target windows
+    --manifest-template ${CMAKE_BINARY_DIR}/w-capture-manifest.json
+  VERBATIM)

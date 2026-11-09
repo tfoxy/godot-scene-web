@@ -79,6 +79,28 @@ function binary(name: string, bytes: Buffer): string {
   return path;
 }
 
+function exportedPe(names: string[], unnamed = false): Buffer {
+  const bytes = pe(["kernel32.dll"]);
+  const rva = (offset: number) => offset + 0xe00;
+  bytes.writeUInt32LE(rva(0x600), 0x98 + 112);
+  bytes.writeUInt32LE(40, 0x98 + 116);
+  bytes.writeUInt32LE(names.length + Number(unnamed), 0x600 + 20);
+  bytes.writeUInt32LE(names.length, 0x600 + 24);
+  bytes.writeUInt32LE(rva(0x640), 0x600 + 28);
+  bytes.writeUInt32LE(rva(0x680), 0x600 + 32);
+  bytes.writeUInt32LE(rva(0x6c0), 0x600 + 36);
+  let cursor = 0x700;
+  names.forEach((name, index) => {
+    bytes.writeUInt32LE(0x1000 + index, 0x640 + index * 4);
+    bytes.writeUInt32LE(rva(cursor), 0x680 + index * 4);
+    bytes.writeUInt16LE(index, 0x6c0 + index * 2);
+    bytes.write(`${name}\0`, cursor, "ascii");
+    cursor += Buffer.byteLength(name) + 1;
+  });
+  if (unnamed) bytes.writeUInt32LE(0x1100, 0x640 + names.length * 4);
+  return bytes;
+}
+
 function run(...args: string[]) {
   const result = spawnSync("python3", ["-I", tool, ...args], {
     encoding: "utf8",
@@ -88,6 +110,57 @@ function run(...args: string[]) {
 }
 
 try {
+  const prng = run(binary("rust-prng.dll", pe(["BCRYPTPRIMITIVES.dll"])));
+  check("rust-std-process-prng", prng.rc === 0, prng.text);
+  const symbols = ["grc_net_module_v1", "grc_net_tls_v1"];
+  const expectExports = ["--expect-exports", symbols.join(",")];
+  const exportsReport = join(scratch, "exports.json");
+  const exportsMatch = run(
+    ...expectExports,
+    "--json",
+    exportsReport,
+    binary("net.dll", exportedPe([...symbols].reverse())),
+  );
+  check("exact-exports", exportsMatch.rc === 0, exportsMatch.text);
+  if (exportsMatch.rc === 0) {
+    check(
+      "exports-json",
+      JSON.parse(readFileSync(exportsReport, "utf8")).binaries[0].exports.join(
+        ",",
+      ) === symbols.join(","),
+    );
+  }
+  for (const [name, names] of [
+    ["extra", [...symbols, "other_export"]],
+    ["missing", symbols.slice(0, 1)],
+    ["case", ["GRC_NET_MODULE_V1", symbols[1]]],
+    ["duplicate", [symbols[0], symbols[0]]],
+  ] as const) {
+    const result = run(
+      ...expectExports,
+      binary(`exports-${name}.dll`, exportedPe([...names])),
+    );
+    check(
+      `exports-${name}`,
+      result.rc === 2 && result.text.includes("unexpected exports"),
+      result.text,
+    );
+  }
+  const unnamed = run(
+    ...expectExports,
+    binary("unnamed.dll", exportedPe(symbols, true)),
+  );
+  check(
+    "exports-unnamed",
+    unnamed.rc === 2 && unnamed.text.includes("unnamed exports"),
+    unnamed.text,
+  );
+  const noExports = run(...expectExports, binary("no-exports.dll", pe([])));
+  check(
+    "exports-absent",
+    noExports.rc === 2 && noExports.text.includes("unexpected exports"),
+    noExports.text,
+  );
   const good = binary(
     "allowed.exe",
     pe([

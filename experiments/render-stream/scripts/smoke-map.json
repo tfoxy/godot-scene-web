@@ -488,13 +488,25 @@
       "exclusive": true
     },
     {
-      "why": "CAR3 net module (carrier-design.md D8, Q4): the rs-net crate (the wt carrier, its vendored wtransport), the capture's loader and its ctest, build-rs-net.sh and the two wt tests. Nothing here runs unless GRC_LIVE_CARRIERS lists wt, which no gate leg does, so it reaches the crate's tests, the build (rs_net_module ctest) and the pure self-tests (self-test-wt-interop.ts). CAR4's wss tests (self-test-wss.ts, wss-chromium-smoke.ts, lib/test-pki.ts) are the same: no gate leg sets GRC_LIVE_TLS_CERT. CAR10's uplink tooling (wt-impaired-chromium.ts, wt-phone-lockstep.ts, lib/wt-lockstep.ts, lib/udp-impair-proxy.ts) is by-hand, as wt-chromium-smoke.ts: its regression halves are the crate's credit_loop tests. Its call sites in entry.cpp and rs_live_host.cpp are shared capture files and still reach '*'",
+      "why": "The runtime net module and its build script reach the Linux loader, crate tests and pure self-tests, plus the cross-built Windows bundle and hosted tests",
       "paths": [
         "experiments/render-stream/rs-net/**",
+        "experiments/render-stream/scripts/build-rs-net.sh"
+      ],
+      "reach": [
+        "capture-build",
+        "pure",
+        "cargo:experiments/render-stream/rs-net",
+        "windows"
+      ],
+      "exclusive": true
+    },
+    {
+      "why": "The capture's net loader and transport tooling reach the Linux loader build, crate tests and pure self-tests. Browser and impairment probes remain manual checks",
+      "paths": [
         "experiments/render-stream/capture/src/grc_net_module.h",
         "experiments/render-stream/capture/src/rs_net_module*",
         "experiments/render-stream/capture/test/rs_net_*",
-        "experiments/render-stream/scripts/build-rs-net.sh",
         "experiments/render-stream/scripts/test/self-test-rs-net-install.ts",
         "experiments/render-stream/scripts/test/self-test-wt-interop.ts",
         "experiments/render-stream/scripts/lib/wt-track-order.ts",

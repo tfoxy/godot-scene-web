@@ -13,6 +13,7 @@ import sys
 
 ALLOW = [
     "kernel32.dll", "advapi32.dll", "ws2_32.dll", "bcrypt.dll", "ntdll.dll",
+    "bcryptprimitives.dll",  # Rust std uses ProcessPrng on Windows since Rust 1.78.
     "userenv.dll", "api-ms-win-crt-*.dll", "api-ms-win-core-*.dll",
 ]
 
@@ -103,8 +104,32 @@ class PE:
             names.add(self.dll_name(name_rva))
         raise PEError(f"unterminated import directory {index}")
 
+    def exports(self):
+        if not self.directories or self.directories[0] == (0, 0):
+            return []
+        rva, size = self.directories[0]
+        if not rva or size < 40:
+            raise PEError("invalid export directory")
+        offset, _ = self.locate(rva, 40)
+        functions, names, function_table, name_table, ordinal_table = self.unpack("<IIIII", offset + 20)
+        addresses = self.unpack(f"<{functions}I", self.locate(function_table, functions * 4)[0])
+        name_rvas = self.unpack(f"<{names}I", self.locate(name_table, names * 4)[0])
+        ordinals = self.unpack(f"<{names}H", self.locate(ordinal_table, names * 2)[0])
+        if any(ordinal >= functions or not addresses[ordinal] for ordinal in ordinals):
+            raise PEError("invalid named export ordinal")
+        if set(ordinals) != {i for i, address in enumerate(addresses) if address}:
+            raise PEError("module has unnamed exports")
+        result = []
+        for name_rva in name_rvas:
+            start, limit = self.locate(name_rva)
+            end = self.data.find(b"\0", start, limit)
+            if end <= start:
+                raise PEError("empty or unterminated export name")
+            result.append(self.data[start:end].decode("ascii"))
+        return sorted(result)
 
-def inspect(path, objdump):
+
+def inspect(path, objdump, expected_exports=None):
     pe = PE(Path(path).read_bytes())
     imports = pe.imports(1)
     delay_imports = pe.imports(13, delay=True)
@@ -118,7 +143,12 @@ def inspect(path, objdump):
         if other != names:
             raise PEError(f"objdump disagreement: parser={sorted(names)}, objdump={sorted(other)}")
     disallowed = sorted(name for name in names if not any(fnmatch.fnmatchcase(name, p) for p in ALLOW))
-    return dict(path=path, imports=imports, delay_imports=delay_imports, disallowed=disallowed)
+    result = dict(path=path, imports=imports, delay_imports=delay_imports, disallowed=disallowed)
+    if expected_exports is not None:
+        result["exports"] = pe.exports()
+        if result["exports"] != expected_exports:
+            raise PEError(f"unexpected exports: {result['exports']} (expected {expected_exports})")
+    return result
 
 
 def main():
@@ -126,8 +156,14 @@ def main():
     parser.add_argument("--json", metavar="OUT")
     parser.add_argument("--objdump", metavar="PATH")
     parser.add_argument("--expect-disallowed", metavar="DLL[,DLL]")
+    parser.add_argument("--expect-exports", metavar="SYMBOL[,SYMBOL]")
     parser.add_argument("pe", nargs="+", metavar="PE")
     args = parser.parse_args()
+    expected_exports = None
+    if args.expect_exports is not None:
+        expected_exports = sorted(args.expect_exports.split(","))
+        if "" in expected_exports or len(set(expected_exports)) != len(expected_exports):
+            parser.error("--expect-exports requires distinct nonempty symbols")
     expected = set()
     if args.expect_disallowed is not None:
         expected = {name.strip().lower() for name in args.expect_disallowed.split(",")}
@@ -136,7 +172,7 @@ def main():
     binaries = []
     try:
         for path in args.pe:
-            binaries.append(inspect(path, args.objdump))
+            binaries.append(inspect(path, args.objdump, expected_exports))
         for binary in binaries:
             path, bad = binary["path"], binary["disallowed"]
             if bad:

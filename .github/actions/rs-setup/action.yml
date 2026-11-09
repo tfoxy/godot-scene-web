@@ -41,7 +41,7 @@ inputs:
     description: valgrind from the runner image's apt archive (bench-instr's cachegrind Ir counts)
     default: "false"
   llvm-mingw:
-    description: Pinned Linux-hosted llvm-mingw for the Windows test bundle
+    description: Pinned Linux-hosted llvm-mingw and Rust gnullvm target for the Windows test bundle
     default: "false"
   capture-build:
     description: Restore (or build) the capture library build tree that the pure self-tests need (rs_ws_echo)
@@ -175,6 +175,13 @@ runs:
         rustup toolchain install "$RUST_VERSION" --profile minimal
         rustup default "$RUST_VERSION"
         rustc --version
+
+    - name: Rust Windows target
+      if: inputs.llvm-mingw == 'true'
+      shell: bash
+      env:
+        RUST_VERSION: ${{ inputs.rust-version }}
+      run: rustup target add --toolchain "$RUST_VERSION" x86_64-pc-windows-gnullvm
 
     - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       id: cargo-cache

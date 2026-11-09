@@ -392,6 +392,14 @@ def self_test(m):
     check("a doc reaches nothing but the pure self-tests", a["targets"] == ["pure"])
     pin = P("experiments/render-stream/scripts/lib/llvm-mingw.sh")
     check("the Windows pin reaches only pure and windows", set(pin["targets"]) == {"pure", "windows"})
+    for path in ["rs-net/src/lib.rs", "rs-net/tests/wt.rs", "rs-net/Cargo.toml",
+                 "rs-net/Cargo.lock", "rs-net/.cargo/config.toml", "rs-net/vendor/wtransport/src/lib.rs",
+                 "scripts/build-rs-net.sh"]:
+        net = P("experiments/render-stream/" + path)
+        check(f"{path} reaches the Linux and Windows net checks only",
+              not net["unmatched"] and set(net["targets"]) == {
+                  "pure", "capture-build", "cargo:experiments/render-stream/rs-net", "windows"}
+              and {"id": "windows", "kind": "windows", "phase": "setup"} in net["runs"])
     platform = P("experiments/render-stream/capture/src/rs_platform.h")
     check("shared capture source reaches windows in setup", "windows" in platform["targets"]
           and {"id": "windows", "kind": "windows", "phase": "setup"} in platform["runs"])
