@@ -1,0 +1,57 @@
+{
+  "schema": "render-stream-census/1",
+  "binary": "synth-elf",
+  "format": "elf",
+  "toolchain": [],
+  "vtable": {
+    "slots": 140,
+    "prefix": 5,
+    "placeholder_kind": "null",
+    "pure_placeholder": null,
+    "pure_slots": 132
+  },
+  "singleton": {
+    "global_vaddr": "0x404f00",
+    "loads": 1,
+    "vptr_loaded": 1,
+    "api_calls": 1
+  },
+  "band": {
+    "call": 0,
+    "jmp": 0,
+    "total": 0
+  },
+  "guards": {
+    "total": 1,
+    "slots": 1
+  },
+  "direct_api": {
+    "23": 2
+  },
+  "direct_prefix": {},
+  "verdict_hits": {
+    "canvas_item_add_line": {
+      "direct": 2,
+      "jcc": 1,
+      "alias": 0
+    }
+  },
+  "devirtualized_slots": [
+    {
+      "key": "canvas_item_add_line",
+      "slot": 23,
+      "family": "canvas_item_draw",
+      "direct_calls": 3,
+      "sites": [
+        "0x402400",
+        "0x402405",
+        "0x40240a"
+      ]
+    }
+  ],
+  "dropped_families": [
+    "canvas_item_draw"
+  ],
+  "refused_keys": [],
+  "verdict": "drop"
+}

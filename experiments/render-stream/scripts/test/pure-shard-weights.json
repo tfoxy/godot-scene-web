@@ -1,5 +1,6 @@
 {
   "weights": {
+    "self-test-calibrate": 5.0,
     "golden-1": 0.1,
     "golden-2": 0.1,
     "golden-3": 0.1,

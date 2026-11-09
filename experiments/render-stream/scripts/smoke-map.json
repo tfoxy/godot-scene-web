@@ -1107,10 +1107,11 @@
       "reach": ["*"]
     },
     {
-      "why": "Godot reference project and calibration generator: test-harness/src/parity.ts runs godot/project's inspect_scene.gd, perf-harness/src/godot-text-bench.ts runs bench_text.gd, and calibrate.sh writes the calibration record consumed by validate-increment.sh and native runners; a narrower native/live reach is not established, so keep '*'",
+      "why": "Godot reference project and calibration generator: test-harness/src/parity.ts runs godot/project's inspect_scene.gd, perf-harness/src/godot-text-bench.ts runs bench_text.gd, and calibrate.sh (with fetch-windows-template.sh for the stock Windows template) writes the calibration records consumed by validate-increment.sh and native runners; a narrower native/live reach is not established, so keep '*'",
       "paths": [
         "godot/project/**",
-        "experiments/render-stream/scripts/calibrate.sh"
+        "experiments/render-stream/scripts/calibrate.sh",
+        "experiments/render-stream/scripts/fetch-windows-template.sh"
       ],
       "reach": ["*"]
     },

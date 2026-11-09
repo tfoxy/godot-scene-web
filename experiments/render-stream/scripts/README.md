@@ -78,7 +78,7 @@ an exclusive release), `GSW_QUIET_SCHED=v1` (the older admission order), and cor
 | `build-web-receiver.sh --core rust [--out DIR] [--force]`           | The web-export receiver bundle, from pinned, sha-checked editor and template binaries.                             |
 | `build-basis-transcoder.sh`                                         | GSW's KTX2/Basis transcoder wasm.                                                                                  |
 | `prepare-textures.sh --cache DIR (--project\|--images\|--list) ...` | Warms the capture's persisted texture cache, headless, before any session.                                         |
-| `calibrate.sh [--check]`                                            | Re-derives the committed calibration record (`--check` diffs instead of writing).                                  |
+| `calibrate.sh [--check]`                                            | Re-derives pinned Linux and Windows records (`--check` diffs); fetches a missing Windows template.                 |
 
 Every build holds the quiet lock shared and is incremental; cargo builds are offline (`--offline`,
 pinned lockfiles).
