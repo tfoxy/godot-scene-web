@@ -345,7 +345,10 @@
 #       connected in arm 1, re-armed at K2 after the fixture changed while disarmed, arm 2 to the
 #       quit) and `<fx>/once` (run A: the same env armed once at K2); then `id/host`, g8id14's live
 #       tag-scene V2 host under GRC_SWAP_CYCLE=300:60:2 with RS_FIXTURE_TAG_DUMP_AT, a /14 viewer
-#       asking the v2 fields in each arm (`id/arm1`, `id/arm2`). Judged by lib/gate8-rearm-checks.ts.
+#       asking the v2 fields in each arm (`id/arm1`, `id/arm2`). Also tex-htr: a /11 passthrough
+#       texture pair with HTR, standby eviction and a path-less ImageTexture restore probe;
+#       tex-htr-faults: reload-off, swap, swap-skip-verify and skip-htr-restore B-only legs.
+#       G8RE_ONLY selects adopt,tex,id,tex-htr,tex-htr-faults. Judged by lib/gate8-rearm-checks.ts.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -4484,9 +4487,10 @@ run_g8htr() {
 	echo "run-gate8: g8htr tex-deferred-off/on (gate8-tex, armed at frame 6, GRC_ADOPT=arm: step 0 pre-arm)"
 	run_capture_g8htr_tex "$g/tex-deferred-off/capture" "${G8HTR_DEFER_ENV[@]}" "${G8HTR_OFF[@]}"
 	run_capture_g8htr_tex "$g/tex-deferred-on/capture" "${G8HTR_DEFER_ENV[@]}" "${G8HTR_ARM[@]}"
+	# Disable reload so the negative test still exposes the released dummy copy.
 	echo "run-gate8: g8htr sabotage-ignore-predicate (tex-deferred-on, GRC_HEADLESS_TEXTURE_RELEASE_FAULT=ignore-predicate)"
 	run_capture_g8htr_tex "$g/sabotage-ignore-predicate/capture" "${G8HTR_DEFER_ENV[@]}" "${G8HTR_ARM[@]}" \
-		GRC_HEADLESS_TEXTURE_RELEASE_FAULT=ignore-predicate
+		GRC_HEADLESS_TEXTURE_RELEASE_FAULT=ignore-predicate GRC_ADOPT_FAULT=reload-off
 	echo "run-gate8: g8htr sabotage-omit-create-on (tex-on, GRC_SABOTAGE=omit-op texture_2d_create from frame 1)"
 	run_capture_g8htr_tex "$g/sabotage-omit-create-on/capture" "${G8T_DECODE_ENV[@]}" "${G8HTR_ARM[@]}" \
 		GRC_SABOTAGE=omit-op GRC_SABOTAGE_OP=texture_2d_create GRC_SABOTAGE_FRAME=1
@@ -4640,6 +4644,14 @@ G8RE_TEX_ENV=("${G8T_DECODE_ENV[@]}" GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip RS_FIXT
 G8RE_TEX_K1=1
 G8RE_TEX_CYCLE=20:12:2
 G8RE_TEX_QUIT=50
+# tex-htr keeps rows A/B desktop, changes C/D while disarmed, evicts the mobile copies,
+# and probes a path-less ImageTexture after disarm. /11 retains its source block body for restore.
+# B logs its idle-action frame; A repeats the action at exactly that frame before K2.
+G8RE_TEX_HTR_ENV=(GRC_STREAM_VERSION=11 GRC_TEXTURE_DECODE=engine GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip RS_FIXTURE_STEP_FRAMES=30
+	GRC_HEADLESS_TEXTURE_RELEASE=on RS_FIXTURE_STEP1_ROWS=cd RS_FIXTURE_EVICT=1 RS_FIXTURE_IMAGETEXTURE=1)
+G8RE_TEX_HTR_K1=1
+G8RE_TEX_HTR_CYCLE=20:20:2
+G8RE_TEX_HTR_QUIT=60
 # The re-arm round (id/): g8id14's live host on fixtures/tag-scene (RS_FIXTURE_TAG_V2, armed late at
 # frame 12, GRC_ADOPT=arm, the full v2 grant, the fixture's oracle and the capture's id log), with
 # GRC_SWAP_CYCLE in place of GRC_DISARM_AFTER_FRAMES: two cycles of 300 armed and 60 idle frames
@@ -4687,20 +4699,21 @@ g8re_wait_listening() {
 	return 1
 }
 
-# run_g8re_pair <fx> <fixture dir> <K1> <cycle> <quit> <env word...>: g8re/<fx>/rearm (run B) and
-# g8re/<fx>/once (run A), as described above.
-run_g8re_pair() {
-	local fx="$1" fixture="$2" k1="$3" cycle="$4" quit="$5"
+# run_g8re_b <dir> <fixture> <K1> <cycle> <quit> <env word...>: the re-arm half,
+# also used by the texture fault knobs. G8RE_VIEWER_PROTOCOL defaults to /8; tex-htr uses /11.
+run_g8re_b() {
+	local b="$1" fixture="$2" k1="$3" cycle="$4" quit="$5" port pid
 	shift 5
-	local b="$OUT/g8re/$fx/rearm" a="$OUT/g8re/$fx/once" port pid k2
+	uptime
 	port="$(legs_free_port)"
 	mkdir -p "$b/evidence" "$b/client"
 	echo "$port" >"$b/port.txt"
-	echo "run-gate8: g8re $fx/rearm (K1=$k1, GRC_SWAP_CYCLE=$cycle, GRC_LIVE_LISTEN=127.0.0.1:$port, a viewer in arm 1, quit $quit)"
+	echo "run-gate8: g8re ${b#"$OUT/g8re/"} (K1=$k1, GRC_SWAP_CYCLE=$cycle, viewer protocol ${G8RE_VIEWER_PROTOCOL:-8}, quit $quit)"
 	LEG_ENV=(
 		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
 		GRC_EVIDENCE_DIR="$b/evidence" GRC_STREAM_OUT="$b/$RECORDING_NAME"
-		RS_FIXTURE_STEP_LOG="$b/steps.jsonl" GRC_VALIDATION_LOG=on GRC_RESOURCE_STORE_DIR="$b/store"
+		RS_FIXTURE_STEP_LOG="$b/steps.jsonl" RS_FIXTURE_EVENT_LOG="$b/events.jsonl"
+		GRC_VALIDATION_LOG=on GRC_RESOURCE_STORE_DIR="$b/store"
 		GRC_STREAM_PATCH_OUT="$b/$PATCH_RECORDING_NAME" RS_FIXTURE_QUIT_FRAME="$quit"
 		"$@" GRC_LIVE_LISTEN="127.0.0.1:$port" GRC_ARM_DEFER_FRAMES=$((k1 - 1))
 		GRC_SWAP_CYCLE="$cycle" GRC_LIVE_AWAIT_HELLO_MS=20000 GRC_SWAP_CYCLE_REARM_AWAIT_HELLO_MS=
@@ -4710,13 +4723,22 @@ run_g8re_pair() {
 	[ -n "$pid" ] || return 0
 	if g8re_wait_listening "$b/evidence/live.json" "$pid" "$port"; then
 		(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/lib/null-receiver.ts" \
-			--url "ws://127.0.0.1:$port/render-stream" --out "$b/client" --protocol 8 --window 2 \
+			--url "ws://127.0.0.1:$port/render-stream" --out "$b/client" --protocol "${G8RE_VIEWER_PROTOCOL:-8}" --window 2 \
 			--timeout-s 90 >"$b/client/stdout.log" 2>&1)
 		echo "$?" >"$b/client/exit.txt"
 	else
 		echo "arm 1 never listened on $port (see evidence/live.json)" >"$b/client/skipped.txt"
 	fi
 	finish_bg "$b" "$pid" "$HEADLESS_TIMEOUT_S"
+}
+
+# run_g8re_pair <fx> <fixture dir> <K1> <cycle> <quit> <env word...>: run B then A.
+run_g8re_pair() {
+	local fx="$1" fixture="$2" k1="$3" cycle="$4" quit="$5"
+	shift 5
+	local b="$OUT/g8re/$fx/rearm" a="$OUT/g8re/$fx/once" port k2 idle
+	run_g8re_b "$b" "$fixture" "$k1" "$cycle" "$quit" "$@"
+	port="$(cat "$b/port.txt")"
 	k2="$(jq -s '[.[] | select(.phase == "idle" and .cycle == 1)][0] | if . == null then empty else .end_frame + 2 end' \
 		"$b/evidence/swap-cycle.jsonl" 2>/dev/null || true)"
 	mkdir -p "$a"
@@ -4725,11 +4747,42 @@ run_g8re_pair() {
 		return 0
 	fi
 	echo "$k2" >"$b/k2.txt"
-	echo "run-gate8: g8re $fx/once (armed once at K2=$k2, GRC_ARM_DEFER_FRAMES=$((k2 - 1)), quit $quit)"
+	CAPTURE_EXTRA_ENV=("$@" GRC_LIVE_LISTEN="127.0.0.1:$port" GRC_ARM_DEFER_FRAMES=$((k2 - 1))
+		RS_FIXTURE_EVENT_LOG="$a/events.jsonl")
+	# Only the texture fixture has an idle action; the adoption fixture keeps its own schedule.
+	if [ "$fixture" = "$FIXTURE_DIR" ]; then
+		idle="$(jq -s '[.[] | select(.event == "idle-action")][0].frame // empty' "$b/events.jsonl" 2>/dev/null || true)"
+		if ! [[ "$idle" =~ ^[0-9]+$ ]]; then
+			echo 'no idle-action event in run B' >"$a/no-idle-action.txt"
+			CAPTURE_EXTRA_ENV=()
+			return 0
+		fi
+		CAPTURE_EXTRA_ENV+=(RS_FIXTURE_IDLE_ACTION_FRAME="$idle")
+	fi
+	uptime
+	echo "run-gate8: g8re $fx/once (armed once at K2=$k2, quit $quit)"
 	CAPTURE_FIXTURE_DIR="$fixture"
-	CAPTURE_EXTRA_ENV=("$@" GRC_LIVE_LISTEN="127.0.0.1:$port" GRC_ARM_DEFER_FRAMES=$((k2 - 1)))
 	CAPTURE_EXTRA_ARGS=(--max-fps 60)
 	run_capture "$a" "$quit" none
+}
+
+run_g8re_tex_htr_faults() {
+	local name leg
+	for name in reload-off swap swap-skip-verify skip-htr-restore; do
+		leg="$OUT/g8re/tex-htr/$name"
+		local -a fault_env=()
+		case "$name" in
+			reload-off) fault_env=(GRC_ADOPT_FAULT=reload-off) ;;
+			swap | swap-skip-verify)
+				mkdir -p "$leg/ctex"
+				fault_env=(RS_FIXTURE_CTEX_DIR="$leg/ctex" RS_FIXTURE_CTEX_SWAP=1)
+				[ "$name" != swap-skip-verify ] || fault_env+=(GRC_ADOPT_FAULT=reload-skip-verify)
+				;;
+			skip-htr-restore) fault_env=(GRC_ADOPT_FAULT=skip-htr-restore) ;;
+		esac
+		G8RE_VIEWER_PROTOCOL=11 run_g8re_b "$leg" "$FIXTURE_DIR" "$G8RE_TEX_HTR_K1" \
+			"$G8RE_TEX_HTR_CYCLE" "$G8RE_TEX_HTR_QUIT" "${G8RE_TEX_HTR_ENV[@]}" "${fault_env[@]}"
+	done
 }
 
 # run_g8re_id: the re-arm round (g8re/id/host, viewers g8re/id/arm1 and g8re/id/arm2).
@@ -4766,19 +4819,34 @@ run_g8re_id() {
 	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
 }
 
+# G8RE_ONLY: comma-separated adopt,tex,id,tex-htr,tex-htr-faults; unset runs all.
+g8re_selected() { [[ ",${G8RE_ONLY:-adopt,tex,id,tex-htr,tex-htr-faults}," == *",$1,"* ]]; }
+
 run_g8re() {
 	run_import_g8re
 	mkdir -p "$OUT/g8re"
+	local fx
+	for fx in adopt tex id tex-htr tex-htr-faults; do
+		if ! g8re_selected "$fx"; then
+			mkdir -p "$OUT/g8re/$fx"
+			echo 'not selected by G8RE_ONLY' >"$OUT/g8re/$fx/not-selected.txt"
+		fi
+	done
 	# the re-arm round's viewers decode in rs-gsw-wasm and its checks validate through rs-core-check
 	echo "run-gate8: g8re build-rs-core.sh (rs-core-check, rs-gsw-wasm)"
 	bash "$SCRIPT_DIR/build-rs-core.sh" >"$OUT/g8re/build-rs-core.log" 2>&1 || {
 		echo "run-gate8: build-rs-core.sh failed, see $OUT/g8re/build-rs-core.log" >&2
 		exit 1
 	}
-	run_g8re_pair adopt "$G8A_FIXTURE_DIR" "$G8RE_ADOPT_K1" "$G8RE_ADOPT_CYCLE" "$G8RE_ADOPT_QUIT" \
+	g8re_selected adopt && run_g8re_pair adopt "$G8A_FIXTURE_DIR" "$G8RE_ADOPT_K1" "$G8RE_ADOPT_CYCLE" "$G8RE_ADOPT_QUIT" \
 		"${G8RE_ADOPT_ENV[@]}"
-	run_g8re_pair tex "$FIXTURE_DIR" "$G8RE_TEX_K1" "$G8RE_TEX_CYCLE" "$G8RE_TEX_QUIT" "${G8RE_TEX_ENV[@]}"
-	run_g8re_id
+	g8re_selected tex && run_g8re_pair tex "$FIXTURE_DIR" "$G8RE_TEX_K1" "$G8RE_TEX_CYCLE" "$G8RE_TEX_QUIT" "${G8RE_TEX_ENV[@]}"
+	if g8re_selected id; then run_g8re_id; fi
+	if g8re_selected tex-htr; then
+		G8RE_VIEWER_PROTOCOL=11 run_g8re_pair tex-htr "$FIXTURE_DIR" "$G8RE_TEX_HTR_K1" \
+			"$G8RE_TEX_HTR_CYCLE" "$G8RE_TEX_HTR_QUIT" "${G8RE_TEX_HTR_ENV[@]}"
+	fi
+	if g8re_selected tex-htr-faults; then run_g8re_tex_htr_faults; fi
 }
 
 # ------------------------------------------------------------------------------------- g8tdr

@@ -21,11 +21,26 @@ import {
   type CycleLine,
   cyclePhases,
   disarmRound,
+  faultReloadOffCaught,
+  faultSkipRestoreCaught,
+  faultSkipVerifyCaught,
+  imageTextureProbe,
+  imageTextureRestored,
   instanceRound,
+  publishedOneByOne,
   rearmCompare,
   reentryRound,
+  reloadCensus,
+  reloadIdleBeforeArm,
+  reloadMismatchTyped,
+  reloadNo1x1,
+  reloadSourcesBalanced,
+  reloadTyped,
   stepSchedule,
   type TeardownItemMeta,
+  type TextureEvent,
+  type TextureReloadEvidence,
+  type TextureTeardown,
 } from "../lib/gate8-rearm-checks";
 import type {
   ResolvedItem,
@@ -529,6 +544,347 @@ assert(
     reentryRound(marked, logs, ph, views, [stats[0], { reentry_rows: 0 }])
       .problems.length > 0,
     "reentryRound: missing arm-2 re-entry accounting fails",
+  );
+}
+
+// Source conservation includes both ways an unused source can be released.
+{
+  const honest = {
+    final: true,
+    sources_balanced: true,
+    reloaded: 13,
+    adopted_from_reload: 12,
+    dropped_unreferenced: 0,
+    dropped_freed: 1,
+  };
+  assert(
+    reloadSourcesBalanced(honest).length === 0,
+    "reload sources: freed source balances",
+  );
+  assert(
+    reloadSourcesBalanced({
+      ...honest,
+      dropped_freed: 0,
+      dropped_unreferenced: 1,
+    }).length === 0,
+    "reload sources: unreferenced source balances",
+  );
+  for (const bad of [
+    null,
+    { ...honest, final: false },
+    { ...honest, sources_balanced: false },
+    { ...honest, dropped_freed: 0 },
+    { ...honest, dropped_freed: 2 },
+    { ...honest, dropped_unreferenced: -1, dropped_freed: 2 },
+    { ...honest, reloaded: Number.NaN },
+  ])
+    assert(
+      reloadSourcesBalanced(bad).length > 0,
+      "reload sources: invalid evidence fails",
+    );
+}
+
+// Texture reload judges: every assertion has a failing evidence shape.
+{
+  const shape = { format: "DXT1", width: 64, height: 64, mipmaps: false };
+  const entry = {
+    path: "/fixture/swap.ctex",
+    adopted: true,
+    code: null,
+    record: shape,
+    loaded: shape,
+  };
+  const honest: TextureReloadEvidence = {
+    final: true,
+    sources_balanced: true,
+    skipped: null,
+    candidates: { released: 6, evicted: 7, residual: 0, total: 13 },
+    reloaded: 13,
+    adopted_from_reload: 12,
+    dropped_unreferenced: 0,
+    dropped_freed: 1,
+    refused: {
+      reload_unsafe: 0,
+      released_no_path: 0,
+      reload_mismatch: 0,
+      reload_failed: 0,
+      evicted_unverifiable: 0,
+      evicted_mid_arm: 0,
+      total: 0,
+    },
+    released_no_path: 0,
+    temp_outlived: 0,
+    scope_anomalies: 0,
+    verify_skipped: 0,
+    entries: [entry],
+  };
+  const td: TextureTeardown = {
+    reload_sources_held: 0,
+    htr_restore: {
+      candidates: 1,
+      restored: 1,
+      unavailable: 0,
+      mismatch: 0,
+      not_placeholder: 0,
+      skipped_fault: 0,
+    },
+  };
+  const probe: TextureEvent = {
+    event: "imagetexture-probe",
+    frame: 32,
+    expected: { ...shape, format: 17, sha256: "a".repeat(64) },
+    got: { ...shape, format: 17, sha256: "a".repeat(64) },
+  };
+  const rec = recording([20, 21], () => state(0, 0));
+  const dummy = structuredClone(rec);
+  for (const t of dummy.transactions) {
+    t.state.textures[0].width = t.state.textures[0].height = 1;
+    (t.state.items[1].commands[0] as unknown as { rect: number[] }).rect = [
+      0, 0, 64, 64,
+    ];
+  }
+  const pass = (p: string[], name: string) => assert(p.length === 0, name);
+  const fail = (p: string[], name: string) => assert(p.length > 0, name);
+  pass(
+    reloadIdleBeforeArm([{ event: "idle-action", frame: 19 }], 20),
+    "idle before arm passes",
+  );
+  fail(reloadIdleBeforeArm([], 20), "missing idle fails");
+  fail(
+    reloadIdleBeforeArm([{ event: "idle-action", frame: 20 }], 20),
+    "idle at arm fails",
+  );
+  pass(reloadNo1x1(rec, honest), "whole textures pass");
+  assert(publishedOneByOne(dummy), "dummy table detected");
+  for (const r of [null, dummy])
+    fail(reloadNo1x1(r, honest), "missing or dummy recording fails");
+  for (const r of [
+    null,
+    { ...honest, final: false },
+    { ...honest, entries: [{ ...entry, loaded: null }] },
+  ])
+    fail(reloadNo1x1(rec, r), "missing/final/loaded reload failure");
+  for (const [key, value] of Object.entries({
+    format: "RGBA8",
+    width: 1,
+    height: 1,
+    mipmaps: true,
+  }))
+    fail(
+      reloadNo1x1(rec, {
+        ...honest,
+        entries: [{ ...entry, loaded: { ...shape, [key]: value } }],
+      }),
+      `adopted ${key} mismatch fails`,
+    );
+  pass(reloadCensus([rec, rec, rec]), "honest census passes");
+  fail(reloadCensus([rec, dummy, rec]), "dummy census fails");
+  fail(reloadCensus([null]), "missing census fails");
+  pass(reloadTyped(honest, true, [td, td]), "B typed reload passes");
+  pass(
+    reloadTyped(
+      {
+        ...honest,
+        candidates: { released: 0, evicted: 7, residual: 0, total: 7 },
+        reloaded: 7,
+        adopted_from_reload: 6,
+      },
+      false,
+      [td],
+    ),
+    "A typed reload passes",
+  );
+  pass(
+    reloadTyped(honest, true, []),
+    "no emitted teardown needs no invented record",
+  );
+  fail(reloadTyped(null, true, [td]), "missing typed evidence fails");
+  for (const key of Object.keys(honest.candidates))
+    fail(
+      reloadTyped(
+        { ...honest, candidates: { ...honest.candidates, [key]: 99 } },
+        true,
+        [td],
+      ),
+      `candidate ${key} fails`,
+    );
+  for (const key of [
+    "reloaded",
+    "adopted_from_reload",
+    "released_no_path",
+    "temp_outlived",
+    "scope_anomalies",
+    "dropped_freed",
+  ])
+    fail(
+      reloadTyped({ ...honest, [key]: 99 }, true, [td]),
+      `typed ${key} fails`,
+    );
+  for (const key of Object.keys(honest.refused))
+    fail(
+      reloadTyped(
+        { ...honest, refused: { ...honest.refused, [key]: 1 } },
+        true,
+        [td],
+      ),
+      `refusal ${key} fails`,
+    );
+  fail(
+    reloadTyped({ ...honest, final: false }, true, [td]),
+    "nonfinal typed fails",
+  );
+  for (const t of [[null], [{ ...td, reload_sources_held: 1 }]])
+    fail(reloadTyped(honest, true, t), "missing/held teardown fails");
+  pass(imageTextureRestored(probe, td, honest), "restore passes");
+  fail(imageTextureProbe(null), "missing probe fails");
+  for (const [key, value] of Object.entries({
+    format: 0,
+    width: 1,
+    height: 1,
+    mipmaps: true,
+    sha256: "b".repeat(64),
+  }))
+    fail(
+      imageTextureProbe({ ...probe, got: { ...probe.got!, [key]: value } }),
+      `probe ${key} fails`,
+    );
+  fail(imageTextureProbe({ ...probe, got: null }), "null probe image fails");
+  for (const key of [
+    "candidates",
+    "restored",
+    "unavailable",
+    "mismatch",
+    "not_placeholder",
+  ])
+    fail(
+      imageTextureRestored(
+        probe,
+        { ...td, htr_restore: { ...td.htr_restore, [key]: 99 } },
+        honest,
+      ),
+      `restore ${key} fails`,
+    );
+  fail(
+    imageTextureRestored(probe, null, honest),
+    "missing restore teardown fails",
+  );
+  fail(imageTextureRestored(probe, td, null), "missing restore reload fails");
+  fail(
+    imageTextureRestored(probe, td, { ...honest, released_no_path: 1 }),
+    "unrestored path fails",
+  );
+  const mismatch = {
+    ...honest,
+    refused: { ...honest.refused, reload_mismatch: 1, total: 1 },
+    entries: [{ ...entry, adopted: false, code: "reload-mismatch" }],
+  };
+  pass(reloadMismatchTyped(mismatch), "typed swap refusal passes");
+  for (const r of [
+    null,
+    { ...mismatch, final: false },
+    { ...mismatch, entries: [] },
+    { ...mismatch, entries: [{ ...mismatch.entries[0], adopted: true }] },
+    { ...mismatch, entries: [{ ...mismatch.entries[0], path: "x.ctex" }] },
+  ])
+    fail(reloadMismatchTyped(r), "bad swap refusal fails");
+  for (const key of Object.keys(mismatch.refused))
+    fail(
+      reloadMismatchTyped({
+        ...mismatch,
+        refused: { ...mismatch.refused, [key]: 99 },
+      }),
+      `swap refusal ${key} fails`,
+    );
+  pass(
+    faultReloadOffCaught(dummy, { ...honest, skipped: "fault-reload-off" }),
+    "reload-off caught",
+  );
+  fail(
+    faultReloadOffCaught(rec, { ...honest, skipped: "fault-reload-off" }),
+    "whole negative recording fails",
+  );
+  fail(faultReloadOffCaught(dummy, honest), "wrong skip fails");
+  const skipped = {
+    ...honest,
+    verify_skipped: 1,
+    entries: [{ ...entry, loaded: { ...shape, width: 32 } }],
+  };
+  pass(faultSkipVerifyCaught(skipped), "skip verify caught");
+  for (const r of [
+    null,
+    { ...skipped, verify_skipped: 0 },
+    { ...skipped, entries: [entry] },
+    { ...skipped, entries: [{ ...skipped.entries[0], adopted: false }] },
+    { ...skipped, entries: [{ ...skipped.entries[0], path: "x.ctex" }] },
+  ])
+    fail(faultSkipVerifyCaught(r), "uncaught skip verify fails");
+  const badProbe = {
+    ...probe,
+    got: { format: 0, width: 1, height: 1, mipmaps: false },
+  };
+  const skippedTd = {
+    ...td,
+    htr_restore: { ...td.htr_restore, skipped_fault: 1 },
+  };
+  const noPath = { ...honest, released_no_path: 1 };
+  pass(
+    faultSkipRestoreCaught(badProbe, skippedTd, noPath),
+    "skip restore caught",
+  );
+  fail(
+    faultSkipRestoreCaught(probe, skippedTd, noPath),
+    "restored negative probe fails",
+  );
+  fail(
+    faultSkipRestoreCaught(badProbe, td, noPath),
+    "missing restore fault count fails",
+  );
+  fail(
+    faultSkipRestoreCaught(badProbe, skippedTd, honest),
+    "missing no-path refusal fails",
+  );
+  for (const [key, value] of Object.entries({
+    width: 2,
+    height: 2,
+    mipmaps: true,
+  }))
+    fail(
+      faultSkipRestoreCaught(
+        { ...badProbe, got: { ...badProbe.got, [key]: value } },
+        skippedTd,
+        noPath,
+      ),
+      `placeholder ${key} fails`,
+    );
+  for (const [key, value] of Object.entries({
+    width: 32,
+    height: 32,
+    mipmaps: true,
+    sha256: "short",
+  })) {
+    const invalid = { ...probe.expected!, [key]: value };
+    fail(
+      imageTextureProbe({ ...probe, expected: invalid, got: invalid }),
+      `invalid expected ${key} fails`,
+    );
+  }
+  const undrawn = structuredClone(dummy);
+  for (const tx of undrawn.transactions) tx.state.items = [];
+  fail(reloadNo1x1(undrawn, honest), "undrawn published dummy still fails");
+  pass(
+    reloadNo1x1(rec, {
+      ...honest,
+      entries: [{ ...entry, adopted: false, loaded: null }],
+    }),
+    "unadopted refused source need not match",
+  );
+  fail(
+    faultSkipRestoreCaught(
+      { ...badProbe, got: { ...badProbe.got, format: 17 } },
+      skippedTd,
+      noPath,
+    ),
+    "non-L8 negative probe fails",
   );
 }
 

@@ -92,6 +92,7 @@
 #include <vector>
 
 #include "rs2_snapshot.h"
+#include "rs_reload.h"
 
 namespace grc {
 namespace rs {
@@ -274,6 +275,9 @@ enum class AdoptFault : std::uint8_t {
   // (or mesh, multimesh, emitter) first referenced from a loader thread is never adopted, as before
   // LAR6 (fails res-late-adopt on deferred g8res, whose loader-thread reference nothing else makes).
   RegistryQueueDrop,
+  ReloadOff,
+  ReloadSkipVerify,
+  SkipHtrRestore,
 };
 
 // Parses GRC_ADOPT_FAULT (null or "" -> None). False with `error` set for any other value, or
@@ -284,6 +288,7 @@ const char *adopt_fault_name(AdoptFault fault);
 // What lazy resource adoption did (result.json stream.gate8.adopt_stats.resources).
 struct AdoptResourceStats {
   std::uint32_t textures = 0;          // adopted textures, every source
+  std::uint32_t textures_reload = 0;   // ... from a verified arm-time reload
   std::uint32_t textures_current = 0;  // ... declared current
   std::uint32_t textures_creation = 0; // ... declared creation
   std::uint32_t textures_canvas = 0;   // ... canvas textures, every source:
@@ -328,6 +333,14 @@ struct AdoptResourceStats {
 // instance setters are no-ops and whose buffer getter holds only the last set_buffer (LAR2, O3).
 void adopt_resources_begin(AdoptFault fault, bool dummy_host = false);
 void adopt_resources_end();
+// Main-thread arm pass, before the walk can name textures. Evidence is per arm.
+ReloadStats adopt_reload_at_arm();
+ReloadStats adopt_reload_finish();
+// Restore only released path-less textures, before the mirror is freed at disarm.
+// Shutdown skips every engine call once the root has been finalized.
+HtrRestoreStats adopt_htr_restore(AdoptFault fault, bool root_finalized = false);
+std::size_t adopt_reload_sources_held();
+std::string adopt_reload_json(std::uint64_t arm_index, std::uint64_t frame);
 // LS3: after adopt_resources_end at a disarm, frees what the arm left: the refused map, the
 // census, the off-main queue, the emitter waits, the material residuals, the walk's lists and
 // (with no tag acquire holding it) the node map. Returns the entries it freed.

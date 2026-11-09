@@ -33,7 +33,7 @@
 // The pure halves (rearmCompare, stepSchedule, cyclePhases, instanceRound, disarmRound) are
 // exported for test/self-test-gate8-rearm.ts.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -43,6 +43,7 @@ import {
   type G8aCheck,
   stateAt,
 } from "./gate8-adopt-checks";
+import { census1x1 } from "./gate8-htr-checks";
 import {
   type Dump,
   dumpOf,
@@ -222,21 +223,24 @@ interface LoadedRecording {
   error?: string;
 }
 
-function loadRec(path: string): LoadedRecording {
+function loadRec(path: string, version: 8 | 11 = 8): LoadedRecording {
   if (!existsSync(path)) return { error: `${path} missing` };
   const bytes = new Uint8Array(readFileSync(path));
-  if (wireVersionOf(bytes) !== 8)
-    return { bytes, error: `${path} is not GRS8` };
-  const errors = validateRecording(bytes, 8);
+  if (wireVersionOf(bytes) !== version)
+    return { bytes, error: `${path} is not GRS${version}` };
+  const errors = validateRecording(bytes, version);
   if (errors.length > 0)
-    return { bytes, error: `${path}: invalid /8 recording: ${errors[0]}` };
+    return {
+      bytes,
+      error: `${path}: invalid /${version} recording: ${errors[0]}`,
+    };
   try {
-    const decoded = decodeRecording(bytes, 8) as unknown as {
+    const decoded = decodeRecording(bytes, version) as unknown as {
       records: { meta: Record<string, unknown> }[];
     };
     return {
       bytes,
-      rec: resolveRecording(bytes, 8),
+      rec: resolveRecording(bytes, version),
       adoption: decoded.records[0]?.meta
         .adoption as LoadedRecording["adoption"],
     };
@@ -273,7 +277,7 @@ function drawsByClass(s: State): { vram: number; plain: number } {
 
 function rearmEquivalence(
   g: string,
-  fx: "adopt" | "tex",
+  fx: "adopt" | "tex" | "tex-htr",
 ): { check: G8aCheck; report: Record<string, unknown> } {
   const b = join(g, fx, "rearm");
   const a = join(g, fx, "once");
@@ -282,7 +286,9 @@ function rearmEquivalence(
   const criterion =
     fx === "adopt"
       ? "LS3 rearm-equivalence on fixtures/gate8-adopt: run B (armed at K1, a live viewer in arm 1, disarmed by GRC_SWAP_CYCLE, re-armed at K2 on the same port after the fixture changed while disarmed) and run A (armed once at K2) validate; both adoptions are dated K2; B's arm-2 state equals A's at every frame from K2 under D15's exceptions only (ids, versions, origin; draw-index values and hidden items' draw-derived state as g8a), with no residue, no resource exception, equal unsupported and failure lists and equal texture and mesh tables by content; arm 1 had one connection that received transactions; arm 2 listened on arm 1's port; arm 1 covers a fixture step and another happened while disarmed"
-      : "LS3 rearm-equivalence on fixtures/gate8-tex (GRC_HEADLESS_TEXTURE_RELEASE unset: the lossless `control` cells and the host-decoded VRAM cells; every step-1 texture created while disarmed): as rearm-equivalence-adopt";
+      : fx === "tex-htr"
+        ? "The /11 HTR pair is equivalent under D15, and run B evicts before K2"
+        : "LS3 rearm-equivalence on fixtures/gate8-tex (GRC_HEADLESS_TEXTURE_RELEASE unset: the lossless `control` cells and the host-decoded VRAM cells; every step-1 texture created while disarmed): as rearm-equivalence-adopt";
   if (
     !existsSync(join(b, "exit-code.txt")) ||
     !existsSync(join(a, "exit-code.txt"))
@@ -303,9 +309,10 @@ function rearmEquivalence(
     const code = readFileSync(join(d, "exit-code.txt"), "utf8").trim();
     if (code !== "0") problems.push(`${d.slice(g.length + 1)} exit ${code}`);
   }
-  const arm1 = loadRec(join(b, "recording.rs8"));
-  const arm2 = loadRec(join(b, "recording.rs8.arm-2"));
-  const once = loadRec(join(a, "recording.rs8"));
+  const version = fx === "tex-htr" ? 11 : 8;
+  const arm1 = loadRec(join(b, "recording.rs8"), version);
+  const arm2 = loadRec(join(b, "recording.rs8.arm-2"), version);
+  const once = loadRec(join(a, "recording.rs8"), version);
   for (const [name, r] of [
     ["rearm arm 1", arm1],
     ["rearm arm 2", arm2],
@@ -373,6 +380,13 @@ function rearmEquivalence(
     problems.push(...sched.problems);
     const e = rearmCompare(once.rec, arm2.rec, k2);
     problems.push(...e.problems.slice(0, 20));
+    if (fx === "tex-htr")
+      problems.push(
+        ...reloadIdleBeforeArm(
+          jsonlOf<TextureEvent>(join(b, "events.jsonl")),
+          k2,
+        ),
+      );
     if (e.problems.length > 20)
       problems.push(`... ${e.problems.length - 20} more`);
     const first = arm2.rec.transactions[0]?.state;
@@ -808,19 +822,439 @@ function idRound(g: string): {
   };
 }
 
+export interface ReloadShape {
+  format: string | number;
+  width: number;
+  height: number;
+  mipmaps: boolean;
+  sha256?: string;
+}
+export interface TextureEvent {
+  event: string;
+  frame: number;
+  expected?: ReloadShape;
+  got?: ReloadShape | null;
+}
+export interface TextureReloadEvidence extends ReloadSourceEvidence {
+  skipped: string | null;
+  candidates: {
+    released: number;
+    evicted: number;
+    residual: number;
+    total: number;
+  };
+  refused: Record<string, number>;
+  released_no_path: number;
+  temp_outlived: number;
+  scope_anomalies: number;
+  verify_skipped: number;
+  entries: {
+    path: string | null;
+    adopted: boolean;
+    code: string | null;
+    record: ReloadShape;
+    loaded: ReloadShape | null;
+  }[];
+}
+export interface TextureTeardown {
+  reload_sources_held: number;
+  htr_restore?: Record<string, number | string>;
+}
+const refusalKeys = [
+  "reload_unsafe",
+  "released_no_path",
+  "reload_mismatch",
+  "reload_failed",
+  "evicted_unverifiable",
+  "evicted_mid_arm",
+  "total",
+] as const;
+const sameShape = (a: ReloadShape | null, b: ReloadShape): boolean =>
+  a !== null &&
+  ["format", "width", "height", "mipmaps"].every(
+    (key) => a[key as keyof ReloadShape] === b[key as keyof ReloadShape],
+  );
+const placeholder = (s: ReloadShape | null | undefined): boolean =>
+  s?.format === 0 && s.width === 1 && s.height === 1 && s.mipmaps === false;
+
+export function reloadIdleBeforeArm(
+  events: TextureEvent[],
+  k2: number,
+): string[] {
+  const f = events.find((e) => e.event === "idle-action")?.frame;
+  return f !== undefined && Number.isFinite(f) && f < k2
+    ? []
+    : ["idle action missing or not before K2"];
+}
+export function publishedOneByOne(rec: ResolvedRecording): boolean {
+  return rec.transactions.some((t) =>
+    t.state.textures.some(
+      (tex) => tex.kind === "image" && tex.width <= 1 && tex.height <= 1,
+    ),
+  );
+}
+export function reloadNo1x1(
+  rec: ResolvedRecording | null,
+  r: TextureReloadEvidence | null,
+): string[] {
+  const problems: string[] = [];
+  if (!rec || rec.transactions.length === 0) problems.push("missing recording");
+  else if (publishedOneByOne(rec)) problems.push("published <=1x1 image");
+  if (r?.final !== true) problems.push("missing final reload evidence");
+  else
+    for (const e of r.entries)
+      if (e.adopted && !sameShape(e.loaded, e.record))
+        problems.push(`adopted shape mismatch: ${e.path}`);
+  return problems;
+}
+export function reloadCensus(recs: (ResolvedRecording | null)[]): string[] {
+  return recs.flatMap((r, k) =>
+    !r || r.transactions.length === 0
+      ? [`recording ${k} missing`]
+      : census1x1(r).transactions === 0
+        ? []
+        : [`recording ${k} draws a <=1x1 image`],
+  );
+}
+export function reloadTyped(
+  r: TextureReloadEvidence | null,
+  rearm: boolean,
+  teardowns: (TextureTeardown | null)[],
+): string[] {
+  if (!r) return ["missing reload evidence"];
+  const problems: string[] = [];
+  const expected = {
+    released: rearm ? 6 : 0,
+    evicted: 7,
+    residual: 0,
+    total: rearm ? 13 : 7,
+  };
+  for (const key of Object.keys(expected) as (keyof typeof expected)[])
+    if (r.candidates[key] !== expected[key]) problems.push(`candidates.${key}`);
+  for (const [key, value] of Object.entries({
+    reloaded: rearm ? 13 : 7,
+    adopted_from_reload: rearm ? 12 : 6,
+    released_no_path: 0,
+    temp_outlived: 0,
+    scope_anomalies: 0,
+  }))
+    if (r[key as keyof TextureReloadEvidence] !== value) problems.push(key);
+  if (!r.final) problems.push("not final");
+  if (refusalKeys.some((key) => r.refused[key] !== 0)) problems.push("refused");
+  if (r.dropped_unreferenced + r.dropped_freed !== 1)
+    problems.push("dropped sources");
+  if (teardowns.some((t) => t?.reload_sources_held !== 0))
+    problems.push("reload_sources_held");
+  return problems;
+}
+export function imageTextureProbe(probe: TextureEvent | null): string[] {
+  const want = probe?.expected;
+  const got = probe?.got;
+  return want &&
+    got &&
+    want.width === 64 &&
+    want.height === 64 &&
+    want.mipmaps === false &&
+    typeof want.sha256 === "string" &&
+    want.sha256.length === 64 &&
+    sameShape(got, want) &&
+    got.sha256 === want.sha256
+    ? []
+    : ["ImageTexture probe differs"];
+}
+export function imageTextureRestored(
+  probe: TextureEvent | null,
+  td: TextureTeardown | null,
+  r: TextureReloadEvidence | null,
+): string[] {
+  const problems = imageTextureProbe(probe);
+  for (const [key, value] of Object.entries({
+    candidates: 1,
+    restored: 1,
+    unavailable: 0,
+    mismatch: 0,
+    not_placeholder: 0,
+  }))
+    if (td?.htr_restore?.[key] !== value) problems.push(`htr_restore.${key}`);
+  if (r?.released_no_path !== 0) problems.push("released_no_path");
+  return problems;
+}
+export function reloadMismatchTyped(r: TextureReloadEvidence | null): string[] {
+  if (!r?.final) return ["missing final reload evidence"];
+  const problems: string[] = [];
+  for (const key of refusalKeys)
+    if (
+      r.refused[key] !== (key === "reload_mismatch" || key === "total" ? 1 : 0)
+    )
+      problems.push(`refused.${key}`);
+  const entries = r.entries.filter((e) => e.code === "reload-mismatch");
+  if (
+    entries.length !== 1 ||
+    !entries[0].path?.endsWith("swap.ctex") ||
+    entries[0].adopted
+  )
+    problems.push("missing unadopted swap.ctex mismatch");
+  return problems;
+}
+export function faultReloadOffCaught(
+  rec: ResolvedRecording | null,
+  r: TextureReloadEvidence | null,
+): string[] {
+  return rec && publishedOneByOne(rec) && r?.skipped === "fault-reload-off"
+    ? []
+    : ["reload-off negative test not caught"];
+}
+export function faultSkipVerifyCaught(
+  r: TextureReloadEvidence | null,
+): string[] {
+  return r &&
+    r.verify_skipped >= 1 &&
+    r.entries.some(
+      (e) =>
+        e.path?.endsWith("swap.ctex") &&
+        e.adopted &&
+        !sameShape(e.loaded, e.record),
+    )
+    ? []
+    : ["reload-skip-verify negative test not caught"];
+}
+export function faultSkipRestoreCaught(
+  probe: TextureEvent | null,
+  td: TextureTeardown | null,
+  r: TextureReloadEvidence | null,
+): string[] {
+  return imageTextureProbe(probe).length > 0 &&
+    placeholder(probe?.got) &&
+    td?.htr_restore?.skipped_fault === 1 &&
+    r?.released_no_path === 1
+    ? []
+    : ["skip-htr-restore negative test not caught"];
+}
+
+function textureReloadChecks(g: string): G8aCheck[] {
+  const root = join(g, "tex-htr");
+  const evidence = (leg: string, second = true) =>
+    join(root, leg, "evidence", ...(second ? ["arm-2"] : []));
+  const reload = (leg: string, second = true) =>
+    readJson<TextureReloadEvidence>(join(evidence(leg, second), "reload.json"));
+  const teardown = (leg: string, second = true) =>
+    readJson<TextureTeardown>(join(evidence(leg, second), "teardown.json"));
+  const teardowns = (leg: string): (TextureTeardown | null)[] => {
+    const out: (TextureTeardown | null)[] = [];
+    const scan = (dir: string) => {
+      if (!existsSync(dir)) return;
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, e.name);
+        if (e.isDirectory()) scan(path);
+        else if (e.name === "teardown.json")
+          out.push(readJson<TextureTeardown>(path));
+      }
+    };
+    scan(evidence(leg, false));
+    return out;
+  };
+  const rec = (leg: string, second = true) =>
+    loadRec(join(root, leg, `recording.rs8${second ? ".arm-2" : ""}`), 11);
+  const probe = (leg: string) =>
+    jsonlOf<TextureEvent>(join(root, leg, "events.jsonl")).find(
+      (e) => e.event === "imagetexture-probe",
+    ) ?? null;
+  const b = rec("rearm"),
+    a = rec("once", false),
+    first = rec("rearm", false),
+    swap = rec("swap");
+  const rb = reload("rearm"),
+    ra = reload("once", false),
+    rs = reload("swap");
+  const checks: G8aCheck[] = [];
+  const add = (
+    id: string,
+    legs: string[],
+    criterion: string,
+    judge: () => string[],
+  ) => {
+    const absent = legs.some(
+      (leg) => !existsSync(join(root, leg, "exit-code.txt")),
+    );
+    if (absent)
+      checks.push({
+        id,
+        criterion,
+        passed: false,
+        status: "not-run",
+        gating: false,
+        detail: "texture reload legs absent",
+      });
+    else {
+      const pre = legs.flatMap((leg) =>
+        readFileSync(join(root, leg, "exit-code.txt"), "utf8").trim() === "0"
+          ? []
+          : [`${leg} failed`],
+      );
+      checks.push(
+        check(id, criterion, [...pre, ...judge()], "all predicates hold"),
+      );
+    }
+  };
+  add(
+    "rearm-no-1x1",
+    ["rearm", "once", "swap"],
+    "No published image is <=1x1 and every adopted reload matches its record",
+    () => [
+      ...reloadNo1x1(b.rec ?? null, rb),
+      ...reloadNo1x1(a.rec ?? null, ra),
+      ...reloadNo1x1(swap.rec ?? null, rs),
+    ],
+  );
+  add(
+    "htr-census-1x1-rearm",
+    ["rearm", "once"],
+    "No arm draws a <=1x1 image into a large rectangle",
+    () => reloadCensus([first.rec ?? null, b.rec ?? null, a.rec ?? null]),
+  );
+  add(
+    "reload-typed",
+    ["rearm", "once"],
+    "Honest reload candidates, outcomes and teardown counts match the fixture",
+    () => [
+      ...reloadTyped(rb, true, teardowns("rearm")),
+      ...reloadTyped(ra, false, teardowns("once")),
+    ],
+  );
+  add(
+    "htr-imagetexture-restored",
+    ["rearm"],
+    "The path-less ImageTexture is restored exactly at disarm",
+    () => imageTextureRestored(probe("rearm"), teardown("rearm", false), rb),
+  );
+  add(
+    "reload-mismatch-typed",
+    ["swap"],
+    "A swapped .ctex is refused once with reload-mismatch and never publishes a dummy",
+    () => [...reloadMismatchTyped(rs), ...reloadNo1x1(swap.rec ?? null, rs)],
+  );
+  add(
+    "fault-reload-off-caught",
+    ["reload-off"],
+    "reload-off publishes a dummy and records its skip reason",
+    () =>
+      faultReloadOffCaught(rec("reload-off").rec ?? null, reload("reload-off")),
+  );
+  add(
+    "fault-reload-skip-verify-caught",
+    ["swap-skip-verify"],
+    "Skipping verification adopts the swapped .ctex with a mismatched shape",
+    () => faultSkipVerifyCaught(reload("swap-skip-verify")),
+  );
+  add(
+    "fault-skip-htr-restore-caught",
+    ["skip-htr-restore"],
+    "Skipping restore leaves a path-less placeholder and a typed refusal",
+    () =>
+      faultSkipRestoreCaught(
+        probe("skip-htr-restore"),
+        teardown("skip-htr-restore", false),
+        reload("skip-htr-restore"),
+      ),
+  );
+  return checks;
+}
+
+export interface ReloadSourceEvidence {
+  final: boolean;
+  sources_balanced: boolean;
+  reloaded: number;
+  adopted_from_reload: number;
+  dropped_unreferenced: number;
+  dropped_freed: number;
+}
+
+/** Every loaded source must be adopted or counted once when it is dropped. */
+export function reloadSourcesBalanced(
+  evidence: ReloadSourceEvidence | null,
+): string[] {
+  if (evidence === null) return ["missing reload evidence"];
+  const problems: string[] = [];
+  if (evidence.final !== true) problems.push("reload evidence is not final");
+  if (evidence.sources_balanced !== true)
+    problems.push("sources_balanced is not true");
+  const counts = [
+    evidence.reloaded,
+    evidence.adopted_from_reload,
+    evidence.dropped_unreferenced,
+    evidence.dropped_freed,
+  ];
+  if (
+    counts.some((n) => !Number.isSafeInteger(n) || n < 0) ||
+    evidence.reloaded !==
+      evidence.adopted_from_reload +
+        evidence.dropped_unreferenced +
+        evidence.dropped_freed
+  )
+    problems.push("reload sources do not balance");
+  return problems;
+}
+
+function reloadSourceCheck(g: string): G8aCheck {
+  const paths: string[] = [];
+  function scan(dir: string): void {
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) scan(path);
+      else if (entry.isFile() && entry.name === "reload.json") paths.push(path);
+    }
+  }
+  scan(g);
+  const criterion =
+    "Every final reload.json balances reloaded sources across adoption, unreferenced drops and frees, with no source left held";
+  if (paths.length === 0)
+    return {
+      id: "reload-sources-balanced",
+      criterion,
+      passed: false,
+      status: "not-run",
+      gating: false,
+      detail: "reload legs absent",
+    };
+  const problems = paths.flatMap((path) =>
+    reloadSourcesBalanced(readJson<ReloadSourceEvidence>(path)).map(
+      (p) => `${path}: ${p}`,
+    ),
+  );
+  return check(
+    "reload-sources-balanced",
+    criterion,
+    problems,
+    `${paths.length} final reload files balanced`,
+  );
+}
+
+function selectedCheck(c: G8aCheck, g: string, fx: string): G8aCheck {
+  if (!existsSync(join(g, fx, "not-selected.txt"))) return c;
+  return {
+    ...c,
+    passed: false,
+    status: "not-run",
+    gating: false,
+    detail: "not selected by G8RE_ONLY",
+  };
+}
+
 export async function runG8re(
   out: string,
 ): Promise<{ checks: G8aCheck[]; report: Record<string, unknown> }> {
   const g = join(out, "g8re");
   const checks: G8aCheck[] = [];
   const report: Record<string, unknown> = {};
-  for (const fx of ["adopt", "tex"] as const) {
+  for (const fx of ["adopt", "tex", "tex-htr"] as const) {
     const r = rearmEquivalence(g, fx);
-    checks.push(r.check);
+    checks.push(selectedCheck(r.check, g, fx));
     report[fx] = r.report;
   }
   const id = idRound(g);
-  checks.push(...id.checks);
+  checks.push(...id.checks.map((c) => selectedCheck(c, g, "id")));
   report.id = id.report;
+  checks.push(reloadSourceCheck(g), ...textureReloadChecks(g));
   return { checks, report };
 }

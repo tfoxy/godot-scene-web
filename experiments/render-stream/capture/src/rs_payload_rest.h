@@ -64,6 +64,7 @@ enum class InflateSite : std::uint8_t {
   Inline,    // an inline resource record (file recording, live transaction)
   Basis,     // the lazy Basis encode's source (the encode pool)
   Sabotage,  // a sabotage's corrupted copy
+  Restore,   // a released path-less texture restored to the dummy at disarm
   kCount,
 };
 const char *inflate_site_name(InflateSite site);

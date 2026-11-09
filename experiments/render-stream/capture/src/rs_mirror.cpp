@@ -7437,6 +7437,29 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   return captured;
 }
 
+bool Mirror::texture_source_body(std::uint64_t rid, int format, PayloadPtr *out) const {
+  PayloadPtr body;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto id = texture_by_rid_.find(rid);
+    if (id != texture_by_rid_.end()) {
+      const auto *texture = textures_.find(id->second);
+      if (texture != nullptr) {
+        if (texture->job != nullptr && texture->job->done() && !texture->job->mispredict()) {
+          const auto &actual = texture->job->actual();
+          if (actual.format == format) body = texture->job->bytes();
+          else if (image_format_from_name(actual.block_format) == format)
+            body = actual.block_bytes;
+        } else if (texture->copy.format == format && texture->bytes) body = texture->bytes;
+        else if (image_format_from_name(texture->copy.block_format) == format)
+          body = texture->copy.block_bytes;
+      }
+    }
+  }
+  *out = std::move(body);
+  return bool(*out);
+}
+
 void Mirror::at_rest_census(RestCensus *out, std::unordered_set<const void *> *seen) const {
   std::lock_guard<std::mutex> lock(mutex_);
   for (const auto &entry : textures_) {

@@ -2,6 +2,7 @@
 // against std::unordered_map over long random sequences (dense Godot-like RIDs, colliding keys,
 // key 0), so backward-shift deletion and growth keep every key reachable.
 
+#include <memory>
 #include "rs_rid_map.h"
 
 #include <cstdint>
@@ -46,6 +47,31 @@ void test_basics() {
   check(m.empty() && m.find(6) == m.end(), "clear");
   m[11] = 1;
   check(m.find(11)->second == 1, "insert after clear");
+}
+
+void test_iteration() {
+  RidMap<std::uint32_t> m;
+  std::vector<std::uint64_t> keys;
+  const auto scan = [&]() {
+    keys.clear();
+    std::as_const(m).for_each([&](const auto &entry) {
+      keys.push_back(entry.first);
+      check(entry.second == entry.first + 10, "scan preserves value");
+    });
+  };
+  scan();
+  check(keys.empty(), "empty scan");
+  m[1] = 11;
+  m[3] = 13;
+  m[0] = 10;
+  scan();
+  check(keys == std::vector<std::uint64_t>({0, 1, 3}), "zero first then slot order");
+  m.erase(std::uint64_t{1});
+  scan();
+  check(keys == std::vector<std::uint64_t>({0, 3}), "scan excludes erased slots");
+  m.clear();
+  scan();
+  check(keys.empty(), "scan after clear");
 }
 
 // Keys that share a home slot: probe runs that wrap the table's end and holes in their middle.
@@ -112,6 +138,9 @@ void test_random(std::uint32_t seed, bool dense) {
     const auto f = m.find(entry.first);
     ok = ok && f != m.end() && f->second == entry.second;
   }
+  std::unordered_map<std::uint64_t, std::uint32_t> scanned;
+  m.for_each([&](const auto &entry) { scanned.emplace(entry.first, entry.second); });
+  check(scanned == ref, "scan after random growth, collisions and erasure agrees with reference");
   check(ok, std::string("random ops agree with unordered_map (") + (dense ? "dense" : "sparse") +
                 " keys, seed " + std::to_string(seed) + ")");
 }
@@ -119,7 +148,17 @@ void test_random(std::uint32_t seed, bool dense) {
 }  // namespace
 
 int main() {
+  {
+    grc::rs::RidMap<std::unique_ptr<int>> held;
+    for (uint64_t i = 0; i < 200; ++i) held[i] = std::make_unique<int>(i);
+    for (uint64_t i = 0; i < 200; i += 2) held.erase(i);
+    bool intact = held.size() == 100;
+    held.for_each([&](const auto &slot) { intact = intact && *slot.second == static_cast<int>(slot.first); });
+    check(intact, "move-only values survive growth and backward-shift deletion");
+  }
+
   test_basics();
+  test_iteration();
   test_collisions();
   for (std::uint32_t seed = 1; seed <= 4; ++seed) {
     test_random(seed, true);

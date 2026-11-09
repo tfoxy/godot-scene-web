@@ -66,6 +66,7 @@ export interface SwapAccounting {
   resource_log_held?: number;
   mesh_buffers?: number;
   adopt_held?: number;
+  reload_sources_held?: number;
   item_meta?: { host_held?: number; filter_watches?: number };
   malloc?: { uordblks?: number; fordblks?: number; hblkhd?: number };
   rss_bytes?: number;
@@ -263,6 +264,7 @@ export function accountingProblems(label: string, a: SwapAccounting): string[] {
   zero("resource_log_held", a.resource_log_held);
   zero("mesh_buffers", a.mesh_buffers);
   zero("adopt_held", a.adopt_held);
+  zero("reload_sources_held", a.reload_sources_held);
   zero("item_meta.host_held", a.item_meta?.host_held);
   zero("item_meta.filter_watches", a.item_meta?.filter_watches);
   return out;

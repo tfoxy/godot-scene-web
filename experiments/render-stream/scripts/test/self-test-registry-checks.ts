@@ -7,7 +7,7 @@
 // evidence); and registry-cost on synthetic samples: within noise passes, a registry that costs
 // more than the noise fails against both references, a missing config fails. And K1's coverage pin
 // for LAR0 and LAR1: every create hook REGISTRY_CREATE_HOOKS names records into the registry
-// (capture/src/hooks.cpp: its hook_<name> body calls registry_create with a kind of that family), and
+// (capture/src/hooks.cpp: its hook_<name> body records a kind of that family), and
 // hook_free / hook_texture_replace erase.
 //
 //   mise exec -- pnpm exec tsx --conditions=development \
@@ -488,11 +488,21 @@ expect(
       const m = b
         ? /registry_create\([^,]+, rs::RegistryKind::(\w+)\)/.exec(b)
         : null;
+      const kind =
+        h === "texture_2d_create"
+          ? /rs::registry_note_texture_create\(result\.id,/.test(b ?? "")
+            ? "Texture2d"
+            : undefined
+          : m?.[1];
       expect(
-        m !== null && kinds[family].includes(m[1]),
-        `hook_${h} records a ${family} kind (${m?.[1] ?? "no registry_create"})`,
+        kind !== undefined && kinds[family].includes(kind),
+        `hook_${h} records a ${family} kind (${kind ?? "no registry create"})`,
       );
     }
+  expect(
+    !/\bregistry_create\(/.test(body("texture_2d_create") ?? ""),
+    "hook_texture_2d_create has no plain registry_create (records once)",
+  );
   expect(
     /registry_note_free\(rid\.id\)/.test(body("free") ?? ""),
     "hook_free erases",

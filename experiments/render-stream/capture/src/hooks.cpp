@@ -1,5 +1,6 @@
 #include "hooks.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -802,7 +803,7 @@ std::mutex g_mutex;
 // logs: log_entry and the entries its callers build for it, the geometry pre-copies, the direct
 // g_mutex sites below (rects, polygons, texture creates and updates) and the image facts read for
 // them. They fill counters.json `captured`; validation runners set `on` and assert
-// counters.json `validation_log`. Functional state the arm uses (g_mesh_buffers, g_texture_paths)
+// counters.json `validation_log`. Functional state the arm uses (g_mesh_buffers, registry paths)
 // is not gated. Set once at SCENE initialisation, before the vtable is patched.
 bool g_validation_logs = false;
 
@@ -1366,6 +1367,20 @@ ImageFacts read_image(const Ref *image) {
     }
   }
   return facts;
+}
+
+rs::RegistryTextureFacts to_registry_facts(const ImageFacts &facts) {
+  rs::RegistryTextureFacts out;
+  if (facts.ok && facts.mipmaps_known && facts.width >= 1 && facts.width <= 65535 &&
+      facts.height >= 1 && facts.height <= 65535 && facts.format >= 0 &&
+      facts.format < rs::kImageFormatCount) {
+    out.width = static_cast<int32_t>(facts.width);
+    out.height = static_cast<int32_t>(facts.height);
+    out.format = static_cast<int32_t>(facts.format);
+    out.mipmaps = facts.mipmaps;
+    out.known = true;
+  }
+  return out;
 }
 
 ImageCapture describe_image(const ImageFacts &facts, uint64_t rid, int64_t layer) {
@@ -2152,6 +2167,13 @@ rs::ShaderCopy copy_shader_code(const void *code_ptr, rs::PayloadPtr *payload_ou
 thread_local bool t_internal = false;
 // Capture is dlopen'd: avoid __tls_get_addr per hook using a few bytes of glibc's static TLS surplus.
 thread_local bool t_offmain_standby __attribute__((tls_model("initial-exec"))) = false;
+thread_local bool t_reload_scope __attribute__((tls_model("initial-exec"))) = false;
+// Only the main thread inside the reload scope reads or writes these temporary RIDs.
+uint64_t g_reload_temps[4] = {};
+std::size_t g_reload_temp_count = 0;
+uint64_t g_reload_creates = 0;
+uint64_t g_reload_frees = 0;
+uint64_t g_reload_extra = 0;
 thread_local unsigned t_test_counted_depth __attribute__((tls_model("initial-exec"))) = 0;
 std::atomic<uint64_t> g_test_uncounted_accesses{0};
 std::atomic<uint64_t> g_test_held_free{0};
@@ -2176,6 +2198,18 @@ std::atomic<std::uint64_t> g_internal_any{0};
 bool internal_work() {
   return g_internal_any.load(std::memory_order_relaxed) != 0 && t_internal;
 }
+bool reload_work() {
+  return g_internal_any.load(std::memory_order_relaxed) != 0 && t_reload_scope;
+}
+
+// Call only after checking t_reload_scope: the temporary set belongs to the main thread.
+bool reload_temp(uint64_t rid) {
+  for (std::size_t i = 0; i < g_reload_temp_count; ++i) {
+    if (g_reload_temps[i] == rid) return true;
+  }
+  return false;
+}
+
 thread_local std::string *t_internal_code = nullptr;
 thread_local uint64_t *t_internal_rid = nullptr;
 
@@ -2369,9 +2403,9 @@ void hook_add_polygon(void *self, RID item, const Vector<Point2> *points,
 //
 // The engine calls texture_set_path(rid, "res://...") right after texture_2d_create on the loading
 // thread (compressed_texture.cpp:91-96, :158-161), so the path of a texture is known to the hook.
-// The hook keeps, under GRC_TEXTURE_CACHE_DIR (the cache is what uses it; LS1 plans it always), the
-// path per texture, and reports it with the texture's D7 source key and cache outcome in
-// evidence/texture-cache.json, and every call in counters.json `captured.texture_set_path`.
+// The registry holds the engine String without decoding it on the loading thread. Under
+// GRC_TEXTURE_CACHE_DIR the arm also records decoded calls for texture-cache.json and
+// counters.json `captured.texture_set_path`.
 
 struct CacheNote {
   rs::PayloadCopy copy;
@@ -2380,7 +2414,6 @@ struct CacheNote {
 
 std::mutex g_cache_mutex;
 std::map<uint64_t, CacheNote> g_cache_notes;
-std::map<uint64_t, std::string> g_texture_paths;  // the last path set per texture
 std::vector<std::pair<uint64_t, std::string>> g_set_path_calls;
 
 // Keeps only the small facts the evidence needs: the payload bytes (the block variant's, the
@@ -2425,19 +2458,24 @@ void note_cache_texture(uint64_t id, const rs::PayloadCopy &copy, const rs::Text
   }
 }
 
-// the hook is planned always now (a standby slot that records the
-// path in the registry). The path notes are kept only under GRC_TEXTURE_CACHE_DIR, as before:
-// without a cache directory the hook counts the call and forwards it.
+// The hook records paths in the registry in standby too. Decoded evidence notes are kept only
+// under GRC_TEXTURE_CACHE_DIR.
 bool g_path_hook_records = false;
 
 void hook_texture_set_path(void *self, RID texture, const void *path) {
   OffmainGuard inflight;
 
+  if (reload_work() && reload_temp(texture.id)) {
+    original<FnTextureSetPath>(kTextureSetPath)(self, texture, path);
+    return;
+  }
   bump(kTextureSetPath);
+  if (rs::registry_on()) {
+    rs::registry_note_texture_path(texture.id, registry_held_string(path));
+  }
   if (g_path_hook_records) {
     const std::string text = rs::decode_string(path);
     std::lock_guard<std::mutex> lock(g_cache_mutex);
-    g_texture_paths[texture.id] = text;
     if (!inflight.standby() && g_set_path_calls.size() < kMaxTextures) {
       g_set_path_calls.emplace_back(texture.id, text);
     }
@@ -2448,6 +2486,16 @@ void hook_texture_set_path(void *self, RID texture, const void *path) {
 RID hook_texture_2d_create(void *self, const Ref *image) {
   OffmainGuard inflight(true, "texture-create");
 
+  if (reload_work()) {
+    const RID result = original<FnTexture2dCreate>(kTexture2dCreate)(self, image);
+    if (g_reload_temp_count < 4) {
+      g_reload_temps[g_reload_temp_count++] = result.id;
+    } else {
+      ++g_reload_extra;
+    }
+    ++g_reload_creates;
+    return result;
+  }
   bump(kTexture2dCreate);
   const uint64_t t_hook = now_ns();
   // D3: the bytes are copied and hashed here, on the calling thread, before the
@@ -2455,13 +2503,13 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
   // whatever the Image then holds). G8kw: or, under GRC_TEXTURE_WORKERS=<N>, a copy-on-write
   // duplicate taken here is copied and hashed by a worker.
   // LS0: `logging` and `htr` are each read once, ahead of the image facts. The five engine getters
-  // behind the facts run only for a consumer: the validation log, the resource log or HTR.
+  // behind the facts run only for a consumer: validation, resource logging, HTR or the registry.
   const bool logging = log_active();
   const uint32_t release_flags = rs::texture_release_flags();
   const bool standby = t_offmain_standby;  // one initial-exec TLS read for both hot-line inputs
   const uint32_t htr = rs::texture_release_admitted_bits(release_flags, standby);
   const ImageFacts facts =
-      (g_validation_logs || logging || htr != 0) ? read_image(image) : ImageFacts();
+      (g_validation_logs || logging || htr != 0 || rs::registry_on()) ? read_image(image) : ImageFacts();
   ImageCapture capture = describe_image(facts, 0, -1);
   rs::PayloadPtr bytes;
   rs::TextureJobPtr job;
@@ -2529,7 +2577,9 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
   rs::code_at_rest(&bytes);
   rs::code_at_rest(&copy.block_bytes);
   bool unheld = forwarded != image;  // until the mirror takes it
-  registry_create(result.id, rs::RegistryKind::Texture2d);
+  if (rs::registry_on()) {
+    rs::registry_note_texture_create(result.id, to_registry_facts(facts), forwarded != image);
+  }
   capture.rid = result.id;
   if (g_validation_logs) {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -2624,9 +2674,16 @@ void hook_free(void *self, RID rid) {
   if (g_test_admission_delay_ms.load(std::memory_order_relaxed) != 0 && inflight.counted())
     g_test_held_free.store(rid.id, std::memory_order_relaxed);
 
-  if (internal_work()) {  // G8m (D4): the temporary Shader's RID
-    original<FnFree>(kFree)(self, rid);
-    return;
+  if (g_internal_any.load(std::memory_order_relaxed) != 0) {
+    if (t_internal) {  // the capture's temporary Shader
+      original<FnFree>(kFree)(self, rid);
+      return;
+    }
+    if (t_reload_scope && reload_temp(rid.id)) {
+      ++g_reload_frees;
+      original<FnFree>(kFree)(self, rid);
+      return;
+    }
   }
   bump(kFree);
   log_entry(&g_frees, rids(rid.id));
@@ -5886,6 +5943,25 @@ bool hooks_adopt_mesh(uint64_t rid, const std::vector<rs::AdoptSurface> &surface
 
 // --- Adoption (rs_adopt.h): pre-arm shaders and materials ---------
 
+bool hooks_reload_scope_begin() {
+  if (std::this_thread::get_id() != g_main_thread || t_internal || t_reload_scope) return false;
+  for (auto &rid : g_reload_temps) rid = 0;
+  g_reload_temp_count = 0;
+  g_reload_creates = 0;
+  g_reload_frees = 0;
+  g_reload_extra = 0;
+  g_internal_any.fetch_add(1, std::memory_order_relaxed);
+  t_reload_scope = true;
+  return true;
+}
+
+void hooks_reload_scope_end(ReloadScopeCounts *out) {
+  if (!t_reload_scope) return;
+  t_reload_scope = false;
+  g_internal_any.fetch_sub(1, std::memory_order_relaxed);
+  if (out != nullptr) *out = {g_reload_creates, g_reload_frees, g_reload_extra};
+}
+
 void hooks_internal_begin(std::string *code_out, uint64_t *rid_out) {
   if (!t_internal) g_internal_any.fetch_add(1, std::memory_order_relaxed);
   t_internal = true;
@@ -6235,7 +6311,7 @@ std::size_t hooks_release_arm() {
     meshes.swap(g_mesh_buffers);
   }
   {
-    // The arm's cache notes; g_texture_paths stays (LS4 moves it into the registry).
+    // Release the arm's cache evidence notes.
     std::lock_guard<std::mutex> lock(g_cache_mutex);
     std::map<uint64_t, CacheNote>().swap(g_cache_notes);
     g_cache_pending.clear();
@@ -6264,7 +6340,6 @@ void hooks_set_test_inflight_delay_ms(uint32_t ms, bool materialize, bool admiss
 void hooks_reset_texture_cache_notes() {
   std::lock_guard<std::mutex> lock(g_cache_mutex);
   g_cache_notes.clear();
-  g_texture_paths.clear();
   g_set_path_calls.clear();
   g_cache_pending.clear();
 }
@@ -6283,8 +6358,9 @@ std::string hooks_texture_cache_json() {
       const std::string outcome = kv.second.job != nullptr ? std::string("pending") : copy.cache_outcome;
       json.object_begin();
       json.field("id", std::to_string(kv.first));
-      const auto path = g_texture_paths.find(kv.first);
-      if (path != g_texture_paths.end()) {
+      const auto path = std::find_if(g_set_path_calls.rbegin(), g_set_path_calls.rend(),
+                                     [&](const auto &call) { return call.first == kv.first; });
+      if (path != g_set_path_calls.rend()) {
         json.field("path", path->second);
       } else {
         json.field_null("path");

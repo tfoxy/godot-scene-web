@@ -22,6 +22,8 @@
 #include "rs_mirror.h"
 #include "rs_resource_log.h"
 #include "rs_shader_payload.h"
+#include "rs_texture_payload.h"
+#include "rs_texture_worker.h"
 
 namespace {
 
@@ -383,6 +385,9 @@ struct CanvasTextureHookCall {
 std::vector<CanvasTextureHookCall> g_ctex_hook_calls;
 std::vector<uint64_t> g_multimesh_hook_calls;
 bool g_test_standby = false;
+bool g_reload_scope_allowed = false;
+bool g_reload_adopt = false;
+void *g_reload_adopt_image = nullptr;
 int g_guard_entries = 0;
 // LAR2: what the multimesh hook was handed (the buffer by size).
 struct MultimeshHookCall {
@@ -403,7 +408,13 @@ OffmainGuard::OffmainGuard(bool, const char *) { ++g_guard_entries; }
 OffmainGuard::~OffmainGuard() {}
 bool hooks_offmain_standby() { return g_test_standby; }
 bool hooks_test_inflight_delay(std::unique_lock<std::mutex> *) { return true; }
-bool hooks_adopt_texture(uint64_t, void *, rs2::AdoptedContent, const char *, bool *) {
+bool hooks_reload_scope_begin() { return g_reload_scope_allowed; }
+void hooks_reload_scope_end(ReloadScopeCounts *out) { *out = {1, 1, 0}; }
+bool hooks_adopt_texture(uint64_t, void *image, rs2::AdoptedContent content, const char *source, bool *) {
+  if (g_reload_adopt && content == rs2::AdoptedContent::Current && std::string(source) == "reload") {
+    g_reload_adopt_image = image;
+    return true;
+  }
   return false;
 }
 bool hooks_adopt_mesh(uint64_t, const std::vector<rs::AdoptSurface> &, const float[6]) {
@@ -655,6 +666,13 @@ void test_adopt_fault_parse() {
             f == grc::rs::AdoptFault::RegistryQueueDrop &&
             std::string(grc::rs::adopt_fault_name(f)) == "registry-queue-drop",
         "fault: registry-queue-drop (LAR6)");
+  for (const char *name : {"reload-off", "reload-skip-verify", "skip-htr-restore"}) {
+    check(grc::rs::parse_adopt_fault(name, true, &f, &error), "reload fault: accepted");
+    check(std::string(grc::rs::adopt_fault_name(f)) == name, "reload fault: name round trip");
+    check(!grc::rs::parse_adopt_fault(name, false, &f, &error) &&
+              error.find("set GRC_ADOPT=arm") != std::string::npos,
+          "reload fault: requires adoption");
+  }
   // Lazy adoption is off until a stream begins it; every entry point is then a no-op.
   check(!grc::rs::adopt_resources_active(), "lazy: inactive by default");
   grc::rs::materialize(0x50, grc::rs::RefKind::Texture);
@@ -1432,6 +1450,267 @@ void test_particles_from_registry() {
   grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
 }
 
+void test_htr_restore() {
+  auto &w = fake::world();
+  const auto saved = grc::g_iface;
+  static std::vector<uint8_t> packed;
+  grc::g_iface.variant_get_ptr_constructor = [](GDExtensionVariantType, int32_t) -> GDExtensionPtrConstructor {
+    return +[](GDExtensionUninitializedTypePtr, const GDExtensionConstTypePtr *) {};
+  };
+  grc::g_iface.variant_get_ptr_builtin_method = [](GDExtensionVariantType, GDExtensionConstStringNamePtr,
+                                                  GDExtensionInt) -> GDExtensionPtrBuiltInMethod {
+    return +[](GDExtensionTypePtr, const GDExtensionConstTypePtr *args, GDExtensionTypePtr ret, int) {
+      packed.resize(*static_cast<const int64_t *>(args[0]));
+      fake::put_int(ret, 0);
+    };
+  };
+  grc::g_iface.get_proc_address = [](const char *) -> GDExtensionInterfaceFunctionPtr {
+    return reinterpret_cast<GDExtensionInterfaceFunctionPtr>(
+        +[](GDExtensionTypePtr, GDExtensionInt i) -> uint8_t * { return packed.data() + i; });
+  };
+  grc::g_iface.string_to_utf8_chars = [](GDExtensionConstStringPtr str, char *out, GDExtensionInt n) -> GDExtensionInt {
+    const auto &text = *static_cast<const std::string *>(str);
+    if (out) std::memcpy(out, text.data(), std::min<size_t>(n, text.size()));
+    return text.size();
+  };
+  // main body, block variant, missing source, mismatched source, existing image, failed write,
+  // fault, shutdown, non-dummy, valid path, invalid path, null image, coded source, wrong format,
+  // finished job's main body, finished job's block variant, mispredicted finished job.
+  for (int action = 0; action < 17; ++action) {
+    constexpr uint64_t rid = 0xabcd9876;
+    grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
+    grc::rs::registry_note_texture_create(rid, {64, 64, 17, false, true}, true);
+    if (action == 9 || action == 10) grc::rs::registry_note_texture_path(
+        rid, std::make_shared<const std::string>(action == 9 ? "res://ok.ctex" : "res://scene::image"));
+    auto &image = w.make({"Object", "Image"});
+    w.singletons["RenderingServer"] = &w.make({"Object", "RenderingServer"});
+    int64_t size = action == 4 ? 32 : 1, format = action == 4 ? 17 : 0;
+    int writes = 0, reads = 0;
+    w.overrides["RenderingServer.texture_2d_get"] = [&](fake::Object *, FakeArgs args, void *ret) {
+      ++reads;
+      check(fake::arg_u64(args, 0) == rid, "restore: getter names original texture");
+      fake::put_object(ret, action == 11 ? nullptr : &image);
+    };
+    w.overrides["Image.get_width"] = [&](fake::Object *, FakeArgs, void *ret) { fake::put_int(ret, size); };
+    w.overrides["Image.get_height"] = w.overrides["Image.get_width"];
+    w.overrides["Image.get_format"] = [&](fake::Object *, FakeArgs, void *ret) { fake::put_int(ret, format); };
+    w.overrides["Image.has_mipmaps"] = [](fake::Object *, FakeArgs, void *ret) { *static_cast<uint8_t *>(ret) = 0; };
+    w.overrides["Image.set_data"] = [&](fake::Object *obj, FakeArgs args, void *) {
+      ++writes;
+      check(obj == &image && fake::arg_u64(args, 0) == 64 && fake::arg_u64(args, 1) == 64 &&
+            *static_cast<const uint8_t *>(args[2]) == 0 && fake::arg_u64(args, 3) == 17,
+            "restore: Image.set_data uses original image and typed shape arguments");
+      check(packed == std::vector<uint8_t>(2048, 0x5a), "restore: exact source bytes copied");
+      if (action != 5) { size = 64; format = 17; }
+    };
+    grc::rs::mirror_enable(false);
+    grc::rs::mirror_enable(true);
+    auto &mirror = grc::rs::mirror_instance();
+    grc::rs::PayloadCopy copy;
+    copy.status = "ok"; copy.format = 17; copy.width = 64; copy.height = 64;
+    copy.hash = std::string(64, 'a'); copy.data_bytes = 2048;
+    std::vector<uint8_t> data(2048, 0x5a);
+    auto body = std::make_shared<grc::rs::PayloadBytes>(grc::rs::encode_payload(
+        17, action == 3 ? 32 : 64, 64, false, data.data(), data.size()));
+    grc::rs::PayloadPtr main = body;
+    if (action == 12) {
+      grc::rs::set_rest_config({grc::rs::RestCoding::Zstd, false});
+      grc::rs::code_at_rest(&main);
+      check(main->rest == grc::rs::RestCoding::Zstd, "restore: test source is coded at rest");
+      grc::rs::reset_rest_stats();
+    }
+    if (action == 13) copy.format = 5;
+    if (action == 1) { copy.format = 5; copy.block_format = "DXT1"; copy.block_bytes = body; main.reset(); }
+    if (action >= 14) {
+      if (action == 15) copy.format = 5;
+      auto job = std::make_shared<grc::rs::TextureJob>(copy);
+      mirror.texture_2d_create(rid, copy, nullptr, 0, job);
+      auto actual = copy;
+      if (action == 15) {
+        actual.block_format = "DXT1";
+        actual.block_bytes = body;
+        std::vector<uint8_t> rgba(64 * 64 * 4, 0x7f);
+        main = std::make_shared<grc::rs::PayloadBytes>(grc::rs::encode_payload(
+            5, 64, 64, false, rgba.data(), rgba.size()));
+      }
+      if (action == 16) actual.width = 32;
+      job->finish(actual, main);
+      check(job->done() && job->mispredict() == (action == 16),
+            "restore: finished job has expected prediction status before any settle");
+    } else if (action != 2) mirror.texture_2d_create(rid, copy, main, 0);
+    grc::rs::adopt_resources_begin(grc::rs::AdoptFault::None, action != 8);
+    const auto stats = grc::rs::adopt_htr_restore(
+        action == 6 ? grc::rs::AdoptFault::SkipHtrRestore : grc::rs::AdoptFault::None, action == 7);
+    const bool restored = action == 0 || action == 1 || action == 10 || action == 12 ||
+                          action == 14 || action == 15;
+    check(stats.candidates == (action == 9 ? 0u : 1u), "restore: only released non-reloadable paths qualify");
+    check(stats.restored == (restored ? 1u : 0u), "restore: source restored only after verified write");
+    check(stats.unavailable == (action == 2 || action == 11 || action == 13 || action == 16 ? 1u : 0u), "restore: unavailable body/image counted");
+    check(stats.mismatch == (action == 3 || action == 5 ? 1u : 0u), "restore: source and read-back mismatch counted");
+    check(stats.not_placeholder == (action == 4 ? 1u : 0u), "restore: existing non-placeholder untouched");
+    check(stats.skipped_fault == (action == 6 ? 1u : 0u) && stats.skipped_shutdown == (action == 7 ? 1u : 0u),
+          "restore: fault and shutdown candidates counted");
+    check(reads == (restored || action == 4 || action == 5 || action == 11 ? 1 : 0),
+          "restore: no engine getter on skipped or invalid source");
+    check(writes == (restored || action == 5 ? 1 : 0), "restore: no overwrite outside placeholder");
+    if (action == 12) check(grc::rs::rest_stats().inflate[
+        static_cast<size_t>(grc::rs::InflateSite::Restore)].count == 1 &&
+        std::string(grc::rs::inflate_site_name(grc::rs::InflateSite::Restore)) == "restore",
+        "restore: coded source inflates at the restore site");
+    grc::rs::RegistryTextureRecord record;
+    check(grc::rs::registry_texture(rid, &record) && record.released == !restored,
+          "restore: clears released only after successful read-back");
+    grc::rs::adopt_resources_end(); grc::rs::adopt_release(); w.reset_calls();
+  }
+  grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
+  check(grc::rs::adopt_htr_restore(grc::rs::AdoptFault::None).skipped == "registry-off",
+        "restore: registry-off skips without engine calls");
+  grc::rs::set_rest_config({});
+  grc::g_iface = saved;
+}
+
+void test_reload_sources() {
+  auto &w = fake::world();
+  const auto saved = grc::g_iface;
+  grc::g_iface.variant_get_ptr_constructor = [](GDExtensionVariantType, int32_t) -> GDExtensionPtrConstructor {
+    return +[](GDExtensionUninitializedTypePtr, const GDExtensionConstTypePtr *) {};
+  };
+  grc::g_iface.variant_get_ptr_builtin_method = [](GDExtensionVariantType, GDExtensionConstStringNamePtr,
+                                                  GDExtensionInt) -> GDExtensionPtrBuiltInMethod {
+    return +[](GDExtensionTypePtr, const GDExtensionConstTypePtr *, GDExtensionTypePtr, int) {};
+  };
+  grc::g_iface.get_proc_address = [](const char *) -> GDExtensionInterfaceFunctionPtr {
+    return reinterpret_cast<GDExtensionInterfaceFunctionPtr>(+[]() {});
+  };
+  grc::g_iface.string_to_utf8_chars = [](GDExtensionConstStringPtr str, char *out, GDExtensionInt n) -> GDExtensionInt {
+    const auto &text = *static_cast<const std::string *>(str);
+    if (out) std::memcpy(out, text.data(), std::min<size_t>(n, text.size()));
+    return text.size();
+  };
+  for (int action = 0; action < 5; ++action) {
+    constexpr uint64_t rid = 0xabcd1234, temp = 0xabcd1235;
+    grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
+    grc::rs::registry_note_texture_create(rid, {64, 64, 17, false, true}, true);
+    auto path = std::make_shared<const std::string>("res://source.ctex");
+    grc::rs::registry_note_texture_path(rid, path);
+    auto &image = w.make({"Object", "Image"});
+    auto &resource = w.make({"Object", "Resource", "CompressedTexture2D"}, temp);
+    w.singletons["ResourceLoader"] = &w.make({"Object", "ResourceLoader"});
+    w.singletons["RenderingServer"] = &w.make({"Object", "RenderingServer"});
+    w.overrides["ResourceLoader.load"] = [&](fake::Object *, FakeArgs args, void *ret) {
+      check(args[0] == path.get() && fake::arg_u64(args, 2) == 0, "reload: held String and ignore-cache mode");
+      fake::put_object(ret, &resource);
+    };
+    w.overrides["RenderingServer.texture_2d_get"] = [&](fake::Object *, FakeArgs args, void *ret) {
+      check(fake::arg_u64(args, 0) == temp, "reload: materialize consumes source without original getter");
+      fake::put_object(ret, &image);
+    };
+    w.overrides["Image.get_width"] = [](fake::Object *, FakeArgs, void *ret) { fake::put_int(ret, 64); };
+    w.overrides["Image.get_height"] = w.overrides["Image.get_width"];
+    w.overrides["Image.get_format"] = [](fake::Object *, FakeArgs, void *ret) { fake::put_int(ret, 17); };
+    w.overrides["Image.has_mipmaps"] = [](fake::Object *, FakeArgs, void *ret) { *static_cast<uint8_t *>(ret) = 0; };
+    grc::rs::mirror_enable(false);
+    grc::rs::mirror_enable(true);
+    grc::rs::adopt_resources_begin(grc::rs::AdoptFault::None, true);
+    g_reload_scope_allowed = true;
+    const auto stats = grc::rs::adopt_reload_at_arm();
+    check(stats.reloaded == 1 && stats.held_bytes == 2048 && stats.refused.total() == 0 &&
+              stats.temp_outlived == 0 && grc::rs::adopt_reload_sources_held() == 1,
+          "reload: verified source retained with compressed byte accounting");
+    if (action == 0) {
+      g_reload_adopt = true;
+      grc::rs::materialize(rid, grc::rs::RefKind::Texture);
+      check(g_reload_adopt_image == &image && grc::rs::adopt_resource_stats().textures_reload == 1,
+            "reload: original held Image adopted as current");
+      check(grc::rs::adopt_reload_json(1, 1).find("\"adopted\": true") != std::string::npos,
+            "reload: source entry marked adopted");
+      g_reload_adopt = false;
+    } else if (action == 1) {
+      grc::rs::adopt_resource_freed(rid);
+      grc::rs::adopt_resource_freed(rid);
+      grc::rs::adopt_reload_finish();
+      check(grc::rs::adopt_reload_json(1, 1).find("\"dropped_freed\": 1") != std::string::npos,
+            "reload: free counts a dropped source exactly once");
+    } else if (action == 2) {
+      const auto final = grc::rs::adopt_reload_finish();
+      check(final.final && final.dropped_unreferenced == 1, "reload: finish counts unreferenced source");
+    } else if (action == 3) grc::rs::adopt_release();
+    else {
+      g_reload_adopt = false;
+      grc::rs::materialize(rid, grc::rs::RefKind::Texture);
+      const auto final = grc::rs::adopt_reload_finish();
+      check(final.adopted_from_reload == 0 && final.dropped_unreferenced == 1 &&
+                final.sources_balanced && grc::rs::adopt_reload_sources_held() == 0,
+            "reload: declined adoption drops unused source and preserves conservation");
+      check(grc::rs::adopt_resource_stats().textures_reload == 0 &&
+                grc::rs::adopt_reload_json(1, 1).find("\"adopted\": true") == std::string::npos,
+            "reload: declined adoption does not mark source adopted");
+    }
+    check(grc::rs::adopt_reload_sources_held() == 0, "reload: every consume/teardown path releases source");
+    grc::rs::adopt_reload_finish();
+    check(grc::rs::adopt_reload_json(1, 1).find("\"sources_balanced\": true") != std::string::npos,
+          "reload: adopted, unreferenced and freed sources balance at finish");
+    grc::rs::adopt_resources_end();
+    grc::rs::adopt_release();
+    w.reset_calls();
+  }
+  g_reload_scope_allowed = false;
+  grc::g_iface = saved;
+  grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
+}
+
+// A placeholder discovered after the arm pass must never be published as the original texture.
+void test_reload_materialize_guards() {
+  auto &w = fake::world();
+  const auto run = [&](bool registered, bool known, bool mipmaps, grc::rs::AdoptFault fault) {
+    constexpr uint64_t rid = 0xdead1234;
+    grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
+    if (registered) grc::rs::registry_note_texture_create(rid, {64, 64, 17, false, known}, false);
+    auto &image = w.make({"Object", "Image"});
+    std::vector<uint64_t> reads;
+    fake_rendering_server(&reads);
+    w.overrides["RenderingServer.texture_2d_get"] = [&image](fake::Object *, FakeArgs, void *ret) {
+      fake::put_object(ret, &image);
+    };
+    w.overrides["Image.get_width"] = [](fake::Object *, FakeArgs, void *ret) {
+      *static_cast<int64_t *>(ret) = 1;
+    };
+    w.overrides["Image.get_height"] = w.overrides["Image.get_width"];
+    w.overrides["Image.get_format"] = [](fake::Object *, FakeArgs, void *ret) {
+      *static_cast<int64_t *>(ret) = 0;
+    };
+    w.overrides["Image.has_mipmaps"] = [mipmaps](fake::Object *, FakeArgs, void *ret) {
+      *static_cast<uint8_t *>(ret) = mipmaps;
+    };
+    grc::rs::mirror_enable(false);
+    grc::rs::mirror_enable(true);
+    grc::rs::mirror_instance().set_root(kRootViewport, kRootCanvas, kIdentity);
+    grc::rs::adopt_resources_begin(fault, true);
+    grc::rs::materialize(rid, grc::rs::RefKind::Texture);
+    grc::rs::materialize(rid, grc::rs::RefKind::Texture);
+    const auto json = grc::rs::adopt_reload_json(1, 1);
+    const bool guarded = !mipmaps && fault != grc::rs::AdoptFault::ReloadOff && (!registered || known);
+    const auto stats = grc::rs::adopt_resource_stats();
+    check(stats.textures_refused == (guarded ? 1u : 0u), "reload guard: refuse once only when provable");
+    if (guarded) check(json.find(registered ? "evicted-mid-arm" : "evicted-unverifiable") != std::string::npos,
+                       "reload guard: typed refusal evidence");
+    grc::rs::adopt_resource_freed(rid);
+    if (guarded) check(grc::rs::adopt_resource_stats().refused_live == 0, "reload guard: free forgets refusal");
+    grc::rs::adopt_reload_finish();
+    grc::rs::adopt_resources_end();
+    grc::rs::adopt_release();
+    check(grc::rs::adopt_held() == 0, "reload guard: release clears evidence and sources");
+    w.reset_calls();
+  };
+  run(true, true, false, grc::rs::AdoptFault::None);
+  run(false, false, false, grc::rs::AdoptFault::None);
+  run(true, false, false, grc::rs::AdoptFault::None);
+  run(true, true, true, grc::rs::AdoptFault::None);
+  run(true, true, false, grc::rs::AdoptFault::ReloadOff);
+  run(false, false, false, grc::rs::AdoptFault::ReloadOff);
+  grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
+}
+
 void test_reentry_admission() {
   fake::install();
   auto &w = fake::world();
@@ -1520,6 +1799,9 @@ int main() {
   test_canvas_texture_registry_gating();
   test_refused_ppm_not_retried();
   test_particles_from_registry();
+  test_reload_materialize_guards();
+  test_reload_sources();
+  test_htr_restore();
   std::printf("rs_adopt_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

@@ -1057,6 +1057,8 @@ class Mirror {
   // TDR served-at-rest: every texture body the mirror holds (bytes, block variants, finished
   // jobs' bodies), each distinct body once across `seen`.
   void at_rest_census(RestCensus *out, std::unordered_set<const void *> *seen) const;
+  // Borrows the source-format body; the caller inflates and calls the engine after unlocking.
+  bool texture_source_body(std::uint64_t rid, int format, PayloadPtr *out) const;
 
   // The shadow oracle ( GRC_HC_SHADOW=1, a
   // test knob, never the product default): every snapshot is also built by the full walk the

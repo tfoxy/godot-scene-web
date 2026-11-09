@@ -62,6 +62,164 @@ bool identity_holds() {
 int main() {
   using namespace grc::rs;
 
+  // Texture records preserve creation facts independently of content edits and paths.
+  {
+    registry_configure(true, RegistryFault::None);
+    const RegistryTextureFacts facts{64, 32, 17, true, true};
+    RegistryTextureRecord rec;
+    registry_note_texture_create(11, facts, true);
+    expect(registry_texture(11, &rec) && rec.rid == 11 && rec.facts.known &&
+               rec.facts.width == 64 && rec.facts.height == 32 && rec.facts.format == 17 &&
+               rec.facts.mipmaps && rec.released && !rec.edited && !rec.updated && !rec.path,
+           "texture: fresh facts and released flag");
+    registry_frame(1);
+    int drops = 0;
+    auto path = [&drops]() -> RegistryValue {
+      return RegistryValue(new int(1), [&drops](const void *p) {
+        delete static_cast<const int *>(p);
+        ++drops;
+        (void)registry_stats();  // Must be outside the leaf lock.
+      });
+    };
+    registry_note_texture_path(11, path());
+    auto latest = path();
+    const void *latest_path = latest.get();
+    registry_note_texture_path(11, std::move(latest));
+    expect(drops == 1, "texture: last path wins, releases outside lock");
+    registry_note_texture_update(11);
+    registry_frame(2);
+    expect(registry_timeline(nullptr).size() == 1, "texture: payload changes have no timeline row");
+    expect(registry_texture(11, &rec) && rec.updated && rec.edited && rec.released && rec.path.get() == latest_path,
+           "texture: update keeps facts, path and release, sets edited and updated");
+    rec = {};
+    expect(registry_texture_set_released(11, false) && registry_texture(11, &rec) &&
+               !rec.released && rec.edited && rec.path,
+           "texture: release toggle preserves other fields");
+    rec = {};
+    registry_note_texture_create(11, facts, false);
+    expect(drops == 2 && registry_texture(11, &rec) && !rec.released && !rec.edited &&
+               !rec.updated && !rec.path && rec.facts.known,
+           "texture: recreate resets flags and drops path");
+    registry_note_texture_path(11, path());
+    registry_note_create(11, RegistryKind::TexturePlaceholder);
+    expect(drops == 3 && registry_texture(11, &rec) && !rec.facts.known && !rec.path,
+           "texture: placeholder recreate clears facts and path");
+    registry_note_texture_path(11, path());
+    registry_note_texture_create(12, facts, true);
+    registry_note_texture_update(12);
+    registry_note_texture_path(12, path());
+    registry_note_replace(11, 12);
+    expect(drops == 5 && !registry_texture(12, nullptr) && registry_texture(11, &rec) &&
+               rec.kind == RegistryKind::Texture2d && rec.released && rec.edited && rec.updated &&
+               rec.facts.known && rec.facts.mipmaps && !rec.path,
+           "texture: replace inherits source facts/flags but neither path");
+    registry_note_texture_create(12, {1, 1, 0, false, true}, false);
+    registry_note_replace(11, 12);
+    expect(registry_texture(11, &rec) && !rec.released && !rec.edited && rec.updated &&
+               rec.facts.width == 1 && rec.facts.format == 0 && !rec.facts.mipmaps,
+           "texture: replace clears destination flags absent from source");
+    registry_note_texture_path(11, path());
+    registry_note_replace(11, 11);
+    expect(drops == 5 && registry_stats().texture_paths == 1, "texture: self replace keeps path");
+    registry_note_free(11);
+    expect(drops == 6 && !registry_texture(11, nullptr) && registry_stats().texture_paths == 0,
+           "texture: free drops path outside lock");
+    registry_note_create(13, RegistryKind::Mesh);
+    registry_note_texture_path(13, path());
+    registry_note_texture_path(99, path());
+    expect(drops == 8 && !registry_texture(13, nullptr) &&
+               !registry_texture_set_released(13, true) && !registry_texture_set_released(99, true),
+           "texture: nontexture and unknown setters drop values and do nothing");
+    registry_note_texture_create(14, facts, false);
+    registry_note_texture_path(14, path());
+    registry_note_create(14, RegistryKind::Material);
+    expect(drops == 9 && !registry_texture(14, nullptr), "texture: other create drops path");
+    registry_note_texture_create(0, facts, true);
+    expect(registry_stats().family[fam(RegistryFamily::Texture)].null_creates == 1,
+           "texture: null creates counted");
+    expect(identity_holds(), "texture: mixed-create accounting identity");
+
+    registry_configure(true, RegistryFault::None, 1);
+    registry_note_texture_create(1, facts, true);
+    registry_note_texture_create(2, facts, true);
+    expect(!registry_texture(2, nullptr) && registry_stats().texture_facts == 1 &&
+               registry_stats().texture_released == 1 &&
+               registry_stats().family[fam(RegistryFamily::Texture)].overflow == 1,
+           "texture: overflow records neither facts nor released creates");
+    registry_note_texture_create(1, facts, false);
+    expect(identity_holds(), "texture: recreate at cap is recorded");
+
+    registry_configure(true, RegistryFault::KeepFreed);
+    registry_note_texture_create(1, facts, true);
+    registry_note_texture_path(1, path());
+    registry_note_free(1);
+    expect(registry_texture(1, &rec) && rec.path && rec.released &&
+               registry_stats().texture_paths == 1, "texture: KeepFreed keeps path and facts");
+    rec = {};
+    registry_configure(true, RegistryFault::None);
+    expect(drops == 10 && registry_stats().texture_paths == 0 &&
+               registry_stats().texture_path_bytes == 0 && registry_stats().texture_facts == 0 &&
+               registry_stats().texture_released == 0 && registry_stats().texture_path_sets == 0,
+           "texture: configure resets counters and releases paths outside lock");
+
+    for (const RegistryTextureFacts bad : {
+             RegistryTextureFacts{0, 1, 0, false, true}, {1, 0, 0, false, true},
+             {65536, 1, 0, false, true}, {1, 65536, 0, false, true},
+             {1, 1, -1, false, true}, {1, 1, 39, false, true}, {1, 1, 0, false, false}}) {
+      registry_note_texture_create(1, bad, true);
+      expect(registry_texture(1, &rec) && !rec.facts.known && rec.released,
+             "texture: invalid/unknown facts stay unknown, release is independent");
+    }
+    registry_note_texture_create(1, {65535, 65535, 38, true, true}, false);
+    expect(registry_texture(1, &rec) && rec.facts.known && rec.facts.width == 65535 &&
+               rec.facts.height == 65535 && rec.facts.format == 38, "texture: fact bounds inclusive");
+
+    registry_configure(true, RegistryFault::None);
+    registry_note_texture_create(1, facts, true);
+    registry_note_create(2, RegistryKind::Mesh);
+    registry_note_create(3, RegistryKind::TexturePlaceholder);
+    registry_note_texture_path(1, path());
+    registry_note_texture_path(3, path());
+    std::vector<RegistryTextureRecord> records(1);
+    registry_textures(&records);
+    // At capacity 64 the Fibonacci homes of 1 and 3 are 39 and 54.
+    expect(records.size() == 2 && records[0].rid == 1 && records[1].rid == 3 &&
+               records[0].facts.known && records[0].released && records[0].path &&
+               !records[1].facts.known && records[1].path,
+           "texture: scan replaces output in slot order, includes placeholders only");
+    const auto stats = registry_stats();
+    expect(stats.texture_facts == 1 && stats.texture_released == 1 && stats.texture_paths == 2 &&
+               stats.texture_path_sets == 2 && stats.texture_path_bytes == 64 * 24 &&
+               stats.bytes_estimate == 64 * 16 + stats.texture_path_bytes,
+           "texture: fact/path counters and side-map bytes");
+    const auto json = registry_json();
+    for (const char *field : {"texture_facts", "texture_released", "texture_paths",
+                              "texture_path_sets", "texture_path_bytes"}) {
+      expect(contains(json, std::string("\"") + field + "\":"), "texture: evidence field");
+    }
+    registry_configure(false, RegistryFault::None);
+    expect(drops == 10, "texture: scans retain shared paths after configure");
+    registry_textures(&records);
+    expect(drops == 12 && records.empty(), "texture: replacing scan output releases outside lock");
+
+    registry_configure(true, RegistryFault::None);
+    registry_note_texture_create(1, facts, true);
+    registry_note_texture_path(1, path());
+    registry_texture(1, &rec);
+    registry_note_free(1);
+    registry_note_create(2, RegistryKind::TexturePlaceholder);
+    expect(drops == 12 && registry_texture_set_released(2, true),
+           "texture: snapshot owns freed path, placeholder accepts released flag");
+    expect(registry_texture(2, &rec) && drops == 13 && rec.released && !rec.facts.known,
+           "texture: replacing a record releases previous path outside lock");
+    registry_note_texture_create(3, facts, true);
+    registry_note_texture_path(3, path());
+    registry_note_replace(99, 3);
+    expect(drops == 14 && !registry_texture(99, nullptr) && !registry_texture(3, nullptr),
+           "texture: replace into unknown RID erases source and its path");
+    expect(identity_holds(), "texture: source erased into unknown target preserves identity");
+  }
+
   // Kind -> family and names.
   expect(registry_family(RegistryKind::Texture2d) == RegistryFamily::Texture &&
              registry_family(RegistryKind::TexturePlaceholder) == RegistryFamily::Texture,

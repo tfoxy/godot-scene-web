@@ -140,6 +140,17 @@ bool hooks_adopt_texture(uint64_t rid, void *image_object, rs2::AdoptedContent c
 bool hooks_adopt_mesh(uint64_t rid, const std::vector<rs::AdoptSurface> &surfaces,
                       const float custom_aabb[6]);
 
+// A main-thread reload suppresses only its temporary textures' create, path and free calls.
+// Other RIDs retain their ordinary hook behavior. End only after a successful begin, after
+// releasing the temporary resource so its free remains inside the scope.
+struct ReloadScopeCounts {
+  uint64_t creates = 0;
+  uint64_t frees = 0;
+  uint64_t extra = 0;
+};
+bool hooks_reload_scope_begin();
+void hooks_reload_scope_end(ReloadScopeCounts *out);
+
 // Adoption (rs_adopt.h): pre-arm shaders and materials.
 // hooks_internal_begin/end bracket the capture's own temporary objects on this thread (the
 // reentrancy flag): shader_create_from_code writes the code it receives into `code_out` and the

@@ -10,8 +10,9 @@
 //
 // The interface is the subset of std::unordered_map the mirror uses -- find/end, count,
 // operator[], erase by key or by iterator, clear, size -- with `it->first` / `it->second`, so the
-// lookups read as before. It is never iterated: there is no begin(). An iterator (a pointer to
-// the slot) is valid until the next insertion or erasure, as with a rehashing unordered_map.
+// lookups read as before. It is iterated only by registry scans at an arm or a disarm. An iterator
+// (a pointer to the slot) is valid until the next insertion or erasure, as with a rehashing
+// unordered_map.
 // Not synchronised; the mirror holds its mutex around every use.
 #pragma once
 
@@ -53,6 +54,15 @@ class RidMap {
     }
   }
   std::size_t count(std::uint64_t key) const { return find(key) != nullptr ? 1 : 0; }
+
+  // The zero key first, then occupied slots in array order. The callback must not mutate the map.
+  template <typename Fn>
+  void for_each(Fn fn) const {
+    if (has_zero_) fn(zero_);
+    for (const value_type &slot : slots_) {
+      if (slot.first != 0) fn(slot);
+    }
+  }
 
   // Inserts a value-initialised V when `key` is absent.
   V &operator[](std::uint64_t key) {
@@ -143,7 +153,7 @@ class RidMap {
     const std::size_t capacity = slots_.empty() ? 64 : slots_.size() * 2;
     std::vector<value_type> old;
     old.swap(slots_);
-    slots_.assign(capacity, value_type(0, V()));
+    slots_.resize(capacity);
     mask_ = capacity - 1;
     unsigned bits = 0;
     while ((std::size_t{1} << bits) < capacity) {

@@ -1117,6 +1117,7 @@ std::string result_json() {
       json.field("resolve_scans", static_cast<int64_t>(rs::adopt_resolve_scans()));
       json.key("resources").object_begin();
       json.field("textures", static_cast<int64_t>(r.textures));
+      json.field("textures_reload", static_cast<int64_t>(r.textures_reload));
       json.field("textures_current", static_cast<int64_t>(r.textures_current));
       json.field("textures_creation", static_cast<int64_t>(r.textures_creation));
       json.field("textures_canvas", static_cast<int64_t>(r.textures_canvas));
@@ -3198,6 +3199,15 @@ void stream_start() {
             : sabotage.config.kind == rs2::SabotageKind::AdoptSkipParams
                   ? rs::AdoptMaterialSabotage::SkipParams
                   : rs::AdoptMaterialSabotage::None);
+    const auto reload = rs::adopt_reload_at_arm();
+    emit("reload.json", rs::adopt_reload_json(g_rearm.arm_index, adopt_config.arm_frame));
+    log_line("reload: candidates=" + std::to_string(reload.candidates.total()) +
+             " (released " + std::to_string(reload.candidates.released) + ", evicted " +
+             std::to_string(reload.candidates.evicted) + ", residual " +
+             std::to_string(reload.candidates.residual) + ") reloaded=" +
+             std::to_string(reload.reloaded) + " refused=" + std::to_string(reload.refused.total()) +
+             " released_no_path=" + std::to_string(reload.refused.released_no_path) +
+             " us=" + std::to_string(reload.reload_us));
     g_stream.adopt_stats = rs::adopt_at_arm(adopt_config);
     session.adoption.present = true;
     session.adoption.frame = static_cast<int32_t>(adopt_config.arm_frame);
@@ -4108,6 +4118,10 @@ bool stream_finish_main(rs2::EndReason reason) {
   encoders_finish();
   emit_at_rest();  // TDR: before anything below lets a body go
   rs::mirror_enable(false);
+  if (rs::adopt_resources_active()) {
+    rs::adopt_reload_finish();
+    emit("reload.json", rs::adopt_reload_json(g_rearm.arm_index, g_state.frames_total));
+  }
   rs::adopt_resources_end();  // G8r
   live_drain(g_state.frames_total);  // G2c2: GETs answered so far reach the hook log first
   resources_finish();
@@ -4803,7 +4817,11 @@ void api_arm_rollback(const std::string &reason) {
     // Startup can begin resource work before a sink opens; stream_finish only closes open streams.
     workers_finish();
     encoders_finish();
-    if (rs::adopt_resources_active()) rs::adopt_resources_end();
+    if (rs::adopt_resources_active()) {
+      rs::adopt_reload_finish();
+      emit("reload.json", rs::adopt_reload_json(g_rearm.arm_index, g_state.frames_total));
+      rs::adopt_resources_end();
+    }
     rs::mirror_enable(false);
   }
   // LS3: a failed arm is torn down as a disarm is (Q3), on the main thread: a carrier that did
@@ -5519,6 +5537,7 @@ void accounting_fields(JsonWriter *json) {
   json->field("publisher", g_stream.publisher != nullptr);
   json->field("resource_log_held", static_cast<int64_t>(rs::resource_log().held()));
   json->field("mesh_buffers", static_cast<int64_t>(hooks_mesh_buffers_held()));
+  json->field("reload_sources_held", static_cast<int64_t>(rs::adopt_reload_sources_held()));
   json->field("adopt_held", static_cast<int64_t>(rs::adopt_held()));
   json->key("item_meta").object_begin();
   json->field("host_held", static_cast<int64_t>(g_meta.host.held()));
@@ -5642,6 +5661,7 @@ void arm_release() {
   g_stream.store.reset();
   g_stream.writer.reset();
   g_stream.holdback = rs::HoldBack();
+  const auto htr_restore = rs::adopt_htr_restore(g_stream.adopt_fault, g_root_finalized);
   // Every off-main mirror write still in flight lands before the mirror goes.
   if (!rearm_fault("skip-mirror-reset")) {
     rs::mirror_release();
@@ -5688,6 +5708,16 @@ void arm_release() {
   json.integer(g_rearm.min_set[1]);
   json.array_end();
   json.field("restore", g_rearm.min_restore);
+  json.object_end();
+  json.key("htr_restore").object_begin();
+  json.field("candidates", static_cast<int64_t>(htr_restore.candidates));
+  json.field("restored", static_cast<int64_t>(htr_restore.restored));
+  json.field("unavailable", static_cast<int64_t>(htr_restore.unavailable));
+  json.field("mismatch", static_cast<int64_t>(htr_restore.mismatch));
+  json.field("not_placeholder", static_cast<int64_t>(htr_restore.not_placeholder));
+  json.field("skipped_fault", static_cast<int64_t>(htr_restore.skipped_fault));
+  json.field("skipped_shutdown", static_cast<int64_t>(htr_restore.skipped_shutdown));
+  json.field_or_null("skipped", htr_restore.skipped);
   json.object_end();
   accounting_fields(&json);
   json.object_end();

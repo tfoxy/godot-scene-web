@@ -69,6 +69,17 @@ var _drawers: Dictionary = {}
 ## Textures held so they stay alive (the undrawn hdr, the cost textures).
 var _held: Array[Texture2D] = []
 var _cost_queue: Array[Dictionary] = []
+var _step1_rows: String = "abcd"
+var _event_log_file: FileAccess
+var _idle_action_frame: int = 0
+var _idle_action_done: bool = false
+var _seen_armed: bool = false
+var _evict: bool = false
+var _mobile_textures: Dictionary = {}
+var _imagetexture: ImageTexture
+var _imagetexture_expected: Dictionary = {}
+var _ctex_dir: String = ""
+var _ctex_swap: bool = false
 
 
 func _ready() -> void:
@@ -94,6 +105,23 @@ func _ready() -> void:
 		var name: String = texture["name"]
 		_drawers[name] = _make_drawers(name, COLUMN_X0 + COLUMN_DX * column)
 		column += 1
+	if _ctex_dir != "":
+		_copy_ctex("opaque")
+	if OS.get_environment("RS_FIXTURE_IMAGETEXTURE") == "1":
+		var bytes := PackedByteArray()
+		bytes.resize(2048)
+		for i: int in range(256):
+			bytes.encode_u16(i * 8, 0xF800 ^ (i * 37 & 0xFFFF))
+			bytes.encode_u16(i * 8 + 2, 0x001F ^ (i * 91 & 0xFFFF))
+			bytes.encode_u32(i * 8 + 4, 0x1B1B1B1B ^ (i * 2654435761 & 0xFFFFFFFF))
+		var image: Image = Image.create_from_data(64, 64, false, Image.FORMAT_DXT1, bytes)
+		if image == null or image.is_empty():
+			_error("Image.create_from_data refused DXT1")
+			get_tree().quit(2)
+			return
+		_imagetexture_expected = _image_probe(image)
+		_imagetexture = ImageTexture.create_from_image(image)
+		_held.append(_imagetexture)
 	_apply_family("desktop")
 	_log_step(0, 1, _start_frame + SETTLE_OFFSET)
 	print("[fixture] gate8-tex ready: S=%d N=%d quit=%d source=%s" % [_start_frame, _step_frames, _quit_frame, _source])
@@ -121,6 +149,7 @@ func _process(_delta: float) -> void:
 		_current_step = apply_step
 		_apply_family("mobile")
 		_log_step(apply_step, _frame, _frame + SETTLE_OFFSET)
+	_maybe_idle_action()
 	var settle_step: int = _step_at(_frame, SETTLE_OFFSET)
 	if settle_step >= 0:
 		_maybe_take_shot("step-%d.png" % settle_step)
@@ -173,10 +202,15 @@ func _apply_family(family: String) -> void:
 			_held.append(made)
 			continue
 		var nodes: Array[Node] = _drawers[name]
-		(nodes[0] as Sprite2D).texture = made
-		(nodes[1] as Sprite2D).texture = made
-		(nodes[2] as NinePatchRect).texture = made
-		(nodes[3] as RegionNode).set_texture(made)
+		var a: Sprite2D = nodes[0]
+		var b: Sprite2D = nodes[1]
+		var c: NinePatchRect = nodes[2]
+		var d: RegionNode = nodes[3]
+		if family != "mobile" or _step1_rows == "abcd":
+			a.texture = made
+			b.texture = made
+		c.texture = made
+		d.set_texture(made)
 
 
 ## The texture of `texture` for `family`: the imported .ctex (ctex), or the oracle's decoded payload
@@ -190,6 +224,8 @@ func _load(texture: Dictionary, family: String) -> Texture2D:
 		return null
 	var key: String = v["key"]
 	var path: String = v["path"]
+	if _ctex_dir != "" and name == "opaque" and family == "desktop":
+		path = _ctex_dir.path_join("swap.ctex")
 	var used_family: String = "desktop" if key == "" else family
 	var made: Texture2D = null
 	var described: Dictionary = {}
@@ -203,7 +239,7 @@ func _load(texture: Dictionary, family: String) -> Texture2D:
 				made = ImageTexture.create_from_image(image)
 				described = {"format": Payload.format_name(image), "width": image.get_width(), "height": image.get_height(), "mipmaps": image.has_mipmaps()}
 	else:
-		var compressed := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE) as CompressedTexture2D
+		var compressed: CompressedTexture2D = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
 		made = compressed
 		if compressed != null:
 			# Headless (the dummy renderer) returns the image texture_2d_create was given;
@@ -211,6 +247,8 @@ func _load(texture: Dictionary, family: String) -> Texture2D:
 			var image: Image = compressed.get_image()
 			if image != null:
 				described = {"format": Payload.format_name(image), "width": image.get_width(), "height": image.get_height(), "mipmaps": image.has_mipmaps()}
+	if _evict and family == "mobile" and _current_step == 1 and made != null:
+		_mobile_textures[name] = made
 	_log_texture(name, family, key, path, described)
 	return made
 
@@ -225,6 +263,26 @@ func _step_at(frame: int, offset: int) -> int:
 
 
 func _read_environment() -> bool:
+	_step1_rows = OS.get_environment("RS_FIXTURE_STEP1_ROWS") if OS.has_environment("RS_FIXTURE_STEP1_ROWS") else "abcd"
+	if _step1_rows != "abcd" and _step1_rows != "cd":
+		_error("RS_FIXTURE_STEP1_ROWS must be abcd or cd")
+		return false
+	_evict = OS.get_environment("RS_FIXTURE_EVICT") == "1"
+	_ctex_swap = OS.get_environment("RS_FIXTURE_CTEX_SWAP") == "1"
+	_ctex_dir = _path_env("RS_FIXTURE_CTEX_DIR")
+	var event_log: String = _path_env("RS_FIXTURE_EVENT_LOG")
+	if _ctex_dir == "!" or event_log == "!":
+		return false
+	if _ctex_swap and _ctex_dir == "":
+		_error("RS_FIXTURE_CTEX_SWAP needs RS_FIXTURE_CTEX_DIR")
+		return false
+	if OS.has_environment("RS_FIXTURE_IDLE_ACTION_FRAME"):
+		_idle_action_frame = _int_env("RS_FIXTURE_IDLE_ACTION_FRAME", 0, 1)
+	if event_log != "":
+		_event_log_file = FileAccess.open(event_log, FileAccess.WRITE)
+		if _event_log_file == null:
+			_error("cannot open RS_FIXTURE_EVENT_LOG=%s" % event_log)
+			return false
 	if OS.has_environment("RS_FIXTURE_SOURCE"):
 		_source = OS.get_environment("RS_FIXTURE_SOURCE")
 		if _source != "ctex" and _source != "decoded":
@@ -262,6 +320,74 @@ func _read_environment() -> bool:
 			_error("cannot open RS_FIXTURE_TEXTURE_LOG=%s" % texture_log)
 			return false
 	return true
+
+
+func _event(line: Dictionary) -> void:
+	if _event_log_file != null:
+		_event_log_file.store_line(JSON.stringify(line, "", false))
+		_event_log_file.flush()
+
+
+func _image_probe(image: Image) -> Dictionary:
+	return {"format": image.get_format(), "width": image.get_width(), "height": image.get_height(),
+		"mipmaps": image.has_mipmaps(), "sha256": _sha256(image.get_data())}
+
+
+func _sha256(data: PackedByteArray) -> String:
+	var context := HashingContext.new()
+	context.start(HashingContext.HASH_SHA256)
+	context.update(data)
+	return context.finish().hex_encode()
+
+
+func _copy_ctex(name: String) -> void:
+	for texture: Dictionary in Textures.TEXTURES:
+		if texture["name"] != name:
+			continue
+		var variant: Dictionary = Textures.variant(texture, "desktop")
+		var path: String = variant["path"]
+		var dest: String = _ctex_dir.path_join("swap.ctex")
+		var file: FileAccess = FileAccess.open(dest, FileAccess.WRITE)
+		if file == null:
+			_error("cannot write " + dest)
+			_failed = true
+			get_tree().quit(2)
+			return
+		file.store_buffer(FileAccess.get_file_as_bytes(path))
+		file.close()
+		return
+
+
+func _maybe_idle_action() -> void:
+	if _idle_action_done:
+		return
+	var standby: bool = false
+	if _idle_action_frame == 0 and Engine.has_singleton("RenderStreamCapture"):
+		var capture: Object = Engine.get_singleton("RenderStreamCapture")
+		var state: Dictionary = capture.call("state")
+		var name: String = state["state"]
+		_seen_armed = _seen_armed or name == "armed"
+		standby = _seen_armed and name == "standby" and _frame > _start_frame + _step_frames
+	if not ((_idle_action_frame > 0 and _frame == _idle_action_frame) or standby):
+		return
+	_idle_action_done = true
+	_event({"event": "idle-action", "frame": _frame})
+	if _evict:
+		var names: Array[String] = []
+		for name: String in _mobile_textures:
+			var texture: Texture2D = _mobile_textures[name]
+			var image: Image = texture.get_image()
+			if image != null and image.is_compressed():
+				image.set_data(1, 1, false, Image.FORMAT_L8, PackedByteArray([0]))
+				names.append(name)
+		_event({"event": "evict", "frame": _frame, "textures": names, "count": names.size()})
+	if _imagetexture != null:
+		var image: Image = _imagetexture.get_image()
+		_event({"event": "imagetexture-probe", "frame": _frame, "expected": _imagetexture_expected,
+			"got": null if image == null else _image_probe(image)})
+	if _ctex_swap:
+		_copy_ctex("alpha_mip")
+		_event({"event": "ctex-swap", "frame": _frame, "from": "alpha_mip", "to": "opaque"})
 
 
 func _int_env(name: String, fallback: int, minimum: int) -> int:

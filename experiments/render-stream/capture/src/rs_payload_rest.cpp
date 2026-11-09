@@ -147,6 +147,8 @@ const char *inflate_site_name(InflateSite site) {
       return "basis";
     case InflateSite::Sabotage:
       return "sabotage";
+    case InflateSite::Restore:
+      return "restore";
     case InflateSite::kCount:
       break;
   }

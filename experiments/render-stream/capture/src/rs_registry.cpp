@@ -9,6 +9,7 @@
 
 #include "report.h"
 #include "rs_rid_map.h"
+#include "rs_texture_payload.h"
 
 namespace grc {
 namespace rs {
@@ -17,12 +18,18 @@ std::atomic<bool> g_registry_on{false};
 
 namespace {
 
+constexpr std::uint8_t kUpdated = 1, kReleased = 2, kEdited = 4, kFacts = 8,
+                       kMipmaps = 16, kHasPath = 32;
 struct Entry {
   RegistryKind kind = RegistryKind::Texture2d;
-  // LAR6 (design R2, R4): a texture's content changed since its create (texture_2d_update, or
-  // texture_replace moved another texture's data in). Clear: the getter's copy is the content.
-  bool updated = false;
+  std::uint8_t flags = 0;
+  std::uint8_t format = 0;
+  std::uint8_t reserved = 0;
+  std::uint16_t width = 0;
+  std::uint16_t height = 0;
 };
+static_assert(sizeof(Entry) == 8, "texture facts fit in the kind slot");
+static_assert(sizeof(RidMap<Entry>::value_type) == 16, "the registry slot is one quarter line");
 
 struct State {
   std::mutex mutex;  // leaf lock (rs_registry.h)
@@ -86,6 +93,11 @@ struct State {
   std::uint64_t row_generation = 0;
   std::vector<RegistryRow> timeline;
   std::uint64_t timeline_dropped = 0;
+  RidMap<RegistryValue> paths;
+  std::uint64_t path_capacity = 0;
+  std::uint64_t path_sets = 0;
+  std::uint64_t texture_facts = 0;
+  std::uint64_t texture_released = 0;
 };
 
 State &state() {
@@ -108,6 +120,29 @@ struct Dropped {
     }
   }
 };
+
+// Called only for a slot whose path bit was set: other resource families never access paths.
+void path_erase_locked(State &s, std::uint64_t rid, Dropped *dropped) {
+  const auto it = s.paths.find(rid);
+  if (it != s.paths.end()) {
+    dropped->values.push_back(std::move(it->second));
+    s.paths.erase(rid);
+  }
+}
+
+RegistryTextureRecord texture_record_locked(State &s, std::uint64_t rid, const Entry &entry) {
+  RegistryTextureRecord out;
+  out.rid = rid;
+  out.kind = entry.kind;
+  if (entry.flags & kFacts) {
+    out.facts = {entry.width, entry.height, entry.format, (entry.flags & kMipmaps) != 0, true};
+  }
+  out.released = (entry.flags & kReleased) != 0;
+  out.edited = (entry.flags & kEdited) != 0;
+  out.updated = (entry.flags & kUpdated) != 0;
+  if (entry.flags & kHasPath) out.path = s.paths.find(rid)->second;
+  return out;
+}
 
 std::size_t index(RegistryFamily family) { return static_cast<std::size_t>(family); }
 
@@ -316,9 +351,15 @@ void registry_configure(bool adopt, RegistryFault fault, std::size_t cap) {
   State &s = state();
   RidMap<RegistryShader> old_shaders;      // released after the lock (RegistryValue)
   RidMap<RegistryMaterial> old_materials;
+  RidMap<RegistryValue> old_paths;
   std::lock_guard<std::mutex> lock(s.mutex);
   std::swap(old_shaders, s.shader);
   std::swap(old_materials, s.material);
+  std::swap(old_paths, s.paths);
+  s.path_capacity = 0;
+  s.path_sets = 0;
+  s.texture_facts = 0;
+  s.texture_released = 0;
   s.shader_capacity = 0;
   s.shader_sets = 0;
   s.material_capacity = 0;
@@ -351,11 +392,52 @@ void registry_configure(bool adopt, RegistryFault fault, std::size_t cap) {
   g_registry_on.store(adopt && s.fault != RegistryFault::Off, std::memory_order_relaxed);
 }
 
+namespace {
+bool create_locked(State &s, std::uint64_t rid, Entry entry, Dropped *dropped) {
+  const RegistryKind kind = entry.kind;
+  const RegistryFamily family = registry_family(kind);
+  RegistryFamilyStats &f = s.family[index(family)];
+  if (rid == 0) {
+    ++f.null_creates;
+    return false;
+  }
+  const auto it = s.map.find(rid);
+  if (it != s.map.end()) {
+    // A value already present: the last create wins (R5), counted against the old family.
+    const RegistryFamily old = registry_family(it->second.kind);
+    ++s.family[index(old)].recreated;
+    remove_entry_locked(s, old);
+    if (it->second.flags & kHasPath) path_erase_locked(s, rid, dropped);
+    it->second = entry;
+    ++f.creates;
+    add_entry_locked(s, family);
+    if (old != family) {
+      payload_erase_locked(s, rid, old, dropped);
+    }
+    payload_create_locked(s, rid, kind, dropped);
+    changed_locked(s);
+    return true;
+  }
+  if (f.entries >= s.cap) {
+    ++f.overflow;  // its later references fall to the residual path (design Q3)
+    return false;
+  }
+  track_growth(s.map.size(), &s.capacity);
+  s.map[rid] = entry;
+  payload_create_locked(s, rid, kind, dropped);
+  ++f.creates;
+  add_entry_locked(s, family);
+  changed_locked(s);
+  return true;
+}
+
+}  // namespace
+
 void registry_note_create(std::uint64_t rid, RegistryKind kind) {
   State &s = state();
-  const RegistryFamily family = registry_family(kind);
-  Dropped dropped;  // released after the lock
+  Dropped dropped;
   std::lock_guard<std::mutex> lock(s.mutex);
+  const RegistryFamily family = registry_family(kind);
   RegistryFamilyStats &f = s.family[index(family)];
   if (rid == 0) {
     ++f.null_creates;
@@ -367,8 +449,8 @@ void registry_note_create(std::uint64_t rid, RegistryKind kind) {
     const RegistryFamily old = registry_family(it->second.kind);
     ++s.family[index(old)].recreated;
     remove_entry_locked(s, old);
-    it->second.kind = kind;
-    it->second.updated = false;
+    if (it->second.flags & kHasPath) path_erase_locked(s, rid, &dropped);
+    it->second = Entry{kind};
     ++f.creates;
     add_entry_locked(s, family);
     if (old != family) {
@@ -390,6 +472,85 @@ void registry_note_create(std::uint64_t rid, RegistryKind kind) {
   changed_locked(s);
 }
 
+void registry_note_texture_create(std::uint64_t rid, const RegistryTextureFacts &facts,
+                                  bool released) {
+  Entry entry;
+  if (released) entry.flags |= kReleased;
+  if (facts.known && facts.width >= 1 && facts.width <= 65535 &&
+      facts.height >= 1 && facts.height <= 65535 && facts.format >= 0 &&
+      facts.format < kImageFormatCount) {
+    entry.flags |= kFacts;
+    if (facts.mipmaps) entry.flags |= kMipmaps;
+    entry.width = static_cast<std::uint16_t>(facts.width);
+    entry.height = static_cast<std::uint16_t>(facts.height);
+    entry.format = static_cast<std::uint8_t>(facts.format);
+  }
+  State &s = state();
+  Dropped dropped;
+  std::lock_guard<std::mutex> lock(s.mutex);
+  if (create_locked(s, rid, entry, &dropped)) {
+    if (entry.flags & kFacts) ++s.texture_facts;
+    if (released) ++s.texture_released;
+  }
+}
+
+void registry_note_texture_path(std::uint64_t rid, RegistryValue path) {
+  State &s = state();
+  Dropped dropped;
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.map.find(rid);
+  if (it == s.map.end() || registry_family(it->second.kind) != RegistryFamily::Texture) return;
+  if (it->second.flags & kHasPath) {
+    auto &held = s.paths.find(rid)->second;
+    dropped.values.push_back(std::move(held));
+    held = std::move(path);
+  } else {
+    track_growth(s.paths.size(), &s.path_capacity);
+    s.paths[rid] = std::move(path);
+    it->second.flags |= kHasPath;
+  }
+  ++s.path_sets;
+}
+
+bool registry_texture_set_released(std::uint64_t rid, bool released) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.map.find(rid);
+  if (it == s.map.end() || registry_family(it->second.kind) != RegistryFamily::Texture) return false;
+  if (released) it->second.flags |= kReleased;
+  else it->second.flags &= ~kReleased;
+  return true;
+}
+
+bool registry_texture(std::uint64_t rid, RegistryTextureRecord *out) {
+  State &s = state();
+  RegistryTextureRecord record;
+  {
+    std::lock_guard<std::mutex> lock(s.mutex);
+    const auto it = s.map.find(rid);
+    if (it == s.map.end() || registry_family(it->second.kind) != RegistryFamily::Texture) return false;
+    if (out != nullptr) record = texture_record_locked(s, rid, it->second);
+  }
+  if (out != nullptr) *out = std::move(record);
+  return true;
+}
+
+void registry_textures(std::vector<RegistryTextureRecord> *out) {
+  if (out == nullptr) return;
+  State &s = state();
+  std::vector<RegistryTextureRecord> records;
+  {
+    std::lock_guard<std::mutex> lock(s.mutex);
+    records.reserve(s.family[index(RegistryFamily::Texture)].entries);
+    s.map.for_each([&](const auto &slot) {
+      if (registry_family(slot.second.kind) == RegistryFamily::Texture) {
+        records.push_back(texture_record_locked(s, slot.first, slot.second));
+      }
+    });
+  }
+  out->swap(records);  // Previous output references are released outside the lock too.
+}
+
 void registry_note_free(std::uint64_t rid) {
   State &s = state();
   Dropped dropped;  // released after the lock
@@ -401,6 +562,7 @@ void registry_note_free(std::uint64_t rid) {
   const RegistryFamily family = registry_family(it->second.kind);
   ++s.family[index(family)].frees;
   if (s.fault != RegistryFault::KeepFreed) {
+    if (it->second.flags & kHasPath) path_erase_locked(s, rid, &dropped);
     s.map.erase(rid);
     payload_erase_locked(s, rid, family, &dropped);
     remove_entry_locked(s, family);
@@ -409,12 +571,11 @@ void registry_note_free(std::uint64_t rid) {
 }
 
 void registry_note_replace(std::uint64_t texture, std::uint64_t by_texture) {
-  // texture_replace(a, b): the engine moves b's data into a and frees b inside the call, with no
-  // free of its own. a keeps its entry but takes b's kind (a placeholder replaced by a loaded
-  // texture -- STS2's threaded loads do this 253 times in pm7-a12-1 -- is a 2D texture from then
-  // on; LAR6 also gives it b's `updated` flag); b's entry goes. An unregistered a (pre-load) stays
-  // unregistered: it was never a recorded create.
+  // The engine moves b's data into a and frees b inside the call. a takes b's kind,
+  // creation facts, release and edit flags, with updated set and no path. An unregistered a
+  // stays unregistered: it was never a recorded create.
   State &s = state();
+  Dropped dropped;
   std::lock_guard<std::mutex> lock(s.mutex);
   if (by_texture == texture) {
     return;
@@ -426,11 +587,13 @@ void registry_note_replace(std::uint64_t texture, std::uint64_t by_texture) {
   const auto into = s.map.find(texture);
   if (into != s.map.end() && registry_family(into->second.kind) == RegistryFamily::Texture &&
       registry_family(it->second.kind) == RegistryFamily::Texture) {
-    into->second.kind = it->second.kind;
-    into->second.updated = true;  // LAR6 (R5): b's data is not a's creation copy
+    if (into->second.flags & kHasPath) path_erase_locked(s, texture, &dropped);
+    into->second = it->second;
+    into->second.flags = (it->second.flags & (kReleased | kEdited | kFacts | kMipmaps)) | kUpdated;
   }
   const RegistryFamily family = registry_family(it->second.kind);
   ++s.family[index(family)].replaced;
+  if (it->second.flags & kHasPath) path_erase_locked(s, by_texture, &dropped);
   s.map.erase(by_texture);
   remove_entry_locked(s, family);
   changed_locked(s);
@@ -447,7 +610,7 @@ bool registry_lookup(std::uint64_t rid, RegistryKind *kind, bool *updated) {
     *kind = it->second.kind;
   }
   if (updated != nullptr) {
-    *updated = it->second.updated;
+    *updated = (it->second.flags & kUpdated) != 0;
   }
   return true;
 }
@@ -457,7 +620,7 @@ void registry_note_texture_update(std::uint64_t rid) {
   std::lock_guard<std::mutex> lock(s.mutex);
   const auto it = s.map.find(rid);
   if (it != s.map.end() && registry_family(it->second.kind) == RegistryFamily::Texture) {
-    it->second.updated = true;  // a bit only (R5): no payload, no timeline row
+    it->second.flags |= kUpdated | kEdited;  // a bit only (R5): no payload, no timeline row
   }
 }
 
@@ -1018,6 +1181,11 @@ RegistryStats registry_stats() {
   }
   out.entries = s.entries;
   out.peak = s.peak;
+  out.texture_facts = s.texture_facts;
+  out.texture_released = s.texture_released;
+  out.texture_paths = s.paths.size();
+  out.texture_path_sets = s.path_sets;
+  out.texture_path_bytes = s.path_capacity * sizeof(RidMap<RegistryValue>::value_type);
   out.entry_bytes = static_cast<std::uint64_t>(s.map.size()) * kNodeBytes +
                     static_cast<std::uint64_t>(s.canvas.size()) * kCanvasNodeBytes +
                     static_cast<std::uint64_t>(s.multimesh.size()) * kMultimeshNodeBytes +
@@ -1025,7 +1193,8 @@ RegistryStats registry_stats() {
                     static_cast<std::uint64_t>(s.material.size()) * kMaterialNodeBytes +
                     s.material_params * kParamBytes +
                     static_cast<std::uint64_t>(s.particles.size()) * kParticlesNodeBytes +
-                    s.particles_elements * kParticlesElementBytes;
+                    s.particles_elements * kParticlesElementBytes +
+                    s.paths.size() * sizeof(RidMap<RegistryValue>::value_type);
   out.shader_payloads = s.shader.size();
   out.shader_payload_sets = s.shader_sets;
   out.shader_payload_bytes = s.shader_capacity * kShaderNodeBytes;
@@ -1047,7 +1216,7 @@ RegistryStats registry_stats() {
   // peak, not by the current entries).
   out.bytes_estimate = s.capacity * kNodeBytes + out.canvas_payload_bytes +
                        out.multimesh_payload_bytes + out.shader_payload_bytes +
-                       out.material_payload_bytes + out.particles_payload_bytes;
+                       out.material_payload_bytes + out.particles_payload_bytes + out.texture_path_bytes;
   return out;
 }
 
@@ -1076,6 +1245,11 @@ std::string registry_json() {
   json.key("bytes_estimate").unsigned_integer(stats.bytes_estimate);
   json.key("entry_bytes").unsigned_integer(stats.entry_bytes);
   json.key("node_bytes").unsigned_integer(kNodeBytes);
+  json.key("texture_facts").unsigned_integer(stats.texture_facts);
+  json.key("texture_released").unsigned_integer(stats.texture_released);
+  json.key("texture_paths").unsigned_integer(stats.texture_paths);
+  json.key("texture_path_sets").unsigned_integer(stats.texture_path_sets);
+  json.key("texture_path_bytes").unsigned_integer(stats.texture_path_bytes);
   json.key("families").object_begin();
   for (std::size_t i = 0; i < kRegistryFamilies; ++i) {
     const RegistryFamilyStats &f = stats.family[i];
@@ -1101,6 +1275,8 @@ std::string registry_json() {
                                      stats.material_params * kParamBytes
                            : static_cast<RegistryFamily>(i) == RegistryFamily::Particles
                                ? stats.particles_payloads * kParticlesNodeBytes
+                           : static_cast<RegistryFamily>(i) == RegistryFamily::Texture
+                               ? stats.texture_paths * sizeof(RidMap<RegistryValue>::value_type)
                                : 0));
     json.object_end();
   }

@@ -130,6 +130,7 @@ add_library(render_stream_capture SHARED
   src/rs_net_module.cpp
   src/rs_particles_shim.cpp
   src/rs_registry.cpp
+  src/rs_reload.cpp
   src/rs_gate8_policy.cpp
   src/rs_histogram.cpp
   src/rs_live.cpp
@@ -609,7 +610,7 @@ add_test(NAME rs_texture_worker COMMAND rs_texture_worker_test)
 # strict and skip; the configurable caps. The walk itself runs only inside Godot (run-gate8.sh g8a).
 # G8r: adopted textures and meshes equal created ones but for origin and adopted_content, the
 # refinement to current, the hook log's adopt lines, GRC_ADOPT_FAULT parsing.
-add_executable(rs_adopt_test test/rs_adopt_test.cpp src/rs_adopt.cpp src/iface.cpp
+add_executable(rs_adopt_test test/rs_adopt_test.cpp src/rs_adopt.cpp src/rs_reload.cpp src/iface.cpp
   src/rs_mirror.cpp src/rs_texture_delivery.cpp src/rs_shader_payload.cpp src/rs_texture_payload.cpp src/rs_mesh_payload.cpp
   src/rs_sha256.cpp src/rs2_diff.cpp src/rs_resource_log.cpp src/rs_texture_worker.cpp
   src/rs2_codec.cpp src/rs_variant.cpp src/rs_registry.cpp src/report.cpp)
@@ -678,6 +679,13 @@ add_executable(rs_registry_test test/rs_registry_test.cpp src/rs_registry.cpp sr
 target_include_directories(rs_registry_test PRIVATE src)
 target_link_libraries(rs_registry_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_registry COMMAND rs_registry_test)
+
+# Engine-free texture reload rules, GRT1 framing and reload/restore evidence.
+add_executable(rs_reload_test test/rs_reload_test.cpp src/rs_reload.cpp
+  src/rs_texture_payload.cpp src/rs_texture_delivery.cpp src/report.cpp)
+target_include_directories(rs_reload_test PRIVATE src)
+target_link_libraries(rs_reload_test PRIVATE grc_warnings Threads::Threads)
+add_test(NAME rs_reload COMMAND rs_reload_test)
 
 # the two shadow tables. rs_vtable_test builds both over a
 # polymorphic fake, checks which slots each replaces, the restore from either and the refusal of a

@@ -120,6 +120,11 @@ struct RegistryStats {
   // An estimate (design R3): the flat map's slot array (at most half full; it never shrinks, so it
   // follows the peak).
   std::uint64_t bytes_estimate = 0;
+  std::uint64_t texture_facts = 0;      // recorded texture creates with known facts
+  std::uint64_t texture_released = 0;   // recorded texture creates forwarded as placeholders
+  std::uint64_t texture_paths = 0;      // live paths
+  std::uint64_t texture_path_sets = 0;  // recorded path calls
+  std::uint64_t texture_path_bytes = 0; // path slot array (in bytes_estimate)
   std::uint64_t entry_bytes = 0;  // the per-entry part of bytes_estimate
   // LAR1: the CanvasTexture payload map (its own flat map; part of bytes_estimate).
   std::uint64_t canvas_payloads = 0;      // live RegistryCanvasTexture entries
@@ -171,8 +176,8 @@ void registry_note_replace(std::uint64_t texture, std::uint64_t by_texture);
 // LAR1+: the recorded kind of a live RID (false: not registered). LAR6: `updated` (optional) is
 // the texture family's "content changed since creation" bit (always false for other families).
 bool registry_lookup(std::uint64_t rid, RegistryKind *kind, bool *updated = nullptr);
-// LAR6 (design R2): the texture_2d_update hook; sets a registered texture's `updated` bit.
-// texture_replace(a, b) sets a's (registry_note_replace); a re-create clears it.
+// The texture_2d_update hook sets a registered texture's `updated` and `edited` bits.
+// texture_replace(a, b) sets updated and inherits edited from b; a re-create clears both.
 void registry_note_texture_update(std::uint64_t rid);
 
 // LAR1 (design R2): a CanvasTexture's payload -- the state RenderingServer has no getter for
@@ -244,13 +249,34 @@ void registry_note_multimesh_instance_edit(std::uint64_t rid);
 bool registry_multimesh(std::uint64_t rid, RegistryMultimesh *out);
 
 // LAR3 (design R2, R5): an engine value the hooks keep alive for the registry -- a copy of the
-// String the server was given as a shader's code, or of a material parameter's Variant (a String
-// copy is a reference-count increment; so is a Variant holding an array). Opaque here: the hooks
+// String the server was given as a texture path or shader code, or a material parameter's Variant
+// (a String copy is a reference-count increment; so is a Variant holding an array). Opaque here: the hooks
 // make it (hooks.cpp registry_held_string/registry_held_variant) and rs_adopt.cpp reads it; get()
 // is the engine object's address. The registry never destroys one under its lock (a Variant's
 // destructor may free an Object, whose free re-enters the hooks): a displaced or erased value is
 // moved out and released after the lock is dropped.
 using RegistryValue = std::shared_ptr<const void>;
+
+// Creation facts are known only when all Image getters succeeded, including the mipmap getter.
+struct RegistryTextureFacts {
+  std::int32_t width = 0, height = 0, format = -1;
+  bool mipmaps = false;
+  bool known = false;
+};
+struct RegistryTextureRecord {
+  std::uint64_t rid = 0;
+  RegistryKind kind = RegistryKind::Texture2d;
+  RegistryTextureFacts facts;
+  bool released = false, edited = false, updated = false;
+  RegistryValue path;
+};
+void registry_note_texture_create(std::uint64_t rid, const RegistryTextureFacts &facts, bool released);
+void registry_note_texture_path(std::uint64_t rid, RegistryValue path);
+bool registry_texture_set_released(std::uint64_t rid, bool released);
+bool registry_texture(std::uint64_t rid, RegistryTextureRecord *out);
+// Copies every texture-family record in slot order under the lock. The caller owns the copied
+// path references and releases them outside the lock. Replaces the vector's previous contents.
+void registry_textures(std::vector<RegistryTextureRecord> *out);
 
 // One shader_set_default_texture_parameter (Shader::set_default_texture_parameter's server call).
 struct RegistryDefaultTexture {

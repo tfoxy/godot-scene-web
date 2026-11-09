@@ -17,6 +17,7 @@
 #include "rs_item_meta.h"
 #include "rs_mirror.h"
 #include "rs_registry.h"
+#include "rs_texture_release.h"
 #include "rs_rid_map.h"
 #include "rs_shader_payload.h"
 #include "rs_texture_payload.h"
@@ -884,6 +885,9 @@ std::atomic<int> g_res_fault{0};
 std::thread::id g_res_main;
 std::mutex g_res_mutex;  // guards the census, the refused map and the stats
 AdoptResourceStats g_res_stats;
+ReloadStats g_reload_stats;
+std::vector<ReloadEntry> g_reload_entries;
+std::size_t g_reload_entries_dropped = 0;
 thread_local bool t_res_inside = false;
 
 // the one refused map, RID -> reason, for
@@ -963,7 +967,7 @@ struct FontPage {
 struct Census {
   bool built = false;
   std::vector<FontPage> pages;
-  std::unordered_set<std::uint64_t> compressed;  // CompressedTexture2D RIDs in the cache
+  std::unordered_map<std::uint64_t, std::string> compressed;  // RID -> cache path
   std::unordered_map<std::uint64_t, std::string> canvas_textures;  // PM9: CanvasTexture RID -> path
 };
 Census g_census;
@@ -987,6 +991,9 @@ struct RefSlot {
   }
   void *object() const { return slot != nullptr ? g_iface.ref_get_object(&slot) : nullptr; }
 };
+
+// Held images are moved out before any engine reference is released.
+RidMap<std::unique_ptr<RefSlot>> g_reload_sources;
 
 // A builtin value (String, Array, Dictionary, a packed array, Variant): default-constructed through
 // the engine's own constructor and destroyed through its destructor.
@@ -1172,6 +1179,7 @@ void scan_directory(void *loader, const std::string &dir, int depth, std::vector
       scan_directory(loader, path, depth + 1, fonts, font_tag, ctex_tag, canvas_tag, paths);
       continue;
     }
+    if (*paths >= 200000) return;
     ++*paths;
     OwnedString arg(path);
     const GDExtensionConstTypePtr args[1] = {arg.data};
@@ -1191,7 +1199,7 @@ void scan_directory(void *loader, const std::string &dir, int depth, std::vector
         fonts->push_back(rid);
       }
     } else if (g_iface.object_cast_to(object, ctex_tag) != nullptr) {
-      g_census.compressed.insert(get_rid(kResourceGetRid, object));
+      g_census.compressed[get_rid(kResourceGetRid, object)] = path;
     } else if (canvas_tag != nullptr && g_iface.object_cast_to(object, canvas_tag) != nullptr) {
       // PM9: a cached CanvasTexture, by its RID and path (re-fetched at adoption).
       g_census.canvas_textures[get_rid(kResourceGetRid, object)] = path;
@@ -1429,6 +1437,132 @@ void adopt_canvas_texture_registered(std::uint64_t rid, const rs::RegistryCanvas
   g_res_stats.lookup_ns += now_ns() - t0;
 }
 
+// Reload-only binds are optional: their absence refuses candidates, never adoption itself.
+enum ReloadBind { kReloadLoad, kReloadLoadPath, kReloadWidth, kReloadHeight,
+                  kReloadSetData, kReloadBindCount };
+const BindSpec kReloadBinds[kReloadBindCount] = {
+    {"ResourceLoader", "load", 3358495409LL},
+    {"CompressedTexture2D", "get_load_path", 201670096LL},
+    {"Texture2D", "get_width", 3905245786LL},
+    {"Texture2D", "get_height", 3905245786LL},
+    {"Image", "set_data", 2740482212LL},
+};
+GDExtensionMethodBindPtr g_reload_bind[kReloadBindCount] = {};
+GDExtensionPtrConstructor g_reload_bytes_new = nullptr;
+GDExtensionPtrBuiltInMethod g_reload_bytes_resize = nullptr;
+GDExtensionInterfacePackedByteArrayOperatorIndex g_reload_bytes_index = nullptr;
+
+bool reload_binds_ready() {
+  if (!adopt_binds_ready(nullptr)) return false;
+  for (int i = 0; i < kReloadBindCount; ++i) {
+    if (!g_reload_bind[i]) g_reload_bind[i] = method_bind(
+        kReloadBinds[i].cls, kReloadBinds[i].method, kReloadBinds[i].hash);
+  }
+  g_reload_bytes_new = g_iface.variant_get_ptr_constructor(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, 0);
+  StringName resize("resize");
+  g_reload_bytes_resize = g_iface.variant_get_ptr_builtin_method(
+      GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, resize.ptr(), 848867239LL);
+  if (g_iface.get_proc_address) g_reload_bytes_index =
+      reinterpret_cast<GDExtensionInterfacePackedByteArrayOperatorIndex>(
+          g_iface.get_proc_address("packed_byte_array_operator_index"));
+  for (const auto bind : g_reload_bind) if (!bind) return false;
+  return g_reload_bytes_new && g_reload_bytes_resize && g_reload_bytes_index;
+}
+
+Shape reload_shape(const ImageShape &s) { return {s.width, s.height, s.format, s.mipmaps}; }
+
+void reload_refuse(ReloadEntry entry, ReloadRefusal code, const std::string &why = {}) {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  if (!refuse_locked(entry.rid, Refusal::Texture)) return;
+  ++g_res_stats.textures_refused;
+  auto &r = g_reload_stats.refused;
+  switch (code) {
+    case ReloadRefusal::UnsafeEdited: ++r.reload_unsafe; break;
+    case ReloadRefusal::NoPath: ++r.released_no_path; break;
+    case ReloadRefusal::Mismatch: ++r.reload_mismatch; break;
+    case ReloadRefusal::Failed: ++r.reload_failed; break;
+    case ReloadRefusal::EvictedUnverifiable: ++r.evicted_unverifiable; break;
+    case ReloadRefusal::EvictedMidArm: ++r.evicted_mid_arm; break;
+  }
+  entry.code = code;
+  entry.why = why;
+  if (g_reload_entries.size() < kReloadEntryCap) g_reload_entries.push_back(std::move(entry));
+  else ++g_reload_entries_dropped;
+}
+
+// The temporary resource dies while its RID is still suppressed; its Image survives the scope.
+void reload_one(ReloadEntry entry, const void *path, bool check_mipmaps, bool check_format) {
+  if (!hooks_reload_scope_begin()) {
+    {
+      std::lock_guard<std::mutex> lock(g_res_mutex);
+      ++g_reload_stats.scope_anomalies;
+    }
+    reload_refuse(std::move(entry), ReloadRefusal::UnsafeEdited, "nested");
+    return;
+  }
+  auto image = std::make_unique<RefSlot>();
+  bool loaded_resource = false;
+  std::uint64_t temp = 0;
+  {
+    RefSlot res;
+    OwnedString hint("");
+    const std::int64_t cache_mode = 0;
+    const GDExtensionConstTypePtr args[] = {path, hint.data, &cache_mode};
+    void *loader = singleton_object("ResourceLoader");
+    if (loader) g_iface.object_method_bind_ptrcall(g_reload_bind[kReloadLoad], loader, args, &res.slot);
+    loaded_resource = res.object() != nullptr;
+    if (loaded_resource) temp = get_rid(kResourceGetRid, res.object());
+    void *server = singleton_object("RenderingServer");
+    if (temp && server) {
+      const GDExtensionConstTypePtr image_args[] = {&temp};
+      ptrcall(kRsTexture2dGet, server, image_args, &image->slot);
+    }
+  }
+  ReloadScopeCounts counts;
+  hooks_reload_scope_end(&counts);
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    if (counts.frees != counts.creates) ++g_reload_stats.temp_outlived;
+  }
+  if (!loaded_resource || !temp || !image->object()) {
+    reload_refuse(std::move(entry), ReloadRefusal::Failed,
+                  !loaded_resource ? "load-null" : !temp ? "no-rid" : "no-image");
+    return;
+  }
+  if (counts.creates != 1 || counts.extra != 0) {
+    {
+      std::lock_guard<std::mutex> lock(g_res_mutex);
+      ++g_reload_stats.scope_anomalies;
+    }
+    const auto why = "scope-creates=" + std::to_string(counts.creates);
+    reload_refuse(std::move(entry), ReloadRefusal::UnsafeEdited, why);
+    return;
+  }
+  entry.loaded = reload_shape(shape_of(image->object()));
+  const bool skip_verify = fault() == AdoptFault::ReloadSkipVerify;
+  if (skip_verify) {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    ++g_reload_stats.verify_skipped;
+  } else if (!reload_verify(*entry.loaded, entry.record, check_mipmaps, check_format)) {
+    reload_refuse(std::move(entry), ReloadRefusal::Mismatch);
+    return;
+  }
+  const auto &shape = *entry.loaded;
+  auto bytes = expected_data_bytes(shape.format, shape.width, shape.height, shape.mipmaps);
+  if (bytes < 0) bytes = vram_data_bytes(shape.format, shape.width, shape.height, shape.mipmaps);
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  if (entry.cause == ReloadCause::Residual) {
+    ++g_reload_stats.candidates.residual_formats[image_format_name(shape.format)];
+    entry.record.format = shape.format;
+    entry.record.mipmaps = shape.mipmaps;
+  }
+  g_reload_sources[entry.rid] = std::move(image);
+  if (bytes > 0) g_reload_stats.held_bytes += bytes;
+  ++g_reload_stats.reloaded;
+  if (g_reload_entries.size() < kReloadEntryCap) g_reload_entries.push_back(std::move(entry));
+  else ++g_reload_entries_dropped;
+}
+
 // The texture family's read-back for a RID the registry does not hold as a CanvasTexture: a
 // registered 2D texture (its getter is the payload) or any unregistered RID (the residual path,
 // design Q3). LAR6 (design R4, Q4 M3): a registered texture whose `updated` bit is clear was never
@@ -1449,15 +1583,24 @@ void adopt_texture_locked_out(std::uint64_t rid) {
       build_census();
     }
   }
-  RefSlot creation;
+  std::unique_ptr<RefSlot> reload_source;
   {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    auto it = g_reload_sources.find(rid);
+    if (it != g_reload_sources.end()) {
+      reload_source = std::move(it->second);
+      g_reload_sources.erase(it);
+    }
+  }
+  RefSlot creation;
+  if (!reload_source) {
     void *rs_singleton = singleton_object("RenderingServer");
     if (rs_singleton != nullptr) {
       const GDExtensionConstTypePtr args[1] = {&rid};
       ptrcall(kRsTexture2dGet, rs_singleton, args, &creation.slot);
     }
   }
-  void *creation_image = creation.object();
+  void *creation_image = reload_source ? reload_source->object() : creation.object();
   if (creation_image == nullptr) {
     // No image (design Q3's residual): a CanvasTexture created before the extension loaded, which
     // only a cached `.tres` (PM9, the census) can describe. Anything else -- a runtime-built
@@ -1477,8 +1620,26 @@ void adopt_texture_locked_out(std::uint64_t rid) {
     g_res_stats.lookup_ns += now_ns() - t0;
     return;
   }
+  if (!reload_source && fault() != AdoptFault::ReloadOff) {
+    RegistryTextureRecord record;
+    const bool registered = registry_texture(rid, &record);
+    const Shape shape = reload_shape(shape_of(creation_image));
+    const bool evicted = registered && record.facts.known && evicted_signature(shape, record.facts);
+    const bool unverifiable = !registry_lookup(rid, nullptr) && shape.width == 1 &&
+                              shape.height == 1 && shape.format == 0 && !shape.mipmaps;
+    if (evicted || unverifiable) {
+      ReloadEntry entry;
+      entry.rid = rid;
+      entry.cause = evicted ? ReloadCause::Evicted : ReloadCause::Residual;
+      entry.record = {record.facts.width, record.facts.height, record.facts.format, record.facts.mipmaps};
+      entry.loaded = shape;
+      reload_refuse(std::move(entry), evicted ? ReloadRefusal::EvictedMidArm :
+                                             ReloadRefusal::EvictedUnverifiable);
+      return;
+    }
+  }
   bool compressed = false;
-  if (!pristine) {
+  if (!reload_source && !pristine) {
     std::lock_guard<std::mutex> lock(g_res_mutex);
     compressed = g_census.compressed.count(rid) != 0;
   }
@@ -1487,7 +1648,10 @@ void adopt_texture_locked_out(std::uint64_t rid) {
   const char *source = "dummy";
   bool atlas = false;
   RefSlot current;
-  if (pristine) {
+  if (reload_source) {
+    content = rs2::AdoptedContent::Current;
+    source = "reload";
+  } else if (pristine) {
     content = rs2::AdoptedContent::Current;  // LAR6: never updated, so the creation copy is current
     source = "registry";
   } else if (compressed) {
@@ -1523,8 +1687,16 @@ void adopt_texture_locked_out(std::uint64_t rid) {
     }
     if (atlas) ++g_res_stats.atlas_pages;
     if (compressed) ++g_res_stats.compressed;
-    if (pristine) ++g_res_stats.textures_registry;
+    if (reload_source) {
+      ++g_res_stats.textures_reload;
+      ++g_reload_stats.adopted_from_reload;
+      for (auto &entry : g_reload_entries) {
+        if (entry.rid == rid && !entry.code) { entry.adopted = true; break; }
+      }
+    } else if (pristine) ++g_res_stats.textures_registry;
     if (decoded) ++g_res_stats.decoded;
+  } else if (reload_source) {
+    ++g_reload_stats.dropped_unreferenced;
   }
   g_res_stats.lookup_ns += now_ns() - t0;
 }
@@ -1699,14 +1871,20 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
     *out = AdoptFault::RegistryDropBinding;
   } else if (text == "registry-skip-particles") {
     *out = AdoptFault::RegistrySkipParticles;
+  } else if (text == "reload-off") {
+    *out = AdoptFault::ReloadOff;
+  } else if (text == "reload-skip-verify") {
+    *out = AdoptFault::ReloadSkipVerify;
+  } else if (text == "skip-htr-restore") {
+    *out = AdoptFault::SkipHtrRestore;
   } else if (text == "registry-queue-drop") {
     *out = AdoptFault::RegistryQueueDrop;
   } else {
     *error = "invalid GRC_ADOPT_FAULT=" + text +
              " (expected no-resources, atlas-from-dummy, claim-current, no-include-path, "
              "no-particles, registry-off, registry-keep-freed, registry-mm-stride, "
-             "registry-skip-params, registry-drop-binding, registry-skip-particles or "
-             "registry-queue-drop)";
+             "registry-skip-params, registry-drop-binding, registry-skip-particles, "
+             "registry-queue-drop, reload-off, reload-skip-verify or skip-htr-restore)";
     return false;
   }
   if (!adopt) {
@@ -1718,6 +1896,9 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
 
 const char *adopt_fault_name(AdoptFault f) {
   switch (f) {
+  case AdoptFault::ReloadOff: return "reload-off";
+  case AdoptFault::ReloadSkipVerify: return "reload-skip-verify";
+  case AdoptFault::SkipHtrRestore: return "skip-htr-restore";
   case AdoptFault::None: return "none";
   case AdoptFault::NoResources: return "no-resources";
   case AdoptFault::AtlasFromDummy: return "atlas-from-dummy";
@@ -1741,14 +1922,202 @@ void adopt_emitters_forget(std::uint64_t rid);  // PM7, below
 void adopt_resources_begin(AdoptFault f, bool dummy_host) {
   adopt_emitters_reset();
   queue_reset();
+  RidMap<std::unique_ptr<RefSlot>> dropped;
   std::lock_guard<std::mutex> lock(g_res_mutex);
+  std::swap(dropped, g_reload_sources);
   g_res_stats = AdoptResourceStats();
+  g_reload_stats = ReloadStats();
+  g_reload_stats.fault = adopt_fault_name(f);
+  g_reload_entries.clear();
+  g_reload_entries_dropped = 0;
   g_refused.clear();  // LAR6: every family's refusals, PM7's emitters and process materials too
   g_census = Census();
   g_res_main = std::this_thread::get_id();
   g_res_fault.store(static_cast<int>(f), std::memory_order_release);
   g_res_dummy_host.store(dummy_host, std::memory_order_relaxed);
   g_res_active.store(true, std::memory_order_seq_cst);
+}
+
+ReloadStats adopt_reload_at_arm() {
+  const auto t0 = now_ns();
+  if (!g_res_dummy_host.load(std::memory_order_relaxed) || fault() == AdoptFault::ReloadOff) {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    g_reload_stats.skipped = fault() == AdoptFault::ReloadOff ? "fault-reload-off" : "not-dummy-host";
+    return g_reload_stats;
+  }
+  const bool binds = reload_binds_ready();
+  void *server = adopt_binds_ready(nullptr) ? singleton_object("RenderingServer") : nullptr;
+  auto creation_shape = [server](std::uint64_t rid) {
+    RefSlot image;
+    if (server) {
+      const GDExtensionConstTypePtr args[] = {&rid};
+      ptrcall(kRsTexture2dGet, server, args, &image.slot);
+    }
+    return reload_shape(shape_of(image.object()));
+  };
+  std::vector<RegistryTextureRecord> records;
+  registry_textures(&records);
+  for (const auto &rec : records) {
+    if (rec.kind != RegistryKind::Texture2d ||
+        (rec.facts.known ? !release_tier(rec.facts.format) : !rec.released) ||
+        mirror_instance().knows_texture(rec.rid) || is_refused(rec.rid)) continue;
+    ++g_reload_stats.scanned.registered_vram;
+    ReloadEntry e;
+    e.rid = rec.rid;
+    e.record = {rec.facts.width, rec.facts.height, rec.facts.format, rec.facts.mipmaps};
+    if (rec.released) {
+      e.cause = ReloadCause::Released;
+      ++g_reload_stats.candidates.released;
+    } else {
+      if (!server || !evicted_signature(creation_shape(rec.rid), rec.facts)) continue;
+      e.cause = ReloadCause::Evicted;
+      ++g_reload_stats.candidates.evicted;
+    }
+    if (rec.path) e.path = utf8_of(rec.path.get());
+    if (!binds) reload_refuse(std::move(e), ReloadRefusal::Failed, "binds");
+    else if (rec.edited) reload_refuse(std::move(e), ReloadRefusal::UnsafeEdited);
+    else if (!reload_path_valid(e.path)) reload_refuse(std::move(e), ReloadRefusal::NoPath);
+    else if (!rec.facts.known) reload_refuse(std::move(e), ReloadRefusal::Mismatch, "no-facts");
+    else reload_one(std::move(e), rec.path.get(), true, true);
+  }
+  // The cache is bounded by the census. Re-fetch each resource rather than trusting an old RID.
+  std::unordered_map<std::uint64_t, std::string> compressed;
+  if (adopt_binds_ready(nullptr)) {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    if (!g_census.built) build_census();
+    compressed = g_census.compressed;
+    g_reload_stats.census_us = g_res_stats.census_ns / 1000;
+  }
+  void *loader = adopt_binds_ready(nullptr) ? singleton_object("ResourceLoader") : nullptr;
+  StringName ctex_name("CompressedTexture2D");
+  void *ctex_tag = g_iface.classdb_get_class_tag(ctex_name.ptr());
+  const bool residual_binds = g_reload_bind[kReloadWidth] && g_reload_bind[kReloadHeight];
+  g_reload_stats.scanned.census_compressed = compressed.size();
+  for (const auto &cached : compressed) {
+    const auto rid = cached.first;
+    if (registry_lookup(rid, nullptr) || mirror_instance().knows_texture(rid) || is_refused(rid) ||
+        !loader || !ctex_tag || !residual_binds) continue;
+    OwnedString path(cached.second);
+    const GDExtensionConstTypePtr args[] = {path.data};
+    RefSlot res;
+    ptrcall(kLoaderGetCachedRef, loader, args, &res.slot);
+    void *obj = res.object();
+    if (!obj || !g_iface.object_cast_to(obj, ctex_tag) || get_rid(kResourceGetRid, obj) != rid) continue;
+    Shape expected;
+    g_iface.object_method_bind_ptrcall(g_reload_bind[kReloadWidth], obj, nullptr, &expected.width);
+    g_iface.object_method_bind_ptrcall(g_reload_bind[kReloadHeight], obj, nullptr, &expected.height);
+    if (expected.width == 1 && expected.height == 1) continue;
+    const Shape dummy = creation_shape(rid);
+    if (dummy.width != 1 || dummy.height != 1 || dummy.format != 0 || dummy.mipmaps) continue;
+    ++g_reload_stats.candidates.residual;
+    ReloadEntry e;
+    e.rid = rid;
+    e.cause = ReloadCause::Residual;
+    e.record = expected;  // The resource exposes dimensions only; the loaded image supplies format.
+    if (!binds) {
+      reload_refuse(std::move(e), ReloadRefusal::Failed, "binds");
+      continue;
+    }
+    Builtin load_path(GDEXTENSION_VARIANT_TYPE_STRING);
+    g_iface.object_method_bind_ptrcall(g_reload_bind[kReloadLoadPath], obj, nullptr, load_path.ptr());
+    e.path = utf8_of(load_path.ptr());
+    if (e.path.size() < 5 || e.path.compare(e.path.size() - 5, 5, ".ctex") != 0)
+      reload_refuse(std::move(e), ReloadRefusal::EvictedUnverifiable);
+    else reload_one(std::move(e), load_path.ptr(), false, false);
+  }
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  g_reload_stats.reload_us = (now_ns() - t0) / 1000;
+  return g_reload_stats;
+}
+
+HtrRestoreStats adopt_htr_restore(AdoptFault f, bool root_finalized) {
+  HtrRestoreStats stats;
+  if (!registry_on()) { stats.skipped = "registry-off"; return stats; }
+  std::vector<RegistryTextureRecord> records;
+  registry_textures(&records);
+  std::vector<RegistryTextureRecord> candidates;
+  for (auto &record : records) {
+    if (!record.released || !record.facts.known) continue;
+    // Shutdown must not even decode a held engine String.
+    if (!root_finalized && record.path && reload_path_valid(decode_string(record.path.get()))) continue;
+    candidates.push_back(std::move(record));
+  }
+  stats.candidates = candidates.size();
+  if (root_finalized) { stats.skipped_shutdown = stats.candidates; return stats; }
+  if (f == AdoptFault::SkipHtrRestore) { stats.skipped_fault = stats.candidates; return stats; }
+  if (!g_res_dummy_host.load(std::memory_order_relaxed)) {
+    stats.skipped = "not-dummy-host"; return stats;
+  }
+  if (candidates.empty()) return stats;
+  if (!reload_binds_ready()) { stats.unavailable = stats.candidates; return stats; }
+  void *server = singleton_object("RenderingServer");
+  for (const auto &record : candidates) {
+    PayloadPtr body;
+    if (!mirror_instance().texture_source_body(record.rid, record.facts.format, &body)) {
+      ++stats.unavailable; continue;
+    }
+    const auto identity = identity_of(body, InflateSite::Restore);
+    Grt1View view;
+    const Shape expected{record.facts.width, record.facts.height, record.facts.format, record.facts.mipmaps};
+    if (!identity || !parse_grt1(identity->data(), identity->size(), &view) ||
+        !reload_verify(view.shape, expected, true)) {
+      ++stats.mismatch; continue;
+    }
+    RefSlot image;
+    const GDExtensionConstTypePtr get_args[] = {&record.rid};
+    if (server) ptrcall(kRsTexture2dGet, server, get_args, &image.slot);
+    if (!image.object()) { ++stats.unavailable; continue; }
+    const Shape current = reload_shape(shape_of(image.object()));
+    if (current.width != 1 || current.height != 1 || current.format != 0 || current.mipmaps) {
+      ++stats.not_placeholder; continue;
+    }
+    Builtin bytes(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY);
+    const int64_t size = static_cast<int64_t>(view.data_length);
+    const GDExtensionConstTypePtr resize_args[] = {&size};
+    int64_t error = 0;
+    g_reload_bytes_resize(bytes.ptr(), resize_args, &error, 1);
+    auto *dest = error == 0 ? g_reload_bytes_index(bytes.ptr(), 0) : nullptr;
+    if (!dest) { ++stats.unavailable; continue; }
+    std::memcpy(dest, identity->data() + view.data_offset, view.data_length);
+    const uint8_t mipmaps = expected.mipmaps;
+    const GDExtensionConstTypePtr set_args[] = {
+        &expected.width, &expected.height, &mipmaps, &expected.format, bytes.ptr()};
+    g_iface.object_method_bind_ptrcall(g_reload_bind[kReloadSetData], image.object(), set_args, nullptr);
+    if (!reload_verify(reload_shape(shape_of(image.object())), expected, true)) {
+      ++stats.mismatch; continue;
+    }
+    registry_texture_set_released(record.rid, false);
+    ++stats.restored;
+  }
+  return stats;
+}
+
+ReloadStats adopt_reload_finish() {
+  RidMap<std::unique_ptr<RefSlot>> dropped;
+  ReloadStats stats;
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    g_reload_stats.dropped_unreferenced += g_reload_sources.size();
+    std::swap(dropped, g_reload_sources);
+    g_reload_stats.final = true;
+    g_reload_stats.sources_balanced = g_reload_sources.empty() &&
+        g_reload_stats.reloaded == g_reload_stats.adopted_from_reload +
+            g_reload_stats.dropped_unreferenced + g_reload_stats.dropped_freed;
+    stats = g_reload_stats;
+  }
+  return stats;
+}
+
+std::size_t adopt_reload_sources_held() {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  return g_reload_sources.size();
+}
+
+std::string adopt_reload_json(std::uint64_t arm_index, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  g_reload_stats.arm_index = arm_index;
+  g_reload_stats.frame = frame;
+  return reload_json(g_reload_stats, g_reload_entries, g_reload_entries_dropped);
 }
 
 void node_map_disconnect();  // G8m, below
@@ -1925,9 +2294,16 @@ void adopt_resource_freed(std::uint64_t rid) {
   if (!g_res_active.load(std::memory_order_seq_cst)) {
     return;
   }
+  std::unique_ptr<RefSlot> dropped;
   {
     std::lock_guard<std::mutex> lock(g_res_mutex);
     g_refused.erase(rid);
+    auto it = g_reload_sources.find(rid);
+    if (it != g_reload_sources.end()) {
+      dropped = std::move(it->second);
+      g_reload_sources.erase(it);
+      ++g_reload_stats.dropped_freed;
+    }
   }
   bool cancelled = false;
   if (g_queue_nonempty.load(std::memory_order_acquire)) {
@@ -4234,7 +4610,7 @@ std::size_t adopt_held() {
   std::size_t n = 0;
   {
     std::lock_guard<std::mutex> lock(g_res_mutex);
-    n += g_refused.size() + g_census.pages.size() + g_census.compressed.size() +
+    n += g_reload_sources.size() + g_reload_entries.size() + g_refused.size() + g_census.pages.size() + g_census.compressed.size() +
          g_census.canvas_textures.size();
   }
   {
@@ -4256,8 +4632,13 @@ std::size_t adopt_held() {
 
 std::size_t adopt_release() {
   const std::size_t n = adopt_held();
+  RidMap<std::unique_ptr<RefSlot>> dropped;
   {
     std::lock_guard<std::mutex> lock(g_res_mutex);
+    std::swap(dropped, g_reload_sources);
+    std::vector<ReloadEntry>().swap(g_reload_entries);
+    g_reload_stats = ReloadStats();
+    g_reload_entries_dropped = 0;
     g_refused = RidMap<Refusal>();
     g_census = Census();
   }

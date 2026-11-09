@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  accountingProblems,
   CPU_BOUND_FRACTION,
   HEAP_IN_USE_BOUND_MIB,
   RSS_SLOPE_MB,
@@ -70,6 +71,7 @@ const clean = () => ({
   resource_log_held: 0,
   mesh_buffers: 0,
   adopt_held: 0,
+  reload_sources_held: 0,
   item_meta: { host_held: 0, filter_watches: 0, calls_while_off: 0 },
   capture_threads: {} as Record<string, number>,
   capture_thread_count: 0,
@@ -78,6 +80,24 @@ const clean = () => ({
   sockets: 3,
   inet_sockets: 0,
 });
+
+ok(
+  accountingProblems("clean", clean()).length === 0,
+  "clean reload accounting passes",
+);
+ok(
+  accountingProblems("held", { ...clean(), reload_sources_held: 1 }).some((p) =>
+    p.includes("reload_sources_held"),
+  ),
+  "held reload source fails accounting",
+);
+ok(
+  accountingProblems("missing", {
+    ...clean(),
+    reload_sources_held: undefined,
+  }).some((p) => p.includes("reload_sources_held")),
+  "missing reload source count fails accounting",
+);
 
 function applyFault(a: ReturnType<typeof clean>, f: Opts["fault"], k: number) {
   if (f === "keep-served") {
