@@ -52,7 +52,7 @@ class Api {
   Value::Object state(std::uint64_t frame = 0, Value::Object registry = {}) const;
   std::string last_refusal() const;
   bool called() const { return called_.load(std::memory_order_relaxed); }
-  bool can_arm() const { return state_ == State::Standby && arm_count_ == 0; }
+  bool can_arm() const { return state_ == State::Standby; }
   State phase() const { return state_; }
   std::uint64_t arm_count() const { return arm_count_; }
   const std::string &last_reason() const { return last_reason_; }
@@ -99,6 +99,7 @@ class Api {
 };
 
 // The worker function performs pure joins only. Read timing after join(); poll done with acquire.
+// One instance serves every teardown of a process: run() after join() starts the next one.
 class TeardownThread {
  public:
   ~TeardownThread();
@@ -113,5 +114,8 @@ class TeardownThread {
   std::thread thread_;
   std::atomic<bool> done_{true};
 };
+// The pool thread is reused by encoders; neither pending phase may expose worker-owned timing.
+Value::Object teardown_join_info(const TeardownThread &thread, bool pending,
+                                bool encoders_pending = false);
 }  // namespace grc::rs::capture
 #endif

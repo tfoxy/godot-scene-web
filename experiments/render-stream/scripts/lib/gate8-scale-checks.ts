@@ -1,5 +1,15 @@
 // Capture-scale must publish the whole mirror, including on live-only legs.
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { check, type G8aCheck } from "./gate8-adopt-checks";
@@ -38,12 +48,92 @@ function mirrorProblems(
   return problems;
 }
 
+// The reader buffers a fixed amount of wire data and skips payload blocks by offset.
+// Only one record's JSON metadata is retained, even for multi-gigabyte streams.
+export function scaleMirrorFileProblems(
+  path: string,
+  requireTransactions = true,
+  bufferSize = 64 * 1024,
+): string[] {
+  if (!Number.isInteger(bufferSize) || bufferSize < 1)
+    throw new RangeError("bufferSize must be a positive integer");
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    const buffer = Buffer.alloc(bufferSize);
+    let bufferedAt = -1;
+    let bufferedBytes = 0;
+    let pos = 0;
+    function read(length: number): Buffer {
+      const out = Buffer.alloc(length);
+      let copied = 0;
+      while (copied < length) {
+        if (pos < bufferedAt || pos >= bufferedAt + bufferedBytes) {
+          bufferedAt = pos;
+          bufferedBytes = readSync(fd, buffer, 0, buffer.length, pos);
+          if (bufferedBytes === 0) throw new Error("unexpected end of stream");
+        }
+        const offset = pos - bufferedAt;
+        const n = Math.min(length - copied, bufferedBytes - offset);
+        buffer.copy(out, copied, offset, offset + n);
+        copied += n;
+        pos += n;
+      }
+      return out;
+    }
+    const magic = read(Math.min(8, size));
+    const header = splitRecords(magic, wireVersionOf(magic));
+    if (header.errors.length > 0)
+      return [
+        ...header.errors,
+        ...(requireTransactions ? ["no transactions"] : []),
+      ];
+    const framing: string[] = [];
+    const problems: string[] = [];
+    let transactions = 0;
+    while (pos < size) {
+      const start = pos;
+      if (size - start < 4) {
+        framing.push(
+          `truncated: record_len prefix at offset ${start} runs past the end of the input`,
+        );
+        break;
+      }
+      const recordLen = read(4).readUInt32LE(0);
+      const byteLength = 4 + recordLen;
+      if (start + byteLength > size) {
+        framing.push(
+          `truncated: record at offset ${start} declares ${byteLength} bytes but only ${size - start} remain`,
+        );
+        break;
+      }
+      // Match the in-memory scanner's metadata slice (including malformed short records).
+      const metaLen = read(Math.min(4, recordLen)).readUInt32LE(0);
+      const meta = JSON.parse(
+        read(Math.min(metaLen, recordLen - 4)).toString("utf8"),
+      );
+      pos = start + byteLength;
+      if (meta.type !== "transaction") continue;
+      transactions++;
+      for (const f of meta.failures ?? []) {
+        if (f.reason === "mirror-capacity")
+          problems.push(`frame ${meta.frame}: mirror-capacity: ${f.detail}`);
+      }
+    }
+    if (requireTransactions && transactions === 0)
+      problems.push("no transactions");
+    return [...framing, ...problems];
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function captureMirrorProblems(dir: string): string[] {
   const saved = join(dir, "scale-mirror.json");
   if (existsSync(saved))
     return JSON.parse(readFileSync(saved, "utf8")) as string[];
   const files = readdirSync(dir)
-    .filter((f) => /^recording.*\.rs\d+$/.test(f))
+    .filter((f) => /^recording.*\.rs\d+(?:\.arm-\d+)?$/.test(f))
     .map((f) => join(dir, f));
   const tap = join(dir, "tap");
   if (existsSync(tap))
@@ -69,12 +159,12 @@ export function captureMirrorProblems(dir: string): string[] {
   let nonEmptyStreams = 0;
   const problems = files.flatMap((f) => {
     try {
-      const data = readFileSync(f);
       const isTap = dirname(f) === tap;
       // A connection can close before publishing its first transaction.
-      if (isTap && data.length === 0) return [];
-      if (data.length > 0) nonEmptyStreams++;
-      return mirrorProblems(data, !isTap).map(
+      const size = statSync(f).size;
+      if (isTap && size === 0) return [];
+      if (size > 0) nonEmptyStreams++;
+      return scaleMirrorFileProblems(f, !isTap).map(
         (p) => `${relative(dir, f)}: ${p}`,
       );
     } catch (e) {

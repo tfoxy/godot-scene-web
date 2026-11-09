@@ -96,6 +96,23 @@ void CarrierRegistry::set_log(std::function<void(const std::string &)> log) {
   log_ = std::move(log);
 }
 
+void CarrierRegistry::reopen() {
+  std::vector<RegisteredCarrier> dropped;
+  std::function<void(const std::string &)> log;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    dropped.swap(carriers_);
+    closed_ = false;
+    next_index_ = 2;
+    refusals_.clear();
+    log = log_;
+  }
+  for (auto &carrier : dropped) {
+    carrier.vtable.destroy(carrier.vtable.self);
+    if (log) log("carrier-register: dropped at reopen: " + carrier.name);
+  }
+}
+
 void CarrierRegistry::reset_for_test() {
   std::lock_guard<std::mutex> lock(mu_);
   closed_ = false;

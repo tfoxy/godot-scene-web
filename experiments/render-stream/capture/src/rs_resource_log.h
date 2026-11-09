@@ -305,8 +305,13 @@ class ResourceLog {
   // formatted, held or buffered, since nothing would read it (take_lines() is then always empty).
   void start(std::uint64_t t0_ns, std::uint64_t root_viewport_rid, bool keep_lines = true);
   void stop();
+  // LS3: stop() and free every map, the pending text and the deferred lines (a disarm leaves
+  // nothing behind). Returns the entries it freed, for the disarm's accounting.
+  std::size_t release();
+  std::size_t held() const;
   // Inline acquire preserves the publication check without a cross-TU hook-path call.
-  bool active() const { return active_.load(std::memory_order_acquire); }
+  // Pairs post-increment admission reads with disarm's seq_cst flag clear and counter poll.
+  bool active() const { return active_.load(std::memory_order_seq_cst); }
   // True while lines are kept (lock-free): a caller that builds an argument only for a line (the
   // multimesh buffer digest) skips it when this is false.
   bool wants_lines() const { return keep_lines_.load(std::memory_order_relaxed); }

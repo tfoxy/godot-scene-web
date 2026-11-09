@@ -118,7 +118,8 @@
 #       receiver and the gsw-input injector under lib/track-input-client.ts, four sabotage legs),
 #       inject (TRK6: GRC_LIVE_TRACK_INPUT_INJECT=reference on fixtures/track-inject and
 #       track-inject-addon, the same client and checks, plus config, refusal and two sabotage legs)
-#       api (fixtures/live-swap: scheduled singleton arm/disarm, bind failure and two API faults),
+#       api (fixtures/live-swap: a two-round singleton lifecycle (arm, disarm, arm again), bind
+#       failure with a cancelled re-arm, a loader-thread leg across both disarms, and three faults),
 #       and wss. G8L_ONLY=ext,api,trk,inject selects headless legs (a local iteration knob).
 #       The api legs run in real time; they are never fast-frame eligible.
 #   g8ku (G8ku, `basis-uastc`; fixtures/gate8-basis;
@@ -330,6 +331,21 @@
 #       hook log on, lib/null-receiver.ts as the viewer; three curl GETs of the largest texture,
 #       get-{zstd,identity,lan}.*) and its fault leg `sabotage-at-rest-keep-identity/host`
 #       (GRC_AT_REST_FAULT=keep-identity). Judged by lib/gate8-tdr-checks.ts.
+#   g8sw (LS3, swap-cycle: the capture's teardown across disarms, GRC_SWAP_CYCLE on
+#       fixtures/capture-scale with an in-process viewer, GRC_HTTP_ENCODING=off, 120 textures; every
+#       leg under g8sw/): short/swap (GRC_SWAP_CYCLE=240:240:3, born, GRC_ADOPT=arm), short/control
+#       (the same phases, GRC_MODE=standby, never arms) and the GRC_REARM_FAULT sabotages
+#       short/sabotage-{keep-served,keep-listener,keep-hub,skip-mirror-reset}; last the swap-cycle
+#       timing group (cycle/control, then cycle/swap: 1800:1800:10, real time, each under the
+#       exclusive quiet lock; skipped on a remote runner). Judged by lib/gate8-swap-checks.ts.
+#   g8re (LS3, re-arm: live-swap-design.md Q3's rearm-equivalence and ID3's re-arm round; every leg
+#       under g8re/, headless): the gate8-adopt, gate8-tex and tag-scene imports; per fixture (adopt,
+#       tex) a pair of /8 captures with file sinks: `<fx>/rearm` (run B: GRC_ADOPT=arm, armed at K1,
+#       GRC_SWAP_CYCLE=<armed>:<idle>:2 on a fixed GRC_LIVE_LISTEN port, lib/null-receiver.ts
+#       connected in arm 1, re-armed at K2 after the fixture changed while disarmed, arm 2 to the
+#       quit) and `<fx>/once` (run A: the same env armed once at K2); then `id/host`, g8id14's live
+#       tag-scene V2 host under GRC_SWAP_CYCLE=300:60:2 with RS_FIXTURE_TAG_DUMP_AT, a /14 viewer
+#       asking the v2 fields in each arm (`id/arm1`, `id/arm2`). Judged by lib/gate8-rearm-checks.ts.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -351,11 +367,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re)
 # GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
 # is not in the default run: g8w11 already runs the native half of those legs.
-DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr)
+DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re)
 
 EXTENSION=""
 CALIBRATION=""
@@ -3837,7 +3853,7 @@ run_g8l_api_leg() {
 		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_VERSION=8 GRC_LIVE_LISTEN=127.0.0.1:0
 		GRC_LIVE_TAP_DIR="$dir/tap" GRC_LIVE_CARRIERS=ws,gdswap
 		GRC_LIVE_HELLO_TIMEOUT_MS=500 GRC_TEXTURE_WORKERS=2 GRC_TEXTURE_WORKER_DELAY_MS=250
-		RS_SWAP_OUT="$dir/driver" RS_FIXTURE_QUIT_FRAME=900 "$@"
+		RS_SWAP_OUT="$dir/driver" RS_FIXTURE_QUIT_FRAME=1500 "$@"
 	)
 	run_headless "$dir" none -- "$BINARY" --headless --max-fps 60 --path "$G8L_API_FIXTURE_DIR"
 }
@@ -3845,14 +3861,68 @@ run_g8l_api_leg() {
 run_g8l_api() {
 	[ -z "${GATE7_LIVE_KIND:-}" ] || return 0
 	local leg="$OUT/g8l/api" port waited=0
+
 	LEG_ENV=()
 	run_headless "$leg/import/fixture" none -- mise exec -- godot --headless --path "$G8L_API_FIXTURE_DIR" --import
 	if [ "$(cat "$leg/import/fixture/exit-code.txt")" != "0" ]; then
 		echo "run-gate8: g8l api import failed, see $leg/import/fixture/stdout.log" >&2
 		exit 1
 	fi
-	echo "run-gate8: g8l api host (scheduled singleton arm and disarm)"
+	if [ -z "${G8L_API_ONLY:-}" ] || [ "${G8L_API_ONLY:-}" = admission ]; then
+		run_g8l_api_leg "$leg/rearm-admission-standby" RS_SWAP_ADMISSION=standby GRC_ADOPT=arm \
+			GRC_LIVE_CARRIERS=ws GRC_TEST_INFLIGHT_SITE=admission GRC_TEST_INFLIGHT_DELAY_MS=10000
+		run_g8l_api_leg "$leg/rearm-admission-counted" RS_SWAP_ADMISSION=counted GRC_ADOPT=arm \
+			GRC_LIVE_CARRIERS=ws GRC_TEST_INFLIGHT_SITE=admission GRC_TEST_INFLIGHT_DELAY_MS=10000
+		run_g8l_api_leg "$leg/sabotage-standby-view-off" RS_SWAP_ADMISSION=standby GRC_ADOPT=arm \
+			GRC_LIVE_CARRIERS=ws GRC_TEST_INFLIGHT_SITE=admission GRC_TEST_INFLIGHT_DELAY_MS=10000 \
+			GRC_REARM_FAULT=standby-view-off
+		run_g8l_api_leg "$leg/sabotage-hot-view-off" RS_SWAP_ADMISSION=standby GRC_ADOPT=arm \
+			GRC_LIVE_CARRIERS=ws GRC_TEST_INFLIGHT_SITE=admission GRC_TEST_INFLIGHT_DELAY_MS=10000 \
+			GRC_REARM_FAULT=hot-view-off
+		[ "${G8L_API_ONLY:-}" != admission ] || return 0
+	fi
+	if [ "${G8L_API_ONLY:-}" = skip-inflight-wait ]; then
+		run_g8l_api_leg "$leg/sabotage-skip-inflight-wait" RS_SWAP_LOADER_THREAD=1 GRC_TEST_INFLIGHT_DELAY_MS=4000 \
+			GRC_REARM_FAULT=skip-inflight-wait
+		return 0
+	fi
+	if [ "${G8L_API_ONLY:-}" = rearm-quit-pending ]; then
+		local attempt
+		for attempt in 1 2 3 4 5; do
+			run_g8l_api_leg "$leg/rearm-quit-pending-$attempt" RS_SWAP_EXPECT=quit-pending \
+				RS_SWAP_LOADER_THREAD=1 GRC_TEST_INFLIGHT_DELAY_MS=4000
+			[ "$(cat "$leg/rearm-quit-pending-$attempt/exit-code.txt")" = 0 ] || return 1
+		done
+		return 0
+	fi
+	if [ "${G8L_API_ONLY:-}" = evidence-dir ]; then
+		run_g8l_api_leg "$leg/evidence-dir" RS_SWAP_EXPECT=evidence-dir
+		return 0
+	fi
+	if [ "${G8L_API_ONLY:-}" = arm-failed-inject ]; then
+		mkdir -p "$leg/arm-failed-inject"
+		python3 -u -c 'import socket, time; s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(); print(s.getsockname()[1], flush=True); time.sleep(120)' \
+			>"$leg/arm-failed-inject/held-port.txt" &
+		G8L_API_PORT_PID=$!
+		while [ ! -s "$leg/arm-failed-inject/held-port.txt" ] && kill -0 "$G8L_API_PORT_PID" 2>/dev/null && [ "$waited" -lt 100 ]; do
+			sleep 0.05
+			waited=$((waited + 1))
+		done
+		port="$(cat "$leg/arm-failed-inject/held-port.txt")"
+		[[ "$port" =~ ^[0-9]+$ ]] || return 1
+		run_g8l_api_leg "$leg/arm-failed-inject" RS_SWAP_EXPECT=arm-failed \
+			"GRC_LIVE_LISTEN=127.0.0.1:$port" GRC_LIVE_CARRIERS=ws \
+			GRC_LIVE_TRACKS=input GRC_LIVE_TRACK_INPUT_INJECT=reference
+		kill "$G8L_API_PORT_PID" 2>/dev/null || true
+		wait "$G8L_API_PORT_PID" 2>/dev/null || true
+		G8L_API_PORT_PID=""
+		return 0
+	fi
+	run_g8l_api_leg "$leg/rearm-quit-pending" RS_SWAP_EXPECT=quit-pending \
+		RS_SWAP_LOADER_THREAD=1 GRC_TEST_INFLIGHT_DELAY_MS=4000
+	echo "run-gate8: g8l api host (scheduled singleton arm and disarm, twice)"
 	run_g8l_api_leg "$leg/host"
+	run_g8l_api_leg "$leg/evidence-dir" RS_SWAP_EXPECT=evidence-dir
 	# Keep the socket owned until the failure leg ends: choosing a free port and closing it races.
 	mkdir -p "$leg/arm-failed"
 	python3 -u -c 'import socket, time; s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(); print(s.getsockname()[1], flush=True); time.sleep(120)' \
@@ -3870,7 +3940,8 @@ run_g8l_api() {
 	echo "run-gate8: g8l api arm-failed (listener port already bound)"
 	run_g8l_api_leg "$leg/arm-failed" RS_SWAP_EXPECT=arm-failed "GRC_LIVE_LISTEN=127.0.0.1:$port"
 	echo "run-gate8: g8l api arm-failed-ws (ws-only listener port already bound)"
-	run_g8l_api_leg "$leg/arm-failed-ws" RS_SWAP_EXPECT=arm-failed "GRC_LIVE_LISTEN=127.0.0.1:$port" GRC_LIVE_CARRIERS=ws
+	run_g8l_api_leg "$leg/arm-failed-ws" RS_SWAP_EXPECT=arm-failed "GRC_LIVE_LISTEN=127.0.0.1:$port" GRC_LIVE_CARRIERS=ws \
+		GRC_LIVE_TRACKS=input GRC_LIVE_TRACK_INPUT_INJECT=reference
 	kill "$G8L_API_PORT_PID" 2>/dev/null || true
 	wait "$G8L_API_PORT_PID" 2>/dev/null || true
 	G8L_API_PORT_PID=""
@@ -3878,6 +3949,21 @@ run_g8l_api() {
 	run_g8l_api_leg "$leg/sabotage-api-early-armed" GRC_API_FAULT=api-early-armed
 	echo "run-gate8: g8l api sabotage-disarm-joins-on-main"
 	run_g8l_api_leg "$leg/sabotage-disarm-joins-on-main" GRC_API_FAULT=disarm-joins-on-main
+	# LS3: the same two-round lifecycle under a loader thread that creates textures across both
+	# disarms. Every create is held in flight for 4 s, longer than an arm lasts, so the write that
+	# began after each `armed` is still pending when the disarm releases the mirror. Then the two
+	# re-arm faults: the release not waiting for that write, and the root min_size not restored.
+	echo "run-gate8: g8l api rearm-inflight (loader thread, creates held in flight)"
+	run_g8l_api_leg "$leg/rearm-inflight" RS_SWAP_LOADER_THREAD=1 GRC_TEST_INFLIGHT_DELAY_MS=4000
+	echo "run-gate8: g8l api rearm-materialize (off-main enabled check held before knows)"
+	run_g8l_api_leg "$leg/rearm-materialize" RS_SWAP_LOADER_THREAD=1 RS_SWAP_LOADER_MATERIALIZE=1 \
+		GRC_ADOPT=arm RS_SWAP_LOADER_MAX_PER_ARM=1 RS_SWAP_LOADER_INTERVAL_MS=100 \
+		GRC_TEST_INFLIGHT_DELAY_MS=4000 GRC_TEST_INFLIGHT_SITE=materialize
+	echo "run-gate8: g8l api sabotage-skip-inflight-wait"
+	run_g8l_api_leg "$leg/sabotage-skip-inflight-wait" RS_SWAP_LOADER_THREAD=1 GRC_TEST_INFLIGHT_DELAY_MS=4000 \
+		GRC_REARM_FAULT=skip-inflight-wait
+	echo "run-gate8: g8l api sabotage-skip-root-restore"
+	run_g8l_api_leg "$leg/sabotage-skip-root-restore" GRC_REARM_FAULT=skip-root-restore
 }
 
 # TRK2: fixtures/track-input binds the `input` track kind
@@ -4439,6 +4525,262 @@ run_g8htr_cost() {
 	fi
 }
 
+# ------------------------------------------------------------------------------------- g8sw
+# LS3 (live-swap-design.md Q3): GRC_SWAP_CYCLE on capture-scale, the paired standby control, the
+# capture's own accounting, threads, sockets and RSS across disarms, and the re-arm sabotages.
+# Every leg under g8sw/. fixtures/capture-scale (born, so the first arm holds the scene), 120
+# textures kept identity-sized (GRC_HTTP_ENCODING=off: RSS sees them), an in-process viewer
+# (RS_SCALE_VIEWER=1: the served set pins the bodies while a viewer is connected), malloc_trim at
+# every disarm, real time at 60 fps. A swap leg is GRC_MODE=arm GRC_ADOPT=arm (a disarm publishes the
+# standby table) under GRC_SWAP_CYCLE=<armed>:<idle>:<n>; the control is GRC_MODE=standby under
+# <armed>:<idle>:<n>:control and never arms. lib/gate8-swap-checks.ts pairs them by cycle index.
+#
+# MALLOC_MMAP_THRESHOLD_ pins glibc's mmap threshold at its static default, which switches off the
+# dynamic adjustment: left on, the first freed 1.3 MB payload blocks raise the threshold, the next
+# arm's blocks come from the brk heap, and malloc_trim(0) cannot return the fragmented heap after the
+# disarm (the idle RSS then sits 57-117 MB above the control's, varying run to run). That is
+# allocator state, the same for any process; pinned, the swap run settles a fixed ~19 MB above the
+# control (the arm's retained pages) and does not drift. Control and swap legs both get it.
+G8SW_ENV=("${G8A_VLC_ENV[@]}" RS_SCALE_TEXTURES=120 GRC_HTTP_ENCODING=off GRC_LIVE_LISTEN=127.0.0.1:0
+	GRC_TEST_TRIM_AT_DISARM=1 GRC_TEST_MEMORY_ACCOUNTING=1 RS_SCALE_VIEWER=1 MALLOC_MMAP_THRESHOLD_=131072)
+
+# run_g8sw_leg <dir> <armed> <idle> <n> <swap|control> [env word...]: one leg. Quit frame: every phase
+# (a control has a leading idle phase 0) plus slack. Only the swap-cycle rows, the per-arm
+# teardown.json files, the frame log and the scale report are judged; the recording, the stores and
+# the hook logs go.
+run_g8sw_leg() {
+	local dir="$1" armed="$2" idle="$3" n="$4" kind="$5" quit
+	local HEADLESS_TIMEOUT_S="$HEADLESS_TIMEOUT_S"
+	shift 5
+	mkdir -p "$dir"
+	cat /proc/loadavg >"$dir/loadavg.txt" 2>/dev/null || true
+	CAPTURE_FIXTURE_DIR="$G8A_COST_DIR"
+	CAPTURE_EXTRA_ENV=("${G8SW_ENV[@]}" RS_SCALE_FRAME_LOG="$dir/frames.csv" RS_SCALE_REPORT="$dir/scale-report.json")
+	CAPTURE_EXTRA_ARGS=(--max-fps 60)
+	if [ "$kind" = control ]; then
+		CAPTURE_EXTRA_ENV+=(GRC_MODE=standby GRC_SWAP_CYCLE="$armed:$idle:$n:control")
+		quit=$((idle + n * (armed + idle) + 60))
+	else
+		CAPTURE_EXTRA_ENV+=(GRC_MODE=arm GRC_ADOPT=arm GRC_SWAP_CYCLE="$armed:$idle:$n")
+		# A disarm takes frames (the first one closes a recording of every armed frame: 50 to 330
+		# frames a run), and a phase begins after it, so the last idle row ends later than
+		# n*(armed+idle): 900 startup frames and 400 per cycle cover every disarm (the capture
+		# idles in standby after the last phase).
+		quit=$((n * (armed + idle) + 900 + 400 * n))
+	fi
+	case "$dir" in
+	*/cycle/*)
+		# Two full real-time quit budgets plus startup/teardown slack; short legs keep the default.
+		HEADLESS_TIMEOUT_S=$(((quit * 2 + 59) / 60 + 60))
+		# Preserve the runner's effective timeout beside the child's other invocation evidence.
+		CAPTURE_EXTRA_ENV+=(RS_G8SW_TIMEOUT_S="$HEADLESS_TIMEOUT_S")
+		;;
+	esac
+	CAPTURE_EXTRA_ENV+=(RS_SCALE_PREALLOC_FRAMES="$quit" "$@")
+	CAPTURE_WITH_PATCH=0
+	run_capture "$dir" "$quit" none
+	CAPTURE_WITH_PATCH=1
+	"$REPO_ROOT/node_modules/.bin/tsx" --conditions=development "$SCRIPT_DIR/lib/gate8-scale-checks.ts" --capture "$dir"
+	rm -rf "${dir:?}/$RECORDING_NAME" "${dir:?}/$RECORDING_NAME".arm-* "${dir:?}/store" "${dir:?}/store".arm-* \
+		"${dir:?}/evidence/resources.jsonl" "${dir:?}"/evidence/arm-*/resources.jsonl
+}
+
+run_g8sw() {
+	local g="$OUT/g8sw" kind
+	# Correctness legs (remote-capable): 240 armed and 240 idle frames, three cycles.
+	echo "run-gate8: g8sw short/swap (capture-scale, born, GRC_SWAP_CYCLE=240:240:3)"
+	run_g8sw_leg "$g/short/swap" 240 240 3 swap
+	echo "run-gate8: g8sw short/control (standby, 240:240:3:control)"
+	run_g8sw_leg "$g/short/control" 240 240 3 control
+	for kind in keep-served keep-listener keep-hub skip-mirror-reset; do
+		echo "run-gate8: g8sw short/sabotage-$kind (short/swap with GRC_REARM_FAULT=$kind)"
+		run_g8sw_leg "$g/short/sabotage-$kind" 240 240 3 swap GRC_REARM_FAULT="$kind"
+	done
+	# swap-cycle (a timing group, local only): ten 1800-frame cycles, the control first, then the swap
+	# run, each under the exclusive quiet lock (about 11 minutes a leg at 60 fps).
+	if ! legs_skip_group swap-cycle "$g/cycle/control" "$g/cycle/swap"; then
+		echo "run-gate8: g8sw cycle/control (standby, 1800:1800:10:control)"
+		timing_leg g8sw-cycle-control run_g8sw_leg "$g/cycle/control" 1800 1800 10 control
+		echo "run-gate8: g8sw cycle/swap (born, GRC_SWAP_CYCLE=1800:1800:10)"
+		timing_leg g8sw-cycle-swap run_g8sw_leg "$g/cycle/swap" 1800 1800 10 swap
+	fi
+}
+
+# ------------------------------------------------------------------------------------- g8re
+# LS3 (live-swap-design.md Q3 "Proving nothing left behind"): rearm-equivalence on gate8-adopt and
+# gate8-tex, and ID3's re-arm round on tag-scene. Every leg under g8re/, all headless at
+# --max-fps 60 (every schedule below is in frames; a hold for a viewer's hello stops the whole
+# timeline, so no leg depends on wall time). Judged by lib/gate8-rearm-checks.ts.
+#
+# rearm-equivalence: per fixture a pair of /8 captures with file sinks.
+#   <fx>/rearm  run B: GRC_ADOPT=arm, the arm deferred to K1 (GRC_ARM_DEFER_FRAMES=K1-1: the hooks
+#               and the registry see every create from load), the capture's own swap cycle
+#               (GRC_SWAP_CYCLE=<armed>:<idle>:2) and a fixed GRC_LIVE_LISTEN port. A
+#               lib/null-receiver.ts viewer connects during arm 1 (arm 1's first publish is held
+#               for its hello, GRC_LIVE_AWAIT_HELLO_MS; arm 2 disables it with an empty arm(options) value),
+#               and ends with arm 1's close. The cycle disarms, idles while the fixture changes,
+#               and re-arms at K2 on the same port; arm 2 (recording.rs8.arm-2) runs to the quit.
+#   <fx>/once   run A: the same env without the cycle, the hold and the viewer, armed once at K2
+#               (GRC_ARM_DEFER_FRAMES=K2-1). K2 is arm 2's first frame (its adoption frame), read
+#               from rearm's evidence/swap-cycle.jsonl: the first idle phase's last callback asks
+#               for the arm, the next one arms, and the frame after it is K2.
+# adopt (fixtures/gate8-adopt, RS_FIXTURE_ARM=deferred): the fixture's schedule at
+# RS_FIXTURE_ARM_FRAME=30 changes the scene at 34, 44 and 54; K1 8 and 32 armed frames cover 34,
+# the disarm comes at 40, 6 idle frames cover 44 and arm 2 (K2 about 49) covers 54 and its settle
+# to the quit at 70, before arm 2's own 32 frames run out.
+# tex (fixtures/gate8-tex): step 0 at load (desktop family), step 1 at 31 (RS_FIXTURE_STEP_FRAMES=30:
+# the mobile family and a fresh lossless `control`, every texture created while disarmed); K1 1
+# (armed at load) and 20 armed frames cover step 0, 12 idle frames step 1, arm 2 (K2 about 36)
+# runs to the quit at 50.
+G8RE_ADOPT_ENV=("${G8A_ENV[@]}" GRC_ADOPT=arm RS_FIXTURE_ARM=deferred RS_FIXTURE_ARM_FRAME=30)
+G8RE_ADOPT_K1=8
+G8RE_ADOPT_CYCLE=32:6:2
+G8RE_ADOPT_QUIT=70
+G8RE_TEX_ENV=("${G8T_DECODE_ENV[@]}" GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip RS_FIXTURE_STEP_FRAMES=30)
+G8RE_TEX_K1=1
+G8RE_TEX_CYCLE=20:12:2
+G8RE_TEX_QUIT=50
+# The re-arm round (id/): g8id14's live host on fixtures/tag-scene (RS_FIXTURE_TAG_V2, armed late at
+# frame 12, GRC_ADOPT=arm, the full v2 grant, the fixture's oracle and the capture's id log), with
+# GRC_SWAP_CYCLE in place of GRC_DISARM_AFTER_FRAMES: two cycles of 300 armed and 60 idle frames
+# (arm 1 covers the steps at 110-151 and the dump at 240; arm 2 runs from about fixture frame 375
+# to 675), RS_FIXTURE_TAG_DUMP_AT adding a dump in the first idle phase (345) and in arm 2 (560);
+# the quit dump (760) follows the second disarm. One /14 viewer asking the v2 fields per arm
+# (id/arm1, id/arm2), each started once its arm listens on the fixed port and held for.
+G8RE_ID_CYCLE=300:60:2
+G8RE_ID_QUIT=760
+G8RE_ID_DUMPS=345,560
+
+run_import_g8re() {
+	echo "run-gate8: g8re imports (gate8-adopt and gate8-tex sources and fixtures, tag-scene)"
+	LEG_ENV=()
+	run_headless "$OUT/g8re/import/adopt-sources" none -- mise exec -- godot --headless --path "$G8A_FIXTURE_DIR" --script res://make_sources.gd
+	LEG_ENV=()
+	run_headless "$OUT/g8re/import/adopt-fixture" none -- mise exec -- godot --headless --path "$G8A_FIXTURE_DIR" --import
+	LEG_ENV=()
+	run_headless "$OUT/g8re/import/tex-sources" none -- mise exec -- godot --headless --path "$FIXTURE_DIR" --script res://make_sources.gd
+	LEG_ENV=()
+	run_headless "$OUT/g8re/import/tex-fixture" none -- mise exec -- godot --headless --path "$FIXTURE_DIR" --import
+	LEG_ENV=()
+	run_headless "$OUT/g8re/import/tag" none -- mise exec -- godot --headless --path "$TAG_DIR" --import
+	local leg
+	for leg in adopt-sources adopt-fixture tex-sources tex-fixture tag; do
+		if [ "$(cat "$OUT/g8re/import/$leg/exit-code.txt")" != "0" ]; then
+			echo "run-gate8: g8re import ($leg) failed, see $OUT/g8re/import/$leg/stdout.log" >&2
+			exit 1
+		fi
+	done
+}
+
+# g8re_wait_listening <live.json> <pid> <port>: waits (up to 60 s, while <pid> lives) until the
+# file says the listener is up on <port>; returns 1 if it never does.
+g8re_wait_listening() {
+	local file="$1" pid="$2" port="$3" waited=0
+	while [ "$waited" -lt 1200 ] && kill -0 "$pid" 2>/dev/null; do
+		if grep -q '"status": "listening"' "$file" 2>/dev/null &&
+			grep -q "\"port\": $port\b" "$file" 2>/dev/null; then
+			return 0
+		fi
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	return 1
+}
+
+# run_g8re_pair <fx> <fixture dir> <K1> <cycle> <quit> <env word...>: g8re/<fx>/rearm (run B) and
+# g8re/<fx>/once (run A), as described above.
+run_g8re_pair() {
+	local fx="$1" fixture="$2" k1="$3" cycle="$4" quit="$5"
+	shift 5
+	local b="$OUT/g8re/$fx/rearm" a="$OUT/g8re/$fx/once" port pid k2
+	port="$(legs_free_port)"
+	mkdir -p "$b/evidence" "$b/client"
+	echo "$port" >"$b/port.txt"
+	echo "run-gate8: g8re $fx/rearm (K1=$k1, GRC_SWAP_CYCLE=$cycle, GRC_LIVE_LISTEN=127.0.0.1:$port, a viewer in arm 1, quit $quit)"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$b/evidence" GRC_STREAM_OUT="$b/$RECORDING_NAME"
+		RS_FIXTURE_STEP_LOG="$b/steps.jsonl" GRC_VALIDATION_LOG=on GRC_RESOURCE_STORE_DIR="$b/store"
+		GRC_STREAM_PATCH_OUT="$b/$PATCH_RECORDING_NAME" RS_FIXTURE_QUIT_FRAME="$quit"
+		"$@" GRC_LIVE_LISTEN="127.0.0.1:$port" GRC_ARM_DEFER_FRAMES=$((k1 - 1))
+		GRC_SWAP_CYCLE="$cycle" GRC_LIVE_AWAIT_HELLO_MS=20000 GRC_SWAP_CYCLE_REARM_AWAIT_HELLO_MS=
+	)
+	start_headless_bg "$b" -- "$BINARY" --headless --max-fps 60 --path "$fixture"
+	pid="$BG_PID"
+	[ -n "$pid" ] || return 0
+	if g8re_wait_listening "$b/evidence/live.json" "$pid" "$port"; then
+		(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/lib/null-receiver.ts" \
+			--url "ws://127.0.0.1:$port/render-stream" --out "$b/client" --protocol 8 --window 2 \
+			--timeout-s 90 >"$b/client/stdout.log" 2>&1)
+		echo "$?" >"$b/client/exit.txt"
+	else
+		echo "arm 1 never listened on $port (see evidence/live.json)" >"$b/client/skipped.txt"
+	fi
+	finish_bg "$b" "$pid" "$HEADLESS_TIMEOUT_S"
+	k2="$(jq -s '[.[] | select(.phase == "idle" and .cycle == 1)][0] | if . == null then empty else .end_frame + 2 end' \
+		"$b/evidence/swap-cycle.jsonl" 2>/dev/null || true)"
+	mkdir -p "$a"
+	if ! [[ "$k2" =~ ^[0-9]+$ ]]; then
+		echo "no first idle phase in $b/evidence/swap-cycle.jsonl: no K2" >"$a/no-k2.txt"
+		return 0
+	fi
+	echo "$k2" >"$b/k2.txt"
+	echo "run-gate8: g8re $fx/once (armed once at K2=$k2, GRC_ARM_DEFER_FRAMES=$((k2 - 1)), quit $quit)"
+	CAPTURE_FIXTURE_DIR="$fixture"
+	CAPTURE_EXTRA_ENV=("$@" GRC_LIVE_LISTEN="127.0.0.1:$port" GRC_ARM_DEFER_FRAMES=$((k2 - 1)))
+	CAPTURE_EXTRA_ARGS=(--max-fps 60)
+	run_capture "$a" "$quit" none
+}
+
+# run_g8re_id: the re-arm round (g8re/id/host, viewers g8re/id/arm1 and g8re/id/arm2).
+run_g8re_id() {
+	local leg="$OUT/g8re/id" host="$OUT/g8re/id/host" port pid
+	port="$(legs_free_port)"
+	mkdir -p "$host/evidence" "$host/tap"
+	echo "$port" >"$host/port.txt"
+	echo "run-gate8: g8re id (tag-scene V2 live host, GRC_SWAP_CYCLE=$G8RE_ID_CYCLE, one /14 v2 viewer per arm on 127.0.0.1:$port)"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$host/evidence" GRC_STREAM_VERSION=13
+		GRC_LIVE_LISTEN="127.0.0.1:$port" GRC_LIVE_TAP_DIR="$host/tap" GRC_LIVE_MAX_CONNECTIONS=1
+		GRC_LIVE_AWAIT_HELLO_MS=30000 GRC_LIVE_AWAIT_HELLOS=1
+		GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip GRC_ROOT_SIZE=presentation:640x360 RS_FIXTURE_ARM=late
+		RS_FIXTURE_QUIT_FRAME="$G8RE_ID_QUIT" RS_FIXTURE_TAG_V2=1 RS_FIXTURE_TAG_START=90
+		GRC_ITEM_META="$ID_GRANT" RS_FIXTURE_TAG_LOG="$host/oracle.jsonl" GRC_ITEM_META_LOG="$host/ids.jsonl"
+		GRC_SWAP_CYCLE="$G8RE_ID_CYCLE" RS_FIXTURE_TAG_DUMP_AT="$G8RE_ID_DUMPS" RS_FIXTURE_TAG_REARM_REENTRY=1
+	)
+	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$TAG_DIR"
+	pid="$BG_PID"
+	[ -n "$pid" ] || return 0
+	local arm live
+	for arm in 1 2; do
+		live="$host/evidence/live.json"
+		[ "$arm" = 1 ] || live="$host/evidence/arm-$arm/live.json"
+		if g8re_wait_listening "$live" "$pid" "$port"; then
+			run_g8id14_viewers "$leg" "$port" "arm$arm|zstd-base,zstd|2|14|$ID_REQUEST|"
+		else
+			mkdir -p "$leg/arm$arm"
+			echo "arm $arm never listened on $port (see ${live#"$leg"/})" >"$leg/arm$arm/skipped.txt"
+		fi
+	done
+	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
+}
+
+run_g8re() {
+	run_import_g8re
+	mkdir -p "$OUT/g8re"
+	# the re-arm round's viewers decode in rs-gsw-wasm and its checks validate through rs-core-check
+	echo "run-gate8: g8re build-rs-core.sh (rs-core-check, rs-gsw-wasm)"
+	bash "$SCRIPT_DIR/build-rs-core.sh" >"$OUT/g8re/build-rs-core.log" 2>&1 || {
+		echo "run-gate8: build-rs-core.sh failed, see $OUT/g8re/build-rs-core.log" >&2
+		exit 1
+	}
+	run_g8re_pair adopt "$G8A_FIXTURE_DIR" "$G8RE_ADOPT_K1" "$G8RE_ADOPT_CYCLE" "$G8RE_ADOPT_QUIT" \
+		"${G8RE_ADOPT_ENV[@]}"
+	run_g8re_pair tex "$FIXTURE_DIR" "$G8RE_TEX_K1" "$G8RE_TEX_CYCLE" "$G8RE_TEX_QUIT" "${G8RE_TEX_ENV[@]}"
+	run_g8re_id
+}
+
 # ------------------------------------------------------------------------------------- g8tdr
 # TDR: GRT1 texture bodies are zstd-coded at rest where they are built.
 # Every leg under g8tdr/. The captures are /9 with the stock delivery (passthrough: a block variant
@@ -4578,6 +4920,8 @@ for group in "${GROUPS_RUN[@]}"; do
 	g8id) run_g8id ;;
 	g8id2) run_g8id2 ;;
 	g8rec1) run_g8rec1 ;;
+	g8sw) run_g8sw ;;
+	g8re) run_g8re ;;
 	esac
 done
 

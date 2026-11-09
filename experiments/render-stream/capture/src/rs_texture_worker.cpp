@@ -1,5 +1,7 @@
 #include "rs_texture_worker.h"
 
+#include <pthread.h>
+
 #include "rs_texture_delivery.h"
 
 #include <sys/resource.h>
@@ -190,6 +192,7 @@ void TextureWorkerPool::run() {
   // D11: below normal priority, so a busy main thread keeps the core it needs. setpriority() on
   // a thread id sets that thread's own nice value on Linux; failure (a sandbox) is harmless.
   (void)setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 10);
+  (void)pthread_setname_np(pthread_self(), thread_name_);
   for (;;) {
     std::function<void()> work;
     std::uint64_t delay_ms = 0;
@@ -229,7 +232,7 @@ void TextureWorkerPool::run() {
 }
 
 TextureWorkerPool &texture_worker_pool() {
-  static TextureWorkerPool pool;
+  static TextureWorkerPool pool("grc-tex");
   return pool;
 }
 

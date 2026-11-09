@@ -40,6 +40,9 @@ the capture, and writes its own identity table as the oracle the rows are checke
 - `RS_FIXTURE_TAG_START` (default 0): every step's frame is shifted by that much. The live legs
   use 90, so that every viewer started beside the host is connected first.
 - `RS_FIXTURE_QUIT_FRAME` (default 200 + start): the frame it quits at.
+- `RS_FIXTURE_TAG_DUMP_AT` (LS3; a comma list of absolute frames, unset: none): an extra oracle dump
+  at each of those frames. Gate 8's `g8re` re-arm round uses it to dump in every armed and idle
+  phase of its swap cycle.
 - `RS_FIXTURE_TAG_LOG` (an absolute path): the oracle, one JSON line per dump frame (1, 6, 21, 26,
   32, 41, 46, 51, 61, 150 after the start). Each line is
   `{"frame", "nodes": [{"rid", "class", "script", "scene", "path", "groups", "meta"}]}`, every
@@ -123,3 +126,8 @@ in decimal), `mouse_filter` (`get_mouse_filter_with_override()`, plus 4 when the
 Callables connected to the Control's `property_list_changed`, from `get_signal_connection_list`;
 null for a non-Control). The fixture knows nothing about the capture: those are Godot's own
 answers. The `g8id14` legs (`run-gate8.sh`) run it.
+
+`RS_FIXTURE_TAG_REARM_REENTRY=1` extends the re-arm round: Plain changes `rs_tag` while
+detached before its first re-entry and again at frames 480–485 in arm 2. The two viewers
+must receive both metadata updates with the same instance id, one filter connection while
+armed, and no connections after either disarm. Other fixture runs keep their original schedule.

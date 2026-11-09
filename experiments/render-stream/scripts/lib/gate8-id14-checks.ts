@@ -88,7 +88,7 @@ export interface Identity {
   groups: string[];
   meta: Record<string, string | null>;
 }
-interface OracleNode extends Partial<Identity> {
+export interface OracleNode extends Partial<Identity> {
   rid: string;
   groups: string[];
   meta: Record<string, string | null>;
@@ -100,7 +100,7 @@ interface Flip {
   rid: string;
   mouse_filter: number;
 }
-interface OracleLine {
+export interface OracleLine {
   frame: number;
   process_frames?: number;
   flips?: Flip[];
@@ -127,8 +127,8 @@ interface Line {
   rows?: number | null;
   envelope_seq?: number;
 }
-type Row = Identity | null; // resolved; null: no node
-interface Dump {
+export type Row = Identity | null; // resolved; null: no node
+export interface Dump {
   grant: ItemMetaRequest | null;
   seen: Record<string, unknown>;
   rows: Record<string, unknown>;
@@ -215,7 +215,7 @@ function tsValidate(
 }
 
 /** rs-core-check's dump row form -> Identity (groups as names, every meta key present). */
-function fromDump(row: unknown, grant: ItemMetaRequest): Row {
+export function fromDump(row: unknown, grant: ItemMetaRequest): Row {
   if (row === null || row === undefined) return null;
   const r = row as Record<string, unknown>;
   const mask = typeof r.groups === "number" ? r.groups : 0;
@@ -358,7 +358,7 @@ const decodedOf = (leg: string, v: string, version: Version): string =>
   join(leg, v, `decoded.rs${version}`);
 
 /** The rs-core-check dump of a viewer's stream (written beside the leg). */
-function dumpOf(
+export function dumpOf(
   leg: string,
   stream: string,
   version: Version,

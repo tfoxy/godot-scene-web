@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  ftruncateSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tagBurstProblems } from "../lib/gate8-id14-checks";
 import {
+  captureMirrorProblems,
   runScaleMirrorChecks,
+  scaleMirrorFileProblems,
   scaleMirrorProblems,
 } from "../lib/gate8-scale-checks";
 import { MAGIC_V13 } from "../lib/render-stream-2";
@@ -54,6 +67,79 @@ assert.ok(
 );
 const root = mkdtempSync(join(tmpdir(), "scale-selftest-"));
 try {
+  // Keep the old in-memory scanner as the oracle, including truncated framing.
+  const samples = [
+    stream(),
+    stream("mirror-capacity"),
+    stream("pre-existing-object"),
+    MAGIC_V13,
+    Buffer.from("bad magic"),
+    new Uint8Array(),
+    Buffer.concat([stream("mirror-capacity"), Buffer.from([1, 2, 3])]),
+    Buffer.concat([MAGIC_V13, Buffer.from([100, 0, 0, 0])]),
+  ];
+  // Resource payloads are skipped; metadata and prefixes straddle tiny reads.
+  const payload = Buffer.alloc(257, 0xff);
+  const withPayload = Buffer.concat([
+    stream("mirror-capacity"),
+    payload,
+    stream().subarray(8),
+  ]);
+  withPayload.writeUInt32LE(withPayload.readUInt32LE(8) + payload.length, 8);
+  samples.push(withPayload);
+  for (const [i, data] of samples.entries()) {
+    const path = join(root, `sample-${i}.rs13`);
+    writeFileSync(path, data);
+    for (const requireTransactions of [true, false]) {
+      const old = scaleMirrorProblems(data);
+      const expected = requireTransactions
+        ? old
+        : old.filter((p) => p !== "no transactions");
+      for (const bufferSize of [1, 3, 7, 65536])
+        assert.deepEqual(
+          scaleMirrorFileProblems(path, requireTransactions, bufferSize),
+          expected,
+        );
+    }
+  }
+  for (const name of ["full", "patch", "inline", "off"]) {
+    const path = fileURLToPath(
+      new URL(`../../protocol/golden-8/${name}.rs8`, import.meta.url),
+    );
+    for (const bufferSize of [3, 65536])
+      assert.deepEqual(
+        scaleMirrorFileProblems(path, true, bufferSize),
+        scaleMirrorProblems(readFileSync(path)),
+      );
+  }
+  // A sparse resource record proves that payload size never becomes a read/allocation size.
+  const sparse = join(root, "large.rs13");
+  const fd = openSync(sparse, "w");
+  try {
+    const meta = Buffer.from(JSON.stringify({ type: "resource" }));
+    const header = Buffer.alloc(16 + meta.length);
+    header.set(MAGIC_V13);
+    header.writeUInt32LE(0x80000000, 8);
+    header.writeUInt32LE(meta.length, 12);
+    header.set(meta, 16);
+    writeSync(fd, header);
+    const end = 8 + 4 + 0x80000000;
+    ftruncateSync(fd, end);
+    writeSync(fd, stream().subarray(8), 0, stream().length - 8, end);
+  } finally {
+    closeSync(fd);
+  }
+  assert.deepEqual(scaleMirrorFileProblems(sparse), []);
+  const arms = join(root, "arms");
+  mkdirSync(arms);
+  writeFileSync(join(arms, "recording.rs8"), stream());
+  writeFileSync(join(arms, "recording.rs8.arm-2"), stream("mirror-capacity"));
+  writeFileSync(join(arms, "recording.rs8.arm-3"), stream("mirror-capacity"));
+  assert.deepEqual(captureMirrorProblems(arms), [
+    "recording.rs8.arm-2: frame 1: mirror-capacity: full",
+    "recording.rs8.arm-3: frame 1: mirror-capacity: full",
+  ]);
+  rmSync(arms, { recursive: true });
   const host = join(root, "g8id14", "tag-burst", "host");
   mkdirSync(host, { recursive: true });
   writeFileSync(
@@ -102,4 +188,4 @@ try {
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
-console.log("self-test-gate8-scale: 23 passed, 0 failed");
+console.log("self-test-gate8-scale: 105 passed, 0 failed");

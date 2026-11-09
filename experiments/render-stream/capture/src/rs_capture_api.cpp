@@ -1,5 +1,7 @@
 #include "rs_capture_api.h"
 
+#include "rs_platform.h"
+
 #include <chrono>
 #include <stdexcept>
 #include <utility>
@@ -31,7 +33,6 @@ int Api::arm(const Value::Object &options, const Validator &validate) {
   called_.store(true, std::memory_order_relaxed);
   if (state_ == State::Refused) return refuse(2, "capture-refused");
   if (state_ != State::Standby) return refuse(44, "busy");
-  if (!can_arm()) return refuse(2, "rearm-unsupported");
   Settings settings;
   static const std::vector<std::string> keys = {
       "GRC_ROOT_SIZE", "GRC_TEXTURE_DELIVERY", "GRC_TEXTURE_PENDING", "GRC_LIVE_CODING",
@@ -171,7 +172,8 @@ std::uint64_t now_ns() {
 }
 TeardownThread::~TeardownThread() { join(); }
 void TeardownThread::run(std::function<void()> fn, bool inline_on_main) {
-  if (ran) throw std::logic_error("teardown already started");
+  if (!done()) throw std::logic_error("teardown already running");
+  join();
   ran = true;
   on_main = inline_on_main;
   start_ns = now_ns();
@@ -182,7 +184,17 @@ void TeardownThread::run(std::function<void()> fn, bool inline_on_main) {
     done_.store(true, std::memory_order_release);
   };
   if (inline_on_main) work();
-  else thread_ = std::thread(std::move(work));
+  else {
+    thread_ = std::thread([work = std::move(work)] {
+      set_current_thread_name("grc-teardown");
+      work();
+    });
+  }
 }
 void TeardownThread::join() { if (thread_.joinable()) thread_.join(); }
+Value::Object teardown_join_info(const TeardownThread &thread, bool pending,
+                                bool encoders_pending) {
+  return {{"ran", thread.ran}, {"on_main", thread.on_main},
+          {"ms", pending || encoders_pending ? 0.0 : thread.ms}};
+}
 }  // namespace grc::rs::capture

@@ -153,6 +153,9 @@ using TextureJobPtr = std::shared_ptr<TextureJob>;
 class TextureWorkerPool {
  public:
   TextureWorkerPool() = default;
+  // LS3: the threads' name (pthread_setname_np), so a disarm can be judged by the capture's own
+  // threads being gone.
+  explicit TextureWorkerPool(const char *thread_name) : thread_name_(thread_name) {}
   ~TextureWorkerPool();
   TextureWorkerPool(const TextureWorkerPool &) = delete;
   TextureWorkerPool &operator=(const TextureWorkerPool &) = delete;
@@ -180,6 +183,7 @@ class TextureWorkerPool {
  private:
   void run();
 
+  const char *thread_name_ = "grc-pool";
   mutable std::mutex mutex_;
   std::condition_variable work_cv_;
   std::condition_variable idle_cv_;

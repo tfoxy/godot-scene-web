@@ -928,8 +928,12 @@ RidMap<std::uint8_t> g_queued;  // 1: queued; 0: freed while queued (skipped at 
 std::atomic<bool> g_queue_nonempty{false};
 
 void queue_offmain(std::uint64_t rid, RefKind ref) {
+  OffmainGuard inflight;
+  if (inflight.standby()) return;
+  if (!g_res_active.load(std::memory_order_seq_cst)) return;
   {
     std::lock_guard<std::mutex> lock(g_queue_mutex);
+    if (!g_res_active.load(std::memory_order_seq_cst)) return;
     const auto it = g_queued.find(rid);
     if (it != g_queued.end() && it->second != 0) {
       return;  // already queued
@@ -1744,17 +1748,21 @@ void adopt_resources_begin(AdoptFault f, bool dummy_host) {
   g_res_main = std::this_thread::get_id();
   g_res_fault.store(static_cast<int>(f), std::memory_order_release);
   g_res_dummy_host.store(dummy_host, std::memory_order_relaxed);
-  g_res_active.store(true, std::memory_order_release);
+  g_res_active.store(true, std::memory_order_seq_cst);
 }
 
 void node_map_disconnect();  // G8m, below
 
 void adopt_resources_end() {
-  g_res_active.store(false, std::memory_order_release);
+  // Pairs with post-increment admission reads and inflight_ready's seq_cst counter poll.
+  g_res_active.store(false, std::memory_order_seq_cst);
   node_map_disconnect();  // G8m: the SceneTree.node_added callable leaves with the stream
 }
 
-bool adopt_resources_active() { return g_res_active.load(std::memory_order_acquire); }
+bool adopt_resources_active() {
+  return g_res_active.load(std::memory_order_seq_cst) && !hooks_offmain_standby();
+}
+
 
 AdoptResourceStats adopt_resource_stats() {
   std::lock_guard<std::mutex> lock(g_res_mutex);
@@ -1910,10 +1918,11 @@ void adopt_multimesh_locked_out(std::uint64_t rid) {
 // and the map does not grow with freed resources) and cancels its off-main queue entry (LAR6: the
 // drain must not read a freed RID's getter). The registry's own free tap erases its entry.
 void adopt_resource_freed(std::uint64_t rid) {
+  if (hooks_offmain_standby()) return;
   if (rid == 0) {
     return;
   }
-  if (!g_res_active.load(std::memory_order_acquire)) {
+  if (!g_res_active.load(std::memory_order_seq_cst)) {
     return;
   }
   {
@@ -1937,7 +1946,8 @@ void adopt_resource_freed(std::uint64_t rid) {
 }
 
 bool adopt_from_update_begin() {
-  if (!g_res_active.load(std::memory_order_acquire) || fault() == AdoptFault::NoResources) {
+  if (hooks_offmain_standby()) return false;
+  if (!g_res_active.load(std::memory_order_seq_cst) || fault() == AdoptFault::NoResources) {
     return false;
   }
   std::lock_guard<std::mutex> lock(g_res_mutex);
@@ -2224,9 +2234,11 @@ void node_added_call(void * /*userdata*/, const GDExtensionConstVariantPtr *args
   if (error != nullptr) {
     error->error = GDEXTENSION_CALL_OK;
   }
-  if (count < 1 || args == nullptr ||
-      !(g_res_active.load(std::memory_order_acquire) ||
-        g_tag_active.load(std::memory_order_acquire)) ||
+  OffmainGuard inflight;
+  if (hooks_offmain_standby()) return;
+  if (g_root_finalized || count < 1 || args == nullptr ||
+      !(g_res_active.load(std::memory_order_seq_cst) ||
+        g_tag_active.load(std::memory_order_seq_cst)) ||
       g_iface.variant_get_type(const_cast<GDExtensionVariantPtr>(args[0])) !=
           GDEXTENSION_VARIANT_TYPE_OBJECT) {
     return;
@@ -2246,18 +2258,18 @@ void node_added_call(void * /*userdata*/, const GDExtensionConstVariantPtr *args
   {
     std::lock_guard<std::mutex> lock(g_node_mutex);
     g_item_nodes[rid] = id;
-    if (g_tag_active.load(std::memory_order_acquire) && !g_tag_no_reentry) {
+    if (g_tag_active.load(std::memory_order_seq_cst) && !g_tag_no_reentry) {
       g_tag_entered.insert(rid);
     }
   }
   // LATE-RES (gap #5): a pre-arm item not in the tree at arm (a pooled node) is adopted at its
   // first node_added after the arm, so its enter-tree and draw calls land on a known item.
-  if (g_res_active.load(std::memory_order_acquire) && mirror_enabled() &&
+  if (g_res_active.load(std::memory_order_seq_cst) && mirror_enabled() &&
       fault() != AdoptFault::NoResources && std::this_thread::get_id() == g_res_main &&
       adopt_item_node(item, rid, hooks_current_frame())) {
     mat_stat([](AdoptMaterialStats &s) { ++s.items_adopted; });
   }
-  if (g_tag_before_ready && g_tag_active.load(std::memory_order_acquire)) {
+  if (g_tag_before_ready && g_tag_active.load(std::memory_order_seq_cst)) {
     tag_resolve_early(rid);  // sabotage meta-before-ready: the identity before the node's _ready
   }
   mat_stat([](AdoptMaterialStats &s) { ++s.nodes_added; });
@@ -2828,7 +2840,7 @@ void node_map_disconnect_now() {
     return;
   }
   g_node_added_connected = false;
-  void *tree = g_iface.object_get_instance_from_id != nullptr
+  void *tree = !g_root_finalized && g_iface.object_get_instance_from_id != nullptr
                    ? g_iface.object_get_instance_from_id(g_node_added_tree)
                    : nullptr;
   if (tree != nullptr) {
@@ -2840,7 +2852,7 @@ void node_map_disconnect_now() {
 
 // G8m: adoption's end. TAG1: the connection stays while TAG still holds the map.
 void node_map_disconnect() {
-  if (!g_tag_active.load(std::memory_order_acquire)) {
+  if (!g_tag_active.load(std::memory_order_seq_cst)) {
     node_map_disconnect_now();
   }
 }
@@ -3278,6 +3290,10 @@ bool predraw_pump_connect(std::string *why) {
 }
 
 void predraw_pump_disconnect() {
+  if (g_root_finalized) {
+    g_pump_connected = false;
+    return;
+  }
   void *rs_singleton = singleton_object("RenderingServer");
   if (!g_pump_connected || rs_singleton == nullptr || g_pump_disconnect == nullptr) {
     return;
@@ -3664,13 +3680,18 @@ bool knows(Mirror &m, RefKind ref, std::uint64_t rid) {
 }  // namespace
 
 bool materialize(std::uint64_t rid, RefKind ref) {
-  // The pure path (GRC_ADOPT=off, or not armed): one atomic load, as every adopt_*_ref before it.
-  if (rid == 0 || !g_res_active.load(std::memory_order_acquire)) {
+  // Admission precedes all per-arm flags; a standby invocation keeps that view when nested.
+  if (rid == 0) {
     return false;
   }
+  OffmainGuard inflight;
+  if (inflight.standby()) return false;
+  if (!g_res_active.load(std::memory_order_seq_cst)) return false;
   if (fault() == AdoptFault::NoResources || !mirror_enabled()) {
     return false;
   }
+  std::unique_lock<std::mutex> test_reader;
+  if (inflight.counted() && !hooks_test_inflight_delay(&test_reader)) return false;
   Mirror &m = mirror_instance();
   switch (ref) {
   case RefKind::Shader:
@@ -3996,7 +4017,7 @@ bool node_map_acquire_tag(std::string *error) {
   if (!adopt_binds_ready(error)) {
     return false;
   }
-  if (g_tag_active.load(std::memory_order_acquire)) {
+  if (g_tag_active.load(std::memory_order_seq_cst)) {
     return true;
   }
   g_mat_tags.resolve();
@@ -4008,7 +4029,7 @@ bool node_map_acquire_tag(std::string *error) {
     }
     return false;
   }
-  g_tag_active.store(true, std::memory_order_release);
+  g_tag_active.store(true, std::memory_order_seq_cst);
   node_map_connect();
   {
     // §2.6 "Late join": the arm walker's visit fills the map before the first resolution.
@@ -4019,10 +4040,10 @@ bool node_map_acquire_tag(std::string *error) {
 }
 
 void node_map_release_tag() {
-  if (!g_tag_active.load(std::memory_order_acquire)) {
+  if (!g_tag_active.load(std::memory_order_seq_cst)) {
     return;
   }
-  g_tag_active.store(false, std::memory_order_release);
+  g_tag_active.store(false, std::memory_order_seq_cst);
   {
     std::lock_guard<std::mutex> lock(g_node_mutex);
     g_tag_entered.clear();
@@ -4186,7 +4207,8 @@ std::size_t filter_unwatch_all(bool leak) {
   g_filter_on.store(false, std::memory_order_release);
   std::size_t undone = 0;
   for (auto &entry : g_filter_watches) {
-    void *node = leak ? nullptr : g_iface.object_get_instance_from_id(entry.first);
+    void *node = leak || g_root_finalized ? nullptr
+                                        : g_iface.object_get_instance_from_id(entry.first);
     if (node != nullptr) {
       const GDExtensionConstTypePtr args[2] = {property_list_changed_name().ptr(),
                                                entry.second.callable};
@@ -4206,6 +4228,60 @@ std::size_t filter_watch_count() { return g_filter_watches.size(); }
 
 std::uint64_t filter_calls_while_off() {
   return g_filter_calls_off.load(std::memory_order_relaxed);
+}
+
+std::size_t adopt_held() {
+  std::size_t n = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    n += g_refused.size() + g_census.pages.size() + g_census.compressed.size() +
+         g_census.canvas_textures.size();
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_queue_mutex);
+    n += g_queue.size() + g_queued.size();
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_pta_mutex);
+    n += g_pta_sub_wait.size();
+  }
+  n += g_mat_refused_items.size() + g_mat_refused_shaders.size() + g_cim_synthetic.size() +
+       g_walk_material_items.size();
+  if (!g_tag_active.load(std::memory_order_seq_cst)) {
+    std::lock_guard<std::mutex> lock(g_node_mutex);
+    n += g_item_nodes.size() + g_tag_entered.size();
+  }
+  return n;
+}
+
+std::size_t adopt_release() {
+  const std::size_t n = adopt_held();
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    g_refused = RidMap<Refusal>();
+    g_census = Census();
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_queue_mutex);
+    std::vector<std::pair<std::uint64_t, RefKind>>().swap(g_queue);
+    g_queued = RidMap<std::uint8_t>();
+    g_queue_nonempty.store(false, std::memory_order_release);
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_pta_mutex);
+    g_pta_stats = EmitterAdoptStats();
+    g_pta_sub_wait.clear();
+  }
+  g_mat_refused_items.clear();
+  g_mat_refused_shaders.clear();
+  g_cim_synthetic.clear();
+  std::vector<std::uint64_t>().swap(g_walk_material_items);
+  if (!g_tag_active.load(std::memory_order_seq_cst)) {
+    std::lock_guard<std::mutex> lock(g_node_mutex);
+    std::unordered_map<std::uint64_t, std::uint64_t>().swap(g_item_nodes);
+    std::unordered_set<std::uint64_t>().swap(g_tag_entered);
+  }
+  return n;
 }
 
 }  // namespace rs

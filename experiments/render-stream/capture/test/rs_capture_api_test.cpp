@@ -132,20 +132,30 @@ void test_lifecycle() {
       std::get<std::int64_t>(info.at("published").data) == 7 &&
       std::get<std::int64_t>(info.at("clients_served").data) == 2 &&
       std::get<std::string>(info.at("reason").data) == "fixture", "disarmed payload");
-  check(api.phase() == State::Standby && !api.can_arm() && !api.state().contains("listen"),
-      "disarmed standby cannot rearm, hides session");
-  refusal(api, true, 2, "rearm-unsupported");
+  check(api.phase() == State::Standby && api.can_arm() && !api.state().contains("listen"),
+      "disarmed standby can rearm, hides session");
   refusal(api, false, 3, "not-armed");
+  check(api.arm({{"GRC_ROOT_SIZE", std::string("observe")}}) == 0 && api.phase() == State::Arming &&
+      api.arm_pending(), "re-arm schedules");
+  {
+    const auto second = api.arm_point();
+    api.armed({{"listen", std::string("127.0.0.1:2")}});
+    signals = api.take_signals();
+    const auto &again = std::get<Value::Object>(signals.back().args[0].data);
+    check(second.at("GRC_ROOT_SIZE") == "observe" && api.arm_count() == 2 &&
+        std::get<std::int64_t>(again.at("arm_index").data) == 2 &&
+        api.state().contains("listen"), "re-arm counts its index");
+  }
   Api failed;
   failed.loaded(State::Standby);
   failed.arm();
   failed.arm_point();
   failed.arm_failed("listen-bind");
   signals = failed.take_signals();
-  check(failed.phase() == State::Standby && !failed.can_arm() && failed.last_reason() == "listen-bind" &&
+  check(failed.phase() == State::Standby && failed.can_arm() && failed.last_reason() == "listen-bind" &&
       signals.size() == 1 && signals[0].name == "arm_failed", "arm failure standby");
-  refusal(failed, true, 2, "rearm-unsupported");
   refusal(failed, false, 3, "not-armed");
+  check(failed.arm() == 0 && failed.phase() == State::Arming, "arm after a failed arm schedules");
   Api silent;
   silent.loaded(State::Standby);
   silent.arm();
@@ -164,6 +174,17 @@ void test_lifecycle() {
       "disarm inclusive bounds");
 }
 void test_teardown() {
+  {
+    TeardownThread thread;
+    thread.ms = 17.0;  // timing retained from the previous pool phase
+    for (const auto &[pool_pending, encoders_pending] :
+         {std::pair{true, false}, std::pair{false, true}, std::pair{false, false}}) {
+      const auto snapshot = teardown_join_info(thread, pool_pending, encoders_pending);
+      check(std::get<double>(snapshot.at("ms").data) ==
+                (pool_pending || encoders_pending ? 0.0 : 17.0),
+            "pending pool or encoder phase hides unjoined worker timing");
+    }
+  }
   const auto main = std::this_thread::get_id();
   for (bool inline_on_main : {false, true}) {
     TeardownThread teardown;
@@ -187,6 +208,17 @@ void test_teardown() {
   bool joined = false;
   { TeardownThread teardown; teardown.run([&] { joined = true; }); }
   check(joined, "destruction joins worker");
+  {
+    // One instance serves every teardown of a process.
+    TeardownThread teardown;
+    int runs = 0;
+    for (int i = 0; i < 3; ++i) {
+      teardown.run([&] { ++runs; });
+      while (!teardown.done()) std::this_thread::yield();
+      teardown.join();
+    }
+    check(runs == 3 && teardown.ran, "teardown thread reruns after join");
+  }
 }
 }
 int main() {

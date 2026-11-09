@@ -103,6 +103,24 @@ class Host {
   // "copy"} -- the capture's own RID-to-id map, which the meta-oracle check joins the fixture's
   // RID-keyed dump through. Flushed at each pass that made entries.
   void set_log(std::FILE *log) { log_ = log; }
+  // LS3: at a disarm, after set_union(empty): back to a host that never served, keeping only the
+  // per-load configuration (budget, before_ready, the v2 options and the log). The interned
+  // strings, groups, meta names, ids and stats go: the next arm's hub starts empty, so its
+  // viewers must be sent every string again.
+  void release() {
+    set_union(Request(), 0);
+    Host fresh;
+    fresh.budget_ns_ = budget_ns_;
+    fresh.before_ready_ = before_ready_;
+    fresh.v2_options_ = v2_options_;
+    fresh.log_ = log_;
+    *this = std::move(fresh);
+  }
+  // LS3: what the host still holds (the disarm's accounting): watched Controls, queued changes,
+  // pending work and per-RID entries.
+  std::size_t held() const {
+    return watched_.size() + changed_.size() + work_.size() + by_rid_.size();
+  }
   // After the frame's snapshot: the new items' identities, within the budget. Null when the pass
   // added nothing.
   std::shared_ptr<const Batch> pass(const Mirror &mirror, std::uint64_t frame);

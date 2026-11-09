@@ -162,7 +162,7 @@ add_library(render_stream_capture SHARED
 )
 target_include_directories(render_stream_capture PRIVATE src vendor ${GRC_INJECT_GEN})
 add_dependencies(render_stream_capture grc_inject_script)
-target_link_libraries(render_stream_capture PRIVATE grc_warnings grc_codecs grc_basisu)
+target_link_libraries(render_stream_capture PRIVATE grc_warnings grc_codecs grc_basisu grc_platform)
 set_target_properties(render_stream_capture PROPERTIES
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
@@ -224,7 +224,7 @@ add_executable(rs_publish_test
   src/report.cpp
 )
 target_include_directories(rs_publish_test PRIVATE src test)
-target_link_libraries(rs_publish_test PRIVATE grc_warnings grc_codecs Threads::Threads)
+target_link_libraries(rs_publish_test PRIVATE grc_warnings grc_codecs grc_platform Threads::Threads)
 target_compile_definitions(rs_publish_test PRIVATE
   GRC_GOLDEN2_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-2"
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_publish_test_tmp")
@@ -334,7 +334,7 @@ add_executable(rs_live_test
   src/rs_ws.cpp
 )
 target_include_directories(rs_live_test PRIVATE src test)
-target_link_libraries(rs_live_test PRIVATE grc_warnings grc_codecs Threads::Threads)
+target_link_libraries(rs_live_test PRIVATE grc_warnings grc_codecs grc_platform Threads::Threads)
 target_compile_definitions(rs_live_test PRIVATE
   GRC_GOLDEN2_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-2"
   GRC_GOLDEN3_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-3"
@@ -369,7 +369,7 @@ add_executable(rs_live_window_test
   src/rs_ws.cpp
 )
 target_include_directories(rs_live_window_test PRIVATE src test)
-target_link_libraries(rs_live_window_test PRIVATE grc_warnings grc_codecs Threads::Threads)
+target_link_libraries(rs_live_window_test PRIVATE grc_warnings grc_codecs grc_platform Threads::Threads)
 target_compile_definitions(rs_live_window_test PRIVATE
   GRC_WINDOW1_TRANSCRIPTS="${CMAKE_CURRENT_SOURCE_DIR}/test/golden/live-window1-transcripts.txt"
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_live_window_test_tmp")
@@ -404,7 +404,7 @@ add_executable(rs_live_host
   src/rs_sha256.cpp
 )
 target_include_directories(rs_live_host PRIVATE src test)
-target_link_libraries(rs_live_host PRIVATE grc_warnings grc_codecs Threads::Threads ${CMAKE_DL_LIBS})
+target_link_libraries(rs_live_host PRIVATE grc_warnings grc_codecs grc_platform Threads::Threads ${CMAKE_DL_LIBS})
 # CAR6: export grc_carrier_register from the executable, so the host registers its in-memory
 # carriers through dlsym(RTLD_DEFAULT) exactly as a consumer reaches the capture library's.
 set_target_properties(rs_live_host PROPERTIES ENABLE_EXPORTS ON)
@@ -780,5 +780,5 @@ target_link_libraries(rs_setting_test PRIVATE grc_warnings)
 add_test(NAME rs_setting COMMAND rs_setting_test)
 add_executable(rs_capture_api_test test/rs_capture_api_test.cpp src/rs_capture_api.cpp)
 target_include_directories(rs_capture_api_test PRIVATE src)
-target_link_libraries(rs_capture_api_test PRIVATE grc_warnings Threads::Threads)
+target_link_libraries(rs_capture_api_test PRIVATE grc_warnings grc_platform Threads::Threads)
 add_test(NAME rs_capture_api COMMAND rs_capture_api_test)

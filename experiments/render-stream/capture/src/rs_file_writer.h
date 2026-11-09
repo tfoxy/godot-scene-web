@@ -18,6 +18,8 @@
 #ifndef GRC_RS_FILE_WRITER_H
 #define GRC_RS_FILE_WRITER_H
 
+#include "rs_platform.h"
+
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -38,7 +40,10 @@ class FileWriter {
 
   explicit FileWriter(std::size_t max_queued_bytes = std::size_t{256} << 20)
       : max_queued_bytes_(max_queued_bytes) {
-    thread_ = std::thread([this] { run(); });
+    thread_ = std::thread([this] {
+      set_current_thread_name("grc-writer");
+      run();
+    });
   }
   ~FileWriter() { stop(); }
   FileWriter(const FileWriter &) = delete;

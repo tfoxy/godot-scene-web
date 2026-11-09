@@ -1,6 +1,7 @@
 #include "rs_root_query.h"
 
 #include <cstring>
+#include <cstdio>
 
 #include "abi.h"
 #include "iface.h"
@@ -42,6 +43,7 @@ constexpr int64_t kViewportGetDefaultTextureFilter = 896601198LL;   // -> Viewpo
 constexpr int64_t kViewportGetDefaultTextureRepeat = 4049774160LL;  // -> Viewport.DefaultCanvasItemTextureRepeat
 // The one write (GRC_ROOT_SIZE=enforce-min-size only).
 constexpr int64_t kWindowSetMinSize = 1130785943LL;              // Window.set_min_size(Vector2i) -> void
+constexpr int64_t kWindowGetMinSize = 3690982128LL;              // Window.get_min_size() -> Vector2i
 // Gate 6, from the same dump (extension_api.json of 4.5.1-stable).
 constexpr int64_t kViewportGetOversampling = 1740695150LL;       // Viewport.get_oversampling() -> float (double on ptrcall)
 constexpr int64_t kViewportIsSnap2dTransforms = 36873697LL;      // Viewport.is_snap_2d_transforms_to_pixel_enabled() -> bool
@@ -58,7 +60,12 @@ void note(RootInfo *info, const char *step) {
 
 RootInfo root_query_run() {
   RootInfo info;
+  if (g_root_finalized) {
+    note(&info, "root-finalized");
+    return info;
+  }
 
+  std::fprintf(stderr, "[grc] root-call: query\n");
   // 8 does not depend on the scene tree, so it runs whatever happens above it.
   {
     void *rs = singleton_object("RenderingServer");
@@ -296,7 +303,7 @@ RootInfo root_query_run() {
 }
 
 bool root_enforce_min_size(const RootInfo &info, std::string *detail) {
-  if (info.window == nullptr) {
+  if (g_root_finalized || info.window == nullptr) {
     *detail = "no root Window";
     return false;
   }
@@ -315,7 +322,7 @@ bool root_enforce_min_size(const RootInfo &info, std::string *detail) {
 
 bool root_set_min_size(const RootInfo &info, std::int32_t width, std::int32_t height,
                        std::string *detail) {
-  if (info.window == nullptr) {
+  if (g_root_finalized || info.window == nullptr) {
     *detail = "no root Window";
     return false;
   }
@@ -329,6 +336,26 @@ bool root_set_min_size(const RootInfo &info, std::int32_t width, std::int32_t he
     return false;
   }
   return true;
+}
+
+bool root_get_min_size(void *window, std::int32_t out[2]) {
+  if (g_root_finalized || window == nullptr) return false;
+  std::fprintf(stderr, "[grc] root-call: get-min-size\n");
+  std::int32_t size[2] = {0, 0};
+  if (!call_value_getter(method_bind("Window", "get_min_size", kWindowGetMinSize), window, size,
+                         sizeof(size))) {
+    return false;
+  }
+  out[0] = size[0];
+  out[1] = size[1];
+  return true;
+}
+
+bool root_write_min_size(void *window, std::int32_t width, std::int32_t height) {
+  if (g_root_finalized || window == nullptr) return false;
+  std::fprintf(stderr, "[grc] root-call: write-min-size\n");
+  return call_void_vector2i(method_bind("Window", "set_min_size", kWindowSetMinSize), window,
+                            width, height);
 }
 
 const char *content_scale_mode_name(std::int64_t mode) {

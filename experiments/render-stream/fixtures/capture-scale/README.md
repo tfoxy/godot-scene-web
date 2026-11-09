@@ -39,6 +39,22 @@ With `RS_SCALE_CPU_REPORT=1` it also reports the main thread's CPU time per fram
 (`cpu_us_mean/_p50/_p95`, from `/proc/thread-self/schedstat`) and each per-frame block's wall time
 (`section_us`), which time an unarmed capture's hook cost from outside the capture.
 
+Two opt-in knobs serve the capture's arm/disarm cycle tests (`GRC_SWAP_CYCLE`); unset, the scene does
+exactly what it did without them:
+
+- `RS_SCALE_VIEWER=1`: an in-process WebSocket viewer. Every frame, while the `RenderStreamCapture`
+  singleton reports `armed` with a listen address and no viewer is open, a `WebSocketPeer` connects to
+  `ws://<listen>/render-stream` (subprotocol `render-stream.8`, a `render-stream/8` hello) and drains its
+  packets; it is dropped when the state leaves `armed` or the socket closes. A connected viewer is what
+  makes the host's served set hold the current resource bodies, so a disarm that leaves the set behind
+  shows up in the process's memory. With the knob unset the scene never touches the singleton.
+- `RS_SCALE_FRAME_LOG=<absolute path>` (needs `RS_SCALE_CPU_REPORT=1`): one CSV line per frame from the
+  first, `process_frame,cpu_ns,<one wall-time column in us per section>` in the order
+  movers, redraws, mesh_updates, params, churn. `process_frame` is `Engine.get_process_frames()`;
+  `cpu_ns` is the main thread's CPU over the previous frame (0 on the first line). It covers every frame,
+  warmup included, so a checker can take per-phase medians; the report's own windows still open after
+  `RS_SCALE_WARMUP`. Lines are buffered and flushed every 60 frames and at quit.
+
 ## Use
 
 ```bash

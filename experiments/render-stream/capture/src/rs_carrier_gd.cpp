@@ -155,6 +155,7 @@ void var_bytes(Var *out, const std::uint8_t *data, std::size_t len) {
 
 // Object.emit_signal(name, args...) on `object`.
 void emit(GDExtensionObjectPtr object, const char *signal, const Var *const *args, int count) {
+  if (g_root_finalized) return;
   SName name(signal);
   Var vname;
   g_fn.var_from_string_name(&vname.v, name.ptr());

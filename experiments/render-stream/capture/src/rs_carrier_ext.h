@@ -15,7 +15,8 @@
 //
 // Ownership: a refused registration (-1) leaves the carrier with its caller; nothing is copied or
 // called. An accepted one belongs to the capture, which calls its destroy() exactly once: after
-// stop() for a started carrier, at the close for one never started.
+// stop() for a started carrier, at the close for one never started, or at the reopen of an arm
+// that failed before start.
 //
 // Threading: grc_carrier_register may be called from any thread; the registry is mutex-guarded.
 // close() runs on the main thread.
@@ -65,6 +66,9 @@ class CarrierRegistry {
   // called from any thread, under the registry's lock.
   void set_log(std::function<void(const std::string &)> log);
 
+  // LS3: a disarm reopens registration (the v1 carriers it held were destroyed after their stop,
+  // as grc_carrier.h promises); indexes start again at 2.
+  void reopen();
   // Tests only: forget everything (registrations are dropped without destroy()).
   void reset_for_test();
 

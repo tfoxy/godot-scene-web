@@ -189,6 +189,9 @@
 #include <sys/random.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <sstream>
+#include <malloc.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -291,6 +294,9 @@ struct State {
   // LS0: the vtable was restored at shutdown or deinitialize although the capture never armed.
   std::string unarmed_restore_phase;
   bool unarmed_restore_restored = false;
+  // LS3: a disarm that published the standby table restores the engine's at shutdown.
+  std::string standby_restore_phase;
+  std::string disarm_table;
   bool disarmed = false;
   bool disarm_was_shadow = false;
   bool disarm_restored = false;
@@ -490,6 +496,56 @@ struct ItemMetaState {
   rs::item_meta::Host host;
 };
 ItemMetaState g_meta;
+
+// LS3 (live-swap-design.md Q3): the per-load facts a re-arm needs, the test-only knobs, and what a
+// GRC_REARM_FAULT sabotage keeps alive on purpose. Arm 1 writes where a capture always did; arm
+// k >= 2 writes its evidence under GRC_EVIDENCE_DIR/arm-<k>/ and its recordings (and resource
+// store) as <path>.arm-<k>, so a re-arm never overwrites what an earlier arm wrote.
+struct Rearm {
+  std::string evidence_root;
+  std::string stream_out;
+  std::string patch_out;
+  uint64_t arm_index = 0;  // the arm in progress, or the last one (1-based)
+  std::string fault;       // GRC_REARM_FAULT
+  bool trim = false;       // GRC_TEST_TRIM_AT_DISARM=1: malloc_trim(0) before `disarmed`
+  // The root Window's min_size: the value before this arm's write, and the write itself.
+  uint64_t window_id = 0;
+  bool min_recorded = false;
+  bool min_written = false;
+  int32_t min_before[2] = {0, 0};
+  int32_t min_set[2] = {0, 0};
+  std::string min_restore = "none";  // none | restored | changed | unreadable | skipped
+  // Kept alive by a sabotage (never in a product run); released at shutdown.
+  std::vector<std::unique_ptr<rs::ServedResources>> kept_served;
+  std::vector<std::unique_ptr<live::NetTlsContext>> kept_tls;
+  std::vector<std::unique_ptr<live::CarrierSet>> kept_carriers;
+  std::vector<std::unique_ptr<rs2::Hub>> kept_hubs;
+  // The last release's accounting (evidence/arm-<k>/teardown.json and swap-cycle.jsonl).
+  std::string accounting;
+};
+Rearm g_rearm;
+
+bool rearm_fault(const char *kind) { return g_rearm.fault == kind; }
+
+// GRC_SWAP_CYCLE=<armed>:<idle>:<n>[:control] (test only, D2): n cycles of an arm, <armed> armed
+// frames, a disarm and <idle> idle frames, driven through the same RenderStreamCapture calls a
+// consumer makes. A standby capture starts with an idle phase (phase 0, the pure-standby baseline).
+// `control` never arms but samples at the same frames, for a paired standby-only run.
+struct SwapCycle {
+  bool on = false;
+  bool control = false;
+  uint64_t armed = 0;
+  uint64_t idle = 0;
+  uint64_t cycles = 0;
+  uint64_t done = 0;           // disarms completed
+  uint64_t phase_frame = 0;    // frames_total when the current phase began
+  bool idle_phase = true;
+  bool requested = false;      // an arm or disarm was asked for and has not landed yet
+  int64_t phase_cpu_ns = 0;    // the main thread's CPU at the phase start
+  uint64_t phase_callback_ns = 0;
+  uint64_t phase_callbacks = 0;
+};
+SwapCycle g_swap;
 
 std::vector<std::string> comma_names(const std::string &text) {
   std::vector<std::string> out;
@@ -766,12 +822,25 @@ void emit(const std::string &name, const std::string &text) {
   log_line("evidence " + name + " " + text);
 }
 
+// LS3: a load-lifetime evidence file (result.json, counters.json, capture-api.json, ...), always
+// at GRC_EVIDENCE_DIR itself; emit() writes into the current arm's directory.
+void emit_load(const std::string &name, const std::string &text) {
+  if (g_state.evidence_ready) {
+    const std::string path = path_join(g_rearm.evidence_root, name);
+    if (!write_file(path, text)) {
+      log_line("could not write " + path);
+    }
+    return;
+  }
+  log_line("evidence " + name + " " + text);
+}
+
 // LAR0: evidence/registry.json, beside counters.json, when GRC_ADOPT=arm configured the registry
 // (registry-off included: it reports `enabled: false`). GRC_ADOPT=off, or no evidence directory,
 // writes nothing (its timeline is no stdout line).
 void emit_registry() {
   if (g_state.evidence_ready && rs::registry_stats().configured) {
-    emit("registry.json", rs::registry_json());
+    emit_load("registry.json", rs::registry_json());
   }
 }
 
@@ -818,6 +887,7 @@ std::string result_json() {
   json.field("vptr_written", g_state.vptr_written);
   json.field("disarmed", g_state.disarmed);
   json.field_or_null("unarmed_restore", g_state.unarmed_restore_phase);  // LS0
+  json.field_or_null("standby_restore", g_state.standby_restore_phase);  // LS3
   if (g_state.shadow.built()) {
     // the two tables and which one the singleton carries now.
     const ShadowVtable::Table t = g_state.shadow.published();
@@ -1209,7 +1279,7 @@ void emit_headless_texture_release() {
   if (g_state.htr_env_set) {
     JsonWriter json;
     htr_fields(&json);
-    emit("headless-texture-release.json", json.take());
+    emit_load("headless-texture-release.json", json.take());
   }
 }
 
@@ -1217,7 +1287,7 @@ void emit_headless_texture_release() {
 // when the opt-in is set.
 void emit_canvas_texture_shim() {
   if (g_state.ct_shim_env_set) {
-    emit("canvas-texture-shim.json",
+    emit_load("canvas-texture-shim.json",
          rs::canvas_texture_shim().evidence_json(g_state.ct_shim_state, g_state.ct_shim_reason));
   }
 }
@@ -1275,6 +1345,9 @@ std::string disarm_json() {
   json.field("disarmed", g_state.disarmed);
   json.field("vptr_was_shadow", g_state.disarm_was_shadow);
   json.field("vptr_restored", g_state.disarm_restored);
+  // LS3: the table the disarm published (standby while the registry records, so a re-arm adopts
+  // what it saw; the engine's otherwise).
+  json.field("table", g_state.disarm_table);
   json.field("frame", g_state.disarm_frame);
   json.object_end();
   return json.take();
@@ -1301,12 +1374,24 @@ struct ApiArmInfo {
   double ms = 0;
   uint64_t published = 0;
 } g_api_arm;
+// LS3: the disarm's steps, advanced once a frame callback (api_teardown_advance).
+enum class TeardownStep { Idle, Workers, Encoders, Finish, Sinks, Linger, Release };
 struct ApiTeardown {
-  cap::TeardownThread pool, carriers;
+  // The threads only join (or drain a queue they own): the texture pool, then the encode pool, on
+  // `pool`; the file sinks' end records, the store's index and the writer on `sinks`; ws/wt on
+  // `carriers`. The hub, consumer carriers, signals and gd queues stay on the main thread.
+  cap::TeardownThread pool, sinks, carriers;
+  TeardownStep step = TeardownStep::Idle;
   bool active = false;
   bool pool_pending = false;
+  bool encoders_pending = false;
+  std::size_t encoders_dropped = 0;
+  bool sinks_pending = false;
   bool carrier_pending = false;
   bool evidence_done = false;
+  uint64_t inflight_wait_start_ns = 0, inflight_wait_frames = 0;
+  int inflight_max = 0;
+  bool inflight_wait_timeout = false;
   uint64_t first_frame = 0, last_frame = 0, callbacks = 0, max_callback_us = 0;
   struct Callback { uint64_t frame, us; std::string phase; };
   std::vector<Callback> top;
@@ -1340,9 +1425,9 @@ void decide(const std::string &status, const std::string &reason) {
   g_state.status = status;
   g_state.reason = reason;
   g_state.decided = true;
-  emit("calibration-check.json", calibration_check_json());
-  emit("fingerprint.json", fingerprint_json());
-  emit("result.json", result_json());
+  emit_load("calibration-check.json", calibration_check_json());
+  emit_load("fingerprint.json", fingerprint_json());
+  emit_load("result.json", result_json());
   log_line("decision: " + status + (reason.empty() ? "" : " (" + reason + ")") +
            " vptr_written=" + (g_state.vptr_written ? "true" : "false"));
 }
@@ -2203,6 +2288,18 @@ void ext_carriers_drop_unstarted() {
   g_live.registered.clear();
 }
 
+// LS3: the root Window's min_size before this arm writes it (GRC_ROOT_SIZE=enforce-min-size or
+// presentation:), and the value it writes, so the disarm can put it back.
+void rearm_record_min_size(void *window, const int32_t set[2]) {
+  if (g_root_finalized) return;
+  g_rearm.window_id = window != nullptr && g_iface.object_get_instance_id != nullptr
+                          ? g_iface.object_get_instance_id(window) : 0;
+  g_rearm.min_recorded = rs::root_get_min_size(window, g_rearm.min_before);
+  g_rearm.min_written = true;
+  g_rearm.min_set[0] = set[0];
+  g_rearm.min_set[1] = set[1];
+}
+
 void stream_start() {
   // registration closes at the arm, whatever the
   // stream and live do next; a later grc_carrier_register returns -1 (`carrier-late`). Whatever
@@ -2562,6 +2659,9 @@ void stream_start() {
       error = "invalid GRC_RESOURCE_BUDGET_BYTES (a decimal integer >= 1)";
     } else {
       g_stream.store_dir = env_string("GRC_RESOURCE_STORE_DIR");
+      if (!g_stream.store_dir.empty() && g_rearm.arm_index >= 2) {
+        g_stream.store_dir += ".arm-" + std::to_string(g_rearm.arm_index);  // LS3
+      }
       const bool delivery_inline = inline_max_bytes >= max_payload_bytes;
       if (!g_stream.store_dir.empty() && g_stream.store_dir[0] != '/') {
         error = "GRC_RESOURCE_STORE_DIR must be absolute";
@@ -2625,6 +2725,10 @@ void stream_start() {
     std::string why;
     const char *tap = std::getenv("GRC_LIVE_TAP_DIR");
     live_config.tap_dir = tap != nullptr ? std::string(tap) : std::string();
+    if (!live_config.tap_dir.empty() && g_rearm.arm_index >= 2) {
+      live_config.tap_dir = path_join(live_config.tap_dir,
+                                      "arm-" + std::to_string(g_rearm.arm_index));
+    }
     const std::string auth_mode = env_string("GRC_LIVE_AUTH");
     if (!live::parse_expose(std::getenv("GRC_LIVE_EXPOSE"), &g_live.expose, &why)) {
       // expose-invalid.
@@ -3076,6 +3180,7 @@ void stream_start() {
     // size-before-adopt applies the presentation size ahead of
     // the walk, so the relayout, stretch and oversampling it causes name RIDs nothing has adopted.
     if (sabotage.config.kind == rs2::SabotageKind::SizeBeforeAdopt) {
+      rearm_record_min_size(before.window, presentation_wh);
       std::string early_detail;
       size_applied_early =
           rs::root_set_min_size(before, presentation_wh[0], presentation_wh[1], &early_detail);
@@ -3118,6 +3223,13 @@ void stream_start() {
   }
   if (policy == RootSizePolicy::EnforceMinSize || policy == RootSizePolicy::Presentation) {
     enforce_called = true;
+    if (!size_applied_early) {
+      const int32_t set[2] = {policy == RootSizePolicy::Presentation ? presentation_wh[0]
+                                                                     : before.logical_size[0],
+                              policy == RootSizePolicy::Presentation ? presentation_wh[1]
+                                                                     : before.logical_size[1]};
+      rearm_record_min_size(before.window, set);
+    }
     // size-before-adopt (G8h) already wrote it, ahead of the walk.
     const bool written =
         size_applied_early ? true
@@ -3866,20 +3978,33 @@ void workers_finish() {
 
 // G8ku: a lazy encode nobody will publish is dropped at stream end (the pool discards what is
 // queued and waits only for the encodes in flight); the mirror forgets its submitter.
-void encoders_finish() {
-  if (!g_stream.basis) {
-    return;
-  }
+// LS3: in three steps, so a disarm waits for the encodes on its teardown thread: the main thread
+// starts what the last callback did not (drain) or drops the queue, the wait joins the pool, and
+// the main thread then abandons what is left.
+std::size_t encoders_finish_begin() {
   if (g_stream.basis_config.drain && g_stream.encoders_started) {
     // G8kf: the prepare step's end. Start what the last callback did not, then wait for every
     // queued encode: each one stores its result in the persisted cache (D8).
     rs::mirror_instance().service_basis(false, false);
-    rs::texture_encode_pool().drain();
-    log_line("stream: drained the uastc encode pool at stream end");
+    return 0;
   }
   rs::mirror_instance().set_basis_submit(nullptr);
-  const std::size_t dropped = rs::texture_encode_pool().discard_queued();
+  return rs::texture_encode_pool().discard_queued();
+}
+
+void encoders_finish_wait() {
+  if (g_stream.basis_config.drain && g_stream.encoders_started) {
+    rs::texture_encode_pool().drain();
+  }
   rs::texture_encode_pool().stop();
+}
+
+void encoders_finish_end(std::size_t dropped) {
+  if (g_stream.basis_config.drain && g_stream.encoders_started) {
+    log_line("stream: drained the uastc encode pool at stream end");
+    rs::mirror_instance().set_basis_submit(nullptr);
+    dropped = rs::texture_encode_pool().discard_queued();
+  }
   for (const rs::BasisJobPtr &job : rs::mirror_instance().basis_jobs()) {
     job->abandon();
   }
@@ -3887,6 +4012,17 @@ void encoders_finish() {
   if (dropped != 0) {
     log_line("stream: dropped " + std::to_string(dropped) + " queued uastc encodes at stream end");
   }
+}
+
+// G8ku: a lazy encode nobody will publish is dropped at stream end (the pool discards what is
+// queued and waits only for the encodes in flight); the mirror forgets its submitter.
+void encoders_finish() {
+  if (!g_stream.basis) {
+    return;
+  }
+  const std::size_t dropped = encoders_finish_begin();
+  encoders_finish_wait();
+  encoders_finish_end(dropped);
 }
 
 // TDR (served-at-rest): evidence/at-rest.json at stream end, with an
@@ -3961,9 +4097,12 @@ void emit_at_rest() {
   emit("at-rest.json", json.take());
 }
 
-void stream_finish(rs2::EndReason reason) {
+// The main-thread half of a stream's end: the workers and encoders (when the caller has not run
+// them yet), the at-rest census, the mirror, adoption, the hook log, item meta's watch and the
+// live end records. False when no stream was open. Logs the store before the sinks close it.
+bool stream_finish_main(rs2::EndReason reason) {
   if (g_stream.status != "open") {
-    return;
+    return false;
   }
   workers_finish();
   encoders_finish();
@@ -3979,12 +4118,7 @@ void stream_finish(rs2::EndReason reason) {
   live_finish(reason, reason == rs2::EndReason::Shutdown);
   if (g_stream.publisher == nullptr) {
     g_stream.status = "closed";
-    return;
-  }
-  const bool ok = g_stream.publisher->finish(reason);
-  g_stream.status = "closed";
-  if (!ok && g_stream.reason.empty()) {
-    g_stream.reason = "end record write failed";
+    return true;
   }
   if (g_stream.store != nullptr) {
     log_line("stream: store " + g_stream.store->dir() + " hashes=" +
@@ -3993,13 +4127,39 @@ void stream_finish(rs2::EndReason reason) {
              (g_stream.store->corrupted_hash().empty()
                   ? std::string()
                   : " corrupted=" + g_stream.store->corrupted_hash()));
+  }
+  return true;
+}
+
+// LS3: the file sinks' end: both end records, the store's index, then the writer drained and its
+// thread joined. It touches only the publisher, the sinks, the store and their writer, which
+// nothing else uses once the stream is closing, so a disarm runs it on the teardown thread.
+struct SinksEnd {
+  bool ok = true;
+  bool writer_ok = true;
+  std::string writer_error;
+};
+SinksEnd g_sinks_end;
+
+void stream_sinks_end(rs2::EndReason reason) {
+  g_sinks_end = SinksEnd();
+  g_sinks_end.ok = g_stream.publisher->finish(reason);
+  if (g_stream.store != nullptr) {
     g_stream.store->close();
   }
   if (g_stream.writer != nullptr) {
-    std::string error;
-    if (!g_stream.writer->drain(&error) && g_stream.reason.empty()) {
-      g_stream.reason = error;  // a queued write failed after the last publication
-    }
+    g_sinks_end.writer_ok = g_stream.writer->drain(&g_sinks_end.writer_error);
+    g_stream.writer->stop();
+  }
+}
+
+void stream_finish_after_sinks(rs2::EndReason reason) {
+  g_stream.status = "closed";
+  if (!g_sinks_end.ok && g_stream.reason.empty()) {
+    g_stream.reason = "end record write failed";
+  }
+  if (!g_sinks_end.writer_ok && g_stream.reason.empty()) {
+    g_stream.reason = g_sinks_end.writer_error;  // a queued write failed after the last publication
   }
   log_line("stream: resources retained_bytes_max=" + std::to_string(g_stream.retained_bytes_max) +
            " budget=" + std::to_string(g_stream.budget_bytes));
@@ -4018,6 +4178,16 @@ void stream_finish(rs2::EndReason reason) {
              " snapshot_ns_total=" + std::to_string(stats.snapshot_ns_total) +
              " diff_ns_total=" + std::to_string(stats.diff_ns_total));
   }
+}
+
+// The whole end on the calling thread (shutdown, unload, a self-ended stream, a failed arm).
+// Only the first call while the stream is open does anything.
+void stream_finish(rs2::EndReason reason) {
+  if (!stream_finish_main(reason) || g_stream.publisher == nullptr) {
+    return;
+  }
+  stream_sinks_end(reason);
+  stream_finish_after_sinks(reason);
 }
 
 // GRC_LIVE_AWAIT_HELLO_MS=<ms>
@@ -4610,6 +4780,8 @@ void stream_publish(uint64_t frame) {
 }
 
 void do_disarm(const char *phase);
+void arm_release();
+void swap_cycle_armed();
 
 std::string api_arm_failure() {
   if (g_live.status == "failed") return "listen-bind";
@@ -4622,7 +4794,9 @@ std::string api_arm_failure() {
   return "stream-refused";
 }
 
+bool inflight_ready(bool blocking);
 void api_arm_rollback(const std::string &reason) {
+  live::gd_tracks_builtin_discard_pending();
   const bool opened = g_stream.status == "open";
   stream_finish(rs2::EndReason::Disarm);
   if (!opened) {
@@ -4630,11 +4804,76 @@ void api_arm_rollback(const std::string &reason) {
     workers_finish();
     encoders_finish();
     if (rs::adopt_resources_active()) rs::adopt_resources_end();
+    rs::mirror_enable(false);
+  }
+  // LS3: a failed arm is torn down as a disarm is (Q3), on the main thread: a carrier that did
+  // start is stopped here (an error path, never the swap's), then everything is released.
+  g_live.close_async = false;
+  live_linger(true);
+  if (g_live.hub == nullptr && g_live.carriers != nullptr) {
+    g_live.carriers->stop();  // started carriers with no hub (the arm failed before it)
   }
   do_disarm("api");
+  inflight_ready(true);
+  arm_release();
+  g_state.evidence_dir = g_rearm.evidence_root;
   g_state.standby = true;
   decide("standby", "arm-failed: " + reason);
   g_api->arm_failed(reason);
+  if (g_swap.on) {
+    log_line("swap-cycle: the arm failed (" + reason + "); the cycle stops");
+    g_swap.on = false;
+  }
+}
+
+// LS3: every arm starts from the state a capture that never armed has, but for the per-load
+// fields: the stream and live structs are rebuilt for a re-arm, each arm k >= 2 gets its own
+// evidence directory and recordings, and the one-shot flags of the frame path are cleared.
+bool arm_prepare() {
+  const uint64_t k = g_rearm.arm_index;
+  g_state.evidence_dir = g_rearm.evidence_root;
+  if (k >= 2) {
+    Stream stream;
+    g_stream = std::move(stream);
+    Live live;
+    live.listen = g_live.listen;
+    live.net_module = g_live.net_module;  // loaded once, never unloaded (D8)
+    g_live = std::move(live);
+    if (g_state.evidence_ready) {
+      g_state.evidence_dir = path_join(g_rearm.evidence_root, "arm-" + std::to_string(k));
+      if (!make_directories(g_state.evidence_dir)) {
+        log_line("cannot create evidence directory " + g_state.evidence_dir);
+        return false;
+      }
+    }
+    g_perf.frame_interval_us = Histogram();
+    g_perf.frame_callback_us = Histogram();
+    g_perf.snapshot_us = Histogram();
+  }
+  const std::string suffix = k >= 2 ? ".arm-" + std::to_string(k) : std::string();
+  g_stream.path = g_rearm.stream_out.empty() ? std::string() : g_rearm.stream_out + suffix;
+  g_stream.patch_path = g_rearm.patch_out.empty() ? std::string() : g_rearm.patch_out + suffix;
+  g_state.frames_armed = 0;
+  g_state.disarmed = false;
+  g_state.disarm_frame = -1;
+  g_api_arm.published = 0;
+  g_live_await = LiveAwaitHello();
+  g_live_await_hellos = 1;
+  g_live_hold = LiveHold();
+  g_meta.hub_version = ~uint64_t{0};
+  g_hc_pin_late_frames = 0;
+  g_rearm.window_id = 0;
+  g_rearm.min_recorded = false;
+  g_rearm.min_written = false;
+  g_rearm.min_restore = "none";
+  // PM5: the predraw pump follows the arm (the callable is made once, the connection per arm).
+  if (g_state.pump && !g_state.pump_connected) {
+    std::string why;
+    g_state.pump_connected = rs::predraw_pump_connect(&why);
+    log_line(g_state.pump_connected ? std::string("predraw pump: connected")
+                                    : "predraw pump: " + why);
+  }
+  return true;
 }
 
 // Environment arms remain inline; API arms arrive at the same frame boundary as deferred arms.
@@ -4650,6 +4889,11 @@ void arm_now(const char *source) {
     return;
   }
   g_state.armed = true;
+  g_rearm.arm_index = g_api->arm_count();
+  if (!arm_prepare()) {
+    api_arm_rollback("evidence-dir");
+    return;
+  }
   perf_arm();
   stream_start();
   // API clients need a usable ws descriptor even when another carrier started successfully.
@@ -4669,6 +4913,7 @@ void arm_now(const char *source) {
   g_api_arm.ms = double(monotonic_ns() - start_ns) / 1e6;
   g_api->armed(api_arm_info(), !api || g_api_fault != "api-early-armed");
   if (!ok) g_api->stream_ended(api_arm_failure());
+  if (g_swap.on) swap_cycle_armed();
 }
 
 void api_arm_point() {
@@ -4937,12 +5182,7 @@ bool attempt(const char *phase) {
     if (g_state.pt_shim_mode == rs::ParticlesShimMode::Synthesize) {
       log_line("particles shim: synthesize armed (display server " + g_state.display_server + ")");
     }
-    if (g_state.pump) {
-      std::string why;
-      g_state.pump_connected = rs::predraw_pump_connect(&why);
-      log_line(g_state.pump_connected ? std::string("predraw pump: connected")
-                                      : "predraw pump: " + why);
-    }
+    // PM5's predraw pump is connected at each arm (arm_prepare), LS3.
     if (!hooks_image_details_available()) {
       log_line("Image method binds unavailable: texture captures will omit details");
     }
@@ -5051,8 +5291,10 @@ bool attempt(const char *phase) {
 // armed, so before this the hooks outlived the library's teardown; on a signal-driven exit that
 // turned SIGABRT into SIGSEGV.
 void restore_unarmed(const char *phase) {
-  if (g_state.armed || g_state.disarmed || !g_state.vptr_written ||
-      !g_state.unarmed_restore_phase.empty()) {
+  // LS3: a disarm that published the standby table is restored here too (standby_restore).
+  if (g_state.armed || !g_state.vptr_written ||
+      g_state.shadow.published() == ShadowVtable::Table::Engine ||
+      (!g_state.disarmed && !g_state.unarmed_restore_phase.empty())) {
     return;
   }
   bool was_shadow = false;
@@ -5061,6 +5303,12 @@ void restore_unarmed(const char *phase) {
   if (g_state.pump_connected) {
     rs::predraw_pump_disconnect();
     g_state.pump_connected = false;
+  }
+  if (g_state.disarmed) {
+    g_state.standby_restore_phase = phase;
+    log_line(std::string("standby restore from ") + phase + " restored=" +
+             (restored ? "true" : "false"));
+    return;
   }
   g_state.unarmed_restore_phase = phase;
   g_state.unarmed_restore_restored = restored;
@@ -5075,7 +5323,18 @@ bool disarm_hooks(const char *phase) {
   }
   bool was_shadow = false;
   bool restored = false;
-  g_state.shadow.disarm(&was_shadow, &restored);
+  // LS3 (Q3): a disarm while the registry records publishes the standby table, so the registry
+  // stays fed for the next arm; shutdown and unload, and a capture without the registry (nothing
+  // a re-arm could adopt), restore the engine's.
+  const std::string p = phase;
+  if (rs::registry_on() && p != "shutdown" && p != "deinitialize" &&
+      g_state.shadow.publish(ShadowVtable::Table::Standby)) {
+    was_shadow = true;
+    g_state.disarm_table = "standby";
+  } else {
+    g_state.shadow.disarm(&was_shadow, &restored);
+    g_state.disarm_table = restored ? "engine" : "none";
+  }
   g_state.armed = false;
   if (g_state.pump_connected) {
     rs::predraw_pump_disconnect();  // PM5
@@ -5106,7 +5365,7 @@ void disarm_evidence() {
              " draws_missed=" + std::to_string(rs::shader_clock_draws_missed()));
   }
   emit("disarm.json", disarm_json());
-  emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
+  emit_load("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
   emit_registry();
   if (rs::texture_cache().enabled()) {
     emit("texture-cache.json", hooks_texture_cache_json());  // G8kc
@@ -5114,7 +5373,7 @@ void disarm_evidence() {
   emit_canvas_texture_shim();
   emit_headless_texture_release();
   perf_finish();
-  emit("result.json", result_json());
+  emit_load("result.json", result_json());
 }
 
 void do_disarm(const char *phase) {
@@ -5135,6 +5394,312 @@ void live_close_async_begin() {
   }, g_api_fault == "disarm-joins-on-main");
 }
 
+// --- LS3: the capture's own threads and sockets, and the disarm's accounting -------------------
+
+// Threads named by the capture (rs-ws-io, grc-net-wt, grc-tex, grc-enc, grc-writer, grc-former,
+// grc-teardown), counted by name, and the process total.
+void thread_census(JsonWriter *json) {
+  std::map<std::string, int64_t> named;
+  int64_t total = 0;
+  if (DIR *dir = opendir("/proc/self/task")) {
+    while (const dirent *e = readdir(dir)) {
+      if (e->d_name[0] == '.') continue;
+      ++total;
+      std::FILE *f = std::fopen(("/proc/self/task/" + std::string(e->d_name) + "/comm").c_str(), "r");
+      if (f == nullptr) continue;
+      char comm[64] = {0};
+      if (std::fgets(comm, sizeof(comm), f) != nullptr) {
+        std::string name(comm);
+        while (!name.empty() && (name.back() == '\n' || name.back() == ' ')) name.pop_back();
+        if (name.rfind("grc-", 0) == 0 || name.rfind("rs-ws", 0) == 0) ++named[name];
+      }
+      std::fclose(f);
+    }
+    closedir(dir);
+  }
+  int64_t own = 0;
+  json->key("capture_threads").object_begin();
+  for (const auto &[name, n] : named) {
+    json->field(name, n);
+    own += n;
+  }
+  json->object_end();
+  json->field("capture_thread_count", own);
+  json->field("threads_total", total);
+}
+
+// The inodes of this process's inet sockets (TCP and UDP, v4 and v6; /proc/self/net/*).
+std::unordered_set<std::string> inet_socket_inodes() {
+  std::unordered_set<std::string> out;
+  for (const char *table : {"tcp", "tcp6", "udp", "udp6"}) {
+    std::FILE *f = std::fopen((std::string("/proc/self/net/") + table).c_str(), "r");
+    if (f == nullptr) continue;
+    char line[512];
+    bool header = true;
+    while (std::fgets(line, sizeof(line), f) != nullptr) {
+      if (header) {
+        header = false;
+        continue;
+      }
+      // sl local rem st tx:rx tr:when retrnsmt uid timeout inode ...: the 10th field.
+      std::istringstream fields(line);
+      std::string field;
+      for (int k = 0; k < 10 && (fields >> field); ++k) {
+      }
+      if (!field.empty()) out.insert(field);
+    }
+    std::fclose(f);
+  }
+  return out;
+}
+
+// Open fds, sockets, and inet sockets: the capture's listeners and connections. The engine holds
+// a few Unix sockets of its own (their count varies run to run); a headless fixture opens no inet
+// socket, so `inet_sockets` is the capture's.
+void fd_census(JsonWriter *json) {
+  const std::unordered_set<std::string> inet = inet_socket_inodes();
+  int64_t fds = 0;
+  int64_t sockets = 0;
+  int64_t inet_sockets = 0;
+  if (DIR *dir = opendir("/proc/self/fd")) {
+    while (const dirent *e = readdir(dir)) {
+      if (e->d_name[0] == '.') continue;
+      ++fds;
+      char target[128] = {0};
+      const std::string link = "/proc/self/fd/" + std::string(e->d_name);
+      const ssize_t n = readlink(link.c_str(), target, sizeof(target) - 1);
+      const std::string t = n > 0 ? std::string(target, static_cast<std::size_t>(n)) : std::string();
+      if (t.rfind("socket:[", 0) == 0) {
+        ++sockets;
+        if (inet.count(t.substr(8, t.size() - 9)) != 0) ++inet_sockets;
+      }
+    }
+    closedir(dir);
+  }
+  json->field("fds_total", fds);
+  json->field("sockets", sockets);
+  json->field("inet_sockets", inet_sockets);
+}
+
+// What the capture still holds per arm (swap-accounting): every count is 0 after an honest
+// disarm but `canvases` (a fresh mirror's root canvas).
+void accounting_fields(JsonWriter *json) {
+  const rs::MirrorStats m = rs::mirror_stats();
+  json->key("mirror").object_begin();
+  json->field("items", static_cast<int64_t>(m.live_items));
+  json->field("canvases", static_cast<int64_t>(m.live_canvases));
+  json->field("textures", static_cast<int64_t>(m.live_textures));
+  json->field("meshes", static_cast<int64_t>(m.live_meshes));
+  json->field("texture_payload_bytes", static_cast<int64_t>(m.texture_payload_bytes));
+  json->field("mesh_payload_bytes", static_cast<int64_t>(m.mesh_payload_bytes));
+  {
+    std::unordered_set<const void *> seen;
+    rs::RestCensus held;
+    rs::mirror_instance().at_rest_census(&held, &seen);
+    json->field("held_bytes", static_cast<int64_t>(held.held_bytes));
+  }
+  json->object_end();
+  int64_t served_bytes = 0;
+  int64_t served_sets = g_live.served != nullptr ? 1 : 0;
+  if (g_live.served != nullptr) served_bytes += static_cast<int64_t>(g_live.served->retained_bytes());
+  for (const auto &kept : g_rearm.kept_served) {
+    served_bytes += static_cast<int64_t>(kept->retained_bytes());
+    ++served_sets;
+  }
+  json->field("served_sets", served_sets);
+  json->field("served_bytes", served_bytes);
+  json->field("warm_cache_bytes", static_cast<int64_t>(0));  // LS5's warm cache does not exist yet
+  json->field("texture_workers_running", rs::texture_worker_pool().running());
+  json->field("encode_workers_running", rs::texture_encode_pool().running());
+  json->field("hubs", static_cast<int64_t>((g_live.hub != nullptr ? 1 : 0) + g_rearm.kept_hubs.size()));
+  json->field("carrier_sets",
+              static_cast<int64_t>((g_live.carriers != nullptr ? 1 : 0) + g_rearm.kept_carriers.size()));
+  json->field("track_hub", g_live.tracks != nullptr);
+  json->field("writer_joined", g_stream.writer == nullptr);
+  json->field("publisher", g_stream.publisher != nullptr);
+  json->field("resource_log_held", static_cast<int64_t>(rs::resource_log().held()));
+  json->field("mesh_buffers", static_cast<int64_t>(hooks_mesh_buffers_held()));
+  json->field("adopt_held", static_cast<int64_t>(rs::adopt_held()));
+  json->key("item_meta").object_begin();
+  json->field("host_held", static_cast<int64_t>(g_meta.host.held()));
+  json->field("filter_watches", static_cast<int64_t>(rs::filter_watch_count()));
+  json->field("calls_while_off", static_cast<int64_t>(rs::filter_calls_while_off()));
+  json->object_end();
+  json->field("rss_bytes", static_cast<int64_t>(read_rss_bytes()));
+  // RssAnon (the heap: what a leak holds) apart from RssFile (mapped code and data pages the arm
+  // touched, the extension's and the net module's included) and RssShmem.
+  if (std::FILE *f = std::fopen("/proc/self/status", "r")) {
+    char line[256];
+    while (std::fgets(line, sizeof(line), f) != nullptr) {
+      for (const auto &[key, name] : {std::pair<const char *, const char *>{"RssAnon:", "rss_anon_bytes"},
+                                      {"RssFile:", "rss_file_bytes"},
+                                      {"RssShmem:", "rss_shmem_bytes"}}) {
+        if (std::strncmp(line, key, std::strlen(key)) == 0) {
+          json->field(name, static_cast<int64_t>(std::strtoll(line + std::strlen(key), nullptr, 10)) * 1024);
+        }
+      }
+    }
+    std::fclose(f);
+  }
+  thread_census(json);
+  fd_census(json);
+  // Test-only allocator evidence: separate live allocations from free arena pages and mmap.
+  if (env_string("GRC_TEST_MEMORY_ACCOUNTING") == "1") {
+    const auto heap = mallinfo2();
+    json->key("malloc").object_begin();
+    json->field("uordblks", static_cast<int64_t>(heap.uordblks));
+    json->field("fordblks", static_cast<int64_t>(heap.fordblks));
+    json->field("hblkhd", static_cast<int64_t>(heap.hblkhd));
+    json->field("arena", static_cast<int64_t>(heap.arena));
+    json->field("keepcost", static_cast<int64_t>(heap.keepcost));
+    json->object_end();
+    const auto registry = rs::registry_stats();
+    json->key("registry").object_begin();
+    json->field("entries", static_cast<int64_t>(registry.entries));
+    json->field("bytes_estimate", static_cast<int64_t>(registry.bytes_estimate));
+    json->field("entry_bytes", static_cast<int64_t>(registry.entry_bytes));
+    json->field("material_params", static_cast<int64_t>(registry.material_params));
+    json->field("material_payload_bytes", static_cast<int64_t>(registry.material_payload_bytes));
+    json->object_end();
+    json->field("store", g_stream.store != nullptr);
+    json->field("net_module", g_live.net_module != nullptr);
+  }
+}
+
+// Q3's root min_size: put back what was there before the arm, if what the arm wrote is still set.
+void rearm_restore_min_size() {
+  if (!g_rearm.min_written) return;
+  void *window = !g_root_finalized && g_rearm.window_id != 0 &&
+                         g_iface.object_get_instance_from_id != nullptr
+                     ? g_iface.object_get_instance_from_id(g_rearm.window_id) : nullptr;
+  if (window == nullptr) {
+    g_rearm.min_restore = "root-gone";
+    return;
+  }
+  if (rearm_fault("skip-root-restore")) {
+    g_rearm.min_restore = "skipped";
+    return;
+  }
+  int32_t now[2] = {0, 0};
+  if (!g_rearm.min_recorded || !rs::root_get_min_size(window, now)) {
+    g_rearm.min_restore = "unreadable";
+  } else if (now[0] != g_rearm.min_set[0] || now[1] != g_rearm.min_set[1]) {
+    g_rearm.min_restore = "changed";  // somebody else set it since: theirs stays
+  } else {
+    g_rearm.min_restore = rs::root_write_min_size(window, g_rearm.min_before[0],
+                                                  g_rearm.min_before[1])
+                              ? "restored"
+                              : "unreadable";
+  }
+}
+
+bool inflight_ready(bool blocking) {
+  if (rearm_fault("skip-inflight-wait")) return true;
+  auto &t = g_api_teardown;
+  for (;;) {
+    // Pairs prior seq_cst arm-flag clears with OffmainGuard's increment and flag reads.
+    const int count = hooks_offmain_inflight();
+    t.inflight_max = std::max(t.inflight_max, count);
+    if (count == 0) return true;
+    if (t.inflight_wait_start_ns == 0) t.inflight_wait_start_ns = monotonic_ns();
+    if (!t.inflight_wait_timeout && monotonic_ns() - t.inflight_wait_start_ns > 5000000000ULL) {
+      t.inflight_wait_timeout = true;
+      log_line("teardown: off-main in-flight wait exceeded 5 s; release still waits");
+    }
+    if (!blocking) { ++t.inflight_wait_frames; return false; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+}
+
+// LS3 (Q3 "Reset at disarm"): after the end records, the linger and every join, frees what the
+// arm built, so the capture holds what one that never armed would. Main thread.
+void arm_release() {
+  auto test_reader_release = hooks_test_arm_release();
+  const uint64_t t0 = monotonic_ns();
+  // Live: every carrier has stopped and the hub has finished (live_close_finish, which detached
+  // the track receivers) by now.
+  g_live.tracks.reset();
+  if (rearm_fault("keep-hub") && g_live.hub != nullptr) {
+    g_rearm.kept_hubs.push_back(std::move(g_live.hub));
+  }
+  g_live.hub.reset();  // joins the Former thread
+  g_live.ws = nullptr;
+  if (rearm_fault("keep-listener") && g_live.carriers != nullptr) {
+    g_rearm.kept_carriers.push_back(std::move(g_live.carriers));
+    if (g_live.tls != nullptr) g_rearm.kept_tls.push_back(std::move(g_live.tls));
+  }
+  g_live.carriers.reset();  // closes the listen sockets and wake pipes; destroys v1 carriers
+  g_live.tls.reset();
+  if (rearm_fault("keep-served") && g_live.served != nullptr) {
+    g_rearm.kept_served.push_back(std::move(g_live.served));
+  }
+  g_live.served.reset();
+  live::carrier_registry().reopen();
+  // The stream: the sinks' end already joined the writer.
+  g_stream.publisher.reset();
+  g_stream.full_sink.reset();
+  g_stream.patch_sink.reset();
+  g_stream.store.reset();
+  g_stream.writer.reset();
+  g_stream.holdback = rs::HoldBack();
+  // Every off-main mirror write still in flight lands before the mirror goes.
+  if (!rearm_fault("skip-mirror-reset")) {
+    rs::mirror_release();
+  }
+  const std::size_t log_freed = rs::resource_log().release();
+  const std::size_t mesh_freed = hooks_release_arm();
+  const std::size_t adopt_freed = rs::adopt_release();
+  g_meta.host.release();
+  g_meta.on = false;
+  rs::texture_cache().close();
+  rs::settings_install({});
+  rearm_restore_min_size();
+  if (g_rearm.trim) {
+    malloc_trim(0);  // GRC_TEST_TRIM_AT_DISARM (test only): RSS then reads what is held
+  }
+  JsonWriter json;
+  json.object_begin();
+  json.field("schema", std::string("render-stream-teardown/1"));
+  json.field("arm_index", static_cast<int64_t>(g_rearm.arm_index));
+  json.field("frame", static_cast<int64_t>(g_state.frames_total));
+  json.field("fault", g_rearm.fault);
+  json.field("root_finalized", g_root_finalized);
+  json.field("inflight_wait_frames", static_cast<int64_t>(g_api_teardown.inflight_wait_frames));
+  json.field("inflight_max", static_cast<int64_t>(g_api_teardown.inflight_max));
+  json.field("inflight_wait_timeout", g_api_teardown.inflight_wait_timeout);
+  if (env_string("GRC_TEST_INFLIGHT_SITE") == "admission") {
+    json.field("uncounted_arm_accesses", static_cast<int64_t>(hooks_test_uncounted_accesses()));
+    json.field("held_free_registered", hooks_test_freed_registered());
+  }
+  json.field("release_us", static_cast<int64_t>((monotonic_ns() - t0) / 1000));
+  json.key("freed").object_begin();
+  json.field("resource_log", static_cast<int64_t>(log_freed));
+  json.field("mesh_buffers", static_cast<int64_t>(mesh_freed));
+  json.field("adopt", static_cast<int64_t>(adopt_freed));
+  json.object_end();
+  json.key("root_min_size").object_begin();
+  json.field("written", g_rearm.min_written);
+  json.key("before").array_begin();
+  json.integer(g_rearm.min_before[0]);
+  json.integer(g_rearm.min_before[1]);
+  json.array_end();
+  json.key("set").array_begin();
+  json.integer(g_rearm.min_set[0]);
+  json.integer(g_rearm.min_set[1]);
+  json.array_end();
+  json.field("restore", g_rearm.min_restore);
+  json.object_end();
+  accounting_fields(&json);
+  json.object_end();
+  g_rearm.accounting = json.take();
+  emit("teardown.json", g_rearm.accounting);
+  log_line("teardown: arm " + std::to_string(g_rearm.arm_index) + " released in " +
+           std::to_string((monotonic_ns() - t0) / 1000) + " us (resource log " +
+           std::to_string(log_freed) + ", mesh buffers " + std::to_string(mesh_freed) +
+           ", adoption " + std::to_string(adopt_freed) + "; root min_size " +
+           g_rearm.min_restore + ")");
+}
+
 void api_disarm_post() {
   g_api_teardown.active = false;
   g_api_teardown.last_frame = g_state.frames_total;
@@ -5142,69 +5707,308 @@ void api_disarm_post() {
   g_state.standby = true;
   g_api->disarmed(g_api_arm.published);
   api_evidence();
+  g_state.evidence_dir = g_rearm.evidence_root;  // standby's evidence is the load's
+  if (g_swap.on) {
+    ++g_swap.done;
+    g_swap.requested = false;
+    g_swap.idle_phase = true;
+    g_swap.phase_frame = g_state.frames_total;
+    g_swap.phase_cpu_ns = main_thread_cpu_us() * 1000;
+    g_swap.phase_callback_ns = 0;
+    g_swap.phase_callbacks = 0;
+  }
 }
 
-void api_disarm_p1() {
-  g_api_teardown.callback_phase = "stream-finish";
-  stream_finish(rs2::EndReason::Disarm);
-  disarm_evidence();
-  g_api_teardown.evidence_done = true;
+bool teardown_ready(cap::TeardownThread &thread, bool blocking) {
+  if (!thread.done() && !blocking) return false;
+  thread.join();
+  return true;
 }
 
-// P0 runs at the frame boundary. With no workers the established finish/disarm order is kept.
+// LS3: the disarm, one step at a time (D1): the texture pool, the encode pool, the stream's end on
+// main, the file sinks, the evidence, the linger and the carriers, then the release and
+// `disarmed`. Each join runs on a teardown thread and is polled once a frame callback;
+// `blocking` (shutdown, unload) runs them inline instead.
+void api_teardown_advance(bool blocking) {
+  ApiTeardown &t = g_api_teardown;
+  const bool inline_joins = blocking || g_api_fault == "disarm-joins-on-main";
+  for (;;) {
+    switch (t.step) {
+    case TeardownStep::Idle:
+      return;
+    case TeardownStep::Workers:
+      if (!t.pool_pending && g_stream.workers_started) {
+        t.callback_phase = "pool-wait";
+        t.pool_pending = true;
+        t.pool.run([] { rs::texture_worker_pool().stop(); }, inline_joins);
+      }
+      if (t.pool_pending) {
+        if (!teardown_ready(t.pool, blocking)) return;
+        t.pool_pending = false;
+        workers_finish();  // the held snapshot, published now that every job is done
+      }
+      t.step = TeardownStep::Encoders;
+      continue;
+    case TeardownStep::Encoders:
+      if (!t.encoders_pending && g_stream.basis && g_stream.status == "open") {
+        t.callback_phase = "encode-wait";
+        t.encoders_dropped = encoders_finish_begin();
+        t.encoders_pending = true;
+        t.pool.run([] { encoders_finish_wait(); }, inline_joins);
+      }
+      if (t.encoders_pending) {
+        if (!teardown_ready(t.pool, blocking)) return;
+        t.encoders_pending = false;
+        encoders_finish_end(t.encoders_dropped);  // stream_finish_main's own call is then a no-op
+      }
+      t.step = TeardownStep::Finish;
+      continue;
+    case TeardownStep::Finish:
+      t.callback_phase = "stream-finish";
+      if (stream_finish_main(rs2::EndReason::Disarm) && g_stream.publisher != nullptr) {
+        g_stream.status = "closing";
+        t.sinks_pending = true;
+        t.sinks.run([] { stream_sinks_end(rs2::EndReason::Disarm); }, inline_joins);
+      }
+      t.step = TeardownStep::Sinks;
+      continue;
+    case TeardownStep::Sinks:
+      if (t.sinks_pending) {
+        t.callback_phase = "sinks-wait";
+        if (!teardown_ready(t.sinks, blocking)) return;
+        t.sinks_pending = false;
+        stream_finish_after_sinks(rs2::EndReason::Disarm);
+      }
+      disarm_evidence();
+      t.evidence_done = true;
+      t.step = TeardownStep::Linger;
+      continue;
+    case TeardownStep::Linger:
+      if (t.carrier_pending) {
+        if (!teardown_ready(t.carriers, blocking)) return;
+        t.carrier_pending = false;
+        t.callback_phase = "close-finish";
+        live_close_finish();
+      }
+      if (g_live.hub != nullptr && !g_live.stopped) {
+        if (!g_live.ending && !g_live.closing) {
+          live_finish(rs2::EndReason::Disarm, false);  // a stream that ended by itself: the linger
+        }
+        if (!blocking) return;  // on_frame's live_linger advances it, then the carriers' join
+        g_live.close_async = false;
+        live_linger(true);
+        continue;
+      }
+      t.step = TeardownStep::Release;
+      continue;
+    case TeardownStep::Release:
+      t.callback_phase = "inflight-wait";
+      if (!inflight_ready(blocking)) return;
+      t.callback_phase = "release";
+      arm_release();
+      t.step = TeardownStep::Idle;
+      api_disarm_post();
+      return;
+    }
+  }
+}
+
+// P0 runs at the frame boundary: the armed table goes first, then the steps above.
 void api_disarm_point(const char *phase) {
   g_api->disarm_point();
-  g_api_teardown.active = true;
-  g_api_teardown.first_frame = g_state.frames_total;
-  g_api_teardown.callback_phase = "disarm";
+  ApiTeardown &t = g_api_teardown;
+  t.active = true;
+  t.first_frame = g_state.frames_total;
+  t.last_frame = 0;
+  t.callbacks = 0;
+  t.max_callback_us = 0;
+  t.top.clear();
+  t.evidence_done = false;
+  t.inflight_wait_start_ns = 0;
+  t.inflight_wait_frames = 0;
+  t.inflight_max = hooks_offmain_inflight();
+  t.inflight_wait_timeout = false;
+  t.callback_phase = "disarm";
   g_live.close_async = true;
   g_live.linger_ns = uint64_t(g_api->pending_disarm().linger_ms) * 1000000;
-  if (!g_stream.workers_started) {
-    stream_finish(rs2::EndReason::Disarm);
-    do_disarm(phase);
-    g_api_teardown.evidence_done = true;
-  } else {
-    disarm_hooks(phase);
-    g_api_teardown.pool_pending = true;
-    g_api_teardown.pool.run([] { rs::texture_worker_pool().stop(); },
-                           g_api_fault == "disarm-joins-on-main");
-  }
+  disarm_hooks(phase);
+  t.step = TeardownStep::Workers;
+  api_teardown_advance(false);
 }
 
 void api_disarm_poll() {
   if (!g_api_teardown.active) return;
-  if (g_api_teardown.pool_pending && g_api_teardown.pool.done()) {
-    g_api_teardown.pool.join();
-    g_api_teardown.pool_pending = false;
-    api_disarm_p1();
-  }
-  if (g_api_teardown.carrier_pending && g_api_teardown.carriers.done()) {
-    g_api_teardown.carriers.join();
-    g_api_teardown.carrier_pending = false;
-    g_api_teardown.callback_phase = "close-finish";
-    live_close_finish();
-  }
-  if (g_api_teardown.evidence_done &&
-      (g_live.hub == nullptr || g_live.stopped)) api_disarm_post();
+  api_teardown_advance(false);
 }
 
 // Shutdown/unload cannot leave a worker owning extension code or an engine Image.
 void api_teardown_finish_blocking() {
   g_live.close_async = false;
   if (!g_api_teardown.active) return;
-  if (g_api_teardown.pool_pending) {
-    g_api_teardown.pool.join();
-    g_api_teardown.pool_pending = false;
-    api_disarm_p1();
+  api_teardown_advance(true);
+}
+
+// LS3 (D2): GRC_SWAP_CYCLE's driver and its per-phase samples (evidence/swap-cycle.jsonl, one line
+// at the end of every phase: the swap-cycle-* checks' input).
+void swap_cycle_sample(const char *phase) {
+  const uint64_t frames = g_state.frames_total - g_swap.phase_frame;
+  JsonWriter json;
+  json.object_begin();
+  json.field("cycle", static_cast<int64_t>(g_swap.done));
+  json.field("phase", std::string(phase));
+  json.field("control", g_swap.control);
+  json.field("arm_index", static_cast<int64_t>(g_rearm.arm_index));
+  json.field("start_frame", static_cast<int64_t>(g_swap.phase_frame));
+  json.field("end_frame", static_cast<int64_t>(g_state.frames_total));
+  json.field("process_frame", static_cast<int64_t>(rs::adopt_engine_process_frames()));
+  json.field("frames", static_cast<int64_t>(frames));
+  const int64_t cpu_ns = main_thread_cpu_us() * 1000 - g_swap.phase_cpu_ns;
+  // Nanoseconds a frame, integers (the checkers divide): the main thread's CPU over the phase and
+  // the capture's own frame callbacks.
+  json.field("main_cpu_ns_per_frame", frames != 0 ? cpu_ns / static_cast<int64_t>(frames) : 0);
+  json.field("callback_ns_per_frame",
+             g_swap.phase_callbacks != 0
+                 ? static_cast<int64_t>(g_swap.phase_callback_ns / g_swap.phase_callbacks)
+                 : int64_t{0});
+  json.field("t_ns", static_cast<int64_t>(monotonic_ns()));
+  accounting_fields(&json);
+  json.object_end();
+  if (g_state.evidence_ready) {
+    if (env_string("GRC_TEST_MEMORY_ACCOUNTING") == "1") {
+      const std::string prefix = path_join(g_rearm.evidence_root,
+          "memory-" + std::to_string(g_swap.done) + "-" + phase);
+      std::ifstream maps("/proc/self/smaps");
+      std::ofstream dump(prefix + ".smaps");
+      dump << maps.rdbuf();
+      if (std::FILE *f = std::fopen((prefix + ".malloc.xml").c_str(), "w")) {
+        malloc_info(0, f);
+        std::fclose(f);
+      }
+    }
+    const std::string path = path_join(g_rearm.evidence_root, "swap-cycle.jsonl");
+    if (std::FILE *f = std::fopen(path.c_str(), "a")) {
+      // One line: the writer's newlines and their indentation dropped (no string holds a newline).
+      std::string line;
+      bool indent = false;
+      for (const char c : json.take()) {
+        if (c == '\n') {
+          indent = true;
+        } else if (!(indent && c == ' ')) {
+          indent = false;
+          line += c;
+        }
+      }
+      line += '\n';
+      std::fwrite(line.data(), 1, line.size(), f);
+      std::fclose(f);
+    }
   }
-  if (g_api_teardown.carrier_pending) {
-    g_api_teardown.carriers.join();
-    g_api_teardown.carrier_pending = false;
-    live_close_finish();
+}
+
+void swap_cycle_phase(bool idle) {
+  g_swap.idle_phase = idle;
+  g_swap.phase_frame = g_state.frames_total;
+  g_swap.phase_cpu_ns = main_thread_cpu_us() * 1000;
+  g_swap.phase_callback_ns = 0;
+  g_swap.phase_callbacks = 0;
+}
+
+void swap_cycle_armed() {
+  g_swap.requested = false;
+  swap_cycle_phase(false);
+}
+
+cap::Value api_invoke(const std::string &method, const cap::Value::Object &options);
+
+// End of every frame callback while GRC_SWAP_CYCLE runs (standby included).
+void swap_cycle_frame(uint64_t frame_start_ns) {
+  if (g_state.frames_total == g_swap.phase_frame) {
+    // The callback the phase began in (an arm, or a disarm's release) is not the phase's: its
+    // CPU and callback windows open at its end.
+    g_swap.phase_cpu_ns = main_thread_cpu_us() * 1000;
+    g_swap.phase_callback_ns = 0;
+    g_swap.phase_callbacks = 0;
+    return;
+  }
+  g_swap.phase_callback_ns += monotonic_ns() - frame_start_ns;
+  ++g_swap.phase_callbacks;
+  if (g_swap.requested) return;
+  const uint64_t in_phase = g_state.frames_total - g_swap.phase_frame;
+  if (g_swap.idle_phase) {
+    if (in_phase < g_swap.idle) return;
+    swap_cycle_sample("idle");
+    if (g_swap.done >= g_swap.cycles) {
+      g_swap.on = false;  // every cycle ran; the capture stays in standby
+      log_line("swap-cycle: " + std::to_string(g_swap.done) + " cycles done at frame " +
+               std::to_string(g_state.frames_total));
+      return;
+    }
+    if (g_swap.control) {
+      swap_cycle_phase(false);
+      return;
+    }
+    // Test driver only: a leg with no viewer after arm 1 can override that arm's hello wait.
+    cap::Value::Object options;
+    const char *hello_ms = std::getenv("GRC_SWAP_CYCLE_REARM_AWAIT_HELLO_MS");
+    if (hello_ms != nullptr) options.emplace("GRC_LIVE_AWAIT_HELLO_MS", std::string(hello_ms));
+    const cap::Value code = api_invoke("arm", options);
+    if (std::get<std::int64_t>(code.data) == 0) {
+      g_swap.requested = true;
+    } else {
+      log_line("swap-cycle: arm refused (" + g_api->last_refusal() + "); the cycle stops");
+      g_swap.on = false;
+    }
+    return;
+  }
+  if (in_phase < g_swap.armed) return;
+  swap_cycle_sample("armed");
+  if (g_swap.control) {
+    ++g_swap.done;
+    swap_cycle_phase(true);
+    return;
+  }
+  const cap::Value code =
+      api_invoke("disarm", {{"reason", std::string("swap-cycle")}, {"linger_ms", std::int64_t(0)}});
+  if (std::get<std::int64_t>(code.data) == 0) {
+    g_swap.requested = true;
   } else {
-    live_linger(true);
+    log_line("swap-cycle: disarm refused (" + g_api->last_refusal() + "); the cycle stops");
+    g_swap.on = false;
   }
-  api_disarm_post();
+}
+
+// GRC_SWAP_CYCLE=<armed>:<idle>:<n>[:control], read once at SCENE initialisation.
+void swap_cycle_configure() {
+  const std::string spec = env_string("GRC_SWAP_CYCLE");
+  if (spec.empty()) return;
+  uint64_t v[3] = {0, 0, 0};
+  std::size_t at = 0;
+  bool ok = true;
+  for (int i = 0; i < 3 && ok; ++i) {
+    const std::size_t end = spec.find(':', at);
+    const std::string part = spec.substr(at, end == std::string::npos ? std::string::npos : end - at);
+    ok = !part.empty() && part.size() <= 9 &&
+         std::all_of(part.begin(), part.end(), [](char c) { return c >= '0' && c <= '9'; });
+    if (ok) v[i] = std::strtoull(part.c_str(), nullptr, 10);
+    at = end == std::string::npos ? spec.size() + 1 : end + 1;
+  }
+  const std::string rest = at <= spec.size() ? spec.substr(at) : std::string();
+  ok = ok && v[0] > 0 && v[2] > 0 && (rest.empty() || rest == "control");
+  if (!ok) {
+    log_line("init: ignoring an invalid GRC_SWAP_CYCLE=" + spec +
+             " (expected <armed>:<idle>:<n>[:control], armed and n >= 1)");
+    return;
+  }
+  g_swap.on = true;
+  g_swap.armed = v[0];
+  g_swap.idle = v[1];
+  g_swap.cycles = v[2];
+  g_swap.control = rest == "control";
+  g_swap.phase_cpu_ns = main_thread_cpu_us() * 1000;
+  // A born capture starts armed (its first arm is the env's); a standby one starts idle.
+  g_swap.idle_phase = g_state.mode != "arm" || g_swap.control;
+  log_line("init: swap-cycle armed=" + std::to_string(v[0]) + " idle=" + std::to_string(v[1]) +
+           " cycles=" + std::to_string(v[2]) + (g_swap.control ? " control" : ""));
 }
 
 void api_callback_record(uint64_t start_ns) {
@@ -5277,21 +6081,22 @@ void api_evidence() {
   snapshot["arm_frame"] = std::int64_t(g_api_arm.frame);
   snapshot["published"] = std::int64_t(g_api_arm.published);
   snapshot["texture_workers_running"] = rs::texture_worker_pool().running();
+  snapshot["track_inject_prepared"] = !g_live.track_config.inject_mode.empty();
+  snapshot["track_inject_pending"] = live::gd_tracks_builtin_pending();
   snapshot["max_callback_us"] = std::int64_t(g_api_teardown.max_callback_us);
   snapshot["callbacks"] = std::int64_t(g_api_teardown.callbacks);
-  const auto join_info = [](const cap::TeardownThread &t, bool pending) {
-    // Read worker-owned timing only after the main-thread poll has joined.
-    return cap::Value::Object{{"ran", t.ran}, {"on_main", t.on_main},
-        {"ms", pending ? 0.0 : t.ms}};
-  };
-  snapshot["pool_join"] = join_info(g_api_teardown.pool, g_api_teardown.pool_pending);
-  snapshot["carrier_join"] = join_info(g_api_teardown.carriers, g_api_teardown.carrier_pending);
+  snapshot["pool_join"] = cap::teardown_join_info(g_api_teardown.pool,
+      g_api_teardown.pool_pending, g_api_teardown.encoders_pending);
+  snapshot["carrier_join"] = cap::teardown_join_info(g_api_teardown.carriers,
+      g_api_teardown.carrier_pending);
+  snapshot["sinks_join"] = cap::teardown_join_info(g_api_teardown.sinks,
+      g_api_teardown.sinks_pending);
   cap::Value::Array top;
   for (const auto &c : g_api_teardown.top) top.emplace_back(cap::Value::Object{
       {"frame", std::int64_t(c.frame)}, {"us", std::int64_t(c.us)}, {"phase", c.phase}});
   snapshot["top_callbacks"] = std::move(top);
   api_json_value(j, snapshot);
-  emit("capture-api.json", j.take());
+  emit_load("capture-api.json", j.take());
 }
 cap::Value api_invoke(const std::string &method, const cap::Value::Object &options) {
   cap::Value result;
@@ -5350,6 +6155,7 @@ void on_frame() {
     hooks_set_frame(g_state.frames_total + 1);
     live::gd_carriers_flush();
     api_flush();
+    if (g_swap.on) swap_cycle_frame(frame_start_ns);
     return;
   }
   g_api_teardown.callback_phase = g_api_teardown.pool_pending ? "pool-wait" :
@@ -5414,22 +6220,35 @@ void on_frame() {
   // its process step. One relaxed load when no receiver was ever bound.
   live::gd_tracks_flush();
   api_flush();
+  if (g_swap.on) swap_cycle_frame(frame_start_ns);
+}
+
+// LS3: what a GRC_REARM_FAULT sabotage kept alive goes at shutdown, hubs first (their Former
+// threads), then the carrier sets that served them.
+void rearm_kept_release() {
+  g_rearm.kept_hubs.clear();
+  g_rearm.kept_carriers.clear();
+  g_rearm.kept_tls.clear();
+  g_rearm.kept_served.clear();
 }
 
 void on_shutdown() {
+  g_root_finalized = true;  // SceneTree::finalize deletes root before shutdown_func runs.
+  log_line("shutdown: root-finalized");
   api_teardown_finish_blocking();
   stream_finish(rs2::EndReason::Shutdown);
   rs::texture_worker_pool().stop();  // G8kw: also when the stream never opened after the pool ran
   live_linger(true);  // a linger still running after a disarm ends here
   do_disarm("shutdown");
-  emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
+  emit_load("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
   emit_registry();
   if (rs::texture_cache().enabled()) {
     emit("texture-cache.json", hooks_texture_cache_json());  // G8kc
   }
   emit_canvas_texture_shim();
   emit_headless_texture_release();
-  emit("result.json", result_json());
+  emit_load("result.json", result_json());
+  rearm_kept_release();
   log_line("shutdown: frames_total=" + std::to_string(g_state.frames_total) +
            " frames_armed=" + std::to_string(g_state.frames_armed) + " intercepted=" +
            std::to_string(hooks_total_calls()));
@@ -5484,6 +6303,33 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   g_stream.path = env_string("GRC_STREAM_OUT");
   g_stream.patch_path = env_string("GRC_STREAM_PATCH_OUT");
   g_live.listen = env_string("GRC_LIVE_LISTEN");
+  // LS3: the per-load paths each arm derives its own from, and the re-arm test knobs.
+  g_rearm.evidence_root = g_state.evidence_dir;
+  g_rearm.stream_out = g_stream.path;
+  g_rearm.patch_out = g_stream.patch_path;
+  g_rearm.fault = env_string("GRC_REARM_FAULT");
+  if (!g_rearm.fault.empty()) {
+    static const char *kFaults[] = {"keep-served", "keep-listener", "keep-hub", "skip-mirror-reset",
+                                    "skip-inflight-wait", "skip-root-restore", "standby-view-off"};
+    if (std::none_of(std::begin(kFaults), std::end(kFaults),
+                     [](const char *k) { return g_rearm.fault == k; })) {
+      log_line("init: ignoring an unknown GRC_REARM_FAULT=" + g_rearm.fault);
+      g_rearm.fault.clear();
+    } else {
+      log_line("init: sabotage GRC_REARM_FAULT=" + g_rearm.fault);
+    }
+  }
+  g_rearm.trim = env_string("GRC_TEST_TRIM_AT_DISARM") == "1";
+  {
+    uint64_t delay = 0;
+    if (env_non_negative("GRC_TEST_INFLIGHT_DELAY_MS", 0, &delay) && delay > 0 && delay <= 10000) {
+      hooks_set_test_inflight_delay_ms(static_cast<uint32_t>(delay),
+          env_string("GRC_TEST_INFLIGHT_SITE") == "materialize",
+          env_string("GRC_TEST_INFLIGHT_SITE") == "admission");
+      log_line("init: test inflight delay " + std::to_string(delay) + " ms (off-main texture creates)");
+    }
+  }
+  swap_cycle_configure();
   // GRC_VALIDATION_LOG=on|off, per load, default off. The
   // validation logs (hooks.cpp log_entry and its callers' pre-copies, the direct g_mutex sites and
   // read_image) feed counters.json `captured` and cost about 80 us a frame on capture-scale;
@@ -5549,6 +6395,7 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   rs::texture_worker_pool().stop();  // G8kw: no worker (or engine Image) outlives the extension
   live_linger(true);
   do_disarm("deinitialize");
+  rearm_kept_release();
   rs::registry_names_release();  // LS0: the parameter names' StringName keepalives go before the engine does
   hooks_release_placeholder_drop();  // HTR
   // CAR6: a capture that never armed still owns its registrations; each gets its one destroy().

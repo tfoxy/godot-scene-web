@@ -22,7 +22,7 @@ std::uint64_t now_ns() {
 }  // namespace
 
 TextureWorkerPool &texture_encode_pool() {
-  static TextureWorkerPool pool;
+  static TextureWorkerPool pool("grc-enc");
   return pool;
 }
 

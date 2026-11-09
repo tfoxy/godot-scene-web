@@ -382,6 +382,8 @@ struct CanvasTextureHookCall {
 };
 std::vector<CanvasTextureHookCall> g_ctex_hook_calls;
 std::vector<uint64_t> g_multimesh_hook_calls;
+bool g_test_standby = false;
+int g_guard_entries = 0;
 // LAR2: what the multimesh hook was handed (the buffer by size).
 struct MultimeshHookCall {
   uint64_t rid = 0, mesh = 0;
@@ -397,6 +399,10 @@ std::vector<std::pair<uint64_t, grc::rs::Mirror::ParticlesAdopt>> g_particles_ho
 
 // rs_adopt.cpp calls the hooks' copy path through these; the engine side never runs here.
 namespace grc {
+OffmainGuard::OffmainGuard(bool, const char *) { ++g_guard_entries; }
+OffmainGuard::~OffmainGuard() {}
+bool hooks_offmain_standby() { return g_test_standby; }
+bool hooks_test_inflight_delay(std::unique_lock<std::mutex> *) { return true; }
 bool hooks_adopt_texture(uint64_t, void *, rs2::AdoptedContent, const char *, bool *) {
   return false;
 }
@@ -1426,6 +1432,71 @@ void test_particles_from_registry() {
   grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
 }
 
+void test_reentry_admission() {
+  fake::install();
+  auto &w = fake::world();
+  w.reset_calls();
+  auto &engine = w.make({"Object", "Engine"});
+  auto &tree = w.make({"Object", "SceneTree"});
+  auto &root = w.make({"Object", "Node", "Window", "Viewport"});
+  auto &node = w.make({"Object", "Node", "CanvasItem", "Control"}, 0x99001);
+  w.singletons["Engine"] = &engine;
+  w.overrides["Engine.get_main_loop"] = [&tree](fake::Object *, FakeArgs, void *ret) {
+    fake::put_object(ret, &tree);
+  };
+  w.overrides["SceneTree.get_root"] = [&root](fake::Object *, FakeArgs, void *ret) {
+    fake::put_object(ret, &root);
+  };
+  GDExtensionCallableCustomInfo2 callback{};
+  static GDExtensionCallableCustomInfo2 *saved = nullptr;
+  saved = &callback;
+  grc::g_iface.callable_custom_create2 = [](GDExtensionUninitializedTypePtr,
+                                           GDExtensionCallableCustomInfo2 *info) {
+    *saved = *info;
+  };
+  std::string error;
+  check(grc::rs::node_map_acquire_tag(&error) && callback.call_func != nullptr,
+        "reentry: TAG connects its node-added callback");
+  if (callback.call_func == nullptr) return;
+  alignas(8) unsigned char variant[24]{};
+  void *object = &node;
+  fake::detail::from_type<void *, GDEXTENSION_VARIANT_TYPE_OBJECT>(variant, &object);
+  const GDExtensionConstVariantPtr args[] = {variant};
+  auto call = [&] {
+    GDExtensionCallError err{};
+    callback.call_func(callback.callable_userdata, args, 1, nullptr, &err);
+    check(err.error == GDEXTENSION_CALL_OK, "reentry: callback returns OK");
+  };
+  const int guards = g_guard_entries;
+  std::thread worker(call);
+  worker.join();
+  std::unordered_set<uint64_t> entered;
+  grc::rs::tag_take_entered(&entered);
+  check(g_guard_entries == guards + 1 && entered.count(node.rid) == 1,
+        "reentry: admitted off-main callback guards and queues its RID");
+  const int reads = w.count("CanvasItem.get_canvas_item");
+  g_test_standby = true;
+  std::thread standby(call);
+  standby.join();
+  g_test_standby = false;
+  grc::rs::tag_take_entered(&entered);
+  check(entered.empty() && w.count("CanvasItem.get_canvas_item") == reads,
+        "reentry: uncounted callback cannot read Objects or enqueue into the next arm");
+  grc::g_root_finalized = true;
+  call();
+  grc::g_root_finalized = false;
+  grc::rs::tag_take_entered(&entered);
+  check(entered.empty() && w.count("CanvasItem.get_canvas_item") == reads,
+        "reentry: shutdown callback cannot read freed scene Objects");
+  call();
+  grc::rs::node_map_release_tag();
+  grc::rs::adopt_release();
+  grc::rs::tag_take_entered(&entered);
+  check(entered.empty() && grc::rs::adopt_held() == 0,
+        "reentry: disarm drops queued entries and the node map");
+  saved = nullptr;
+}
+
 }  // namespace
 
 int main() {
@@ -1442,6 +1513,7 @@ int main() {
   test_material_scans();
   test_ppm_key_bits();
   // From here the fake engine is installed (process-wide): the engine-free tests above run first.
+  test_reentry_admission();
   test_fake_binds();
   test_multimesh_from_registry();
   test_canvas_texture_channels_not_reread();

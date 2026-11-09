@@ -61,6 +61,9 @@ void gd_track_class_unregister();
 // is never bound is released by gd_tracks_builtin_discard().
 bool gd_tracks_builtin_prepare(const std::string &config_json, bool sabotage_no_release, std::string *why);
 void gd_tracks_builtin_discard();
+// Rollback owns only an injector that never reached a hub; bound release stays with the flush.
+void gd_tracks_builtin_discard_pending();
+bool gd_tracks_builtin_pending();
 
 // TRK6: binds the prepared injector as `hub`'s `input` receiver. Call once the hub exists and
 // BEFORE gd_tracks_attach, so a script that binds `input` gets `track-kind-bound` (one that bound

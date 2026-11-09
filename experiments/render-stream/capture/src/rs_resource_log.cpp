@@ -454,7 +454,7 @@ ResourceLog::Entry *ResourceLog::find(std::uint64_t rid) {
 
 void ResourceLog::start(std::uint64_t t0_ns, std::uint64_t root_viewport_rid, bool keep_lines) {
   std::lock_guard<std::mutex> lock(mutex_);
-  active_ = true;
+  active_.store(true, std::memory_order_seq_cst);
   keep_lines_.store(keep_lines, std::memory_order_relaxed);
   formatted_.store(0, std::memory_order_relaxed);
   t0_ns_ = t0_ns;
@@ -474,7 +474,36 @@ void ResourceLog::start(std::uint64_t t0_ns, std::uint64_t root_viewport_rid, bo
 
 void ResourceLog::stop() {
   std::lock_guard<std::mutex> lock(mutex_);
-  active_ = false;
+  // Pairs with OffmainGuard admission and inflight_ready's seq_cst counter poll.
+  active_.store(false, std::memory_order_seq_cst);
+}
+
+std::size_t ResourceLog::held() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return by_rid_.size() + mesh_by_rid_.size() + shader_by_rid_.size() + material_by_rid_.size() +
+         deferred_.size() + (pending_.empty() ? 0 : 1);
+}
+
+std::size_t ResourceLog::release() {
+  std::map<std::uint64_t, Entry> by_rid;
+  std::map<std::uint64_t, MeshEntry> meshes;
+  std::map<std::uint64_t, ShaderEntry> shaders;
+  std::map<std::uint64_t, MaterialEntry> materials;
+  std::string pending;
+  std::vector<std::shared_ptr<Deferred>> deferred;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Pairs with OffmainGuard admission and inflight_ready's seq_cst counter poll.
+    active_.store(false, std::memory_order_seq_cst);
+    by_rid.swap(by_rid_);
+    meshes.swap(mesh_by_rid_);
+    shaders.swap(shader_by_rid_);
+    materials.swap(material_by_rid_);
+    pending.swap(pending_);
+    deferred.swap(deferred_);
+  }
+  // Freed outside the lock: the payload copies can be large.
+  return by_rid.size() + meshes.size() + shaders.size() + materials.size() + deferred.size();
 }
 
 namespace {

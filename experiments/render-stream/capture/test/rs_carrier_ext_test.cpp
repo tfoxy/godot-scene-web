@@ -33,6 +33,7 @@ void check(bool ok, const std::string &what) {
 struct Fake {
   const grc_carrier_host_v1 *host = nullptr;
   int destroys = 0;
+  grc::live::CarrierRegistry *registry = nullptr;
   bool release_twice = false;
   std::vector<grc_buf> held;
 };
@@ -54,7 +55,11 @@ int f_send(void *self, uint32_t, grc_buf m) {
 }
 void f_close(void *, uint32_t, uint16_t, const char *, size_t) {}
 uint64_t f_queued(void *, uint32_t) { return 0; }
-void f_destroy(void *self) { ++static_cast<Fake *>(self)->destroys; }
+void f_destroy(void *self) {
+  auto *f = static_cast<Fake *>(self);
+  ++f->destroys;
+  if (f->registry != nullptr) (void)f->registry->closed();
+}
 
 grc_carrier_v1 fake(Fake *f, const char *name) {
   grc_carrier_v1 vt;
@@ -121,6 +126,30 @@ void registry_rules() {
   check(r.add(&late, &why) == -1 && why.rfind("carrier-late", 0) == 0, "registry: carrier-late after close");
   check(r.close().empty(), "registry: a second close returns nothing");
   check(a.destroys == 0 && b.destroys == 0, "registry: neither a refusal nor the close destroys");
+}
+
+void registry_reopen() {
+  grc::live::CarrierRegistry r;
+  Fake f;
+  auto vt = fake(&f, "rollback");
+  r.add(&vt, nullptr);
+  f.registry = &r;
+  // Consumer callbacks may re-enter the registry: neither destroy nor logging holds mu_.
+  r.set_log([&](const std::string &) { (void)r.closed(); });
+  r.reopen();
+  check(f.destroys == 1, "reopen: an accepted unstarted carrier is destroyed exactly once");
+  check(!r.closed() && !r.has("rollback") && r.close().empty(),
+        "reopen: no registrations remain");
+  r.reopen();
+  check(f.destroys == 1, "reopen: a second reopen does not destroy again");
+  r.set_log({});
+  vt = fake(&f, "normal");
+  check(r.add(&vt, nullptr) == 2, "reopen: indexes restart at 2");
+  auto started = r.close();
+  for (auto &c : started) c.vtable.destroy(c.vtable.self);  // stream_start's DropUnstarted
+  r.reopen();
+  check(f.destroys == 2 && r.close().empty(),
+        "reopen: transferred ownership is never destroyed twice");
 }
 
 void registry_full() {
@@ -207,6 +236,7 @@ void ledger(bool twice) {
 int main(int argc, char **argv) {
   registry_rules();
   registry_full();
+  registry_reopen();
   if (argc > 1) {
     exported(argv[1]);
   } else {

@@ -41,10 +41,12 @@ import { runG8l } from "./lib/gate8-live-checks";
 import { type G8mExpected, runG8m } from "./lib/gate8-mat-checks";
 import { type G8mmExpected, runG8mm } from "./lib/gate8-mm-checks";
 import { type G8ptExpected, runG8pt } from "./lib/gate8-pt-checks";
+import { runG8re } from "./lib/gate8-rearm-checks";
 import { runG8rec1 } from "./lib/gate8-rec1-checks";
 import { type G8resExpected, runG8res } from "./lib/gate8-res-checks";
 import { runScaleMirrorChecks } from "./lib/gate8-scale-checks";
 import { type G8hExpected, runG8h } from "./lib/gate8-size-checks";
+import { runG8sw } from "./lib/gate8-swap-checks";
 import { runG8tag } from "./lib/gate8-tag-checks";
 import { runG8tag2 } from "./lib/gate8-tag2-checks";
 import { runG8tdr } from "./lib/gate8-tdr-checks";
@@ -89,6 +91,8 @@ const KNOWN_GROUPS = [
   "g8rec1",
   "g8htr",
   "g8tdr",
+  "g8sw",
+  "g8re",
 ];
 
 function parseArgs(argv: string[]): { out: string } {
@@ -282,6 +286,18 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
     const g8htr = await runG8htr(out, adoptExpected);
     checks.push(...g8htr.checks);
     report.g8htr = g8htr.report;
+  }
+  if (run.includes("g8sw")) {
+    // LS3: swap cycles, the capture's accounting, threads, sockets, RSS (lib/gate8-swap-checks.ts).
+    const g8sw = await runG8sw(out);
+    checks.push(...g8sw.checks);
+    report.g8sw = g8sw.report;
+  }
+  if (run.includes("g8re")) {
+    // LS3: rearm-equivalence and ID3's re-arm round (lib/gate8-rearm-checks.ts).
+    const g8re = await runG8re(out);
+    checks.push(...g8re.checks);
+    report.g8re = g8re.report;
   }
   if (run.includes("g8tdr")) {
     // TDR: GRT1 bodies zstd-coded at rest (lib/gate8-tdr-checks.ts).

@@ -194,6 +194,12 @@ bool root_enforce_min_size(const RootInfo &info, std::string *detail);
 bool root_set_min_size(const RootInfo &info, std::int32_t width, std::int32_t height,
                        std::string *detail);
 
+// LS3: Window.get_min_size on the root window, read at the arm so the disarm can restore it, and
+// Window.set_min_size(W, H) with no validation (the restore writes back whatever was there,
+// 0x0 included). False when the call could not be made.
+bool root_get_min_size(void *window, std::int32_t out[2]);
+bool root_write_min_size(void *window, std::int32_t width, std::int32_t height);
+
 // Feeds a query result to the process-wide mirror: binds the root RIDs and
 // canvas 1's transform, and records root-query-failed when !info.ok.
 void root_query_apply(const RootInfo &info);

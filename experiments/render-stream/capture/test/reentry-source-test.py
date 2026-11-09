@@ -12,10 +12,14 @@ class ReentrySource(unittest.TestCase):
         hook = SOURCE.split('void node_added_call(', 1)[1].split('void *scene_tree()', 1)[0]
         self.assertRegex(hook, r'std::lock_guard<std::mutex> lock\(g_node_mutex\);\s*'
                          r'g_item_nodes\[rid\] = id;\s*'
-                         r'if \(g_tag_active.load\(std::memory_order_acquire\) && !g_tag_no_reentry\) '
+                         r'if \(g_tag_active.load\(std::memory_order_seq_cst\) && !g_tag_no_reentry\) '
                          r'\{\s*g_tag_entered.insert\(rid\);\s*\}')
         self.assertEqual(hook.count('g_tag_entered.insert'), 1)
         self.assertEqual(hook.count('lock(g_node_mutex)'), 1)
+
+    def test_arm_release_frees_entered_allocation(self):
+        release = SOURCE.split('std::size_t adopt_release()', 1)[1]
+        self.assertIn('std::unordered_set<std::uint64_t>().swap(g_tag_entered);', release)
 
     def test_every_map_clear_clears_entered(self):
         clears = re.findall(r'g_item_nodes.clear\(\);\s*g_tag_entered.clear\(\);', SOURCE)
@@ -29,7 +33,7 @@ class ReentrySource(unittest.TestCase):
         self.assertIn('g_item_nodes.count(*it) == 0 ? g_tag_entered.erase(it)', prune)
 
     def test_tag_off_clears_entered(self):
-        off = SOURCE.split('g_tag_active.store(false, std::memory_order_release);', 1)[1]
+        off = SOURCE.split('g_tag_active.store(false, std::memory_order_seq_cst);', 1)[1]
         self.assertRegex(off, r'^\s*\{\s*std::lock_guard<std::mutex> lock\(g_node_mutex\);'
                          r'\s*g_tag_entered.clear\(\);')
 

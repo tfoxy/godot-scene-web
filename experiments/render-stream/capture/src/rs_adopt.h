@@ -328,6 +328,12 @@ struct AdoptResourceStats {
 // instance setters are no-ops and whose buffer getter holds only the last set_buffer (LAR2, O3).
 void adopt_resources_begin(AdoptFault fault, bool dummy_host = false);
 void adopt_resources_end();
+// LS3: after adopt_resources_end at a disarm, frees what the arm left: the refused map, the
+// census, the off-main queue, the emitter waits, the material residuals, the walk's lists and
+// (with no tag acquire holding it) the node map. Returns the entries it freed.
+std::size_t adopt_release();
+// LS3: what adopt_release would free now (the disarm's accounting).
+std::size_t adopt_held();
 bool adopt_resources_active();
 AdoptResourceStats adopt_resource_stats();
 

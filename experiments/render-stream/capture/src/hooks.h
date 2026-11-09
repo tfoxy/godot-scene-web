@@ -14,7 +14,9 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -49,6 +51,29 @@ bool hooks_image_payload_available();
 // Records the calling thread as the main thread: the texture hook log marks
 // every other caller "other" (loader threads). Called at SCENE initialisation.
 void hooks_set_main_thread();
+
+// Counts only off-main readers of per-arm state. Callers re-check their enabled flag after
+// entering. An off-main standby decision is inherited by all nested guards.
+class OffmainGuard {
+ public:
+  explicit OffmainGuard(bool enabled = true, const char *test_site = nullptr);
+  ~OffmainGuard();
+  OffmainGuard(const OffmainGuard &) = delete;
+  OffmainGuard &operator=(const OffmainGuard &) = delete;
+  bool counted() const { return counted_; }
+  bool standby() const { return standby_; }
+ private:
+  bool counted_ = false;
+  bool standby_ = false;
+  bool previous_standby_ = false;
+};
+int hooks_offmain_inflight();
+bool hooks_offmain_standby();
+uint64_t hooks_test_uncounted_accesses();
+bool hooks_test_freed_registered();
+bool hooks_test_inflight_delay(std::unique_lock<std::mutex> *guard);
+// Test-only lifetime gate: serializes delayed readers with arm release. Empty with no delay.
+std::unique_lock<std::mutex> hooks_test_arm_release();
 
 // GRC_VALIDATION_LOG, set once at SCENE initialisation before the
 // vtable is patched. Off (the default) skips the validation logs that fill counters.json
@@ -164,6 +189,12 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed);
 std::string hooks_texture_cache_json();
 // Forgets the previous stream's notes and paths (called when the cache is opened for a stream).
 void hooks_reset_texture_cache_notes();
+
+// Releases arm-owned caches after the off-main count reaches zero.
+std::size_t hooks_release_arm();
+std::size_t hooks_mesh_buffers_held();
+// GRC_TEST_INFLIGHT_DELAY_MS (test only): see hooks.cpp g_test_inflight_delay_ms.
+void hooks_set_test_inflight_delay_ms(uint32_t ms, bool materialize = false, bool admission = false);
 
 // Total number of intercepted calls across all hooks.
 uint64_t hooks_total_calls();

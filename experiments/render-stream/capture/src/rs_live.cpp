@@ -1,5 +1,7 @@
 #include "rs_live.h"
 
+#include "rs_platform.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -1150,7 +1152,12 @@ struct Hub::Memo {
 // submitted so far has run and returns them in that order, for the main thread to complete.
 class Hub::Former {
  public:
-  explicit Former(Hub *hub) : hub_(hub) { thread_ = std::thread([this] { run(); }); }
+  explicit Former(Hub *hub) : hub_(hub) {
+    thread_ = std::thread([this] {
+      rs::set_current_thread_name("grc-former");
+      run();
+    });
+  }
   ~Former() {
     {
       std::lock_guard<std::mutex> lock(mutex_);

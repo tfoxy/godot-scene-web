@@ -137,17 +137,21 @@ inline void *texture_release_placeholder() {
 }
 void texture_release_set_placeholder(void *object);
 
-// The mirror bits, one load (acquire: pairs with the writers' acq_rel updates below).
-inline std::uint32_t texture_release_mirror_bits() {
-  return detail::g_release_hot.mirror.load(std::memory_order_acquire);
+// An invocation denied admission stays disarmed even if another arm has since set the hot bits.
+constexpr std::uint32_t texture_release_admitted_bits(std::uint32_t bits, bool standby) {
+  return bits & (0u - static_cast<std::uint32_t>(!standby));
 }
-// The writers (rs_mirror.cpp, for the process-wide mirror only). acq_rel keeps each update ordered
+// seq_cst pairs the post-increment admission read with disarm's bit clear, then counter poll.
+inline std::uint32_t texture_release_mirror_bits() {
+  return detail::g_release_hot.mirror.load(std::memory_order_seq_cst);
+}
+// The writers (rs_mirror.cpp, for the process-wide mirror only). seq_cst keeps each update ordered
 // against the mirror state change it brackets: the enable, the reset and the disable.
 inline void texture_release_set_mirror_bit(std::uint32_t bit, bool on) {
   if (on) {
-    detail::g_release_hot.mirror.fetch_or(bit, std::memory_order_acq_rel);
+    detail::g_release_hot.mirror.fetch_or(bit, std::memory_order_seq_cst);
   } else {
-    detail::g_release_hot.mirror.fetch_and(~bit, std::memory_order_acq_rel);
+    detail::g_release_hot.mirror.fetch_and(~bit, std::memory_order_seq_cst);
   }
 }
 // The stream edge in the order the kMirrorStreaming contract needs: `flip` changes the mirror's

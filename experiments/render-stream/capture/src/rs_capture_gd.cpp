@@ -233,7 +233,7 @@ bool gd_capture_register(Invoke invoke, bool singleton, std::string *why) {
   return true;
 }
 void gd_capture_emit(const Signal &signal) {
-  if (!g_object) return;
+  if (g_root_finalized || !g_object) return;
   StringName name(signal.name.c_str()); Var vname, a, b, ret;
   f.from[GDEXTENSION_VARIANT_TYPE_STRING_NAME](&vname.v, const_cast<void *>(name.ptr()));
   const void *args[] = {&vname.v, &a.v, &b.v};

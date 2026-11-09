@@ -261,6 +261,17 @@ int main() {
            "configure resets");
   }
 
+  // A loader call denied admission cannot see a later arm through the inline hot line.
+  texture_release_set_mirror_bit(kMirrorStreaming, true);
+  std::thread uncounted([] {
+    expect(texture_release_admitted_bits(texture_release_mirror_bits(), true) == 0,
+           "uncounted reader ignores an armed hot line");
+  });
+  uncounted.join();
+  expect((texture_release_admitted_bits(texture_release_mirror_bits(), false) &
+          kMirrorStreaming) != 0, "counted reader retains the hot line");
+  texture_release_set_mirror_bit(kMirrorStreaming, false);
+
   // The off path's added cost: the hook's flag load and branch, per create (informative; the
   // result doc reports it). A volatile sink keeps the loop from folding.
   {

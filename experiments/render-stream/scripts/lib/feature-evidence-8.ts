@@ -900,6 +900,8 @@ export const GROUP_COVERAGE_8: Record<string, readonly string[] | string> = {
   g8ku: ["delivery.texture_variant_uastc"],
   g8kc: "none: the receivers' texture cache is internal, no feature row",
   g8l: ["delivery.stream_protocol_8", "delivery.reverse_proxy_fronting"],
+  g8sw: "none: capture teardown accounting and idle resource costs are host lifecycle checks, with no new /8 receiver feature",
+  g8re: "none: re-arm equivalence preserves the existing /8 adoption feature; the item identity round exercises /14, outside the /8 manifest",
   g8c: ["payload.canvas_texture_diffuse"],
   g8ctl: ["payload.canvas_texture_diffuse"],
   g8ctsp: ["payload.canvas_texture_diffuse"],

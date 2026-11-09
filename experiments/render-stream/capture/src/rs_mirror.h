@@ -1967,6 +1967,9 @@ MirrorStats mirror_stats();
 // The process-wide Mirror, for the hook taps. Callers check mirror_enabled()
 // first; the object itself does not.
 Mirror &mirror_instance();
+// LS3: destroys the process-wide Mirror (every table, payload, option and published map) and
+// installs a new one. Main thread, mirror disabled, off-main writers quiesced.
+void mirror_release();
 
 }  // namespace rs
 }  // namespace grc

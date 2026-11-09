@@ -6,6 +6,7 @@
 namespace grc {
 
 Iface g_iface;
+bool g_root_finalized = false;
 
 namespace {
 
@@ -26,7 +27,10 @@ bool bind_one(GDExtensionInterfaceGetProcAddress get_proc_address, const char *n
 bool iface_load(GDExtensionInterfaceGetProcAddress get_proc_address,
                 GDExtensionClassLibraryPtr library) {
   g_iface = Iface();
+  g_root_finalized = false;
   g_iface.library = library;
+  g_iface.object_get_instance_id = reinterpret_cast<GDExtensionInterfaceObjectGetInstanceId>(
+      get_proc_address("object_get_instance_id"));
   g_iface.get_proc_address = get_proc_address;
   bool ok = true;
   ok &= bind_one(get_proc_address, "get_godot_version2", &g_iface.get_godot_version2);

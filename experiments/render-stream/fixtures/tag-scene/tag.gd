@@ -39,6 +39,8 @@ extends Node2D
 ## 640x360, so a GRC_ROOT_SIZE=presentation:<W>x<H> of another aspect is accepted.
 ## RS_FIXTURE_TAG_START (default 0) delays every step (and dump) by that many frames, so that live
 ## viewers started beside the host are all connected before the first step.
+## RS_FIXTURE_TAG_DUMP_AT (LS3, a comma list of absolute frames; unset: no extra dump) adds a dump
+## at each of those frames, wherever they fall (g8re's re-arm round dumps in every arm and idle phase).
 ##
 ## The oracle lines (JSONL) are written at frames 1, 6, 21, 26, 32, 41, 46, 51, 61 and 150:
 ## {"frame", "nodes": [{"rid", "class", "script", "scene", "path", "groups", "meta"}]}, groups
@@ -67,6 +69,7 @@ var _variant: String = ""
 var _pick: bool = false
 var _v2: bool = false
 var _flips: Array = []
+var _dump_at: Array[int] = []
 
 
 func _ready() -> void:
@@ -90,6 +93,9 @@ func _ready() -> void:
 		root.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
 		root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
 		root.content_scale_size = Vector2i(640, 360)
+	if OS.has_environment("RS_FIXTURE_TAG_DUMP_AT"):
+		for part: String in OS.get_environment("RS_FIXTURE_TAG_DUMP_AT").split(",", false):
+			_dump_at.append(part.strip_edges().to_int())
 	if OS.has_environment("RS_FIXTURE_TAG_LOG"):
 		_log = FileAccess.open(OS.get_environment("RS_FIXTURE_TAG_LOG"), FileAccess.WRITE)
 	var loose := Label.new()
@@ -245,6 +251,8 @@ func _process(_delta: float) -> void:
 			_plain_held = $Plain
 			remove_child(_plain_held)
 		45:
+			if OS.has_environment("RS_FIXTURE_TAG_REARM_REENTRY"):
+				_plain_held.set_meta("rs_tag", "rearm-entry-1")
 			add_child(_plain_held)
 			_plain_held.owner = self
 		50:
@@ -259,12 +267,21 @@ func _process(_delta: float) -> void:
 		100:
 			if OS.has_environment("RS_FIXTURE_TAG_PAUSE_MS"):
 				OS.delay_msec(OS.get_environment("RS_FIXTURE_TAG_PAUSE_MS").to_int())
+	if OS.has_environment("RS_FIXTURE_TAG_REARM_REENTRY"):
+		if _frame == 480:
+			_plain_held = $Plain
+			remove_child(_plain_held)
+		elif _frame == 485:
+			_plain_held.set_meta("rs_tag", "rearm-entry-2")
+			add_child(_plain_held)
+			_plain_held.owner = self
 	if _v2:
 		_v2_step(_frame - _start)
 	if (
 		DUMP_FRAMES.has(_frame - _start)
 		or _frame == 1
 		or (_v2 and (V2_DUMP_FRAMES.has(_frame - _start) or _frame >= _quit_frame))
+		or _dump_at.has(_frame)
 	):
 		_dump()
 	if _frame >= _quit_frame:

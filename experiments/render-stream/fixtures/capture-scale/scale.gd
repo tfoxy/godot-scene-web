@@ -55,8 +55,24 @@ extends Node2D
 ##                                (section_us: movers, redraws, mesh_updates, params, churn, mean
 ##                                us per frame), over the same window as the frame times;
 ##                               LS1: and rss_kb/hwm_kb, VmRSS and VmHWM at quit
+##   RS_SCALE_VIEWER [0]          1: LS3 (swap-cycle): an in-process WebSocket viewer. Every frame, while
+##                                the RenderStreamCapture singleton reports state "armed" with a listen
+##                                address and no viewer is open, a WebSocketPeer connects to
+##                                ws://<listen>/render-stream and sends its hello; its packets are drained
+##                                every frame and it is dropped when the state leaves armed or the socket
+##                                closes. The host serves a body to a connected viewer, so the served set
+##                                holds the current bodies while it is open. Unset: no viewer, no state()
+##                                call.
+##   RS_SCALE_FRAME_LOG           LS3: absolute path (needs RS_SCALE_CPU_REPORT=1): one line per frame from
+##                                the first, `process_frame,cpu_ns,<one column per SECTIONS entry, wall
+##                                us>`. process_frame is Engine.get_process_frames(), cpu_ns the main
+##                                thread's CPU over the PREVIOUS frame (the schedstat read at the top of
+##                                _process; 0 on the first line). Buffered, flushed every 60 frames and
+##                                at quit. Unlike the report, it covers every frame, warmup included.
 ##   RS_FIXTURE_QUIT_FRAME [600]  quit after this many frames
 ##   RS_SCALE_WARMUP [120]        frames before the frame-time window opens
+##   RS_SCALE_PREALLOC_FRAMES [0] reserve this many sample slots up front (at least the quit frame);
+##                                0 keeps append-based storage. Reports use only written samples.
 ##   RS_SCALE_REPORT              optional absolute path: the frame-time summary (JSON) at quit
 ##
 ## The capture is loaded by loader.gd (RS_FIXTURE_ARM=born arms before any of this exists, the
@@ -100,13 +116,29 @@ var _warmup: int = 120
 var _window_start_us: int = 0
 var _last_us: int = 0
 var _deltas_us: PackedInt64Array = PackedInt64Array()
+var _prealloc_frames: int = 0
+var _delta_count: int = 0
+var _cpu_count: int = 0
+var _churn_count: int = 0
 var _setup_ms: float = 0.0
 var _churn: int = 0
 var _churn_rids: Array[RID] = []
 var _churn_us: PackedInt64Array = PackedInt64Array()
 var _cpu_report: bool = false
 var _last_cpu_ns: int = -1
+var _frame_log: FileAccess = null
+var _frame_log_lines: PackedStringArray = PackedStringArray()
+var _frame_cpu_ns: int = 0
+var _frame_sec: PackedInt64Array = PackedInt64Array([0, 0, 0, 0, 0])
+var _viewer_on: bool = false
+var _viewer: WebSocketPeer = null
+var _viewer_hello: bool = false
 var _cpu_ns: PackedInt64Array = PackedInt64Array()
+const _VIEWER_SUBPROTOCOL: String = "render-stream.8"
+const _VIEWER_HELLO: Dictionary = {"type": "hello", "protocol": "render-stream/8", "receiver": "scale-viewer",
+	"receiver_kind": "gsw-canvas", "credit_stage": "submitted", "credit_window": 1, "inbound_buffer_bytes": 16777216,
+	"token": null, "manifest_sha256": null, "presentation_backing_w": 1920, "presentation_backing_h": 1080,
+	"presentation_css_w": 1920, "presentation_css_h": 1080, "dpr_milli": 1000}
 const SECTIONS: Array[String] = ["movers", "redraws", "mesh_updates", "params", "churn"]
 var _section_us: PackedInt64Array = PackedInt64Array([0, 0, 0, 0, 0])
 var _section_frames: int = 0
@@ -143,6 +175,15 @@ func _ready() -> void:
 	_param_updates = _env_int("RS_SCALE_PARAM_UPDATES", 8)
 	_quit_frame = maxi(2, _env_int("RS_FIXTURE_QUIT_FRAME", 600))
 	_warmup = mini(_env_int("RS_SCALE_WARMUP", 120), _quit_frame - 1)
+	_prealloc_frames = _env_int("RS_SCALE_PREALLOC_FRAMES", 0)
+	if _prealloc_frames > 0:
+		if _prealloc_frames < _quit_frame:
+			printerr("[scale] error: RS_SCALE_PREALLOC_FRAMES must cover RS_FIXTURE_QUIT_FRAME")
+			get_tree().quit(1)
+			return
+		_deltas_us.resize(_prealloc_frames)
+		_cpu_ns.resize(_prealloc_frames)
+		_churn_us.resize(_prealloc_frames)
 	_node_burst = _env_int("RS_SCALE_NODE_BURST", 0)
 	_node_burst_frame = _env_int("RS_SCALE_NODE_BURST_FRAME", _warmup + 30)
 	_node_churn = _env_int("RS_SCALE_NODE_CHURN", 0)
@@ -153,6 +194,14 @@ func _ready() -> void:
 	if _cpu_report and not FileAccess.file_exists("/proc/thread-self/schedstat"):
 		printerr("[scale] error: RS_SCALE_CPU_REPORT: no /proc/thread-self/schedstat")
 		_cpu_report = false
+	_viewer_on = _env_int("RS_SCALE_VIEWER", 0) != 0
+	if OS.has_environment("RS_SCALE_FRAME_LOG"):
+		if not _cpu_report:
+			printerr("[scale] error: RS_SCALE_FRAME_LOG needs RS_SCALE_CPU_REPORT=1")
+		else:
+			_frame_log = FileAccess.open(OS.get_environment("RS_SCALE_FRAME_LOG"), FileAccess.WRITE)
+			if _frame_log == null:
+				printerr("[scale] error: RS_SCALE_FRAME_LOG: cannot open %s" % OS.get_environment("RS_SCALE_FRAME_LOG"))
 	var n_nodes: int = _env_int("RS_SCALE_NODES", 0)
 	if n_nodes > 0 or _node_burst > 0 or _node_churn > 0:
 		_node_root = Node2D.new()
@@ -279,9 +328,15 @@ func _process(_delta: float) -> void:
 	if _frame == _warmup + 1:
 		_window_start_us = now
 	elif _frame > _warmup + 1:
-		_deltas_us.append(now - _last_us)
+		if _prealloc_frames > 0:
+			_deltas_us[_delta_count] = now - _last_us
+			_delta_count += 1
+		else:
+			_deltas_us.append(now - _last_us)
 	_last_us = now
 	var timed: bool = _cpu_report and _frame > _warmup + 1
+	# The frame log covers every frame; the report's windows still open after the warmup.
+	var measure: bool = _cpu_report and (_frame > _warmup + 1 or _frame_log != null)
 	if _cpu_report:
 		# Reopened every frame: a seek(0) re-reads stdio's stale buffer. The kernel advances the
 		# figure at scheduler events, and the paced main thread sleeps once a frame, so a read at
@@ -289,17 +344,24 @@ func _process(_delta: float) -> void:
 		var stat: FileAccess = FileAccess.open("/proc/thread-self/schedstat", FileAccess.READ)
 		var cpu_ns: int = stat.get_line().get_slice(" ", 0).to_int() if stat != null else _last_cpu_ns
 		if timed and _last_cpu_ns >= 0:
-			_cpu_ns.append(cpu_ns - _last_cpu_ns)
+			if _prealloc_frames > 0:
+				_cpu_ns[_cpu_count] = cpu_ns - _last_cpu_ns
+				_cpu_count += 1
+			else:
+				_cpu_ns.append(cpu_ns - _last_cpu_ns)
+		_frame_cpu_ns = (cpu_ns - _last_cpu_ns) if _last_cpu_ns >= 0 else 0
 		_last_cpu_ns = cpu_ns
 	if timed:
 		_section_frames += 1
+	if measure:
+		_frame_sec.fill(0)
 	var t: int = Time.get_ticks_usec()
 	var n: int = _items.size()
 	for j: int in mini(_movers, n):
 		var i: int = (j * 29) % n
 		var x: float = float((i * 37) % 600) + float((_frame + j) % 16)
 		RenderingServer.canvas_item_set_transform(_items[i], Transform2D(0.0, Vector2(x, (i * 23) % 330)))
-	if timed:
+	if measure:
 		t = _section(0, t)
 	for r: int in (mini(_redraws, _draws.size()) if _draws.size() > 0 else 0):
 		var d: int = (_redraw_cursor + r) % _draws.size()
@@ -315,7 +377,7 @@ func _process(_delta: float) -> void:
 			_record(rec, 0.5 * (_vary_toggle[d] if d < _vary_toggle.size() else 0))
 	if _draws.size() > 0:
 		_redraw_cursor = (_redraw_cursor + _redraws) % _draws.size()
-	if timed:
+	if measure:
 		t = _section(1, t)
 	var m: int = _meshes.size()
 	for u: int in _mesh_updates:
@@ -331,13 +393,13 @@ func _process(_delta: float) -> void:
 			RenderingServer.canvas_item_set_material(_mesh_items[k], _mesh_materials[k])
 	if m > 0:
 		_mesh_cursor = (_mesh_cursor + _mesh_updates) % m
-	if timed:
+	if measure:
 		t = _section(2, t)
 	var nm: int = _materials.size()
 	for u: int in (_param_updates if nm > 0 else 0):
 		var mi: int = (_frame * _param_updates + u) % nm
 		RenderingServer.material_set_param(_materials[mi], "particle_param_00", float(_frame + u))
-	if timed:
+	if measure:
 		t = _section(3, t)
 	if _churn > 0:
 		var c0: int = Time.get_ticks_usec()
@@ -348,8 +410,12 @@ func _process(_delta: float) -> void:
 		while _churn_rids.size() > _churn * 3 * 4:
 			RenderingServer.free_rid(_churn_rids.pop_front())
 		if _frame > _warmup + 1:
-			_churn_us.append(Time.get_ticks_usec() - c0)
-	if timed:
+			if _prealloc_frames > 0:
+				_churn_us[_churn_count] = Time.get_ticks_usec() - c0
+				_churn_count += 1
+			else:
+				_churn_us.append(Time.get_ticks_usec() - c0)
+	if measure:
 		t = _section(4, t)
 	if _node_root != null:
 		if _frame == _node_burst_frame:
@@ -367,7 +433,13 @@ func _process(_delta: float) -> void:
 					rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 				else:
 					rect.mouse_filter = Control.MOUSE_FILTER_STOP
+	if _frame_log != null:
+		_log_frame()
+	if _viewer_on:
+		_viewer_step()
 	if _frame >= _quit_frame:
+		if _viewer != null:
+			_viewer.close()
 		_report()
 		get_tree().quit()
 
@@ -375,8 +447,53 @@ func _process(_delta: float) -> void:
 ## RS_SCALE_CPU_REPORT: adds the wall time since `since` to section `index`; returns now.
 func _section(index: int, since: int) -> int:
 	var now: int = Time.get_ticks_usec()
-	_section_us[index] += now - since
+	_frame_sec[index] = now - since
+	if _frame > _warmup + 1:
+		_section_us[index] += now - since
 	return now
+
+
+## RS_SCALE_FRAME_LOG: this frame's line (buffered; flushed every 60 frames and at quit).
+func _log_frame() -> void:
+	var line: String = "%d,%d" % [Engine.get_process_frames(), _frame_cpu_ns]
+	for k: int in SECTIONS.size():
+		line += ",%d" % _frame_sec[k]
+	_frame_log_lines.append(line)
+	if _frame_log_lines.size() >= 60 or _frame >= _quit_frame:
+		_frame_log.store_string("\n".join(_frame_log_lines) + "\n")
+		_frame_log.flush()
+		_frame_log_lines = PackedStringArray()
+		if _frame >= _quit_frame:
+			_frame_log.close()
+			_frame_log = null
+
+
+## RS_SCALE_VIEWER: connect while the capture is armed and listening, drop when it is not.
+func _viewer_step() -> void:
+	var state: Dictionary = {}
+	if Engine.has_singleton("RenderStreamCapture"):
+		state = Engine.get_singleton("RenderStreamCapture").call("state")
+	var armed: bool = state.get("state", "") == "armed" and str(state.get("listen", "")) != ""
+	if _viewer != null:
+		_viewer.poll()
+		var ready: WebSocketPeer.State = _viewer.get_ready_state()
+		if not armed or ready == WebSocketPeer.STATE_CLOSED:
+			if ready != WebSocketPeer.STATE_CLOSED:
+				_viewer.close()
+			_viewer = null
+			return
+		if ready == WebSocketPeer.STATE_OPEN:
+			if not _viewer_hello:
+				_viewer_hello = true
+				_viewer.send_text(JSON.stringify(_VIEWER_HELLO, "", false))
+			while _viewer.get_available_packet_count() > 0:
+				_viewer.get_packet()
+	elif armed:
+		_viewer = WebSocketPeer.new()
+		_viewer.supported_protocols = PackedStringArray([_VIEWER_SUBPROTOCOL])
+		_viewer_hello = false
+		if _viewer.connect_to_url("ws://" + str(state.get("listen")) + "/render-stream") != OK:
+			_viewer = null
 
 
 func _add_nodes(count: int) -> void:
@@ -395,7 +512,7 @@ func _add_nodes(count: int) -> void:
 
 
 func _report() -> void:
-	var sorted: PackedInt64Array = _deltas_us.duplicate()
+	var sorted: PackedInt64Array = _deltas_us.slice(0, _delta_count) if _prealloc_frames > 0 else _deltas_us.duplicate()
 	sorted.sort()
 	var count: int = sorted.size()
 	var window_s: float = (_last_us - _window_start_us) / 1000000.0
@@ -410,7 +527,7 @@ func _report() -> void:
 		"redraws_varied": _redraws_varied,
 	}
 	if _churn > 0:
-		var churn_sorted: PackedInt64Array = _churn_us.duplicate()
+		var churn_sorted: PackedInt64Array = _churn_us.slice(0, _churn_count) if _prealloc_frames > 0 else _churn_us.duplicate()
 		churn_sorted.sort()
 		var churn_total: int = 0
 		for v: int in churn_sorted:
@@ -419,7 +536,7 @@ func _report() -> void:
 		summary["churn_us_p50"] = churn_sorted[churn_sorted.size() / 2] if churn_sorted.size() > 0 else 0
 		summary["churn_us_mean"] = (float(churn_total) / churn_sorted.size()) if churn_sorted.size() > 0 else 0.0
 	if _cpu_report:
-		var cpu_sorted: PackedInt64Array = _cpu_ns.duplicate()
+		var cpu_sorted: PackedInt64Array = _cpu_ns.slice(0, _cpu_count) if _prealloc_frames > 0 else _cpu_ns.duplicate()
 		cpu_sorted.sort()
 		var cpu_total: int = 0
 		for v: int in cpu_sorted:
@@ -455,6 +572,9 @@ func _report() -> void:
 
 
 func _exit_tree() -> void:
+	for rid: RID in _churn_rids:
+		RenderingServer.free_rid(rid)
+	_churn_rids.clear()
 	for item: RID in _items:
 		RenderingServer.free_rid(item)
 	for mesh: RID in _meshes:

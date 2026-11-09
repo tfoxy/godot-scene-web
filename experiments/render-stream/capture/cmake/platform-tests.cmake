@@ -2,6 +2,8 @@ enable_testing()
 if(NOT GRC_WINDOWS)
   find_package(Threads REQUIRED)
   add_library(grc_platform STATIC src/rs_platform_posix.cpp)
+  set_target_properties(grc_platform PROPERTIES
+    POSITION_INDEPENDENT_CODE ON CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
   target_include_directories(grc_platform PUBLIC src)
   target_link_libraries(grc_platform PRIVATE grc_warnings PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 endif()

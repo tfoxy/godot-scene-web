@@ -70,11 +70,15 @@ struct Iface {
   GDExtensionInterfaceObjectDestroy object_destroy = nullptr;
   GDExtensionInterfaceCallableCustomCreate2 callable_custom_create2 = nullptr;
   GDExtensionInterfaceObjectGetInstanceFromId object_get_instance_from_id = nullptr;
+  GDExtensionInterfaceObjectGetInstanceId object_get_instance_id = nullptr;
   // Name of the first interface function that failed to resolve, if any.
   std::string missing;
 };
 
 extern Iface g_iface;
+
+// Main-thread scene lifetime barrier; engine singletons and builtins remain available.
+extern bool g_root_finalized;
 
 // Resolves the interface functions. Returns false (and fills `g_iface.missing`)
 // if the host does not provide one of them.

@@ -1,7 +1,6 @@
 #include "rs_setting.h"
 #include <cstdio>
 #include <cstdlib>
-#include <stdexcept>
 #include <string>
 
 int main() {
@@ -23,9 +22,12 @@ int main() {
   check(std::string(std::getenv("GRC_RS_SETTING_TEST")) == "environment", "environment unchanged");
   check(grc::rs::setting("GRC_RS_SETTING_ABSENT") == nullptr, "missing fallback after install");
   check(stable == grc::rs::setting("GRC_RS_SETTING_TEST"), "pointer stable");
-  bool refused = false;
-  try { grc::rs::settings_install({}); } catch (const std::logic_error &) { refused = true; }
-  check(refused && std::string(stable) == "override", "second install cannot invalidate pointers");
+  // A re-arm installs its own map: the previous arm's overrides are gone.
+  grc::rs::settings_install({{"GRC_RS_SETTING_EMPTY", "second"}});
+  check(std::string(grc::rs::setting("GRC_RS_SETTING_TEST")) == "environment", "re-arm drops old override");
+  check(std::string(grc::rs::setting("GRC_RS_SETTING_EMPTY")) == "second", "re-arm installs its map");
+  grc::rs::settings_install({});
+  check(std::string(grc::rs::setting("GRC_RS_SETTING_EMPTY")) == "environment", "empty map restores env");
   std::printf("rs_setting_test: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

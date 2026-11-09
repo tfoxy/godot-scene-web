@@ -136,7 +136,7 @@ grc_w_test(rs_live_coding TARGET rs_live_coding_test
 grc_w_test(rs_particles_shim TARGET rs_particles_shim_test
   SOURCES test/rs_particles_shim_test.cpp src/rs_particles_shim.cpp LIBS Threads::Threads)
 grc_w_test(rs_capture_api TARGET rs_capture_api_test
-  SOURCES test/rs_capture_api_test.cpp src/rs_capture_api.cpp LIBS Threads::Threads)
+  SOURCES test/rs_capture_api_test.cpp src/rs_capture_api.cpp LIBS grc_platform Threads::Threads)
 
 # Excluded until the capture library is ported:
 # rs_publish, rs_ws, rs_carrier_set, rs_track, rs_carrier_ext, rs_net_module,

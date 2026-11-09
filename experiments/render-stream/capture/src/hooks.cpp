@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -1237,9 +1238,12 @@ PodEntry<ItemValueKey> item_value(RID item, int64_t value) {
 // behave exactly as at gate -1. The tap never blocks or alters the forwarded
 // call.
 
-bool streaming() { return rs::mirror_enabled(); }
+extern thread_local bool t_offmain_standby __attribute__((tls_model("initial-exec")));
+void test_arm_access();
 
-rs::Mirror &mirror() { return rs::mirror_instance(); }
+bool streaming() { return rs::mirror_enabled() && !t_offmain_standby; }
+
+rs::Mirror &mirror() { test_arm_access(); return rs::mirror_instance(); }
 
 rs2::Xform to_xform(const Transform2D &t) {
   return {t.columns[0].x, t.columns[0].y, t.columns[1].x, t.columns[1].y, t.columns[2].x,
@@ -1384,6 +1388,7 @@ struct ResourcePolicy {
 
 ResourcePolicy g_resource_policy;
 std::thread::id g_main_thread;
+std::atomic<int> g_offmain_inflight{0};
 // G8kw (rs_texture_worker.h): GRC_TEXTURE_WORKERS's worker count (0: sync, the default) and
 // GRC_TEXTURE_WORKER_MIN_BYTES, set at arm and cleared at stream finish by the main thread while
 // loader threads may be inside a texture hook, hence atomics.
@@ -1406,7 +1411,8 @@ rs::TapContext tap_context() {
   return ctx;
 }
 
-rs::ResourceLog &resources() { return rs::resource_log(); }
+rs::ResourceLog &resources() { test_arm_access(); return rs::resource_log(); }
+bool log_active() { return resources().active() && !t_offmain_standby; }
 
 // Q3 "Copy", steps 2-3: the GRT1 payload of `size` data bytes and its SHA-256, timed separately.
 void build_payload(const std::string &meta, const uint8_t *data, int64_t size,
@@ -1842,7 +1848,54 @@ bool omitted(const char *op) { return streaming() && mirror().omits(op, current_
 // the same sequence of identity calls. Loader threads create textures too, so
 // every texture identity tap holds this lock across both calls: the two see the calls in one
 // order and assign the same ids (`texture-versions-current` compares them).
+// Writes retain their identity ordering; lifetime is protected by OffmainGuard, which also
+// covers adoption reads before this lock is taken. Main never waits on this lock at Release.
 std::mutex g_texture_order;
+// LS3 test-only (GRC_TEST_INFLIGHT_DELAY_MS): an off-main texture create sleeps this long between
+// its streaming() re-check and its mirror write, so a disarm deterministically meets a write in
+// flight. 0 (the default): one relaxed load on that path only.
+std::atomic<uint32_t> g_test_inflight_delay_ms{0};
+std::atomic<uint32_t> g_test_materialize_delay_ms{0};
+// Only the delay probe uses this gate. A skipped wait must be observable without dereferencing
+// an arm that the negative test deliberately released. The release generation is per load.
+std::mutex g_test_reader_mutex;
+uint64_t g_test_released_generation = 0;
+std::map<uint64_t, uint64_t> g_test_readers_after_release;
+
+void test_reader_evidence() {  // g_test_reader_mutex held
+  JsonWriter json;
+  json.object_begin();
+  uint64_t total = 0;
+  for (const auto &entry : g_test_readers_after_release) total += entry.second;
+  json.field("reader_after_release", static_cast<int64_t>(total));
+  json.key("arms").array_begin();
+  for (const auto &entry : g_test_readers_after_release) {
+    json.object_begin();
+    json.field("arm_index", static_cast<int64_t>(entry.first));
+    json.field("reader_after_release", static_cast<int64_t>(entry.second));
+    json.object_end();
+  }
+  json.array_end();
+  json.object_end();
+  const char *dir = std::getenv("GRC_EVIDENCE_DIR");
+  if (dir != nullptr) write_file(path_join(dir, "reader-after-release.json"), json.take());
+}
+
+bool test_reader_delay(uint32_t ms, std::unique_lock<std::mutex> *guard) {
+  if (ms == 0) return true;
+  *guard = std::unique_lock<std::mutex>(g_test_reader_mutex);
+  const uint64_t admitted_generation = g_test_released_generation;
+  const char *dir = std::getenv("GRC_EVIDENCE_DIR");
+  if (dir != nullptr) write_file(path_join(dir, "reader-delay-arm-" +
+      std::to_string(admitted_generation + 1) + ".json"), "{\"pending\":true}");
+  guard->unlock();
+  std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+  guard->lock();
+  if (admitted_generation == g_test_released_generation) return true;
+  ++g_test_readers_after_release[admitted_generation + 1];
+  test_reader_evidence();
+  return false;
+}
 
 // --- mesh payload copy at the hook ---------------
 //
@@ -2097,6 +2150,25 @@ rs::ShaderCopy copy_shader_code(const void *code_ptr, rs::PayloadPtr *payload_ou
 // (rs_adopt.cpp's temporary Shader) instead of the mirror and the hook log, and every other
 // shader and free call passes straight to the engine: none of them is the game's.
 thread_local bool t_internal = false;
+// Capture is dlopen'd: avoid __tls_get_addr per hook using a few bytes of glibc's static TLS surplus.
+thread_local bool t_offmain_standby __attribute__((tls_model("initial-exec"))) = false;
+thread_local unsigned t_test_counted_depth __attribute__((tls_model("initial-exec"))) = 0;
+std::atomic<uint64_t> g_test_uncounted_accesses{0};
+std::atomic<uint64_t> g_test_held_free{0};
+std::atomic<uint32_t> g_test_admission_delay_ms{0};
+bool g_test_standby_view_off = false;
+bool g_test_hot_view_off = false;
+bool g_test_admission_probe = false;
+
+void test_arm_access() {
+  // Only the admission probe reads the test counter/TLS depth. Standby flag queries are safe;
+  // a TLS-denied invocation never proceeds to the active arm's mirror or log.
+  if (g_test_admission_delay_ms.load(std::memory_order_relaxed) != 0 &&
+      std::this_thread::get_id() != g_main_thread && !t_offmain_standby &&
+      t_test_counted_depth == 0 && (rs::mirror_enabled() || rs::resource_log().active())) {
+    g_test_uncounted_accesses.fetch_add(1, std::memory_order_relaxed);
+  }
+}
 std::atomic<std::uint64_t> g_internal_any{0};
 // The common path avoids dynamic-library TLS lookup. A thread increments before setting its
 // flag and decrements after clearing it, so its own internal calls always see a nonzero count.
@@ -2146,6 +2218,8 @@ rs::MaterialParamCopy decode_material_param(const void *value_ptr,
 // --- gate -1 hooks -----------------------------------------------------------
 
 void hook_add_rect(void *self, RID item, const Rect2 *rect, const Color *color, bool antialiased) {
+  OffmainGuard inflight;
+
   bump(kAddRect);
   if (g_validation_logs && rect != nullptr && color != nullptr) {
     RectCapture capture = {item.id, *rect, *color, antialiased};
@@ -2171,6 +2245,8 @@ void hook_add_rect(void *self, RID item, const Rect2 *rect, const Color *color, 
 
 void hook_add_texture_rect(void *self, RID item, const Rect2 *rect, RID texture, bool tile,
                            const Color *modulate, bool transpose) {
+  OffmainGuard inflight;
+
   bump(kAddTextureRect);
   rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming() && rect != nullptr && modulate != nullptr) {
@@ -2198,6 +2274,8 @@ void hook_add_texture_rect(void *self, RID item, const Rect2 *rect, RID texture,
 void hook_add_texture_rect_region(void *self, RID item, const Rect2 *rect, RID texture,
                                   const Rect2 *source, const Color *modulate, bool transpose,
                                   bool clip_uv) {
+  OffmainGuard inflight;
+
   bump(kAddTextureRectRegion);
   rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming() && rect != nullptr && source != nullptr && modulate != nullptr) {
@@ -2223,6 +2301,8 @@ void hook_add_texture_rect_region(void *self, RID item, const Rect2 *rect, RID t
 void hook_add_msdf_texture_rect_region(void *self, RID item, const Rect2 *rect, RID texture,
                                        const Rect2 *source, const Color *modulate,
                                        int outline_size, float px_range, float scale) {
+  OffmainGuard inflight;
+
   bump(kAddMsdfTextureRectRegion);
   rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
   // the /3 command, no longer a typed refusal.
@@ -2250,6 +2330,8 @@ void hook_add_msdf_texture_rect_region(void *self, RID item, const Rect2 *rect, 
 
 void hook_add_polygon(void *self, RID item, const Vector<Point2> *points,
                       const Vector<Color> *colors, const Vector<Point2> *uvs, RID texture) {
+  OffmainGuard inflight;
+
   bump(kAddPolygon);
   rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming()) {
@@ -2349,12 +2431,14 @@ void note_cache_texture(uint64_t id, const rs::PayloadCopy &copy, const rs::Text
 bool g_path_hook_records = false;
 
 void hook_texture_set_path(void *self, RID texture, const void *path) {
+  OffmainGuard inflight;
+
   bump(kTextureSetPath);
   if (g_path_hook_records) {
     const std::string text = rs::decode_string(path);
     std::lock_guard<std::mutex> lock(g_cache_mutex);
     g_texture_paths[texture.id] = text;
-    if (g_set_path_calls.size() < kMaxTextures) {
+    if (!inflight.standby() && g_set_path_calls.size() < kMaxTextures) {
       g_set_path_calls.emplace_back(texture.id, text);
     }
   }
@@ -2362,6 +2446,8 @@ void hook_texture_set_path(void *self, RID texture, const void *path) {
 }
 
 RID hook_texture_2d_create(void *self, const Ref *image) {
+  OffmainGuard inflight(true, "texture-create");
+
   bump(kTexture2dCreate);
   const uint64_t t_hook = now_ns();
   // D3: the bytes are copied and hashed here, on the calling thread, before the
@@ -2370,8 +2456,10 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
   // duplicate taken here is copied and hashed by a worker.
   // LS0: `logging` and `htr` are each read once, ahead of the image facts. The five engine getters
   // behind the facts run only for a consumer: the validation log, the resource log or HTR.
-  const bool logging = resources().active();
-  const uint32_t htr = rs::texture_release_flags();
+  const bool logging = log_active();
+  const uint32_t release_flags = rs::texture_release_flags();
+  const bool standby = t_offmain_standby;  // one initial-exec TLS read for both hot-line inputs
+  const uint32_t htr = rs::texture_release_admitted_bits(release_flags, standby);
   const ImageFacts facts =
       (g_validation_logs || logging || htr != 0) ? read_image(image) : ImageFacts();
   ImageCapture capture = describe_image(facts, 0, -1);
@@ -2387,14 +2475,27 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
   rs::ReleaseSkip release_skip = rs::ReleaseSkip::Inactive;
   int64_t release_ns = -1;
   uint64_t t_release = 0;
+  const bool admission_probe = g_test_admission_probe;
+  if ((htr & rs::kReleaseActive) != 0) t_release = now_ns();
+  const uint32_t raw_mirror_bits = ((htr & rs::kReleaseActive) != 0 || admission_probe)
+      ? rs::texture_release_mirror_bits() : 0;
+  const uint32_t mirror_bits = rs::texture_release_admitted_bits(
+      raw_mirror_bits, standby && !g_test_hot_view_off);
+  if (admission_probe && std::this_thread::get_id() != g_main_thread) {
+    const bool armed = (mirror_bits & rs::kMirrorStreaming) != 0;
+    if (standby && armed) g_test_uncounted_accesses.fetch_add(1, std::memory_order_relaxed);
+    const char *dir = std::getenv("GRC_EVIDENCE_DIR");
+    if (dir != nullptr) write_file(path_join(dir, "admission-texture-hot.json"),
+        std::string("{\"raw_streaming\":") +
+        ((raw_mirror_bits & rs::kMirrorStreaming) != 0 ? "true" : "false") +
+        ",\"streaming\":" + (armed ? "true" : "false") + "}");
+  }
   if ((htr & rs::kReleaseActive) != 0) {
-    t_release = now_ns();
     rs::ReleaseInputs in;
     in.logging = logging;
     // The stream and omit-op state from the hot line (rs_texture_release.h kMirrorStreaming,
-    // kMirrorOmitArmed), read here, inside the timed predicate. Only an armed omit-op sabotage
+    // kMirrorOmitArmed), read above, inside the timed predicate. Only an armed omit-op sabotage
     // reaches the mirror, which decides.
-    const uint32_t mirror_bits = rs::texture_release_mirror_bits();
     in.streaming = (mirror_bits & rs::kMirrorStreaming) != 0;
     in.omitted = in.streaming && (mirror_bits & rs::kMirrorOmitArmed) != 0 &&
                  omitted("texture_2d_create");
@@ -2437,6 +2538,11 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
     }
   }
   if (logging) {
+    std::unique_lock<std::mutex> test_reader;
+    if (const uint32_t ms = g_test_inflight_delay_ms.load(std::memory_order_relaxed);
+        ms != 0 && std::this_thread::get_id() != g_main_thread && streaming()) {
+      if (!test_reader_delay(ms, &test_reader)) return result;
+    }
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("texture_2d_create");
     if (streaming() && !omit) {
@@ -2463,9 +2569,11 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
 }
 
 void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer) {
+  OffmainGuard inflight;
+
   bump(kTexture2dUpdate);
   const uint64_t t_hook = now_ns();
-  const bool logging = resources().active();  // LS0: read once, ahead of the image facts
+  const bool logging = log_active();  // LS0: read once, ahead of the image facts
   const ImageFacts facts = (g_validation_logs || logging) ? read_image(image) : ImageFacts();
   if (g_validation_logs) {
     ImageCapture capture = describe_image(facts, texture.id, layer);
@@ -2512,6 +2620,10 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
 }
 
 void hook_free(void *self, RID rid) {
+  OffmainGuard inflight(true, "free");
+  if (g_test_admission_delay_ms.load(std::memory_order_relaxed) != 0 && inflight.counted())
+    g_test_held_free.store(rid.id, std::memory_order_relaxed);
+
   if (internal_work()) {  // G8m (D4): the temporary Shader's RID
     original<FnFree>(kFree)(self, rid);
     return;
@@ -2531,7 +2643,7 @@ void hook_free(void *self, RID rid) {
   // Arm resets/enables the mirror and starts the resource log without g_texture_order; no arm
   // step relies on that lock excluding an idle free. Registry erase and every counter above
   // still run. Once either flag is true, retain the original lock and checks unchanged.
-  if (streaming() || resources().active()) {
+  if (streaming() || log_active()) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("free");
     if (streaming()) {
@@ -2567,7 +2679,7 @@ void hook_free(void *self, RID rid) {
     }
     // Likewise for the texture and mesh hook logs, which log only RIDs they know.
     resources().free_rid(tap_context(), rid.id, omit);
-    if (resources().active()) {
+    if (log_active()) {
       // G5a: the hook's own retained mesh-buffer cache leaves with the mesh, omit-op included --
       // a stale free is the same contradiction a stale texture update is, left to show as pixels.
       std::lock_guard<std::mutex> lock(g_mutex);
@@ -2585,6 +2697,8 @@ void hook_add_triangle_array(void *self, RID item, const Vector<int32_t> *indice
                              const Vector<Point2> *points, const Vector<Color> *colors,
                              const Vector<Point2> *uvs, const Vector<int32_t> *bones,
                              const Vector<float> *weights, RID texture, int count) {
+  OffmainGuard inflight;
+
   bump(kAddTriangleArray);
   rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming()) {
@@ -2615,6 +2729,8 @@ void hook_add_triangle_array(void *self, RID item, const Vector<int32_t> *indice
 
 void hook_add_mesh(void *self, RID item, const RID *mesh, const Transform2D *transform,
                    const Color *modulate, RID texture) {
+  OffmainGuard inflight;
+
   bump(kAddMesh);
   if (mesh != nullptr) {
     rs::materialize(mesh->id, rs::RefKind::Mesh);  // G8r: a pre-arm mesh is adopted at first reference
@@ -2644,6 +2760,8 @@ void hook_add_mesh(void *self, RID item, const RID *mesh, const Transform2D *tra
 }
 
 void hook_add_multimesh(void *self, RID item, RID mesh, RID texture) {
+  OffmainGuard inflight;
+
   bump(kAddMultimesh);
   if (g_multimesh_hooked) {
     // PM1 rule 7: /11's add_multimesh, naming the mirror's multimesh entry (an unknown RID
@@ -2664,6 +2782,8 @@ void hook_add_nine_patch(void *self, RID item, const Rect2 *rect, const Rect2 *s
                          RID texture, const Vector2 *topleft, const Vector2 *bottomright,
                          int32_t x_axis_mode, int32_t y_axis_mode, bool draw_center,
                          const Color *modulate) {
+  OffmainGuard inflight;
+
   bump(kAddNinePatch);
   rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming() && rect != nullptr && source != nullptr && topleft != nullptr &&
@@ -2694,6 +2814,8 @@ void hook_add_nine_patch(void *self, RID item, const Rect2 *rect, const Rect2 *s
 
 void hook_add_primitive(void *self, RID item, const Vector<Point2> *points,
                         const Vector<Color> *colors, const Vector<Point2> *uvs, RID texture) {
+  OffmainGuard inflight;
+
   bump(kAddPrimitive);
   rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming()) {
@@ -2714,6 +2836,8 @@ void hook_add_primitive(void *self, RID item, const Vector<Point2> *points,
 
 void hook_add_line(void *self, RID item, const Point2 *from, const Point2 *to, const Color *color,
                    float width, bool antialiased) {
+  OffmainGuard inflight;
+
   bump(kAddLine);
   if (streaming() && from != nullptr && to != nullptr && color != nullptr) {
     mirror().add_line(item.id, to_point(*from), to_point(*to), to_color(*color), width,
@@ -2735,6 +2859,8 @@ void hook_add_line(void *self, RID item, const Point2 *from, const Point2 *to, c
 
 void hook_add_polyline(void *self, RID item, const Vector<Point2> *points,
                        const Vector<Color> *colors, float width, bool antialiased) {
+  OffmainGuard inflight;
+
   bump(kAddPolyline);
   if (streaming()) {
     mirror().add_polyline(item.id, whole_points(points), whole_colors(colors), width, antialiased,
@@ -2754,6 +2880,8 @@ void hook_add_polyline(void *self, RID item, const Vector<Point2> *points,
 
 void hook_add_circle(void *self, RID item, const Point2 *position, float radius,
                      const Color *color, bool antialiased) {
+  OffmainGuard inflight;
+
   bump(kAddCircle);
   if (streaming() && position != nullptr && color != nullptr) {
     mirror().add_circle(item.id, to_point(*position), radius, to_color(*color), antialiased,
@@ -2781,6 +2909,8 @@ PodEntry<ItemTransformKey> item_transform(RID item, const Transform2D &transform
 }
 
 void hook_add_set_transform(void *self, RID item, const Transform2D *transform) {
+  OffmainGuard inflight;
+
   bump(kAddSetTransform);
   if (streaming() && transform != nullptr) {
     mirror().add_set_transform(item.id, to_xform(*transform), current_frame());
@@ -2792,6 +2922,8 @@ void hook_add_set_transform(void *self, RID item, const Transform2D *transform) 
 }
 
 void hook_set_transform(void *self, RID item, const Transform2D *transform) {
+  OffmainGuard inflight;
+
   bump(kSetTransform);
   if (transform != nullptr) {
     log_entry(&g_set_transforms, item_transform(item, *transform));
@@ -2803,6 +2935,8 @@ void hook_set_transform(void *self, RID item, const Transform2D *transform) {
 }
 
 void hook_set_modulate(void *self, RID item, const Color *color) {
+  OffmainGuard inflight;
+
   bump(kSetModulate);
   if (color != nullptr) {
     ItemColorKey key;
@@ -2818,6 +2952,8 @@ void hook_set_modulate(void *self, RID item, const Color *color) {
 }
 
 RID hook_canvas_item_create(void *self) {
+  OffmainGuard inflight;
+
   bump(kCanvasItemCreate);
   const RID result = original<FnCreate>(kCanvasItemCreate)(self);
   log_entry(&g_canvas_item_creates, rids(result.id));
@@ -2828,6 +2964,8 @@ RID hook_canvas_item_create(void *self) {
 }
 
 void hook_canvas_item_clear(void *self, RID item) {
+  OffmainGuard inflight;
+
   bump(kCanvasItemClear);
   log_entry(&g_canvas_item_clears, rids(item.id));
   if (streaming()) {
@@ -2837,6 +2975,8 @@ void hook_canvas_item_clear(void *self, RID item) {
 }
 
 void hook_set_material(void *self, RID item, RID material) {
+  OffmainGuard inflight;
+
   bump(kSetMaterial);
   log_entry(&g_set_materials, rids(item.id, material.id));
   if (streaming() && mirror().set_material(item.id, material.id, current_frame()) &&
@@ -2847,23 +2987,25 @@ void hook_set_material(void *self, RID item, RID material) {
   // Logged for the material census alongside calibrator 8's own taps;
   // the mirror keeps it as the item's `material` field.
   // HC6: the log keeps no registry for this call, so with its lines off there is nothing to do.
-  if (resources().active() && resources().wants_lines()) {
+  if (log_active() && resources().wants_lines()) {
     resources().canvas_item_set_material(tap_context(), item.id, material.id);
   }
   original<FnSetMaterial>(kSetMaterial)(self, item, material);
 }
 
 RID hook_mesh_create(void *self) {
+  OffmainGuard inflight;
+
   bump(kMeshCreate);
   const RID result = original<FnCreate>(kMeshCreate)(self);
   registry_create(result.id, rs::RegistryKind::Mesh);
   log_entry(&g_mesh_creates, rids(result.id));
-  const bool logging = resources().active();
+  const bool logging = log_active();
   if (logging) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("mesh_create");
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (!omit) {
+    if (!omit && log_active()) {  // LS3: re-checked under the lock
       g_mesh_buffers[result.id];  // an empty surface list, value-initialized
     }
     if (streaming()) {
@@ -2875,6 +3017,8 @@ RID hook_mesh_create(void *self) {
 }
 
 void hook_mesh_add_surface(void *self, RID mesh, const SurfaceDataPrefix *surface) {
+  OffmainGuard inflight;
+
   bump(kMeshAddSurface);
   if (surface != nullptr) {
     MeshSurfaceKey key;
@@ -2894,14 +3038,14 @@ void hook_mesh_add_surface(void *self, RID mesh, const SurfaceDataPrefix *surfac
   // Gate 5 (G5a, D6): whole-surface copy at the hook, classified (D7), hashed into a GRM1
   // payload, and appended to the hook's own retained-buffer cache (so a later region update can
   // re-hash the whole surface) and to evidence/resources.jsonl.
-  if (surface != nullptr && resources().active()) {
+  if (surface != nullptr && log_active()) {
     MeshSurfaceBuffer buffer;
     rs::MeshSurfaceInput input;
     input.copy = copy_mesh_surface(*surface, &buffer, &input.bytes);
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("mesh_add_surface");
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (!omit) {
+    if (!omit && log_active()) {  // LS3: re-checked under the lock
       g_mesh_buffers[mesh.id].push_back(std::move(buffer));
     }
     if (streaming()) {
@@ -2983,7 +3127,7 @@ std::vector<uint8_t> *mesh_buffer_field(MeshSurfaceBuffer *buffer, MeshBuffer wh
 
 void handle_mesh_region_update(MeshBuffer which, RID mesh, int32_t surface, int32_t offset,
                                const Vector<uint8_t> *data) {
-  if (!resources().active()) {
+  if (!log_active()) {
     return;
   }
   const int64_t bytes = data != nullptr ? data->size() : 0;
@@ -3059,6 +3203,8 @@ void handle_mesh_region_update(MeshBuffer which, RID mesh, int32_t surface, int3
 
 void hook_mesh_update_vertex_region(void *self, RID mesh, int surface, int offset,
                                     const Vector<uint8_t> *data) {
+  OffmainGuard inflight;
+
   bump(kMeshUpdateVertexRegion);
   log_entry(&g_vertex_regions, region(mesh, surface, offset, data));
   handle_mesh_region_update(MeshBuffer::kVertex, mesh, surface, offset, data);
@@ -3067,6 +3213,8 @@ void hook_mesh_update_vertex_region(void *self, RID mesh, int surface, int offse
 
 void hook_mesh_update_attribute_region(void *self, RID mesh, int surface, int offset,
                                        const Vector<uint8_t> *data) {
+  OffmainGuard inflight;
+
   bump(kMeshUpdateAttributeRegion);
   log_entry(&g_attribute_regions, region(mesh, surface, offset, data));
   handle_mesh_region_update(MeshBuffer::kAttribute, mesh, surface, offset, data);
@@ -3074,9 +3222,11 @@ void hook_mesh_update_attribute_region(void *self, RID mesh, int surface, int of
 }
 
 void hook_mesh_clear(void *self, RID mesh) {
+  OffmainGuard inflight;
+
   bump(kMeshClear);
   log_entry(&g_mesh_clears, rids(mesh.id));
-  if (resources().active()) {
+  if (log_active()) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("mesh_clear");
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -3095,6 +3245,8 @@ void hook_mesh_clear(void *self, RID mesh) {
 }
 
 void hook_mesh_set_custom_aabb(void *self, RID mesh, const AABB *aabb) {
+  OffmainGuard inflight;
+
   bump(kMeshSetCustomAabb);
   if (aabb != nullptr) {
     MeshAabbKey key;
@@ -3103,7 +3255,7 @@ void hook_mesh_set_custom_aabb(void *self, RID mesh, const AABB *aabb) {
     key.aabb = *aabb;
     log_entry(&g_mesh_aabbs, pod(key));
   }
-  if (resources().active()) {
+  if (log_active()) {
     std::lock_guard<std::mutex> order(g_texture_order);
     if (streaming() && aabb != nullptr) {
       // G5e: the mesh entry's custom AABB (position xyz, size xyz).
@@ -3125,13 +3277,15 @@ void hook_mesh_set_custom_aabb(void *self, RID mesh, const AABB *aabb) {
 // classified and hashed exactly as a plain mesh_add_surface's is.
 RID hook_mesh_create_from_surfaces(void *self, const Vector<SurfaceDataPrefix> *surfaces,
                                    int32_t blend_shape_count) {
+  OffmainGuard inflight;
+
   bump(kMeshCreateFromSurfaces);
   const RID result =
       original<FnMeshCreateFromSurfaces>(kMeshCreateFromSurfaces)(self, surfaces, blend_shape_count);
   registry_create(result.id, rs::RegistryKind::Mesh);
   log_entry(&g_mesh_create_from_surfaces_calls,
            rids(result.id, surfaces != nullptr ? static_cast<uint64_t>(surfaces->size()) : 0));
-  if (resources().active()) {
+  if (log_active()) {
     std::vector<MeshSurfaceBuffer> buffers;
     std::vector<rs::MeshSurfaceInput> inputs;
     std::vector<rs::MeshSurfaceCopy> copies;
@@ -3149,7 +3303,7 @@ RID hook_mesh_create_from_surfaces(void *self, const Vector<SurfaceDataPrefix> *
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("mesh_create_from_surfaces");
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (!omit) {
+    if (!omit && log_active()) {  // LS3: re-checked under the lock
       g_mesh_buffers[result.id] = std::move(buffers);
     }
     if (streaming()) {
@@ -3162,6 +3316,8 @@ RID hook_mesh_create_from_surfaces(void *self, const Vector<SurfaceDataPrefix> *
 
 void hook_mesh_update_skin_region(void *self, RID mesh, int surface, int offset,
                                   const Vector<uint8_t> *data) {
+  OffmainGuard inflight;
+
   bump(kMeshUpdateSkinRegion);
   log_entry(&g_skin_regions, region(mesh, surface, offset, data));
   handle_mesh_region_update(MeshBuffer::kSkin, mesh, surface, offset, data);
@@ -3170,6 +3326,8 @@ void hook_mesh_update_skin_region(void *self, RID mesh, int surface, int offset,
 
 void hook_mesh_update_index_region(void *self, RID mesh, int surface, int offset,
                                    const Vector<uint8_t> *data) {
+  OffmainGuard inflight;
+
   bump(kMeshUpdateIndexRegion);
   log_entry(&g_index_regions, region(mesh, surface, offset, data));
   handle_mesh_region_update(MeshBuffer::kIndex, mesh, surface, offset, data);
@@ -3177,9 +3335,11 @@ void hook_mesh_update_index_region(void *self, RID mesh, int surface, int offset
 }
 
 void hook_mesh_surface_remove(void *self, RID mesh, int surface) {
+  OffmainGuard inflight;
+
   bump(kMeshSurfaceRemove);
   log_entry(&g_mesh_surface_removes, item_value(mesh, surface));
-  if (resources().active()) {
+  if (log_active()) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("mesh_surface_remove");
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -3204,6 +3364,8 @@ void hook_mesh_surface_remove(void *self, RID mesh, int surface) {
 // command (whole arrays); counters.json is truncated like every other optional geometry op.
 void hook_add_multiline(void *self, RID item, const Vector<Point2> *points,
                         const Vector<Color> *colors, float width, bool antialiased) {
+  OffmainGuard inflight;
+
   bump(kAddMultiline);
   if (streaming()) {
     mirror().add_polyline(item.id, whole_points(points), whole_colors(colors), width, antialiased,
@@ -3222,6 +3384,8 @@ void hook_add_multiline(void *self, RID item, const Vector<Point2> *points,
 }
 
 void hook_add_particles(void *self, RID item, RID particles, RID texture) {
+  OffmainGuard inflight;
+
   bump(kAddParticles);
   if (g_particles_hooked) {
     // PM5 ("The command"): /12's add_particles, naming the mirror's emitter (an unknown RID
@@ -3240,6 +3404,8 @@ void hook_add_particles(void *self, RID item, RID particles, RID texture) {
 
 void hook_add_animation_slice(void *self, RID item, double animation_length, double slice_begin,
                               double slice_end, double offset) {
+  OffmainGuard inflight;
+
   bump(kAddAnimationSlice);
   tap_unsupported(item, "canvas_item_add_animation_slice");
   AnimationSliceKey key;
@@ -3258,6 +3424,8 @@ void hook_add_animation_slice(void *self, RID item, double animation_length, dou
 // leaves no trace; a non-null one is reported in Snapshot::unsupported only, as a non-null
 // material is (D2, D16).
 void hook_attach_skeleton(void *self, RID item, RID skeleton) {
+  OffmainGuard inflight;
+
   bump(kAttachSkeleton);
   log_entry(&g_attach_skeletons, rids(item.id, skeleton.id));
   if (streaming()) {
@@ -3267,6 +3435,8 @@ void hook_attach_skeleton(void *self, RID item, RID skeleton) {
 }
 
 RID hook_shader_create_from_code(void *self, const void *code, const void *path_hint) {
+  OffmainGuard inflight;
+
   if (internal_work()) {  // G8m (D4): the capture's temporary Shader
     const RID made =
         original<FnShaderCreateFromCode>(kShaderCreateFromCode)(self, code, path_hint);
@@ -3286,7 +3456,7 @@ RID hook_shader_create_from_code(void *self, const void *code, const void *path_
     rs::registry_note_shader_code(result.id, registry_held_string(code));
   }
   log_entry(&g_shader_creates, rids(result.id));
-  if (resources().active()) {
+  if (log_active()) {
     rs::ShaderCodeInput input;
     input.copy = copy_shader_code(code, &input.bytes);
     // Loader threads create shaders too (Q1g): one order for the mirror's and the log's ids.
@@ -3301,13 +3471,15 @@ RID hook_shader_create_from_code(void *self, const void *code, const void *path_
 }
 
 void hook_shader_set_code(void *self, RID shader, const void *code) {
+  OffmainGuard inflight(true, "shader-set-code");
+
   if (internal_work()) {  // G8m (D4)
     original<FnShaderSetCode>(kShaderSetCode)(self, shader, code);
     return;
   }
   bump(kShaderSetCode);
   log_entry(&g_shader_codes, rids(shader.id));
-  if (resources().active()) {
+  if (log_active()) {
     rs::ShaderCodeInput input;
     input.copy = copy_shader_code(code, &input.bytes);
     std::lock_guard<std::mutex> order(g_texture_order);
@@ -3324,6 +3496,8 @@ void hook_shader_set_code(void *self, RID shader, const void *code) {
 }
 
 void hook_material_set_param(void *self, RID material, const void *name, const void *value) {
+  OffmainGuard inflight;
+
   if (internal_work()) {  // G8m: the capture's own temporary objects pass straight through
     original<FnMaterialSetParam>(kMaterialSetParam)(self, material, name, value);
     return;
@@ -3331,7 +3505,7 @@ void hook_material_set_param(void *self, RID material, const void *name, const v
   bump(kMaterialSetParam);
   log_entry(&g_material_params, rids(material.id));
   std::string param_name;
-  if (resources().active()) {
+  if (log_active()) {
     param_name = rs::decode_string_name(name);
     rs::DecodedParam decoded;
     const rs::MaterialParamCopy copy = decode_material_param(value, &decoded);
@@ -3357,11 +3531,13 @@ void hook_material_set_param(void *self, RID material, const void *name, const v
 // --- calibrator 8 hooks --------------------------------
 
 RID hook_shader_create(void *self) {
+  OffmainGuard inflight;
+
   bump(kShaderCreate);
   const RID result = original<FnCreate>(kShaderCreate)(self);
   registry_create(result.id, rs::RegistryKind::Shader);
   log_entry(&g_shader_create_calls, rids(result.id));
-  if (resources().active()) {
+  if (log_active()) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("shader_create");
     if (streaming()) {
@@ -3374,6 +3550,8 @@ RID hook_shader_create(void *self) {
 
 void hook_shader_set_default_texture_parameter(void *self, RID shader, const void *name,
                                                RID texture, int32_t index) {
+  OffmainGuard inflight;
+
   bump(kShaderSetDefaultTextureParameter);
   rs::materialize(texture.id, rs::RefKind::Texture);  // G8r
   ShaderDefaultTextureKey key;
@@ -3382,7 +3560,7 @@ void hook_shader_set_default_texture_parameter(void *self, RID shader, const voi
   key.texture = texture.id;
   key.index = index;
   log_entry(&g_shader_default_textures, pod(key));
-  if (resources().active()) {
+  if (log_active()) {
     const std::string param_name = rs::decode_string_name(name);
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("shader_set_default_texture_parameter");
@@ -3402,6 +3580,8 @@ void hook_shader_set_default_texture_parameter(void *self, RID shader, const voi
 }
 
 RID hook_material_create(void *self) {
+  OffmainGuard inflight;
+
   if (internal_work()) {  // G8m: the capture's own temporary objects pass straight through
     return original<FnCreate>(kMaterialCreate)(self);
   }
@@ -3409,7 +3589,7 @@ RID hook_material_create(void *self) {
   const RID result = original<FnCreate>(kMaterialCreate)(self);
   registry_create(result.id, rs::RegistryKind::Material);
   log_entry(&g_material_create_calls, rids(result.id));
-  if (resources().active()) {
+  if (log_active()) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("material_create");
     if (streaming()) {
@@ -3421,6 +3601,8 @@ RID hook_material_create(void *self) {
 }
 
 RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority, RID shader) {
+  OffmainGuard inflight;
+
   if (internal_work()) {  // G8m: the capture's own temporary objects pass straight through
     return original<FnMaterialCreateFromShader>(kMaterialCreateFromShader)(self, next_pass,
                                                                             priority, shader);
@@ -3440,7 +3622,7 @@ RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority
   key.material = result.id;
   key.shader = shader.id;
   log_entry(&g_material_create_from_shader_calls, pod(key));
-  if (resources().active()) {
+  if (log_active()) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("material_create_from_shader");
     if (streaming()) {
@@ -3452,6 +3634,8 @@ RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority
 }
 
 void hook_material_set_shader(void *self, RID material, RID shader) {
+  OffmainGuard inflight;
+
   if (internal_work()) {  // G8m: the capture's own temporary objects pass straight through
     original<FnSetMaterial>(kMaterialSetShader)(self, material, shader);
     return;
@@ -3462,7 +3646,7 @@ void hook_material_set_shader(void *self, RID material, RID shader) {
     rs::registry_note_material_shader(material.id, shader.id);  // LAR3
     rs::materialize(shader.id, rs::RefKind::Shader);  // LAR3 (R4): a registered shader the mirror does not know
   }
-  if (resources().active()) {
+  if (log_active()) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("material_set_shader");
     if (streaming()) {
@@ -3478,6 +3662,8 @@ void hook_material_set_shader(void *self, RID material, RID shader) {
 // modulate/_self_modulate already are; the hook log's own line (kind:"item-material") is
 // presence-only. Since G55d the mirror keeps it as the canvas's `modulate` (D10).
 void hook_set_canvas_modulate(void *self, RID canvas, const Color *color) {
+  OffmainGuard inflight;
+
   bump(kSetCanvasModulate);
   if (color != nullptr) {
     ItemColorKey key;
@@ -3489,19 +3675,21 @@ void hook_set_canvas_modulate(void *self, RID canvas, const Color *color) {
       mirror().canvas_set_modulate(canvas.id, to_color(*color), current_frame());
     }
   }
-  if (resources().active()) {
+  if (log_active()) {
     resources().canvas_set_modulate(tap_context(), canvas.id);
   }
   original<FnSetModulate>(kSetCanvasModulate)(self, canvas, color);
 }
 
 void hook_set_use_parent_material(void *self, RID item, bool enable) {
+  OffmainGuard inflight;
+
   bump(kSetUseParentMaterial);
   log_entry(&g_set_use_parent_materials, item_value(item, enable ? 1 : 0));
   if (streaming()) {
     mirror().set_use_parent_material(item.id, enable, current_frame());
   }
-  if (resources().active()) {
+  if (log_active()) {
     resources().canvas_item_set_use_parent_material(tap_context(), item.id, enable);
   }
   original<FnRidBool>(kSetUseParentMaterial)(self, item, enable);
@@ -3511,9 +3699,11 @@ void hook_set_use_parent_material(void *self, RID item, bool enable) {
 // decoded name and value go to the hook log alone.
 void hook_set_instance_shader_parameter(void *self, RID item, const void *name,
                                         const void *value) {
+  OffmainGuard inflight;
+
   bump(kSetInstanceShaderParameter);
   log_entry(&g_set_instance_shader_parameters, rids(item.id));
-  if (resources().active() || streaming()) {
+  if (log_active() || streaming()) {
     const std::string param_name = rs::decode_string_name(name);
     rs::DecodedParam decoded;
     const rs::MaterialParamCopy copy = decode_material_param(value, &decoded);
@@ -3523,7 +3713,7 @@ void hook_set_instance_shader_parameter(void *self, RID item, const void *name,
     if (streaming()) {
       mirror().set_instance_shader_parameter(item.id, param_name, decoded, current_frame());
     }
-    if (resources().active()) {
+    if (log_active()) {
       resources().canvas_item_set_instance_shader_parameter(tap_context(), item.id, param_name,
                                                              copy);
     }
@@ -3532,12 +3722,14 @@ void hook_set_instance_shader_parameter(void *self, RID item, const void *name,
 }
 
 void hook_canvas_light_attach_to_canvas(void *self, RID light, RID canvas) {
+  OffmainGuard inflight;
+
   bump(kCanvasLightAttachToCanvas);
   log_entry(&g_canvas_light_attaches, rids(light.id, canvas.id));
   if (streaming()) {
     mirror().canvas_light_attach_to_canvas(light.id, canvas.id, current_frame());
   }
-  if (resources().active()) {
+  if (log_active()) {
     resources().canvas_light_attach_to_canvas(tap_context(), light.id, canvas.id);
   }
   original<FnSetMaterial>(kCanvasLightAttachToCanvas)(self, light, canvas);
@@ -3547,12 +3739,14 @@ void hook_canvas_light_attach_to_canvas(void *self, RID light, RID canvas) {
 // ----------------------------------------------------------------------------
 
 void hook_viewport_remove_canvas(void *self, RID viewport, RID canvas) {
+  OffmainGuard inflight;
+
   bump(kViewportRemoveCanvas);
   log_entry(&g_viewport_remove_canvases, rids(viewport.id, canvas.id));
   if (streaming()) {
     mirror().viewport_remove_canvas(viewport.id, canvas.id, current_frame());
   }
-  if (resources().active()) {
+  if (log_active()) {
     resources().viewport_remove_canvas(tap_context(), viewport.id, canvas.id);
   }
   original<FnSetMaterial>(kViewportRemoveCanvas)(self, viewport, canvas);
@@ -3560,6 +3754,8 @@ void hook_viewport_remove_canvas(void *self, RID viewport, RID canvas) {
 
 void hook_viewport_set_global_canvas_transform(void *self, RID viewport,
                                                 const Transform2D *transform) {
+  OffmainGuard inflight;
+
   bump(kViewportSetGlobalCanvasTransform);
   if (transform != nullptr) {
     ViewportTransformKey key;
@@ -3571,7 +3767,7 @@ void hook_viewport_set_global_canvas_transform(void *self, RID viewport,
       mirror().viewport_set_global_canvas_transform(viewport.id, to_xform(*transform),
                                                     current_frame());
     }
-    if (resources().active()) {
+    if (log_active()) {
       resources().viewport_set_global_canvas_transform(tap_context(), viewport.id,
                                                         &transform->columns[0].x);
     }
@@ -3582,6 +3778,8 @@ void hook_viewport_set_global_canvas_transform(void *self, RID viewport,
 
 void hook_viewport_set_canvas_stacking(void *self, RID viewport, RID canvas, int32_t layer,
                                         int32_t sublayer) {
+  OffmainGuard inflight;
+
   bump(kViewportSetCanvasStacking);
   CanvasStackingKey key;
   zero(&key);
@@ -3594,7 +3792,7 @@ void hook_viewport_set_canvas_stacking(void *self, RID viewport, RID canvas, int
     mirror().viewport_set_canvas_stacking(viewport.id, canvas.id, layer, sublayer,
                                           current_frame());
   }
-  if (resources().active()) {
+  if (log_active()) {
     resources().viewport_set_canvas_stacking(tap_context(), viewport.id, canvas.id, layer,
                                               sublayer);
   }
@@ -3605,6 +3803,8 @@ void hook_viewport_set_canvas_stacking(void *self, RID viewport, RID canvas, int
 // canvas_set_item_mirroring's real ABI takes two RIDs (p_canvas, p_item); see the ABI comment
 // block above.
 void hook_canvas_set_item_mirroring(void *self, RID canvas, RID item, const Point2 *mirroring) {
+  OffmainGuard inflight;
+
   bump(kCanvasSetItemMirroring);
   if (mirroring != nullptr) {
     CanvasItemMirroringKey key;
@@ -3617,7 +3817,7 @@ void hook_canvas_set_item_mirroring(void *self, RID canvas, RID item, const Poin
       mirror().canvas_set_item_mirroring(canvas.id, item.id, mirroring->x, mirroring->y,
                                          current_frame());
     }
-    if (resources().active()) {
+    if (log_active()) {
       resources().canvas_set_item_mirroring(tap_context(), canvas.id, item.id, &mirroring->x);
     }
   }
@@ -3626,6 +3826,8 @@ void hook_canvas_set_item_mirroring(void *self, RID canvas, RID item, const Poin
 
 void hook_canvas_set_item_repeat(void *self, RID item, const Point2 *repeat_size,
                                   int32_t repeat_times) {
+  OffmainGuard inflight;
+
   bump(kCanvasSetItemRepeat);
   if (repeat_size != nullptr) {
     CanvasItemRepeatKey key;
@@ -3638,7 +3840,7 @@ void hook_canvas_set_item_repeat(void *self, RID item, const Point2 *repeat_size
       mirror().canvas_set_item_repeat(item.id, repeat_size->x, repeat_size->y, repeat_times,
                                       current_frame());
     }
-    if (resources().active()) {
+    if (log_active()) {
       resources().canvas_set_item_repeat(tap_context(), item.id, &repeat_size->x, repeat_times);
     }
   }
@@ -3646,6 +3848,8 @@ void hook_canvas_set_item_repeat(void *self, RID item, const Point2 *repeat_size
 }
 
 void hook_canvas_set_parent(void *self, RID canvas, RID parent, float scale) {
+  OffmainGuard inflight;
+
   bump(kCanvasSetParent);
   CanvasParentKey key;
   zero(&key);
@@ -3656,7 +3860,7 @@ void hook_canvas_set_parent(void *self, RID canvas, RID parent, float scale) {
   if (streaming()) {
     mirror().canvas_set_parent(canvas.id, parent.id, current_frame());
   }
-  if (resources().active()) {
+  if (log_active()) {
     resources().canvas_set_parent(tap_context(), canvas.id, parent.id);
   }
   original<FnCanvasSetParent>(kCanvasSetParent)(self, canvas, parent, scale);
@@ -3665,6 +3869,8 @@ void hook_canvas_set_parent(void *self, RID canvas, RID parent, float scale) {
 // --- calibrator 3 hooks --------------------------------------------------------
 
 void hook_viewport_attach_canvas(void *self, RID viewport, RID canvas) {
+  OffmainGuard inflight;
+
   bump(kViewportAttachCanvas);
   log_entry(&g_viewport_attaches, rids(viewport.id, canvas.id));
   if (streaming()) {
@@ -3675,6 +3881,8 @@ void hook_viewport_attach_canvas(void *self, RID viewport, RID canvas) {
 
 void hook_viewport_set_canvas_transform(void *self, RID viewport, RID canvas,
                                         const Transform2D *transform) {
+  OffmainGuard inflight;
+
   bump(kViewportSetCanvasTransform);
   if (transform != nullptr) {
     ViewportCanvasTransformKey key;
@@ -3693,6 +3901,8 @@ void hook_viewport_set_canvas_transform(void *self, RID viewport, RID canvas,
 }
 
 RID hook_canvas_create(void *self) {
+  OffmainGuard inflight;
+
   bump(kCanvasCreate);
   const RID result = original<FnCreate>(kCanvasCreate)(self);
   log_entry(&g_canvas_creates, rids(result.id));
@@ -3703,6 +3913,8 @@ RID hook_canvas_create(void *self) {
 }
 
 void hook_set_parent(void *self, RID item, RID parent) {
+  OffmainGuard inflight;
+
   bump(kSetParent);
   log_entry(&g_set_parents, rids(item.id, parent.id));
   if (streaming()) {
@@ -3712,6 +3924,8 @@ void hook_set_parent(void *self, RID item, RID parent) {
 }
 
 void hook_set_visible(void *self, RID item, bool visible) {
+  OffmainGuard inflight;
+
   bump(kSetVisible);
   log_entry(&g_set_visibles, item_value(item, visible ? 1 : 0));
   if (streaming()) {
@@ -3721,6 +3935,8 @@ void hook_set_visible(void *self, RID item, bool visible) {
 }
 
 void hook_set_clip(void *self, RID item, bool clip) {
+  OffmainGuard inflight;
+
   bump(kSetClip);
   log_entry(&g_set_clips, item_value(item, clip ? 1 : 0));
   if (streaming()) {
@@ -3741,6 +3957,8 @@ std::atomic<uint64_t> g_canvas_group_mode_invalid{0};
 
 void hook_set_canvas_group_mode(void *self, RID item, int32_t mode, float clear_margin,
                                 bool fit_empty, float fit_margin, bool blur_mipmaps) {
+  OffmainGuard inflight;
+
   bump(kSetCanvasGroupMode);
   original<FnSetCanvasGroupMode>(kSetCanvasGroupMode)(self, item, mode, clear_margin, fit_empty,
                                                       fit_margin, blur_mipmaps);
@@ -3755,6 +3973,8 @@ void hook_set_canvas_group_mode(void *self, RID item, int32_t mode, float clear_
 }
 
 void hook_set_copy_to_backbuffer(void *self, RID item, bool enable, const Rect2 *rect) {
+  OffmainGuard inflight;
+
   bump(kSetCopyToBackbuffer);
   original<FnSetCustomRect>(kSetCopyToBackbuffer)(self, item, enable, rect);
   if (streaming()) {
@@ -3771,6 +3991,8 @@ void hook_set_copy_to_backbuffer(void *self, RID item, bool enable, const Rect2 
 // :330-333, :373-377). The call passes through first, then the mirror takes the flag.
 
 void hook_set_use_identity_transform(void *self, RID item, bool enable) {
+  OffmainGuard inflight;
+
   bump(kSetUseIdentityTransform);
   original<FnRidBool>(kSetUseIdentityTransform)(self, item, enable);
   if (streaming()) {
@@ -3787,6 +4009,8 @@ void hook_set_use_identity_transform(void *self, RID item, bool enable) {
 // only a main-thread call reaches the clock.
 
 void hook_draw(void *self, bool swap_buffers, double frame_step) {
+  OffmainGuard inflight;
+
   bump(kDraw);
   if (std::this_thread::get_id() == g_main_thread) {
     rs::shader_clock_draw(frame_step);
@@ -3818,14 +4042,17 @@ void mm_record(HookId id, uint64_t rid, const rs::Mirror::MultimeshCall &r,
                              r.omitted);
 }
 
-bool mm_logging() { return resources().active(); }
+bool mm_logging() { return log_active(); }
 
 RID hook_multimesh_create(void *self) {
+  OffmainGuard inflight;
+
   bump(kMultimeshCreate);
   const RID result = original<FnCreate>(kMultimeshCreate)(self);
   registry_create(result.id, rs::RegistryKind::Multimesh);
   if (streaming()) {
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return result;  // LS3: re-checked under the order lock
     const rs::Mirror::MultimeshCall r = mirror().multimesh_create(result.id, current_frame());
     if (mm_logging()) {
       mm_record(kMultimeshCreate, result.id, r, rs::MultimeshArgs());
@@ -3836,6 +4063,8 @@ RID hook_multimesh_create(void *self) {
 
 void hook_multimesh_allocate_data(void *self, RID multimesh, int instances, int32_t format,
                                   bool colors, bool custom, bool indirect) {
+  OffmainGuard inflight;
+
   bump(kMultimeshAllocateData);
   original<FnMultimeshAllocateData>(kMultimeshAllocateData)(self, multimesh, instances, format,
                                                             colors, custom, indirect);
@@ -3844,6 +4073,7 @@ void hook_multimesh_allocate_data(void *self, RID multimesh, int instances, int3
   }
   if (streaming()) {
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::MultimeshCall r = mirror().multimesh_allocate_data(
         multimesh.id, instances, format, colors, custom, indirect, current_frame());
     if (mm_logging()) {
@@ -3859,6 +4089,8 @@ void hook_multimesh_allocate_data(void *self, RID multimesh, int instances, int3
 }
 
 void hook_multimesh_set_mesh(void *self, RID multimesh, RID mesh) {
+  OffmainGuard inflight;
+
   bump(kMultimeshSetMesh);
   rs::materialize(mesh.id, rs::RefKind::Mesh);  // G8r: a pre-arm mesh is adopted at first reference
   original<FnSetMaterial>(kMultimeshSetMesh)(self, multimesh, mesh);
@@ -3867,6 +4099,7 @@ void hook_multimesh_set_mesh(void *self, RID multimesh, RID mesh) {
   }
   if (streaming()) {
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::MultimeshCall r =
         mirror().multimesh_set_mesh(multimesh.id, mesh.id, current_frame());
     if (mm_logging()) {
@@ -3877,6 +4110,8 @@ void hook_multimesh_set_mesh(void *self, RID multimesh, RID mesh) {
 
 void hook_multimesh_instance_set_transform(void *self, RID multimesh, int index,
                                            const Transform3D *transform) {
+  OffmainGuard inflight;
+
   bump(kMultimeshInstanceSetTransform);
   original<FnMultimeshSetTransform>(kMultimeshInstanceSetTransform)(self, multimesh, index,
                                                                     transform);
@@ -3890,6 +4125,7 @@ void hook_multimesh_instance_set_transform(void *self, RID multimesh, int index,
                                      b[3], b[4], b[5], transform->origin.y,
                                      b[6], b[7], b[8], transform->origin.z};
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::MultimeshCall r =
         mirror().multimesh_instance_set_transform(multimesh.id, index, t, current_frame());
     if (mm_logging()) {
@@ -3901,6 +4137,8 @@ void hook_multimesh_instance_set_transform(void *self, RID multimesh, int index,
 
 void hook_multimesh_instance_set_transform_2d(void *self, RID multimesh, int index,
                                               const Transform2D *transform) {
+  OffmainGuard inflight;
+
   bump(kMultimeshInstanceSetTransform2d);
   original<FnMultimeshSetTransform2d>(kMultimeshInstanceSetTransform2d)(self, multimesh, index,
                                                                         transform);
@@ -3910,6 +4148,7 @@ void hook_multimesh_instance_set_transform_2d(void *self, RID multimesh, int ind
   if (streaming() && transform != nullptr) {
     const rs2::Xform t = to_xform(*transform);
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::MultimeshCall r =
         mirror().multimesh_instance_set_transform_2d(multimesh.id, index, t, current_frame());
     if (mm_logging()) {
@@ -3920,6 +4159,8 @@ void hook_multimesh_instance_set_transform_2d(void *self, RID multimesh, int ind
 }
 
 void hook_multimesh_instance_set_color(void *self, RID multimesh, int index, const Color *color) {
+  OffmainGuard inflight;
+
   bump(kMultimeshInstanceSetColor);
   original<FnMultimeshSetColor>(kMultimeshInstanceSetColor)(self, multimesh, index, color);
   if (rs::registry_on()) {  // LAR2: the dummy drops instance setters (design O3)
@@ -3928,6 +4169,7 @@ void hook_multimesh_instance_set_color(void *self, RID multimesh, int index, con
   if (streaming() && color != nullptr) {
     const rs2::Color4 c = to_color(*color);
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::MultimeshCall r =
         mirror().multimesh_instance_set_color(multimesh.id, index, c, current_frame());
     if (mm_logging()) {
@@ -3939,6 +4181,8 @@ void hook_multimesh_instance_set_color(void *self, RID multimesh, int index, con
 
 void hook_multimesh_instance_set_custom_data(void *self, RID multimesh, int index,
                                              const Color *color) {
+  OffmainGuard inflight;
+
   bump(kMultimeshInstanceSetCustomData);
   original<FnMultimeshSetColor>(kMultimeshInstanceSetCustomData)(self, multimesh, index, color);
   if (rs::registry_on()) {  // LAR2: the dummy drops instance setters (design O3)
@@ -3947,6 +4191,7 @@ void hook_multimesh_instance_set_custom_data(void *self, RID multimesh, int inde
   if (streaming() && color != nullptr) {
     const rs2::Color4 c = to_color(*color);
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::MultimeshCall r =
         mirror().multimesh_instance_set_custom_data(multimesh.id, index, c, current_frame());
     if (mm_logging()) {
@@ -3957,6 +4202,8 @@ void hook_multimesh_instance_set_custom_data(void *self, RID multimesh, int inde
 }
 
 void hook_multimesh_set_custom_aabb(void *self, RID multimesh, const AABB *aabb) {
+  OffmainGuard inflight;
+
   bump(kMultimeshSetCustomAabb);
   original<FnMeshSetCustomAabb>(kMultimeshSetCustomAabb)(self, multimesh, aabb);
   if (rs::registry_on() && aabb != nullptr) {
@@ -3968,6 +4215,7 @@ void hook_multimesh_set_custom_aabb(void *self, RID multimesh, const AABB *aabb)
     const std::array<float, 6> a = {aabb->position.x, aabb->position.y, aabb->position.z,
                                     aabb->size.x,     aabb->size.y,     aabb->size.z};
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::MultimeshCall r =
         mirror().multimesh_set_custom_aabb(multimesh.id, a, current_frame());
     if (mm_logging()) {
@@ -3978,6 +4226,8 @@ void hook_multimesh_set_custom_aabb(void *self, RID multimesh, const AABB *aabb)
 }
 
 void hook_multimesh_set_buffer(void *self, RID multimesh, const Vector<float> *buffer) {
+  OffmainGuard inflight;
+
   bump(kMultimeshSetBuffer);
   original<FnMultimeshSetBuffer>(kMultimeshSetBuffer)(self, multimesh, buffer);
   if (rs::registry_on()) {
@@ -3990,6 +4240,7 @@ void hook_multimesh_set_buffer(void *self, RID multimesh, const Vector<float> *b
     const float *data = buffer != nullptr ? buffer->ptr() : nullptr;
     const std::size_t count = static_cast<std::size_t>(n > 0 ? n : 0);
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::MultimeshCall r =
         mirror().multimesh_set_buffer(multimesh.id, data, count, current_frame());
     if (mm_logging()) {
@@ -4001,6 +4252,8 @@ void hook_multimesh_set_buffer(void *self, RID multimesh, const Vector<float> *b
 
 void hook_multimesh_set_buffer_interpolated(void *self, RID multimesh, const Vector<float> *curr,
                                             const Vector<float> *prev) {
+  OffmainGuard inflight;
+
   bump(kMultimeshSetBufferInterpolated);
   original<FnMultimeshSetBufferInterpolated>(kMultimeshSetBufferInterpolated)(self, multimesh,
                                                                               curr, prev);
@@ -4016,6 +4269,7 @@ void hook_multimesh_set_buffer_interpolated(void *self, RID multimesh, const Vec
     const std::size_t count = static_cast<std::size_t>(n > 0 ? n : 0);
     const std::size_t prev_count = static_cast<std::size_t>(pn > 0 ? pn : 0);
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::MultimeshCall r = mirror().multimesh_set_buffer_interpolated(
         multimesh.id, data, count, prev_count, current_frame());
     if (mm_logging()) {
@@ -4028,10 +4282,13 @@ void hook_multimesh_set_buffer_interpolated(void *self, RID multimesh, const Vec
 }
 
 void hook_multimesh_set_physics_interpolated(void *self, RID multimesh, bool interpolated) {
+  OffmainGuard inflight;
+
   bump(kMultimeshSetPhysicsInterpolated);
   original<FnRidBool>(kMultimeshSetPhysicsInterpolated)(self, multimesh, interpolated);
   if (streaming()) {
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::MultimeshCall r =
         mirror().multimesh_set_physics_interpolated(multimesh.id, interpolated, current_frame());
     if (mm_logging()) {
@@ -4042,6 +4299,8 @@ void hook_multimesh_set_physics_interpolated(void *self, RID multimesh, bool int
 }
 
 void hook_multimesh_set_visible_instances(void *self, RID multimesh, int visible) {
+  OffmainGuard inflight;
+
   bump(kMultimeshSetVisibleInstances);
   original<FnRidInt>(kMultimeshSetVisibleInstances)(self, multimesh, visible);
   if (rs::registry_on()) {
@@ -4049,6 +4308,7 @@ void hook_multimesh_set_visible_instances(void *self, RID multimesh, int visible
   }
   if (streaming()) {
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::MultimeshCall r =
         mirror().multimesh_set_visible_instances(multimesh.id, visible, current_frame());
     if (mm_logging()) {
@@ -4084,7 +4344,7 @@ void pt_record(HookId id, uint64_t rid, const rs::Mirror::ParticlesCall &r,
   if (r.changed) {
     g_pt_changed[id].fetch_add(1, std::memory_order_relaxed);
   }
-  if (resources().active()) {
+  if (log_active()) {
     resources().particles_call(tap_context(), call != nullptr ? call : hook_name(id), rid, r.id,
                                r.accepted, r.version, args, r.omitted);
   }
@@ -4141,6 +4401,7 @@ void pt_tap(HookId id, RID particles, PtOp op, const rs::Mirror::ParticlesArgs &
     return;
   }
   std::lock_guard<std::mutex> order(g_texture_order);
+  if (!streaming()) return;  // LS3: re-checked under the order lock
   const rs::Mirror::ParticlesCall r = mirror().particles_call(particles.id, op, args,
                                                               current_frame());
   pt_record(id, particles.id, r, log_args);
@@ -4159,6 +4420,8 @@ rs::Mirror::ParticlesArgs pt_floats(const float *v, std::size_t n) {
 }
 
 RID hook_particles_create(void *self) {
+  OffmainGuard inflight;
+
   bump(kParticlesCreate);
   const RID engine = original<FnCreate>(kParticlesCreate)(self);
   // The headless RID shim (rs_particles_shim.h): a RID() result becomes a private RID.
@@ -4167,6 +4430,7 @@ RID hook_particles_create(void *self) {
   registry_create(result.id, rs::RegistryKind::Particles);
   if (streaming()) {
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return result;  // LS3: re-checked under the order lock
     const rs::Mirror::ParticlesCall r = mirror().particles_create(result.id, current_frame());
     pt_record(kParticlesCreate, result.id, r, rs::MultimeshArgs());
   }
@@ -4174,6 +4438,8 @@ RID hook_particles_create(void *self) {
 }
 
 void hook_particles_set_mode(void *self, RID p, int32_t mode) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetMode);
   original<FnRidEnum>(kParticlesSetMode)(self, p, mode);
   pt_tap(kParticlesSetMode, p, PtOp::SetMode, pt_int(mode),
@@ -4181,6 +4447,8 @@ void hook_particles_set_mode(void *self, RID p, int32_t mode) {
 }
 
 void hook_particles_set_emitting(void *self, RID p, bool enable) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetEmitting);
   original<FnRidBool>(kParticlesSetEmitting)(self, p, enable);
   pt_tap(kParticlesSetEmitting, p, PtOp::SetEmitting, pt_int(enable ? 1 : 0),
@@ -4188,6 +4456,8 @@ void hook_particles_set_emitting(void *self, RID p, bool enable) {
 }
 
 void hook_particles_set_amount(void *self, RID p, int amount) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetAmount);
   original<FnRidInt>(kParticlesSetAmount)(self, p, amount);
   pt_tap(kParticlesSetAmount, p, PtOp::SetAmount, pt_int(amount),
@@ -4195,6 +4465,8 @@ void hook_particles_set_amount(void *self, RID p, int amount) {
 }
 
 void hook_particles_set_amount_ratio(void *self, RID p, float ratio) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetAmountRatio);
   original<FnRidFloat>(kParticlesSetAmountRatio)(self, p, ratio);
   pt_tap(kParticlesSetAmountRatio, p, PtOp::SetAmountRatio, pt_floats(&ratio, 1),
@@ -4202,6 +4474,8 @@ void hook_particles_set_amount_ratio(void *self, RID p, float ratio) {
 }
 
 void hook_particles_set_lifetime(void *self, RID p, double lifetime) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetLifetime);
   original<FnRidDouble>(kParticlesSetLifetime)(self, p, lifetime);
   const float f = static_cast<float>(lifetime);  // the wire's float32 rounding (to nearest)
@@ -4210,6 +4484,8 @@ void hook_particles_set_lifetime(void *self, RID p, double lifetime) {
 }
 
 void hook_particles_set_one_shot(void *self, RID p, bool one_shot) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetOneShot);
   original<FnRidBool>(kParticlesSetOneShot)(self, p, one_shot);
   pt_tap(kParticlesSetOneShot, p, PtOp::SetOneShot, pt_int(one_shot ? 1 : 0),
@@ -4217,6 +4493,8 @@ void hook_particles_set_one_shot(void *self, RID p, bool one_shot) {
 }
 
 void hook_particles_set_pre_process_time(void *self, RID p, double time) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetPreProcessTime);
   original<FnRidDouble>(kParticlesSetPreProcessTime)(self, p, time);
   const float f = static_cast<float>(time);
@@ -4225,6 +4503,8 @@ void hook_particles_set_pre_process_time(void *self, RID p, double time) {
 }
 
 void hook_particles_request_process_time(void *self, RID p, float time) {
+  OffmainGuard inflight;
+
   bump(kParticlesRequestProcessTime);
   original<FnRidFloat>(kParticlesRequestProcessTime)(self, p, time);
   pt_tap(kParticlesRequestProcessTime, p, PtOp::RequestProcessTime, pt_floats(&time, 1),
@@ -4232,6 +4512,8 @@ void hook_particles_request_process_time(void *self, RID p, float time) {
 }
 
 void hook_particles_set_explosiveness_ratio(void *self, RID p, float ratio) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetExplosivenessRatio);
   original<FnRidFloat>(kParticlesSetExplosivenessRatio)(self, p, ratio);
   pt_tap(kParticlesSetExplosivenessRatio, p, PtOp::SetExplosivenessRatio, pt_floats(&ratio, 1),
@@ -4239,6 +4521,8 @@ void hook_particles_set_explosiveness_ratio(void *self, RID p, float ratio) {
 }
 
 void hook_particles_set_randomness_ratio(void *self, RID p, float ratio) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetRandomnessRatio);
   original<FnRidFloat>(kParticlesSetRandomnessRatio)(self, p, ratio);
   pt_tap(kParticlesSetRandomnessRatio, p, PtOp::SetRandomnessRatio, pt_floats(&ratio, 1),
@@ -4246,6 +4530,8 @@ void hook_particles_set_randomness_ratio(void *self, RID p, float ratio) {
 }
 
 void hook_particles_set_custom_aabb(void *self, RID p, const AABB *aabb) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetCustomAabb);
   original<FnMeshSetCustomAabb>(kParticlesSetCustomAabb)(self, p, aabb);
   if (aabb != nullptr) {
@@ -4257,6 +4543,8 @@ void hook_particles_set_custom_aabb(void *self, RID p, const AABB *aabb) {
 }
 
 void hook_particles_set_speed_scale(void *self, RID p, double scale) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetSpeedScale);
   original<FnRidDouble>(kParticlesSetSpeedScale)(self, p, scale);
   const float f = static_cast<float>(scale);
@@ -4265,6 +4553,8 @@ void hook_particles_set_speed_scale(void *self, RID p, double scale) {
 }
 
 void hook_particles_set_use_local_coordinates(void *self, RID p, bool enable) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetUseLocalCoordinates);
   original<FnRidBool>(kParticlesSetUseLocalCoordinates)(self, p, enable);
   pt_tap(kParticlesSetUseLocalCoordinates, p, PtOp::SetUseLocalCoordinates,
@@ -4272,6 +4562,8 @@ void hook_particles_set_use_local_coordinates(void *self, RID p, bool enable) {
 }
 
 void hook_particles_set_process_material(void *self, RID p, RID material) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetProcessMaterial);
   original<FnSetMaterial>(kParticlesSetProcessMaterial)(self, p, material);
   if (rs::registry_on()) {
@@ -4287,6 +4579,7 @@ void hook_particles_set_process_material(void *self, RID p, RID material) {
       rs::materialize(material.id, rs::RefKind::ProcessMaterial);
     }
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::ParticlesCall r =
         mirror().particles_call(p.id, PtOp::SetProcessMaterial, a, current_frame());
     pt_record(kParticlesSetProcessMaterial, p.id, r,
@@ -4295,6 +4588,8 @@ void hook_particles_set_process_material(void *self, RID p, RID material) {
 }
 
 void hook_particles_set_fixed_fps(void *self, RID p, int fps) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetFixedFps);
   original<FnRidInt>(kParticlesSetFixedFps)(self, p, fps);
   pt_tap(kParticlesSetFixedFps, p, PtOp::SetFixedFps, pt_int(fps),
@@ -4302,6 +4597,8 @@ void hook_particles_set_fixed_fps(void *self, RID p, int fps) {
 }
 
 void hook_particles_set_interpolate(void *self, RID p, bool enable) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetInterpolate);
   original<FnRidBool>(kParticlesSetInterpolate)(self, p, enable);
   pt_tap(kParticlesSetInterpolate, p, PtOp::SetInterpolate, pt_int(enable ? 1 : 0),
@@ -4309,6 +4606,8 @@ void hook_particles_set_interpolate(void *self, RID p, bool enable) {
 }
 
 void hook_particles_set_fractional_delta(void *self, RID p, bool enable) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetFractionalDelta);
   original<FnRidBool>(kParticlesSetFractionalDelta)(self, p, enable);
   pt_tap(kParticlesSetFractionalDelta, p, PtOp::SetFractionalDelta, pt_int(enable ? 1 : 0),
@@ -4316,6 +4615,8 @@ void hook_particles_set_fractional_delta(void *self, RID p, bool enable) {
 }
 
 void hook_particles_set_collision_base_size(void *self, RID p, float size) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetCollisionBaseSize);
   original<FnRidFloat>(kParticlesSetCollisionBaseSize)(self, p, size);
   pt_tap(kParticlesSetCollisionBaseSize, p, PtOp::SetCollisionBaseSize, pt_floats(&size, 1),
@@ -4323,6 +4624,8 @@ void hook_particles_set_collision_base_size(void *self, RID p, float size) {
 }
 
 void hook_particles_set_seed(void *self, RID p, uint32_t seed) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetSeed);
   original<FnRidU32>(kParticlesSetSeed)(self, p, seed);
   pt_tap(kParticlesSetSeed, p, PtOp::SetSeed, pt_int(seed),
@@ -4330,6 +4633,8 @@ void hook_particles_set_seed(void *self, RID p, uint32_t seed) {
 }
 
 void hook_particles_set_transform_align(void *self, RID p, int32_t align) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetTransformAlign);
   original<FnRidEnum>(kParticlesSetTransformAlign)(self, p, align);
   pt_tap(kParticlesSetTransformAlign, p, PtOp::SetTransformAlign, pt_int(align),
@@ -4337,6 +4642,8 @@ void hook_particles_set_transform_align(void *self, RID p, int32_t align) {
 }
 
 void hook_particles_set_trails(void *self, RID p, bool enable, float length) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetTrails);
   original<FnParticlesSetTrails>(kParticlesSetTrails)(self, p, enable, length);
   rs::Mirror::ParticlesArgs a = pt_floats(&length, 1);
@@ -4346,6 +4653,8 @@ void hook_particles_set_trails(void *self, RID p, bool enable, float length) {
 }
 
 void hook_particles_set_trail_bind_poses(void *self, RID p, const Vector<Transform3D> *poses) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetTrailBindPoses);
   original<FnParticlesSetTrailBindPoses>(kParticlesSetTrailBindPoses)(self, p, poses);
   const bool record = rs::registry_on();
@@ -4363,6 +4672,7 @@ void hook_particles_set_trail_bind_poses(void *self, RID p, const Vector<Transfo
       return;
     }
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::ParticlesCall r =
         mirror().particles_call(p.id, PtOp::SetTrailBindPoses, a, current_frame());
     pt_record(kParticlesSetTrailBindPoses, p.id, r,
@@ -4371,6 +4681,8 @@ void hook_particles_set_trail_bind_poses(void *self, RID p, const Vector<Transfo
 }
 
 void hook_particles_request_process(void *self, RID p) {
+  OffmainGuard inflight;
+
   bump(kParticlesRequestProcess);
   original<FnRidOnly>(kParticlesRequestProcess)(self, p);
   pt_tap(kParticlesRequestProcess, p, PtOp::RequestProcess, rs::Mirror::ParticlesArgs(),
@@ -4378,12 +4690,16 @@ void hook_particles_request_process(void *self, RID p) {
 }
 
 void hook_particles_restart(void *self, RID p) {
+  OffmainGuard inflight;
+
   bump(kParticlesRestart);
   original<FnRidOnly>(kParticlesRestart)(self, p);
   pt_tap(kParticlesRestart, p, PtOp::Restart, rs::Mirror::ParticlesArgs(), rs::MultimeshArgs());
 }
 
 void hook_particles_set_subemitter(void *self, RID p, RID sub) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetSubemitter);
   original<FnSetMaterial>(kParticlesSetSubemitter)(self, p, sub);
   if (rs::registry_on()) {
@@ -4394,6 +4710,7 @@ void hook_particles_set_subemitter(void *self, RID p, RID sub) {
     rs::Mirror::ParticlesArgs a;
     a.rid = sub.id;
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::ParticlesCall r =
         mirror().particles_call(p.id, PtOp::SetSubemitter, a, current_frame());
     pt_record(kParticlesSetSubemitter, p.id, r,
@@ -4405,6 +4722,8 @@ void hook_particles_set_subemitter(void *self, RID p, RID sub) {
 
 void hook_particles_emit(void *self, RID p, const Transform3D *transform, const Vector3 *velocity,
                          const Color *color, const Color *custom, uint32_t flags) {
+  OffmainGuard inflight;
+
   bump(kParticlesEmit);
   original<FnParticlesEmit>(kParticlesEmit)(self, p, transform, velocity, color, custom, flags);
   if (streaming() && transform != nullptr && velocity != nullptr && color != nullptr &&
@@ -4418,6 +4737,7 @@ void hook_particles_emit(void *self, RID p, const Transform3D *transform, const 
     }
     a.flags = flags;
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::ParticlesCall r =
         mirror().particles_call(p.id, PtOp::Emit, a, current_frame());
     pt_record(kParticlesEmit, p.id, r,
@@ -4432,6 +4752,8 @@ void hook_particles_emit(void *self, RID p, const Transform3D *transform, const 
 }
 
 void hook_particles_set_draw_order(void *self, RID p, int32_t order_value) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetDrawOrder);
   original<FnRidEnum>(kParticlesSetDrawOrder)(self, p, order_value);
   pt_tap(kParticlesSetDrawOrder, p, PtOp::SetDrawOrder, pt_int(order_value),
@@ -4439,6 +4761,8 @@ void hook_particles_set_draw_order(void *self, RID p, int32_t order_value) {
 }
 
 void hook_particles_set_draw_passes(void *self, RID p, int count) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetDrawPasses);
   original<FnRidInt>(kParticlesSetDrawPasses)(self, p, count);
   pt_tap(kParticlesSetDrawPasses, p, PtOp::SetDrawPasses, pt_int(count),
@@ -4446,6 +4770,8 @@ void hook_particles_set_draw_passes(void *self, RID p, int count) {
 }
 
 void hook_particles_set_draw_pass_mesh(void *self, RID p, int pass, RID mesh) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetDrawPassMesh);
   rs::materialize(mesh.id, rs::RefKind::Mesh);  // G8r: a pre-arm mesh is adopted at first reference
   original<FnParticlesSetDrawPassMesh>(kParticlesSetDrawPassMesh)(self, p, pass, mesh);
@@ -4458,6 +4784,7 @@ void hook_particles_set_draw_pass_mesh(void *self, RID p, int pass, RID mesh) {
     a.i = pass;
     a.rid = mesh.id;
     std::lock_guard<std::mutex> order(g_texture_order);
+    if (!streaming()) return;  // LS3: re-checked under the order lock
     const rs::Mirror::ParticlesCall r =
         mirror().particles_call(p.id, PtOp::SetDrawPassMesh, a, current_frame());
     pt_record(kParticlesSetDrawPassMesh, p.id, r,
@@ -4466,6 +4793,8 @@ void hook_particles_set_draw_pass_mesh(void *self, RID p, int pass, RID mesh) {
 }
 
 void hook_particles_set_emission_transform(void *self, RID p, const Transform3D *transform) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetEmissionTransform);
   original<FnParticlesSetTransform3d>(kParticlesSetEmissionTransform)(self, p, transform);
   if (transform != nullptr) {
@@ -4476,6 +4805,8 @@ void hook_particles_set_emission_transform(void *self, RID p, const Transform3D 
 }
 
 void hook_particles_set_emitter_velocity(void *self, RID p, const Vector3 *velocity) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetEmitterVelocity);
   original<FnParticlesSetVector3>(kParticlesSetEmitterVelocity)(self, p, velocity);
   if (velocity != nullptr) {
@@ -4486,6 +4817,8 @@ void hook_particles_set_emitter_velocity(void *self, RID p, const Vector3 *veloc
 }
 
 void hook_particles_set_interp_to_end(void *self, RID p, float interp) {
+  OffmainGuard inflight;
+
   bump(kParticlesSetInterpToEnd);
   original<FnRidFloat>(kParticlesSetInterpToEnd)(self, p, interp);
   pt_tap(kParticlesSetInterpToEnd, p, PtOp::SetInterpToEnd, pt_floats(&interp, 1),
@@ -4493,6 +4826,8 @@ void hook_particles_set_interp_to_end(void *self, RID p, float interp) {
 }
 
 void hook_set_custom_rect(void *self, RID item, bool enabled, const Rect2 *rect) {
+  OffmainGuard inflight;
+
   bump(kSetCustomRect);
   if (rect != nullptr) {
     ItemCustomRectKey key;
@@ -4509,6 +4844,8 @@ void hook_set_custom_rect(void *self, RID item, bool enabled, const Rect2 *rect)
 }
 
 void hook_set_self_modulate(void *self, RID item, const Color *color) {
+  OffmainGuard inflight;
+
   bump(kSetSelfModulate);
   if (color != nullptr) {
     ItemColorKey key;
@@ -4524,6 +4861,8 @@ void hook_set_self_modulate(void *self, RID item, const Color *color) {
 }
 
 void hook_set_visibility_layer(void *self, RID item, uint32_t layer) {
+  OffmainGuard inflight;
+
   bump(kSetVisibilityLayer);
   log_entry(&g_set_visibility_layers, item_value(item, static_cast<int64_t>(layer)));
   if (streaming()) {
@@ -4533,6 +4872,8 @@ void hook_set_visibility_layer(void *self, RID item, uint32_t layer) {
 }
 
 void hook_set_z_index(void *self, RID item, int z) {
+  OffmainGuard inflight;
+
   bump(kSetZIndex);
   log_entry(&g_set_z_indices, item_value(item, z));
   if (streaming()) {
@@ -4542,6 +4883,8 @@ void hook_set_z_index(void *self, RID item, int z) {
 }
 
 void hook_set_draw_index(void *self, RID item, int index) {
+  OffmainGuard inflight;
+
   bump(kSetDrawIndex);
   log_entry(&g_set_draw_indices, item_value(item, index));
   if (streaming()) {
@@ -4551,6 +4894,8 @@ void hook_set_draw_index(void *self, RID item, int index) {
 }
 
 void hook_set_z_as_relative(void *self, RID item, bool relative) {
+  OffmainGuard inflight;
+
   bump(kSetZAsRelative);
   log_entry(&g_set_z_as_relatives, item_value(item, relative ? 1 : 0));
   if (streaming()) {
@@ -4560,6 +4905,8 @@ void hook_set_z_as_relative(void *self, RID item, bool relative) {
 }
 
 void hook_set_draw_behind_parent(void *self, RID item, bool behind) {
+  OffmainGuard inflight;
+
   bump(kSetDrawBehindParent);
   log_entry(&g_set_draw_behinds, item_value(item, behind ? 1 : 0));
   if (streaming()) {
@@ -4577,6 +4924,8 @@ void hook_set_draw_behind_parent(void *self, RID item, bool behind) {
 // the four canvas_texture_* hooks are mirror taps too.
 
 RID hook_texture_2d_placeholder_create(void *self) {
+  OffmainGuard inflight;
+
   bump(kTexture2dPlaceholderCreate);
   const RID result = original<FnCreate>(kTexture2dPlaceholderCreate)(self);
   registry_create(result.id, rs::RegistryKind::TexturePlaceholder);
@@ -4591,6 +4940,8 @@ RID hook_texture_2d_placeholder_create(void *self) {
 }
 
 void hook_texture_replace(void *self, RID texture, RID by_texture) {
+  OffmainGuard inflight;
+
   bump(kTextureReplace);
   // G8r: either side may be a pre-arm texture; adopt it before the dummy frees the by-texture.
   rs::materialize(texture.id, rs::RefKind::Texture);
@@ -4610,6 +4961,8 @@ void hook_texture_replace(void *self, RID texture, RID by_texture) {
 }
 
 void hook_viewport_set_default_texture_filter(void *self, RID viewport, int32_t filter) {
+  OffmainGuard inflight;
+
   bump(kViewportSetDefaultTextureFilter);
   log_entry(&g_viewport_texture_filters, item_value(viewport, filter));
   if (streaming()) {
@@ -4620,6 +4973,8 @@ void hook_viewport_set_default_texture_filter(void *self, RID viewport, int32_t 
 }
 
 void hook_viewport_set_default_texture_repeat(void *self, RID viewport, int32_t repeat) {
+  OffmainGuard inflight;
+
   bump(kViewportSetDefaultTextureRepeat);
   log_entry(&g_viewport_texture_repeats, item_value(viewport, repeat));
   if (streaming()) {
@@ -4630,6 +4985,8 @@ void hook_viewport_set_default_texture_repeat(void *self, RID viewport, int32_t 
 }
 
 RID hook_canvas_texture_create(void *self) {
+  OffmainGuard inflight;
+
   bump(kCanvasTextureCreate);
   RID result = original<FnCreate>(kCanvasTextureCreate)(self);
   // The opt-in headless shim (GRC_HEADLESS_CANVAS_TEXTURE=synthesize, rs_canvas_texture_shim.h):
@@ -4650,6 +5007,8 @@ RID hook_canvas_texture_create(void *self) {
 
 void hook_canvas_texture_set_channel(void *self, RID canvas_texture, int32_t channel,
                                      RID texture) {
+  OffmainGuard inflight;
+
   bump(kCanvasTextureSetChannel);
   rs::materialize(texture.id, rs::RefKind::Texture);  // G8r
   ChannelKey key;
@@ -4673,6 +5032,8 @@ void hook_canvas_texture_set_channel(void *self, RID canvas_texture, int32_t cha
 }
 
 void hook_canvas_texture_set_texture_filter(void *self, RID canvas_texture, int32_t filter) {
+  OffmainGuard inflight;
+
   bump(kCanvasTextureSetTextureFilter);
   log_entry(&g_canvas_texture_filters, item_value(canvas_texture, filter));
   if (rs::registry_on()) {
@@ -4688,6 +5049,8 @@ void hook_canvas_texture_set_texture_filter(void *self, RID canvas_texture, int3
 }
 
 void hook_canvas_texture_set_texture_repeat(void *self, RID canvas_texture, int32_t repeat) {
+  OffmainGuard inflight;
+
   bump(kCanvasTextureSetTextureRepeat);
   log_entry(&g_canvas_texture_repeats, item_value(canvas_texture, repeat));
   if (rs::registry_on()) {
@@ -4703,6 +5066,8 @@ void hook_canvas_texture_set_texture_repeat(void *self, RID canvas_texture, int3
 }
 
 void hook_set_default_texture_filter(void *self, RID item, int32_t filter) {
+  OffmainGuard inflight;
+
   bump(kSetDefaultTextureFilter);
   log_entry(&g_item_texture_filters, item_value(item, filter));
   if (streaming()) {
@@ -4713,6 +5078,8 @@ void hook_set_default_texture_filter(void *self, RID item, int32_t filter) {
 }
 
 void hook_set_default_texture_repeat(void *self, RID item, int32_t repeat) {
+  OffmainGuard inflight;
+
   bump(kSetDefaultTextureRepeat);
   log_entry(&g_item_texture_repeats, item_value(item, repeat));
   if (streaming()) {
@@ -4724,6 +5091,8 @@ void hook_set_default_texture_repeat(void *self, RID item, int32_t repeat) {
 
 void hook_add_lcd_texture_rect_region(void *self, RID item, const Rect2 *rect, RID texture,
                                       const Rect2 *source, const Color *modulate) {
+  OffmainGuard inflight;
+
   bump(kAddLcdTextureRectRegion);
   tap_unsupported(item, "canvas_item_add_lcd_texture_rect_region");
   if (rect != nullptr && source != nullptr && modulate != nullptr) {
@@ -4748,6 +5117,8 @@ void hook_add_lcd_texture_rect_region(void *self, RID item, const Rect2 *rect, R
 // so a calibration run can tell the two toggle directions apart.
 
 void hook_add_clip_ignore(void *self, RID item, bool ignore) {
+  OffmainGuard inflight;
+
   bump(kAddClipIgnore);
   log_entry(&g_clip_ignores, item_value(item, ignore ? 1 : 0));
   if (streaming()) {
@@ -5343,6 +5714,67 @@ void hooks_set_validation_log(bool on) { g_validation_logs = on; }
 
 bool hooks_validation_log() { return g_validation_logs; }
 
+OffmainGuard::OffmainGuard(bool enabled, const char *test_site) {
+  if (std::this_thread::get_id() == g_main_thread) return;
+  previous_standby_ = t_offmain_standby;
+  if (t_offmain_standby) {
+    standby_ = true;
+  } else if (enabled && (rs::mirror_enabled() || rs::resource_log().active())) {
+    // Pairs subsequent seq_cst arm-flag reads with disarm's flag clears and counter poll.
+    g_offmain_inflight.fetch_add(1, std::memory_order_seq_cst);
+    counted_ = true;
+  } else {
+    standby_ = true;
+    if (!g_test_standby_view_off) t_offmain_standby = true;
+  }
+  const auto ms = g_test_admission_delay_ms.load(std::memory_order_relaxed);
+  if (ms != 0) {
+    if (counted_) ++t_test_counted_depth;
+    if (test_site != nullptr) {
+      const char *dir = std::getenv("GRC_EVIDENCE_DIR");
+      const std::string stem = std::string("admission-") + test_site;
+      if (dir != nullptr) write_file(path_join(dir, stem + ".json"),
+          counted_ ? "{\"counted\":true}" : "{\"counted\":false}");
+      // The fixture releases this hold explicitly; the delay is a bounded fallback on failure.
+      for (uint32_t elapsed = 0; elapsed < ms; ++elapsed) {
+        if (dir != nullptr) {
+          FILE *release = std::fopen(path_join(dir, stem + ".release").c_str(), "r");
+          if (release != nullptr) { std::fclose(release); break; }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+    }
+  }
+}
+OffmainGuard::~OffmainGuard() {
+  if (standby_) t_offmain_standby = previous_standby_;
+  if (counted_) {
+    if (g_test_admission_delay_ms.load(std::memory_order_relaxed) != 0) --t_test_counted_depth;
+    g_offmain_inflight.fetch_sub(1, std::memory_order_release);
+  }
+}
+bool hooks_offmain_standby() { return t_offmain_standby; }
+uint64_t hooks_test_uncounted_accesses() {
+  return g_test_uncounted_accesses.load(std::memory_order_relaxed);
+}
+bool hooks_test_freed_registered() {
+  rs::RegistryKind kind;
+  const auto rid = g_test_held_free.load(std::memory_order_relaxed);
+  return rid != 0 && rs::registry_lookup(rid, &kind);
+}
+bool hooks_test_inflight_delay(std::unique_lock<std::mutex> *guard) {
+  return test_reader_delay(g_test_materialize_delay_ms.load(std::memory_order_relaxed), guard);
+}
+std::unique_lock<std::mutex> hooks_test_arm_release() {
+  if (g_test_inflight_delay_ms.load(std::memory_order_relaxed) == 0 &&
+      g_test_materialize_delay_ms.load(std::memory_order_relaxed) == 0) return {};
+  std::unique_lock<std::mutex> guard(g_test_reader_mutex);
+  g_test_readers_after_release[++g_test_released_generation] = 0;
+  test_reader_evidence();
+  return guard;
+}
+int hooks_offmain_inflight() { return g_offmain_inflight.load(std::memory_order_seq_cst); }
+
 void hooks_set_main_thread() { g_main_thread = std::this_thread::get_id(); }
 
 void hooks_set_resource_policy(const rs::FormatPolicy &formats, uint64_t max_payload_bytes) {
@@ -5369,10 +5801,12 @@ void hooks_set_shader_time_carried(bool carried) {
 
 bool hooks_adopt_texture(uint64_t rid, void *image_object, rs2::AdoptedContent content,
                          const char *source, bool *decoded) {
+  OffmainGuard inflight;
+  if (inflight.standby()) return false;
   if (decoded != nullptr) {
     *decoded = false;
   }
-  if (rid == 0 || image_object == nullptr || !streaming() || !resources().active()) {
+  if (rid == 0 || image_object == nullptr || !streaming() || !log_active()) {
     return false;
   }
   const uint64_t t_hook = now_ns();
@@ -5405,7 +5839,9 @@ bool hooks_adopt_texture(uint64_t rid, void *image_object, rs2::AdoptedContent c
 
 bool hooks_adopt_mesh(uint64_t rid, const std::vector<rs::AdoptSurface> &surfaces,
                       const float custom_aabb[6]) {
-  if (rid == 0 || !streaming() || !resources().active()) {
+  OffmainGuard inflight;
+  if (inflight.standby()) return false;
+  if (rid == 0 || !streaming() || !log_active()) {
     return false;
   }
   std::vector<MeshSurfaceBuffer> buffers;
@@ -5466,6 +5902,8 @@ void hooks_internal_end() {
 }
 
 bool hooks_adopt_multimesh(uint64_t rid, rs::Mirror::MultimeshAdopt adopt) {
+  OffmainGuard inflight;
+  if (inflight.standby()) return false;
   if (rid == 0 || !streaming()) {
     return false;
   }
@@ -5484,7 +5922,7 @@ bool hooks_adopt_multimesh(uint64_t rid, rs::Mirror::MultimeshAdopt adopt) {
   if (!r.known) {
     return false;
   }
-  if (resources().active()) {
+  if (log_active()) {
     rs::MultimeshArgs args;
     args.i64("instances", static_cast<int64_t>(facts.instances));
     args.i64("format", static_cast<int64_t>(facts.format));
@@ -5501,7 +5939,9 @@ bool hooks_adopt_multimesh(uint64_t rid, rs::Mirror::MultimeshAdopt adopt) {
 
 bool hooks_adopt_canvas_texture(uint64_t rid, uint64_t diffuse, uint64_t normal, uint64_t specular,
                                 int32_t filter, int32_t repeat) {
-  if (rid == 0 || !streaming() || !resources().active()) {
+  OffmainGuard inflight;
+  if (inflight.standby()) return false;
+  if (rid == 0 || !streaming() || !log_active()) {
     return false;
   }
   std::lock_guard<std::mutex> order(g_texture_order);
@@ -5521,6 +5961,8 @@ bool hooks_adopt_canvas_texture(uint64_t rid, uint64_t diffuse, uint64_t normal,
 }
 
 bool hooks_adopt_particles(uint64_t rid, const rs::Mirror::ParticlesAdopt &adopt) {
+  OffmainGuard inflight;
+  if (inflight.standby()) return false;
   if (rid == 0 || !streaming()) {
     return false;
   }
@@ -5529,7 +5971,7 @@ bool hooks_adopt_particles(uint64_t rid, const rs::Mirror::ParticlesAdopt &adopt
   if (!r.known) {
     return false;
   }
-  if (resources().active()) {
+  if (log_active()) {
     rs::MultimeshArgs args;
     args.i64("restarts", static_cast<int64_t>(r.restarts));
     resources().particles_call(tap_context(), "particles_adopt", rid, r.id, r.accepted, r.version,
@@ -5539,6 +5981,8 @@ bool hooks_adopt_particles(uint64_t rid, const rs::Mirror::ParticlesAdopt &adopt
 }
 
 void hooks_adopt_particles_subemitter(uint64_t particles, uint64_t subemitter) {
+  OffmainGuard inflight;
+  if (inflight.standby()) return;
   if (!streaming()) {
     return;
   }
@@ -5547,7 +5991,7 @@ void hooks_adopt_particles_subemitter(uint64_t particles, uint64_t subemitter) {
   std::lock_guard<std::mutex> order(g_texture_order);
   const rs::Mirror::ParticlesCall r =
       mirror().particles_call(particles, PtOp::SetSubemitter, a, current_frame());
-  if (resources().active()) {
+  if (log_active()) {
     resources().particles_call(tap_context(), "particles_adopt_subemitter", particles, r.id,
                                r.accepted, r.version,
                                rs::MultimeshArgs().id("subemitter", r.ref_id), false);
@@ -5555,25 +5999,35 @@ void hooks_adopt_particles_subemitter(uint64_t particles, uint64_t subemitter) {
 }
 
 bool hooks_adopt_shader(uint64_t rid, const std::string &code) {
-  if (rid == 0 || !streaming() || !resources().active()) {
+  OffmainGuard inflight;
+  if (inflight.standby()) return false;
+  if (rid == 0 || !streaming() || !log_active()) {
     return false;
   }
   rs::ShaderCodeInput input;
   input.copy = copy_shader_code_text(code, now_ns(), &input.bytes);
   std::lock_guard<std::mutex> order(g_texture_order);
+  if (!streaming() || !log_active()) return false;
   if (mirror().knows_shader(rid)) {
     return false;
   }
   mirror().shader_adopt(rid, input, current_frame());
+  if (g_test_admission_delay_ms.load(std::memory_order_relaxed) != 0) {
+    const char *dir = std::getenv("GRC_EVIDENCE_DIR");
+    if (dir != nullptr) write_file(path_join(dir, "admission-adopted-code.txt"), code);
+  }
   resources().shader_create_from_code(tap_context(), rid, input.copy, false);
   return true;
 }
 
 bool hooks_adopt_shader_refused(uint64_t rid, rs2::ShaderReason reason) {
-  if (rid == 0 || !streaming() || !resources().active()) {
+  OffmainGuard inflight;
+  if (inflight.standby()) return false;
+  if (rid == 0 || !streaming() || !log_active()) {
     return false;
   }
   std::lock_guard<std::mutex> order(g_texture_order);
+  if (!streaming() || !log_active()) return false;
   if (mirror().knows_shader(rid)) {
     return false;
   }
@@ -5584,7 +6038,9 @@ bool hooks_adopt_shader_refused(uint64_t rid, rs2::ShaderReason reason) {
 
 void hooks_adopt_default_texture(uint64_t shader, const std::string &name, uint64_t texture,
                                  int32_t index) {
-  if (shader == 0 || !streaming() || !resources().active()) {
+  OffmainGuard inflight;
+  if (inflight.standby()) return;
+  if (shader == 0 || !streaming() || !log_active()) {
     return;
   }
   rs::materialize(texture, rs::RefKind::Texture);
@@ -5596,7 +6052,9 @@ void hooks_adopt_default_texture(uint64_t shader, const std::string &name, uint6
 
 bool hooks_adopt_material(uint64_t material, uint64_t shader,
                           const std::vector<rs::AdoptParam> &params) {
-  if (material == 0 || !streaming() || !resources().active()) {
+  OffmainGuard inflight;
+  if (inflight.standby()) return false;
+  if (material == 0 || !streaming() || !log_active()) {
     return false;
   }
   std::vector<std::pair<rs::DecodedParam, rs::MaterialParamCopy>> decoded(params.size());
@@ -5626,17 +6084,21 @@ bool hooks_adopt_material(uint64_t material, uint64_t shader,
 }
 
 void hooks_adopt_item_material(uint64_t item, uint64_t material) {
+  OffmainGuard inflight;
+  if (inflight.standby()) return;
   if (!streaming()) {
     return;
   }
   mirror().set_material(item, material, current_frame());
-  if (resources().active()) {
+  if (log_active()) {
     resources().canvas_item_set_material(tap_context(), item, material);
   }
 }
 
 void hooks_adopt_material_shader(uint64_t material, uint64_t shader) {
-  if (!streaming() || !resources().active()) {
+  OffmainGuard inflight;
+  if (inflight.standby()) return;
+  if (!streaming() || !log_active()) {
     return;
   }
   std::lock_guard<std::mutex> order(g_texture_order);
@@ -5645,6 +6107,8 @@ void hooks_adopt_material_shader(uint64_t material, uint64_t shader) {
 }
 
 void hooks_adopt_instance_param(uint64_t item, const std::string &name, const void *variant) {
+  OffmainGuard inflight;
+  if (inflight.standby()) return;
   if (!streaming()) {
     return;
   }
@@ -5654,7 +6118,7 @@ void hooks_adopt_instance_param(uint64_t item, const std::string &name, const vo
     rs::materialize(decoded.tex_rid, rs::RefKind::Texture);
   }
   mirror().set_instance_shader_parameter(item, name, decoded, current_frame());
-  if (resources().active()) {
+  if (log_active()) {
     resources().canvas_item_set_instance_shader_parameter(tap_context(), item, name, copy);
   }
 }
@@ -5761,6 +6225,40 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   // P3-CK: the shader clock sums the hooked draws' steps once the host draws (rs_shader_clock.h).
   rs::shader_clock_set_draw_hooked(!g_skipped[kDraw] && !g_omitted[kDraw]);
   return plan->missing_required.empty();
+}
+
+std::size_t hooks_release_arm() {
+  std::map<uint64_t, std::vector<MeshSurfaceBuffer>> meshes;
+  {
+    std::lock_guard<std::mutex> order(g_texture_order);
+    std::lock_guard<std::mutex> lock(g_mutex);
+    meshes.swap(g_mesh_buffers);
+  }
+  {
+    // The arm's cache notes; g_texture_paths stays (LS4 moves it into the registry).
+    std::lock_guard<std::mutex> lock(g_cache_mutex);
+    std::map<uint64_t, CacheNote>().swap(g_cache_notes);
+    g_cache_pending.clear();
+    g_set_path_calls.clear();
+  }
+  g_shader_time_carried.store(false, std::memory_order_relaxed);
+  return meshes.size();
+}
+
+std::size_t hooks_mesh_buffers_held() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return g_mesh_buffers.size();
+}
+
+void hooks_set_test_inflight_delay_ms(uint32_t ms, bool materialize, bool admission) {
+  g_test_admission_probe = admission && ms != 0;
+  g_test_admission_delay_ms.store(admission ? ms : 0, std::memory_order_relaxed);
+  const char *fault = std::getenv("GRC_REARM_FAULT");
+  g_test_standby_view_off = admission && fault != nullptr && std::strcmp(fault, "standby-view-off") == 0;
+  g_test_hot_view_off = admission && fault != nullptr && std::strcmp(fault, "hot-view-off") == 0;
+  if (admission) ms = 0;
+  g_test_inflight_delay_ms.store(materialize ? 0 : ms, std::memory_order_relaxed);
+  g_test_materialize_delay_ms.store(materialize ? ms : 0, std::memory_order_relaxed);
 }
 
 void hooks_reset_texture_cache_notes() {

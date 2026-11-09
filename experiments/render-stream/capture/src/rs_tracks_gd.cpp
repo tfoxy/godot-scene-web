@@ -809,6 +809,11 @@ void register_signal(GDExtensionStringNamePtr cls, const char *signal,
 // Delivers one receiver's queue. A freed object's sources end here and its queue is dropped.
 void flush_one(const std::shared_ptr<State> &sp) {
   State &s = *sp;
+  if (g_root_finalized) {
+    s.owner = nullptr;
+    s.queue.clear();
+    return;
+  }
   if (s.owner_id != 0) {
     s.owner = g_iface.object_get_instance_from_id != nullptr
                   ? g_iface.object_get_instance_from_id(s.owner_id)
@@ -990,6 +995,7 @@ GDExtensionObjectPtr variant_object(GVariant *v) {
 
 // Calls `method` on the live node `id` (queue_free, attach); the result is discarded.
 bool node_call(std::uint64_t id, const char *method, bool *result) {
+  if (g_root_finalized) return false;
   GDExtensionObjectPtr node = g_iface.object_get_instance_from_id(id);
   if (node == nullptr) return false;
   GVariant self;
@@ -1007,7 +1013,8 @@ bool node_call(std::uint64_t id, const char *method, bool *result) {
 }
 
 void pending_discard() {
-  if (g_pending.node != nullptr && g_iface.object_get_instance_from_id != nullptr &&
+  if (!g_root_finalized && g_pending.node != nullptr &&
+      g_iface.object_get_instance_from_id != nullptr &&
       g_iface.object_get_instance_from_id(g_pending.id) != nullptr) {
     g_iface.object_destroy(g_pending.node);  // not in a tree yet: freed at once
   }
@@ -1024,7 +1031,7 @@ void builtin_release(bool call_engine) {
   sp->on_hub = false;
   sp->kind.clear();
   sp->queue.clear();
-  if (call_engine && sp->owner_id != 0 && g_iface.object_get_instance_from_id != nullptr) {
+  if (!g_root_finalized && call_engine && sp->owner_id != 0 && g_iface.object_get_instance_from_id != nullptr) {
     node_call(sp->owner_id, "queue_free", nullptr);
   }
   g_builtin_attached = false;
@@ -1108,6 +1115,9 @@ void gd_tracks_builtin_discard() {
   pending_discard();
   builtin_release(true);
 }
+
+void gd_tracks_builtin_discard_pending() { pending_discard(); }
+bool gd_tracks_builtin_pending() { return g_pending.node != nullptr; }
 
 bool gd_tracks_builtin_bind(TrackHub *hub, std::string *why) {
   if (g_pending.node == nullptr || hub == nullptr) {

@@ -7507,23 +7507,37 @@ std::atomic<bool> g_enabled{false};
 
 }  // namespace
 
+// LS3: one heap instance, replaced at each disarm (mirror_release) so a re-arm starts from a
+// mirror that never held anything. Replaced only on the main thread while disabled, after the
+// hooks' order lock has quiesced every off-main writer; every reader checks mirror_enabled()
+// first or runs on the main thread.
+Mirror *g_mirror = nullptr;
+
 Mirror &mirror_instance() {
-  static Mirror mirror{Mirror::ProcessWide{}};
-  return mirror;
+  if (g_mirror == nullptr) g_mirror = new Mirror(Mirror::ProcessWide{});
+  return *g_mirror;
+}
+
+void mirror_release() {
+  Mirror *old = g_mirror;
+  g_mirror = new Mirror(Mirror::ProcessWide{});
+  delete old;
 }
 
 void mirror_enable(bool enabled) {
+  // Pairs with OffmainGuard admission and the seq_cst counter poll.
   // kMirrorStreaming implies g_enabled: set after the enable and its reset, cleared before the
   // disable (rs_texture_release.h).
   texture_release_mirror_edge(enabled, [enabled] {
-    const bool was = g_enabled.exchange(enabled);
+    const bool was = g_enabled.exchange(enabled, std::memory_order_seq_cst);
     if (enabled && !was) {
       mirror_instance().reset();
     }
   });
 }
 
-bool mirror_enabled() { return g_enabled.load(std::memory_order_acquire); }
+// Pairs post-increment admission reads with disarm's seq_cst flag clear and counter poll.
+bool mirror_enabled() { return g_enabled.load(std::memory_order_seq_cst); }
 
 void mirror_set_root(std::uint64_t viewport_rid, std::uint64_t canvas_rid, const Xform &xform) {
   mirror_instance().set_root(viewport_rid, canvas_rid, xform);
