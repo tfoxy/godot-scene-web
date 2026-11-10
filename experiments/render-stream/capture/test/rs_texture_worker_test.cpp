@@ -183,6 +183,66 @@ void test_pool() {
   pool.stop();
 }
 
+// A gate keeps the worker occupied until all three queued positions are known.
+void test_submit_front() {
+  TextureWorkerPool pool;
+  check(!pool.submit_front([] {}), "front submit refuses a pool that never started");
+  check(pool.start(1, 0), "front submit starts one worker");
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool entered = false, release = false;
+  std::vector<char> order;
+  check(pool.submit([&] {
+    std::unique_lock<std::mutex> lock(mutex);
+    entered = true;
+    cv.notify_all();
+    cv.wait(lock, [&] { return release; });
+  }), "gate submitted");
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    cv.wait(lock, [&] { return entered; });
+  }
+  check(pool.submit([&] { order.push_back('A'); }), "A submitted");
+  check(pool.submit([&] { order.push_back('B'); }), "B submitted");
+  check(pool.submit_front([&] { order.push_back('C'); }), "C submitted at front");
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    release = true;
+  }
+  cv.notify_all();
+  pool.stop();
+  check(order == std::vector<char>({'C', 'A', 'B'}), "front submit runs C, A, B");
+  const auto stats = pool.stats();
+  check(stats.submitted == 4 && stats.completed == 4 && stats.max_queued == 3,
+        "front submit uses the same stats");
+  check(!pool.submit_front([] {}), "front submit refuses a stopped pool");
+}
+
+// Entries that own their delay must bypass the pool delay, at either queue end.
+void test_entry_delay() {
+  TextureWorkerPool pool;
+  check(pool.start(1, 300), "per-entry delay starts one worker");
+  check(pool.delay_ms() == 300, "configured delay is available to warm tasks");
+  for (bool front : {false, true}) {
+    const auto t0 = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::duration elapsed{};
+    auto work = [&] { elapsed = std::chrono::steady_clock::now() - t0; };
+    check(front ? pool.submit_front(work, false) : pool.submit(work, false),
+          "entry with its own delay is accepted");
+    pool.drain();
+    check(elapsed < std::chrono::milliseconds(200), "pool_delay=false bypasses pool sleep");
+  }
+  const auto t0 = std::chrono::steady_clock::now();
+  std::chrono::steady_clock::duration elapsed{};
+  check(pool.submit([&] { elapsed = std::chrono::steady_clock::now() - t0; }),
+        "default entry is accepted");
+  pool.drain();
+  check(elapsed >= std::chrono::milliseconds(290), "default entry retains pool sleep");
+  pool.stop();
+  check(pool.stats().submitted == 3 && pool.stats().completed == 3,
+        "per-entry delay preserves submitted and completed accounting");
+}
+
 // A stop racing submits from other threads never loses a job: each is either run by the pool or
 // refused (and then run by its caller).
 void test_stop_race() {
@@ -530,6 +590,8 @@ void test_log_order() {
 int main() {
   test_parse();
   test_pool();
+  test_submit_front();
+  test_entry_delay();
   test_stop_race();
   test_job();
   test_holdback_equals_sync();

@@ -56,6 +56,7 @@ export interface SwapAccounting {
   served_sets?: number;
   served_bytes?: number;
   warm_cache_bytes?: number;
+  warm_entries?: number;
   texture_workers_running?: boolean;
   encode_workers_running?: boolean;
   hubs?: number;
@@ -254,6 +255,7 @@ export function accountingProblems(label: string, a: SwapAccounting): string[] {
   zero("served_sets", a.served_sets);
   zero("served_bytes", a.served_bytes);
   zero("warm_cache_bytes", a.warm_cache_bytes);
+  zero("warm_entries", a.warm_entries);
   is("texture_workers_running", a.texture_workers_running, false);
   is("encode_workers_running", a.encode_workers_running, false);
   zero("hubs", a.hubs);
@@ -276,6 +278,82 @@ export interface Judged {
   /** The evidence was missing or incomplete: never a catch. */
   evidence: string[];
   detail: string;
+}
+
+export interface WarmCaptureEvidence {
+  final: boolean;
+  warm_balanced: boolean;
+  decode_at_reference: number;
+  discarded_stale: number;
+  mispredicts: number;
+  queued: number;
+  warm_complete: boolean;
+  arm_to_warm_complete_ms: number | null;
+  arm_to_warm_queued_ms: number;
+  reload_us: number;
+  census_us: number;
+  warm_queue_us: number;
+  warm_work_us: number;
+  jobs: number;
+  promoted: number;
+  served_in_flight: number;
+  warm_cache_bytes: number;
+}
+
+/** Each capture-scale arm accounts for its warm; arm timings are reported without a bound. */
+export function judgeWarmCaptureScale(
+  name: string,
+  arms: (WarmCaptureEvidence | undefined)[],
+  teardowns?: (SwapAccounting | undefined)[],
+): Judged {
+  const rule: string[] = [];
+  const evidence: string[] = [];
+  const reports: string[] = [];
+  for (let k = 1; k <= 3; k++) {
+    const label = `${name} arm ${k}`;
+    const w = arms[k - 1];
+    if (!w) evidence.push(`${label}: no warm.json`);
+    else {
+      if (w.final !== true) rule.push(`${label}: warm not final`);
+      if (w.warm_balanced !== true) rule.push(`${label}: warm not balanced`);
+      for (const field of [
+        "decode_at_reference",
+        "discarded_stale",
+        "mispredicts",
+      ] as const)
+        if (w[field] !== 0) rule.push(`${label}: ${field} ${w[field]}`);
+      if (k >= 2) {
+        if (!Number.isSafeInteger(w.queued) || w.queued < 100)
+          rule.push(`${label}: queued ${w.queued}, want >= 100`);
+        if (w.warm_complete !== true) rule.push(`${label}: warm not complete`);
+      }
+      reports.push(
+        `${label}: ${JSON.stringify(
+          Object.fromEntries(
+            [
+              "arm_to_warm_complete_ms",
+              "arm_to_warm_queued_ms",
+              "reload_us",
+              "census_us",
+              "warm_queue_us",
+              "warm_work_us",
+              "queued",
+              "jobs",
+              "promoted",
+              "served_in_flight",
+              "warm_cache_bytes",
+            ].map((field) => [field, w[field as keyof WarmCaptureEvidence]]),
+          ),
+        )}`,
+      );
+    }
+    if (teardowns) {
+      const t = teardowns[k - 1];
+      if (!t) evidence.push(`${label}: no teardown.json`);
+      else rule.push(...accountingProblems(`${label} teardown`, t));
+    }
+  }
+  return { rule, evidence, detail: reports.join(" | ") };
 }
 
 const idleRows = (leg: SwapLeg) => leg.rows.filter((r) => r.phase === "idle");
@@ -645,6 +723,7 @@ export async function runG8sw(
   const legDirs = [
     "short/swap",
     "short/control",
+    "short/warm-workers",
     ...SABOTAGES.map((s) => `short/sabotage-${s}`),
     "cycle/control",
     "cycle/swap",
@@ -692,6 +771,42 @@ export async function runG8sw(
       fromJudged(
         "swap-accounting",
         "LS3 (live-swap-design.md Q3): after every disarm of a swap run (each arm's teardown.json, and every idle row of swap-cycle.jsonl) the capture's own accounting is empty: mirror tables, payload and held bytes 0 (canvases at most the fresh mirror's root), served sets, served bytes and warm cache 0, both worker pools stopped, no hub, no carrier set, no track hub, writer joined, no publisher, resource-log, mesh-buffer and adopt-registry maps empty, item_meta host and filter-watch tables empty; and the armed rows are not vacuous (a hub each, every armed row serving bytes the viewer pinned, the born first arm holding textures)",
+        judged,
+      ),
+    );
+  }
+
+  // --- warm-capture-scale ------------------------------------------------------------------
+  {
+    const judged: [string, Judged][] = [];
+    for (const name of ["short/swap", "short/warm-workers"]) {
+      const leg =
+        name === "short/swap" ? shortSwap : await load(name, "swap", SHORT_N);
+      const arms: (WarmCaptureEvidence | undefined)[] = [];
+      for (let k = 1; k <= SHORT_N; k++)
+        arms.push(
+          await readJson<WarmCaptureEvidence>(
+            join(
+              leg.dir,
+              "evidence",
+              ...(k === 1 ? [] : [`arm-${k}`]),
+              "warm.json",
+            ),
+          ),
+        );
+      const j = judgeWarmCaptureScale(
+        name,
+        arms,
+        name === "short/warm-workers" ? leg.teardowns : undefined,
+      );
+      j.evidence.push(...leg.evidence);
+      if (leg.exit_code !== "0") j.rule.push(`${name} exit ${leg.exit_code}`);
+      judged.push([name, j]);
+    }
+    checks.push(
+      fromJudged(
+        "warm-capture-scale",
+        "Every capture-scale arm balances without reference-time decode; re-arms complete the warm for at least 100 textures, and worker teardowns are empty",
         judged,
       ),
     );

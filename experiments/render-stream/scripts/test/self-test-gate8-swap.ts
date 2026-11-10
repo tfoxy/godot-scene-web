@@ -9,9 +9,11 @@ import {
   accountingProblems,
   CPU_BOUND_FRACTION,
   HEAP_IN_USE_BOUND_MIB,
+  judgeWarmCaptureScale,
   RSS_SLOPE_MB,
   runG8sw,
   slope,
+  type WarmCaptureEvidence,
 } from "../lib/gate8-swap-checks";
 
 const scratch = join(import.meta.dirname, "../../../../.local");
@@ -61,6 +63,7 @@ const clean = () => ({
   served_sets: 0,
   served_bytes: 0,
   warm_cache_bytes: 0,
+  warm_entries: 0,
   texture_workers_running: false,
   encode_workers_running: false,
   hubs: 0,
@@ -81,10 +84,37 @@ const clean = () => ({
   inet_sockets: 0,
 });
 
+const warm = (arm: number): WarmCaptureEvidence => ({
+  final: true,
+  warm_balanced: true,
+  decode_at_reference: 0,
+  discarded_stale: 0,
+  mispredicts: 0,
+  queued: arm === 1 ? 0 : 120,
+  warm_complete: true,
+  arm_to_warm_complete_ms: 12,
+  arm_to_warm_queued_ms: 3,
+  reload_us: 1000,
+  census_us: 500,
+  warm_queue_us: 2000,
+  warm_work_us: 9000,
+  jobs: arm === 1 ? 0 : 120,
+  promoted: 4,
+  served_in_flight: 2,
+  warm_cache_bytes: 1024,
+});
+
 ok(
   accountingProblems("clean", clean()).length === 0,
   "clean reload accounting passes",
 );
+for (const warm_entries of [1, undefined])
+  ok(
+    accountingProblems("warm", { ...clean(), warm_entries }).some((p) =>
+      p.includes("warm_entries"),
+    ),
+    "held or missing warm entry count fails accounting",
+  );
 ok(
   accountingProblems("held", { ...clean(), reload_sources_held: 1 }).some((p) =>
     p.includes("reload_sources_held"),
@@ -208,6 +238,7 @@ function writeLeg(dir: string, o: Opts) {
       if (o.dropTeardown?.includes(k)) continue;
       const d = k === 1 ? ev : join(ev, `arm-${k}`);
       mkdirSync(d, { recursive: true });
+      writeFileSync(join(d, "warm.json"), JSON.stringify(warm(k)));
       writeFileSync(
         join(d, "teardown.json"),
         JSON.stringify({
@@ -248,6 +279,7 @@ function build(
   };
   writeLeg(join(g, "short/swap"), { kind: "swap", n: SHORT, ...tweak.short });
   writeLeg(join(g, "short/control"), { kind: "control", n: SHORT });
+  writeLeg(join(g, "short/warm-workers"), { kind: "swap", n: SHORT });
   for (const s of SABS) {
     const t = tweak.sabotage?.[s];
     writeLeg(
@@ -276,6 +308,7 @@ const passes = (m: Map<string, { passed: boolean }>, id: string) => {
 };
 const IDS = [
   "swap-accounting",
+  "warm-capture-scale",
   "swap-cycle-threads",
   "swap-cycle-fds",
   "swap-cycle-rss",
@@ -288,6 +321,80 @@ const IDS = [
 
 try {
   ok(Math.abs(slope([1, 2, 3], [1, 3, 5]) - 2) < 1e-9, "slope of a line");
+
+  const arms = [warm(1), warm(2), warm(3)];
+  const judgeWarm = (a = arms, t = [clean(), clean(), clean()]) =>
+    judgeWarmCaptureScale("workers", a, t);
+  const honest = judgeWarm();
+  ok(
+    honest.rule.length === 0 && honest.evidence.length === 0,
+    "warm scale passes",
+  );
+  for (const field of [
+    "arm_to_warm_complete_ms",
+    "arm_to_warm_queued_ms",
+    "reload_us",
+    "census_us",
+    "warm_queue_us",
+    "warm_work_us",
+    "queued",
+    "jobs",
+    "promoted",
+    "served_in_flight",
+    "warm_cache_bytes",
+  ])
+    ok(honest.detail.includes(`"${field}":`), `warm reports ${field}`);
+  for (let k = 0; k < 3; k++) {
+    for (const patch of [
+      { final: false },
+      { warm_balanced: false },
+      { decode_at_reference: 1 },
+      { discarded_stale: 1 },
+      { mispredicts: 1 },
+      ...(k > 0
+        ? [{ queued: 99 }, { queued: Number.NaN }, { warm_complete: false }]
+        : []),
+    ]) {
+      const bad = arms.map((w, i) => (i === k ? { ...w, ...patch } : w));
+      ok(
+        judgeWarm(bad).rule.length > 0,
+        `arm ${k + 1} rejects ${JSON.stringify(patch)}`,
+      );
+    }
+    const missing = [...arms];
+    delete missing[k];
+    ok(judgeWarm(missing).evidence.length > 0, `missing arm ${k + 1} fails`);
+    const missingTeardown = [clean(), clean(), clean()];
+    delete missingTeardown[k];
+    ok(
+      judgeWarm(arms, missingTeardown).evidence.length > 0,
+      `missing teardown ${k + 1} fails`,
+    );
+    const held = [clean(), clean(), clean()];
+    held[k].warm_entries = 1;
+    ok(
+      judgeWarm(arms, held).rule.length > 0,
+      `held warm in teardown ${k + 1} fails`,
+    );
+  }
+  const unbounded = arms.map((w) => ({
+    ...w,
+    arm_to_warm_complete_ms: 1e9,
+    warm_cache_bytes: 1e12,
+  }));
+  ok(
+    judgeWarm(unbounded).rule.length === 0,
+    "timing and bytes are reported without bounds",
+  );
+
+  for (const leg of ["short/swap", "short/warm-workers"]) {
+    const { root, g } = build(`warm-missing-${leg.replaceAll("/", "-")}`);
+    rmSync(join(g, leg, "evidence/arm-2/warm.json"));
+    ok(
+      !passes((await verdict(root)).m, "warm-capture-scale"),
+      `${leg} missing warm fails`,
+    );
+  }
 
   // --- honest: everything passes, the ids are exactly the contract's -------------------------
   {

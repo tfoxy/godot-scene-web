@@ -348,7 +348,8 @@
 #       asking the v2 fields in each arm (`id/arm1`, `id/arm2`). Also tex-htr: a /11 passthrough
 #       texture pair with HTR, standby eviction and a path-less ImageTexture restore probe;
 #       tex-htr-faults: reload-off, swap, swap-skip-verify and skip-htr-restore B-only legs.
-#       G8RE_ONLY selects adopt,tex,id,tex-htr,tex-htr-faults. Judged by lib/gate8-rearm-checks.ts.
+#       tex-warm: B-only workers and warm-off legs with update/free probes after the second arm.
+#       G8RE_ONLY selects adopt,tex,id,tex-htr,tex-htr-faults,tex-warm. Judged by lib/gate8-rearm-checks.ts.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -4596,6 +4597,8 @@ run_g8sw() {
 	run_g8sw_leg "$g/short/swap" 240 240 3 swap
 	echo "run-gate8: g8sw short/control (standby, 240:240:3:control)"
 	run_g8sw_leg "$g/short/control" 240 240 3 control
+	echo "run-gate8: g8sw short/warm-workers (short/swap with GRC_TEXTURE_WORKERS=2)"
+	run_g8sw_leg "$g/short/warm-workers" 240 240 3 swap GRC_TEXTURE_WORKERS=2
 	for kind in keep-served keep-listener keep-hub skip-mirror-reset; do
 		echo "run-gate8: g8sw short/sabotage-$kind (short/swap with GRC_REARM_FAULT=$kind)"
 		run_g8sw_leg "$g/short/sabotage-$kind" 240 240 3 swap GRC_REARM_FAULT="$kind"
@@ -4636,6 +4639,8 @@ run_g8sw() {
 # the mobile family and a fresh lossless `control`, every texture created while disarmed); K1 1
 # (armed at load) and 20 armed frames cover step 0, 12 idle frames step 1, arm 2 (K2 about 36)
 # runs to the quit at 50.
+# tex-warm: tex-htr's /11 schedule with two workers and undrawn update/free probes;
+# workers warms normally, warm-off is the fault knob negative test. Both are B-only.
 G8RE_ADOPT_ENV=("${G8A_ENV[@]}" GRC_ADOPT=arm RS_FIXTURE_ARM=deferred RS_FIXTURE_ARM_FRAME=30)
 G8RE_ADOPT_K1=8
 G8RE_ADOPT_CYCLE=32:6:2
@@ -4652,6 +4657,7 @@ G8RE_TEX_HTR_ENV=(GRC_STREAM_VERSION=11 GRC_TEXTURE_DECODE=engine GRC_ADOPT=arm 
 G8RE_TEX_HTR_K1=1
 G8RE_TEX_HTR_CYCLE=20:20:2
 G8RE_TEX_HTR_QUIT=60
+G8RE_TEX_WARM_ENV=("${G8RE_TEX_HTR_ENV[@]}" GRC_TEXTURE_WORKERS=2 RS_FIXTURE_WARM_PROBE=1)
 # The re-arm round (id/): g8id14's live host on fixtures/tag-scene (RS_FIXTURE_TAG_V2, armed late at
 # frame 12, GRC_ADOPT=arm, the full v2 grant, the fixture's oracle and the capture's id log), with
 # GRC_SWAP_CYCLE in place of GRC_DISARM_AFTER_FRAMES: two cycles of 300 armed and 60 idle frames
@@ -4819,14 +4825,14 @@ run_g8re_id() {
 	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
 }
 
-# G8RE_ONLY: comma-separated adopt,tex,id,tex-htr,tex-htr-faults; unset runs all.
-g8re_selected() { [[ ",${G8RE_ONLY:-adopt,tex,id,tex-htr,tex-htr-faults}," == *",$1,"* ]]; }
+# G8RE_ONLY: comma-separated adopt,tex,id,tex-htr,tex-htr-faults,tex-warm; unset runs all.
+g8re_selected() { [[ ",${G8RE_ONLY:-adopt,tex,id,tex-htr,tex-htr-faults,tex-warm}," == *",$1,"* ]]; }
 
 run_g8re() {
 	run_import_g8re
 	mkdir -p "$OUT/g8re"
 	local fx
-	for fx in adopt tex id tex-htr tex-htr-faults; do
+	for fx in adopt tex id tex-htr tex-htr-faults tex-warm; do
 		if ! g8re_selected "$fx"; then
 			mkdir -p "$OUT/g8re/$fx"
 			echo 'not selected by G8RE_ONLY' >"$OUT/g8re/$fx/not-selected.txt"
@@ -4847,6 +4853,16 @@ run_g8re() {
 			"$G8RE_TEX_HTR_CYCLE" "$G8RE_TEX_HTR_QUIT" "${G8RE_TEX_HTR_ENV[@]}"
 	fi
 	if g8re_selected tex-htr-faults; then run_g8re_tex_htr_faults; fi
+	if g8re_selected tex-warm; then
+		local name leg
+		for name in workers warm-off; do
+			leg="$OUT/g8re/tex-warm/$name"
+			local -a fault_env=()
+			[ "$name" != warm-off ] || fault_env+=(GRC_ADOPT_FAULT=warm-off)
+			G8RE_VIEWER_PROTOCOL=11 run_g8re_b "$leg" "$FIXTURE_DIR" "$G8RE_TEX_HTR_K1" \
+				"$G8RE_TEX_HTR_CYCLE" "$G8RE_TEX_HTR_QUIT" "${G8RE_TEX_WARM_ENV[@]}" "${fault_env[@]}"
+		done
+	fi
 }
 
 # ------------------------------------------------------------------------------------- g8tdr

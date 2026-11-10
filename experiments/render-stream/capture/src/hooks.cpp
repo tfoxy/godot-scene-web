@@ -1702,11 +1702,30 @@ void run_texture_job(const rs::TextureJobPtr &job, std::shared_ptr<ImageDuplicat
   job->finish(actual, std::move(bytes));
 }
 
+struct WarmTask : rs::WarmTaskBase {
+  rs::TextureJobPtr job;
+  std::shared_ptr<ImageDuplicate> dup;
+  rs::PayloadCopy base;
+  bool decode = false;
+  rs::DecodeRequest request;
+  std::string meta;
+
+  void run() override {
+    if (!claim_and_delay(rs::texture_worker_pool().delay_ms())) return;
+    const uint64_t t0 = rs::warm_now_ns();
+    run_texture_job(job, std::move(dup), base, decode, request, meta);
+    const uint64_t t1 = rs::warm_now_ns();
+    rs::warm_counters().note_done(t1, t1 - t0, job->mispredict());
+  }
+  void drop_source() override { dup.reset(); }
+};
+
 // Hands `predicted`'s content to a worker. False (nothing submitted) when the duplicate or the
 // pool is unavailable: the caller then copies synchronously.
 bool submit_texture_job(rs::PayloadCopy *predicted, const rs::PayloadCopy &base, const Ref *image,
                         bool decode, const rs::DecodeRequest &request, const std::string &meta,
-                        rs::TextureJobPtr *job_out) {
+                        rs::TextureJobPtr *job_out,
+                        std::shared_ptr<rs::WarmTaskBase> *warm = nullptr) {
   const uint64_t t0 = now_ns();
   std::shared_ptr<ImageDuplicate> dup = duplicate_image(image->object);
   const uint64_t t1 = now_ns();
@@ -1714,9 +1733,21 @@ bool submit_texture_job(rs::PayloadCopy *predicted, const rs::PayloadCopy &base,
     return false;
   }
   auto job = std::make_shared<rs::TextureJob>(*predicted);
-  if (!rs::texture_worker_pool().submit([job, dup, base, decode, request, meta]() mutable {
-        run_texture_job(job, std::move(dup), base, decode, request, meta);
-      })) {
+  if (warm != nullptr) {
+    auto task = std::make_shared<WarmTask>();
+    task->job = job;
+    task->dup = std::move(dup);
+    task->base = base;
+    task->decode = decode;
+    task->request = request;
+    task->meta = meta;
+    if (!rs::texture_worker_pool().submit([task] { task->run(); }, false)) {
+      return false;
+    }
+    *warm = std::move(task);
+  } else if (!rs::texture_worker_pool().submit([job, dup, base, decode, request, meta]() mutable {
+               run_texture_job(job, std::move(dup), base, decode, request, meta);
+             })) {
     return false;
   }
   predicted->worker = true;
@@ -1731,7 +1762,8 @@ bool submit_texture_job(rs::PayloadCopy *predicted, const rs::PayloadCopy &base,
 // unless the copy is "ok". G8kw: under GRC_TEXTURE_WORKERS=<N> an "ok" copy may instead be a
 // prediction whose content `*job` delivers (`bytes` then stays null).
 rs::PayloadCopy copy_payload_identity(const ImageFacts &facts, const Ref *image,
-                                      rs::PayloadPtr *bytes, rs::TextureJobPtr *job) {
+                                      rs::PayloadPtr *bytes, rs::TextureJobPtr *job,
+                                      std::shared_ptr<rs::WarmTaskBase> *warm = nullptr) {
   bytes->reset();
   job->reset();
   rs::PayloadCopy copy;
@@ -1788,7 +1820,7 @@ rs::PayloadCopy copy_payload_identity(const ImageFacts &facts, const Ref *image,
           predicted.status = "ok";
           predicted.payload_bytes =
               static_cast<int64_t>(rs::payload_size(meta, static_cast<uint64_t>(expected)));
-          if (submit_texture_job(&predicted, copy, image, true, request, meta, job)) {
+          if (submit_texture_job(&predicted, copy, image, true, request, meta, job, warm)) {
             return predicted;
           }
         }
@@ -1827,7 +1859,7 @@ rs::PayloadCopy copy_payload_identity(const ImageFacts &facts, const Ref *image,
     predicted.status = "ok";
     predicted.payload_bytes =
         static_cast<int64_t>(rs::payload_size(meta, static_cast<uint64_t>(facts.data_size)));
-    if (submit_texture_job(&predicted, copy, image, false, rs::DecodeRequest(), meta, job)) {
+    if (submit_texture_job(&predicted, copy, image, false, rs::DecodeRequest(), meta, job, warm)) {
       return predicted;
     }
   }
@@ -1846,8 +1878,9 @@ rs::PayloadCopy copy_payload_identity(const ImageFacts &facts, const Ref *image,
 // prediction carries no bytes yet; its job codes them (run_texture_job). The create and update
 // hooks call copy_payload_identity and code after forwarding the call instead.
 rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::PayloadPtr *bytes,
-                             rs::TextureJobPtr *job) {
-  rs::PayloadCopy copy = copy_payload_identity(facts, image, bytes, job);
+                             rs::TextureJobPtr *job,
+                             std::shared_ptr<rs::WarmTaskBase> *warm = nullptr) {
+  rs::PayloadCopy copy = copy_payload_identity(facts, image, bytes, job, warm);
   rs::code_at_rest(bytes);
   rs::code_at_rest(&copy.block_bytes);
   return copy;
@@ -5856,6 +5889,28 @@ void hooks_set_shader_time_carried(bool carried) {
   g_shader_time_carried.store(carried, std::memory_order_relaxed);
 }
 
+static bool adopt_texture_body(uint64_t rid, const rs::PayloadCopy &copy, rs::PayloadPtr bytes,
+                                const rs::TextureJobPtr &job, rs2::AdoptedContent content,
+                                const char *source, int64_t source_format,
+                                int64_t source_data_bytes, bool *decoded) {
+  std::lock_guard<std::mutex> order(g_texture_order);
+  if (mirror().knows_texture(rid)) {
+    return false;  // a loader thread created or adopted it meanwhile
+  }
+  mirror().texture_adopt(rid, copy, std::move(bytes), content, current_frame(), job);
+  resources().texture_adopt(tap_context(), rid, copy,
+                            content == rs2::AdoptedContent::Current ? "current" : "creation",
+                            source, job);
+  // An adopted tier texture keeps its dummy copy until a later release; account for its bytes.
+  if ((rs::texture_release_flags() & rs::kReleaseActive) != 0 && rs::release_tier(source_format)) {
+    rs::note_kept_adopted(source_data_bytes);
+  }
+  if (decoded != nullptr) {
+    *decoded = copy.status == "ok" && copy.source_format >= 0;
+  }
+  return true;
+}
+
 bool hooks_adopt_texture(uint64_t rid, void *image_object, rs2::AdoptedContent content,
                          const char *source, bool *decoded) {
   OffmainGuard inflight;
@@ -5875,23 +5930,33 @@ bool hooks_adopt_texture(uint64_t rid, void *image_object, rs2::AdoptedContent c
   if (job != nullptr) {
     copy.hook_ns = static_cast<int64_t>(now_ns() - t_hook);
   }
-  std::lock_guard<std::mutex> order(g_texture_order);
-  if (mirror().knows_texture(rid)) {
-    return false;  // a loader thread created or adopted it meanwhile
-  }
-  mirror().texture_adopt(rid, copy, std::move(bytes), content, current_frame(), job);
-  resources().texture_adopt(tap_context(), rid, copy,
-                            content == rs2::AdoptedContent::Current ? "current" : "creation",
-                            source, job);
-  // HTR (design answer 4): a tier texture adoption read back keeps its dummy copy in v1 (release
-  // after adoption is deferred to arm-on-first-subscriber); counted so the product sees the cost.
-  if ((rs::texture_release_flags() & rs::kReleaseActive) != 0 && rs::release_tier(facts.format)) {
-    rs::note_kept_adopted(facts.data_size);
-  }
-  if (decoded != nullptr) {
-    *decoded = copy.status == "ok" && copy.source_format >= 0;
-  }
+  return adopt_texture_body(rid, copy, std::move(bytes), job, content, source,
+                            facts.format, facts.data_size, decoded);
+}
+
+bool hooks_warm_texture(void *image_object, rs::WarmBody *out) {
+  if (image_object == nullptr) return false;
+  Ref image{image_object};
+  const ImageFacts facts = read_image(&image);
+  out->copy = copy_payload(facts, &image, &out->bytes, &out->job, &out->task);
+  out->source_format = facts.format;
+  out->source_data_bytes = facts.data_size;
   return true;
+}
+
+bool hooks_adopt_texture_warm(uint64_t rid, rs::WarmBody body, rs2::AdoptedContent content,
+                              const char *source, bool *decoded) {
+  OffmainGuard inflight;
+  if (inflight.standby()) return false;
+  if (decoded != nullptr) *decoded = false;
+  if (rid == 0 || !streaming() || !log_active()) return false;
+  return adopt_texture_body(rid, body.copy, std::move(body.bytes), body.job, content, source,
+                            body.source_format, body.source_data_bytes, decoded);
+}
+
+bool hooks_warm_promote(const std::shared_ptr<rs::WarmTaskBase> &task) {
+  return task != nullptr && task->claim.state() == rs::WarmClaim::kQueued &&
+         rs::texture_worker_pool().submit_front([task] { task->run(); }, false);
 }
 
 bool hooks_adopt_mesh(uint64_t rid, const std::vector<rs::AdoptSurface> &surfaces,

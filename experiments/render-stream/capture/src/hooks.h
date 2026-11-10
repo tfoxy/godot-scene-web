@@ -26,6 +26,7 @@
 #include "rs_mirror.h"
 #include "rs_texture_payload.h"
 #include "rs_texture_worker.h"
+#include "rs_warm.h"
 #include "vtable.h"
 
 namespace grc {
@@ -134,6 +135,11 @@ void hooks_set_shader_time_carried(bool carried);
 // `decoded` (optional) reports a host-decoded payload.
 bool hooks_adopt_texture(uint64_t rid, void *image_object, rs2::AdoptedContent content,
                          const char *source, bool *decoded);
+// Prepare a body at the arm without publishing it; adoption still happens at first reference.
+bool hooks_warm_texture(void *image_object, rs::WarmBody *out);
+bool hooks_adopt_texture_warm(uint64_t rid, rs::WarmBody body, rs2::AdoptedContent content,
+                              const char *source, bool *decoded);
+bool hooks_warm_promote(const std::shared_ptr<rs::WarmTaskBase> &task);
 // The same for a mesh read back through mesh_get_surface (its custom AABB, position xyz and
 // size xyz); the hook's retained-buffer cache takes its surfaces, so a later region update
 // re-hashes them as for any mesh.

@@ -170,6 +170,7 @@ void evidence() {
   s.adopted_from_reload = 11;
   s.dropped_unreferenced = 1;
   s.dropped_freed = 1;
+  s.dropped_stale = 2;
   s.held_bytes = 123456;
   s.refused = {1, 2, 3, 4, 5, 6};
   s.temp_outlived = 7;
@@ -192,7 +193,8 @@ void evidence() {
   EXPECT(field(doc, "sources_balanced").b);
   for (const auto &v : std::vector<std::pair<const char *, const char *>>{
       {"arm_index", "2"}, {"frame", "43"}, {"reloaded", "13"}, {"verify_skipped", "3"},
-      {"adopted_from_reload", "11"}, {"dropped_unreferenced", "1"}, {"dropped_freed", "1"}, {"held_bytes", "123456"},
+      {"adopted_from_reload", "11"}, {"dropped_unreferenced", "1"}, {"dropped_freed", "1"},
+      {"dropped_stale", "2"}, {"held_bytes", "123456"},
       {"released_no_path", "2"}, {"temp_outlived", "7"}, {"scope_anomalies", "8"},
       {"reload_us", "9"}, {"census_us", "10"}, {"entries_dropped", "5"}})
     EXPECT(field(doc, v.first).text == v.second);

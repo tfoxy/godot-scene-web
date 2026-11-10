@@ -65,7 +65,7 @@ struct ReloadStats {
   ReloadScanned scanned;
   ReloadCandidates candidates;
   std::uint64_t reloaded = 0, verify_skipped = 0, adopted_from_reload = 0;
-  std::uint64_t dropped_unreferenced = 0, dropped_freed = 0, held_bytes = 0;
+  std::uint64_t dropped_unreferenced = 0, dropped_freed = 0, dropped_stale = 0, held_bytes = 0;
   ReloadRefused refused;
   std::uint64_t temp_outlived = 0, scope_anomalies = 0, reload_us = 0, census_us = 0;
 };

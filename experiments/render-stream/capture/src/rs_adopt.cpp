@@ -994,6 +994,32 @@ struct RefSlot {
 
 // Held images are moved out before any engine reference is released.
 RidMap<std::unique_ptr<RefSlot>> g_reload_sources;
+RidMap<WarmEntry> g_warm;
+WarmStats g_warm_stats;
+bool g_warm_census_at_warm = false;
+bool g_warm_pass_done = false;
+bool g_warm_complete_noted = false;
+std::uint64_t g_warm_jobs = 0, g_warm_pass_end_ns = 0, g_warm_arm_t0_ns = 0;
+
+void warm_reset_locked() {
+  g_warm_stats = WarmStats();
+  g_warm_census_at_warm = false;
+  g_warm_pass_done = g_warm_complete_noted = false;
+  g_warm_jobs = g_warm_pass_end_ns = g_warm_arm_t0_ns = 0;
+}
+std::uint64_t warm_bytes_locked() {
+  std::uint64_t bytes = 0;
+  g_warm.for_each([&](const auto &entry) { bytes += entry.second.body.coded_bytes(); });
+  return bytes;
+}
+void warm_snapshot_locked() {
+  auto &c = warm_counters();
+  g_warm_stats.completed = c.done.load(std::memory_order_acquire);
+  g_warm_stats.mispredicts = c.mispredicts.load(std::memory_order_relaxed);
+  g_warm_stats.warm_work_us = c.work_ns.load(std::memory_order_relaxed) / 1000;
+  g_warm_stats.held_entries = g_warm.size();
+  g_warm_stats.warm_balanced = warm_balanced(g_warm_stats);
+}
 
 // A builtin value (String, Array, Dictionary, a packed array, Variant): default-constructed through
 // the engine's own constructor and destroyed through its destructor.
@@ -1575,8 +1601,65 @@ void adopt_texture_locked_out(std::uint64_t rid) {
   const bool main = std::this_thread::get_id() == g_res_main;
   rs::RegistryKind kind = rs::RegistryKind::Texture2d;
   bool updated = true;
-  const bool pristine = rs::registry_on() && rs::registry_lookup(rid, &kind, &updated) &&
+  const bool registered_now = rs::registry_on() && rs::registry_lookup(rid, &kind, &updated);
+  const bool pristine = registered_now &&
                         rs::registry_family(kind) == rs::RegistryFamily::Texture && !updated;
+  std::optional<WarmEntry> warm;
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    const auto it = g_warm.find(rid);
+    if (it != g_warm.end()) {
+      warm.emplace(std::move(it->second));
+      g_warm.erase(it);
+    }
+  }
+  if (warm) {
+    if (warm_stale(warm->updated_at_warm, registered_now, updated)) {
+      {
+        std::lock_guard<std::mutex> lock(g_res_mutex);
+        ++g_warm_stats.discarded_stale;
+        if (warm->source == WarmSource::Reload) ++g_reload_stats.dropped_stale;
+      }
+      if (warm->body.task && warm->body.task->claim.cancel()) {
+        warm->body.task->drop_source();
+        warm_counters().note_cancel(warm_now_ns());
+      }
+      warm.reset();  // Image references are released outside the capture lock.
+    } else {
+      const bool promoted = hooks_warm_promote(warm->body.task);
+      const bool in_flight = warm->body.job && !warm->body.job->done();
+      const auto content = rs2::AdoptedContent::Current;
+      bool decoded = false;
+      const bool adopted = !mirror_instance().knows_texture(rid) &&
+          hooks_adopt_texture_warm(rid, std::move(warm->body), declared(content),
+                                   warm_source_name(warm->source), &decoded);
+      std::lock_guard<std::mutex> lock(g_res_mutex);
+      if (promoted) ++g_warm_stats.promoted;
+      if (adopted) {
+        ++g_res_stats.textures;
+        if (declared(content) == rs2::AdoptedContent::Current) ++g_res_stats.textures_current;
+        else ++g_res_stats.textures_creation;
+        if (warm->source == WarmSource::Cache) ++g_res_stats.compressed;
+        if (warm->source == WarmSource::Registry) ++g_res_stats.textures_registry;
+        if (decoded) ++g_res_stats.decoded;
+        if (warm->source == WarmSource::Reload) {
+          ++g_res_stats.textures_reload;
+          ++g_reload_stats.adopted_from_reload;
+          for (auto &entry : g_reload_entries) {
+            if (entry.rid == rid && !entry.code) { entry.adopted = true; break; }
+          }
+          ++g_warm_stats.served_reload;
+        }
+        ++g_warm_stats.served;
+        if (in_flight) ++g_warm_stats.served_in_flight;
+      } else {
+        ++g_warm_stats.discarded_superseded;
+        if (warm->source == WarmSource::Reload) ++g_reload_stats.dropped_unreferenced;
+      }
+      g_res_stats.lookup_ns += now_ns() - t0;
+      return;
+    }
+  }
   {
     std::lock_guard<std::mutex> lock(g_res_mutex);
     if (main && !pristine && !g_census.built) {
@@ -1679,6 +1762,12 @@ void adopt_texture_locked_out(std::uint64_t rid) {
   }
   std::lock_guard<std::mutex> lock(g_res_mutex);
   if (adopted) {
+    if (warm_eligible_at_reference(reload_source != nullptr, pristine, compressed, g_warm_census_at_warm)) {
+      ++g_warm_stats.decode_at_reference;
+      if (g_warm_stats.decode_at_reference_rids.size() < 32)
+        g_warm_stats.decode_at_reference_rids.push_back(rid);
+    } else if (registered_now) ++g_warm_stats.lazy_at_reference.updated;
+    else ++g_warm_stats.lazy_at_reference.unregistered;
     ++g_res_stats.textures;
     if (declared(content) == rs2::AdoptedContent::Current) {
       ++g_res_stats.textures_current;
@@ -1849,7 +1938,9 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
   if (text.empty()) {
     return true;
   }
-  if (text == "no-resources") {
+  if (text == "warm-off") {
+    *out = AdoptFault::WarmOff;
+  } else if (text == "no-resources") {
     *out = AdoptFault::NoResources;
   } else if (text == "atlas-from-dummy") {
     *out = AdoptFault::AtlasFromDummy;
@@ -1884,7 +1975,7 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
              " (expected no-resources, atlas-from-dummy, claim-current, no-include-path, "
              "no-particles, registry-off, registry-keep-freed, registry-mm-stride, "
              "registry-skip-params, registry-drop-binding, registry-skip-particles, "
-             "registry-queue-drop, reload-off, reload-skip-verify or skip-htr-restore)";
+             "registry-queue-drop, reload-off, reload-skip-verify, skip-htr-restore or warm-off)";
     return false;
   }
   if (!adopt) {
@@ -1896,6 +1987,7 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
 
 const char *adopt_fault_name(AdoptFault f) {
   switch (f) {
+  case AdoptFault::WarmOff: return "warm-off";
   case AdoptFault::ReloadOff: return "reload-off";
   case AdoptFault::ReloadSkipVerify: return "reload-skip-verify";
   case AdoptFault::SkipHtrRestore: return "skip-htr-restore";
@@ -1923,7 +2015,12 @@ void adopt_resources_begin(AdoptFault f, bool dummy_host) {
   adopt_emitters_reset();
   queue_reset();
   RidMap<std::unique_ptr<RefSlot>> dropped;
+  RidMap<WarmEntry> dropped_warm;
   std::lock_guard<std::mutex> lock(g_res_mutex);
+  std::swap(dropped_warm, g_warm);
+  warm_reset_locked();
+  warm_counters().reset();
+  g_warm_stats.fault = adopt_fault_name(f);
   std::swap(dropped, g_reload_sources);
   g_res_stats = AdoptResourceStats();
   g_reload_stats = ReloadStats();
@@ -1936,6 +2033,248 @@ void adopt_resources_begin(AdoptFault f, bool dummy_host) {
   g_res_fault.store(static_cast<int>(f), std::memory_order_release);
   g_res_dummy_host.store(dummy_host, std::memory_order_relaxed);
   g_res_active.store(true, std::memory_order_seq_cst);
+}
+
+WarmStats adopt_warm_at_arm(std::uint64_t arm_t0_ns, const std::string &workers) {
+  const auto t0 = warm_now_ns();
+  WarmStats stats;
+  stats.fault = adopt_fault_name(fault());
+  stats.workers = workers;
+  if (fault() == AdoptFault::WarmOff) stats.skipped = "fault-warm-off";
+  else if (fault() == AdoptFault::NoResources) stats.skipped = "fault-no-resources";
+  else if (fault() == AdoptFault::RegistryKeepFreed) stats.skipped = "fault-registry-keep-freed";
+  else if (fault() == AdoptFault::RegistryOff || !registry_on()) stats.skipped = "no-registry";
+  else if (!adopt_binds_ready(nullptr)) stats.skipped = "binds";
+  if (!stats.skipped.empty()) {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    g_warm_stats = stats;
+    return stats;
+  }
+  void *server = singleton_object("RenderingServer");
+  std::vector<RegistryTextureRecord> records;
+  registry_textures(&records);
+  std::unordered_map<std::uint64_t, std::string> compressed;
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    g_warm_census_at_warm = g_census.built;
+    stats.census_at_warm = g_census.built;
+    if (g_census.built) compressed = g_census.compressed;
+  }
+  const auto prepare = [&](WarmSource source, void *image, WarmBody *body) {
+    hooks_warm_texture(image, body);
+    if (body->job) ++stats.jobs;
+    else ++stats.sync_coded;
+    if (body->copy.status != "ok") ++stats.not_ok;
+    ++stats.queued;
+    if (source == WarmSource::Reload) {
+      ++stats.from_reload;
+      stats.from_reload_bytes += std::max<std::int64_t>(body->source_data_bytes, 0);
+    } else if (source == WarmSource::Registry) ++stats.from_registry;
+    else ++stats.from_cache;
+  };
+  for (const auto &rec : records) {
+    WarmClassInput input;
+    input.registered = true;
+    input.texture2d = rec.kind == RegistryKind::Texture2d;
+    input.updated = rec.updated;
+    input.released = rec.released;
+    input.census_built = stats.census_at_warm;
+    input.census_compressed = compressed.count(rec.rid) != 0;
+    input.mirror_known = mirror_instance().knows_texture(rec.rid);
+    input.refused = is_refused(rec.rid);
+    {
+      std::lock_guard<std::mutex> lock(g_res_mutex);
+      input.has_reload_source = g_reload_sources.count(rec.rid) != 0;
+    }
+    input.reload_off = fault() == AdoptFault::ReloadOff;
+    if (input.texture2d) ++stats.scanned.registered_2d;
+    WarmSource source;
+    switch (warm_class(input, &source)) {
+      case WarmSkip::MirrorKnown: ++stats.scanned.mirror_known; continue;
+      case WarmSkip::Refused: ++stats.scanned.refused; continue;
+      case WarmSkip::NotTexture2d: ++stats.skipped_by.not_texture2d; continue;
+      case WarmSkip::Released: ++stats.skipped_by.released; continue;
+      case WarmSkip::Updated: ++stats.skipped_by.updated; continue;
+      case WarmSkip::None: break;
+    }
+    WarmBody body;
+    {
+      RefSlot image;
+      std::unique_ptr<RefSlot> reload_source;
+      if (source == WarmSource::Reload) {
+        std::lock_guard<std::mutex> lock(g_res_mutex);
+        const auto it = g_reload_sources.find(rec.rid);
+        if (it != g_reload_sources.end()) {
+          reload_source = std::move(it->second);
+          g_reload_sources.erase(it);
+        }
+      } else if (server) {
+        const GDExtensionConstTypePtr args[1] = {&rec.rid};
+        ptrcall(kRsTexture2dGet, server, args, &image.slot);
+      }
+      void *object = reload_source ? reload_source->object() : image.object();
+      if (!object) { ++stats.skipped_by.no_image; continue; }
+      if (source != WarmSource::Reload && !input.reload_off && rec.facts.known &&
+          evicted_signature(reload_shape(shape_of(object)), rec.facts)) {
+        ++stats.skipped_by.evicted;
+        continue;
+      }
+      prepare(source, object, &body);
+    }
+    {
+      std::lock_guard<std::mutex> lock(g_res_mutex);
+      g_warm[rec.rid] = {source, rec.updated, std::move(body)};
+    }
+  }
+  // Cached textures can predate the registry. Their getter copy is current at the arm.
+  void *loader = singleton_object("ResourceLoader");
+  StringName ctex_name("CompressedTexture2D");
+  void *ctex_tag = g_iface.classdb_get_class_tag(ctex_name.ptr());
+  for (const auto &cached : compressed) {
+    if (!loader || !ctex_tag) break;
+    const auto rid = cached.first;
+    if (registry_lookup(rid, nullptr) || mirror_instance().knows_texture(rid) || is_refused(rid)) continue;
+    {
+      std::lock_guard<std::mutex> lock(g_res_mutex);
+      if (g_reload_sources.count(rid) || g_warm.count(rid)) continue;
+    }
+    ++stats.scanned.census_unregistered;
+    OwnedString path(cached.second);
+    const GDExtensionConstTypePtr cached_args[] = {path.data};
+    RefSlot res;
+    ptrcall(kLoaderGetCachedRef, loader, cached_args, &res.slot);
+    void *obj = res.object();
+    if (!obj || !g_iface.object_cast_to(obj, ctex_tag) || get_rid(kResourceGetRid, obj) != rid) {
+      ++stats.skipped_by.no_image;
+      continue;
+    }
+    WarmBody body;
+    {
+      RefSlot image;
+      if (server) {
+        const GDExtensionConstTypePtr args[] = {&rid};
+        ptrcall(kRsTexture2dGet, server, args, &image.slot);
+      }
+      if (!image.object()) { ++stats.skipped_by.no_image; continue; }
+      const Shape shape = reload_shape(shape_of(image.object()));
+      if (shape.width == 1 && shape.height == 1 && shape.format == 0 && !shape.mipmaps) {
+        ++stats.skipped_by.evicted;
+        continue;
+      }
+      prepare(WarmSource::Cache, image.object(), &body);
+    }
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    g_warm[rid] = {WarmSource::Cache, false, std::move(body)};
+  }
+  RidMap<std::unique_ptr<RefSlot>> residual;
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    std::swap(residual, g_reload_sources);
+  }
+  std::vector<std::uint64_t> residual_rids;
+  residual.for_each([&](const auto &entry) { residual_rids.push_back(entry.first); });
+  for (const auto rid : residual_rids) {
+    auto image = std::move(residual.find(rid)->second);
+    residual.erase(rid);
+    WarmBody body;
+    prepare(WarmSource::Reload, image->object(), &body);
+    image.reset();
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    g_warm[rid] = {WarmSource::Reload, false, std::move(body)};
+  }
+  const auto end = warm_now_ns();
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  stats.reload_sources_left = g_reload_sources.size();
+  stats.reload_us = g_reload_stats.reload_us;
+  stats.census_us = g_reload_stats.census_us;
+  stats.warm_queue_us = (end - t0) / 1000;
+  stats.arm_to_warm_queued_ms = (end - arm_t0_ns) / 1e6;
+  // Frees can classify entries already inserted while the pass prepares its next body.
+  stats.cancelled_freed = g_warm_stats.cancelled_freed;
+  stats.discarded_freed = g_warm_stats.discarded_freed;
+  stats.discarded_superseded = g_warm_stats.discarded_superseded;
+  g_warm_stats = stats;
+  g_warm_jobs = stats.jobs;
+  g_warm_pass_end_ns = end;
+  g_warm_arm_t0_ns = arm_t0_ns;
+  g_warm_pass_done = true;
+  if (g_warm_jobs == 0) {
+    g_warm_stats.warm_complete = true;
+    g_warm_stats.arm_to_warm_complete_ms = stats.arm_to_warm_queued_ms;
+    g_warm_stats.warm_cache_bytes = warm_bytes_locked();
+    g_warm_complete_noted = true;
+  }
+  warm_snapshot_locked();
+  return g_warm_stats;
+}
+
+bool adopt_warm_poll() {
+  if (!g_warm_pass_done || g_warm_complete_noted) return false;
+  auto &c = warm_counters();
+  if (c.done.load(std::memory_order_acquire) + c.cancelled.load(std::memory_order_acquire) != g_warm_jobs)
+    return false;
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  g_warm_complete_noted = true;
+  g_warm_stats.warm_complete = true;
+  g_warm_stats.arm_to_warm_complete_ms =
+      (std::max(c.last_finish_ns.load(std::memory_order_relaxed), g_warm_pass_end_ns) - g_warm_arm_t0_ns) / 1e6;
+  g_warm_stats.warm_cache_bytes = warm_bytes_locked();
+  return true;
+}
+
+void adopt_warm_cancel() {
+  std::vector<std::shared_ptr<WarmTaskBase>> cancelled;
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    g_warm.for_each([&](const auto &entry) {
+      const auto &task = entry.second.body.task;
+      if (task && task->claim.cancel()) {
+        ++g_warm_stats.cancelled_disarm;
+        cancelled.push_back(task);
+      }
+    });
+  }
+  for (const auto &task : cancelled) task->drop_source();
+}
+
+WarmStats adopt_warm_finish() {
+  RidMap<WarmEntry> dropped;
+  WarmStats stats;
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    if (!g_warm_stats.warm_complete) g_warm_stats.warm_cache_bytes = warm_bytes_locked();
+    g_warm.for_each([&](const auto &entry) {
+      if (mirror_instance().knows_texture(entry.first)) ++g_warm_stats.discarded_superseded;
+      else ++g_warm_stats.dropped_unreferenced;
+      if (entry.second.source == WarmSource::Reload) ++g_reload_stats.dropped_unreferenced;
+    });
+    std::swap(dropped, g_warm);
+    g_warm_stats.final = true;
+    warm_snapshot_locked();
+    stats = g_warm_stats;
+  }
+  return stats;
+}
+
+WarmStats adopt_warm_stats() {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  warm_snapshot_locked();
+  return g_warm_stats;
+}
+std::string adopt_warm_json(std::uint64_t arm_index, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  g_warm_stats.arm_index = arm_index;
+  g_warm_stats.frame = frame;
+  warm_snapshot_locked();
+  return warm_json(g_warm_stats);
+}
+std::size_t adopt_warm_entries_held() {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  return g_warm.size();
+}
+std::uint64_t adopt_warm_cache_bytes() {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  return warm_bytes_locked();
 }
 
 ReloadStats adopt_reload_at_arm() {
@@ -2102,7 +2441,7 @@ ReloadStats adopt_reload_finish() {
     g_reload_stats.final = true;
     g_reload_stats.sources_balanced = g_reload_sources.empty() &&
         g_reload_stats.reloaded == g_reload_stats.adopted_from_reload +
-            g_reload_stats.dropped_unreferenced + g_reload_stats.dropped_freed;
+            g_reload_stats.dropped_unreferenced + g_reload_stats.dropped_freed + g_reload_stats.dropped_stale;
     stats = g_reload_stats;
   }
   return stats;
@@ -2295,8 +2634,12 @@ void adopt_resource_freed(std::uint64_t rid) {
     return;
   }
   std::unique_ptr<RefSlot> dropped;
+  WarmEntry dropped_warm;
+  bool warm_present = false;
+  bool warm_cancelled = false;
   {
     std::lock_guard<std::mutex> lock(g_res_mutex);
+    warm_present = g_warm.find(rid) != g_warm.end();
     g_refused.erase(rid);
     auto it = g_reload_sources.find(rid);
     if (it != g_reload_sources.end()) {
@@ -2304,6 +2647,30 @@ void adopt_resource_freed(std::uint64_t rid) {
       g_reload_sources.erase(it);
       ++g_reload_stats.dropped_freed;
     }
+  }
+  if (warm_present) {
+#ifdef GRC_ADOPT_TEST
+    extern void adopt_test_before_warm_free_classify();
+    adopt_test_before_warm_free_classify();
+#endif
+    const bool known = mirror_instance().knows_texture(rid);
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    const auto warm = g_warm.find(rid);
+    if (warm != g_warm.end()) {
+      dropped_warm = std::move(warm->second);
+      g_warm.erase(warm);
+      if (dropped_warm.body.task && dropped_warm.body.task->claim.cancel()) {
+        ++g_warm_stats.cancelled_freed;
+        warm_cancelled = true;
+      }
+      if (known) ++g_warm_stats.discarded_superseded;
+      else ++g_warm_stats.discarded_freed;
+      if (dropped_warm.source == WarmSource::Reload) ++g_reload_stats.dropped_freed;
+    }
+  }
+  if (warm_cancelled) {
+    dropped_warm.body.task->drop_source();
+    warm_counters().note_cancel(warm_now_ns());
   }
   bool cancelled = false;
   if (g_queue_nonempty.load(std::memory_order_acquire)) {
@@ -4610,7 +4977,7 @@ std::size_t adopt_held() {
   std::size_t n = 0;
   {
     std::lock_guard<std::mutex> lock(g_res_mutex);
-    n += g_reload_sources.size() + g_reload_entries.size() + g_refused.size() + g_census.pages.size() + g_census.compressed.size() +
+    n += g_warm.size() + g_reload_sources.size() + g_reload_entries.size() + g_refused.size() + g_census.pages.size() + g_census.compressed.size() +
          g_census.canvas_textures.size();
   }
   {
@@ -4633,8 +5000,11 @@ std::size_t adopt_held() {
 std::size_t adopt_release() {
   const std::size_t n = adopt_held();
   RidMap<std::unique_ptr<RefSlot>> dropped;
+  RidMap<WarmEntry> dropped_warm;
   {
     std::lock_guard<std::mutex> lock(g_res_mutex);
+    std::swap(dropped_warm, g_warm);
+    warm_reset_locked();
     std::swap(dropped, g_reload_sources);
     std::vector<ReloadEntry>().swap(g_reload_entries);
     g_reload_stats = ReloadStats();

@@ -1032,9 +1032,16 @@ export function faultSkipRestoreCaught(
 }
 
 function textureReloadChecks(g: string): G8aCheck[] {
-  const root = join(g, "tex-htr");
+  const root = g;
+  const workerSelected = !existsSync(join(g, "tex-warm", "not-selected.txt"));
+  const workers = workerSelected ? ["tex-warm/workers"] : [];
   const evidence = (leg: string, second = true) =>
-    join(root, leg, "evidence", ...(second ? ["arm-2"] : []));
+    join(
+      root,
+      leg.startsWith("tex-warm/") ? leg : `tex-htr/${leg}`,
+      "evidence",
+      ...(second ? ["arm-2"] : []),
+    );
   const reload = (leg: string, second = true) =>
     readJson<TextureReloadEvidence>(join(evidence(leg, second), "reload.json"));
   const teardown = (leg: string, second = true) =>
@@ -1054,11 +1061,22 @@ function textureReloadChecks(g: string): G8aCheck[] {
     return out;
   };
   const rec = (leg: string, second = true) =>
-    loadRec(join(root, leg, `recording.rs8${second ? ".arm-2" : ""}`), 11);
+    loadRec(
+      join(
+        root,
+        leg.startsWith("tex-warm/") ? leg : `tex-htr/${leg}`,
+        `recording.rs8${second ? ".arm-2" : ""}`,
+      ),
+      11,
+    );
   const probe = (leg: string) =>
-    jsonlOf<TextureEvent>(join(root, leg, "events.jsonl")).find(
-      (e) => e.event === "imagetexture-probe",
-    ) ?? null;
+    jsonlOf<TextureEvent>(
+      join(
+        root,
+        leg.startsWith("tex-warm/") ? leg : `tex-htr/${leg}`,
+        "events.jsonl",
+      ),
+    ).find((e) => e.event === "imagetexture-probe") ?? null;
   const b = rec("rearm"),
     a = rec("once", false),
     first = rec("rearm", false),
@@ -1074,7 +1092,14 @@ function textureReloadChecks(g: string): G8aCheck[] {
     judge: () => string[],
   ) => {
     const absent = legs.some(
-      (leg) => !existsSync(join(root, leg, "exit-code.txt")),
+      (leg) =>
+        !existsSync(
+          join(
+            root,
+            leg.startsWith("tex-warm/") ? leg : `tex-htr/${leg}`,
+            "exit-code.txt",
+          ),
+        ),
     );
     if (absent)
       checks.push({
@@ -1087,7 +1112,14 @@ function textureReloadChecks(g: string): G8aCheck[] {
       });
     else {
       const pre = legs.flatMap((leg) =>
-        readFileSync(join(root, leg, "exit-code.txt"), "utf8").trim() === "0"
+        readFileSync(
+          join(
+            root,
+            leg.startsWith("tex-warm/") ? leg : `tex-htr/${leg}`,
+            "exit-code.txt",
+          ),
+          "utf8",
+        ).trim() === "0"
           ? []
           : [`${leg} failed`],
       );
@@ -1098,12 +1130,15 @@ function textureReloadChecks(g: string): G8aCheck[] {
   };
   add(
     "rearm-no-1x1",
-    ["rearm", "once", "swap"],
+    ["rearm", "once", "swap", ...workers],
     "No published image is <=1x1 and every adopted reload matches its record",
     () => [
       ...reloadNo1x1(b.rec ?? null, rb),
       ...reloadNo1x1(a.rec ?? null, ra),
       ...reloadNo1x1(swap.rec ?? null, rs),
+      ...workers.flatMap((leg) =>
+        reloadNo1x1(rec(leg).rec ?? null, reload(leg)),
+      ),
     ],
   );
   add(
@@ -1114,11 +1149,14 @@ function textureReloadChecks(g: string): G8aCheck[] {
   );
   add(
     "reload-typed",
-    ["rearm", "once"],
+    ["rearm", "once", ...workers],
     "Honest reload candidates, outcomes and teardown counts match the fixture",
     () => [
       ...reloadTyped(rb, true, teardowns("rearm")),
       ...reloadTyped(ra, false, teardowns("once")),
+      ...workers.flatMap((leg) =>
+        reloadTyped(reload(leg), true, teardowns(leg)),
+      ),
     ],
   );
   add(
@@ -1160,6 +1198,229 @@ function textureReloadChecks(g: string): G8aCheck[] {
   return checks;
 }
 
+export interface WarmEvidence {
+  final: boolean;
+  skipped: string | null;
+  warm_balanced: boolean;
+  held_entries: number;
+  decode_at_reference: number;
+  discarded_stale: number;
+  mispredicts: number;
+  reload_sources_left: number;
+  from_reload: number;
+  served_reload: number;
+  warm_complete: boolean;
+  jobs: number;
+  arm_to_warm_complete_ms: number | null;
+  reload_us: number;
+  discarded_superseded: number;
+  discarded_freed: number;
+  queued: number;
+}
+
+/** Final warm evidence must account for every entry without reference-time work. */
+export function warmCompleteProblems(
+  w: WarmEvidence | null,
+  reloadCounts?: readonly [number, number],
+  workers = false,
+): string[] {
+  if (!w) return ["missing warm evidence"];
+  const problems: string[] = [];
+  if (w.skipped !== null) problems.push("warm skipped");
+  if (w.final !== true) problems.push("warm not final");
+  if (w.warm_balanced !== true) problems.push("warm not balanced");
+  for (const key of [
+    "held_entries",
+    "decode_at_reference",
+    "discarded_stale",
+    "mispredicts",
+    "reload_sources_left",
+  ] as const)
+    if (w[key] !== 0) problems.push(key);
+  if (reloadCounts) {
+    if (w.from_reload !== reloadCounts[0]) problems.push("from_reload");
+    if (w.served_reload !== reloadCounts[1]) problems.push("served_reload");
+  }
+  if (workers) {
+    if (w.warm_complete !== true) problems.push("warm not complete");
+    if (!Number.isSafeInteger(w.jobs) || w.jobs < 1) problems.push("jobs");
+    if (
+      typeof w.arm_to_warm_complete_ms !== "number" ||
+      !Number.isFinite(w.arm_to_warm_complete_ms) ||
+      !Number.isFinite(w.reload_us) ||
+      w.reload_us < 0 ||
+      w.arm_to_warm_complete_ms < w.reload_us / 1000
+    )
+      problems.push("arm_to_warm_complete_ms");
+  }
+  return problems;
+}
+
+export function warmInvalidationProblems(
+  w: WarmEvidence | null,
+  events: TextureEvent[],
+  k2: number | null,
+): string[] {
+  if (!w) return ["missing warm evidence"];
+  const problems: string[] = [];
+  if (w.final !== true) problems.push("warm not final");
+  if (w.discarded_superseded !== 1) problems.push("discarded_superseded");
+  if (!Number.isSafeInteger(w.discarded_freed) || w.discarded_freed < 1)
+    problems.push("discarded_freed");
+  if (w.discarded_stale !== 0) problems.push("discarded_stale");
+  if (
+    k2 === null ||
+    !Number.isFinite(k2) ||
+    !events.some(
+      (e) =>
+        e.event === "warm-probe" && Number.isFinite(e.frame) && e.frame >= k2,
+    )
+  )
+    problems.push("warm-probe missing or before K2");
+  return problems;
+}
+
+export function faultWarmOffProblems(
+  w: WarmEvidence | null,
+  reload: ReloadSourceEvidence | null,
+): string[] {
+  if (!w) return ["missing warm evidence"];
+  const problems = reloadSourcesBalanced(reload);
+  if (w.final !== true) problems.push("warm not final");
+  if (w.skipped !== "fault-warm-off") problems.push("wrong warm skip");
+  if (w.queued !== 0) problems.push("queued");
+  if (
+    !Number.isSafeInteger(w.decode_at_reference) ||
+    w.decode_at_reference < 12 ||
+    !warmCompleteProblems(w).includes("decode_at_reference")
+  )
+    problems.push("warm-off negative test not caught by decode_at_reference");
+  if (reload?.adopted_from_reload !== 12) problems.push("adopted_from_reload");
+  return problems;
+}
+
+function warmChecks(g: string): G8aCheck[] {
+  const checks: G8aCheck[] = [];
+  const selected = (leg: string) =>
+    !existsSync(join(g, leg.split("/")[0], "not-selected.txt"));
+  const add = (
+    id: string,
+    criterion: string,
+    legs: string[],
+    judge: () => string[],
+  ) => {
+    if (
+      legs.length === 0 ||
+      legs.some((leg) => !existsSync(join(g, leg, "exit-code.txt")))
+    ) {
+      checks.push({
+        id,
+        criterion,
+        passed: false,
+        status: "not-run",
+        gating: false,
+        detail: "warm legs absent or not selected",
+      });
+      return;
+    }
+    const pre = legs.flatMap((leg) =>
+      readFileSync(join(g, leg, "exit-code.txt"), "utf8").trim() === "0"
+        ? []
+        : [`${leg} failed`],
+    );
+    checks.push(
+      check(id, criterion, [...pre, ...judge()], "all predicates hold"),
+    );
+  };
+  const warm = (leg: string, arm = 2) =>
+    readJson<WarmEvidence>(
+      join(
+        g,
+        leg,
+        "evidence",
+        ...(arm === 1 ? [] : [`arm-${arm}`]),
+        "warm.json",
+      ),
+    );
+  const legs = [
+    "adopt/rearm",
+    "adopt/once",
+    "tex/rearm",
+    "tex/once",
+    "tex-htr/rearm",
+    "tex-htr/once",
+    "tex-htr/swap",
+    "id/host",
+    "tex-warm/workers",
+  ].filter(selected);
+  add(
+    "warm-complete",
+    "Every selected honest arm warms eligible bodies without reference-time decode",
+    legs,
+    () =>
+      legs.flatMap((leg) => {
+        const dir = join(g, leg, "evidence");
+        const arms = [
+          1,
+          ...(existsSync(dir)
+            ? readdirSync(dir, { withFileTypes: true })
+            : []
+          ).flatMap((e) =>
+            e.isDirectory() && /^arm-(?:[2-9]|[1-9][0-9]+)$/.test(e.name)
+              ? [Number(e.name.slice(4))]
+              : [],
+          ),
+        ];
+        // Re-arm legs must provide both arms, even if their evidence directory is missing.
+        if (!leg.endsWith("/once") && !arms.includes(2)) arms.push(2);
+        return arms.flatMap((arm) => {
+          const counts: readonly [number, number] | undefined =
+            leg === "tex-htr/once"
+              ? [7, 6]
+              : arm === 2 &&
+                  (leg === "tex-htr/rearm" || leg === "tex-warm/workers")
+                ? [13, 12]
+                : undefined;
+          return warmCompleteProblems(
+            warm(leg, arm),
+            counts,
+            leg === "tex-warm/workers" && arm === 2,
+          ).map((p) => `${leg} arm ${arm}: ${p}`);
+        });
+      }),
+  );
+  const worker = "tex-warm/workers";
+  add(
+    "warm-invalidation-typed",
+    "The arm-2 update supersedes and the free discards warmed entries",
+    selected(worker) ? [worker] : [],
+    () => {
+      const idle = jsonlOf<CycleLine>(
+        join(g, worker, "evidence/swap-cycle.jsonl"),
+      ).find((e) => e.phase === "idle" && e.cycle === 1);
+      return warmInvalidationProblems(
+        warm(worker),
+        jsonlOf<TextureEvent>(join(g, worker, "events.jsonl")),
+        idle ? idle.end_frame + 2 : null,
+      );
+    },
+  );
+  const off = "tex-warm/warm-off";
+  add(
+    "fault-warm-off-caught",
+    "The warm-off fault knob forces at least twelve reference-time decodes",
+    selected(off) ? [off] : [],
+    () =>
+      faultWarmOffProblems(
+        warm(off),
+        readJson<ReloadSourceEvidence>(
+          join(g, off, "evidence/arm-2/reload.json"),
+        ),
+      ),
+  );
+  return checks;
+}
+
 export interface ReloadSourceEvidence {
   final: boolean;
   sources_balanced: boolean;
@@ -1167,6 +1428,7 @@ export interface ReloadSourceEvidence {
   adopted_from_reload: number;
   dropped_unreferenced: number;
   dropped_freed: number;
+  dropped_stale: number;
 }
 
 /** Every loaded source must be adopted or counted once when it is dropped. */
@@ -1183,13 +1445,15 @@ export function reloadSourcesBalanced(
     evidence.adopted_from_reload,
     evidence.dropped_unreferenced,
     evidence.dropped_freed,
+    evidence.dropped_stale,
   ];
   if (
     counts.some((n) => !Number.isSafeInteger(n) || n < 0) ||
     evidence.reloaded !==
       evidence.adopted_from_reload +
         evidence.dropped_unreferenced +
-        evidence.dropped_freed
+        evidence.dropped_freed +
+        evidence.dropped_stale
   )
     problems.push("reload sources do not balance");
   return problems;
@@ -1255,6 +1519,10 @@ export async function runG8re(
   const id = idRound(g);
   checks.push(...id.checks.map((c) => selectedCheck(c, g, "id")));
   report.id = id.report;
-  checks.push(reloadSourceCheck(g), ...textureReloadChecks(g));
+  checks.push(
+    reloadSourceCheck(g),
+    ...textureReloadChecks(g),
+    ...warmChecks(g),
+  );
   return { checks, report };
 }

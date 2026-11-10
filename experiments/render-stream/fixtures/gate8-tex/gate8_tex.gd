@@ -28,6 +28,7 @@ extends Node
 ##   RS_FIXTURE_START_FRAME  S >= 1, default 1
 ##   RS_FIXTURE_STEP_FRAMES  N >= 8, default 10
 ##   RS_FIXTURE_QUIT_FRAME   >= S+N+11 (the default)
+##   RS_FIXTURE_WARM_PROBE   1: update/draw one held texture and free another on re-arm
 
 const Textures := preload("res://textures.gd")
 const Payload := preload("res://payload.gd")
@@ -80,6 +81,10 @@ var _imagetexture: ImageTexture
 var _imagetexture_expected: Dictionary = {}
 var _ctex_dir: String = ""
 var _ctex_swap: bool = false
+var _warm_upd: ImageTexture
+var _warm_free: ImageTexture
+var _warm_drawer: Sprite2D
+var _warm_probe_done: bool = false
 
 
 func _ready() -> void:
@@ -122,6 +127,18 @@ func _ready() -> void:
 		_imagetexture_expected = _image_probe(image)
 		_imagetexture = ImageTexture.create_from_image(image)
 		_held.append(_imagetexture)
+	if OS.get_environment("RS_FIXTURE_WARM_PROBE") == "1":
+		var update_image: Image = Image.create(16, 16, false, Image.FORMAT_RGBA8)
+		update_image.fill(Color(0.2, 0.4, 0.6, 1))
+		_warm_upd = ImageTexture.create_from_image(update_image)
+		var free_image: Image = Image.create(16, 16, false, Image.FORMAT_RGBA8)
+		free_image.fill(Color(0.9, 0.1, 0.1, 1))
+		_warm_free = ImageTexture.create_from_image(free_image)
+		_held.append(_warm_upd)
+		_held.append(_warm_free)
+		_warm_drawer = Sprite2D.new()
+		_warm_drawer.position = Vector2(600, 300)
+		add_child(_warm_drawer)
 	_apply_family("desktop")
 	_log_step(0, 1, _start_frame + SETTLE_OFFSET)
 	print("[fixture] gate8-tex ready: S=%d N=%d quit=%d source=%s" % [_start_frame, _step_frames, _quit_frame, _source])
@@ -150,6 +167,7 @@ func _process(_delta: float) -> void:
 		_apply_family("mobile")
 		_log_step(apply_step, _frame, _frame + SETTLE_OFFSET)
 	_maybe_idle_action()
+	_maybe_warm_probe()
 	var settle_step: int = _step_at(_frame, SETTLE_OFFSET)
 	if settle_step >= 0:
 		_maybe_take_shot("step-%d.png" % settle_step)
@@ -388,6 +406,26 @@ func _maybe_idle_action() -> void:
 	if _ctex_swap:
 		_copy_ctex("alpha_mip")
 		_event({"event": "ctex-swap", "frame": _frame, "from": "alpha_mip", "to": "opaque"})
+
+
+func _maybe_warm_probe() -> void:
+	if _warm_probe_done or _warm_upd == null or not _idle_action_done:
+		return
+	if not Engine.has_singleton("RenderStreamCapture"):
+		return
+	var capture: Object = Engine.get_singleton("RenderStreamCapture")
+	var state: Dictionary = capture.call("state")
+	var name: String = state["state"]
+	if name != "armed":
+		return
+	_warm_probe_done = true
+	var image: Image = Image.create(16, 16, false, Image.FORMAT_RGBA8)
+	image.fill(Color(0.1, 0.8, 0.3, 1))
+	_warm_upd.update(image)
+	_warm_drawer.texture = _warm_upd
+	_held.erase(_warm_free)
+	_warm_free = null
+	_event({"event": "warm-probe", "frame": _frame})
 
 
 func _int_env(name: String, fallback: int, minimum: int) -> int:

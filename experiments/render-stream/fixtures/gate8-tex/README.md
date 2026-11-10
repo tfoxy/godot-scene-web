@@ -57,17 +57,23 @@ All controls below are optional; actions default off.
 | Environment variable                           | Behavior                                                                                                                                                                                             |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `RS_FIXTURE_STEP1_ROWS=abcd` (default) or `cd` | Swap all rows at step 1, or only C/D while A/B retain desktop textures.                                                                                                                              |
-| `RS_FIXTURE_EVENT_LOG`                         | Absolute JSONL output path for `idle-action`, `evict`, `imagetexture-probe` and `ctex-swap` events. `steps.jsonl` is unchanged.                                                                      |
+| `RS_FIXTURE_EVENT_LOG`                         | Absolute JSONL output path for `idle-action`, `evict`, `imagetexture-probe`, `ctex-swap` and `warm-probe` events. `steps.jsonl` is unchanged.                                                        |
 | `RS_FIXTURE_IDLE_ACTION_FRAME`                 | Run the idle action once at this frame. Otherwise use the first frame after step 1 observed in standby, after an earlier frame observed armed. Run A uses run B's logged frame.                      |
 | `RS_FIXTURE_EVICT=1`                           | Hold step-1 mobile textures and shrink each compressed dummy Image to 1×1 L8 at the idle action, including the undrawn HDR cell.                                                                     |
 | `RS_FIXTURE_IMAGETEXTURE=1`                    | Create and hold an undrawn 64×64 DXT1 image from 256 deterministic blocks at step 0. Log its expected format, dimensions, mipmaps and SHA-256 before upload, and probe its Image at the idle action. |
 | `RS_FIXTURE_CTEX_DIR`                          | Absolute, runner-created directory. Copy desktop `opaque` to `swap.ctex` there and load that copy with `CACHE_MODE_IGNORE`.                                                                          |
 | `RS_FIXTURE_CTEX_SWAP=1`                       | Replace that private copy with desktop `alpha_mip` at the idle action. Requires `RS_FIXTURE_CTEX_DIR`; shared imports are never written.                                                             |
+| `RS_FIXTURE_WARM_PROBE=1`                      | Create two held, undrawn 16×16 RGBA8 ImageTextures. On the first armed frame after the idle action, update and draw one at (600, 300), free the other and log one `warm-probe` event.                |
 
 The runner's `G8RE_ONLY=tex-htr,tex-htr-faults` selects the /11 passthrough HTR pair
 and the B-only `reload-off`, `swap`, `swap-skip-verify` and `skip-htr-restore` legs.
 `G8RE_VIEWER_PROTOCOL` selects the pair's viewer protocol (default 8; these legs use 11).
 The fault knobs are `GRC_ADOPT_FAULT=reload-off`, `reload-skip-verify` and `skip-htr-restore`.
+
+`G8RE_ONLY=tex-warm` selects two B-only /11 legs on the same HTR schedule with
+`GRC_TEXTURE_WORKERS=2` and `RS_FIXTURE_WARM_PROBE=1`: `tex-warm/workers` warms normally;
+`tex-warm/warm-off` uses the `GRC_ADOPT_FAULT=warm-off` fault knob as a negative test.
+The update supersedes its warmed body and the free discards the other warmed entry; neither is stale.
 
 `reload-sources-balanced` checks every final `reload.json`: `sources_balanced` must be true,
 and `reloaded` must equal `adopted_from_reload + dropped_unreferenced + dropped_freed`.

@@ -122,13 +122,29 @@ bool TextureWorkerPool::running() const {
   return running_ && !stopping_;
 }
 
-bool TextureWorkerPool::submit(std::function<void()> work) {
+bool TextureWorkerPool::submit(std::function<void()> work, bool pool_delay) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!running_ || stopping_) {
       return false;
     }
-    queue_.push_back(std::move(work));
+    queue_.push_back({std::move(work), pool_delay});
+    ++stats_.submitted;
+    if (queue_.size() > stats_.max_queued) {
+      stats_.max_queued = queue_.size();
+    }
+  }
+  work_cv_.notify_one();
+  return true;
+}
+
+bool TextureWorkerPool::submit_front(std::function<void()> work, bool pool_delay) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!running_ || stopping_) {
+      return false;
+    }
+    queue_.push_front({std::move(work), pool_delay});
     ++stats_.submitted;
     if (queue_.size() > stats_.max_queued) {
       stats_.max_queued = queue_.size();
@@ -165,7 +181,7 @@ void TextureWorkerPool::stop() {
 }
 
 std::size_t TextureWorkerPool::discard_queued() {
-  std::deque<std::function<void()>> dropped;
+  std::deque<QueueEntry> dropped;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     dropped.swap(queue_);
@@ -197,10 +213,10 @@ void TextureWorkerPool::run() {
       if (queue_.empty()) {
         return;  // stopping and drained
       }
-      work = std::move(queue_.front());
+      work = std::move(queue_.front().work);
+      delay_ms = queue_.front().pool_delay ? delay_ms_ : 0;
       queue_.pop_front();
       ++in_flight_;
-      delay_ms = delay_ms_;
     }
     const std::uint64_t t0 = now_ns();
     if (delay_ms != 0) {

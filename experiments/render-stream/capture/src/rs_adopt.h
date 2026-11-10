@@ -84,6 +84,8 @@
 #ifndef GRC_RS_ADOPT_H
 #define GRC_RS_ADOPT_H
 
+#include "rs_warm.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -278,6 +280,7 @@ enum class AdoptFault : std::uint8_t {
   ReloadOff,
   ReloadSkipVerify,
   SkipHtrRestore,
+  WarmOff,
 };
 
 // Parses GRC_ADOPT_FAULT (null or "" -> None). False with `error` set for any other value, or
@@ -335,6 +338,14 @@ void adopt_resources_begin(AdoptFault fault, bool dummy_host = false);
 void adopt_resources_end();
 // Main-thread arm pass, before the walk can name textures. Evidence is per arm.
 ReloadStats adopt_reload_at_arm();
+WarmStats adopt_warm_at_arm(std::uint64_t arm_t0_ns, const std::string &workers);
+bool adopt_warm_poll();
+WarmStats adopt_warm_stats();
+void adopt_warm_cancel();
+WarmStats adopt_warm_finish();
+std::string adopt_warm_json(std::uint64_t arm_index, std::uint64_t frame);
+std::size_t adopt_warm_entries_held();
+std::uint64_t adopt_warm_cache_bytes();
 ReloadStats adopt_reload_finish();
 // Restore only released path-less textures, before the mirror is freed at disarm.
 // Shutdown skips every engine call once the root has been finalized.

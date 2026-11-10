@@ -24,6 +24,7 @@ import {
   faultReloadOffCaught,
   faultSkipRestoreCaught,
   faultSkipVerifyCaught,
+  faultWarmOffProblems,
   imageTextureProbe,
   imageTextureRestored,
   instanceRound,
@@ -41,6 +42,9 @@ import {
   type TextureEvent,
   type TextureReloadEvidence,
   type TextureTeardown,
+  type WarmEvidence,
+  warmCompleteProblems,
+  warmInvalidationProblems,
 } from "../lib/gate8-rearm-checks";
 import type {
   ResolvedItem,
@@ -556,6 +560,7 @@ assert(
     adopted_from_reload: 12,
     dropped_unreferenced: 0,
     dropped_freed: 1,
+    dropped_stale: 0,
   };
   assert(
     reloadSourcesBalanced(honest).length === 0,
@@ -569,7 +574,14 @@ assert(
     }).length === 0,
     "reload sources: unreferenced source balances",
   );
+  assert(
+    reloadSourcesBalanced({ ...honest, dropped_freed: 0, dropped_stale: 1 })
+      .length === 0,
+    "reload sources: stale source balances",
+  );
   for (const bad of [
+    { ...honest, dropped_stale: 1 },
+    { ...honest, dropped_stale: -1, dropped_freed: 2 },
     null,
     { ...honest, final: false },
     { ...honest, sources_balanced: false },
@@ -603,6 +615,7 @@ assert(
     adopted_from_reload: 12,
     dropped_unreferenced: 0,
     dropped_freed: 1,
+    dropped_stale: 0,
     refused: {
       reload_unsafe: 0,
       released_no_path: 0,
@@ -886,6 +899,158 @@ assert(
     ),
     "non-L8 negative probe fails",
   );
+}
+
+// Warm judges: an honest shape and a negative shape for every predicate.
+{
+  const honest: WarmEvidence = {
+    final: true,
+    skipped: null,
+    warm_balanced: true,
+    held_entries: 0,
+    decode_at_reference: 0,
+    discarded_stale: 0,
+    mispredicts: 0,
+    reload_sources_left: 0,
+    from_reload: 13,
+    served_reload: 12,
+    warm_complete: true,
+    jobs: 18,
+    arm_to_warm_complete_ms: 8,
+    reload_us: 2000,
+    discarded_superseded: 1,
+    discarded_freed: 1,
+    queued: 20,
+  };
+  const reload = {
+    final: true,
+    sources_balanced: true,
+    reloaded: 13,
+    adopted_from_reload: 12,
+    dropped_freed: 1,
+    dropped_unreferenced: 0,
+    dropped_stale: 0,
+  };
+  assert(
+    warmCompleteProblems(honest, [13, 12], true).length === 0,
+    "warm workers pass",
+  );
+  assert(
+    warmCompleteProblems(
+      { ...honest, from_reload: 7, served_reload: 6 },
+      [7, 6],
+    ).length === 0,
+    "warm once passes",
+  );
+  for (const bad of [
+    null,
+    ...[
+      { skipped: "fault-warm-off" },
+      { final: false },
+      { warm_balanced: false },
+      { held_entries: 1 },
+      { decode_at_reference: 1 },
+      { discarded_stale: 1 },
+      { mispredicts: 1 },
+      { reload_sources_left: 1 },
+      { from_reload: 12 },
+      { served_reload: 11 },
+      { warm_complete: false },
+      { jobs: 0 },
+      { jobs: Number.NaN },
+      { arm_to_warm_complete_ms: null },
+      { arm_to_warm_complete_ms: Number.NaN },
+      { arm_to_warm_complete_ms: 1 },
+      { reload_us: Number.NaN },
+      { reload_us: -1 },
+    ].map((patch) => ({ ...honest, ...patch })),
+  ])
+    assert(
+      warmCompleteProblems(bad, [13, 12], true).length > 0,
+      "invalid warm completion fails",
+    );
+  assert(
+    warmCompleteProblems({
+      ...honest,
+      warm_complete: false,
+      jobs: 0,
+      arm_to_warm_complete_ms: null,
+    }).length === 0,
+    "non-worker arm needs no worker completion",
+  );
+  const events = [{ event: "warm-probe", frame: 45 }];
+  assert(
+    warmInvalidationProblems(honest, events, 45).length === 0,
+    "probe at K2 passes",
+  );
+  assert(
+    warmInvalidationProblems(honest, events, 44).length === 0,
+    "probe after K2 passes",
+  );
+  for (const bad of [
+    null,
+    ...[
+      { final: false },
+      { discarded_superseded: 0 },
+      { discarded_superseded: 2 },
+      { discarded_freed: 0 },
+      { discarded_freed: Number.NaN },
+      { discarded_stale: 1 },
+    ].map((patch) => ({ ...honest, ...patch })),
+  ])
+    assert(
+      warmInvalidationProblems(bad, events, 45).length > 0,
+      "invalid warm discard fails",
+    );
+  for (const bad of [
+    [],
+    [{ event: "warm-probe", frame: 44 }],
+    [{ event: "other", frame: 45 }],
+    [{ event: "warm-probe", frame: Number.NaN }],
+  ])
+    assert(
+      warmInvalidationProblems(honest, bad, 45).length > 0,
+      "missing/early probe fails",
+    );
+  for (const k2 of [null, Number.NaN])
+    assert(
+      warmInvalidationProblems(honest, events, k2).length > 0,
+      "missing K2 fails",
+    );
+  const off = {
+    ...honest,
+    skipped: "fault-warm-off",
+    queued: 0,
+    decode_at_reference: 12,
+  };
+  assert(
+    faultWarmOffProblems(off, reload).length === 0,
+    "warm-off caught by decode count",
+  );
+  for (const bad of [
+    null,
+    ...[
+      { final: false },
+      { skipped: null },
+      { queued: 1 },
+      { decode_at_reference: 11 },
+      { decode_at_reference: Number.NaN },
+    ].map((patch) => ({ ...off, ...patch })),
+  ])
+    assert(
+      faultWarmOffProblems(bad, reload).length > 0,
+      "invalid warm-off evidence fails",
+    );
+  for (const bad of [
+    null,
+    { ...reload, adopted_from_reload: 11, dropped_freed: 2 },
+    { ...reload, sources_balanced: false },
+    { ...reload, dropped_freed: 0 },
+  ])
+    assert(
+      faultWarmOffProblems(off, bad).length > 0,
+      "invalid warm-off reload fails",
+    );
 }
 
 if (failures > 0) {

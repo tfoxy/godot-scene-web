@@ -6,6 +6,7 @@
 // mirror's configurable caps, and the seam's refusal without an engine.
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <map>
 #include <memory>
@@ -386,6 +387,8 @@ std::vector<CanvasTextureHookCall> g_ctex_hook_calls;
 std::vector<uint64_t> g_multimesh_hook_calls;
 bool g_test_standby = false;
 bool g_reload_scope_allowed = false;
+std::function<void()> g_warm_prepare_probe;
+std::function<void()> g_warm_free_probe;
 bool g_reload_adopt = false;
 void *g_reload_adopt_image = nullptr;
 int g_guard_entries = 0;
@@ -404,6 +407,11 @@ std::vector<std::pair<uint64_t, grc::rs::Mirror::ParticlesAdopt>> g_particles_ho
 
 // rs_adopt.cpp calls the hooks' copy path through these; the engine side never runs here.
 namespace grc {
+namespace rs {
+void adopt_test_before_warm_free_classify() {
+  if (g_warm_free_probe) g_warm_free_probe();
+}
+}
 OffmainGuard::OffmainGuard(bool, const char *) { ++g_guard_entries; }
 OffmainGuard::~OffmainGuard() {}
 bool hooks_offmain_standby() { return g_test_standby; }
@@ -417,6 +425,25 @@ bool hooks_adopt_texture(uint64_t, void *image, rs2::AdoptedContent content, con
   }
   return false;
 }
+bool hooks_warm_texture(void *image, rs::WarmBody *out) {
+  if (image == nullptr) return false;
+  if (g_warm_prepare_probe) g_warm_prepare_probe();
+  auto bytes = std::make_shared<rs::PayloadBytes>();
+  bytes->resize(sizeof(image));
+  std::memcpy(bytes->data(), &image, sizeof(image));
+  out->copy.status = "ok";
+  out->bytes = std::move(bytes);
+  return true;
+}
+bool hooks_adopt_texture_warm(uint64_t rid, rs::WarmBody body, rs2::AdoptedContent content,
+                              const char *source, bool *decoded) {
+  void *image = nullptr;
+  if (body.bytes != nullptr && body.bytes->size() == sizeof(image)) {
+    std::memcpy(&image, body.bytes->data(), sizeof(image));
+  }
+  return hooks_adopt_texture(rid, image, content, source, decoded);
+}
+bool hooks_warm_promote(const std::shared_ptr<rs::WarmTaskBase> &) { return false; }
 bool hooks_adopt_mesh(uint64_t, const std::vector<rs::AdoptSurface> &, const float[6]) {
   return false;
 }
@@ -1587,7 +1614,9 @@ void test_reload_sources() {
     if (out) std::memcpy(out, text.data(), std::min<size_t>(n, text.size()));
     return text.size();
   };
-  for (int action = 0; action < 5; ++action) {
+  for (int scenario = 0; scenario < 14; ++scenario) {
+    const bool warm = scenario >= 5;
+    const int action = scenario == 10 ? 0 : scenario >= 12 ? 2 : scenario % 5;
     constexpr uint64_t rid = 0xabcd1234, temp = 0xabcd1235;
     grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
     grc::rs::registry_note_texture_create(rid, {64, 64, 17, false, true}, true);
@@ -1613,10 +1642,19 @@ void test_reload_sources() {
     grc::rs::mirror_enable(true);
     grc::rs::adopt_resources_begin(grc::rs::AdoptFault::None, true);
     g_reload_scope_allowed = true;
+    g_reload_adopt_image = nullptr;
     const auto stats = grc::rs::adopt_reload_at_arm();
     check(stats.reloaded == 1 && stats.held_bytes == 2048 && stats.refused.total() == 0 &&
               stats.temp_outlived == 0 && grc::rs::adopt_reload_sources_held() == 1,
           "reload: verified source retained with compressed byte accounting");
+    if (warm) {
+      if (scenario == 10) grc::rs::registry_note_free(rid);
+      const auto queued = grc::rs::adopt_warm_at_arm(grc::rs::warm_now_ns(), "sync");
+      check(queued.queued == 1 && queued.from_reload == 1 && queued.reload_sources_left == 0 &&
+                queued.warm_complete && grc::rs::adopt_reload_sources_held() == 0,
+            "warm reload: registered and residual sources are prepared and released at the arm");
+      check(g_reload_adopt_image == nullptr, "warm reload: preparing a body does not publish it");
+    }
     if (action == 0) {
       g_reload_adopt = true;
       grc::rs::materialize(rid, grc::rs::RefKind::Texture);
@@ -1626,14 +1664,43 @@ void test_reload_sources() {
             "reload: source entry marked adopted");
       g_reload_adopt = false;
     } else if (action == 1) {
+      const bool superseded = scenario == 11;
+      if (superseded) {
+        grc::rs::PayloadCopy copy;
+        copy.status = "ok";
+        grc::rs::mirror_instance().texture_2d_create(rid, copy, nullptr, 0);
+      }
+      check(grc::rs::mirror_instance().knows_texture(rid) == superseded,
+            "warm free: mirror distinguishes an update adoption from an unknown texture");
       grc::rs::adopt_resource_freed(rid);
       grc::rs::adopt_resource_freed(rid);
+      if (warm) grc::rs::adopt_warm_finish();
       grc::rs::adopt_reload_finish();
       check(grc::rs::adopt_reload_json(1, 1).find("\"dropped_freed\": 1") != std::string::npos,
             "reload: free counts a dropped source exactly once");
     } else if (action == 2) {
+      if (scenario == 12) {
+        g_warm_free_probe = [&] {
+          const auto finished = grc::rs::adopt_warm_finish();
+          const auto reload = grc::rs::adopt_reload_finish();
+          check(finished.final && finished.warm_balanced && finished.dropped_unreferenced == 1 &&
+                    reload.sources_balanced && reload.dropped_unreferenced == 1,
+                "warm free interleaving: finish sees every removed entry classified");
+        };
+        grc::rs::adopt_resource_freed(rid);
+        g_warm_free_probe = {};
+      }
+      if (warm) grc::rs::adopt_warm_finish();
       const auto final = grc::rs::adopt_reload_finish();
       check(final.final && final.dropped_unreferenced == 1, "reload: finish counts unreferenced source");
+      if (scenario >= 12) {
+        grc::rs::adopt_resource_freed(rid);
+        const auto after = grc::rs::adopt_warm_stats();
+        const auto reload = grc::rs::adopt_reload_finish();
+        check(after.final && after.warm_balanced && after.dropped_unreferenced == 1 &&
+                  after.discarded_freed == 0 && reload.sources_balanced && reload.dropped_freed == 0,
+              "warm finish then free: no late warm or reload count");
+      }
     } else if (action == 3) grc::rs::adopt_release();
     else {
       g_reload_adopt = false;
@@ -1646,6 +1713,16 @@ void test_reload_sources() {
                 grc::rs::adopt_reload_json(1, 1).find("\"adopted\": true") == std::string::npos,
             "reload: declined adoption does not mark source adopted");
     }
+    if (warm && action != 3) {
+      const auto final = grc::rs::adopt_warm_finish();
+      check(final.warm_balanced && final.held_entries == 0 && final.decode_at_reference == 0,
+            "warm reload: every consumed, declined, freed or unreferenced entry balances");
+      check(final.served_reload == (action == 0 ? 1u : 0u) &&
+                final.discarded_freed == (action == 1 && scenario != 11 ? 1u : 0u) &&
+                final.dropped_unreferenced == (action == 2 ? 1u : 0u) &&
+                final.discarded_superseded == (action == 4 || scenario == 11 ? 1u : 0u),
+            "warm reload: first reference and lifetime paths classify exactly once");
+    }
     check(grc::rs::adopt_reload_sources_held() == 0, "reload: every consume/teardown path releases source");
     grc::rs::adopt_reload_finish();
     check(grc::rs::adopt_reload_json(1, 1).find("\"sources_balanced\": true") != std::string::npos,
@@ -1657,6 +1734,89 @@ void test_reload_sources() {
   g_reload_scope_allowed = false;
   grc::g_iface = saved;
   grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
+}
+
+
+void test_warm_free_during_pass() {
+  auto &w = fake::world();
+  constexpr uint64_t first = 0xcafe1000, second = first + 1;
+  grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
+  for (const auto rid : {first, second})
+    grc::rs::registry_note_texture_create(rid, {16, 16, 5, false, true}, false);
+  auto &image = w.make({"Object", "Image"});
+  w.singletons["RenderingServer"] = &w.make({"Object", "RenderingServer"});
+  std::vector<uint64_t> reads;
+  w.overrides["RenderingServer.texture_2d_get"] = [&](fake::Object *, FakeArgs args, void *ret) {
+    reads.push_back(fake::arg_u64(args, 0));
+    fake::put_object(ret, &image);
+  };
+  int prepared = 0;
+  g_warm_prepare_probe = [&] {
+    if (++prepared == 2) grc::rs::adopt_resource_freed(reads.front());
+  };
+  grc::rs::mirror_enable(false); grc::rs::mirror_enable(true);
+  grc::rs::adopt_resources_begin(grc::rs::AdoptFault::None, false);
+  const auto queued = grc::rs::adopt_warm_at_arm(grc::rs::warm_now_ns(), "sync");
+  g_warm_prepare_probe = {};
+  check(queued.discarded_freed == 1, "warm pass: preserves a free during preparation");
+  const auto final = grc::rs::adopt_warm_finish();
+  check(final.final && final.warm_balanced && final.queued == 2,
+        "warm pass: concurrent free and finish balance both queued textures");
+  grc::rs::adopt_resources_end(); grc::rs::adopt_release();
+  grc::rs::registry_configure(false, grc::rs::RegistryFault::None); w.reset_calls();
+}
+
+void test_warm_census_revalidation() {
+  auto &w = fake::world();
+  const auto saved = grc::g_iface;
+  // One fake packed String: the census reads its text through string_to_utf8_chars.
+  static uint64_t packed[] = {1, 1, 0};
+  grc::g_iface.string_to_utf8_chars = [](GDExtensionConstStringPtr, char *out, GDExtensionInt n) -> GDExtensionInt {
+    const std::string text = "cached.ctex";
+    if (out) std::memcpy(out, text.data(), std::min<size_t>(n, text.size()));
+    return text.size();
+  };
+  for (int state = 0; state < 4; ++state) {
+    constexpr uint64_t rid = 0xcafe2000;
+    grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
+    auto &resource = w.make({"Object", "Resource", "CompressedTexture2D"}, rid);
+    auto &wrong_class = w.make({"Object", "Resource"}, rid);
+    auto &image = w.make({"Object", "Image"});
+    w.singletons["ResourceLoader"] = &w.make({"Object", "ResourceLoader"});
+    w.singletons["RenderingServer"] = &w.make({"Object", "RenderingServer"});
+    bool warming = false;
+    w.overrides["ResourceLoader.list_directory"] = [](fake::Object *, FakeArgs, void *ret) {
+      const void *data = packed + 2;
+      std::memcpy(static_cast<unsigned char *>(ret) + 8, &data, sizeof(data));
+    };
+    w.overrides["ResourceLoader.has_cached"] = [](fake::Object *, FakeArgs, void *ret) {
+      *static_cast<uint8_t *>(ret) = 1;
+    };
+    w.overrides["ResourceLoader.get_cached_ref"] = [&](fake::Object *, FakeArgs, void *ret) {
+      fake::put_object(ret, warming && state == 1 ? nullptr : warming && state == 2 ? &wrong_class : &resource);
+    };
+    w.overrides["RenderingServer.texture_2d_get"] = [&](fake::Object *, FakeArgs, void *ret) {
+      fake::put_object(ret, &image);
+    };
+    w.overrides["Image.get_width"] = [](fake::Object *, FakeArgs, void *ret) { fake::put_int(ret, 16); };
+    w.overrides["Image.get_height"] = w.overrides["Image.get_width"];
+    grc::rs::mirror_enable(false); grc::rs::mirror_enable(true);
+    grc::rs::adopt_resources_begin(grc::rs::AdoptFault::None, true);
+    grc::rs::adopt_reload_at_arm();
+    const int before = w.count("RenderingServer.texture_2d_get");
+    warming = true;
+    if (state == 3) resource.rid = rid + 1;
+    const auto stats = grc::rs::adopt_warm_at_arm(grc::rs::warm_now_ns(), "sync");
+    check(stats.scanned.census_unregistered == 1, "warm census: scans the unregistered cached RID");
+    check(w.count("RenderingServer.texture_2d_get") - before == (state == 0 ? 1 : 0),
+          "warm census: getter requires a cached resource of matching class and RID");
+    check(stats.from_cache == (state == 0 ? 1u : 0u) && stats.skipped_by.no_image == (state == 0 ? 0u : 1u),
+          "warm census: missing or changed resource is counted without warming");
+    check(grc::rs::adopt_warm_finish().warm_balanced, "warm census: entries balance after revalidation");
+    grc::rs::adopt_resources_end(); grc::rs::adopt_release(); w.reset_calls();
+  }
+  grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
+  grc::g_iface = saved;
 }
 
 // A placeholder discovered after the arm pass must never be published as the original texture.
@@ -1802,6 +1962,8 @@ int main() {
   test_reload_materialize_guards();
   test_reload_sources();
   test_htr_restore();
+  test_warm_free_during_pass();
+  test_warm_census_revalidation();
   std::printf("rs_adopt_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

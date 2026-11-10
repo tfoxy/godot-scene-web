@@ -162,7 +162,11 @@ class TextureWorkerPool {
 
   bool start(int workers, std::uint64_t delay_ms);
   bool running() const;
-  bool submit(std::function<void()> work);
+  bool submit(std::function<void()> work, bool pool_delay = true);
+  // Queue referenced work ahead of work that has not started. Same refusal and stats as submit.
+  bool submit_front(std::function<void()> work, bool pool_delay = true);
+  // Configured before workers start; unchanged until stop() joins them.
+  std::uint64_t delay_ms() const { return delay_ms_; }
   void drain();
   void stop();
   // G8ku: drops every job not yet started (returns how many), so a following stop() waits only
@@ -175,7 +179,7 @@ class TextureWorkerPool {
     std::uint64_t submitted = 0;
     std::uint64_t completed = 0;
     std::uint64_t max_queued = 0;    // the deepest the queue got (jobs not yet started)
-    std::uint64_t busy_ns = 0;       // summed worker time inside jobs (delay excluded)
+    std::uint64_t busy_ns = 0;       // summed worker time inside jobs (pool delay excluded)
     std::uint64_t max_job_ns = 0;
   };
   Stats stats() const;
@@ -187,7 +191,11 @@ class TextureWorkerPool {
   mutable std::mutex mutex_;
   std::condition_variable work_cv_;
   std::condition_variable idle_cv_;
-  std::deque<std::function<void()>> queue_;
+  struct QueueEntry {
+    std::function<void()> work;
+    bool pool_delay = true;
+  };
+  std::deque<QueueEntry> queue_;
   std::vector<std::thread> threads_;
   bool running_ = false;
   bool stopping_ = false;

@@ -133,6 +133,7 @@ std::string reload_json(const ReloadStats &s, const std::vector<ReloadEntry> &en
   count(j, "adopted_from_reload", s.adopted_from_reload);
   count(j, "dropped_unreferenced", s.dropped_unreferenced);
   count(j, "dropped_freed", s.dropped_freed);
+  count(j, "dropped_stale", s.dropped_stale);
   if (s.final) j.field("sources_balanced", s.sources_balanced);
   count(j, "held_bytes", s.held_bytes);
   j.key("refused").object_begin();

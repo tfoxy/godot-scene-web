@@ -353,6 +353,7 @@ struct State {
 // The render-stream/2 file publication (G1b2, G2b2). `status` is result.json
 // `stream.status`: off | open | closed | refused | open-failed.
 struct Stream {
+  uint64_t arm_t0_ns = 0;
   std::string path;        // GRC_STREAM_OUT (full sink); empty when unset
   std::string patch_path;  // GRC_STREAM_PATCH_OUT (patch sink); empty when unset
   std::string status = "off";
@@ -2302,6 +2303,7 @@ void rearm_record_min_size(void *window, const int32_t set[2]) {
 }
 
 void stream_start() {
+  g_stream.arm_t0_ns = monotonic_ns();
   // registration closes at the arm, whatever the
   // stream and live do next; a later grc_carrier_register returns -1 (`carrier-late`). Whatever
   // the set does not take is destroyed when this returns.
@@ -3208,6 +3210,13 @@ void stream_start() {
              std::to_string(reload.reloaded) + " refused=" + std::to_string(reload.refused.total()) +
              " released_no_path=" + std::to_string(reload.refused.released_no_path) +
              " us=" + std::to_string(reload.reload_us));
+    const auto warm = rs::adopt_warm_at_arm(g_stream.arm_t0_ns, rs::texture_workers_name(g_stream.workers));
+    emit("warm.json", rs::adopt_warm_json(g_rearm.arm_index, adopt_config.arm_frame));
+    log_line("warm: queued=" + std::to_string(warm.queued) + " (reload " +
+             std::to_string(warm.from_reload) + ", registry " + std::to_string(warm.from_registry) +
+             ", cache " + std::to_string(warm.from_cache) + ") jobs=" + std::to_string(warm.jobs) +
+             " sync=" + std::to_string(warm.sync_coded) + " skipped=" +
+             (warm.skipped.empty() ? "-" : warm.skipped) + " us=" + std::to_string(warm.warm_queue_us));
     g_stream.adopt_stats = rs::adopt_at_arm(adopt_config);
     session.adoption.present = true;
     session.adoption.frame = static_cast<int32_t>(adopt_config.arm_frame);
@@ -3962,6 +3971,7 @@ void workers_finish() {
   if (!g_stream.workers_started) {
     return;
   }
+  rs::adopt_warm_cancel();
   rs::texture_worker_pool().stop();
   g_stream.workers_started = false;
   rs::mirror_instance().set_publish_pending(false);
@@ -4117,6 +4127,10 @@ bool stream_finish_main(rs2::EndReason reason) {
   workers_finish();
   encoders_finish();
   emit_at_rest();  // TDR: before anything below lets a body go
+  if (rs::adopt_resources_active()) {
+    rs::adopt_warm_finish();
+    emit("warm.json", rs::adopt_warm_json(g_rearm.arm_index, g_state.frames_total));
+  }
   rs::mirror_enable(false);
   if (rs::adopt_resources_active()) {
     rs::adopt_reload_finish();
@@ -4818,6 +4832,8 @@ void api_arm_rollback(const std::string &reason) {
     workers_finish();
     encoders_finish();
     if (rs::adopt_resources_active()) {
+      rs::adopt_warm_finish();
+      emit("warm.json", rs::adopt_warm_json(g_rearm.arm_index, g_state.frames_total));
       rs::adopt_reload_finish();
       emit("reload.json", rs::adopt_reload_json(g_rearm.arm_index, g_state.frames_total));
       rs::adopt_resources_end();
@@ -5526,7 +5542,8 @@ void accounting_fields(JsonWriter *json) {
   }
   json->field("served_sets", served_sets);
   json->field("served_bytes", served_bytes);
-  json->field("warm_cache_bytes", static_cast<int64_t>(0));  // LS5's warm cache does not exist yet
+  json->field("warm_cache_bytes", static_cast<int64_t>(rs::adopt_warm_cache_bytes()));
+  json->field("warm_entries", static_cast<int64_t>(rs::adopt_warm_entries_held()));
   json->field("texture_workers_running", rs::texture_worker_pool().running());
   json->field("encode_workers_running", rs::texture_encode_pool().running());
   json->field("hubs", static_cast<int64_t>((g_live.hub != nullptr ? 1 : 0) + g_rearm.kept_hubs.size()));
@@ -5770,6 +5787,7 @@ void api_teardown_advance(bool blocking) {
       if (!t.pool_pending && g_stream.workers_started) {
         t.callback_phase = "pool-wait";
         t.pool_pending = true;
+        rs::adopt_warm_cancel();
         t.pool.run([] { rs::texture_worker_pool().stop(); }, inline_joins);
       }
       if (t.pool_pending) {
@@ -6196,6 +6214,13 @@ void on_frame() {
     // now, dated this frame, before the transaction is formed: off-main references, then G8m's
     // material and shader references, then PM5's process-material keying.
     rs::adopt_frame_drain();
+    if (rs::adopt_warm_poll()) {
+      emit("warm.json", rs::adopt_warm_json(g_rearm.arm_index, g_state.frames_total));
+      const auto warm = rs::adopt_warm_stats();
+      log_line("warm: complete ms=" + std::to_string(*warm.arm_to_warm_complete_ms) +
+               " cache_bytes=" + std::to_string(warm.warm_cache_bytes) +
+               " completed=" + std::to_string(warm.completed) + " promoted=" + std::to_string(warm.promoted));
+    }
   }
   if (g_state.armed && g_state.pump_connected) {
     // PM5 (GRC_PREDRAW_PUMP=1): before the snapshot, frame_pre_draw when the engine did not emit
@@ -6267,6 +6292,7 @@ void on_shutdown() {
   log_line("shutdown: root-finalized");
   api_teardown_finish_blocking();
   stream_finish(rs2::EndReason::Shutdown);
+  rs::adopt_warm_cancel();
   rs::texture_worker_pool().stop();  // G8kw: also when the stream never opened after the pool ran
   live_linger(true);  // a linger still running after a disarm ends here
   do_disarm("shutdown");
@@ -6422,6 +6448,7 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   // The shutdown callback normally gets here first; this is the backstop for an
   // unload that happens without it.
   stream_finish(rs2::EndReason::Shutdown);
+  rs::adopt_warm_cancel();
   rs::texture_worker_pool().stop();  // G8kw: no worker (or engine Image) outlives the extension
   live_linger(true);
   do_disarm("deinitialize");
