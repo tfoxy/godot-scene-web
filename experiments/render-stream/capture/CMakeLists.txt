@@ -846,3 +846,57 @@ add_executable(rs_warm_test test/rs_warm_test.cpp src/rs_warm.cpp src/report.cpp
 target_include_directories(rs_warm_test PRIVATE src)
 target_link_libraries(rs_warm_test PRIVATE grc_warnings grc_platform Threads::Threads)
 add_test(NAME rs_warm COMMAND rs_warm_test)
+
+# Audit the copied Windows declarations against CMake's evaluated Linux target properties.
+# Bracket quoting preserves definitions containing quotes and paths without expanding them again.
+set(GRC_LINUX_TEST_LISTS "${CMAKE_CURRENT_BINARY_DIR}/windows-test-linux-lists.cmake")
+file(WRITE "${GRC_LINUX_TEST_LISTS}" "")
+function(grc_write_linux_test_list name value)
+  set(equals "=")
+  string(FIND "${value}" "]${equals}]" closing)
+  while(NOT closing EQUAL -1)
+    string(APPEND equals "=")
+    string(FIND "${value}" "]${equals}]" closing)
+  endwhile()
+  file(APPEND "${GRC_LINUX_TEST_LISTS}" "set(${name} [${equals}[${value}]${equals}])\n")
+endfunction()
+grc_write_linux_test_list(GRC_L_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+get_property(grc_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+set(grc_executables "")
+foreach(target IN LISTS grc_targets)
+  get_target_property(type ${target} TYPE)
+  if(NOT type STREQUAL "EXECUTABLE")
+    continue()
+  endif()
+  list(APPEND grc_executables "${target}")
+  foreach(property IN ITEMS SOURCES COMPILE_DEFINITIONS INCLUDE_DIRECTORIES LINK_LIBRARIES)
+    get_target_property(value ${target} ${property})
+    if(value STREQUAL "value-NOTFOUND")
+      set(value "")
+    endif()
+    grc_write_linux_test_list(GRC_L_${target}_${property} "${value}")
+  endforeach()
+endforeach()
+grc_write_linux_test_list(GRC_L_TARGETS "${grc_executables}")
+
+set(GRC_WINDOWS_TEST_AUDIT "${CMAKE_CURRENT_SOURCE_DIR}/cmake/windows-tests-audit.cmake")
+add_test(NAME windows_test_lists COMMAND ${CMAKE_COMMAND}
+  "-DGRC_LINUX_LISTS=${GRC_LINUX_TEST_LISTS}" -P "${GRC_WINDOWS_TEST_AUDIT}")
+foreach(fault IN ITEMS missing_source missing_definition extra_source)
+  add_test(NAME windows_test_lists_${fault} COMMAND ${CMAKE_COMMAND}
+    "-DGRC_LINUX_LISTS=${GRC_LINUX_TEST_LISTS}" "-DGRC_W_AUDIT_FAULT=${fault}"
+    -P "${GRC_WINDOWS_TEST_AUDIT}")
+endforeach()
+# A matching diagnostic is required; CTest ignores the expected nonzero exit with PASS_REGULAR_EXPRESSION.
+set_tests_properties(windows_test_lists_missing_source PROPERTIES
+  PASS_REGULAR_EXPRESSION "rs_adopt_test: SOURCES 'src/rs_warm[.]cpp' missing on Windows")
+set_tests_properties(windows_test_lists_missing_definition PROPERTIES
+  PASS_REGULAR_EXPRESSION "rs_adopt_test: COMPILE_DEFINITIONS 'GRC_ADOPT_TEST' missing on Windows")
+set_tests_properties(windows_test_lists_extra_source PROPERTIES
+  PASS_REGULAR_EXPRESSION "rs_adopt_test: SOURCES 'src/windows_audit_unexpected[.]cpp' missing on Linux")
+
+add_test(NAME windows_test_lists_no_declarations COMMAND ${CMAKE_COMMAND}
+  "-DGRC_LINUX_LISTS=${GRC_LINUX_TEST_LISTS}" -DGRC_W_AUDIT_FAULT=no_declarations
+  -P "${GRC_WINDOWS_TEST_AUDIT}")
+set_tests_properties(windows_test_lists_no_declarations PROPERTIES
+  PASS_REGULAR_EXPRESSION "no Windows test declarations were recorded")
