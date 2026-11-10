@@ -1970,6 +1970,17 @@ bool Hub::has_viewer() const {
   return false;
 }
 
+std::size_t Hub::viewer_count() const {
+  std::size_t count = 0;
+  for (const auto &entry : conns_) {
+    const Conn &c = *entry.second;
+    if (c.state == State::Streaming || (c.state == State::AwaitHello && c.hello_received)) {
+      ++count;
+    }
+  }
+  return count;
+}
+
 rs::item_meta::Request Hub::item_meta_union() const {
   rs::item_meta::Request out;
   std::uint32_t fields = 0;

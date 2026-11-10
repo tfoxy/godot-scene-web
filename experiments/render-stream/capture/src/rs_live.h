@@ -426,7 +426,7 @@ LatencyStats latency_stats(std::vector<std::uint64_t> samples_us);
 // counters gate 1c reports).
 struct ConnectionSummary {
   std::uint32_t connection = 0;
-  std::string stream_id;  // empty until the hello
+  std::string stream_id;  // assigned when the connection opens
   std::string receiver;
   std::string credit_stage;  // "" until the hello
   std::uint64_t inbound_buffer_bytes = 0;
@@ -633,6 +633,7 @@ class Hub {
   // HC1: true while a connection has sent its hello or is streaming -- somebody who reads the
   // stream. A connection still awaiting its hello is not a viewer (it names no resource yet).
   bool has_viewer() const;
+  std::size_t viewer_count() const;
 
   // true while an open connection speaks a version below /11, whose
   // mesh tables name every surface by its SHA-256 (a /11 host then hashes its dynamic surfaces

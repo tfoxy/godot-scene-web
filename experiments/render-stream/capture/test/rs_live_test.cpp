@@ -2391,6 +2391,31 @@ void test_v10_connection() {
   }
 }
 
+void test_viewer_count() {
+  LiveConfig config;
+  config.auth_token = kToken;
+  Rig rig(config);
+  rig.hub.on_event(opened_with(1, "render-stream.7"), 0);
+  rig.hub.on_event(opened_with(2, "render-stream.7"), 0);
+  const std::vector<ConnectionSummary> summaries = rig.hub.summaries();
+  check(summaries.size() == 2 && !summaries[0].stream_id.empty() &&
+            !summaries[1].stream_id.empty(),
+        "both open connections have stream ids before any hello");
+  check(rig.hub.viewer_count() == 0, "open connections without hellos are not viewers");
+
+  rig.hub.on_event(text(1, hello7("\"" + kToken + "\"")), rig.frame);
+  check(rig.hub.viewer_count() == 1, "one accepted hello counts as one viewer before streaming");
+  rig.hub.on_event(text(2, hello7("null")), rig.frame);
+  check(rig.hub.summaries().at(1).error_sent == "unauthorized",
+        "the second hello is refused for its missing token");
+  check(rig.hub.viewer_count() == 1, "a refused hello adds no viewer");
+
+  rig.step(1);
+  check(rig.hub.viewer_count() == 1, "the accepted viewer stays counted while streaming");
+  rig.hub.on_event(closed(1, 1000), rig.frame);
+  check(rig.hub.viewer_count() == 0, "closing the accepted viewer leaves no viewers");
+}
+
 // On a bearer session a /7 hello whose
 // token is null or wrong is `error` unauthorized + close 1008 "unauthorized", with nothing sent
 // before or after; the right token streams. token-ignored lets the wrong one through but still
@@ -3948,6 +3973,7 @@ int main(int argc, char **argv) {
   test_v4_hub_and_control();
   test_v7_control_parser();
   test_hello_and_first_transaction();
+  test_viewer_count();
   test_credit_stages();
   test_resync();
   test_message_too_large();

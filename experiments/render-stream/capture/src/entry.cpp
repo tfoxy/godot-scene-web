@@ -4231,19 +4231,13 @@ struct LiveAwaitHello {
 };
 LiveAwaitHello g_live_await;
 
-// TAG1: GRC_LIVE_AWAIT_HELLOS=N (default 1, a test knob beside GRC_LIVE_AWAIT_HELLO_MS) holds
-// the frame until N connections said hello, so viewers started together share their first frame
-// (and so number their transactions alike).
+// GRC_LIVE_AWAIT_HELLOS=N (default 1, a test knob beside GRC_LIVE_AWAIT_HELLO_MS) holds
+// the frame until N viewers' hellos were accepted, so viewers started together share their first
+// frame (and so number their transactions alike).
 uint64_t g_live_await_hellos = 1;
 
 bool live_any_hello() {
-  uint64_t hellos = 0;
-  for (const rs2::ConnectionSummary &s : g_live.hub->summaries()) {
-    if (!s.stream_id.empty()) {
-      ++hellos;
-    }
-  }
-  return hellos >= g_live_await_hellos;
+  return g_live.hub->viewer_count() >= g_live_await_hellos;
 }
 
 void live_await_first_hello(uint64_t frame) {
