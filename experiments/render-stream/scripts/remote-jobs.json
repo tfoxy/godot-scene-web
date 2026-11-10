@@ -59,6 +59,7 @@
     }
   },
   "fallback_minutes": [
+    ["libcxx-control", 42],
     ["", 5],
     ["cargo-", 2],
     ["native-", 11],
@@ -68,6 +69,7 @@
     ["pure", 11]
   ],
   "setup_minutes": [
+    ["libcxx-control", 10],
     ["", 0.5],
     ["native-", 8],
     ["g7-", 11],

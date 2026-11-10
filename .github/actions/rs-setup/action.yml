@@ -40,6 +40,9 @@ inputs:
   valgrind:
     description: valgrind from the runner image's apt archive (bench-instr's cachegrind Ir counts)
     default: "false"
+  libcxx:
+    description: Linux clang 20 and dynamic libc++ 20 control build
+    default: "false"
   llvm-mingw:
     description: Pinned Linux-hosted llvm-mingw and Rust gnullvm target for the Windows test bundle
     default: "false"
@@ -240,6 +243,26 @@ runs:
       run: |
         sudo apt-get install -y --no-install-recommends strace || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends strace; }
         cmake --version | head -1 # build-capture.sh defaults to /snap/bin/cmake; the workflows pass CMAKE=cmake
+
+    - name: libcxx
+      if: inputs.libcxx == 'true'
+      shell: bash
+      run: |
+        . /etc/os-release
+        if [ "$ID" != ubuntu ] || [ "$VERSION_ID" != 24.04 ]; then
+          echo "::error::libcxx requires Ubuntu 24.04"; exit 1
+        fi
+        sudo apt-get install -y --no-install-recommends clang-20 libc++-20-dev libc++abi-20-dev || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends clang-20 libc++-20-dev libc++abi-20-dev; }
+        clang++-20 -stdlib=libc++ -dM -E -x c++ -include cstddef /dev/null >"$RUNNER_TEMP/libcxx-macros.txt"
+        major=$(awk '$2 == "_LIBCPP_VERSION" {print int($3 / 10000)}' "$RUNNER_TEMP/libcxx-macros.txt")
+        [ "$major" = 20 ] || { echo "::error::requires libc++ major 20, got $major"; exit 1; }
+        python3 - <<'PY'
+        import json, os, pathlib, subprocess
+        packages = ('clang-20', 'libc++-20-dev', 'libc++abi-20-dev', 'libc++1-20', 'libc++abi1-20')
+        versions = {p: subprocess.check_output(['dpkg-query', '-W', '-f=${Version}', p], text=True) for p in packages}
+        data = {'packages': versions, 'ImageOS': os.environ.get('ImageOS'), 'ImageVersion': os.environ.get('ImageVersion')}
+        (pathlib.Path(os.environ['RUNNER_TEMP']) / 'libcxx-provenance.json').write_text(json.dumps(data, indent=2) + '\n')
+        PY
 
     - name: valgrind
       if: inputs.valgrind == 'true'

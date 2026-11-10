@@ -39,6 +39,8 @@ check() {
 }
 
 check "smoke-plan.py --self-test" "python3 '$SCRIPT_DIR/lib/smoke-plan.py' --self-test --map '$SCRIPT_DIR/smoke-map.json' >'$TMP/plan-st.log' 2>&1"
+check "libcxx driver stub legs" "bash '$SCRIPT_DIR/test/self-test-libcxx-control.sh' >'$TMP/libcxx-driver.log' 2>&1"
+check "libcxx-verdict.py --self-test" "python3 '$SCRIPT_DIR/lib/libcxx-verdict.py' --self-test >'$TMP/libcxx-st.log' 2>&1"
 check "tier-verdict.py --self-test" "python3 '$SCRIPT_DIR/lib/tier-verdict.py' --self-test >'$TMP/verdict-st.log' 2>&1"
 check "remote-matrix.py --self-test (the remote matrix: longest first, leg shards)" \
 	"python3 '$SCRIPT_DIR/lib/remote-matrix.py' --self-test >'$TMP/matrix-st.log' 2>&1"
@@ -285,6 +287,29 @@ RS_VALIDATE_STUB="$TMP/stub.sh" STUB_Q="$Q" STUB_TIMES="$TMP/times2.txt" STUB_FO
 check "an unplanned --only id prints a warning naming it and the way to force it" \
 	"grep -q 'WARNING --only native-rust-gate99: not in this plan' '$TMP/unplanned.log' && grep -q -- '--paths' '$TMP/unplanned.log'"
 check "the warning is not an error: the planned ids still run" "grep -q 'pure rc=0' '$TMP/unplanned.log'"
+
+# The opt-in control row keeps findings in the summary even when its driver fails.
+cat >"$TMP/stub-libcxx.sh" <<'STUB'
+[ "$RS_VALIDATE_KIND" = libcxx ] || exit 2
+mkdir -p "$RS_VALIDATE_DIR/run"
+echo '{"rc":1,"ctest":"fail","counts":{"finding":1}}' >"$RS_VALIDATE_DIR/run/libcxx-control.json"
+echo 'file.cpp:1: error: synthetic libcxx diagnostic' >&2
+exit 1
+STUB
+RS_VALIDATE_STUB="$TMP/stub-libcxx.sh" bash "$SCRIPT_DIR/validate-increment.sh" --tier full \
+    --only libcxx-control --paths README.md --out "$TMP/libcxx" >"$TMP/libcxx.log" 2>&1
+check "explicit libcxx control keeps failing findings and driver arguments" "python3 - '$TMP/libcxx' <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+s = json.loads((p / 'validate-summary.json').read_text())
+assert len(s['runs']) == 1 and s['failed'] == 1
+r = s['runs'][0]
+assert r['id'] == 'libcxx-control' and r['rc'] == '1' and r['libcxx']['counts']['finding'] == 1
+command = (p / 'libcxx-control/command.txt').read_text()
+assert 'libcxx-control.sh' in command and '--extension' in command and '--calibration' in command
+PY"
+check "libcxx diagnostics reach both the job output and run log" \
+    "grep -q 'file.cpp:1: error: synthetic libcxx diagnostic' '$TMP/libcxx.log' && grep -q 'file.cpp:1: error: synthetic libcxx diagnostic' '$TMP/libcxx/libcxx-control/run.log'"
 
 echo "self-test-validate-tier: $([ "$fails" = 0 ] && echo "all pass" || echo "$fails FAIL")"
 [ "$fails" = 0 ]

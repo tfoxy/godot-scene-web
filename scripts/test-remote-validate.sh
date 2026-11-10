@@ -529,6 +529,62 @@ except ImportError:
 for f in glob.glob(sys.argv[1] + "/.github/workflows/remote-*.yml") + [sys.argv[1] + "/.github/actions/rs-setup/action.yml"]:
     yaml.safe_load(open(f))
 PY
+check "libcxx setup, flags, artifacts and watchdog are explicit" python3 - "$ROOT" <<'PYTEST'
+import importlib.util, json, pathlib, sys, yaml
+root = pathlib.Path(sys.argv[1])
+w = yaml.safe_load((root / '.github/workflows/remote-validate.yml').read_text())
+a = yaml.safe_load((root / '.github/actions/rs-setup/action.yml').read_text())
+steps = w['jobs']['validate']['steps']
+setup = next(s for s in steps if s.get('uses', '').endswith('rs-setup'))['with']
+for key in ('libcxx', 'capture-build', 'swrast', 'rs-core-ext', 'apt', 'godot', 'templates'):
+    assert "matrix.id == 'libcxx-control'" in setup[key], key
+for key in ('chromium', 'chromium-pinned', 'emsdk', 'llvm-mingw'):
+    assert 'libcxx-control' not in setup[key], key
+run = next(s for s in steps if 'RS_LEG_SHARDS' in s.get('env', {}))
+for key in ('RS_LEG_SHARDS', 'RS_SKIP_TIMING_GROUPS'):
+    assert "matrix.id == 'libcxx-control'" in run['env'][key], key
+assert a['inputs']['libcxx']['default'] == 'false'
+install = next(s for s in a['runs']['steps'] if s.get('name') == 'libcxx')
+assert install['if'] == "inputs.libcxx == 'true'"
+for package in ('clang-20', 'libc++-20-dev', 'libc++abi-20-dev'):
+    assert package in install['run']
+assert '24.04' in install['run'] and '_LIBCPP_VERSION' in install['run']
+assert 'libcxx-provenance.json' in install['run']
+trim = next(s for s in steps if s.get('name') == 'Trim artifact')['run']
+assert 'run/libcxx-control.json' in trim and 'cp ' in trim
+spec = importlib.util.spec_from_file_location('matrix', root / 'experiments/render-stream/scripts/lib/remote-matrix.py')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+jobs = m.expand(['libcxx-control'])['include']
+assert len(jobs) == 1 and jobs[0]['id'] == 'libcxx-control' and jobs[0]['watchdog'] == '60', jobs
+PYTEST
+check "libcxx trim preserves build diagnostics, provenance and gate log tails" python3 - "$ROOT" <<'PYTEST'
+import json, os, pathlib, subprocess, sys, tempfile, yaml
+root = pathlib.Path(sys.argv[1])
+w = yaml.safe_load((root / '.github/workflows/remote-validate.yml').read_text())
+trim = next(s for s in w['jobs']['validate']['steps'] if s.get('name') == 'Trim artifact')['run']
+with tempfile.TemporaryDirectory() as tmp:
+    p = pathlib.Path(tmp)
+    run = p / 'v/libcxx-control/run'
+    run.mkdir(parents=True)
+    (run / 'build-libcxx.log').write_text('early error: compile failed\n' + 'build output\n' * 450)
+    (run / 'provenance.json').write_text('{"compiler":"fixture"}\n')
+    for label in ('gcc-a', 'libcxx', 'gcc-b'):
+        for gate in ('gate0', 'gate1', 'gate2', 'gate8'):
+            d = run / label / gate
+            d.mkdir(parents=True)
+            (d / 'tier-verdict.json').write_text('{"verdict":"fail"}\n')
+            d.with_suffix('.log').write_text(''.join(f'runner line {i}\n' for i in range(450)))
+    env = dict(os.environ, RUNNER_TEMP=tmp, ID='libcxx-control', LABEL='libcxx-control', LEGS='', GROUP='')
+    subprocess.run(['bash', '-c', trim], cwd=root, env=env, capture_output=True, text=True, check=True, timeout=30)
+    art = p / 'art'
+    assert (art / 'build-libcxx.log').read_bytes() == (run / 'build-libcxx.log').read_bytes()
+    assert (art / 'libcxx-provenance.json').read_bytes() == (run / 'provenance.json').read_bytes()
+    for label in ('gcc-a', 'libcxx', 'gcc-b'):
+        for gate in ('gate0', 'gate1', 'gate2', 'gate8'):
+            d = art / 'libcxx-gates' / label / gate
+            assert json.loads((d / 'tier-verdict.json').read_text()) == {'verdict': 'fail'}
+            assert (d / 'runner.log').read_text().splitlines() == [f'runner line {i}' for i in range(50, 450)]
+PYTEST
 check "Windows job runs only the bundle, with sparse checkout and no setup or build" python3 - "$ROOT/.github/workflows/remote-validate.yml" <<'PYTEST'
 import sys, yaml
 w = yaml.safe_load(open(sys.argv[1]))

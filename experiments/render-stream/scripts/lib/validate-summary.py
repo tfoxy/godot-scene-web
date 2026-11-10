@@ -68,6 +68,14 @@ def bench_instr_block(d):
     return {"cpu_model": cpu, "baseline_cpu_model": res.get("baseline_cpu_model"), "cases": cases}
 
 
+def libcxx_block(d):
+    """Include control findings even when the driver failed."""
+    try:
+        return json.load(open(os.path.join(d, "run", "libcxx-control.json")))
+    except (OSError, ValueError):
+        return None
+
+
 def collect_rows(out, plan):
     rows, failed = [], 0
     for r in plan["runs"]:
@@ -104,6 +112,10 @@ def collect_rows(out, plan):
             bi = bench_instr_block(d)
             if bi is not None:
                 rows[-1]["bench_instr"] = bi
+        if r["id"] == "libcxx-control":
+            lc = libcxx_block(d)
+            if lc is not None:
+                rows[-1]["libcxx"] = lc
         failed += rc != "0"
     return rows, failed
 

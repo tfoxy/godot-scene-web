@@ -154,7 +154,7 @@ def untracked_files(repo):
     return {l.strip() for l in r.stdout.splitlines() if l.strip()} if r.returncode == 0 else set()
 
 
-def plan(m, paths, repo, milestone=False, tier="smoke", base=None, diff_base=None):
+def plan(m, paths, repo, milestone=False, tier="smoke", base=None, diff_base=None, only=""):
     """`milestone` True with `base` None: the complete sweep; with `base`: the delta sweep.
     `diff_base`: the ref the diff is taken against; sabotage_content then reads only the changed lines."""
     untracked = untracked_files(repo) if diff_base is not None else set()
@@ -191,6 +191,7 @@ def plan(m, paths, repo, milestone=False, tier="smoke", base=None, diff_base=Non
         sabotage_why = ["--milestone: a sweep runs every leg"]
     elif milestone:
         sabotage_why = [f"--milestone --base {base}: a delta sweep runs every leg of the targets it reaches"]
+    targets |= set(only.split(",")) & set(m["universe"].get("opt_in", []))
     return {
         "schema": "render-stream-smoke-plan/1",
         "milestone": ("delta" if base is not None else "complete") if milestone else False,
@@ -231,6 +232,8 @@ def runs(targets, m, sabotage, tier="smoke"):
         out.append({"id": "capture-build", "kind": "capture-build"})
     if "windows" in targets:
         out.append({"id": "windows", "kind": "windows"})
+    if "libcxx-control" in targets:
+        out.append({"id": "libcxx-control", "kind": "libcxx", "phase": "native"})
     for c in u["cargo"]:
         if f"cargo:{c}" in targets:
             out.append({"id": f"cargo-{os.path.basename(c)}", "kind": "cargo", "crate": c})
@@ -390,6 +393,15 @@ def self_test(m):
     P = lambda *ps, ms=False: plan(m, list(ps), repo, ms)
     a = P("experiments/render-stream/results/grt.md")
     check("a doc reaches nothing but the pure self-tests", a["targets"] == ["pure"])
+    check("opt-in target stays out of wildcard and complete milestone",
+          "libcxx-control" not in expand("*", uni) and "libcxx-control" not in P(ms=True)["targets"])
+    explicit = plan(m, [], repo, only="libcxx-control")
+    check("explicit --only reaches the opt-in target without a matching diff",
+          set(explicit["targets"]) == {"pure", "libcxx-control"})
+    control = P("experiments/render-stream/scripts/libcxx-control.sh")
+    check("libcxx driver reaches its opt-in native run",
+          set(control["targets"]) == {"pure", "libcxx-control"}
+          and {"id": "libcxx-control", "kind": "libcxx", "phase": "native"} in control["runs"])
     pin = P("experiments/render-stream/scripts/lib/llvm-mingw.sh")
     check("the Windows pin reaches only pure and windows", set(pin["targets"]) == {"pure", "windows"})
     for path in ["rs-net/src/lib.rs", "rs-net/tests/wt.rs", "rs-net/Cargo.toml",
@@ -559,7 +571,7 @@ def self_test(m):
 def main():
     args = sys.argv[1:]
     mp, repo, milestone, paths_from, st, tier = None, ".", False, None, False, "smoke"
-    base, print_paths, diff_base = None, False, None
+    base, print_paths, diff_base, only = None, False, None, ""
     paths = []
     i = 0
     while i < len(args):
@@ -580,6 +592,8 @@ def main():
             base = args[i + 1]; i += 2
         elif a == "--diff-base":
             diff_base = args[i + 1]; i += 2
+        elif a == "--only":
+            only = args[i + 1]; i += 2
         elif a == "--print-paths":
             print_paths = True; i += 1
         else:
@@ -600,7 +614,7 @@ def main():
     # --base only changes the meaning of --milestone (a delta sweep); without --milestone it only
     # chose the paths above.
     print(json.dumps(plan(m, sorted(set(paths)), repo, milestone, tier,
-                          base if milestone else None, diff_base), indent=2))
+                          base if milestone else None, diff_base, only), indent=2))
 
 
 if __name__ == "__main__":

@@ -157,6 +157,11 @@ for x in s["runs"]:
         vs = f"{c['delta_pct']:+.2f}% vs baseline" if c.get("delta_pct") is not None else "no baseline"
         print(f"  bench-instr: {c['case']} Ir {c['ir']:,} ({vs}, cpu {bi.get('cpu_model')})"
               + ("" if c.get("status") in ("ok", "improvement") else f" {str(c.get('status')).upper()}"))
+for x in s["runs"]:
+    lc = x.get("libcxx")
+    if lc is not None:
+        print(f"  libcxx: rc={lc.get('rc')} ctest={lc.get('ctest')} seam={lc.get('seam')} "
+              f"files={lc.get('counts')} errors={lc.get('errors')}")
 r = s.get("remote", {})
 for x in r.get("refused", []):
     print(f"  refused {x['id']:<24} {x['reason']}")
@@ -218,6 +223,7 @@ BASE_SHA="$(git merge-base "$BASE" HEAD 2>/dev/null || git rev-parse "$BASE" 2>/
 	exit 2
 }
 PLAN_ARGS=(--plan --tier "$TIER" --out "$TMP/plan")
+[ -n "$ONLY" ] && PLAN_ARGS+=(--only "$ONLY")
 [ -n "$PATHS" ] && PLAN_ARGS+=(--paths "$PATHS")
 if [ "$MILESTONE" = 1 ]; then
 	PLAN_ARGS+=(--milestone)

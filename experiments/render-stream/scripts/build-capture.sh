@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Configure, build and unit-test the gate -1 capture library.
 #
-# Usage: experiments/render-stream/scripts/build-capture.sh [--target linux|windows] [cmake build type]
+# Usage: experiments/render-stream/scripts/build-capture.sh [--target linux|windows|linux-libcxx] [cmake build type]
 set -euo pipefail
 
 # Measurement isolation: the build holds the machine-wide quiet lock SHARED (lib/quiet.sh), so it
@@ -13,18 +13,32 @@ fi
 
 TARGET=linux
 if [ "${1:-}" = --target ]; then
-	[ "$#" -ge 2 ] || { echo 'build-capture: --target requires linux or windows' >&2; exit 2; }
+	[ "$#" -ge 2 ] || { echo 'build-capture: --target requires linux, windows or linux-libcxx' >&2; exit 2; }
 	TARGET="$2"
 	shift 2
 fi
-if [ "$#" -gt 1 ] || [[ "${1:-}" = --* ]] || [[ "$TARGET" != linux && "$TARGET" != windows ]]; then
-	echo 'usage: build-capture.sh [--target linux|windows] [cmake build type]' >&2
+if [ "$#" -gt 1 ] || [[ "${1:-}" = --* ]] || [[ "$TARGET" != linux && "$TARGET" != windows && "$TARGET" != linux-libcxx ]]; then
+	echo 'usage: build-capture.sh [--target linux|windows|linux-libcxx] [cmake build type]' >&2
 	exit 2
 fi
 BUILD_TYPE="${1:-RelWithDebInfo}"
 CMAKE="${CMAKE:-/snap/bin/cmake}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CAPTURE="$(cd "${HERE}/../capture" && pwd)"
+
+if [ "$TARGET" = linux-libcxx ]; then
+	if ! command -v clang++-20 >/dev/null 2>&1; then
+		echo 'build-capture: install clang-20 libc++-20-dev libc++abi-20-dev' >&2
+		exit 2
+	fi
+	B="$CAPTURE/build-libcxx"
+	"${CMAKE}" -S "$CAPTURE" -B "$B" \
+		-DCMAKE_TOOLCHAIN_FILE="$CAPTURE/cmake/clang-libcxx-linux.cmake" \
+		-DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+	"${CMAKE}" --build "$B" -j"$(nproc)"
+	(cd "$B" && ctest --output-on-failure)
+	exit 0
+fi
 
 if [ "$TARGET" = windows ]; then
 	. "$HERE/lib/llvm-mingw.sh"

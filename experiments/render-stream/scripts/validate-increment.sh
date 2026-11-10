@@ -114,7 +114,7 @@ DIFF_BASE_ARGS=()
 # --milestone with an explicit --base is the delta sweep (the diff's targets, every leg).
 [ "$MILESTONE" = 1 ] && [ "$BASE_SET" = 1 ] && PLAN_ARGS+=(--base "$BASE")
 python3 "$SCRIPT_DIR/lib/smoke-plan.py" --map "$SCRIPT_DIR/smoke-map.json" --repo "$REPO_ROOT" \
-	"${PLAN_ARGS[@]}" ${DIFF_BASE_ARGS[@]+"${DIFF_BASE_ARGS[@]}"} --paths-from "$OUT/changed-paths.txt" >"$OUT/plan.json" || exit 2
+	--only "$ONLY" "${PLAN_ARGS[@]}" ${DIFF_BASE_ARGS[@]+"${DIFF_BASE_ARGS[@]}"} --paths-from "$OUT/changed-paths.txt" >"$OUT/plan.json" || exit 2
 python3 - "$OUT/plan.json" <<'PY'
 import json, sys
 p = json.load(open(sys.argv[1]))
@@ -225,6 +225,9 @@ run_one() {
 	lock-tests)
 		launch "$dir" -- bash -c 'rc=0; bash "$1" --out "$3/quiet" || rc=$?; bash "$2" --out "$3/sched" || rc=$?; exit $rc' _ \
 			"$SCRIPT_DIR/test/self-test-quiet.sh" "$SCRIPT_DIR/test/self-test-quiet-sched.sh" "$dir" >"$dir/run.log" 2>&1 || rc=$?
+		;;
+	libcxx)
+		launch "$dir" -- bash "$SCRIPT_DIR/libcxx-control.sh" --extension "$EXT" --calibration "$CAL" --out "$dir/run" 2>&1 | tee "$dir/run.log" || rc=$?
 		;;
 	windows)
 		launch "$dir" -- bash "$SCRIPT_DIR/build-capture.sh" --target windows >"$dir/run.log" 2>&1 || rc=$?

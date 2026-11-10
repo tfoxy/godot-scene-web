@@ -16,7 +16,10 @@ check only when
     dropping receiver/host/capture/reference/evidence, as a word: '-' and '/' delimit).
 Every other failing check is real, so an unexplained failure stays loud. Each `--smoke-legs`
 entry must also name a directory that was launched (exists, no marker): a wrong or stale entry
-fails the verdict instead of skipping everything. No checks found is a failure.
+fails the verdict instead of skipping everything. No checks found is a failure. A typed `not-run`
+check whose detail says its group was not in `--legs` (a deliberate selection) can explain runner
+exit 1, just like an excused tier check; any other `not-run` row cannot.
+It never explains a refusal (exit >= 2) or hides a real failure.
 
 Typed `unavailable` rows (GRT4a): a failing check whose status is `unavailable` or
 `device-unavailable` (desktop g7-lc's real-suspension rows: no device run) is evidence that does not
@@ -121,12 +124,15 @@ def verdict(run, sabotage_skipped, smoke_legs, runner_rc=None):
         ok = any((os.sep + e + os.sep) in (os.sep + r + os.sep) for r in launched)
         if not ok:
             missing.append(e)
+    not_run = any(c.get("passed") is not True and c.get("gating") is not False
+                  and c.get("status") == "not-run" and "not in --legs" in str(c.get("detail", ""))
+                  for c in checks)
     ok = bool(checks) and not real and not missing
     runner = None
     if runner_rc is not None and runner_rc != 0:
         if runner_rc >= 2:
             ok, runner = False, f"the runner exited {runner_rc} (a usage error or refusal)"
-        elif not (excused or unavailable or flakes or real or missing):
+        elif not (excused or unavailable or flakes or real or missing or not_run):
             ok, runner = False, "the runner exited 1 but no check explains it"
     out = {"verdict": "pass" if ok else "fail", "checks": len(checks), "skipped_dirs": len(marked),
            "skipped_by_tier": sorted(set(excused)), "unavailable": sorted(set(unavailable)),
@@ -213,6 +219,18 @@ def self_test():
     case("unavailable rows do not hide a real failure",
          {"result.json": rows(unav("u"), {"id": "b", "passed": False, "detail": "pixels"}), "x/a.json": "{}"},
          "fail", rc=1)
+    not_run = {"id": "group-g2b", "passed": False, "status": "not-run", "detail": "g2b was not in --legs"}
+    case("unselected not-run groups explain runner rc 1",
+         {"result.json": rows({"id": "capture", "passed": True}, not_run)}, "pass", rc=1)
+    case("not-run groups do not hide a real failure",
+         {"result.json": rows({"id": "pixels", "passed": False}, not_run)}, "fail", rc=1)
+    case("not-run groups never excuse a refusal",
+         {"result.json": rows({"id": "capture", "passed": True}, not_run)}, "fail", rc=2)
+    case("a not-run row that is not a --legs selection does not explain runner rc 1",
+         {"result.json": rows({"id": "capture", "passed": True},
+                              {**not_run, "detail": "gsw receiver not built"})}, "fail", rc=1)
+    case("non-gating not-run checks do not explain runner rc 1",
+         {"result.json": rows({"id": "capture", "passed": True}, {**not_run, "gating": False})}, "fail", rc=1)
     case("runner rc 1 with every check passing stays a failure",
          {"result.json": rows({"id": "a", "passed": True}), "x/a.json": "{}"}, "fail", rc=1)
     case("runner rc 2 (refusal) always fails", {"result.json": rows(unav("u")), "x/a.json": "{}"}, "fail", rc=2)

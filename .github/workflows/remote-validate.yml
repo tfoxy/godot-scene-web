@@ -163,22 +163,23 @@ jobs:
           # worktree runs build-capture.sh once for the same reason): restored from the seeded cache.
           # A native gate needs the capture extension too, and so does every gate 7 run: its sources
           # (--make-sources) and live hosts are native gate runs.
+          libcxx: ${{ matrix.id == 'libcxx-control' }}
           llvm-mingw: ${{ matrix.id == 'windows' }}
-          capture-build: ${{ matrix.id == 'pure' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
+          capture-build: ${{ matrix.id == 'pure' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') || matrix.id == 'libcxx-control' }}
           # native-* runs: rendered legs on Xvfb + llvmpipe, the rs-core GDExtension, the
           # release template, the editor (imports, receiver self-test) and strace
-          swrast: ${{ startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
-          rs-core-ext: ${{ startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
+          swrast: ${{ startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') || matrix.id == 'libcxx-control' }}
+          rs-core-ext: ${{ startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') || matrix.id == 'libcxx-control' }}
           valgrind: ${{ matrix.id == 'bench-instr' }}
-          apt: ${{ startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
+          apt: ${{ startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') || matrix.id == 'libcxx-control' }}
           # gate 4's i18n fixtures read the engine's thirdparty/fonts (fonts.lock.json); g7-4's
           # source is a gate 4 run
           fonts: ${{ matrix.id == 'native-rust-gate4' || startsWith(matrix.id, 'g7-') }}
           # toolchain-smoke (remote-validate.sh --toolchain-smoke) builds with every pinned input;
           # gate 7 builds the web receiver (web-rust) or the gsw bundle (build-rs-core.sh), and so
           # does native gate 8, whose g8ku group replays its /9 recording in the web export
-          godot: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
-          templates: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
+          godot: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') || matrix.id == 'libcxx-control' }}
+          templates: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') || matrix.id == 'libcxx-control' }}
           # every gate 7 run: the web receiver (web-rust), and the gsw bundle's KTX2
           # transcoder wasm (build-basis-transcoder.sh)
           emsdk: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'g7') || matrix.id == 'native-rust-gate8' }}
@@ -215,7 +216,7 @@ jobs:
           # native gates: 4 vCPU run two legs at once. The timing groups inside the correctness
           # gates (g1c-rate, g1d, g2c-pins, g5f, g55f) are wall-clock legs a shared VM would only make
           # noisy: they are skipped here (skipped-remote.txt) and stay local. Never set locally.
-          RS_LEG_SHARDS: ${{ (startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7')) && '2' || '' }}
+          RS_LEG_SHARDS: ${{ (startsWith(matrix.id, 'native-') || matrix.id == 'libcxx-control' || startsWith(matrix.id, 'g7')) && '2' || '' }}
           # gate 7: a file run (g7-gsw, g7-web-rust) skips every timing group too: the gsw half
           # makes FULL native sources (run-gate7.sh --make-sources: gates 1, 2 and 5 carry g1c-rate,
           # g1d, g2c-pins, g5f), and source-run-valid@gsw excuses exactly those by tier-verdict.py
@@ -224,7 +225,7 @@ jobs:
           # g2c-pins, g5f and g55f are frame-counted under fast frames (lib/legs.sh
           # RS_FAST_ALLOW_LEGS) and are the browser's live correctness legs. The timing groups
           # (g7-6, g7-lc, g7-r, g7-k) are -timing runs, refused by phase.
-          RS_SKIP_TIMING_GROUPS: ${{ (startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7-')) && '1' || (startsWith(matrix.id, 'g7live-') && 'g1c-rate' || '') }}
+          RS_SKIP_TIMING_GROUPS: ${{ (startsWith(matrix.id, 'native-') || matrix.id == 'libcxx-control' || startsWith(matrix.id, 'g7-')) && '1' || (startsWith(matrix.id, 'g7live-') && 'g1c-rate' || '') }}
           # the CI-only browser allowance (lib/browser-renderer.ts; Decision 10): only here
           RS_BROWSER_PROVENANCE: ${{ (startsWith(matrix.id, 'g7') || matrix.id == 'native-rust-gate8') && inputs.browser_renderer || '' }}
         run: |
@@ -331,6 +332,23 @@ jobs:
           art="$RUNNER_TEMP/art"
           mkdir -p "$art"
           [ -f "$RUNNER_TEMP/v/validate-summary.json" ] && cp "$RUNNER_TEMP/v/validate-summary.json" "$art/"
+          [ -f "$RUNNER_TEMP/v/$ID/run/libcxx-control.json" ] && cp "$RUNNER_TEMP/v/$ID/run/libcxx-control.json" "$art/"
+          [ -f "$RUNNER_TEMP/v/$ID/run/provenance.json" ] && cp "$RUNNER_TEMP/v/$ID/run/provenance.json" "$art/libcxx-provenance.json"
+          [ -d "$RUNNER_TEMP/v/$ID/run/comparisons" ] && cp -r "$RUNNER_TEMP/v/$ID/run/comparisons" "$art/libcxx-comparisons"
+          if [ "$ID" = libcxx-control ]; then
+            control="$RUNNER_TEMP/v/$ID/run"
+            [ -f "$control/build-libcxx.log" ] && cp "$control/build-libcxx.log" "$art/"
+            for label in gcc-a libcxx gcc-b; do
+              for gate in gate0 gate1 gate2 gate8; do
+                src="$control/$label/$gate"
+                [ -f "$src/tier-verdict.json" ] || [ -f "$src.log" ] || continue
+                dest="$art/libcxx-gates/$label/$gate"
+                mkdir -p "$dest"
+                [ -f "$src/tier-verdict.json" ] && cp "$src/tier-verdict.json" "$dest/"
+                [ -f "$src.log" ] && tail -n 400 "$src.log" >"$dest/runner.log"
+              done
+            done
+          fi
           # per-test seconds of a pure shard (a few KB): the input to pure-shard-weights.json
           [ -f "$RUNNER_TEMP/v/$ID/toolchain-hashes.json" ] && cp "$RUNNER_TEMP/v/$ID/toolchain-hashes.json" "$art/"
           [ -f "$RUNNER_TEMP/v/$ID/quiet-lock.jsonl" ] && cp "$RUNNER_TEMP/v/$ID/quiet-lock.jsonl" "$art/timings-$LABEL.jsonl"

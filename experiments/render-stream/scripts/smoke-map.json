@@ -48,6 +48,7 @@
       "experiments/render-stream/decode-proto-rs",
       "experiments/render-stream/rs-net"
     ],
+    "opt_in": ["libcxx-control"],
     "other": [
       "pure",
       "lock-tests",
@@ -137,6 +138,7 @@
   "remote": {
     "doc": "scripts/remote-validate.sh (docs/remote-compute.md): which planned runs may go to hosted runners at the current rung. A run is remote-capable when its id matches a 'capable' glob and nothing in 'refuse' applies; 'refuse' always wins. 'refuse.groups' refuses single groups of a gate 7 run (the run keeps its other groups remotely, and is refused whole when none is left). Every other run is refused with default_reason (each rung widens 'capable'). Refused runs are listed in the summary's remote.refused[] and may be run locally with --and-local.",
     "capable": [
+      "libcxx-control",
       "pure",
       "capture-build",
       "pnpm-test",
@@ -446,6 +448,18 @@
         "experiments/render-stream/scripts/test/self-test-track-caps.ts"
       ],
       "reach": ["capture-build", "pure", "native:gate8@*"],
+      "exclusive": true
+    },
+    {
+      "why": "Linux libc++ control build and file-sink comparison: opt-in only",
+      "paths": [
+        "experiments/render-stream/capture/cmake/clang-libcxx-linux.cmake",
+        "experiments/render-stream/capture/cmake/linux-libcxx.cmake",
+        "experiments/render-stream/scripts/libcxx-control.sh",
+        "experiments/render-stream/scripts/lib/libcxx-verdict.py",
+        "experiments/render-stream/scripts/test/self-test-libcxx*"
+      ],
+      "reach": ["pure", "libcxx-control"],
       "exclusive": true
     },
     {

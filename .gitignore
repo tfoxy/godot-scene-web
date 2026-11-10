@@ -69,3 +69,4 @@ apps/playground/public/recovered
 # file CMake generates into it with absolute paths.
 experiments/render-stream/capture/build/
 experiments/render-stream/capture/build-windows/
+experiments/render-stream/capture/build-libcxx/
