@@ -178,6 +178,7 @@ grc_w_test(rs_adopt TARGET rs_adopt_test
   INCLUDES vendor LIBS grc_platform grc_codecs Threads::Threads)
 # The adopt test stubs the hook implementation, leaving its private state unused.
 target_compile_options(rs_adopt_test PRIVATE -Wall -Wextra -Werror -Wno-unused-private-field)
+target_compile_definitions(rs_adopt_test PRIVATE GRC_ADOPT_TEST)
 grc_w_test(rs_reload TARGET rs_reload_test
   SOURCES test/rs_reload_test.cpp src/rs_reload.cpp src/rs_texture_payload.cpp
     src/rs_texture_delivery.cpp src/report.cpp
