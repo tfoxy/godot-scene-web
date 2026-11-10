@@ -108,6 +108,29 @@ add_custom_command(
   VERBATIM)
 add_custom_target(grc_inject_script DEPENDS ${GRC_INJECT_GEN}/embed.stamp)
 
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_executable(pe_image_test test/pe_image_test.cpp src/pe_image.cpp src/rs_sha256.cpp)
+target_include_directories(pe_image_test PRIVATE src)
+target_link_libraries(pe_image_test PRIVATE grc_warnings grc_platform)
+add_test(NAME pe_image_test COMMAND ${Python3_EXECUTABLE} -I
+  ${CMAKE_CURRENT_SOURCE_DIR}/test/pe_image_test.py $<TARGET_FILE:pe_image_test>
+  ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+
+add_executable(calib_pe_checks_test test/calib_pe_checks_test.cpp src/pe_image.cpp src/calib.cpp
+  src/calib_fingerprint_posix.cpp src/iface.cpp src/rs_sha256.cpp)
+target_include_directories(calib_pe_checks_test PRIVATE src vendor)
+target_link_libraries(calib_pe_checks_test PRIVATE grc_warnings grc_platform)
+add_test(NAME calib_pe_checks COMMAND ${Python3_EXECUTABLE} -I
+  ${CMAKE_CURRENT_SOURCE_DIR}/test/calib_pe_checks_test.py $<TARGET_FILE:calib_pe_checks_test>
+  ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+
+file(GLOB GRC_CALIBRATION_RECORDS "${CMAKE_CURRENT_SOURCE_DIR}/../calibration/*.json")
+add_executable(calib_slot_mask_test test/calib_slot_mask_test.cpp src/calib.cpp
+  src/calib_fingerprint_posix.cpp src/iface.cpp src/rs_sha256.cpp)
+target_include_directories(calib_slot_mask_test PRIVATE src vendor)
+target_link_libraries(calib_slot_mask_test PRIVATE grc_warnings grc_platform)
+add_test(NAME calib_slot_mask COMMAND calib_slot_mask_test ${GRC_CALIBRATION_RECORDS})
+
 # Engine-free checks for process identity collection and calibration refusals.
 add_executable(calib_fingerprint_test test/calib_fingerprint_test.cpp src/calib.cpp
   src/calib_fingerprint_posix.cpp src/iface.cpp src/rs_sha256.cpp)

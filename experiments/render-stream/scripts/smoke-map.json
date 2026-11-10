@@ -454,6 +454,8 @@
         "experiments/render-stream/capture/cmake/llvm-mingw-x86_64.cmake",
         "experiments/render-stream/capture/cmake/windows.cmake",
         "experiments/render-stream/capture/src/rs_platform_win32.cpp",
+        "experiments/render-stream/capture/src/calib_fingerprint_win32.cpp",
+        "experiments/render-stream/capture/test/calib_pe_self_test.cpp",
         "experiments/render-stream/scripts/lib/llvm-mingw.sh",
         "experiments/render-stream/scripts/w-imports.py",
         "experiments/render-stream/scripts/lib/w-run.py",

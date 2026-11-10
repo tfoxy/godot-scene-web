@@ -45,9 +45,26 @@ bundle.mkdir()
 manifest = json.loads((build / "w-manifest.json").read_text())
 exes = {entry["exe"] for key in ("tests", "imports_only", "sabotage") for entry in manifest[key]}
 for exe in sorted(exes):
+    if exe == "bin/calib_pe_self_test-rdata-sabotage.exe":
+        continue
     dest = bundle / exe
     dest.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run([sys.argv[3], "--strip-debug", "-o", str(dest), str(build / exe)], check=True)
+# Compute the identity on Ubuntu; Windows only collects and compares process facts.
+tools = rs / "capture/tools"
+identity = subprocess.check_output([sys.executable, "-I", str(tools / "calibrate.py"),
+                                    "--pe-identity", str(bundle / "bin/calib_pe_self_test.exe")])
+(bundle / "calib_pe_self_test.identity.json").write_bytes(identity)
+sys.path.insert(0, str(tools))
+from calibrate import Pe
+image = Pe(str(bundle / "bin/calib_pe_self_test.exe"))
+rdata = next(s for s in image.sections if s["name"] == ".rdata" and s["raw_size"])
+sabotage = bytearray(image.data)
+# Flip a raw padding byte so the program remains runnable; the image hash covers padding too.
+if rdata["raw_size"] <= rdata["virtual_size"]:
+    raise SystemExit("calib PE self-test has no .rdata padding byte for sabotage")
+sabotage[rdata["offset"] + rdata["raw_size"] - 1] ^= 1
+(bundle / "bin/calib_pe_self_test-rdata-sabotage.exe").write_bytes(sabotage)
 for directory in manifest["data"]:
     shutil.copytree(rs / directory, bundle / directory)
 shutil.copyfile(build / "w-manifest.json", bundle / "manifest.json")
@@ -75,7 +92,7 @@ import json, sys
 from pathlib import Path
 bundle = Path(sys.argv[1])
 m = json.loads((bundle / "manifest.json").read_text())
-print(f"windows bundle: {bundle}: {len(m['tests'])} tests, {len(m['imports_only'])} imports-only")
+print(f"windows bundle: {bundle}: {len(m['tests'])} tests, {len(m['imports_only'])} imports-only, {len(m['sabotage'])} imports sabotages")
 PYCOUNT
 	exit 0
 fi

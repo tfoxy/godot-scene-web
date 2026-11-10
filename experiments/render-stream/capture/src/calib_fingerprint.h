@@ -9,6 +9,12 @@
 namespace grc {
 
 struct ProcessFingerprint {
+  std::string platform = "linux-x86_64";
+  std::string image_sha256;
+  std::string codeview_id;
+  uint32_t time_date_stamp = 0, size_of_image = 0;
+  uint64_t image_base = 0;
+  bool dynamic_base = false;
   std::string exe_path;
   std::string exe_sha256;
   std::string build_id;  // empty when the running binary has no GNU build-id
@@ -18,7 +24,7 @@ struct ProcessFingerprint {
   int pid = 0;
   // Executable mappings of the main binary, as [begin, end) pairs.
   std::vector<std::pair<uint64_t, uint64_t>> exec_ranges;
-  // Raw /proc/self/maps lines that belong to the main binary.
+  // Main binary mappings (raw proc lines on Linux, section summaries on Windows).
   std::vector<std::string> exe_maps;
 
   bool in_exec_range(uint64_t address) const;

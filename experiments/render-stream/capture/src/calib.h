@@ -21,6 +21,12 @@ struct Calibration {
   std::string platform;
   std::string flavor;
   bool pie = false;
+  std::string image_sha256;
+  std::string codeview_id;
+  bool codeview_id_present = false;
+  int64_t time_date_stamp = 0, size_of_image = 0;
+  uint64_t image_base = 0;
+  bool dynamic_base = false;
 
   uint64_t abstract_vtable_vaddr = 0;
   uint64_t concrete_vtable_vaddr = 0;
@@ -29,6 +35,10 @@ struct Calibration {
   int64_t slot_count = 0;
   int64_t anchors_total = 0;
   int64_t anchors_matched = 0;
+  std::string placeholder_kind = "null";
+  uint64_t pure_placeholder = 0;
+  std::vector<std::string> dropped_families;
+  std::vector<std::string> devirtualized_slots;
 
   // calibrator.version, as written (a decimal string); empty when absent.
   std::string calibrator_version;

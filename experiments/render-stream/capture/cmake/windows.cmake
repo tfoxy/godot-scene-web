@@ -66,6 +66,19 @@ function(grc_w_test name)
     "{\"name\":${name_json},\"exe\":\"bin/$<TARGET_FILE_NAME:${W_TARGET}>\",\"args\":${args},\"env\":${env}}")
 endfunction()
 
+grc_w_test(calib_pe_self TARGET calib_pe_self_test
+  SOURCES test/calib_pe_self_test.cpp src/calib.cpp src/calib_fingerprint_win32.cpp
+    src/pe_image.cpp src/iface.cpp src/rs_sha256.cpp
+  INCLUDES vendor LIBS grc_platform ARGS calib_pe_self_test.identity.json)
+target_link_options(calib_pe_self_test PRIVATE -Wl,--build-id)
+# The bundle builder makes this copy after stripping, so identity is measured on shipped bytes.
+set_property(GLOBAL APPEND PROPERTY GRC_W_TESTS
+  "{\"name\":\"calib_pe_rdata_sabotage\",\"exe\":\"bin/calib_pe_self_test-rdata-sabotage.exe\",\"args\":[\"calib_pe_self_test.identity.json\",\"--expect-image-mismatch\"],\"env\":{}}")
+grc_w_test(calib_slot_mask TARGET calib_slot_mask_test
+  SOURCES test/calib_slot_mask_test.cpp src/calib.cpp src/calib_fingerprint_win32.cpp
+    src/pe_image.cpp src/iface.cpp src/rs_sha256.cpp
+  INCLUDES vendor LIBS grc_platform)
+
 grc_w_test(abi_decode TARGET abi_decode_test SOURCES test/abi_decode.cpp)
 grc_w_test(rs_mirror TARGET rs_mirror_test
   SOURCES test/rs_mirror_test.cpp src/rs_mirror.cpp src/rs_texture_delivery.cpp src/rs_shader_payload.cpp
@@ -178,7 +191,7 @@ grc_w_test(rs_reload TARGET rs_reload_test
 # rs_texture_release: wall-clock assertion on a shared VM.
 # rs_basis_*: basisu, bash + godot. rs_live_coding_golden*: sh -c + cmp.
 # rs_platform_clock: POSIX clock_gettime linker-wrap regression test.
-# calib_fingerprint: POSIX ELF/proc collector; the PE collector is not implemented yet.
+# calib_fingerprint: POSIX ELF/proc fault injection; calib_pe_self covers Windows identity.
 # rs_net_module also needs unchanged rs_ws/rs_carrier_set socket sources ported.
 
 add_library(grc_platform STATIC src/rs_platform_win32.cpp)

@@ -231,6 +231,33 @@ bool read_string_map(JsonParser *parser, std::vector<std::pair<std::string, int6
   return parser->error().empty();
 }
 
+bool read_string_array(JsonParser *parser, std::vector<std::string> *out, bool objects) {
+  if (!parser->expect('[')) return false;
+  parser->skip_space();
+  while (parser->peek() != ']') {
+    std::string value;
+    if (objects) {
+      if (!parser->parse_object_begin()) return false;
+      std::string key;
+      bool found = false;
+      while (parser->next_key(&key)) {
+        if (key == "key") {
+          if (!parser->read_string(&value)) return false;
+          found = true;
+        } else if (!parser->skip_value()) return false;
+      }
+      if (!found || !parser->error().empty()) return false;
+    } else if (!parser->read_string(&value)) return false;
+    out->push_back(value);
+    parser->skip_space();
+    if (parser->peek() == ']') break;
+    if (!parser->expect(',')) return false;
+    parser->skip_space();
+    if (parser->peek() == ']') return false;
+  }
+  return parser->expect(']');
+}
+
 bool read_file(const std::string &path, std::string *out) {
   FILE *handle = rs::open_file(path, "rb");
   if (handle == nullptr) {
@@ -335,6 +362,25 @@ bool load_calibration(const std::string &path, Calibration *out, std::string *er
             *error = "build_id is neither a string nor null";
             return false;
           }
+        } else if (sub == "image_sha256") {
+          if (!parser.read_string(&out->image_sha256)) { *error = "image_sha256 is not a string"; return false; }
+        } else if (sub == "codeview_id") {
+          if (parser.read_null()) out->codeview_id_present = false;
+          else if (parser.read_string(&out->codeview_id)) out->codeview_id_present = true;
+          else { *error = "codeview_id is neither a string nor null"; return false; }
+        } else if (sub == "time_date_stamp" || sub == "size_of_image") {
+          int64_t value = 0;
+          if (!parser.read_integer(&value) || value < 0 || value > 0xffffffffLL) {
+            *error = sub + " is not a uint32"; return false;
+          }
+          if (sub == "time_date_stamp") out->time_date_stamp = value;
+          else out->size_of_image = value;
+        } else if (sub == "image_base") {
+          std::string value;
+          if (!parser.read_string(&value)) { *error = "image_base is not a string"; return false; }
+          out->image_base = parse_hex(value);
+        } else if (sub == "dynamic_base") {
+          if (!parser.read_bool(&out->dynamic_base)) { *error = "dynamic_base is not a boolean"; return false; }
         } else if (sub == "sha256") {
           parser.read_string(&out->sha256);
         } else if (sub == "platform") {
@@ -371,6 +417,17 @@ bool load_calibration(const std::string &path, Calibration *out, std::string *er
           } else {
             out->concrete_vtable_vaddr = parsed;
           }
+        } else if (sub == "placeholder_kind") {
+          if (!parser.read_string(&out->placeholder_kind) ||
+              (out->placeholder_kind != "null" && out->placeholder_kind != "code")) {
+            *error = "invalid placeholder_kind"; return false;
+          }
+        } else if (sub == "pure_placeholder") {
+          if (!parser.read_null()) {
+            std::string value;
+            if (!parser.read_string(&value)) { *error = "pure_placeholder is neither a string nor null"; return false; }
+            out->pure_placeholder = parse_hex(value);
+          }
         } else if (sub == "concrete_class") {
           parser.read_string(&out->concrete_class);
         } else if (sub == "object_prefix") {
@@ -385,6 +442,11 @@ bool load_calibration(const std::string &path, Calibration *out, std::string *er
           *error = "malformed rendering_server." + sub;
           return false;
         }
+      }
+    } else if (key == "dropped_families" || key == "devirtualized_slots") {
+      if (!read_string_array(&parser, key == "dropped_families" ? &out->dropped_families : &out->devirtualized_slots,
+                             key == "devirtualized_slots")) {
+        *error = "malformed " + key; return false;
       }
     } else if (key == "slots") {
       if (!read_string_map(&parser, &out->slots)) {
@@ -468,6 +530,30 @@ bool check_fingerprint(const Calibration &calib, const ProcessFingerprint &fp,
                        std::vector<CheckResult> *checks) {
   bool ok = true;
 
+  if (fp.platform == "windows-x86_64") {
+    const bool sha_ok = !fp.image_sha256.empty() && fp.image_sha256 == calib.image_sha256;
+    record(checks, "image_sha256", sha_ok, "live " + fp.image_sha256 + " record " + calib.image_sha256);
+    const bool version_ok = !fp.version_string.empty() && fp.version_string == calib.version_string;
+    record(checks, "version_string", version_ok,
+           "live '" + fp.version_string + "' record '" + calib.version_string + "'");
+    bool id_ok = calib.codeview_id_present ? fp.codeview_id == calib.codeview_id : fp.codeview_id.empty();
+    std::string detail = calib.codeview_id_present ? "live " + fp.codeview_id + " record " + calib.codeview_id :
+      (fp.codeview_id.empty() ? "absent in both" : "live binary has one, record does not");
+    id_ok = id_ok && fp.time_date_stamp == calib.time_date_stamp && fp.size_of_image == calib.size_of_image;
+    detail += " time_date_stamp " + std::to_string(fp.time_date_stamp) + " record " + std::to_string(calib.time_date_stamp) +
+              " size_of_image " + std::to_string(fp.size_of_image) + " record " + std::to_string(calib.size_of_image);
+    record(checks, "codeview_id", id_ok, detail);
+    const bool aslr_ok = fp.dynamic_base == calib.dynamic_base && fp.image_base == calib.image_base &&
+                         (calib.dynamic_base || fp.load_bias == 0);
+    record(checks, "aslr_and_bias", aslr_ok,
+           std::string("live dynamic_base=") + (fp.dynamic_base ? "true" : "false") +
+           " bias " + format_hex(fp.load_bias) + " image_base " + format_hex(fp.image_base) +
+           " record dynamic_base=" + (calib.dynamic_base ? "true" : "false") + " image_base " + format_hex(calib.image_base));
+    const bool platform_ok = calib.platform == fp.platform;
+    record(checks, "platform", platform_ok, calib.platform);
+    return sha_ok && version_ok && id_ok && aslr_ok && platform_ok;
+  }
+
   const bool sha_ok = !fp.exe_sha256.empty() && fp.exe_sha256 == calib.sha256;
   record(checks, "exe_sha256", sha_ok, "live " + fp.exe_sha256 + " record " + calib.sha256);
   ok = ok && sha_ok;
@@ -548,7 +634,8 @@ bool check_slot_mask(const Calibration &calib, const ProcessFingerprint &fp,
   std::string anchor_detail;
   for (const auto &entry : calib.anchors) {
     const uint64_t value = reinterpret_cast<uint64_t>(abstract[entry.second]);
-    if (value != 0 && fp.in_exec_range(value)) {
+    if (value != 0 && fp.in_exec_range(value) &&
+        (calib.placeholder_kind != "code" || value != calib.pure_placeholder + fp.load_bias)) {
       ++matched;
     } else if (anchor_detail.empty()) {
       anchor_detail = entry.first + "@" + std::to_string(entry.second) + " = " + format_hex(value);
@@ -587,11 +674,18 @@ bool check_slot_mask(const Calibration &calib, const ProcessFingerprint &fp,
       }
     }
   }
-  // The placeholder must not itself be a function in the main binary: that
-  // would mean the slot is implemented in RenderingServer and the index does
-  // not refer to the pure method the record claims.
-  const bool pure_distinct =
+  // Null placeholders stay outside executable ranges. Code placeholders must
+  // match the record and must never implement a concrete slot.
+  bool pure_distinct =
       facts->pure_placeholder_known && !fp.in_exec_range(facts->pure_placeholder);
+  if (calib.placeholder_kind == "code") {
+    pure_distinct = facts->pure_placeholder_known &&
+                    facts->pure_placeholder == calib.pure_placeholder + fp.load_bias;
+    for (int64_t i = 0; i < calib.slot_count; ++i) {
+      pure_distinct = pure_distinct &&
+                      facts->pure_placeholder != reinterpret_cast<uint64_t>(concrete[i]);
+    }
+  }
   record(checks, "hooked_slots_pure_in_abstract", placeholder_ok && pure_distinct,
          "placeholder " + format_hex(facts->pure_placeholder) +
              (placeholder_detail.empty() ? "" : " " + placeholder_detail));
