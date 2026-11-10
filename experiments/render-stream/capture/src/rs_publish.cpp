@@ -1,6 +1,6 @@
 #include "rs_publish.h"
 
-#include <sys/random.h>
+#include "rs_platform.h"
 
 #include <algorithm>
 #include <cctype>
@@ -65,7 +65,7 @@ bool FileRecordSink::open(const std::string &path) {
   if (!dir.empty() && !make_directories(dir)) {
     return false;
   }
-  file_ = std::fopen(path.c_str(), "wb");
+  file_ = rs::open_file(path, "wb");
   return file_ != nullptr;
 }
 
@@ -272,17 +272,7 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
 
 std::string generate_id() {
   unsigned char buf[16] = {};
-  std::size_t got = 0;
-  while (got < sizeof(buf)) {
-    const ssize_t n = ::getrandom(buf + got, sizeof(buf) - got, 0);
-    if (n < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      break;  // leaves the remaining bytes zero rather than looping forever
-    }
-    got += static_cast<std::size_t>(n);
-  }
+  (void)rs::fill_random(buf, sizeof(buf));  // leaves remaining bytes zero on failure
   static const char *const hex = "0123456789abcdef";
   std::string out;
   out.reserve(32);

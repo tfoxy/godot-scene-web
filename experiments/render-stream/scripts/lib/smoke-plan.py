@@ -434,10 +434,17 @@ def self_test(m):
     delivery = P("experiments/render-stream/capture/src/rs_texture_delivery.cpp", "experiments/render-stream/capture/test/rs9_codec_test.cpp")
     check("the texture delivery seam reaches the build, the pure tests, gate 0 and gate 8 only (G8k9)",
           set(delivery["targets"]) == {"capture-build", "pure", "native:gate0@rust", "native:gate8@rust"})
-    cache = P("experiments/render-stream/capture/src/rs_texture_cache.cpp", "experiments/render-stream/capture/test/rs_texture_cache_test.cpp",
+    cache = P("experiments/render-stream/capture/src/rs_texture_cache.cpp",
               "experiments/render-stream/scripts/prepare-textures.sh", "experiments/render-stream/scripts/prepare_textures.gd")
     check("the texture cache and the prepare step reach the build, the pure tests, gate 0 and gate 8 only (G8kc)",
           set(cache["targets"]) == {"capture-build", "pure", "native:gate0@rust", "native:gate8@rust"})
+    for name in ("test_paths.h", "rs_texture_cache_test.cpp", "rs_publish_test.cpp", "rs_net_module_test.cpp"):
+        check(f"the file-test helper or consumer {name} reaches the Linux and Windows tests only",
+              set(P("experiments/render-stream/capture/test/" + name)["targets"]) == {"capture-build", "pure", "windows"})
+    check("a cache source and its unit test keep both production and Windows coverage",
+          set(P("experiments/render-stream/capture/src/rs_texture_cache.cpp",
+                "experiments/render-stream/capture/test/rs_texture_cache_test.cpp")["targets"])
+          == {"capture-build", "pure", "windows", "native:gate0@rust", "native:gate8@rust"})
     check("the cache's call sites (hooks.cpp, entry.cpp) next to it still reach everything",
           set(P("experiments/render-stream/capture/src/rs_texture_cache.cpp", "experiments/render-stream/capture/src/entry.cpp")["targets"]) == uni)
     check("a shared capture file next to the delivery seam still reaches everything",

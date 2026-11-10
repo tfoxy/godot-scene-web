@@ -11,11 +11,11 @@
 #include <fstream>
 #include <string>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
 #include "rs_sha256.h"
 #include "rs_texture_cache.h"
+#include "test_paths.h"
 
 namespace {
 
@@ -75,7 +75,8 @@ void test_roundtrip_and_reopen(const std::string &dir) {
   // The same bytes under a KTX2 key live in their own extension.
   const auto k2 = bytes_of(50, 9);
   check(store(c, key_of('a', "uastc", "basisu-1.60/uastc-l2/zstd6/linear"), k2, "ktx2"), "put ktx2");
-  check(fs::exists(dir + "/sha256/" + hash_of(k2) + ".ktx2"), "ktx2 file named by its hash");
+  check(fs::exists(grc::rs::fs_path(dir + "/sha256/" + hash_of(k2) + ".ktx2")),
+        "ktx2 file named by its hash");
   c.close();
 
   TextureCache d;
@@ -98,7 +99,7 @@ void test_corrupt(const std::string &dir) {
   check(store(c, key_of('d'), v), "put d, the same bytes under another key");
   const std::string path = dir + "/sha256/" + hash_of(v) + ".grt";
   {
-    std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);
+    std::fstream f(grc::rs::fs_path(path), std::ios::in | std::ios::out | std::ios::binary);
     f.seekp(10);
     char x = 0x55;
     f.write(&x, 1);
@@ -106,7 +107,7 @@ void test_corrupt(const std::string &dir) {
   std::vector<std::uint8_t> out;
   std::string h;
   check(c.get(key_of('c'), &out, &h) == CacheResult::Corrupt, "a flipped byte is Corrupt");
-  check(!fs::exists(path), "the corrupt file is deleted");
+  check(!fs::exists(grc::rs::fs_path(path)), "the corrupt file is deleted");
   check(!c.has(key_of('c')) && !c.has(key_of('d')), "every row naming it is gone");
   check(c.get(key_of('d'), &out, &h) == CacheResult::Miss, "the sibling key misses now");
   check(c.stats().corrupt == 1, "corrupt counted");
@@ -116,10 +117,10 @@ void test_corrupt(const std::string &dir) {
   // A truncated file and a missing one.
   const auto w = bytes_of(80, 5);
   check(store(c, key_of('e'), w), "put e");
-  fs::resize_file(dir + "/sha256/" + hash_of(w) + ".grt", 40);
+  fs::resize_file(grc::rs::fs_path(dir + "/sha256/" + hash_of(w) + ".grt"), 40);
   check(c.get(key_of('e'), &out, &h) == CacheResult::Corrupt, "a truncated file is Corrupt");
   check(store(c, key_of('e'), w), "put e again");
-  fs::remove(dir + "/sha256/" + hash_of(w) + ".grt");
+  fs::remove(grc::rs::fs_path(dir + "/sha256/" + hash_of(w) + ".grt"));
   check(c.get(key_of('e'), &out, &h) == CacheResult::Miss, "a missing file is a Miss");
   check(!c.has(key_of('e')), "and its row is dropped");
 
@@ -144,7 +145,7 @@ void test_lru(const std::string &dir) {
   check(store(c, key_of('c'), cc), "put c: over budget");
   check(!c.has(key_of('b')), "b (least recently used) was evicted");
   check(c.has(key_of('a')) && c.has(key_of('c')), "a and c stay");
-  check(!fs::exists(dir + "/sha256/" + hash_of(b) + ".grt"), "b's file is gone");
+  check(!fs::exists(grc::rs::fs_path(dir + "/sha256/" + hash_of(b) + ".grt")), "b's file is gone");
   check(c.stats().evicted == 1 && c.stats().bytes == 200, "evicted counted, bytes within budget");
   // Recency survives a reopen.
   c.close();
@@ -240,7 +241,7 @@ void test_compaction(const std::string &dir) {
   c.close();
   TextureCache d;
   check(d.open(CacheConfig{dir, 0}, &err), "reopen compacts");
-  std::ifstream in(dir + "/index-v1.jsonl");
+  std::ifstream in(grc::rs::fs_path(dir + "/index-v1.jsonl"));
   int lines = 0;
   std::string line;
   while (std::getline(in, line)) ++lines;
@@ -251,9 +252,7 @@ void test_compaction(const std::string &dir) {
 }  // namespace
 
 int main() {
-  const std::string root = fs::temp_directory_path().string() + "/rs_texture_cache_test." +
-                           std::to_string(static_cast<long>(::getpid()));
-  fs::remove_all(root);
+  const std::string root = grc::test::temp_directory("rs_texture_cache-évidence'á");
   test_config();
   test_roundtrip_and_reopen(root + "/rt");
   test_corrupt(root + "/corrupt");
@@ -261,7 +260,7 @@ int main() {
   test_sharing_and_validation(root + "/share");
   test_parallel(root + "/par");
   test_compaction(root + "/compact");
-  fs::remove_all(root);
+  check(grc::test::remove_tree(root), "remove the temp directory recursively");
   std::printf("%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

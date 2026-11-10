@@ -1,14 +1,9 @@
 // rs_tracks: TrackHub (rs_tracks.h).
 #include "rs_tracks.h"
 
-#include <sys/random.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
+#include "rs_platform.h"
 
 #include <algorithm>
-#include <ctime>
-#include <cerrno>
 #include <cstring>
 #include <set>
 #include <utility>
@@ -192,7 +187,7 @@ void append_json_string(std::string *out, const std::string &value) {
   out->push_back('"');
 }
 
-std::string quoted(const std::string &value) {
+std::string json_quoted(const std::string &value) {
   std::string out;
   append_json_string(&out, value);
   return out;
@@ -381,14 +376,8 @@ bool format_ok(std::string_view format) {
 
 std::string generate_credential() {
   unsigned char buf[32] = {};
-  std::size_t got = 0;
-  while (got < sizeof(buf)) {
-    const ssize_t n = ::getrandom(buf + got, sizeof(buf) - got, 0);
-    if (n < 0) {
-      if (errno == EINTR) continue;
-      return std::string();  // no entropy: the caller refuses rather than write a weak secret
-    }
-    got += static_cast<std::size_t>(n);
+  if (!fill_random(buf, sizeof(buf))) {
+    return std::string();  // no entropy: the caller refuses rather than write a weak secret
   }
   static const char *const hex = "0123456789abcdef";
   std::string out;
@@ -401,21 +390,7 @@ std::string generate_credential() {
 }
 
 bool write_secret_file(const std::string &path, const std::string &text) {
-  const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-  if (fd < 0) return false;
-  bool ok = ::fchmod(fd, 0600) == 0;
-  std::size_t off = 0;
-  while (ok && off < text.size()) {
-    const ssize_t n = ::write(fd, text.data() + off, text.size() - off);
-    if (n < 0) {
-      if (errno == EINTR) continue;
-      ok = false;
-      break;
-    }
-    off += static_cast<std::size_t>(n);
-  }
-  ok = ::close(fd) == 0 && ok;
-  return ok;
+  return write_private_file(path, text);
 }
 
 // ----------------------------------------------------------------------------- the hub
@@ -454,9 +429,7 @@ TrackHub::~TrackHub() {
 
 std::int64_t TrackHub::wall_now_s() const {
   if (config_.wall_clock_s) return config_.wall_clock_s();
-  struct timespec ts {};
-  ::clock_gettime(CLOCK_REALTIME, &ts);
-  return static_cast<std::int64_t>(ts.tv_sec);
+  return rs::wall_clock_s();
 }
 
 TrackHub::Conn *TrackHub::find(std::uint32_t conn) {
@@ -519,7 +492,7 @@ void TrackHub::tap(Conn &c, const std::string &line) {
   if (c.tap == nullptr) {
     const std::string name = c.info.source != 0 ? "track-" + std::to_string(c.info.source) + ".jsonl"
                                                 : "track-conn-" + std::to_string(c.conn) + ".jsonl";
-    c.tap = std::fopen(path_join(config_.tap_dir, name).c_str(), "wb");
+    c.tap = open_file(path_join(config_.tap_dir, name), "wb");
     if (c.tap == nullptr) return;
     if (!c.tap_hello.empty()) {
       std::fputs(c.tap_hello.c_str(), c.tap);
@@ -552,7 +525,7 @@ void TrackHub::close_tap(Conn &c) {
 }
 
 std::string TrackHub::error_json(const std::string &reason, const std::string &detail) {
-  return "{\"type\":\"track-error\",\"reason\":" + quoted(reason) + ",\"detail\":" + quoted(detail) + "}";
+  return "{\"type\":\"track-error\",\"reason\":" + json_quoted(reason) + ",\"detail\":" + json_quoted(detail) + "}";
 }
 
 void TrackHub::on_event(const live::Event &e, std::uint64_t now_ns) {
@@ -596,7 +569,7 @@ void TrackHub::on_event(const live::Event &e, std::uint64_t now_ns) {
         if (s != nullptr) ++s->closes[key];
         tap_counts(*c, true);
         tap(*c, "{\"event\":\"close\",\"by\":\"peer\",\"code\":" + std::to_string(e.code) +
-                    ",\"reason\":" + quoted(e.reason) + ",\"messages\":" +
+                    ",\"reason\":" + json_quoted(e.reason) + ",\"messages\":" +
                     std::to_string(c->messages_in) + "}");
         log_("live: track close source=" + std::to_string(c->info.source) + " code=" +
              std::to_string(e.code) + " reason=" + (e.reason.empty() ? key : e.reason) +
@@ -636,15 +609,15 @@ void TrackHub::on_hello(Conn &c, const std::string &text, std::uint64_t now_ns) 
   c.info.origin = c.origin;
   if (!config_.tap_dir.empty()) {
     // The hello with its credential redacted (Q9): never secret material in a tap.
-    std::string line = "{\"event\":\"hello\",\"kind\":" + quoted(hello.kind) +
+    std::string line = "{\"event\":\"hello\",\"kind\":" + json_quoted(hello.kind) +
                        ",\"formats\":" + quoted_list(hello.formats) +
                        ",\"down_formats\":" + quoted_list(hello.down_formats) +
-                       ",\"credential\":\"<redacted>\",\"client\":" + quoted(hello.client) +
+                       ",\"credential\":\"<redacted>\",\"client\":" + json_quoted(hello.client) +
                        ",\"view\":" +
-                       (hello.view ? "{\"stream_id\":" + quoted(hello.view->stream_id) +
+                       (hello.view ? "{\"stream_id\":" + json_quoted(hello.view->stream_id) +
                                          ",\"connection\":" + std::to_string(hello.view->connection) + "}"
                                    : std::string("null")) +
-                       ",\"carrier\":" + quoted(c.carrier) + "}";
+                       ",\"carrier\":" + json_quoted(c.carrier) + "}";
     c.tap_hello = std::move(line);
   }
   // 2. The grant (GRC_LIVE_TRACKS).
@@ -708,9 +681,9 @@ void TrackHub::on_hello(Conn &c, const std::string &text, std::uint64_t now_ns) 
   c.refill_ns = c.last_rx_ns;
   const std::string ready =
       "{\"type\":\"track-ready\",\"protocol\":\"" + std::string(kTrackProtocolV1) +
-      "\",\"source\":" + std::to_string(c.info.source) + ",\"kind\":" + quoted(c.info.kind) +
-      ",\"format\":" + quoted(format) +
-      ",\"down_format\":" + (down_format.empty() ? std::string("null") : quoted(down_format)) +
+      "\",\"source\":" + std::to_string(c.info.source) + ",\"kind\":" + json_quoted(c.info.kind) +
+      ",\"format\":" + json_quoted(format) +
+      ",\"down_format\":" + (down_format.empty() ? std::string("null") : json_quoted(down_format)) +
       ",\"keepalive_ms\":" + std::to_string(config_.keepalive_ms) +
       ",\"max_message_bytes\":" + std::to_string(config_.max_message_bytes) +
       ",\"rate\":{\"messages_per_second\":" + std::to_string(config_.rate_per_s) +
@@ -718,9 +691,9 @@ void TrackHub::on_hello(Conn &c, const std::string &text, std::uint64_t now_ns) 
   text_out(c, ready);
   c.tap_second_ns = c.last_rx_ns;
   tap(c, "{\"event\":\"ready\",\"source\":" + std::to_string(c.info.source) + ",\"format\":" +
-             quoted(format) + ",\"down_format\":" +
-             (down_format.empty() ? std::string("null") : quoted(down_format)) +
-             (config_.caps == CapsMode::Hmac ? ",\"subject\":" + quoted(c.info.subject) : std::string()) + "}");
+             json_quoted(format) + ",\"down_format\":" +
+             (down_format.empty() ? std::string("null") : json_quoted(down_format)) +
+             (config_.caps == CapsMode::Hmac ? ",\"subject\":" + json_quoted(c.info.subject) : std::string()) + "}");
   KindStats *s = stats(c.info.kind);
   if (s != nullptr) ++s->opened;
   changed_ = true;
@@ -777,7 +750,7 @@ void TrackHub::refuse(Conn &c, std::uint16_t code, const std::string &reason, co
   log_("live: track refused reason=" + reason + " detail=" + (detail.empty() ? "-" : detail) +
        " carrier=" + c.carrier);
   if (!config_.tap_dir.empty()) {
-    tap(c, "{\"event\":\"error\",\"reason\":" + quoted(reason) + ",\"detail\":" + quoted(detail) +
+    tap(c, "{\"event\":\"error\",\"reason\":" + json_quoted(reason) + ",\"detail\":" + json_quoted(detail) +
                ",\"code\":" + std::to_string(code) + "}");
   }
   c.phase = Conn::Phase::Closing;
@@ -810,7 +783,7 @@ void TrackHub::host_close(std::uint32_t conn, std::uint16_t code, const std::str
   if (s != nullptr) ++s->closes[reason];
   tap_counts(*c, true);
   tap(*c, "{\"event\":\"close\",\"by\":\"host\",\"code\":" + std::to_string(code) +
-              ",\"reason\":" + quoted(reason) + ",\"messages\":" + std::to_string(c->messages_in) + "}");
+              ",\"reason\":" + json_quoted(reason) + ",\"messages\":" + std::to_string(c->messages_in) + "}");
   log_("live: track close source=" + std::to_string(c->info.source) + " code=" + std::to_string(code) +
        " reason=" + reason + " messages=" + std::to_string(c->messages_in));
   c->phase = Conn::Phase::Closing;

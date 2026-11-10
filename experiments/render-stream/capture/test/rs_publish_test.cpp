@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -27,6 +28,8 @@
 #include "rs13_predict.h"
 #include "rs2_codec.h"
 #include "rs2_diff.h"
+#include "rs_platform.h"
+#include "test_paths.h"
 #include "rs2_golden_states.h"
 #include "rs2_snapshot.h"
 #include "rs_mesh_payload.h"
@@ -885,22 +888,35 @@ struct TextureScene {
 
 std::string tmp_dir(const std::string &name) {
   const std::string dir = std::string(GRC_TEST_TMP_DIR) + "/" + name;
-  const int removed = std::system(("rm -rf '" + dir + "'").c_str());
-  check(removed == 0, "clean " + dir);
+  check(grc::test::remove_tree(dir), "clean " + dir);
   return dir;
 }
 
 std::vector<std::uint8_t> read_bytes(const std::string &path) {
-  std::ifstream in(path, std::ios::binary);
+  std::ifstream in(grc::rs::fs_path(path), std::ios::binary);
   return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(in)),
                                    std::istreambuf_iterator<char>());
 }
 
 std::string read_text(const std::string &path) {
-  std::ifstream in(path);
+  std::ifstream in(grc::rs::fs_path(path));
   std::stringstream text;
   text << in.rdbuf();
   return text.str();
+}
+
+void test_tmp_dir_cleanup() {
+  const std::string name = "évidence'á/ñ";
+  const std::string dir = tmp_dir(name);
+  check(grc::rs::make_directories(dir), "create a quoted non-ASCII temp directory");
+  {
+    std::ofstream out(grc::rs::fs_path(dir + "/marker.json"));
+    out << "{}\n";
+    check(out.good(), "write a marker in the temp directory");
+  }
+  check(read_text(dir + "/marker.json") == "{}\n", "read the temp directory marker");
+  tmp_dir(name);
+  check(!std::filesystem::exists(grc::rs::fs_path(dir)), "remove the temp directory recursively");
 }
 
 std::string sha_of(const std::vector<std::uint8_t> &bytes) {
@@ -1975,8 +1991,7 @@ void test_file_writer() {
   TextureScene scene;
   check(publisher.publish(scene.frame(1), 1, 0), "frame 1 queues its payloads");
   failing.drain();
-  const int removed = std::system(("rm -rf '" + dir + "/sha256'").c_str());
-  check(removed == 0, "remove the store's payload directory");
+  check(grc::test::remove_tree(dir + "/sha256"), "remove the store's payload directory");
   check(publisher.publish(scene.frame(3), 3, 0), "frame 3 queues A1 (the write fails later)");
   failing.drain();
   check(!publisher.publish(scene.frame(4), 4, 0) &&
@@ -1987,6 +2002,7 @@ void test_file_writer() {
 
 int main() {
   grc::rs13::set_verify_meta(true);  // W13p: predict_meta() == the meta JSON
+  test_tmp_dir_cleanup();
   test_file_writer();
   test_lane_former();
   test_start_two_sinks();

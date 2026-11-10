@@ -8,8 +8,8 @@
 #include <fstream>
 #include <set>
 #include <sstream>
-#include <unistd.h>
 
+#include "rs_platform.h"
 #include "rs_sha256.h"
 
 namespace grc {
@@ -142,13 +142,13 @@ bool TextureCache::open(const CacheConfig &config, std::string *error) {
     return true;
   }
   std::error_code ec;
-  fs::create_directories(fs::path(config.dir) / "sha256", ec);
+  fs::create_directories(fs_path(config.dir) / "sha256", ec);
   if (ec) {
     *error = "GRC_TEXTURE_CACHE_DIR '" + config.dir + "' is not usable: " + ec.message();
     return false;
   }
   const std::string index = config.dir + "/index-v1.jsonl";
-  std::ifstream in(index);
+  std::ifstream in(fs_path(index));
   std::string line;
   std::map<std::string, std::string> f;
   while (std::getline(in, line)) {
@@ -171,6 +171,8 @@ bool TextureCache::open(const CacheConfig &config, std::string *error) {
     clock_ = std::max(clock_, row.use);
     rows_[key] = row;
   }
+  // Windows readers deny replacement until closed; compaction replaces this index.
+  in.close();
   enabled_ = true;
   if (lines_ > static_cast<std::int64_t>(rows_.size()) * 2 + 16) {
     compact_locked();
@@ -195,7 +197,7 @@ std::string TextureCache::dir() const {
 }
 
 void TextureCache::append_row(const CacheKey &key, const Row &row) {
-  std::ofstream out(config_.dir + "/index-v1.jsonl", std::ios::app);
+  std::ofstream out(fs_path(config_.dir + "/index-v1.jsonl"), std::ios::app);
   out << "{\"v\":1,\"source\":\"" << key.source << "\",\"encoding\":\"" << key.encoding
       << "\",\"params\":\"" << key.params << "\",\"hash\":\"" << row.hash << "\",\"bytes\":"
       << row.bytes << ",\"ext\":\"" << row.ext << "\",\"use\":" << row.use << "}\n";
@@ -203,7 +205,7 @@ void TextureCache::append_row(const CacheKey &key, const Row &row) {
 }
 
 void TextureCache::append_delete(const CacheKey &key) {
-  std::ofstream out(config_.dir + "/index-v1.jsonl", std::ios::app);
+  std::ofstream out(fs_path(config_.dir + "/index-v1.jsonl"), std::ios::app);
   out << "{\"v\":1,\"del\":1,\"source\":\"" << key.source << "\",\"encoding\":\"" << key.encoding
       << "\",\"params\":\"" << key.params << "\"}\n";
   ++lines_;
@@ -211,9 +213,9 @@ void TextureCache::append_delete(const CacheKey &key) {
 
 void TextureCache::compact_locked() {
   const std::string index = config_.dir + "/index-v1.jsonl";
-  const std::string tmp = index + ".tmp." + std::to_string(::getpid());
+  const std::string tmp = index + ".tmp." + std::to_string(process_id());
   {
-    std::ofstream out(tmp, std::ios::trunc);
+    std::ofstream out(fs_path(tmp), std::ios::trunc);
     for (const auto &kv : rows_) {
       out << "{\"v\":1,\"source\":\"" << kv.first.source << "\",\"encoding\":\""
           << kv.first.encoding << "\",\"params\":\"" << kv.first.params << "\",\"hash\":\""
@@ -222,9 +224,9 @@ void TextureCache::compact_locked() {
     }
   }
   std::error_code ec;
-  fs::rename(tmp, index, ec);
+  fs::rename(fs_path(tmp), fs_path(index), ec);
   if (ec) {
-    fs::remove(tmp, ec);
+    fs::remove(fs_path(tmp), ec);
     return;
   }
   lines_ = static_cast<std::int64_t>(rows_.size());
@@ -245,7 +247,7 @@ void TextureCache::drop_hash_locked(const std::string &hash) {
     append_delete(key);
   }
   std::error_code ec;
-  fs::remove(file_path(hash, ext), ec);
+  fs::remove(fs_path(file_path(hash, ext)), ec);
 }
 
 std::uint64_t TextureCache::total_bytes_locked() const {
@@ -305,12 +307,14 @@ CacheResult TextureCache::get(const CacheKey &key, std::vector<std::uint8_t> *by
     path = file_path(row.hash, row.ext);
   }
   // The read and the verify run outside the lock: workers hit the cache in parallel.
-  std::ifstream in(path, std::ios::binary);
+  std::ifstream in(fs_path(path), std::ios::binary);
   std::vector<std::uint8_t> data;
   const bool present = static_cast<bool>(in);
   if (present) {
     data.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
   }
+  // Release the reader before corrupt-file deletion, which Windows otherwise refuses.
+  in.close();
   const bool good =
       present && data.size() == row.bytes && sha256_hex(data.data(), data.size()) == row.hash;
   std::lock_guard<std::mutex> lock(mutex_);
@@ -347,21 +351,21 @@ bool TextureCache::put(const CacheKey &key, const std::string &hash, const std::
   }
   const std::string path = file_path(hash, ext);
   std::error_code ec;
-  if (!fs::exists(path, ec) || fs::file_size(path, ec) != size) {
-    const std::string tmp = path + ".tmp." + std::to_string(::getpid()) + "." +
+  if (!fs::exists(fs_path(path), ec) || fs::file_size(fs_path(path), ec) != size) {
+    const std::string tmp = path + ".tmp." + std::to_string(process_id()) + "." +
                             std::to_string(++tmp_counter_);
     {
-      std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+      std::ofstream out(fs_path(tmp), std::ios::binary | std::ios::trunc);
       out.write(reinterpret_cast<const char *>(data), static_cast<std::streamsize>(size));
       if (!out) {
         out.close();
-        fs::remove(tmp, ec);
+        fs::remove(fs_path(tmp), ec);
         return false;
       }
     }
-    fs::rename(tmp, path, ec);
+    fs::rename(fs_path(tmp), fs_path(path), ec);
     if (ec) {
-      fs::remove(tmp, ec);
+      fs::remove(fs_path(tmp), ec);
       return false;
     }
   }

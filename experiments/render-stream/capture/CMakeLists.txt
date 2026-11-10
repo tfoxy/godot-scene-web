@@ -108,8 +108,19 @@ add_custom_command(
   VERBATIM)
 add_custom_target(grc_inject_script DEPENDS ${GRC_INJECT_GEN}/embed.stamp)
 
+# Engine-free checks for process identity collection and calibration refusals.
+add_executable(calib_fingerprint_test test/calib_fingerprint_test.cpp src/calib.cpp
+  src/calib_fingerprint_posix.cpp src/iface.cpp src/rs_sha256.cpp)
+target_include_directories(calib_fingerprint_test PRIVATE src vendor)
+target_link_libraries(calib_fingerprint_test PRIVATE grc_warnings grc_platform)
+target_link_options(calib_fingerprint_test PRIVATE
+  -Wl,--wrap=readlink -Wl,--wrap=dl_iterate_phdr -Wl,--wrap=fopen)
+add_test(NAME calib_fingerprint COMMAND calib_fingerprint_test)
+
 add_library(render_stream_capture SHARED
+  src/rs_platform_posix.cpp
   src/calib.cpp
+  src/calib_fingerprint_posix.cpp
   src/entry.cpp
   src/hooks.cpp
   src/iface.cpp
@@ -790,3 +801,12 @@ add_executable(rs_capture_api_test test/rs_capture_api_test.cpp src/rs_capture_a
 target_include_directories(rs_capture_api_test PRIVATE src)
 target_link_libraries(rs_capture_api_test PRIVATE grc_warnings grc_platform Threads::Threads)
 add_test(NAME rs_capture_api COMMAND rs_capture_api_test)
+
+# These standalone consumers share the same platform implementation as the capture.
+foreach(target IN ITEMS rs_publish_test rs_ws_test rs_carrier_set_test rs_track_test
+    rs_carrier_ext_test rs_expose_test rs_net_module_test rs_live_test rs_live_window_test
+    rs_live_host rs_texture_worker_test rs_adopt_test rs_histogram_test
+    rs_canvas_texture_shim_test rs_registry_test rs_registry_bench rs_texture_cache_test
+    rs_reload_test)
+  target_link_libraries(${target} PRIVATE grc_platform)
+endforeach()

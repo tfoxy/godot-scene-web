@@ -188,6 +188,17 @@
   },
   "rules": [
     {
+      "why": "Capture file-test helpers and their engine-free consumers run in ctest and the Windows manifest; production sources are mapped separately",
+      "paths": [
+        "experiments/render-stream/capture/test/test_paths.h",
+        "experiments/render-stream/capture/test/rs_publish_test.cpp",
+        "experiments/render-stream/capture/test/rs_texture_cache_test.cpp",
+        "experiments/render-stream/capture/test/rs_net_module_test.cpp"
+      ],
+      "reach": ["capture-build", "pure", "windows"],
+      "exclusive": true
+    },
+    {
       "why": "Item identity re-entry host unit tests and callback lifetime source checks",
       "paths": [
         "experiments/render-stream/capture/test/rs_item_meta_host_test.cpp",
@@ -442,6 +453,7 @@
       "paths": [
         "experiments/render-stream/capture/cmake/llvm-mingw-x86_64.cmake",
         "experiments/render-stream/capture/cmake/windows.cmake",
+        "experiments/render-stream/capture/src/rs_platform_win32.cpp",
         "experiments/render-stream/scripts/lib/llvm-mingw.sh",
         "experiments/render-stream/scripts/w-imports.py",
         "experiments/render-stream/scripts/lib/w-run.py",
@@ -453,7 +465,10 @@
     },
     {
       "why": "Shared platform tests: Linux capture build, pure self-tests and the Windows bundle",
-      "paths": ["experiments/render-stream/capture/cmake/platform-tests.cmake"],
+      "paths": [
+        "experiments/render-stream/capture/cmake/platform-tests.cmake",
+        "experiments/render-stream/capture/test/rs_platform_paths_test.cpp"
+      ],
       "reach": ["capture-build", "pure", "windows"],
       "exclusive": true
     },

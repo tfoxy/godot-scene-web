@@ -214,8 +214,10 @@ std::int64_t ThreadCpuClock::now_ns() const {
 }
 std::int64_t wall_clock_s() {
   struct timespec ts{};
-  return ::clock_gettime(CLOCK_REALTIME, &ts) == 0 ? ts.tv_sec : -1;
+  ::clock_gettime(CLOCK_REALTIME, &ts);
+  return static_cast<std::int64_t>(ts.tv_sec);
 }
+std::string library_file_name(const std::string &stem) { return "lib" + stem + ".so"; }
 void *library_open(const std::string &path, std::string *error) {
   void *handle = ::dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (!handle && error) {

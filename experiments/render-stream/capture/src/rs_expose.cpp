@@ -1,6 +1,6 @@
 #include "rs_expose.h"
 
-#include <arpa/inet.h>
+#include "rs_platform.h"
 
 namespace grc {
 namespace live {
@@ -55,8 +55,9 @@ bool parse_lan_plaintext(const char *text, Expose expose, bool *out, std::string
 bool is_loopback_literal(const std::string &host) { return host == "127.0.0.1" || host == "::1"; }
 
 bool is_ip_literal(const std::string &host) {
-  unsigned char buf[sizeof(in6_addr)];
-  return inet_pton(AF_INET, host.c_str(), buf) == 1 || inet_pton(AF_INET6, host.c_str(), buf) == 1;
+  rs::IpAddress address;
+  return rs::parse_ip_literal(host, rs::AddrFamily::IPv4, &address) ||
+         rs::parse_ip_literal(host, rs::AddrFamily::IPv6, &address);
 }
 
 bool listen_host_allowed(const std::string &host, Expose expose) {

@@ -91,6 +91,7 @@ private:
 #endif
 };
 std::int64_t wall_clock_s();
+std::string library_file_name(const std::string &stem);
 void *library_open(const std::string &utf8_path, std::string *error);
 void *library_symbol(void *library, const char *name);
 void *library_loaded(const std::string &file_name);

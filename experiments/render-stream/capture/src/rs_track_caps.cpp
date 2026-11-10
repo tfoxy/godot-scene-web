@@ -1,9 +1,8 @@
 // rs_track_caps: per-viewer track capabilities (rs_track_caps.h).
 #include "rs_track_caps.h"
 
-#include <sys/random.h>
+#include "rs_platform.h"
 
-#include <cerrno>
 #include <set>
 #include <vector>
 
@@ -196,15 +195,7 @@ std::string key_to_hex(std::string_view key) {
 
 std::string generate_key() {
   std::string buf(kKeyBytes, '\0');
-  std::size_t got = 0;
-  while (got < buf.size()) {
-    const ssize_t n = ::getrandom(&buf[got], buf.size() - got, 0);
-    if (n < 0) {
-      if (errno == EINTR) continue;
-      return std::string();
-    }
-    got += static_cast<std::size_t>(n);
-  }
+  if (!fill_random(buf.data(), buf.size())) return std::string();
   return buf;
 }
 

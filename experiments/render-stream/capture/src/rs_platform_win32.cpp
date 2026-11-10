@@ -24,6 +24,19 @@
 
 namespace grc::rs {
 namespace {
+enum class FileFault { None, NarrowPath, PlainRename };
+FileFault file_fault() {
+  // Read only on the first open or replacement, never during module initialization.
+  static const auto fault = [] {
+    const char *value = std::getenv("GRC_PLATFORM_FAULT");
+    if (value && std::strcmp(value, "narrow-path") == 0)
+      return FileFault::NarrowPath;
+    if (value && std::strcmp(value, "plain-rename") == 0)
+      return FileFault::PlainRename;
+    return FileFault::None;
+  }();
+  return fault;
+}
 bool widen(const std::string &text, std::wstring *out) {
   if (text.empty()) {
     out->clear();
@@ -366,6 +379,7 @@ std::int64_t wall_clock_s() {
              std::chrono::system_clock::now().time_since_epoch())
       .count();
 }
+std::string library_file_name(const std::string &stem) { return stem + ".dll"; }
 void *library_open(const std::string &path, std::string *error) {
   std::wstring wide;
   if (!widen(path, &wide)) {
@@ -427,6 +441,8 @@ std::filesystem::path fs_path(const std::string &utf8) {
       std::u8string(reinterpret_cast<const char8_t *>(utf8.data()), utf8.size()));
 }
 std::FILE *open_file(const std::string &path, const char *mode) {
+  if (file_fault() == FileFault::NarrowPath)
+    return std::fopen(path.c_str(), mode);
   std::wstring wide, wmode;
   if (!widen(path, &wide) || !widen(mode, &wmode)) {
     errno = EINVAL;
@@ -457,6 +473,13 @@ bool remove_file(const std::string &path, std::string *error) {
   return false;
 }
 bool replace_file(const std::string &from, const std::string &to, std::string *error) {
+  if (file_fault() == FileFault::PlainRename) {
+    if (std::rename(from.c_str(), to.c_str()) == 0)
+      return true;
+    if (error)
+      *error = std::string("rename: ") + std::strerror(errno);
+    return false;
+  }
   std::wstring a, b;
   if (widen(from, &a) && widen(to, &b) &&
       ::MoveFileExW(a.c_str(), b.c_str(), MOVEFILE_REPLACE_EXISTING))

@@ -55,6 +55,11 @@ void set_env(const char *name, const char *value) {
 } // namespace
 
 int main() {
+#ifdef _WIN32
+  check(library_file_name("render_stream_net") == "render_stream_net.dll", "library_file_name");
+#else
+  check(library_file_name("render_stream_net") == "librender_stream_net.so", "library_file_name");
+#endif
   std::array<unsigned char, 32> a{}, b{};
   check(fill_random(a.data(), a.size()) && fill_random(b.data(), b.size()), "fill_random");
   check(std::any_of(a.begin(), a.end(), [](auto v) { return v != 0; }), "random nonzero");

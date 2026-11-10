@@ -1,9 +1,7 @@
 #include "report.h"
 
-#include <sys/stat.h>
-#include <sys/types.h>
+#include "rs_platform.h"
 
-#include <cerrno>
 #include <cstdio>
 #include <cstring>
 
@@ -203,39 +201,10 @@ std::string JsonWriter::take() {
   return text;
 }
 
-bool make_directories(const std::string &path) {
-  if (path.empty()) {
-    return false;
-  }
-  std::string partial;
-  size_t index = 0;
-  if (path[0] == '/') {
-    partial = "/";
-    index = 1;
-  }
-  while (index <= path.size()) {
-    const size_t next = path.find('/', index);
-    const std::string component = path.substr(index, next == std::string::npos ? next : next - index);
-    if (!component.empty()) {
-      if (partial.size() > 1 || (partial.size() == 1 && partial[0] != '/')) {
-        partial += "/";
-      }
-      partial += component;
-      if (::mkdir(partial.c_str(), 0775) != 0 && errno != EEXIST) {
-        return false;
-      }
-    }
-    if (next == std::string::npos) {
-      break;
-    }
-    index = next + 1;
-  }
-  struct stat info = {};
-  return ::stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
-}
+bool make_directories(const std::string &path) { return rs::make_directories(path); }
 
 bool write_file(const std::string &path, const std::string &text) {
-  FILE *handle = std::fopen(path.c_str(), "wb");
+  FILE *handle = rs::open_file(path, "wb");
   if (handle == nullptr) {
     return false;
   }

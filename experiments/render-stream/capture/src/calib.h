@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "calib_fingerprint.h"
+
 namespace grc {
 
 struct Calibration {
@@ -41,22 +43,6 @@ struct Calibration {
 // Parses a calibration record. On failure `error` explains why and the record
 // is left unusable.
 bool load_calibration(const std::string &path, Calibration *out, std::string *error);
-
-struct ProcessFingerprint {
-  std::string exe_path;
-  std::string exe_sha256;
-  std::string build_id;  // empty when the running binary has no GNU build-id
-  std::string version_string;
-  bool pie = false;
-  uint64_t load_bias = 0;
-  int pid = 0;
-  // Executable mappings of the main binary, as [begin, end) pairs.
-  std::vector<std::pair<uint64_t, uint64_t>> exec_ranges;
-  // Raw /proc/self/maps lines that belong to the main binary.
-  std::vector<std::string> exe_maps;
-
-  bool in_exec_range(uint64_t address) const;
-};
 
 // Fills `out` from /proc/self and the GDExtension version call. Returns false
 // only when the process cannot be identified at all.
@@ -95,8 +81,5 @@ bool check_slot_mask(const Calibration &calib, const ProcessFingerprint &fp,
 //    is unavailable.
 bool check_behaviour(const Calibration &calib, const LiveVtableFacts &facts,
                      std::vector<CheckResult> *checks);
-
-// sha256 of a file's contents, lowercase hex. Empty string on failure.
-std::string sha256_file(const std::string &path);
 
 }  // namespace grc

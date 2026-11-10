@@ -632,7 +632,7 @@ int main() {
     // reaches the free hook) must not deadlock.
     registry_note_create(kReentry, RegistryKind::Texture2d);
     bool released = false;
-    RegistryValue reentrant(new std::string("v"), [&released, kReentry](const std::string *p) {
+    RegistryValue reentrant(new std::string("v"), [&released](const std::string *p) {
       grc::rs::registry_note_free(kReentry);
       released = true;
       delete p;

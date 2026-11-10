@@ -6,6 +6,10 @@ if(NOT GRC_WINDOWS)
     POSITION_INDEPENDENT_CODE ON CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
   target_include_directories(grc_platform PUBLIC src)
   target_link_libraries(grc_platform PRIVATE grc_warnings PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+  add_executable(rs_platform_clock_test test/rs_platform_clock_test.cpp)
+  target_link_libraries(rs_platform_clock_test PRIVATE grc_warnings grc_platform)
+  target_link_options(rs_platform_clock_test PRIVATE -Wl,--wrap=clock_gettime)
+  add_test(NAME rs_platform_clock COMMAND rs_platform_clock_test)
 endif()
 
 add_executable(rs_platform_test test/rs_platform_test.cpp)
@@ -18,6 +22,23 @@ else()
   target_compile_definitions(rs_platform_test PRIVATE
     GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_platform_test_tmp")
   add_test(NAME rs_platform COMMAND rs_platform_test)
+endif()
+
+add_executable(rs_platform_paths_test test/rs_platform_paths_test.cpp
+  src/rs_texture_cache.cpp src/rs_sha256.cpp)
+target_link_libraries(rs_platform_paths_test PRIVATE grc_warnings grc_platform)
+if(GRC_WINDOWS)
+  target_link_libraries(rs_platform_paths_test PRIVATE grc_static_runtime)
+  target_compile_definitions(rs_platform_paths_test PRIVATE GRC_TEST_TMP_DIR="rs_platform_paths_test_tmp")
+  grc_w_test(rs_platform_paths TARGET rs_platform_paths_test)
+  grc_w_test(rs_platform_paths_narrow_path_sabotage TARGET rs_platform_paths_test
+    ARGS --expect-fail non-ascii ENV GRC_PLATFORM_FAULT=narrow-path)
+  grc_w_test(rs_platform_paths_plain_rename_sabotage TARGET rs_platform_paths_test
+    ARGS --expect-fail replace-twice ENV GRC_PLATFORM_FAULT=plain-rename)
+else()
+  target_compile_definitions(rs_platform_paths_test PRIVATE
+    GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_platform_paths_test_tmp")
+  add_test(NAME rs_platform_paths COMMAND rs_platform_paths_test)
 endif()
 
 add_executable(abi_convention_probe test/abi_convention_probe.cpp)

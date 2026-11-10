@@ -1,7 +1,7 @@
 // rs_net_module.cpp -- see rs_net_module.h.
 #include "rs_net_module.h"
 
-#include <dlfcn.h>
+#include "rs_platform.h"
 
 #include <cstddef>
 #include <cstring>
@@ -11,8 +11,6 @@ namespace grc {
 namespace live {
 
 namespace {
-
-constexpr const char *kModuleFile = "librender_stream_net.so";
 
 std::string dir_of(const std::string &path) {
   const std::size_t slash = path.rfind('/');
@@ -40,28 +38,27 @@ std::mutex &load_mu() {
 }  // namespace
 
 std::string default_net_module_path() {
-  Dl_info info{};
-  if (dladdr(reinterpret_cast<void *>(&default_net_module_path), &info) == 0 ||
-      info.dli_fname == nullptr || info.dli_fname[0] == '\0') {
-    return kModuleFile;
+  const std::string module_file = rs::library_file_name("render_stream_net");
+  const std::string path = rs::module_path_of(reinterpret_cast<void *>(&default_net_module_path));
+  if (path.empty()) {
+    return module_file;
   }
-  return dir_of(info.dli_fname) + "/" + kModuleFile;
+  return dir_of(path) + "/" + module_file;
 }
 
 const grc_net_module_table_v1 *load_net_module_at(const std::string &path, std::string *error,
                                             void **handle_out) {
-  // D8: never dlclose()d, so a carrier thread can never outlive its code.
-  void *handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+  // Never unloaded, so a carrier thread can never outlive its code.
+  std::string why;
+  void *handle = rs::library_open(path, &why);
   if (handle_out != nullptr) *handle_out = handle;
   if (handle == nullptr) {
-    const char *why = dlerror();
     *error = "net-module-missing: cannot load " + path + " (" +
-             (why != nullptr ? why : "dlopen failed") +
+             why +
              "); build it with scripts/build-rs-net.sh or set GRC_LIVE_NET_MODULE";
     return nullptr;
   }
-  dlerror();
-  void *entry = dlsym(handle, GRC_NET_MODULE_ENTRY);
+  void *entry = rs::library_symbol(handle, GRC_NET_MODULE_ENTRY);
   if (entry == nullptr) {
     *error = "net-module-abi: " + path + " has no " + GRC_NET_MODULE_ENTRY;
     return nullptr;
@@ -110,8 +107,7 @@ const grc_net_tls_table_v1 *net_tls_table(void *handle, const std::string &path,
     *error = "net-module-missing: " + path + " is not loaded";
     return nullptr;
   }
-  dlerror();
-  void *entry = dlsym(handle, GRC_NET_TLS_ENTRY);
+  void *entry = rs::library_symbol(handle, GRC_NET_TLS_ENTRY);
   if (entry == nullptr) {
     *error = "net-module-abi: " + path + " has no " + GRC_NET_TLS_ENTRY + " (wss needs a CAR4 module)";
     return nullptr;

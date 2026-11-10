@@ -1,12 +1,8 @@
 #include "rs_texture_worker.h"
 
-#include <pthread.h>
-
 #include "rs_texture_delivery.h"
 
-#include <sys/resource.h>
-#include <sys/syscall.h>
-#include <unistd.h>
+#include "rs_platform.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -189,10 +185,9 @@ TextureWorkerPool::Stats TextureWorkerPool::stats() const {
 }
 
 void TextureWorkerPool::run() {
-  // D11: below normal priority, so a busy main thread keeps the core it needs. setpriority() on
-  // a thread id sets that thread's own nice value on Linux; failure (a sandbox) is harmless.
-  (void)setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 10);
-  (void)pthread_setname_np(pthread_self(), thread_name_);
+  // Below normal priority, so a busy main thread keeps the core it needs; failure is harmless.
+  lower_current_thread_priority();
+  set_current_thread_name(thread_name_);
   for (;;) {
     std::function<void()> work;
     std::uint64_t delay_ms = 0;

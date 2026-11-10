@@ -200,20 +200,21 @@ one set. Entries live in the main checkout's ignored `artifacts/render-stream/so
 
 Most runs need none of these; runners set what their legs need.
 
-| Variable                                                       | Effect                                                                                                                    |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `RS_QUIET_LOCK_DIR`                                            | A private quiet-lock directory (tooling tests and synthetic runs only).                                                   |
-| `RS_LEG_SHARDS=N`                                              | Run file-mode legs on N parallel workers, each with its own gamescope (gates 0–3 and gate 7 file groups; default serial). |
-| `RS_FAST_FRAMES=all\|host\|receiver`, `RS_FAST_FRAMES_MAX_FPS` | Run allowlisted live correctness legs unthrottled (default off; 61..1000 fps, default 240).                               |
-| `RS_SABOTAGE_TIER=skip`                                        | Skip sabotage legs; their checks are reported skipped-by-tier.                                                            |
-| `RS_SMOKE_LEGS`, `GATE7_SMOKE_LEGS`                            | The smoke tier's leg selection (set by `validate-increment.sh`).                                                          |
-| `RS_SKIP_TIMING_GROUPS=1`                                      | Skip exclusive-lock timing groups (set only by the hosted-runner workflow).                                               |
-| `RS_SOURCE_CACHE=0`                                            | Do not look up or publish gate 7 sources in the cache.                                                                    |
-| `GATE7_CREDIT_WINDOW`                                          | The live credit window for gate 7 runs (same as `--credit-window`).                                                       |
-| `RS_PRIVATE_BROWSERS_DIR`                                      | The root of the pinned Chromium copy.                                                                                     |
-| `RS_RECEIVER_*`                                                | Receiver configuration, normally set per leg by the runner; see [../receiver/README.md](../receiver/README.md).           |
-| `GRC_*`                                                        | Capture configuration, set per leg by the runner; see [../protocol/streaming-host.md](../protocol/streaming-host.md).     |
-| `RS_FIXTURE_*`                                                 | Fixture-scene controls (frames to quit at, shot frames, variants), read by the fixtures' own scripts.                     |
+| Variable                                                       | Effect                                                                                                                             |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `RS_QUIET_LOCK_DIR`                                            | A private quiet-lock directory (tooling tests and synthetic runs only).                                                            |
+| `RS_LEG_SHARDS=N`                                              | Run file-mode legs on N parallel workers, each with its own gamescope (gates 0–3 and gate 7 file groups; default serial).          |
+| `RS_FAST_FRAMES=all\|host\|receiver`, `RS_FAST_FRAMES_MAX_FPS` | Run allowlisted live correctness legs unthrottled (default off; 61..1000 fps, default 240).                                        |
+| `RS_SABOTAGE_TIER=skip`                                        | Skip sabotage legs; their checks are reported skipped-by-tier.                                                                     |
+| `RS_SMOKE_LEGS`, `GATE7_SMOKE_LEGS`                            | The smoke tier's leg selection (set by `validate-increment.sh`).                                                                   |
+| `RS_SKIP_TIMING_GROUPS=1`                                      | Skip exclusive-lock timing groups (set only by the hosted-runner workflow).                                                        |
+| `RS_SOURCE_CACHE=0`                                            | Do not look up or publish gate 7 sources in the cache.                                                                             |
+| `GATE7_CREDIT_WINDOW`                                          | The live credit window for gate 7 runs (same as `--credit-window`).                                                                |
+| `RS_PRIVATE_BROWSERS_DIR`                                      | The root of the pinned Chromium copy.                                                                                              |
+| `RS_RECEIVER_*`                                                | Receiver configuration, normally set per leg by the runner; see [../receiver/README.md](../receiver/README.md).                    |
+| `GRC_*`                                                        | Capture configuration, set per leg by the runner; see [../protocol/streaming-host.md](../protocol/streaming-host.md).              |
+| `GRC_PLATFORM_FAULT=narrow-path\|plain-rename`                 | Windows test sabotage: narrow file open or non-replacing rename; cached lazily at the first open or replacement, ignored on POSIX. |
+| `RS_FIXTURE_*`                                                 | Fixture-scene controls (frames to quit at, shot frames, variants), read by the fixtures' own scripts.                              |
 
 ## Self-tests
 

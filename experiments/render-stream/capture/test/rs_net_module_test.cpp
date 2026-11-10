@@ -8,11 +8,10 @@
 #include <cstring>
 #include <cstdlib>
 #include <string>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #include "rs_carrier_set.h"
 #include "rs_net_module.h"
+#include "test_paths.h"
 
 namespace {
 
@@ -79,11 +78,10 @@ int main(int argc, char **argv) {
           "no handle is net-module-missing (" + error + ")");
   }
   const std::string beside = default_net_module_path();
-  check(beside.size() > 24 && beside.substr(beside.size() - 24) == "/librender_stream_net.so",
+  check(beside.ends_with("/" + grc::rs::library_file_name("render_stream_net")),
         "the default path is beside this binary (" + beside + ")");
 
-  struct stat st {};
-  if (stat(beside.c_str(), &st) != 0) {
+  if (!std::filesystem::exists(grc::rs::fs_path(beside))) {
     std::printf("skip the real-module checks: %s not built (scripts/build-rs-net.sh)\n", beside.c_str());
     return g_failed == 0 ? 0 : 1;
   }
@@ -107,9 +105,8 @@ int main(int argc, char **argv) {
           "an unreadable pair is tls-config-invalid (" + error + ")");
   }
 
-  char dir_template[] = "/tmp/rs-net-module-test-XXXXXX";
-  const char *dir = mkdtemp(dir_template);
-  check(dir != nullptr, "an evidence dir");
+  const std::string dir = grc::test::temp_directory("rs-net-module-test");
+  check(!dir.empty(), "an evidence dir");
   CarrierServices services;
   services.config["wt_listen"] = "127.0.0.1:0";
   services.config["path"] = "/render-stream";
@@ -122,7 +119,10 @@ int main(int argc, char **argv) {
   CarrierSet set(2, services);
   std::unique_ptr<NetWtCarrier> wt = NetWtCarrier::create(m, &error);
   check(wt != nullptr, "wt_create (" + error + ")");
-  if (wt == nullptr) return 1;
+  if (wt == nullptr) {
+    grc::test::remove_tree(dir);
+    return 1;
+  }
   NetWtCarrier *raw = wt.get();
   check(set.add(kCarrierWt, std::move(wt), &error), "added as index 1 (" + error + ")");
   check(set.start(&error), "started (" + error + ")");
@@ -132,7 +132,7 @@ int main(int argc, char **argv) {
   check(info.transport == "udp" && info.port > 0 && info.address == "127.0.0.1",
         "bound udp 127.0.0.1:" + std::to_string(info.port));
   check(info.tls == "self-signed" && info.cert_sha256.size() == 64, "self-signed, sha256 " + info.cert_sha256);
-  FILE *f = std::fopen((std::string(dir) + "/live-cert-sha256").c_str(), "r");
+  FILE *f = grc::rs::open_file(dir + "/live-cert-sha256", "r");
   char line[80] = {0};
   if (f != nullptr) {
     if (std::fgets(line, sizeof line, f) == nullptr) line[0] = '\0';
@@ -146,7 +146,6 @@ int main(int argc, char **argv) {
   check(set.take_events().empty(), "no events without a client");
   set.stop();
   check(raw->abi().outstanding_buffers() == 0, "no host buffer outstanding after stop");
-  std::remove((std::string(dir) + "/live-cert-sha256").c_str());
-  rmdir(dir);
+  check(grc::test::remove_tree(dir), "remove the evidence dir recursively");
   return g_failed == 0 ? 0 : 1;
 }
