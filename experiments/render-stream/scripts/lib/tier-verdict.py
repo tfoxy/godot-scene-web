@@ -11,9 +11,14 @@ timing group; both mark a skipped leg the same way, the second is also listed as
 the checker fails the checks that needed that evidence. The verdict reads every gating check in the
 run's own result.json (any `{id, passed, detail}` object in it) and excuses a failing
 check only when
-  - the sabotage legs were skipped and its id names "sabotage", or
-  - its id or detail names a skipped leg (the last path component of a skipped directory, after
-    dropping receiver/host/capture/reference/evidence, as a word: '-' and '/' delimit).
+  - the sabotage legs were skipped and its id names "sabotage", "catches" or "caught", or
+  - its id, detail or failures names a skipped leg (the last path component of a skipped directory,
+    after dropping receiver/host/capture/reference/evidence, as a word: '-' and '/' delimit).
+Checkers keep skipped-evidence checks failing. Only when every problem is skipped evidence do
+they name the affected directory (`skipped-by-tier: <leg directory>` or
+`skipped-remote: <leg directory>`) in their problems. A receiver with `skipped.txt` also counts
+as skipped evidence when a sibling host or capture directory holds a tier or remote marker.
+Gate -1 criterion rows also carry `passed: status == "pass"`, preserving their status for unavailable-row handling.
 Every other failing check is real, so an unexplained failure stays loud. Each `--smoke-legs`
 entry must also name a directory that was launched (exists, no marker): a wrong or stale entry
 fails the verdict instead of skipping everything. No checks found is a failure. A typed `not-run`
@@ -163,7 +168,101 @@ def self_test():
         print(("PASS " if got == want else "FAIL ") + name)
         fails += got != want
 
+    # Build gate -1 rows with the same TypeScript function as its checker CLI.
+    import subprocess
+    from pathlib import Path
+    scripts = Path(__file__).resolve().parent.parent
+    repo = scripts.parents[2]
+    reports = json.loads(subprocess.check_output([
+        str(repo / "node_modules/.bin/tsx"), "--conditions=development",
+        str(scripts / "test/gate-minus1-report-fixture.ts"),
+    ], cwd=repo, text=True))
+    for status in ("pass", "fail", "unavailable"):
+        with tempfile.TemporaryDirectory() as d:
+            mk(d, {"result.json": json.dumps(reports[status])})
+            v = verdict(d, False, "", 0 if status == "pass" else 1)
+        ok = (v["verdict"] == ("fail" if status == "fail" else "pass")
+              and v["checks"] == 2
+              and v["failing"] == (["criterion-2"] if status == "fail" else [])
+              and v["unavailable"] == (["criterion-2"] if status == "unavailable" else []))
+        print(("PASS " if ok else "FAIL ") + f"gate -1 {status} criteria are counted and classified: {v}")
+        fails += not ok
+
     res = lambda *cs: json.dumps({"checks": [{"id": i, "passed": p, "detail": d} for i, p, d in cs]})
+    skipped_evidence = [
+        ("corrupt-coded-body", "sabotage-corrupt-coded-body/host",
+         "live.json listener_sabotage is null, expected corrupt-coded-body; the host sent no coded body, so nothing was corrupted"),
+        ("receiver-consumed-stream-layout", "layout/sabotage-omit-atlas/receiver",
+         "sabotage-layout-omit-atlas-receiver: applied.json recording.sha256 <none> != its own copy <unreadable>; sabotage-layout-omit-atlas-receiver: status=undefined end_seen=undefined"),
+        ("receiver-consumed-stream-i18n", "i18n/sabotage-omit-atlas/receiver",
+         "sabotage-i18n-omit-atlas-receiver: applied.json recording.sha256 <none> != its own copy <unreadable>; sabotage-i18n-omit-atlas-receiver: status=undefined end_seen=undefined"),
+        ("receiver-consumed-stream-msdf", "msdf/sabotage-perturb-glyph/receiver",
+         "sabotage-msdf-perturb-glyph-receiver: applied.json recording.sha256 <none> != its own copy <unreadable>; sabotage-msdf-perturb-glyph-receiver: status=undefined end_seen=undefined"),
+        ("cim-receiver-typed-clean", "cim/sabotage-freeze/receiver",
+         "sabotage-cim-freeze: stdout.log missing"),
+        ("cim-modulate-receiver-typed-clean", "cim-modulate/sabotage-receiver-ignore-canvas-modulate",
+         "sabotage-cim-modulate-receiver-ignore-canvas-modulate: stdout.log missing"),
+        ("shader-receiver-typed", "shader/sabotage-freeze/receiver",
+         "sabotage-shader-freeze: stdout.log missing"),
+        ("g55e-capture-log-clean", "shader/sabotage-freeze/capture",
+         "sabotage-shader-freeze stdout.log missing"),
+    ]
+    for check_id, leg, launched_detail in skipped_evidence:
+        for marker in ("skipped-by-tier", "skipped-remote", None):
+            detail = f"{marker}: /run/{leg}" if marker else launched_detail
+            files = {"result.json": res((check_id, False, detail)),
+                     "unrelated/skipped-by-tier.txt": "skip"}
+            files[f"{leg}/{marker}.txt" if marker else f"{leg}/exit-code.txt"] = "skip" if marker else "0"
+            with tempfile.TemporaryDirectory() as d:
+                mk(d, files)
+                v = verdict(d, True, "", 1)
+            ok = (v["verdict"] == ("pass" if marker else "fail")
+                  and v["skipped_by_tier"] == ([check_id] if marker else [])
+                  and v["failing"] == ([] if marker else [check_id]))
+            print(("PASS " if ok else "FAIL ") + f"{check_id} {marker or 'launched'} evidence: {v}")
+            fails += not ok
+    for marker in ("skipped-by-tier", "skipped-remote", None):
+        check_id = "corrupt-coded-body"
+        leg = "sabotage-corrupt-coded-body"
+        detail = (f"{marker}: /run/{leg}/host; {marker}: /run/{leg}/receiver" if marker
+                  else "the receiver's failure is null, expected a typed refusal of the body")
+        files = {"result.json": res((check_id, False, detail)),
+                 f"{leg}/receiver/skipped.txt": "the live host is not listening (see host/evidence/live.json)",
+                 "unrelated/skipped-by-tier.txt": "skip"}
+        if marker:
+            files[f"{leg}/host/{marker}.txt"] = "skip"
+        with tempfile.TemporaryDirectory() as d:
+            mk(d, files)
+            v = verdict(d, True, "", 1)
+        ok = (v["verdict"] == ("pass" if marker else "fail")
+              and v["skipped_by_tier"] == ([check_id] if marker else [])
+              and v["failing"] == ([] if marker else [check_id]))
+        print(("PASS " if ok else "FAIL ") + f"dependent receiver {marker or 'unmarked skipped.txt'}: {v}")
+        fails += not ok
+    with tempfile.TemporaryDirectory() as d:
+        check_id = "receiver-consumed-stream-layout"
+        mk(d, {"result.json": res((check_id, False, "honest-receiver: status=error end_seen=false")),
+               "layout/sabotage-omit-atlas/receiver/skipped-by-tier.txt": "skip",
+               "layout/honest/receiver/exit-code.txt": "1"})
+        v = verdict(d, True, "", 1)
+    ok = v["verdict"] == "fail" and v["failing"] == [check_id] and v["skipped_by_tier"] == []
+    print(("PASS " if ok else "FAIL ") + f"mixed skipped and launched evidence keeps launched failure: {v}")
+    fails += not ok
+    for marked in (True, False):
+        leg = "g8htr/sabotage-omit-create-on/capture"
+        detail = (f"1 problem(s): skipped-by-tier: {leg}" if marked
+                  else "evidence missing (a leg did not run)")
+        files = {"result.json": res(("htr-omit-op", False, detail))}
+        if marked:
+            files[f"{leg}/skipped-by-tier.txt"] = "skip"
+        with tempfile.TemporaryDirectory() as d:
+            mk(d, files)
+            v = verdict(d, True, "", 1)
+        ok = (v["verdict"] == ("pass" if marked else "fail")
+              and v["skipped_by_tier"] == (["htr-omit-op"] if marked else [])
+              and v["failing"] == ([] if marked else ["htr-omit-op"]))
+        print(("PASS " if ok else "FAIL ") + f"htr-omit-op {'marked' if marked else 'unmarked'} missing evidence: {v}")
+        fails += not ok
     case("sabotage checks are excused only when sabotage was skipped",
          {"result.json": res(("a", True, ""), ("leg-class-sabotage-x", False, "no recording")),
           "live/applied.json": "{}"}, "pass", sab=True)

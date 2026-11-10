@@ -25,7 +25,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { decodePngRgba } from "./gate-minus1-checks";
+import { decodePngRgba, skippedLegProblem } from "./gate-minus1-checks";
 import {
   check,
   type EquivalenceAllow,
@@ -819,7 +819,9 @@ export async function runG8htr(
     let problems: string[] | null = null;
     let detail = "";
     const leg = "sabotage-omit-create-on";
-    if (ran(`${leg}/capture`) && ran("tex-on/capture")) {
+    const skippedProblem = skippedLegProblem(cap(leg));
+    if (skippedProblem && ran("tex-on/capture")) problems = [skippedProblem];
+    else if (ran(`${leg}/capture`) && ran("tex-on/capture")) {
       problems = [];
       const s = await stats(leg);
       const on = await stats("tex-on");

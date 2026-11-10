@@ -26,7 +26,14 @@
 // Exits non-zero if any assertion fails.
 
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,6 +53,7 @@ import {
   evaluateShaderStore,
   evaluateStateDumps,
   evaluateWireMaterialCensus,
+  G55D_SABOTAGES,
   g55dIds,
   g55dLegName,
   MATERIAL_COUNTERS,
@@ -1110,6 +1118,118 @@ for (const key of [
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+const tierRoot = await mkdtemp(join(tmpdir(), "gate55d-tier-"));
+try {
+  for (const sab of G55D_SABOTAGES) {
+    const variant = sab.variant === "base" ? "cim" : "cim-modulate";
+    const leg = g55dLegName(sab.dir, sab.variant);
+    const dir = join(
+      tierRoot,
+      variant,
+      sab.dir,
+      ...(sab.host ? ["receiver"] : []),
+    );
+    await mkdir(dir, { recursive: true });
+    const input = [
+      { leg, dir, honest: false, applied: undefined, stdout: undefined },
+    ];
+    assert(
+      `${variant}-receiver-typed-clean launched detail unchanged`,
+      JSON.stringify(evaluateReceiverTypedClean(input).problems) ===
+        JSON.stringify([`${leg}: stdout.log missing`]),
+    );
+    for (const dependent of sab.host ? [false, true] : [false]) {
+      const capture = join(tierRoot, variant, sab.dir, "capture");
+      const markerDir = dependent ? capture : dir;
+      await mkdir(markerDir, { recursive: true });
+      await writeFile(
+        join(dir, "skipped.txt"),
+        `no source recording at ${join(capture, "recording.rs2")}\n`,
+      );
+      assert(
+        `${leg} skipped.txt without marked sibling keeps launched detail`,
+        JSON.stringify(evaluateReceiverTypedClean(input).problems) ===
+          JSON.stringify([`${leg}: stdout.log missing`]),
+      );
+      if (!dependent) await unlink(join(dir, "skipped.txt"));
+      for (const marker of ["skipped-by-tier", "skipped-remote"]) {
+        await writeFile(join(markerDir, `${marker}.txt`), "skipped");
+        const problems = evaluateReceiverTypedClean(input).problems;
+        assert(
+          `${leg} ${dependent ? "dependent" : "direct"} ${marker} names directory`,
+          JSON.stringify(problems) === JSON.stringify([`${marker}: ${dir}`]),
+          problems.join("; "),
+        );
+        const mixed = evaluateReceiverTypedClean([
+          ...input,
+          {
+            leg: "honest-receiver",
+            honest: true,
+            applied: undefined,
+            stdout: "SCRIPT ERROR: launched failure",
+          },
+        ]).problems;
+        assert(
+          `${leg} ${dependent ? "dependent" : "direct"} ${marker} mixed failure keeps launched problems only`,
+          JSON.stringify(mixed) ===
+            JSON.stringify([
+              "honest-receiver: SCRIPT ERROR: launched failure",
+              "honest-receiver: applied.json missing",
+            ]) && !mixed.join("; ").includes("skipped-"),
+          mixed.join("; "),
+        );
+        await unlink(join(markerDir, `${marker}.txt`));
+      }
+      if (dependent) await unlink(join(dir, "skipped.txt"));
+    }
+  }
+  // Another leg marked beside a receiver is not that receiver's source: only a marked
+  // `capture` or `host` sibling explains a receiver the runner skipped.
+  const besideRoot = join(tierRoot, "beside");
+  const besideReceiver = join(besideRoot, "receiver");
+  const besideOther = join(
+    besideRoot,
+    "sabotage-receiver-ignore-canvas-modulate",
+  );
+  await mkdir(besideReceiver, { recursive: true });
+  await mkdir(besideOther, { recursive: true });
+  await writeFile(
+    join(besideReceiver, "skipped.txt"),
+    `no source recording at ${join(besideRoot, "capture", "recording.rs2")}\n`,
+  );
+  await writeFile(join(besideOther, "skipped-by-tier.txt"), "skipped");
+  const besideInput = [
+    {
+      leg: "cim-modulate-receiver",
+      dir: besideReceiver,
+      honest: true,
+      applied: undefined,
+      stdout: undefined,
+    },
+  ];
+  const besideProblems = evaluateReceiverTypedClean(besideInput).problems;
+  assert(
+    "a receiver whose source is unmarked stays a launched failure beside another marked leg",
+    besideProblems.length > 0 &&
+      !besideProblems.join("; ").includes("skipped-"),
+    besideProblems.join("; "),
+  );
+  await mkdir(join(besideRoot, "capture"), { recursive: true });
+  await writeFile(
+    join(besideRoot, "capture", "skipped-by-tier.txt"),
+    "skipped",
+  );
+  const sourceProblems = evaluateReceiverTypedClean(besideInput).problems;
+  assert(
+    "the same receiver is skipped once its own capture is marked",
+    JSON.stringify(sourceProblems) ===
+      JSON.stringify([`skipped-by-tier: ${besideReceiver}`]),
+    sourceProblems.join("; "),
+  );
+} finally {
+  await rm(tierRoot, { recursive: true, force: true });
 }
 
 console.log(

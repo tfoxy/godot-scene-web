@@ -38,6 +38,7 @@ import {
   fileExists,
   readJson,
   readTextOrUndefined,
+  skippedLegProblem,
 } from "./gate-minus1-checks";
 import {
   type CaptureResultJson,
@@ -81,8 +82,8 @@ import {
 import type { Gate55Expected as Gate55CimExpected } from "./gate55b-expected";
 import {
   asGate5,
+  evaluateShaderLogClean as evaluateCaptureLogClean,
   evaluateShaderCapture5,
-  evaluateShaderLogClean,
   type Gate55ShaderExpected,
   jsonEqual,
   loadOracle,
@@ -703,7 +704,23 @@ export async function libraryCodes(dir: string): Promise<string[]> {
 // Typed receivers
 // ---------------------------------------------------------------------------------------------
 
-/** Pure (`shader-receiver-typed`): honest receivers record no typed refusal and skip nothing;
+/** Name skipped leg directories only when no launched capture log has a problem. */
+export function evaluateShaderLogClean(
+  logs: readonly { leg: string; dir?: string; text: string | undefined }[],
+) {
+  const skippedProblems: string[] = [];
+  const problems = logs.flatMap((l) => {
+    const skipped = l.dir ? skippedLegProblem(l.dir) : null;
+    if (skipped) {
+      skippedProblems.push(skipped);
+      return [];
+    }
+    return evaluateCaptureLogClean([l]).problems;
+  });
+  return { problems: problems.length > 0 ? problems : skippedProblems };
+}
+
+/** `shader-receiver-typed`: honest receivers record no typed refusal and skip nothing;
  * receiver-refused records exactly canvas_item_set_material / unsupported-material on the five
  * refused items (wire ids by creation order) and nothing else; receiver-params-nolib records
  * exactly one shader_set_code / shader-withheld per (shader id, hash) its recording makes resident
@@ -713,6 +730,7 @@ export async function libraryCodes(dir: string): Promise<string[]> {
 export function evaluateReceiverTyped(
   legs: readonly {
     leg: string;
+    dir?: string;
     kind: "honest" | "refused" | "nolib" | "lib" | "sabotage";
     applied: AppliedJson55d | undefined;
     stdout: string | undefined;
@@ -721,10 +739,16 @@ export function evaluateReceiverTyped(
   }[],
 ): { problems: string[]; table: Record<string, string> } {
   const problems: string[] = [];
+  const skippedProblems: string[] = [];
   const table: Record<string, string> = {};
   const bad =
     /SHADER ERROR|Shader compilation failed|SCRIPT ERROR|SCRIPT WARNING|Parse Error|Failed to load script/;
   for (const l of legs) {
+    const skipped = l.dir ? skippedLegProblem(l.dir) : null;
+    if (skipped) {
+      skippedProblems.push(skipped);
+      continue;
+    }
     if (l.stdout === undefined) problems.push(`${l.leg}: stdout.log missing`);
     else {
       const line = l.stdout.split("\n").find((x) => bad.test(x));
@@ -801,7 +825,10 @@ export function evaluateReceiverTyped(
         );
     }
   }
-  return { problems: problems.slice(0, 12), table };
+  return {
+    problems: (problems.length > 0 ? problems : skippedProblems).slice(0, 12),
+    table,
+  };
 }
 
 /** The (shader id, hash) pairs a receiver makes resident: every shader version an item's effective
@@ -1355,6 +1382,7 @@ export async function runGate55e(
     checkpoints.push(...receiverShotPaths(image.checkpoints, rdir, seqs));
     typedInputs.push({
       leg: r.leg,
+      dir: rdir,
       kind: isRefused
         ? "refused"
         : r.leg === "receiver-params-nolib"
@@ -1480,7 +1508,13 @@ export async function runGate55e(
       exit_code: await readExitCode(rdir),
       artifacts,
     };
-    typedInputs.push({ leg: sab.leg, kind: "sabotage", applied, stdout });
+    typedInputs.push({
+      leg: sab.leg,
+      dir: rdir,
+      kind: "sabotage",
+      applied,
+      stdout,
+    });
   }
   const typed = evaluateReceiverTyped(typedInputs);
   checks.push(
@@ -1508,7 +1542,11 @@ export async function runGate55e(
           "sabotage-shader-perturb-shader",
           "shader/sabotage-perturb-shader/capture",
         ],
-      ].map(async ([leg, rel]) => ({ leg, text: await stdoutOf(at(rel)) })),
+      ].map(async ([leg, rel]) => ({
+        leg,
+        dir: at(rel),
+        text: await stdoutOf(at(rel)),
+      })),
     ),
   );
   checks.push(

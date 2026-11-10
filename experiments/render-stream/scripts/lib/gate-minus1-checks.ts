@@ -8,8 +8,9 @@
 // field for field. "unavailable" is reserved for evidence the HOST could not produce (strace not
 // installed); a missing or malformed capture-library field is a "fail".
 
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
 import { compareRgbaBuffers } from "../../../../packages/test-harness/src/image-diff";
@@ -26,10 +27,43 @@ export interface Criterion {
   detail?: string;
 }
 
+/** Add the report fields shared by the CLI and tier-verdict fixtures. */
+export function reportCriterion(criterion: Criterion, number: number) {
+  return {
+    criterion: number,
+    ...criterion,
+    passed: criterion.status === "pass",
+  };
+}
+
 // ---------------------------------------------------------------------------------------------
 // Small IO helpers. Every one of these is forgiving: a missing/unparseable file is `undefined`,
 // never a thrown error -- a criterion function decides what that means for ITS verdict.
 // ---------------------------------------------------------------------------------------------
+
+/** Name skipped evidence, including receivers the runner skipped after their marked source. */
+export function skippedLegProblem(legDir: string): string | null {
+  const markers = ["skipped-by-tier", "skipped-remote"];
+  for (const marker of markers) {
+    if (existsSync(join(legDir, `${marker}.txt`)))
+      return `${marker}: ${resolve(legDir)}`;
+  }
+  // A missing source or listener alone is a real failure. It explains missing receiver
+  // evidence only when the runner recorded its skip and the leg's own source (the sibling
+  // `capture` or `host` directory) was skipped by policy. Another leg marked beside it, such
+  // as a receiver-only negative-test leg, says nothing about this one.
+  if (!existsSync(join(legDir, "skipped.txt"))) return null;
+  const parent = dirname(resolve(legDir));
+  for (const marker of markers) {
+    if (
+      ["capture", "host"].some((source) =>
+        existsSync(join(parent, source, `${marker}.txt`)),
+      )
+    )
+      return `${marker}: ${resolve(legDir)}`;
+  }
+  return null;
+}
 
 export async function readJson<T>(path: string): Promise<T | undefined> {
   try {

@@ -16,7 +16,6 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  type Criterion,
   checkCanvasHookLog,
   checkCaptureCounts,
   checkDisarmAndCompletion,
@@ -31,6 +30,7 @@ import {
   checkRenderedLegs,
   checkValidateAndRefusals,
   type ExpectedWithDrawPaths,
+  reportCriterion,
 } from "./lib/gate-minus1-checks";
 
 /** Which criterion each check id belongs to: the eight gate -1 criteria, then #9
@@ -84,7 +84,7 @@ function parseArgs(argv: string[]): { out: string } {
   return { out: resolve(out) };
 }
 
-export type NumberedCriterion = Criterion & { criterion: number };
+export type NumberedCriterion = ReturnType<typeof reportCriterion>;
 
 export async function runChecks(outDir: string): Promise<NumberedCriterion[]> {
   const expected = JSON.parse(
@@ -117,7 +117,7 @@ export async function runChecks(outDir: string): Promise<NumberedCriterion[]> {
         `check-gate-minus1: unnumbered criterion ${criterion.id}`,
       );
     }
-    return { criterion: criterionNumber, ...criterion };
+    return reportCriterion(criterion, criterionNumber);
   });
 }
 

@@ -21,7 +21,14 @@
 // Exits non-zero if any assertion fails.
 
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -74,6 +81,9 @@ import {
   synthesizeGate4,
   synthesizeText,
 } from "../lib/gate4-expected";
+import { checkReceiverConsumedStream as layoutConsumed } from "../lib/gate4c-checks";
+import { checkReceiverConsumedStream as msdfConsumed } from "../lib/gate4e-checks";
+import { checkReceiverConsumedStream as i18nConsumed } from "../lib/gate4f-checks";
 import {
   decodeTexturePayload,
   payloadSha256,
@@ -1252,6 +1262,76 @@ async function main(): Promise<void> {
       "utf8",
     ),
   ) as Gate4Expected;
+  const tierRoot = await mkdtemp(join(tmpdir(), "gate4-tier-"));
+  try {
+    for (const [variant, consumed] of [
+      ["layout", layoutConsumed],
+      ["i18n", i18nConsumed],
+      ["msdf", msdfConsumed],
+    ] as const) {
+      const sabotage = variant === "msdf" ? "perturb-glyph" : "omit-atlas";
+      const leg = `sabotage-${variant}-${sabotage}-receiver`;
+      const dir = join(tierRoot, variant, `sabotage-${sabotage}`, "receiver");
+      await mkdir(dir, { recursive: true });
+      const receivers = [{ leg, dir, applied: undefined }];
+      const missing = `${leg}: applied.json recording.sha256 <none> != its own copy <unreadable>; ${leg}: status=undefined end_seen=undefined`;
+      const launched = await consumed(receivers);
+      assert(
+        `${variant} launched consumed-stream detail unchanged`,
+        !launched.passed && launched.detail === missing,
+        launched.detail,
+      );
+      for (const dependent of [false, true]) {
+        const capture = join(
+          tierRoot,
+          variant,
+          `sabotage-${sabotage}`,
+          "capture",
+        );
+        const markerDir = dependent ? capture : dir;
+        await mkdir(markerDir, { recursive: true });
+        if (dependent) {
+          await writeFile(
+            join(dir, "skipped.txt"),
+            `no source recording at ${join(capture, "recording.rs2")}\n`,
+          );
+          const unmarked = await consumed(receivers);
+          assert(
+            `${variant} skipped.txt without marked sibling keeps launched detail`,
+            !unmarked.passed && unmarked.detail === missing,
+            unmarked.detail,
+          );
+        }
+        for (const marker of ["skipped-by-tier", "skipped-remote"]) {
+          await writeFile(join(markerDir, `${marker}.txt`), "skipped");
+          const skipped = await consumed(receivers);
+          assert(
+            `${variant} ${dependent ? "dependent" : "direct"} ${marker} consumed-stream names directory`,
+            !skipped.passed && skipped.detail === `${marker}: ${dir}`,
+            skipped.detail,
+          );
+          const honest = {
+            leg: "honest-receiver",
+            dir: join(tierRoot, variant, "honest", "receiver"),
+            applied: undefined,
+          };
+          const honestReport = await consumed([honest]);
+          const mixed = await consumed([...receivers, honest]);
+          assert(
+            `${variant} ${dependent ? "dependent" : "direct"} ${marker} mixed consumed-stream keeps launched detail only`,
+            !mixed.passed &&
+              !mixed.detail.includes("skipped-") &&
+              mixed.detail === honestReport.detail,
+            mixed.detail,
+          );
+          await unlink(join(markerDir, `${marker}.txt`));
+        }
+        if (dependent) await unlink(join(dir, "skipped.txt"));
+      }
+    }
+  } finally {
+    await rm(tierRoot, { recursive: true, force: true });
+  }
   grt1Cases();
   appendOnlyCases();
   selfConsistentCases(expected);

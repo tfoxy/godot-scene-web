@@ -23,6 +23,7 @@
 import {
   appendFile,
   cp,
+  mkdir,
   mkdtemp,
   readdir,
   readFile,
@@ -33,7 +34,6 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import { GATE0_HOOKS } from "../lib/gate0-checks";
 import {
   censusOf,
@@ -54,6 +54,7 @@ import {
   stepOfFrame,
   synthesizeGate2,
 } from "../lib/gate2-expected";
+import { checkCorruptCodedBody } from "../lib/gate2e-checks";
 import {
   buildModel,
   buildTree,
@@ -615,6 +616,72 @@ async function main(): Promise<void> {
     ),
   ) as Gate2Expected;
   pureCases();
+
+  // Missing evidence from a launched leg stays a real failure, byte for byte.
+  const tierRoot = await mkdtemp(join(tmpdir(), "gate2-tier-"));
+  try {
+    const leg = join(tierRoot, "sabotage-corrupt-coded-body");
+    const broken = await checkCorruptCodedBody(tierRoot);
+    const missing =
+      "live.json listener_sabotage is null, expected corrupt-coded-body; the host sent no coded body, so nothing was corrupted; the receiver's failure is null, expected a typed refusal of the body";
+    assert(
+      "corrupt-coded-body launched missing detail unchanged",
+      !broken.passed && broken.detail === missing,
+      broken.detail,
+    );
+    for (const marker of ["skipped-by-tier", "skipped-remote"]) {
+      for (const dir of ["host", "receiver"]) {
+        const path = join(leg, dir);
+        await mkdir(path, { recursive: true });
+        await writeFile(join(path, `${marker}.txt`), "skipped");
+        const skipped = await checkCorruptCodedBody(tierRoot);
+        assert(
+          `corrupt-coded-body ${marker} ${dir} mixed failure keeps launched problems`,
+          !skipped.passed &&
+            skipped.detail ===
+              (dir === "host"
+                ? "the receiver's failure is null, expected a typed refusal of the body"
+                : "live.json listener_sabotage is null, expected corrupt-coded-body; the host sent no coded body, so nothing was corrupted"),
+          skipped.detail,
+        );
+        assert(
+          `corrupt-coded-body ${marker} ${dir} mixed detail has no skipped marker`,
+          !skipped.detail.includes("skipped-"),
+          skipped.detail,
+        );
+        await unlink(join(path, `${marker}.txt`));
+      }
+      await writeFile(join(leg, "host", `${marker}.txt`), "skipped");
+      await writeFile(
+        join(leg, "receiver", "skipped.txt"),
+        `the live host is not listening (see ${join(leg, "host", "evidence", "live.json")})\n`,
+      );
+      const skipped = await checkCorruptCodedBody(tierRoot);
+      assert(
+        `corrupt-coded-body ${marker} host and dependent receiver name directories`,
+        !skipped.passed &&
+          skipped.detail ===
+            `${marker}: ${join(leg, "host")}; ${marker}: ${join(leg, "receiver")}`,
+        skipped.detail,
+      );
+      await unlink(join(leg, "host", `${marker}.txt`));
+      const unmarked = await checkCorruptCodedBody(tierRoot);
+      assert(
+        `corrupt-coded-body skipped.txt without marked sibling keeps launched detail`,
+        !unmarked.passed && unmarked.detail === missing,
+        unmarked.detail,
+      );
+      await unlink(join(leg, "receiver", "skipped.txt"));
+    }
+    const launched = await checkCorruptCodedBody(tierRoot);
+    assert(
+      "corrupt-coded-body marker removal restores launched detail",
+      launched.detail === missing,
+      launched.detail,
+    );
+  } finally {
+    await rm(tierRoot, { recursive: true, force: true });
+  }
 
   const MAIN: Model = buildModel(EXPECTED, { quit: CAPTURE_QUIT });
   const VARIANT: Model = buildModel(EXPECTED, {

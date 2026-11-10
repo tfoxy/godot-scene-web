@@ -28,7 +28,11 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
-import { readJson, readTextOrUndefined } from "./gate-minus1-checks";
+import {
+  readJson,
+  readTextOrUndefined,
+  skippedLegProblem,
+} from "./gate-minus1-checks";
 import {
   type AppliedJson,
   type CaptureResultJson,
@@ -58,9 +62,9 @@ import {
 import {
   checkAtlasAppendOnly,
   checkAtlasHashParity,
+  checkReceiverConsumedStream as checkConsumedStream,
   checkLegClass,
   check as checkOf,
-  checkReceiverConsumedStream,
   checkReceiverNeverShapes,
   checkReceiverTypedClean,
   checkStepAlignment,
@@ -822,6 +826,24 @@ export interface G4eResult {
   receiver_measured: RegionBudget[];
   census: Record<string, LayoutCensusStep>;
   ink: Record<string, Record<string, number>>;
+}
+
+export async function checkReceiverConsumedStream(
+  receivers: readonly ReceiverLegInfo[],
+): Promise<Gate4Check> {
+  const skipped = receivers.map((r) => skippedLegProblem(r.dir));
+  const report = await checkConsumedStream(
+    receivers.filter((_, i) => skipped[i] === null),
+  );
+  const problems = skipped.filter((p): p is string => p !== null);
+  if (problems.length === 0) return report;
+  return {
+    ...report,
+    passed: false,
+    status: "fail",
+    detail: report.passed ? problems.join("; ") : report.detail,
+    evidence: receivers.map((r) => join(r.dir, "applied.json")),
+  };
 }
 
 export interface G4eContext {

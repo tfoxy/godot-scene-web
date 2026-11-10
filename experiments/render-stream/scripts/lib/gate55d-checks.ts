@@ -35,6 +35,7 @@ import {
   fileExists,
   readJson,
   readTextOrUndefined,
+  skippedLegProblem,
 } from "./gate-minus1-checks";
 import {
   type AppliedJson,
@@ -1021,22 +1022,29 @@ export function evaluateResourceQuiet(
   return { problems: problems.slice(0, 12), totals };
 }
 
-/** Pure (`receiver-typed-clean`): an honest receiver records no typed refusal (applied.json
+/** `receiver-typed-clean`: an honest receiver records no typed refusal (applied.json
  * `unsupported` empty) and skips nothing (no `skipped*` resource counter above 0); no receiver's
  * stdout, sabotages included, carries an engine shader compile error (`SHADER ERROR`, `Shader
  * compilation failed`) or a script error. */
 export function evaluateReceiverTypedClean(
   legs: readonly {
     leg: string;
+    dir?: string;
     honest: boolean;
     applied: AppliedJson55d | undefined;
     stdout: string | undefined;
   }[],
 ): { problems: string[] } {
   const problems: string[] = [];
+  const skippedProblems: string[] = [];
   const bad =
     /SHADER ERROR|Shader compilation failed|SCRIPT ERROR|SCRIPT WARNING|Parse Error|Failed to load script/;
   for (const l of legs) {
+    const skipped = l.dir ? skippedLegProblem(l.dir) : null;
+    if (skipped) {
+      skippedProblems.push(skipped);
+      continue;
+    }
     if (l.stdout === undefined) problems.push(`${l.leg}: stdout.log missing`);
     else {
       const line = l.stdout.split("\n").find((x) => bad.test(x));
@@ -1067,7 +1075,7 @@ export function evaluateReceiverTypedClean(
       }
     }
   }
-  return { problems };
+  return { problems: problems.length > 0 ? problems : skippedProblems };
 }
 
 /** Pure (`receiver-state-dumps`): each patch receiver state dump at a settle seq equals the patch
@@ -1561,7 +1569,7 @@ async function runScene(
     imageProblems.push(...image.problems);
     checkpoints.push(...receiverShotPaths(image.checkpoints, rdir, seqs));
     quietInputs.push({ leg, applied, transactions: wire.transactions });
-    typedInputs.push({ leg, honest: true, applied, stdout });
+    typedInputs.push({ leg, dir: rdir, honest: true, applied, stdout });
     if (r.dir === "receiver") {
       const fr = evaluateFreshness5(e5, leg, shots);
       receiverFresh = fr.table;
@@ -1720,7 +1728,7 @@ async function runScene(
       await readExitCode(receiverDir),
       artifacts,
     );
-    typedInputs.push({ leg, honest: false, applied, stdout });
+    typedInputs.push({ leg, dir: receiverDir, honest: false, applied, stdout });
   }
   const typed = evaluateReceiverTypedClean(typedInputs);
   checks.push(

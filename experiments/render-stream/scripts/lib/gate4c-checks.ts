@@ -28,7 +28,11 @@ import {
   type DeriveInput,
   deriveClipRects,
 } from "./clip-derive";
-import { readJson, readTextOrUndefined } from "./gate-minus1-checks";
+import {
+  readJson,
+  readTextOrUndefined,
+  skippedLegProblem,
+} from "./gate-minus1-checks";
 import {
   type AppliedJson,
   type CaptureResultJson,
@@ -61,9 +65,9 @@ import {
   checkAtlasAppendOnly,
   checkAtlasHashParity,
   checkAtlasHashParitySabotage,
+  checkReceiverConsumedStream as checkConsumedStream,
   checkLegClass,
   check as checkOf,
-  checkReceiverConsumedStream,
   checkReceiverNeverShapes,
   checkReceiverTypedClean,
   checkStepAlignment,
@@ -1355,6 +1359,24 @@ export interface G4cResult {
     Record<string, { uploads: number; new_pairs: number; shifts: number[] }>
   >;
   clips: Record<string, Record<string, ClipRect | null | string>>;
+}
+
+export async function checkReceiverConsumedStream(
+  receivers: readonly ReceiverLegInfo[],
+): Promise<Gate4Check> {
+  const skipped = receivers.map((r) => skippedLegProblem(r.dir));
+  const report = await checkConsumedStream(
+    receivers.filter((_, i) => skipped[i] === null),
+  );
+  const problems = skipped.filter((p): p is string => p !== null);
+  if (problems.length === 0) return report;
+  return {
+    ...report,
+    passed: false,
+    status: "fail",
+    detail: report.passed ? problems.join("; ") : report.detail,
+    evidence: receivers.map((r) => join(r.dir, "applied.json")),
+  };
 }
 
 export interface G4cContext {

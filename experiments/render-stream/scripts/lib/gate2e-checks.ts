@@ -30,7 +30,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { readTextOrUndefined } from "./gate-minus1-checks";
+import { readTextOrUndefined, skippedLegProblem } from "./gate-minus1-checks";
 import { readExitCode } from "./gate0-checks";
 import type { Gate2Expected } from "./gate2-expected";
 import {
@@ -800,7 +800,11 @@ export async function checkHttpContentCoding(
 export async function checkCorruptCodedBody(outDir: string): Promise<G2bCheck> {
   const leg = "sabotage-corrupt-coded-body";
   const e = await loadCodingLeg(outDir, leg);
-  const problems: string[] = [];
+  const hostSkipped = skippedLegProblem(e.hostDir);
+  const receiverSkipped = skippedLegProblem(e.receiverDir);
+  const hostProblems: string[] = [];
+  const receiverProblems: string[] = [];
+
   const coded = e.gets.filter(
     (g) =>
       g.http_status === 200 &&
@@ -808,11 +812,11 @@ export async function checkCorruptCodedBody(outDir: string): Promise<G2bCheck> {
       g.coding !== "identity",
   );
   if (e.listenerSabotage !== "corrupt-coded-body")
-    problems.push(
+    hostProblems.push(
       `live.json listener_sabotage is ${e.listenerSabotage}, expected corrupt-coded-body`,
     );
   if (coded.length < 1)
-    problems.push("the host sent no coded body, so nothing was corrupted");
+    hostProblems.push("the host sent no coded body, so nothing was corrupted");
   const reason = e.failure?.reason ?? "";
   if (
     ![
@@ -821,7 +825,7 @@ export async function checkCorruptCodedBody(outDir: string): Promise<G2bCheck> {
       "resource-unavailable",
     ].includes(reason)
   )
-    problems.push(
+    receiverProblems.push(
       `the receiver's failure is ${JSON.stringify(e.failure ?? null)}, expected a typed refusal of the body`,
     );
   const verified = e.fetches.filter(
@@ -832,13 +836,20 @@ export async function checkCorruptCodedBody(outDir: string): Promise<G2bCheck> {
   );
   for (const f of verified)
     if (corruptedHashes.has(f.hash) && f.content_encoding !== "unknown")
-      problems.push(
+      receiverProblems.push(
         `${f.hash?.slice(0, 12)}: a corrupted coded body was verified`,
       );
+  const launchedProblems = [
+    ...(hostSkipped ? [] : hostProblems),
+    ...(receiverSkipped ? [] : receiverProblems),
+  ];
+  const skippedProblems = [hostSkipped, receiverSkipped].filter(
+    (p): p is string => p !== null,
+  );
   return check(
     "corrupt-coded-body",
     "sabotage corrupt-coded-body (G8kz): the host flips one byte of every coded body it sends (identity bytes, hash and ETag stay right), and the receiver refuses it with resource-invalid (the body does not decode), resource-hash-mismatch (it decodes to other bytes) or resource-unavailable (a browser's fetch failed to decode it) instead of applying it",
-    problems,
+    launchedProblems.length > 0 ? launchedProblems : skippedProblems,
     // Names its leg so tier-verdict.py excuses it when the tier skipped the sabotage legs.
     `${leg}: ${coded.length} coded GET(s) sent corrupted; receiver ${reason} at seq ${e.failure?.seq}`,
     [

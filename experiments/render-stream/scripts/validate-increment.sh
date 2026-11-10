@@ -40,8 +40,12 @@
 #   scoped   the plan's targets; a changed file no rule matches reaches EVERY target
 #   sabotage native sabotage legs run only when a checker, runner, sabotage or mutation file is in
 #            the diff (smoke-map.json sabotage_paths / sabotage_content); otherwise the runners get
-#            RS_SABOTAGE_TIER=skip and their sabotage checks are reported skipped-by-tier, not
-#            failed (any other failing check still fails the run)
+#            RS_SABOTAGE_TIER=skip. Checkers still fail checks that need skipped evidence and name
+#            the affected leg directory only when every problem is skipped evidence. A receiver
+#            with skipped.txt needs a marked sibling host or capture to count as skipped evidence.
+#            lib/tier-verdict.py reports those checks
+#            skipped-by-tier by matching the leg's directory name, or a sabotage/catches/caught
+#            check id (any unexplained failing check still fails the run)
 #   milestone --milestone: everything; the orchestrator's sweeps
 #
 # Typed unavailable rows (GRT4a): a native or gate 7 run whose runner exits 1 is re-judged by

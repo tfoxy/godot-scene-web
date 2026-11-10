@@ -25,7 +25,15 @@
 //
 // Exits non-zero if any assertion fails.
 
-import { readFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -40,6 +48,7 @@ import {
   evaluatePolicyRespected,
   evaluateReceiverTyped,
   evaluateShaderHashParity,
+  evaluateShaderLogClean,
   type Gate55eExpected,
   residentShaderVersions,
   viewExpected,
@@ -712,6 +721,100 @@ const oracle = oracleOf(e);
       JSON.stringify([1, 2, 3, 4, 5, 6, 7, 8, 9]),
     JSON.stringify(freeze.Marker),
   );
+}
+
+const tierRoot = await mkdtemp(join(tmpdir(), "gate55e-tier-"));
+try {
+  for (const sabotage of ["freeze", "omit-param", "perturb-shader"]) {
+    const leg = `sabotage-shader-${sabotage}`;
+    for (const kind of ["receiver", "capture"] as const) {
+      const dir = join(tierRoot, "shader", `sabotage-${sabotage}`, kind);
+      await mkdir(dir, { recursive: true });
+      const evaluate = () =>
+        kind === "receiver"
+          ? evaluateReceiverTyped([
+              {
+                leg,
+                dir,
+                kind: "sabotage",
+                applied: undefined,
+                stdout: undefined,
+              },
+            ]).problems
+          : evaluateShaderLogClean([{ leg, dir, text: undefined }]).problems;
+      const missing = `${leg}${kind === "receiver" ? ":" : ""} stdout.log missing`;
+      assert(
+        `${kind} launched shader log detail unchanged`,
+        JSON.stringify(evaluate()) === JSON.stringify([missing]),
+      );
+      for (const dependent of kind === "receiver" ? [false, true] : [false]) {
+        const capture = join(
+          tierRoot,
+          "shader",
+          `sabotage-${sabotage}`,
+          "capture",
+        );
+        const markerDir = dependent ? capture : dir;
+        await mkdir(markerDir, { recursive: true });
+        await writeFile(
+          join(dir, "skipped.txt"),
+          `no source recording at ${join(capture, "recording.rs2")}\n`,
+        );
+        assert(
+          `${leg} ${kind} skipped.txt without marked sibling keeps launched detail`,
+          JSON.stringify(evaluate()) === JSON.stringify([missing]),
+        );
+        if (!dependent) await unlink(join(dir, "skipped.txt"));
+        for (const marker of ["skipped-by-tier", "skipped-remote"]) {
+          await writeFile(join(markerDir, `${marker}.txt`), "skipped");
+          const problems = evaluate();
+          assert(
+            `${leg} ${kind} ${dependent ? "dependent" : "direct"} ${marker} shader log names directory`,
+            JSON.stringify(problems) === JSON.stringify([`${marker}: ${dir}`]),
+            problems.join("; "),
+          );
+          const mixed =
+            kind === "receiver"
+              ? evaluateReceiverTyped([
+                  {
+                    leg,
+                    dir,
+                    kind: "sabotage",
+                    applied: undefined,
+                    stdout: undefined,
+                  },
+                  {
+                    leg: "honest-receiver",
+                    kind: "honest",
+                    applied: undefined,
+                    stdout: "SCRIPT ERROR: launched failure",
+                  },
+                ]).problems
+              : evaluateShaderLogClean([
+                  { leg, dir, text: undefined },
+                  { leg: "honest-capture", text: undefined },
+                ]).problems;
+          const launchedProblems =
+            kind === "receiver"
+              ? [
+                  "honest-receiver: SCRIPT ERROR: launched failure",
+                  "honest-receiver: applied.json missing",
+                ]
+              : ["honest-capture stdout.log missing"];
+          assert(
+            `${leg} ${kind} ${dependent ? "dependent" : "direct"} ${marker} mixed shader failure keeps launched problems only`,
+            JSON.stringify(mixed) === JSON.stringify(launchedProblems) &&
+              !mixed.join("; ").includes("skipped-"),
+            mixed.join("; "),
+          );
+          await unlink(join(markerDir, `${marker}.txt`));
+        }
+        if (dependent) await unlink(join(dir, "skipped.txt"));
+      }
+    }
+  }
+} finally {
+  await rm(tierRoot, { recursive: true, force: true });
 }
 
 console.log(
