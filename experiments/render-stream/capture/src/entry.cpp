@@ -241,6 +241,7 @@
 #include "rs_texture_decode.h"
 #include "rs_texture_payload.h"
 #include "rs_texture_release.h"
+#include "rs_evict.h"
 #include "rs_item_meta_host.h"
 #include "rs_track_caps.h"
 #include "rs_tracks.h"
@@ -338,6 +339,11 @@ struct State {
   rs::TextureReleaseFault htr_fault = rs::TextureReleaseFault::None;
   std::string htr_state = "off";
   std::string htr_reason;
+
+  std::string evict_state = "off", evict_reason;
+  bool evict_rss_test = false;
+  std::uint64_t evict_last_write = 0;
+  bool evict_written = false;
 
   // PM5 (render-stream-12.md "Headless shims (opt-in)"): GRC_HEADLESS_PARTICLES and
   // GRC_PREDRAW_PUMP as given, parsed, and the pump's counters.
@@ -874,6 +880,13 @@ void htr_fields(JsonWriter *json) {
   json->field("hook_ns_max", st.hook_ns_max);
   json->field("forward_ns_total", st.forward_ns_total);
   json->object_end();
+  if (g_state.htr_mode == rs::TextureReleaseMode::Always) {
+    auto &evict = rs::evict_stats();
+    evict.queue = rs::evict_queue().counts();
+    json->key("evict").object_begin();
+    rs::evict_fields(json, evict);
+    json->object_end();
+  }
   json->object_end();
 }
 
@@ -5253,6 +5266,22 @@ bool attempt(const char *phase) {
                  " (fault " + rs::registry_fault_name(registry_fault) + ")");
       }
     }
+    if (g_state.htr_mode == rs::TextureReleaseMode::Always) {
+      g_state.evict_state = "ignored";
+      if (g_state.htr_state != "active") {
+        g_state.evict_reason = g_state.htr_reason;
+      } else if (!rs::registry_on()) {
+        g_state.evict_reason = "registry-off";
+      } else {
+        g_state.evict_state = "active";
+        g_state.evict_reason.clear();
+      }
+      g_state.evict_rss_test = env_string("GRC_TEST_EVICT_RSS") == "1";
+      rs::evict_configure(g_state.evict_state == "active", g_state.evict_rss_test,
+                          g_state.evict_state, g_state.evict_reason);
+      log_line("evict: " + g_state.evict_state +
+               (g_state.evict_reason.empty() ? std::string() : " (" + g_state.evict_reason + ")"));
+    }
     // both tables are built once, here; the standby table is
     // published first, whatever the mode, and an arm is one more store to the armed table.
     // GRC_STANDBY_FAULT edits only the standby table's membership.
@@ -5276,6 +5305,11 @@ bool attempt(const char *phase) {
       }
       rs::particles_shim().configure(rs::ParticlesShimMode::Off);
       rs::registry_configure(false, rs::RegistryFault::None);
+      if (g_state.htr_mode == rs::TextureReleaseMode::Always) {
+        g_state.evict_state = "ignored";
+        g_state.evict_reason = "arm-failed";
+        rs::evict_configure(false, false, g_state.evict_state, g_state.evict_reason);
+      }
       if (g_state.pump_connected) {
         rs::predraw_pump_disconnect();
         g_state.pump_connected = false;
@@ -5677,6 +5711,7 @@ void arm_release() {
   if (!rearm_fault("skip-mirror-reset")) {
     rs::mirror_release();
   }
+  if (g_state.htr_mode == rs::TextureReleaseMode::Always) rs::evict_queue().unpark_all();
   const std::size_t log_freed = rs::resource_log().release();
   const std::size_t mesh_freed = hooks_release_arm();
   const std::size_t adopt_freed = rs::adopt_release();
@@ -6168,6 +6203,23 @@ void api_flush() {
 
 void on_startup() { attempt("startup"); }
 
+void evict_frame() {
+  const auto drained = rs::adopt_evict_drain(rs::kEvictDrainPerFrame, g_state.frames_total);
+  if (drained.released == 0 || (g_state.evict_written &&
+      g_state.frames_total - g_state.evict_last_write < rs::kEvictEvidenceEveryFrames)) return;
+  auto &evict = rs::evict_stats();
+  evict.queue = rs::evict_queue().counts();
+  emit_load("evict.json", rs::evict_json(evict, false, g_state.frames_total, read_rss_bytes(),
+                                       rs::evict_read_rss_anon()));
+  g_state.evict_written = true;
+  g_state.evict_last_write = g_state.frames_total;
+  log_line("evict: released=" + std::to_string(evict.released) +
+           " bytes=" + std::to_string(evict.released_bytes) +
+           " pending=" + std::to_string(evict.queue.pending) +
+           " parked=" + std::to_string(evict.queue.parked) +
+           " drain_us_max=" + std::to_string(evict.drain_us_max));
+}
+
 void on_frame() {
   const uint64_t frame_start_ns = monotonic_ns();
   // P3-TM: the host's shader time follows every iteration from the first, armed or not.
@@ -6190,6 +6242,7 @@ void on_frame() {
   if (rs::registry_on()) {
     rs::registry_frame(g_state.frames_total);
   }
+  if (rs::evict_pending()) evict_frame();
   if (g_state.standby && !g_state.api_pending_arm) {
     // a standby callback runs the shader clock, the registry's row
     // and the carriers' flush (one relaxed load with none registered), nothing else: no attempt, no
@@ -6297,6 +6350,17 @@ void on_shutdown() {
   }
   emit_canvas_texture_shim();
   emit_headless_texture_release();
+  if (g_state.htr_mode == rs::TextureReleaseMode::Always) {
+    auto &evict = rs::evict_stats();
+    evict.queue = rs::evict_queue().counts();
+    emit_load("evict.json", rs::evict_json(evict, true, g_state.frames_total, read_rss_bytes(),
+                                         rs::evict_read_rss_anon()));
+    log_line("evict: released=" + std::to_string(evict.released) +
+             " bytes=" + std::to_string(evict.released_bytes) +
+             " pending=" + std::to_string(evict.queue.pending) +
+             " parked=" + std::to_string(evict.queue.parked) +
+             " drain_us_max=" + std::to_string(evict.drain_us_max));
+  }
   emit_load("result.json", result_json());
   rearm_kept_release();
   log_line("shutdown: frames_total=" + std::to_string(g_state.frames_total) +

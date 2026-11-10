@@ -1,5 +1,5 @@
 // Gate 8 g8htr checks (HTR, capture/src/rs_texture_release.h): the opt-in
-// headless texture release, GRC_HEADLESS_TEXTURE_RELEASE=on. run-gate8.sh run_g8htr writes every
+// headless texture release, GRC_HEADLESS_TEXTURE_RELEASE=on or always. run-gate8.sh run_g8htr writes every
 // leg under g8htr/:
 //
 //   tex-default, tex-off, tex-on       gate8-tex at /8 with GRC_TEXTURE_DECODE=engine: unset, off, on
@@ -14,12 +14,18 @@
 //   sabotage-omit-create-on            tex-on with the omit-op sabotage on texture_2d_create
 //   rendered-on                        a rendered gate8-tex capture with the switch on
 //   tex-{off,on}/receiver              the rendered native receiver on tex-off's and tex-on's sinks
+//   standby-always                    always: never-armed release and ImageTexture probe
+//   fault-always-ignore-predicate     the ImageTexture negative test
+//   tex-always                        always with the registry off, compared with tex-on
+//   tex-refused-{adopt-on,always}      armed refused copies, compared for recording identity
+//   cost-standby/{off,always}-<r>       standby RSS savings, including in-process frees
 //   cost/{off,on}-<r>                  the htr-cost timing group (the g8t cost variant)
 //
 // Checks: htr-legs, htr-default-unreported, htr-stream-identical, htr-released,
 // htr-replay-identical, htr-workers, htr-adopt, htr-adopt-equivalence, htr-refused, htr-budget,
 // htr-census-1x1, htr-sabotage, htr-omit-op, htr-rendered-ignored, htr-invalid, htr-cost (timing) and
-// htr-lever (measured, no budget).
+// htr-lever (measured, no budget), plus eviction eligibility, ImageTexture safety, always
+// equivalence, standby RSS savings and standby hot-hook checks.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
@@ -40,6 +46,7 @@ import {
   skipped,
 } from "./gate8-adopt-checks";
 import { compareWorkerRecordings } from "./gate8-tex-checks";
+import { STANDBY_HOOKS, standbyHotZero } from "./registry-checks";
 import type { ResolvedRecording, ResolvedTransaction } from "./render-stream-2";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -71,6 +78,7 @@ export const VRAM_FORMATS: ReadonlySet<string> = new Set([
 ]);
 
 export interface HtrStats {
+  evict?: Omit<EvictEvidence, "schema" | "final" | "releases" | "rss_test">;
   env: string;
   state: string;
   reason: string | null;
@@ -97,7 +105,299 @@ export interface HtrStats {
   };
 }
 
+export const EVICT_SKIP_KEYS = [
+  "unregistered",
+  "not_texture2d",
+  "already_released",
+  "format",
+  "edited",
+  "no_path",
+  "armed_unheld",
+  "no_image",
+  "already_shrunk",
+  "mismatch",
+  "below_min",
+  "freed_during",
+  "shrink_failed",
+] as const;
+export interface EvictEvidence {
+  schema: string;
+  final: boolean;
+  state: string;
+  reason: string | null;
+  min_bytes: number;
+  per_frame: number;
+  noted: number;
+  queued: number;
+  queue_dropped: number;
+  requeued: number;
+  pending: number;
+  parked: number;
+  examined: number;
+  released: number;
+  released_bytes: number;
+  released_armed: number;
+  skipped: Record<(typeof EVICT_SKIP_KEYS)[number], number>;
+  evict_balanced: boolean;
+  lifetime_frames_max: number;
+  drain_us_max: number;
+  releases_dropped: number;
+  releases: {
+    path: string;
+    data_bytes: number;
+    format: number;
+    armed: boolean;
+  }[];
+  rss_test: {
+    batches: number;
+    measured_bytes: number;
+    freed_bytes: number;
+  } | null;
+}
+
+function equalFields(actual: object, expected: object): string[] {
+  return Object.entries(expected).flatMap(([key, value]) =>
+    (actual as Record<string, unknown>)[key] === value ? [] : [key],
+  );
+}
+
+/** Final fixture evidence must account for every queued entry and every released byte. */
+export function evictFixtureProblems(
+  e: EvictEvidence | null,
+  armed: boolean,
+  cost = false,
+): string[] {
+  if (!e) return ["missing evict evidence"];
+  const count = cost ? 6 : 16;
+  const problems = equalFields(e, {
+    schema: "render-stream-evict/1",
+    final: true,
+    state: "active",
+    reason: null,
+    min_bytes: 4096,
+    per_frame: 32,
+    noted: count,
+    queued: count,
+    examined: count,
+    queue_dropped: 0,
+    requeued: 0,
+    pending: 0,
+    parked: 0,
+    released: cost ? 6 : 8,
+    released_armed: armed ? 8 : 0,
+    evict_balanced: true,
+    releases_dropped: 0,
+  });
+  for (const key of EVICT_SKIP_KEYS) {
+    const expected = cost
+      ? 0
+      : key === "below_min"
+        ? 6
+        : key === "format"
+          ? 2
+          : 0;
+    if (e.skipped?.[key] !== expected) problems.push(`skipped.${key}`);
+  }
+  if (!(e.lifetime_frames_max >= 0 && e.lifetime_frames_max <= 1))
+    problems.push("lifetime_frames_max");
+  if (!(e.drain_us_max >= 0 && e.drain_us_max <= 5000))
+    problems.push("drain_us_max");
+  if (e.releases.length !== e.released) problems.push("release record count");
+  if (e.released_bytes !== e.releases.reduce((n, r) => n + r.data_bytes, 0))
+    problems.push("release byte sum");
+  for (const r of e.releases) {
+    if (!r.path.endsWith(".ctex")) problems.push("release path");
+    if (!(r.data_bytes >= 4096)) problems.push("release data_bytes");
+    if (!(Number.isInteger(r.format) && r.format >= 17 && r.format <= 38))
+      problems.push("release format");
+    if (r.armed !== armed) problems.push("release armed");
+  }
+  return problems;
+}
+
+export interface ReloadShape {
+  format: string | number;
+  width: number;
+  height: number;
+  mipmaps: boolean;
+  sha256?: string;
+}
+export interface TextureEvent {
+  event: string;
+  frame: number;
+  expected?: ReloadShape;
+  got?: ReloadShape | null;
+}
+export function imageTextureProbe(probe: TextureEvent | null): string[] {
+  const want = probe?.expected;
+  const got = probe?.got;
+  return want &&
+    got &&
+    want.width === 64 &&
+    want.height === 64 &&
+    want.mipmaps === false &&
+    typeof want.sha256 === "string" &&
+    want.sha256.length === 64 &&
+    ["format", "width", "height", "mipmaps"].every(
+      (key) => got[key as keyof ReloadShape] === want[key as keyof ReloadShape],
+    ) &&
+    got.sha256 === want.sha256
+    ? []
+    : ["ImageTexture probe differs"];
+}
+
+export function noImageTextureReleaseProblems(
+  probe: TextureEvent | null,
+  htrStats: HtrStats | null,
+  evict: EvictEvidence | null,
+  neverArmed: boolean,
+): string[] {
+  const problems = imageTextureProbe(probe);
+  if (neverArmed && htrStats?.released !== 0)
+    problems.push("standby create-time released");
+  if (!evict) problems.push("missing evict evidence");
+  else if (evict.releases.some((r) => !r.path.endsWith(".ctex")))
+    problems.push("release path");
+  return problems;
+}
+
+export function faultAlwaysIgnorePredicateProblems(
+  probe: TextureEvent | null,
+  htr: HtrStats | null,
+  evict: EvictEvidence | null,
+): string[] {
+  const problems: string[] = [];
+  const caught = noImageTextureReleaseProblems(probe, htr, evict, true);
+  if (!evict) problems.push("missing evict evidence");
+  if (!caught.includes("ImageTexture probe differs"))
+    problems.push("negative test did not fail the probe");
+  if (
+    probe?.got?.width !== 1 ||
+    probe.got.height !== 1 ||
+    probe.got.format !== 0 ||
+    probe.got.mipmaps !== false
+  )
+    problems.push("probe does not read released state");
+  if (htr?.fault !== "ignore-predicate") problems.push("fault");
+  if (!(htr && htr.released >= 1)) problems.push("released");
+  return problems;
+}
+
+export function alwaysSupersetProblems(
+  always: HtrStats | null,
+  on: HtrStats | null,
+  evict: EvictEvidence | null,
+  identical: boolean,
+): string[] {
+  const problems: string[] = [];
+  if (!identical) problems.push("recordings differ");
+  if (!always || !on) problems.push("missing HTR stats");
+  else
+    for (const key of [
+      "released",
+      "released_bytes",
+      "released_then_unheld",
+      "kept_adopted",
+      "skipped",
+    ] as const) {
+      if (key === "skipped") {
+        for (const field of [
+          "inactive",
+          "refused",
+          "format",
+          "omitted",
+        ] as const)
+          if (always.skipped[field] !== on.skipped[field])
+            problems.push(`skipped.${field}`);
+      } else if (always[key] !== on[key]) problems.push(key);
+    }
+  if (!evict) problems.push("missing evict evidence");
+  else
+    problems.push(
+      ...equalFields(evict, {
+        state: "ignored",
+        reason: "registry-off",
+        noted: 0,
+      }),
+    );
+  return problems;
+}
+
+export function evictArmedProblems(
+  evict: EvictEvidence | null,
+  identical: boolean,
+): string[] {
+  return [
+    ...evictFixtureProblems(evict, true),
+    ...(identical ? [] : ["recordings differ"]),
+  ];
+}
+
+export interface StandbyCostRound {
+  round: number;
+  evict: EvictEvidence | null;
+  off: HtrStats | null;
+  off_exit: string | null;
+  always_exit: string | null;
+  off_rss: number | null;
+  always_rss: number | null;
+}
+export function costStandbyProblems(rounds: StandbyCostRound[]): string[] {
+  if (rounds.length === 0) return ["no standby cost rounds"];
+  const problems: string[] = [];
+  const savings: number[] = [];
+  for (const r of rounds) {
+    problems.push(
+      ...evictFixtureProblems(r.evict, false, true).map(
+        (p) => `round ${r.round}: ${p}`,
+      ),
+    );
+    if (r.off_exit !== "0" || r.always_exit !== "0")
+      problems.push(`round ${r.round}: exit codes`);
+    if (r.off?.released !== 0 || r.off.evict !== undefined)
+      problems.push(`round ${r.round}: off releases`);
+    if (r.evict?.released_bytes !== 20971520)
+      problems.push(`round ${r.round}: released_bytes`);
+    const rss = r.evict?.rss_test;
+    if (
+      !rss ||
+      !(rss.batches > 0) ||
+      rss.measured_bytes !== r.evict?.released_bytes ||
+      !(rss.freed_bytes >= (r.evict?.released_bytes ?? Infinity))
+    )
+      problems.push(`round ${r.round}: in-process RSS`);
+    if (
+      r.off_rss === null ||
+      r.always_rss === null ||
+      r.off_rss < 0 ||
+      r.always_rss < 0
+    )
+      problems.push(`round ${r.round}: missing RSS sample`);
+    else savings.push(r.off_rss - r.always_rss);
+  }
+  savings.sort((a, b) => a - b);
+  if (
+    savings.length === rounds.length &&
+    savings[Math.floor(savings.length / 2)] < 20971520 / 2
+  )
+    problems.push("median cross-process RSS < half released bytes");
+  return problems;
+}
+
+export function standbyHotZeroEvictProblems(
+  legs: {
+    name: string;
+    result: Parameters<typeof standbyHotZero>[1];
+    counters: Parameters<typeof standbyHotZero>[2];
+  }[],
+): string[] {
+  return legs.flatMap(
+    (l) => standbyHotZero(l.name, l.result, l.counters, STANDBY_HOOKS).problems,
+  );
+}
+
 interface CaptureResult {
+  vtable?: { published?: string; standby_hooks?: string[] };
   status?: string;
   reason?: string | null;
   stream?: {
@@ -263,6 +563,11 @@ const TEX_LEGS = [
   "sabotage-ignore-predicate",
   "sabotage-omit-create-on",
   "rendered-on",
+  "standby-always",
+  "fault-always-ignore-predicate",
+  "tex-always",
+  "tex-refused-adopt-on",
+  "tex-refused-always",
 ];
 const ADOPT_LEGS = ["born", "late", "deferred"].flatMap((a) => [
   `adopt-${a}-off`,
@@ -743,6 +1048,8 @@ export async function runG8htr(
   const censusLegs: [string, 8 | 9][] = [
     ["tex-off", 8],
     ["tex-on", 8],
+    ["tex-always", 8],
+    ["tex-refused-always", 8],
     ["tex-workers-on", 8],
     ["tex-passthrough-on", 9],
     ["tex-deferred-on", 8],
@@ -1046,6 +1353,172 @@ export async function runG8htr(
       gating: false,
     } as G8aCheck);
   }
+
+  // The eviction queue is per load, including never-armed standby seats.
+  const evict = (leg: string) =>
+    readJson<EvictEvidence>(join(cap(leg), "evidence", "evict.json"));
+  const probe = async (dir: string) =>
+    jsonl<TextureEvent>(await readText(join(dir, "events.jsonl"))).find(
+      (e) => e.event === "imagetexture-probe",
+    ) ?? null;
+  const addEvict = (
+    id: string,
+    criterion: string,
+    problems: string[] | null,
+    detail = "",
+  ) => checks.push(check(id, criterion, problems, detail));
+  const standbyRan = ran("standby-always/capture");
+  const standby = standbyRan ? await evict("standby-always") : null;
+  addEvict(
+    "htr-evict-standby",
+    "standby releases only eligible .ctex copies at the frame boundary",
+    standbyRan ? evictFixtureProblems(standby, false) : null,
+    `drain_us_max=${standby?.drain_us_max} us`,
+  );
+  addEvict(
+    "no-imagetexture-release",
+    "the ImageTexture probe retains its content and every eviction path ends .ctex",
+    standbyRan
+      ? noImageTextureReleaseProblems(
+          await probe(cap("standby-always")),
+          await stats("standby-always"),
+          standby,
+          true,
+        )
+      : null,
+  );
+  {
+    const leg = "fault-always-ignore-predicate";
+    addEvict(
+      "fault-always-ignore-predicate-caught",
+      "the existing fault knob fails the ImageTexture probe, which reads released state",
+      ran(`${leg}/capture`)
+        ? faultAlwaysIgnorePredicateProblems(
+            await probe(cap(leg)),
+            await stats(leg),
+            await evict(leg),
+          )
+        : null,
+    );
+  }
+  {
+    const ready = ran("tex-always/capture") && ran("tex-on/capture");
+    const cmp = ready
+      ? cmpRec(
+          join(cap("tex-always"), "recording.rs8"),
+          join(cap("tex-on"), "recording.rs8"),
+        )
+      : null;
+    addEvict(
+      "htr-always-superset",
+      "always equals on with the eviction scope ignored when the registry is off",
+      ready
+        ? alwaysSupersetProblems(
+            await stats("tex-always"),
+            await stats("tex-on"),
+            await evict("tex-always"),
+            cmp!.identical,
+          )
+        : null,
+      cmp?.detail,
+    );
+  }
+  {
+    const ready =
+      ran("tex-refused-always/capture") && ran("tex-refused-adopt-on/capture");
+    const cmp = ready
+      ? cmpRec(
+          join(cap("tex-refused-always"), "recording.rs8"),
+          join(cap("tex-refused-adopt-on"), "recording.rs8"),
+        )
+      : null;
+    addEvict(
+      "htr-evict-armed",
+      "mirror-known refused copies release while armed without changing the recording",
+      ready
+        ? evictArmedProblems(await evict("tex-refused-always"), cmp!.identical)
+        : null,
+      cmp?.detail,
+    );
+  }
+  const costDir = join(g, "cost-standby");
+  const ns = existsSync(costDir)
+    ? [
+        ...new Set(
+          readdirSync(costDir)
+            .map((n) => /^(?:off|always)-(\d+)$/.exec(n)?.[1])
+            .filter((n) => n !== undefined),
+        ),
+      ].sort()
+    : [];
+  const costRounds: StandbyCostRound[] = [];
+  const hotLegs = standbyRan
+    ? [{ name: "standby-always", dir: cap("standby-always") }]
+    : [];
+  for (const n of ns) {
+    const off = join(costDir, `off-${n}`),
+      always = join(costDir, `always-${n}`);
+    if (skipped(always) === null && (await exitCode(always)) !== null)
+      hotLegs.push({ name: `cost-standby/always-${n}`, dir: always });
+    if (
+      skipped(off) !== null ||
+      skipped(always) !== null ||
+      (await exitCode(off)) === null ||
+      (await exitCode(always)) === null
+    )
+      continue;
+    const rss = async (dir: string) => {
+      const rows = jsonl<{
+        phase: string;
+        cycle: number;
+        rss_anon_bytes: number;
+      }>(await readText(join(dir, "evidence", "swap-cycle.jsonl")));
+      return (
+        rows.filter((r) => r.phase === "idle" && r.cycle === 1).at(-1)
+          ?.rss_anon_bytes ?? null
+      );
+    };
+    costRounds.push({
+      round: Number(n),
+      evict: await readJson<EvictEvidence>(
+        join(always, "evidence", "evict.json"),
+      ),
+      off:
+        (await readJson<CaptureResult>(join(off, "evidence", "result.json")))
+          ?.headless_texture_release ?? null,
+      off_exit: await exitCode(off),
+      always_exit: await exitCode(always),
+      off_rss: await rss(off),
+      always_rss: await rss(always),
+    });
+  }
+  addEvict(
+    "htr-cost-standby",
+    "in-process RSS freed is at least 100% of released bytes; median cross-process RSS saving is at least half",
+    costRounds.length ? costStandbyProblems(costRounds) : null,
+    costRounds
+      .map(
+        (r) =>
+          `round ${r.round}: in-process ${(((r.evict?.rss_test?.freed_bytes ?? 0) / 20971520) * 100).toFixed(3)}%; cross-process ${r.off_rss !== null && r.always_rss !== null ? (((r.off_rss - r.always_rss) / 20971520) * 100).toFixed(3) : "?"}% of 20971520 B`,
+      )
+      .join("; "),
+  );
+  const hotEvidence = await Promise.all(
+    hotLegs.map(async (l) => ({
+      name: l.name,
+      result: await readJson<CaptureResult>(
+        join(l.dir, "evidence", "result.json"),
+      ),
+      counters: await readJson<
+        NonNullable<Parameters<typeof standbyHotZero>[2]>
+      >(join(l.dir, "evidence", "counters.json")),
+    })),
+  );
+  addEvict(
+    "standby-hot-zero-evict",
+    "never-armed eviction seats install only standby hooks and run no hot hooks",
+    hotLegs.length ? standbyHotZeroEvictProblems(hotEvidence) : null,
+  );
 
   return { checks, report };
 }

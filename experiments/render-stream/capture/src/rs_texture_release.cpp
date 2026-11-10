@@ -47,8 +47,12 @@ bool parse_texture_release(const char *value, TextureReleaseMode *out, std::stri
     *out = TextureReleaseMode::On;
     return true;
   }
+  if (is(value, "always")) {
+    *out = TextureReleaseMode::Always;
+    return true;
+  }
   if (why != nullptr) {
-    *why = std::string("invalid GRC_HEADLESS_TEXTURE_RELEASE=") + value + " (expected off or on)";
+    *why = std::string("invalid GRC_HEADLESS_TEXTURE_RELEASE=") + value + " (expected off, on or always)";
   }
   return false;
 }
@@ -97,6 +101,11 @@ void texture_release_configure(std::uint32_t flags) {
     c->store(0, std::memory_order_relaxed);
   }
   detail::g_release_hot.flags.store(flags, std::memory_order_release);
+}
+
+void texture_release_set_evict(bool on) {
+  if (on) detail::g_release_hot.flags.fetch_or(kReleaseEvict, std::memory_order_release);
+  else detail::g_release_hot.flags.fetch_and(~kReleaseEvict, std::memory_order_release);
 }
 
 void note_release_decision(ReleaseSkip skip, std::int64_t data_bytes, std::int64_t release_ns,

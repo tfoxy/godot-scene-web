@@ -14,6 +14,7 @@
 #include "abi.h"
 #include "hooks.h"
 #include "iface.h"
+#include "rs_evict.h"
 #include "rs_item_meta.h"
 #include "rs_mirror.h"
 #include "rs_registry.h"
@@ -1465,13 +1466,14 @@ void adopt_canvas_texture_registered(std::uint64_t rid, const rs::RegistryCanvas
 
 // Reload-only binds are optional: their absence refuses candidates, never adoption itself.
 enum ReloadBind { kReloadLoad, kReloadLoadPath, kReloadWidth, kReloadHeight,
-                  kReloadSetData, kReloadBindCount };
+                  kReloadSetData, kReloadDataSize, kReloadBindCount };
 const BindSpec kReloadBinds[kReloadBindCount] = {
     {"ResourceLoader", "load", 3358495409LL},
     {"CompressedTexture2D", "get_load_path", 201670096LL},
     {"Texture2D", "get_width", 3905245786LL},
     {"Texture2D", "get_height", 3905245786LL},
     {"Image", "set_data", 2740482212LL},
+    {"Image", "get_data_size", 3905245786LL},
 };
 GDExtensionMethodBindPtr g_reload_bind[kReloadBindCount] = {};
 GDExtensionPtrConstructor g_reload_bytes_new = nullptr;
@@ -2367,6 +2369,129 @@ ReloadStats adopt_reload_at_arm() {
   std::lock_guard<std::mutex> lock(g_res_mutex);
   g_reload_stats.reload_us = (now_ns() - t0) / 1000;
   return g_reload_stats;
+}
+
+EvictDrainResult adopt_evict_drain(std::size_t max, std::uint64_t frame) {
+  const auto t0 = now_ns();
+  auto &stats = evict_stats();
+  std::vector<EvictEntry> batch;
+  evict_queue().take(max, &batch);
+  EvictDrainResult result;
+  result.examined = batch.size();
+  const auto skip = [&stats](EvictSkip why, std::size_t count = 1) {
+    stats.skipped[static_cast<std::size_t>(why)] += count;
+  };
+  const auto finish = [&]() {
+    stats.examined += batch.size();
+    ++stats.drains;
+    result.us = (now_ns() - t0) / 1000;
+    stats.drain_us_total += result.us;
+    stats.drain_us_max = std::max(stats.drain_us_max, result.us);
+    stats.queue = evict_queue().counts();
+    return result;
+  };
+  if (!reload_binds_ready()) {
+    stats.skipped[static_cast<std::size_t>(EvictSkip::NoImage)] += batch.size();
+    return finish();
+  }
+  struct Candidate {
+    EvictEntry entry;
+    std::unique_ptr<RefSlot> image;
+    void *object;
+    RegistryTextureRecord record;
+    std::int64_t data_bytes;
+    bool armed;
+    std::string path;
+    std::size_t notifications = 1;
+  };
+  std::vector<Candidate> candidates;
+  std::map<std::uint64_t, std::size_t> candidate_by_rid;
+  void *server = singleton_object("RenderingServer");
+  for (const auto &e : batch) {
+    // Repeated notifications share one shrink and its eventual outcome.
+    const auto duplicate = candidate_by_rid.find(e.rid);
+    if (duplicate != candidate_by_rid.end()) {
+      ++candidates[duplicate->second].notifications;
+      continue;
+    }
+    RegistryTextureRecord rec;
+    const bool registered = registry_texture(e.rid, &rec);
+    const std::string path = rec.path ? utf8_of(rec.path.get()) : std::string();
+    const bool streaming = mirror_enabled();
+    const bool known = streaming && mirror_instance().knows_texture(e.rid);
+    const auto record_decision = evict_record_decision({
+        registered, rec.kind == RegistryKind::Texture2d, rec.released, rec.facts.known,
+        rec.facts.format, rec.edited, reload_path_valid(path), streaming, known});
+    if (record_decision != EvictSkip::None) {
+      if (record_decision == EvictSkip::ArmedUnheld) evict_queue().park(e);
+      skip(record_decision);
+      continue;
+    }
+    auto image = std::make_unique<RefSlot>();
+    const GDExtensionConstTypePtr args[] = {&e.rid};
+    if (server) ptrcall(kRsTexture2dGet, server, args, &image->slot);
+    void *obj = image->object();
+    const auto shape = shape_of(obj);
+    std::int64_t data_bytes = -1;
+    if (obj) g_iface.object_method_bind_ptrcall(g_reload_bind[kReloadDataSize], obj, nullptr, &data_bytes);
+    const auto image_decision = evict_image_decision({
+        obj != nullptr, shape.width, shape.height, shape.format, shape.mipmaps, data_bytes,
+        rec.facts.width, rec.facts.height, rec.facts.format, rec.facts.mipmaps});
+    if (image_decision != EvictSkip::None) { skip(image_decision); continue; }
+    candidate_by_rid.emplace(e.rid, candidates.size());
+    candidates.push_back({e, std::move(image), obj, std::move(rec), data_bytes, streaming, path});
+  }
+  if (!candidates.empty()) {
+    Builtin bytes(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY);
+    const std::int64_t one = 1, format = 0;
+    const std::uint8_t mipmaps = 0;
+    const GDExtensionConstTypePtr resize_args[] = {&one};
+    std::int64_t error = 0;
+    g_reload_bytes_resize(bytes.ptr(), resize_args, &error, 1);
+    auto *dest = error == 0 ? g_reload_bytes_index(bytes.ptr(), 0) : nullptr;
+    if (!dest) {
+      for (const auto &c : candidates) skip(EvictSkip::ShrinkFailed, c.notifications);
+      candidates.clear();
+      return finish();
+    }
+    *dest = 0;
+    const GDExtensionConstTypePtr set_args[] = {&one, &one, &mipmaps, &format, bytes.ptr()};
+    // Only the in-place shrinks run between the RSS reads; all candidates and bytes are ready.
+    const auto before = stats.rss_test ? evict_read_rss_anon() : -1;
+    for (const auto &c : candidates) {
+      g_iface.object_method_bind_ptrcall(g_reload_bind[kReloadSetData], c.object, set_args, nullptr);
+    }
+    const auto after = stats.rss_test ? evict_read_rss_anon() : -1;
+    if (stats.rss_test) {
+      ++stats.rss_batches;
+      if (before >= 0 && after >= 0 && before > after)
+        stats.rss_freed_bytes += static_cast<std::uint64_t>(before - after);
+    }
+    for (const auto &c : candidates) {
+      const auto shape = shape_of(c.object);
+      if (shape.width != 1 || shape.height != 1 || shape.format != 0 || shape.mipmaps) {
+        skip(EvictSkip::ShrinkFailed, c.notifications); continue;
+      }
+      if (!registry_texture_set_released(c.entry.rid, true)) {
+        skip(EvictSkip::FreedDuring, c.notifications); continue;
+      }
+      skip(EvictSkip::AlreadyReleased, c.notifications - 1);
+      ++result.released;
+      ++stats.released;
+      stats.released_bytes += c.data_bytes;
+      stats.released_armed += c.armed;
+      stats.lifetime_frames_max = std::max(stats.lifetime_frames_max, frame - c.entry.frame);
+      if (stats.rss_test) stats.rss_measured_bytes += c.data_bytes;
+      if (stats.releases.size() < kEvictReleaseRecordCap) {
+        const auto &f = c.record.facts;
+        stats.releases.push_back({c.entry.rid, frame, c.entry.frame, f.format, f.width, f.height,
+                                  c.data_bytes, f.mipmaps, c.armed, c.path});
+      } else ++stats.releases_dropped;
+    }
+  }
+  // Drop the image and path references before accounting the drain's whole cost.
+  candidates.clear();
+  return finish();
 }
 
 HtrRestoreStats adopt_htr_restore(AdoptFault f, bool root_finalized) {

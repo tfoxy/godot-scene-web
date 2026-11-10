@@ -31,6 +31,7 @@
 #include "rs_texture_delivery.h"
 #include "rs_texture_payload.h"
 #include "rs_texture_release.h"
+#include "rs_evict.h"
 #include "rs_payload_rest.h"
 #include "rs_texture_worker.h"
 #include "rs_variant.h"
@@ -2506,8 +2507,13 @@ void hook_texture_set_path(void *self, RID texture, const void *path) {
   if (rs::registry_on()) {
     rs::registry_note_texture_path(texture.id, registry_held_string(path));
   }
+  // The always mode queues fresh .ctex RIDs for release at the frame boundary.
+  // Other modes pay only one relaxed load; the cache shares the decoded path when needed.
+  const bool evict = (rs::texture_release_flags() & rs::kReleaseEvict) != 0;
+  std::string text;
+  if (evict || g_path_hook_records) text = rs::decode_string(path);
+  if (evict && rs::evict_path_is_ctex(text)) rs::evict_queue().note(texture.id, current_frame());
   if (g_path_hook_records) {
-    const std::string text = rs::decode_string(path);
     std::lock_guard<std::mutex> lock(g_cache_mutex);
     if (!inflight.standby() && g_set_path_calls.size() < kMaxTextures) {
       g_set_path_calls.emplace_back(texture.id, text);

@@ -19,6 +19,7 @@
 #include "fake_godot_iface.h"
 #include "hooks.h"
 #include "rs_adopt.h"
+#include "rs_evict.h"
 #include "rs_registry.h"
 #include "rs_mirror.h"
 #include "rs_resource_log.h"
@@ -1596,6 +1597,81 @@ void test_htr_restore() {
   grc::g_iface = saved;
 }
 
+void test_evict_duplicate_rid() {
+  auto &w = fake::world();
+  const auto saved = grc::g_iface;
+  static std::vector<uint8_t> packed;
+  grc::g_iface.variant_get_ptr_constructor = [](GDExtensionVariantType, int32_t) -> GDExtensionPtrConstructor {
+    return +[](GDExtensionUninitializedTypePtr, const GDExtensionConstTypePtr *) {};
+  };
+  grc::g_iface.variant_get_ptr_builtin_method = [](GDExtensionVariantType, GDExtensionConstStringNamePtr,
+                                                  GDExtensionInt) -> GDExtensionPtrBuiltInMethod {
+    return +[](GDExtensionTypePtr, const GDExtensionConstTypePtr *args, GDExtensionTypePtr ret, int) {
+      packed.resize(*static_cast<const int64_t *>(args[0]));
+      fake::put_int(ret, 0);
+    };
+  };
+  grc::g_iface.get_proc_address = [](const char *) -> GDExtensionInterfaceFunctionPtr {
+    return reinterpret_cast<GDExtensionInterfaceFunctionPtr>(
+        +[](GDExtensionTypePtr, GDExtensionInt i) -> uint8_t * { return packed.data() + i; });
+  };
+  grc::g_iface.string_to_utf8_chars = [](GDExtensionConstStringPtr str, char *out, GDExtensionInt n) -> GDExtensionInt {
+    const auto &text = *static_cast<const std::string *>(str);
+    if (out) std::memcpy(out, text.data(), std::min<size_t>(n, text.size()));
+    return text.size();
+  };
+  for (const bool shrink_fails : {false, true}) {
+    constexpr uint64_t rid = 0xabcd9877;
+    constexpr int64_t data_bytes = 4096;
+    grc::rs::mirror_enable(false);
+    grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
+    grc::rs::registry_note_texture_create(rid, {64, 64, 19, false, true}, false);
+    grc::rs::registry_note_texture_path(rid, std::make_shared<const std::string>("res://duplicate.ctex"));
+    grc::rs::evict_configure(true, true, "active", "");
+    auto &image = w.make({"Object", "Image"});
+    w.singletons["RenderingServer"] = &w.make({"Object", "RenderingServer"});
+    int64_t size = 64, format = 19;
+    int writes = 0;
+    w.overrides["RenderingServer.texture_2d_get"] = [&](fake::Object *, FakeArgs args, void *ret) {
+      check(fake::arg_u64(args, 0) == rid, "evict duplicate: getter names original texture");
+      fake::put_object(ret, &image);
+    };
+    w.overrides["Image.get_width"] = [&](fake::Object *, FakeArgs, void *ret) { fake::put_int(ret, size); };
+    w.overrides["Image.get_height"] = w.overrides["Image.get_width"];
+    w.overrides["Image.get_format"] = [&](fake::Object *, FakeArgs, void *ret) { fake::put_int(ret, format); };
+    w.overrides["Image.has_mipmaps"] = [](fake::Object *, FakeArgs, void *ret) { *static_cast<uint8_t *>(ret) = 0; };
+    w.overrides["Image.get_data_size"] = [](fake::Object *, FakeArgs, void *ret) { fake::put_int(ret, data_bytes); };
+    w.overrides["Image.set_data"] = [&](fake::Object *obj, FakeArgs args, void *) {
+      ++writes;
+      check(obj == &image && fake::arg_u64(args, 0) == 1 && fake::arg_u64(args, 1) == 1 &&
+            *static_cast<const uint8_t *>(args[2]) == 0 && fake::arg_u64(args, 3) == 0,
+            "evict duplicate: shrink uses typed 1x1 L8 arguments");
+      check(packed == std::vector<uint8_t>(1, 0), "evict duplicate: shrink uses one zero byte");
+      if (!shrink_fails) { size = 1; format = 0; }
+    };
+    grc::rs::evict_queue().note(rid, 7);
+    grc::rs::evict_queue().note(rid, 7);
+    const auto drained = grc::rs::adopt_evict_drain(32, 8);
+    const auto &stats = grc::rs::evict_stats();
+    check(drained.examined == 2 && stats.examined == 2, "evict duplicate: both notifications examined");
+    check(drained.released == (shrink_fails ? 0u : 1u) && stats.released == drained.released,
+          "evict duplicate: one release per RID");
+    check(stats.released_bytes == (shrink_fails ? 0u : data_bytes), "evict duplicate: bytes counted once");
+    check(stats.rss_measured_bytes == stats.released_bytes, "evict duplicate: RSS measured bytes counted once");
+    check(stats.skipped[static_cast<size_t>(grc::rs::EvictSkip::AlreadyReleased)] == (shrink_fails ? 0u : 1u),
+          "evict duplicate: second successful notification already released");
+    check(stats.skipped[static_cast<size_t>(grc::rs::EvictSkip::ShrinkFailed)] == (shrink_fails ? 2u : 0u),
+          "evict duplicate: failed shrink applies to both notifications");
+    check(stats.releases.size() == (shrink_fails ? 0u : 1u), "evict duplicate: one release record per RID");
+    check(writes == 1, "evict duplicate: one shrink attempt per RID");
+    check(grc::rs::evict_balanced(stats), "evict duplicate: balanced accounting");
+    w.reset_calls();
+  }
+  grc::rs::evict_configure(false, false, "off", "");
+  grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
+  grc::g_iface = saved;
+}
+
 void test_reload_sources() {
   auto &w = fake::world();
   const auto saved = grc::g_iface;
@@ -1962,6 +2038,7 @@ int main() {
   test_reload_materialize_guards();
   test_reload_sources();
   test_htr_restore();
+  test_evict_duplicate_rid();
   test_warm_free_during_pass();
   test_warm_census_revalidation();
   std::printf("rs_adopt_test: %d checks, %d failures\n", g_checks, g_failures);

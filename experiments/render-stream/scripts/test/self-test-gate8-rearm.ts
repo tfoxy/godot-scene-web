@@ -16,11 +16,17 @@
 //
 // Exits non-zero if any assertion fails.
 
+import {
+  type EvictEvidence,
+  type HtrStats,
+  noImageTextureReleaseProblems,
+} from "../lib/gate8-htr-checks";
 import type { Dump, IdLine, OracleLine } from "../lib/gate8-id14-checks";
 import {
   type CycleLine,
   cyclePhases,
   disarmRound,
+  evictRearmProblems,
   faultReloadOffCaught,
   faultSkipRestoreCaught,
   faultSkipVerifyCaught,
@@ -42,6 +48,7 @@ import {
   type TextureEvent,
   type TextureReloadEvidence,
   type TextureTeardown,
+  textureEvictExpected,
   type WarmEvidence,
   warmCompleteProblems,
   warmInvalidationProblems,
@@ -748,6 +755,131 @@ assert(
   );
   for (const t of [[null], [{ ...td, reload_sources_held: 1 }]])
     fail(reloadTyped(honest, true, t), "missing/held teardown fails");
+  // The always pair uses the same shape, census and restore judges as the on pair.
+  for (const rearm of [true, false]) {
+    const expected = textureEvictExpected(rearm);
+    const r = { ...honest, ...expected };
+    pass(reloadTyped(r, rearm, [td], expected), "evict typed reload passes");
+    if (rearm)
+      assert(
+        reloadTyped(r, true, [null], expected).includes("reload_sources_held"),
+        "evict typed reload rejects missing rearm teardown",
+      );
+    for (const key of Object.keys(expected.candidates))
+      fail(
+        reloadTyped(
+          { ...r, candidates: { ...r.candidates, [key]: 99 } },
+          rearm,
+          [td],
+          expected,
+        ),
+        `evict candidate ${key} fails`,
+      );
+    for (const key of ["reloaded", "adopted_from_reload"])
+      fail(
+        reloadTyped({ ...r, [key]: 99 }, rearm, [td], expected),
+        `evict outcome ${key} fails`,
+      );
+    pass(reloadNo1x1(rec, r), "evict no-1x1 passes");
+    fail(reloadNo1x1(dummy, r), "evict no-1x1 reads released state");
+    pass(reloadCensus([rec, rec, rec]), "evict census passes");
+    fail(reloadCensus([rec, dummy, rec]), "evict census reads released state");
+    pass(imageTextureRestored(probe, td, r), "evict restore passes");
+    fail(
+      imageTextureRestored(
+        probe,
+        { ...td, htr_restore: { ...td.htr_restore, restored: 0 } },
+        r,
+      ),
+      "evict restore failure caught",
+    );
+    const evict = {
+      final: true,
+      released: rearm ? 4 : 8,
+      noted: 16,
+      released_armed: 0,
+      pending: 0,
+      parked: 0,
+      evict_balanced: true,
+      skipped: { already_released: rearm ? 6 : 0 },
+    } as EvictEvidence;
+    if (!rearm) {
+      const e = {
+        ...evict,
+        releases: [{ path: "res://texture.ctex" }],
+      } as EvictEvidence;
+      const htr = { released: 1 } as HtrStats;
+      pass(
+        noImageTextureReleaseProblems(probe, htr, e, false),
+        "once-arm ImageTexture keeps its content after arming",
+      );
+      fail(
+        noImageTextureReleaseProblems(
+          { ...probe, got: { ...probe.got!, width: 1, height: 1, format: 0 } },
+          htr,
+          e,
+          false,
+        ),
+        "once-arm probe reads released state",
+      );
+      fail(
+        noImageTextureReleaseProblems(
+          probe,
+          htr,
+          { ...e, releases: [{ ...e.releases[0], path: "res://image.png" }] },
+          false,
+        ),
+        "once-arm eviction path must end .ctex",
+      );
+    }
+    const reloads = rearm ? [r, r] : [r];
+    pass(evictRearmProblems(evict, rearm, reloads), "evict rearm passes");
+    fail(evictRearmProblems(null, rearm, reloads), "missing evict fails");
+    for (const key of [
+      "released",
+      "noted",
+      "released_armed",
+      "pending",
+      "parked",
+    ])
+      fail(
+        evictRearmProblems({ ...evict, [key]: 99 }, rearm, reloads),
+        `evict ${key} fails`,
+      );
+    for (const key of ["final", "evict_balanced"])
+      fail(
+        evictRearmProblems({ ...evict, [key]: false }, rearm, reloads),
+        `evict ${key} fails`,
+      );
+    if (rearm)
+      fail(
+        evictRearmProblems(
+          { ...evict, skipped: { ...evict.skipped, already_released: 0 } },
+          rearm,
+          reloads,
+        ),
+        "evict already released fails",
+      );
+    fail(evictRearmProblems(evict, rearm, []), "missing reload arms fails");
+    fail(
+      evictRearmProblems(evict, rearm, [null, ...reloads]),
+      "null reload fails",
+    );
+    fail(
+      evictRearmProblems(evict, rearm, [
+        { ...r, released_no_path: 1 },
+        ...reloads,
+      ]),
+      "evict missing path fails",
+    );
+    fail(
+      evictRearmProblems(evict, rearm, [
+        { ...r, refused: { ...r.refused, released_no_path: 1 } },
+        ...reloads,
+      ]),
+      "evict refused missing path fails",
+    );
+  }
   pass(imageTextureRestored(probe, td, honest), "restore passes");
   fail(imageTextureProbe(null), "missing probe fails");
   for (const [key, value] of Object.entries({

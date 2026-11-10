@@ -1,5 +1,5 @@
 // HTR: the opt-in headless texture
-// release, GRC_HEADLESS_TEXTURE_RELEASE=off|on.
+// release, GRC_HEADLESS_TEXTURE_RELEASE=off|on|always.
 //
 // On a `headless` display server the dummy rasterizer keeps `p_image->duplicate()` of every
 // texture for the RID's life (servers/rendering/dummy/storage/texture_storage.h:82-86). For a
@@ -32,10 +32,10 @@
 namespace grc {
 namespace rs {
 
-enum class TextureReleaseMode { Off, On };
+enum class TextureReleaseMode { Off, On, Always };
 
-// GRC_HEADLESS_TEXTURE_RELEASE: unset, "", "off" or "0" is Off; "on" or "1" is On. Anything else
-// is false with `why` naming the value.
+// GRC_HEADLESS_TEXTURE_RELEASE: unset, "", "off" or "0" is Off; "on" or "1" is On;
+// "always" is Always. Anything else is false with `why` naming the value.
 bool parse_texture_release(const char *value, TextureReleaseMode *out, std::string *why);
 
 // GRC_HEADLESS_TEXTURE_RELEASE_FAULT (the sabotage knob, not a GRC_SABOTAGE kind: the wire is not
@@ -45,7 +45,7 @@ enum class TextureReleaseFault { None, IgnorePredicate };
 bool parse_texture_release_fault(const char *value, TextureReleaseFault *out, std::string *why);
 const char *texture_release_fault_name(TextureReleaseFault fault);
 
-// The arm decision: `active` (On on a headless host), `off`, or `ignored` (On elsewhere, reason
+// The arm decision: `active` (On or Always on a headless host), `off`, or `ignored` (elsewhere, reason
 // `not-headless`).
 struct TextureReleaseDecision {
   const char *state = "off";  // "active" | "off" | "ignored"
@@ -100,6 +100,7 @@ constexpr ReleaseSkip release_decision(const ReleaseInputs &in, TextureReleaseFa
 constexpr std::uint32_t kReleaseActive = 1u;
 constexpr std::uint32_t kReleaseTimed = 2u;
 constexpr std::uint32_t kReleaseFaultIgnorePredicate = 4u;
+constexpr std::uint32_t kReleaseEvict = 8u;
 
 // The mirror's half of the predicate's inputs, copied into the hot line (`ReleaseHot::mirror`) by
 // rs_mirror.cpp, which owns the state they copy:
@@ -128,6 +129,8 @@ inline ReleaseHot g_release_hot;
 
 // Set once on the main thread before the vptr store (entry.cpp); stats are reset.
 void texture_release_configure(std::uint32_t flags);
+// Toggle only the frame-boundary release scope after the create-time flags are configured.
+void texture_release_set_evict(bool on);
 inline std::uint32_t texture_release_flags() {
   return detail::g_release_hot.flags.load(std::memory_order_relaxed);
 }

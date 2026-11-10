@@ -319,7 +319,11 @@
 #       `tex-passthrough-{off,on}`; gate8-adopt `adopt-{born,late,deferred}-{off,on}`; the gate8-tex
 #       deferred arm (GRC_ARM_DEFER_FRAMES=5, GRC_ADOPT=arm) `tex-deferred-{off,on}` and its fault
 #       leg `sabotage-ignore-predicate` (GRC_HEADLESS_TEXTURE_RELEASE_FAULT), the omit-op leg
-#       `sabotage-omit-create-on` (an armed omit-op on texture_2d_create); rendered,
+#       `sabotage-omit-create-on` (an armed omit-op on texture_2d_create);
+#       `standby-always/capture` (always mode releases .ctex copies in standby), its negative
+#       test `fault-always-ignore-predicate`, `tex-always` (registry off), and
+#       `tex-refused-{adopt-on,always}` (armed, decode off); the non-timing RSS pairs
+#       `cost-standby/{off,always}-<r>`; rendered,
 #       `rendered-on` (the switch ignored, not-headless) and the native receivers of tex-off and
 #       tex-on; last the htr-cost timing group (`cost/{off,on}-<r>`, the g8t cost variant, each
 #       under the exclusive quiet lock). Judged by lib/gate8-htr-checks.ts.
@@ -348,8 +352,9 @@
 #       asking the v2 fields in each arm (`id/arm1`, `id/arm2`). Also tex-htr: a /11 passthrough
 #       texture pair with HTR, standby eviction and a path-less ImageTexture restore probe;
 #       tex-htr-faults: reload-off, swap, swap-skip-verify and skip-htr-restore B-only legs.
+#       tex-evict: the /11 texture pair with GRC_HEADLESS_TEXTURE_RELEASE=always;
 #       tex-warm: B-only workers and warm-off legs with update/free probes after the second arm.
-#       G8RE_ONLY selects adopt,tex,id,tex-htr,tex-htr-faults,tex-warm. Judged by lib/gate8-rearm-checks.ts.
+#       G8RE_ONLY selects adopt,tex,id,tex-htr,tex-evict,tex-htr-faults,tex-warm. Judged by lib/gate8-rearm-checks.ts.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -4363,6 +4368,7 @@ run_g8ku() {
 # g8htr/. The off twin of each pair sets the variable to `off` (so both are timed alike);
 # tex-default leaves it unset (the default path: no result.json key, no evidence file).
 G8HTR_ARM=(GRC_HEADLESS_TEXTURE_RELEASE=on)
+G8HTR_ALWAYS=(GRC_HEADLESS_TEXTURE_RELEASE=always)
 G8HTR_OFF=(GRC_HEADLESS_TEXTURE_RELEASE=off)
 # tex-budget-on: a budget the fixture's step-0 payloads exceed, so the stream ends before step 1.
 G8HTR_BUDGET_BYTES="${G8HTR_BUDGET_BYTES:-40000}"
@@ -4395,6 +4401,19 @@ run_capture_g8htr_tex() {
 	mkdir -p "$dir"
 	CAPTURE_EXTRA_ENV=("$@" RS_FIXTURE_TEXTURE_LOG="$dir/textures.jsonl")
 	run_capture "$dir" "" none
+}
+
+# A never-armed seat loads both texture families and probes its ImageTexture before quitting.
+G8HTR_STANDBY_QUIT=50
+G8HTR_STANDBY_ENV=("${G8T_DECODE_ENV[@]}" RS_FIXTURE_STEP_FRAMES=30 RS_FIXTURE_IMAGETEXTURE=1
+	RS_FIXTURE_IDLE_ACTION_FRAME=40)
+run_capture_g8htr_standby() {
+	local dir="$1"
+	shift
+	mkdir -p "$dir"
+	CAPTURE_EXTRA_ENV=("$@" GRC_MODE=standby
+		RS_FIXTURE_TEXTURE_LOG="$dir/textures.jsonl" RS_FIXTURE_EVENT_LOG="$dir/events.jsonl")
+	run_capture "$dir" "$G8HTR_STANDBY_QUIT" none
 }
 
 # run_capture_rendered_g8htr <dir>: the armed gate8-tex capture on the private gamescope (g8c's
@@ -4431,6 +4450,21 @@ run_cost_capture_g8htr() {
 	CAPTURE_WITH_PATCH=1
 	"$REPO_ROOT/node_modules/.bin/tsx" --conditions=development "$SCRIPT_DIR/lib/gate8-scale-checks.ts" --capture "$dir"
 	rm -rf "${dir:?}/$RECORDING_NAME" "${dir:?}/store"
+}
+
+# run_cost_standby_g8htr <dir> <off|always>: never armed; the control cycle writes RSS at
+# each phase end. Pin glibc's mmap threshold to disable its dynamic adjustment, so every
+# released 2-4 MiB buffer is an mmapped chunk returned on free. Both legs use the same pin.
+run_cost_standby_g8htr() {
+	local dir="$1" config="$2"
+	mkdir -p "$dir"
+	cat /proc/loadavg >"$dir/loadavg.txt" 2>/dev/null || true
+	CAPTURE_EXTRA_ENV=("${G8T_DECODE_ENV[@]}" RS_FIXTURE_VARIANT=cost
+		RS_FIXTURE_TEXTURE_LOG="$dir/textures.jsonl" GRC_MODE=standby GRC_SWAP_CYCLE=150:150:1:control
+		MALLOC_MMAP_THRESHOLD_=131072 GRC_TEST_EVICT_RSS=1 GRC_HEADLESS_TEXTURE_RELEASE="$config")
+	CAPTURE_WITH_PATCH=0
+	run_capture "$dir" "$G8HTR_COST_QUIT" none
+	CAPTURE_WITH_PATCH=1
 }
 
 G8HTR_COST_ROUNDS="${G8HTR_COST_ROUNDS:-3}"
@@ -4495,6 +4529,26 @@ run_g8htr() {
 	echo "run-gate8: g8htr sabotage-omit-create-on (tex-on, GRC_SABOTAGE=omit-op texture_2d_create from frame 1)"
 	run_capture_g8htr_tex "$g/sabotage-omit-create-on/capture" "${G8T_DECODE_ENV[@]}" "${G8HTR_ARM[@]}" \
 		GRC_SABOTAGE=omit-op GRC_SABOTAGE_OP=texture_2d_create GRC_SABOTAGE_FRAME=1
+
+	echo "run-gate8: g8htr standby-always (never armed, .ctex loads queued at set_path)"
+	run_capture_g8htr_standby "$g/standby-always/capture" "${G8HTR_STANDBY_ENV[@]}" "${G8HTR_ALWAYS[@]}"
+	echo "run-gate8: g8htr fault-always-ignore-predicate (standby ImageTexture negative test, fault knob ignore-predicate)"
+	run_capture_g8htr_standby "$g/fault-always-ignore-predicate/capture" "${G8HTR_STANDBY_ENV[@]}" "${G8HTR_ALWAYS[@]}" \
+		GRC_HEADLESS_TEXTURE_RELEASE_FAULT=ignore-predicate
+	echo "run-gate8: g8htr tex-always (born, registry off: always equals on)"
+	run_capture_g8htr_tex "$g/tex-always/capture" "${G8T_DECODE_ENV[@]}" "${G8HTR_ALWAYS[@]}"
+	echo "run-gate8: g8htr tex-refused-adopt-on/tex-refused-always (armed, decode off, registry on)"
+	run_capture_g8htr_tex "$g/tex-refused-adopt-on/capture" GRC_STREAM_VERSION=8 GRC_TEXTURE_DECODE=off GRC_ADOPT=arm "${G8HTR_ARM[@]}"
+	run_capture_g8htr_tex "$g/tex-refused-always/capture" GRC_STREAM_VERSION=8 GRC_TEXTURE_DECODE=off GRC_ADOPT=arm "${G8HTR_ALWAYS[@]}"
+
+	# These pairs judge RSS, not time, so RS_SKIP_TIMING_GROUPS does not filter them.
+	local r c
+	for r in $(seq 1 "$G8HTR_COST_ROUNDS"); do
+		for c in off always; do
+			echo "run-gate8: g8htr cost-standby/$c-$r (never armed, switch $c)"
+			run_cost_standby_g8htr "$g/cost-standby/$c-$r" "$c"
+		done
+	done
 
 	echo "run-gate8: bringing up private gamescope for g8htr's rendered legs"
 	gs_start 640 360 "$OUT/gamescope-g8htr"
@@ -4639,6 +4693,7 @@ run_g8sw() {
 # the mobile family and a fresh lossless `control`, every texture created while disarmed); K1 1
 # (armed at load) and 20 armed frames cover step 0, 12 idle frames step 1, arm 2 (K2 about 36)
 # runs to the quit at 50.
+# tex-evict: the same texture schedule with always releasing eligible copies while disarmed.
 # tex-warm: tex-htr's /11 schedule with two workers and undrawn update/free probes;
 # workers warms normally, warm-off is the fault knob negative test. Both are B-only.
 G8RE_ADOPT_ENV=("${G8A_ENV[@]}" GRC_ADOPT=arm RS_FIXTURE_ARM=deferred RS_FIXTURE_ARM_FRAME=30)
@@ -4654,6 +4709,8 @@ G8RE_TEX_QUIT=50
 # B logs its idle-action frame; A repeats the action at exactly that frame before K2.
 G8RE_TEX_HTR_ENV=(GRC_STREAM_VERSION=11 GRC_TEXTURE_DECODE=engine GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip RS_FIXTURE_STEP_FRAMES=30
 	GRC_HEADLESS_TEXTURE_RELEASE=on RS_FIXTURE_STEP1_ROWS=cd RS_FIXTURE_EVICT=1 RS_FIXTURE_IMAGETEXTURE=1)
+G8RE_TEX_EVICT_ENV=(GRC_STREAM_VERSION=11 GRC_TEXTURE_DECODE=engine GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip RS_FIXTURE_STEP_FRAMES=30
+	GRC_HEADLESS_TEXTURE_RELEASE=always RS_FIXTURE_STEP1_ROWS=cd RS_FIXTURE_EVICT=1 RS_FIXTURE_IMAGETEXTURE=1)
 G8RE_TEX_HTR_K1=1
 G8RE_TEX_HTR_CYCLE=20:20:2
 G8RE_TEX_HTR_QUIT=60
@@ -4825,14 +4882,14 @@ run_g8re_id() {
 	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
 }
 
-# G8RE_ONLY: comma-separated adopt,tex,id,tex-htr,tex-htr-faults,tex-warm; unset runs all.
-g8re_selected() { [[ ",${G8RE_ONLY:-adopt,tex,id,tex-htr,tex-htr-faults,tex-warm}," == *",$1,"* ]]; }
+# G8RE_ONLY: comma-separated adopt,tex,id,tex-htr,tex-evict,tex-htr-faults,tex-warm; unset runs all.
+g8re_selected() { [[ ",${G8RE_ONLY:-adopt,tex,id,tex-htr,tex-evict,tex-htr-faults,tex-warm}," == *",$1,"* ]]; }
 
 run_g8re() {
 	run_import_g8re
 	mkdir -p "$OUT/g8re"
 	local fx
-	for fx in adopt tex id tex-htr tex-htr-faults tex-warm; do
+	for fx in adopt tex id tex-htr tex-evict tex-htr-faults tex-warm; do
 		if ! g8re_selected "$fx"; then
 			mkdir -p "$OUT/g8re/$fx"
 			echo 'not selected by G8RE_ONLY' >"$OUT/g8re/$fx/not-selected.txt"
@@ -4851,6 +4908,10 @@ run_g8re() {
 	if g8re_selected tex-htr; then
 		G8RE_VIEWER_PROTOCOL=11 run_g8re_pair tex-htr "$FIXTURE_DIR" "$G8RE_TEX_HTR_K1" \
 			"$G8RE_TEX_HTR_CYCLE" "$G8RE_TEX_HTR_QUIT" "${G8RE_TEX_HTR_ENV[@]}"
+	fi
+	if g8re_selected tex-evict; then
+		G8RE_VIEWER_PROTOCOL=11 run_g8re_pair tex-evict "$FIXTURE_DIR" "$G8RE_TEX_HTR_K1" \
+			"$G8RE_TEX_HTR_CYCLE" "$G8RE_TEX_HTR_QUIT" "${G8RE_TEX_EVICT_ENV[@]}"
 	fi
 	if g8re_selected tex-htr-faults; then run_g8re_tex_htr_faults; fi
 	if g8re_selected tex-warm; then

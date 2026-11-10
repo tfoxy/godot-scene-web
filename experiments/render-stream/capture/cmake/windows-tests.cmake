@@ -97,7 +97,7 @@ grc_w_test(rs_texture_cache TARGET rs_texture_cache_test
   LIBS grc_platform Threads::Threads)
 grc_w_test(rs_adopt TARGET rs_adopt_test
   SOURCES test/rs_adopt_test.cpp src/rs_adopt.cpp src/rs_reload.cpp src/rs_warm.cpp src/iface.cpp
-    src/rs_mirror.cpp
+    src/rs_mirror.cpp src/rs_evict.cpp src/rs_texture_release.cpp
     src/rs_texture_delivery.cpp src/rs_shader_payload.cpp src/rs_texture_payload.cpp
     src/rs_mesh_payload.cpp src/rs_sha256.cpp src/rs2_diff.cpp src/rs_resource_log.cpp
     src/rs_texture_worker.cpp src/rs2_codec.cpp src/rs_variant.cpp src/rs_registry.cpp src/report.cpp

@@ -350,6 +350,9 @@ ReloadStats adopt_reload_finish();
 // Restore only released path-less textures, before the mirror is freed at disarm.
 // Shutdown skips every engine call once the root has been finalized.
 HtrRestoreStats adopt_htr_restore(AdoptFault fault, bool root_finalized = false);
+// Main-thread frame boundary only; no capture lock is held across an engine call.
+struct EvictDrainResult { std::size_t examined = 0, released = 0; std::uint64_t us = 0; };
+EvictDrainResult adopt_evict_drain(std::size_t max, std::uint64_t frame);
 std::size_t adopt_reload_sources_held();
 std::string adopt_reload_json(std::uint64_t arm_index, std::uint64_t frame);
 // LS3: after adopt_resources_end at a disarm, frees what the arm left: the refused map, the

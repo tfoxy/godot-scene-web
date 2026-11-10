@@ -43,7 +43,22 @@ import {
   type G8aCheck,
   stateAt,
 } from "./gate8-adopt-checks";
-import { census1x1 } from "./gate8-htr-checks";
+import {
+  census1x1,
+  type EvictEvidence,
+  type HtrStats,
+  imageTextureProbe,
+  noImageTextureReleaseProblems,
+  type ReloadShape,
+  type TextureEvent,
+} from "./gate8-htr-checks";
+
+export {
+  imageTextureProbe,
+  type ReloadShape,
+  type TextureEvent,
+} from "./gate8-htr-checks";
+
 import {
   type Dump,
   dumpOf,
@@ -277,7 +292,7 @@ function drawsByClass(s: State): { vram: number; plain: number } {
 
 function rearmEquivalence(
   g: string,
-  fx: "adopt" | "tex" | "tex-htr",
+  fx: "adopt" | "tex" | "tex-htr" | "tex-evict",
 ): { check: G8aCheck; report: Record<string, unknown> } {
   const b = join(g, fx, "rearm");
   const a = join(g, fx, "once");
@@ -286,9 +301,11 @@ function rearmEquivalence(
   const criterion =
     fx === "adopt"
       ? "LS3 rearm-equivalence on fixtures/gate8-adopt: run B (armed at K1, a live viewer in arm 1, disarmed by GRC_SWAP_CYCLE, re-armed at K2 on the same port after the fixture changed while disarmed) and run A (armed once at K2) validate; both adoptions are dated K2; B's arm-2 state equals A's at every frame from K2 under D15's exceptions only (ids, versions, origin; draw-index values and hidden items' draw-derived state as g8a), with no residue, no resource exception, equal unsupported and failure lists and equal texture and mesh tables by content; arm 1 had one connection that received transactions; arm 2 listened on arm 1's port; arm 1 covers a fixture step and another happened while disarmed"
-      : fx === "tex-htr"
-        ? "The /11 HTR pair is equivalent under D15, and run B evicts before K2"
-        : "LS3 rearm-equivalence on fixtures/gate8-tex (GRC_HEADLESS_TEXTURE_RELEASE unset: the lossless `control` cells and the host-decoded VRAM cells; every step-1 texture created while disarmed): as rearm-equivalence-adopt";
+      : fx === "tex-evict"
+        ? "The /11 HTR pair with GRC_HEADLESS_TEXTURE_RELEASE=always is equivalent under D15, and run B evicts before K2"
+        : fx === "tex-htr"
+          ? "The /11 HTR pair is equivalent under D15, and run B evicts before K2"
+          : "LS3 rearm-equivalence on fixtures/gate8-tex (GRC_HEADLESS_TEXTURE_RELEASE unset: the lossless `control` cells and the host-decoded VRAM cells; every step-1 texture created while disarmed): as rearm-equivalence-adopt";
   if (
     !existsSync(join(b, "exit-code.txt")) ||
     !existsSync(join(a, "exit-code.txt"))
@@ -309,7 +326,7 @@ function rearmEquivalence(
     const code = readFileSync(join(d, "exit-code.txt"), "utf8").trim();
     if (code !== "0") problems.push(`${d.slice(g.length + 1)} exit ${code}`);
   }
-  const version = fx === "tex-htr" ? 11 : 8;
+  const version = fx === "tex-htr" || fx === "tex-evict" ? 11 : 8;
   const arm1 = loadRec(join(b, "recording.rs8"), version);
   const arm2 = loadRec(join(b, "recording.rs8.arm-2"), version);
   const once = loadRec(join(a, "recording.rs8"), version);
@@ -380,7 +397,7 @@ function rearmEquivalence(
     problems.push(...sched.problems);
     const e = rearmCompare(once.rec, arm2.rec, k2);
     problems.push(...e.problems.slice(0, 20));
-    if (fx === "tex-htr")
+    if (fx === "tex-htr" || fx === "tex-evict")
       problems.push(
         ...reloadIdleBeforeArm(
           jsonlOf<TextureEvent>(join(b, "events.jsonl")),
@@ -822,19 +839,6 @@ function idRound(g: string): {
   };
 }
 
-export interface ReloadShape {
-  format: string | number;
-  width: number;
-  height: number;
-  mipmaps: boolean;
-  sha256?: string;
-}
-export interface TextureEvent {
-  event: string;
-  frame: number;
-  expected?: ReloadShape;
-  got?: ReloadShape | null;
-}
 export interface TextureReloadEvidence extends ReloadSourceEvidence {
   skipped: string | null;
   candidates: {
@@ -916,24 +920,48 @@ export function reloadCensus(recs: (ResolvedRecording | null)[]): string[] {
         : [`recording ${k} draws a <=1x1 image`],
   );
 }
+export interface ReloadExpected {
+  candidates: TextureReloadEvidence["candidates"];
+  reloaded: number;
+  adopted_from_reload: number;
+}
+export function textureEvictExpected(rearm: boolean): ReloadExpected {
+  return {
+    candidates: {
+      released: rearm ? 10 : 8,
+      evicted: 3,
+      residual: 0,
+      total: rearm ? 13 : 11,
+    },
+    reloaded: rearm ? 13 : 11,
+    adopted_from_reload: rearm ? 12 : 10,
+  };
+}
 export function reloadTyped(
   r: TextureReloadEvidence | null,
   rearm: boolean,
   teardowns: (TextureTeardown | null)[],
+  expected: ReloadExpected = {
+    candidates: {
+      released: rearm ? 6 : 0,
+      evicted: 7,
+      residual: 0,
+      total: rearm ? 13 : 7,
+    },
+    reloaded: rearm ? 13 : 7,
+    adopted_from_reload: rearm ? 12 : 6,
+  },
 ): string[] {
   if (!r) return ["missing reload evidence"];
   const problems: string[] = [];
-  const expected = {
-    released: rearm ? 6 : 0,
-    evicted: 7,
-    residual: 0,
-    total: rearm ? 13 : 7,
-  };
-  for (const key of Object.keys(expected) as (keyof typeof expected)[])
-    if (r.candidates[key] !== expected[key]) problems.push(`candidates.${key}`);
+  for (const key of Object.keys(
+    expected.candidates,
+  ) as (keyof typeof expected.candidates)[])
+    if (r.candidates[key] !== expected.candidates[key])
+      problems.push(`candidates.${key}`);
   for (const [key, value] of Object.entries({
-    reloaded: rearm ? 13 : 7,
-    adopted_from_reload: rearm ? 12 : 6,
+    reloaded: expected.reloaded,
+    adopted_from_reload: expected.adopted_from_reload,
     released_no_path: 0,
     temp_outlived: 0,
     scope_anomalies: 0,
@@ -946,21 +974,6 @@ export function reloadTyped(
   if (teardowns.some((t) => t?.reload_sources_held !== 0))
     problems.push("reload_sources_held");
   return problems;
-}
-export function imageTextureProbe(probe: TextureEvent | null): string[] {
-  const want = probe?.expected;
-  const got = probe?.got;
-  return want &&
-    got &&
-    want.width === 64 &&
-    want.height === 64 &&
-    want.mipmaps === false &&
-    typeof want.sha256 === "string" &&
-    want.sha256.length === 64 &&
-    sameShape(got, want) &&
-    got.sha256 === want.sha256
-    ? []
-    : ["ImageTexture probe differs"];
 }
 export function imageTextureRestored(
   probe: TextureEvent | null,
@@ -1198,6 +1211,170 @@ function textureReloadChecks(g: string): G8aCheck[] {
   return checks;
 }
 
+export function evictRearmProblems(
+  evict: EvictEvidence | null,
+  rearm: boolean,
+  reloads: (TextureReloadEvidence | null)[],
+): string[] {
+  if (!evict) return ["missing evict evidence"];
+  const problems: string[] = [];
+  for (const [key, value] of Object.entries({
+    released: rearm ? 4 : 8,
+    noted: 16,
+    released_armed: 0,
+    pending: 0,
+    parked: 0,
+    evict_balanced: true,
+    final: true,
+  }))
+    if (evict[key as keyof EvictEvidence] !== value)
+      problems.push(`evict.${key}`);
+  if (rearm && evict.skipped.already_released !== 6)
+    problems.push("evict.skipped.already_released");
+  if (reloads.length < (rearm ? 2 : 1)) problems.push("missing reload arms");
+  for (const r of reloads)
+    if (r?.released_no_path !== 0 || r.refused.released_no_path !== 0)
+      problems.push("released_no_path");
+  return problems;
+}
+
+function textureEvictChecks(g: string): G8aCheck[] {
+  const root = join(g, "tex-evict");
+  const evidence = (leg: string, arm = 1) =>
+    join(root, leg, "evidence", ...(arm === 1 ? [] : [`arm-${arm}`]));
+  const reload = (leg: string, arm = 1) =>
+    readJson<TextureReloadEvidence>(join(evidence(leg, arm), "reload.json"));
+  const teardown = (leg: string, arm = 1) =>
+    readJson<TextureTeardown>(join(evidence(leg, arm), "teardown.json"));
+  const allEvidence = <T>(leg: string, name: string): (T | null)[] => {
+    const scan = (dir: string): (T | null)[] =>
+      existsSync(dir)
+        ? readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+            const path = join(dir, e.name);
+            return e.isDirectory()
+              ? scan(path)
+              : e.name === name
+                ? [readJson<T>(path)]
+                : [];
+          })
+        : [];
+    return scan(evidence(leg));
+  };
+  const rec = (leg: string, arm = 1) =>
+    loadRec(
+      join(root, leg, `recording.rs8${arm === 1 ? "" : `.arm-${arm}`}`),
+      11,
+    ).rec ?? null;
+  const rb = reload("rearm", 2),
+    ra = reload("once");
+  const checks: G8aCheck[] = [];
+  const add = (
+    id: string,
+    legs: string[],
+    criterion: string,
+    judge: () => string[],
+  ) => {
+    if (
+      existsSync(join(root, "not-selected.txt")) ||
+      legs.some((leg) => !existsSync(join(root, leg, "exit-code.txt")))
+    ) {
+      checks.push({
+        id,
+        criterion,
+        passed: false,
+        status: "not-run",
+        gating: false,
+        detail: "texture eviction legs absent or not selected",
+      });
+      return;
+    }
+    const pre = legs.flatMap((leg) =>
+      readFileSync(join(root, leg, "exit-code.txt"), "utf8").trim() === "0"
+        ? []
+        : [`${leg} failed`],
+    );
+    checks.push(
+      check(id, criterion, [...pre, ...judge()], "all predicates hold"),
+    );
+  };
+  add(
+    "rearm-no-1x1-evict",
+    ["rearm", "once"],
+    "Every adopted reload matches its record and no image is published as 1x1",
+    () => [
+      ...reloadNo1x1(rec("rearm", 2), rb),
+      ...reloadNo1x1(rec("once"), ra),
+    ],
+  );
+  add(
+    "htr-census-1x1-rearm-evict",
+    ["rearm", "once"],
+    "No arm draws a 1x1 image into a large rectangle",
+    () => reloadCensus([rec("rearm"), rec("rearm", 2), rec("once")]),
+  );
+  add(
+    "reload-typed-evict",
+    ["rearm", "once"],
+    "Eviction reload candidates, outcomes and teardown counts match the fixture",
+    () => [
+      ...reloadTyped(rb, true, [teardown("rearm")], textureEvictExpected(true)),
+      ...reloadTyped(
+        ra,
+        false,
+        allEvidence<TextureTeardown>("once", "teardown.json"),
+        textureEvictExpected(false),
+      ),
+    ],
+  );
+  add(
+    "htr-imagetexture-restored-evict",
+    ["rearm"],
+    "The path-less ImageTexture is restored at disarm",
+    () =>
+      imageTextureRestored(
+        jsonlOf<TextureEvent>(join(root, "rearm", "events.jsonl")).find(
+          (e) => e.event === "imagetexture-probe",
+        ) ?? null,
+        teardown("rearm"),
+        rb,
+      ),
+  );
+  add(
+    "rearm-evict-no-imagetexture-release",
+    ["rearm", "once"],
+    "The once-arm ImageTexture retains its content and every eviction path ends .ctex",
+    () =>
+      noImageTextureReleaseProblems(
+        jsonlOf<TextureEvent>(join(root, "once", "events.jsonl")).find(
+          (e) => e.event === "imagetexture-probe",
+        ) ?? null,
+        readJson<{ headless_texture_release?: HtrStats }>(
+          join(evidence("once"), "result.json"),
+        )?.headless_texture_release ?? null,
+        readJson<EvictEvidence>(join(evidence("once"), "evict.json")),
+        false,
+      ),
+  );
+  add(
+    "evict-rearm",
+    ["rearm", "once"],
+    "Standby eviction is balanced and every released texture has a reload path",
+    () => [
+      ...evictRearmProblems(
+        readJson<EvictEvidence>(join(evidence("rearm"), "evict.json")),
+        true,
+        allEvidence<TextureReloadEvidence>("rearm", "reload.json"),
+      ),
+      ...evictRearmProblems(
+        readJson<EvictEvidence>(join(evidence("once"), "evict.json")),
+        false,
+        allEvidence<TextureReloadEvidence>("once", "reload.json"),
+      ),
+    ],
+  );
+  return checks;
+}
+
 export interface WarmEvidence {
   final: boolean;
   skipped: string | null;
@@ -1302,7 +1479,13 @@ export function faultWarmOffProblems(
 function warmChecks(g: string): G8aCheck[] {
   const checks: G8aCheck[] = [];
   const selected = (leg: string) =>
-    !existsSync(join(g, leg.split("/")[0], "not-selected.txt"));
+    !existsSync(
+      join(
+        g,
+        leg === "tex-htr/swap" ? "tex-htr-faults" : leg.split("/")[0],
+        "not-selected.txt",
+      ),
+    );
   const add = (
     id: string,
     criterion: string,
@@ -1349,6 +1532,8 @@ function warmChecks(g: string): G8aCheck[] {
     "tex/once",
     "tex-htr/rearm",
     "tex-htr/once",
+    "tex-evict/rearm",
+    "tex-evict/once",
     "tex-htr/swap",
     "id/host",
     "tex-warm/workers",
@@ -1375,12 +1560,16 @@ function warmChecks(g: string): G8aCheck[] {
         if (!leg.endsWith("/once") && !arms.includes(2)) arms.push(2);
         return arms.flatMap((arm) => {
           const counts: readonly [number, number] | undefined =
-            leg === "tex-htr/once"
-              ? [7, 6]
-              : arm === 2 &&
-                  (leg === "tex-htr/rearm" || leg === "tex-warm/workers")
-                ? [13, 12]
-                : undefined;
+            leg === "tex-evict/once"
+              ? [11, 10]
+              : leg === "tex-htr/once"
+                ? [7, 6]
+                : arm === 2 &&
+                    (leg === "tex-htr/rearm" ||
+                      leg === "tex-evict/rearm" ||
+                      leg === "tex-warm/workers")
+                  ? [13, 12]
+                  : undefined;
           return warmCompleteProblems(
             warm(leg, arm),
             counts,
@@ -1511,7 +1700,7 @@ export async function runG8re(
   const g = join(out, "g8re");
   const checks: G8aCheck[] = [];
   const report: Record<string, unknown> = {};
-  for (const fx of ["adopt", "tex", "tex-htr"] as const) {
+  for (const fx of ["adopt", "tex", "tex-htr", "tex-evict"] as const) {
     const r = rearmEquivalence(g, fx);
     checks.push(selectedCheck(r.check, g, fx));
     report[fx] = r.report;
@@ -1522,6 +1711,7 @@ export async function runG8re(
   checks.push(
     reloadSourceCheck(g),
     ...textureReloadChecks(g),
+    ...textureEvictChecks(g),
     ...warmChecks(g),
   );
   return { checks, report };

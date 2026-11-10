@@ -69,7 +69,9 @@ int main() {
       expect(parse_texture_release(on, &mode, &why) && mode == TextureReleaseMode::On,
              std::string(on) + " is on");
     }
-    for (const char *bad : {"maybe", "ON", "true", "2", " on"}) {
+    expect(parse_texture_release("always", &mode, &why) &&
+               mode == TextureReleaseMode::Always, "always parses");
+    for (const char *bad : {"maybe", "ON", "true", "2", " on", "ALWAYS", "Always", "always "}) {
       why.clear();
       expect(!parse_texture_release(bad, &mode, &why) && why.find(bad) != std::string::npos,
              std::string("'") + bad + "' is invalid, named");
@@ -95,6 +97,11 @@ int main() {
            "on + X11 is ignored, not-headless");
     d = resolve_texture_release(TextureReleaseMode::On, "Wayland");
     expect(std::string(d.state) == "ignored", "on + Wayland is ignored");
+    d = resolve_texture_release(TextureReleaseMode::Always, "headless");
+    expect(std::string(d.state) == "active" && std::string(d.reason).empty(), "always + headless");
+    d = resolve_texture_release(TextureReleaseMode::Always, "X11");
+    expect(std::string(d.state) == "ignored" && std::string(d.reason) == "not-headless",
+           "always + X11 is ignored, not-headless");
     d = resolve_texture_release(TextureReleaseMode::Off, "headless");
     expect(std::string(d.state) == "off" && std::string(d.reason).empty(), "off + headless");
   }
@@ -181,6 +188,21 @@ int main() {
       }
     }
     expect(cases == 640, "predicate matrix covers every case");
+  }
+
+  {
+    constexpr auto base = kReleaseActive | kReleaseTimed | kReleaseFaultIgnorePredicate;
+    static_assert(kReleaseEvict == 8u && (kReleaseEvict & base) == 0);
+    texture_release_configure(base);
+    texture_release_set_evict(true);
+    expect(texture_release_flags() == (base | kReleaseEvict), "evict set alone");
+    texture_release_set_evict(true);
+    expect(texture_release_flags() == (base | kReleaseEvict), "evict set idempotent");
+    texture_release_set_evict(false);
+    expect(texture_release_flags() == base, "evict cleared alone");
+    texture_release_set_evict(false);
+    expect(texture_release_flags() == base, "evict clear idempotent");
+    texture_release_configure(0);
   }
 
   // The mirror bits: set and cleared one at a time, untouched by configure.
