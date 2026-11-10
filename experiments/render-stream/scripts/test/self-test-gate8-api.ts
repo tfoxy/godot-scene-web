@@ -143,7 +143,13 @@ const driver = {
     },
   ],
   rounds: [] as Record<string, unknown>[],
-  loader: { enabled: false, creates: 0, errors: 0, samples: {} },
+  loader: {
+    enabled: false,
+    creates: 0,
+    errors: 0,
+    samples: {} as Record<string, number>,
+    inflight: {},
+  },
 };
 const evidence = {
   ...state,
@@ -268,6 +274,15 @@ inflightDriver.loader = {
     disarm_call2: 268,
     disarmed2: 530,
     final: 625,
+  },
+  inflight: {
+    armed1: 0,
+    disarm_call1: 1,
+    disarmed1: 0,
+    armed2: 0,
+    disarm_call2: 1,
+    disarmed2: 0,
+    final: 0,
   },
 };
 const sabotageRoot = structuredClone(driver);
@@ -906,6 +921,65 @@ try {
   assertions += 2;
   // g8l-rearm-inflight: a loader thread across both disarms, every teardown clean.
   const inflight = "g8l-rearm-inflight";
+  // A create held before `armed` still covers that arm even if no new create begins.
+  for (const round of [1, 2]) {
+    for (const held of [1, 0, "1", undefined]) {
+      const tree = structuredClone(baseline);
+      const loader = tree["rearm-inflight"].driver.loader;
+      set(
+        loader,
+        `samples.disarm_call${round}`,
+        loader.samples[`armed${round}`],
+      );
+      if (held === undefined) set(loader, "inflight", undefined);
+      else set(loader, `inflight.armed${round}`, held);
+      write(tree);
+      const checked = (await runApiChecks(out)).find((c) => c.id === inflight);
+      assert.equal(
+        checked?.passed,
+        held === 1,
+        `round ${round}: equal samples with inflight=${String(held)}`,
+      );
+      if (held === 1)
+        assert.equal(
+          checked?.detail,
+          `loader creates=${loader.creates} samples=${JSON.stringify(loader.samples)} inflight=${JSON.stringify(loader.inflight)}`,
+        );
+      else
+        assert.ok(
+          checked?.detail?.includes(
+            `round ${round}: no loader texture create was begun or in flight while armed`,
+          ),
+        );
+      assertions += 2;
+    }
+  }
+  const heldWithoutWait = structuredClone(baseline);
+  set(
+    heldWithoutWait,
+    "rearm-inflight.driver.loader.samples.disarm_call2",
+    265,
+  );
+  set(heldWithoutWait, "rearm-inflight.driver.loader.inflight.armed2", 1);
+  set(heldWithoutWait, "rearm-inflight.teardown2.inflight_wait_frames", 0);
+  write(heldWithoutWait);
+  const noWait = (await runApiChecks(out)).find((c) => c.id === inflight);
+  assert.equal(noWait?.passed, false);
+  assert.ok(
+    noWait?.detail?.includes(
+      "arm 2 waited 0 frames: no write was in flight to wait for",
+    ),
+  );
+  assertions += 2;
+  // Older evidence with no in-flight dictionary still passes when creates began after `armed`.
+  const legacy = structuredClone(baseline);
+  set(legacy, "rearm-inflight.driver.loader.inflight", undefined);
+  write(legacy);
+  assert.equal(
+    (await runApiChecks(out)).find((c) => c.id === inflight)?.passed,
+    true,
+  );
+  assertions++;
   for (const [path, value] of [
     ["driver.timeouts", ["deadline"]],
     ["driver.loader.enabled", false],

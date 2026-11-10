@@ -534,16 +534,21 @@ export function rearmInflightProblems(
     problems.push("driver timed out");
   const loader = object(driver.loader);
   const samples = object(loader.samples);
+  const inflight = object(loader.inflight);
   if (loader.enabled !== true) problems.push("loader thread was not enabled");
   if (loader.errors !== 0) problems.push("loader creates returned no RID");
-  // Creates begun (a create held in flight has begun, not completed): round 1 from its `armed`,
-  // round 2 from its own `armed`, excluding any creates begun in standby.
-  for (const [n, from, to] of [
-    [1, samples.armed1, samples.disarm_call1],
-    [2, samples.armed2, samples.disarm_call2],
+  // A create may begin after `armed` or already be in flight when `armed` is sampled.
+  for (const [n, from, to, held] of [
+    [1, samples.armed1, samples.disarm_call1, inflight.armed1],
+    [2, samples.armed2, samples.disarm_call2, inflight.armed2],
   ] as const)
-    if (typeof from !== "number" || typeof to !== "number" || to <= from)
-      problems.push(`round ${n}: loader began no texture create while armed`);
+    if (
+      !(typeof from === "number" && typeof to === "number" && to > from) &&
+      !(typeof held === "number" && held > 0)
+    )
+      problems.push(
+        `round ${n}: no loader texture create was begun or in flight while armed`,
+      );
   if (typeof loader.creates !== "number" || loader.creates <= 0)
     problems.push("loader created no texture");
   const final = object(driver.final);
@@ -993,7 +998,7 @@ export async function runApiChecks(out: string): Promise<G8aCheck[]> {
               inflight.teardown2,
             ),
           ],
-          `loader creates=${String(loader.creates)} samples=${JSON.stringify(loader.samples)}`,
+          `loader creates=${String(loader.creates)} samples=${JSON.stringify(loader.samples)} inflight=${JSON.stringify(loader.inflight)}`,
         ),
       );
     }

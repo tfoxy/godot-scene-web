@@ -41,7 +41,7 @@ Three more legs cover the re-arm teardown:
   finishes, across both disarms, while `GRC_TEST_INFLIGHT_DELAY_MS=4000` holds
   each create in flight longer than an arm lasts. The driver then skips its own
   main-thread texture to keep the loader as the only texture-create probe. Each release has to
-  wait for the write begun after its `armed`.
+  wait for a write begun after its `armed` sample or already in flight at that sample.
 - `sabotage-skip-inflight-wait` adds `GRC_REARM_FAULT=skip-inflight-wait`: the
   release does not wait. The delayed test reader records `reader_after_release`
   instead of accessing released arm state. Before each disarm the fixture waits
@@ -52,8 +52,11 @@ Three more legs cover the re-arm teardown:
   disarm leaves the arm's `min_size` on the root Window.
 
 Each leg writes `driver/driver.json` (signals, refusals, carrier activity,
-rounds, loader counts and final state) and `evidence/capture-api.json` (capture
-frames, callback durations and join timing). The file is rewritten by every
+rounds, loader counts and final state). The loader's `samples` dictionary counts
+creates begun; its `inflight` dictionary counts creates begun minus completed
+and failed creates, sampled under the same mutex at each lifecycle mark.
+`evidence/capture-api.json` records capture frames, callback durations and join
+timing. The file is rewritten by every
 disarm, so the driver keeps round 1's copy in `driver.json`. Arm 1 writes
 `evidence/teardown.json` and arm 2 `evidence/arm-2/teardown.json`.
 
@@ -61,8 +64,9 @@ disarm, so the driver keeps round 1's copy in `driver.json`. Arm 1 writes
 `g8l-api-arm-failed`, `g8l-root-min-size-restored` (armed `min_size` is 640x360,
 each disarm restores the value held before that arm, and both `teardown.json`
 files say `restored`), `g8l-rearm-inflight` (every honest accounting rule holds
-in both `teardown.json` files, the loader began creates while armed, and each
-release waited out a write in flight, with `reader_after_release == 0` in
+in both `teardown.json` files, the loader began a create after each `armed`
+sample or had a create in flight at that sample, and each release waited out a
+write in flight, with `reader_after_release == 0` in
 `evidence/reader-after-release.json`) and the three sabotage checks
 (`g8l-sabotage-*`) judge these files. The process gap in `driver.json` is
 informational; the stall check uses capture callback time, which excludes

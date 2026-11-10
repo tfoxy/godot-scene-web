@@ -41,7 +41,8 @@ var _disarmed2_frame: int = -1
 var _arm_failed_frame: int = -1
 var _arm_options: Dictionary = {}
 ## RS_SWAP_LOADER_THREAD=1: a thread creating and freeing textures from the first `armed` to the end.
-## `samples` hold the creates begun (a create held in flight has begun and not completed).
+## `samples` holds creates begun; `inflight` holds creates begun but not completed or failed.
+## Both counts are sampled under the same mutex, including creates already pending at `armed`.
 var _loader: Thread = null
 var _loader_run: bool = false
 var _loader_budget: int = 0
@@ -50,6 +51,7 @@ var _loader_begun: int = 0
 var _loader_creates: int = 0
 var _loader_errors: int = 0
 var _loader_samples: Dictionary = {}
+var _loader_inflight: Dictionary = {}
 var _quit_pending: Dictionary = {}
 var _evidence_before: Dictionary = {}
 var _evidence_dir_failure: Dictionary = {}
@@ -265,6 +267,7 @@ func _loader_main() -> void:
 func _loader_sample(key: String) -> void:
 	_loader_mutex.lock()
 	_loader_samples[key] = _loader_begun
+	_loader_inflight[key] = _loader_begun - _loader_creates - _loader_errors
 	_loader_mutex.unlock()
 
 # The skipped wait can finish arm 1 while its loader is still sleeping. Do not disarm arm 2
@@ -438,7 +441,8 @@ func _finish() -> void:
 			file.store_string(JSON.stringify({"events": _events, "refusals": _refusals,
 				"carrier": _carrier_result, "carrier2": _carrier2_result, "rounds": _rounds,
 				"loader": {"enabled": OS.get_environment("RS_SWAP_LOADER_THREAD") == "1",
-					"begun": _loader_begun, "creates": _loader_creates, "errors": _loader_errors, "samples": _loader_samples},
+					"begun": _loader_begun, "creates": _loader_creates, "errors": _loader_errors,
+					"samples": _loader_samples, "inflight": _loader_inflight},
 				"quit_pending": _quit_pending, "initial": _initial, "ptrcall": _ptrcall, "timeouts": _timeouts,
 				"evidence_dir_failure": _evidence_dir_failure,
 				"arm_call_frame": _arm_call_frame, "arm_code": _arm_code,
