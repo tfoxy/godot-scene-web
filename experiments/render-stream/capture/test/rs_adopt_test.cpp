@@ -391,6 +391,7 @@ bool g_reload_scope_allowed = false;
 std::function<void()> g_warm_prepare_probe;
 std::function<void()> g_warm_free_probe;
 bool g_reload_adopt = false;
+bool g_hold_adopt = false;
 void *g_reload_adopt_image = nullptr;
 int g_guard_entries = 0;
 // LAR2: what the multimesh hook was handed (the buffer by size).
@@ -420,7 +421,8 @@ bool hooks_test_inflight_delay(std::unique_lock<std::mutex> *) { return true; }
 bool hooks_reload_scope_begin() { return g_reload_scope_allowed; }
 void hooks_reload_scope_end(ReloadScopeCounts *out) { *out = {1, 1, 0}; }
 bool hooks_adopt_texture(uint64_t, void *image, rs2::AdoptedContent content, const char *source, bool *) {
-  if (g_reload_adopt && content == rs2::AdoptedContent::Current && std::string(source) == "reload") {
+  if (g_reload_adopt && content == rs2::AdoptedContent::Current &&
+      (std::string(source) == "reload" || (g_hold_adopt && std::string(source) == "hold"))) {
     g_reload_adopt_image = image;
     return true;
   }
@@ -690,6 +692,14 @@ void test_adopt_fault_parse() {
         "fault: no-resources");
   check(!grc::rs::parse_adopt_fault("no-resources", false, &f, &error), "fault: needs GRC_ADOPT");
   check(!grc::rs::parse_adopt_fault("bogus", true, &f, &error), "fault: unknown value refused");
+  check(grc::rs::parse_adopt_fault("hold-off", true, &f, &error) &&
+            std::string(grc::rs::adopt_fault_name(f)) == "hold-off",
+        "hold fault: accepted and named");
+  check(!grc::rs::parse_adopt_fault("hold-off", false, &f, &error),
+        "hold fault: needs GRC_ADOPT");
+  check(!grc::rs::parse_adopt_fault("bogus", true, &f, &error) &&
+            error.find("hold-off") != std::string::npos,
+        "hold fault: listed in invalid-value diagnostic");
   check(grc::rs::parse_adopt_fault("registry-queue-drop", true, &f, &error) &&
             f == grc::rs::AdoptFault::RegistryQueueDrop &&
             std::string(grc::rs::adopt_fault_name(f)) == "registry-queue-drop",
@@ -1842,6 +1852,64 @@ void test_warm_free_during_pass() {
   grc::rs::registry_configure(false, grc::rs::RegistryFault::None); w.reset_calls();
 }
 
+void test_warm_held_images() {
+  auto &w = fake::world();
+  constexpr uint64_t rid = 0xcafe3000;
+  auto &image = w.make({"Object", "Image"});
+  auto &newer = w.make({"Object", "Image"});
+  w.singletons["RenderingServer"] = &w.make({"Object", "RenderingServer"});
+  for (int scenario = 0; scenario < 4; ++scenario) {
+    grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
+    grc::rs::registry_note_texture_create(rid, {16, 16, 5, false, true}, false);
+    const auto store = [&](void *object) {
+      grc::rs::RegistryHoldInput in;
+      in.image = grc::rs::RegistryValue(object, [](const void *) {});
+      in.width = in.height = 16; in.format = 5; in.bytes = 1024;
+      check(grc::rs::registry_note_texture_update(rid, &in) == grc::rs::HoldSkip::None,
+            "hold warm: register current image");
+    };
+    store(&image);
+    grc::rs::mirror_enable(false); grc::rs::mirror_enable(true);
+    const bool fault = scenario == 1;
+    grc::rs::adopt_resources_begin(fault ? grc::rs::AdoptFault::HoldOff : grc::rs::AdoptFault::None, false);
+    const int getters = w.count("RenderingServer.texture_2d_get");
+    const auto queued = grc::rs::adopt_warm_at_arm(grc::rs::warm_now_ns(), "sync");
+    check(queued.from_hold == (fault ? 0u : 1u) && queued.held_at_arm == (fault ? 0u : 1u) &&
+              queued.held_bytes_at_arm == (fault ? 0u : 1024u), "hold warm: source and bytes at arm");
+    grc::rs::RegistryHoldRef held;
+    check(grc::rs::registry_hold(rid, &held) != fault, "hold warm: warm keeps hold except under fault knob");
+    check(queued.hold_dropped_fault == (fault ? 1u : 0u) &&
+              queued.skipped_by.updated == (fault ? 1u : 0u), "hold warm: fault drops before classification");
+    check(w.count("RenderingServer.texture_2d_get") == getters, "hold warm: no dummy getter");
+    if (!fault) {
+      if (scenario == 2) store(&newer);
+      if (scenario == 3) grc::rs::registry_note_texture_update(rid);
+      g_reload_adopt = g_hold_adopt = true;
+      g_reload_adopt_image = nullptr;
+      grc::rs::materialize(rid, grc::rs::RefKind::Texture);
+      g_reload_adopt = g_hold_adopt = false;
+      if (scenario != 3)
+        check(g_reload_adopt_image == (scenario == 2 ? &newer : &image),
+              "hold warm: reference uses latest image");
+      const auto stats = grc::rs::adopt_warm_stats();
+      check(stats.served_hold == (scenario == 0 ? 1u : 0u) &&
+                stats.discarded_stale == (scenario == 0 ? 0u : 1u), "hold warm: sequence and missing hold discard stale body");
+      check(stats.lazy_from_hold == (scenario == 2 ? 1u : 0u) &&
+                stats.decode_at_reference == (scenario == 2 ? 1u : 0u) &&
+                stats.lazy_at_reference.updated == 0, "hold warm: lazy hold is eligible at reference");
+      if (scenario != 3)
+        check(w.count("RenderingServer.texture_2d_get") == getters, "hold warm: served and lazy hold skip getter");
+    }
+    const auto final = grc::rs::adopt_warm_finish();
+    check(final.final && final.warm_balanced, "hold warm: final balances");
+    check(final.textures.adopted == (scenario == 0 || scenario == 2 ? 1u : 0u) &&
+              final.textures.current == final.textures.adopted && final.textures.creation == 0,
+          "hold warm: final snapshots per-arm texture counts");
+    grc::rs::adopt_resources_end(); grc::rs::adopt_release(); w.reset_calls();
+  }
+  grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
+}
+
 void test_warm_census_revalidation() {
   auto &w = fake::world();
   const auto saved = grc::g_iface;
@@ -2041,6 +2109,7 @@ int main() {
   test_evict_duplicate_rid();
   test_warm_free_during_pass();
   test_warm_census_revalidation();
+  test_warm_held_images();
   std::printf("rs_adopt_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

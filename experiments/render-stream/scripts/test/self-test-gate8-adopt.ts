@@ -30,6 +30,7 @@ import {
   censusProblems,
   compareStates,
   type G8aExpected,
+  judgeTexCurrentUnupdated,
   resourceException,
 } from "../lib/gate8-adopt-checks";
 import type { ResolvedItem, ResolvedTransaction } from "../lib/render-stream-2";
@@ -334,6 +335,74 @@ async function main(): Promise<void> {
     censusProblems(undefined, expected.census).length === 1,
     "no stats fails",
   );
+
+  // Deferred adoption uses the latest held image for the pre-arm update.
+  {
+    const registry = {
+      op: "adopt",
+      kind: "image",
+      rid: 1,
+      adopt_source: "registry",
+      adopted_content: "current",
+    };
+    const held = {
+      ...registry,
+      rid: 2,
+      adopt_source: "hold",
+    };
+    const update = { op: "texture_2d_update", rid: 2 };
+    const stats = { textures_registry: 1 };
+    const judge = (lines: Record<string, unknown>[]) =>
+      judgeTexCurrentUnupdated(lines, stats).problems;
+    assert(
+      judge([registry, update, held]).length === 0,
+      "deferred texture adoption accepts one current held image and no creation",
+    );
+    assert(
+      judge([
+        registry,
+        update,
+        held,
+        { ...registry, rid: 3, adopted_content: "creation" },
+      ]).length > 0,
+      "a creation image fails deferred texture adoption",
+    );
+    assert(
+      judge([registry, update, { ...held, adopted_content: "creation" }])
+        .length > 0,
+      "a held image declared creation fails",
+    );
+    assert(judge([registry, update]).length > 0, "a missing held image fails");
+    assert(
+      judge([registry, update, held, { ...held, rid: 3 }]).length > 0,
+      "more than one held image fails",
+    );
+    assert(
+      judge([registry, held]).length > 0,
+      "a held image never updated fails",
+    );
+    assert(
+      judge([{ ...registry, adopted_content: "creation" }, update, held])
+        .length > 0,
+      "a registry image declared creation fails",
+    );
+    assert(
+      judge([registry, { ...update, rid: 1 }, update, held]).length > 0,
+      "an updated registry image fails",
+    );
+    assert(
+      judgeTexCurrentUnupdated([registry, update, held], undefined).problems
+        .length > 0,
+      "missing adoption stats fail",
+    );
+    assert(
+      judgeTexCurrentUnupdated([registry, update, held], {
+        textures_registry: 2,
+      }).problems.length > 0,
+      "a registry adoption count mismatch fails",
+    );
+    assert(judge([]).length > 0, "missing resource evidence fails");
+  }
 
   // 4. G8r: resources
   {

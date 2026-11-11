@@ -4,6 +4,7 @@
 // - replaced - recreated, on every timeline row), the timeline, both fault knobs, the evidence
 // shape, concurrent creates and frees from several threads, and the payloads: (LAR1) CanvasTexture,
 // (LAR2) multimesh, (LAR3) shader and material.
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -16,8 +17,10 @@
 namespace {
 
 int g_failures = 0;
+int g_checks = 0;
 
 void expect(bool ok, const std::string &what) {
+  ++g_checks;
   if (!ok) {
     std::fprintf(stderr, "FAIL %s\n", what.c_str());
     ++g_failures;
@@ -57,10 +60,426 @@ bool identity_holds() {
   return true;
 }
 
+
+void texture_holds() {
+  using namespace grc::rs;
+  auto input = [](std::int64_t bytes = 16) {
+    RegistryHoldInput in;
+    in.image = std::make_shared<int>(7);
+    in.bytes = bytes; in.width = 2; in.height = 2; in.format = 5; in.frame = 23;
+    return in;
+  };
+  auto balanced = [] { expect(hold_balanced(registry_hold_stats()), "hold: balanced"); };
+  auto drop_count = [](HoldDrop why) {
+    return registry_hold_stats().dropped[static_cast<std::size_t>(why)];
+  };
+  auto reset = [] { registry_configure(true, RegistryFault::None); };
+  auto create = [](std::uint64_t rid) {
+    registry_note_texture_create(rid, {2, 2, 5, false, true}, false);
+  };
+  auto store = [&](std::uint64_t rid) {
+    auto in = input();
+    expect(registry_note_texture_update(rid, &in) == HoldSkip::None && !in.image,
+           "hold: store consumes reference"); balanced();
+  };
+  reset(); create(1); store(1);
+  RegistryHoldRef ref;
+  RegistryTextureRecord record;
+  expect(registry_hold(1, &ref) && ref.image && ref.rec.rid == 1 && ref.rec.seq == 1 &&
+             ref.rec.frame == 23 && ref.rec.bytes == 16 && ref.rec.source == HoldSource::Update,
+         "hold: copies reference and record");
+  expect(registry_texture(1, &record) && record.held && record.updated && record.edited,
+         "hold: record bits");
+  const auto generation = registry_hold_generation();
+  store(1);
+  expect(drop_count(HoldDrop::Superseded) == 1 && registry_hold_generation() > generation,
+         "hold: supersede and generation");
+  expect(ref.rec.seq == 1 && registry_hold(1, &ref) && ref.rec.seq == 2,
+         "hold: snapshot owns old sequence");
+  ref = {};
+  // Every hook refusal must erase a previous image, never leave stale content.
+  for (std::size_t i = 1; i < static_cast<std::size_t>(HoldSkip::Count); ++i) {
+    reset(); create(1); store(1);
+    auto in = input(); in.pre = static_cast<HoldSkip>(i);
+    expect(registry_note_texture_update(1, &in) == in.pre && in.image &&
+               !registry_hold(1, nullptr) && drop_count(HoldDrop::Unheld) == 1 &&
+               registry_hold_stats().skipped[i] == 1, "hold: pre skip drops old image");
+    expect(registry_texture(1, &record) && !record.held, "hold: skip clears bit"); balanced();
+  }
+  reset();
+  auto in = input();
+  expect(registry_note_texture_update(99, &in) == HoldSkip::Unregistered,
+         "hold: missing update"); balanced();
+  registry_note_create(1, RegistryKind::Shader);
+  expect(registry_note_texture_update(1, &in) == HoldSkip::Unregistered,
+         "hold: other family update"); balanced();
+  registry_note_create(2, RegistryKind::TexturePlaceholder);
+  expect(registry_note_texture_update(2, &in) == HoldSkip::NotTexture2d,
+         "hold: placeholder update"); balanced();
+  for (int field = 0; field < 4; ++field) {
+    reset(); create(1); store(1); in = input();
+    if (field == 0) ++in.width;
+    if (field == 1) ++in.height;
+    if (field == 2) ++in.format;
+    if (field == 3) in.mipmaps = true;
+    expect(registry_note_texture_update(1, &in) == HoldSkip::ShapeMismatch &&
+               !registry_hold(1, nullptr) && drop_count(HoldDrop::Unheld) == 1,
+           "hold: mismatched facts drop old image"); balanced();
+  }
+  reset(); create(1); create(2); store(1); store(2);
+  in = input(); in.source = HoldSource::Replace;
+  expect(registry_note_replace(1, 2, &in) == HoldSkip::None && in.image &&
+             !registry_hold(2, nullptr) && registry_hold(1, &ref) &&
+             ref.rec.source == HoldSource::Replace && ref.rec.seq == 3 &&
+             drop_count(HoldDrop::Superseded) == 1 && drop_count(HoldDrop::ReplacedAway) == 1 &&
+             registry_hold_stats().taken.replace == 1, "hold: replace both held RIDs");
+  ref = {}; balanced();
+  in = input();
+  expect(registry_note_replace(1, 1, &in) == HoldSkip::None && in.image &&
+             registry_hold(1, nullptr), "hold: self replace unchanged"); balanced();
+  expect(registry_note_replace(1, 99, &in) == HoldSkip::Unregistered &&
+             !registry_hold(1, nullptr) && drop_count(HoldDrop::Unheld) == 1,
+         "hold: unknown source unholds target"); balanced();
+  reset(); create(2); store(2); in = input();
+  expect(registry_note_replace(99, 2, &in) == HoldSkip::Unregistered &&
+             !registry_hold(2, nullptr) && drop_count(HoldDrop::ReplacedAway) == 1 &&
+             !registry_lookup(2, nullptr), "hold: unknown target retires source"); balanced();
+  for (auto kind : {RegistryKind::Shader, RegistryKind::TexturePlaceholder}) {
+    reset(); create(1); store(1); registry_note_create(2, kind); in = input();
+    const auto expected = kind == RegistryKind::Shader ? HoldSkip::Unregistered : HoldSkip::NotTexture2d;
+    expect(registry_note_replace(1, 2, &in) == expected && !registry_hold(1, nullptr) &&
+               drop_count(HoldDrop::Unheld) == 1, "hold: invalid source kind"); balanced();
+  }
+  for (std::size_t i = 1; i < static_cast<std::size_t>(HoldSkip::Count); ++i) {
+    reset(); create(1); create(2); store(1); in = input();
+    in.pre = static_cast<HoldSkip>(i);
+    expect(registry_note_replace(1, 2, &in) == in.pre && in.image &&
+               !registry_hold(1, nullptr) && !registry_hold(2, nullptr) &&
+               drop_count(HoldDrop::Unheld) == 1 && drop_count(HoldDrop::ReplacedAway) == 0,
+           "hold: getter refusal retires target image"); balanced();
+  }
+  reset(); registry_note_create(1, RegistryKind::Texture2d); in = input();
+  expect(registry_note_texture_update(1, &in) == HoldSkip::None,
+         "hold: unknown creation facts accept current image"); balanced();
+  reset(); create(1); create(2); store(1);
+  registry_texture_set_released(2, true); in = input();
+  expect(registry_note_replace(1, 2, &in) == HoldSkip::ReleasedSource &&
+             !registry_hold(1, nullptr), "hold: released source"); balanced();
+  for (auto fault : {RegistryFault::None, RegistryFault::KeepFreed}) {
+    registry_configure(true, fault); create(1); store(1); registry_note_free(1);
+    expect(!registry_hold(1, nullptr) && drop_count(HoldDrop::Freed) == 1,
+           "hold: free also under keep-freed"); balanced();
+  }
+  for (bool texture_create : {false, true}) {
+    reset(); create(1); store(1);
+    if (texture_create) create(1); else registry_note_create(1, RegistryKind::Texture2d);
+    expect(!registry_hold(1, nullptr) && drop_count(HoldDrop::Recreated) == 1,
+           "hold: both recreate entry points"); balanced();
+  }
+  reset();
+  // Fill the total cap, including a small final image, and replace that image at the boundary.
+  for (std::uint64_t rid = 1; rid <= 65; ++rid) {
+    registry_note_create(rid, RegistryKind::Texture2d); in = input(rid == 65 ? 64 : 65535);
+    expect(registry_note_texture_update(rid, &in) == HoldSkip::None, "hold: cap fill"); balanced();
+  }
+  in = input(64);
+  expect(registry_note_texture_update(65, &in) == HoldSkip::None,
+         "hold: total subtracts previous image"); balanced();
+  registry_note_create(66, RegistryKind::Texture2d); in = input(65);
+  expect(registry_note_replace(65, 66, &in) == HoldSkip::OverTotalCap &&
+             !registry_hold(65, nullptr), "hold: replace respects total cap"); balanced();
+  in = input(64); registry_note_texture_update(65, &in);
+  in = input(65);
+  expect(registry_note_texture_update(65, &in) == HoldSkip::OverTotalCap &&
+             !registry_hold(65, nullptr), "hold: over total drops previous image"); balanced();
+  std::vector<HoldRecord> records;
+  registry_hold_records(&records, 3);
+  expect(records.size() == 3 && records[0].rid == 1 && records[1].rid == 2 && records[2].rid == 3,
+         "hold: records sorted before cap");
+  registry_hold_records(&records, 0); expect(records.empty(), "hold: zero record cap");
+  expect(registry_holds_drop_all(HoldDrop::Fault) == 64 && registry_hold_stats().live.bytes == 0 &&
+             drop_count(HoldDrop::Fault) == 64 && !registry_hold(1, nullptr), "hold: fault drop all");
+  balanced();
+  // Final destruction re-enters the registry; any destruction under its leaf lock deadlocks.
+  for (int event = 0; event < 8; ++event) {
+    reset(); create(1); create(2); bool destroyed = false;
+    in = input(); in.image = RegistryValue(new int(9), [&](const int *p) {
+      delete p; registry_lookup(1, nullptr); destroyed = true;
+    });
+    registry_note_texture_update(1, &in);
+    if (event == 0) registry_note_free(1);
+    if (event == 1) create(1);
+    if (event == 2) { in = input(); registry_note_texture_update(1, &in); }
+    if (event == 3) { in = input(); in.pre = HoldSkip::NoImage; registry_note_texture_update(1, &in); }
+    if (event == 4) { in = input(); registry_note_replace(2, 1, &in); registry_note_free(2); }
+    if (event == 5) registry_holds_drop_all(HoldDrop::Fault);
+    if (event == 6) reset();
+    if (event == 7) registry_holds_release();
+    expect(destroyed, "hold: releases outside lock");
+    if (event != 7) balanced();
+  }
+  reset(); create(1); create(2); store(1); store(2);
+  bool output_destroyed = false;
+  ref.image = RegistryValue(new int(4), [&](const int *p) {
+    delete p; registry_lookup(1, nullptr); output_destroyed = true;
+  });
+  expect(registry_hold(1, &ref) && output_destroyed,
+         "hold: replacing output releases outside lock");
+  registry_note_free(1);
+  expect(ref.image && ref.rec.rid == 1, "hold: copied reference outlives free");
+  ref = {}; balanced();
+  reset(); create(1); store(1); registry_holds_release();
+  expect(!registry_hold(1, nullptr) && registry_texture(1, &record) && !record.held,
+         "hold: shutdown clears side map and bit");
+  reset();
+}
+
+
+void replace_held_source() {
+  using namespace grc::rs;
+  auto input = [](int marker, std::int64_t bytes = 16) {
+    RegistryHoldInput in;
+    in.image = std::make_shared<int>(marker);
+    in.bytes = bytes; in.width = 2; in.height = 2; in.format = 5; in.frame = 31;
+    return in;
+  };
+  auto create = [](std::uint64_t rid) { registry_note_create(rid, RegistryKind::Texture2d); };
+  auto balanced = [] {
+    const auto s = registry_hold_stats();
+    expect(hold_balanced(s) && pending_balanced(s.pending), "held source: balanced");
+  };
+  for (bool offmain : {false, true}) {
+    registry_configure(true, RegistryFault::None); create(1); create(2);
+    auto in = input(1);
+    registry_note_texture_update(1, &in);
+    int released = 0;
+    in = input(2);
+    in.image = RegistryValue(new int(2), [&](const int *p) {
+      delete p; registry_lookup(1, nullptr); ++released;
+    });
+    registry_note_texture_update(2, &in);
+    in = input(3); const auto getter = in.image;
+    if (offmain) { in.image.reset(); in.pre = HoldSkip::OffmainReplace; }
+    expect(registry_note_replace(1, 2, &in) == HoldSkip::None,
+           "held source: replace accepts updated source on any thread");
+    RegistryHoldRef ref;
+    expect(registry_hold(1, &ref) && *static_cast<const int *>(ref.image.get()) == 2,
+           "held source: latest update wins over stale getter");
+    expect(offmain ? !in.image : in.image == getter, "held source: getter stays in input");
+    const auto s = registry_hold_stats();
+    expect(!registry_hold(2, nullptr) && s.taken.replace == 1 &&
+               s.dropped[static_cast<std::size_t>(HoldDrop::ReplacedAway)] == 1 &&
+               s.dropped[static_cast<std::size_t>(HoldDrop::Superseded)] == 1 &&
+               s.skipped[static_cast<std::size_t>(HoldSkip::OffmainReplace)] == 0,
+           "held source: transfer accounting");
+    ref = {};
+    expect(released == 0, "held source: source stays alive until target free");
+    registry_note_free(1);
+    expect(released == 1, "held source: source released exactly once outside lock"); balanced();
+  }
+  registry_configure(true, RegistryFault::None); create(1); create(2);
+  auto in = input(1); registry_note_pending(2, &in);
+  in = input(2); registry_note_texture_update(2, &in);
+  auto s = registry_hold_stats();
+  expect(s.pending.live.entries == 0 && s.pending.live.bytes == 0 &&
+             s.pending.dropped[static_cast<std::size_t>(PendingDrop::Updated)] == 1 &&
+             registry_hold(2, nullptr), "held source: update cannot leave pending and held together");
+  in = {}; in.pre = HoldSkip::OffmainReplace;
+  expect(registry_note_replace(1, 2, &in) == HoldSkip::None &&
+             registry_hold_stats().pending.moved == 0,
+         "held source: updated pending source moves as hold"); balanced();
+
+  registry_configure(true, RegistryFault::None);
+  for (std::uint64_t rid = 1; rid <= 65; ++rid) {
+    create(rid); in = input(2, rid == 65 ? 64 : 65535);
+    registry_note_texture_update(rid, &in);
+  }
+  expect(registry_hold_stats().live.bytes == kHoldTotalMaxBytes, "held source: full cap setup");
+  create(66); in = input(3, 65535);
+  expect(registry_note_replace(66, 1, &in) == HoldSkip::None && in.image &&
+             registry_hold(66, nullptr) && !registry_hold(1, nullptr),
+         "held source: total cap credits retiring source bytes");
+  s = registry_hold_stats();
+  expect(s.live.bytes == kHoldTotalMaxBytes && s.peak.bytes == kHoldTotalMaxBytes &&
+             s.skipped[static_cast<std::size_t>(HoldSkip::OverTotalCap)] == 0,
+         "held source: transfer stays within cap including peak"); balanced();
+  registry_configure(true, RegistryFault::None);
+}
+
+void pending_holds() {
+  using namespace grc::rs;
+  auto reset = [](RegistryFault fault = RegistryFault::None) { registry_configure(true, fault); };
+  auto create = [](std::uint64_t rid) {
+    registry_note_texture_create(rid, {2, 2, 5, false, true}, false);
+  };
+  auto input = [](std::int64_t bytes = 16) {
+    RegistryHoldInput in;
+    in.image = std::make_shared<int>(7);
+    in.bytes = bytes; in.width = 2; in.height = 2; in.format = 5; in.frame = 23;
+    return in;
+  };
+  auto balanced = [] {
+    const auto s = registry_hold_stats();
+    expect(hold_balanced(s) && pending_balanced(s.pending), "pending: balanced");
+  };
+  auto store = [&](std::uint64_t rid, std::int64_t bytes = 16) {
+    auto in = input(bytes);
+    expect(registry_note_pending(rid, &in) == HoldSkip::None && !in.image,
+           "pending: stores reference"); balanced();
+  };
+  auto offmain = [] {
+    RegistryHoldInput in; in.pre = HoldSkip::OffmainReplace; in.frame = 31; return in;
+  };
+  auto count = [](PendingDrop why) {
+    return registry_hold_stats().pending.dropped[static_cast<std::size_t>(why)];
+  };
+  reset(); auto in = input();
+  expect(registry_note_pending(1, &in) == HoldSkip::Unregistered && in.image,
+         "pending: missing RID leaves input"); balanced();
+  for (auto kind : {RegistryKind::Shader, RegistryKind::TexturePlaceholder}) {
+    registry_note_create(1, kind);
+    expect(registry_note_pending(1, &in) == HoldSkip::NotTexture2d,
+           "pending: only Texture2d"); balanced();
+  }
+  create(1);
+  for (auto skip : {HoldSkip::VramFormat, HoldSkip::NoImage, HoldSkip::SizeUnknown,
+                    HoldSkip::OverTextureCap}) {
+    in = input(); in.pre = skip;
+    expect(registry_note_pending(1, &in) == skip && in.image &&
+               registry_hold_stats().pending.skipped[static_cast<std::size_t>(skip)] == 1,
+           "pending: hook refusal"); balanced();
+  }
+  reset(); create(1); create(2); store(2);
+  in = offmain();
+  expect(registry_note_replace(1, 2, &in) == HoldSkip::None, "pending: offmain move");
+  RegistryHoldRef ref;
+  auto st = registry_hold_stats();
+  expect(registry_hold(1, &ref) && ref.rec.bytes == 16 && ref.rec.frame == 31 &&
+             ref.rec.source == HoldSource::Replace && st.pending.moved == 1 &&
+             st.pending.moved_bytes == 16 && st.pending.live.entries == 0 &&
+             st.taken.replace == 1 && !registry_lookup(2, nullptr), "pending: move counters");
+  ref = {}; balanced();
+  create(2); in = offmain();
+  expect(registry_note_replace(1, 2, &in) == HoldSkip::OffmainReplace && !registry_hold(1, nullptr),
+         "pending: no pending offmain source unholds target"); balanced();
+  reset(); create(1); create(2); store(1);
+  in = input(); auto pending_image = in.image;
+  registry_note_pending(2, &in); in = input(); auto getter_image = in.image;
+  expect(registry_note_replace(1, 2, &in) == HoldSkip::None && in.image == getter_image &&
+             registry_hold(1, &ref) && ref.image == pending_image &&
+             count(PendingDrop::Replaced) == 1, "pending: source wins and target pending retires");
+  ref = {}; balanced();
+  reset(); create(1); store(1); in = input();
+  expect(registry_note_texture_update(1, &in) == HoldSkip::None &&
+             count(PendingDrop::Updated) == 1 && registry_hold(1, nullptr),
+         "pending: update becomes hold"); balanced();
+  for (auto fault : {RegistryFault::None, RegistryFault::KeepFreed}) {
+    reset(fault); create(1); store(1); registry_note_free(1);
+    expect(count(PendingDrop::Freed) == 1 && registry_hold_stats().pending.live.entries == 0,
+           "pending: free including keep-freed"); balanced();
+  }
+  for (bool generic : {false, true}) {
+    reset(); create(1); store(1);
+    if (generic) registry_note_create(1, RegistryKind::Texture2d); else create(1);
+    expect(count(PendingDrop::Recreated) == 1, "pending: recreate both entry points"); balanced();
+  }
+  for (int scenario = 0; scenario < 5; ++scenario) {
+    reset(); create(1); create(2); store(1); store(2); in = offmain();
+    if (scenario == 0) registry_note_replace(99, 2, &in);
+    if (scenario == 1) registry_note_replace(1, 99, &in);
+    if (scenario == 2) { registry_texture_set_released(2, true); registry_note_replace(1, 2, &in); }
+    if (scenario == 3) { registry_note_create(1, RegistryKind::Shader); registry_note_replace(1, 2, &in); }
+    if (scenario == 4) registry_note_replace(1, 1, &in);
+    const auto p = registry_hold_stats().pending;
+    expect(p.moved == 0 && p.live.entries == (scenario == 4 ? 2U : scenario == 2 || scenario == 3 ? 0U : 1U),
+           "pending: refused and self replace lifetime"); balanced();
+  }
+  reset();
+  for (std::uint64_t rid = 1; rid <= 17; ++rid) { create(rid); store(rid); }
+  st = registry_hold_stats();
+  expect(st.pending.evicted == 1 && st.pending.evicted_bytes == 16 && st.pending.live.entries == 16,
+         "pending: seventeenth evicts oldest");
+  create(100); in = offmain();
+  expect(registry_note_replace(100, 1, &in) == HoldSkip::OffmainReplace, "pending: oldest was evicted");
+  in = offmain(); expect(registry_note_replace(100, 2, &in) == HoldSkip::None,
+                         "pending: second oldest survives"); balanced();
+  reset();
+  for (std::uint64_t rid = 1; rid <= 5; ++rid) { create(rid); store(rid, 65535); }
+  st = registry_hold_stats();
+  expect(st.pending.live.entries == 4 && st.pending.live.bytes == 262140 &&
+             st.pending.evicted == 1 && st.pending.evicted_bytes == 65535,
+         "pending: byte cap evicts oldest"); balanced();
+  // A larger incoming image can require several evictions even below the entry cap.
+  reset();
+  for (std::uint64_t rid = 1; rid <= 8; ++rid) { create(rid); store(rid, 32768); }
+  create(9); store(9, 65535);
+  expect(registry_hold_stats().pending.evicted == 2 &&
+             registry_hold_stats().pending.live.bytes == 262143, "pending: evicts until bytes fit");
+  balanced();
+  expect(registry_holds_drop_all(HoldDrop::Fault) == 0 &&
+             registry_hold_stats().pending.live.entries == 7, "pending: arm fault leaves pending"); balanced();
+  // Engine-reference destruction re-enters the registry on every retiring path.
+  for (int event = 0; event < 8; ++event) {
+    reset(); create(1); create(2); bool destroyed = false;
+    in = input(); in.image = RegistryValue(new int(9), [&](const int *p) {
+      delete p; registry_lookup(1, nullptr); destroyed = true;
+    });
+    registry_note_pending(1, &in);
+    if (event == 0) registry_note_free(1);
+    if (event == 1) create(1);
+    if (event == 2) { in = input(); registry_note_texture_update(1, &in); }
+    if (event == 3) { in = offmain(); registry_note_replace(1, 2, &in); }
+    if (event == 4) { in = offmain(); registry_texture_set_released(1, true); registry_note_replace(2, 1, &in); }
+    if (event == 5) { for (std::uint64_t rid = 2; rid <= 17; ++rid) { create(rid); store(rid); } }
+    if (event == 6) reset();
+    if (event == 7) registry_holds_release();
+    expect(destroyed, "pending: releases outside lock");
+    if (event != 7) balanced();
+    else expect(registry_hold_stats().pending.live.entries == 0, "pending: shutdown clears slots");
+  }
+  reset();
+  std::atomic<int> made{0}, destroyed{0}, ready{0};
+  std::atomic<bool> go{false};
+  constexpr int per_thread = 200;
+  std::vector<std::thread> threads;
+  for (int t = 0; t < 4; ++t) {
+    threads.emplace_back([&, t] {
+      ++ready; while (!go.load()) std::this_thread::yield();
+      for (int i = 0; i < per_thread; ++i) {
+        const auto rid = static_cast<std::uint64_t>(1000 + t * per_thread + i);
+        create(rid); auto value = input(); ++made;
+        value.image = RegistryValue(new int(9), [&](const int *p) {
+          delete p; registry_lookup(1, nullptr); ++destroyed;
+        });
+        registry_note_pending(rid, &value);
+      }
+    });
+  }
+  while (ready.load() != 4) std::this_thread::yield();
+  go = true;
+  for (int i = 0; i < per_thread; ++i) {
+    for (int t = 0; t < 4; ++t) {
+      const auto rid = static_cast<std::uint64_t>(1000 + t * per_thread + i);
+      create(1); auto source = offmain(); registry_note_replace(1, rid, &source);
+      registry_note_free(rid); registry_note_free(1);
+    }
+  }
+  for (auto &thread : threads) thread.join();
+  balanced();
+  reset();
+  expect(made == 4 * per_thread && destroyed == made,
+         "pending: concurrent stores, frees and replaces release every reference exactly once");
+  balanced();
+}
+
 }  // namespace
 
 int main() {
   using namespace grc::rs;
+
+  texture_holds();
+  replace_held_source();
+  pending_holds();
 
   // Texture records preserve creation facts independently of content edits and paths.
   {
@@ -829,6 +1248,6 @@ int main() {
     std::fprintf(stderr, "rs_registry_test: %d failure(s)\n", g_failures);
     return 1;
   }
-  std::printf("rs_registry_test: ok\n");
+  std::printf("rs_registry_test: %d checks, 0 failures\n", g_checks);
   return 0;
 }

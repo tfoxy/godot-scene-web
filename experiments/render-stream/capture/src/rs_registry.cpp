@@ -19,7 +19,7 @@ std::atomic<bool> g_registry_on{false};
 namespace {
 
 constexpr std::uint8_t kUpdated = 1, kReleased = 2, kEdited = 4, kFacts = 8,
-                       kMipmaps = 16, kHasPath = 32;
+                       kMipmaps = 16, kHasPath = 32, kHeld = 64, kPending = 128;
 struct Entry {
   RegistryKind kind = RegistryKind::Texture2d;
   std::uint8_t flags = 0;
@@ -30,6 +30,14 @@ struct Entry {
 };
 static_assert(sizeof(Entry) == 8, "texture facts fit in the kind slot");
 static_assert(sizeof(RidMap<Entry>::value_type) == 16, "the registry slot is one quarter line");
+
+struct RegistryHold { RegistryValue image; HoldRecord rec; };
+
+struct PendingSlot {
+  std::uint64_t rid = 0, seq = 0;
+  std::int64_t bytes = 0;
+  RegistryValue image;
+};
 
 struct State {
   std::mutex mutex;  // leaf lock (rs_registry.h)
@@ -93,6 +101,11 @@ struct State {
   std::uint64_t row_generation = 0;
   std::vector<RegistryRow> timeline;
   std::uint64_t timeline_dropped = 0;
+  RidMap<RegistryHold> holds;
+  std::uint64_t holds_capacity = 0;
+  HoldStats hold;
+  std::array<PendingSlot, kHoldPendingMaxEntries> pending;
+  std::atomic<std::uint64_t> hold_generation{0};
   RidMap<RegistryValue> paths;
   std::uint64_t path_capacity = 0;
   std::uint64_t path_sets = 0;
@@ -130,6 +143,56 @@ void path_erase_locked(State &s, std::uint64_t rid, Dropped *dropped) {
   }
 }
 
+void hold_erase_locked(State &s, std::uint64_t rid, Entry &entry, HoldDrop why,
+                       Dropped *dropped) {
+  const auto it = s.holds.find(rid);
+  if (it != s.holds.end()) {
+    --s.hold.live.entries;
+    s.hold.live.bytes -= it->second.rec.bytes;
+    ++s.hold.dropped[static_cast<std::size_t>(why)];
+    s.hold.dropped_bytes += it->second.rec.bytes;
+    dropped->values.push_back(std::move(it->second.image));
+    s.holds.erase(rid);
+    s.hold_generation.fetch_add(1, std::memory_order_relaxed);
+  }
+  entry.flags &= ~kHeld;
+}
+
+PendingSlot *pending_locked(State &s, std::uint64_t rid) {
+  for (auto &slot : s.pending) if (slot.rid == rid) return &slot;
+  return nullptr;
+}
+
+// Move references to the caller's deferred-release list before clearing a pending slot.
+void pending_erase_locked(State &s, PendingSlot &slot, PendingDrop why,
+                          Dropped *dropped, bool evicted = false, bool moved = false) {
+  auto &p = s.hold.pending;
+  --p.live.entries;
+  p.live.bytes -= slot.bytes;
+  if (evicted) { ++p.evicted; p.evicted_bytes += slot.bytes; }
+  else if (moved) { ++p.moved; p.moved_bytes += slot.bytes; }
+  else { ++p.dropped[static_cast<std::size_t>(why)]; p.dropped_bytes += slot.bytes; }
+  s.map.find(slot.rid)->second.flags &= ~kPending;
+  if (slot.image) dropped->values.push_back(std::move(slot.image));
+  slot = {};
+  s.hold_generation.fetch_add(1, std::memory_order_relaxed);
+}
+
+void pending_drop_locked(State &s, std::uint64_t rid, Entry &entry, PendingDrop why,
+                         Dropped *dropped) {
+  if (entry.flags & kPending) pending_erase_locked(s, *pending_locked(s, rid), why, dropped);
+}
+
+// The mask is tested by the caller on the flags byte it already loaded for a lifetime event.
+void texture_side_erase_locked(State &s, std::uint64_t rid, Entry &entry, HoldDrop why,
+                               Dropped *dropped, bool erase_path = true) {
+  if (erase_path && (entry.flags & kHasPath)) path_erase_locked(s, rid, dropped);
+  if (entry.flags & kHeld) hold_erase_locked(s, rid, entry, why, dropped);
+  const auto pending_why = why == HoldDrop::Freed ? PendingDrop::Freed :
+      why == HoldDrop::Recreated ? PendingDrop::Recreated : PendingDrop::Replaced;
+  pending_drop_locked(s, rid, entry, pending_why, dropped);
+}
+
 RegistryTextureRecord texture_record_locked(State &s, std::uint64_t rid, const Entry &entry) {
   RegistryTextureRecord out;
   out.rid = rid;
@@ -140,6 +203,7 @@ RegistryTextureRecord texture_record_locked(State &s, std::uint64_t rid, const E
   out.released = (entry.flags & kReleased) != 0;
   out.edited = (entry.flags & kEdited) != 0;
   out.updated = (entry.flags & kUpdated) != 0;
+  out.held = (entry.flags & kHeld) != 0;
   if (entry.flags & kHasPath) out.path = s.paths.find(rid)->second;
   return out;
 }
@@ -223,6 +287,39 @@ void material_create_locked(State &s, std::uint64_t rid, Dropped *dropped) {
   s.material_params -= it->second.params.size();
   dropped->material(std::move(it->second));
   it->second = RegistryMaterial();
+}
+
+// Decide and store the latest image while accounting for the image it displaces.
+HoldSkip hold_store_locked(State &s, std::uint64_t rid, Entry &entry,
+                           RegistryHoldInput &in, HoldSkip skip, HoldSource source,
+                           Dropped *dropped) {
+  const auto old = (entry.flags & kHeld) ? s.holds.find(rid) : s.holds.end();
+  const std::uint64_t old_bytes = old != s.holds.end() ? old->second.rec.bytes : 0;
+  if (skip == HoldSkip::None &&
+      !hold_total_ok(s.hold.live.bytes, old_bytes, static_cast<std::uint64_t>(in.bytes))) {
+    skip = HoldSkip::OverTotalCap;
+  }
+  if (entry.flags & kHeld) {
+    hold_erase_locked(s, rid, entry,
+                      skip == HoldSkip::None ? HoldDrop::Superseded : HoldDrop::Unheld, dropped);
+  }
+  if (skip != HoldSkip::None) {
+    ++s.hold.skipped[static_cast<std::size_t>(skip)];
+    return skip;
+  }
+  track_growth(s.holds.size(), &s.holds_capacity);
+  s.holds[rid] = {std::move(in.image), {rid, in.frame, ++s.hold.seq, in.bytes, source}};
+  entry.flags |= kHeld;
+  ++s.hold.live.entries;
+  s.hold.live.bytes += in.bytes;
+  s.hold.peak.entries = std::max(s.hold.peak.entries, s.hold.live.entries);
+  s.hold.peak.bytes = std::max(s.hold.peak.bytes, s.hold.live.bytes);
+  ++s.hold.taken.total;
+  if (source == HoldSource::Update) ++s.hold.taken.update;
+  else ++s.hold.taken.replace;
+  s.hold.taken.bytes += in.bytes;
+  s.hold_generation.fetch_add(1, std::memory_order_relaxed);
+  return HoldSkip::None;
 }
 
 // A create of `kind` on `rid` (fresh or recreated): the payload maps follow the kind entry.
@@ -352,10 +449,17 @@ void registry_configure(bool adopt, RegistryFault fault, std::size_t cap) {
   RidMap<RegistryShader> old_shaders;      // released after the lock (RegistryValue)
   RidMap<RegistryMaterial> old_materials;
   RidMap<RegistryValue> old_paths;
+  RidMap<RegistryHold> old_holds;
+  std::array<PendingSlot, kHoldPendingMaxEntries> old_pending;
   std::lock_guard<std::mutex> lock(s.mutex);
   std::swap(old_shaders, s.shader);
   std::swap(old_materials, s.material);
   std::swap(old_paths, s.paths);
+  std::swap(old_holds, s.holds);
+  std::swap(old_pending, s.pending);
+  s.holds_capacity = 0;
+  s.hold = {};
+  s.hold_generation.store(0, std::memory_order_relaxed);
   s.path_capacity = 0;
   s.path_sets = 0;
   s.texture_facts = 0;
@@ -407,7 +511,9 @@ bool create_locked(State &s, std::uint64_t rid, Entry entry, Dropped *dropped) {
     const RegistryFamily old = registry_family(it->second.kind);
     ++s.family[index(old)].recreated;
     remove_entry_locked(s, old);
-    if (it->second.flags & kHasPath) path_erase_locked(s, rid, dropped);
+    if (it->second.flags & (kHasPath | kHeld | kPending)) {
+      texture_side_erase_locked(s, rid, it->second, HoldDrop::Recreated, dropped);
+    }
     it->second = entry;
     ++f.creates;
     add_entry_locked(s, family);
@@ -449,7 +555,9 @@ void registry_note_create(std::uint64_t rid, RegistryKind kind) {
     const RegistryFamily old = registry_family(it->second.kind);
     ++s.family[index(old)].recreated;
     remove_entry_locked(s, old);
-    if (it->second.flags & kHasPath) path_erase_locked(s, rid, &dropped);
+    if (it->second.flags & (kHasPath | kHeld | kPending)) {
+      texture_side_erase_locked(s, rid, it->second, HoldDrop::Recreated, &dropped);
+    }
     it->second = Entry{kind};
     ++f.creates;
     add_entry_locked(s, family);
@@ -561,8 +669,11 @@ void registry_note_free(std::uint64_t rid) {
   }
   const RegistryFamily family = registry_family(it->second.kind);
   ++s.family[index(family)].frees;
+  if (it->second.flags & (kHasPath | kHeld | kPending)) {
+    texture_side_erase_locked(s, rid, it->second, HoldDrop::Freed, &dropped,
+                              s.fault != RegistryFault::KeepFreed);
+  }
   if (s.fault != RegistryFault::KeepFreed) {
-    if (it->second.flags & kHasPath) path_erase_locked(s, rid, &dropped);
     s.map.erase(rid);
     payload_erase_locked(s, rid, family, &dropped);
     remove_entry_locked(s, family);
@@ -571,32 +682,90 @@ void registry_note_free(std::uint64_t rid) {
 }
 
 void registry_note_replace(std::uint64_t texture, std::uint64_t by_texture) {
-  // The engine moves b's data into a and frees b inside the call. a takes b's kind,
-  // creation facts, release and edit flags, with updated set and no path. An unregistered a
-  // stays unregistered: it was never a recorded create.
+  registry_note_replace(texture, by_texture, nullptr);
+}
+
+HoldSkip registry_note_replace(std::uint64_t texture, std::uint64_t by_texture,
+                               RegistryHoldInput *hold) {
+  RegistryHoldInput retained_input;  // releases a rejected source after the lock
+  // The engine moves b's content into a and frees b. Keep a registered only when its create
+  // was seen, and never inherit b's side-map flags with the creation facts.
   State &s = state();
   Dropped dropped;
   std::lock_guard<std::mutex> lock(s.mutex);
-  if (by_texture == texture) {
-    return;
-  }
+  if (by_texture == texture) return HoldSkip::None;
   const auto it = s.map.find(by_texture);
-  if (it == s.map.end()) {
-    return;
-  }
   const auto into = s.map.find(texture);
+  HoldSkip skip = HoldSkip::Unregistered;
+  if (it == s.map.end()) {
+    if (into != s.map.end()) {
+      pending_drop_locked(s, texture, into->second, PendingDrop::Replaced, &dropped);
+    }
+    if (into != s.map.end() && (into->second.flags & kHeld)) {
+      hold_erase_locked(s, texture, into->second, HoldDrop::Unheld, &dropped);
+    }
+    if (hold) ++s.hold.skipped[static_cast<std::size_t>(skip)];
+    return skip;
+  }
   if (into != s.map.end() && registry_family(into->second.kind) == RegistryFamily::Texture &&
       registry_family(it->second.kind) == RegistryFamily::Texture) {
+    pending_drop_locked(s, texture, into->second, PendingDrop::Replaced, &dropped);
+    // Preserve a's held bit until the decision can account its displaced image.
+    const auto held = into->second.flags & kHeld;
     if (into->second.flags & kHasPath) path_erase_locked(s, texture, &dropped);
     into->second = it->second;
-    into->second.flags = (it->second.flags & (kReleased | kEdited | kFacts | kMipmaps)) | kUpdated;
+    into->second.flags = (it->second.flags & (kReleased | kEdited | kFacts | kMipmaps)) |
+                          kUpdated | held;
+    if (hold) {
+      PendingSlot *pending = (it->second.flags & kPending) ? pending_locked(s, by_texture) : nullptr;
+      RegistryHoldInput *source = hold;
+      if (pending) {
+        retained_input.image = std::move(pending->image);
+        retained_input.bytes = pending->bytes;
+        retained_input.frame = hold->frame;
+        source = &retained_input;
+      } else if (it->second.flags & kHeld) {
+        // The dummy getter still names the creation image after an update. The held image is
+        // the latest content; copying its shared reference makes no engine call.
+        const auto &by_hold = s.holds.find(by_texture)->second;
+        retained_input.image = by_hold.image;
+        retained_input.bytes = by_hold.rec.bytes;
+        retained_input.frame = hold->frame;
+        source = &retained_input;
+      }
+      // Retire b's hold before the cap test and store: its bytes leave in this same replace.
+      // This credits those bytes without temporarily exceeding the live or peak cap.
+      if (it->second.flags & kHeld) {
+        hold_erase_locked(s, by_texture, it->second, HoldDrop::ReplacedAway, &dropped);
+      }
+      skip = (it->second.flags & kReleased) ? HoldSkip::ReleasedSource : source->pre;
+      if (skip == HoldSkip::None && it->second.kind != RegistryKind::Texture2d) {
+        skip = HoldSkip::NotTexture2d;
+      }
+      skip = hold_store_locked(s, texture, into->second, *source, skip, HoldSource::Replace, &dropped);
+      if (pending) pending_erase_locked(s, *pending, PendingDrop::Replaced, &dropped,
+                                        false, skip == HoldSkip::None);
+    } else if (held) {
+      hold_erase_locked(s, texture, into->second, HoldDrop::Unheld, &dropped);
+    }
+  } else {
+    if (into != s.map.end()) {
+      pending_drop_locked(s, texture, into->second, PendingDrop::Replaced, &dropped);
+    }
+    if (into != s.map.end() && (into->second.flags & kHeld)) {
+      hold_erase_locked(s, texture, into->second, HoldDrop::Unheld, &dropped);
+    }
+    if (hold) ++s.hold.skipped[static_cast<std::size_t>(skip)];
   }
   const RegistryFamily family = registry_family(it->second.kind);
   ++s.family[index(family)].replaced;
-  if (it->second.flags & kHasPath) path_erase_locked(s, by_texture, &dropped);
+  if (it->second.flags & (kHasPath | kHeld | kPending)) {
+    texture_side_erase_locked(s, by_texture, it->second, HoldDrop::ReplacedAway, &dropped);
+  }
   s.map.erase(by_texture);
   remove_entry_locked(s, family);
   changed_locked(s);
+  return hold ? skip : HoldSkip::None;
 }
 
 bool registry_lookup(std::uint64_t rid, RegistryKind *kind, bool *updated) {
@@ -616,12 +785,140 @@ bool registry_lookup(std::uint64_t rid, RegistryKind *kind, bool *updated) {
 }
 
 void registry_note_texture_update(std::uint64_t rid) {
+  registry_note_texture_update(rid, nullptr);
+}
+
+HoldSkip registry_note_texture_update(std::uint64_t rid, RegistryHoldInput *hold) {
   State &s = state();
+  Dropped dropped;
   std::lock_guard<std::mutex> lock(s.mutex);
   const auto it = s.map.find(rid);
+  if (it != s.map.end()) pending_drop_locked(s, rid, it->second, PendingDrop::Updated, &dropped);
+  HoldSkip skip = HoldSkip::Unregistered;
   if (it != s.map.end() && registry_family(it->second.kind) == RegistryFamily::Texture) {
-    it->second.flags |= kUpdated | kEdited;  // a bit only (R5): no payload, no timeline row
+    if (hold && it->second.kind != RegistryKind::Texture2d) skip = HoldSkip::NotTexture2d;
+    else {
+      it->second.flags |= kUpdated | kEdited;
+      if (!hold) {
+        if (it->second.flags & kHeld) {
+          hold_erase_locked(s, rid, it->second, HoldDrop::Unheld, &dropped);
+        }
+        return HoldSkip::None;
+      }
+      skip = hold->pre;
+      if (skip == HoldSkip::None && (it->second.flags & kFacts) &&
+          (hold->width != it->second.width || hold->height != it->second.height ||
+           hold->format != it->second.format || hold->mipmaps != ((it->second.flags & kMipmaps) != 0))) {
+        skip = HoldSkip::ShapeMismatch;
+      }
+    }
+    if (hold) return hold_store_locked(s, rid, it->second, *hold, skip, HoldSource::Update, &dropped);
   }
+  if (hold) ++s.hold.skipped[static_cast<std::size_t>(skip)];
+  return skip;
+}
+
+HoldSkip registry_note_pending(std::uint64_t rid, RegistryHoldInput *in) {
+  State &s = state();
+  Dropped dropped;
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.map.find(rid);
+  HoldSkip skip = HoldSkip::Unregistered;
+  if (it != s.map.end()) {
+    pending_drop_locked(s, rid, it->second, PendingDrop::Recreated, &dropped);
+    skip = it->second.kind != RegistryKind::Texture2d ? HoldSkip::NotTexture2d : in->pre;
+  }
+  auto &p = s.hold.pending;
+  if (skip != HoldSkip::None) {
+    ++p.skipped[static_cast<std::size_t>(skip)];
+    return skip;
+  }
+  while (pending_evictions_needed(p.live.entries, p.live.bytes, in->bytes)) {
+    PendingSlot *oldest = nullptr;
+    for (auto &slot : s.pending) {
+      if (slot.rid && (!oldest || slot.seq < oldest->seq)) oldest = &slot;
+    }
+    pending_erase_locked(s, *oldest, PendingDrop::Recreated, &dropped, true);
+  }
+  for (auto &slot : s.pending) {
+    if (slot.rid) continue;
+    slot = {rid, ++s.hold.seq, in->bytes, std::move(in->image)};
+    break;
+  }
+  it->second.flags |= kPending;
+  ++p.taken; p.taken_bytes += in->bytes;
+  ++p.live.entries; p.live.bytes += in->bytes;
+  p.peak.entries = std::max(p.peak.entries, p.live.entries);
+  p.peak.bytes = std::max(p.peak.bytes, p.live.bytes);
+  s.hold_generation.fetch_add(1, std::memory_order_relaxed);
+  return HoldSkip::None;
+}
+
+bool registry_hold(std::uint64_t rid, RegistryHoldRef *out) {
+  State &s = state();
+  RegistryHoldRef ref;
+  {
+    std::lock_guard<std::mutex> lock(s.mutex);
+    const auto entry = s.map.find(rid);
+    if (entry == s.map.end() || !(entry->second.flags & kHeld)) return false;
+    const auto it = s.holds.find(rid);
+    if (out) ref = {it->second.image, it->second.rec};
+  }
+  if (out) *out = std::move(ref);
+  return true;
+}
+
+std::size_t registry_holds_drop_all(HoldDrop why) {
+  State &s = state();
+  Dropped dropped;
+  std::lock_guard<std::mutex> lock(s.mutex);
+  std::vector<std::uint64_t> rids;
+  s.holds.for_each([&](const auto &slot) { rids.push_back(slot.first); });
+  for (auto rid : rids) hold_erase_locked(s, rid, s.map.find(rid)->second, why, &dropped);
+  return rids.size();
+}
+
+void registry_holds_release() {
+  State &s = state();
+  RidMap<RegistryHold> old;
+  std::array<PendingSlot, kHoldPendingMaxEntries> old_pending;
+  std::lock_guard<std::mutex> lock(s.mutex);
+  s.holds.for_each([&](const auto &slot) { s.map.find(slot.first)->second.flags &= ~kHeld; });
+  std::swap(old, s.holds);
+  for (auto &slot : s.pending) {
+    if (slot.rid) s.map.find(slot.rid)->second.flags &= ~kPending;
+  }
+  std::swap(old_pending, s.pending);
+  s.hold_generation.fetch_add(s.hold.pending.live.entries, std::memory_order_relaxed);
+  s.hold.pending.live = {};
+  s.holds_capacity = 0;
+  s.hold.live = {};
+  s.hold_generation.fetch_add(old.size(), std::memory_order_relaxed);
+}
+
+HoldStats registry_hold_stats() {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  return s.hold;
+}
+
+void registry_hold_records(std::vector<HoldRecord> *out, std::size_t cap) {
+  if (!out) return;
+  State &s = state();
+  std::vector<HoldRecord> records;
+  {
+    std::lock_guard<std::mutex> lock(s.mutex);
+    s.holds.for_each([&](const auto &slot) { records.push_back(slot.second.rec); });
+  }
+  std::sort(records.begin(), records.end(), [](const HoldRecord &a, const HoldRecord &b) {
+    return a.rid < b.rid;
+  });
+  if (records.size() > cap) records.resize(cap);
+  out->swap(records);
+}
+
+std::uint64_t registry_hold_generation() {
+  return state().hold_generation.load(std::memory_order_relaxed);
 }
 
 namespace {

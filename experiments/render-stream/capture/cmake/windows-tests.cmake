@@ -82,7 +82,7 @@ grc_w_test(rs_expose TARGET rs_expose_test
 grc_w_test(rs_histogram TARGET rs_histogram_test
   SOURCES test/rs_histogram_test.cpp src/rs_histogram.cpp src/report.cpp LIBS grc_platform)
 grc_w_test(rs_registry TARGET rs_registry_test
-  SOURCES test/rs_registry_test.cpp src/rs_registry.cpp src/report.cpp
+  SOURCES test/rs_registry_test.cpp src/rs_registry.cpp src/rs_hold.cpp src/report.cpp
   LIBS grc_platform Threads::Threads)
 grc_w_test(rs_canvas_texture_shim TARGET rs_canvas_texture_shim_test
   SOURCES test/rs_canvas_texture_shim_test.cpp src/rs_canvas_texture_shim.cpp src/report.cpp
@@ -104,6 +104,9 @@ grc_w_test(rs_adopt TARGET rs_adopt_test
   INCLUDES vendor LIBS grc_platform grc_codecs Threads::Threads DEFINES GRC_ADOPT_TEST
   # The adopt test stubs the hook implementation, leaving its private state unused.
   OPTIONS -Wall -Wextra -Werror -Wno-unused-private-field)
+grc_w_test(rs_hold TARGET rs_hold_test
+  SOURCES test/rs_hold_test.cpp src/rs_hold.cpp src/report.cpp
+  LIBS grc_platform Threads::Threads)
 grc_w_test(rs_reload TARGET rs_reload_test
   SOURCES test/rs_reload_test.cpp src/rs_reload.cpp src/rs_texture_payload.cpp
     src/rs_texture_delivery.cpp src/report.cpp

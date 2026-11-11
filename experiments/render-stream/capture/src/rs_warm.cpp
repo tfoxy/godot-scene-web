@@ -28,12 +28,14 @@ const char *warm_source_name(WarmSource source) {
     case WarmSource::Reload: return "reload";
     case WarmSource::Registry: return "registry";
     case WarmSource::Cache: return "cache";
+    case WarmSource::Hold: return "hold";
   }
   return "registry";
 }
 WarmSkip warm_class(const WarmClassInput &in, WarmSource *out) {
   if (in.mirror_known) return WarmSkip::MirrorKnown;
   if (in.refused) return WarmSkip::Refused;
+  if (in.held) { *out = WarmSource::Hold; return WarmSkip::None; }
   if (in.has_reload_source) { *out = WarmSource::Reload; return WarmSkip::None; }
   if (!in.texture2d) return WarmSkip::NotTexture2d;
   if (in.released && !in.reload_off) return WarmSkip::Released;
@@ -41,8 +43,9 @@ WarmSkip warm_class(const WarmClassInput &in, WarmSource *out) {
   if (in.census_built && in.census_compressed) { *out = WarmSource::Cache; return WarmSkip::None; }
   return WarmSkip::Updated;
 }
-bool warm_eligible_at_reference(bool reload_source, bool pristine, bool compressed, bool census_at_warm) {
-  return reload_source || pristine || (compressed && census_at_warm);
+bool warm_eligible_at_reference(bool reload_source, bool pristine, bool compressed, bool census_at_warm,
+                                bool held) {
+  return held || reload_source || pristine || (compressed && census_at_warm);
 }
 bool warm_stale(bool updated_at_warm, bool registered_now, bool updated_now) {
   return registered_now && updated_now && !updated_at_warm;
@@ -112,6 +115,9 @@ std::string warm_json(const WarmStats &s) {
   field("fault", quoted(s.fault));
   field("skipped", s.skipped.empty() ? "null" : quoted(s.skipped));
   field("workers", quoted(s.workers));
+  field("held_at_arm", s.held_at_arm);
+  field("held_bytes_at_arm", s.held_bytes_at_arm);
+  field("hold_dropped_fault", s.hold_dropped_fault);
   j << ",\"scanned\":{\"registered_2d\":" << s.scanned.registered_2d;
   field("mirror_known", s.scanned.mirror_known);
   field("refused", s.scanned.refused);
@@ -126,6 +132,7 @@ std::string warm_json(const WarmStats &s) {
   field("from_reload", s.from_reload);
   field("from_registry", s.from_registry);
   field("from_cache", s.from_cache);
+  field("from_hold", s.from_hold);
   field("jobs", s.jobs);
   field("sync_coded", s.sync_coded);
   field("not_ok", s.not_ok);
@@ -140,6 +147,8 @@ std::string warm_json(const WarmStats &s) {
   field("served", s.served);
   field("served_in_flight", s.served_in_flight);
   field("served_reload", s.served_reload);
+  field("served_hold", s.served_hold);
+  field("lazy_from_hold", s.lazy_from_hold);
   field("discarded_stale", s.discarded_stale);
   field("discarded_freed", s.discarded_freed);
   field("discarded_superseded", s.discarded_superseded);
@@ -154,6 +163,12 @@ std::string warm_json(const WarmStats &s) {
   }
   j << "],\"lazy_at_reference\":{\"updated\":" << s.lazy_at_reference.updated;
   field("unregistered", s.lazy_at_reference.unregistered);
+  j << '}';
+  j << ",\"textures\":{\"adopted\":" << s.textures.adopted;
+  field("current", s.textures.current);
+  field("creation", s.textures.creation);
+  field("refused", s.textures.refused);
+  field("refused_no_image", s.textures.refused_no_image);
   j << '}';
   field("warm_complete", s.warm_complete);
   j << ",\"arm_to_warm_complete_ms\":";

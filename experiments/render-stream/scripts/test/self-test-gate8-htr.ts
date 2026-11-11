@@ -11,6 +11,7 @@ import {
   evictFixtureProblems,
   faultAlwaysIgnorePredicateProblems,
   type HtrStats,
+  htrDeferredCreationPaths,
   noImageTextureReleaseProblems,
   type StandbyCostRound,
   standbyHotZeroEvictProblems,
@@ -382,6 +383,36 @@ rejects("standby hot zero", hot, standbyHotZeroEvictProblems, [
     v[0].counters.hooks_planned = [STANDBY_HOOKS[0]];
   },
 ]);
+const held = { state: "active", taken: { update: 1 } };
+const heldLine = {
+  op: "adopt",
+  kind: "image",
+  adopt_source: "hold",
+  adopted_content: "current",
+};
+const deferred = htrDeferredCreationPaths(held, [heldLine], 1);
+assert(
+  deferred.paths === 0 && deferred.problems.length === 0,
+  "deferred: held Stale is current without creation exception",
+);
+for (const [name, hold, lines] of [
+  ["missing hold line", held, []],
+  ["no update held", { state: "active", taken: { update: 0 } }, [heldLine]],
+  ["creation content", held, [{ ...heldLine, adopted_content: "creation" }]],
+  ["two hold lines", held, [heldLine, heldLine]],
+] as const) {
+  assert(
+    htrDeferredCreationPaths(hold, lines, 1).problems.length > 0,
+    `deferred: ${name} fails`,
+  );
+}
+for (const hold of [null, { state: "ignored" }]) {
+  const r = htrDeferredCreationPaths(hold, [heldLine], 1);
+  assert(
+    r.paths === 1 && r.problems.length === 0,
+    "deferred: inactive holds keep declared exception",
+  );
+}
 console.log(
   `gate8-htr self-test: ${assertions - failures}/${assertions} passed, ${failures} failed`,
 );

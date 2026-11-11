@@ -859,10 +859,9 @@ function stripTimings(v: unknown, lar6 = false): unknown {
   );
 }
 
-/** LAR6 tex-current-unupdated's verdict from the deferred capture's hook log (resources.jsonl) and
- * adopt_stats.resources. Pure. A never-updated adopted texture (adopt_source "registry", its RID
- * never named by a texture_2d_update) is declared current; the texture updated in place before the
- * arm (G8r's Stale: adopted creation, updated again after the arm) stays creation. */
+/** Pure verdict from the deferred capture's hook log and adopt_stats.resources. Registry-sourced
+ * textures must be current and never updated; the image updated before the arm must be current
+ * from its held reference, since the headless server's creation image is stale. */
 export function judgeTexCurrentUnupdated(
   lines: readonly Record<string, unknown>[],
   res: Record<string, unknown> | undefined,
@@ -874,25 +873,32 @@ export function judgeTexCurrentUnupdated(
   const adopt = lines.filter((l) => l.op === "adopt" && l.kind === "image");
   const registry = adopt.filter((l) => l.adopt_source === "registry");
   const creation = adopt.filter((l) => l.adopted_content === "creation");
+  const held = adopt.filter((l) => l.adopt_source === "hold");
   const pristine = registry.filter((l) => !updated.has(String(l.rid)));
   if (pristine.length === 0)
     problems.push(
       "no adopted texture declared current from the registry's `updated` bit",
     );
-  for (const l of registry)
+  for (const l of registry) {
     if (l.adopted_content !== "current")
       problems.push(
         `registry-sourced texture ${l.rid} declared ${l.adopted_content}`,
       );
-  if (creation.length !== 1)
+    if (updated.has(String(l.rid)))
+      problems.push(`registry-sourced texture ${l.rid} was updated in place`);
+  }
+  if (creation.length !== 0)
+    problems.push(`${creation.length} textures declared creation, expected 0`);
+  if (held.length !== 1)
     problems.push(
-      `${creation.length} textures declared creation, expected 1 (Stale)`,
+      `${held.length} textures adopted from hold, expected 1 (Stale)`,
     );
-  for (const l of creation)
+  for (const l of held) {
+    if (l.adopted_content !== "current")
+      problems.push(`held texture ${l.rid} declared ${l.adopted_content}`);
     if (!updated.has(String(l.rid)))
-      problems.push(
-        `creation texture ${l.rid} is never updated in place (only Stale should be)`,
-      );
+      problems.push(`held texture ${l.rid} is never updated in place`);
+  }
   if (!res) problems.push("no stream.gate8.adopt_stats.resources");
   else if (res.textures_registry !== registry.length)
     problems.push(
@@ -900,7 +906,7 @@ export function judgeTexCurrentUnupdated(
     );
   return {
     problems,
-    detail: `${registry.length} current from the registry (${pristine.length} never updated), ${creation.length} creation`,
+    detail: `${registry.length} current from the registry (${pristine.length} never updated), ${held.length} current from hold, ${creation.length} creation`,
   };
 }
 
@@ -1092,8 +1098,8 @@ export async function runG8a(
 
   // --- LAR0: adopt-equivalence on the deferred leg ------------------------------------------
   // Loaded at birth (the hooks see every create, the registry records them), armed at K by
-  // GRC_ARM_DEFER_FRAMES: from K on it must equal born exactly as late does, and -- adoption is
-  // unchanged by LAR0 -- its adoption account must be late's, timings aside.
+  // GRC_ARM_DEFER_FRAMES: from K on it must equal born with only refused textures excepted.
+  // Its adoption account matches late's apart from timings and texture-content sources.
   const deferred = await loadRecording(join(root, "deferred/capture"));
   const deferredResult = await readJson<CaptureResult>(
     join(root, "deferred/capture/evidence/result.json"),
@@ -1121,7 +1127,9 @@ export async function runG8a(
         problems.push(
           `first transaction at frame ${first?.frame}, expected ${K}`,
         );
-      const e = equivalence(born.rec, deferred.rec, K, expected.residue, allow);
+      const e = equivalence(born.rec, deferred.rec, K, expected.residue, {
+        refused: allow.refused,
+      });
       problems.push(...e.problems.slice(0, 20));
       if (e.problems.length > 20)
         problems.push(`... ${e.problems.length - 20} more`);
@@ -1135,7 +1143,7 @@ export async function runG8a(
     checks.push(
       check(
         "adopt-equivalence-deferred",
-        `the deferred capture (loaded at birth, armed at K=${K} by GRC_ARM_DEFER_FRAMES) validates, declares {"mode":"arm","frame":${K}} with its first transaction at K, equals born from K on under adopt-equivalence's rule and exceptions, and its adopt_stats equal late's but for timings (LAR0 leaves adoption unchanged) and LAR6's texture-content split (judged by tex-current-unupdated)`,
+        `the deferred capture (loaded at birth, armed at K=${K} by GRC_ARM_DEFER_FRAMES) validates, declares {"mode":"arm","frame":${K}} with its first transaction at K, equals born from K on under adopt-equivalence's rule and its refused exception (the deferred capture holds Stale's pre-arm update, so no creation exception), and its adopt_stats equal late's but for timings (LAR0 leaves adoption unchanged) and LAR6's texture-content split (judged by tex-current-unupdated)`,
         problems,
       ),
     );
@@ -1161,7 +1169,7 @@ export async function runG8a(
     checks.push(
       check(
         "tex-current-unupdated",
-        "LAR6: on the deferred capture a registered texture never updated since its create (the registry's `updated` bit clear: Plain; the chips predate the load and stay G8r's census path) is adopted `current` from the registry with no census, and the ImageTexture updated in place before the arm (Stale) stays `creation`, as G8r declares",
+        "LAR6: on the deferred capture a registered texture never updated since its create (the registry's `updated` bit clear: Plain; the chips predate the load and stay G8r's census path) is adopted `current` from the registry with no census, and the ImageTexture updated in place before the arm (Stale) is adopted `current` from its held image",
         problems,
         detail,
       ),

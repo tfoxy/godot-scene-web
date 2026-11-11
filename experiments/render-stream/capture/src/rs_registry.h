@@ -37,6 +37,8 @@
 #ifndef GRC_RS_REGISTRY_H
 #define GRC_RS_REGISTRY_H
 
+#include "rs_hold.h"
+
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -267,7 +269,7 @@ struct RegistryTextureRecord {
   std::uint64_t rid = 0;
   RegistryKind kind = RegistryKind::Texture2d;
   RegistryTextureFacts facts;
-  bool released = false, edited = false, updated = false;
+  bool released = false, edited = false, updated = false, held = false;
   RegistryValue path;
 };
 void registry_note_texture_create(std::uint64_t rid, const RegistryTextureFacts &facts, bool released);
@@ -277,6 +279,34 @@ bool registry_texture(std::uint64_t rid, RegistryTextureRecord *out);
 // Copies every texture-family record in slot order under the lock. The caller owns the copied
 // path references and releases them outside the lock. Replaces the vector's previous contents.
 void registry_textures(std::vector<RegistryTextureRecord> *out);
+
+// The latest image delivered by an update or replace on a headless host, whose dummy server
+// keeps no current content. Images are references, never copies; side-map values are released
+// outside the registry lock, as every RegistryValue is.
+struct RegistryHoldInput {
+  RegistryValue image;
+  std::int64_t bytes = -1, width = -1, height = -1, format = -1;
+  bool mipmaps = false;
+  HoldSource source = HoldSource::Update;
+  HoldSkip pre = HoldSkip::None;
+  std::uint64_t frame = 0;
+};
+struct RegistryHoldRef {
+  RegistryValue image;
+  HoldRecord rec;
+};
+// Null inputs preserve the original kind/fact notes without taking a reference.
+HoldSkip registry_note_texture_update(std::uint64_t rid, RegistryHoldInput *hold);
+HoldSkip registry_note_replace(std::uint64_t texture, std::uint64_t by_texture,
+                               RegistryHoldInput *hold);
+// Off-main creates keep a bounded reference until a replace consumes it or its RID retires.
+HoldSkip registry_note_pending(std::uint64_t rid, RegistryHoldInput *in);
+bool registry_hold(std::uint64_t rid, RegistryHoldRef *out);
+std::size_t registry_holds_drop_all(HoldDrop why);
+void registry_holds_release();  // deinitialize: release without counting drops
+HoldStats registry_hold_stats();
+void registry_hold_records(std::vector<HoldRecord> *out, std::size_t cap);
+std::uint64_t registry_hold_generation();
 
 // One shader_set_default_texture_parameter (Shader::set_default_texture_parameter's server call).
 struct RegistryDefaultTexture {

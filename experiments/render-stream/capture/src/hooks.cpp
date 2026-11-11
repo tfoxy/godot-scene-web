@@ -1315,6 +1315,7 @@ struct ImageBinds {
   bool payload_available = false;
   // G8kw: Resource.duplicate(bool), the copy-on-write duplicate a texture worker reads.
   GDExtensionMethodBindPtr duplicate = nullptr;
+  GDExtensionMethodBindPtr texture_2d_get = nullptr;
 };
 
 ImageBinds g_image_binds;
@@ -1410,6 +1411,89 @@ std::atomic<int> g_offmain_inflight{0};
 // loader threads may be inside a texture hook, hence atomics.
 std::atomic<int> g_texture_workers{0};
 std::atomic<uint64_t> g_texture_worker_min_bytes{0};
+
+// The dummy server retains no current image after an update or replace. Keep only an engine
+// reference here; all reference operations and image getters run outside the registry lock.
+struct HeldImage {
+  void *slot = nullptr;
+  ~HeldImage() { if (slot) g_iface.ref_set_object(&slot, nullptr); }
+};
+
+rs::RegistryValue held_image_ref(void *object) {
+  auto h = std::make_shared<HeldImage>();
+  g_iface.ref_set_object(&h->slot, object);
+  return rs::RegistryValue(h, g_iface.ref_get_object(&h->slot));
+}
+
+rs::RegistryValue held_image_get(void *server, uint64_t rid) {
+  if (g_image_binds.texture_2d_get == nullptr) return nullptr;
+  auto h = std::make_shared<HeldImage>();
+  const GDExtensionConstTypePtr args[] = {&rid};
+  g_iface.object_method_bind_ptrcall(g_image_binds.texture_2d_get, server, args, &h->slot);
+  return rs::RegistryValue(h, g_iface.ref_get_object(&h->slot));
+}
+
+void hold_image_facts(rs::RegistryHoldInput *in, const ImageFacts &f) {
+  in->width = f.width;
+  in->height = f.height;
+  in->format = f.format;
+  in->mipmaps = f.mipmaps;
+  in->bytes = f.data_size;
+}
+
+void hold_note_update(uint64_t rid, const Ref *image, int layer) {
+  rs::RegistryHoldInput in;
+  in.source = rs::HoldSource::Update;
+  in.frame = current_frame();
+  if (layer != 0) {
+    in.pre = rs::HoldSkip::NotTexture2d;
+  } else {
+    const ImageFacts f = read_image(image);
+    hold_image_facts(&in, f);
+    in.pre = rs::hold_image_decision(image && image->object, f.ok && f.mipmaps_known,
+                                     f.format, f.data_size);
+    if (in.pre == rs::HoldSkip::None) {
+      in.image = held_image_ref(image->object);
+      if (!in.image) in.pre = rs::HoldSkip::NoImage;
+    }
+  }
+  rs::registry_note_texture_update(rid, &in);
+}
+
+void hold_note_replace(void *self, uint64_t a, uint64_t b) {
+  rs::RegistryHoldInput in;
+  in.source = rs::HoldSource::Replace;
+  in.frame = current_frame();
+  // Off-main getters wait on the main thread's queue; only a pending create can supply content.
+  if (std::this_thread::get_id() != g_main_thread) {
+    in.pre = rs::HoldSkip::OffmainReplace;
+  } else {
+    in.image = held_image_get(self, b);
+    const Ref image{const_cast<void *>(in.image.get())};
+    const ImageFacts f = read_image(&image);
+    hold_image_facts(&in, f);
+    in.pre = rs::hold_image_decision(image.object != nullptr, f.ok && f.mipmaps_known,
+                                     f.format, f.data_size);
+    if (in.pre != rs::HoldSkip::None) in.image.reset();
+  }
+  rs::registry_note_replace(a, b, &in);
+}
+
+[[gnu::noinline]] void hold_note_offmain_create(uint64_t rid, const Ref *image,
+                                              const ImageFacts &facts) {
+  if (std::this_thread::get_id() == g_main_thread) return;
+  if (!rs::hold_active()) return;
+  rs::RegistryHoldInput in;
+  in.frame = current_frame();
+  hold_image_facts(&in, facts);
+  in.pre = rs::hold_image_decision(image && image->object, facts.ok && facts.mipmaps_known,
+                                   facts.format, facts.data_size);
+  if (in.pre == rs::HoldSkip::None) {
+    in.image = held_image_ref(image->object);
+    if (!in.image) in.pre = rs::HoldSkip::NoImage;
+  }
+  rs::registry_note_pending(rid, &in);
+}
 
 uint64_t now_ns() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -2619,6 +2703,8 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
   if (rs::registry_on()) {
     rs::registry_note_texture_create(result.id, to_registry_facts(facts), forwarded != image);
   }
+  // An off-main create keeps the image that a following replace needs before queued initialize.
+  if (standby || inflight.counted()) hold_note_offmain_create(result.id, image, facts);
   capture.rid = result.id;
   if (g_validation_logs) {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -2672,7 +2758,9 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
     }
   }
   if (rs::registry_on()) {
-    rs::registry_note_texture_update(texture.id);  // LAR6: its getter is no longer the content
+    // The dummy keeps no update content, so keep a reference to the caller's image.
+    if (rs::hold_active()) hold_note_update(texture.id, image, layer);
+    else rs::registry_note_texture_update(texture.id);  // LAR6: its getter is no longer the content
   }
   rs::PayloadPtr bytes;
   rs::TextureJobPtr job;
@@ -5045,7 +5133,9 @@ void hook_texture_replace(void *self, RID texture, RID by_texture) {
   log_entry(&g_texture_replaces, rids(texture.id, by_texture.id));
   if (rs::registry_on()) {
     // LAR0 (design R5): the engine frees by_texture inside the call, with no free of its own.
-    rs::registry_note_replace(texture.id, by_texture.id);
+    // Before the forward, the source image is the content the target takes.
+    if (rs::hold_active()) hold_note_replace(self, texture.id, by_texture.id);
+    else rs::registry_note_replace(texture.id, by_texture.id);
   }
   original<FnSetMaterial>(kTextureReplace)(self, texture, by_texture);
   std::lock_guard<std::mutex> order(g_texture_order);
@@ -5755,6 +5845,7 @@ void hooks_init_image_binds() {
   g_image_binds.has_mipmaps = method_bind("Image", "has_mipmaps", 36873697LL);
   // G8kw: optional; without it a texture worker is never used (the copy stays synchronous).
   g_image_binds.duplicate = method_bind("Resource", "duplicate", 482882304LL);
+  g_image_binds.texture_2d_get = method_bind("RenderingServer", "texture_2d_get", 4206205781LL);
   g_image_binds.payload_available = g_image_binds.available &&
                                     g_image_binds.has_mipmaps != nullptr &&
                                     g_iface.image_ptr != nullptr;

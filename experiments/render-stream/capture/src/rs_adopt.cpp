@@ -1616,7 +1616,10 @@ void adopt_texture_locked_out(std::uint64_t rid) {
     }
   }
   if (warm) {
-    if (warm_stale(warm->updated_at_warm, registered_now, updated)) {
+    RegistryHoldRef hold;
+    const bool stale_hold = warm->source == WarmSource::Hold &&
+        (!registry_hold(rid, &hold) || hold.rec.seq != warm->hold_seq);
+    if (stale_hold || warm_stale(warm->updated_at_warm, registered_now, updated)) {
       {
         std::lock_guard<std::mutex> lock(g_res_mutex);
         ++g_warm_stats.discarded_stale;
@@ -1643,6 +1646,7 @@ void adopt_texture_locked_out(std::uint64_t rid) {
         else ++g_res_stats.textures_creation;
         if (warm->source == WarmSource::Cache) ++g_res_stats.compressed;
         if (warm->source == WarmSource::Registry) ++g_res_stats.textures_registry;
+        if (warm->source == WarmSource::Hold) ++g_warm_stats.served_hold;
         if (decoded) ++g_res_stats.decoded;
         if (warm->source == WarmSource::Reload) {
           ++g_res_stats.textures_reload;
@@ -1662,9 +1666,11 @@ void adopt_texture_locked_out(std::uint64_t rid) {
       return;
     }
   }
+  RegistryHoldRef hold;
+  const bool held = registered_now && registry_hold(rid, &hold);
   {
     std::lock_guard<std::mutex> lock(g_res_mutex);
-    if (main && !pristine && !g_census.built) {
+    if (main && !pristine && !held && !g_census.built) {
       build_census();
     }
   }
@@ -1678,14 +1684,15 @@ void adopt_texture_locked_out(std::uint64_t rid) {
     }
   }
   RefSlot creation;
-  if (!reload_source) {
+  if (!held && !reload_source) {
     void *rs_singleton = singleton_object("RenderingServer");
     if (rs_singleton != nullptr) {
       const GDExtensionConstTypePtr args[1] = {&rid};
       ptrcall(kRsTexture2dGet, rs_singleton, args, &creation.slot);
     }
   }
-  void *creation_image = reload_source ? reload_source->object() : creation.object();
+  void *creation_image = held ? const_cast<void *>(hold.image.get()) :
+      reload_source ? reload_source->object() : creation.object();
   if (creation_image == nullptr) {
     // No image (design Q3's residual): a CanvasTexture created before the extension loaded, which
     // only a cached `.tres` (PM9, the census) can describe. Anything else -- a runtime-built
@@ -1705,7 +1712,7 @@ void adopt_texture_locked_out(std::uint64_t rid) {
     g_res_stats.lookup_ns += now_ns() - t0;
     return;
   }
-  if (!reload_source && fault() != AdoptFault::ReloadOff) {
+  if (!held && !reload_source && fault() != AdoptFault::ReloadOff) {
     RegistryTextureRecord record;
     const bool registered = registry_texture(rid, &record);
     const Shape shape = reload_shape(shape_of(creation_image));
@@ -1724,7 +1731,7 @@ void adopt_texture_locked_out(std::uint64_t rid) {
     }
   }
   bool compressed = false;
-  if (!reload_source && !pristine) {
+  if (!held && !reload_source && !pristine) {
     std::lock_guard<std::mutex> lock(g_res_mutex);
     compressed = g_census.compressed.count(rid) != 0;
   }
@@ -1733,7 +1740,10 @@ void adopt_texture_locked_out(std::uint64_t rid) {
   const char *source = "dummy";
   bool atlas = false;
   RefSlot current;
-  if (reload_source) {
+  if (held) {
+    content = rs2::AdoptedContent::Current;
+    source = "hold";
+  } else if (reload_source) {
     content = rs2::AdoptedContent::Current;
     source = "reload";
   } else if (pristine) {
@@ -1764,7 +1774,7 @@ void adopt_texture_locked_out(std::uint64_t rid) {
   }
   std::lock_guard<std::mutex> lock(g_res_mutex);
   if (adopted) {
-    if (warm_eligible_at_reference(reload_source != nullptr, pristine, compressed, g_warm_census_at_warm)) {
+    if (warm_eligible_at_reference(reload_source != nullptr, pristine, compressed, g_warm_census_at_warm, held)) {
       ++g_warm_stats.decode_at_reference;
       if (g_warm_stats.decode_at_reference_rids.size() < 32)
         g_warm_stats.decode_at_reference_rids.push_back(rid);
@@ -1785,6 +1795,7 @@ void adopt_texture_locked_out(std::uint64_t rid) {
         if (entry.rid == rid && !entry.code) { entry.adopted = true; break; }
       }
     } else if (pristine) ++g_res_stats.textures_registry;
+    if (held) ++g_warm_stats.lazy_from_hold;
     if (decoded) ++g_res_stats.decoded;
   } else if (reload_source) {
     ++g_reload_stats.dropped_unreferenced;
@@ -1940,7 +1951,9 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
   if (text.empty()) {
     return true;
   }
-  if (text == "warm-off") {
+  if (text == "hold-off") {
+    *out = AdoptFault::HoldOff;
+  } else if (text == "warm-off") {
     *out = AdoptFault::WarmOff;
   } else if (text == "no-resources") {
     *out = AdoptFault::NoResources;
@@ -1977,7 +1990,7 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
              " (expected no-resources, atlas-from-dummy, claim-current, no-include-path, "
              "no-particles, registry-off, registry-keep-freed, registry-mm-stride, "
              "registry-skip-params, registry-drop-binding, registry-skip-particles, "
-             "registry-queue-drop, reload-off, reload-skip-verify, skip-htr-restore or warm-off)";
+             "registry-queue-drop, reload-off, reload-skip-verify, skip-htr-restore, warm-off or hold-off)";
     return false;
   }
   if (!adopt) {
@@ -1989,6 +2002,7 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
 
 const char *adopt_fault_name(AdoptFault f) {
   switch (f) {
+  case AdoptFault::HoldOff: return "hold-off";
   case AdoptFault::WarmOff: return "warm-off";
   case AdoptFault::ReloadOff: return "reload-off";
   case AdoptFault::ReloadSkipVerify: return "reload-skip-verify";
@@ -2042,6 +2056,11 @@ WarmStats adopt_warm_at_arm(std::uint64_t arm_t0_ns, const std::string &workers)
   WarmStats stats;
   stats.fault = adopt_fault_name(fault());
   stats.workers = workers;
+  if (fault() == AdoptFault::HoldOff)
+    stats.hold_dropped_fault = registry_holds_drop_all(HoldDrop::Fault);
+  const auto holds = registry_hold_stats();
+  stats.held_at_arm = holds.live.entries;
+  stats.held_bytes_at_arm = holds.live.bytes;
   if (fault() == AdoptFault::WarmOff) stats.skipped = "fault-warm-off";
   else if (fault() == AdoptFault::NoResources) stats.skipped = "fault-no-resources";
   else if (fault() == AdoptFault::RegistryKeepFreed) stats.skipped = "fault-registry-keep-freed";
@@ -2071,7 +2090,8 @@ WarmStats adopt_warm_at_arm(std::uint64_t arm_t0_ns, const std::string &workers)
     if (source == WarmSource::Reload) {
       ++stats.from_reload;
       stats.from_reload_bytes += std::max<std::int64_t>(body->source_data_bytes, 0);
-    } else if (source == WarmSource::Registry) ++stats.from_registry;
+    } else if (source == WarmSource::Hold) ++stats.from_hold;
+    else if (source == WarmSource::Registry) ++stats.from_registry;
     else ++stats.from_cache;
   };
   for (const auto &rec : records) {
@@ -2079,6 +2099,7 @@ WarmStats adopt_warm_at_arm(std::uint64_t arm_t0_ns, const std::string &workers)
     input.registered = true;
     input.texture2d = rec.kind == RegistryKind::Texture2d;
     input.updated = rec.updated;
+    input.held = rec.held;
     input.released = rec.released;
     input.census_built = stats.census_at_warm;
     input.census_compressed = compressed.count(rec.rid) != 0;
@@ -2100,10 +2121,13 @@ WarmStats adopt_warm_at_arm(std::uint64_t arm_t0_ns, const std::string &workers)
       case WarmSkip::None: break;
     }
     WarmBody body;
+    RegistryHoldRef hold;
     {
       RefSlot image;
       std::unique_ptr<RefSlot> reload_source;
-      if (source == WarmSource::Reload) {
+      if (source == WarmSource::Hold) {
+        if (!registry_hold(rec.rid, &hold)) { ++stats.skipped_by.no_image; continue; }
+      } else if (source == WarmSource::Reload) {
         std::lock_guard<std::mutex> lock(g_res_mutex);
         const auto it = g_reload_sources.find(rec.rid);
         if (it != g_reload_sources.end()) {
@@ -2114,9 +2138,10 @@ WarmStats adopt_warm_at_arm(std::uint64_t arm_t0_ns, const std::string &workers)
         const GDExtensionConstTypePtr args[1] = {&rec.rid};
         ptrcall(kRsTexture2dGet, server, args, &image.slot);
       }
-      void *object = reload_source ? reload_source->object() : image.object();
+      void *object = source == WarmSource::Hold ? const_cast<void *>(hold.image.get()) :
+          reload_source ? reload_source->object() : image.object();
       if (!object) { ++stats.skipped_by.no_image; continue; }
-      if (source != WarmSource::Reload && !input.reload_off && rec.facts.known &&
+      if (source != WarmSource::Hold && source != WarmSource::Reload && !input.reload_off && rec.facts.known &&
           evicted_signature(reload_shape(shape_of(object)), rec.facts)) {
         ++stats.skipped_by.evicted;
         continue;
@@ -2125,7 +2150,7 @@ WarmStats adopt_warm_at_arm(std::uint64_t arm_t0_ns, const std::string &workers)
     }
     {
       std::lock_guard<std::mutex> lock(g_res_mutex);
-      g_warm[rec.rid] = {source, rec.updated, std::move(body)};
+      g_warm[rec.rid] = {source, rec.updated, std::move(body), hold.rec.seq};
     }
   }
   // Cached textures can predate the registry. Their getter copy is current at the arm.
@@ -2251,6 +2276,8 @@ WarmStats adopt_warm_finish() {
       if (entry.second.source == WarmSource::Reload) ++g_reload_stats.dropped_unreferenced;
     });
     std::swap(dropped, g_warm);
+    g_warm_stats.textures = {g_res_stats.textures, g_res_stats.textures_current,
+        g_res_stats.textures_creation, g_res_stats.textures_refused, g_res_stats.refused_no_image};
     g_warm_stats.final = true;
     warm_snapshot_locked();
     stats = g_warm_stats;

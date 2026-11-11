@@ -14,7 +14,7 @@
 
 namespace grc::rs {
 
-enum class WarmSource : std::uint8_t { Reload, Registry, Cache };
+enum class WarmSource : std::uint8_t { Reload, Registry, Cache, Hold };
 const char *warm_source_name(WarmSource source);
 enum class WarmSkip : std::uint8_t { None, MirrorKnown, Refused, NotTexture2d, Released, Updated };
 struct WarmClassInput {
@@ -25,9 +25,11 @@ struct WarmClassInput {
   bool census_built = false, census_compressed = false;
   bool mirror_known = false, refused = false;
   bool reload_off = false;
+  bool held = false;
 };
 WarmSkip warm_class(const WarmClassInput &in, WarmSource *out);
-bool warm_eligible_at_reference(bool reload_source, bool pristine, bool compressed, bool census_at_warm);
+bool warm_eligible_at_reference(bool reload_source, bool pristine, bool compressed, bool census_at_warm,
+                                bool held = false);
 bool warm_stale(bool updated_at_warm, bool registered_now, bool updated_now);
 
 class WarmClaim {
@@ -61,6 +63,7 @@ struct WarmEntry {
   WarmSource source = WarmSource::Registry;
   bool updated_at_warm = false;
   WarmBody body;
+  std::uint64_t hold_seq = 0;
 };
 struct WarmCounters {
   std::atomic<std::uint64_t> done{0}, cancelled{0}, mispredicts{0}, work_ns{0}, last_finish_ns{0};
@@ -80,24 +83,29 @@ struct WarmSkippedBy {
 struct WarmLazyAtReference {
   std::uint64_t updated = 0, unregistered = 0;
 };
+struct WarmTextures {
+  std::uint64_t adopted = 0, current = 0, creation = 0, refused = 0, refused_no_image = 0;
+};
 struct WarmStats {
   bool final = false;
   std::uint64_t arm_index = 0, frame = 0;
   std::string fault = "none", skipped, workers = "sync";
+  std::uint64_t held_at_arm = 0, held_bytes_at_arm = 0, hold_dropped_fault = 0;
   WarmScanned scanned;
   WarmSkippedBy skipped_by;
-  std::uint64_t queued = 0, from_reload = 0, from_registry = 0, from_cache = 0;
+  std::uint64_t queued = 0, from_reload = 0, from_registry = 0, from_cache = 0, from_hold = 0;
   std::uint64_t jobs = 0, sync_coded = 0, not_ok = 0, from_reload_bytes = 0;
   std::uint64_t reload_sources_left = 0;
   bool census_at_warm = false;
   std::uint64_t completed = 0, cancelled_freed = 0, cancelled_disarm = 0, promoted = 0, mispredicts = 0;
-  std::uint64_t served = 0, served_in_flight = 0, served_reload = 0;
+  std::uint64_t served = 0, served_in_flight = 0, served_reload = 0, served_hold = 0, lazy_from_hold = 0;
   std::uint64_t discarded_stale = 0, discarded_freed = 0, discarded_superseded = 0;
   std::uint64_t dropped_unreferenced = 0, held_entries = 0;
   bool warm_balanced = false;
   std::uint64_t decode_at_reference = 0;
   std::vector<std::uint64_t> decode_at_reference_rids;
   WarmLazyAtReference lazy_at_reference;
+  WarmTextures textures;
   bool warm_complete = false;
   std::optional<double> arm_to_warm_complete_ms;
   double arm_to_warm_queued_ms = 0;

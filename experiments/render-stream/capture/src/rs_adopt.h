@@ -281,6 +281,7 @@ enum class AdoptFault : std::uint8_t {
   ReloadSkipVerify,
   SkipHtrRestore,
   WarmOff,
+  HoldOff,
 };
 
 // Parses GRC_ADOPT_FAULT (null or "" -> None). False with `error` set for any other value, or

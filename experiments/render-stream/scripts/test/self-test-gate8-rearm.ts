@@ -27,13 +27,22 @@ import {
   cyclePhases,
   disarmRound,
   evictRearmProblems,
+  type FloatHoldOracle,
+  faultHoldOffProblems,
   faultReloadOffCaught,
   faultSkipRestoreCaught,
   faultSkipVerifyCaught,
   faultWarmOffProblems,
+  floatHoldArmProblems,
+  floatHoldCellProblems,
+  floatHoldCellTable,
+  floatHoldSchedule,
+  holdAccountingProblems,
   imageTextureProbe,
   imageTextureRestored,
   instanceRound,
+  offmainProblems,
+  published,
   publishedOneByOne,
   rearmCompare,
   reentryRound,
@@ -1183,6 +1192,458 @@ assert(
       faultWarmOffProblems(off, bad).length > 0,
       "invalid warm-off reload fails",
     );
+}
+
+// Texture content identifies the cells independently of item order or node names.
+{
+  const names = [
+    "curve_rf",
+    "curve_xyz",
+    "curve_rgb",
+    "img_rh",
+    "img_rgbah",
+    "grad_hdr",
+    "off_curve",
+    "off_grad",
+    "off_curve2",
+    "off_grad2",
+    "img_rgf",
+    "img_rgh",
+    "img_rgbh",
+    "img_rgbaf_mip",
+    "img_rf_odd",
+    "hdr_bptc",
+    "hdr_astc",
+  ];
+  const oracle: FloatHoldOracle[] = names.flatMap((name) =>
+    [0, 1].map((step) => ({ name, step, payload_sha256: `${name}-${step}` })),
+  );
+  const s = state(0, 0);
+  s.materials = [];
+  s.textures = [];
+  for (const [id, o] of oracle.entries()) {
+    s.textures.push({ ...state(0, 0).textures[0], id, hash: o.payload_sha256 });
+    s.materials.push({
+      id,
+      origin: "adopted",
+      status: "ok",
+      reason: null,
+      version: 1,
+      shader: null,
+      params: [{ name: "src", type: "rid", value: { tex: id } }],
+    });
+  }
+  assert(published(s, "curve_rf-0"), "published supported material texture");
+  for (const mutate of [
+    (x: State) => {
+      x.materials![0].status = "unsupported";
+    },
+    (x: State) => {
+      x.materials![0].params = [];
+    },
+    (x: State) => {
+      x.textures[0].status = "unsupported";
+    },
+    (x: State) => {
+      x.textures[0].hash = "other";
+    },
+  ]) {
+    const bad = structuredClone(s);
+    mutate(bad);
+    assert(
+      !published(bad, "curve_rf-0"),
+      "unpublished unsupported/missing/stale texture",
+    );
+  }
+  assert(!published(null, "h"), "missing published state fails");
+  const tables = [1, 2, 3].map((k) => floatHoldCellTable(s, oracle, k)!);
+  const faults = tables.map((t) =>
+    Object.fromEntries(
+      Object.entries(t).map(([cell, ns]) => [
+        cell,
+        Object.fromEntries(
+          Object.keys(ns).map((name) => [name, cell === "control"]),
+        ),
+      ]),
+    ),
+  );
+  for (const k of [1, 2, 3]) {
+    assert(
+      floatHoldCellProblems(tables[k - 1], k, "published").length === 0,
+      "honest cell table passes",
+    );
+    assert(
+      floatHoldCellProblems(faults[k - 1], k, "fault").length === 0,
+      "fault cell table passes",
+    );
+    for (const mode of ["published", "fault"] as const) {
+      assert(
+        floatHoldCellProblems(null, k, mode).length > 0,
+        "missing cell state fails",
+      );
+      for (const [cell, ns] of Object.entries(tables[k - 1]))
+        for (const name of Object.keys(ns)) {
+          const bad = structuredClone(
+            mode === "published" ? tables[k - 1] : faults[k - 1],
+          );
+          bad[cell][name] = !bad[cell][name];
+          assert(
+            floatHoldCellProblems(bad, k, mode).length > 0,
+            `${mode} ${cell}.${name} mutation caught`,
+          );
+          bad[cell][name] = null;
+          assert(
+            floatHoldCellProblems(bad, k, mode).length > 0,
+            `${mode} missing oracle caught`,
+          );
+        }
+    }
+  }
+  assert(floatHoldCellTable(null, oracle, 1) === null, "missing state table");
+  assert(floatHoldCellTable(s, null, 1) === null, "missing oracle table");
+  assert(
+    floatHoldCellProblems(floatHoldCellTable(s, [], 1), 1, "published").length >
+      0,
+    "empty oracle fails",
+  );
+  const arms = [
+    { first: 32, last: 62 },
+    { first: 95, last: 125 },
+    { first: 158, last: 188 },
+  ];
+  const steps = [
+    { step: 0, applied_frame: 1, settle_frame: 8 },
+    { step: 1, applied_frame: 77, settle_frame: 84 },
+  ];
+  assert(
+    floatHoldSchedule(steps, arms).length === 0,
+    "honest float hold schedule",
+  );
+  for (const bad of [
+    null,
+    [],
+    [{ ...steps[0], settle_frame: 32 }, steps[1]],
+    [steps[0], { ...steps[1], applied_frame: 62 }],
+    [steps[0], { ...steps[1], settle_frame: 95 }],
+    [steps[0], { step: 1, applied_frame: 77 }],
+  ])
+    assert(floatHoldSchedule(bad, arms).length > 0, "bad fill window fails");
+  for (const bad of [null, [], [arms[0], arms[1], { first: 125, last: 188 }]])
+    assert(floatHoldSchedule(steps, bad).length > 0, "bad arm window fails");
+  const pending = {
+    caps: { entries: 16, bytes: 262144 },
+    taken: 15,
+    taken_bytes: 21400,
+    moved: 4,
+    moved_bytes: 5120,
+    dropped: { freed: 5, updated: 4, replaced: 2, recreated: 0 },
+    dropped_bytes: 16280,
+    evicted: 0,
+    evicted_bytes: 0,
+    skipped: {
+      unregistered: 0,
+      not_texture2d: 0,
+      vram_format: 0,
+      no_image: 0,
+      size_unknown: 0,
+      over_texture_cap: 0,
+    },
+    live: { entries: 0, bytes: 0 },
+    peak: { entries: 9, bytes: 14744 },
+    pending_balanced: true,
+  };
+  const h = {
+    schema: "render-stream-hold/1",
+    final: true,
+    state: "active",
+    reason: null,
+    fault: "none",
+    caps: { texture_max_bytes: 65535, total_max_bytes: 4194304 },
+    live: { entries: 0, bytes: 0 },
+    peak: { entries: 10, bytes: 18944 },
+    taken: { total: 16, update: 10, replace: 6, bytes: 30720 },
+    skipped: {
+      unregistered: 0,
+      not_texture2d: 0,
+      offmain_replace: 0,
+      released_source: 0,
+      vram_format: 0,
+      no_image: 0,
+      size_unknown: 0,
+      shape_mismatch: 0,
+      over_texture_cap: 0,
+      over_total_cap: 0,
+    },
+    dropped: {
+      superseded: 6,
+      unheld: 0,
+      freed: 10,
+      recreated: 0,
+      replaced_away: 0,
+      fault: 0,
+    },
+    dropped_bytes: 30720,
+    hold_balanced: true,
+    pending,
+  };
+  const fh = structuredClone(h);
+  fh.fault = "hold-off";
+  fh.peak = { entries: 8, bytes: 15360 };
+  fh.dropped = {
+    superseded: 3,
+    unheld: 0,
+    freed: 0,
+    recreated: 0,
+    replaced_away: 0,
+    fault: 13,
+  };
+  const td = [
+    { hold_entries: 7, hold_bytes: 13312 },
+    { hold_entries: 10, hold_bytes: 17920 },
+    { hold_entries: 10, hold_bytes: 17920 },
+  ];
+  const ftd = [
+    { hold_entries: 2, hold_bytes: 2560 },
+    { hold_entries: 0, hold_bytes: 0 },
+    { hold_entries: 0, hold_bytes: 0 },
+  ];
+  // Change every required leaf individually, keeping other evidence honest.
+  function mutations(value: unknown): unknown[] {
+    if (value === null) return ["missing"];
+    if (typeof value === "number") return [value + 1];
+    if (typeof value === "boolean") return [!value];
+    if (typeof value === "string") return ["wrong"];
+    if (typeof value !== "object") return [];
+    return Object.entries(value).flatMap(([key, v]) =>
+      mutations(v).map((bad) => ({ ...value, [key]: bad })),
+    );
+  }
+  for (const [leg, hold, teardown] of [
+    ["standby", h, td],
+    ["fault-hold-off", fh, ftd],
+  ] as const) {
+    assert(
+      holdAccountingProblems(hold, [...teardown], leg).length === 0,
+      `${leg} honest accounting`,
+    );
+    for (const bad of [null, ...mutations(hold)])
+      assert(
+        holdAccountingProblems(bad, [...teardown], leg).length > 0,
+        `${leg} every accounting leaf mutation fails`,
+      );
+    for (const bad of [
+      null,
+      [],
+      ...teardown.map((_, i) => teardown.map((t, j) => (i === j ? null : t))),
+    ])
+      assert(
+        holdAccountingProblems(hold, bad, leg).length > 0,
+        "missing teardown fails",
+      );
+    for (const bad of mutations(teardown[0]))
+      assert(
+        holdAccountingProblems(hold, [bad, ...teardown.slice(1)], leg).length >
+          0,
+        "teardown count mutation fails",
+      );
+  }
+  for (const bad of [
+    { ...h, live: { entries: 0, bytes: 4194305 } },
+    { ...h, pending: { ...pending, live: { entries: 17, bytes: 262145 } } },
+  ])
+    assert(
+      holdAccountingProblems(bad, td, "standby").length > 0,
+      "above cap fails",
+    );
+  const warm = (k: number, fault: boolean) => {
+    const tuple = fault
+      ? k === 1
+        ? [0, 0, 5, 0, 11, 11, 10, 0, 0, 0, 4, 14, 10, 4, 1, 1]
+        : [0, 0, k === 2 ? 8 : 0, 0, 8, 8, 7, 0, 0, 0, 9, 16, 7, 9, 1, 1]
+      : k === 1
+        ? [5, 10752, 0, 5, 11, 16, 15, 5, 0, 0, 0, 15, 15, 0, 0, 0]
+        : [10, 17920, 0, 10, 8, 18, 17, 10, 0, 0, 0, 17, 17, 0, 0, 0];
+    const [
+      held_at_arm,
+      held_bytes_at_arm,
+      hold_dropped_fault,
+      from_hold,
+      from_registry,
+      queued,
+      served,
+      served_hold,
+      lazy_from_hold,
+      decode_at_reference,
+      updated,
+      adopted,
+      current,
+      creation,
+      refused,
+      refused_no_image,
+    ] = tuple;
+    return {
+      schema: "render-stream-warm/1",
+      final: true,
+      arm_index: k,
+      held_at_arm,
+      held_bytes_at_arm,
+      hold_dropped_fault,
+      from_hold,
+      from_registry,
+      queued,
+      served,
+      served_hold,
+      lazy_from_hold,
+      decode_at_reference,
+      lazy_at_reference: { updated },
+      textures: { adopted, current, creation, refused, refused_no_image },
+      scanned: { registered_2d: k === 1 ? 16 : 18 },
+      dropped_unreferenced: 1,
+      warm_balanced: true,
+    };
+  };
+  for (const k of [1, 2, 3]) {
+    const input = {
+      equivalenceProblems: [],
+      warm: warm(k, false),
+      teardown: td[k - 1],
+      oracleLines: oracle,
+      state: s,
+    };
+    assert(
+      floatHoldArmProblems(k, input, "standby").length === 0,
+      "honest hold arm passes",
+    );
+    assert(
+      floatHoldArmProblems(k, null, "standby").length > 0,
+      "missing arm fails",
+    );
+    for (const key of Object.keys(input))
+      assert(
+        floatHoldArmProblems(k, { ...input, [key]: null }, "standby").length >
+          0,
+        `missing ${key} fails`,
+      );
+    for (const bad of mutations(input.warm))
+      assert(
+        floatHoldArmProblems(k, { ...input, warm: bad }, "standby").length > 0,
+        "every warm leaf mutation fails",
+      );
+    assert(
+      floatHoldArmProblems(
+        k,
+        { ...input, equivalenceProblems: ["different"] },
+        "standby",
+      ).length > 0,
+      "nonempty equivalence fails honest arm",
+    );
+  }
+  const fwarms = [1, 2, 3].map((k) => warm(k, true));
+  const eqs = [["different"], ["different"], ["different"]];
+  assert(
+    faultHoldOffProblems(eqs, fwarms, fh, faults, "fault-hold-off").length ===
+      0,
+    "honest fault judge passes",
+  );
+  for (const [problems, warms, hold, tables] of [
+    [null, fwarms, fh, faults],
+    [eqs, null, fh, faults],
+    [eqs, fwarms, null, faults],
+    [eqs, fwarms, fh, null],
+  ] as const)
+    assert(
+      faultHoldOffProblems(problems, warms, hold, tables, "fault-hold-off")
+        .length > 0,
+      "missing fault judge input fails",
+    );
+  for (let i = 0; i < 3; i++) {
+    assert(
+      faultHoldOffProblems(
+        eqs.map((p, j) => (i === j ? [] : p)),
+        fwarms,
+        fh,
+        faults,
+        "fault-hold-off",
+      ).length > 0,
+      "fault must fail every arm",
+    );
+    for (const bad of mutations(fwarms[i]))
+      assert(
+        faultHoldOffProblems(
+          eqs,
+          fwarms.map((w, j) => (i === j ? bad : w)),
+          fh,
+          faults,
+          "fault-hold-off",
+        ).length > 0,
+        "every fault warm leaf mutation fails",
+      );
+    assert(
+      faultHoldOffProblems(
+        eqs,
+        fwarms,
+        fh,
+        faults.map((t, j) => (i === j ? null : t)),
+        "fault-hold-off",
+      ).length > 0,
+      "missing fault arm state fails",
+    );
+  }
+  const lines = [
+    {
+      event: "offmain-fill",
+      variant: 1,
+      frame: 0,
+      off_main: true,
+      thread_id: 2,
+      main_thread_id: 1,
+    },
+    {
+      event: "offmain-fill",
+      variant: 2,
+      frame: 45,
+      off_main: true,
+      thread_id: 3,
+      main_thread_id: 1,
+    },
+  ];
+  const off = { standby: lines, born: lines, arms };
+  assert(offmainProblems(off, h, tables).length === 0, "honest offmain passes");
+  for (const bad of [
+    null,
+    { ...off, standby: null },
+    { ...off, born: null },
+    { ...off, arms: null },
+    { ...off, standby: lines.slice(0, 1) },
+    { ...off, standby: [lines[0], { ...lines[1], frame: 95 }] },
+    { ...off, standby: [{ ...lines[0], off_main: false }, lines[1]] },
+    { ...off, born: [lines[0], { ...lines[1], thread_id: 1 }] },
+  ])
+    assert(
+      offmainProblems(bad, h, tables).length > 0,
+      "bad offmain proof fails",
+    );
+  assert(
+    offmainProblems(off, null, tables).length > 0,
+    "missing offmain hold fails",
+  );
+  assert(
+    offmainProblems(off, h, null).length > 0,
+    "missing offmain cells fails",
+  );
+  for (const bad of mutations(pending))
+    assert(
+      offmainProblems(off, { ...h, pending: bad }, tables).length > 0,
+      "every pending leaf mutation fails offmain",
+    );
+  assert(
+    offmainProblems(
+      off,
+      { ...h, skipped: { ...h.skipped, offmain_replace: 1 } },
+      tables,
+    ).length > 0,
+    "offmain skip fails",
+  );
 }
 
 if (failures > 0) {

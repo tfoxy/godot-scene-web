@@ -1945,6 +1945,47 @@ async function main(): Promise<void> {
       ).problems.length === 1,
       "ptRegistryParamsProblems: a short registry adoption count fails",
     );
+    const activeHold = { state: "active" };
+    const honestHeld = ptRegistryParamsProblems(
+      headStats,
+      [bornTx],
+      [withParams(3)],
+      late,
+      0,
+      activeHold,
+    );
+    expect(
+      honestHeld.problems.length === 0 && honestHeld.excused.length === 0,
+      "ptRegistryParamsProblems: holds active pass without an excuse",
+    );
+    const missingHeld = ptRegistryParamsProblems(
+      headStats,
+      [bornTx],
+      [
+        withParams(3, (p) => {
+          p.splice(2, 1);
+        }),
+      ],
+      late,
+      1,
+      activeHold,
+    );
+    expect(
+      missingHeld.problems.length > 0 && missingHeld.excused.length === 0,
+      "ptRegistryParamsProblems: holds active cannot excuse no-image",
+    );
+    expect(
+      ptRegistryParamsProblems(
+        headStats,
+        [bornTx],
+        [withParams(3)],
+        late,
+        0,
+        activeHold,
+        [{ op: "adopt", kind: "image", id: 3, adopted_content: "creation" }],
+      ).problems.length > 0,
+      "ptRegistryParamsProblems: holds active reject creation texture parameters",
+    );
     // The dummy's texture_replace exception: a texture parameter absent from the headless material
     // is excused only while the headless capture refused as many textures for no image.
     const noRamp = withParams(3, (p) => {

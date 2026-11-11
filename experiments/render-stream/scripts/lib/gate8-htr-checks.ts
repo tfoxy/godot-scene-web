@@ -49,6 +49,34 @@ import { compareWorkerRecordings } from "./gate8-tex-checks";
 import { STANDBY_HOOKS, standbyHotZero } from "./registry-checks";
 import type { ResolvedRecording, ResolvedTransaction } from "./render-stream-2";
 
+/** Active holds require Stale's pre-arm update to be adopted current from its held image.
+ * Other seats keep the fixture's declared creation exception. */
+export function htrDeferredCreationPaths(
+  hold: { state?: string; taken?: { update?: number } } | null,
+  adoptLines: readonly Record<string, unknown>[],
+  declaredPaths: number,
+): { paths: number; problems: string[] } {
+  if (hold?.state !== "active") return { paths: declaredPaths, problems: [] };
+  const problems: string[] = [];
+  if ((hold.taken?.update ?? 0) < 1)
+    problems.push("holds active but no update held");
+  const held = adoptLines.filter(
+    (line) =>
+      line.op === "adopt" &&
+      line.kind === "image" &&
+      line.adopt_source === "hold",
+  );
+  if (held.length !== 1)
+    problems.push(
+      `${held.length} textures adopted from hold, expected 1 (Stale)`,
+    );
+  for (const line of held) {
+    if (line.adopted_content !== "current")
+      problems.push("texture adopted from hold is not current (Stale)");
+  }
+  return { paths: 0, problems };
+}
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 /** Image::is_format_compressed's formats (4.5.1 FORMAT_DXT1..FORMAT_ASTC_8x8_HDR): the release tier. */
@@ -954,12 +982,25 @@ export async function runG8htr(
           problems.push(born.error ?? late.error ?? "no recording");
           continue;
         }
+        let allowD = allow;
+        if (a === "deferred") {
+          const evidence = join(cap("adopt-deferred-on"), "evidence");
+          const held = htrDeferredCreationPaths(
+            (await readJson<{ state?: string; taken?: { update?: number } }>(
+              join(evidence, "hold.json"),
+            )) ?? null,
+            jsonl(await readText(join(evidence, "resources.jsonl"))),
+            adoptExpected.exceptions.creation.paths,
+          );
+          problems.push(...held.problems.map((p) => `deferred: ${p}`));
+          allowD = held.paths > 0 ? allow : { refused: allow.refused };
+        }
         const e = equivalence(
           born.rec,
           late.rec,
           K,
           adoptExpected.residue,
-          allow,
+          allowD,
         );
         frames += e.frames;
         problems.push(...e.problems.slice(0, 6).map((p) => `${a}: ${p}`));
@@ -968,7 +1009,7 @@ export async function runG8htr(
     checks.push(
       check(
         "htr-adopt-equivalence",
-        "G8a's adopt-equivalence (and LAR0's -deferred) holds on the on legs: late and deferred equal born from the arm on under its rule and declared exceptions",
+        "late equals born under the declared exceptions; deferred equals born with only the refused exception when holds are active on it (Stale adopted current from its hold), else under the declared exceptions",
         problems,
         `${frames} frames equal`,
       ),

@@ -195,6 +195,7 @@ add_library(render_stream_capture SHARED
   src/rs_texture_payload.cpp
   src/rs_texture_release.cpp
   src/rs_evict.cpp
+  src/rs_hold.cpp
   src/rs_texture_worker.cpp
   src/rs_variant.cpp
   src/rs_ws.cpp
@@ -716,7 +717,7 @@ add_test(NAME rs_texture_release COMMAND rs_texture_release_test)
 # the resource registry -- kinds per tracked create, erase on
 # free and texture_replace, the per-family cap and overflow, the accounting identity
 # registry-live-bound judges, the timeline, the two fault knobs, the off gate, threads.
-add_executable(rs_registry_test test/rs_registry_test.cpp src/rs_registry.cpp src/report.cpp)
+add_executable(rs_registry_test test/rs_registry_test.cpp src/rs_registry.cpp src/rs_hold.cpp src/report.cpp)
 target_include_directories(rs_registry_test PRIVATE src)
 target_link_libraries(rs_registry_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_registry COMMAND rs_registry_test)
@@ -848,6 +849,12 @@ add_executable(rs_warm_test test/rs_warm_test.cpp src/rs_warm.cpp src/report.cpp
 target_include_directories(rs_warm_test PRIVATE src)
 target_link_libraries(rs_warm_test PRIVATE grc_warnings grc_platform Threads::Threads)
 add_test(NAME rs_warm COMMAND rs_warm_test)
+
+# Pure texture image reference policy, accounting and evidence.
+add_executable(rs_hold_test test/rs_hold_test.cpp src/rs_hold.cpp src/report.cpp)
+target_include_directories(rs_hold_test PRIVATE src)
+target_link_libraries(rs_hold_test PRIVATE grc_warnings grc_platform Threads::Threads)
+add_test(NAME rs_hold COMMAND rs_hold_test)
 
 # Pure frame-boundary texture release predicates, queue, accounting and evidence.
 add_executable(rs_evict_test test/rs_evict_test.cpp src/rs_evict.cpp src/rs_texture_release.cpp src/report.cpp)

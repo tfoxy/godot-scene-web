@@ -72,7 +72,13 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { decodePngRgba } from "./gate-minus1-checks";
-import { check, type G8aCheck, readText, skipped } from "./gate8-adopt-checks";
+import {
+  check,
+  type G8aCheck,
+  jsonl,
+  readText,
+  skipped,
+} from "./gate8-adopt-checks";
 import { mmCellDiff, type Rgba } from "./gate8-mm-checks";
 import {
   type PtPixels,
@@ -629,7 +635,8 @@ function paramValuesDiffer(a: unknown, b: unknown): boolean {
  * as a placeholder and filled by texture_replace (GradientTexture1D's first _update) has no image
  * on a headless host, adoption refuses it (`refused_no_image`), and the parameter naming it is not
  * published. A texture parameter absent from the headless material is excused (`excused`) while
- * the headless capture counts that many textures refused for no image (`refusedNoImage`).
+ * the headless capture counts that many textures refused for no image (`refusedNoImage`)
+ * and holds are inactive. Active holds require current content for texture parameters.
  */
 export function ptRegistryParamsProblems(
   stats: Record<string, number> | null,
@@ -637,9 +644,22 @@ export function ptRegistryParamsProblems(
   headless: readonly PtLateTx[],
   late: PtLate,
   refusedNoImage = 0,
+  hold: { state?: string } | null = null,
+  adoptLines: readonly Record<string, unknown>[] = [],
 ): { problems: string[]; compared: number; excused: string[] } {
   const problems: string[] = [];
   const excused: string[] = [];
+  const holdsActive = hold?.state === "active";
+  const creation = new Set(
+    adoptLines
+      .filter(
+        (line) =>
+          line.op === "adopt" &&
+          line.kind === "image" &&
+          line.adopted_content === "creation",
+      )
+      .map((line) => line.id),
+  );
   let compared = 0;
   if (!stats)
     problems.push("no stream.gate8.particles.adoption in result.json");
@@ -676,6 +696,7 @@ export function ptRegistryParamsProblems(
       const q = hp.get(name);
       if (
         !q &&
+        !holdsActive &&
         typeof p.value === "object" &&
         p.value !== null &&
         !Array.isArray(p.value) &&
@@ -691,6 +712,16 @@ export function ptRegistryParamsProblems(
         );
         continue;
       }
+      if (
+        holdsActive &&
+        typeof q.value === "object" &&
+        q.value !== null &&
+        "tex" in q.value &&
+        creation.has(q.value.tex)
+      )
+        problems.push(
+          `amount ${be.amount}: ${name} adopted with creation-time content while holds active`,
+        );
       compared++;
       if (q.type !== p.type)
         problems.push(
@@ -1177,6 +1208,11 @@ export async function runG8ptLate(
             | undefined
         )?.adopt_stats as Record<string, unknown> | undefined
       )?.resources as Record<string, number> | undefined;
+      const evidence = join(dir(HEADLESS_DEFERRED_CAPTURE), "evidence");
+      const hold = await json(join(evidence, "hold.json"));
+      const adoptLines = jsonl<Record<string, unknown>>(
+        await readText(join(evidence, "resources.jsonl")),
+      );
       const born = await deps.trace(BORN_CAPTURE, SINKS[0]);
       const head = await deps.trace(HEADLESS_DEFERRED_CAPTURE, SINKS[0]);
       if (!born || !head) problems.push("recording missing");
@@ -1187,6 +1223,8 @@ export async function runG8ptLate(
           head,
           late,
           resources?.refused_no_image ?? 0,
+          hold as { state?: string } | null,
+          adoptLines,
         );
         problems.push(...r.problems);
         compared = r.compared;

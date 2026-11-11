@@ -43,6 +43,9 @@ extends Node
 ##   RS_FIXTURE_START_FRAME  S >= 1, default 1
 ##   RS_FIXTURE_STEP_FRAMES  N >= 8, default 10
 ##   RS_FIXTURE_QUIT_FRAME   >= S+N+11 (the default)
+##   RS_FIXTURE_OFFMAIN      1: also fill a curve and an image by create + replace on a Thread
+##   RS_FIXTURE_OFFMAIN_ARMED_FRAME  >= 1: repeat the off-main fill at this process frame
+##   RS_FIXTURE_OFFMAIN_LOG  absolute path: one JSONL proof of the thread and frame per fill
 
 const Textures := preload("res://textures.gd")
 const Payload := preload("res://payload.gd")
@@ -87,6 +90,12 @@ var _gradient_texture: GradientTexture1D
 var _loader_images: Dictionary = {}
 var _loader_textures: Dictionary = {}
 var _logged_step: Dictionary = {}
+var _offmain: bool = false
+var _offmain_armed_frame: int = 0
+var _offmain_armed_parent: Node2D
+var _offmain_log_file: FileAccess
+## variant -> textures, source image and curve, retained after the worker finishes.
+var _offmain_fills: Dictionary = {}
 
 
 func _ready() -> void:
@@ -98,6 +107,8 @@ func _ready() -> void:
 	_view_shader.code = VIEW_SHADER_CODE
 	_make_engine_textures()
 	_make_loader_textures()
+	if _offmain:
+		_make_offmain_textures(1)
 	_make_hdr_textures()
 	_build_scene()
 	_log_step(0, 1, _start_frame + SETTLE_OFFSET)
@@ -108,6 +119,10 @@ func _process(_delta: float) -> void:
 	if _failed:
 		return
 	_frame += 1
+	if _offmain and _frame == _offmain_armed_frame:
+		_make_offmain_textures(2)
+		_add_view("off_curve2_0", "off_curve2", Vector2(8, 304), Vector2(256, 16), 0, 1.0, _offmain_armed_parent)
+		_add_view("off_grad2_0", "off_grad2", Vector2(8, 326), Vector2(256, 16), 0, 0.5, _offmain_armed_parent)
 	# The engine textures' deferred updates have run by frame 2: log what each was built from.
 	if _frame == 2 and not _logged_step.has(0):
 		_log_expected(0)
@@ -195,6 +210,52 @@ func _loader_main() -> void:
 		var image: Image = _build_image(spec)
 		_loader_images[name] = image
 		_loader_textures[name] = ImageTexture.create_from_image(image)
+
+
+func _make_offmain_textures(variant: int) -> void:
+	var thread := Thread.new()
+	thread.start(_offmain_fill.bind(variant))
+	thread.wait_to_finish()
+	var fill: Dictionary = _offmain_fills[variant]
+	var suffix: String = "2" if variant == 2 else ""
+	_textures["off_curve" + suffix] = fill["curve_texture"]
+	_textures["off_grad" + suffix] = fill["image_texture"]
+	if _offmain_log_file != null:
+		var thread_id: int = fill["thread_id"]
+		var main_thread_id: int = OS.get_main_thread_id()
+		_offmain_log_file.store_line(JSON.stringify({
+			"event": "offmain-fill", "variant": variant, "frame": _frame,
+			"thread_id": thread_id, "main_thread_id": main_thread_id,
+			"off_main": thread_id != main_thread_id,
+		}, "", false))
+		_offmain_log_file.flush()
+
+
+func _offmain_fill(variant: int) -> void:
+	# These synchronous setters queue create + replace without waiting for a server getter.
+	var c := Curve.new()
+	c.add_point(Vector2(0.0, 0.25 if variant == 1 else 1.0))
+	c.add_point(Vector2(1.0, 1.0 if variant == 1 else 0.1))
+	var t := CurveTexture.new()
+	t.width = 64
+	t.curve = c
+	t.width = 128
+	var g := Gradient.new()
+	g.set_color(0, Color(0.2, 0.9, 0.4, 1.0) if variant == 1 else Color(0.9, 0.2, 0.1, 1.0))
+	g.set_color(1, Color(1.5, 0.1, 0.7, 0.5) if variant == 1 else Color(0.1, 0.4, 1.8, 0.75))
+	var img0 := Image.create(64, 1, false, Image.FORMAT_RGBAF)
+	for i: int in 64:
+		img0.set_pixel(i, 0, g.sample(float(i) / 63.0))
+	g.set_color(1, Color(0.3, 0.3, 2.0, 1.0) if variant == 1 else Color(2.0, 1.0, 0.2, 1.0))
+	var img1 := Image.create(64, 1, false, Image.FORMAT_RGBAF)
+	for i: int in 64:
+		img1.set_pixel(i, 0, g.sample(float(i) / 63.0))
+	var it := ImageTexture.create_from_image(img0)
+	it.set_image(img1)
+	_offmain_fills[variant] = {
+		"curve_texture": t, "image_texture": it, "image": img1, "curve": c,
+		"thread_id": OS.get_thread_caller_id(),
+	}
 
 
 func _image_specs() -> Array[Dictionary]:
@@ -318,8 +379,16 @@ func _build_scene() -> void:
 			add_child(sprite)
 		x += 56
 
+	if _offmain:
+		_add_view("off_curve_0", "off_curve", Vector2(8, 260), Vector2(256, 16), 0, 1.0)
+		_add_view("off_grad_0", "off_grad", Vector2(8, 282), Vector2(256, 16), 0, 0.5)
+		if _offmain_armed_frame > 0:
+			_offmain_armed_parent = Node2D.new()
+			_offmain_armed_parent.name = "OffArmed"
+			add_child(_offmain_armed_parent)
 
-func _add_view(node_name: String, texture_name: String, position: Vector2, size: Vector2, channel: int, gain: float) -> void:
+
+func _add_view(node_name: String, texture_name: String, position: Vector2, size: Vector2, channel: int, gain: float, parent: Node = null) -> void:
 	var rect := ColorRect.new()
 	rect.name = node_name
 	rect.position = position
@@ -330,7 +399,9 @@ func _add_view(node_name: String, texture_name: String, position: Vector2, size:
 	material.set_shader_parameter("gain", gain)
 	material.set_shader_parameter("channel", channel)
 	rect.material = material
-	add_child(rect)
+	if parent == null:
+		parent = self
+	parent.add_child(rect)
 
 
 # ------------------------------------------------------------------------------ step 1
@@ -386,6 +457,18 @@ func _log_expected(step: int) -> void:
 	if step == 0:
 		for pair: Array in [["hdr_bptc", "desktop"], ["hdr_astc", "mobile"]]:
 			_log_hdr(step, pair[0], pair[1])
+
+	for variant: int in _offmain_fills:
+		var fill: Dictionary = _offmain_fills[variant]
+		var curve: Curve = fill["curve"]
+		var curve_rgb := PackedFloat32Array()
+		for i: int in 128:
+			var sample: float = curve.sample_baked(float(i) / 128.0)
+			curve_rgb.append_array(PackedFloat32Array([sample, sample, sample]))
+		var suffix: String = "2" if variant == 2 else ""
+		_log_texture(step, "off_curve" + suffix, "curve", _from_floats(curve_rgb, 128, Image.FORMAT_RGBF))
+		var image: Image = fill["image"]
+		_log_texture(step, "off_grad" + suffix, "image", image)
 
 
 func _from_floats(values: PackedFloat32Array, width: int, format: Image.Format) -> Image:
@@ -467,6 +550,18 @@ func _read_environment() -> bool:
 		if _texture_log_file == null:
 			_error("cannot open RS_FIXTURE_TEXTURE_LOG=%s" % texture_log)
 			return false
+
+	_offmain = OS.get_environment("RS_FIXTURE_OFFMAIN") == "1"
+	if _offmain:
+		_offmain_armed_frame = _int_env("RS_FIXTURE_OFFMAIN_ARMED_FRAME", 0, 1)
+		var offmain_log: String = _path_env("RS_FIXTURE_OFFMAIN_LOG")
+		if offmain_log == "!" or _failed:
+			return false
+		if offmain_log != "":
+			_offmain_log_file = FileAccess.open(offmain_log, FileAccess.WRITE)
+			if _offmain_log_file == null:
+				_error("cannot open RS_FIXTURE_OFFMAIN_LOG=%s" % offmain_log)
+				return false
 	return true
 
 

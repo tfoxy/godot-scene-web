@@ -242,6 +242,7 @@
 #include "rs_texture_payload.h"
 #include "rs_texture_release.h"
 #include "rs_evict.h"
+#include "rs_hold.h"
 #include "rs_item_meta_host.h"
 #include "rs_track_caps.h"
 #include "rs_tracks.h"
@@ -344,6 +345,11 @@ struct State {
   bool evict_rss_test = false;
   std::uint64_t evict_last_write = 0;
   bool evict_written = false;
+
+  bool hold_configured = false;
+  std::string hold_state, hold_reason, hold_fault;
+  bool hold_written = false;
+  std::uint64_t hold_last_write = 0, hold_written_gen = 0;
 
   // PM5 (render-stream-12.md "Headless shims (opt-in)"): GRC_HEADLESS_PARTICLES and
   // GRC_PREDRAW_PUMP as given, parsed, and the pump's counters.
@@ -5262,6 +5268,22 @@ bool attempt(const char *phase) {
       }
       rs::registry_configure(adopt, registry_fault);
       if (adopt) {
+        g_state.hold_configured = true;
+        g_state.hold_state = "ignored";
+        if (!rs::registry_on()) {
+          g_state.hold_reason = "registry-off";
+        } else if (g_state.display_server != "headless") {
+          g_state.hold_reason = "not-headless";
+        } else {
+          g_state.hold_state = "active";
+          g_state.hold_reason.clear();
+        }
+        g_state.hold_fault = fault == rs::AdoptFault::HoldOff ? "hold-off" : "none";
+        rs::hold_set_active(g_state.hold_state == "active");
+        log_line("hold: " + g_state.hold_state +
+                 (g_state.hold_reason.empty() ? std::string() : " (" + g_state.hold_reason + ")"));
+      }
+      if (adopt) {
         log_line(std::string("registry: ") + (rs::registry_on() ? "recording" : "off") +
                  " (fault " + rs::registry_fault_name(registry_fault) + ")");
       }
@@ -5305,6 +5327,11 @@ bool attempt(const char *phase) {
       }
       rs::particles_shim().configure(rs::ParticlesShimMode::Off);
       rs::registry_configure(false, rs::RegistryFault::None);
+      rs::hold_set_active(false);
+      if (g_state.hold_configured) {
+        g_state.hold_state = "ignored";
+        g_state.hold_reason = "arm-failed";
+      }
       if (g_state.htr_mode == rs::TextureReleaseMode::Always) {
         g_state.evict_state = "ignored";
         g_state.evict_reason = "arm-failed";
@@ -5572,6 +5599,9 @@ void accounting_fields(JsonWriter *json) {
   json->field("served_bytes", served_bytes);
   json->field("warm_cache_bytes", static_cast<int64_t>(rs::adopt_warm_cache_bytes()));
   json->field("warm_entries", static_cast<int64_t>(rs::adopt_warm_entries_held()));
+  const auto hold = rs::registry_hold_stats();
+  json->field("hold_entries", static_cast<int64_t>(hold.live.entries));
+  json->field("hold_bytes", static_cast<int64_t>(hold.live.bytes));
   json->field("texture_workers_running", rs::texture_worker_pool().running());
   json->field("encode_workers_running", rs::texture_encode_pool().running());
   json->field("hubs", static_cast<int64_t>((g_live.hub != nullptr ? 1 : 0) + g_rearm.kept_hubs.size()));
@@ -6203,6 +6233,33 @@ void api_flush() {
 
 void on_startup() { attempt("startup"); }
 
+void emit_hold(bool final) {
+  const auto gen = rs::registry_hold_generation();
+  const auto stats = rs::registry_hold_stats();
+  std::vector<rs::HoldRecord> records;
+  rs::registry_hold_records(&records, rs::kHoldRecordCap);
+  const auto omitted = stats.live.entries > records.size() ? stats.live.entries - records.size() : 0;
+  emit_load("hold.json", rs::hold_json(stats, records, omitted, final, g_state.frames_total,
+                                    g_state.hold_state, g_state.hold_reason, g_state.hold_fault));
+  g_state.hold_written = true;
+  g_state.hold_last_write = g_state.frames_total;
+  g_state.hold_written_gen = gen;
+  std::uint64_t skipped = 0, dropped = 0;
+  for (const auto n : stats.skipped) skipped += n;
+  for (const auto n : stats.dropped) dropped += n;
+  log_line("hold: live=" + std::to_string(stats.live.entries) +
+           " bytes=" + std::to_string(stats.live.bytes) +
+           " taken=" + std::to_string(stats.taken.total) +
+           " skipped=" + std::to_string(skipped) + " dropped=" + std::to_string(dropped));
+}
+
+void hold_frame() {
+  if (rs::registry_hold_generation() == g_state.hold_written_gen ||
+      (g_state.hold_written &&
+       g_state.frames_total - g_state.hold_last_write < rs::kHoldEvidenceEveryFrames)) return;
+  emit_hold(false);
+}
+
 void evict_frame() {
   const auto drained = rs::adopt_evict_drain(rs::kEvictDrainPerFrame, g_state.frames_total);
   if (drained.released == 0 || (g_state.evict_written &&
@@ -6241,6 +6298,7 @@ void on_frame() {
   // by the previous callback's hooks_set_frame), when any changed it. Off: one relaxed load.
   if (rs::registry_on()) {
     rs::registry_frame(g_state.frames_total);
+    if (rs::hold_active()) hold_frame();
   }
   if (rs::evict_pending()) evict_frame();
   if (g_state.standby && !g_state.api_pending_arm) {
@@ -6361,6 +6419,7 @@ void on_shutdown() {
              " parked=" + std::to_string(evict.queue.parked) +
              " drain_us_max=" + std::to_string(evict.drain_us_max));
   }
+  if (g_state.hold_configured) emit_hold(true);
   emit_load("result.json", result_json());
   rearm_kept_release();
   log_line("shutdown: frames_total=" + std::to_string(g_state.frames_total) +
@@ -6512,6 +6571,7 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   do_disarm("deinitialize");
   rearm_kept_release();
   rs::registry_names_release();  // LS0: the parameter names' StringName keepalives go before the engine does
+  rs::registry_holds_release();
   hooks_release_placeholder_drop();  // HTR
   // CAR6: a capture that never armed still owns its registrations; each gets its one destroy().
   for (live::RegisteredCarrier &r : live::carrier_registry().close()) {

@@ -33,8 +33,9 @@ void rules() {
   EXPECT(std::string(warm_source_name(WarmSource::Reload)) == "reload");
   EXPECT(std::string(warm_source_name(WarmSource::Registry)) == "registry");
   EXPECT(std::string(warm_source_name(WarmSource::Cache)) == "cache");
+  EXPECT(std::string(warm_source_name(WarmSource::Hold)) == "hold");
   // Exhaust all inputs, including precedence when several rules apply.
-  for (unsigned bits = 0; bits < 1024; ++bits) {
+  for (unsigned bits = 0; bits < 2048; ++bits) {
     WarmClassInput in;
     in.registered = bits & 1;
     in.texture2d = bits & 2;
@@ -46,10 +47,12 @@ void rules() {
     in.mirror_known = bits & 128;
     in.refused = bits & 256;
     in.reload_off = bits & 512;
+    in.held = bits & 1024;
     WarmSkip expected = WarmSkip::None;
     WarmSource source = WarmSource::Cache, wanted = source;
     if (in.mirror_known) expected = WarmSkip::MirrorKnown;
     else if (in.refused) expected = WarmSkip::Refused;
+    else if (in.held) wanted = WarmSource::Hold;
     else if (in.has_reload_source) wanted = WarmSource::Reload;
     else if (!in.texture2d) expected = WarmSkip::NotTexture2d;
     else if (in.released && !in.reload_off) expected = WarmSkip::Released;
@@ -59,11 +62,17 @@ void rules() {
     EXPECT(warm_class(in, &source) == expected);
     EXPECT(source == wanted);
   }
-  // Only the three input combinations below cannot have been prepared at the arm.
-  for (unsigned bits = 0; bits < 16; ++bits) {
+  // Only these three combinations lack both a hold and a source prepared at the arm.
+  for (unsigned bits = 0; bits < 32; ++bits) {
     const bool eligible = bits != 0 && bits != 4 && bits != 8;
-    EXPECT(warm_eligible_at_reference(bits & 1, bits & 2, bits & 4, bits & 8) == eligible);
+    EXPECT(warm_eligible_at_reference(bits & 1, bits & 2, bits & 4, bits & 8, bits & 16) == eligible);
+    if (bits < 16)
+      EXPECT(warm_eligible_at_reference(bits & 1, bits & 2, bits & 4, bits & 8) == eligible);
   }
+  WarmEntry entry;
+  EXPECT(entry.hold_seq == 0);
+  entry = {WarmSource::Hold, true, WarmBody(), 42};
+  EXPECT(entry.source == WarmSource::Hold && entry.updated_at_warm && entry.hold_seq == 42);
   for (unsigned bits = 0; bits < 8; ++bits)
     EXPECT(warm_stale(bits & 1, bits & 2, bits & 4) == (bits == 6));
 }
@@ -176,13 +185,18 @@ void evidence() {
   EXPECT(field(v, "arm_to_warm_complete_ms").kind == JValue::Null);
   for (const char *name : {"final", "census_at_warm", "warm_balanced", "warm_complete"})
     EXPECT(field(v, name).kind == JValue::Bool && !field(v, name).b);
-  for (const char *name : {"arm_index", "frame", "queued", "from_reload", "from_registry", "from_cache",
+  for (const char *name : {"arm_index", "frame", "held_at_arm", "held_bytes_at_arm", "hold_dropped_fault",
+       "queued", "from_hold", "from_reload", "from_registry", "from_cache",
        "jobs", "sync_coded", "not_ok", "from_reload_bytes", "reload_sources_left", "completed",
        "cancelled_freed", "cancelled_disarm", "promoted", "mispredicts", "served", "served_in_flight",
-       "served_reload", "discarded_stale", "discarded_freed", "discarded_superseded", "dropped_unreferenced",
+       "served_reload", "served_hold", "lazy_from_hold", "discarded_stale", "discarded_freed",
+       "discarded_superseded", "dropped_unreferenced",
        "held_entries", "decode_at_reference", "warm_cache_bytes", "warm_queue_us", "warm_work_us",
        "reload_us", "census_us"}) EXPECT(field(v, name).text == "0");
   EXPECT(field(v, "arm_to_warm_queued_ms").text == "0.000");
+  const auto &textures = field(v, "textures");
+  for (const char *name : {"adopted", "current", "creation", "refused", "refused_no_image"})
+    EXPECT(field(textures, name).text == "0");
   const auto &scanned = field(v, "scanned");
   for (const char *name : {"registered_2d", "mirror_known", "refused"}) EXPECT(field(scanned, name).text == "0");
   const auto &skipped = field(v, "skipped_by");
@@ -193,6 +207,12 @@ void evidence() {
   const std::pair<const char *, std::uint64_t WarmStats::*> counts[] = {
       {"arm_index", &WarmStats::arm_index},
       {"frame", &WarmStats::frame},
+      {"held_at_arm", &WarmStats::held_at_arm},
+      {"held_bytes_at_arm", &WarmStats::held_bytes_at_arm},
+      {"hold_dropped_fault", &WarmStats::hold_dropped_fault},
+      {"from_hold", &WarmStats::from_hold},
+      {"served_hold", &WarmStats::served_hold},
+      {"lazy_from_hold", &WarmStats::lazy_from_hold},
       {"queued", &WarmStats::queued},
       {"from_reload", &WarmStats::from_reload},
       {"from_registry", &WarmStats::from_registry},
@@ -227,6 +247,7 @@ void evidence() {
   s.scanned = {31, 32, 33, 41};
   s.skipped_by = {34, 35, 36, 37, 38};
   s.lazy_at_reference = {39, 40};
+  s.textures = {51, 52, 53, 54, 55};
   v = json(s);
   n = 1;
   for (const auto &entry : counts) EXPECT(field(v, entry.first).text == std::to_string(n++));
@@ -239,6 +260,9 @@ void evidence() {
     EXPECT(field(field(v, "skipped_by"), key).text == std::to_string(n++));
   EXPECT(field(field(v, "lazy_at_reference"), "updated").text == "39");
   EXPECT(field(field(v, "lazy_at_reference"), "unregistered").text == "40");
+  n = 51;
+  for (const char *key : {"adopted", "current", "creation", "refused", "refused_no_image"})
+    EXPECT(field(field(v, "textures"), key).text == std::to_string(n++));
   s.final = s.warm_complete = s.warm_balanced = s.census_at_warm = true;
   s.arm_to_warm_complete_ms = 12.3456;
   s.arm_to_warm_queued_ms = 1.2344;

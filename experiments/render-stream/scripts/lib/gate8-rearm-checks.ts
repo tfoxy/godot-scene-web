@@ -40,6 +40,7 @@ import {
   canonicalState,
   check,
   compareStates,
+  equivalence,
   type G8aCheck,
   stateAt,
 } from "./gate8-adopt-checks";
@@ -1683,6 +1684,664 @@ function reloadSourceCheck(g: string): G8aCheck {
   );
 }
 
+export interface FloatHoldOracle {
+  name: string;
+  step: number;
+  payload_sha256: string;
+}
+export interface FloatHoldArm {
+  first: number;
+  last: number;
+}
+export type FloatHoldCells = Record<string, Record<string, boolean | null>>;
+type HoldLeg = "standby" | "fault-hold-off";
+type Predicates = Record<string, string | number | boolean | null>;
+const floatHoldCells: Record<string, readonly string[]> = {
+  "held-update": ["curve_rf", "curve_xyz"],
+  "held-update-step1": ["curve_rgb", "img_rh", "img_rgbah"],
+  "held-replace": ["grad_hdr"],
+  "pending-standby": ["off_curve", "off_grad"],
+  "pending-armed": ["off_curve2", "off_grad2"],
+  control: [
+    "img_rgf",
+    "img_rgh",
+    "img_rgbh",
+    "img_rgbaf_mip",
+    "img_rf_odd",
+    "hdr_bptc",
+    "hdr_astc",
+  ],
+};
+function cellsForArm(arm: number) {
+  return Object.entries(floatHoldCells).filter(
+    ([cell]) =>
+      arm !== 1 || (cell !== "held-update-step1" && cell !== "pending-armed"),
+  );
+}
+
+/** A published material must actually name the oracle's live, supported texture. */
+export function published(state: State | null, hash: string): boolean {
+  if (!state || !hash) return false;
+  const ids = new Set(
+    state.textures
+      .filter((t) => t.status === "ok" && t.hash === hash)
+      .map((t) => t.id),
+  );
+  return (state.materials ?? []).some(
+    (m) =>
+      m.status === "ok" &&
+      m.params.some(
+        (p) =>
+          p.type === "rid" &&
+          p.value !== null &&
+          typeof p.value === "object" &&
+          "tex" in p.value &&
+          ids.has(p.value.tex as number),
+      ),
+  );
+}
+export function floatHoldCellTable(
+  state: State | null,
+  oracleLines: FloatHoldOracle[] | null,
+  arm: number,
+): FloatHoldCells | null {
+  if (!state || !oracleLines) return null;
+  return Object.fromEntries(
+    cellsForArm(arm).map(([cell, names]) => [
+      cell,
+      Object.fromEntries(
+        names.map((name) => {
+          const step = name.startsWith("hdr_") || arm === 1 ? 0 : 1;
+          const hash = oracleLines.find(
+            (o) => o.name === name && o.step === step,
+          )?.payload_sha256;
+          return [name, hash ? published(state, hash) : null];
+        }),
+      ),
+    ]),
+  );
+}
+export function floatHoldCellProblems(
+  table: FloatHoldCells | null,
+  arm: number,
+  want: "published" | "fault",
+): string[] {
+  if (!table) return ["missing cell state or oracle"];
+  return cellsForArm(arm).flatMap(([cell, names]) =>
+    names.flatMap((name) => {
+      const got = table[cell]?.[name];
+      return got === (want === "published" || cell === "control")
+        ? []
+        : [`${cell}.${name}: ${got ?? "missing oracle"}`];
+    }),
+  );
+}
+export function floatHoldSchedule(
+  steps: StepLine[] | null,
+  arms: FloatHoldArm[] | null,
+): string[] {
+  if (!steps || !arms || arms.length !== 3)
+    return ["missing steps or three arm windows"];
+  const [a, b, c] = arms;
+  const zero = steps.filter((s) => s.step === 0),
+    one = steps.filter((s) => s.step === 1);
+  const problems: string[] = [];
+  if (
+    zero.length !== 1 ||
+    !Number.isFinite(zero[0]?.settle_frame) ||
+    !(zero[0].settle_frame! < a.first)
+  )
+    problems.push("step 0 outside initial standby window");
+  if (
+    one.length !== 1 ||
+    !(one[0].applied_frame > a.last) ||
+    !Number.isFinite(one[0]?.settle_frame) ||
+    !(one[0].settle_frame! < b.first)
+  )
+    problems.push("step 1 outside disarmed window");
+  if (
+    arms.some(
+      (x) =>
+        !Number.isSafeInteger(x.first) ||
+        !Number.isSafeInteger(x.last) ||
+        x.first > x.last,
+    ) ||
+    !(c.first > b.last)
+  )
+    problems.push("invalid arm windows");
+  return problems;
+}
+function evidenceField(input: unknown, path: string): unknown {
+  return path
+    .split(".")
+    .reduce<unknown>(
+      (v, key) =>
+        v !== null && typeof v === "object"
+          ? (v as Record<string, unknown>)[key]
+          : undefined,
+      input,
+    );
+}
+function fieldsMatch(
+  input: unknown,
+  expected: Predicates,
+  label: string,
+): string[] {
+  if (input == null) return [`missing ${label}`];
+  return Object.entries(expected).flatMap(([key, value]) =>
+    evidenceField(input, key) === value
+      ? []
+      : [
+          `${label}.${key}: ${String(evidenceField(input, key))}, expected ${value}`,
+        ],
+  );
+}
+function warmExpected(arm: number, leg: HoldLeg): Predicates {
+  const fault = leg === "fault-hold-off",
+    first = arm === 1;
+  const tuple = fault
+    ? first
+      ? [0, 0, 5, 0, 11, 11, 10, 0, 0, 0, 4, 14, 10, 4, 1, 1]
+      : [0, 0, arm === 2 ? 8 : 0, 0, 8, 8, 7, 0, 0, 0, 9, 16, 7, 9, 1, 1]
+    : first
+      ? [5, 10752, 0, 5, 11, 16, 15, 5, 0, 0, 0, 15, 15, 0, 0, 0]
+      : [10, 17920, 0, 10, 8, 18, 17, 10, 0, 0, 0, 17, 17, 0, 0, 0];
+  const keys = [
+    "held_at_arm",
+    "held_bytes_at_arm",
+    "hold_dropped_fault",
+    "from_hold",
+    "from_registry",
+    "queued",
+    "served",
+    "served_hold",
+    "lazy_from_hold",
+    "decode_at_reference",
+    "lazy_at_reference.updated",
+    "textures.adopted",
+    "textures.current",
+    "textures.creation",
+    "textures.refused",
+    "textures.refused_no_image",
+  ];
+  return {
+    ...Object.fromEntries(keys.map((key, i) => [key, tuple[i]])),
+    schema: "render-stream-warm/1",
+    final: true,
+    arm_index: arm,
+    "scanned.registered_2d": first ? 16 : 18,
+    dropped_unreferenced: 1,
+    warm_balanced: true,
+  };
+}
+function teardownExpected(arm: number, leg: HoldLeg): Predicates {
+  return {
+    hold_entries: leg === "standby" ? (arm === 1 ? 7 : 10) : arm === 1 ? 2 : 0,
+    hold_bytes:
+      leg === "standby" ? (arm === 1 ? 13312 : 17920) : arm === 1 ? 2560 : 0,
+  };
+}
+export interface FloatHoldArmInput {
+  equivalenceProblems: string[] | null;
+  warm: unknown;
+  teardown: unknown;
+  oracleLines: FloatHoldOracle[] | null;
+  state: State | null;
+}
+export function floatHoldArmProblems(
+  arm: number,
+  input: FloatHoldArmInput | null,
+  expected: HoldLeg,
+): string[] {
+  if (!input) return ["missing arm evidence"];
+  return [
+    ...(input.equivalenceProblems ?? ["missing equivalence"]),
+    ...fieldsMatch(input.warm, warmExpected(arm, expected), "warm"),
+    ...fieldsMatch(input.teardown, teardownExpected(arm, expected), "teardown"),
+    ...floatHoldCellProblems(
+      floatHoldCellTable(input.state, input.oracleLines, arm),
+      arm,
+      "published",
+    ),
+  ];
+}
+const holdSkipNames = [
+  "unregistered",
+  "not_texture2d",
+  "offmain_replace",
+  "released_source",
+  "vram_format",
+  "no_image",
+  "size_unknown",
+  "shape_mismatch",
+  "over_texture_cap",
+  "over_total_cap",
+];
+const pendingSkipNames = [
+  "unregistered",
+  "not_texture2d",
+  "vram_format",
+  "no_image",
+  "size_unknown",
+  "over_texture_cap",
+];
+function pendingExpected(): Predicates {
+  return {
+    "caps.entries": 16,
+    "caps.bytes": 262144,
+    taken: 15,
+    taken_bytes: 21400,
+    moved: 4,
+    moved_bytes: 5120,
+    "dropped.updated": 4,
+    "dropped.replaced": 2,
+    "dropped.recreated": 0,
+    evicted: 0,
+    evicted_bytes: 0,
+    "peak.entries": 9,
+    "peak.bytes": 14744,
+    pending_balanced: true,
+    ...Object.fromEntries(pendingSkipNames.map((k) => [`skipped.${k}`, 0])),
+  };
+}
+function count(input: unknown, path: string): number {
+  const value = evidenceField(input, path);
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : Number.NaN;
+}
+/** Recompute accounting as well as checking the producer's balance flags. */
+function holdEvidenceProblems(hold: unknown, expected: HoldLeg): string[] {
+  const fault = expected === "fault-hold-off";
+  const problems = fieldsMatch(
+    hold,
+    {
+      schema: "render-stream-hold/1",
+      final: true,
+      state: "active",
+      reason: null,
+      fault: fault ? "hold-off" : "none",
+      "caps.texture_max_bytes": 65535,
+      "caps.total_max_bytes": 4194304,
+      "taken.total": 16,
+      "taken.update": 10,
+      "taken.replace": 6,
+      "taken.bytes": 30720,
+      "dropped.superseded": fault ? 3 : 6,
+      "dropped.fault": fault ? 13 : 0,
+      "dropped.unheld": 0,
+      "dropped.recreated": 0,
+      "dropped.replaced_away": 0,
+      "peak.entries": fault ? 8 : 10,
+      "peak.bytes": fault ? 15360 : 18944,
+      hold_balanced: true,
+      ...Object.fromEntries(holdSkipNames.map((k) => [`skipped.${k}`, 0])),
+    },
+    "hold",
+  );
+  const p = evidenceField(hold, "pending");
+  problems.push(...fieldsMatch(p, pendingExpected(), "pending"));
+  const n = (path: string) => count(hold, path),
+    pn = (path: string) => count(p, path);
+  const dropCount = [
+    "superseded",
+    "unheld",
+    "freed",
+    "recreated",
+    "replaced_away",
+    "fault",
+  ].reduce((s, k) => s + n(`dropped.${k}`), 0);
+  const pendingDrops = ["freed", "updated", "replaced", "recreated"].reduce(
+    (s, k) => s + pn(`dropped.${k}`),
+    0,
+  );
+  if (
+    n("live.entries") + n("dropped.freed") !== (fault ? 0 : 10) ||
+    n("taken.total") !== n("live.entries") + dropCount ||
+    n("taken.bytes") !== n("live.bytes") + n("dropped_bytes") ||
+    n("taken.total") !== n("taken.update") + n("taken.replace")
+  )
+    problems.push("hold accounting does not balance");
+  if (
+    pn("live.entries") + pn("dropped.freed") !== 5 ||
+    pn("taken") !==
+      pn("live.entries") + pn("moved") + pendingDrops + pn("evicted") ||
+    pn("taken_bytes") !==
+      pn("live.bytes") +
+        pn("moved_bytes") +
+        pn("dropped_bytes") +
+        pn("evicted_bytes")
+  )
+    problems.push("pending accounting does not balance");
+  for (const prefix of ["live", "peak"]) {
+    if (!(n(`${prefix}.bytes`) <= 4194304))
+      problems.push(`hold.${prefix} above cap or missing`);
+    if (!(pn(`${prefix}.entries`) <= 16 && pn(`${prefix}.bytes`) <= 262144))
+      problems.push(`pending.${prefix} above cap or missing`);
+  }
+  return problems;
+}
+export function holdAccountingProblems(
+  hold: unknown,
+  teardowns: unknown[] | null,
+  expected: HoldLeg,
+): string[] {
+  const problems = holdEvidenceProblems(hold, expected);
+  if (teardowns?.length !== 3) problems.push("missing three teardowns");
+  else
+    teardowns.forEach((t, i) => {
+      problems.push(
+        ...fieldsMatch(
+          t,
+          teardownExpected(i + 1, expected),
+          `teardown arm ${i + 1}`,
+        ),
+      );
+    });
+  return problems;
+}
+export function faultHoldOffProblems(
+  armEquivalenceProblems: (string[] | null)[] | null,
+  warms: unknown[] | null,
+  hold: unknown,
+  cellTables: (FloatHoldCells | null)[] | null,
+  expected: HoldLeg,
+): string[] {
+  const problems = holdEvidenceProblems(hold, expected);
+  if (
+    armEquivalenceProblems?.length !== 3 ||
+    armEquivalenceProblems.some((p) => !p || p.length === 0)
+  )
+    problems.push("fault knob did not fail equivalence on every arm");
+  if (warms?.length !== 3) problems.push("missing three fault warms");
+  else
+    warms.forEach((w, i) => {
+      problems.push(
+        ...fieldsMatch(
+          w,
+          warmExpected(i + 1, expected),
+          `fault warm arm ${i + 1}`,
+        ),
+      );
+    });
+  if (cellTables?.length !== 3)
+    problems.push("missing three fault cell tables");
+  else
+    cellTables.forEach((table, i) => {
+      problems.push(...floatHoldCellProblems(table, i + 1, "fault"));
+    });
+  return problems;
+}
+export interface OffmainLine {
+  event: string;
+  variant: number;
+  frame: number;
+  off_main: boolean;
+  thread_id: number;
+  main_thread_id: number;
+}
+export function offmainProblems(
+  offmainLines: {
+    standby: OffmainLine[] | null;
+    born: OffmainLine[] | null;
+    arms: FloatHoldArm[] | null;
+  } | null,
+  hold: unknown,
+  cellTables: (FloatHoldCells | null)[] | null,
+): string[] {
+  if (!offmainLines) return ["missing offmain evidence"];
+  const problems: string[] = [];
+  for (const leg of ["standby", "born"] as const) {
+    const lines = offmainLines[leg];
+    if (
+      lines?.length !== 2 ||
+      lines.some(
+        (x, i) =>
+          x.event !== "offmain-fill" ||
+          x.variant !== i + 1 ||
+          x.off_main !== true ||
+          !Number.isSafeInteger(x.thread_id) ||
+          !Number.isSafeInteger(x.main_thread_id) ||
+          x.thread_id === x.main_thread_id,
+      )
+    )
+      problems.push(`${leg}: missing two off-main variant fills`);
+  }
+  const a = offmainLines.arms?.[0],
+    lines = offmainLines.standby;
+  if (
+    !a ||
+    !lines ||
+    !(lines[0]?.frame < a.first) ||
+    !(lines[1]?.frame >= a.first && lines[1]?.frame <= a.last)
+  )
+    problems.push("offmain fills outside standby and armed windows");
+  problems.push(
+    ...fieldsMatch(
+      evidenceField(hold, "pending"),
+      pendingExpected(),
+      "pending",
+    ),
+    ...fieldsMatch(hold, { "skipped.offmain_replace": 0 }, "hold"),
+  );
+  const pending = evidenceField(hold, "pending");
+  const pn = (path: string) => count(pending, path);
+  const dropped = ["freed", "updated", "replaced", "recreated"].reduce(
+    (n, key) => n + pn(`dropped.${key}`),
+    0,
+  );
+  if (
+    pn("live.entries") + pn("dropped.freed") !== 5 ||
+    pn("taken") !==
+      pn("live.entries") + pn("moved") + dropped + pn("evicted") ||
+    pn("taken_bytes") !==
+      pn("live.bytes") +
+        pn("moved_bytes") +
+        pn("dropped_bytes") +
+        pn("evicted_bytes") ||
+    !(pn("live.entries") <= 16 && pn("live.bytes") <= 262144)
+  )
+    problems.push("pending accounting does not balance or exceeds cap");
+  if (cellTables?.length !== 3) problems.push("missing offmain cell tables");
+  else
+    cellTables.forEach((table, i) => {
+      const all = floatHoldCellProblems(table, i + 1, "published");
+      problems.push(
+        ...(table ? all.filter((p) => p.startsWith("pending-")) : all),
+      );
+    });
+  return problems;
+}
+
+function floatHoldChecks(g: string): {
+  checks: G8aCheck[];
+  report: Record<string, unknown>;
+} {
+  const root = join(g, "float-hold");
+  const capture = (leg: string) => join(root, leg, "capture");
+  const evidence = (leg: string, arm: number, name: string) =>
+    readJson<unknown>(
+      join(
+        capture(leg),
+        "evidence",
+        ...(arm === 1 ? [] : [`arm-${arm}`]),
+        name,
+      ),
+    );
+  const loaded = new Map<string, LoadedRecording>();
+  const rec = (leg: string, arm = 1) => {
+    const key = `${leg}/${arm}`;
+    if (!loaded.has(key))
+      loaded.set(
+        key,
+        loadRec(
+          join(capture(leg), `recording.rs8${arm === 1 ? "" : `.arm-${arm}`}`),
+        ),
+      );
+    return loaded.get(key)!;
+  };
+  const oracle = (leg: string) =>
+    jsonlOf<FloatHoldOracle>(join(capture(leg), "textures.jsonl"));
+  const tables = (leg: string) =>
+    [1, 2, 3].map((k) =>
+      floatHoldCellTable(
+        rec(leg, k).rec?.transactions.at(-1)?.state ?? null,
+        oracle(leg),
+        k,
+      ),
+    );
+  const arms = (leg: string) =>
+    [1, 2, 3].map((k) => {
+      const tx = rec(leg, k).rec?.transactions;
+      return {
+        first: tx?.[0]?.frame ?? Number.NaN,
+        last: tx?.at(-1)?.frame ?? Number.NaN,
+      };
+    });
+  const born = rec("born");
+  const compare = (leg: string) =>
+    [1, 2, 3].map((k) => {
+      const r = rec(leg, k);
+      return born.rec && r.rec
+        ? equivalence(born.rec, r.rec, r.rec.transactions[0]?.frame ?? 0, 0, {})
+            .problems
+        : null;
+    });
+  const hold = (leg: string) => evidence(leg, 1, "hold.json");
+  const teardowns = (leg: string) =>
+    [1, 2, 3].map((k) => evidence(leg, k, "teardown.json"));
+  const warms = (leg: string) =>
+    [1, 2, 3].map((k) => evidence(leg, k, "warm.json"));
+  const checks: G8aCheck[] = [];
+  const add = (
+    id: string,
+    legs: string[],
+    criterion: string,
+    judge: () => string[],
+    detail: string,
+  ) => {
+    const present = legs.some((leg) => existsSync(capture(leg)));
+    const pre = legs.flatMap((leg) => {
+      const exit = join(capture(leg), "exit-code.txt");
+      return existsSync(exit) && readFileSync(exit, "utf8").trim() === "0"
+        ? []
+        : [`${leg}: missing or nonzero exit`];
+    });
+    checks.push(
+      selectedCheck(
+        !present
+          ? {
+              id,
+              criterion,
+              passed: false,
+              status: "not-run",
+              gating: false,
+              detail: "float-hold legs absent",
+            }
+          : check(id, criterion, [...pre, ...judge()], detail),
+        g,
+        "float-hold",
+      ),
+    );
+  };
+  const honestTables = tables("standby"),
+    faultTables = tables("fault-hold-off");
+  add(
+    "float-hold-equivalence",
+    ["standby", "born"],
+    "Every arm equals born without exceptions, fills occur while disarmed, and every texture cell is published",
+    () => {
+      const comparisons = compare("standby");
+      return [
+        ...floatHoldSchedule(
+          jsonlOf<StepLine>(join(capture("standby"), "steps.jsonl")),
+          arms("standby"),
+        ),
+        ...[1, 2, 3].flatMap((k) =>
+          floatHoldArmProblems(
+            k,
+            {
+              equivalenceProblems: comparisons[k - 1],
+              warm: evidence("standby", k, "warm.json"),
+              teardown: evidence("standby", k, "teardown.json"),
+              oracleLines: oracle("standby"),
+              state: rec("standby", k).rec?.transactions.at(-1)?.state ?? null,
+            },
+            "standby",
+          ),
+        ),
+      ];
+    },
+    "3 arms equal born; all applicable cells published; warm counts and standby fill windows match",
+  );
+  add(
+    "float-hold-offmain",
+    ["standby", "born"],
+    "Both variants fill off-main in their required windows, bounded pending references move, and later arms publish them",
+    () => [
+      ...offmainProblems(
+        {
+          standby: jsonlOf<OffmainLine>(
+            join(capture("standby"), "offmain.jsonl"),
+          ),
+          born: jsonlOf<OffmainLine>(join(capture("born"), "offmain.jsonl")),
+          arms: arms("standby"),
+        },
+        hold("standby"),
+        honestTables,
+      ),
+      ...[2, 3].flatMap((k) =>
+        fieldsMatch(
+          evidence("standby", k, "warm.json"),
+          { "textures.refused": 0 },
+          `warm arm ${k}`,
+        ),
+      ),
+    ],
+    "2 off-main variants per leg; variant 2 inside arm 1; pending taken=15 moved=4; pending cells published on later arms",
+  );
+  add(
+    "float-hold-accounting",
+    ["standby", "born"],
+    "Final hold and pending accounting and each teardown match their bounds; born keeps no hold evidence",
+    () => [
+      ...holdAccountingProblems(
+        hold("standby"),
+        teardowns("standby"),
+        "standby",
+      ),
+      ...(existsSync(join(capture("born"), "evidence", "hold.json"))
+        ? ["born has hold.json"]
+        : []),
+    ],
+    "hold taken=16/30720 B peak=10/18944 B; pending taken=15/21400 B peak=9/14744 B; all balances and caps hold",
+  );
+  add(
+    "fault-hold-off-caught",
+    ["fault-hold-off", "born"],
+    "The hold-off fault knob fails every arm's equivalence on held and pending cells while controls remain published",
+    () => [
+      ...faultHoldOffProblems(
+        compare("fault-hold-off"),
+        warms("fault-hold-off"),
+        hold("fault-hold-off"),
+        faultTables,
+        "fault-hold-off",
+      ),
+      ...holdAccountingProblems(
+        hold("fault-hold-off"),
+        teardowns("fault-hold-off"),
+        "fault-hold-off",
+      ),
+    ],
+    "3 arms fail equivalence; all applicable held/pending cells absent and controls published; fault drops=13/26112 B",
+  );
+  return {
+    checks,
+    report: { standby: honestTables, "fault-hold-off": faultTables },
+  };
+}
+
 function selectedCheck(c: G8aCheck, g: string, fx: string): G8aCheck {
   if (!existsSync(join(g, fx, "not-selected.txt"))) return c;
   return {
@@ -1714,5 +2373,8 @@ export async function runG8re(
     ...textureEvictChecks(g),
     ...warmChecks(g),
   );
+  const floatHold = floatHoldChecks(g);
+  checks.push(...floatHold.checks);
+  report["float-hold"] = floatHold.report;
   return { checks, report };
 }
