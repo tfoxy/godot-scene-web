@@ -45,12 +45,19 @@
 // src/rs_ws.cpp, so a bug that is symmetric between encode and decode would
 // not cancel out.
 
+#include "rs_platform.h"
+
+// Native client-only facilities; the listener itself uses rs_platform on every OS.
+#ifdef _WIN32
+#include <winsock2.h>
+#else
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #include <atomic>
 #include <cerrno>
@@ -83,6 +90,9 @@
 
 namespace {
 
+using grc::rs::SocketHandle;
+using grc::rs::kInvalidSocket;
+
 int g_failures = 0;
 int g_checks = 0;
 
@@ -106,28 +116,65 @@ std::string hex(const std::uint8_t *data, std::size_t len) {
 
 // --- A minimal, independent raw-socket WebSocket client for the test. ---
 
-int connect_loopback(std::uint16_t port) {
-  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) return -1;
-  timeval tv{};
-  tv.tv_sec = 5;
-  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
-    ::close(fd);
-    return -1;
-  }
+void client_timeouts(SocketHandle fd, bool send_timeout) {
+#ifdef _WIN32
+  const DWORD timeout = 5000;
+  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&timeout), sizeof(timeout));
+  if (send_timeout)
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&timeout), sizeof(timeout));
+#else
+  timeval timeout{};
+  timeout.tv_sec = 5;
+  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  if (send_timeout) ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#endif
+}
+
+// Winsock has no per-send MSG_DONTWAIT: only the flood client becomes nonblocking.
+void client_prepare_flood(SocketHandle fd) {
+#ifdef _WIN32
+  grc::rs::set_nonblocking(fd);
+#else
+  (void)fd;
+#endif
+}
+
+std::ptrdiff_t client_flood_send(SocketHandle fd, const void *data, std::size_t size) {
+#ifdef _WIN32
+  return grc::rs::socket_send(fd, data, size);
+#else
+  return ::send(fd, data, size, MSG_NOSIGNAL | MSG_DONTWAIT);
+#endif
+}
+
+bool client_connection_closed(int code) {
+#ifdef _WIN32
+  return code == WSAECONNRESET || code == WSAECONNABORTED || code == WSAESHUTDOWN || code == WSAENOTCONN;
+#else
+  return code == EPIPE || code == ECONNRESET;
+#endif
+}
+
+bool client_socket_error(SocketHandle fd, int *code) {
+#ifdef _WIN32
+  int size = sizeof(*code);
+  return ::getsockopt(fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(code), &size) == 0;
+#else
+  socklen_t size = sizeof(*code);
+  return ::getsockopt(fd, SOL_SOCKET, SO_ERROR, code, &size) == 0;
+#endif
+}
+
+SocketHandle connect_loopback(std::uint16_t port) {
+  const auto fd = grc::rs::tcp_connect(grc::rs::loopback_address(grc::rs::AddrFamily::IPv4), port, nullptr);
+  if (fd != kInvalidSocket) client_timeouts(fd, true);
   return fd;
 }
 
-bool recv_exact(int fd, std::uint8_t *buf, std::size_t len) {
+bool recv_exact(SocketHandle fd, std::uint8_t *buf, std::size_t len) {
   std::size_t have = 0;
   while (have < len) {
-    const ssize_t n = ::recv(fd, buf + have, len - have, 0);
+    const std::ptrdiff_t n = grc::rs::socket_recv(fd, buf + have, len - have);
     if (n <= 0) return false;
     have += static_cast<std::size_t>(n);
   }
@@ -136,9 +183,9 @@ bool recv_exact(int fd, std::uint8_t *buf, std::size_t len) {
 
 // Reads whatever is available right now (one recv call, with the socket's
 // receive timeout), for reading an HTTP response or a short error frame.
-std::vector<std::uint8_t> recv_some(int fd) {
+std::vector<std::uint8_t> recv_some(SocketHandle fd) {
   std::uint8_t buf[8192];
-  const ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+  const std::ptrdiff_t n = grc::rs::socket_recv(fd, buf, sizeof(buf));
   if (n <= 0) return {};
   return std::vector<std::uint8_t>(buf, buf + n);
 }
@@ -200,7 +247,7 @@ struct ServerFrame {
 };
 
 // Reads exactly one outbound (unmasked) server frame.
-ServerFrame read_server_frame(int fd) {
+ServerFrame read_server_frame(SocketHandle fd) {
   ServerFrame out;
   std::uint8_t head[2];
   if (!recv_exact(fd, head, 2)) return out;
@@ -236,11 +283,11 @@ struct Handshake {
   std::string raw;
 };
 
-Handshake do_handshake(int fd, const std::string &key, const std::string &path = "/render-stream",
+Handshake do_handshake(SocketHandle fd, const std::string &key, const std::string &path = "/render-stream",
                         const std::string &subprotocol_header = "render-stream.1",
                         const std::vector<std::pair<std::string, std::string>> &extra_headers = {}) {
   const std::string req = http_request(key, path, subprotocol_header, extra_headers);
-  ::send(fd, req.data(), req.size(), 0);
+  grc::rs::socket_send(fd, req.data(), req.size());
   Handshake out;
   const auto bytes = recv_some(fd);
   out.raw.assign(bytes.begin(), bytes.end());
@@ -347,7 +394,7 @@ struct HttpResponse {
 // then exactly Content-Length body bytes (0 if the header is absent, which is every status this
 // server sends without a body). Blocks, subject to the socket's receive timeout, until the
 // response is complete, the peer closes, or the timeout fires.
-HttpResponse read_http_response(int fd) {
+HttpResponse read_http_response(SocketHandle fd) {
   HttpResponse out;
   std::vector<std::uint8_t> buf;
   std::uint8_t chunk[65536];
@@ -360,7 +407,7 @@ HttpResponse read_http_response(int fd) {
       }
     }
     if (header_end != std::string::npos) break;
-    const ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);
+    const std::ptrdiff_t n = grc::rs::socket_recv(fd, chunk, sizeof(chunk));
     if (n <= 0) return out;  // closed or timed out before the headers completed.
     buf.insert(buf.end(), chunk, chunk + n);
   }
@@ -401,7 +448,7 @@ HttpResponse read_http_response(int fd) {
 
   out.body = std::move(body_so_far);
   while (out.body.size() < content_length) {
-    const ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);
+    const std::ptrdiff_t n = grc::rs::socket_recv(fd, chunk, sizeof(chunk));
     if (n <= 0) return out;  // incomplete: ok stays false.
     out.body.insert(out.body.end(), chunk, chunk + n);
   }
@@ -424,15 +471,15 @@ void test_handshake_accept_key_rfc_vector() {
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
 
-  const int fd = connect_loopback(server.port());
-  check(fd >= 0, "connect for RFC vector");
+  const SocketHandle fd = connect_loopback(server.port());
+  check(fd != kInvalidSocket, "connect for RFC vector");
   const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   check(hs.status == 101, "RFC vector handshake status 101");
   check(hs.raw.find("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=") != std::string::npos,
         "RFC 6455 ssec 1.3 accept key: got " + hs.raw);
   check(hs.raw.find("Sec-WebSocket-Protocol: render-stream.1") != std::string::npos, "subprotocol echoed");
   check(expect_opened(server) != 0, "Opened event after a good handshake");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -441,17 +488,17 @@ void test_masked_text_roundtrip() {
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   const std::uint32_t conn = expect_opened(server);
   check(conn != 0, "opened for text roundtrip");
 
   const auto frame = client_text("hello render-stream");
-  ::send(fd, frame.data(), frame.size(), 0);
+  grc::rs::socket_send(fd, frame.data(), frame.size());
   const auto events = wait_events(server, 1, 2000);
   check(!events.empty() && events[0].kind == grc::live::Event::Text && events[0].text == "hello render-stream",
         "masked text arrives as a Text event");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -460,7 +507,7 @@ void test_frame_header_length_classes() {
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   const std::uint32_t conn = expect_opened(server);
   check(conn != 0, "opened for length classes");
@@ -478,7 +525,7 @@ void test_frame_header_length_classes() {
           "header length at payload " + std::to_string(lengths[i]) + ": got " + std::to_string(frame.header_len));
     check(frame.payload == payload, "payload byte-exact at length " + std::to_string(lengths[i]));
   }
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -487,17 +534,17 @@ void test_ping_pong() {
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   check(expect_opened(server) != 0, "opened for ping/pong");
 
   const std::vector<std::uint8_t> ping_payload = {'p', 'i', 'n', 'g', '!'};
   const auto frame = client_frame(0x9, ping_payload);
-  ::send(fd, frame.data(), frame.size(), 0);
+  grc::rs::socket_send(fd, frame.data(), frame.size());
   const ServerFrame pong = read_server_frame(fd);
   check(pong.ok && pong.opcode == 0xA && pong.payload == ping_payload, "pong echoes the ping payload");
   check(wait_events(server, 1, 300).empty(), "ping/pong produces no Event");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -506,14 +553,14 @@ void test_close_handshake() {
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   const std::uint32_t conn = expect_opened(server);
   check(conn != 0, "opened for close");
 
   std::vector<std::uint8_t> close_payload = {0x03, 0xE8};  // 1000, big-endian, no reason.
   const auto frame = client_frame(0x8, close_payload);
-  ::send(fd, frame.data(), frame.size(), 0);
+  grc::rs::socket_send(fd, frame.data(), frame.size());
   const ServerFrame echoed = read_server_frame(fd);
   check(echoed.ok && echoed.opcode == 0x8, "server echoes a close frame");
   check(echoed.payload.size() >= 2 && echoed.payload[0] == 0x03 && echoed.payload[1] == 0xE8,
@@ -524,26 +571,24 @@ void test_close_handshake() {
         "Closed event with code 1000 after a peer-initiated close");
 
   std::uint8_t probe;
-  const ssize_t n = ::recv(fd, &probe, 1, 0);
+  const std::ptrdiff_t n = grc::rs::socket_recv(fd, &probe, 1);
   check(n == 0, "TCP connection actually closes after the close handshake");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
 // Reads through the final FIN as well as the frame/response: a reset can arrive after all
 // application bytes, so successfully decoding them alone does not prove a graceful close.
-void expect_clean_eof(int fd, const std::string &label) {
+void expect_clean_eof(SocketHandle fd, const std::string &label) {
   std::uint8_t probe;
-  errno = 0;
-  const ssize_t n = ::recv(fd, &probe, 1, 0);
-  const int saved_errno = errno;
+  const std::ptrdiff_t n = grc::rs::socket_recv(fd, &probe, 1);
+  const int recv_error = n < 0 ? grc::rs::last_socket_error().code : 0;
   int socket_error = 0;
-  socklen_t error_len = sizeof(socket_error);
-  const bool queried = ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_len) == 0;
+  const bool queried = client_socket_error(fd, &socket_error);
   check(n == 0 && queried && socket_error == 0,
-        label + ": EOF, recv=" + std::to_string(n) + " errno=" + std::to_string(saved_errno) +
-            " (" + std::strerror(saved_errno) + "), socket errno=" + std::to_string(socket_error) +
-            " (" + std::strerror(socket_error) + ")");
+        label + ": EOF, recv=" + std::to_string(n) + " error=" + std::to_string(recv_error) +
+            " (" + grc::rs::socket_error_text(recv_error) + "), socket error=" + std::to_string(socket_error) +
+            " (" + grc::rs::socket_error_text(socket_error) + ")");
 }
 
 int closed_count(const std::vector<grc::live::Event> &events, std::uint32_t conn) {
@@ -554,40 +599,54 @@ int closed_count(const std::vector<grc::live::Event> &events, std::uint32_t conn
   return count;
 }
 
+// Short sleeps can round up to a full timer tick. Keep the trailing send loop
+// comfortably inside the server's one-second linger deadline on every OS.
+void pause_one_millisecond() {
+  const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(1);
+  while (std::chrono::steady_clock::now() < until) std::this_thread::yield();
+}
+
 void test_close_while_client_sends() {
   grc::live::Server server;
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, nullptr, &error), "linger WS server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   check(do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==").status == 101, "linger WS upgrade");
   const std::uint32_t conn = expect_opened(server);
   check(conn != 0, "linger WS opened");
   std::atomic<bool> started{false};
   std::atomic<bool> closing{false};
+  double trailing_ms = 0;
   int sent_after_close = 0;
   int first_send_error = 0;
   std::thread writer([&] {
     const auto frame = client_text(std::string(1024, 'x'));
     do {
-      ::send(fd, frame.data(), frame.size(), MSG_NOSIGNAL);
+      grc::rs::socket_send(fd, frame.data(), frame.size());
       started.store(true);
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      pause_one_millisecond();
     } while (!closing.load());
+    const auto trailing_start = std::chrono::steady_clock::now();
     for (int i = 0; i < 100; ++i) {
-      if (::send(fd, frame.data(), frame.size(), MSG_NOSIGNAL) == static_cast<ssize_t>(frame.size())) {
+      if (grc::rs::socket_send(fd, frame.data(), frame.size()) == static_cast<std::ptrdiff_t>(frame.size())) {
         ++sent_after_close;
       } else if (first_send_error == 0) {
-        first_send_error = errno;
+        first_send_error = grc::rs::last_socket_error().code;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      pause_one_millisecond();
     }
+    trailing_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - trailing_start).count();
   });
   while (!started.load()) std::this_thread::yield();
   check(server.send_text(conn, "final text"), "linger WS queues final text");
   server.close(conn, 1008, "track-rate");
   closing.store(true);
   writer.join();
+  std::printf("linger WS 100 trailing frames: %.3f ms (bound < 500 ms)\n", trailing_ms);
+  check(trailing_ms < 500, "linger WS trailing loop finishes within half the 1000 ms linger deadline, ms=" +
+                               std::to_string(trailing_ms));
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   const ServerFrame text = read_server_frame(fd);
   check(text.ok && text.opcode == 1 && std::string(text.payload.begin(), text.payload.end()) == "final text",
@@ -598,7 +657,7 @@ void test_close_while_client_sends() {
         "linger WS receives complete close 1008 track-rate");
   expect_clean_eof(fd, "linger WS");
   check(sent_after_close == 100, "linger WS accepts 100 trailing client frames, first errno=" +
-                                    std::to_string(first_send_error) + " (" + std::strerror(first_send_error) + ")");
+                                    std::to_string(first_send_error) + " (" + grc::rs::socket_error_text(first_send_error) + ")");
   auto events = server.take_events();
   check(closed_count(events, conn) == 1, "linger WS exactly one Closed at flush");
   bool after_closed = false;
@@ -611,7 +670,7 @@ void test_close_while_client_sends() {
       check(!after_closed, "linger WS no events after Closed");
     }
   }
-  ::close(fd);
+  grc::rs::socket_close(fd);
   const auto start = std::chrono::steady_clock::now();
   server.stop(1500);
   const double wall_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
@@ -630,18 +689,18 @@ void test_http_close_with_trailing_bytes(bool reject) {
   std::string error;
   const std::string label = reject ? "linger HTTP reject 404" : "linger HTTP 200";
   check(server.start(config, &source, &error), label + " server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   // More than handle_readable's buffer: there must be unread kernel input when the
   // response flushes, even if the whole first recv contains the request and some junk.
   const std::string request = plain_http_request("GET", reject ? "/unknown" : config.resource_prefix + hash,
                                                  {{"Connection", "close"}}) + std::string(256 * 1024, 'x');
-  ::send(fd, request.data(), request.size(), MSG_NOSIGNAL);
+  grc::rs::socket_send(fd, request.data(), request.size());
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   const HttpResponse response = read_http_response(fd);
   check(response.ok && response.status == (reject ? 404 : 200) &&
             response.body == (reject ? std::vector<std::uint8_t>{} : body), label + " complete response");
   expect_clean_eof(fd, label);
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -657,7 +716,7 @@ void test_linger_releases_slots_and_stop() {
     const std::string protocol = track ? "render-stream-track.1" : "render-stream.1";
     std::string error;
     check(server.start(config, nullptr, &error), "linger slot server starts: " + error);
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     check(do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", config.path, protocol).status == 101,
           "linger slot first upgrade");
     const std::uint32_t conn = expect_opened(server);
@@ -670,7 +729,7 @@ void test_linger_releases_slots_and_stop() {
     const auto stats = server.stats(conn);
     check(stats.queued_bytes == 0 && stats.max_queued_bytes == 0 && stats.sent_bytes == 0 &&
               stats.sent_messages == 0 && stats.received_text == 0, "linger stats are zero");
-    const int replacement = connect_loopback(server.port());
+    const SocketHandle replacement = connect_loopback(server.port());
     check(do_handshake(replacement, "dGhlIHNhbXBsZSBub25jZQ==", config.path, protocol).status == 101,
           track ? "linger frees max_tracks slot" : "linger frees max_clients slot");
     const auto opened = expect_opened(server);
@@ -683,8 +742,8 @@ void test_linger_releases_slots_and_stop() {
     const auto events = server.take_events();
     check(closed_count(events, conn) == 0 && closed_count(events, opened) == 1,
           "linger stop timeout pushes no duplicate Closed");
-    ::close(fd);
-    ::close(replacement);
+    grc::rs::socket_close(fd);
+    grc::rs::socket_close(replacement);
   }
   FakeResourceSource source;
   const std::string hash = make_hash('b');
@@ -694,18 +753,18 @@ void test_linger_releases_slots_and_stop() {
   config.max_http_clients = 1;
   std::string error;
   check(server.start(config, &source, &error), "linger HTTP slot server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const std::string request = plain_http_request("GET", config.resource_prefix + hash, {{"Connection", "close"}});
-  ::send(fd, request.data(), request.size(), MSG_NOSIGNAL);
+  grc::rs::socket_send(fd, request.data(), request.size());
   check(read_http_response(fd).status == 200, "linger HTTP slot first GET");
   expect_clean_eof(fd, "linger HTTP slot");
-  const int replacement = connect_loopback(server.port());
+  const SocketHandle replacement = connect_loopback(server.port());
   const std::string next = plain_http_request("GET", config.resource_prefix + hash);
-  ::send(replacement, next.data(), next.size(), MSG_NOSIGNAL);
+  grc::rs::socket_send(replacement, next.data(), next.size());
   check(read_http_response(replacement).status == 200, "linger frees max_http_clients slot");
   server.stop(0);
-  ::close(fd);
-  ::close(replacement);
+  grc::rs::socket_close(fd);
+  grc::rs::socket_close(replacement);
 }
 
 void test_linger_deadline_and_admission() {
@@ -722,7 +781,7 @@ void test_linger_deadline_and_admission() {
     config.admission = &admission;
     std::string error;
     check(server.start(config, nullptr, &error), "linger deadline server starts: " + error);
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     check(do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==").status == 101, "linger deadline upgrade");
     const std::uint32_t conn = expect_opened(server);
     server.close(conn, 1008, "track-rate");
@@ -738,7 +797,7 @@ void test_linger_deadline_and_admission() {
     check(wall_ms < (timeout == 2000 ? 1800 : 600), "linger stop bounded by linger/flush deadline");
     check(admission.releases.load() == releases && closed_count(server.take_events(), conn) == 0,
           "linger deadline/stop sweep releases and reports exactly once");
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
 }
 
@@ -756,7 +815,7 @@ void test_linger_flood(bool stop_now) {
   config.admission = &admission;
   std::string error;
   check(server.start(config, nullptr, &error), label + " server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   check(do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==").status == 101, label + " upgrade");
   const std::uint32_t conn = expect_opened(server);
   check(conn != 0 && admission.held.load() == 1, label + " admitted once");
@@ -773,6 +832,7 @@ void test_linger_flood(bool stop_now) {
   std::atomic<bool> sending{true};
   std::atomic<int> active{0};
   std::atomic<int> send_error{0};
+  client_prepare_flood(fd);
   std::vector<std::thread> writers;
   for (int i = 0; i < 4; ++i) {
     writers.emplace_back([&] {
@@ -781,7 +841,8 @@ void test_linger_flood(bool stop_now) {
       while (sending.load() && std::chrono::steady_clock::now() - start < std::chrono::seconds(3)) {
         // Prime each writer with one byte before flooding, so a single writer
         // cannot monopolize the socket's send buffer before the others start.
-        const ssize_t n = ::send(fd, tail.data(), wrote ? tail.size() : 1, MSG_NOSIGNAL | MSG_DONTWAIT);
+        const std::ptrdiff_t n = client_flood_send(fd, tail.data(), wrote ? tail.size() : 1);
+        const auto error = n < 0 ? grc::rs::last_socket_error() : grc::rs::SocketError{grc::rs::SockErr::None, 0};
         if (n > 0) {
           if (!wrote) {
             wrote = true;
@@ -791,18 +852,18 @@ void test_linger_flood(bool stop_now) {
               std::this_thread::yield();
             }
           }
-        } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+        } else if (n < 0 && (error.kind == grc::rs::SockErr::WouldBlock || error.kind == grc::rs::SockErr::Interrupted)) {
           std::this_thread::yield();
         } else {
           int unset = 0;
-          send_error.compare_exchange_strong(unset, n < 0 ? errno : EPIPE);
+          send_error.compare_exchange_strong(unset, n < 0 ? error.code : -1);
           break;
         }
       }
     });
   }
   while (active.load() < 4 && std::chrono::steady_clock::now() - start < std::chrono::milliseconds(200)) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    pause_one_millisecond();
   }
   check(active.load() == 4, label + " all four writers sent trailing bytes");
   double wall_ms;
@@ -813,17 +874,17 @@ void test_linger_flood(bool stop_now) {
     wall_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - stop_start).count();
   } else {
     while (send_error.load() == 0 && std::chrono::steady_clock::now() - start < std::chrono::milliseconds(1600)) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      pause_one_millisecond();
     }
     wall_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
   }
   sending.store(false);
   for (auto &writer : writers) writer.join();
-  std::printf("%s, peer never FIN: %.3f ms, send errno=%d (%s)\n", label.c_str(), wall_ms,
-              send_error.load(), std::strerror(send_error.load()));
+  std::printf("%s, peer never FIN: %.3f ms, send error=%d (%s)\n", label.c_str(), wall_ms,
+              send_error.load(), grc::rs::socket_error_text(send_error.load()).c_str());
   check(wall_ms < (stop_now ? 500 : 1500), label + " returns/closes within bound");
   if (!stop_now) {
-    check(send_error.load() == EPIPE || send_error.load() == ECONNRESET,
+    check(client_connection_closed(send_error.load()),
           label + " socket torn down while peer sends");
     check(closed_count(server.take_events(), conn) == 0 && admission.releases.load() == 1 &&
               admission.held.load() == 0, label + " deadline reports/releases no second time");
@@ -831,7 +892,7 @@ void test_linger_flood(bool stop_now) {
   }
   check(closed_count(server.take_events(), conn) == 0 && admission.releases.load() == 1 &&
             admission.held.load() == 0, label + " stop reports/releases no second time");
-  ::close(fd);
+  grc::rs::socket_close(fd);
 }
 
 void test_linger() {
@@ -849,17 +910,17 @@ void test_fragmentation_rejected() {
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   check(expect_opened(server) != 0, "opened for fragmentation");
 
   const auto frame = client_text("partial", /*fin=*/false);
-  ::send(fd, frame.data(), frame.size(), 0);
+  grc::rs::socket_send(fd, frame.data(), frame.size());
   const ServerFrame close_frame = read_server_frame(fd);
   check(close_frame.ok && close_frame.opcode == 0x8 && close_frame.payload.size() >= 2 &&
             ((static_cast<std::uint16_t>(close_frame.payload[0]) << 8) | close_frame.payload[1]) == 1002,
         "fragmentation closes with 1002");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -868,17 +929,17 @@ void test_binary_inbound_rejected() {
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   check(expect_opened(server) != 0, "opened for binary-inbound rejection");
 
   const auto frame = client_frame(0x2, {1, 2, 3, 4});
-  ::send(fd, frame.data(), frame.size(), 0);
+  grc::rs::socket_send(fd, frame.data(), frame.size());
   const ServerFrame close_frame = read_server_frame(fd);
   check(close_frame.ok && close_frame.opcode == 0x8 && close_frame.payload.size() >= 2 &&
             ((static_cast<std::uint16_t>(close_frame.payload[0]) << 8) | close_frame.payload[1]) == 1003,
         "binary inbound closes with 1003");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -887,17 +948,17 @@ void test_unmasked_inbound_rejected() {
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   check(expect_opened(server) != 0, "opened for unmasked rejection");
 
   const auto frame = client_text("not masked", /*fin=*/true, /*masked=*/false);
-  ::send(fd, frame.data(), frame.size(), 0);
+  grc::rs::socket_send(fd, frame.data(), frame.size());
   const ServerFrame close_frame = read_server_frame(fd);
   check(close_frame.ok && close_frame.opcode == 0x8 && close_frame.payload.size() >= 2 &&
             ((static_cast<std::uint16_t>(close_frame.payload[0]) << 8) | close_frame.payload[1]) == 1002,
         "unmasked inbound closes with 1002");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -907,17 +968,17 @@ void test_text_too_long() {
   config.max_inbound_text = 16;
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   check(expect_opened(server) != 0, "opened for too-long text");
 
   const auto frame = client_text("this text is longer than sixteen bytes");
-  ::send(fd, frame.data(), frame.size(), 0);
+  grc::rs::socket_send(fd, frame.data(), frame.size());
   const ServerFrame close_frame = read_server_frame(fd);
   check(close_frame.ok && close_frame.opcode == 0x8 && close_frame.payload.size() >= 2 &&
             ((static_cast<std::uint16_t>(close_frame.payload[0]) << 8) | close_frame.payload[1]) == 1009,
         "over-long text closes with 1009");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -926,11 +987,11 @@ void test_wrong_path_404() {
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/wrong-path");
   check(hs.status == 404, "wrong path -> 404, got " + std::to_string(hs.status));
   check(wait_events(server, 1, 300).empty(), "a rejected handshake pushes no event");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -939,10 +1000,10 @@ void test_missing_subprotocol_400() {
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", /*subprotocol_header=*/"");
   check(hs.status == 400, "missing subprotocol -> 400, got " + std::to_string(hs.status));
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -951,13 +1012,13 @@ void test_malformed_request_400() {
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const std::string garbage = "not even http\r\n\r\n";
-  ::send(fd, garbage.data(), garbage.size(), 0);
+  grc::rs::socket_send(fd, garbage.data(), garbage.size());
   const auto bytes = recv_some(fd);
   const std::string raw(bytes.begin(), bytes.end());
   check(raw.rfind("HTTP/1.1 400", 0) == 0, "malformed request -> 400, got " + raw);
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -968,17 +1029,17 @@ void test_max_clients_503() {
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
 
-  const int fd1 = connect_loopback(server.port());
+  const SocketHandle fd1 = connect_loopback(server.port());
   const Handshake hs1 = do_handshake(fd1, "dGhlIHNhbXBsZSBub25jZQ==");
   check(hs1.status == 101, "first client admitted");
   check(expect_opened(server) != 0, "first client opened");
 
-  const int fd2 = connect_loopback(server.port());
+  const SocketHandle fd2 = connect_loopback(server.port());
   const Handshake hs2 = do_handshake(fd2, "AAAAAAAAAAAAAAAAAAAAAA==");
   check(hs2.status == 503, "second client over max_clients -> 503, got " + std::to_string(hs2.status));
 
-  ::close(fd1);
-  ::close(fd2);
+  grc::rs::socket_close(fd1);
+  grc::rs::socket_close(fd2);
   server.stop(1000);
 }
 
@@ -1004,7 +1065,7 @@ void test_queued_bytes_safety_net() {
   config.max_queued_bytes = 1024;
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   const std::uint32_t conn = expect_opened(server);
   check(conn != 0, "opened for queue limit");
@@ -1014,7 +1075,7 @@ void test_queued_bytes_safety_net() {
   const auto events = wait_events(server, 1, 2000);
   check(!events.empty() && events.back().kind == grc::live::Event::Closed && events.back().code == 1008,
         "queued-bytes overflow closes with 1008");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -1023,7 +1084,7 @@ void test_stats_track_sent_bytes() {
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   const std::uint32_t conn = expect_opened(server);
   check(conn != 0, "opened for stats");
@@ -1034,7 +1095,7 @@ void test_stats_track_sent_bytes() {
   check(stats.sent_messages == 1, "sent_messages == 1");
   check(stats.sent_bytes >= 5, "sent_bytes includes the frame header");
   check(server.stats(999999).sent_messages == 0, "stats() for an unknown connection is zero");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -1043,7 +1104,7 @@ void test_large_binary_4mib() {
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   const std::uint32_t conn = expect_opened(server);
   check(conn != 0, "opened for 4 MiB binary");
@@ -1054,7 +1115,7 @@ void test_large_binary_4mib() {
   check(server.send_binary(conn, payload), "send_binary 4 MiB");
   const ServerFrame frame = read_server_frame(fd);
   check(frame.ok && frame.opcode == 0x2 && frame.payload == payload, "4 MiB binary arrives byte-exact");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -1063,7 +1124,7 @@ void test_stop_closes_open_connections() {
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");
   check(expect_opened(server) != 0, "opened before stop()");
 
@@ -1073,8 +1134,8 @@ void test_stop_closes_open_connections() {
             ((static_cast<std::uint16_t>(close_frame.payload[0]) << 8) | close_frame.payload[1]) == 1000,
         "stop() sends close 1000 to an open connection");
   std::uint8_t probe;
-  check(::recv(fd, &probe, 1, 0) == 0, "stop() actually closes the TCP connection");
-  ::close(fd);
+  check(grc::rs::socket_recv(fd, &probe, 1) == 0, "stop() actually closes the TCP connection");
+  grc::rs::socket_close(fd);
 }
 
 // --- HTTP GET resource serving. ---
@@ -1091,10 +1152,10 @@ void test_http_get_sizes_byte_exact() {
   check(server.start(config, &source, &error), "server starts: " + error);
 
   for (std::size_t i = 0; i < 4; ++i) {
-    const int fd = connect_loopback(server.port());
-    check(fd >= 0, "connect for size " + std::to_string(sizes[i]));
+    const SocketHandle fd = connect_loopback(server.port());
+    check(fd != kInvalidSocket, "connect for size " + std::to_string(sizes[i]));
     const std::string req = plain_http_request("GET", config.resource_prefix + hashes[i]);
-    ::send(fd, req.data(), req.size(), 0);
+    grc::rs::socket_send(fd, req.data(), req.size());
     const HttpResponse resp = read_http_response(fd);
     check(resp.ok, "response complete for size " + std::to_string(sizes[i]));
     check(resp.status == 200, "200 for size " + std::to_string(sizes[i]) + ": got " + std::to_string(resp.status));
@@ -1107,7 +1168,7 @@ void test_http_get_sizes_byte_exact() {
           "ETag for size " + std::to_string(sizes[i]));
     check(resp.body == pattern_bytes(sizes[i], static_cast<std::uint8_t>(i)),
           "byte-exact body for size " + std::to_string(sizes[i]));
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
   server.stop(1000);
 }
@@ -1118,13 +1179,13 @@ void test_http_404_unknown_hash() {
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, &source, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const std::string req = plain_http_request("GET", config.resource_prefix + make_hash('e'));
-  ::send(fd, req.data(), req.size(), 0);
+  grc::rs::socket_send(fd, req.data(), req.size());
   const HttpResponse resp = read_http_response(fd);
   check(resp.ok && resp.status == 404, "unknown hash -> 404, got " + std::to_string(resp.status));
   check(resp.body.empty(), "404 body is empty");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -1142,12 +1203,12 @@ void test_http_400_malformed_hash() {
       config.resource_prefix + std::string(63, '0') + "g",   // non-hex
   };
   for (const std::string &path : bad_paths) {
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     const std::string req = plain_http_request("GET", path);
-    ::send(fd, req.data(), req.size(), 0);
+    grc::rs::socket_send(fd, req.data(), req.size());
     const HttpResponse resp = read_http_response(fd);
     check(resp.ok && resp.status == 400, "malformed hash '" + path + "' -> 400, got " + std::to_string(resp.status));
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
   const auto events = wait_events(server, (sizeof(bad_paths) / sizeof(bad_paths[0])), 2000);
   check(events.size() == (sizeof(bad_paths) / sizeof(bad_paths[0])) && events.back().kind == grc::live::Event::HttpGet &&
@@ -1164,9 +1225,9 @@ void test_http_405_wrong_method() {
   grc::live::ServerConfig config;
   std::string error;
   check(server.start(config, &source, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const std::string req = plain_http_request("POST", config.resource_prefix + hash);
-  ::send(fd, req.data(), req.size(), 0);
+  grc::rs::socket_send(fd, req.data(), req.size());
   const HttpResponse resp = read_http_response(fd);
   check(resp.ok && resp.status == 405, "POST -> 405, got " + std::to_string(resp.status));
   check(resp.headers.count("allow") != 0 && resp.headers.at("allow") == "GET", "405 carries Allow: GET");
@@ -1174,7 +1235,7 @@ void test_http_405_wrong_method() {
   check(!events.empty() && events[0].kind == grc::live::Event::HttpGet && events[0].hash == hash &&
             events[0].http_status == 405,
         "405 is also reported as an HttpGet event naming the attempted hash");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -1220,10 +1281,10 @@ void test_http_content_coding() {
   check(server.start(config, &source, &error), "server starts: " + error);
   const std::string path = config.resource_prefix + hash;
 
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   // 1. zstd negotiated.
   std::string req = plain_http_request("GET", path, {{"Accept-Encoding", "gzip, zstd"}});
-  ::send(fd, req.data(), req.size(), 0);
+  grc::rs::socket_send(fd, req.data(), req.size());
   HttpResponse resp = read_http_response(fd);
   check(resp.ok && resp.status == 200, "coded GET is 200");
   check(resp.headers.at("content-encoding") == "zstd", "Content-Encoding zstd");
@@ -1237,7 +1298,7 @@ void test_http_content_coding() {
   const std::size_t coded_size = resp.body.size();
   // 2. No Accept-Encoding: identity, still Vary.
   req = plain_http_request("GET", path);
-  ::send(fd, req.data(), req.size(), 0);
+  grc::rs::socket_send(fd, req.data(), req.size());
   resp = read_http_response(fd);
   check(resp.ok && resp.status == 200 && resp.body == identity, "no Accept-Encoding: identity bytes");
   check(resp.headers.count("content-encoding") == 0, "no Content-Encoding on identity");
@@ -1245,7 +1306,7 @@ void test_http_content_coding() {
         "identity ETag and Vary");
   // 3. gzip is not offered by this host.
   req = plain_http_request("GET", path, {{"Accept-Encoding", "gzip"}});
-  ::send(fd, req.data(), req.size(), 0);
+  grc::rs::socket_send(fd, req.data(), req.size());
   resp = read_http_response(fd);
   check(resp.ok && resp.body == identity && resp.headers.count("content-encoding") == 0,
         "a coding the host does not offer is identity");
@@ -1254,7 +1315,7 @@ void test_http_content_coding() {
   const int before_304 = source.compressions;
   for (const std::string &tag : {"\"" + hash + "\"", "\"" + hash + "-zstd\"", "\"" + hash + "-gzip\""}) {
     req = plain_http_request("GET", path, {{"Accept-Encoding", "zstd"}, {"If-None-Match", "\"x\", " + tag}});
-    ::send(fd, req.data(), req.size(), 0);
+    grc::rs::socket_send(fd, req.data(), req.size());
     resp = read_http_response(fd);
     check(resp.ok && resp.status == 304 && resp.body.empty() && resp.headers.at("etag") == tag &&
               resp.headers.at("vary") == "Accept-Encoding",
@@ -1263,12 +1324,12 @@ void test_http_content_coding() {
   check(source.compressions == before_304, "a 304 touches no body");
   // 5. A body that is not smaller is served as identity.
   req = plain_http_request("GET", config.resource_prefix + tiny, {{"Accept-Encoding", "zstd"}});
-  ::send(fd, req.data(), req.size(), 0);
+  grc::rs::socket_send(fd, req.data(), req.size());
   resp = read_http_response(fd);
   check(resp.ok && resp.status == 200 && resp.headers.count("content-encoding") == 0 &&
             resp.headers.at("etag") == "\"" + tiny + "\"",
         "an incompressible body falls back to identity");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   // 6. Events: coding and coded bytes.
   const auto events = wait_events(server, 8, 2000);
   int coded_events = 0;
@@ -1293,10 +1354,10 @@ void test_http_gzip_and_off_and_sabotage() {
     config.codings = {grc::live::Coding::Gzip};
     std::string error;
     check(server.start(config, &source, &error), "gzip server starts: " + error);
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     const std::string req = plain_http_request("GET", config.resource_prefix + hash,
                                                {{"Accept-Encoding", "gzip, deflate, br, zstd"}});
-    ::send(fd, req.data(), req.size(), 0);
+    grc::rs::socket_send(fd, req.data(), req.size());
     const HttpResponse resp = read_http_response(fd);
     check(resp.ok && resp.headers.at("content-encoding") == "gzip" &&
               resp.headers.at("etag") == "\"" + hash + "-gzip\"",
@@ -1305,7 +1366,7 @@ void test_http_gzip_and_off_and_sabotage() {
     check(grc::rs::http_coding::gzip_decompress(resp.body.data(), resp.body.size(), &decoded) && decoded == identity,
           "gzip body decodes to identity");
     check(resp.body.size() >= 2 && resp.body[0] == 0x1f && resp.body[1] == 0x8b, "a real gzip header");
-    ::close(fd);
+    grc::rs::socket_close(fd);
     server.stop(1000);
   }
   {
@@ -1313,14 +1374,14 @@ void test_http_gzip_and_off_and_sabotage() {
     grc::live::ServerConfig config;
     std::string error;
     check(server.start(config, &source, &error), "off server starts: " + error);
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     const std::string req = plain_http_request("GET", config.resource_prefix + hash, {{"Accept-Encoding", "zstd"}});
-    ::send(fd, req.data(), req.size(), 0);
+    grc::rs::socket_send(fd, req.data(), req.size());
     const HttpResponse resp = read_http_response(fd);
     check(resp.ok && resp.body == identity && resp.headers.count("content-encoding") == 0 &&
               resp.headers.count("vary") == 0 && resp.headers.at("etag") == "\"" + hash + "\"",
           "off: identity, no Vary, plain ETag");
-    ::close(fd);
+    grc::rs::socket_close(fd);
     server.stop(1000);
   }
   {
@@ -1330,15 +1391,15 @@ void test_http_gzip_and_off_and_sabotage() {
     config.corrupt_coded_body = true;
     std::string error;
     check(server.start(config, &source, &error), "sabotage server starts: " + error);
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     const std::string req = plain_http_request("GET", config.resource_prefix + hash, {{"Accept-Encoding", "zstd"}});
-    ::send(fd, req.data(), req.size(), 0);
+    grc::rs::socket_send(fd, req.data(), req.size());
     const HttpResponse resp = read_http_response(fd);
     std::vector<std::uint8_t> decoded;
     const bool ok = grc::rs::http_coding::zstd_decompress(resp.body.data(), resp.body.size(), &decoded);
     check(resp.ok && resp.headers.at("content-encoding") == "zstd" && (!ok || decoded != identity),
           "corrupt-coded-body: the coded body no longer decodes to the identity bytes");
-    ::close(fd);
+    grc::rs::socket_close(fd);
     server.stop(1000);
   }
 }
@@ -1352,19 +1413,19 @@ void test_http_if_none_match_304() {
   std::string error;
   check(server.start(config, &source, &error), "server starts: " + error);
 
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const std::string req1 = plain_http_request("GET", config.resource_prefix + hash);
-  ::send(fd, req1.data(), req1.size(), 0);
+  grc::rs::socket_send(fd, req1.data(), req1.size());
   const HttpResponse resp1 = read_http_response(fd);
   check(resp1.ok && resp1.status == 200, "first GET is 200");
 
   const std::string req2 = plain_http_request("GET", config.resource_prefix + hash, {{"If-None-Match", "\"" + hash + "\""}});
-  ::send(fd, req2.data(), req2.size(), 0);
+  grc::rs::socket_send(fd, req2.data(), req2.size());
   const HttpResponse resp2 = read_http_response(fd);
   check(resp2.ok && resp2.status == 304, "If-None-Match -> 304, got " + std::to_string(resp2.status));
   check(resp2.body.empty(), "304 body is empty");
   check(resp2.headers.count("etag") != 0 && resp2.headers.at("etag") == "\"" + hash + "\"", "304 carries ETag");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -1379,19 +1440,19 @@ void test_http_keep_alive_two_requests_one_connection() {
   std::string error;
   check(server.start(config, &source, &error), "server starts: " + error);
 
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const std::string req1 = plain_http_request("GET", config.resource_prefix + hash_a);
-  ::send(fd, req1.data(), req1.size(), 0);
+  grc::rs::socket_send(fd, req1.data(), req1.size());
   const HttpResponse resp1 = read_http_response(fd);
   check(resp1.ok && resp1.status == 200 && resp1.body == pattern_bytes(32, 1), "first request on the connection");
 
   const std::string req2 = plain_http_request("GET", config.resource_prefix + hash_b);
-  const ssize_t sent = ::send(fd, req2.data(), req2.size(), 0);
-  check(sent == static_cast<ssize_t>(req2.size()), "second request sent on the same (still-open) connection");
+  const std::ptrdiff_t sent = grc::rs::socket_send(fd, req2.data(), req2.size());
+  check(sent == static_cast<std::ptrdiff_t>(req2.size()), "second request sent on the same (still-open) connection");
   const HttpResponse resp2 = read_http_response(fd);
   check(resp2.ok && resp2.status == 200 && resp2.body == pattern_bytes(48, 2),
         "second request on the same connection, keep-alive");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -1404,16 +1465,16 @@ void test_http_connection_close_honoured() {
   std::string error;
   check(server.start(config, &source, &error), "server starts: " + error);
 
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const std::string req = plain_http_request("GET", config.resource_prefix + hash, {{"Connection", "close"}});
-  ::send(fd, req.data(), req.size(), 0);
+  grc::rs::socket_send(fd, req.data(), req.size());
   const HttpResponse resp = read_http_response(fd);
   check(resp.ok && resp.status == 200, "200 despite Connection: close");
   check(resp.headers.count("connection") != 0 && resp.headers.at("connection") == "close",
         "response echoes Connection: close");
   std::uint8_t probe;
-  check(::recv(fd, &probe, 1, 0) == 0, "Connection: close actually closes the TCP connection");
-  ::close(fd);
+  check(grc::rs::socket_recv(fd, &probe, 1) == 0, "Connection: close actually closes the TCP connection");
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -1427,11 +1488,11 @@ void test_http_max_http_clients_503() {
   std::string error;
   check(server.start(config, &source, &error), "server starts: " + error);
 
-  int fds[3];
+  SocketHandle fds[3];
   for (int i = 0; i < 3; ++i) {
     fds[i] = connect_loopback(server.port());
     const std::string req = plain_http_request("GET", config.resource_prefix + hash);
-    ::send(fds[i], req.data(), req.size(), 0);
+    grc::rs::socket_send(fds[i], req.data(), req.size());
     const HttpResponse resp = read_http_response(fds[i]);
     if (i < 2) {
       check(resp.ok && resp.status == 200, "client " + std::to_string(i) + " within max_http_clients -> 200");
@@ -1444,7 +1505,7 @@ void test_http_max_http_clients_503() {
   check(events.size() == 3 && events.back().kind == grc::live::Event::HttpGet &&
             events.back().hash == hash && events.back().http_status == 503,
         "the client beyond max_http_clients is also reported as an HttpGet 503 event");
-  for (int fd : fds) ::close(fd);
+  for (SocketHandle fd : fds) grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -1457,18 +1518,18 @@ void test_http_coexists_with_websocket() {
   std::string error;
   check(server.start(config, &source, &error), "server starts: " + error);
 
-  const int ws_fd = connect_loopback(server.port());
+  const SocketHandle ws_fd = connect_loopback(server.port());
   do_handshake(ws_fd, "dGhlIHNhbXBsZSBub25jZQ==");
   const std::uint32_t conn = expect_opened(server);
   check(conn != 0, "WebSocket session opened before any HTTP traffic");
 
-  const int http_fd = connect_loopback(server.port());
+  const SocketHandle http_fd = connect_loopback(server.port());
   const std::string req = plain_http_request("GET", config.resource_prefix + hash);
-  ::send(http_fd, req.data(), req.size(), 0);
+  grc::rs::socket_send(http_fd, req.data(), req.size());
   const HttpResponse resp = read_http_response(http_fd);
   check(resp.ok && resp.status == 200 && resp.body == pattern_bytes(128, 5),
         "HTTP GET succeeds alongside an open WebSocket session");
-  ::close(http_fd);
+  grc::rs::socket_close(http_fd);
 
   // The successful GET above already pushed its own HttpGet event; drain and check it before
   // sending on the WebSocket, so the Text event below isn't waiting behind it in the queue.
@@ -1478,11 +1539,11 @@ void test_http_coexists_with_websocket() {
         "the HTTP GET is also reported as an HttpGet event");
 
   const auto frame = client_text("still alive");
-  ::send(ws_fd, frame.data(), frame.size(), 0);
+  grc::rs::socket_send(ws_fd, frame.data(), frame.size());
   const auto events = wait_events(server, 1, 2000);
   check(!events.empty() && events[0].kind == grc::live::Event::Text && events[0].text == "still alive",
         "the WebSocket session still carries data after a concurrent HTTP fetch");
-  ::close(ws_fd);
+  grc::rs::socket_close(ws_fd);
   server.stop(1000);
 }
 
@@ -1505,13 +1566,13 @@ void test_ws_auth_missing_token_401() {
   config.auth_token = "s3cr3t-token";
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");  // no Authorization header
   check(hs.status == 401, "missing bearer token -> 401, got " + std::to_string(hs.status));
   const auto events = wait_events(server, 1, 2000);
   check(events.size() == 1 && events[0].kind == grc::live::Event::AuthRejected,
         "a rejected upgrade pushes exactly one AuthRejected event");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -1521,12 +1582,12 @@ void test_ws_auth_wrong_token_401() {
   config.auth_token = "s3cr3t-token";
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.1",
                                      {{"Authorization", "Bearer wrong-token"}});
   check(hs.status == 401, "wrong bearer token -> 401, got " + std::to_string(hs.status));
   check(wait_events(server, 1, 2000).size() == 1, "wrong token also pushes exactly one event");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -1536,12 +1597,12 @@ void test_ws_auth_correct_token_101() {
   config.auth_token = "s3cr3t-token";
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.1",
                                      {{"Authorization", "Bearer s3cr3t-token"}});
   check(hs.status == 101, "correct bearer token -> 101, got " + std::to_string(hs.status));
   check(expect_opened(server) != 0, "Opened event after a correctly authorized handshake");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -1553,10 +1614,10 @@ void test_ws_auth_disabled_by_default() {
   check(config.auth_token.empty(), "ServerConfig::auth_token defaults to empty");
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==");  // no Authorization header at all
   check(hs.status == 101, "no auth_token configured -> unauthenticated upgrade still succeeds");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -1569,9 +1630,9 @@ void test_http_get_auth_missing_token_401() {
   config.auth_token = "s3cr3t-token";
   std::string error;
   check(server.start(config, &source, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const std::string req = plain_http_request("GET", config.resource_prefix + hash);
-  ::send(fd, req.data(), req.size(), 0);
+  grc::rs::socket_send(fd, req.data(), req.size());
   const HttpResponse resp = read_http_response(fd);
   check(resp.ok && resp.status == 401, "missing bearer token on GET -> 401, got " + std::to_string(resp.status));
   check(resp.body.empty(), "401 body is empty");
@@ -1579,7 +1640,7 @@ void test_http_get_auth_missing_token_401() {
   check(!events.empty() && events[0].kind == grc::live::Event::HttpGet && events[0].hash == hash &&
             events[0].http_status == 401,
         "the 401 is also reported as an HttpGet event naming the attempted hash");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -1592,13 +1653,13 @@ void test_http_get_auth_wrong_token_401() {
   config.auth_token = "s3cr3t-token";
   std::string error;
   check(server.start(config, &source, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const std::string req =
       plain_http_request("GET", config.resource_prefix + hash, {{"Authorization", "Bearer wrong-token"}});
-  ::send(fd, req.data(), req.size(), 0);
+  grc::rs::socket_send(fd, req.data(), req.size());
   const HttpResponse resp = read_http_response(fd);
   check(resp.ok && resp.status == 401, "wrong bearer token on GET -> 401, got " + std::to_string(resp.status));
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
@@ -1611,20 +1672,23 @@ void test_http_get_auth_correct_token_200() {
   config.auth_token = "s3cr3t-token";
   std::string error;
   check(server.start(config, &source, &error), "server starts: " + error);
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const std::string req =
       plain_http_request("GET", config.resource_prefix + hash, {{"Authorization", "Bearer s3cr3t-token"}});
-  ::send(fd, req.data(), req.size(), 0);
+  grc::rs::socket_send(fd, req.data(), req.size());
   const HttpResponse resp = read_http_response(fd);
   check(resp.ok && resp.status == 200 && resp.body == pattern_bytes(16, 13),
         "correct bearer token on GET -> 200 byte-exact, got status " + std::to_string(resp.status));
-  ::close(fd);
+  grc::rs::socket_close(fd);
   server.stop(1000);
 }
 
 void test_no_mmap_mprotect_imports() {
+#ifdef _WIN32
+  std::puts("skip no-mmap-mprotect-imports: ELF nm inspection; PE imports are checked by w-imports");
+#else
   char exe_path[4096];
-  const ssize_t n = ::readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+  const std::ptrdiff_t n = ::readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
   check(n > 0, "readlink /proc/self/exe");
   if (n <= 0) return;
   exe_path[n] = '\0';
@@ -1644,6 +1708,7 @@ void test_no_mmap_mprotect_imports() {
   ::pclose(pipe);
   check(!found_mmap, "the test binary imports no mmap symbol (HTTP bodies are served from memory, never mapped)");
   check(!found_mprotect, "the test binary imports no mprotect symbol");
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -1666,11 +1731,11 @@ grc::live::ServerConfig g7n_config() {
 // Sends one request on a fresh connection and reads one response.
 HttpResponse one_request(std::uint16_t port, const std::string &method, const std::string &path,
                          const std::vector<std::pair<std::string, std::string>> &headers) {
-  const int fd = connect_loopback(port);
+  const SocketHandle fd = connect_loopback(port);
   const std::string req = plain_http_request(method, path, headers);
-  ::send(fd, req.data(), req.size(), 0);
+  grc::rs::socket_send(fd, req.data(), req.size());
   HttpResponse resp = read_http_response(fd);
-  ::close(fd);
+  grc::rs::socket_close(fd);
   return resp;
 }
 
@@ -1697,7 +1762,7 @@ void test_g7n_subprotocol_choice() {
       {"render-stream.5", 400, ""},
   };
   for (const Case &k : cases) {
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", k.offered);
     check(hs.status == k.status, std::string("offered '") + k.offered + "' -> " + std::to_string(k.status) +
                                      ", got " + std::to_string(hs.status));
@@ -1722,11 +1787,11 @@ void test_g7n_subprotocol_choice() {
       check(events.size() == 1 && events[0].kind == grc::live::Event::AuthRejected,
             "the /6 401 is an AuthRejected event");
     }
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
   {
     // /6 with the right bearer header still upgrades, and is reported as /6.
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.6",
                                        {{"Authorization", "Bearer s3cr3t-token"}});
     check(hs.status == 101, "/6 with the right bearer header -> 101");
@@ -1735,7 +1800,7 @@ void test_g7n_subprotocol_choice() {
       reported = reported || (e.kind == grc::live::Event::Opened && e.subprotocol == "render-stream.6");
     }
     check(reported, "reported as render-stream.6");
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
   server.stop(1000);
 }
@@ -1745,7 +1810,7 @@ void test_g7n_origin_on_upgrade() {
   std::string error;
   check(server.start(g7n_config(), nullptr, &error), "server starts: " + error);
   {
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7",
                                        {{"Origin", kForeign}});
     check(hs.status == 403, "a foreign Origin's upgrade -> 403, got " + std::to_string(hs.status));
@@ -1754,10 +1819,10 @@ void test_g7n_origin_on_upgrade() {
               events[0].origin == kForeign && events[0].route == "upgrade" && events[0].method == "GET" &&
               events[0].http_status == 403,
           "one OriginRejected event (route upgrade), no Opened");
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
   {
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7",
                                        {{"Origin", kOrigin}});
     check(hs.status == 101, "an allowed Origin's upgrade -> 101");
@@ -1765,17 +1830,17 @@ void test_g7n_origin_on_upgrade() {
     const auto events = wait_events(server, 1, 2000);
     check(events.size() == 1 && events[0].kind == grc::live::Event::Opened && events[0].origin == kOrigin,
           "Opened carries the allowed origin");
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
   {
     // Origin is compared exactly: a trailing slash or another port is foreign.
-    for (const char *near : {"http://127.0.0.1:5173/", "http://127.0.0.1:5174", "HTTP://127.0.0.1:5173", "null"}) {
-      const int fd = connect_loopback(server.port());
+    for (const char *near_origin : {"http://127.0.0.1:5173/", "http://127.0.0.1:5174", "HTTP://127.0.0.1:5173", "null"}) {
+      const SocketHandle fd = connect_loopback(server.port());
       const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7",
-                                         {{"Origin", near}});
-      check(hs.status == 403, std::string("near-miss origin '") + near + "' -> 403");
+                                         {{"Origin", near_origin}});
+      check(hs.status == 403, std::string("near-miss origin '") + near_origin + "' -> 403");
       wait_events(server, 1, 1000);
-      ::close(fd);
+      grc::rs::socket_close(fd);
     }
   }
   server.stop(1000);
@@ -1866,11 +1931,11 @@ void test_g7n_sabotage_switches() {
     const HttpResponse r = one_request(server.port(), "GET", config.resource_prefix + hash, {{"Origin", kForeign}});
     check(r.ok && r.status == 200 && header_or(r, "access-control-allow-origin") == kForeign,
           "accept-any-origin: a foreign GET is 200 with ACAO <foreign>");
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7",
                                        {{"Origin", kForeign}});
     check(hs.status == 101, "accept-any-origin: a foreign upgrade is 101");
-    ::close(fd);
+    grc::rs::socket_close(fd);
     server.stop(1000);
   }
   {
@@ -1929,6 +1994,10 @@ void test_g7n_parse_allowed_origins() {
 
 // The first non-loopback IPv4 address of this machine, or "" (the LAN legs then skip).
 std::string first_lan_ipv4() {
+#ifdef _WIN32
+  std::puts("skip LAN address discovery: getifaddrs is unavailable in the Windows test client");
+  return "";
+#else
   ifaddrs *list = nullptr;
   if (::getifaddrs(&list) != 0) return "";
   std::string found;
@@ -1941,22 +2010,14 @@ std::string first_lan_ipv4() {
   }
   ::freeifaddrs(list);
   return found;
+#endif
 }
 
-int connect_ipv4(const std::string &host, std::uint16_t port) {
-  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) return -1;
-  timeval tv{};
-  tv.tv_sec = 5;
-  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  ::inet_pton(AF_INET, host.c_str(), &addr.sin_addr);
-  if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
-    ::close(fd);
-    return -1;
-  }
+SocketHandle connect_ipv4(const std::string &host, std::uint16_t port) {
+  grc::rs::IpAddress addr;
+  if (!grc::rs::parse_ip_literal(host, grc::rs::AddrFamily::IPv4, &addr)) return kInvalidSocket;
+  const auto fd = grc::rs::tcp_connect(addr, port, nullptr);
+  if (fd != kInvalidSocket) client_timeouts(fd, false);
   return fd;
 }
 
@@ -1986,17 +2047,17 @@ void test_trk1_track_upgrade_off() {
   check(config.track_subprotocols.empty() && config.max_tracks == 0, "trk1 off: defaults");
   std::string error;
   check(server.start(config, nullptr, &error), "server starts: " + error);
-  const int fd1 = connect_loopback(server.port());
+  const SocketHandle fd1 = connect_loopback(server.port());
   const Handshake track = do_handshake(fd1, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", kTrackSp);
-  const int fd2 = connect_loopback(server.port());
+  const SocketHandle fd2 = connect_loopback(server.port());
   const Handshake unknown = do_handshake(fd2, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "nope.1");
   check(track.ok && track.status == 400, "trk1 off: a track upgrade -> 400, got " + std::to_string(track.status));
   check(!track.raw.empty() && track.raw == unknown.raw,
         "trk1 off: the track upgrade's response is byte-identical to an unknown subprotocol's:\n" + track.raw +
             "\n---\n" + unknown.raw);
   check(wait_events(server, 1, 300).empty(), "trk1 off: no event for either");
-  ::close(fd1);
-  ::close(fd2);
+  grc::rs::socket_close(fd1);
+  grc::rs::socket_close(fd2);
   server.stop(1000);
 }
 
@@ -2012,7 +2073,7 @@ void test_trk1_track_upgrade_on() {
   check(server.start(config, nullptr, &error), "server starts: " + error);
 
   // A track upgrade without the bearer header: 101 with the track subprotocol.
-  const int t1 = connect_loopback(server.port());
+  const SocketHandle t1 = connect_loopback(server.port());
   const Handshake hs1 = do_handshake(t1, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", kTrackSp);
   check(hs1.status == 101, "trk1 on: track upgrade without a token -> 101, got " + std::to_string(hs1.status));
   check(hs1.raw.find(std::string("Sec-WebSocket-Protocol: ") + kTrackSp + "\r\n") != std::string::npos,
@@ -2023,58 +2084,58 @@ void test_trk1_track_upgrade_on() {
 
   // A view upgrade still needs the token.
   {
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     const Handshake hs = do_handshake(fd, "AAAAAAAAAAAAAAAAAAAAAA==");
     check(hs.status == 401, "trk1 on: view upgrade without the token -> 401, got " + std::to_string(hs.status));
     check(wait_kind(server, grc::live::Event::AuthRejected), "trk1 on: ...an AuthRejected event");
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
   // A second track upgrade is over max_tracks.
-  const int t2 = connect_loopback(server.port());
+  const SocketHandle t2 = connect_loopback(server.port());
   const Handshake hs2 = do_handshake(t2, "BBBBBBBBBBBBBBBBBBBBBA==", "/render-stream", kTrackSp);
   check(hs2.status == 503, "trk1 on: second track upgrade -> 503, got " + std::to_string(hs2.status));
-  ::close(t2);
+  grc::rs::socket_close(t2);
   // ...while a view upgrade (with the token) still succeeds: the pools are independent.
-  const int v1 = connect_loopback(server.port());
+  const SocketHandle v1 = connect_loopback(server.port());
   const Handshake hv = do_handshake(v1, "CCCCCCCCCCCCCCCCCCCCCA==", "/render-stream", "render-stream.1", {bearer});
   check(hv.status == 101, "trk1 on: view upgrade beside a track -> 101, got " + std::to_string(hv.status));
   check(wait_kind(server, grc::live::Event::Opened, &opened) && opened.subprotocol == "render-stream.1",
         "trk1 on: the view Opened");
   // And with the view pool full, a view upgrade is 503 while the track stays.
   {
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     const Handshake hs = do_handshake(fd, "DDDDDDDDDDDDDDDDDDDDDA==", "/render-stream", "render-stream.1", {bearer});
     check(hs.status == 503, "trk1 on: second view upgrade -> 503, got " + std::to_string(hs.status));
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
-  ::close(v1);
+  grc::rs::socket_close(v1);
   check(wait_kind(server, grc::live::Event::Closed), "trk1 on: view Closed");
 
   // A client offering both gets the view subprotocol, in either offer order (and is bearer-checked).
   for (const char *offer : {"render-stream.1, render-stream-track.1", "render-stream-track.1, render-stream.1"}) {
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     const Handshake hs = do_handshake(fd, "EEEEEEEEEEEEEEEEEEEEEA==", "/render-stream", offer, {bearer});
     check(hs.status == 101 && hs.raw.find("Sec-WebSocket-Protocol: render-stream.1\r\n") != std::string::npos,
           std::string("trk1 on: offering '") + offer + "' gets the view subprotocol, got " + hs.raw);
     check(wait_kind(server, grc::live::Event::Opened, &opened) && opened.subprotocol == "render-stream.1",
           std::string("trk1 on: '") + offer + "' Opened as view");
-    ::close(fd);
+    grc::rs::socket_close(fd);
     check(wait_kind(server, grc::live::Event::Closed), "trk1 on: closed between offers");
   }
   {
     // Offering both without a token: it is a view upgrade, so 401.
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     const Handshake hs = do_handshake(fd, "FFFFFFFFFFFFFFFFFFFFFA==", "/render-stream", "render-stream.1, render-stream-track.1");
     check(hs.status == 401, "trk1 on: both offered without the token -> 401, got " + std::to_string(hs.status));
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
   // The track slot returns at its Closed.
-  ::close(t1);
+  grc::rs::socket_close(t1);
   check(wait_kind(server, grc::live::Event::Closed), "trk1 on: track Closed");
-  const int t3 = connect_loopback(server.port());
+  const SocketHandle t3 = connect_loopback(server.port());
   const Handshake hs3 = do_handshake(t3, "GGGGGGGGGGGGGGGGGGGGGA==", "/render-stream", kTrackSp);
   check(hs3.status == 101, "trk1 on: a track upgrade after the first closed -> 101, got " + std::to_string(hs3.status));
-  ::close(t3);
+  grc::rs::socket_close(t3);
   server.stop(1000);
 }
 
@@ -2115,25 +2176,25 @@ void test_lan_bind() {
   if (!lan.empty()) via.push_back(lan);
   else std::printf("rs_ws_test: no non-loopback IPv4 address; the LAN-address connection is skipped\n");
   for (const std::string &host : via) {
-    const int fd = connect_ipv4(host, server.port());
-    check(fd >= 0, "connects to 0.0.0.0's listener through " + host);
-    if (fd < 0) continue;
+    const SocketHandle fd = connect_ipv4(host, server.port());
+    check(fd != kInvalidSocket, "connects to 0.0.0.0's listener through " + host);
+    if (fd == kInvalidSocket) continue;
     const Handshake ok = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7",
                                        {{"Origin", kOrigin}});
     check(ok.status == 101, "an allowed Origin's upgrade through " + host + " -> 101, got " + std::to_string(ok.status));
     wait_events(server, 1, 2000);
-    ::close(fd);
-    const int fd2 = connect_ipv4(host, server.port());
+    grc::rs::socket_close(fd);
+    const SocketHandle fd2 = connect_ipv4(host, server.port());
     const Handshake bad = do_handshake(fd2, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7",
                                         {{"Origin", kForeign}});
     check(bad.status == 403, "a foreign Origin through " + host + " -> 403, got " + std::to_string(bad.status));
     wait_events(server, 1, 2000);
-    ::close(fd2);
+    grc::rs::socket_close(fd2);
     // The same listener also enforces the bearer token on resources and the upgrade rules.
-    const int fd3 = connect_ipv4(host, server.port());
+    const SocketHandle fd3 = connect_ipv4(host, server.port());
     const Handshake nosub = do_handshake(fd3, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "", {{"Origin", kOrigin}});
     check(nosub.status == 400, "no subprotocol through " + host + " -> 400, got " + std::to_string(nosub.status));
-    ::close(fd3);
+    grc::rs::socket_close(fd3);
   }
   server.stop(1000);
   if (!lan.empty()) {
@@ -2143,16 +2204,16 @@ void test_lan_bind() {
     c2.host = lan;
     c2.allow_non_loopback = true;
     check(bound.start(c2, nullptr, &error), "the host address binds with allow_non_loopback: " + error);
-    const int fd = connect_ipv4(lan, bound.port());
-    check(fd >= 0, "connects to " + lan);
-    if (fd >= 0) ::close(fd);
-    check(connect_loopback(bound.port()) < 0, "a listener bound to " + lan + " is not on 127.0.0.1");
+    const SocketHandle fd = connect_ipv4(lan, bound.port());
+    check(fd != kInvalidSocket, "connects to " + lan);
+    if (fd != kInvalidSocket) grc::rs::socket_close(fd);
+    check(connect_loopback(bound.port()) == kInvalidSocket, "a listener bound to " + lan + " is not on 127.0.0.1");
     bound.stop(1000);
   }
 }
 
 // Reads until the peer closes or `ms` passes; the first frame, if any.
-ServerFrame first_frame_or_close(int fd) { return read_server_frame(fd); }
+ServerFrame first_frame_or_close(SocketHandle fd) { return read_server_frame(fd); }
 
 std::uint16_t close_code_of(const ServerFrame &f) {
   return f.ok && f.opcode == 0x8 && f.payload.size() >= 2
@@ -2170,37 +2231,37 @@ void test_malformed_inputs_on_lan_listener() {
   std::string error;
   check(server.start(config, nullptr, &error), "malformed-input server starts: " + error);
   const auto upgraded = [&]() {
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7",
                                        {{"Origin", kOrigin}});
     if (hs.status != 101) {
-      ::close(fd);
-      return -1;
+      grc::rs::socket_close(fd);
+      return kInvalidSocket;
     }
     wait_events(server, 1, 2000);
     return fd;
   };
   // Headers over 8 KiB without a terminator, then with one.
   for (const bool terminated : {false, true}) {
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     std::string req = "GET /render-stream HTTP/1.1\r\nHost: x\r\nX-Pad: " + std::string(9000, 'a') + (terminated ? "\r\n\r\n" : "");
-    ::send(fd, req.data(), req.size(), MSG_NOSIGNAL);
+    grc::rs::socket_send(fd, req.data(), req.size());
     const auto bytes = recv_some(fd);
     const std::string raw(bytes.begin(), bytes.end());
     check(raw.rfind("HTTP/1.1 400", 0) == 0 || raw.rfind("HTTP/1.1 431", 0) == 0 || raw.empty(),
           std::string("headers over 8 KiB (") + (terminated ? "terminated" : "unterminated") + ") -> 400 or closed, got " + raw.substr(0, 40));
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
   // A NUL in the request line, a lone LF head, an absurd method and a 70000-byte target.
   for (const std::string &req : {std::string("GET /render\0stream HTTP/1.1\r\n\r\n", 32), std::string("GET / HTTP/1.1\n\n"),
                                  std::string(300, 'M') + " / HTTP/1.1\r\n\r\n",
                                  "GET /" + std::string(70000, 'p') + " HTTP/1.1\r\n\r\n"}) {
-    const int fd = connect_loopback(server.port());
-    ::send(fd, req.data(), req.size(), MSG_NOSIGNAL);
+    const SocketHandle fd = connect_loopback(server.port());
+    grc::rs::socket_send(fd, req.data(), req.size());
     const auto bytes = recv_some(fd);
     const std::string raw(bytes.begin(), bytes.end());
     check(raw.empty() || raw.rfind("HTTP/1.1 4", 0) == 0, "a malformed head -> 4xx or closed, got " + raw.substr(0, 40));
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
   // Frame headers: {description, bytes, expected close code (0: the server just closes)}.
   struct Case {
@@ -2229,44 +2290,44 @@ void test_malformed_inputs_on_lan_listener() {
       {"binary frame", with_key({0x82, 0x80}), 1003},
   };
   for (const Case &c : cases) {
-    const int fd = upgraded();
-    check(fd >= 0, std::string("upgrade before: ") + c.what);
-    if (fd < 0) continue;
-    ::send(fd, c.bytes.data(), c.bytes.size(), MSG_NOSIGNAL);
+    const SocketHandle fd = upgraded();
+    check(fd != kInvalidSocket, std::string("upgrade before: ") + c.what);
+    if (fd == kInvalidSocket) continue;
+    grc::rs::socket_send(fd, c.bytes.data(), c.bytes.size());
     const ServerFrame f = first_frame_or_close(fd);
     check(close_code_of(f) == c.code, std::string(c.what) + " closes " + std::to_string(c.code) + ", got " +
                                           std::to_string(close_code_of(f)));
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
   {
     // A masked text frame whose payload is not UTF-8.
-    const int fd = upgraded();
-    if (fd >= 0) {
+    const SocketHandle fd = upgraded();
+    if (fd != kInvalidSocket) {
       const auto f = client_frame(0x1, {0xC3, 0x28, 0xFF});
-      ::send(fd, f.data(), f.size(), MSG_NOSIGNAL);
+      grc::rs::socket_send(fd, f.data(), f.size());
       const ServerFrame r = first_frame_or_close(fd);
       check(close_code_of(r) == 1007 || close_code_of(r) == 1002 || close_code_of(r) == 0,
             "non-UTF-8 text is closed or tolerated without a crash, got " + std::to_string(close_code_of(r)));
-      ::close(fd);
+      grc::rs::socket_close(fd);
     }
   }
   {
     // A header cut off mid-way and an abrupt close; a frame header cut off and a close.
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     const std::string half = "GET /render-stream HTTP/1.1\r\nHost: x\r\nUpg";
-    ::send(fd, half.data(), half.size(), MSG_NOSIGNAL);
-    ::close(fd);
-    const int fd2 = upgraded();
-    if (fd2 >= 0) {
+    grc::rs::socket_send(fd, half.data(), half.size());
+    grc::rs::socket_close(fd);
+    const SocketHandle fd2 = upgraded();
+    if (fd2 != kInvalidSocket) {
       const std::uint8_t part[3] = {0x81, 0xFE, 0x01};
-      ::send(fd2, part, sizeof(part), MSG_NOSIGNAL);
-      ::close(fd2);
+      grc::rs::socket_send(fd2, part, sizeof(part));
+      grc::rs::socket_close(fd2);
     }
     wait_events(server, 1, 500);
   }
-  const int after = upgraded();
-  check(after >= 0, "the server still upgrades after every malformed input");
-  if (after >= 0) ::close(after);
+  const SocketHandle after = upgraded();
+  check(after != kInvalidSocket, "the server still upgrades after every malformed input");
+  if (after != kInvalidSocket) grc::rs::socket_close(after);
   server.stop(1000);
 }
 
@@ -2363,7 +2424,7 @@ void make_pki(TestPki *p) {
 
 // A blocking OpenSSL client over an already-connected socket (the socket's 5 s timeouts apply).
 struct TlsClient {
-  int fd = -1;
+  SocketHandle fd = kInvalidSocket;
   SSL_CTX *ctx = nullptr;
   SSL *ssl = nullptr;
   bool ok = false;
@@ -2375,7 +2436,7 @@ struct TlsClient {
   ~TlsClient() {
     if (ssl != nullptr) SSL_free(ssl);
     if (ctx != nullptr) SSL_CTX_free(ctx);
-    if (fd >= 0) ::close(fd);
+    if (fd != kInvalidSocket) grc::rs::socket_close(fd);
   }
   bool send(const std::string &s) { return send(reinterpret_cast<const std::uint8_t *>(s.data()), s.size()); }
   bool send(const std::uint8_t *data, std::size_t len) {
@@ -2404,10 +2465,10 @@ struct TlsClient {
   }
 };
 
-std::unique_ptr<TlsClient> tls_connect(int fd, const TestPki &pki) {
+std::unique_ptr<TlsClient> tls_connect(SocketHandle fd, const TestPki &pki) {
   auto c = std::make_unique<TlsClient>();
   c->fd = fd;
-  if (fd < 0) return c;
+  if (fd == kInvalidSocket) return c;
   c->ctx = SSL_CTX_new(TLS_client_method());
   SSL_CTX_load_verify_locations(c->ctx, pki.cert.c_str(), nullptr);
   SSL_CTX_set_verify(c->ctx, SSL_VERIFY_PEER, nullptr);
@@ -2608,6 +2669,7 @@ void test_wss_close_while_client_sends(const TestPki &pki, grc::live::TlsContext
   const auto previous_sigpipe = std::signal(SIGPIPE, SIG_IGN);
   std::atomic<bool> started{false};
   std::atomic<bool> closing{false};
+  double trailing_ms = 0;
   int sent_after_close = 0;
   int first_send_error = 0;
   std::thread writer([&] {
@@ -2615,8 +2677,9 @@ void test_wss_close_while_client_sends(const TestPki &pki, grc::live::TlsContext
     do {
       c->send(frame.data(), frame.size());
       started.store(true);
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      pause_one_millisecond();
     } while (!closing.load());
+    const auto trailing_start = std::chrono::steady_clock::now();
     for (int i = 0; i < 100; ++i) {
       errno = 0;
       if (c->send(frame.data(), frame.size())) {
@@ -2624,14 +2687,19 @@ void test_wss_close_while_client_sends(const TestPki &pki, grc::live::TlsContext
       } else if (first_send_error == 0) {
         first_send_error = errno;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      pause_one_millisecond();
     }
+    trailing_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - trailing_start).count();
   });
   while (!started.load()) std::this_thread::yield();
   check(server.send_text(conn, "final text"), "linger WSS queues final text");
   server.close(conn, 1008, "track-rate");
   closing.store(true);
   writer.join();
+  std::printf("linger WSS 100 trailing frames: %.3f ms (bound < 500 ms)\n", trailing_ms);
+  check(trailing_ms < 500, "linger WSS trailing loop finishes within half the 1000 ms linger deadline, ms=" +
+                               std::to_string(trailing_ms));
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   const ServerFrame text = tls_read_server_frame(*c);
   check(text.ok && text.opcode == 1 && std::string(text.payload.begin(), text.payload.end()) == "final text",
@@ -2731,10 +2799,10 @@ void test_wss_resources(const TestPki &pki, grc::live::TlsContext *ctx) {
   const HttpResponse plain_get = one_request(server.port(), "GET", path_b, {});
   check(plain_get.ok && plain_get.status == 200 && plain_get.body == *source.lookup(b),
         "plaintext GET from loopback on the TLS port: 200");
-  const int fd = connect_loopback(server.port());
+  const SocketHandle fd = connect_loopback(server.port());
   const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7", kOriginHeader);
   check(hs.status == 101, "plaintext upgrade from loopback on the TLS port: 101");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   const grc::live::Server::TlsStats ts = server.tls_stats();
   check(ts.tls_connections == 1 && ts.plaintext_loopback == 2 && ts.tls_required == 0,
         "tls_stats: 1 TLS, 2 plaintext loopback (" + std::to_string(ts.tls_connections) + ", " +
@@ -2761,14 +2829,14 @@ void test_wss_tls_required_off_loopback(const TestPki &pki, grc::live::TlsContex
   for (const std::string &req :
        {plain_http_request("GET", "/resources/sha256/" + b),
         http_request("dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7", kOriginHeader)}) {
-    const int fd = connect_ipv4(lan, server.port());
-    ::send(fd, req.data(), req.size(), 0);
+    const SocketHandle fd = connect_ipv4(lan, server.port());
+    grc::rs::socket_send(fd, req.data(), req.size());
     const HttpResponse r = read_http_response(fd);
     check(r.ok && r.status == 403 && std::string(r.body.begin(), r.body.end()) == "tls-required\n",
           "plaintext from " + lan + " is 403 tls-required (got " + std::to_string(r.status) + ")");
     std::uint8_t tail[8];
-    check(::recv(fd, tail, sizeof tail, 0) == 0, "and the TCP connection closes");
-    ::close(fd);
+    check(grc::rs::socket_recv(fd, tail, sizeof tail) == 0, "and the TCP connection closes");
+    grc::rs::socket_close(fd);
   }
   check(wait_events(server, 1, 200).empty(), "a tls-required refusal raises no event");
   // TLS through the LAN address: served.
@@ -2808,22 +2876,22 @@ void test_wss_lan_plaintext(const TestPki &pki, grc::live::TlsContext *ctx) {
   check(server.start(config, &source, &error), "wss with lan_plaintext on 0.0.0.0 starts: " + error);
   // Plaintext GET through the LAN address: 200, byte-exact.
   {
-    const int fd = connect_ipv4(lan, server.port());
+    const SocketHandle fd = connect_ipv4(lan, server.port());
     const std::string req = plain_http_request("GET", "/resources/sha256/" + b);
-    ::send(fd, req.data(), req.size(), 0);
+    grc::rs::socket_send(fd, req.data(), req.size());
     const HttpResponse r = read_http_response(fd);
     check(r.ok && r.status == 200 && r.body == *source.lookup(b),
           "lan_plaintext: plaintext GET from " + lan + " is 200 (got " + std::to_string(r.status) + ")");
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
   // Plaintext upgrade through the LAN address: 101, an Opened event, text in.
   {
-    const int fd = connect_ipv4(lan, server.port());
+    const SocketHandle fd = connect_ipv4(lan, server.port());
     const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7", kOriginHeader);
     check(hs.status == 101, "lan_plaintext: plaintext upgrade from " + lan + " is 101 (got " +
                                 std::to_string(hs.status) + ")");
     const auto frame = client_text("hello");
-    ::send(fd, frame.data(), frame.size(), 0);
+    grc::rs::socket_send(fd, frame.data(), frame.size());
     const auto events = wait_events(server, 3, 2000);  // the GET's HttpGet, Opened, Text
     bool opened = false;
     bool text = false;
@@ -2832,7 +2900,7 @@ void test_wss_lan_plaintext(const TestPki &pki, grc::live::TlsContext *ctx) {
       text |= e.kind == grc::live::Event::Text && e.text == "hello";
     }
     check(opened && text, "lan_plaintext: the plaintext LAN session opens and its text arrives");
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
   // TLS through the LAN address: still served.
   auto c = tls_connect(connect_ipv4(lan, server.port()), pki);
@@ -2858,19 +2926,19 @@ void test_wss_bad_records(const TestPki &pki, grc::live::TlsContext *ctx) {
   check(server.start(wss_config(ctx), nullptr, &error), "wss server starts: " + error);
   {
     // A handshake record that is not a ClientHello: an alert, then the close.
-    const int fd = connect_loopback(server.port());
+    const SocketHandle fd = connect_loopback(server.port());
     // One record holding a ClientHello whose body is one byte: a decode error, not a wait.
     const std::uint8_t junk[] = {0x16, 0x03, 0x01, 0x00, 0x05, 0x01, 0x00, 0x00, 0x01, 0xff};
-    ::send(fd, junk, sizeof junk, 0);
+    grc::rs::socket_send(fd, junk, sizeof junk);
     std::vector<std::uint8_t> got;
     std::uint8_t buf[256];
     for (;;) {
-      const ssize_t n = ::recv(fd, buf, sizeof buf, 0);
+      const std::ptrdiff_t n = grc::rs::socket_recv(fd, buf, sizeof buf);
       if (n <= 0) break;
       got.insert(got.end(), buf, buf + n);
     }
     check(!got.empty() && got[0] == 0x15, "a bad ClientHello gets a TLS alert record, then the close");
-    ::close(fd);
+    grc::rs::socket_close(fd);
   }
   {
     // A session that opened a WebSocket, then sends a forged application-data record: the
@@ -2883,7 +2951,7 @@ void test_wss_bad_records(const TestPki &pki, grc::live::TlsContext *ctx) {
     check(conn != 0, "opened");
     std::uint8_t forged[5 + 32] = {0x17, 0x03, 0x03, 0x00, 0x20};
     for (std::size_t i = 5; i < sizeof forged; ++i) forged[i] = static_cast<std::uint8_t>(i);
-    ::send(c->fd, forged, sizeof forged, MSG_NOSIGNAL);
+    grc::rs::socket_send(c->fd, forged, sizeof forged);
     const auto events = wait_events(server, 1, 2000);
     check(events.size() == 1 && events[0].kind == grc::live::Event::Closed && events[0].code == 1006 &&
               events[0].reason == "tls error",
@@ -2922,7 +2990,7 @@ void tls_bench(const TestPki &pki, grc::live::TlsContext *ctx) {
     for (int round = 0; round < 10; ++round) {
       const int tls = round % 2;
       std::unique_ptr<TlsClient> c;
-      int fd = connect_loopback(server.port());
+      SocketHandle fd = connect_loopback(server.port());
       if (tls == 1) {
         c = tls_connect(fd, pki);
         c->send(http_request("dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7", kOriginHeader));
@@ -2942,7 +3010,7 @@ void tls_bench(const TestPki &pki, grc::live::TlsContext *ctx) {
         }
       }
       secs[tls] = std::min(secs[tls], std::chrono::duration<double>(now() - t0).count());
-      if (tls == 0) ::close(fd);
+      if (tls == 0) grc::rs::socket_close(fd);
       server.close(conn, 1000, "");
       wait_events(server, 1, 1000);
     }

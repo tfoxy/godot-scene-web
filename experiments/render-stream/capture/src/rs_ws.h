@@ -23,7 +23,7 @@
 // called from the main thread and never blocks on the network; take_events()
 // drains what the I/O thread observed since the last call. The I/O thread and
 // the caller's thread communicate only through the Server's internal mutex
-// and a self-pipe used to wake poll(2) -- never a callback, so encoding and
+// and the platform wake channel -- never a callback, so encoding and
 // mirror access stay entirely on the caller's thread.
 // ResourceSource::lookup() is
 // the one exception: it is called directly from the I/O thread (never the
@@ -146,6 +146,9 @@
 #include <vector>
 
 namespace grc {
+namespace rs {
+enum class WinBind : std::uint8_t;
+}
 namespace live {
 
 // (render-stream-2.md "HTTP (live)"): an HTTP content coding a
@@ -370,6 +373,8 @@ struct Event {
 class Server {
  public:
   Server();
+  // Explicit platform policy for engine-free bind/rearm probes. Production uses the default.
+  explicit Server(rs::WinBind win_bind);
   ~Server();
   Server(const Server &) = delete;
   Server &operator=(const Server &) = delete;

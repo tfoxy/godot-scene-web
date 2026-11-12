@@ -10,10 +10,7 @@
 // The CAR1 sabotages are test-only: CarrierSet::Sabotage::RouteByLocal must fail the routing
 // check and PerCarrierAdmission the admission check; main() runs both checks under each and
 // fails if a sabotage goes unnoticed.
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include "rs_platform.h"
 
 #include <chrono>
 #include <cstddef>
@@ -34,6 +31,8 @@
 #include "rs_carrier_set.h"
 #include "rs_ws.h"
 
+using grc::rs::SocketHandle;
+using grc::rs::kInvalidSocket;
 using grc::live::AbiCarrier;
 using grc::live::CarrierServices;
 using grc::live::CarrierSet;
@@ -511,27 +510,22 @@ void test_carrier_list() {
 
 // ------------------------------------------------------------------- ws: the real rs_ws server
 
-int connect_upgrade(std::uint16_t port, int *status) {
-  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-  if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
-    ::close(fd);
+SocketHandle connect_upgrade(std::uint16_t port, int *status) {
+  const auto fd = grc::rs::tcp_connect(grc::rs::loopback_address(grc::rs::AddrFamily::IPv4), port, nullptr);
+  if (fd == kInvalidSocket) {
     *status = -1;
-    return -1;
+    return kInvalidSocket;
   }
   const std::string req =
       "GET /render-stream HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\n"
       "Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
       "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: render-stream.1\r\n\r\n";
-  if (::send(fd, req.data(), req.size(), 0) != static_cast<ssize_t>(req.size())) {
+  if (grc::rs::socket_send(fd, req.data(), req.size()) != static_cast<std::ptrdiff_t>(req.size())) {
     *status = -1;
   }
   std::string head;
   char ch;
-  while (head.find("\r\n\r\n") == std::string::npos && ::recv(fd, &ch, 1, 0) == 1) head.push_back(ch);
+  while (head.find("\r\n\r\n") == std::string::npos && grc::rs::socket_recv(fd, &ch, 1) == 1) head.push_back(ch);
   *status = head.size() > 12 ? std::atoi(head.substr(9, 3).c_str()) : -1;
   return fd;
 }
@@ -559,9 +553,9 @@ void test_ws_shares_admission() {
   check(set.start(&error), "ws: start " + error);
   check(b.connect(1), "ws: fb takes the one slot");
   int status = 0;
-  int fd = connect_upgrade(wsp->port(), &status);
+  SocketHandle fd = connect_upgrade(wsp->port(), &status);
   check(status == 503, "ws: upgrade refused 503 while fb holds the slot (got " + std::to_string(status) + ")");
-  if (fd >= 0) ::close(fd);
+  if (fd != kInvalidSocket) grc::rs::socket_close(fd);
   b.closed(1);
   set.take_events();
   fd = connect_upgrade(wsp->port(), &status);
@@ -573,7 +567,7 @@ void test_ws_shares_admission() {
   const std::uint32_t conn = ev.empty() ? 0 : ev[0].conn;
   check(b.admit(2) == 0, "ws: fb refused while ws holds the slot");
   check(set.send_text(conn, "hi"), "ws: send through the set");
-  ::close(fd);
+  grc::rs::socket_close(fd);
   ev = wait_events(set, 1, 2000);
   check(ev.size() == 1 && ev[0].kind == Event::Closed && ev[0].conn == conn, "ws: Closed");
   check(set.admitted() == 0, "ws: the slot returned at Closed");

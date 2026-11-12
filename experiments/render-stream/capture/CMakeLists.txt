@@ -198,6 +198,11 @@ target_include_directories(rs_carrier_set_test PRIVATE src)
 target_link_libraries(rs_carrier_set_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_carrier_set COMMAND rs_carrier_set_test)
 
+add_executable(rs_ws_platform_test test/rs_ws_platform_test.cpp src/rs_ws.cpp src/rs_sha1.cpp)
+target_include_directories(rs_ws_platform_test PRIVATE src)
+target_link_libraries(rs_ws_platform_test PRIVATE grc_warnings grc_platform grc_codecs Threads::Threads)
+add_test(NAME rs_ws_platform COMMAND rs_ws_platform_test)
+
 # TrackHub over a recording fake transport -- the hello grammar,
 # every check in its order, every close reason, pairing, keepalive and idle, rate, UTF-8,
 # close_all -- plus the four test-only sabotages, each of which must fail its check.
@@ -735,7 +740,7 @@ target_link_libraries(rs_capture_api_test PRIVATE grc_warnings grc_platform Thre
 add_test(NAME rs_capture_api COMMAND rs_capture_api_test)
 
 # These standalone consumers share the same platform implementation as the capture.
-foreach(target IN ITEMS rs_publish_test rs_ws_test rs_carrier_set_test rs_track_test
+foreach(target IN ITEMS rs_publish_test rs_ws_test rs_ws_echo rs_carrier_set_test rs_track_test
     rs_carrier_ext_test rs_expose_test rs_net_module_test rs_live_test rs_live_window_test
     rs_live_host rs_texture_worker_test rs_adopt_test rs_histogram_test
     rs_canvas_texture_shim_test rs_registry_test rs_registry_bench rs_texture_cache_test

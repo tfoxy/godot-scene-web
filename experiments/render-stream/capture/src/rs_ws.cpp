@@ -1,18 +1,10 @@
 #include "rs_ws.h"
 
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <poll.h>
-#include <pthread.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include "rs_platform.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cctype>
-#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -470,11 +462,6 @@ bool contains(const std::vector<std::string> &list, const std::string &value) {
   return std::find(list.begin(), list.end(), value) != list.end();
 }
 
-void set_nonblocking(int fd) {
-  const int flags = ::fcntl(fd, F_GETFL, 0);
-  ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-
 const char *http_status_text(int status) {
   switch (status) {
     case 204:
@@ -576,7 +563,7 @@ Event make_auth_rejected_event(std::uint32_t conn) {
 // ---------------------------------------------------------------------------
 
 struct Conn {
-  int fd = -1;
+  rs::SocketHandle fd = rs::kInvalidSocket;
   std::uint32_t id = 0;
   // Handshaking also means "awaiting the next HTTP request line": an HTTP connection (unlike a
   // WebSocket one) never leaves this phase, since every request on it is parsed the same way.
@@ -615,17 +602,12 @@ struct Conn {
 constexpr std::size_t kTlsChunk = 64u << 10;
 constexpr int kCloseLingerMs = 1000;
 
-bool peer_is_loopback(const sockaddr_storage &addr) {
-  if (addr.ss_family == AF_INET) {
-    const auto *in = reinterpret_cast<const sockaddr_in *>(&addr);
-    return (ntohl(in->sin_addr.s_addr) >> 24) == 127;
-  }
-  if (addr.ss_family == AF_INET6) {
-    const auto *in6 = reinterpret_cast<const sockaddr_in6 *>(&addr);
-    if (IN6_IS_ADDR_LOOPBACK(&in6->sin6_addr)) return true;
-    return IN6_IS_ADDR_V4MAPPED(&in6->sin6_addr) && in6->sin6_addr.s6_addr[12] == 127;
-  }
-  return false;
+bool peer_is_loopback(const rs::IpAddress &addr) {
+  if (addr.family == rs::AddrFamily::IPv4) return addr.bytes[0] == 127;
+  const auto loopback = rs::loopback_address(rs::AddrFamily::IPv6);
+  if (std::memcmp(addr.bytes, loopback.bytes, 16) == 0) return true;
+  const std::uint8_t mapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255};
+  return std::memcmp(addr.bytes, mapped, 12) == 0 && addr.bytes[12] == 127;
 }
 
 // Bytes queued for the peer and not yet on the socket: plaintext not yet encrypted plus, with
@@ -637,9 +619,10 @@ std::uint64_t pending_bytes(const Conn &c) {
 struct Server::Impl {
   ServerConfig config;
   ResourceSource *resource_source = nullptr;  // never owned; may be null (every GET -> 404).
-  int listen_fd = -1;
-  int wake_r = -1;
-  int wake_w = -1;
+  rs::WinBind win_bind = rs::kListenerWinBind;
+  rs::SocketHandle listen_fd = rs::kInvalidSocket;
+  rs::Wake wake_pair;
+  bool net_initialized = false;
   std::uint16_t bound_port = 0;
   std::thread io_thread;
   std::atomic<bool> running{false};
@@ -659,12 +642,10 @@ struct Server::Impl {
   std::atomic<bool> wake_pending{false};
 
   void wake() {
-    if (wake_w < 0) return;
+    if (wake_pair.write_handle == rs::kInvalidSocket) return;
     if (wake_pending.exchange(true, std::memory_order_acq_rel)) return;
-    const char b = 0;
-    // Best effort: a full pipe means poll() is already about to wake anyway.
-    if (::write(wake_w, &b, 1) < 0) { /* ignored */
-    }
+    // Best effort: a full wake channel is already readable.
+    rs::wake_signal(wake_pair);
   }
 
   // --- Every method below assumes `mu` is already held by the caller. ---
@@ -720,8 +701,8 @@ struct Server::Impl {
   // Lingering sockets have already sent FIN and released their logical connection.
   void finalize_now(Conn &c, std::uint16_t code, const std::string &reason) {
     if (c.phase == Conn::Phase::Closed) return;
-    if (c.phase != Conn::Phase::Lingering) ::shutdown(c.fd, SHUT_RDWR);
-    ::close(c.fd);
+    if (c.phase != Conn::Phase::Lingering) rs::socket_shutdown(c.fd, rs::ShutdownHow::Both);
+    rs::socket_close(c.fd);
     report_closed(c, code, reason);
     c.phase = Conn::Phase::Closed;
   }
@@ -734,9 +715,9 @@ struct Server::Impl {
     std::uint8_t buf[65536];
     constexpr int kMaxReads = 4;
     for (int i = 0; i < kMaxReads; ++i) {
-      const ssize_t n = ::recv(c.fd, buf, sizeof(buf), 0);
+      const std::ptrdiff_t n = rs::socket_recv(c.fd, buf, sizeof(buf));
       if (n > 0) continue;
-      if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return LingerDrain::Empty;
+      if (n < 0 && (rs::last_socket_error().kind == rs::SockErr::WouldBlock)) return LingerDrain::Empty;
       finalize_now(c, c.pending_close_code, c.pending_close_reason);
       return LingerDrain::Finalized;
     }
@@ -759,7 +740,7 @@ struct Server::Impl {
         if (c.phase == Conn::Phase::Closed || c.tls_out_off < c.tls_out.size()) return;
       }
     }
-    ::shutdown(c.fd, SHUT_WR);
+    rs::socket_shutdown(c.fd, rs::ShutdownHow::Write);
     report_closed(c, c.pending_close_code, c.pending_close_reason);
     c.phase = Conn::Phase::Lingering;
     c.linger_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kCloseLingerMs);
@@ -805,13 +786,12 @@ struct Server::Impl {
   void try_flush_tls(Conn &c) {
     for (;;) {
       while (c.tls_out_off < c.tls_out.size()) {
-        const ssize_t n = ::send(c.fd, c.tls_out.data() + c.tls_out_off, c.tls_out.size() - c.tls_out_off,
-                                 MSG_NOSIGNAL);
+        const std::ptrdiff_t n = rs::socket_send(c.fd, c.tls_out.data() + c.tls_out_off, c.tls_out.size() - c.tls_out_off);
         if (n > 0) {
           c.tls_out_off += static_cast<std::size_t>(n);
           continue;
         }
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        if (n < 0 && (rs::last_socket_error().kind == rs::SockErr::WouldBlock)) return;
         finalize_now(c, 1006, "send error");
         return;
       }
@@ -847,13 +827,13 @@ struct Server::Impl {
       return;
     }
     while (c.send_off < c.send_buf.size()) {
-      const ssize_t n = ::send(c.fd, c.send_buf.data() + c.send_off, c.send_buf.size() - c.send_off, MSG_NOSIGNAL);
+      const std::ptrdiff_t n = rs::socket_send(c.fd, c.send_buf.data() + c.send_off, c.send_buf.size() - c.send_off);
       if (n > 0) {
         c.send_off += static_cast<std::size_t>(n);
         c.sent_bytes += static_cast<std::uint64_t>(n);
         continue;
       }
-      if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+      if (n < 0 && (rs::last_socket_error().kind == rs::SockErr::WouldBlock)) break;
       finalize_now(c, 1006, "send error");
       return;
     }
@@ -1353,13 +1333,13 @@ struct Server::Impl {
   void handle_readable(Conn &c) {
     if (c.shutdown_after_flush) return;
     std::uint8_t buf[65536];
-    const ssize_t n = ::recv(c.fd, buf, sizeof(buf), 0);
+    const std::ptrdiff_t n = rs::socket_recv(c.fd, buf, sizeof(buf));
     if (n == 0) {
       finalize_now(c, 1006, "peer closed");
       return;
     }
     if (n < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+      if (rs::last_socket_error().kind == rs::SockErr::WouldBlock) return;
       finalize_now(c, 1006, "recv error");
       return;
     }
@@ -1398,13 +1378,11 @@ struct Server::Impl {
   // both once it is.
   void accept_loop() {
     for (;;) {
-      sockaddr_storage addr{};
-      socklen_t alen = sizeof(addr);
-      const int fd = ::accept(listen_fd, reinterpret_cast<sockaddr *>(&addr), &alen);
-      if (fd < 0) break;  // EAGAIN/EWOULDBLOCK or a transient error: stop accepting this pass.
-      set_nonblocking(fd);
-      const int one = 1;
-      ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+      rs::IpAddress addr;
+      const auto fd = rs::tcp_accept(listen_fd, &addr);
+      if (fd == rs::kInvalidSocket) break;  // Would block or transient error: end this pass.
+      rs::set_nonblocking(fd);
+      rs::set_tcp_nodelay(fd);
 
       Conn c;
       c.fd = fd;
@@ -1417,7 +1395,7 @@ struct Server::Impl {
   void io_loop() {
     bool deadline_set = false;
     std::chrono::steady_clock::time_point deadline{};
-    std::uint8_t drain[256];
+    rs::set_current_thread_name("rs-ws-io");
 
     for (;;) {
       const bool stopping = stop_requested.load();
@@ -1437,32 +1415,32 @@ struct Server::Impl {
       }
 
       struct PollEntry {
-        int fd;
+        rs::SocketHandle fd;
         std::uint32_t id;
         bool is_listener;
         bool is_wake;
       };
-      std::vector<pollfd> fds;
+      std::vector<rs::PollEntry> fds;
       std::vector<PollEntry> entries;
       {
         std::lock_guard<std::mutex> lock(mu);
         if (!stopping) {
-          fds.push_back({listen_fd, POLLIN, 0});
+          fds.push_back({listen_fd, rs::kPollIn, 0});
           entries.push_back({listen_fd, 0, true, false});
         }
-        fds.push_back({wake_r, POLLIN, 0});
-        entries.push_back({wake_r, 0, false, true});
+        fds.push_back({wake_pair.poll_handle, rs::kPollIn, 0});
+        entries.push_back({wake_pair.poll_handle, 0, false, true});
         for (auto &entry : conns) {
-          short want = POLLIN;
-          if (entry.second.phase != Conn::Phase::Lingering && pending_bytes(entry.second) > 0) want |= POLLOUT;
+          short want = rs::kPollIn;
+          if (entry.second.phase != Conn::Phase::Lingering && pending_bytes(entry.second) > 0) want |= rs::kPollOut;
           fds.push_back({entry.second.fd, want, 0});
           entries.push_back({entry.second.fd, entry.first, false, false});
         }
       }
 
-      const int n = ::poll(fds.data(), fds.size(), 50);
+      const int n = rs::poll_sockets(fds.data(), fds.size(), 50);
       if (n < 0) {
-        if (errno == EINTR) continue;
+        if (rs::last_socket_error().kind == rs::SockErr::Interrupted) continue;
         break;
       }
 
@@ -1472,13 +1450,12 @@ struct Server::Impl {
           // Drain first, then re-arm: clearing first would let this drain swallow the byte of a
           // wake() that set the flag after the clear, leaving the flag set with nothing in the
           // pipe (the next message would then wait for poll's 50 ms timeout).
-          while (::read(wake_r, drain, sizeof(drain)) > 0) {
-          }
+          rs::wake_drain(wake_pair);
           wake_pending.store(false, std::memory_order_release);
           continue;
         }
         if (entries[i].is_listener) {
-          if (fds[i].revents & POLLIN) {
+          if (fds[i].revents & rs::kPollIn) {
             std::lock_guard<std::mutex> lock(mu);
             accept_loop();
           }
@@ -1489,21 +1466,21 @@ struct Server::Impl {
         if (it == conns.end()) continue;
         Conn &c = it->second;
         if (c.phase == Conn::Phase::Lingering) {
-          if (fds[i].revents & (POLLERR | POLLNVAL)) {
+          if (fds[i].revents & (rs::kPollErr | rs::kPollNval)) {
             finalize_now(c, 1006, "connection reset");
           } else {
-            // If the budget is used up, POLLHUP will fire again next pass. Closing
+            // If the budget is used up, rs::kPollHup will fire again next pass. Closing
             // before the queued tail drains would reset the peer's final response.
             const auto drained = drain_linger(c);
-            if ((fds[i].revents & POLLHUP) && drained == LingerDrain::Empty) {
+            if ((fds[i].revents & rs::kPollHup) && drained == LingerDrain::Empty) {
               finalize_now(c, c.pending_close_code, c.pending_close_reason);
             }
           }
-        } else if (fds[i].revents & (POLLHUP | POLLERR | POLLNVAL)) {
+        } else if (fds[i].revents & (rs::kPollHup | rs::kPollErr | rs::kPollNval)) {
           finalize_now(c, 1006, "connection reset");
         } else {
-          if (fds[i].revents & POLLOUT) try_flush(c);
-          if (c.phase != Conn::Phase::Closed && (fds[i].revents & POLLIN)) handle_readable(c);
+          if (fds[i].revents & rs::kPollOut) try_flush(c);
+          if (c.phase != Conn::Phase::Closed && (fds[i].revents & rs::kPollIn)) handle_readable(c);
           maybe_finalize(c);
         }
         if (c.phase == Conn::Phase::Closed) conns.erase(it);
@@ -1553,14 +1530,18 @@ struct Server::Impl {
 // Public API.
 // ---------------------------------------------------------------------------
 
-Server::Server() : impl_(std::make_unique<Impl>()) {}
+Server::Server() : Server(rs::kListenerWinBind) {}
+
+Server::Server(rs::WinBind win_bind) : impl_(std::make_unique<Impl>()) {
+  impl_->win_bind = win_bind;
+}
 
 Server::~Server() {
   if (!impl_) return;
   if (impl_->running.load()) stop(0);
-  if (impl_->listen_fd >= 0) ::close(impl_->listen_fd);
-  if (impl_->wake_r >= 0) ::close(impl_->wake_r);
-  if (impl_->wake_w >= 0) ::close(impl_->wake_w);
+  if (impl_->listen_fd != rs::kInvalidSocket) rs::socket_close(impl_->listen_fd);
+  rs::wake_close(&impl_->wake_pair);
+  if (impl_->net_initialized) rs::net_release();
 }
 
 bool Server::start(const ServerConfig &config, ResourceSource *source, std::string *error) {
@@ -1569,85 +1550,38 @@ bool Server::start(const ServerConfig &config, ResourceSource *source, std::stri
     return false;
   }
 
-  sockaddr_in addr4{};
-  sockaddr_in6 addr6{};
-  int family = 0;
+  rs::IpAddress addr;
   if (config.host == "127.0.0.1") {
-    family = AF_INET;
-    addr4.sin_family = AF_INET;
-    addr4.sin_port = htons(config.port);
-    addr4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr = rs::loopback_address(rs::AddrFamily::IPv4);
   } else if (config.host == "::1") {
-    family = AF_INET6;
-    addr6.sin6_family = AF_INET6;
-    addr6.sin6_port = htons(config.port);
-    addr6.sin6_addr = in6addr_loopback;
-  } else if (config.allow_non_loopback && inet_pton(AF_INET, config.host.c_str(), &addr4.sin_addr) == 1) {
-    // 0.0.0.0 or a host address, only when the entry point has
-    // checked GRC_LIVE_EXPOSE=lan, the token and the origins.
-    family = AF_INET;
-    addr4.sin_family = AF_INET;
-    addr4.sin_port = htons(config.port);
-  } else if (config.allow_non_loopback && inet_pton(AF_INET6, config.host.c_str(), &addr6.sin6_addr) == 1) {
-    family = AF_INET6;
-    addr6.sin6_family = AF_INET6;
-    addr6.sin6_port = htons(config.port);
-  } else {
+    addr = rs::loopback_address(rs::AddrFamily::IPv6);
+  } else if (!config.allow_non_loopback ||
+             (!rs::parse_ip_literal(config.host, rs::AddrFamily::IPv4, &addr) &&
+              !rs::parse_ip_literal(config.host, rs::AddrFamily::IPv6, &addr))) {
     if (error) *error = "non-loopback";
     return false;
   }
-
-  const int fd = ::socket(family, SOCK_STREAM, 0);
-  if (fd < 0) {
-    if (error) *error = std::string("socket: ") + std::strerror(errno);
+  if (!impl_->net_initialized) {
+    if (!rs::net_init(error)) return false;
+    impl_->net_initialized = true;
+  }
+  rs::SocketHandle fd = rs::kInvalidSocket;
+  std::uint16_t bound_port = 0;
+  if (!rs::tcp_listen(addr, config.port, 16, impl_->win_bind, &fd, &bound_port, error)) return false;
+  rs::Wake wake_pair;
+  if (!rs::wake_open(&wake_pair, error)) {
+    rs::socket_close(fd);
     return false;
   }
-  const int one = 1;
-  ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-
-  const int bind_rc = (family == AF_INET)
-                           ? ::bind(fd, reinterpret_cast<sockaddr *>(&addr4), sizeof(addr4))
-                           : ::bind(fd, reinterpret_cast<sockaddr *>(&addr6), sizeof(addr6));
-  if (bind_rc != 0) {
-    if (error) *error = std::string("bind: ") + std::strerror(errno);
-    ::close(fd);
-    return false;
-  }
-  if (::listen(fd, 16) != 0) {
-    if (error) *error = std::string("listen: ") + std::strerror(errno);
-    ::close(fd);
-    return false;
-  }
-  set_nonblocking(fd);
-
-  sockaddr_storage bound{};
-  socklen_t blen = sizeof(bound);
-  ::getsockname(fd, reinterpret_cast<sockaddr *>(&bound), &blen);
-  std::uint16_t bound_port =
-      (family == AF_INET) ? ntohs(reinterpret_cast<sockaddr_in *>(&bound)->sin_port)
-                           : ntohs(reinterpret_cast<sockaddr_in6 *>(&bound)->sin6_port);
-
-  int pipe_fds[2];
-  if (::pipe(pipe_fds) != 0) {
-    if (error) *error = std::string("pipe: ") + std::strerror(errno);
-    ::close(fd);
-    return false;
-  }
-  set_nonblocking(pipe_fds[0]);
-  set_nonblocking(pipe_fds[1]);
 
   impl_->config = config;
   impl_->resource_source = source;
   impl_->listen_fd = fd;
-  impl_->wake_r = pipe_fds[0];
-  impl_->wake_w = pipe_fds[1];
+  impl_->wake_pair = wake_pair;
   impl_->bound_port = bound_port;
   impl_->stop_requested.store(false);
   impl_->running.store(true);
   impl_->io_thread = std::thread([this] { impl_->io_loop(); });
-  // G6c: a name the runner's /proc sampler can find (task/<tid>/comm), so the report's
-  // host_io_thread_s is this thread's own CPU time. Best effort: a failure changes nothing else.
-  pthread_setname_np(impl_->io_thread.native_handle(), "rs-ws-io");
   return true;
 }
 

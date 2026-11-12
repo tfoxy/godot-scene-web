@@ -60,9 +60,10 @@ struct IpAddress {
 bool parse_ip_literal(const std::string &text, AddrFamily family, IpAddress *out);
 IpAddress loopback_address(AddrFamily family);
 enum class WinBind : std::uint8_t { ExclusiveAddrUse, NoOption, ReuseAddr };
+inline constexpr WinBind kListenerWinBind = WinBind::ExclusiveAddrUse;
 bool tcp_listen(const IpAddress &addr, std::uint16_t port, int backlog, WinBind win_bind,
                 SocketHandle *out, std::uint16_t *bound_port, std::string *error);
-SocketHandle tcp_accept(SocketHandle listener);
+SocketHandle tcp_accept(SocketHandle listener, IpAddress *peer = nullptr);
 SocketHandle tcp_connect(const IpAddress &addr, std::uint16_t port, std::string *error);
 bool set_nonblocking(SocketHandle s);
 void set_tcp_nodelay(SocketHandle s);

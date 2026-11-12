@@ -111,10 +111,18 @@ bool tcp_listen(const IpAddress &addr, std::uint16_t port, int backlog, WinBind,
   *out = fd;
   return true;
 }
-SocketHandle tcp_accept(SocketHandle listener) {
+SocketHandle tcp_accept(SocketHandle listener, IpAddress *peer) {
   sockaddr_storage address{};
   socklen_t len = sizeof(address);
-  return ::accept(listener, reinterpret_cast<sockaddr *>(&address), &len);
+  const auto fd = ::accept(listener, reinterpret_cast<sockaddr *>(&address), &len);
+  if (fd != kInvalidSocket && peer) {
+    peer->family = address.ss_family == AF_INET ? AddrFamily::IPv4 : AddrFamily::IPv6;
+    if (peer->family == AddrFamily::IPv4)
+      std::memcpy(peer->bytes, &reinterpret_cast<sockaddr_in *>(&address)->sin_addr, 4);
+    else
+      std::memcpy(peer->bytes, &reinterpret_cast<sockaddr_in6 *>(&address)->sin6_addr, 16);
+  }
+  return fd;
 }
 SocketHandle tcp_connect(const IpAddress &addr, std::uint16_t port, std::string *error) {
   socklen_t size;

@@ -41,6 +41,17 @@ FileFault file_fault() {
   }();
   return fault;
 }
+enum class SocketFault { None, ReuseAddr, NoWake };
+SocketFault socket_fault() {
+  // Lazy: arming and wake signalling are the only callers.
+  static const auto fault = [] {
+    const char *value = std::getenv("GRC_PLATFORM_FAULT");
+    if (value && std::strcmp(value, "reuseaddr") == 0) return SocketFault::ReuseAddr;
+    if (value && std::strcmp(value, "no-wake") == 0) return SocketFault::NoWake;
+    return SocketFault::None;
+  }();
+  return fault;
+}
 bool widen(const std::string &text, std::wstring *out) {
   if (text.empty()) {
     out->clear();
@@ -187,6 +198,7 @@ bool tcp_listen(const IpAddress &addr, std::uint16_t port, int backlog, WinBind 
     return false;
   }
   const int one = 1, zero = 0;
+  if (socket_fault() == SocketFault::ReuseAddr) win_bind = WinBind::ReuseAddr;
   if (win_bind != WinBind::NoOption) {
     const int option = win_bind == WinBind::ExclusiveAddrUse ? SO_EXCLUSIVEADDRUSE : SO_REUSEADDR;
     if (::setsockopt(fd, SOL_SOCKET, option, reinterpret_cast<const char *>(&one), sizeof(one)) !=
@@ -226,10 +238,18 @@ bool tcp_listen(const IpAddress &addr, std::uint16_t port, int backlog, WinBind 
   *out = fd;
   return true;
 }
-SocketHandle tcp_accept(SocketHandle listener) {
+SocketHandle tcp_accept(SocketHandle listener, IpAddress *peer) {
   sockaddr_storage address{};
   int len = sizeof(address);
-  return ::accept(listener, reinterpret_cast<sockaddr *>(&address), &len);
+  const auto fd = ::accept(listener, reinterpret_cast<sockaddr *>(&address), &len);
+  if (fd != kInvalidSocket && peer) {
+    peer->family = address.ss_family == AF_INET ? AddrFamily::IPv4 : AddrFamily::IPv6;
+    if (peer->family == AddrFamily::IPv4)
+      std::memcpy(peer->bytes, &reinterpret_cast<sockaddr_in *>(&address)->sin_addr, 4);
+    else
+      std::memcpy(peer->bytes, &reinterpret_cast<sockaddr_in6 *>(&address)->sin6_addr, 16);
+  }
+  return fd;
 }
 SocketHandle tcp_connect(const IpAddress &addr, std::uint16_t port, std::string *error) {
   int size;
@@ -318,7 +338,9 @@ bool wake_open(Wake *out, std::string *error) {
   *out = {fd, fd};
   return true;
 }
-void wake_signal(const Wake &w) { (void)::send(w.write_handle, "\0", 1, 0); }
+void wake_signal(const Wake &w) {
+  if (socket_fault() != SocketFault::NoWake) (void)::send(w.write_handle, "\0", 1, 0);
+}
 void wake_drain(const Wake &w) {
   char drain[256];
   while (::recv(w.poll_handle, drain, sizeof(drain), 0) > 0) {

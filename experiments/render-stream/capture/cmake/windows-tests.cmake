@@ -117,16 +117,29 @@ grc_w_test(rs_reload TARGET rs_reload_test
 
 # Excluded until the capture library and remaining test helpers are ported:
 # rs_publish: unchanged rs_resource_store.cpp's POSIX file operations.
-# rs_ws, rs_carrier_set, rs_track, rs_carrier_ext, rs_net_module,
+# rs_track, rs_carrier_ext, rs_net_module,
 # rs_live(_thread), rs_live_window(_thread), rs_ws_echo, rs_live_host: POSIX sockets or dl*.
 # rs_setting: setenv.
 # rs_vtable: GCC anti-devirtualization flags. rs_standby: reads a source path.
 # rs_texture_release: wall-clock assertion on a shared VM.
 # rs_basis_*: basisu, bash + godot. rs_live_coding_golden*: sh -c + cmp.
 # calib_fingerprint: POSIX ELF/proc fault injection; calib_pe_self covers Windows identity.
-# rs_net_module also needs unchanged rs_ws/rs_carrier_set socket sources ported.
 
 grc_w_test(rs_env TARGET rs_env_test SOURCES test/rs_env_test.cpp LIBS grc_platform)
 grc_w_test(rs_process TARGET rs_process_test SOURCES test/rs_process_test.cpp LIBS grc_platform)
 grc_w_test(rs_platform_clock TARGET rs_platform_clock_test
   SOURCES test/rs_platform_clock_test.cpp LIBS grc_platform)
+grc_w_test(rs_ws TARGET rs_ws_test
+  SOURCES test/rs_ws_test.cpp src/rs_ws.cpp src/rs_sha1.cpp src/rs_net_module.cpp
+    src/rs_carrier_set.cpp LIBS grc_platform grc_codecs Threads::Threads)
+grc_w_test(rs_carrier_set TARGET rs_carrier_set_test
+  SOURCES test/rs_carrier_set_test.cpp src/rs_carrier_set.cpp src/rs_ws.cpp src/rs_sha1.cpp
+  LIBS grc_platform grc_codecs Threads::Threads)
+
+grc_w_test(rs_ws_platform TARGET rs_ws_platform_test
+  SOURCES test/rs_ws_platform_test.cpp src/rs_ws.cpp src/rs_sha1.cpp
+  LIBS grc_platform grc_codecs Threads::Threads)
+grc_w_test(rs_ws_platform_reuseaddr_sabotage TARGET rs_ws_platform_test
+  ARGS --expect-fail port-steal ENV GRC_PLATFORM_FAULT=reuseaddr)
+grc_w_test(rs_ws_platform_no_wake_sabotage TARGET rs_ws_platform_test
+  ARGS --expect-fail wake-latency ENV GRC_PLATFORM_FAULT=no-wake)
