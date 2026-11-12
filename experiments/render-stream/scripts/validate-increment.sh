@@ -234,7 +234,9 @@ run_one() {
 		launch "$dir" -- bash "$SCRIPT_DIR/libcxx-control.sh" --extension "$EXT" --calibration "$CAL" --out "$dir/run" 2>&1 | tee "$dir/run.log" || rc=$?
 		;;
 	windows)
-		launch "$dir" -- bash "$SCRIPT_DIR/build-capture.sh" --target windows >"$dir/run.log" 2>&1 || rc=$?
+		launch "$dir" -- bash -c 'bash "$1" --target windows && bash "$2" --out "$3"' _ \
+			"$SCRIPT_DIR/build-capture.sh" "$SCRIPT_DIR/wfile-linux-ref.sh" \
+			"$EXPERIMENT_DIR/capture/build-windows/wfile-linux" >"$dir/run.log" 2>&1 || rc=$?
 		;;
 	capture-build)
 		launch "$dir" -- bash "$SCRIPT_DIR/build-capture.sh" >"$dir/run.log" 2>&1 || rc=$?

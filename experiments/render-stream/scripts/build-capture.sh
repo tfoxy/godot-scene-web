@@ -97,6 +97,7 @@ PYBUNDLE
 	llvm_mingw_record "$B/bundle/toolchain.json"
 	bash "$HERE/fetch-windows-template.sh"
 	python3 -I "$HERE/lib/w1-bundle.py" --target windows --out "$B/bundle"
+	python3 -I "$HERE/lib/wfile-bundle.py" --target windows --out "$B/bundle"
 	python3 -I - "$B" "$HERE/w-imports.py" "$LLVM_MINGW_ROOT/bin/llvm-objdump" <<'PYIMPORTS'
 import json, subprocess, sys
 from pathlib import Path

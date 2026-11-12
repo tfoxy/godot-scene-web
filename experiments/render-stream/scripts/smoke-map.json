@@ -477,7 +477,14 @@
         "experiments/render-stream/scripts/w-imports.py",
         "experiments/render-stream/scripts/lib/w-run.py",
         "experiments/render-stream/scripts/lib/w1-*.py",
+        "experiments/render-stream/scripts/lib/wfile-driver.py",
+        "experiments/render-stream/scripts/lib/w-equiv.py",
+        "experiments/render-stream/scripts/lib/wfile-bundle.py",
+        "experiments/render-stream/scripts/lib/wfile-legs.json",
+        "experiments/render-stream/scripts/wfile-linux-ref.sh",
         "experiments/render-stream/scripts/test/self-test-w1-driver.ts",
+        "experiments/render-stream/scripts/test/self-test-wfile-driver.ts",
+        "experiments/render-stream/scripts/test/self-test-w-equiv.ts",
         "experiments/render-stream/scripts/test/self-test-w-imports.ts",
         "experiments/render-stream/scripts/test/self-test-w-run.ts"
       ],
@@ -811,6 +818,23 @@
         "experiments/render-stream/fixtures/spike/**"
       ],
       "reach": ["native:gate-minus1@*", "windows"]
+    },
+    {
+      "why": "Windows file-sink legs mirror these fixtures, runners and the shared recording decoder and comparator",
+      "paths": [
+        "experiments/render-stream/fixtures/gate0/**",
+        "experiments/render-stream/fixtures/gate1/**",
+        "experiments/render-stream/fixtures/gate2/**",
+        "experiments/render-stream/fixtures/gate8-tex/**",
+        "experiments/render-stream/scripts/run-gate0.sh",
+        "experiments/render-stream/scripts/run-gate1.sh",
+        "experiments/render-stream/scripts/run-gate2.sh",
+        "experiments/render-stream/scripts/run-gate8.sh",
+        "experiments/render-stream/scripts/lib/legs.sh",
+        "experiments/render-stream/scripts/lib/render-stream-2.ts",
+        "experiments/render-stream/scripts/cmp-rec.ts"
+      ],
+      "reach": ["windows"]
     },
     {
       "why": "gate 0",

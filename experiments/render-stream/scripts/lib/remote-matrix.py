@@ -219,7 +219,7 @@ def expand(runs, run_groups=None, determinism=(), pure_shards=6, max_parallel=16
         include.append(e)
         shards[e["id"]] = shards.get(e["id"], 0) + 1
     if "windows" in runs:
-        shards["windows"] = shards.get("windows", 1) + 1
+        shards["windows"] = shards.get("windows", 1) + 2
     shards = {i: n for i, n in shards.items() if n > 1}
     est = {"makespan_min": round(sim(final, max_parallel), 1), "job_minutes": round(sum(j["est"] for j in final), 1),
            "longest_min": round(max([j["est"] for j in final] + [0]), 1), "max_parallel": max_parallel,
@@ -271,8 +271,8 @@ def self_test():
 
     for det in ([], [3, 1]):
         win = expand(["windows"], determinism=det)
-        check(f"windows: one build job and two expected shards, determinism={det}",
-              len(win["include"]) == 1 and win["shards"] == {"windows": 2}
+        check(f"windows: one build job and three expected shards, determinism={det}",
+              len(win["include"]) == 1 and win["shards"] == {"windows": 3}
               and all(win["include"][0].get(k) == v for k, v in
                       {"id": "windows", "shard": "", "legs": "", "label": "windows"}.items())
               and "repeat" not in win["include"][0])

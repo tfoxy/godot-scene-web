@@ -1,0 +1,297 @@
+{
+  "legs": [
+    {
+      "gate": "gate0",
+      "path": "capture",
+      "fixture": "gate0",
+      "quit": 400,
+      "sinks": ["recording.rs2"],
+      "store": true,
+      "env": ["GRC_ROOT_SIZE=enforce-min-size"]
+    },
+    {
+      "gate": "gate0",
+      "path": "preexisting",
+      "fixture": "gate0",
+      "quit": 52,
+      "sinks": ["recording.rs2"],
+      "store": true,
+      "env": ["GRC_ROOT_SIZE=enforce-min-size"],
+      "scene": "res://preexisting.tscn"
+    },
+    {
+      "gate": "gate0",
+      "path": "preexisting-skip/capture",
+      "fixture": "gate0",
+      "quit": 52,
+      "sinks": ["recording.rs2"],
+      "store": true,
+      "env": ["GRC_ROOT_SIZE=enforce-min-size", "GRC_UNKNOWN_ITEM=skip"],
+      "scene": "res://preexisting.tscn"
+    },
+    {
+      "gate": "gate0",
+      "path": "unsupported/capture",
+      "fixture": "gate0",
+      "quit": 52,
+      "sinks": ["recording.rs2"],
+      "store": true,
+      "env": [
+        "GRC_ROOT_SIZE=enforce-min-size",
+        "RS_FIXTURE_VARIANT=unsupported"
+      ]
+    },
+    {
+      "gate": "gate0",
+      "path": "sabotage-freeze/capture",
+      "fixture": "gate0",
+      "quit": 52,
+      "sinks": ["recording.rs2"],
+      "store": true,
+      "env": [
+        "GRC_ROOT_SIZE=enforce-min-size",
+        "GRC_SABOTAGE=freeze-frame",
+        "GRC_SABOTAGE_FRAME=21"
+      ]
+    },
+    {
+      "gate": "gate0",
+      "path": "sabotage-omit/capture",
+      "fixture": "gate0",
+      "quit": 52,
+      "sinks": ["recording.rs2"],
+      "store": true,
+      "env": [
+        "GRC_ROOT_SIZE=enforce-min-size",
+        "GRC_SABOTAGE=omit-update",
+        "GRC_SABOTAGE_FRAME=21"
+      ]
+    },
+    {
+      "gate": "gate0",
+      "path": "sabotage-perturb/capture",
+      "fixture": "gate0",
+      "quit": 52,
+      "sinks": ["recording.rs2"],
+      "store": true,
+      "env": [
+        "GRC_ROOT_SIZE=enforce-min-size",
+        "GRC_SABOTAGE=perturb-transform",
+        "GRC_SABOTAGE_FRAME=21"
+      ]
+    },
+    {
+      "gate": "gate1",
+      "path": "capture",
+      "fixture": "gate1",
+      "quit": 400,
+      "sinks": ["recording.rs2", "recording-patch.rs2"],
+      "store": true,
+      "env": [
+        "GRC_ROOT_SIZE=enforce-min-size",
+        "RS_FIXTURE_ROOT_LOG={leg}/root.jsonl"
+      ]
+    },
+    {
+      "gate": "gate1",
+      "path": "sabotage-omit-modulate/capture",
+      "fixture": "gate1",
+      "quit": null,
+      "sinks": ["recording.rs2", "recording-patch.rs2"],
+      "store": true,
+      "env": [
+        "GRC_ROOT_SIZE=enforce-min-size",
+        "GRC_SABOTAGE=omit-update",
+        "GRC_SABOTAGE_FRAME=11"
+      ]
+    },
+    {
+      "gate": "gate1",
+      "path": "sabotage-omit-transform/capture",
+      "fixture": "gate1",
+      "quit": null,
+      "sinks": ["recording.rs2", "recording-patch.rs2"],
+      "store": true,
+      "env": [
+        "GRC_ROOT_SIZE=enforce-min-size",
+        "GRC_SABOTAGE=omit-update",
+        "GRC_SABOTAGE_FRAME=21"
+      ]
+    },
+    {
+      "gate": "gate1",
+      "path": "sabotage-omit-order/capture",
+      "fixture": "gate1",
+      "quit": null,
+      "sinks": ["recording.rs2", "recording-patch.rs2"],
+      "store": true,
+      "env": [
+        "GRC_ROOT_SIZE=enforce-min-size",
+        "GRC_SABOTAGE=omit-update",
+        "GRC_SABOTAGE_FRAME=31"
+      ]
+    },
+    {
+      "gate": "gate1",
+      "path": "sabotage-omit-visibility/capture",
+      "fixture": "gate1",
+      "quit": null,
+      "sinks": ["recording.rs2", "recording-patch.rs2"],
+      "store": true,
+      "env": [
+        "GRC_ROOT_SIZE=enforce-min-size",
+        "GRC_SABOTAGE=omit-update",
+        "GRC_SABOTAGE_FRAME=71"
+      ]
+    },
+    {
+      "gate": "gate1",
+      "path": "root-size-observe/capture",
+      "fixture": "gate1",
+      "quit": null,
+      "sinks": ["recording.rs2", "recording-patch.rs2"],
+      "store": true,
+      "env": ["RS_FIXTURE_ROOT_LOG={leg}/root.jsonl"]
+    },
+    {
+      "gate": "gate2",
+      "path": "capture",
+      "fixture": "gate2",
+      "quit": 400,
+      "sinks": ["recording.rs2", "recording-patch.rs2"],
+      "store": true,
+      "env": [
+        "GRC_ROOT_SIZE=enforce-min-size",
+        "RS_FIXTURE_TEXTURE_LOG={leg}/textures.jsonl",
+        "GRC_RESOURCE_STORE_DIR={leg}/store"
+      ]
+    },
+    {
+      "gate": "gate2",
+      "path": "capture-unsupported",
+      "fixture": "gate2",
+      "quit": null,
+      "sinks": ["recording.rs2", "recording-patch.rs2"],
+      "store": true,
+      "env": [
+        "GRC_ROOT_SIZE=enforce-min-size",
+        "RS_FIXTURE_TEXTURE_LOG={leg}/textures.jsonl",
+        "RS_FIXTURE_VARIANT=unsupported",
+        "GRC_RESOURCE_STORE_DIR={leg}/store"
+      ]
+    },
+    {
+      "gate": "gate8",
+      "path": "capture",
+      "fixture": "gate8-tex",
+      "quit": null,
+      "sinks": ["recording.rs8", "recording-patch.rs8"],
+      "store": true,
+      "env": [
+        "GRC_STREAM_VERSION=8",
+        "GRC_TEXTURE_DECODE=engine",
+        "RS_FIXTURE_TEXTURE_LOG={leg}/textures.jsonl"
+      ]
+    },
+    {
+      "gate": "gate8",
+      "path": "decode-default/capture",
+      "fixture": "gate8-tex",
+      "quit": null,
+      "sinks": ["recording.rs8", "recording-patch.rs8"],
+      "store": true,
+      "env": [
+        "GRC_STREAM_VERSION=8",
+        "RS_FIXTURE_TEXTURE_LOG={leg}/textures.jsonl"
+      ]
+    },
+    {
+      "gate": "gate8",
+      "path": "decode-off/capture",
+      "fixture": "gate8-tex",
+      "quit": null,
+      "sinks": ["recording.rs2", "recording-patch.rs2"],
+      "store": true,
+      "env": [
+        "GRC_TEXTURE_DECODE=off",
+        "RS_FIXTURE_TEXTURE_LOG={leg}/textures.jsonl"
+      ]
+    },
+    {
+      "gate": "gate8",
+      "path": "decode-default/plain-v6/capture",
+      "fixture": "gate8-tex",
+      "quit": null,
+      "sinks": ["recording.rs2", "recording-patch.rs2"],
+      "store": true,
+      "env": ["RS_FIXTURE_TEXTURE_LOG={leg}/textures.jsonl"]
+    },
+    {
+      "gate": "gate8",
+      "path": "sabotage-perturb-decode/capture",
+      "fixture": "gate8-tex",
+      "quit": null,
+      "sinks": ["recording.rs8", "recording-patch.rs8"],
+      "store": true,
+      "env": [
+        "GRC_STREAM_VERSION=8",
+        "GRC_TEXTURE_DECODE=engine",
+        "GRC_SABOTAGE=perturb-decode",
+        "GRC_SABOTAGE_FRAME=11",
+        "RS_FIXTURE_TEXTURE_LOG={leg}/textures.jsonl"
+      ]
+    },
+    {
+      "gate": "gate8",
+      "path": "delivery9/capture",
+      "fixture": "gate8-tex",
+      "quit": null,
+      "sinks": ["recording.rs9", "recording-patch.rs9"],
+      "store": true,
+      "env": [
+        "GRC_STREAM_VERSION=9",
+        "GRC_TEXTURE_DECODE=engine",
+        "GRC_TEXTURE_DELIVERY=rgba",
+        "RS_FIXTURE_TEXTURE_LOG={leg}/textures.jsonl"
+      ]
+    },
+    {
+      "gate": "gate8",
+      "path": "delivery9/default/capture",
+      "fixture": "gate8-tex",
+      "quit": null,
+      "sinks": ["recording.rs9", "recording-patch.rs9"],
+      "store": true,
+      "env": [
+        "GRC_STREAM_VERSION=9",
+        "RS_FIXTURE_TEXTURE_LOG={leg}/textures.jsonl"
+      ]
+    }
+  ],
+  "excluded": [
+    {
+      "path": "gate8/workers/capture",
+      "reason": "publication follows worker-thread wall-clock sleep and readiness"
+    },
+    {
+      "path": "gate8/workers/sabotage-publish-before-ready/capture",
+      "reason": "publication follows worker-thread wall-clock sleep and readiness"
+    },
+    {
+      "path": "gate8/decode-cost/*",
+      "reason": "timing group"
+    },
+    {
+      "path": "gate0/corrupt",
+      "reason": "tool-made copy"
+    },
+    {
+      "path": "gate2/reference-armed",
+      "reason": "rendered capture requires gamescope"
+    },
+    {
+      "path": "receiver legs, rendered legs and copied recording files",
+      "reason": "not headless captures; rendered legs require gamescope"
+    }
+  ]
+}

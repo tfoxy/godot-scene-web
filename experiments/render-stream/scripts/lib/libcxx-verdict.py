@@ -10,6 +10,8 @@ import tempfile
 
 RECORDING = re.compile(r"^recording[^/]*\.rs\d+$")
 EXCLUDED = "gate0/corrupt/recording.rs2"
+TIMING_DEPENDENT = ("gate8/workers/",)
+TIMING_REASON = "texture publication waits for worker-thread wall-clock sleep and readiness"
 
 
 def recordings(root):
@@ -89,6 +91,9 @@ def classify(run, gates, seam=False, ctest="pass", error=None):
                     cls = "noise" if not x["identical"] else "ok" if y["identical"] else "finding"
                     row["differing"] = y.get("differing", [])
             row["class"] = cls
+            if row["path"].startswith(TIMING_DEPENDENT):
+                row["class"] = "excluded-timing"
+                row["reason"] = TIMING_REASON
             files.append(row)
         verdicts = {}
         for label, root in roots.items():
@@ -106,7 +111,7 @@ def classify(run, gates, seam=False, ctest="pass", error=None):
             errors.append(f"{gate}:verdict-parity-failed")
         gate_files = [f for f in files if f["path"].startswith(gate + "/")]
         gate_rows[-1]["whole_gate_noise"] = bool(gate_files) and all(f["class"] == "noise" for f in gate_files)
-    counts = {c: sum(f["class"] == c for f in files) for c in ("ok", "noise", "finding", "missing")}
+    counts = {c: sum(f["class"] == c for f in files) for c in ("ok", "noise", "finding", "missing", "excluded-timing")}
     rc = 1 if errors or counts["finding"] or counts["missing"] else 3 if seam else 0
     return {"schema": "render-stream-libcxx-control/1", "rc": rc, "seam": seam, "ctest": ctest,
             "needed_ok": needed_ok, "errors": errors, "counts": counts, "files": files,
@@ -145,6 +150,26 @@ def self_test():
             tests.append(ok)
             print(("PASS " if ok else "FAIL ") + name)
         reset(); check("all-ok", result()["rc"] == 0)
+        for relative, expected in (("workers/capture", "excluded-timing"),
+                                   ("capture", "finding"),
+                                   ("workers-x/capture", "finding")):
+            reset("gate8")
+            for label in ("gcc-a", "libcxx", "gcc-b"):
+                root = run / label / "gate8"
+                target = root / relative / "recording.rs8"
+                target.parent.mkdir(parents=True)
+                (root / "recording.rs2").rename(target)
+            for name in ("gcc-repeat", "libcxx"):
+                row = {"a": str(run / "gcc-a/gate8" / relative / "recording.rs8"),
+                       "identical": name == "gcc-repeat", "differing": []}
+                (run / "comparisons/gate8" / f"{name}.json").write_text(
+                    json.dumps([row]) + f"\ncmp-rec: {int(row['identical'])}/1 identical\n")
+            got = result("gate8")
+            check(f"gate8/{relative} libc++ difference -> {expected}",
+                  got["files"][0]["class"] == expected
+                  and got["rc"] == (0 if expected == "excluded-timing" else 1)
+                  and (expected != "excluded-timing" or bool(got["files"][0].get("reason"))))
+        reset()
         differs("libcxx"); check("finding", result()["counts"]["finding"] == 1 and result()["rc"] == 1)
         differs("gcc-repeat"); check("noise", result()["counts"]["noise"] == 1 and result()["rc"] == 0)
         reset()
@@ -221,6 +246,9 @@ def main():
         p.error("--run is required")
     verdict = classify(args.run, args.gates.split(","), args.seam, args.ctest, args.error)
     (args.run / "libcxx-control.json").write_text(json.dumps(verdict, indent=2) + "\n")
+    for row in verdict["files"]:
+        if row["class"] == "excluded-timing":
+            print(f"excluded-timing: {row['path']}: {row['reason']}")
     print(f"libcxx-control: rc={verdict['rc']} ctest={args.ctest} {verdict['counts']} errors={verdict['errors']}")
     return verdict["rc"]
 

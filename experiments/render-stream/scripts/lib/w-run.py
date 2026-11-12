@@ -14,18 +14,18 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
-def run_check(name, argv, bundle, out, env=None):
+def run_check(name, argv, bundle, out, env=None, timeout_s=300):
     start = time.monotonic()
     log = out / "logs" / (name + ".log")
     timed_out = False
     with log.open("wb") as stream:
         try:
             result = subprocess.run(argv, cwd=bundle, env={**os.environ, **(env or {})},
-                                    stdout=stream, stderr=subprocess.STDOUT, timeout=300)
+                                    stdout=stream, stderr=subprocess.STDOUT, timeout=timeout_s)
             rc = result.returncode
         except subprocess.TimeoutExpired:
             timed_out, rc = True, 124
-            stream.write(b"\nw-run: timed out after 300 s\n")
+            stream.write(f"\nw-run: timed out after {timeout_s} s\n".encode("utf-8"))
         except OSError as exc:
             rc = 1
             stream.write(("w-run: " + str(exc) + "\n").encode("utf-8"))
@@ -46,6 +46,8 @@ def read_manifest(bundle):
                 raise ValueError(f"manifest {group} entry needs exe")
             if group == "tests" and not isinstance(entry.get("name"), str):
                 raise ValueError("manifest test entry needs name")
+            if "timeout_s" in entry and (type(entry["timeout_s"]) is not int or entry["timeout_s"] <= 0):
+                raise ValueError(f"manifest {group} entry timeout_s must be a positive integer")
             if "interpreter" in entry and entry["interpreter"] != "python":
                 raise ValueError(f"manifest {group} entry has unknown interpreter: {entry['interpreter']!r}")
     return manifest
@@ -82,7 +84,7 @@ def main():
                 argv = [sys.executable, "-I", *argv]
                 env["W_RUN_ARTIFACT_DIR"] = str(out / "artifacts" / test["name"])
                 interpreter_tests += 1
-            tests.append(run_check(test["name"], argv, bundle, out, env))
+            tests.append(run_check(test["name"], argv, bundle, out, env, test.get("timeout_s", 300)))
         print(f"w-run: ran {interpreter_tests} interpreter tests", flush=True)
         imports = [str(bundle / e["exe"]) for e in manifest["tests"] + manifest["imports_only"]
                    if "interpreter" not in e]
@@ -110,11 +112,23 @@ def main():
                     stream.write((out / "logs" / (result["name"] + ".log")).read_bytes())
             checks.append(combined)
         rc = int(any(r["rc"] != 0 for r in tests + checks))
+    groups = {name: {"passed": 0, "total": 0} for name in ("w-ctest", "w-imports", "w-1", "w-file")}
+    for result in tests + checks:
+        name = result["name"]
+        if name == "bundle":
+            continue
+        group = ("w-file" if name.startswith("wfile-") else
+                 "w-1" if name.startswith("w1-") else
+                 "w-imports" if name.startswith(("w-imports", "w-exports-")) else "w-ctest")
+        groups[group]["total"] += 1
+        groups[group]["passed"] += int(result["rc"] == 0)
+    print("gate W: " + ", ".join(f"{name} {counts['passed']}/{counts['total']}"
+                                for name, counts in groups.items()), flush=True)
     failing = [r["name"] for r in tests + checks if r["rc"] != 0]
     wall = round(time.monotonic() - start, 3)
     write_json(out / "w-run.json", {"schema": "render-stream-w-run/1", "python": platform.python_version(),
                "platform": platform.platform(), "toolchain": toolchain, "tests": tests, "checks": checks,
-               "wall_s": wall, "rc": rc})
+               "groups": groups, "wall_s": wall, "rc": rc})
     row = {"id": args.id, "phase": "setup", "rc": str(rc), "wall_s": wall,
            "lock_wait_s": 0, "lock_hold_s": 0, "lock": {}, "lock_summaries": 0,
            "skipped_by_tier": 0, "skipped_remote": [], "skipped_remote_groups": [],
@@ -126,7 +140,10 @@ def main():
         evidence.mkdir(parents=True, exist_ok=True)
         log = out / "logs" / (name + ".log")
         with log.open("rb") as stream:
-            stream.seek(max(0, log.stat().st_size - 20 * 1024))
+            # A wfile test runs many legs; its early failure diagnostics must
+            # survive even when later successful legs produce a long log.
+            if not name.startswith("wfile-"):
+                stream.seek(max(0, log.stat().st_size - 20 * 1024))
             (evidence / log.name).write_bytes(stream.read())
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:

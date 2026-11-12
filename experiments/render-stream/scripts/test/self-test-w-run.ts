@@ -101,10 +101,17 @@ function run(
   extraEnv: Record<string, string> = {},
 ) {
   const out = join(scratch, name);
-  // Shorten only the synthetic timeout; production still passes timeout=300 to subprocess.run.
+  // Simulate a 450 s leg without waiting; shorten only the actual sleep timeout.
   const launcher = `import runpy, subprocess, sys
 real_run = subprocess.run
 def short_run(argv, **kwargs):
+    if str(argv[0]).endswith("/timeout-probe"):
+        elapsed = 450
+        limit = kwargs["timeout"]
+        if elapsed > limit:
+            raise subprocess.TimeoutExpired(argv, limit)
+        kwargs["stdout"].write(f"simulated {elapsed} s within {limit} s timeout\\n".encode())
+        return subprocess.CompletedProcess(argv, 0)
     if str(argv[0]).endswith("/slow"):
         kwargs["timeout"] = 0.05
     return real_run(argv, **kwargs)
@@ -361,6 +368,10 @@ art.mkdir(parents=True, exist_ok=True)
     interpreted.text,
   );
   check(
+    "passing-run-has-no-evidence",
+    !existsSync(join(interpreted.out, "evidence")),
+  );
+  check(
     "python-interpreter-artifact-dir",
     existsSync(
       join(interpreted.out, "artifacts/python-test/runtime-proof.txt"),
@@ -391,6 +402,48 @@ art.mkdir(parents=True, exist_ok=True)
       ),
     JSON.stringify(interpreterImports),
   );
+  writeFileSync(
+    join(bundle, "bin/long-failure.py"),
+    'import sys\nprint("first-leg-failure-detail")\nprint("later-passing-leg\\n" * 2000)\nsys.exit(1)\n',
+  );
+  manifest([
+    {
+      name: "wfile-gate8-a",
+      exe: "bin/long-failure.py",
+      interpreter: "python",
+    },
+    {
+      name: "other-long-failure",
+      exe: "bin/long-failure.py",
+      interpreter: "python",
+    },
+  ]);
+  const longFailure = run("long-failure");
+  const wfileEvidence = readFileSync(
+    join(longFailure.out, "evidence/windows-win/wfile-gate8-a.log"),
+    "utf8",
+  );
+  check(
+    "wfile-failure-preserves-first-line-beyond-20KB",
+    longFailure.rc === 1 &&
+      wfileEvidence.length > 20 * 1024 &&
+      wfileEvidence.startsWith("first-leg-failure-detail\n") &&
+      wfileEvidence ===
+        readFileSync(join(longFailure.out, "logs/wfile-gate8-a.log"), "utf8"),
+    longFailure.text,
+  );
+  check(
+    "other-failure-retains-20KB-tail",
+    readFileSync(
+      join(longFailure.out, "evidence/windows-win/other-long-failure.log"),
+    ).length ===
+      20 * 1024 &&
+      !readFileSync(
+        join(longFailure.out, "evidence/windows-win/other-long-failure.log"),
+        "utf8",
+      ).includes("first-leg-failure-detail"),
+    longFailure.text,
+  );
   rmSync(join(bundle, "imports-calls.jsonl"));
   manifest([{ ...pythonTest, interpreter: "ruby" }]);
   const unknownInterpreter = run("unknown-interpreter");
@@ -401,6 +454,83 @@ art.mkdir(parents=True, exist_ok=True)
       json(unknownInterpreter.out, "w-run.json").tests.length === 0 &&
       !existsSync(join(bundle, "imports-calls.jsonl")),
     unknownInterpreter.text,
+  );
+  const timeoutProbe = {
+    name: "wfile-timeout-probe",
+    exe: exe("timeout-probe", "exit 99"),
+    args: [],
+    env: {},
+  };
+  manifest([{ ...timeoutProbe, timeout_s: 900 }]);
+  const extendedTimeout = run("extended-timeout");
+  check(
+    "timeout-override-outlives-300s-stub",
+    extendedTimeout.rc === 0 &&
+      readFileSync(
+        join(extendedTimeout.out, "logs/wfile-timeout-probe.log"),
+        "utf8",
+      ).includes("simulated 450 s within 900 s timeout"),
+    extendedTimeout.text,
+  );
+  manifest([timeoutProbe]);
+  const defaultTimeout = run("default-timeout");
+  check(
+    "timeout-default-stays-300s",
+    defaultTimeout.rc === 1 &&
+      json(defaultTimeout.out, "w-run.json").tests[0].timed_out &&
+      readFileSync(
+        join(defaultTimeout.out, "logs/wfile-timeout-probe.log"),
+        "utf8",
+      ).includes("timed out after 300 s"),
+    defaultTimeout.text,
+  );
+  for (const timeout of [0, -1, 1.5, "900", true, null]) {
+    rmSync(join(bundle, "imports-calls.jsonl"), { force: true });
+    manifest([{ ...pass, timeout_s: timeout }]);
+    const invalid = run(`invalid-timeout-${JSON.stringify(timeout)}`);
+    check(
+      `invalid-timeout-${JSON.stringify(timeout)}-bundle-error`,
+      invalid.rc === 2 &&
+        invalid.text.includes("timeout_s") &&
+        json(invalid.out, "w-run.json").tests.length === 0 &&
+        !existsSync(join(bundle, "imports-calls.jsonl")),
+      invalid.text,
+    );
+  }
+  manifest(
+    [
+      pass,
+      fail,
+      { ...pass, name: "w1-arm" },
+      { ...fail, name: "w1-refuse" },
+      { ...pass, name: "wfile-gate0-a" },
+      { ...pass, name: "wfile-sabotage" },
+    ],
+    [{ name: "only", exe: "bin/only", expect_exports: ["exported"] }],
+    [{ exe: "bin/dynamic", expect_disallowed: ["libc++.dll"] }],
+  );
+  const grouped = run("grouped");
+  check(
+    "gate-W-groups-counts",
+    grouped.rc === 1 &&
+      JSON.stringify(json(grouped.out, "w-run.json").groups) ===
+        JSON.stringify({
+          "w-ctest": { passed: 1, total: 2 },
+          "w-imports": { passed: 3, total: 3 },
+          "w-1": { passed: 1, total: 2 },
+          "w-file": { passed: 2, total: 2 },
+        }),
+    grouped.text,
+  );
+  check(
+    "gate-W-single-summary-line",
+    grouped.text.split("\n").filter((line) => line.startsWith("gate W:"))
+      .length === 1 &&
+      grouped.text.includes("w-ctest 1/2") &&
+      grouped.text.includes("w-imports 3/3") &&
+      grouped.text.includes("w-1 1/2") &&
+      grouped.text.includes("w-file 2/2"),
+    grouped.text,
   );
   manifest([fail, slow, pass]);
   const bad = run("bad");
