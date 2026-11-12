@@ -23,7 +23,7 @@ ResourceStore::~ResourceStore() { close(); }
 
 bool ResourceStore::open(const std::string &dir, std::string *error) {
   close();
-  if (dir.empty() || dir[0] != '/') {
+  if (!is_absolute_path(dir)) {
     *error = "GRC_RESOURCE_STORE_DIR must be absolute";
     return false;
   }

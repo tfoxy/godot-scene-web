@@ -25,11 +25,6 @@ std::uint64_t saturating_add(std::uint64_t a, std::uint64_t b) {
   return sum > kMaxJsonInteger ? kMaxJsonInteger : sum;
 }
 
-std::string dirname_of(const std::string &path) {
-  const std::size_t slash = path.find_last_of('/');
-  return slash == std::string::npos ? std::string() : path.substr(0, slash);
-}
-
 std::uint64_t monotonic_ns() {
   return static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -61,7 +56,7 @@ FileRecordSink::~FileRecordSink() { close(); }
 
 bool FileRecordSink::open(const std::string &path) {
   close();
-  const std::string dir = dirname_of(path);
+  const std::string dir = rs::parent_path(path);
   if (!dir.empty() && !make_directories(dir)) {
     return false;
   }

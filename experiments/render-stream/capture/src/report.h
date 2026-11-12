@@ -63,7 +63,7 @@ bool write_file(const std::string &path, const std::string &text);
 // Writes an empty file at `path`. Returns false on failure.
 bool touch_file(const std::string &path);
 
-// `dir` + "/" + `name`.
+// Append `name`, inserting '/' unless `dir` already ends in a platform separator.
 std::string path_join(const std::string &dir, const std::string &name);
 
 }  // namespace grc

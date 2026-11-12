@@ -219,7 +219,7 @@ std::string path_join(const std::string &dir, const std::string &name) {
   if (dir.empty()) {
     return name;
   }
-  if (dir.back() == '/') {
+  if (rs::is_path_separator(dir.back())) {
     return dir + name;
   }
   return dir + "/" + name;

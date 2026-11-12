@@ -2650,7 +2650,7 @@ void stream_start() {
         g_stream.store_dir += ".arm-" + std::to_string(g_rearm.arm_index);  // LS3
       }
       const bool delivery_inline = inline_max_bytes >= max_payload_bytes;
-      if (!g_stream.store_dir.empty() && g_stream.store_dir[0] != '/') {
+      if (!g_stream.store_dir.empty() && !rs::is_absolute_path(g_stream.store_dir)) {
         error = "GRC_RESOURCE_STORE_DIR must be absolute";
       } else if (files && !delivery_inline && g_stream.store_dir.empty()) {
         // A recording whose payloads have nowhere to go.
@@ -2738,7 +2738,7 @@ void stream_start() {
                live_max_connections > 4) {
       live_ok = false;
       why = "invalid GRC_LIVE_MAX_CONNECTIONS (a decimal integer 1..4)";
-    } else if (!live_config.tap_dir.empty() && live_config.tap_dir[0] != '/') {
+    } else if (!live_config.tap_dir.empty() && !rs::is_absolute_path(live_config.tap_dir)) {
       live_ok = false;
       why = "GRC_LIVE_TAP_DIR must be absolute";
     } else if (g_stream.policy.inline_max_bytes > kLiveInlineMaxBytes) {

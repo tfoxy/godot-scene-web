@@ -34,7 +34,8 @@
 #endif
 
 namespace grc::rs {
-// Paths are UTF-8; Windows path results use '/'. Errors, when requested, start with the operation.
+// Paths are UTF-8; Windows module/executable path results use '/'.
+// Errors, when requested, start with the operation.
 // No function takes or returns engine-owned memory.
 #if defined(_WIN32)
 using SocketHandle = std::uintptr_t;
@@ -177,6 +178,20 @@ std::string executable_path();
 void set_current_thread_name(const char *name);
 void lower_current_thread_priority();
 std::filesystem::path fs_path(const std::string &utf8);
+#if defined(_WIN32)
+inline bool is_path_separator(char c) { return c == '/' || c == '\\'; }
+bool is_absolute_path(const std::string &path);
+std::string parent_path(const std::string &path);
+#else
+inline bool is_path_separator(char c) { return c == '/'; }
+inline bool is_absolute_path(const std::string &path) {
+  return !path.empty() && path[0] == '/';
+}
+inline std::string parent_path(const std::string &path) {
+  const std::size_t slash = path.find_last_of('/');
+  return slash == std::string::npos ? std::string() : path.substr(0, slash);
+}
+#endif
 #if defined(_WIN32)
 std::FILE *open_file(const std::string &utf8_path, const char *mode);
 #else

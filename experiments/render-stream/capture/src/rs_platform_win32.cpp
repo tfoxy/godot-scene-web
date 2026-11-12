@@ -27,6 +27,19 @@
 #include <system_error>
 
 namespace grc::rs {
+bool is_absolute_path(const std::string &path) {
+  const bool drive = path.size() >= 3 &&
+      ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
+      path[1] == ':' && is_path_separator(path[2]);
+  const bool unc = path.size() >= 2 &&
+      ((path[0] == '\\' && path[1] == '\\') || (path[0] == '/' && path[1] == '/'));
+  return drive || unc;
+}
+std::string parent_path(const std::string &path) {
+  const std::size_t slash = path.find_last_of("/\\");
+  return slash == std::string::npos ? std::string() : path.substr(0, slash);
+}
+
 namespace {
 enum class FileFault { None, NarrowPath, PlainRename };
 FileFault file_fault() {

@@ -64,6 +64,10 @@ if(GRC_LINUX_LIBCXX)
 endif()
 include(cmake/platform-tests.cmake)
 
+add_executable(rs_path_logic_test test/rs_path_logic_test.cpp src/report.cpp)
+target_link_libraries(rs_path_logic_test PRIVATE grc_warnings grc_platform)
+grc_add_test(NAME rs_path_logic COMMAND rs_path_logic_test)
+
 if(GRC_WINDOWS)
   set(GRC_FINGERPRINT_SOURCES src/calib_fingerprint_win32.cpp src/pe_image.cpp)
   set(GRC_DATA_PREFIX "")
