@@ -3,7 +3,7 @@
 // module has been built beside this test (scripts/build-rs-net.sh) -- a `wt` carrier through the
 // CarrierSet: start, live-carriers.json, stop.
 //
-// Usage: rs_net_module_test <no-entry fake .so> <bad-abi fake .so> <car3 fake .so>
+// Usage: rs_net_module_test <no-entry fake> <bad-abi fake> <car3 fake> [--require-real-module]
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -28,8 +28,9 @@ bool starts_with(const std::string &s, const std::string &p) { return s.rfind(p,
 
 int main(int argc, char **argv) {
   using namespace grc::live;  // NOLINT
-  if (argc != 4) {
-    std::fprintf(stderr, "usage: rs_net_module_test <no-entry.so> <bad-abi.so> <car3.so>\n");
+  const bool require_real = argc == 5 && std::strcmp(argv[4], "--require-real-module") == 0;
+  if (argc != 4 && !require_real) {
+    std::fprintf(stderr, "usage: rs_net_module_test <no-entry> <bad-abi> <car3> [--require-real-module]\n");
     return 2;
   }
   std::string error;
@@ -82,6 +83,10 @@ int main(int argc, char **argv) {
         "the default path is beside this binary (" + beside + ")");
 
   if (!std::filesystem::exists(grc::rs::fs_path(beside))) {
+    if (require_real) {
+      check(false, "required real module missing: " + beside);
+      return 1;
+    }
     std::printf("skip the real-module checks: %s not built (scripts/build-rs-net.sh)\n", beside.c_str());
     return g_failed == 0 ? 0 : 1;
   }
@@ -89,6 +94,9 @@ int main(int argc, char **argv) {
   const grc_net_module_table_v1 *m = load_net_module(nullptr, &error);
   check(m != nullptr, "the real module loads (" + error + ")");
   if (m == nullptr) return 1;
+  std::printf("info real table: abi_version=%u size=%u carrier_abi_version=%u features=%llu module_version=%s\n",
+              m->abi_version, m->size, m->carrier_abi_version,
+              static_cast<unsigned long long>(m->features), m->module_version ? m->module_version : "?");
   check(m->carrier_abi_version == GRC_CARRIER_ABI_VERSION && m->module_version != nullptr &&
             starts_with(m->module_version, "render-stream-net "),
         std::string("its table: carrier ABI 1, version ") + (m->module_version ? m->module_version : "?"));

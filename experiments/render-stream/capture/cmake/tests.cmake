@@ -16,3 +16,13 @@ function(grc_linux_only targets reason)
     message(STATUS "Linux-only: ${target}: ${reason}")
   endforeach()
 endfunction()
+
+# Runtime-loaded test inputs travel with the bundle, outside the shipped-code import gate.
+function(grc_w_test_file target directory why)
+  set_target_properties(${target} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${directory}"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${directory}"
+    GRC_W_FILE_PATH "${directory}/$<TARGET_FILE_NAME:${target}>"
+    GRC_W_FILE_WHY "${why}")
+  set_property(GLOBAL APPEND PROPERTY GRC_W_FILE_TARGETS "${target}")
+endfunction()

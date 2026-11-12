@@ -205,7 +205,10 @@ typedef struct grc_carrier_v1 {
  * (C#: NativeLibrary.Load(path) or TryLoad) and dlsym that handle; the path is the .gdextension's
  * library entry (GDScript and C#: RenderStreamCarrier.library_path()). On Windows use
  * GetModuleHandleW(L"render_stream_capture.dll") and GetProcAddress(handle, "grc_carrier_register")
- * to look up the entry point in the already loaded DLL. */
+ * to look up the entry point in the already loaded DLL.
+ * In the editor, Godot loads a hidden ~render_stream_capture.dll copy, so that GetModuleHandleW
+ * lookup finds nothing and loading the original path maps a second, unarmed copy; the template
+ * and game executable make no copy. */
 typedef int (*grc_carrier_register_fn)(const grc_carrier_v1 *carrier);
 
 #if defined(_WIN32)

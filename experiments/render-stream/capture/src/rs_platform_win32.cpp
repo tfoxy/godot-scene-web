@@ -41,6 +41,14 @@ FileFault file_fault() {
   }();
   return fault;
 }
+bool plain_load() {
+  // Read only on the first library open, never during module initialization.
+  static const bool fault = [] {
+    const char *value = env("GRC_PLATFORM_FAULT");
+    return value && std::strcmp(value, "plain-load") == 0;
+  }();
+  return fault;
+}
 enum class SocketFault { None, ReuseAddr, NoWake };
 SocketFault socket_fault() {
   // Lazy: arming and wake signalling are the only callers.
@@ -427,9 +435,10 @@ void *library_open(const std::string &path, std::string *error) {
     fail(error, "GetFullPathNameW", written >= n ? ERROR_INSUFFICIENT_BUFFER : ::GetLastError());
     return nullptr;
   }
-  auto handle =
-      ::LoadLibraryExW(absolute.c_str(), nullptr,
-                       LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+  auto handle = plain_load()
+                    ? ::LoadLibraryW(absolute.c_str())
+                    : ::LoadLibraryExW(absolute.c_str(), nullptr,
+                                       LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
   if (!handle)
     fail(error, "LoadLibraryExW", ::GetLastError());
   return reinterpret_cast<void *>(handle);

@@ -306,6 +306,17 @@ else()
   grc_linux_only("rs_carrier_ext_test" "Uses dlopen and RTLD_NOLOAD.")
 endif()
 
+# The documented consumer lookup and registration through the capture's exported C ABI.
+add_executable(rs_carrier_lookup_test test/rs_carrier_lookup_test.cpp)
+target_link_libraries(rs_carrier_lookup_test PRIVATE grc_warnings grc_platform)
+add_dependencies(rs_carrier_lookup_test render_stream_capture)
+if(GRC_WINDOWS)
+  set(GRC_CARRIER_LOOKUP_LIBRARY bin/$<TARGET_FILE_NAME:render_stream_capture>)
+else()
+  set(GRC_CARRIER_LOOKUP_LIBRARY $<TARGET_FILE:render_stream_capture>)
+endif()
+grc_add_test(NAME rs_carrier_lookup COMMAND rs_carrier_lookup_test ${GRC_CARRIER_LOOKUP_LIBRARY})
+
 # the LAN exposure policy's refusal matrix.
 add_executable(rs_expose_test test/rs_expose_test.cpp src/rs_expose.cpp)
 target_include_directories(rs_expose_test PRIVATE src)
@@ -317,8 +328,6 @@ grc_add_test(NAME rs_expose COMMAND rs_expose_test)
 # librender_stream_net.so beside the tests -- its table and a wt carrier's start/stop through the
 # CarrierSet. The wire itself is the crate's (rs-net/tests) and the interop leg's
 # (scripts/test/self-test-wt-interop.ts).
-# Linux-only: POSIX dynamic-loader test helpers.
-if(NOT GRC_WINDOWS)
 add_library(rs_net_fake_noentry MODULE test/rs_net_fake_module.c)
 target_compile_definitions(rs_net_fake_noentry PRIVATE GRC_FAKE_NO_ENTRY=1)
 add_library(rs_net_fake_badabi MODULE test/rs_net_fake_module.c)
@@ -331,11 +340,43 @@ add_executable(rs_net_module_test test/rs_net_module_test.cpp src/rs_net_module.
 target_include_directories(rs_net_module_test PRIVATE src)
 target_link_libraries(rs_net_module_test PRIVATE grc_warnings grc_codecs Threads::Threads ${CMAKE_DL_LIBS})
 add_dependencies(rs_net_module_test rs_net_fake_noentry rs_net_fake_badabi rs_net_fake_car3)
-grc_add_test(NAME rs_net_module COMMAND rs_net_module_test
-  $<TARGET_FILE:rs_net_fake_noentry> $<TARGET_FILE:rs_net_fake_badabi> $<TARGET_FILE:rs_net_fake_car3>)
-
+if(GRC_WINDOWS)
+  foreach(fake IN ITEMS rs_net_fake_noentry rs_net_fake_badabi rs_net_fake_car3)
+    grc_w_test_file(${fake} test-data/netmod "Net module loader refusal input.")
+  endforeach()
+  set(GRC_NET_MODULE_TEST_ARGS
+    test-data/netmod/$<TARGET_FILE_NAME:rs_net_fake_noentry>
+    test-data/netmod/$<TARGET_FILE_NAME:rs_net_fake_badabi>
+    test-data/netmod/$<TARGET_FILE_NAME:rs_net_fake_car3> --require-real-module)
 else()
-  grc_linux_only("rs_net_fake_noentry;rs_net_fake_badabi;rs_net_fake_car3;rs_net_module_test" "POSIX dynamic-loader test helpers.")
+  set(GRC_NET_MODULE_TEST_ARGS
+    $<TARGET_FILE:rs_net_fake_noentry> $<TARGET_FILE:rs_net_fake_badabi> $<TARGET_FILE:rs_net_fake_car3>)
+endif()
+grc_add_test(NAME rs_net_module COMMAND rs_net_module_test ${GRC_NET_MODULE_TEST_ARGS})
+
+# Windows-only: PE loader search order.
+message(STATUS "Windows-only: rs_library_search_test: PE loader search order.")
+if(GRC_WINDOWS)
+  add_library(rs_library_search_dep SHARED test/rs_library_search_dep.c)
+  add_library(rs_library_search_module MODULE test/rs_library_search_module.c)
+  target_include_directories(rs_library_search_module PRIVATE src)
+  target_link_libraries(rs_library_search_module PRIVATE rs_library_search_dep)
+  grc_w_test_file(rs_library_search_dep test-data/library-search "PE loader dependency input.")
+  grc_w_test_file(rs_library_search_module test-data/library-search "PE loader module input.")
+  add_executable(rs_library_search_test test/rs_library_search_test.cpp src/rs_net_module.cpp
+    src/rs_carrier_set.cpp src/rs_ws.cpp src/rs_sha1.cpp)
+  target_include_directories(rs_library_search_test PRIVATE src)
+  target_link_libraries(rs_library_search_test PRIVATE grc_warnings grc_codecs Threads::Threads)
+  target_compile_definitions(rs_library_search_test PRIVATE
+    GRC_SEARCH_MODULE_NAME="$<TARGET_FILE_NAME:rs_library_search_module>"
+    GRC_SEARCH_DEP_NAME="$<TARGET_FILE_NAME:rs_library_search_dep>")
+  add_dependencies(rs_library_search_test rs_library_search_module)
+  grc_add_test(NAME rs_library_search COMMAND rs_library_search_test
+    test-data/library-search bin/render_stream_net.dll)
+  grc_add_test(NAME rs_library_search_plain_load_sabotage COMMAND rs_library_search_test
+    test-data/library-search bin/render_stream_net.dll
+    --expect-fail dll-load-dir,cwd-not-searched)
+  set_tests_properties(rs_library_search_plain_load_sabotage PROPERTIES ENVIRONMENT GRC_PLATFORM_FAULT=plain-load)
 endif()
 
 # Test-only echo server for the Node and Godot interop self-tests

@@ -51,7 +51,7 @@ if [ "$TARGET" = windows ]; then
 	"${CMAKE}" --build "$B" -j"$(nproc)"
 	rm -rf "$B/bundle"
 	python3 -I - "$B" "$HERE/.." "$LLVM_MINGW_ROOT/bin/llvm-strip" <<'PYBUNDLE'
-import json, shutil, subprocess, sys
+import hashlib, json, shutil, subprocess, sys
 from pathlib import Path
 build, rs = map(Path, sys.argv[1:3])
 bundle = build / "bundle"
@@ -64,6 +64,15 @@ for exe in sorted(exes):
     dest = bundle / exe
     dest.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run([sys.argv[3], "--strip-debug", "-o", str(dest), str(build / exe)], check=True)
+for entry in manifest.get("files", []):
+    dest = bundle / entry["path"]
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(build / entry["path"], dest)
+# The runtime module lives beside the capture DLL and test hosts in the product layout.
+net = bundle / "rs-net/render_stream_net.dll"
+beside = bundle / "bin/render_stream_net.dll"
+shutil.copyfile(net, beside)
+assert hashlib.sha256(net.read_bytes()).digest() == hashlib.sha256(beside.read_bytes()).digest()
 # Compute the identity on Ubuntu; Windows only collects and compares process facts.
 tools = rs / "capture/tools"
 identity = subprocess.check_output([sys.executable, "-I", str(tools / "calibrate.py"),

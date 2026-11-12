@@ -2,6 +2,9 @@
  * GRC_FAKE_NO_ENTRY it exports no grc_net_module_v1 at all; without it, an entry whose table
  * claims a future module ABI. */
 #ifdef GRC_FAKE_NO_ENTRY
+#if defined(_WIN32)
+__declspec(dllexport)
+#endif
 int grc_net_fake_unrelated(void) { return 1; }
 #elif defined(GRC_FAKE_CAR3)
 /* TRK3: a CAR3-era module -- a valid table of 40 bytes (no `features` field). The loader must
@@ -19,9 +22,15 @@ static int fake_info(void *self, grc_net_wt_info_v1 *out) {
 static const grc_net_module_table_v1 kTable = {
     GRC_NET_MODULE_ABI_VERSION, offsetof(grc_net_module_table_v1, features), 1u, 0u, "fake car3 0",
     fake_create, fake_info, 0, 0};
+#if defined(_WIN32)
+__declspec(dllexport)
+#endif
 const grc_net_module_table_v1 *grc_net_module_v1(void) { return &kTable; }
 #else
 #include "grc_net_module.h"
 static const grc_net_module_table_v1 kTable = {99u, sizeof(grc_net_module_table_v1), 1u, 0u, "fake 0", 0, 0};
+#if defined(_WIN32)
+__declspec(dllexport)
+#endif
 const grc_net_module_table_v1 *grc_net_module_v1(void) { return &kTable; }
 #endif
