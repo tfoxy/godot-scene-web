@@ -75,6 +75,7 @@
 #include "rs_captured.h"
 #include "rs_resource_log.h"
 #include "rs_rid_map.h"
+#include "rs_refusal.h"
 #include "rs_texture_delivery.h"
 #include "rs_variant.h"
 #include "rs_payload_rest.h"
@@ -127,6 +128,7 @@ struct MirrorStats {
   std::uint64_t ppm_resolved = 0;        // particles-mode shaders keyed by the builtin so far
   // Gate 5.5 (G55d).
   std::uint64_t live_shaders = 0;
+  std::uint64_t recover_index = 0;  // live unknown-texture dependents (evidence only)
   std::uint64_t live_materials = 0;
   std::uint64_t shader_payload_bytes = 0;  // distinct GRP1 payload bytes the table holds now
   std::uint64_t material_unknown = 0;      // a shader/material tap naming a RID the table lacks
@@ -884,7 +886,7 @@ class Mirror {
   // its first reference by a hooked call. Exactly texture_2d_create (a new id, kind image, version
   // 1, status from the copy, G8kw's job) but with origin `adopted` and `content` (Current or
   // Creation) as its adopted_content. Identity bookkeeping: no omit-op name, never dropped.
-  void texture_adopt(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
+  RecoverInfo texture_adopt(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
                      rs2::AdoptedContent content, std::uint64_t frame,
                      std::shared_ptr<TextureJob> job = nullptr);
   // G8r: whether `rid` is in the texture / mesh table (a live entry, not a tombstone).
@@ -967,6 +969,9 @@ class Mirror {
   // no free call). b unknown: t becomes `unsupported` (`unknown-texture`). t
   // unknown: b's id leaves the table. t == b: nothing.
   void texture_replace(std::uint64_t texture, std::uint64_t by_texture, std::uint64_t frame);
+  // An unknown refused target takes a known by-texture; other cases change nothing.
+  bool texture_replace_recover(std::uint64_t texture, std::uint64_t by_texture,
+                               std::uint64_t frame, RecoverInfo *out);
 
   // spurious-texture-update sabotage: bumps the version of
   // the lowest-id `ok` image and re-copies its identical bytes. Returns that
@@ -1053,6 +1058,10 @@ class Mirror {
   // Every unfinished encode job (stream end: entry.cpp abandons them after the pool dropped them).
   std::vector<BasisJobPtr> basis_jobs() const;
 
+  // Unknown texture dependents are bounded and live only in this mirror's arm.
+  void set_recover(bool notes_on, bool republish);
+  RefusalDependents recover_dependents(std::uint64_t rid, std::size_t cap) const;
+  RecoverIndexReport recover_report(std::size_t cap) const;
   MirrorStats stats() const;
   // TDR served-at-rest: every texture body the mirror holds (bytes, block variants, finished
   // jobs' bodies), each distinct body once across `seen`.
@@ -1234,6 +1243,7 @@ class Mirror {
   };
   // One material parameter as the table keeps it: supported (`param`) or refused (`reason`).
   struct MaterialParam {
+    std::uint64_t unknown_tex_rid = 0;
     bool ok = true;
     rs2::MaterialReason reason = rs2::MaterialReason::ParamType;
     rs2::Param param;
@@ -1344,7 +1354,8 @@ class Mirror {
   // D11 for a /4 op's texture argument: fills command->has_tex/tex and returns true, or turns
   // the command into an `unsupported` one named `op` (canvas-texture-headless or
   // unknown-texture) and returns false.
-  bool geometry_texture(std::uint64_t texture, const char *op, rs2::Command *command) const;
+  bool geometry_texture(std::uint64_t texture, const char *op, const Item &item,
+                        rs2::Command *command);
   // Shared prologue of the /4 taps: the item to record into, or nullptr (dropped / unknown).
   Item *geometry_item(std::uint64_t rid, const char *op, std::uint64_t frame);
   // A texture argument as a command: tex id / null, or false for an unknown RID.
@@ -1511,6 +1522,23 @@ class Mirror {
   void full_walk_resources(FullWalk *out) const;
   void shadow_compare(const FullWalk &walk, const ItemsPublished &refs, Captured *captured);
   Captured hc_shadow_prev_captured_;  // HC4b: the previous snapshot with its payloads and names
+
+  struct RecoverDependent {
+    std::uint32_t owner = 0;
+    std::uint8_t kind = 0;  // 0: material, 1: item (evidence only)
+    const char *op = nullptr;  // static command name for an item
+  };
+  void note_recover_locked(std::uint64_t rid, RecoverDependent dependent);
+  void erase_recover_locked(std::uint64_t rid);
+  enum class RecoverBy { Replace, Adopt };
+  RecoverInfo resolve_recover_locked(std::uint64_t rid, RecoverBy path);
+  static void copy_texture_content(Texture *target, const Texture *by);
+  RefusalDependents recover_dependents_locked(std::uint64_t rid, std::size_t cap) const;
+  bool recover_on_ = false;
+  bool recover_republish_ = true;
+  RidMap<std::vector<RecoverDependent>> recover_index_;
+  std::uint64_t recover_entries_ = 0, recover_peak_ = 0;
+  RecoverIndexReport recover_counts_;
 
   mutable std::mutex mutex_;
   std::uint64_t epoch_ = 0;

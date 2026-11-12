@@ -69,7 +69,15 @@ void texture_holds() {
     in.bytes = bytes; in.width = 2; in.height = 2; in.format = 5; in.frame = 23;
     return in;
   };
-  auto balanced = [] { expect(hold_balanced(registry_hold_stats()), "hold: balanced"); };
+  auto balanced = [] {
+    const auto h = registry_hold_stats();
+    expect(hold_balanced(h) && pending_balanced(h.pending), "hold: balanced");
+    HoldRings r; registry_hold_rings(&r);
+    std::array<std::uint64_t, static_cast<std::size_t>(HoldSkip::Count)> counts{};
+    for (const auto &record : r.skips) ++counts[static_cast<std::size_t>(record.reason)];
+    expect(r.skips_dropped == 0 && counts == h.skipped,
+           "hold: every skip site has exactly one record with the counted reason");
+  };
   auto drop_count = [](HoldDrop why) {
     return registry_hold_stats().dropped[static_cast<std::size_t>(why)];
   };
@@ -179,7 +187,7 @@ void texture_holds() {
   reset();
   // Fill the total cap, including a small final image, and replace that image at the boundary.
   for (std::uint64_t rid = 1; rid <= 65; ++rid) {
-    registry_note_create(rid, RegistryKind::Texture2d); in = input(rid == 65 ? 64 : 65535);
+    registry_note_create(rid, RegistryKind::Texture2d); in = input(rid == 65 ? 64 : 262143);
     expect(registry_note_texture_update(rid, &in) == HoldSkip::None, "hold: cap fill"); balanced();
   }
   in = input(64);
@@ -291,11 +299,11 @@ void replace_held_source() {
 
   registry_configure(true, RegistryFault::None);
   for (std::uint64_t rid = 1; rid <= 65; ++rid) {
-    create(rid); in = input(2, rid == 65 ? 64 : 65535);
+    create(rid); in = input(2, rid == 65 ? 64 : 262143);
     registry_note_texture_update(rid, &in);
   }
   expect(registry_hold_stats().live.bytes == kHoldTotalMaxBytes, "held source: full cap setup");
-  create(66); in = input(3, 65535);
+  create(66); in = input(3, 262143);
   expect(registry_note_replace(66, 1, &in) == HoldSkip::None && in.image &&
              registry_hold(66, nullptr) && !registry_hold(1, nullptr),
          "held source: total cap credits retiring source bytes");
@@ -395,26 +403,26 @@ void pending_holds() {
            "pending: refused and self replace lifetime"); balanced();
   }
   reset();
-  for (std::uint64_t rid = 1; rid <= 17; ++rid) { create(rid); store(rid); }
+  for (std::uint64_t rid = 1; rid <= 65; ++rid) { create(rid); store(rid); }
   st = registry_hold_stats();
-  expect(st.pending.evicted == 1 && st.pending.evicted_bytes == 16 && st.pending.live.entries == 16,
-         "pending: seventeenth evicts oldest");
+  expect(st.pending.evicted == 1 && st.pending.evicted_bytes == 16 && st.pending.live.entries == 64,
+         "pending: sixty-fifth evicts oldest");
   create(100); in = offmain();
   expect(registry_note_replace(100, 1, &in) == HoldSkip::OffmainReplace, "pending: oldest was evicted");
   in = offmain(); expect(registry_note_replace(100, 2, &in) == HoldSkip::None,
                          "pending: second oldest survives"); balanced();
   reset();
-  for (std::uint64_t rid = 1; rid <= 5; ++rid) { create(rid); store(rid, 65535); }
+  for (std::uint64_t rid = 1; rid <= 5; ++rid) { create(rid); store(rid, 1048576); }
   st = registry_hold_stats();
-  expect(st.pending.live.entries == 4 && st.pending.live.bytes == 262140 &&
-             st.pending.evicted == 1 && st.pending.evicted_bytes == 65535,
+  expect(st.pending.live.entries == 4 && st.pending.live.bytes == 4194304 &&
+             st.pending.evicted == 1 && st.pending.evicted_bytes == 1048576,
          "pending: byte cap evicts oldest"); balanced();
   // A larger incoming image can require several evictions even below the entry cap.
   reset();
-  for (std::uint64_t rid = 1; rid <= 8; ++rid) { create(rid); store(rid, 32768); }
-  create(9); store(9, 65535);
+  for (std::uint64_t rid = 1; rid <= 8; ++rid) { create(rid); store(rid, 524288); }
+  create(9); store(9, 1048576);
   expect(registry_hold_stats().pending.evicted == 2 &&
-             registry_hold_stats().pending.live.bytes == 262143, "pending: evicts until bytes fit");
+             registry_hold_stats().pending.live.bytes == 4194304, "pending: evicts until bytes fit");
   balanced();
   expect(registry_holds_drop_all(HoldDrop::Fault) == 0 &&
              registry_hold_stats().pending.live.entries == 7, "pending: arm fault leaves pending"); balanced();
@@ -430,7 +438,7 @@ void pending_holds() {
     if (event == 2) { in = input(); registry_note_texture_update(1, &in); }
     if (event == 3) { in = offmain(); registry_note_replace(1, 2, &in); }
     if (event == 4) { in = offmain(); registry_texture_set_released(1, true); registry_note_replace(2, 1, &in); }
-    if (event == 5) { for (std::uint64_t rid = 2; rid <= 17; ++rid) { create(rid); store(rid); } }
+    if (event == 5) { for (std::uint64_t rid = 2; rid <= 65; ++rid) { create(rid); store(rid); } }
     if (event == 6) reset();
     if (event == 7) registry_holds_release();
     expect(destroyed, "pending: releases outside lock");
@@ -472,12 +480,174 @@ void pending_holds() {
   balanced();
 }
 
+void hold_evidence() {
+  using namespace grc::rs;
+  auto reset = [] { registry_configure(true, RegistryFault::None); };
+  auto create = [](std::uint64_t rid) {
+    registry_note_texture_create(rid, {2, 2, 5, false, true}, false);
+  };
+  auto input = [] {
+    RegistryHoldInput in;
+    in.image = std::make_shared<int>(7);
+    in.bytes = 16; in.width = 2; in.height = 2; in.format = 5; in.frame = 23;
+    return in;
+  };
+  auto rings = [] { HoldRings r; registry_hold_rings(&r); return r; };
+  auto balanced = [] {
+    const auto h = registry_hold_stats();
+    expect(hold_balanced(h) && pending_balanced(h.pending), "evidence: both balances");
+    HoldRings r; registry_hold_rings(&r);
+    std::uint64_t skips = 0, pending_skips = 0;
+    for (auto n : h.skipped) skips += n;
+    for (auto n : h.pending.skipped) pending_skips += n;
+    expect(skips == r.skips.size() + r.skips_dropped,
+           "evidence: exactly one record per hold skip");
+    expect(pending_skips + h.pending.evicted == r.pending.size() + r.pending_dropped,
+           "evidence: exactly one record per pending event");
+  };
+  auto last_skip = [&](HoldSkip reason, HoldSource source, std::uint64_t rid) {
+    const auto r = rings();
+    expect(!r.skips.empty(), "evidence: skip exists");
+    if (r.skips.empty()) return HoldSkipRecord{};
+    const auto &v = r.skips.back();
+    expect(v.reason == reason && v.source == source && v.rid == rid && v.frame == 23 &&
+               v.width == 2 && v.height == 2 && v.format == 5 && v.bytes == 16,
+           "evidence: skip decision facts");
+    balanced();
+    return v;
+  };
+  // All caller-provided refusal reasons preserve the input facts and update thread sentinel.
+  for (std::size_t i = 1; i < static_cast<std::size_t>(HoldSkip::Count); ++i) {
+    reset(); create(1); auto in = input(); in.pre = static_cast<HoldSkip>(i);
+    const auto generation = registry_hold_generation();
+    registry_note_texture_update(1, &in);
+    const auto v = last_skip(in.pre, HoldSource::Update, 1);
+    expect(!v.has_by && v.thread == -1 && registry_hold_generation() > generation,
+           "evidence: update skip bumps generation without recording thread");
+  }
+  reset(); auto in = input(); registry_note_texture_update(1, &in);
+  last_skip(HoldSkip::Unregistered, HoldSource::Update, 1);
+  registry_note_create(2, RegistryKind::TexturePlaceholder);
+  registry_note_texture_update(2, &in);
+  last_skip(HoldSkip::NotTexture2d, HoldSource::Update, 2);
+  reset(); create(1); in = input(); registry_note_texture_update(1, &in);
+  expect(rings().skips.empty() && rings().pending.empty(), "evidence: success writes no record");
+  balanced();
+
+  reset(); create(1); in = input(); in.thread = 0;
+  registry_note_replace(1, 99, &in);
+  auto v = last_skip(HoldSkip::Unregistered, HoldSource::Replace, 1);
+  expect(v.has_by && v.by_rid == 99 && !v.by_kind && v.by_width == -1 &&
+             v.by_pending == ByPending::Unregistered && v.thread == 0,
+         "evidence: unregistered by-texture");
+  reset(); create(2); in = input(); registry_note_replace(99, 2, &in);
+  v = last_skip(HoldSkip::Unregistered, HoldSource::Replace, 99);
+  expect(v.has_by && v.by_rid == 2 && std::string(v.by_kind) == "texture_2d" &&
+             v.by_width == 2 && v.by_height == 2 && v.by_format == 5 &&
+             v.by_pending == ByPending::None, "evidence: registered source, absent target");
+  for (auto kind : {RegistryKind::Shader, RegistryKind::TexturePlaceholder}) {
+    reset(); create(1); registry_note_create(2, kind); in = input();
+    const auto reason = kind == RegistryKind::Shader ? HoldSkip::Unregistered : HoldSkip::NotTexture2d;
+    registry_note_replace(1, 2, &in); v = last_skip(reason, HoldSource::Replace, 1);
+    expect(v.has_by && std::string(v.by_kind) == registry_kind_name(kind) && v.by_format == -1,
+           "evidence: registered source kind without facts");
+  }
+  for (auto pending : {ByPending::None, ByPending::Present, ByPending::Evicted, ByPending::Skipped}) {
+    reset(); create(1); create(2); in = input();
+    if (pending == ByPending::Present || pending == ByPending::Evicted) registry_note_pending(2, &in);
+    if (pending == ByPending::Evicted) {
+      for (std::uint64_t rid = 3; rid < 67; ++rid) {
+        create(rid); in = input(); registry_note_pending(rid, &in);
+      }
+      const auto r = rings();
+      expect(r.pending.size() == 1 && r.pending[0].evicted && r.pending[0].rid == 2 &&
+                 r.pending[0].bytes == 16 && r.pending[0].width == -1 &&
+                 r.pending[0].height == -1 && r.pending[0].format == -1 &&
+                 r.pending[0].reason == HoldSkip::None && r.pending[0].frame == 23,
+             "evidence: eviction captured before slot clear");
+    }
+    if (pending == ByPending::Skipped) {
+      in = input(); in.pre = HoldSkip::OverTextureCap;
+      const auto generation = registry_hold_generation();
+      registry_note_pending(2, &in);
+      const auto r = rings();
+      expect(r.pending.size() == 1 && !r.pending[0].evicted && r.pending[0].rid == 2 &&
+                 r.pending[0].reason == in.pre && r.pending[0].width == 2 &&
+                 r.pending[0].height == 2 && r.pending[0].format == 5 &&
+                 r.pending[0].bytes == 16 && r.pending[0].frame == 23 &&
+                 registry_hold_generation() > generation, "evidence: pending skip facts and generation");
+    }
+    balanced();
+    RegistryRefusalFacts facts;
+    expect(registry_refusal_facts(2, &facts) && facts.registered && !facts.has_skip &&
+               facts.offmain_seen == (pending != ByPending::None),
+           "evidence: off-main identity from live slot or retained event");
+    in = input(); in.thread = 1;
+    // A present pending image overrides the hook refusal, so use released-source to force a skip.
+    if (pending == ByPending::Present) registry_texture_set_released(2, true);
+    in.pre = pending == ByPending::None ? HoldSkip::OverTextureCap : HoldSkip::OffmainReplace;
+    registry_note_replace(1, 2, &in);
+    v = last_skip(pending == ByPending::Present ? HoldSkip::ReleasedSource : in.pre,
+                  HoldSource::Replace, 1);
+    expect(v.by_pending == pending && v.by_rid == 2 && v.thread == 1 &&
+               v.by_width == 2 && v.by_height == 2 && v.by_format == 5 &&
+               (pending != ByPending::Skipped || v.by_pending_reason == HoldSkip::OverTextureCap),
+           "evidence: replace pending classification");
+  }
+  reset(); create(1); in = input(); in.pre = HoldSkip::NoImage;
+  registry_note_texture_update(1, &in);
+  in.pre = HoldSkip::SizeUnknown; in.frame = 24; registry_note_texture_update(1, &in);
+  RegistryRefusalFacts facts;
+  expect(registry_refusal_facts(1, &facts) && facts.has_skip && facts.last_skip.seq == 2 &&
+             facts.last_skip.reason == HoldSkip::SizeUnknown && facts.last_skip.frame == 24 &&
+             facts.record.rid == 1 && facts.record.facts.known && !facts.offmain_seen,
+         "evidence: refusal gets newest matching skip and registry facts");
+  expect(!registry_refusal_facts(99, &facts) && !facts.registered && !facts.has_skip &&
+             !facts.offmain_seen && !facts.record.path, "evidence: unknown RID resets output");
+  registry_note_create(99, RegistryKind::Shader);
+  expect(!registry_refusal_facts(99, &facts) && !facts.registered,
+         "evidence: other family is not a registered texture");
+  registry_note_free(1);
+  expect(!registry_refusal_facts(1, &facts) && facts.has_skip,
+         "evidence: free leaves bounded historical evidence");
+  balanced();
+  // Copying evidence must release any previous engine reference after unlocking.
+  bool destroyed = false;
+  facts.record.path = RegistryValue(new int(7), [&](const int *p) {
+    delete p; registry_lookup(1, nullptr); destroyed = true;
+  });
+  registry_refusal_facts(99, &facts);
+  expect(destroyed, "evidence: previous output releases outside lock");
+  reset(); create(1); in = input(); in.pre = HoldSkip::NoImage;
+  for (int i = 0; i < 300; ++i) {
+    registry_note_texture_update(1, &in); balanced();
+  }
+  const auto r = rings();
+  expect(r.skips.size() == 256 && r.skips_dropped == 44 && r.skips.front().seq == 45 &&
+             r.skips.back().seq == 300 &&
+             registry_hold_stats().skipped[static_cast<std::size_t>(HoldSkip::NoImage)] == 300,
+         "evidence: bounded oldest-first hold records");
+  reset();
+  for (int i = 0; i < 70; ++i) { in = input(); registry_note_pending(99, &in); balanced(); }
+  const auto p = rings();
+  expect(p.pending.size() == 64 && p.pending_dropped == 6 && p.pending.front().seq == 7 &&
+             p.pending.back().seq == 70, "evidence: bounded oldest-first pending records");
+  reset();
+  expect(rings().skips.empty() && rings().pending.empty() && rings().skips_dropped == 0 &&
+             rings().pending_dropped == 0 && registry_hold_generation() == 0,
+         "evidence: configure resets rings, counters and generation");
+  expect(!registry_refusal_facts(0, &facts) && !facts.offmain_seen,
+         "evidence: empty pending slots do not name a null RID");
+  registry_hold_rings(nullptr); registry_refusal_facts(99, nullptr);
+}
+
 }  // namespace
 
 int main() {
   using namespace grc::rs;
 
   texture_holds();
+  hold_evidence();
   replace_held_source();
   pending_holds();
 

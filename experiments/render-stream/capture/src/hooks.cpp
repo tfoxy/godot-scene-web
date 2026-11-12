@@ -1464,8 +1464,10 @@ void hold_note_replace(void *self, uint64_t a, uint64_t b) {
   rs::RegistryHoldInput in;
   in.source = rs::HoldSource::Replace;
   in.frame = current_frame();
+  const bool off_main = std::this_thread::get_id() != g_main_thread;
+  in.thread = off_main ? 1 : 0;
   // Off-main getters wait on the main thread's queue; only a pending create can supply content.
-  if (std::this_thread::get_id() != g_main_thread) {
+  if (off_main) {
     in.pre = rs::HoldSkip::OffmainReplace;
   } else {
     in.image = held_image_get(self, b);
@@ -2782,9 +2784,10 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
       if (job != nullptr) {
         copy.hook_ns = static_cast<int64_t>(now_ns() - t_hook - forward_ns);
       }
-      mirror().texture_adopt(texture.id, copy, bytes, rs2::AdoptedContent::Current,
-                             current_frame(), job);
+      const rs::RecoverInfo recovered = mirror().texture_adopt(
+          texture.id, copy, bytes, rs2::AdoptedContent::Current, current_frame(), job);
       resources().texture_adopt(tap_context(), texture.id, copy, "current", "update", job);
+      rs::adopt_texture_recovered(texture.id, rs::RecoverPath::Update, current_frame(), recovered);
     }
     if (streaming() && !omit) {
       mirror().texture_2d_update(texture.id, copy, std::move(bytes), layer, current_frame(), job);
@@ -5141,7 +5144,14 @@ void hook_texture_replace(void *self, RID texture, RID by_texture) {
   std::lock_guard<std::mutex> order(g_texture_order);
   const bool omit = omitted("texture_replace");
   if (streaming() && !omit) {
-    mirror().texture_replace(texture.id, by_texture.id, current_frame());
+    // A refused target takes the replacement content and publishes its material parameters.
+    rs::RecoverInfo recovered;
+    if (rs::adopt_texture_refused(texture.id) &&
+        mirror().texture_replace_recover(texture.id, by_texture.id, current_frame(), &recovered)) {
+      rs::adopt_texture_recovered(texture.id, rs::RecoverPath::Replace, current_frame(), recovered);
+    } else {
+      mirror().texture_replace(texture.id, by_texture.id, current_frame());
+    }
   }
   resources().texture_replace(tap_context(), texture.id, by_texture.id, omit);
 }

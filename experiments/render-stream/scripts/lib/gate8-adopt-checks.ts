@@ -859,12 +859,82 @@ function stripTimings(v: unknown, lar6 = false): unknown {
   );
 }
 
+/** Active holds supply Stale's pre-arm update and, when it fits, Grown's glyph atlas.
+ * Match the fixture's image facts as well as the count; equivalence then compares their content
+ * with born without a creation exception. */
+export function deferredHeldTextureProblems(
+  hold: {
+    state?: string;
+    caps?: { texture_max_bytes?: number };
+    taken?: { update?: number };
+  } | null,
+  adoptLines: readonly Record<string, unknown>[],
+): string[] {
+  if (hold?.state !== "active") return ["no active hold evidence"];
+  const problems: string[] = [];
+  const cap = hold.caps?.texture_max_bytes;
+  if (typeof cap !== "number" || !Number.isFinite(cap) || cap < 64)
+    problems.push(
+      "holds active but per-texture cap missing or below Stale's 64 B",
+    );
+  // Stale is the fixture's 4x4 RGBA8 checker; Grown uses a 256x256 LA8 glyph page.
+  const expected = [
+    { name: "Stale", width: 4, height: 4, format: "RGBA8", bytes: 64 },
+    {
+      name: "Grown atlas",
+      width: 256,
+      height: 256,
+      format: "LA8",
+      bytes: 131072,
+    },
+  ].filter((texture) => texture.bytes <= (cap ?? 0));
+  if ((hold.taken?.update ?? 0) < expected.length)
+    problems.push(
+      `holds active but fewer than ${expected.length} updates held`,
+    );
+  const held = adoptLines.filter(
+    (line) =>
+      line.op === "adopt" &&
+      line.kind === "image" &&
+      line.adopt_source === "hold",
+  );
+  if (held.length !== expected.length)
+    problems.push(
+      `${held.length} textures adopted from hold, expected ${expected.length} (${expected.map((t) => t.name).join(", ")})`,
+    );
+  for (const texture of expected) {
+    const matches = held.filter(
+      (line) =>
+        line.width === texture.width &&
+        line.height === texture.height &&
+        line.format === texture.format &&
+        line.data_bytes === texture.bytes &&
+        line.mipmaps === false,
+    );
+    if (matches.length !== 1)
+      problems.push(
+        `${texture.name}: ${matches.length} hold adoptions, expected 1`,
+      );
+    for (const line of matches) {
+      if (line.status !== "ok" || line.adopted_content !== "current")
+        problems.push(`${texture.name}: hold adoption is not ok and current`);
+    }
+  }
+  if (
+    held.some((line) => !line.rid) ||
+    new Set(held.map((line) => String(line.rid))).size !== held.length
+  )
+    problems.push("hold adoptions must name distinct texture RIDs");
+  return problems;
+}
+
 /** Pure verdict from the deferred capture's hook log and adopt_stats.resources. Registry-sourced
- * textures must be current and never updated; the image updated before the arm must be current
- * from its held reference, since the headless server's creation image is stale. */
+ * textures must be current and never updated; the images updated before the arm must be current
+ * from their held references, since the headless server's creation images are stale. */
 export function judgeTexCurrentUnupdated(
   lines: readonly Record<string, unknown>[],
   res: Record<string, unknown> | undefined,
+  hold: Parameters<typeof deferredHeldTextureProblems>[0],
 ): { problems: string[]; detail: string } {
   const problems: string[] = [];
   const updated = new Set(
@@ -889,10 +959,7 @@ export function judgeTexCurrentUnupdated(
   }
   if (creation.length !== 0)
     problems.push(`${creation.length} textures declared creation, expected 0`);
-  if (held.length !== 1)
-    problems.push(
-      `${held.length} textures adopted from hold, expected 1 (Stale)`,
-    );
+  problems.push(...deferredHeldTextureProblems(hold, lines));
   for (const l of held) {
     if (l.adopted_content !== "current")
       problems.push(`held texture ${l.rid} declared ${l.adopted_content}`);
@@ -1143,7 +1210,7 @@ export async function runG8a(
     checks.push(
       check(
         "adopt-equivalence-deferred",
-        `the deferred capture (loaded at birth, armed at K=${K} by GRC_ARM_DEFER_FRAMES) validates, declares {"mode":"arm","frame":${K}} with its first transaction at K, equals born from K on under adopt-equivalence's rule and its refused exception (the deferred capture holds Stale's pre-arm update, so no creation exception), and its adopt_stats equal late's but for timings (LAR0 leaves adoption unchanged) and LAR6's texture-content split (judged by tex-current-unupdated)`,
+        `the deferred capture (loaded at birth, armed at K=${K} by GRC_ARM_DEFER_FRAMES) validates, declares {"mode":"arm","frame":${K}} with its first transaction at K, equals born from K on under adopt-equivalence's rule and its refused exception (the deferred capture holds Stale's and Grown atlas's pre-arm updates, so no creation exception), and its adopt_stats equal late's but for timings (LAR0 leaves adoption unchanged) and LAR6's texture-content split (judged by tex-current-unupdated)`,
         problems,
       ),
     );
@@ -1162,6 +1229,9 @@ export async function runG8a(
       const j = judgeTexCurrentUnupdated(
         lines,
         st?.resources as Record<string, unknown> | undefined,
+        await readJson<Parameters<typeof deferredHeldTextureProblems>[0]>(
+          join(root, "deferred/capture/evidence/hold.json"),
+        ),
       );
       problems = j.problems;
       detail = j.detail;
@@ -1169,7 +1239,7 @@ export async function runG8a(
     checks.push(
       check(
         "tex-current-unupdated",
-        "LAR6: on the deferred capture a registered texture never updated since its create (the registry's `updated` bit clear: Plain; the chips predate the load and stay G8r's census path) is adopted `current` from the registry with no census, and the ImageTexture updated in place before the arm (Stale) is adopted `current` from its held image",
+        "LAR6: on the deferred capture a registered texture never updated since its create (the registry's `updated` bit clear: Plain; the chips predate the load and stay G8r's census path) is adopted `current` from the registry with no census, and the textures updated in place before the arm (Stale and Grown atlas, when within the hold cap) are adopted `current` from their held images, with the named set matched against hold.json and distinct RIDs",
         problems,
         detail,
       ),

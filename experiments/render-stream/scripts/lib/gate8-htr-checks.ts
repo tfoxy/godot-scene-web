@@ -34,6 +34,7 @@ import { fileURLToPath } from "node:url";
 import { decodePngRgba, skippedLegProblem } from "./gate-minus1-checks";
 import {
   check,
+  deferredHeldTextureProblems,
   type EquivalenceAllow,
   equivalence,
   exitCode,
@@ -49,32 +50,15 @@ import { compareWorkerRecordings } from "./gate8-tex-checks";
 import { STANDBY_HOOKS, standbyHotZero } from "./registry-checks";
 import type { ResolvedRecording, ResolvedTransaction } from "./render-stream-2";
 
-/** Active holds require Stale's pre-arm update to be adopted current from its held image.
- * Other seats keep the fixture's declared creation exception. */
+/** Inactive holds keep the declared creation exception; active holds must supply the fixture's
+ * updated images and let equivalence compare them with born without a creation exception. */
 export function htrDeferredCreationPaths(
-  hold: { state?: string; taken?: { update?: number } } | null,
+  hold: Parameters<typeof deferredHeldTextureProblems>[0],
   adoptLines: readonly Record<string, unknown>[],
   declaredPaths: number,
 ): { paths: number; problems: string[] } {
   if (hold?.state !== "active") return { paths: declaredPaths, problems: [] };
-  const problems: string[] = [];
-  if ((hold.taken?.update ?? 0) < 1)
-    problems.push("holds active but no update held");
-  const held = adoptLines.filter(
-    (line) =>
-      line.op === "adopt" &&
-      line.kind === "image" &&
-      line.adopt_source === "hold",
-  );
-  if (held.length !== 1)
-    problems.push(
-      `${held.length} textures adopted from hold, expected 1 (Stale)`,
-    );
-  for (const line of held) {
-    if (line.adopted_content !== "current")
-      problems.push("texture adopted from hold is not current (Stale)");
-  }
-  return { paths: 0, problems };
+  return { paths: 0, problems: deferredHeldTextureProblems(hold, adoptLines) };
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -986,7 +970,7 @@ export async function runG8htr(
         if (a === "deferred") {
           const evidence = join(cap("adopt-deferred-on"), "evidence");
           const held = htrDeferredCreationPaths(
-            (await readJson<{ state?: string; taken?: { update?: number } }>(
+            (await readJson<Parameters<typeof htrDeferredCreationPaths>[0]>(
               join(evidence, "hold.json"),
             )) ?? null,
             jsonl(await readText(join(evidence, "resources.jsonl"))),
@@ -1009,7 +993,7 @@ export async function runG8htr(
     checks.push(
       check(
         "htr-adopt-equivalence",
-        "late equals born under the declared exceptions; deferred equals born with only the refused exception when holds are active on it (Stale adopted current from its hold), else under the declared exceptions",
+        "late equals born under the declared exceptions; deferred equals born with only the refused exception when holds are active on it (Stale and Grown atlas adopted current from their holds), else under the declared exceptions",
         problems,
         `${frames} frames equal`,
       ),

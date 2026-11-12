@@ -900,6 +900,16 @@ thread_local bool t_res_inside = false;
 // and stay with it (M12-M14).
 enum class Refusal : std::uint8_t { Texture = 1, Mesh, Multimesh, Particles, ProcessMaterial };
 RidMap<Refusal> g_refused;
+std::atomic<std::uint32_t> g_refused_textures{0};
+std::vector<RefusalRecord> g_refusal_records;
+std::uint64_t g_refusal_records_dropped = 0;
+RefusalCounts g_refusal_counts;
+
+void record_refusal_locked(RefusalRecord record) {
+  if (g_refusal_records.size() < kRefusalRecordCap)
+    g_refusal_records.push_back(std::move(record));
+  else ++g_refusal_records_dropped;
+}
 
 bool refused_locked(std::uint64_t rid) { return g_refused.find(rid) != g_refused.end(); }
 
@@ -909,6 +919,7 @@ bool refuse_locked(std::uint64_t rid, Refusal why) {
     return false;
   }
   g_refused[rid] = why;
+  if (why == Refusal::Texture) g_refused_textures.fetch_add(1, std::memory_order_release);
   return true;
 }
 
@@ -1081,6 +1092,37 @@ std::string utf8_of(const void *string) {
   std::string out(static_cast<std::size_t>(n), '\0');
   g_iface.string_to_utf8_chars(string, &out[0], n);
   return out;
+}
+
+// Gather plain evidence before taking the adoption lock. Path reads and reference drops may
+// call the engine, so the registry reference never survives into the stored record.
+RefusalRecord refusal_record(std::uint64_t rid, const char *reason) {
+  RegistryRefusalFacts facts;
+  registry_refusal_facts(rid, &facts);
+  RefusalRecord record;
+  record.rid = rid;
+  record.frame = hooks_current_frame();
+  record.reason = reason;
+  record.registered = facts.registered;
+  if (facts.registered) {
+    const auto &r = facts.record;
+    record.kind = registry_kind_name(r.kind);
+    record.width = r.facts.width;
+    record.height = r.facts.height;
+    record.format = r.facts.format;
+    record.mipmaps = r.facts.mipmaps;
+    record.facts_known = r.facts.known;
+    record.updated = r.updated;
+    record.released = r.released;
+    record.edited = r.edited;
+    record.held = r.held;
+    record.has_path = static_cast<bool>(r.path);
+    if (r.path) record.path = utf8_of(r.path.get());
+  }
+  record.offmain_seen = facts.offmain_seen;
+  record.has_skip = facts.has_skip;
+  record.last_skip = facts.last_skip;
+  return record;
 }
 
 std::int64_t array_size(void *array) {
@@ -1442,6 +1484,7 @@ bool adopt_canvas_texture_locked_out(std::uint64_t rid) {
 // typed `canvas-empty`, when no diffuse was ever set: a CanvasTexture with no diffuse has nothing
 // to draw from, so there is nothing to adopt. Main thread (the channel read-backs).
 void adopt_canvas_texture_registered(std::uint64_t rid, const rs::RegistryCanvasTexture &c) {
+  auto record = refusal_record(rid, "canvas-empty");
   const std::uint64_t t0 = now_ns();
   bool adopted = false;
   if (c.diffuse_set && c.diffuse != 0) {
@@ -1457,6 +1500,7 @@ void adopt_canvas_texture_registered(std::uint64_t rid, const rs::RegistryCanvas
     ++g_res_stats.canvas_registry;
   } else if (refuse_locked(rid, Refusal::Texture)) {
     ++g_res_stats.textures_refused;
+    record_refusal_locked(std::move(record));
     if (!c.diffuse_set || c.diffuse == 0) {
       ++g_res_stats.refused_canvas_empty;
     }
@@ -1500,8 +1544,10 @@ bool reload_binds_ready() {
 Shape reload_shape(const ImageShape &s) { return {s.width, s.height, s.format, s.mipmaps}; }
 
 void reload_refuse(ReloadEntry entry, ReloadRefusal code, const std::string &why = {}) {
+  auto record = refusal_record(entry.rid, reload_refusal_name(code));
   std::lock_guard<std::mutex> lock(g_res_mutex);
   if (!refuse_locked(entry.rid, Refusal::Texture)) return;
+  record_refusal_locked(std::move(record));
   ++g_res_stats.textures_refused;
   auto &r = g_reload_stats.refused;
   switch (code) {
@@ -1699,6 +1745,7 @@ void adopt_texture_locked_out(std::uint64_t rid) {
     // CanvasTexture the hooks never saw (a load-late arm, F1), a placeholder, a proxy -- is
     // refused, typed `no-image`. RT-CTX's node read (M7) is gone: the registry covers every
     // CanvasTexture created under the hooks, and load-late is not a fidelity target (F1).
+    auto record = refusal_record(rid, "no-image");
     const bool adopted_canvas = main && adopt_canvas_texture_locked_out(rid);
     std::lock_guard<std::mutex> lock(g_res_mutex);
     if (adopted_canvas) {
@@ -1708,6 +1755,7 @@ void adopt_texture_locked_out(std::uint64_t rid) {
     } else if (refuse_locked(rid, Refusal::Texture)) {
       ++g_res_stats.textures_refused;
       ++g_res_stats.refused_no_image;
+      record_refusal_locked(std::move(record));
     }
     g_res_stats.lookup_ns += now_ns() - t0;
     return;
@@ -1951,7 +1999,9 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
   if (text.empty()) {
     return true;
   }
-  if (text == "hold-off") {
+  if (text == "hold-off-skip-republish") {
+    *out = AdoptFault::HoldOffSkipRepublish;
+  } else if (text == "hold-off") {
     *out = AdoptFault::HoldOff;
   } else if (text == "warm-off") {
     *out = AdoptFault::WarmOff;
@@ -1990,7 +2040,7 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
              " (expected no-resources, atlas-from-dummy, claim-current, no-include-path, "
              "no-particles, registry-off, registry-keep-freed, registry-mm-stride, "
              "registry-skip-params, registry-drop-binding, registry-skip-particles, "
-             "registry-queue-drop, reload-off, reload-skip-verify, skip-htr-restore, warm-off or hold-off)";
+             "registry-queue-drop, reload-off, reload-skip-verify, skip-htr-restore, warm-off, hold-off or hold-off-skip-republish)";
     return false;
   }
   if (!adopt) {
@@ -2002,6 +2052,7 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
 
 const char *adopt_fault_name(AdoptFault f) {
   switch (f) {
+  case AdoptFault::HoldOffSkipRepublish: return "hold-off-skip-republish";
   case AdoptFault::HoldOff: return "hold-off";
   case AdoptFault::WarmOff: return "warm-off";
   case AdoptFault::ReloadOff: return "reload-off";
@@ -2024,6 +2075,10 @@ const char *adopt_fault_name(AdoptFault f) {
   return "none";
 }
 
+bool holds_dropped_by_fault() {
+  return fault() == AdoptFault::HoldOff || fault() == AdoptFault::HoldOffSkipRepublish;
+}
+
 void adopt_emitters_reset();                  // PM7, below
 void adopt_emitters_forget(std::uint64_t rid);  // PM7, below
 
@@ -2043,6 +2098,11 @@ void adopt_resources_begin(AdoptFault f, bool dummy_host) {
   g_reload_stats.fault = adopt_fault_name(f);
   g_reload_entries.clear();
   g_reload_entries_dropped = 0;
+  g_refusal_records.clear();
+  g_refusal_records.reserve(kRefusalRecordCap);
+  g_refusal_records_dropped = 0;
+  g_refusal_counts = RefusalCounts();
+  g_refused_textures.store(0, std::memory_order_release);
   g_refused.clear();  // LAR6: every family's refusals, PM7's emitters and process materials too
   g_census = Census();
   g_res_main = std::this_thread::get_id();
@@ -2056,7 +2116,7 @@ WarmStats adopt_warm_at_arm(std::uint64_t arm_t0_ns, const std::string &workers)
   WarmStats stats;
   stats.fault = adopt_fault_name(fault());
   stats.workers = workers;
-  if (fault() == AdoptFault::HoldOff)
+  if (holds_dropped_by_fault())
     stats.hold_dropped_fault = registry_holds_drop_all(HoldDrop::Fault);
   const auto holds = registry_hold_stats();
   stats.held_at_arm = holds.live.entries;
@@ -2277,7 +2337,8 @@ WarmStats adopt_warm_finish() {
     });
     std::swap(dropped, g_warm);
     g_warm_stats.textures = {g_res_stats.textures, g_res_stats.textures_current,
-        g_res_stats.textures_creation, g_res_stats.textures_refused, g_res_stats.refused_no_image};
+        g_res_stats.textures_creation, g_res_stats.textures_refused, g_res_stats.refused_no_image,
+        g_refusal_counts.recovered};
     g_warm_stats.final = true;
     warm_snapshot_locked();
     stats = g_warm_stats;
@@ -2792,7 +2853,12 @@ void adopt_resource_freed(std::uint64_t rid) {
   {
     std::lock_guard<std::mutex> lock(g_res_mutex);
     warm_present = g_warm.find(rid) != g_warm.end();
-    g_refused.erase(rid);
+    const auto refused = g_refused.find(rid);
+    if (refused != g_refused.end()) {
+      if (refused->second == Refusal::Texture)
+        g_refused_textures.fetch_sub(1, std::memory_order_release);
+      g_refused.erase(refused);
+    }
     auto it = g_reload_sources.find(rid);
     if (it != g_reload_sources.end()) {
       dropped = std::move(it->second);
@@ -2838,6 +2904,65 @@ void adopt_resource_freed(std::uint64_t rid) {
     ++g_res_stats.offmain_dropped;
   }
   adopt_emitters_forget(rid);
+}
+
+bool adopt_texture_refused(std::uint64_t rid) {
+  if (g_refused_textures.load(std::memory_order_acquire) == 0) return false;
+  if (hooks_offmain_standby() || !g_res_active.load(std::memory_order_seq_cst)) return false;
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  const auto it = g_refused.find(rid);
+  return it != g_refused.end() && it->second == Refusal::Texture;
+}
+
+void adopt_texture_recovered(std::uint64_t rid, RecoverPath path, std::uint64_t frame,
+                             const RecoverInfo &info) {
+  if (g_refused_textures.load(std::memory_order_acquire) == 0) return;
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  const auto it = g_refused.find(rid);
+  if (it == g_refused.end() || it->second != Refusal::Texture) return;
+  g_refused.erase(it);
+  g_refused_textures.fetch_sub(1, std::memory_order_release);
+  ++g_refusal_counts.recovered;
+  if (path == RecoverPath::Replace) {
+    ++g_refusal_counts.recovered_replace;
+    ++g_res_stats.textures;
+    ++g_res_stats.textures_current;
+  } else ++g_refusal_counts.recovered_update;
+  for (auto &record : g_refusal_records) {
+    if (record.rid != rid || record.recovered) continue;
+    record.recovered = true;
+    record.recovered_path = path == RecoverPath::Replace ? "replace" : "update";
+    record.recovered_frame = frame;
+    record.recover = info;
+    break;
+  }
+}
+
+std::string adopt_refusals_json(std::uint64_t arm, std::uint64_t frame) {
+  std::vector<RefusalRecord> records;
+  RefusalCounts counts;
+  std::uint64_t dropped = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    records = g_refusal_records;
+    counts = g_refusal_counts;
+    counts.refused = g_res_stats.textures_refused;
+    counts.refused_no_image = g_res_stats.refused_no_image;
+    dropped = g_refusal_records_dropped;
+  }
+  for (auto &record : records) {
+    if (!record.recovered)
+      record.deps = mirror_instance().recover_dependents(record.rid, kRefusalDependentsCap);
+  }
+  auto index = mirror_instance().recover_report(kRecoverUnresolvedCap);
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    for (auto &entry : index.unresolved) {
+      const auto it = g_refused.find(entry.rid);
+      entry.refused = it != g_refused.end() && it->second == Refusal::Texture;
+    }
+  }
+  return refusals_json(records, dropped, counts, index, arm, frame);
 }
 
 bool adopt_from_update_begin() {
@@ -5129,7 +5254,7 @@ std::size_t adopt_held() {
   std::size_t n = 0;
   {
     std::lock_guard<std::mutex> lock(g_res_mutex);
-    n += g_warm.size() + g_reload_sources.size() + g_reload_entries.size() + g_refused.size() + g_census.pages.size() + g_census.compressed.size() +
+    n += g_refusal_records.size() + g_warm.size() + g_reload_sources.size() + g_reload_entries.size() + g_refused.size() + g_census.pages.size() + g_census.compressed.size() +
          g_census.canvas_textures.size();
   }
   {
@@ -5162,6 +5287,10 @@ std::size_t adopt_release() {
     g_reload_stats = ReloadStats();
     g_reload_entries_dropped = 0;
     g_refused = RidMap<Refusal>();
+    g_refused_textures.store(0, std::memory_order_release);
+    std::vector<RefusalRecord>().swap(g_refusal_records);
+    g_refusal_records_dropped = 0;
+    g_refusal_counts = RefusalCounts();
     g_census = Census();
   }
   {

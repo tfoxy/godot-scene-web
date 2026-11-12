@@ -46,6 +46,10 @@ extends Node
 ##   RS_FIXTURE_OFFMAIN      1: also fill a curve and an image by create + replace on a Thread
 ##   RS_FIXTURE_OFFMAIN_ARMED_FRAME  >= 1: repeat the off-main fill at this process frame
 ##   RS_FIXTURE_OFFMAIN_LOG  absolute path: one JSONL proof of the thread and frame per fill
+##   RS_FIXTURE_RECOVER      1: also replace an over-cap image and fill a material on a Thread
+##   RS_FIXTURE_RECOVER_PARAM_FRAME  >= 1: fill the material at this frame (unset: no fill)
+##   RS_FIXTURE_RECOVER_LOG  absolute path: JSONL texture RIDs and material-fill thread evidence
+##   RS_FIXTURE_RECOVER_BIG  <width>x<height>, default 5x19661: the over-cap RGBAF image size
 
 const Textures := preload("res://textures.gd")
 const Payload := preload("res://payload.gd")
@@ -96,6 +100,13 @@ var _offmain_armed_parent: Node2D
 var _offmain_log_file: FileAccess
 ## variant -> textures, source image and curve, retained after the worker finishes.
 var _offmain_fills: Dictionary = {}
+var _recover: bool = false
+var _recover_param_frame: int = 0
+var _recover_log_file: FileAccess
+var _recover_big_size: Vector2i = Vector2i(5, 19661)
+var _recover_images: Dictionary = {}
+var _recover_parent: Node2D
+var _recover_fill: Dictionary = {}
 
 
 func _ready() -> void:
@@ -110,6 +121,8 @@ func _ready() -> void:
 	if _offmain:
 		_make_offmain_textures(1)
 	_make_hdr_textures()
+	if _recover:
+		_make_recover_textures()
 	_build_scene()
 	_log_step(0, 1, _start_frame + SETTLE_OFFSET)
 	print("[fixture] gate8-float ready: S=%d N=%d quit=%d source=%s" % [_start_frame, _step_frames, _quit_frame, _source])
@@ -119,6 +132,24 @@ func _process(_delta: float) -> void:
 	if _failed:
 		return
 	_frame += 1
+	if _recover and _frame == _recover_param_frame:
+		var thread := Thread.new()
+		thread.start(_recover_param_fill)
+		thread.wait_to_finish()
+		var material: ShaderMaterial = _recover_fill["material"]
+		var rect := ColorRect.new()
+		rect.name = "late_0"
+		rect.position = Vector2(64, 360)
+		rect.size = Vector2(48, 48)
+		rect.material = material
+		_recover_parent.add_child(rect)
+		var thread_id: int = _recover_fill["thread_id"]
+		var main_thread_id: int = OS.get_main_thread_id()
+		_log_recover({
+			"event": "recover-param", "frame": _frame,
+			"thread_id": thread_id, "main_thread_id": main_thread_id,
+			"off_main": thread_id != main_thread_id,
+		})
 	if _offmain and _frame == _offmain_armed_frame:
 		_make_offmain_textures(2)
 		_add_view("off_curve2_0", "off_curve2", Vector2(8, 304), Vector2(256, 16), 0, 1.0, _offmain_armed_parent)
@@ -270,6 +301,31 @@ func _image_specs() -> Array[Dictionary]:
 	]
 
 
+func _make_recover_textures() -> void:
+	var image: Image = _build_image({"name": "img_late", "format": Image.FORMAT_RGBAH, "w": 16, "h": 16, "mips": false})
+	_recover_images["img_late"] = image
+	_textures["img_late"] = ImageTexture.create_from_image(image)
+	_textures["img_big"] = ImageTexture.new()
+
+
+func _big_image(step: int) -> Image:
+	return _build_image({
+		"name": "img_big", "format": Image.FORMAT_RGBAF,
+		"w": _recover_big_size.x, "h": _recover_big_size.y, "mips": false,
+	}, 0.0 if step == 0 else 0.5)
+
+
+func _recover_param_fill() -> void:
+	var material := ShaderMaterial.new()
+	material.shader = _view_shader
+	# Create the lazy RID here so the parameter writes reach the server on this thread.
+	material.get_rid()
+	material.set_shader_parameter("src", _textures["img_late"])
+	material.set_shader_parameter("gain", 1.0)
+	material.set_shader_parameter("channel", 0)
+	_recover_fill = {"material": material, "thread_id": OS.get_thread_caller_id()}
+
+
 ## The image of `spec`; `phase` shifts the pattern so a step-1 update changes every texel.
 func _build_image(spec: Dictionary, phase: float = 0.0) -> Image:
 	var name: String = spec["name"]
@@ -290,6 +346,10 @@ func _build_image(spec: Dictionary, phase: float = 0.0) -> Image:
 
 func _pixel(name: String, u: float, v: float, x: int, y: int, phase: float) -> Color:
 	match name:
+		"img_big":
+			return Color(fposmod(u + phase, 1.0), v, 1.0 - u, 1.0)
+		"img_late":
+			return Color(1.0 - u, 0.5 * v, u, 1.0)
 		"img_rgf":
 			return Color(u * 1.5, v - 0.25, 0.0, 1.0)  # r above 1, g below 0
 		"img_rh":
@@ -386,6 +446,19 @@ func _build_scene() -> void:
 			_offmain_armed_parent = Node2D.new()
 			_offmain_armed_parent.name = "OffArmed"
 			add_child(_offmain_armed_parent)
+	if _recover:
+		# Naming the empty texture first creates its placeholder before the initial replace.
+		_add_view("big_0", "img_big", Vector2(8, 360), Vector2(48, 48), 0, 1.0)
+		var image: Image = _big_image(0)
+		var texture: ImageTexture = _textures["img_big"]
+		texture.set_image(image)
+		_recover_images["img_big_0"] = image
+		_recover_parent = Node2D.new()
+		_recover_parent.name = "RecoverArmed"
+		add_child(_recover_parent)
+		for name: String in ["grad_hdr", "img_big", "img_late"]:
+			var named_texture: Texture2D = _textures[name]
+			_log_recover({"event": "rid", "name": name, "rid": named_texture.get_rid().get_id(), "frame": _frame})
 
 
 func _add_view(node_name: String, texture_name: String, position: Vector2, size: Vector2, channel: int, gain: float, parent: Node = null) -> void:
@@ -407,6 +480,11 @@ func _add_view(node_name: String, texture_name: String, position: Vector2, size:
 # ------------------------------------------------------------------------------ step 1
 
 func _apply_step_1() -> void:
+	if _recover:
+		var image: Image = _big_image(1)
+		var texture: ImageTexture = _textures["img_big"]
+		texture.set_image(image)
+		_recover_images["img_big_1"] = image
 	# CurveTexture/CurveXYZTexture: the same width and mode -> texture_2d_update of the float image.
 	_curve_rf.set_point_value(1, 0.25)
 	_curve_rgb.set_point_value(0, 0.5)
@@ -428,6 +506,9 @@ func _apply_step_1() -> void:
 
 func _log_expected(step: int) -> void:
 	_logged_step[step] = true
+	if _recover:
+		_log_texture(step, "img_big", "image", _recover_images["img_big_%d" % step])
+		_log_texture(step, "img_late", "image", _recover_images["img_late"])
 	var width: int = 192 if step == 1 else CURVE_WIDTH
 	# CurveTexture: RF (or RGBF in RGB mode) samples at t = i / width (curve_texture.cpp:100-110).
 	var rf := PackedFloat32Array()
@@ -515,6 +596,12 @@ func _log_texture(step: int, name: String, kind: String, image: Image, source_fo
 
 # ------------------------------------------------------------------------------ plumbing
 
+func _log_recover(line: Dictionary) -> void:
+	if _recover_log_file != null:
+		_recover_log_file.store_line(JSON.stringify(line, "", false))
+		_recover_log_file.flush()
+
+
 func _read_environment() -> bool:
 	if OS.has_environment("RS_FIXTURE_SOURCE"):
 		_source = OS.get_environment("RS_FIXTURE_SOURCE")
@@ -562,6 +649,26 @@ func _read_environment() -> bool:
 			if _offmain_log_file == null:
 				_error("cannot open RS_FIXTURE_OFFMAIN_LOG=%s" % offmain_log)
 				return false
+	_recover = OS.get_environment("RS_FIXTURE_RECOVER") == "1"
+	if _recover:
+		_recover_param_frame = _int_env("RS_FIXTURE_RECOVER_PARAM_FRAME", 0, 1)
+		var recover_log: String = _path_env("RS_FIXTURE_RECOVER_LOG")
+		if recover_log == "!" or _failed:
+			return false
+		if recover_log != "":
+			_recover_log_file = FileAccess.open(recover_log, FileAccess.WRITE)
+			if _recover_log_file == null:
+				_error("cannot open RS_FIXTURE_RECOVER_LOG=%s" % recover_log)
+				return false
+		var big_size: String = OS.get_environment("RS_FIXTURE_RECOVER_BIG") if OS.has_environment("RS_FIXTURE_RECOVER_BIG") else "5x19661"
+		var dimensions: PackedStringArray = big_size.split("x")
+		if dimensions.size() != 2 or not dimensions[0].is_valid_int() or not dimensions[1].is_valid_int():
+			_error("RS_FIXTURE_RECOVER_BIG must be <width>x<height> (got %s)" % JSON.stringify(big_size))
+			return false
+		_recover_big_size = Vector2i(dimensions[0].to_int(), dimensions[1].to_int())
+		if _recover_big_size.x < 1 or _recover_big_size.y < 1:
+			_error("RS_FIXTURE_RECOVER_BIG dimensions must be >= 1")
+			return false
 	return true
 
 

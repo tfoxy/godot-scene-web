@@ -356,7 +356,9 @@
 #       tex-warm: B-only workers and warm-off legs with update/free probes after the second arm.
 #       float-hold: float textures filled while in standby or disarmed, plus off-main fills in
 #       standby and arm 1, compared across three arms against a born capture.
-#       G8RE_ONLY selects adopt,tex,id,tex-htr,tex-evict,tex-htr-faults,tex-warm,float-hold.
+#       float-recover: refused float textures change inside arm 1, plus an off-main material
+#       parameter naming a pre-arm texture, compared against a born capture.
+#       G8RE_ONLY selects adopt,tex,id,tex-htr,tex-evict,tex-htr-faults,tex-warm,float-hold,float-recover.
 #       Judged by lib/gate8-rearm-checks.ts.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
@@ -4701,6 +4703,8 @@ run_g8sw() {
 # workers warms normally, warm-off is the fault knob negative test. Both are B-only.
 # float-hold: /8 float textures with step 1 in the first disarmed idle phase; off-main fills
 # happen at load and in arm 1. Three standby arms are compared against an armed-at-load capture.
+# float-recover: /8 float textures with step 1 inside arm 1 and an off-main material parameter
+# naming a pre-arm texture. The hold-off fault knob refuses the textures before they change.
 G8RE_ADOPT_ENV=("${G8A_ENV[@]}" GRC_ADOPT=arm RS_FIXTURE_ARM=deferred RS_FIXTURE_ARM_FRAME=30)
 G8RE_ADOPT_K1=8
 G8RE_ADOPT_CYCLE=32:6:2
@@ -4724,6 +4728,10 @@ G8RE_FLOAT_HOLD_ENV=("${G8F_ENV[@]}" RS_FIXTURE_STEP_FRAMES=76 RS_FIXTURE_OFFMAI
 	RS_FIXTURE_OFFMAIN_ARMED_FRAME=45)
 G8RE_FLOAT_HOLD_CYCLE=30:30:3
 G8RE_FLOAT_HOLD_QUIT=230
+G8RE_FLOAT_RECOVER_ENV=("${G8F_ENV[@]}" RS_FIXTURE_STEP_FRAMES=40 RS_FIXTURE_RECOVER=1
+	RS_FIXTURE_RECOVER_PARAM_FRAME=45)
+G8RE_FLOAT_RECOVER_CYCLE=30:30:2
+G8RE_FLOAT_RECOVER_QUIT=150
 # The re-arm round (id/): g8id14's live host on fixtures/tag-scene (RS_FIXTURE_TAG_V2, armed late at
 # frame 12, GRC_ADOPT=arm, the full v2 grant, the fixture's oracle and the capture's id log), with
 # GRC_SWAP_CYCLE in place of GRC_DISARM_AFTER_FRAMES: two cycles of 300 armed and 60 idle frames
@@ -4908,14 +4916,33 @@ run_g8re_float_hold() {
 	done
 }
 
-# G8RE_ONLY: comma-separated adopt,tex,id,tex-htr,tex-evict,tex-htr-faults,tex-warm,float-hold; unset runs all.
-g8re_selected() { [[ ",${G8RE_ONLY:-adopt,tex,id,tex-htr,tex-evict,tex-htr-faults,tex-warm,float-hold}," == *",$1,"* ]]; }
+run_g8re_float_recover() {
+	local leg d
+	for leg in standby fault-republish born; do
+		d="$OUT/g8re/float-recover/$leg/capture"
+		mkdir -p "$d"
+		local -a env=("${G8RE_FLOAT_RECOVER_ENV[@]}" RS_FIXTURE_TEXTURE_LOG="$d/textures.jsonl"
+			RS_FIXTURE_RECOVER_LOG="$d/recover.jsonl")
+		[ "$leg" = born ] || env+=(GRC_MODE=standby GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip
+			GRC_SWAP_CYCLE="$G8RE_FLOAT_RECOVER_CYCLE")
+		[ "$leg" != standby ] || env+=(GRC_ADOPT_FAULT=hold-off)
+		[ "$leg" != fault-republish ] || env+=(GRC_ADOPT_FAULT=hold-off-skip-republish)
+		uptime
+		echo "run-gate8: g8re float-recover/$leg/capture"
+		CAPTURE_FIXTURE_DIR="$FIXTURE_DIR"
+		CAPTURE_EXTRA_ENV=("${env[@]}")
+		run_capture "$d" "$G8RE_FLOAT_RECOVER_QUIT" none "$G8F_SCENE"
+	done
+}
+
+# G8RE_ONLY: comma-separated adopt,tex,id,tex-htr,tex-evict,tex-htr-faults,tex-warm,float-hold,float-recover; unset runs all.
+g8re_selected() { [[ ",${G8RE_ONLY:-adopt,tex,id,tex-htr,tex-evict,tex-htr-faults,tex-warm,float-hold,float-recover}," == *",$1,"* ]]; }
 
 run_g8re() {
 	run_import_g8re
 	mkdir -p "$OUT/g8re"
 	local fx
-	for fx in adopt tex id tex-htr tex-evict tex-htr-faults tex-warm float-hold; do
+	for fx in adopt tex id tex-htr tex-evict tex-htr-faults tex-warm float-hold float-recover; do
 		if ! g8re_selected "$fx"; then
 			mkdir -p "$OUT/g8re/$fx"
 			echo 'not selected by G8RE_ONLY' >"$OUT/g8re/$fx/not-selected.txt"
@@ -4951,6 +4978,7 @@ run_g8re() {
 		done
 	fi
 	if g8re_selected float-hold; then run_g8re_float_hold; fi
+	if g8re_selected float-recover; then run_g8re_float_recover; fi
 }
 
 # ------------------------------------------------------------------------------------- g8tdr

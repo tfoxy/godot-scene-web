@@ -4752,6 +4752,296 @@ void test_ppm_resolve_candidates() {
   }
 }
 
+void test_recover_index_notes() {
+  using namespace grc::rs;
+  Mirror m;
+  bind_root(&m);
+  m.material_create(0x700, 1);
+  DecodedParam tex;
+  tex.type = "rid";
+  tex.n = 1;
+  tex.tex_rid = 0x900;
+  m.material_set_param(0x700, "src", tex, 1);
+  check(m.stats().recover_index == 0 && m.recover_report(32).unresolved.empty(),
+        "recovery notes default off");
+  m.set_recover(true, true);
+  m.material_set_param(0x700, "src", tex, 2);
+  m.material_set_param(0x700, "src", tex, 2);
+  m.material_set_param(0x700, "other", tex, 2);
+  auto deps = m.recover_dependents(0x900, 16);
+  check(deps.materials.size() == 1 && deps.materials[0].id == 1 &&
+            deps.materials[0].params == std::vector<std::string>({"other", "src"}) &&
+            m.stats().recover_index == 1,
+        "unknown RID retained per parameter, deduplicated by material");
+  auto snap = m.snapshot(2, 2).state;
+  check(material(snap, 1)->status == grc::rs2::MaterialStatus::Unsupported &&
+            material(snap, 1)->reason == grc::rs2::MaterialReason::UnknownTexture,
+        "notes preserve material's unsupported wire verdict");
+  m.canvas_item_create(0x300, 2);
+  m.add_texture_rect(0x300, kRect, 0x900, false, kRed, false, 2);
+  m.add_texture_rect(0x300, kRect, 0x900, false, kRed, false, 2);
+  deps = m.recover_dependents(0x900, 16);
+  check(deps.items.size() == 1 && deps.items[0].id == 1 &&
+            deps.items[0].op == "canvas_item_add_texture_rect" && m.stats().recover_index == 2,
+        "unknown texture rect notes one item and its static op");
+  // Clearing and freeing an owner leave bounded stale notes until the unknown RID is freed.
+  m.clear(0x300, 3);
+  m.free_rid(0x300, 3);
+  check(m.stats().recover_index == 2 && m.recover_dependents(0x900, 16).items.empty(),
+        "known item free leaves index lifetime tied to the unknown RID");
+  m.material_set_param(0x700, "other", scalar("nil", {}), 3);
+  deps = m.recover_dependents(0x900, 16);
+  check(deps.materials.size() == 1 && deps.materials[0].params == std::vector<std::string>({"src"}),
+        "dependent evidence excludes overwritten parameters");
+  auto report = m.recover_report(32);
+  check(report.entries == 2 && report.peak == 2 && report.dropped == 0 &&
+            report.unresolved.size() == 1 && report.unresolved[0].rid == 0x900 &&
+            !report.unresolved[0].refused && report.resolved_by_adopt == 0 &&
+            report.resolved_by_replace == 0,
+        "notes report unresolved RID without inventing refusal or resolution");
+  m.free_rid(0x900, 4);
+  report = m.recover_report(32);
+  check(m.stats().recover_index == 0 && report.entries == 0 && report.peak == 2 &&
+            report.unresolved.empty(), "unknown RID free erases all its dependents");
+  m.set_recover(false, false);
+  m.material_set_param(0x700, "src", tex, 4);
+  m.canvas_item_create(0x301, 4);
+  m.add_texture_rect(0x301, kRect, 0x900, false, kRed, false, 4);
+  check(m.stats().recover_index == 0, "disabled notes cover material and command misses");
+  m.set_recover(true, false);
+  m.material_set_param(0x700, "src", tex, 5);
+  check(m.stats().recover_index == 1, "republish fault still records notes");
+  m.reset();
+  check(m.stats().recover_index == 0 && m.recover_report(32).peak == 0,
+        "reset clears index and counters");
+  m.material_create(0x700, 6);
+  m.material_set_param(0x700, "src", tex, 6);
+  check(m.stats().recover_index == 0, "reset disables recovery notes");
+}
+
+void test_recover_command_builders() {
+  Mirror m;
+  bind_root(&m);
+  m.set_recover(true, true);
+  m.canvas_item_create(0x300, 1);
+  m.add_texture_rect_region(0x300, kRect, 0x901, kRect, kRed, false, false, 1);
+  m.add_msdf_texture_rect_region(0x300, kRect, 0x902, kRect, kRed, 0, 4, 1, 1);
+  m.add_primitive(0x300, {{0, 0}}, {kRed}, {}, 0x903, false, 1);
+  for (std::uint64_t rid = 0x901; rid <= 0x903; ++rid) {
+    const auto deps = m.recover_dependents(rid, 16);
+    const char *ops[] = {"canvas_item_add_texture_rect_region",
+                         "canvas_item_add_msdf_texture_rect_region", "canvas_item_add_primitive"};
+    check(deps.items.size() == 1 && deps.items[0].op == ops[rid - 0x901],
+          "each texture command builder retains its unknown RID and op");
+  }
+  m.add_texture_rect(0x300, kRect, 0, false, kRed, false, 1);
+  m.set_canvas_texture_headless(true);
+  m.add_texture_rect(0x300, kRect, 0, false, kRed, false, 1);
+  m.texture_2d_placeholder_create(0x904, 1);
+  m.add_texture_rect(0x300, kRect, 0x904, false, kRed, false, 1);
+  check(m.stats().recover_index == 3 && m.recover_dependents(0, 16).items.empty(),
+        "null, headless-canvas and known texture branches add no notes");
+}
+
+void test_recover_adoption() {
+  using namespace grc::rs;
+  using namespace grc::rs2;
+  Mirror m;
+  bind_root(&m);
+  m.set_recover(true, true);
+  m.material_create(0x700, 1);
+  DecodedParam tex;
+  tex.type = "rid";
+  tex.tex_rid = 0x900;
+  m.material_set_param(0x700, "src", tex, 1);
+  const auto before = m.snapshot(1, 1).state;
+  PayloadPtr bytes;
+  const auto copy = rgba8_copy(4, 4, fill(4, 4, 3), &bytes);
+  const auto info = m.texture_adopt(0x900, copy, bytes, AdoptedContent::Current, 2);
+  const auto after = m.snapshot(2, 2).state;
+  const auto *mat = material(after, 1);
+  check(info.published_id == 1 && info.materials == 1 && info.params == 1 &&
+            !info.republish_skipped, "adoption returns published id and republished counts");
+  check(mat != nullptr && mat->version == material(before, 1)->version + 1 &&
+            mat->status == MaterialStatus::Ok && mat->params.size() == 1 &&
+            mat->params[0].name == "src" && mat->params[0].type == VariantType::Rid &&
+            mat->params[0].n == 1 && mat->params[0].has_tex && mat->params[0].tex == 1 &&
+            mat->params[0].floats.empty(), "adoption republishes material with resolved wire parameter");
+  const auto patch = make_patch(before, after);
+  check(patch.materials.size() == 1 && patch.materials[0].id == 1,
+        "resolved material is marked for the next patch");
+  auto report = m.recover_report(32);
+  check(report.entries == 0 && report.resolved_by_adopt == 1 && report.materials == 1 &&
+            report.params == 1 && m.recover_dependents(0x900, 16).materials.empty(),
+        "adoption clears retained unknown RID and counts resolution once");
+  const auto epoch = m.epoch();
+  const auto duplicate = m.texture_adopt(0x900, copy, bytes, AdoptedContent::Current, 3);
+  const auto zero = m.texture_adopt(0, copy, bytes, AdoptedContent::Current, 3);
+  check(duplicate.published_id == 0 && zero.published_id == 0 && m.epoch() == epoch &&
+            m.recover_report(32).resolved_by_adopt == 1, "duplicate and null adoptions change nothing");
+  m.material_create(0x701, 3);
+  tex.tex_rid = 0x901;
+  m.material_set_param(0x701, "src", tex, 3);
+  m.snapshot(3, 3);
+  m.canvas_texture_adopt(0x901, 0x900, 0, 0, 0, 0, 4);
+  const auto canvas = m.snapshot(4, 4).state;
+  check(material(canvas, 2)->status == MaterialStatus::Ok &&
+            material(canvas, 2)->params[0].tex == 2 &&
+            m.recover_report(32).resolved_by_adopt == 2,
+        "canvas adoption resolves after its texture-table insert");
+}
+
+void test_recover_replace() {
+  using namespace grc::rs;
+  using namespace grc::rs2;
+  for (bool republish : {true, false}) {
+    Mirror m;
+    bind_root(&m);
+    m.set_recover(true, republish);
+    DecodedParam tex;
+    tex.type = "rid";
+    tex.tex_rid = 0x900;
+    for (std::uint64_t rid : {0x700, 0x701}) {
+      m.material_create(rid, 1);
+      m.material_set_param(rid, "src", tex, 1);
+    }
+    m.material_set_param(0x700, "other", tex, 1);
+    m.canvas_item_create(100, 1);
+    m.add_texture_rect(100, kRect, 0x900, false, kRed, false, 1);
+    const auto before = m.snapshot(1, 1).state;
+    PayloadPtr bytes;
+    const auto copy = rgba8_copy(4, 4, fill(4, 4, 7), &bytes);
+    m.texture_2d_create(0x901, copy, bytes, 2);
+    RecoverInfo info;
+    check(m.texture_replace_recover(0x900, 0x901, 2, &info), "unknown target recovers from known by-texture");
+    const auto after = m.snapshot(2, 2).state;
+    const auto *t = texture(after, info.published_id);
+    check(info.published_id == 2 && t != nullptr && t->hash == copy.hash &&
+              t->status == TextureStatus::Ok && t->version == 1 &&
+              t->origin == Origin::Adopted && t->adopted_content == AdoptedContent::Current &&
+              !m.knows_texture(0x901) && texture(after, 1) == nullptr,
+          "recovery copies content, mints adopted target and retires by-texture");
+    const auto report = m.recover_report(32);
+    if (republish) {
+      check(info.materials == 2 && info.params == 3 && !info.republish_skipped &&
+                report.entries == 0 && report.resolved_by_replace == 1 &&
+                report.materials == 2 && report.params == 3,
+            "two materials and an item resolve once per RID and erase all dependents");
+      check(material(after, 1)->status == MaterialStatus::Ok &&
+                material(after, 1)->version == material(before, 1)->version + 1 &&
+                material(after, 2)->version == material(before, 2)->version + 1 &&
+                material(after, 1)->params.size() == 2,
+            "multiple resolved parameters bump each material version once");
+    } else {
+      check(info.materials == 0 && info.params == 0 && info.republish_skipped &&
+                report.entries == 3 && report.resolved_by_replace == 0 &&
+                report.republish_skipped_fault == 1 && report.unresolved.size() == 1,
+            "republish fault preserves the index and records the skipped call");
+      check(material(after, 1)->status == MaterialStatus::Unsupported &&
+                material(after, 1)->version == material(before, 1)->version &&
+                material(after, 2)->version == material(before, 2)->version,
+            "republish fault leaves material parameters and versions unchanged");
+    }
+    check(item(after, 1)->commands[0].kind == CommandKind::Unsupported,
+          "item recovery waits for the engine to re-record commands");
+  }
+}
+
+void test_recover_replace_noops_and_stale() {
+  using namespace grc::rs;
+  using namespace grc::rs2;
+  Mirror m, control;
+  PayloadPtr bytes;
+  const auto copy = rgba8_copy(4, 4, fill(4, 4, 9), &bytes);
+  for (Mirror *mirror : {&m, &control}) {
+    bind_root(mirror);
+    mirror->texture_2d_placeholder_create(0x900, 1);
+    mirror->texture_2d_create(0x901, copy, bytes, 1);
+  }
+  RecoverInfo out{99, 98, 97, true};
+  const auto epoch = m.epoch();
+  check(!m.texture_replace_recover(0x900, 0x901, 2, &out) && m.epoch() == epoch &&
+            out.published_id == 99, "known target returns false without changing output or epoch");
+  check(!m.texture_replace_recover(0x902, 0x903, 2, &out) &&
+            !m.texture_replace_recover(0x901, 0x901, 2, &out) && m.epoch() == epoch,
+        "unknown by-texture and self-replace change nothing");
+  m.set_omit_op("texture_replace", 2);
+  check(!m.texture_replace_recover(0x902, 0x901, 2, &out) && m.epoch() == epoch &&
+            m.stats().dropped_omit_op == 0 && m.knows_texture(0x901),
+        "omitted recovery does not mutate either texture or omit counter");
+  m.set_omit_op("", 0);
+  m.texture_replace(0x900, 0x901, 2);
+  control.texture_replace(0x900, 0x901, 2);
+  check(encode_transaction(make_full(m.snapshot(2, 2).state)) ==
+            encode_transaction(make_full(control.snapshot(2, 2).state)),
+        "known-target fallback keeps the original replace snapshot byte-identical");
+
+  m.set_recover(true, true);
+  DecodedParam tex;
+  tex.type = "rid";
+  tex.tex_rid = 0x904;
+  m.material_create(0x700, 3);
+  m.material_create(0x701, 3);
+  m.material_set_param(0x700, "src", tex, 3);
+  m.material_set_param(0x701, "src", tex, 3);
+  tex.tex_rid = 0x900;
+  m.material_set_param(0x700, "src", tex, 3);
+  m.free_rid(0x701, 3);
+  const auto before = m.snapshot(3, 3).state;
+  const auto stale = m.texture_adopt(0x904, copy, bytes, AdoptedContent::Creation, 4);
+  const auto after = m.snapshot(4, 4).state;
+  check(stale.materials == 0 && stale.params == 0 && m.recover_report(32).entries == 0 &&
+            material(after, 1)->version == material(before, 1)->version &&
+            material(after, 1)->params[0].tex == 1,
+        "overwritten parameters and freed material owners are skipped");
+  m.texture_adopt(0x905, copy, bytes, AdoptedContent::Creation, 5);
+  RecoverInfo adopted;
+  check(m.texture_replace_recover(0x906, 0x905, 5, &adopted),
+        "recovery also accepts an adopted by-texture without dependents");
+  check(texture(m.snapshot(5, 5).state, adopted.published_id)->adopted_content ==
+            AdoptedContent::Creation && adopted.materials == 0 && adopted.params == 0,
+        "adopted by-texture preserves its content trust");
+}
+
+void test_recover_index_bounds() {
+  using namespace grc::rs;
+  Mirror m;
+  bind_root(&m);
+  m.set_recover(true, true);
+  DecodedParam tex;
+  tex.type = "rid";
+  tex.n = 1;
+  tex.tex_rid = 0x900;
+  for (std::size_t i = 0; i <= kRecoverIndexMaxEntries; ++i) {
+    m.material_create(0x10000 + i, 1);
+    m.material_set_param(0x10000 + i, "src", tex, 1);
+  }
+  auto report = m.recover_report(32);
+  check(report.entries == 4096 && report.peak == 4096 && report.dropped == 1 &&
+            m.stats().recover_index == 4096,
+        "4097th dependent is dropped without growing index");
+  m.material_set_param(0x10000, "src", tex, 2);
+  check(m.recover_report(32).dropped == 1, "duplicate at capacity is not a dropped note");
+  auto deps = m.recover_dependents(0x900, 100);
+  check(deps.materials.size() == 16 && deps.more == 4080,
+        "dependent evidence is capped per kind");
+  deps = m.recover_dependents(0x900, 0);
+  check(deps.materials.empty() && deps.more == 4096, "zero evidence cap counts omissions");
+  report = m.recover_report(0);
+  check(report.unresolved.empty() && report.unresolved_more == 1,
+        "zero unresolved cap counts omitted RIDs");
+  m.free_rid(0x900, 3);
+  check(m.stats().recover_index == 0 && m.recover_report(32).peak == 4096,
+        "erasure subtracts all bounded dependents and preserves peak");
+  for (std::uint64_t i = 0; i < 40; ++i) {
+    tex.tex_rid = 0x20000 + i;
+    m.material_set_param(0x10000, "p" + std::to_string(i), tex, 4);
+  }
+  report = m.recover_report(100);
+  check(report.entries == 40 && report.unresolved.size() == 32 && report.unresolved_more == 8,
+        "unresolved report is capped at 32 RIDs");
+}
+
 int main() {
   // HC4a: RS_MIRROR_TEST_SHADOW=1 (the rs_mirror_shadow ctest) runs every case with the shadow
   // oracle on: every snapshot of every Mirror is also built by the full walk and compared.
@@ -4764,6 +5054,12 @@ int main() {
   test_hc4b_skip_dirty_texture();
   test_same_value_set_material_keeps_epoch();
   test_particles_defaults_and_versions();
+  test_recover_index_notes();
+  test_recover_command_builders();
+  test_recover_index_bounds();
+  test_recover_adoption();
+  test_recover_replace();
+  test_recover_replace_noops_and_stale();
   test_particles_trail_poses_need_trails();
   test_particles_adopt();
   test_particles_reasons_and_publication();

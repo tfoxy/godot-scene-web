@@ -84,7 +84,7 @@ struct WarmLazyAtReference {
   std::uint64_t updated = 0, unregistered = 0;
 };
 struct WarmTextures {
-  std::uint64_t adopted = 0, current = 0, creation = 0, refused = 0, refused_no_image = 0;
+  std::uint64_t adopted = 0, current = 0, creation = 0, refused = 0, refused_no_image = 0, recovered = 0;
 };
 struct WarmStats {
   bool final = false;

@@ -30,6 +30,7 @@ import {
   type FloatHoldOracle,
   faultHoldOffProblems,
   faultReloadOffCaught,
+  faultRepublishProblems,
   faultSkipRestoreCaught,
   faultSkipVerifyCaught,
   faultWarmOffProblems,
@@ -37,6 +38,9 @@ import {
   floatHoldCellProblems,
   floatHoldCellTable,
   floatHoldSchedule,
+  floatRecoverCells,
+  floatRecoverEquivalenceProblems,
+  floatRecoverSchedule,
   holdAccountingProblems,
   imageTextureProbe,
   imageTextureRestored,
@@ -45,6 +49,8 @@ import {
   published,
   publishedOneByOne,
   rearmCompare,
+  recoverRefusalProblems,
+  recoverSkipProblems,
   reentryRound,
   reloadCensus,
   reloadIdleBeforeArm,
@@ -1331,7 +1337,7 @@ assert(
   for (const bad of [null, [], [arms[0], arms[1], { first: 125, last: 188 }]])
     assert(floatHoldSchedule(steps, bad).length > 0, "bad arm window fails");
   const pending = {
-    caps: { entries: 16, bytes: 262144 },
+    caps: { entries: 64, bytes: 4194304 },
     taken: 15,
     taken_bytes: 21400,
     moved: 4,
@@ -1358,7 +1364,7 @@ assert(
     state: "active",
     reason: null,
     fault: "none",
-    caps: { texture_max_bytes: 65535, total_max_bytes: 4194304 },
+    caps: { texture_max_bytes: 1572864, total_max_bytes: 16777216 },
     live: { entries: 0, bytes: 0 },
     peak: { entries: 10, bytes: 18944 },
     taken: { total: 16, update: 10, replace: 6, bytes: 30720 },
@@ -1448,8 +1454,8 @@ assert(
       );
   }
   for (const bad of [
-    { ...h, live: { entries: 0, bytes: 4194305 } },
-    { ...h, pending: { ...pending, live: { entries: 17, bytes: 262145 } } },
+    { ...h, live: { entries: 0, bytes: 16777217 } },
+    { ...h, pending: { ...pending, live: { entries: 65, bytes: 4194305 } } },
   ])
     assert(
       holdAccountingProblems(bad, td, "standby").length > 0,
@@ -1644,6 +1650,475 @@ assert(
     ).length > 0,
     "offmain skip fails",
   );
+}
+
+// Recovery evidence must fail closed, including each bounded counter and dependent list.
+{
+  const rids = { grad_hdr: 101, img_big: 102, img_late: 103 };
+  const arm = { first: 32, last: 62 };
+  const steps = [
+    { step: 0, applied_frame: 1, settle_frame: 8 },
+    { step: 1, applied_frame: 41, settle_frame: 48 },
+  ];
+  const lines = [
+    ...Object.entries(rids).map(([name, rid]) => ({
+      event: "rid",
+      name,
+      rid,
+      frame: 0,
+    })),
+    {
+      event: "recover-param",
+      frame: 45,
+      off_main: true,
+      thread_id: 2,
+      main_thread_id: 1,
+    },
+  ];
+  assert(
+    floatRecoverSchedule(steps, lines, arm).length === 0,
+    "recovery schedule passes",
+  );
+  for (const args of [
+    [null, lines, arm],
+    [steps, null, arm],
+    [steps, lines, null],
+  ] as const)
+    assert(
+      floatRecoverSchedule(...args).length > 0,
+      "null recovery schedule input fails",
+    );
+  for (const bad of [
+    [],
+    lines.slice(1),
+    [...lines, lines[0]],
+    lines.map((l) => (l.event === "recover-param" ? { ...l, frame: 95 } : l)),
+    lines.map((l) => ({ ...l, off_main: false })),
+    lines.map((l) => ({ ...l, thread_id: 1 })),
+  ])
+    assert(
+      floatRecoverSchedule(steps, bad, arm).length > 0,
+      "bad recovery-param or RID fails",
+    );
+  for (const bad of [
+    [],
+    [{ ...steps[0], settle_frame: 33 }, steps[1]],
+    [steps[0], { ...steps[1], applied_frame: 31 }],
+    [steps[0], { ...steps[1], settle_frame: 63 }],
+  ])
+    assert(
+      floatRecoverSchedule(bad, lines, arm).length > 0,
+      "bad recovery step window fails",
+    );
+  const skip = (seq: number) => ({
+    seq,
+    rid: rids.img_big,
+    frame: seq === 1 ? 1 : 41,
+    source: "replace",
+    reason: "over_texture_cap",
+    thread: "main",
+    width: 5,
+    height: 19661,
+    format: 11,
+    bytes: 1572880,
+    by: {
+      rid: 200 + seq,
+      kind: "texture_2d",
+      width: 5,
+      height: 19661,
+      format: 11,
+      pending: "none",
+    },
+  });
+  const hold = {
+    schema: "render-stream-hold/1",
+    final: true,
+    caps: { texture_max_bytes: 1572864, total_max_bytes: 16777216 },
+    hold_balanced: true,
+    skipped: {
+      unregistered: 0,
+      not_texture2d: 0,
+      offmain_replace: 0,
+      released_source: 0,
+      vram_format: 0,
+      no_image: 0,
+      size_unknown: 0,
+      shape_mismatch: 0,
+      over_texture_cap: 2,
+      over_total_cap: 0,
+    },
+    pending: {
+      caps: { entries: 64, bytes: 4194304 },
+      pending_balanced: true,
+      evicted: 0,
+      skipped: {
+        unregistered: 0,
+        not_texture2d: 0,
+        vram_format: 0,
+        no_image: 0,
+        size_unknown: 0,
+        over_texture_cap: 0,
+      },
+    },
+    skip_records: [skip(1), skip(2)],
+    skip_records_dropped: 0,
+    pending_records: [],
+    pending_records_dropped: 0,
+  };
+  assert(
+    recoverSkipProblems(hold, rids, arm, steps[1]).length === 0,
+    "recovery skips pass",
+  );
+  for (const args of [
+    [null, rids, arm, steps[1]],
+    [hold, null, arm, steps[1]],
+    [hold, rids, null, steps[1]],
+    [hold, rids, arm, null],
+  ] as const)
+    assert(
+      recoverSkipProblems(...args).length > 0,
+      "null recovery skip input fails",
+    );
+  function leafMutations(value: unknown): unknown[] {
+    if (value === null) return ["wrong"];
+    if (typeof value === "number") return [value + 1];
+    if (typeof value === "boolean") return [!value];
+    if (typeof value === "string") return ["wrong"];
+    if (Array.isArray(value))
+      return value.length
+        ? value.flatMap((v, i) =>
+            leafMutations(v).map((bad) =>
+              value.map((x, j) => (j === i ? bad : x)),
+            ),
+          )
+        : [[{}]];
+    if (typeof value === "object")
+      return Object.entries(value).flatMap(([key, v]) =>
+        leafMutations(v).map((bad) => ({ ...value, [key]: bad })),
+      );
+    return [];
+  }
+  // Frame and by-RID are windows/identities, not exact values; test their invalid boundaries separately.
+  const skipBad = [
+    { ...hold, skip_records: [...hold.skip_records, skip(3)] },
+    { ...hold, skip_records: [{ ...skip(1), thread: "offmain" }, skip(2)] },
+    {
+      ...hold,
+      skip_records: [
+        { ...skip(1), by: { ...skip(1).by, pending: "evicted" } },
+        skip(2),
+      ],
+    },
+    { ...hold, pending_records: [{}] },
+    { ...hold, skip_records_dropped: 1 },
+    { ...hold, skip_records: [{ ...skip(1), frame: 32 }, skip(2)] },
+    { ...hold, skip_records: [skip(1), { ...skip(2), frame: 44 }] },
+    { ...hold, skipped: { ...hold.skipped, unregistered: 1 } },
+    {
+      ...hold,
+      pending: {
+        ...hold.pending,
+        skipped: { ...hold.pending.skipped, no_image: 1 },
+      },
+    },
+  ];
+  for (const bad of skipBad)
+    assert(
+      recoverSkipProblems(bad, rids, arm, steps[1]).length > 0,
+      "bad skip evidence fails",
+    );
+  const deps = (n: number) => ({
+    materials: Array.from({ length: n }, (_, i) => ({
+      id: i + 1,
+      params: ["src"],
+    })),
+    items: [],
+    more: 0,
+  });
+  function refusal(arm: number, fault: boolean) {
+    const first = arm === 1;
+    return {
+      schema: "render-stream-refusals/1",
+      final: true,
+      arm,
+      counts: {
+        refused: 2,
+        refused_no_image: 2,
+        recovered: { total: first ? 2 : 0, replace: first ? 2 : 0, update: 0 },
+        records: 2,
+        records_dropped: 0,
+      },
+      records: ["grad_hdr", "img_big"].map((name) => ({
+        rid: rids[name as keyof typeof rids],
+        family: "texture",
+        reason: "no-image",
+        created_offmain: null,
+        registry: {
+          kind: "texture_2d",
+          width: name === "img_big" ? 5 : first ? 256 : 192,
+          height: name === "img_big" ? 19661 : 1,
+          format: 11,
+          updated: true,
+          held: false,
+          has_path: name !== "img_big",
+        },
+        last_skip: name === "img_big" ? skip(first ? 1 : 2) : null,
+        recovered: first
+          ? {
+              path: "replace",
+              frame: 41,
+              published_id: name === "img_big" ? 10 : 11,
+              materials: fault ? 0 : name === "img_big" ? 1 : 2,
+              params: fault ? 0 : name === "img_big" ? 1 : 2,
+            }
+          : null,
+        dependents: deps(first ? 0 : name === "img_big" ? 1 : 2),
+      })),
+      index: {
+        entries: first ? (fault ? 4 : 0) : 3,
+        peak: first && fault ? 4 : 3,
+        dropped: 0,
+        resolved: {
+          by_replace: first && !fault ? 2 : 0,
+          by_adopt: first && !fault ? 1 : 0,
+        },
+        materials: first && !fault ? 4 : 0,
+        params: first && !fault ? 4 : 0,
+        republish_skipped_fault: first && fault ? 3 : 0,
+        unresolved: (first
+          ? fault
+            ? Object.keys(rids)
+            : []
+          : ["grad_hdr", "img_big"]
+        ).map((name) => ({
+          rid: rids[name as keyof typeof rids],
+          refused: !first,
+          ...deps(name === "grad_hdr" ? 2 : 1),
+        })),
+        unresolved_more: 0,
+      },
+    };
+  }
+  for (const k of [1, 2])
+    for (const mode of ["standby", "fault"] as const) {
+      const r = refusal(k, mode === "fault");
+      assert(
+        recoverRefusalProblems(r, rids, k, mode).length === 0,
+        `recovery ${mode} arm ${k} passes`,
+      );
+      assert(
+        recoverRefusalProblems(null, rids, k, mode).length > 0,
+        "null refusals fail",
+      );
+      assert(
+        recoverRefusalProblems(r, null, k, mode).length > 0,
+        "null recovery RIDs fail",
+      );
+      for (const key of ["counts", "index"] as const) {
+        const counters = structuredClone(r[key]);
+        if ("unresolved" in counters)
+          delete (counters as Partial<typeof r.index>).unresolved;
+        for (const bad of leafMutations(counters))
+          assert(
+            recoverRefusalProblems(
+              { ...r, [key]: { ...r[key], ...(bad as object) } },
+              rids,
+              k,
+              mode,
+            ).length > 0,
+            `every ${mode} arm ${k} ${key} counter mutation fails`,
+          );
+      }
+      for (const bad of [
+        { ...r, records: r.records.slice(1) },
+        { ...r, records: [...r.records, r.records[0]] },
+        {
+          ...r,
+          records: [{ ...r.records[0], reason: "canvas-empty" }, r.records[1]],
+        },
+        {
+          ...r,
+          records: [
+            r.records[0],
+            {
+              ...r.records[1],
+              last_skip: { ...r.records[1].last_skip!, seq: 99 },
+            },
+          ],
+        },
+        { ...r, records: [r.records[0], { ...r.records[1], registry: null }] },
+      ])
+        assert(
+          recoverRefusalProblems(bad, rids, k, mode).length > 0,
+          "missing, extra or wrong refusal fails",
+        );
+      for (const key of ["materials", "params"] as const) {
+        if (k === 1) {
+          const bad = structuredClone(r);
+          bad.records[0].recovered![key]++;
+          assert(
+            recoverRefusalProblems(bad, rids, k, mode).length > 0,
+            `recovered ${key} count mutation fails`,
+          );
+        }
+      }
+      const reordered = structuredClone(r);
+      reordered.records.reverse();
+      reordered.index.unresolved.reverse();
+      assert(
+        recoverRefusalProblems(reordered, rids, k, mode).length === 0,
+        "refusal and unresolved record order does not matter",
+      );
+      if (k === 2 || mode === "fault")
+        for (const bad of [
+          { ...r, index: { ...r.index, unresolved: [] } },
+          {
+            ...r,
+            index: {
+              ...r.index,
+              unresolved: r.index.unresolved.map((u) => ({
+                ...u,
+                refused: !u.refused,
+              })),
+            },
+          },
+          {
+            ...r,
+            index: {
+              ...r.index,
+              unresolved: r.index.unresolved.map((u) => ({
+                ...u,
+                materials: [],
+              })),
+            },
+          },
+        ])
+          assert(
+            recoverRefusalProblems(bad, rids, k, mode).length > 0,
+            "bad unresolved dependents fail",
+          );
+    }
+  const names = [
+    ...Object.keys(rids),
+    "img_rgf",
+    "img_rgh",
+    "img_rgbh",
+    "img_rgbaf_mip",
+    "img_rf_odd",
+    "hdr_bptc",
+    "hdr_astc",
+  ];
+  const oracle = names.flatMap((name) =>
+    [0, 1].map((step) => ({ name, step, payload_sha256: `${name}-${step}` })),
+  );
+  function cells(phase: "first" | "last", fault = false): State {
+    const s = state(0, 0);
+    s.textures = [];
+    s.materials = [];
+    names.forEach((name, id) => {
+      const step =
+        phase === "first" || name === "img_late" || name.startsWith("hdr_")
+          ? 0
+          : 1;
+      s.textures.push({
+        ...state(0, 0).textures[0],
+        id,
+        hash: `${name}-${step}`,
+      });
+      if (
+        (phase === "first" && name !== "grad_hdr" && name !== "img_big") ||
+        (phase === "last" && (!fault || !Object.keys(rids).includes(name)))
+      )
+        s.materials!.push({
+          id,
+          origin: "adopted",
+          status: "ok",
+          reason: null,
+          version: 1,
+          shader: null,
+          params: [{ name: "src", type: "rid", value: { tex: id } }],
+        });
+    });
+    return s;
+  }
+  for (const phase of ["first", "last"] as const) {
+    assert(
+      floatRecoverCells(cells(phase), oracle, phase).length === 0,
+      `honest ${phase} cells pass`,
+    );
+    assert(
+      floatRecoverCells(null, oracle, phase).length > 0,
+      "null cell state fails",
+    );
+    assert(
+      floatRecoverCells(cells(phase), null, phase).length > 0,
+      "null cell oracle fails",
+    );
+    assert(
+      floatRecoverCells(cells(phase), [], phase).length > 0,
+      "missing oracle hashes fail",
+    );
+  }
+  const nonvacuous = cells("first");
+  nonvacuous.materials!.push({ ...cells("last").materials![0] });
+  assert(
+    floatRecoverCells(nonvacuous, oracle, "first").length > 0,
+    "initial published grad_hdr fails non-vacuity",
+  );
+  assert(
+    floatRecoverEquivalenceProblems([]).length === 0,
+    "honest equivalence passes",
+  );
+  assert(
+    floatRecoverEquivalenceProblems(["different"]).length > 0,
+    "honest equivalence difference fails",
+  );
+  assert(
+    floatRecoverEquivalenceProblems(null).length > 0,
+    "null honest equivalence fails",
+  );
+  const fault = cells("last", true),
+    fr = refusal(1, true);
+  assert(
+    faultRepublishProblems(["different"], fault, oracle, fr, rids).length === 0,
+    "honest fault judge passes",
+  );
+  for (const args of [
+    [null, fault, oracle, fr, rids],
+    [[], fault, oracle, fr, rids],
+    [["different"], null, oracle, fr, rids],
+    [["different"], fault, null, fr, rids],
+    [["different"], fault, oracle, null, rids],
+    [["different"], fault, oracle, fr, null],
+  ] as const)
+    assert(
+      faultRepublishProblems(
+        args[0] ? [...args[0]] : null,
+        args[1],
+        args[2],
+        args[3],
+        args[4],
+      ).length > 0,
+      "null or empty fault input fails",
+    );
+  const publishedBig = structuredClone(fault);
+  publishedBig.materials!.push(cells("last").materials![1]);
+  assert(
+    faultRepublishProblems(["different"], publishedBig, oracle, fr, rids)
+      .length > 0,
+    "published img_big fails fault judge",
+  );
+  for (const name of Object.keys(rids)) {
+    const missing = structuredClone(fault);
+    missing.textures = missing.textures.filter(
+      (t) => !t.hash?.startsWith(name),
+    );
+    assert(
+      faultRepublishProblems(["different"], missing, oracle, fr, rids).length >
+        0,
+      "missing recovered texture fails fault judge",
+    );
+  }
 }
 
 if (failures > 0) {

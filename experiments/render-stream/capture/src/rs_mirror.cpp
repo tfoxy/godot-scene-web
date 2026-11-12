@@ -63,6 +63,11 @@ Mirror::Mirror(ProcessWide) : process_wide_(true) {
 void Mirror::reset() {
   std::lock_guard<std::mutex> lock(mutex_);
   ++epoch_;
+  recover_on_ = false;
+  recover_republish_ = true;
+  recover_index_.clear();
+  recover_entries_ = recover_peak_ = 0;
+  recover_counts_ = RecoverIndexReport();
   material_refs_queue_on_ = false;  // LAR3: adoption's arm turns the pending queue on again
   material_refs_queue_.clear();
   material_refs_queued_.store(false, std::memory_order_release);
@@ -746,6 +751,7 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     materials_.erase(id);
     return;
   }
+  if (!recover_index_.empty()) erase_recover_locked(rid);
   ++stats_.free_unknown;  // anything else this mirror does not model
 }
 
@@ -1630,6 +1636,7 @@ void Mirror::add_texture_rect(std::uint64_t rid, const Rect4 &rect, std::uint64_
     command.kind = CommandKind::Unsupported;
     command.name = kOp;
     command.unsupported_reason = UnsupportedCmdReason::UnknownTexture;
+    note_recover_locked(texture, {item->state.id, 1, kOp});
   } else {
     command.kind = CommandKind::AddTextureRect;
     command.tile = tile;
@@ -1665,6 +1672,7 @@ void Mirror::add_texture_rect_region(std::uint64_t rid, const Rect4 &rect, std::
     command.kind = CommandKind::Unsupported;
     command.name = kOp;
     command.unsupported_reason = UnsupportedCmdReason::UnknownTexture;
+    note_recover_locked(texture, {item->state.id, 1, kOp});
   } else {
     command.kind = CommandKind::AddTextureRectRegion;
     command.transpose = transpose;
@@ -1702,6 +1710,7 @@ void Mirror::add_msdf_texture_rect_region(std::uint64_t rid, const Rect4 &rect,
     command.kind = CommandKind::Unsupported;
     command.name = kOp;
     command.unsupported_reason = UnsupportedCmdReason::UnknownTexture;
+    note_recover_locked(texture, {item->state.id, 1, kOp});
   } else {
     command.kind = CommandKind::AddMsdfTextureRectRegion;
     command.rect = perturbed_glyph(rect, frame);
@@ -1731,7 +1740,8 @@ Point2 Mirror::perturbed_vertex(const Point2 &point, std::uint64_t frame) const 
   return out;
 }
 
-bool Mirror::geometry_texture(std::uint64_t texture, const char *op, Command *command) const {
+bool Mirror::geometry_texture(std::uint64_t texture, const char *op, const Item &item,
+                              Command *command) {
   if (texture == 0 && canvas_texture_headless_ && canvas_texture_created_) {
     // D11: on a headless host that has created a canvas texture, RID() may be that texture.
     command->kind = CommandKind::Unsupported;
@@ -1743,6 +1753,7 @@ bool Mirror::geometry_texture(std::uint64_t texture, const char *op, Command *co
     command->kind = CommandKind::Unsupported;
     command->name = op;
     command->unsupported_reason = UnsupportedCmdReason::UnknownTexture;
+    note_recover_locked(texture, {item.state.id, 1, op});
     return false;
   }
   return true;
@@ -1819,7 +1830,7 @@ void Mirror::add_primitive(std::uint64_t rid, std::vector<Point2> points,
     return;
   }
   Command command;
-  if (geometry_texture(texture, op, &command)) {
+  if (geometry_texture(texture, op, *item, &command)) {
     command.kind = polygon ? CommandKind::AddPolygon : CommandKind::AddPrimitive;
     command.points = std::move(points);
     if (!command.points.empty()) {
@@ -1847,7 +1858,7 @@ void Mirror::add_triangle_array(std::uint64_t rid, std::vector<std::int32_t> ind
     command.kind = CommandKind::Unsupported;
     command.name = kOp;
     command.unsupported_reason = UnsupportedCmdReason::SkinnedGeometry;
-  } else if (geometry_texture(texture, kOp, &command)) {
+  } else if (geometry_texture(texture, kOp, *item, &command)) {
     command.kind = CommandKind::AddTriangleArray;
     command.indices = std::move(indices);
     command.points = std::move(points);
@@ -1879,7 +1890,7 @@ void Mirror::add_nine_patch(std::uint64_t rid, const Rect4 &rect, const Rect4 &s
     command.kind = CommandKind::Unsupported;
     command.name = kOp;
     command.unsupported_reason = UnsupportedCmdReason::UnsupportedOp;
-  } else if (geometry_texture(texture, kOp, &command)) {
+  } else if (geometry_texture(texture, kOp, *item, &command)) {
     command.kind = CommandKind::AddNinePatch;
     command.rect = rect;
     command.src = source;
@@ -2571,7 +2582,7 @@ void Mirror::add_mesh(std::uint64_t rid, std::uint64_t mesh_rid, const Xform &tr
     command.kind = CommandKind::Unsupported;
     command.name = kOp;
     command.unsupported_reason = UnsupportedCmdReason::UnknownMesh;
-  } else if (geometry_texture(texture, kOp, &command)) {
+  } else if (geometry_texture(texture, kOp, *item, &command)) {
     command.kind = CommandKind::AddMesh;
     command.mesh = mesh->id;
     command.transform = transform;
@@ -3104,7 +3115,7 @@ void Mirror::add_multimesh(std::uint64_t rid, std::uint64_t multimesh_rid, std::
     command.name = kOp;
     command.unsupported_reason = mm_options_.enabled ? UnsupportedCmdReason::UnknownMultimesh
                                                      : UnsupportedCmdReason::UnsupportedOp;
-  } else if (geometry_texture(texture, kOp, &command)) {
+  } else if (geometry_texture(texture, kOp, *item, &command)) {
     command.kind = CommandKind::AddMultimesh;
     command.multimesh = mm->id;
   }
@@ -3656,7 +3667,7 @@ void Mirror::add_particles(std::uint64_t rid, std::uint64_t particles_rid, std::
     command.name = kOp;
     command.unsupported_reason = pt_options_.enabled ? UnsupportedCmdReason::UnknownParticles
                                                      : UnsupportedCmdReason::UnsupportedOp;
-  } else if (geometry_texture(texture, kOp, &command)) {
+  } else if (geometry_texture(texture, kOp, *item, &command)) {
     command.kind = CommandKind::AddParticles;
     command.particles = p->id;
     // LAR4: a draw of an emitter that still needs work queues it with its drawing item.
@@ -4085,13 +4096,13 @@ void Mirror::texture_2d_create(std::uint64_t rid, const PayloadCopy &copy, Paylo
   textures_.emplace(texture.id, std::move(texture));
 }
 
-void Mirror::texture_adopt(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
+RecoverInfo Mirror::texture_adopt(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
                            AdoptedContent content, std::uint64_t frame,
                            std::shared_ptr<TextureJob> job) {
   (void)frame;
   std::lock_guard<std::mutex> lock(mutex_);
   if (rid == 0 || texture_by_rid_.count(rid) != 0) {
-    return;  // adoption only ever names a RID the table does not hold
+    return {};  // adoption only ever names a RID the table does not hold
   }
   ++epoch_;
   Texture texture;
@@ -4108,7 +4119,10 @@ void Mirror::texture_adopt(std::uint64_t rid, const PayloadCopy &copy, PayloadPt
     texture.job = std::move(job);
   }
   texture_by_rid_[rid] = texture.id;
+  const auto id = texture.id;
   textures_.emplace(texture.id, std::move(texture));
+  if (!recover_index_.empty()) return resolve_recover_locked(rid, RecoverBy::Adopt);
+  return {id, 0, 0, false};
 }
 
 bool Mirror::knows_texture(std::uint64_t rid) const {
@@ -4344,6 +4358,47 @@ void Mirror::texture_2d_update(std::uint64_t rid, const PayloadCopy &copy, Paylo
   }
 }
 
+void Mirror::copy_texture_content(Texture *t, const Texture *b) {
+  t->kind = b->kind;
+  t->status = b->status;
+  t->has_reason = b->has_reason;
+  t->reason = b->reason;
+  t->copy = b->copy;
+  t->bytes = b->bytes;
+  t->job = b->job;
+  // The content's pending encode and attached variants move with it.
+  t->updated = b->updated;
+  t->basis = b->basis;
+  t->uastc_hash = b->uastc_hash;
+  t->uastc_params = b->uastc_params;
+  t->uastc_bytes = b->uastc_bytes;
+  t->basis_decided = b->basis_decided;
+}
+
+bool Mirror::texture_replace_recover(std::uint64_t t_rid, std::uint64_t b_rid,
+                                     std::uint64_t frame, RecoverInfo *out) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (t_rid == b_rid || omit_op_matches("texture_replace", frame) ||
+      texture_by_rid_.count(t_rid) != 0) return false;
+  const Texture *b = find_texture(b_rid);
+  if (b == nullptr) return false;
+  Texture t;
+  t.id = next_texture_id_++;
+  t.rid = t_rid;
+  t.version = 1;
+  t.origin = Origin::Adopted;
+  t.adopted_content =
+      b->origin == Origin::Adopted ? b->adopted_content : AdoptedContent::Current;
+  copy_texture_content(&t, b);
+  ++epoch_;
+  const auto b_id = b->id;
+  texture_by_rid_[t_rid] = t.id;
+  textures_.emplace(t.id, std::move(t));
+  retire_texture(b_id);
+  *out = resolve_recover_locked(t_rid, RecoverBy::Replace);
+  return true;
+}
+
 void Mirror::texture_replace(std::uint64_t t_rid, std::uint64_t b_rid, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (omit_op_matches("texture_replace", frame)) {
@@ -4362,21 +4417,7 @@ void Mirror::texture_replace(std::uint64_t t_rid, std::uint64_t b_rid, std::uint
   if (t != nullptr) {
     t->version += 1;
     if (b != nullptr) {
-      t->kind = b->kind;
-      t->status = b->status;
-      t->has_reason = b->has_reason;
-      t->reason = b->reason;
-      t->copy = b->copy;
-      t->bytes = b->bytes;
-      t->job = b->job;  // G8kw: a pending payload moves with the rest
-      // G8ku: so does b's Basis state (its encode is of exactly this content; the version check
-      // in service_basis is against t's raised version, so a running encode becomes stale).
-      t->updated = b->updated;
-      t->basis = b->basis;
-      t->uastc_hash = b->uastc_hash;
-      t->uastc_params = b->uastc_params;
-      t->uastc_bytes = b->uastc_bytes;
-      t->basis_decided = b->basis_decided;
+      copy_texture_content(t, b);
       // G8r: t's content is now b's; an adopted t keeps origin and inherits b's trust.
       if (t->origin == Origin::Adopted) {
         t->adopted_content =
@@ -4471,6 +4512,7 @@ void Mirror::canvas_texture_adopt(std::uint64_t rid, std::uint64_t diffuse, std:
                        : TextureReason::UnknownTexture;
   texture_by_rid_[rid] = texture.id;
   textures_.emplace(texture.id, std::move(texture));
+  if (!recover_index_.empty()) resolve_recover_locked(rid, RecoverBy::Adopt);
 }
 
 void Mirror::canvas_texture_set_channel(std::uint64_t rid, std::int32_t channel,
@@ -5315,6 +5357,11 @@ void Mirror::material_set_param(std::uint64_t rid, const std::string &name,
   }
   MaterialParam param;
   param.ok = to_param(name, value, &param.param, &param.reason);
+  if (!param.ok && param.reason == MaterialReason::UnknownTexture &&
+      value.type == "rid" && value.tex_rid != 0 && recover_on_) {
+    param.unknown_tex_rid = value.tex_rid;
+    note_recover_locked(value.tex_rid, {material->id, 0, nullptr});
+  }
   if (!param.ok && pt_options_.param_arrays && value.type == "array" && value.array_form) {
     // PM5: the packed form GLES3 converts the Array to, carried at /12 (wire_params()).
     DecodedParam packed;
@@ -7473,9 +7520,128 @@ void Mirror::at_rest_census(RestCensus *out, std::unordered_set<const void *> *s
   }
 }
 
+void Mirror::set_recover(bool notes_on, bool republish) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  recover_on_ = notes_on;
+  recover_republish_ = republish;
+}
+
+void Mirror::note_recover_locked(std::uint64_t rid, RecoverDependent dependent) {
+  if (!recover_on_ || rid == 0) return;
+  const auto found = recover_index_.find(rid);
+  if (found != recover_index_.end()) {
+    for (const auto &entry : found->second) {
+      if (entry.kind == dependent.kind && entry.owner == dependent.owner) return;
+    }
+  }
+  if (recover_entries_ == kRecoverIndexMaxEntries) {
+    ++recover_counts_.dropped;
+    return;
+  }
+  recover_index_[rid].push_back(dependent);
+  ++recover_entries_;
+  recover_peak_ = std::max(recover_peak_, recover_entries_);
+}
+
+void Mirror::erase_recover_locked(std::uint64_t rid) {
+  const auto found = recover_index_.find(rid);
+  if (found == recover_index_.end()) return;
+  recover_entries_ -= found->second.size();
+  recover_index_.erase(found);
+}
+
+RecoverInfo Mirror::resolve_recover_locked(std::uint64_t rid, RecoverBy path) {
+  RecoverInfo out;
+  out.published_id = texture_by_rid_.find(rid)->second;
+  const auto found = recover_index_.find(rid);
+  if (found == recover_index_.end()) return out;
+  if (!recover_republish_) {
+    out.republish_skipped = true;
+    ++recover_counts_.republish_skipped_fault;
+    return out;
+  }
+  for (const auto &dep : found->second) {
+    if (dep.kind != 0) continue;  // item commands are re-recorded by the engine's redraw
+    Material *material = materials_.mut(dep.owner);
+    if (material == nullptr) continue;
+    bool changed = false;
+    for (auto &entry : material->params) {
+      MaterialParam &param = entry.second;
+      if (param.ok || param.reason != MaterialReason::UnknownTexture ||
+          param.unknown_tex_rid != rid) continue;
+      param.param = {entry.first, VariantType::Rid, 1, true, out.published_id, {}};
+      param.ok = true;
+      param.reason = MaterialReason::ParamType;
+      param.unknown_tex_rid = 0;
+      changed = true;
+      ++out.params;
+    }
+    if (changed) {
+      ++material->version;
+      ++out.materials;
+    }
+  }
+  if (path == RecoverBy::Replace) ++recover_counts_.resolved_by_replace;
+  else ++recover_counts_.resolved_by_adopt;
+  recover_counts_.materials += out.materials;
+  recover_counts_.params += out.params;
+  erase_recover_locked(rid);
+  return out;
+}
+
+RefusalDependents Mirror::recover_dependents_locked(std::uint64_t rid, std::size_t cap) const {
+  RefusalDependents out;
+  cap = std::min(cap, kRefusalDependentsCap);
+  const auto found = recover_index_.find(rid);
+  if (found == recover_index_.end()) return out;
+  for (const auto &entry : found->second) {
+    if (entry.kind == 0) {
+      const Material *material = materials_.find(entry.owner);
+      if (material == nullptr) continue;
+      RefusalDependents::Material dep;
+      dep.id = entry.owner;
+      for (const auto &param : material->params) {
+        if (!param.second.ok && param.second.reason == MaterialReason::UnknownTexture &&
+            param.second.unknown_tex_rid == rid) dep.params.push_back(param.first);
+      }
+      if (dep.params.empty()) continue;
+      if (out.materials.size() < cap) out.materials.push_back(std::move(dep));
+      else ++out.more;
+    } else {
+      if (items_.find(entry.owner) == nullptr) continue;
+      if (out.items.size() < cap) out.items.push_back({entry.owner, entry.op});
+      else ++out.more;
+    }
+  }
+  return out;
+}
+
+RefusalDependents Mirror::recover_dependents(std::uint64_t rid, std::size_t cap) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return recover_dependents_locked(rid, cap);
+}
+
+RecoverIndexReport Mirror::recover_report(std::size_t cap) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  RecoverIndexReport out = recover_counts_;
+  out.entries = recover_entries_;
+  out.peak = recover_peak_;
+  cap = std::min(cap, kRecoverUnresolvedCap);
+  recover_index_.for_each([&](const auto &entry) {
+    if (out.unresolved.size() < cap) {
+      out.unresolved.push_back({entry.first, false,
+                               recover_dependents_locked(entry.first, kRefusalDependentsCap)});
+    } else {
+      ++out.unresolved_more;
+    }
+  });
+  return out;
+}
+
 MirrorStats Mirror::stats() const {
   std::lock_guard<std::mutex> lock(mutex_);
   MirrorStats out = stats_;
+  out.recover_index = recover_entries_;
   out.live_canvases = canvases_.size();
   out.live_items = items_.size();
   out.live_textures = textures_.size();

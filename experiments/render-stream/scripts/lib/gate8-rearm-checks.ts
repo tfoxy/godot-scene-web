@@ -1927,8 +1927,8 @@ const pendingSkipNames = [
 ];
 function pendingExpected(): Predicates {
   return {
-    "caps.entries": 16,
-    "caps.bytes": 262144,
+    "caps.entries": 64,
+    "caps.bytes": 4194304,
     taken: 15,
     taken_bytes: 21400,
     moved: 4,
@@ -1961,8 +1961,8 @@ function holdEvidenceProblems(hold: unknown, expected: HoldLeg): string[] {
       state: "active",
       reason: null,
       fault: fault ? "hold-off" : "none",
-      "caps.texture_max_bytes": 65535,
-      "caps.total_max_bytes": 4194304,
+      "caps.texture_max_bytes": 1572864,
+      "caps.total_max_bytes": 16777216,
       "taken.total": 16,
       "taken.update": 10,
       "taken.replace": 6,
@@ -2014,9 +2014,9 @@ function holdEvidenceProblems(hold: unknown, expected: HoldLeg): string[] {
   )
     problems.push("pending accounting does not balance");
   for (const prefix of ["live", "peak"]) {
-    if (!(n(`${prefix}.bytes`) <= 4194304))
+    if (!(n(`${prefix}.bytes`) <= 16777216))
       problems.push(`hold.${prefix} above cap or missing`);
-    if (!(pn(`${prefix}.entries`) <= 16 && pn(`${prefix}.bytes`) <= 262144))
+    if (!(pn(`${prefix}.entries`) <= 64 && pn(`${prefix}.bytes`) <= 4194304))
       problems.push(`pending.${prefix} above cap or missing`);
   }
   return problems;
@@ -2139,7 +2139,7 @@ export function offmainProblems(
         pn("moved_bytes") +
         pn("dropped_bytes") +
         pn("evicted_bytes") ||
-    !(pn("live.entries") <= 16 && pn("live.bytes") <= 262144)
+    !(pn("live.entries") <= 64 && pn("live.bytes") <= 4194304)
   )
     problems.push("pending accounting does not balance or exceeds cap");
   if (cellTables?.length !== 3) problems.push("missing offmain cell tables");
@@ -2342,6 +2342,639 @@ function floatHoldChecks(g: string): {
   };
 }
 
+export interface RecoverLine {
+  event: string;
+  name?: string;
+  rid?: number;
+  frame: number;
+  off_main?: boolean;
+  thread_id?: number;
+  main_thread_id?: number;
+}
+type RecoverRids = Record<string, number>;
+const recoverNames = ["grad_hdr", "img_big", "img_late"] as const;
+const objectOf = (v: unknown): Record<string, unknown> =>
+  v !== null && typeof v === "object" ? (v as Record<string, unknown>) : {};
+const arrayOf = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+const positiveId = (v: unknown): boolean =>
+  typeof v === "number" && Number.isSafeInteger(v) && v > 0;
+
+export function floatRecoverSchedule(
+  steps: StepLine[] | null,
+  recoverLines: RecoverLine[] | null,
+  arm1: FloatHoldArm | null,
+): string[] {
+  if (!steps || !recoverLines || !arm1) return ["missing recovery schedule"];
+  const problems: string[] = [];
+  const zero = steps.filter((s) => s.step === 0);
+  const one = steps.filter((s) => s.step === 1);
+  if (
+    !Number.isSafeInteger(arm1.first) ||
+    !Number.isSafeInteger(arm1.last) ||
+    arm1.first > arm1.last
+  )
+    problems.push("invalid arm 1 window");
+  if (zero.length !== 1 || !(zero[0].settle_frame! < arm1.first))
+    problems.push("step 0 does not settle before arm 1");
+  if (
+    one.length !== 1 ||
+    !(
+      one[0].applied_frame >= arm1.first &&
+      one[0].applied_frame <= arm1.last &&
+      one[0].settle_frame! >= one[0].applied_frame &&
+      one[0].settle_frame! <= arm1.last
+    )
+  )
+    problems.push("step 1 does not apply and settle within arm 1");
+  const fill = recoverLines.filter((l) => l.event === "recover-param");
+  if (
+    fill.length !== 1 ||
+    fill[0].frame !== 45 ||
+    !(fill[0].frame >= arm1.first && fill[0].frame <= arm1.last) ||
+    fill[0].off_main !== true ||
+    !positiveId(fill[0].thread_id) ||
+    !positiveId(fill[0].main_thread_id) ||
+    fill[0].thread_id === fill[0].main_thread_id
+  )
+    problems.push("recover-param is not off-main at frame 45 within arm 1");
+  const ridLines = recoverLines.filter((l) => l.event === "rid");
+  if (
+    ridLines.length !== 3 ||
+    new Set(ridLines.map((l) => l.rid)).size !== 3 ||
+    recoverNames.some(
+      (name) =>
+        ridLines.filter((l) => l.name === name && positiveId(l.rid)).length !==
+        1,
+    )
+  )
+    problems.push("missing, extra or invalid recovery RIDs");
+  return problems;
+}
+
+function recoverCellTable(
+  state: State | null,
+  oracle: FloatHoldOracle[] | null,
+  phase: "first" | "last",
+): Record<string, boolean | null> {
+  return Object.fromEntries(
+    [...recoverNames, ...floatHoldCells.control].map((name) => {
+      const step =
+        name === "img_late" || name.startsWith("hdr_") || phase === "first"
+          ? 0
+          : 1;
+      const hash = oracle?.find(
+        (o) => o.name === name && o.step === step,
+      )?.payload_sha256;
+      return [name, state && hash ? published(state, hash) : null];
+    }),
+  );
+}
+export function floatRecoverCells(
+  state: State | null,
+  oracleLines: FloatHoldOracle[] | null,
+  phase: "first" | "last",
+): string[] {
+  if (!state || !oracleLines) return ["missing recovery state or oracle"];
+  const table = recoverCellTable(state, oracleLines, phase);
+  const names =
+    phase === "first" ? ["grad_hdr", "img_big"] : Object.keys(table);
+  return names.flatMap((name) =>
+    table[name] === (phase === "last")
+      ? []
+      : [`${phase} ${name}: ${table[name] ?? "missing oracle"}`],
+  );
+}
+export function floatRecoverEquivalenceProblems(
+  problems: string[] | null,
+): string[] {
+  return problems === null ? ["missing recovery equivalence"] : problems;
+}
+
+function skipRecordProblems(
+  record: unknown,
+  rids: RecoverRids | null,
+  seq: number,
+): string[] {
+  const problems = fieldsMatch(
+    record,
+    {
+      seq,
+      rid: rids?.img_big ?? -1,
+      source: "replace",
+      reason: "over_texture_cap",
+      thread: "main",
+      width: 5,
+      height: 19661,
+      format: 11,
+      bytes: 1572880,
+      "by.kind": "texture_2d",
+      "by.width": 5,
+      "by.height": 19661,
+      "by.format": 11,
+      "by.pending": "none",
+    },
+    "skip",
+  );
+  if (!positiveId(evidenceField(record, "by.rid")))
+    problems.push("skip missing by RID");
+  return problems;
+}
+export function recoverSkipProblems(
+  hold: unknown,
+  rids: RecoverRids | null,
+  arm1: FloatHoldArm | null,
+  step1: StepLine | null,
+): string[] {
+  if (!hold || !rids || !arm1 || !step1)
+    return ["missing skip evidence or schedule"];
+  const problems = fieldsMatch(
+    hold,
+    {
+      schema: "render-stream-hold/1",
+      final: true,
+      "caps.texture_max_bytes": 1572864,
+      "caps.total_max_bytes": 16777216,
+      "pending.caps.entries": 64,
+      "pending.caps.bytes": 4194304,
+      hold_balanced: true,
+      "pending.pending_balanced": true,
+      skip_records_dropped: 0,
+      pending_records_dropped: 0,
+      "pending.evicted": 0,
+    },
+    "hold",
+  );
+  for (const [path, reasons] of [
+    [
+      "skipped",
+      [
+        "unregistered",
+        "not_texture2d",
+        "offmain_replace",
+        "released_source",
+        "vram_format",
+        "no_image",
+        "size_unknown",
+        "shape_mismatch",
+        "over_texture_cap",
+        "over_total_cap",
+      ],
+    ],
+    [
+      "pending.skipped",
+      [
+        "unregistered",
+        "not_texture2d",
+        "vram_format",
+        "no_image",
+        "size_unknown",
+        "over_texture_cap",
+      ],
+    ],
+  ] as const) {
+    for (const reason of reasons)
+      problems.push(
+        ...fieldsMatch(
+          hold,
+          {
+            [`${path}.${reason}`]:
+              path === "skipped" && reason === "over_texture_cap" ? 2 : 0,
+          },
+          "hold",
+        ),
+      );
+    if (
+      Object.keys(objectOf(evidenceField(hold, path))).length !== reasons.length
+    )
+      problems.push(`${path} has missing or extra reasons`);
+  }
+  if (!eq(evidenceField(hold, "pending_records"), []))
+    problems.push("pending records not empty");
+  const skips = arrayOf(evidenceField(hold, "skip_records"));
+  if (skips.length !== 2) problems.push("expected exactly two skip records");
+  skips.forEach((s, i) => {
+    problems.push(...skipRecordProblems(s, rids, i + 1));
+  });
+  const f0 = evidenceField(skips[0], "frame"),
+    f1 = evidenceField(skips[1], "frame");
+  if (
+    typeof f0 !== "number" ||
+    !Number.isSafeInteger(f0) ||
+    f0 < 0 ||
+    !(f0 < arm1.first)
+  )
+    problems.push("first skip outside initial standby");
+  if (
+    typeof f1 !== "number" ||
+    !(
+      Math.abs(f1 - step1.applied_frame) <= 1 &&
+      f1 >= arm1.first &&
+      f1 <= arm1.last
+    )
+  )
+    problems.push("second skip outside step 1 window");
+  return problems;
+}
+
+function dependentProblems(value: unknown, count: number): string[] {
+  const materials = arrayOf(evidenceField(value, "materials"));
+  const problems = fieldsMatch(value, { more: 0 }, "dependents");
+  if (materials.length !== count || !eq(evidenceField(value, "items"), []))
+    problems.push("dependent counts differ");
+  if (
+    new Set(materials.map((m) => evidenceField(m, "id"))).size !==
+    materials.length
+  )
+    problems.push("duplicate material dependents");
+  for (const m of materials)
+    if (
+      !positiveId(evidenceField(m, "id")) ||
+      !eq(evidenceField(m, "params"), ["src"])
+    )
+      problems.push("dependent material id or params differ");
+  return problems;
+}
+export function recoverRefusalProblems(
+  refusals: unknown,
+  rids: RecoverRids | null,
+  arm: number,
+  want: "standby" | "fault",
+): string[] {
+  if (
+    !refusals ||
+    !rids ||
+    recoverNames.some((n) => !positiveId(rids[n])) ||
+    new Set(recoverNames.map((n) => rids[n])).size !== 3
+  )
+    return ["missing refusals or recovery RIDs"];
+  const first = arm === 1,
+    fault = first && want === "fault";
+  const problems = fieldsMatch(
+    refusals,
+    {
+      schema: "render-stream-refusals/1",
+      final: true,
+      arm,
+      "counts.refused": 2,
+      "counts.refused_no_image": 2,
+      "counts.recovered.total": first ? 2 : 0,
+      "counts.recovered.replace": first ? 2 : 0,
+      "counts.recovered.update": 0,
+      "counts.records": 2,
+      "counts.records_dropped": 0,
+      "index.entries": fault ? 4 : first ? 0 : 3,
+      "index.peak": fault ? 4 : 3,
+      "index.dropped": 0,
+      "index.resolved.by_replace": first && !fault ? 2 : 0,
+      "index.resolved.by_adopt": first && !fault ? 1 : 0,
+      "index.materials": first && !fault ? 4 : 0,
+      "index.params": first && !fault ? 4 : 0,
+      "index.republish_skipped_fault": fault ? 3 : 0,
+      "index.unresolved_more": 0,
+    },
+    "refusals",
+  );
+  const records = arrayOf(evidenceField(refusals, "records"));
+  if (records.length !== 2)
+    problems.push("expected exactly two refusal records");
+  for (const name of ["grad_hdr", "img_big"] as const) {
+    const matches = records.filter(
+      (r) => evidenceField(r, "rid") === rids[name],
+    );
+    if (matches.length !== 1) {
+      problems.push(`${name}: missing or duplicate refusal`);
+      continue;
+    }
+    const r = matches[0],
+      big = name === "img_big",
+      n = big ? 1 : 2;
+    problems.push(
+      ...fieldsMatch(
+        r,
+        {
+          family: "texture",
+          reason: "no-image",
+          created_offmain: null,
+          "registry.kind": "texture_2d",
+          "registry.width": big ? 5 : first ? 256 : 192,
+          "registry.height": big ? 19661 : 1,
+          "registry.format": 11,
+          "registry.updated": true,
+          "registry.held": false,
+          ...(big ? { "registry.has_path": false } : {}),
+        },
+        name,
+      ),
+    );
+    if (big)
+      problems.push(
+        ...skipRecordProblems(
+          evidenceField(r, "last_skip"),
+          rids,
+          first ? 1 : 2,
+        ),
+      );
+    else if (evidenceField(r, "last_skip") !== null)
+      problems.push("grad_hdr last_skip not null");
+    if (first) {
+      problems.push(
+        ...fieldsMatch(
+          r,
+          {
+            "recovered.path": "replace",
+            "recovered.materials": fault ? 0 : n,
+            "recovered.params": fault ? 0 : n,
+          },
+          name,
+        ),
+      );
+      const frame = evidenceField(r, "recovered.frame");
+      if (
+        typeof frame !== "number" ||
+        frame < 40 ||
+        frame > 42 ||
+        !positiveId(evidenceField(r, "recovered.published_id"))
+      )
+        problems.push(`${name}: invalid recovery frame or id`);
+    } else if (evidenceField(r, "recovered") !== null)
+      problems.push(`${name}: arm 2 recovered`);
+    problems.push(
+      ...dependentProblems(evidenceField(r, "dependents"), first ? 0 : n),
+    );
+  }
+  const unresolved = arrayOf(evidenceField(refusals, "index.unresolved"));
+  const names = fault ? recoverNames : first ? [] : ["grad_hdr", "img_big"];
+  if (unresolved.length !== names.length)
+    problems.push("unresolved RID count differs");
+  for (const name of names) {
+    const matches = unresolved.filter(
+      (u) => evidenceField(u, "rid") === rids[name],
+    );
+    if (matches.length !== 1) {
+      problems.push(`${name}: missing or duplicate unresolved RID`);
+      continue;
+    }
+    problems.push(
+      ...fieldsMatch(matches[0], { refused: !first }, name),
+      ...dependentProblems(matches[0], name === "grad_hdr" ? 2 : 1),
+    );
+  }
+  if (!Array.isArray(evidenceField(refusals, "index.unresolved")))
+    problems.push("missing unresolved list");
+  return problems;
+}
+
+export function faultRepublishProblems(
+  problems: string[] | null,
+  state: State | null,
+  oracleLines: FloatHoldOracle[] | null,
+  refusals: unknown,
+  rids: RecoverRids | null,
+): string[] {
+  const result = recoverRefusalProblems(refusals, rids, 1, "fault");
+  if (!problems || problems.length === 0)
+    result.push("fault knob did not fail equivalence");
+  if (!state || !oracleLines)
+    return [...result, "missing fault state or oracle"];
+  const table = recoverCellTable(state, oracleLines, "last");
+  for (const name of Object.keys(table)) {
+    const recovered = recoverNames.includes(
+      name as (typeof recoverNames)[number],
+    );
+    if (table[name] !== !recovered)
+      result.push(`fault ${name}: ${table[name] ?? "missing oracle"}`);
+    if (recovered) {
+      const hash = oracleLines.find(
+        (o) => o.name === name && o.step === (name === "img_late" ? 0 : 1),
+      )?.payload_sha256;
+      if (
+        !hash ||
+        !state.textures.some((t) => t.status === "ok" && t.hash === hash)
+      )
+        result.push(`${name}: recovered texture entry absent`);
+    }
+  }
+  return result;
+}
+
+function floatRecoverChecks(g: string): {
+  checks: G8aCheck[];
+  report: Record<string, unknown>;
+} {
+  const root = join(g, "float-recover"),
+    checks: G8aCheck[] = [];
+  const capture = (leg: string) => join(root, leg, "capture");
+  const evidence = (leg: string, arm: number, file: string) =>
+    readJson<unknown>(
+      join(
+        capture(leg),
+        "evidence",
+        ...(arm === 1 ? [] : [`arm-${arm}`]),
+        file,
+      ),
+    );
+  const cache = new Map<string, LoadedRecording>();
+  const rec = (leg: string, arm = 1) => {
+    const key = `${leg}/${arm}`;
+    if (!cache.has(key))
+      cache.set(
+        key,
+        loadRec(
+          join(capture(leg), `recording.rs8${arm === 1 ? "" : `.arm-${arm}`}`),
+        ),
+      );
+    return cache.get(key)!;
+  };
+  const lines = (leg: string) =>
+    jsonlOf<RecoverLine>(join(capture(leg), "recover.jsonl"));
+  const steps = (leg: string) =>
+    jsonlOf<StepLine>(join(capture(leg), "steps.jsonl"));
+  const oracle = (leg: string) =>
+    jsonlOf<FloatHoldOracle>(join(capture(leg), "textures.jsonl"));
+  const rids = (leg: string) =>
+    Object.fromEntries(
+      lines(leg)
+        .filter((l) => l.event === "rid")
+        .map((l) => [l.name!, l.rid!]),
+    );
+  const window = (leg: string) => ({
+    first: rec(leg).rec?.transactions[0]?.frame ?? NaN,
+    last: rec(leg).rec?.transactions.at(-1)?.frame ?? NaN,
+  });
+  const compare = (leg: string) => {
+    const born = rec("born").rec,
+      arm = rec(leg).rec;
+    const settle = steps(leg).find((s) => s.step === 1)?.settle_frame;
+    return born && arm && settle !== undefined
+      ? equivalence(born, arm, settle, 0, {}).problems
+      : null;
+  };
+  const schedule = (leg: string) =>
+    floatRecoverSchedule(steps(leg), lines(leg), window(leg));
+  const skip = (leg: string) =>
+    recoverSkipProblems(
+      evidence(leg, 1, "hold.json"),
+      rids(leg),
+      window(leg),
+      steps(leg).find((s) => s.step === 1) ?? null,
+    );
+  const add = (
+    id: string,
+    legs: string[],
+    criterion: string,
+    judge: () => string[],
+    detail: string,
+  ) => {
+    const present = legs.some((leg) => existsSync(capture(leg)));
+    const pre = legs.flatMap((leg) => {
+      const exit = join(capture(leg), "exit-code.txt");
+      return existsSync(exit) && readFileSync(exit, "utf8").trim() === "0"
+        ? []
+        : [`${leg}: missing or nonzero exit`];
+    });
+    checks.push(
+      selectedCheck(
+        !present
+          ? {
+              id,
+              criterion,
+              passed: false,
+              status: "not-run",
+              gating: false,
+              detail: "float-recover legs absent",
+            }
+          : check(id, criterion, [...pre, ...judge()], detail),
+        g,
+        "float-recover",
+      ),
+    );
+  };
+  add(
+    "float-recover-equivalence",
+    ["standby", "born"],
+    "Arm 1 equals born after step 1 settles, with recovered textures published and absent at its first frame",
+    () => [
+      ...schedule("standby"),
+      ...floatRecoverSchedule(steps("born"), lines("born"), window("standby")),
+      ...[1, 2].flatMap((arm) =>
+        rec("standby", arm).error ? [rec("standby", arm).error!] : [],
+      ),
+      ...(rec("born").error ? [rec("born").error!] : []),
+      ...floatRecoverEquivalenceProblems(compare("standby")),
+      ...floatRecoverCells(
+        rec("standby").rec?.transactions[0]?.state ?? null,
+        oracle("standby"),
+        "first",
+      ),
+      ...floatRecoverCells(
+        rec("standby").rec?.transactions.at(-1)?.state ?? null,
+        oracle("standby"),
+        "last",
+      ),
+      ...[1, 2].flatMap((arm) =>
+        fieldsMatch(
+          evidence("standby", arm, "warm.json"),
+          {
+            schema: "render-stream-warm/1",
+            final: true,
+            arm_index: arm,
+            decode_at_reference: 0,
+            "textures.refused": 2,
+            "textures.refused_no_image": 2,
+            "textures.recovered": arm === 1 ? 2 : 0,
+          },
+          `warm arm ${arm}`,
+        ),
+      ),
+    ],
+    "arm 1 equals born from step-1 settle; 3 recovered cells and 7 controls published; initial refused cells absent; warm counts 2/2/2 and 2/2/0",
+  );
+  add(
+    "float-recover-evidence",
+    ["standby", "born"],
+    "Every refusal and hold skip identifies its texture, recovery, dependents and arm with balanced teardown",
+    () => {
+      const hold = evidence("standby", 1, "hold.json");
+      return [
+        ...skip("standby"),
+        ...fieldsMatch(hold, { fault: "hold-off" }, "hold"),
+        ...[1, 2].flatMap((arm) => {
+          const refusal = evidence("standby", arm, "refusals.json");
+          const records = arrayOf(evidenceField(refusal, "records"));
+          const last = evidenceField(
+            records.find(
+              (r) => evidenceField(r, "rid") === rids("standby").img_big,
+            ),
+            "last_skip",
+          );
+          const source = arrayOf(evidenceField(hold, "skip_records")).find(
+            (r) => evidenceField(r, "seq") === evidenceField(last, "seq"),
+          );
+          return [
+            ...recoverRefusalProblems(refusal, rids("standby"), arm, "standby"),
+            ...(!source || !eq(source, last)
+              ? [`arm ${arm}: last_skip differs from hold record`]
+              : []),
+            ...fieldsMatch(
+              evidence("standby", arm, "teardown.json"),
+              { "mirror.recover_index": 0, adopt_held: 0 },
+              `teardown arm ${arm}`,
+            ),
+          ];
+        }),
+        ...["hold.json", "refusals.json"].flatMap((f) =>
+          existsSync(join(capture("born"), "evidence", f))
+            ? [`born has ${f}`]
+            : [],
+        ),
+      ];
+    },
+    "2 exact skip records; 2 refusals per arm; replace recovery 2 then 0; index adoption 1; last_skip matches hold; both teardowns empty; born evidence absent",
+  );
+  add(
+    "fault-republish-caught",
+    ["fault-republish", "born"],
+    "The fault knob recovers texture entries while leaving their materials unpublished and controls published",
+    () => [
+      ...schedule("fault-republish"),
+      ...skip("fault-republish"),
+      ...fieldsMatch(
+        evidence("fault-republish", 1, "hold.json"),
+        { fault: "hold-off-skip-republish" },
+        "hold",
+      ),
+      ...faultRepublishProblems(
+        compare("fault-republish"),
+        rec("fault-republish").rec?.transactions.at(-1)?.state ?? null,
+        oracle("fault-republish"),
+        evidence("fault-republish", 1, "refusals.json"),
+        rids("fault-republish"),
+      ),
+    ],
+    "equivalence fails; all 3 recovered texture entries present but unpublished; 7 controls published; skipped_fault 3; unresolved materials 2/1/1",
+  );
+  return {
+    checks,
+    report: Object.fromEntries(
+      ["standby", "fault-republish"].map((leg) => [
+        leg,
+        {
+          first: recoverCellTable(
+            rec(leg).rec?.transactions[0]?.state ?? null,
+            oracle(leg),
+            "first",
+          ),
+          last: recoverCellTable(
+            rec(leg).rec?.transactions.at(-1)?.state ?? null,
+            oracle(leg),
+            "last",
+          ),
+        },
+      ]),
+    ),
+  };
+}
+
 function selectedCheck(c: G8aCheck, g: string, fx: string): G8aCheck {
   if (!existsSync(join(g, fx, "not-selected.txt"))) return c;
   return {
@@ -2376,5 +3009,8 @@ export async function runG8re(
   const floatHold = floatHoldChecks(g);
   checks.push(...floatHold.checks);
   report["float-hold"] = floatHold.report;
+  const floatRecover = floatRecoverChecks(g);
+  checks.push(...floatRecover.checks);
+  report["float-recover"] = floatRecover.report;
   return { checks, report };
 }

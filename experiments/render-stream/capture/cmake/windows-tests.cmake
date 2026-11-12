@@ -100,12 +100,15 @@ grc_w_test(rs_adopt TARGET rs_adopt_test
     src/rs_mirror.cpp src/rs_evict.cpp src/rs_texture_release.cpp
     src/rs_texture_delivery.cpp src/rs_shader_payload.cpp src/rs_texture_payload.cpp
     src/rs_mesh_payload.cpp src/rs_sha256.cpp src/rs2_diff.cpp src/rs_resource_log.cpp
-    src/rs_texture_worker.cpp src/rs2_codec.cpp src/rs_variant.cpp src/rs_registry.cpp src/report.cpp
+    src/rs_texture_worker.cpp src/rs2_codec.cpp src/rs_variant.cpp src/rs_registry.cpp src/rs_refusal.cpp src/rs_hold.cpp src/report.cpp
   INCLUDES vendor LIBS grc_platform grc_codecs Threads::Threads DEFINES GRC_ADOPT_TEST
   # The adopt test stubs the hook implementation, leaving its private state unused.
   OPTIONS -Wall -Wextra -Werror -Wno-unused-private-field)
 grc_w_test(rs_hold TARGET rs_hold_test
   SOURCES test/rs_hold_test.cpp src/rs_hold.cpp src/report.cpp
+  LIBS grc_platform Threads::Threads)
+grc_w_test(rs_refusal TARGET rs_refusal_test
+  SOURCES test/rs_refusal_test.cpp src/rs_refusal.cpp src/rs_hold.cpp src/report.cpp
   LIBS grc_platform Threads::Threads)
 grc_w_test(rs_reload TARGET rs_reload_test
   SOURCES test/rs_reload_test.cpp src/rs_reload.cpp src/rs_texture_payload.cpp

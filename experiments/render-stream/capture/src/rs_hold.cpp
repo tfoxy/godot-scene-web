@@ -13,6 +13,7 @@ constexpr const char *kSkipNames[] = {
     "no_image", "size_unknown", "shape_mismatch", "over_texture_cap", "over_total_cap"};
 constexpr const char *kDropNames[] = {"superseded", "unheld", "freed", "recreated", "replaced_away", "fault"};
 constexpr const char *kPendingDropNames[] = {"freed", "updated", "replaced", "recreated"};
+constexpr const char *kByPendingNames[] = {"none", "present", "evicted", "skipped", "unregistered"};
 constexpr HoldSkip kPendingSkips[] = {HoldSkip::Unregistered, HoldSkip::NotTexture2d,
     HoldSkip::VramFormat, HoldSkip::NoImage, HoldSkip::SizeUnknown, HoldSkip::OverTextureCap};
 }
@@ -20,6 +21,7 @@ const char *hold_source_name(HoldSource source) { return kSourceNames[static_cas
 const char *hold_skip_name(HoldSkip skip) { return kSkipNames[static_cast<std::size_t>(skip)]; }
 const char *hold_drop_name(HoldDrop drop) { return kDropNames[static_cast<std::size_t>(drop)]; }
 const char *pending_drop_name(PendingDrop drop) { return kPendingDropNames[static_cast<std::size_t>(drop)]; }
+const char *by_pending_name(ByPending pending) { return kByPendingNames[static_cast<std::size_t>(pending)]; }
 
 bool hold_balanced(const HoldStats &s) {
   const auto dropped = std::accumulate(s.dropped.begin(), s.dropped.end(), std::uint64_t{0});
@@ -38,6 +40,12 @@ bool pending_balanced(const HoldStats::Pending &s) {
 std::string hold_json(const HoldStats &s, const std::vector<HoldRecord> &records,
                       std::uint64_t held_dropped, bool final, std::uint64_t frame,
                       const std::string &state, const std::string &reason, const std::string &fault) {
+  return hold_json(s, records, held_dropped, final, frame, state, reason, fault, HoldRings{});
+}
+std::string hold_json(const HoldStats &s, const std::vector<HoldRecord> &records,
+                      std::uint64_t held_dropped, bool final, std::uint64_t frame,
+                      const std::string &state, const std::string &reason, const std::string &fault,
+                      const HoldRings &rings) {
   JsonWriter j;
   const auto u = [&j](const char *key, std::uint64_t v) { j.key(key).unsigned_integer(v); };
   const auto size = [&j, &u](const char *key, const HoldSize &v) {
@@ -80,7 +88,40 @@ std::string hold_json(const HoldStats &s, const std::vector<HoldRecord> &records
   j.key("skipped").object_begin();
   for (const auto skip : kPendingSkips) u(hold_skip_name(skip), p.skipped[static_cast<std::size_t>(skip)]);
   j.object_end(); size("live", p.live); size("peak", p.peak);
-  j.field("pending_balanced", pending_balanced(p)).object_end().object_end();
+  j.field("pending_balanced", pending_balanced(p)).object_end();
+  j.key("skip_records").array_begin();
+  for (const auto &r : rings.skips) {
+    j.object_begin(); u("seq", r.seq); u("rid", r.rid); u("frame", r.frame);
+    j.field("source", std::string(hold_source_name(r.source)));
+    j.field("reason", std::string(hold_skip_name(r.reason)));
+    if (r.thread < 0) j.field_null("thread");
+    else j.field("thread", std::string(r.thread == 0 ? "main" : "offmain"));
+    j.field("width", r.width).field("height", r.height).field("format", r.format).field("bytes", r.bytes);
+    j.key("by");
+    if (!r.has_by) j.null();
+    else {
+      j.object_begin(); u("rid", r.by_rid);
+      if (r.by_kind) j.field("kind", std::string(r.by_kind));
+      else j.field_null("kind");
+      j.field("width", r.by_width).field("height", r.by_height).field("format", r.by_format);
+      std::string pending = by_pending_name(r.by_pending);
+      if (r.by_pending == ByPending::Skipped) pending += std::string(":") + hold_skip_name(r.by_pending_reason);
+      j.field("pending", pending).object_end();
+    }
+    j.object_end();
+  }
+  j.array_end(); u("skip_records_dropped", rings.skips_dropped);
+  j.key("pending_records").array_begin();
+  for (const auto &r : rings.pending) {
+    j.object_begin(); u("seq", r.seq); u("rid", r.rid); u("frame", r.frame);
+    j.field("event", std::string(r.evicted ? "evicted" : "skipped"));
+    if (r.evicted) j.field_null("reason");
+    else j.field("reason", std::string(hold_skip_name(r.reason)));
+    j.field("bytes", r.bytes).field("width", r.width).field("height", r.height).field("format", r.format);
+    j.object_end();
+  }
+  j.array_end(); u("pending_records_dropped", rings.pending_dropped);
+  j.object_end();
   return j.take();
 }
 }  // namespace grc::rs

@@ -169,6 +169,7 @@ std::string warm_json(const WarmStats &s) {
   field("creation", s.textures.creation);
   field("refused", s.textures.refused);
   field("refused_no_image", s.textures.refused_no_image);
+  field("recovered", s.textures.recovered);
   j << '}';
   field("warm_complete", s.warm_complete);
   j << ",\"arm_to_warm_complete_ms\":";

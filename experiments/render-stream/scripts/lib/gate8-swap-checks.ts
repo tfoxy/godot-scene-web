@@ -52,6 +52,7 @@ export interface SwapAccounting {
     texture_payload_bytes?: number;
     mesh_payload_bytes?: number;
     held_bytes?: number;
+    recover_index?: number;
   };
   served_sets?: number;
   served_bytes?: number;
@@ -248,6 +249,7 @@ export function accountingProblems(label: string, a: SwapAccounting): string[] {
   zero("mirror.texture_payload_bytes", m?.texture_payload_bytes);
   zero("mirror.mesh_payload_bytes", m?.mesh_payload_bytes);
   zero("mirror.held_bytes", m?.held_bytes);
+  zero("mirror.recover_index", m?.recover_index);
   if (typeof m?.canvases !== "number" || m.canvases > 1)
     out.push(
       `${label}: mirror.canvases ${m?.canvases ?? "missing"}, want <= 1`,

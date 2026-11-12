@@ -13,12 +13,15 @@
 
 namespace grc::rs {
 
-constexpr std::int64_t kHoldTextureMaxBytes = 65535;
-constexpr std::uint64_t kHoldTotalMaxBytes = 4194304;
-constexpr std::size_t kHoldPendingMaxEntries = 16;
-constexpr std::uint64_t kHoldPendingMaxBytes = 262144;
+constexpr std::int64_t kHoldTextureMaxBytes = 1572864;
+constexpr std::uint64_t kHoldTotalMaxBytes = 16777216;
+constexpr std::size_t kHoldPendingMaxEntries = 64;
+constexpr std::uint64_t kHoldPendingMaxBytes = 4194304;
+static_assert(kHoldPendingMaxBytes >= kHoldTextureMaxBytes);
 constexpr std::uint64_t kHoldEvidenceEveryFrames = 300;
 constexpr std::size_t kHoldRecordCap = 64;
+constexpr std::size_t kHoldSkipRecordCap = 256;
+constexpr std::size_t kHoldPendingRecordCap = 64;
 
 enum class HoldSource : std::uint8_t { Update, Replace };
 enum class HoldSkip : std::uint8_t {
@@ -29,10 +32,59 @@ enum class HoldDrop : std::uint8_t {
   Superseded, Unheld, Freed, Recreated, ReplacedAway, Fault, Count
 };
 enum class PendingDrop : std::uint8_t { Freed, Updated, Replaced, Recreated, Count };
+enum class ByPending : std::uint8_t { None, Present, Evicted, Skipped, Unregistered };
 const char *hold_source_name(HoldSource source);
 const char *hold_skip_name(HoldSkip skip);
 const char *hold_drop_name(HoldDrop drop);
 const char *pending_drop_name(PendingDrop drop);
+const char *by_pending_name(ByPending pending);
+
+struct HoldSkipRecord {
+  std::uint64_t seq = 0, rid = 0, frame = 0;
+  std::int64_t width = -1, height = -1, format = -1, bytes = -1;
+  HoldSource source = HoldSource::Update;
+  HoldSkip reason = HoldSkip::None;
+  std::int8_t thread = -1;
+  bool has_by = false;
+  std::uint64_t by_rid = 0;
+  const char *by_kind = nullptr;
+  std::int64_t by_width = -1, by_height = -1, by_format = -1;
+  ByPending by_pending = ByPending::None;
+  HoldSkip by_pending_reason = HoldSkip::None;
+};
+struct PendingRecord {
+  std::uint64_t seq = 0, rid = 0, frame = 0;
+  std::int64_t bytes = -1, width = -1, height = -1, format = -1;
+  bool evicted = false;
+  HoldSkip reason = HoldSkip::None;
+};
+struct HoldRings {
+  std::vector<HoldSkipRecord> skips;
+  std::uint64_t skips_dropped = 0;
+  std::vector<PendingRecord> pending;
+  std::uint64_t pending_dropped = 0;
+};
+
+// Appends use fixed storage; evidence readers copy the retained records oldest first.
+template <typename Record, std::size_t Cap>
+inline void hold_ring_push(std::array<Record, Cap> &ring, std::uint64_t &appended, Record record) {
+  static_assert(Cap > 0);
+  record.seq = appended + 1;
+  ring[static_cast<std::size_t>(appended % Cap)] = record;
+  ++appended;
+}
+template <typename Record, std::size_t Cap>
+inline std::vector<Record> hold_ring_copy(const std::array<Record, Cap> &ring,
+                                         std::uint64_t appended, std::uint64_t &dropped) {
+  static_assert(Cap > 0);
+  const auto kept = appended < Cap ? static_cast<std::size_t>(appended) : Cap;
+  dropped = appended - kept;
+  std::vector<Record> records;
+  records.reserve(kept);
+  for (std::size_t i = 0; i < kept; ++i)
+    records.push_back(ring[static_cast<std::size_t>((dropped + i) % Cap)]);
+  return records;
+}
 
 struct HoldRecord {
   std::uint64_t rid = 0, frame = 0, seq = 0;
@@ -84,6 +136,10 @@ bool pending_balanced(const HoldStats::Pending &s);
 std::string hold_json(const HoldStats &s, const std::vector<HoldRecord> &records,
                       std::uint64_t held_dropped, bool final, std::uint64_t frame,
                       const std::string &state, const std::string &reason, const std::string &fault);
+std::string hold_json(const HoldStats &s, const std::vector<HoldRecord> &records,
+                      std::uint64_t held_dropped, bool final, std::uint64_t frame,
+                      const std::string &state, const std::string &reason, const std::string &fault,
+                      const HoldRings &rings);
 
 }  // namespace grc::rs
 #endif  // GRC_RS_HOLD_H

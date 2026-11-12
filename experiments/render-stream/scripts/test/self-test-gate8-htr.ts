@@ -383,31 +383,79 @@ rejects("standby hot zero", hot, standbyHotZeroEvictProblems, [
     v[0].counters.hooks_planned = [STANDBY_HOOKS[0]];
   },
 ]);
-const held = { state: "active", taken: { update: 1 } };
+const held = {
+  state: "active",
+  caps: { texture_max_bytes: 1572864 },
+  taken: { update: 2 },
+};
 const heldLine = {
   op: "adopt",
   kind: "image",
+  status: "ok",
   adopt_source: "hold",
   adopted_content: "current",
+  rid: "1",
+  width: 4,
+  height: 4,
+  format: "RGBA8",
+  data_bytes: 64,
+  mipmaps: false,
 };
-const deferred = htrDeferredCreationPaths(held, [heldLine], 1);
+const atlasLine = {
+  ...heldLine,
+  rid: "2",
+  width: 256,
+  height: 256,
+  format: "LA8",
+  data_bytes: 131072,
+};
+const heldLines = [heldLine, atlasLine];
+const deferred = htrDeferredCreationPaths(held, heldLines, 1);
 assert(
   deferred.paths === 0 && deferred.problems.length === 0,
-  "deferred: held Stale is current without creation exception",
+  "deferred: held Stale and Grown atlas are current without creation exception",
 );
 for (const [name, hold, lines] of [
-  ["missing hold line", held, []],
-  ["no update held", { state: "active", taken: { update: 0 } }, [heldLine]],
-  ["creation content", held, [{ ...heldLine, adopted_content: "creation" }]],
-  ["two hold lines", held, [heldLine, heldLine]],
+  ["missing hold lines", held, []],
+  ["missing Grown atlas", held, [heldLine]],
+  ["missing Stale", held, [atlasLine]],
+  ["unexpected third", held, [...heldLines, { ...heldLine, rid: "3" }]],
+  ["duplicate Stale", held, [heldLine, { ...heldLine, rid: "3" }]],
+  ["same RID", held, [heldLine, { ...atlasLine, rid: "1" }]],
+  ["no update held", { ...held, taken: { update: 0 } }, heldLines],
+  ["too few updates held", { ...held, taken: { update: 1 } }, heldLines],
+  ["missing caps", { state: "active", taken: { update: 2 } }, heldLines],
+  [
+    "creation content",
+    held,
+    [{ ...heldLine, adopted_content: "creation" }, atlasLine],
+  ],
+  [
+    "atlas creation content",
+    held,
+    [heldLine, { ...atlasLine, adopted_content: "creation" }],
+  ],
+  ["wrong atlas format", held, [heldLine, { ...atlasLine, format: "RGBA8" }]],
+  ["wrong atlas bytes", held, [heldLine, { ...atlasLine, data_bytes: 131071 }]],
+  ["wrong atlas size", held, [heldLine, { ...atlasLine, width: 128 }]],
+  ["atlas not ok", held, [heldLine, { ...atlasLine, status: "refused" }]],
 ] as const) {
   assert(
     htrDeferredCreationPaths(hold, lines, 1).problems.length > 0,
     `deferred: ${name} fails`,
   );
 }
+const oldCap = htrDeferredCreationPaths(
+  { ...held, caps: { texture_max_bytes: 65535 } },
+  [heldLine],
+  1,
+);
+assert(
+  oldCap.paths === 0 && oldCap.problems.length === 0,
+  "deferred: old cap excludes Grown atlas from the held set",
+);
 for (const hold of [null, { state: "ignored" }]) {
-  const r = htrDeferredCreationPaths(hold, [heldLine], 1);
+  const r = htrDeferredCreationPaths(hold, heldLines, 1);
   assert(
     r.paths === 1 && r.problems.length === 0,
     "deferred: inactive holds keep declared exception",

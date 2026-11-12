@@ -20,6 +20,7 @@
 #include "hooks.h"
 #include "rs_adopt.h"
 #include "rs_evict.h"
+#include "rs_json_lite.h"
 #include "rs_registry.h"
 #include "rs_mirror.h"
 #include "rs_resource_log.h"
@@ -1858,7 +1859,7 @@ void test_warm_held_images() {
   auto &image = w.make({"Object", "Image"});
   auto &newer = w.make({"Object", "Image"});
   w.singletons["RenderingServer"] = &w.make({"Object", "RenderingServer"});
-  for (int scenario = 0; scenario < 4; ++scenario) {
+  for (int scenario = 0; scenario < 5; ++scenario) {
     grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
     grc::rs::registry_note_texture_create(rid, {16, 16, 5, false, true}, false);
     const auto store = [&](void *object) {
@@ -1870,8 +1871,9 @@ void test_warm_held_images() {
     };
     store(&image);
     grc::rs::mirror_enable(false); grc::rs::mirror_enable(true);
-    const bool fault = scenario == 1;
-    grc::rs::adopt_resources_begin(fault ? grc::rs::AdoptFault::HoldOff : grc::rs::AdoptFault::None, false);
+    const bool fault = scenario == 1 || scenario == 4;
+    grc::rs::adopt_resources_begin(scenario == 4 ? grc::rs::AdoptFault::HoldOffSkipRepublish :
+        fault ? grc::rs::AdoptFault::HoldOff : grc::rs::AdoptFault::None, false);
     const int getters = w.count("RenderingServer.texture_2d_get");
     const auto queued = grc::rs::adopt_warm_at_arm(grc::rs::warm_now_ns(), "sync");
     check(queued.from_hold == (fault ? 0u : 1u) && queued.held_at_arm == (fault ? 0u : 1u) &&
@@ -2080,6 +2082,137 @@ void test_reentry_admission() {
   saved = nullptr;
 }
 
+void test_refusal_records_and_recovery() {
+  using namespace grc::rs;
+  using json_lite::JValue;
+  auto &w = fake::world();
+  std::vector<uint64_t> reads;
+  fake_rendering_server(&reads);
+  w.overrides["RenderingServer.texture_2d_get"] = [](fake::Object *, FakeArgs, void *ret) {
+    fake::put_object(ret, nullptr);
+  };
+  registry_configure(true, RegistryFault::None);
+  mirror_enable(false); mirror_enable(true);
+  auto &mirror = mirror_instance();
+  mirror.set_recover(true, true);
+  const auto field = [](const JValue &v, const char *key) -> const JValue & {
+    static const JValue missing;
+    const auto *p = v.get(key);
+    check(p != nullptr, std::string("refusal evidence field: ") + key);
+    return p ? *p : missing;
+  };
+  const auto evidence = [&]() {
+    JValue v;
+    check(json_lite::Reader(adopt_refusals_json(2, 77)).parse(&v), "refusal evidence parses");
+    return v;
+  };
+  AdoptFault parsed;
+  std::string error;
+  check(parse_adopt_fault("hold-off-skip-republish", true, &parsed, &error) &&
+            parsed == AdoptFault::HoldOffSkipRepublish &&
+            std::string(adopt_fault_name(parsed)) == "hold-off-skip-republish", "republication fault parses and names");
+  check(!parse_adopt_fault("hold-off-skip-republish", false, &parsed, &error),
+        "republication fault requires adoption");
+  check(!parse_adopt_fault("invalid", true, &parsed, &error) &&
+            error.find("hold-off-skip-republish") != std::string::npos, "invalid fault lists republication knob");
+  adopt_resources_begin(AdoptFault::None, true);
+  check(!adopt_texture_refused(0x9000), "no texture refusal fast path");
+  for (uint64_t i = 0; i < 65; ++i) {
+    const auto rid = 0x9000 + i;
+    registry_note_texture_create(rid, {i == 0 ? 5 : 64, i == 0 ? 19661 : 64, 11, false, true}, false);
+    if (i == 0) {
+      RegistryHoldInput in;
+      in.width = 5; in.height = 19661; in.format = 11; in.bytes = 1572880; in.frame = 9;
+      in.pre = HoldSkip::OverTextureCap;
+      in.image = RegistryValue(&w.make({"Object", "Image"}), [](const void *) {});
+      check(registry_note_texture_update(rid, &in) == HoldSkip::OverTextureCap,
+            "refusal fixture records over-cap skip");
+      mirror.material_create(0xa000, 1);
+      DecodedParam param; param.type = "rid"; param.tex_rid = rid;
+      mirror.material_set_param(0xa000, "src", param, 1);
+    }
+    materialize(rid, RefKind::Texture);
+    materialize(rid, RefKind::Texture);
+    check(adopt_texture_refused(rid), "no-image refusal is live");
+  }
+  auto v = evidence();
+  const auto &counts = field(v, "counts");
+  check(field(counts, "refused").text == "65" && field(counts, "refused_no_image").text == "65" &&
+            field(counts, "records").text == "64" && field(counts, "records_dropped").text == "1",
+        "refusals counted once and evidence capped");
+  const auto &records = field(v, "records");
+  check(records.items.size() == 64, "first 64 refusal records retained");
+  if (!records.items.empty()) {
+    const auto &r = records.items.front();
+    check(field(r, "reason").text == "no-image" && field(r, "frame").text == "1",
+          "refusal captures reason and hook frame");
+    check(field(field(r, "registry"), "updated").b &&
+              field(field(r, "registry"), "width").text == "5" &&
+              field(field(r, "last_skip"), "frame").text == "9", "refusal captures registry and newest skip");
+    check(field(field(r, "dependents"), "materials").items.size() == 1,
+          "write-time evidence queries material dependents");
+  }
+  check(adopt_held() == 129, "accounting includes 65 live refusals and 64 records");
+  const auto &unresolved = field(field(v, "index"), "unresolved");
+  check(unresolved.items.size() == 1 && field(unresolved.items.front(), "refused").b,
+        "unresolved index marks live refusal");
+  adopt_texture_recovered(0x9000, RecoverPath::Replace, 42, {7, 2, 3, false});
+  adopt_texture_recovered(0x9000, RecoverPath::Replace, 43, {8, 9, 9, false});
+  check(!adopt_texture_refused(0x9000), "replace recovery erases refusal exactly once");
+  check(adopt_from_update_begin(), "update adoption counts current texture");
+  adopt_texture_recovered(0x9001, RecoverPath::Update, 44, {8, 1, 1, false});
+  adopt_texture_recovered(0xffff, RecoverPath::Replace, 45, {});
+  auto stats = adopt_resource_stats();
+  check(stats.textures == 2 && stats.textures_current == 2 && stats.from_update == 1 &&
+            stats.textures_refused == 65 && stats.refused_no_image == 65 && stats.refused_live == 63,
+        "recovery preserves historical refusal counts and avoids double adoption");
+  v = evidence();
+  const auto &recovered = field(field(v, "counts"), "recovered");
+  check(field(recovered, "total").text == "2" && field(recovered, "replace").text == "1" &&
+            field(recovered, "update").text == "1", "recovery totals split by write path");
+  const auto &recovery_records = field(v, "records").items;
+  const JValue missing_record;
+  const auto &r = field(recovery_records.empty() ? missing_record : recovery_records.front(), "recovered");
+  check(field(r, "path").text == "replace" && field(r, "frame").text == "42" &&
+            field(r, "published_id").text == "7" && field(r, "materials").text == "2" &&
+            field(r, "params").text == "3", "first recovery records published identity and counts");
+  check(!field(field(field(v, "index"), "unresolved").items.front(), "refused").b,
+        "unresolved evidence distinguishes recovered texture from live refusal");
+  check(adopt_warm_finish().textures.recovered == 2, "warm finish includes recovered total");
+  for (uint64_t i = 2; i < 65; ++i) adopt_resource_freed(0x9000 + i);
+  check(!adopt_texture_refused(0x9002) && adopt_resource_stats().refused_live == 0 && adopt_held() == 64,
+        "free drains live texture refusals but preserves records");
+  adopt_resources_end();
+  check(!adopt_texture_refused(0x9000), "inactive texture refusal query is false");
+  adopt_release();
+  check(adopt_held() == 0, "release drops all refusal records");
+  adopt_resources_begin(AdoptFault::None, true);
+  v = evidence();
+  check(field(field(v, "counts"), "records").text == "0" &&
+            field(field(v, "counts"), "records_dropped").text == "0" &&
+            field(field(field(v, "counts"), "recovered"), "total").text == "0", "new arm resets refusal evidence");
+  materialize(0xb001, RefKind::Texture);
+  registry_note_create(0xb002, RegistryKind::CanvasTexture);
+  materialize(0xb002, RefKind::Texture);
+  v = evidence();
+  const auto &extra = field(v, "records").items;
+  check(extra.size() == 2, "unregistered and canvas-empty refusals both recorded");
+  if (extra.size() == 2) {
+    check(field(extra[0], "registry").kind == JValue::Null &&
+              field(extra[0], "reason").text == "no-image" &&
+              field(extra[0], "last_skip").kind == JValue::Null,
+          "unregistered refusal has no registry or skip facts");
+    check(field(extra[1], "reason").text == "canvas-empty" &&
+              field(extra[1], "registry").kind == JValue::Null,
+          "canvas refusal captures reason without 2D registry facts");
+  }
+  materialize(0xb000, RefKind::Mesh);
+  check(!adopt_texture_refused(0xb000), "mesh refusal is never a texture refusal");
+  adopt_resources_end(); adopt_release();
+  registry_configure(false, RegistryFault::None);
+  w.reset_calls();
+}
+
 }  // namespace
 
 int main() {
@@ -2110,6 +2243,7 @@ int main() {
   test_warm_free_during_pass();
   test_warm_census_revalidation();
   test_warm_held_images();
+  test_refusal_records_and_recovery();
   std::printf("rs_adopt_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

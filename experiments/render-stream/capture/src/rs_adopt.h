@@ -85,6 +85,7 @@
 #define GRC_RS_ADOPT_H
 
 #include "rs_warm.h"
+#include "rs_refusal.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -282,12 +283,19 @@ enum class AdoptFault : std::uint8_t {
   SkipHtrRestore,
   WarmOff,
   HoldOff,
+  HoldOffSkipRepublish,
 };
 
 // Parses GRC_ADOPT_FAULT (null or "" -> None). False with `error` set for any other value, or
 // for a fault without GRC_ADOPT=arm (`adopt` false).
 bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::string *error);
 const char *adopt_fault_name(AdoptFault fault);
+bool holds_dropped_by_fault();
+enum class RecoverPath { Replace, Update };
+bool adopt_texture_refused(std::uint64_t rid);
+void adopt_texture_recovered(std::uint64_t rid, RecoverPath path, std::uint64_t frame,
+                             const RecoverInfo &info);
+std::string adopt_refusals_json(std::uint64_t arm, std::uint64_t frame);
 
 // What lazy resource adoption did (result.json stream.gate8.adopt_stats.resources).
 struct AdoptResourceStats {

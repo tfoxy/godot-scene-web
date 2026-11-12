@@ -290,6 +290,7 @@ struct RegistryHoldInput {
   HoldSource source = HoldSource::Update;
   HoldSkip pre = HoldSkip::None;
   std::uint64_t frame = 0;
+  std::int8_t thread = -1;  // -1 unknown (updates), 0 main, 1 off-main
 };
 struct RegistryHoldRef {
   RegistryValue image;
@@ -307,6 +308,17 @@ void registry_holds_release();  // deinitialize: release without counting drops
 HoldStats registry_hold_stats();
 void registry_hold_records(std::vector<HoldRecord> *out, std::size_t cap);
 std::uint64_t registry_hold_generation();
+void registry_hold_rings(HoldRings *out);
+
+// Evidence at refusal time. The caller releases record.path outside the registry lock.
+struct RegistryRefusalFacts {
+  bool registered = false;
+  RegistryTextureRecord record;
+  bool has_skip = false;
+  HoldSkipRecord last_skip;
+  bool offmain_seen = false;
+};
+bool registry_refusal_facts(std::uint64_t rid, RegistryRefusalFacts *out);
 
 // One shader_set_default_texture_parameter (Shader::set_default_texture_parameter's server call).
 struct RegistryDefaultTexture {

@@ -195,7 +195,7 @@ void evidence() {
        "reload_us", "census_us"}) EXPECT(field(v, name).text == "0");
   EXPECT(field(v, "arm_to_warm_queued_ms").text == "0.000");
   const auto &textures = field(v, "textures");
-  for (const char *name : {"adopted", "current", "creation", "refused", "refused_no_image"})
+  for (const char *name : {"adopted", "current", "creation", "refused", "refused_no_image", "recovered"})
     EXPECT(field(textures, name).text == "0");
   const auto &scanned = field(v, "scanned");
   for (const char *name : {"registered_2d", "mirror_known", "refused"}) EXPECT(field(scanned, name).text == "0");
@@ -247,7 +247,7 @@ void evidence() {
   s.scanned = {31, 32, 33, 41};
   s.skipped_by = {34, 35, 36, 37, 38};
   s.lazy_at_reference = {39, 40};
-  s.textures = {51, 52, 53, 54, 55};
+  s.textures = {51, 52, 53, 54, 55, 56};
   v = json(s);
   n = 1;
   for (const auto &entry : counts) EXPECT(field(v, entry.first).text == std::to_string(n++));
@@ -261,7 +261,7 @@ void evidence() {
   EXPECT(field(field(v, "lazy_at_reference"), "updated").text == "39");
   EXPECT(field(field(v, "lazy_at_reference"), "unregistered").text == "40");
   n = 51;
-  for (const char *key : {"adopted", "current", "creation", "refused", "refused_no_image"})
+  for (const char *key : {"adopted", "current", "creation", "refused", "refused_no_image", "recovered"})
     EXPECT(field(field(v, "textures"), key).text == std::to_string(n++));
   s.final = s.warm_complete = s.warm_balanced = s.census_at_warm = true;
   s.arm_to_warm_complete_ms = 12.3456;

@@ -59,6 +59,7 @@ const clean = () => ({
     texture_payload_bytes: 0,
     mesh_payload_bytes: 0,
     held_bytes: 0,
+    recover_index: 0,
   },
   served_sets: 0,
   served_bytes: 0,
@@ -108,6 +109,14 @@ ok(
   accountingProblems("clean", clean()).length === 0,
   "clean reload accounting passes",
 );
+for (const recover_index of [1, undefined])
+  ok(
+    accountingProblems("recovery", {
+      ...clean(),
+      mirror: { ...clean().mirror, recover_index },
+    }).some((p) => p.includes("mirror.recover_index")),
+    "held or missing recovery index count fails accounting",
+  );
 for (const warm_entries of [1, undefined])
   ok(
     accountingProblems("warm", { ...clean(), warm_entries }).some((p) =>

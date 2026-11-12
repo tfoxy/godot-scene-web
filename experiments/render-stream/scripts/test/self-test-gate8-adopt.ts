@@ -349,57 +349,133 @@ async function main(): Promise<void> {
       ...registry,
       rid: 2,
       adopt_source: "hold",
+      status: "ok",
+      width: 4,
+      height: 4,
+      format: "RGBA8",
+      data_bytes: 64,
+      mipmaps: false,
+    };
+    const atlas = {
+      ...held,
+      rid: 3,
+      width: 256,
+      height: 256,
+      format: "LA8",
+      data_bytes: 131072,
     };
     const update = { op: "texture_2d_update", rid: 2 };
+    const atlasUpdate = { ...update, rid: 3 };
     const stats = { textures_registry: 1 };
+    const hold = {
+      state: "active",
+      caps: { texture_max_bytes: 1572864 },
+      taken: { update: 2 },
+    };
+    const honest = [registry, update, held, atlasUpdate, atlas];
     const judge = (lines: Record<string, unknown>[]) =>
-      judgeTexCurrentUnupdated(lines, stats).problems;
+      judgeTexCurrentUnupdated(lines, stats, hold).problems;
     assert(
-      judge([registry, update, held]).length === 0,
-      "deferred texture adoption accepts one current held image and no creation",
+      judge(honest).length === 0,
+      "deferred texture adoption accepts current held Stale and Grown atlas",
     );
     assert(
-      judge([
-        registry,
-        update,
-        held,
-        { ...registry, rid: 3, adopted_content: "creation" },
-      ]).length > 0,
+      judge([registry, update, held]).length > 0,
+      "a missing held Grown atlas fails",
+    );
+    assert(
+      judge([registry, atlasUpdate, atlas]).length > 0,
+      "a missing held Stale fails",
+    );
+    assert(
+      judge([...honest, { ...held, rid: 4 }, { ...update, rid: 4 }]).length > 0,
+      "an unexpected third held image fails",
+    );
+    assert(
+      judge([...honest, held]).length > 0,
+      "a duplicate held texture fails",
+    );
+    assert(
+      judge([registry, update, held, atlasUpdate, { ...atlas, rid: 2 }])
+        .length > 0,
+      "two held textures with the same RID fail",
+    );
+    for (const [field, value] of Object.entries({
+      width: 128,
+      height: 128,
+      format: "RGBA8",
+      data_bytes: 131071,
+      mipmaps: true,
+      status: "refused",
+      adopted_content: "creation",
+    })) {
+      assert(
+        judge([
+          registry,
+          update,
+          held,
+          atlasUpdate,
+          { ...atlas, [field]: value },
+        ]).length > 0,
+        `held Grown atlas with wrong ${field} fails`,
+      );
+    }
+    assert(
+      judge([...honest, { ...registry, rid: 4, adopted_content: "creation" }])
+        .length > 0,
       "a creation image fails deferred texture adoption",
     );
     assert(
-      judge([registry, update, { ...held, adopted_content: "creation" }])
-        .length > 0,
-      "a held image declared creation fails",
-    );
-    assert(judge([registry, update]).length > 0, "a missing held image fails");
-    assert(
-      judge([registry, update, held, { ...held, rid: 3 }]).length > 0,
-      "more than one held image fails",
+      judge([registry, held, atlasUpdate, atlas]).length > 0,
+      "held Stale never updated fails",
     );
     assert(
-      judge([registry, held]).length > 0,
-      "a held image never updated fails",
+      judge([registry, update, held, atlas]).length > 0,
+      "held Grown atlas never updated fails",
     );
     assert(
-      judge([{ ...registry, adopted_content: "creation" }, update, held])
+      judge([{ ...registry, adopted_content: "creation" }, ...honest.slice(1)])
         .length > 0,
       "a registry image declared creation fails",
     );
     assert(
-      judge([registry, { ...update, rid: 1 }, update, held]).length > 0,
+      judge([...honest, { ...update, rid: 1 }]).length > 0,
       "an updated registry image fails",
     );
     assert(
-      judgeTexCurrentUnupdated([registry, update, held], undefined).problems
-        .length > 0,
+      judgeTexCurrentUnupdated(honest, undefined, hold).problems.length > 0,
       "missing adoption stats fail",
     );
     assert(
-      judgeTexCurrentUnupdated([registry, update, held], {
-        textures_registry: 2,
-      }).problems.length > 0,
+      judgeTexCurrentUnupdated(honest, { textures_registry: 2 }, hold).problems
+        .length > 0,
       "a registry adoption count mismatch fails",
+    );
+    assert(
+      judgeTexCurrentUnupdated(honest, stats, null).problems.length > 0,
+      "missing hold evidence fails",
+    );
+    assert(
+      judgeTexCurrentUnupdated(honest, stats, { ...hold, state: "inactive" })
+        .problems.length > 0,
+      "inactive holds fail current held texture adoption",
+    );
+    assert(
+      judgeTexCurrentUnupdated(honest, stats, { ...hold, caps: {} }).problems
+        .length > 0,
+      "missing hold cap fails",
+    );
+    assert(
+      judgeTexCurrentUnupdated(honest, stats, { ...hold, taken: { update: 1 } })
+        .problems.length > 0,
+      "too few held updates fail",
+    );
+    assert(
+      judgeTexCurrentUnupdated([registry, update, held], stats, {
+        ...hold,
+        caps: { texture_max_bytes: 65535 },
+      }).problems.length === 0,
+      "the old hold cap expects only Stale",
     );
     assert(judge([]).length > 0, "missing resource evidence fails");
   }

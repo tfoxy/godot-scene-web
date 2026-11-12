@@ -3337,6 +3337,8 @@ void stream_start() {
         repeat >= 0 && repeat < 3 ? kRepeats[repeat] : rs2::Repeat::Default);
   }
   rs::mirror_set_canvas_texture_headless(headless_host);
+  rs::mirror_instance().set_recover(
+      g_stream.gate8.adopt, g_stream.adopt_fault != rs::AdoptFault::HoldOffSkipRepublish);
   if (sabotage.config.kind == rs2::SabotageKind::OmitUpdate) {
     rs::mirror_set_drop_frame(sabotage.config.frame);
   } else if (sabotage.config.kind == rs2::SabotageKind::OmitOp) {
@@ -4149,6 +4151,7 @@ bool stream_finish_main(rs2::EndReason reason) {
   if (rs::adopt_resources_active()) {
     rs::adopt_warm_finish();
     emit("warm.json", rs::adopt_warm_json(g_rearm.arm_index, g_state.frames_total));
+    emit("refusals.json", rs::adopt_refusals_json(g_rearm.arm_index, g_state.frames_total));
   }
   rs::mirror_enable(false);
   if (rs::adopt_resources_active()) {
@@ -4847,6 +4850,7 @@ void api_arm_rollback(const std::string &reason) {
     if (rs::adopt_resources_active()) {
       rs::adopt_warm_finish();
       emit("warm.json", rs::adopt_warm_json(g_rearm.arm_index, g_state.frames_total));
+      emit("refusals.json", rs::adopt_refusals_json(g_rearm.arm_index, g_state.frames_total));
       rs::adopt_reload_finish();
       emit("reload.json", rs::adopt_reload_json(g_rearm.arm_index, g_state.frames_total));
       rs::adopt_resources_end();
@@ -5278,7 +5282,10 @@ bool attempt(const char *phase) {
           g_state.hold_state = "active";
           g_state.hold_reason.clear();
         }
-        g_state.hold_fault = fault == rs::AdoptFault::HoldOff ? "hold-off" : "none";
+        g_state.hold_fault =
+            fault == rs::AdoptFault::HoldOff || fault == rs::AdoptFault::HoldOffSkipRepublish
+                ? rs::adopt_fault_name(fault)
+                : "none";
         rs::hold_set_active(g_state.hold_state == "active");
         log_line("hold: " + g_state.hold_state +
                  (g_state.hold_reason.empty() ? std::string() : " (" + g_state.hold_reason + ")"));
@@ -5579,6 +5586,7 @@ void accounting_fields(JsonWriter *json) {
   json->field("canvases", static_cast<int64_t>(m.live_canvases));
   json->field("textures", static_cast<int64_t>(m.live_textures));
   json->field("meshes", static_cast<int64_t>(m.live_meshes));
+  json->field("recover_index", static_cast<int64_t>(m.recover_index));
   json->field("texture_payload_bytes", static_cast<int64_t>(m.texture_payload_bytes));
   json->field("mesh_payload_bytes", static_cast<int64_t>(m.mesh_payload_bytes));
   {
@@ -6239,8 +6247,10 @@ void emit_hold(bool final) {
   std::vector<rs::HoldRecord> records;
   rs::registry_hold_records(&records, rs::kHoldRecordCap);
   const auto omitted = stats.live.entries > records.size() ? stats.live.entries - records.size() : 0;
+  rs::HoldRings rings;
+  rs::registry_hold_rings(&rings);
   emit_load("hold.json", rs::hold_json(stats, records, omitted, final, g_state.frames_total,
-                                    g_state.hold_state, g_state.hold_reason, g_state.hold_fault));
+                                    g_state.hold_state, g_state.hold_reason, g_state.hold_fault, rings));
   g_state.hold_written = true;
   g_state.hold_last_write = g_state.frames_total;
   g_state.hold_written_gen = gen;

@@ -196,6 +196,7 @@ add_library(render_stream_capture SHARED
   src/rs_texture_release.cpp
   src/rs_evict.cpp
   src/rs_hold.cpp
+  src/rs_refusal.cpp
   src/rs_texture_worker.cpp
   src/rs_variant.cpp
   src/rs_ws.cpp
@@ -654,7 +655,7 @@ add_executable(rs_adopt_test test/rs_adopt_test.cpp src/rs_adopt.cpp src/rs_relo
   src/rs_mirror.cpp src/rs_texture_delivery.cpp src/rs_shader_payload.cpp src/rs_texture_payload.cpp src/rs_mesh_payload.cpp
   src/rs_sha256.cpp src/rs2_diff.cpp src/rs_resource_log.cpp src/rs_texture_worker.cpp
   src/rs2_codec.cpp src/rs_variant.cpp src/rs_registry.cpp src/rs_evict.cpp
-  src/rs_texture_release.cpp src/report.cpp)
+  src/rs_texture_release.cpp src/rs_refusal.cpp src/rs_hold.cpp src/report.cpp)
 target_compile_definitions(rs_adopt_test PRIVATE GRC_ADOPT_TEST)
 target_include_directories(rs_adopt_test PRIVATE src vendor)
 target_link_libraries(rs_adopt_test PRIVATE grc_warnings grc_codecs Threads::Threads)
@@ -855,6 +856,12 @@ add_executable(rs_hold_test test/rs_hold_test.cpp src/rs_hold.cpp src/report.cpp
 target_include_directories(rs_hold_test PRIVATE src)
 target_link_libraries(rs_hold_test PRIVATE grc_warnings grc_platform Threads::Threads)
 add_test(NAME rs_hold COMMAND rs_hold_test)
+
+# Pure texture refusal and dependent recovery evidence.
+add_executable(rs_refusal_test test/rs_refusal_test.cpp src/rs_refusal.cpp src/rs_hold.cpp src/report.cpp)
+target_include_directories(rs_refusal_test PRIVATE src)
+target_link_libraries(rs_refusal_test PRIVATE grc_warnings grc_platform Threads::Threads)
+add_test(NAME rs_refusal COMMAND rs_refusal_test)
 
 # Pure frame-boundary texture release predicates, queue, accounting and evidence.
 add_executable(rs_evict_test test/rs_evict_test.cpp src/rs_evict.cpp src/rs_texture_release.cpp src/report.cpp)

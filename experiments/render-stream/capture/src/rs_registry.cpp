@@ -105,6 +105,10 @@ struct State {
   std::uint64_t holds_capacity = 0;
   HoldStats hold;
   std::array<PendingSlot, kHoldPendingMaxEntries> pending;
+  std::array<HoldSkipRecord, kHoldSkipRecordCap> skip_ring;
+  std::uint64_t skip_appended = 0;
+  std::array<PendingRecord, kHoldPendingRecordCap> pending_ring;
+  std::uint64_t pending_appended = 0;
   std::atomic<std::uint64_t> hold_generation{0};
   RidMap<RegistryValue> paths;
   std::uint64_t path_capacity = 0;
@@ -289,10 +293,69 @@ void material_create_locked(State &s, std::uint64_t rid, Dropped *dropped) {
   it->second = RegistryMaterial();
 }
 
+struct ReplaceBy {
+  std::uint64_t rid;
+  const Entry *entry;
+  ByPending pending = ByPending::None;
+  HoldSkip pending_reason = HoldSkip::None;
+  const RegistryHoldInput *input = nullptr;
+};
+
+// Search newest first without allocating; callers reach this only for evidence.
+const PendingRecord *last_pending_locked(const State &s, std::uint64_t rid) {
+  const auto kept = std::min<std::uint64_t>(s.pending_appended, kHoldPendingRecordCap);
+  for (std::uint64_t i = 0; i < kept; ++i) {
+    const auto &record = s.pending_ring[(s.pending_appended - 1 - i) % kHoldPendingRecordCap];
+    if (record.rid == rid) return &record;
+  }
+  return nullptr;
+}
+
+void hold_skip_locked(State &s, std::uint64_t rid, const RegistryHoldInput &in,
+                      HoldSkip skip, HoldSource source, const ReplaceBy *by = nullptr) {
+  HoldSkipRecord record;
+  record.rid = rid; record.frame = in.frame;
+  record.width = in.width; record.height = in.height; record.format = in.format;
+  record.bytes = in.bytes; record.source = source; record.reason = skip; record.thread = in.thread;
+  if (by) {
+    // A retained pending/held image has its own bytes but the caller owns the write context.
+    if (by->input) {
+      record.thread = by->input->thread;
+      if (&in != by->input && by->entry && (by->entry->flags & kFacts)) {
+        record.width = by->entry->width; record.height = by->entry->height;
+        record.format = by->entry->format;
+      }
+    }
+    record.has_by = true; record.by_rid = by->rid; record.by_pending = by->pending;
+    record.by_pending_reason = by->pending_reason;
+    if (by->entry) {
+      record.by_kind = registry_kind_name(by->entry->kind);
+      if (by->entry->flags & kFacts) {
+        record.by_width = by->entry->width; record.by_height = by->entry->height;
+        record.by_format = by->entry->format;
+      }
+    }
+    if (record.by_pending == ByPending::None && in.pre == HoldSkip::OffmainReplace) {
+      if (const auto *pending = last_pending_locked(s, by->rid)) {
+        record.by_pending = pending->evicted ? ByPending::Evicted : ByPending::Skipped;
+        record.by_pending_reason = pending->reason;
+      }
+    }
+  }
+  ++s.hold.skipped[static_cast<std::size_t>(skip)];
+  hold_ring_push(s.skip_ring, s.skip_appended, record);
+  s.hold_generation.fetch_add(1, std::memory_order_relaxed);
+}
+
+void pending_record_locked(State &s, PendingRecord record) {
+  hold_ring_push(s.pending_ring, s.pending_appended, record);
+  s.hold_generation.fetch_add(1, std::memory_order_relaxed);
+}
+
 // Decide and store the latest image while accounting for the image it displaces.
 HoldSkip hold_store_locked(State &s, std::uint64_t rid, Entry &entry,
                            RegistryHoldInput &in, HoldSkip skip, HoldSource source,
-                           Dropped *dropped) {
+                           Dropped *dropped, const ReplaceBy *by = nullptr) {
   const auto old = (entry.flags & kHeld) ? s.holds.find(rid) : s.holds.end();
   const std::uint64_t old_bytes = old != s.holds.end() ? old->second.rec.bytes : 0;
   if (skip == HoldSkip::None &&
@@ -304,7 +367,7 @@ HoldSkip hold_store_locked(State &s, std::uint64_t rid, Entry &entry,
                       skip == HoldSkip::None ? HoldDrop::Superseded : HoldDrop::Unheld, dropped);
   }
   if (skip != HoldSkip::None) {
-    ++s.hold.skipped[static_cast<std::size_t>(skip)];
+    hold_skip_locked(s, rid, in, skip, source, by);
     return skip;
   }
   track_growth(s.holds.size(), &s.holds_capacity);
@@ -459,6 +522,8 @@ void registry_configure(bool adopt, RegistryFault fault, std::size_t cap) {
   std::swap(old_pending, s.pending);
   s.holds_capacity = 0;
   s.hold = {};
+  s.skip_ring = {}; s.skip_appended = 0;
+  s.pending_ring = {}; s.pending_appended = 0;
   s.hold_generation.store(0, std::memory_order_relaxed);
   s.path_capacity = 0;
   s.path_sets = 0;
@@ -704,7 +769,10 @@ HoldSkip registry_note_replace(std::uint64_t texture, std::uint64_t by_texture,
     if (into != s.map.end() && (into->second.flags & kHeld)) {
       hold_erase_locked(s, texture, into->second, HoldDrop::Unheld, &dropped);
     }
-    if (hold) ++s.hold.skipped[static_cast<std::size_t>(skip)];
+    if (hold) {
+      const ReplaceBy by{by_texture, nullptr, ByPending::Unregistered};
+      hold_skip_locked(s, texture, *hold, skip, HoldSource::Replace, &by);
+    }
     return skip;
   }
   if (into != s.map.end() && registry_family(into->second.kind) == RegistryFamily::Texture &&
@@ -742,7 +810,9 @@ HoldSkip registry_note_replace(std::uint64_t texture, std::uint64_t by_texture,
       if (skip == HoldSkip::None && it->second.kind != RegistryKind::Texture2d) {
         skip = HoldSkip::NotTexture2d;
       }
-      skip = hold_store_locked(s, texture, into->second, *source, skip, HoldSource::Replace, &dropped);
+      const ReplaceBy by{by_texture, &it->second, pending ? ByPending::Present : ByPending::None,
+                         HoldSkip::None, hold};
+      skip = hold_store_locked(s, texture, into->second, *source, skip, HoldSource::Replace, &dropped, &by);
       if (pending) pending_erase_locked(s, *pending, PendingDrop::Replaced, &dropped,
                                         false, skip == HoldSkip::None);
     } else if (held) {
@@ -755,7 +825,11 @@ HoldSkip registry_note_replace(std::uint64_t texture, std::uint64_t by_texture,
     if (into != s.map.end() && (into->second.flags & kHeld)) {
       hold_erase_locked(s, texture, into->second, HoldDrop::Unheld, &dropped);
     }
-    if (hold) ++s.hold.skipped[static_cast<std::size_t>(skip)];
+    if (hold) {
+      const ReplaceBy by{by_texture, &it->second,
+                         (it->second.flags & kPending) ? ByPending::Present : ByPending::None};
+      hold_skip_locked(s, texture, *hold, skip, HoldSource::Replace, &by);
+    }
   }
   const RegistryFamily family = registry_family(it->second.kind);
   ++s.family[index(family)].replaced;
@@ -814,7 +888,7 @@ HoldSkip registry_note_texture_update(std::uint64_t rid, RegistryHoldInput *hold
     }
     if (hold) return hold_store_locked(s, rid, it->second, *hold, skip, HoldSource::Update, &dropped);
   }
-  if (hold) ++s.hold.skipped[static_cast<std::size_t>(skip)];
+  if (hold) hold_skip_locked(s, rid, *hold, skip, HoldSource::Update);
   return skip;
 }
 
@@ -831,6 +905,11 @@ HoldSkip registry_note_pending(std::uint64_t rid, RegistryHoldInput *in) {
   auto &p = s.hold.pending;
   if (skip != HoldSkip::None) {
     ++p.skipped[static_cast<std::size_t>(skip)];
+    PendingRecord record;
+    record.rid = rid; record.frame = in->frame; record.reason = skip;
+    record.bytes = in->bytes; record.width = in->width; record.height = in->height;
+    record.format = in->format;
+    pending_record_locked(s, record);
     return skip;
   }
   while (pending_evictions_needed(p.live.entries, p.live.bytes, in->bytes)) {
@@ -838,6 +917,10 @@ HoldSkip registry_note_pending(std::uint64_t rid, RegistryHoldInput *in) {
     for (auto &slot : s.pending) {
       if (slot.rid && (!oldest || slot.seq < oldest->seq)) oldest = &slot;
     }
+    PendingRecord record;
+    record.rid = oldest->rid; record.bytes = oldest->bytes; record.frame = in->frame;
+    record.evicted = true;
+    pending_record_locked(s, record);
     pending_erase_locked(s, *oldest, PendingDrop::Recreated, &dropped, true);
   }
   for (auto &slot : s.pending) {
@@ -915,6 +998,37 @@ void registry_hold_records(std::vector<HoldRecord> *out, std::size_t cap) {
   });
   if (records.size() > cap) records.resize(cap);
   out->swap(records);
+}
+
+void registry_hold_rings(HoldRings *out) {
+  if (!out) return;
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  out->skips = hold_ring_copy(s.skip_ring, s.skip_appended, out->skips_dropped);
+  out->pending = hold_ring_copy(s.pending_ring, s.pending_appended, out->pending_dropped);
+}
+
+bool registry_refusal_facts(std::uint64_t rid, RegistryRefusalFacts *out) {
+  State &s = state();
+  RegistryRefusalFacts facts;
+  {
+    std::lock_guard<std::mutex> lock(s.mutex);
+    const auto it = s.map.find(rid);
+    if (it != s.map.end() && registry_family(it->second.kind) == RegistryFamily::Texture) {
+      facts.registered = true;
+      facts.record = texture_record_locked(s, rid, it->second);
+    }
+    const auto kept = std::min<std::uint64_t>(s.skip_appended, kHoldSkipRecordCap);
+    for (std::uint64_t i = 0; i < kept; ++i) {
+      const auto &record = s.skip_ring[(s.skip_appended - 1 - i) % kHoldSkipRecordCap];
+      if (record.rid == rid) { facts.has_skip = true; facts.last_skip = record; break; }
+    }
+    facts.offmain_seen = (rid != 0 && pending_locked(s, rid) != nullptr) ||
+                         last_pending_locked(s, rid) != nullptr;
+  }
+  const bool registered = facts.registered;
+  if (out) *out = std::move(facts);
+  return registered;
 }
 
 std::uint64_t registry_hold_generation() {
