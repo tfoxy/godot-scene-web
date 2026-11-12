@@ -98,6 +98,26 @@ PYBUNDLE
 	bash "$HERE/fetch-windows-template.sh"
 	python3 -I "$HERE/lib/w1-bundle.py" --target windows --out "$B/bundle"
 	python3 -I "$HERE/lib/wfile-bundle.py" --target windows --out "$B/bundle"
+	python3 -I "$HERE/lib/wlive-bundle.py" --target windows --out "$B/bundle"
+	# The Python-only hosted probe fetches Chrome on Windows; never put Chrome in the bundle.
+	python3 -I - "$B/bundle" "$HERE" <<'PYPROBE'
+import json, shutil, sys
+from pathlib import Path
+bundle, scripts = map(Path, sys.argv[1:])
+probe = bundle / "wlive"
+probe.mkdir(exist_ok=True)
+shutil.copyfile(scripts / "fetch-cft-windows.py", probe / "fetch-cft-windows.py")
+shutil.copyfile(scripts / "lib/wlive-probe.html", probe / "wlive-probe.html")
+manifest_path = bundle / "manifest.json"
+manifest = json.loads(manifest_path.read_text())
+manifest["tests"].append({"name": "wlive-probe", "exe": "wlive/fetch-cft-windows.py",
+                          "interpreter": "python", "args": ["--probe", "wlive/wlive-probe.html"], "env": {}})
+manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+size = sum(p.stat().st_size for p in bundle.rglob("*") if p.is_file())
+if size > 300_000_000:
+    raise ValueError(f"bundle exceeds 300 MB: {size} bytes")
+print(f"wlive-probe bundle: total bundle bytes={size}")
+PYPROBE
 	python3 -I - "$B" "$HERE/w-imports.py" "$LLVM_MINGW_ROOT/bin/llvm-objdump" <<'PYIMPORTS'
 import json, subprocess, sys
 from pathlib import Path

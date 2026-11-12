@@ -29,13 +29,17 @@ def run_check(name, argv, bundle, out, env=None, timeout_s=300):
         except OSError as exc:
             rc = 1
             stream.write(("w-run: " + str(exc) + "\n").encode("utf-8"))
+    if name.startswith("wlive-"):
+        for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith(("client-carrier-check: leg ", "wlive-carriers:", "wlive-wss:")):
+                print(line, flush=True)
     wall = round(time.monotonic() - start, 3)
     print(f"{'ok  ' if rc == 0 else 'FAIL'} {name}: rc={rc}, {wall:.3f} s", flush=True)
     return {"name": name, "rc": rc, "wall_s": wall, "timed_out": timed_out}
 
 
-def read_manifest(bundle):
-    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+def read_manifest(bundle, suite="capture"):
+    manifest = json.loads((bundle / ("wlive/manifest.json" if suite == "live" else "manifest.json")).read_text(encoding="utf-8"))
     if manifest.get("schema") != "render-stream-w-manifest/1":
         raise ValueError("unsupported bundle manifest schema")
     for group in ("tests", "imports_only", "sabotage"):
@@ -50,11 +54,18 @@ def read_manifest(bundle):
                 raise ValueError(f"manifest {group} entry timeout_s must be a positive integer")
             if "interpreter" in entry and entry["interpreter"] != "python":
                 raise ValueError(f"manifest {group} entry has unknown interpreter: {entry['interpreter']!r}")
+    if suite == "live" and (
+        sorted(e["name"] for e in manifest["tests"]) != ["wlive-carriers", "wlive-wss"]
+        or any(e.get("interpreter") != "python" for e in manifest["tests"])
+        or manifest["imports_only"] or manifest["sabotage"]
+    ):
+        raise ValueError("live manifest must contain exactly the two Python live legs")
     return manifest
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--suite", choices=("capture", "live"), default="capture")
     parser.add_argument("--bundle", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--id", default="windows")
@@ -67,7 +78,7 @@ def main():
     tests, checks, toolchain = [], [], None
     rc = 0
     try:
-        manifest = read_manifest(bundle)
+        manifest = read_manifest(bundle, args.suite)
         toolchain = json.loads((bundle / "toolchain.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError, AttributeError) as exc:
         rc = 2
@@ -86,31 +97,32 @@ def main():
                 interpreter_tests += 1
             tests.append(run_check(test["name"], argv, bundle, out, env, test.get("timeout_s", 300)))
         print(f"w-run: ran {interpreter_tests} interpreter tests", flush=True)
-        imports = [str(bundle / e["exe"]) for e in manifest["tests"] + manifest["imports_only"]
-                   if "interpreter" not in e]
-        tool = [sys.executable, "-I", str(Path(args.imports_tool).resolve())]
-        checks.append(run_check("w-imports", tool + imports, bundle, out))
-        for index, entry in enumerate(manifest["imports_only"]):
-            if "interpreter" not in entry and "expect_exports" in entry:
-                checks.append(run_check(f"w-exports-{index + 1}", tool + ["--expect-exports",
-                                        ",".join(entry["expect_exports"]), str(bundle / entry["exe"])],
+        if args.suite == "capture":
+            imports = [str(bundle / e["exe"]) for e in manifest["tests"] + manifest["imports_only"]
+                       if "interpreter" not in e]
+            tool = [sys.executable, "-I", str(Path(args.imports_tool).resolve())]
+            checks.append(run_check("w-imports", tool + imports, bundle, out))
+            for index, entry in enumerate(manifest["imports_only"]):
+                if "interpreter" not in entry and "expect_exports" in entry:
+                    checks.append(run_check(f"w-exports-{index + 1}", tool + ["--expect-exports",
+                                            ",".join(entry["expect_exports"]), str(bundle / entry["exe"])],
+                                            bundle, out))
+            # Keep one named check and log even when several sabotage binaries are specified.
+            sabotage_results = []
+            native_sabotage = [e for e in manifest["sabotage"] if "interpreter" not in e]
+            for index, entry in enumerate(native_sabotage):
+                name = "w-imports-sabotage" if index == 0 else f"w-imports-sabotage-{index + 1}"
+                sabotage_results.append(run_check(name, tool + ["--expect-disallowed",
+                                        ",".join(entry["expect_disallowed"]), str(bundle / entry["exe"])],
                                         bundle, out))
-        # Keep one named check and log even when several sabotage binaries are specified.
-        sabotage_results = []
-        native_sabotage = [e for e in manifest["sabotage"] if "interpreter" not in e]
-        for index, entry in enumerate(native_sabotage):
-            name = "w-imports-sabotage" if index == 0 else f"w-imports-sabotage-{index + 1}"
-            sabotage_results.append(run_check(name, tool + ["--expect-disallowed",
-                                    ",".join(entry["expect_disallowed"]), str(bundle / entry["exe"])],
-                                    bundle, out))
-        if sabotage_results:
-            combined = {"name": "w-imports-sabotage",
-                        "rc": int(any(r["rc"] != 0 for r in sabotage_results)),
-                        "wall_s": round(sum(r["wall_s"] for r in sabotage_results), 3)}
-            for result in sabotage_results[1:]:
-                with (out / "logs/w-imports-sabotage.log").open("ab") as stream:
-                    stream.write((out / "logs" / (result["name"] + ".log")).read_bytes())
-            checks.append(combined)
+            if sabotage_results:
+                combined = {"name": "w-imports-sabotage",
+                            "rc": int(any(r["rc"] != 0 for r in sabotage_results)),
+                            "wall_s": round(sum(r["wall_s"] for r in sabotage_results), 3)}
+                for result in sabotage_results[1:]:
+                    with (out / "logs/w-imports-sabotage.log").open("ab") as stream:
+                        stream.write((out / "logs" / (result["name"] + ".log")).read_bytes())
+                checks.append(combined)
         rc = int(any(r["rc"] != 0 for r in tests + checks))
     groups = {name: {"passed": 0, "total": 0} for name in ("w-ctest", "w-imports", "w-1", "w-file")}
     for result in tests + checks:

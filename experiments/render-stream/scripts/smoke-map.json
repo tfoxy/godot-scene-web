@@ -476,6 +476,10 @@
         "experiments/render-stream/scripts/lib/llvm-mingw.sh",
         "experiments/render-stream/scripts/w-imports.py",
         "experiments/render-stream/scripts/lib/w-run.py",
+        "experiments/render-stream/scripts/fetch-cft-windows.py",
+        "experiments/render-stream/scripts/lib/wlive-probe.html",
+        "experiments/render-stream/scripts/lib/wlive-*.py",
+        "experiments/render-stream/scripts/test/self-test-wlive-driver.ts",
         "experiments/render-stream/scripts/lib/w1-*.py",
         "experiments/render-stream/scripts/lib/wfile-driver.py",
         "experiments/render-stream/scripts/lib/w-equiv.py",
@@ -699,7 +703,7 @@
         "experiments/render-stream/scripts/run-client-carrier-check.sh",
         "experiments/render-stream/web/client-carrier-check/**"
       ],
-      "reach": ["pure"]
+      "reach": ["pure", "windows"]
     },
     {
       "why": "TRK4's client track check (tracks-design.md \"As built (TRK4)\"): a real-time headless-Chromium page driven by hand against capture/build/rs_live_host --tracks, not a validate-increment target; the package subpath it mounts (packages/render-stream-client/src/track*.ts) is reached above and is unit-tested by the package suite",
@@ -997,6 +1001,11 @@
         "g7live:g7-k@*",
         "g7live:g7-lc@*"
       ]
+    },
+    {
+      "why": "The shared browser harness also launches the pinned Windows live client",
+      "paths": ["experiments/render-stream/scripts/lib/browser-harness.ts"],
+      "reach": ["windows"]
     },
     {
       "why": "gate 7's runner, tool, checker and shared adapters: every gate 7 group on every receiver",

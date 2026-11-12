@@ -102,10 +102,26 @@ export const CI_RENDERER_ALLOWANCE: RendererAllowance | null =
 
 /** The flags every leg launches with: D9's, plus `--ignore-gpu-blocklist` under the CI lavapipe
  * allowance (lib/browser-renderer.ts launchArgsFor). */
-export const BROWSER_LAUNCH_ARGS: readonly string[] = launchArgsFor(
-  D9_LAUNCH_ARGS,
-  CI_RENDERER_ALLOWANCE,
-);
+export const WINDOWS_LAUNCH_ARGS = [
+  ...D9_LAUNCH_ARGS.filter((a) => a !== "--use-angle=vulkan"),
+  "--no-first-run",
+  "--no-default-browser-check",
+  "--disable-gpu-sandbox",
+  "--use-angle=swiftshader",
+  "--enable-logging=stderr",
+  "--v=1",
+] as const;
+
+if (
+  process.platform !== "win32" &&
+  process.env.RS_PINNED_CHROMIUM_EXE !== undefined
+)
+  throw new Error("browser-harness: RS_PINNED_CHROMIUM_EXE is Windows-only");
+
+export const BROWSER_LAUNCH_ARGS: readonly string[] =
+  process.platform === "win32"
+    ? WINDOWS_LAUNCH_ARGS
+    : launchArgsFor(D9_LAUNCH_ARGS, CI_RENDERER_ALLOWANCE);
 
 /** D9: layered on for every leg EXCEPT suspension legs, which need Chromium's REAL throttling
  * heuristics active to be worth measuring. */
@@ -131,6 +147,8 @@ export const SABOTAGE_SWIFTSHADER_ARGS = [
  */
 export const EXPECTED_CHROMIUM_SHA256 =
   "adc1c21ceed5c2a67184766376fe816ac03e556cc0ca3f782e8212235fe05c6f";
+export const EXPECTED_CHROMIUM_SHA256_WIN64 =
+  "290fa7018fda22c52ada5eddb0113baf3ebc41fd0fde6085eddb19793606c635";
 export const EXPECTED_CHROMIUM_VERSION = "148.0.7778.96";
 
 /**
@@ -155,7 +173,7 @@ export const PRIVATE_BROWSERS_DIR =
 export interface PinnedChromium {
   executablePath: string;
   /** private: the repo-private copy; seeded: copied there now; shared: Playwright's cache. */
-  source: "private" | "seeded" | "shared";
+  source: "private" | "seeded" | "shared" | "windows";
   privatePath: string;
   sharedPath: string;
 }
@@ -164,6 +182,24 @@ let pinnedChromium: PinnedChromium | undefined;
 
 /** The pinned Chromium to launch (header above; memoized per process). */
 export function resolvePinnedChromium(): PinnedChromium {
+  if (process.platform === "win32") {
+    const executablePath = process.env.RS_PINNED_CHROMIUM_EXE;
+    if (!executablePath)
+      throw new Error(
+        "browser-harness: Windows requires RS_PINNED_CHROMIUM_EXE",
+      );
+    const digest = sha256File(executablePath);
+    if (digest !== EXPECTED_CHROMIUM_SHA256_WIN64)
+      throw new Error(
+        `browser-harness: Windows binary sha256 ${digest} != expected ${EXPECTED_CHROMIUM_SHA256_WIN64} for ${executablePath}`,
+      );
+    return {
+      executablePath,
+      source: "windows",
+      privatePath: executablePath,
+      sharedPath: executablePath,
+    };
+  }
   if (pinnedChromium && existsSync(pinnedChromium.executablePath))
     return pinnedChromium;
   const sharedPath = chromium.executablePath();

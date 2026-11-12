@@ -16,6 +16,9 @@
 //                         of ITS connection (one tap file matches, and the carrier is the expected one)
 //   ws-wt-same-pixels     the final canvas of the ws leg and the wt leg are pixel-identical
 //   auto-fallbacks        the two fallback legs streamed over ws
+// Opt-in: --legs late --late-join N adds ws-late after ws applied N transactions; its recording's first
+// transaction must be full and every recorded transaction must have applied. --legs wss runs
+// one websocket page at --wss, trusting only --wss-spki, and checks the host's TLS leaf evidence.
 // The runner (run-client-carrier-check.sh) starts the host and passes its ports and evidence.
 //
 //   tsx --conditions=development experiments/render-stream/scripts/client-carrier-check.ts \
@@ -37,9 +40,12 @@ import { build } from "esbuild";
 import {
   BROWSER_LAUNCH_ARGS,
   checkBrowserProvenance,
+  EXPECTED_CHROMIUM_VERSION,
   HarnessServer,
   launchHarnessBrowser,
 } from "./lib/browser-harness";
+
+import { decodeRecording } from "./lib/render-stream-2";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..", "..");
@@ -53,6 +59,27 @@ function args(): Record<string, string> {
       throw new Error(`client-carrier-check: bad argument ${a[i]}`);
     out[a[i].slice(2)] = a[i + 1];
   }
+  if (out.legs !== undefined && !["wss", "late"].includes(out.legs))
+    throw new Error(
+      "client-carrier-check: --legs must be wss or late when supplied",
+    );
+  if (
+    out["late-join"] !== undefined &&
+    (!/^\d+$/.test(out["late-join"]) ||
+      Number(out["late-join"]) < 1 ||
+      out.legs !== "late")
+  )
+    throw new Error(
+      "client-carrier-check: --late-join needs a positive transaction count and --legs late",
+    );
+  if (
+    out.legs === "wss" &&
+    (!out.wss?.startsWith("wss://") ||
+      !/^[A-Za-z0-9+/]{43}=$/.test(out["wss-spki"] ?? ""))
+  )
+    throw new Error(
+      "client-carrier-check: wss needs --wss wss://... and --wss-spki <base64 sha256>",
+    );
   for (const k of [
     "dir",
     "port",
@@ -90,6 +117,11 @@ const rsc = "__rsc";
 
 async function main(): Promise<number> {
   const a = args();
+  const wss = a.legs === "wss";
+  if (a.legs === "late" && !a["late-join"])
+    throw new Error("--legs late requires --late-join");
+  const defaultLegs = a.legs === undefined;
+  const lateJoin = Number(a["late-join"] ?? 0);
   const dir = resolve(a.dir);
   const staticDir = join(dir, "static");
   mkdirSync(join(staticDir, "core"), { recursive: true });
@@ -129,12 +161,15 @@ async function main(): Promise<number> {
     allowedLegNonces: [],
   });
   const { origin } = await server.start(Number(a.port));
-  const launched = await launchHarnessBrowser();
+  const launchArgs = [
+    ...BROWSER_LAUNCH_ARGS,
+    ...(wss ? [`--ignore-certificate-errors-spki-list=${a["wss-spki"]}`] : []),
+  ];
+  const launched = await launchHarnessBrowser(wss ? { args: launchArgs } : {});
   const token = readFileSync(join(a.evidence, "live-token"), "utf8").trim();
-  const certHash = readFileSync(
-    join(a.evidence, "live-cert-sha256"),
-    "utf8",
-  ).trim();
+  const certHash = wss
+    ? ""
+    : readFileSync(join(a.evidence, "live-cert-sha256"), "utf8").trim();
   const WRONG_HASH = "0".repeat(64);
   const WRONG_TOKEN = "a".repeat(64);
   const core = {
@@ -143,12 +178,12 @@ async function main(): Promise<number> {
     expectedTree,
   };
   const endpoint = (hash: string, tok: string) => ({
-    url: a.ws,
+    url: wss ? a.wss : a.ws,
     resourceBase: a.http,
     token: tok,
     protocol: 13,
     presentation: [640, 360] as [number, number],
-    webTransport: { url: a.wt, certificateHashes: [hash] },
+    ...(wss ? {} : { webTransport: { url: a.wt, certificateHashes: [hash] } }),
   });
   const report: Record<string, unknown> = {
     schema: "render-stream-client-carrier-check/1",
@@ -203,101 +238,154 @@ async function main(): Promise<number> {
 
   try {
     const probe = await open(false);
-    const prov = await checkBrowserProvenance(
-      probe,
-      launched,
-      [...BROWSER_LAUNCH_ARGS],
-      {
-        DISPLAY: undefined,
-        WAYLAND_DISPLAY: undefined,
-      },
-    );
+    const prov = await checkBrowserProvenance(probe, launched, launchArgs, {
+      DISPLAY: undefined,
+      WAYLAND_DISPLAY: undefined,
+    });
     report.provenance = {
       ok: prov.ok,
       reasons: prov.reasons,
       renderer: prov.renderer,
     };
+    const browserFacts = await probe.evaluate(async () => {
+      const gpu = (
+        navigator as Navigator & {
+          gpu?: {
+            requestAdapter(): Promise<{
+              info?: {
+                vendor?: string;
+                architecture?: string;
+                device?: string;
+                description?: string;
+              };
+            } | null>;
+          };
+        }
+      ).gpu;
+      const info = gpu ? (await gpu.requestAdapter())?.info : null;
+      return {
+        userAgent: navigator.userAgent,
+        webgpu: info
+          ? {
+              vendor: info.vendor,
+              architecture: info.architecture,
+              device: info.device,
+              description: info.description,
+            }
+          : null,
+      };
+    });
+    report.browser = {
+      variant: process.platform === "win32" ? "cdp-swiftshader" : "linux-d9",
+      product_version: launched.browser.version(),
+      webgl_renderer: prov.renderer,
+      ...browserFacts,
+    };
+    if (process.platform === "win32")
+      check(
+        "browser-version",
+        launched.browser.version() === EXPECTED_CHROMIUM_VERSION &&
+          /(?:HeadlessChrome|Chrome)\/(\d+)/.exec(
+            browserFacts.userAgent,
+          )?.[1] === EXPECTED_CHROMIUM_VERSION.split(".")[0],
+        `product ${launched.browser.version()}, UA ${browserFacts.userAgent}`,
+      );
     await probe.close();
 
     // The sabotages first: they hold a connection only for a moment.
-    const fails: Record<string, { statuses: Status[]; applied: number }> = {};
-    for (const [name, hash, tok] of [
-      ["wt-wrong-hash", WRONG_HASH, token],
-      ["wt-wrong-token", certHash, WRONG_TOKEN],
-    ] as const) {
-      const page = await open(false);
-      await page.evaluate(
-        ([k, o]) => (window as unknown as Record<string, Api>)[k].mount(o),
-        [
+    if (defaultLegs) {
+      const fails: Record<string, { statuses: Status[]; applied: number }> = {};
+      for (const [name, hash, tok] of [
+        ["wt-wrong-hash", WRONG_HASH, token],
+        ["wt-wrong-token", certHash, WRONG_TOKEN],
+      ] as const) {
+        const page = await open(false);
+        await page.evaluate(
+          ([k, o]) => (window as unknown as Record<string, Api>)[k].mount(o),
+          [
+            rsc,
+            { endpoint: endpoint(hash, tok), core, carrier: "webtransport" },
+          ] as const,
+        );
+        const until = Date.now() + 20000;
+        let st: Status[] = [];
+        while (Date.now() < until) {
+          await sleep(200);
+          st = await statuses(page);
+          if (st.some((s) => s.kind === "failed")) break;
+        }
+        const stats = await call<{ applied: number } | null>(page, "stats");
+        fails[name] = { statuses: st, applied: stats?.applied ?? 0 };
+        await page.evaluate(
+          (k) => (window as unknown as Record<string, Api>)[k].dispose(),
           rsc,
-          { endpoint: endpoint(hash, tok), core, carrier: "webtransport" },
-        ] as const,
-      );
-      const until = Date.now() + 20000;
-      let st: Status[] = [];
-      while (Date.now() < until) {
-        await sleep(200);
-        st = await statuses(page);
-        if (st.some((s) => s.kind === "failed")) break;
+        );
+        await page.close();
       }
-      const stats = await call<{ applied: number } | null>(page, "stats");
-      fails[name] = { statuses: st, applied: stats?.applied ?? 0 };
-      await page.evaluate(
-        (k) => (window as unknown as Record<string, Api>)[k].dispose(),
-        rsc,
+      report.sabotages = fails;
+      const f1 = fails["wt-wrong-hash"].statuses.find(
+        (s) => s.kind === "failed",
       );
-      await page.close();
+      check(
+        "sabotage-wrong-hash",
+        f1?.reason === "live-connect-failed" &&
+          fails["wt-wrong-hash"].applied === 0,
+        `carrier webtransport, wrong certificate hash: ${JSON.stringify(f1)}`,
+      );
+      const f2 = fails["wt-wrong-token"].statuses.find(
+        (s) => s.kind === "failed",
+      );
+      check(
+        "sabotage-wrong-token",
+        f2?.reason === "live-connect-failed" &&
+          (f2.detail ?? "").includes("unauthorized") &&
+          fails["wt-wrong-token"].applied === 0,
+        `carrier webtransport, wrong token: ${JSON.stringify(f2)}`,
+      );
     }
-    report.sabotages = fails;
-    const f1 = fails["wt-wrong-hash"].statuses.find((s) => s.kind === "failed");
-    check(
-      "sabotage-wrong-hash",
-      f1?.reason === "live-connect-failed" &&
-        fails["wt-wrong-hash"].applied === 0,
-      `carrier webtransport, wrong certificate hash: ${JSON.stringify(f1)}`,
-    );
-    const f2 = fails["wt-wrong-token"].statuses.find(
-      (s) => s.kind === "failed",
-    );
-    check(
-      "sabotage-wrong-token",
-      f2?.reason === "live-connect-failed" &&
-        (f2.detail ?? "").includes("unauthorized") &&
-        fails["wt-wrong-token"].applied === 0,
-      `carrier webtransport, wrong token: ${JSON.stringify(f2)}`,
-    );
 
-    // The four streaming legs, together.
-    const legs = [
-      {
-        name: "ws",
-        carrier: "websocket",
-        hash: certHash,
-        noWt: false,
-        expect: "ws",
-      },
-      {
-        name: "auto",
-        carrier: "auto",
-        hash: certHash,
-        noWt: false,
-        expect: "wt",
-      },
-      {
-        name: "auto-wrong-hash",
-        carrier: "auto",
-        hash: WRONG_HASH,
-        noWt: false,
-        expect: "ws",
-      },
-      {
-        name: "auto-no-wt",
-        carrier: "auto",
-        hash: certHash,
-        noWt: true,
-        expect: "ws",
-      },
-    ] as const;
+    // The default streaming legs, or the explicitly requested TLS leg.
+    const legs = wss
+      ? [
+          {
+            name: "wss",
+            carrier: "websocket",
+            hash: "",
+            noWt: false,
+            expect: "ws",
+          },
+        ]
+      : [
+          {
+            name: "ws",
+            carrier: "websocket",
+            hash: certHash,
+            noWt: false,
+            expect: "ws",
+          },
+          {
+            name: "auto",
+            carrier: "auto",
+            hash: certHash,
+            noWt: false,
+            expect: "wt",
+          },
+          {
+            name: "auto-wrong-hash",
+            carrier: "auto",
+            hash: WRONG_HASH,
+            noWt: false,
+            expect: "ws",
+          },
+          {
+            name: "auto-no-wt",
+            carrier: "auto",
+            hash: certHash,
+            noWt: true,
+            expect: "ws",
+          },
+        ];
+    if (lateJoin) legs.splice(1);
     const pages = await Promise.all(legs.map((l) => open(l.noWt)));
     const t0 = Date.now();
     for (let i = 0; i < legs.length; i++)
@@ -312,10 +400,42 @@ async function main(): Promise<number> {
           },
         ] as const,
       );
+    let lateOpenedAfter = 0;
     const done = new Set<string>();
     const timeoutMs = Number(a["timeout-s"] ?? 150) * 1000;
     while (done.size < legs.length && Date.now() - t0 < timeoutMs) {
       await sleep(250);
+      if (lateJoin && !legs.some((l) => l.name === "ws-late")) {
+        const stats = await call<{ applied: number } | null>(pages[0], "stats");
+        if (
+          (stats?.applied ?? 0) >= lateJoin &&
+          !(await statuses(pages[0])).some(
+            (s) => s.kind === "ended" || s.kind === "failed",
+          )
+        ) {
+          lateOpenedAfter = stats?.applied ?? 0;
+          const page = await open(false);
+          legs.push({
+            name: "ws-late",
+            carrier: "websocket",
+            hash: certHash,
+            noWt: false,
+            expect: "ws",
+          });
+          pages.push(page);
+          await page.evaluate(
+            ([k, o]) => (window as unknown as Record<string, Api>)[k].mount(o),
+            [
+              rsc,
+              {
+                endpoint: endpoint(certHash, token),
+                core,
+                carrier: "websocket",
+              },
+            ] as const,
+          );
+        }
+      }
       for (let i = 0; i < legs.length; i++) {
         if (done.has(legs[i].name)) continue;
         const st = await statuses(pages[i]);
@@ -349,6 +469,31 @@ async function main(): Promise<number> {
       };
     }
     report.legs = results;
+    for (const l of legs)
+      console.log(
+        `client-carrier-check: leg ${l.name}: ${JSON.stringify(results[l.name])}`,
+      );
+    if (lateJoin) {
+      const rec = recs["ws-late"];
+      const txs = rec
+        ? decodeRecording(rec, 13).records.filter(
+            (r) => r.meta.type === "transaction",
+          )
+        : [];
+      const first = txs[0]?.meta as
+        | { encoding?: string; seq?: number }
+        | undefined;
+      const applied =
+        (results["ws-late"] as { applied?: number } | undefined)?.applied ?? 0;
+      check(
+        "late-join",
+        lateOpenedAfter >= lateJoin &&
+          applied > 0 &&
+          txs.length === applied &&
+          first?.encoding === "full",
+        `ws-late opened after ws applied ${lateOpenedAfter} (requested ${lateJoin}); first transaction ${JSON.stringify(first ? { seq: first.seq, encoding: first.encoding } : null)}; ${applied}/${txs.length} transactions applied`,
+      );
+    }
     const bad = legs.filter((l) => {
       const r = results[l.name] as { ended: boolean; applied: number };
       return !r.ended || r.applied === 0;
@@ -390,21 +535,44 @@ async function main(): Promise<number> {
       );
     }
     check("recording-equals-tap", allEqual, matches.join("; "));
-    const fbOk = ["auto-wrong-hash", "auto-no-wt"].every((n) => {
-      const r = results[n] as { ended: boolean; applied: number };
-      return r.ended && r.applied > 0;
-    });
-    check(
-      "auto-fallbacks",
-      fbOk && allEqual,
-      "auto-wrong-hash and auto-no-wt streamed over ws (their taps carry carrier ws)",
-    );
-    const same = pngs.ws.equals(pngs.auto) && pngs.ws.length > 1500;
-    check(
-      "ws-wt-same-pixels",
-      same,
-      `final canvas ws ${pngs.ws.length} B vs wt ${pngs.auto.length} B ${same ? "identical" : "DIFFER"}`,
-    );
+    if (defaultLegs) {
+      const fbOk = ["auto-wrong-hash", "auto-no-wt"].every((n) => {
+        const r = results[n] as { ended: boolean; applied: number };
+        return r.ended && r.applied > 0;
+      });
+      check(
+        "auto-fallbacks",
+        fbOk && allEqual,
+        "auto-wrong-hash and auto-no-wt streamed over ws (their taps carry carrier ws)",
+      );
+      const same = pngs.ws.equals(pngs.auto) && pngs.ws.length > 1500;
+      check(
+        "ws-wt-same-pixels",
+        same,
+        `final canvas ws ${pngs.ws.length} B vs wt ${pngs.auto.length} B ${same ? "identical" : "DIFFER"}`,
+      );
+    }
+    if (wss) {
+      const carriers = JSON.parse(
+        readFileSync(join(a.evidence, "live-carriers.json"), "utf8"),
+      ) as {
+        carriers?: { name: string; tls: string; cert_sha256: string | null }[];
+      };
+      const ws = carriers.carriers?.find((c) => c.name === "ws");
+      const leaf = readFileSync(
+        join(a.evidence, "wss-cert-sha256"),
+        "utf8",
+      ).trim();
+      check(
+        "wss-tls",
+        !!ws &&
+          ws.tls !== "none" &&
+          !!ws.tls &&
+          /^[a-f0-9]{64}$/.test(leaf) &&
+          ws.cert_sha256 === leaf,
+        `ws TLS ${JSON.stringify(ws)}; expected leaf ${leaf}`,
+      );
+    }
     for (const p of pages) await p.close().catch(() => {});
     check(
       "page-is-package-only",
@@ -416,6 +584,19 @@ async function main(): Promise<number> {
     writeFileSync(
       join(dir, "client-carrier.json"),
       `${JSON.stringify(report, null, 1)}\n`,
+    );
+    writeFileSync(
+      join(dir, "client-carrier-summary.json"),
+      `${JSON.stringify(
+        {
+          schema: "render-stream-client-carrier-summary/1",
+          browser: report.browser,
+          legs: report.legs,
+          checks,
+        },
+        null,
+        1,
+      )}\n`,
     );
     await launched.browser.close().catch(() => {});
     await server.stop().catch(() => {});

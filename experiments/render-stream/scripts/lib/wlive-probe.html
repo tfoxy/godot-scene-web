@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Windows live browser probe</title>
+<pre id="probe"></pre>
+<script>
+  const facts = {
+    userAgent: navigator.userAgent,
+    webTransport: typeof WebTransport,
+    renderer: "none",
+    canvasPixel: null,
+  };
+  try {
+    const gl = document.createElement("canvas").getContext("webgl");
+    const debug = gl?.getExtension("WEBGL_debug_renderer_info");
+    if (debug) facts.renderer = gl.getParameter(debug.UNMASKED_RENDERER_WEBGL);
+  } catch (error) {
+    facts.webglError = String(error);
+  }
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 1;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#112233";
+    ctx.fillRect(0, 0, 1, 1);
+    facts.canvasPixel = Array.from(ctx.getImageData(0, 0, 1, 1).data);
+  } catch (error) {
+    facts.canvasError = String(error);
+  }
+  document.getElementById("probe").textContent = JSON.stringify(facts);
+</script>
