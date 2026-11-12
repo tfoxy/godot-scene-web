@@ -57,7 +57,8 @@ build, rs = map(Path, sys.argv[1:3])
 bundle = build / "bundle"
 bundle.mkdir()
 manifest = json.loads((build / "w-manifest.json").read_text())
-exes = {entry["exe"] for key in ("tests", "imports_only", "sabotage") for entry in manifest[key]}
+exes = {entry["exe"] for key in ("tests", "imports_only", "sabotage") for entry in manifest[key]
+        if "interpreter" not in entry}
 for exe in sorted(exes):
     if exe == "bin/calib_pe_self_test-rdata-sabotage.exe":
         continue
@@ -94,6 +95,8 @@ shutil.copyfile(build / "w-manifest.json", bundle / "manifest.json")
 shutil.copyfile(build / "render_stream_capture.gdextension", bundle / "render_stream_capture.gdextension")
 PYBUNDLE
 	llvm_mingw_record "$B/bundle/toolchain.json"
+	bash "$HERE/fetch-windows-template.sh"
+	python3 -I "$HERE/lib/w1-bundle.py" --target windows --out "$B/bundle"
 	python3 -I - "$B" "$HERE/w-imports.py" "$LLVM_MINGW_ROOT/bin/llvm-objdump" <<'PYIMPORTS'
 import json, subprocess, sys
 from pathlib import Path
@@ -101,16 +104,20 @@ build = Path(sys.argv[1])
 bundle = build / "bundle"
 m = json.loads((bundle / "manifest.json").read_text())
 checker = [sys.executable, "-I", sys.argv[2], "--objdump", sys.argv[3]]
-exes = [str(bundle / entry["exe"]) for key in ("tests", "imports_only") for entry in m[key]]
+exes = [str(bundle / entry["exe"]) for key in ("tests", "imports_only") for entry in m[key]
+        if "interpreter" not in entry]
 commands = [checker + ["--json", str(build / "w-imports.json"), *exes]]
 for entry in m["imports_only"]:
-    if "expect_exports" in entry:
+    if "interpreter" not in entry and "expect_exports" in entry:
         commands.append(checker + ["--expect-exports", ",".join(entry["expect_exports"]),
                                    str(bundle / entry["exe"])])
 for entry in m["sabotage"]:
+    if "interpreter" in entry:
+        continue
     commands.append(checker + ["--expect-disallowed", ",".join(entry["expect_disallowed"]),
                                str(bundle / entry["exe"])])
 for command in commands:
+    print("w-imports argv: " + json.dumps(command), flush=True)
     result = subprocess.run(command)
     if result.returncode:
         sys.exit(result.returncode)
@@ -121,6 +128,7 @@ from pathlib import Path
 bundle = Path(sys.argv[1])
 m = json.loads((bundle / "manifest.json").read_text())
 print(f"windows bundle: {bundle}: {len(m['tests'])} tests, {len(m['imports_only'])} imports-only, {len(m['sabotage'])} imports sabotages")
+print(f"windows bundle: {sum('interpreter' in entry for entry in m['tests'])} interpreter tests")
 PYCOUNT
 	exit 0
 fi

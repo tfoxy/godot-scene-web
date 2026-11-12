@@ -46,6 +46,8 @@ def read_manifest(bundle):
                 raise ValueError(f"manifest {group} entry needs exe")
             if group == "tests" and not isinstance(entry.get("name"), str):
                 raise ValueError("manifest test entry needs name")
+            if "interpreter" in entry and entry["interpreter"] != "python":
+                raise ValueError(f"manifest {group} entry has unknown interpreter: {entry['interpreter']!r}")
     return manifest
 
 
@@ -72,20 +74,29 @@ def main():
         print(log.read_text(encoding="utf-8"), end="", file=sys.stderr)
         checks.append({"name": "bundle", "rc": 2, "wall_s": 0})
     else:
+        interpreter_tests = 0
         for test in manifest["tests"]:
-            tests.append(run_check(test["name"], [str(bundle / test["exe"]), *test.get("args", [])],
-                                   bundle, out, test.get("env", {})))
-        imports = [str(bundle / e["exe"]) for e in manifest["tests"] + manifest["imports_only"]]
+            argv = [str(bundle / test["exe"]), *test.get("args", [])]
+            env = dict(test.get("env", {}))
+            if "interpreter" in test:
+                argv = [sys.executable, "-I", *argv]
+                env["W_RUN_ARTIFACT_DIR"] = str(out / "artifacts" / test["name"])
+                interpreter_tests += 1
+            tests.append(run_check(test["name"], argv, bundle, out, env))
+        print(f"w-run: ran {interpreter_tests} interpreter tests", flush=True)
+        imports = [str(bundle / e["exe"]) for e in manifest["tests"] + manifest["imports_only"]
+                   if "interpreter" not in e]
         tool = [sys.executable, "-I", str(Path(args.imports_tool).resolve())]
         checks.append(run_check("w-imports", tool + imports, bundle, out))
         for index, entry in enumerate(manifest["imports_only"]):
-            if "expect_exports" in entry:
+            if "interpreter" not in entry and "expect_exports" in entry:
                 checks.append(run_check(f"w-exports-{index + 1}", tool + ["--expect-exports",
                                         ",".join(entry["expect_exports"]), str(bundle / entry["exe"])],
                                         bundle, out))
         # Keep one named check and log even when several sabotage binaries are specified.
         sabotage_results = []
-        for index, entry in enumerate(manifest["sabotage"]):
+        native_sabotage = [e for e in manifest["sabotage"] if "interpreter" not in e]
+        for index, entry in enumerate(native_sabotage):
             name = "w-imports-sabotage" if index == 0 else f"w-imports-sabotage-{index + 1}"
             sabotage_results.append(run_check(name, tool + ["--expect-disallowed",
                                     ",".join(entry["expect_disallowed"]), str(bundle / entry["exe"])],

@@ -476,6 +476,8 @@
         "experiments/render-stream/scripts/lib/llvm-mingw.sh",
         "experiments/render-stream/scripts/w-imports.py",
         "experiments/render-stream/scripts/lib/w-run.py",
+        "experiments/render-stream/scripts/lib/w1-*.py",
+        "experiments/render-stream/scripts/test/self-test-w1-driver.ts",
         "experiments/render-stream/scripts/test/self-test-w-imports.ts",
         "experiments/render-stream/scripts/test/self-test-w-run.ts"
       ],
@@ -808,7 +810,7 @@
         "experiments/render-stream/scripts/check-gate-minus1.ts",
         "experiments/render-stream/fixtures/spike/**"
       ],
-      "reach": ["native:gate-minus1@*"]
+      "reach": ["native:gate-minus1@*", "windows"]
     },
     {
       "why": "gate 0",
@@ -1163,7 +1165,7 @@
     {
       "why": "gate -1's refusal evidence: run-gate-minus1.sh invokes tamper-calibration.mjs for refuse-sha, refuse-prefix and old-record",
       "paths": ["experiments/render-stream/scripts/lib/tamper-calibration.mjs"],
-      "reach": ["native:gate-minus1@*"]
+      "reach": ["native:gate-minus1@*", "windows"]
     },
     {
       "why": "gate 6 sampling and report attribution: run-gate6.sh and lib/gate6c-legs.sh invoke sample-proc.ts; lib/gate6p-legs.sh invokes sample-rate.ts; report-gate6.ts imports analyze-deltas.ts and is read by lib/gate6c-checks.ts and lib/gate6p-checks.ts; run-gate7.sh reuses gate 6 for its file/live g7-6, g7-r, g7-k and g7-lc groups; self-test-report.ts and self-test-gate6p.ts import the analyzer and rate sampler",

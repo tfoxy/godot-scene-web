@@ -325,6 +325,83 @@ try {
       readFileSync(summaryPath, "utf8").includes("| pass | 0 |"),
     );
   }
+  const pythonPath = "bin/interpreter test.py";
+  writeFileSync(
+    join(bundle, pythonPath),
+    `import os, pathlib, sys
+assert sys.flags.isolated == 1
+assert sys.argv[1:] == ["hello world"]
+assert os.environ["W_RUN_ENV"] == "évidence"
+assert pathlib.Path("manifest.json").is_file()
+art = pathlib.Path(os.environ["W_RUN_ARTIFACT_DIR"])
+art.mkdir(parents=True, exist_ok=True)
+(art / "runtime-proof.txt").write_text(sys.executable, encoding="utf-8")
+`,
+  );
+  const pythonTest = {
+    name: "python-test",
+    exe: pythonPath,
+    interpreter: "python",
+    args: ["hello world"],
+    env: { W_RUN_ENV: "évidence", W_RUN_ARTIFACT_DIR: "wrong-directory" },
+  };
+  rmSync(join(bundle, "imports-calls.jsonl"));
+  manifest(
+    [pass, pythonTest],
+    [{ ...pythonTest, expect_exports: ["not-a-PE-export"] }],
+    [
+      { ...pythonTest, expect_disallowed: ["not-a-PE-import"] },
+      { exe: "bin/dynamic", expect_disallowed: ["libc++.dll"] },
+    ],
+  );
+  const interpreted = run("interpreted");
+  check(
+    "python-interpreter-runs-isolated",
+    interpreted.rc === 0,
+    interpreted.text,
+  );
+  check(
+    "python-interpreter-artifact-dir",
+    existsSync(
+      join(interpreted.out, "artifacts/python-test/runtime-proof.txt"),
+    ),
+    interpreted.text,
+  );
+  check(
+    "python-interpreter-count",
+    interpreted.text.includes("1 interpreter tests"),
+    interpreted.text,
+  );
+  const interpreterImports = readFileSync(
+    join(bundle, "imports-calls.jsonl"),
+    "utf8",
+  )
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[]);
+  check(
+    "python-interpreter-skips-imports",
+    interpreterImports.length === 2 &&
+      interpreterImports[0].length === 1 &&
+      interpreterImports[0][0].endsWith("/bin/pass") &&
+      interpreterImports[1][0] === "--expect-disallowed" &&
+      interpreterImports[1][2].endsWith("/bin/dynamic") &&
+      interpreterImports.every((args) =>
+        args.every((arg) => !arg.endsWith(".py")),
+      ),
+    JSON.stringify(interpreterImports),
+  );
+  rmSync(join(bundle, "imports-calls.jsonl"));
+  manifest([{ ...pythonTest, interpreter: "ruby" }]);
+  const unknownInterpreter = run("unknown-interpreter");
+  check(
+    "unknown-interpreter-bundle-error",
+    unknownInterpreter.rc === 2 &&
+      unknownInterpreter.text.includes("unknown interpreter") &&
+      json(unknownInterpreter.out, "w-run.json").tests.length === 0 &&
+      !existsSync(join(bundle, "imports-calls.jsonl")),
+    unknownInterpreter.text,
+  );
   manifest([fail, slow, pass]);
   const bad = run("bad");
   check("fail-and-timeout", bad.rc === 1, bad.text);

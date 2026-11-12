@@ -4,6 +4,7 @@
 #define NOMINMAX
 #include <windows.h>
 
+#include <chrono>
 #include <cstdio>
 
 #include "pe_image.h"
@@ -23,7 +24,14 @@ bool collect_engine_fingerprint(ProcessFingerprint *out, std::string *error) {
   PeHeaders h;
   if (!pe_parse_headers(base, nt->OptionalHeader.SizeOfHeaders, &h, error)) return false;
   uint64_t bytes = 0;
-  if (!pe_image_sha256(out->exe_path, &out->image_sha256, &bytes, &out->image_base, error)) return false;
+  const auto hash_start = std::chrono::steady_clock::now();
+  const bool hash_ok = pe_image_sha256(out->exe_path, &out->image_sha256, &bytes, &out->image_base, error);
+  const double hash_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - hash_start).count();
+  std::printf("[grc] fingerprint: image hash %.3f ms over %llu bytes\n", hash_ms,
+              static_cast<unsigned long long>(bytes));
+  std::fflush(stdout);
+  if (!hash_ok) return false;
   out->time_date_stamp = h.time_date_stamp;
   out->size_of_image = h.size_of_image;
   out->dynamic_base = bool(h.dll_characteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE);
