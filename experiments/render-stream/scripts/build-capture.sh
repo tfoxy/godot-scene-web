@@ -46,7 +46,7 @@ if [ "$TARGET" = windows ]; then
 	B="$CAPTURE/build-windows"
 	"${CMAKE}" -S "$CAPTURE" -B "$B" \
 		-DCMAKE_TOOLCHAIN_FILE="$CAPTURE/cmake/llvm-mingw-x86_64.cmake" \
-		-DGRC_LLVM_MINGW_ROOT="$LLVM_MINGW_ROOT" -DGRC_WINDOWS_SCOPE=tests \
+		-DGRC_LLVM_MINGW_ROOT="$LLVM_MINGW_ROOT" \
 		-DCMAKE_BUILD_TYPE="$BUILD_TYPE"
 	"${CMAKE}" --build "$B" -j"$(nproc)"
 	rm -rf "$B/bundle"
@@ -82,6 +82,7 @@ sabotage[rdata["offset"] + rdata["raw_size"] - 1] ^= 1
 for directory in manifest["data"]:
     shutil.copytree(rs / directory, bundle / directory)
 shutil.copyfile(build / "w-manifest.json", bundle / "manifest.json")
+shutil.copyfile(build / "render_stream_capture.gdextension", bundle / "render_stream_capture.gdextension")
 PYBUNDLE
 	llvm_mingw_record "$B/bundle/toolchain.json"
 	python3 -I - "$B" "$HERE/w-imports.py" "$LLVM_MINGW_ROOT/bin/llvm-objdump" <<'PYIMPORTS'
@@ -93,6 +94,10 @@ m = json.loads((bundle / "manifest.json").read_text())
 checker = [sys.executable, "-I", sys.argv[2], "--objdump", sys.argv[3]]
 exes = [str(bundle / entry["exe"]) for key in ("tests", "imports_only") for entry in m[key]]
 commands = [checker + ["--json", str(build / "w-imports.json"), *exes]]
+for entry in m["imports_only"]:
+    if "expect_exports" in entry:
+        commands.append(checker + ["--expect-exports", ",".join(entry["expect_exports"]),
+                                   str(bundle / entry["exe"])])
 for entry in m["sabotage"]:
     commands.append(checker + ["--expect-disallowed", ",".join(entry["expect_disallowed"]),
                                str(bundle / entry["exe"])])

@@ -78,6 +78,11 @@ def main():
         imports = [str(bundle / e["exe"]) for e in manifest["tests"] + manifest["imports_only"]]
         tool = [sys.executable, "-I", str(Path(args.imports_tool).resolve())]
         checks.append(run_check("w-imports", tool + imports, bundle, out))
+        for index, entry in enumerate(manifest["imports_only"]):
+            if "expect_exports" in entry:
+                checks.append(run_check(f"w-exports-{index + 1}", tool + ["--expect-exports",
+                                        ",".join(entry["expect_exports"]), str(bundle / entry["exe"])],
+                                        bundle, out))
         # Keep one named check and log even when several sabotage binaries are specified.
         sabotage_results = []
         for index, entry in enumerate(manifest["sabotage"]):

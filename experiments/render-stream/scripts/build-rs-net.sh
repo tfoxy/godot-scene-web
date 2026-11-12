@@ -112,7 +112,8 @@ if sys.argv[5]:
         manifest["tests"].append(dict(name="rs-net-" + test["name"],
             exe=dest.relative_to(template.parent).as_posix(), args=[], env={}))
     manifest["imports_only"].append(dict(exe=library.relative_to(template.parent).as_posix(),
-        why="Runtime-loaded net module; the Windows capture host is not built yet."))
+        why="Runtime-loaded net module.",
+        expect_exports=["grc_net_module_v1", "grc_net_tls_v1"]))
     (template.parent / "w-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 print(json.dumps(report, indent=2))
 PYWINDOWS

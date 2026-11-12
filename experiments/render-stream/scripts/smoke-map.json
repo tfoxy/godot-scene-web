@@ -503,7 +503,7 @@
         "experiments/render-stream/scripts/lib/gate8-track-checks.ts",
         "experiments/render-stream/scripts/lib/raw-track-client.ts"
       ],
-      "reach": ["capture-build", "pure", "native:gate8@*"],
+      "reach": ["capture-build", "pure", "windows", "native:gate8@*"],
       "exclusive": true
     },
     {

@@ -1,0 +1,95 @@
+# Quote manifest strings independently of CMake's list syntax.
+function(grc_w_quote out value)
+  string(REPLACE "\\" "\\\\" value "${value}")
+  string(REPLACE "\"" "\\\"" value "${value}")
+  string(REPLACE "\n" "\\n" value "${value}")
+  string(REPLACE "\r" "\\r" value "${value}")
+  string(REPLACE "\t" "\\t" value "${value}")
+  set(${out} "\"${value}\"" PARENT_SCOPE)
+endfunction()
+
+# Process identity is PE-specific; the bundle builder mutates .rdata after stripping.
+add_executable(calib_pe_self_test test/calib_pe_self_test.cpp src/calib.cpp
+  ${GRC_FINGERPRINT_SOURCES} src/iface.cpp src/rs_sha256.cpp)
+target_include_directories(calib_pe_self_test PRIVATE src vendor)
+target_link_libraries(calib_pe_self_test PRIVATE grc_warnings grc_platform)
+target_link_options(calib_pe_self_test PRIVATE -Wl,--build-id)
+grc_add_test(NAME calib_pe_self COMMAND calib_pe_self_test calib_pe_self_test.identity.json)
+grc_add_test(NAME calib_pe_rdata_sabotage COMMAND calib_pe_self_test-rdata-sabotage.exe
+  calib_pe_self_test.identity.json --expect-image-mismatch)
+
+# Keep the toolchain's dynamic default for the imports sabotage.
+add_executable(w_imports_sabotage_dynamic test/abi_convention_probe.cpp)
+target_include_directories(w_imports_sabotage_dynamic PRIVATE src)
+target_link_libraries(w_imports_sabotage_dynamic PRIVATE grc_warnings)
+set_target_properties(w_imports_sabotage_dynamic PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/sabotage)
+
+# Static runtime and Win32 adapter are additional Windows link requirements only.
+get_property(targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(target IN LISTS targets)
+  get_target_property(type ${target} TYPE)
+  if(type STREQUAL "EXECUTABLE" AND NOT target STREQUAL "w_imports_sabotage_dynamic")
+    target_link_libraries(${target} PRIVATE grc_static_runtime grc_platform)
+  endif()
+endforeach()
+# Keep the suppression after -Wall, which otherwise re-enables this Clang diagnostic.
+target_compile_options(rs_adopt_test PRIVATE -Wall -Wextra -Werror -Wno-unused-private-field)
+
+
+get_property(names GLOBAL PROPERTY GRC_W_NAMES)
+set(tests "")
+set(data "")
+foreach(name IN LISTS names)
+  get_property(command GLOBAL PROPERTY GRC_W_COMMAND_${name})
+  list(POP_FRONT command target)
+  if(target STREQUAL "calib_pe_self_test-rdata-sabotage.exe")
+    set(exe "bin/${target}")
+    set(defines "")
+  elseif(NOT TARGET ${target})
+    message(FATAL_ERROR "Windows test ${name} must run a declared target: ${target}")
+  else()
+    set(exe "bin/$<TARGET_FILE_NAME:${target}>")
+    get_target_property(defines ${target} COMPILE_DEFINITIONS)
+  endif()
+  set(args "[]")
+  foreach(arg IN LISTS command)
+    string(JSON n LENGTH "${args}")
+    grc_w_quote(value "${arg}")
+    string(JSON args SET "${args}" ${n} "${value}")
+  endforeach()
+  get_test_property(${name} ENVIRONMENT environment)
+  set(env "{}")
+  if(environment)
+    foreach(pair IN LISTS environment)
+      if(NOT pair MATCHES "^([^=]+)=(.*)$")
+        message(FATAL_ERROR "Invalid environment entry: ${pair}")
+      endif()
+      set(key "${CMAKE_MATCH_1}")
+      grc_w_quote(value "${CMAKE_MATCH_2}")
+      string(JSON env SET "${env}" "${key}" "${value}")
+    endforeach()
+  endif()
+  grc_w_quote(name_json "${name}")
+  list(APPEND tests "{\"name\":${name_json},\"exe\":\"${exe}\",\"args\":${args},\"env\":${env}}")
+  foreach(define IN LISTS defines)
+    if(define MATCHES "^GRC_GOLDEN[0-9]+_DIR=\"([^\"]+)\"$")
+      list(APPEND data "${CMAKE_MATCH_1}")
+    endif()
+  endforeach()
+endforeach()
+list(JOIN tests ",\n" tests_json)
+list(REMOVE_DUPLICATES data)
+set(data_json "[]")
+foreach(path IN LISTS data)
+  string(JSON n LENGTH "${data_json}")
+  grc_w_quote(value "${path}")
+  string(JSON data_json SET "${data_json}" ${n} "${value}")
+endforeach()
+file(GENERATE OUTPUT ${CMAKE_BINARY_DIR}/w-capture-manifest.json CONTENT
+  "{\"schema\":\"render-stream-w-manifest/1\",\"tests\":[${tests_json}],\"imports_only\":[{\"exe\":\"bin/$<TARGET_FILE_NAME:render_stream_capture>\",\"expect_exports\":[\"grc_library_init\",\"grc_carrier_register\"]}],\"sabotage\":[{\"exe\":\"sabotage/$<TARGET_FILE_NAME:w_imports_sabotage_dynamic>\",\"expect_disallowed\":[\"libc++.dll\"]}],\"data\":${data_json}}\n")
+
+add_custom_target(rs_net ALL
+  COMMAND bash ${CMAKE_CURRENT_LIST_DIR}/../../scripts/build-rs-net.sh --target windows
+    --manifest-template ${CMAKE_BINARY_DIR}/w-capture-manifest.json
+  VERBATIM)
