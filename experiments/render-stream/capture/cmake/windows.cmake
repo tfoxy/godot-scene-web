@@ -107,3 +107,25 @@ add_custom_target(rs_net ALL
   COMMAND bash ${CMAKE_CURRENT_LIST_DIR}/../../scripts/build-rs-net.sh --target windows
     --manifest-template ${CMAKE_BINARY_DIR}/w-capture-manifest.json
   VERBATIM)
+
+# Compile the capture's complete source list against the Windows ABI without linking a DLL.
+# The WebSocket source is ported independently; keep every other source in this probe.
+include(${CMAKE_CURRENT_LIST_DIR}/capture-deps.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/capture-sources.cmake)
+list(REMOVE_ITEM GRC_CAPTURE_SOURCES
+  src/rs_platform_posix.cpp src/calib_fingerprint_posix.cpp src/rs_ws.cpp)
+list(APPEND GRC_CAPTURE_SOURCES
+  src/rs_platform_win32.cpp src/calib_fingerprint_win32.cpp src/pe_image.cpp)
+add_library(grc_capture_windows_probe OBJECT ${GRC_CAPTURE_SOURCES})
+# Match the Clang control build's exception for the unused predictor helper.
+set_property(SOURCE src/rs13_predict.cpp APPEND PROPERTY COMPILE_OPTIONS -Wno-unused-function)
+target_include_directories(grc_capture_windows_probe PRIVATE src vendor ${GRC_INJECT_GEN})
+# The fingerprint source also defines these header switches with empty replacement text.
+target_compile_definitions(grc_capture_windows_probe PRIVATE
+  render_stream_capture_EXPORTS WIN32_LEAN_AND_MEAN= NOMINMAX= _WIN32_WINNT=0x0A00 PSAPI_VERSION=2)
+target_compile_options(grc_capture_windows_probe PRIVATE -fno-omit-frame-pointer)
+target_link_libraries(grc_capture_windows_probe PRIVATE
+  grc_warnings grc_codecs grc_basisu grc_platform Threads::Threads)
+set_target_properties(grc_capture_windows_probe PROPERTIES
+  POSITION_INDEPENDENT_CODE ON CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+add_dependencies(grc_capture_windows_probe grc_inject_script)

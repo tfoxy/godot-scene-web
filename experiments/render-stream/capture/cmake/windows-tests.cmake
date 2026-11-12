@@ -123,6 +123,10 @@ grc_w_test(rs_reload TARGET rs_reload_test
 # rs_vtable: GCC anti-devirtualization flags. rs_standby: reads a source path.
 # rs_texture_release: wall-clock assertion on a shared VM.
 # rs_basis_*: basisu, bash + godot. rs_live_coding_golden*: sh -c + cmp.
-# rs_platform_clock: POSIX clock_gettime linker-wrap regression test.
 # calib_fingerprint: POSIX ELF/proc fault injection; calib_pe_self covers Windows identity.
 # rs_net_module also needs unchanged rs_ws/rs_carrier_set socket sources ported.
+
+grc_w_test(rs_env TARGET rs_env_test SOURCES test/rs_env_test.cpp LIBS grc_platform)
+grc_w_test(rs_process TARGET rs_process_test SOURCES test/rs_process_test.cpp LIBS grc_platform)
+grc_w_test(rs_platform_clock TARGET rs_platform_clock_test
+  SOURCES test/rs_platform_clock_test.cpp LIBS grc_platform)

@@ -1,3 +1,4 @@
+#include "rs_platform.h"
 #include "hooks.h"
 
 #include <algorithm>
@@ -1240,7 +1241,7 @@ PodEntry<ItemValueKey> item_value(RID item, int64_t value) {
 // behave exactly as at gate -1. The tap never blocks or alters the forwarded
 // call.
 
-extern thread_local bool t_offmain_standby __attribute__((tls_model("initial-exec")));
+extern thread_local bool t_offmain_standby GRC_INITIAL_EXEC_TLS;
 void test_arm_access();
 
 bool streaming() { return rs::mirror_enabled() && !t_offmain_standby; }
@@ -2012,7 +2013,7 @@ void test_reader_evidence() {  // g_test_reader_mutex held
   }
   json.array_end();
   json.object_end();
-  const char *dir = std::getenv("GRC_EVIDENCE_DIR");
+  const char *dir = grc::rs::env("GRC_EVIDENCE_DIR");
   if (dir != nullptr) write_file(path_join(dir, "reader-after-release.json"), json.take());
 }
 
@@ -2020,7 +2021,7 @@ bool test_reader_delay(uint32_t ms, std::unique_lock<std::mutex> *guard) {
   if (ms == 0) return true;
   *guard = std::unique_lock<std::mutex>(g_test_reader_mutex);
   const uint64_t admitted_generation = g_test_released_generation;
-  const char *dir = std::getenv("GRC_EVIDENCE_DIR");
+  const char *dir = grc::rs::env("GRC_EVIDENCE_DIR");
   if (dir != nullptr) write_file(path_join(dir, "reader-delay-arm-" +
       std::to_string(admitted_generation + 1) + ".json"), "{\"pending\":true}");
   guard->unlock();
@@ -2286,15 +2287,15 @@ rs::ShaderCopy copy_shader_code(const void *code_ptr, rs::PayloadPtr *payload_ou
 // shader and free call passes straight to the engine: none of them is the game's.
 thread_local bool t_internal = false;
 // Capture is dlopen'd: avoid __tls_get_addr per hook using a few bytes of glibc's static TLS surplus.
-thread_local bool t_offmain_standby __attribute__((tls_model("initial-exec"))) = false;
-thread_local bool t_reload_scope __attribute__((tls_model("initial-exec"))) = false;
+thread_local bool t_offmain_standby GRC_INITIAL_EXEC_TLS = false;
+thread_local bool t_reload_scope GRC_INITIAL_EXEC_TLS = false;
 // Only the main thread inside the reload scope reads or writes these temporary RIDs.
 uint64_t g_reload_temps[4] = {};
 std::size_t g_reload_temp_count = 0;
 uint64_t g_reload_creates = 0;
 uint64_t g_reload_frees = 0;
 uint64_t g_reload_extra = 0;
-thread_local unsigned t_test_counted_depth __attribute__((tls_model("initial-exec"))) = 0;
+thread_local unsigned t_test_counted_depth GRC_INITIAL_EXEC_TLS = 0;
 std::atomic<uint64_t> g_test_uncounted_accesses{0};
 std::atomic<uint64_t> g_test_held_free{0};
 std::atomic<uint32_t> g_test_admission_delay_ms{0};
@@ -2657,7 +2658,7 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
   if (admission_probe && std::this_thread::get_id() != g_main_thread) {
     const bool armed = (mirror_bits & rs::kMirrorStreaming) != 0;
     if (standby && armed) g_test_uncounted_accesses.fetch_add(1, std::memory_order_relaxed);
-    const char *dir = std::getenv("GRC_EVIDENCE_DIR");
+    const char *dir = grc::rs::env("GRC_EVIDENCE_DIR");
     if (dir != nullptr) write_file(path_join(dir, "admission-texture-hot.json"),
         std::string("{\"raw_streaming\":") +
         ((raw_mirror_bits & rs::kMirrorStreaming) != 0 ? "true" : "false") +
@@ -5928,14 +5929,14 @@ OffmainGuard::OffmainGuard(bool enabled, const char *test_site) {
   if (ms != 0) {
     if (counted_) ++t_test_counted_depth;
     if (test_site != nullptr) {
-      const char *dir = std::getenv("GRC_EVIDENCE_DIR");
+      const char *dir = grc::rs::env("GRC_EVIDENCE_DIR");
       const std::string stem = std::string("admission-") + test_site;
       if (dir != nullptr) write_file(path_join(dir, stem + ".json"),
           counted_ ? "{\"counted\":true}" : "{\"counted\":false}");
       // The fixture releases this hold explicitly; the delay is a bounded fallback on failure.
       for (uint32_t elapsed = 0; elapsed < ms; ++elapsed) {
         if (dir != nullptr) {
-          FILE *release = std::fopen(path_join(dir, stem + ".release").c_str(), "r");
+          FILE *release = grc::rs::open_file(path_join(dir, stem + ".release"), "r");
           if (release != nullptr) { std::fclose(release); break; }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -6261,7 +6262,7 @@ bool hooks_adopt_shader(uint64_t rid, const std::string &code) {
   }
   mirror().shader_adopt(rid, input, current_frame());
   if (g_test_admission_delay_ms.load(std::memory_order_relaxed) != 0) {
-    const char *dir = std::getenv("GRC_EVIDENCE_DIR");
+    const char *dir = grc::rs::env("GRC_EVIDENCE_DIR");
     if (dir != nullptr) write_file(path_join(dir, "admission-adopted-code.txt"), code);
   }
   resources().shader_create_from_code(tap_context(), rid, input.copy, false);
@@ -6377,11 +6378,11 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   g_omitted_names.clear();
   // the path notes are kept only under a cache directory. The
   // texture_set_path hook itself is planned always, so session.capture.hooks_planned names it.
-  const char *cache_dir = std::getenv("GRC_TEXTURE_CACHE_DIR");
+  const char *cache_dir = grc::rs::env("GRC_TEXTURE_CACHE_DIR");
   g_path_hook_records = cache_dir != nullptr && cache_dir[0] != '\0';
   // CG1: the back-buffer hooks exist for /10's item keys only (GRC_STREAM_VERSION=10; W11b: and
   // /11, which carries them too).
-  const char *stream_version = std::getenv("GRC_STREAM_VERSION");
+  const char *stream_version = grc::rs::env("GRC_STREAM_VERSION");
   // PM5: /12 installs /10's and /11's conditional hooks too, plus the 33 particles hooks.
   // W13b: /13 is /12 with predicted blocks: the same hooks.
   const bool v12_wanted = stream_version != nullptr && (std::strcmp(stream_version, "12") == 0 ||
@@ -6501,7 +6502,7 @@ std::size_t hooks_mesh_buffers_held() {
 void hooks_set_test_inflight_delay_ms(uint32_t ms, bool materialize, bool admission) {
   g_test_admission_probe = admission && ms != 0;
   g_test_admission_delay_ms.store(admission ? ms : 0, std::memory_order_relaxed);
-  const char *fault = std::getenv("GRC_REARM_FAULT");
+  const char *fault = grc::rs::env("GRC_REARM_FAULT");
   g_test_standby_view_off = admission && fault != nullptr && std::strcmp(fault, "standby-view-off") == 0;
   g_test_hot_view_off = admission && fault != nullptr && std::strcmp(fault, "hot-view-off") == 0;
   if (admission) ms = 0;

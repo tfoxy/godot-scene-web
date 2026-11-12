@@ -203,13 +203,21 @@ typedef struct grc_carrier_v1 {
  * Lookup: Godot opens an extension library without RTLD_GLOBAL, so dlsym(RTLD_DEFAULT, ...) does
  * not see it. Open the already loaded capture by its path with dlopen(path, RTLD_NOW | RTLD_NOLOAD)
  * (C#: NativeLibrary.Load(path) or TryLoad) and dlsym that handle; the path is the .gdextension's
- * library entry (GDScript and C#: RenderStreamCarrier.library_path()). */
+ * library entry (GDScript and C#: RenderStreamCarrier.library_path()). On Windows use
+ * GetModuleHandleW(L"render_stream_capture.dll") and GetProcAddress(handle, "grc_carrier_register")
+ * to look up the entry point in the already loaded DLL. */
 typedef int (*grc_carrier_register_fn)(const grc_carrier_v1 *carrier);
 
-#if defined(__GNUC__) || defined(__clang__)
-__attribute__((visibility("default")))
+#if defined(_WIN32)
+#if defined(GRC_CARRIER_BUILD)
+#define GRC_CARRIER_API __declspec(dllexport)
+#else
+#define GRC_CARRIER_API __declspec(dllimport)
 #endif
-int grc_carrier_register(const grc_carrier_v1 *carrier);
+#else
+#define GRC_CARRIER_API __attribute__((visibility("default")))
+#endif
+GRC_CARRIER_API int grc_carrier_register(const grc_carrier_v1 *carrier);
 
 #ifdef __cplusplus
 }

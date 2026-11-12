@@ -1,3 +1,4 @@
+#include "rs_platform.h"
 // GDExtension entry point and the arming decision.
 //
 // Nothing is written into the engine's memory until every check in
@@ -186,12 +187,7 @@
 // wire declares no sabotage for them (the session's `sabotage` stays null): evidence/live.json
 // carries `listener_sabotage` instead.
 
-#include <sys/random.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <dirent.h>
 #include <sstream>
-#include <malloc.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -520,7 +516,7 @@ struct Rearm {
   std::string patch_out;
   uint64_t arm_index = 0;  // the arm in progress, or the last one (1-based)
   std::string fault;       // GRC_REARM_FAULT
-  bool trim = false;       // GRC_TEST_TRIM_AT_DISARM=1: malloc_trim(0) before `disarmed`
+  bool trim = false;       // GRC_TEST_TRIM_AT_DISARM=1: trim the heap before `disarmed`
   // The root Window's min_size: the value before this arm's write, and the write itself.
   uint64_t window_id = 0;
   bool min_recorded = false;
@@ -641,8 +637,7 @@ struct Perf {
   Histogram frame_interval_us;
   Histogram frame_callback_us;
   Histogram snapshot_us;
-  struct timespec main_thread_cpu_start {};
-  bool main_thread_cpu_start_ok = false;
+  rs::ThreadCpuClock main_thread_clock;
   std::FILE *timeline_file = nullptr;
   std::string timeline_path;
   int64_t timeline_last_second = -1;  // the last whole second a timeline line was written for
@@ -659,28 +654,11 @@ Perf g_perf;
 // Correct only when called from the main thread, as every entry point here is (the gdextension
 // frame/arm/disarm callbacks).
 int64_t main_thread_cpu_us() {
-  struct timespec ts {};
-  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) {
-    return -1;
-  }
-  return static_cast<int64_t>(ts.tv_sec) * 1000000 + ts.tv_nsec / 1000;
+  return g_perf.main_thread_clock.now_us();
 }
 
-// The process's resident set size in bytes, from /proc/self/statm (field 2, in pages) through
-// plain file reads (D9: process RSS, never an engine memory counter). 0 when unreadable.
-uint64_t read_rss_bytes() {
-  std::ifstream in("/proc/self/statm");
-  if (!in) {
-    return 0;
-  }
-  uint64_t pages = 0, resident_pages = 0;
-  in >> pages >> resident_pages;
-  if (!in) {
-    return 0;
-  }
-  const long page_size = sysconf(_SC_PAGESIZE);
-  return page_size > 0 ? resident_pages * static_cast<uint64_t>(page_size) : 0;
-}
+// Process resident set size in bytes, or zero when unreadable.
+uint64_t read_rss_bytes() { return rs::rss_bytes(); }
 
 // GRC_ROOT_SIZE, read at arm.
 using rs2::RootSizePolicy;
@@ -793,26 +771,16 @@ void log_line(const std::string &text) {
 }
 
 std::string env_string(const char *name) {
-  const char *value = std::getenv(name);
+  const char *value = grc::rs::env(name);
   return value != nullptr ? std::string(value) : std::string();
 }
 
-// 32 random bytes as 64 lowercase hex characters, via
-// getrandom() -- independent of rs2::generate_id()'s 16-byte session/stream ids, which are not
+// 32 random bytes as 64 lowercase hex characters, independent of
+// rs2::generate_id()'s 16-byte session/stream ids, which are not
 // secrets and need no particular length.
 std::string generate_live_token() {
   unsigned char buf[32] = {};
-  std::size_t got = 0;
-  while (got < sizeof(buf)) {
-    const ssize_t n = ::getrandom(buf + got, sizeof(buf) - got, 0);
-    if (n < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      break;  // leaves the remaining bytes zero rather than looping forever
-    }
-    got += static_cast<std::size_t>(n);
-  }
+  (void)rs::fill_random(buf, sizeof(buf));  // failure leaves the remaining bytes zero
   static const char *const hex = "0123456789abcdef";
   std::string out;
   out.reserve(sizeof(buf) * 2);
@@ -1469,8 +1437,7 @@ void perf_arm() {
   g_perf.arm_ns = monotonic_ns();
   g_perf.last_frame_ns = 0;
   g_perf.timeline_last_second = -1;
-  g_perf.main_thread_cpu_start_ok =
-      clock_gettime(CLOCK_THREAD_CPUTIME_ID, &g_perf.main_thread_cpu_start) == 0;
+  g_perf.main_thread_clock.arm();
 }
 
 bool env_non_negative(const char *name, uint64_t fallback, uint64_t *out);  // defined below
@@ -1488,7 +1455,7 @@ void perf_timeline_tick(uint64_t now_ns) {
   g_perf.timeline_last_second = second;
   if (g_perf.timeline_file == nullptr) {
     g_perf.timeline_path = path_join(g_state.evidence_dir, "perf-timeline.jsonl");
-    g_perf.timeline_file = std::fopen(g_perf.timeline_path.c_str(), "w");
+    g_perf.timeline_file = grc::rs::open_file(g_perf.timeline_path, "w");
     if (g_perf.timeline_file == nullptr) {
       log_line("perf: cannot open " + g_perf.timeline_path);
       return;
@@ -1500,8 +1467,8 @@ void perf_timeline_tick(uint64_t now_ns) {
   }
   if (g_perf.timeline_max_bytes > 0 && g_perf.timeline_bytes >= g_perf.timeline_max_bytes / 2) {
     std::fclose(g_perf.timeline_file);
-    std::rename(g_perf.timeline_path.c_str(), (g_perf.timeline_path + ".1").c_str());
-    g_perf.timeline_file = std::fopen(g_perf.timeline_path.c_str(), "w");
+    grc::rs::replace_file(g_perf.timeline_path, (g_perf.timeline_path + ".1"));
+    g_perf.timeline_file = grc::rs::open_file(g_perf.timeline_path, "w");
     g_perf.timeline_bytes = 0;
     if (g_perf.timeline_file == nullptr) {
       log_line("perf: cannot reopen " + g_perf.timeline_path);
@@ -1642,11 +1609,9 @@ std::string perf_json() {
   }
   json.array_end();
   json.key("cpu").object_begin();
-  const int64_t main_us = main_thread_cpu_us();
-  if (g_perf.main_thread_cpu_start_ok && main_us >= 0) {
-    const int64_t start_us = static_cast<int64_t>(g_perf.main_thread_cpu_start.tv_sec) * 1000000 +
-                             g_perf.main_thread_cpu_start.tv_nsec / 1000;
-    json.field("main_thread_us", main_us - start_us);
+  const int64_t main_us = g_perf.main_thread_clock.elapsed_us();
+  if (main_us >= 0) {
+    json.field("main_thread_us", main_us);
   } else {
     json.field_null("main_thread_us");
   }
@@ -1770,7 +1735,7 @@ void resources_start(uint64_t root_viewport_rid) {
   // only this file's content is skipped.
   if (g_state.evidence_ready && g_stream.hook_log_on) {
     g_stream.resources_path = path_join(g_state.evidence_dir, "resources.jsonl");
-    g_stream.resources_file = std::fopen(g_stream.resources_path.c_str(), "w");
+    g_stream.resources_file = grc::rs::open_file(g_stream.resources_path, "w");
     if (g_stream.resources_file == nullptr) {
       log_line("resources: cannot open " + g_stream.resources_path);
     }
@@ -1924,7 +1889,7 @@ void item_meta_configure() {
   g_meta.host.configure_v2(v2);
   const std::string log_path = env_string("GRC_ITEM_META_LOG");
   if (g_meta.grant != 0 && !log_path.empty()) {
-    std::FILE *log = std::fopen(log_path.c_str(), "w");  // closed at exit (a test knob)
+    std::FILE *log = grc::rs::open_file(log_path, "w");  // closed at exit (a test knob)
     if (log == nullptr) {
       log_line("item_meta: cannot open GRC_ITEM_META_LOG " + log_path);
     }
@@ -2021,7 +1986,7 @@ void live_decided(const std::string &status, const std::string &reason) {
 // only when listed (CAR6).
 bool live_carriers_ok(std::string *why) {
   std::vector<std::string> names;
-  if (!live::parse_carrier_list(std::getenv("GRC_LIVE_CARRIERS"), &names, why)) {
+  if (!live::parse_carrier_list(grc::rs::env("GRC_LIVE_CARRIERS"), &names, why)) {
     return false;
   }
   g_live.wt_enabled = false;
@@ -2054,7 +2019,7 @@ bool live_carriers_ok(std::string *why) {
     return false;
   }
   // D12: whether `ws` also serves plaintext to LAN peers beside wss (rs_expose.h).
-  if (!live::parse_lan_plaintext(std::getenv("GRC_LIVE_LAN_PLAINTEXT"), g_live.expose,
+  if (!live::parse_lan_plaintext(grc::rs::env("GRC_LIVE_LAN_PLAINTEXT"), g_live.expose,
                                  &g_live.lan_plaintext, why)) {
     return false;
   }
@@ -2070,7 +2035,7 @@ bool live_carriers_ok(std::string *why) {
   }
   if (!g_live.tls_cert.empty()) {
     // D8, D12: a pair loads the net module even without `wt`; its TLS session serves wss on ws.
-    const grc_net_tls_table_v1 *tls = live::load_net_tls(std::getenv("GRC_LIVE_NET_MODULE"), why);
+    const grc_net_tls_table_v1 *tls = live::load_net_tls(grc::rs::env("GRC_LIVE_NET_MODULE"), why);
     if (tls == nullptr) {
       return false;
     }
@@ -2096,7 +2061,7 @@ bool live_carriers_ok(std::string *why) {
     }
   }
   // D8: loaded only now that `wt` is listed; never unloaded.
-  g_live.net_module = live::load_net_module(std::getenv("GRC_LIVE_NET_MODULE"), why);
+  g_live.net_module = live::load_net_module(grc::rs::env("GRC_LIVE_NET_MODULE"), why);
   return g_live.net_module != nullptr;
 }
 
@@ -2115,7 +2080,7 @@ void refresh_live_carriers() {
   if (!g_state.evidence_ready || g_live.carriers == nullptr) return;
   const std::string path = path_join(g_state.evidence_dir, "live-carriers.json");
   const std::string tmp = path + ".tmp";
-  if (!write_file(tmp, g_live.carriers->carriers_json()) || std::rename(tmp.c_str(), path.c_str()) != 0) {
+  if (!write_file(tmp, g_live.carriers->carriers_json()) || !grc::rs::replace_file(tmp, path)) {
     log_line("could not refresh " + path);
   }
 }
@@ -2144,7 +2109,7 @@ void refresh_live_tracks() {
   }
   const std::string path = path_join(g_state.evidence_dir, "live-tracks.json");
   const std::string tmp = path + ".tmp";
-  if (!write_file(tmp, g_live.tracks->json(extras)) || std::rename(tmp.c_str(), path.c_str()) != 0) {
+  if (!write_file(tmp, g_live.tracks->json(extras)) || !grc::rs::replace_file(tmp, path)) {
     log_line("could not refresh " + path);
   }
 }
@@ -2154,7 +2119,7 @@ void refresh_live_tracks() {
 bool tracks_configure(std::string *why) {
   g_live.track_config = rs::tracks::TrackConfig();
   g_live.max_tracks = 0;
-  if (!rs::tracks::parse_kinds(std::getenv("GRC_LIVE_TRACKS"), &g_live.track_config.kinds, why)) {
+  if (!rs::tracks::parse_kinds(grc::rs::env("GRC_LIVE_TRACKS"), &g_live.track_config.kinds, why)) {
     return false;
   }
   const bool on = !g_live.track_config.kinds.empty();
@@ -2265,13 +2230,13 @@ bool tracks_write_credentials(const std::string &view_token, std::string *why) {
       return false;
     }
     for (const std::string &kind : g_live.track_config.kinds) {
-      ::unlink(path_join(g_state.evidence_dir, "live-track-" + kind + "-token").c_str());
+      grc::rs::remove_file(path_join(g_state.evidence_dir, "live-track-" + kind + "-token"));
     }
     g_live.track_config.cap_key = key;
     g_live.track_config.view_token = view_token;
     return true;
   }
-  ::unlink(key_path.c_str());
+  grc::rs::remove_file(key_path);
   for (const std::string &kind : g_live.track_config.kinds) {
     std::string credential;
     for (int attempt = 0; attempt < 4 && (credential.empty() || credential == view_token); ++attempt) {
@@ -2334,9 +2299,9 @@ void stream_start() {
   if (!files && g_live.listen.empty()) {
     return;
   }
-  const char *sabotage_kind = std::getenv("GRC_SABOTAGE");
-  const char *sabotage_frame = std::getenv("GRC_SABOTAGE_FRAME");
-  const char *sabotage_op = std::getenv("GRC_SABOTAGE_OP");
+  const char *sabotage_kind = grc::rs::env("GRC_SABOTAGE");
+  const char *sabotage_frame = grc::rs::env("GRC_SABOTAGE_FRAME");
+  const char *sabotage_op = grc::rs::env("GRC_SABOTAGE_OP");
   // G7n: a listener sabotage never reaches the stream's sabotage parser (nor the wire).
   if (is_listener_sabotage(sabotage_kind)) {
     g_live.listener_sabotage = sabotage_kind;
@@ -2360,7 +2325,7 @@ void stream_start() {
     }
     return;
   }
-  const char *shader_policy = std::getenv("GRC_SHADER_POLICY");
+  const char *shader_policy = grc::rs::env("GRC_SHADER_POLICY");
   if (!parse_shader_policy(shader_policy, &g_stream.shader_policy)) {
     const std::string error = std::string("invalid GRC_SHADER_POLICY=") + shader_policy +
                               " (expected source, params or exclude)";
@@ -2373,7 +2338,7 @@ void stream_start() {
     }
     return;
   }
-  const char *unknown_item = std::getenv("GRC_UNKNOWN_ITEM");
+  const char *unknown_item = grc::rs::env("GRC_UNKNOWN_ITEM");
   if (!parse_unknown_item_policy(unknown_item, &g_stream.unknown_item_policy)) {
     const std::string error = std::string("invalid GRC_UNKNOWN_ITEM=") + unknown_item +
                               " (expected strict or skip)";
@@ -2392,8 +2357,8 @@ void stream_start() {
     rs::Gate8Policy gate8;
     std::string error;
     const bool parsed = rs::parse_gate8_policy(
-        std::getenv("GRC_STREAM_VERSION"), std::getenv("GRC_ADOPT"),
-        std::getenv("GRC_TEXTURE_DECODE"), std::getenv("GRC_RESOURCE_FORMATS"), &gate8, &error);
+        grc::rs::env("GRC_STREAM_VERSION"), grc::rs::env("GRC_ADOPT"),
+        grc::rs::env("GRC_TEXTURE_DECODE"), grc::rs::env("GRC_RESOURCE_FORMATS"), &gate8, &error);
     gate8.v8_sabotage = parsed && sabotage.ok && rs::sabotage_needs_v8(sabotage.config.kind);
     gate8.apply_decode_default();  // TDE (F3): after every field that makes the stream speak /8
     if (!parsed || !rs::gate8_policy_allows(gate8, files, &error)) {
@@ -2407,7 +2372,7 @@ void stream_start() {
     }
     // G8r: GRC_ADOPT_FAULT needs GRC_ADOPT=arm (rs_adopt.h AdoptFault).
     rs::AdoptFault adopt_fault = rs::AdoptFault::None;
-    if (!rs::parse_adopt_fault(std::getenv("GRC_ADOPT_FAULT"), gate8.adopt, &adopt_fault, &error)) {
+    if (!rs::parse_adopt_fault(grc::rs::env("GRC_ADOPT_FAULT"), gate8.adopt, &adopt_fault, &error)) {
       log_line("stream: refused adoption fault (" + error + ")");
       g_stream.status = "refused";
       g_stream.reason = error;
@@ -2420,9 +2385,9 @@ void stream_start() {
     // GRC_FREEZE_PARTICLES marks the seat particle-frozen. Read at arm;
     // off (the default) changes nothing, on is recorded in host evidence and gates the FRZ-P
     // sabotages. It never alters the wire (a frozen emitter still sends its config + events).
-    if (!parse_freeze_particles(std::getenv("GRC_FREEZE_PARTICLES"), &g_stream.freeze_particles)) {
+    if (!parse_freeze_particles(grc::rs::env("GRC_FREEZE_PARTICLES"), &g_stream.freeze_particles)) {
       const std::string error = std::string("invalid GRC_FREEZE_PARTICLES=") +
-                                std::getenv("GRC_FREEZE_PARTICLES") + " (expected off or on)";
+                                grc::rs::env("GRC_FREEZE_PARTICLES") + " (expected off or on)";
       log_line("stream: refused particle freeze (" + error + ")");
       g_stream.status = "refused";
       g_stream.reason = error;
@@ -2435,9 +2400,9 @@ void stream_start() {
     // policy, declared by a /11 session only and ignored below it (so never refused there).
     rs2::MeshDynamicPolicy mesh_dynamic;
     if (gate8.speaks_v11() &&
-        !rs::parse_mesh_dynamic_policy(std::getenv("GRC_MESH_DYNAMIC"),
-                                       std::getenv("GRC_MESH_DYNAMIC_FRAMES"),
-                                       std::getenv("GRC_MESH_DYNAMIC_MAX_BYTES"), &mesh_dynamic,
+        !rs::parse_mesh_dynamic_policy(grc::rs::env("GRC_MESH_DYNAMIC"),
+                                       grc::rs::env("GRC_MESH_DYNAMIC_FRAMES"),
+                                       grc::rs::env("GRC_MESH_DYNAMIC_MAX_BYTES"), &mesh_dynamic,
                                        &error)) {
       log_line("stream: refused mesh dynamic policy (" + error + ")");
       g_stream.status = "refused";
@@ -2480,12 +2445,12 @@ void stream_start() {
     g_stream.basis = gate8.speaks_v9() && delivery.mode == "basis-uastc";
     g_stream.basis_config = rs::BasisConfig();
     if (g_stream.basis &&
-        !rs::parse_basis_config(std::getenv("GRC_TEXTURE_UASTC_LEVEL"),
-                                std::getenv("GRC_TEXTURE_BASIS_MIN_PX"),
-                                std::getenv("GRC_TEXTURE_ENCODE_WORKERS"),
-                                std::getenv("GRC_TEXTURE_ENCODE_WAIT_FRAME"),
-                                std::getenv("GRC_TEXTURE_ENCODE_FAULT"), &g_stream.basis_config,
-                                &error, std::getenv("GRC_TEXTURE_ENCODE_DRAIN"))) {
+        !rs::parse_basis_config(grc::rs::env("GRC_TEXTURE_UASTC_LEVEL"),
+                                grc::rs::env("GRC_TEXTURE_BASIS_MIN_PX"),
+                                grc::rs::env("GRC_TEXTURE_ENCODE_WORKERS"),
+                                grc::rs::env("GRC_TEXTURE_ENCODE_WAIT_FRAME"),
+                                grc::rs::env("GRC_TEXTURE_ENCODE_FAULT"), &g_stream.basis_config,
+                                &error, grc::rs::env("GRC_TEXTURE_ENCODE_DRAIN"))) {
       log_line("stream: refused texture delivery policy (" + error + ")");
       g_stream.status = "refused";
       g_stream.reason = error;
@@ -2505,8 +2470,8 @@ void stream_start() {
     rs::TextureWorkerConfig workers;
     std::string error;
     bool workers_ok = rs::parse_texture_workers(
-        std::getenv("GRC_TEXTURE_WORKERS"), std::getenv("GRC_TEXTURE_WORKER_MIN_BYTES"),
-        std::getenv("GRC_TEXTURE_WORKER_DELAY_MS"), std::getenv("GRC_TEXTURE_WORKER_FAULT"), &workers,
+        grc::rs::env("GRC_TEXTURE_WORKERS"), grc::rs::env("GRC_TEXTURE_WORKER_MIN_BYTES"),
+        grc::rs::env("GRC_TEXTURE_WORKER_DELAY_MS"), grc::rs::env("GRC_TEXTURE_WORKER_FAULT"), &workers,
         &error, rs::setting("GRC_TEXTURE_PENDING"));
     if (workers_ok && workers.publish_pending && !g_stream.gate8.speaks_v9()) {
       error = "GRC_TEXTURE_PENDING=publish needs render-stream/9 (delivery-pending is a /9 reason)";
@@ -2533,8 +2498,8 @@ void stream_start() {
     std::vector<live::Coding> codings;
     std::string error;
     rs::RestConfig rest;
-    bool rest_ok = parse_http_encoding(std::getenv("GRC_HTTP_ENCODING"), &codings, &error) &&
-                   rs::parse_rest_fault(std::getenv("GRC_AT_REST_FAULT"), &rest.keep_identity,
+    bool rest_ok = parse_http_encoding(grc::rs::env("GRC_HTTP_ENCODING"), &codings, &error) &&
+                   rs::parse_rest_fault(grc::rs::env("GRC_AT_REST_FAULT"), &rest.keep_identity,
                                         &error);
     if (rest_ok && rest.keep_identity && codings.empty()) {
       error = "GRC_AT_REST_FAULT=keep-identity needs GRC_HTTP_ENCODING=zstd or gzip";
@@ -2564,8 +2529,8 @@ void stream_start() {
   {
     rs::CacheConfig cache;
     std::string error;
-    if (!rs::parse_cache_config(std::getenv("GRC_TEXTURE_CACHE_DIR"),
-                                std::getenv("GRC_TEXTURE_CACHE_MAX_BYTES"), &cache, &error) ||
+    if (!rs::parse_cache_config(grc::rs::env("GRC_TEXTURE_CACHE_DIR"),
+                                grc::rs::env("GRC_TEXTURE_CACHE_MAX_BYTES"), &cache, &error) ||
         !rs::texture_cache().open(cache, &error)) {
       log_line("stream: refused texture cache (" + error + ")");
       g_stream.status = "refused";
@@ -2668,8 +2633,8 @@ void stream_start() {
     uint64_t max_payload_bytes = 0;
     uint64_t inline_max_bytes = 0;
     std::string error;
-    if (!rs::parse_format_policy(std::getenv("GRC_RESOURCE_FORMATS"), &formats, &error) ||
-        !rs::parse_max_payload_bytes(std::getenv("GRC_RESOURCE_MAX_PAYLOAD_BYTES"),
+    if (!rs::parse_format_policy(grc::rs::env("GRC_RESOURCE_FORMATS"), &formats, &error) ||
+        !rs::parse_max_payload_bytes(grc::rs::env("GRC_RESOURCE_MAX_PAYLOAD_BYTES"),
                                      &max_payload_bytes, &error)) {
       // error says which variable
     } else if (!hooks_image_payload_available()) {
@@ -2745,14 +2710,14 @@ void stream_start() {
   }
   if (live_ok) {
     std::string why;
-    const char *tap = std::getenv("GRC_LIVE_TAP_DIR");
+    const char *tap = grc::rs::env("GRC_LIVE_TAP_DIR");
     live_config.tap_dir = tap != nullptr ? std::string(tap) : std::string();
     if (!live_config.tap_dir.empty() && g_rearm.arm_index >= 2) {
       live_config.tap_dir = path_join(live_config.tap_dir,
                                       "arm-" + std::to_string(g_rearm.arm_index));
     }
     const std::string auth_mode = env_string("GRC_LIVE_AUTH");
-    if (!live::parse_expose(std::getenv("GRC_LIVE_EXPOSE"), &g_live.expose, &why)) {
+    if (!live::parse_expose(grc::rs::env("GRC_LIVE_EXPOSE"), &g_live.expose, &why)) {
       // expose-invalid.
       live_ok = false;
     } else if (!parse_listen(g_live.listen, g_live.expose, "GRC_LIVE_LISTEN", &live_host, &live_port,
@@ -2765,7 +2730,7 @@ void stream_start() {
     } else if (!env_positive("GRC_LIVE_HELLO_TIMEOUT_MS", 5000, &live_config.hello_timeout_ms)) {
       live_ok = false;
       why = "invalid GRC_LIVE_HELLO_TIMEOUT_MS (a decimal integer >= 1)";
-    } else if (!parse_publish_fps(std::getenv("GRC_PUBLISH_FPS"), &live_config.publish_period_ns,
+    } else if (!parse_publish_fps(grc::rs::env("GRC_PUBLISH_FPS"), &live_config.publish_period_ns,
                                   &live_config.publish_target_fps)) {
       live_ok = false;
       why = "invalid GRC_PUBLISH_FPS (uncapped, or a decimal integer 1..240)";
@@ -2801,7 +2766,7 @@ void stream_start() {
                live_config.credit_window_max > 2) {
       live_ok = false;
       why = "invalid GRC_LIVE_CREDIT_WINDOW_MAX (1 or 2)";
-    } else if (!parse_http_encoding(std::getenv("GRC_HTTP_ENCODING"), &g_live.http_codings,
+    } else if (!parse_http_encoding(grc::rs::env("GRC_HTTP_ENCODING"), &g_live.http_codings,
                                     &why)) {
       live_ok = false;
     } else if (g_live.listener_sabotage == "corrupt-coded-body" && g_live.http_codings.empty()) {
@@ -2854,12 +2819,12 @@ void stream_start() {
     // byte-identical either way). GRC_HC_SABOTAGE=reorder: every job sends its transaction before
     // its resource records (receivers refuse the stream with resource-missing).
     {
-      const char *formation = std::getenv("GRC_HC_FORMATION");
+      const char *formation = grc::rs::env("GRC_HC_FORMATION");
       live_config.formation = formation != nullptr && std::string(formation) == "inline"
                                   ? rs2::Formation::Inline
                                   : rs2::Formation::Thread;
       live_config.formation_wait = false;
-      const char *hc = std::getenv("GRC_HC_SABOTAGE");
+      const char *hc = grc::rs::env("GRC_HC_SABOTAGE");
       live_config.reorder_frame = hc != nullptr && std::string(hc) == "reorder" ? 1 : 0;
       log_line(std::string("live: formation ") +
                (live_config.formation == rs2::Formation::Thread ? "thread" : "inline") +
@@ -2883,7 +2848,7 @@ void stream_start() {
           why = "cannot write " + token_path;
           live_auth_token.clear();
         } else {
-          ::chmod(token_path.c_str(), 0600);
+          grc::rs::restrict_to_owner(token_path);
           live_auth = rs2::Auth::Bearer;
           live_config.auth_token = live_auth_token;  // G7n: checked against a /7 hello's token
           live_config.token_ignored = g_live.listener_sabotage == "token-ignored";
@@ -3360,14 +3325,14 @@ void stream_start() {
     v11.stale_dynamic_frame =
         sabotage.config.kind == rs2::SabotageKind::StaleDynamic ? sabotage.config.frame : 0;
     // HC2 test knob (never declared on the wire): GRC_HC_SABOTAGE=rerecord-stale.
-    const char *hc_sabotage = std::getenv("GRC_HC_SABOTAGE");
+    const char *hc_sabotage = grc::rs::env("GRC_HC_SABOTAGE");
     v11.rerecord_stale = hc_sabotage != nullptr && std::string(hc_sabotage) == "rerecord-stale";
     rs::mirror_instance().set_v11(v11);
     // HC4a test knobs (never declared on the wire): the shadow oracle, GRC_HC_SHADOW=1 (every
     // snapshot also built by the full walk and compared, the stream ended at the first
     // difference), and the sabotages
     // GRC_HC_SABOTAGE=hc-skip-dirty / hc-stale-derived.
-    const char *hc_shadow = std::getenv("GRC_HC_SHADOW");
+    const char *hc_shadow = grc::rs::env("GRC_HC_SHADOW");
     g_hc_shadow = hc_shadow != nullptr && std::string(hc_shadow) == "1";
     g_hc_shadow_budget.clear();
     const rs2::ProtocolVersion shadow_version =
@@ -3477,7 +3442,7 @@ void stream_start() {
     });
     // with the P3-CAP writer, the lanes' records and
     // transactions are formed on it too (GRC_HC_FORMATION=inline keeps them here).
-    const char *formation = std::getenv("GRC_HC_FORMATION");
+    const char *formation = grc::rs::env("GRC_HC_FORMATION");
     if (g_stream.writer != nullptr &&
         !(formation != nullptr && std::string(formation) == "inline")) {
       g_stream.publisher->set_former(g_stream.writer.get());
@@ -3559,9 +3524,9 @@ void stream_start() {
     g_live.served = std::make_unique<rs::ServedResources>();
     // HC4b: the serve-skip sabotage and the serving half of the shadow oracle.
     {
-      const char *hc = std::getenv("GRC_HC_SABOTAGE");
+      const char *hc = grc::rs::env("GRC_HC_SABOTAGE");
       g_live.served->set_serve_skip(hc != nullptr && std::string(hc) == "serve-skip");
-      const char *shadow = std::getenv("GRC_HC_SHADOW");
+      const char *shadow = grc::rs::env("GRC_HC_SHADOW");
       g_live.served->set_shadow(shadow != nullptr && std::string(shadow) == "1");
     }
     if (sabotage.config.kind == rs2::SabotageKind::Unpin) {
@@ -3640,7 +3605,7 @@ void stream_start() {
       {
         std::vector<std::string> listed;
         std::string ignored;
-        live::parse_carrier_list(std::getenv("GRC_LIVE_CARRIERS"), &listed, &ignored);
+        live::parse_carrier_list(grc::rs::env("GRC_LIVE_CARRIERS"), &listed, &ignored);
         for (auto it = g_live.registered.begin(); it != g_live.registered.end();) {
           if (std::find(listed.begin(), listed.end(), it->name) == listed.end()) {
             ++it;
@@ -4336,7 +4301,7 @@ void live_hold_config() {
     log_line("live: hold: recoveries after " + std::to_string(g_live_hold.recovery_frames) +
              " pending frames, cap " + std::to_string(g_live_hold.cap_ms) + " ms");
   }
-  const char *raw = std::getenv("GRC_LIVE_HOLD_WINDOWS");
+  const char *raw = grc::rs::env("GRC_LIVE_HOLD_WINDOWS");
   if (raw == nullptr || *raw == '\0') {
     return;
   }
@@ -4600,7 +4565,7 @@ void stream_publish(uint64_t frame) {
   }
   ++g_api_arm.published;
   static const bool hc_knob = [] {
-    const char *v = std::getenv("GRC_HC_SABOTAGE");
+    const char *v = grc::rs::env("GRC_HC_SABOTAGE");
     g_hc_pin_late = v != nullptr && std::string(v) == "pin-late";
     g_hc_dyn_hash_unread = v != nullptr && std::string(v) == "dyn-hash-unread";
     return true;
@@ -5059,11 +5024,11 @@ bool attempt(const char *phase) {
   // /12+ and off otherwise; an explicit value is taken as given. Resolved here, where the display
   // server is known, so validate predicts arm.
   {
-    const char *ct = std::getenv("GRC_HEADLESS_CANVAS_TEXTURE");
-    const char *pt = std::getenv("GRC_HEADLESS_PARTICLES");
-    const char *pump = std::getenv("GRC_PREDRAW_PUMP");
+    const char *ct = grc::rs::env("GRC_HEADLESS_CANVAS_TEXTURE");
+    const char *pt = grc::rs::env("GRC_HEADLESS_PARTICLES");
+    const char *pump = grc::rs::env("GRC_PREDRAW_PUMP");
     const bool on =
-        rs::headless_defaults_apply(g_state.display_server, std::getenv("GRC_STREAM_VERSION"));
+        rs::headless_defaults_apply(g_state.display_server, grc::rs::env("GRC_STREAM_VERSION"));
     g_state.headless_defaults = on;
     g_state.ct_shim_defaulted = on && (ct == nullptr || std::strcmp(ct, "auto") == 0);
     g_state.ct_shim_env = rs::resolve_headless_default(ct, on, "synthesize", "");
@@ -5141,8 +5106,8 @@ bool attempt(const char *phase) {
   // invalid value (or fault knob) refuses the capture. Decided in both modes, so validate predicts
   // arm.
   {
-    const char *htr = std::getenv("GRC_HEADLESS_TEXTURE_RELEASE");
-    const char *fault = std::getenv("GRC_HEADLESS_TEXTURE_RELEASE_FAULT");
+    const char *htr = grc::rs::env("GRC_HEADLESS_TEXTURE_RELEASE");
+    const char *fault = grc::rs::env("GRC_HEADLESS_TEXTURE_RELEASE_FAULT");
     g_state.htr_env_set = htr != nullptr;
     g_state.htr_env = htr != nullptr ? htr : "";
     std::string why;
@@ -5189,7 +5154,7 @@ bool attempt(const char *phase) {
   // LS1: GRC_STANDBY_FAULT, parsed in every mode so validate predicts arm and standby.
   {
     std::string why;
-    if (!rs::parse_standby_fault(std::getenv("GRC_STANDBY_FAULT"), &g_state.standby_fault, &why)) {
+    if (!rs::parse_standby_fault(grc::rs::env("GRC_STANDBY_FAULT"), &g_state.standby_fault, &why)) {
       log_line("standby: " + why);
       refuse("standby-fault-invalid");
       return true;
@@ -5249,7 +5214,7 @@ bool attempt(const char *phase) {
     // hooked create. The stream setup parses and validates both again at the arm; an invalid
     // value refuses the stream there, so here it only leaves the registry off.
     {
-      const char *adopt_env = std::getenv("GRC_ADOPT");
+      const char *adopt_env = grc::rs::env("GRC_ADOPT");
       // GRC_MODE=standby implies GRC_ADOPT=arm (an arm from standby
       // adopts what the registry recorded); an explicit value is taken as given.
       const bool adopt = adopt_env != nullptr ? std::string(adopt_env) == "arm"
@@ -5257,7 +5222,7 @@ bool attempt(const char *phase) {
       rs::AdoptFault fault = rs::AdoptFault::None;
       std::string fault_error;
       rs::RegistryFault registry_fault = rs::RegistryFault::None;
-      if (rs::parse_adopt_fault(std::getenv("GRC_ADOPT_FAULT"), adopt, &fault, &fault_error)) {
+      if (rs::parse_adopt_fault(grc::rs::env("GRC_ADOPT_FAULT"), adopt, &fault, &fault_error)) {
         if (fault == rs::AdoptFault::RegistryOff) {
           registry_fault = rs::RegistryFault::Off;
         } else if (fault == rs::AdoptFault::RegistryKeepFreed) {
@@ -5495,86 +5460,29 @@ void live_close_async_begin() {
 // Threads named by the capture (rs-ws-io, grc-net-wt, grc-tex, grc-enc, grc-writer, grc-former,
 // grc-teardown), counted by name, and the process total.
 void thread_census(JsonWriter *json) {
-  std::map<std::string, int64_t> named;
-  int64_t total = 0;
-  if (DIR *dir = opendir("/proc/self/task")) {
-    while (const dirent *e = readdir(dir)) {
-      if (e->d_name[0] == '.') continue;
-      ++total;
-      std::FILE *f = std::fopen(("/proc/self/task/" + std::string(e->d_name) + "/comm").c_str(), "r");
-      if (f == nullptr) continue;
-      char comm[64] = {0};
-      if (std::fgets(comm, sizeof(comm), f) != nullptr) {
-        std::string name(comm);
-        while (!name.empty() && (name.back() == '\n' || name.back() == ' ')) name.pop_back();
-        if (name.rfind("grc-", 0) == 0 || name.rfind("rs-ws", 0) == 0) ++named[name];
-      }
-      std::fclose(f);
+  const auto census = rs::thread_census();
+  if (!census) return;
+  if (census->named) {
+    const auto &named = *census->named;
+    int64_t own = 0;
+    json->key("capture_threads").object_begin();
+    for (const auto &[name, n] : named) {
+      json->field(name, n);
+      own += n;
     }
-    closedir(dir);
+    json->object_end();
+    json->field("capture_thread_count", own);
   }
-  int64_t own = 0;
-  json->key("capture_threads").object_begin();
-  for (const auto &[name, n] : named) {
-    json->field(name, n);
-    own += n;
-  }
-  json->object_end();
-  json->field("capture_thread_count", own);
-  json->field("threads_total", total);
+  json->field("threads_total", census->total);
 }
 
-// The inodes of this process's inet sockets (TCP and UDP, v4 and v6; /proc/self/net/*).
-std::unordered_set<std::string> inet_socket_inodes() {
-  std::unordered_set<std::string> out;
-  for (const char *table : {"tcp", "tcp6", "udp", "udp6"}) {
-    std::FILE *f = std::fopen((std::string("/proc/self/net/") + table).c_str(), "r");
-    if (f == nullptr) continue;
-    char line[512];
-    bool header = true;
-    while (std::fgets(line, sizeof(line), f) != nullptr) {
-      if (header) {
-        header = false;
-        continue;
-      }
-      // sl local rem st tx:rx tr:when retrnsmt uid timeout inode ...: the 10th field.
-      std::istringstream fields(line);
-      std::string field;
-      for (int k = 0; k < 10 && (fields >> field); ++k) {
-      }
-      if (!field.empty()) out.insert(field);
-    }
-    std::fclose(f);
-  }
-  return out;
-}
-
-// Open fds, sockets, and inet sockets: the capture's listeners and connections. The engine holds
-// a few Unix sockets of its own (their count varies run to run); a headless fixture opens no inet
-// socket, so `inet_sockets` is the capture's.
 void fd_census(JsonWriter *json) {
-  const std::unordered_set<std::string> inet = inet_socket_inodes();
-  int64_t fds = 0;
-  int64_t sockets = 0;
-  int64_t inet_sockets = 0;
-  if (DIR *dir = opendir("/proc/self/fd")) {
-    while (const dirent *e = readdir(dir)) {
-      if (e->d_name[0] == '.') continue;
-      ++fds;
-      char target[128] = {0};
-      const std::string link = "/proc/self/fd/" + std::string(e->d_name);
-      const ssize_t n = readlink(link.c_str(), target, sizeof(target) - 1);
-      const std::string t = n > 0 ? std::string(target, static_cast<std::size_t>(n)) : std::string();
-      if (t.rfind("socket:[", 0) == 0) {
-        ++sockets;
-        if (inet.count(t.substr(8, t.size() - 9)) != 0) ++inet_sockets;
-      }
-    }
-    closedir(dir);
-  }
-  json->field("fds_total", fds);
-  json->field("sockets", sockets);
-  json->field("inet_sockets", inet_sockets);
+  rs::fd_census(json, [](void *context, const rs::FdCensus &census) {
+    auto *out = static_cast<JsonWriter *>(context);
+    out->field("fds_total", census.fds);
+    out->field("sockets", census.sockets);
+    out->field("inet_sockets", census.inet_sockets);
+  });
 }
 
 // What the capture still holds per arm (swap-accounting): every count is 0 after an honest
@@ -5630,31 +5538,23 @@ void accounting_fields(JsonWriter *json) {
   json->field("rss_bytes", static_cast<int64_t>(read_rss_bytes()));
   // RssAnon (the heap: what a leak holds) apart from RssFile (mapped code and data pages the arm
   // touched, the extension's and the net module's included) and RssShmem.
-  if (std::FILE *f = std::fopen("/proc/self/status", "r")) {
-    char line[256];
-    while (std::fgets(line, sizeof(line), f) != nullptr) {
-      for (const auto &[key, name] : {std::pair<const char *, const char *>{"RssAnon:", "rss_anon_bytes"},
-                                      {"RssFile:", "rss_file_bytes"},
-                                      {"RssShmem:", "rss_shmem_bytes"}}) {
-        if (std::strncmp(line, key, std::strlen(key)) == 0) {
-          json->field(name, static_cast<int64_t>(std::strtoll(line + std::strlen(key), nullptr, 10)) * 1024);
-        }
-      }
-    }
-    std::fclose(f);
-  }
+  rs::rss_split(json, [](void *context, const char *name, int64_t bytes) {
+    static_cast<JsonWriter *>(context)->field(name, bytes);
+  });
   thread_census(json);
   fd_census(json);
   // Test-only allocator evidence: separate live allocations from free arena pages and mmap.
   if (env_string("GRC_TEST_MEMORY_ACCOUNTING") == "1") {
-    const auto heap = mallinfo2();
-    json->key("malloc").object_begin();
-    json->field("uordblks", static_cast<int64_t>(heap.uordblks));
-    json->field("fordblks", static_cast<int64_t>(heap.fordblks));
-    json->field("hblkhd", static_cast<int64_t>(heap.hblkhd));
-    json->field("arena", static_cast<int64_t>(heap.arena));
-    json->field("keepcost", static_cast<int64_t>(heap.keepcost));
-    json->object_end();
+    const auto heap = rs::heap_stats();
+    if (heap) {
+      json->key("malloc").object_begin();
+      json->field("uordblks", static_cast<int64_t>(heap->uordblks));
+      json->field("fordblks", static_cast<int64_t>(heap->fordblks));
+      json->field("hblkhd", static_cast<int64_t>(heap->hblkhd));
+      json->field("arena", static_cast<int64_t>(heap->arena));
+      json->field("keepcost", static_cast<int64_t>(heap->keepcost));
+      json->object_end();
+    }
     const auto registry = rs::registry_stats();
     json->key("registry").object_begin();
     json->field("entries", static_cast<int64_t>(registry.entries));
@@ -5759,7 +5659,7 @@ void arm_release() {
   rs::settings_install({});
   rearm_restore_min_size();
   if (g_rearm.trim) {
-    malloc_trim(0);  // GRC_TEST_TRIM_AT_DISARM (test only): RSS then reads what is held
+    rs::heap_trim();  // GRC_TEST_TRIM_AT_DISARM (test only): RSS then reads what is held
   }
   JsonWriter json;
   json.object_begin();
@@ -5992,16 +5892,10 @@ void swap_cycle_sample(const char *phase) {
     if (env_string("GRC_TEST_MEMORY_ACCOUNTING") == "1") {
       const std::string prefix = path_join(g_rearm.evidence_root,
           "memory-" + std::to_string(g_swap.done) + "-" + phase);
-      std::ifstream maps("/proc/self/smaps");
-      std::ofstream dump(prefix + ".smaps");
-      dump << maps.rdbuf();
-      if (std::FILE *f = std::fopen((prefix + ".malloc.xml").c_str(), "w")) {
-        malloc_info(0, f);
-        std::fclose(f);
-      }
+      rs::dump_memory_info(prefix);
     }
     const std::string path = path_join(g_rearm.evidence_root, "swap-cycle.jsonl");
-    if (std::FILE *f = std::fopen(path.c_str(), "a")) {
+    if (std::FILE *f = grc::rs::open_file(path, "a")) {
       // One line: the writer's newlines and their indentation dropped (no string holds a newline).
       std::string line;
       bool indent = false;
@@ -6064,7 +5958,7 @@ void swap_cycle_frame(uint64_t frame_start_ns) {
     }
     // Test driver only: a leg with no viewer after arm 1 can override that arm's hello wait.
     cap::Value::Object options;
-    const char *hello_ms = std::getenv("GRC_SWAP_CYCLE_REARM_AWAIT_HELLO_MS");
+    const char *hello_ms = grc::rs::env("GRC_SWAP_CYCLE_REARM_AWAIT_HELLO_MS");
     if (hello_ms != nullptr) options.emplace("GRC_LIVE_AWAIT_HELLO_MS", std::string(hello_ms));
     const cap::Value code = api_invoke("arm", options);
     if (std::get<std::int64_t>(code.data) == 0) {
@@ -6443,7 +6337,7 @@ void on_shutdown() {
 // caps it near 145 fps; the fast-frame legs set 0 so `--max-fps N` alone paces the host. Unset,
 // nothing is called.
 void apply_low_processor_sleep() {
-  const char *value = std::getenv("GRC_LOW_PROCESSOR_SLEEP_USEC");
+  const char *value = grc::rs::env("GRC_LOW_PROCESSOR_SLEEP_USEC");
   if (value == nullptr || *value == '\0') {
     return;
   }
@@ -6597,7 +6491,7 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
 
 }  // namespace grc
 
-extern "C" __attribute__((visibility("default"))) GDExtensionBool
+extern "C" GRC_EXPORT GDExtensionBool
 grc_library_init(GDExtensionInterfaceGetProcAddress p_get_proc_address,
                  GDExtensionClassLibraryPtr p_library,
                  GDExtensionInitialization *r_initialization) {

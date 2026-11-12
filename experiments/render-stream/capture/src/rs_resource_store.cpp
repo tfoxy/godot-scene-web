@@ -1,6 +1,5 @@
+#include "rs_platform.h"
 #include "rs_resource_store.h"
-
-#include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
@@ -33,7 +32,7 @@ bool ResourceStore::open(const std::string &dir, std::string *error) {
     return false;
   }
   const std::string index = path_join(dir, "index.jsonl");
-  index_ = std::fopen(index.c_str(), "wb");
+  index_ = grc::rs::open_file(index, "wb");
   if (index_ == nullptr) {
     *error = "cannot create " + index + ": " + errno_text();
     return false;
@@ -194,8 +193,8 @@ bool ResourceStore::write_payload_file(const std::string &final_path,
     corrupted[offset] ^= 0xFF;
     data = corrupted.data();
   }
-  const std::string temp_path = final_path + ".tmp-" + std::to_string(::getpid());
-  std::FILE *file = std::fopen(temp_path.c_str(), "wb");
+  const std::string temp_path = final_path + ".tmp-" + std::to_string(grc::rs::process_id());
+  std::FILE *file = grc::rs::open_file(temp_path, "wb");
   if (file == nullptr) {
     *error = "cannot create " + temp_path + ": " + errno_text();
     return false;
@@ -205,12 +204,12 @@ bool ResourceStore::write_payload_file(const std::string &final_path,
   const bool closed = std::fclose(file) == 0;
   if (!wrote || !flushed || !closed) {
     *error = "cannot write " + temp_path + ": " + errno_text();
-    std::remove(temp_path.c_str());
+    grc::rs::remove_file(temp_path);
     return false;
   }
-  if (std::rename(temp_path.c_str(), final_path.c_str()) != 0) {
+  if (!grc::rs::replace_file(temp_path, final_path)) {
     *error = "cannot rename " + temp_path + ": " + errno_text();
-    std::remove(temp_path.c_str());
+    grc::rs::remove_file(temp_path);
     return false;
   }
   if (std::fwrite(line.data(), 1, line.size(), index) != line.size() || std::fflush(index) != 0) {

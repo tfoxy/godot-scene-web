@@ -21,6 +21,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <dirent.h>
+#include <malloc.h>
+#include <map>
+#include <sstream>
+#include <unordered_set>
 
 namespace grc::rs {
 namespace {
@@ -205,13 +210,6 @@ std::uint64_t rss_bytes() {
   return page_size > 0 ? resident_pages * static_cast<std::uint64_t>(page_size) : 0;
 }
 std::optional<std::uint64_t> private_bytes() { return std::nullopt; }
-bool ThreadCpuClock::arm() { return true; }
-std::int64_t ThreadCpuClock::now_ns() const {
-  struct timespec ts{};
-  if (::clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0)
-    return -1;
-  return static_cast<std::int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
-}
 std::int64_t wall_clock_s() {
   struct timespec ts{};
   ::clock_gettime(CLOCK_REALTIME, &ts);
@@ -249,9 +247,6 @@ void lower_current_thread_priority() {
   (void)::setpriority(PRIO_PROCESS, static_cast<id_t>(::syscall(SYS_gettid)), 10);
 }
 std::filesystem::path fs_path(const std::string &utf8) { return std::filesystem::path(utf8); }
-std::FILE *open_file(const std::string &path, const char *mode) {
-  return std::fopen(path.c_str(), mode);
-}
 bool make_directories(const std::string &path) {
   if (path.empty()) {
     return false;
@@ -287,18 +282,6 @@ bool is_directory(const std::string &path) {
   struct stat info{};
   return ::stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
 }
-bool remove_file(const std::string &path, std::string *error) {
-  if (::unlink(path.c_str()) == 0)
-    return true;
-  fail(error, "unlink");
-  return false;
-}
-bool replace_file(const std::string &from, const std::string &to, std::string *error) {
-  if (std::rename(from.c_str(), to.c_str()) == 0)
-    return true;
-  fail(error, "rename");
-  return false;
-}
 bool write_private_file(const std::string &path, const std::string &text) {
   const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
   if (fd < 0)
@@ -318,7 +301,6 @@ bool write_private_file(const std::string &path, const std::string &text) {
   ok = ::close(fd) == 0 && ok;
   return ok;
 }
-bool restrict_to_owner(const std::string &path) { return ::chmod(path.c_str(), 0600) == 0; }
 bool env_utf8(const char *name, std::string *out) {
   const char *value = std::getenv(name);
   if (!value)
@@ -326,5 +308,126 @@ bool env_utf8(const char *name, std::string *out) {
   *out = value;
   return true;
 }
-std::uint32_t process_id() { return static_cast<std::uint32_t>(::getpid()); }
+std::optional<ThreadCensus> thread_census() {
+  ThreadCensus result;
+  result.named.emplace();
+  auto &named = *result.named;
+  auto &total = result.total;
+  if (DIR *dir = opendir("/proc/self/task")) {
+    while (const dirent *e = readdir(dir)) {
+      if (e->d_name[0] == '.') continue;
+      ++total;
+      std::FILE *f = grc::rs::open_file(("/proc/self/task/" + std::string(e->d_name) + "/comm"), "r");
+      if (f == nullptr) continue;
+      char comm[64] = {0};
+      if (std::fgets(comm, sizeof(comm), f) != nullptr) {
+        std::string name(comm);
+        while (!name.empty() && (name.back() == '\n' || name.back() == ' ')) name.pop_back();
+        if (name.rfind("grc-", 0) == 0 || name.rfind("rs-ws", 0) == 0) ++named[name];
+      }
+      std::fclose(f);
+    }
+    closedir(dir);
+  }
+  return result;
+}
+namespace {
+std::unordered_set<std::string> inet_socket_inodes() {
+  std::unordered_set<std::string> out;
+  for (const char *table : {"tcp", "tcp6", "udp", "udp6"}) {
+    std::FILE *f = grc::rs::open_file((std::string("/proc/self/net/") + table), "r");
+    if (f == nullptr) continue;
+    char line[512];
+    bool header = true;
+    while (std::fgets(line, sizeof(line), f) != nullptr) {
+      if (header) {
+        header = false;
+        continue;
+      }
+      // sl local rem st tx:rx tr:when retrnsmt uid timeout inode ...: the 10th field.
+      std::istringstream fields(line);
+      std::string field;
+      for (int k = 0; k < 10 && (fields >> field); ++k) {
+      }
+      if (!field.empty()) out.insert(field);
+    }
+    std::fclose(f);
+  }
+  return out;
+}
+
+// Open fds, sockets, and inet sockets: the capture's listeners and connections. The engine holds
+// a few Unix sockets of its own (their count varies run to run); a headless fixture opens no inet
+// socket, so `inet_sockets` is the capture's.
+} // namespace
+std::optional<FdCensus> fd_census(void *context, FdCensusVisitor visitor) {
+  const std::unordered_set<std::string> inet = inet_socket_inodes();
+  int64_t fds = 0;
+  int64_t sockets = 0;
+  int64_t inet_sockets = 0;
+  if (DIR *dir = opendir("/proc/self/fd")) {
+    while (const dirent *e = readdir(dir)) {
+      if (e->d_name[0] == '.') continue;
+      ++fds;
+      char target[128] = {0};
+      const std::string link = "/proc/self/fd/" + std::string(e->d_name);
+      const ssize_t n = readlink(link.c_str(), target, sizeof(target) - 1);
+      const std::string t = n > 0 ? std::string(target, static_cast<std::size_t>(n)) : std::string();
+      if (t.rfind("socket:[", 0) == 0) {
+        ++sockets;
+        if (inet.count(t.substr(8, t.size() - 9)) != 0) ++inet_sockets;
+      }
+    }
+    closedir(dir);
+  }
+  const FdCensus result{fds, sockets, inet_sockets};
+  if (visitor) visitor(context, result);
+  return result;
+}
+
+void rss_split(void *context, RssSplitVisitor visitor) {
+  if (std::FILE *f = grc::rs::open_file("/proc/self/status", "r")) {
+    char line[256];
+    while (std::fgets(line, sizeof(line), f) != nullptr) {
+      for (const auto &[key, name] : {std::pair<const char *, const char *>{"RssAnon:", "rss_anon_bytes"},
+                                      {"RssFile:", "rss_file_bytes"},
+                                      {"RssShmem:", "rss_shmem_bytes"}}) {
+        if (std::strncmp(line, key, std::strlen(key)) == 0) {
+          visitor(context, name, static_cast<int64_t>(std::strtoll(line + std::strlen(key), nullptr, 10)) * 1024);
+        }
+      }
+    }
+    std::fclose(f);
+  }
+}
+std::optional<std::int64_t> rss_anon_bytes() {
+  std::ifstream status("/proc/self/status");
+  std::string line;
+  while (std::getline(status, line)) {
+    if (line.compare(0, 8, "RssAnon:") != 0) continue;
+    std::istringstream value(line.substr(8));
+    std::int64_t kb = -1;
+    std::string unit;
+    if (value >> kb >> unit && kb >= 0 && unit == "kB") return kb * 1024;
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+std::optional<HeapStats> heap_stats() {
+  const auto heap = mallinfo2();
+  return HeapStats{heap.uordblks, heap.fordblks, heap.hblkhd, heap.arena, heap.keepcost};
+}
+bool heap_trim() { return malloc_trim(0) != 0; }
+bool dump_memory_info(const std::string &prefix) {
+  std::ifstream maps("/proc/self/smaps");
+  std::ofstream dump(fs_path(prefix + ".smaps"));
+  dump << maps.rdbuf();
+  if (std::FILE *f = open_file(prefix + ".malloc.xml", "w")) {
+    const int result = malloc_info(0, f);
+    std::fclose(f);
+    return maps.good() && dump.good() && result == 0;
+  }
+  return false;
+}
+
 } // namespace grc::rs

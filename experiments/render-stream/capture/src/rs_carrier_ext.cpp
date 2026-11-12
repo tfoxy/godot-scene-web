@@ -1,3 +1,5 @@
+#define GRC_CARRIER_BUILD
+#include "rs_platform.h"
 // rs_carrier_ext: see rs_carrier_ext.h (CAR6).
 #include "rs_carrier_ext.h"
 
@@ -131,7 +133,7 @@ CarrierRegistry &carrier_registry() {
 
 // The public entry point (grc_carrier.h). The capture's only exported symbols are this and
 // grc_library_init; consumers find it with dlsym on the capture library's handle.
-extern "C" __attribute__((visibility("default"))) int grc_carrier_register(
+extern "C" GRC_EXPORT int grc_carrier_register(
     const grc_carrier_v1 *carrier) {
   return grc::live::carrier_registry().add(carrier, nullptr);
 }

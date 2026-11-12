@@ -1613,8 +1613,8 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       }
       if (!config_.tap_dir.empty() && make_directories(config_.tap_dir)) {
         const std::string n = std::to_string(c.s.connection);
-        c.tap = std::fopen(path_join(config_.tap_dir, "stream-" + n + ".rs2").c_str(), "wb");
-        c.log = std::fopen(path_join(config_.tap_dir, "live-" + n + ".jsonl").c_str(), "wb");
+        c.tap = grc::rs::open_file(path_join(config_.tap_dir, "stream-" + n + ".rs2"), "wb");
+        c.log = grc::rs::open_file(path_join(config_.tap_dir, "live-" + n + ".jsonl"), "wb");
         // P3-SP: the stream copy is one frame's messages per flush (flush_taps), so a buffer
         // that holds them keeps it to about one write per frame.
         if (c.tap != nullptr) {

@@ -1,3 +1,4 @@
+#include "rs_platform.h"
 #include "rs_shader_clock.h"
 
 #include <cmath>
@@ -150,7 +151,7 @@ void shader_clock_set_draw_hooked(bool hooked) {
   g_clock.draw_hooked = hooked;
   // The fault knob (not a GRC_SABOTAGE kind, which the session record would carry): P3-TM's
   // frame-callback sum with the hook installed, so a gate can show what the hook fixes.
-  const char *fault = std::getenv("GRC_SHADER_CLOCK_FAULT");
+  const char *fault = grc::rs::env("GRC_SHADER_CLOCK_FAULT");
   g_clock.tree_delta_fault = fault != nullptr && std::strcmp(fault, "tree-delta") == 0;
 }
 

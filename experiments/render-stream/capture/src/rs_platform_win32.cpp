@@ -12,6 +12,7 @@
 #include <sddl.h>
 #include <intrin.h>
 #include <mswsock.h>
+#include <tlhelp32.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -20,6 +21,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <mutex>
+#include <set>
 #include <system_error>
 
 namespace grc::rs {
@@ -28,7 +32,7 @@ enum class FileFault { None, NarrowPath, PlainRename };
 FileFault file_fault() {
   // Read only on the first open or replacement, never during module initialization.
   static const auto fault = [] {
-    const char *value = std::getenv("GRC_PLATFORM_FAULT");
+    const char *value = env("GRC_PLATFORM_FAULT");
     if (value && std::strcmp(value, "narrow-path") == 0)
       return FileFault::NarrowPath;
     if (value && std::strcmp(value, "plain-rename") == 0)
@@ -354,12 +358,16 @@ std::optional<std::uint64_t> private_bytes() {
 }
 bool ThreadCpuClock::arm() {
   LARGE_INTEGER now{};
+  ULONG64 cycles = 0;
   armed_ = ::QueryPerformanceCounter(&now) != 0;
   qpc0_ = now.QuadPart;
   tsc0_ = __rdtsc();
+  armed_ = armed_ && ::QueryThreadCycleTime(::GetCurrentThread(), &cycles) != 0;
+  cycles0_ = cycles;
   return armed_;
 }
-std::int64_t ThreadCpuClock::now_ns() const {
+std::int64_t ThreadCpuClock::now_ns() const { return sample_ns(0); }
+std::int64_t ThreadCpuClock::sample_ns(std::uint64_t cycles0) const {
   if (!armed_)
     return -1;
   ULONG64 cycles = 0;
@@ -369,9 +377,9 @@ std::int64_t ThreadCpuClock::now_ns() const {
     return -1;
   const auto tsc = __rdtsc() - tsc0_;
   const auto elapsed = now.QuadPart - qpc0_;
-  if (elapsed < freq.QuadPart / 1000 || tsc == 0)
+  if (elapsed < freq.QuadPart / 1000 || tsc == 0 || cycles < cycles0)
     return -1;
-  return static_cast<std::int64_t>(static_cast<long double>(cycles) * elapsed * 1000000000.0L /
+  return static_cast<std::int64_t>(static_cast<long double>(cycles - cycles0) * elapsed * 1000000000.0L /
                                    (static_cast<long double>(tsc) * freq.QuadPart));
 }
 std::int64_t wall_clock_s() {
@@ -537,11 +545,67 @@ bool env_utf8(const char *name, std::string *out) {
   std::wstring wide;
   if (!widen(name, &wide))
     return false;
-  const auto *value = ::_wgetenv(wide.c_str());
-  if (!value)
-    return false;
-  *out = narrow(value);
-  return true;
+  std::wstring value;
+  for (;;) {
+    ::SetLastError(ERROR_SUCCESS);
+    const DWORD length = ::GetEnvironmentVariableW(
+        wide.c_str(), value.empty() ? nullptr : value.data(), static_cast<DWORD>(value.size()));
+    if (length == 0) {
+      if (::GetLastError() == ERROR_ENVVAR_NOT_FOUND) return false;
+      out->clear();
+      return true;
+    }
+    if (length >= value.size()) {
+      value.resize(length);
+      continue;
+    }
+    value.resize(length);
+    *out = narrow(value);
+    return true;
+  }
 }
+const char *env(const char *name) {
+  // First use only: no environment reads or storage initialization at library load.
+  struct Values {
+    std::mutex mutex;
+    std::map<std::string, std::set<std::string>, std::less<>> entries;
+  };
+  // Retain storage through extension unload too; unchanged reads allocate no new value.
+  static auto *store = new Values;
+  std::lock_guard<std::mutex> lock(store->mutex);
+  auto &values = store->entries;
+  std::string value;
+  if (!env_utf8(name, &value)) return nullptr;
+  auto found = values.find(name);
+  if (found == values.end()) found = values.emplace(name, std::set<std::string>{}).first;
+  return found->second.insert(std::move(value)).first->c_str();
+}
+std::optional<ThreadCensus> thread_census() {
+  const HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+  if (snapshot == INVALID_HANDLE_VALUE) return std::nullopt;
+  ThreadCensus result;
+  THREADENTRY32 entry{};
+  entry.dwSize = sizeof(entry);
+  if (!::Thread32First(snapshot, &entry)) {
+    ::CloseHandle(snapshot);
+    return std::nullopt;
+  }
+  do {
+    if (entry.th32OwnerProcessID == ::GetCurrentProcessId()) {
+      ++result.total;
+      result.ids.push_back(entry.th32ThreadID);
+    }
+  } while (::Thread32Next(snapshot, &entry));
+  const DWORD error = ::GetLastError();
+  ::CloseHandle(snapshot);
+  if (error != ERROR_NO_MORE_FILES) return std::nullopt;
+  return result;
+}
+std::optional<FdCensus> fd_census(void *, FdCensusVisitor) { return std::nullopt; }
+void rss_split(void *, RssSplitVisitor) {}
+std::optional<std::int64_t> rss_anon_bytes() { return std::nullopt; }
+std::optional<HeapStats> heap_stats() { return std::nullopt; }
+bool heap_trim() { return false; }
+bool dump_memory_info(const std::string &) { return false; }
 std::uint32_t process_id() { return ::GetCurrentProcessId(); }
 } // namespace grc::rs

@@ -3,9 +3,19 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#if !defined(_WIN32)
+#include <cerrno>
+#include <cstring>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+#endif
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 #if defined(_MSC_VER)
 #error "the MSVC ABI is not supported"
@@ -15,6 +25,12 @@
 #define GRC_EXPORT __declspec(dllexport)
 #else
 #define GRC_EXPORT __attribute__((visibility("default")))
+#endif
+
+#if defined(__ELF__)
+#define GRC_INITIAL_EXEC_TLS __attribute__((tls_model("initial-exec")))
+#else
+#define GRC_INITIAL_EXEC_TLS
 #endif
 
 namespace grc::rs {
@@ -79,16 +95,76 @@ void wake_close(Wake *w);
 bool fill_random(void *buf, std::size_t n);
 std::uint64_t rss_bytes();
 std::optional<std::uint64_t> private_bytes();
+struct ThreadCensus {
+  std::int64_t total = 0;
+  // Named capture threads on POSIX; unavailable from the Win32 snapshot.
+  std::optional<std::map<std::string, std::int64_t>> named;
+  std::vector<std::uint32_t> ids;  // Available from the Win32 snapshot.
+};
+struct FdCensus { std::int64_t fds, sockets, inet_sockets; };
+struct HeapStats { std::uint64_t uordblks, fordblks, hblkhd, arena, keepcost; };
+std::optional<ThreadCensus> thread_census();
+using FdCensusVisitor = void (*)(void *, const FdCensus &);
+// Visits before releasing temporary inode storage so allocator observations keep their ordering.
+std::optional<FdCensus> fd_census(void *context = nullptr, FdCensusVisitor visitor = nullptr);
+using RssSplitVisitor = void (*)(void *, const char *, std::int64_t);
+// Visits available Linux RSS fields in status-file order; Windows has no equivalent split.
+void rss_split(void *context, RssSplitVisitor visitor);
+std::optional<std::int64_t> rss_anon_bytes();
+std::optional<HeapStats> heap_stats();
+bool heap_trim();
+// Keeps the smaps streams open during the heap dump, preserving allocator evidence lifetimes.
+bool dump_memory_info(const std::string &prefix);
 class ThreadCpuClock {
 public:
+#if defined(_WIN32)
   bool arm();
   std::int64_t now_ns() const;
+#else
+  bool arm() {
+    struct timespec ts{};
+    armed_ = ::clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0;
+    if (armed_) start_us_ = static_cast<std::int64_t>(ts.tv_sec) * 1000000 + ts.tv_nsec / 1000;
+    return armed_;
+  }
+  std::int64_t now_ns() const {
+    struct timespec ts{};
+    if (::clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) return -1;
+    return static_cast<std::int64_t>(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+  }
+#endif
+  std::int64_t now_us() const {
 #if defined(_WIN32)
+    const auto ns = now_ns();
+    return ns < 0 ? -1 : ns / 1000;
+#else
+    struct timespec ts{};
+    if (::clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) return -1;
+    return static_cast<std::int64_t>(ts.tv_sec) * 1000000 + ts.tv_nsec / 1000;
+#endif
+  }
+  // Uses one calibration for the entire cycle delta on Windows. POSIX truncates each
+  // timestamp before subtracting, matching the perf.json microsecond baseline.
+  std::int64_t elapsed_us() const {
+#if defined(_WIN32)
+    const auto ns = sample_ns(cycles0_);
+    return ns < 0 ? -1 : ns / 1000;
+#else
+    if (!armed_) return -1;
+    const auto us = now_us();
+    return us < 0 ? -1 : us - start_us_;
+#endif
+  }
 private:
+#if defined(_WIN32)
+  std::int64_t sample_ns(std::uint64_t cycles0) const;
   std::int64_t qpc0_ = 0;
   std::uint64_t tsc0_ = 0;
-  bool armed_ = false;
+  std::uint64_t cycles0_ = 0;
+#else
+  std::int64_t start_us_ = -1;
 #endif
+  bool armed_ = false;
 };
 std::int64_t wall_clock_s();
 std::string library_file_name(const std::string &stem);
@@ -100,13 +176,49 @@ std::string executable_path();
 void set_current_thread_name(const char *name);
 void lower_current_thread_priority();
 std::filesystem::path fs_path(const std::string &utf8);
+#if defined(_WIN32)
 std::FILE *open_file(const std::string &utf8_path, const char *mode);
+#else
+// Keep replaced fopen calls direct, including literal paths that must not allocate a string.
+inline std::FILE *open_file(const char *path, const char *mode) { return std::fopen(path, mode); }
+inline std::FILE *open_file(const std::string &path, const char *mode) {
+  return std::fopen(path.c_str(), mode);
+}
+#endif
 bool make_directories(const std::string &utf8_path);
 bool is_directory(const std::string &utf8_path);
+#if defined(_WIN32)
 bool remove_file(const std::string &utf8_path, std::string *error = nullptr);
 bool replace_file(const std::string &from, const std::string &to, std::string *error = nullptr);
+#else
+inline bool remove_file(const std::string &path, std::string *error = nullptr) {
+  if (::unlink(path.c_str()) == 0) return true;
+  if (error) *error = std::string("unlink: ") + std::strerror(errno);
+  return false;
+}
+inline bool replace_file(const std::string &from, const std::string &to, std::string *error = nullptr) {
+  if (std::rename(from.c_str(), to.c_str()) == 0) return true;
+  if (error) *error = std::string("rename: ") + std::strerror(errno);
+  return false;
+}
+#endif
 bool write_private_file(const std::string &utf8_path, const std::string &bytes);
+#if defined(_WIN32)
 bool restrict_to_owner(const std::string &utf8_path);
+#else
+inline bool restrict_to_owner(const std::string &path) { return ::chmod(path.c_str(), 0600) == 0; }
+#endif
 bool env_utf8(const char *name, std::string *out);
+// Raw environment, independent of per-arm settings. Windows retains every distinct value so
+// earlier pointers survive changes; POSIX preserves getenv's exact behavior and call cost.
+#if defined(_WIN32)
+const char *env(const char *name);
+#else
+inline const char *env(const char *name) { return std::getenv(name); }
+#endif
+#if defined(_WIN32)
 std::uint32_t process_id();
+#else
+inline std::uint32_t process_id() { return static_cast<std::uint32_t>(::getpid()); }
+#endif
 } // namespace grc::rs

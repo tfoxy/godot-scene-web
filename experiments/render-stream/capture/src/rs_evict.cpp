@@ -1,8 +1,7 @@
+#include "rs_platform.h"
 #include "rs_evict.h"
 
 #include <algorithm>
-#include <fstream>
-#include <sstream>
 
 #include "report.h"
 #include "rs_texture_release.h"
@@ -143,16 +142,6 @@ std::string evict_json(const EvictStats &s, bool final, std::uint64_t frame,
   return j.take();
 }
 std::int64_t evict_read_rss_anon() {
-  std::ifstream status("/proc/self/status");
-  std::string line;
-  while (std::getline(status, line)) {
-    if (line.compare(0, 8, "RssAnon:") != 0) continue;
-    std::istringstream value(line.substr(8));
-    std::int64_t kb = -1;
-    std::string unit;
-    if (value >> kb >> unit && kb >= 0 && unit == "kB") return kb * 1024;
-    return -1;
-  }
-  return -1;
+  return rss_anon_bytes().value_or(-1);
 }
 }  // namespace grc::rs
