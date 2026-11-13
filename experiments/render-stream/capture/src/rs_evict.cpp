@@ -114,7 +114,7 @@ void evict_fields(JsonWriter *json, const EvictStats &s) {
       (s.releases.size() > kEvictReleaseRecordCap ? s.releases.size() - kEvictReleaseRecordCap : 0));
 }
 std::string evict_json(const EvictStats &s, bool final, std::uint64_t frame,
-                       std::int64_t rss_bytes, std::int64_t rss_anon_bytes) {
+                       std::int64_t rss_bytes, AnonReading anon) {
   JsonWriter j;
   j.object_begin().field("schema", std::string("render-stream-evict/1")).field("final", final);
   j.key("frame").unsigned_integer(frame);
@@ -138,10 +138,7 @@ std::string evict_json(const EvictStats &s, bool final, std::uint64_t frame,
     j.key("freed_bytes").unsigned_integer(s.rss_freed_bytes);
     j.object_end();
   }
-  j.field("rss_bytes", rss_bytes).field("rss_anon_bytes", rss_anon_bytes).object_end();
+  j.field("rss_bytes", rss_bytes).field(anon.name, anon.bytes).object_end();
   return j.take();
-}
-std::int64_t evict_read_rss_anon() {
-  return rss_anon_bytes().value_or(-1);
 }
 }  // namespace grc::rs

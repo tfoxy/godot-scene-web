@@ -1,6 +1,7 @@
 #include "rs_platform.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cerrno>
@@ -19,6 +20,8 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #else
+#include <winsock2.h>
+#include <windows.h>
 #include <process.h>
 #endif
 
@@ -52,6 +55,93 @@ void set_env(const char *name, const char *value) {
   _wputenv_s(L"GRC_PLATFORM_TEST_ENV", value ? (value[0] ? L"value" : L"") : L"");
 #endif
 }
+#ifdef _WIN32
+void observed(bool ok, const char *name, std::int64_t a, std::int64_t b = 0,
+              std::int64_t c = 0) {
+  ++total;
+  if (ok) ++passed;
+  else std::fprintf(stderr, "FAIL WLS %s: observed=%lld/%lld/%lld\n", name,
+                       static_cast<long long>(a), static_cast<long long>(b), static_cast<long long>(c));
+}
+void census_cases() {
+  std::atomic<int> ready{0};
+  std::atomic<bool> done{false};
+  const auto worker = [&](const char *name) {
+    set_current_thread_name(name);
+    ++ready;
+    while (!done.load()) std::this_thread::yield();
+  };
+  std::thread named(worker, "grc-wlsa-probe-long-name");
+  std::thread other(worker, "other");
+  while (ready.load() != 2) std::this_thread::yield();
+  auto census = thread_census();
+  const std::string key = std::string("grc-wlsa-probe-long-name").substr(0, 15);
+  const auto count = census && census->named ? (*census->named)[key] : -1;
+  const auto unrelated = census && census->named ? census->named->count("other") : 1;
+  observed(count == 1 && unrelated == 0, "named census first 15 bytes", count, unrelated);
+  done = true;
+  named.join(); other.join();
+  census = thread_census();
+  const auto after = census && census->named ? census->named->count(key) : 1;
+  observed(after == 0, "named census after join", after);
+
+  const auto before = process_heap();
+  std::array<void *, 4096> blocks{};
+  for (auto &block : blocks) {
+    block = std::malloc(1024);
+    if (block) std::memset(block, 42, 1024);
+  }
+  const auto live = process_heap();
+  for (auto block : blocks) std::free(block);
+  const auto freed = process_heap();
+  const auto allocated = [](const auto &heap) -> std::int64_t {
+    return heap ? static_cast<std::int64_t>(heap->allocated) : -1;
+  };
+  observed(before && live && allocated(live) - allocated(before) >= 3 * 1024 * 1024,
+           "heap allocation growth", allocated(before), allocated(live));
+  observed(before && freed && allocated(freed) <= allocated(before) + 1024 * 1024,
+           "heap allocation freed", allocated(before), allocated(freed));
+  observed(live && live->committed >= live->allocated, "heap committed covers allocated",
+           allocated(live), live ? live->committed : 0);
+  const auto anon = anon_reading();
+  observed(std::string(anon.name) == "private_bytes" && anon.bytes > 0,
+           "anon private bytes", anon.bytes);
+  const auto info = tsc_info();
+  observed(info && info->hz > 0, "tsc calibrated", info ? info->hz : -1);
+}
+void inet_cases() {
+  const auto count = []() -> std::int64_t {
+    const auto census = fd_census();
+    return census ? census->inet_sockets : -1;
+  };
+  const auto base = count();
+  SocketHandle listener = kInvalidSocket;
+  std::uint16_t port = 0;
+  std::string error;
+  const bool bound = tcp_listen(loopback_address(AddrFamily::IPv4), 0, 1,
+                                 WinBind::ExclusiveAddrUse, &listener, &port, &error);
+  const auto tcp = count();
+  observed(base >= 0 && bound && tcp == base + 1, "inet listener", base, tcp);
+  const SOCKET udp = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  const bool udp_bound = udp != INVALID_SOCKET &&
+      ::bind(udp, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) == 0;
+  const auto both = count();
+  observed(udp_bound && both == base + 2, "inet UDP", base, both);
+  if (udp != INVALID_SOCKET) ::closesocket(udp);
+  socket_close(listener);
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  auto closed = count();
+  while (closed != base && std::chrono::steady_clock::now() < end) closed = count();
+  observed(closed == base, "inet after close", base, closed);
+  const auto census = fd_census();
+  observed(census && census->handles > 0 && census->fds == -1 && census->sockets == -1,
+           "handles without fd aliases", census ? census->handles : -1,
+           census ? census->fds : 0, census ? census->sockets : 0);
+}
+#endif
 } // namespace
 
 int main() {
@@ -71,11 +161,24 @@ int main() {
   check(private_bytes().value_or(0) > 0, "private_bytes");
 #endif
   ThreadCpuClock clock;
+#ifndef _WIN32
+  check(std::string(anon_reading().name) == "rss_anon_bytes", "anon POSIX name");
+  check(!process_heap(), "process heap unavailable on POSIX");
+  check(!tsc_info(), "TSC calibration unavailable on POSIX");
+  const auto unarmed_mark = clock.mark();
+  spin(std::chrono::milliseconds(20));
+  check(unarmed_mark >= 0 && clock.ns_since(unarmed_mark) >= 1000000, "unarmed mark CPU delta");
+#endif
   check(clock.arm(), "cpu clock arm");
   spin(std::chrono::milliseconds(2));
-  const auto start = clock.now_ns();
+  const auto start = clock.mark();
   spin(std::chrono::milliseconds(20));
-  check(start >= 0 && clock.now_ns() - start >= 1000000, "cpu clock grows at least 1 ms");
+  const auto elapsed = clock.ns_since(start);
+#ifdef _WIN32
+  observed(start >= 0 && elapsed >= 1000000, "cpu clock grows at least 1 ms", start, elapsed);
+#else
+  check(start >= 0 && elapsed >= 1000000, "cpu clock grows at least 1 ms");
+#endif
   check(std::abs(wall_clock_s() - static_cast<std::int64_t>(std::time(nullptr))) <= 2,
         "wall_clock_s");
 #ifdef _WIN32
@@ -85,6 +188,9 @@ int main() {
   check(module_path_of(reinterpret_cast<const void *>(&std::printf)).find("libc.so") !=
             std::string::npos,
         "module_path_of");
+#endif
+#ifdef _WIN32
+  census_cases();
 #endif
   std::string error;
   check(!library_open("grc-no-such-library", &error) && !error.empty(), "library_open missing");
@@ -197,6 +303,9 @@ int main() {
   check(parse_ip_literal("0.0.0.0", AddrFamily::IPv4, &ip), "parse wildcard");
   check(!parse_ip_literal("localhost", AddrFamily::IPv4, &ip), "reject hostname");
   if (net_init(&error)) {
+#ifdef _WIN32
+    inet_cases();
+#endif
     SocketHandle listener = kInvalidSocket;
     std::uint16_t port = 0;
     const auto loopback = loopback_address(AddrFamily::IPv4);

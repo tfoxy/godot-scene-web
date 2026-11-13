@@ -99,6 +99,7 @@ PYBUNDLE
 	python3 -I "$HERE/lib/w1-bundle.py" --target windows --out "$B/bundle"
 	python3 -I "$HERE/lib/wfile-bundle.py" --target windows --out "$B/bundle"
 	python3 -I "$HERE/lib/wlive-bundle.py" --target windows --out "$B/bundle"
+	python3 -I "$HERE/lib/wswap-bundle.py" --target windows --out "$B/bundle"
 	# The Python-only hosted probe fetches Chrome on Windows; never put Chrome in the bundle.
 	python3 -I - "$B/bundle" "$HERE" <<'PYPROBE'
 import json, shutil, sys

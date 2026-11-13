@@ -81,13 +81,14 @@ int main(int argc, char **argv) {
   check(threads_unchanged, "threads-unchanged");
   if (!threads_available || !threads_unchanged) {
     const auto print_threads = [](const char *when, const auto &snapshot) {
-      std::printf("thread ids %s:", when);
+      std::printf("capture thread names %s:", when);
       if (!snapshot) {
         std::printf(" census unavailable");
-      } else if (snapshot->ids.empty()) {
-        std::printf(" ids not reported by platform census");
+      } else if (!snapshot->named) {
+        std::printf(" names not reported by platform census");
       } else {
-        for (const auto id : snapshot->ids) std::printf(" %llu", static_cast<unsigned long long>(id));
+        for (const auto &[name, count] : *snapshot->named)
+          std::printf(" %s=%lld", name.c_str(), static_cast<long long>(count));
       }
       std::printf("\n");
     };

@@ -43,7 +43,15 @@ export const RSS_NOTES =
 
 // ------------------------------------------------------------------------------- the evidence
 
+export type SwapPlatform = "linux" | "windows";
+
 export interface SwapAccounting {
+  platform?: SwapPlatform;
+  private_bytes?: number;
+  process_heap?: { allocated_bytes?: number; committed_bytes?: number };
+  handles_total?: number;
+  tsc_invariant?: boolean;
+  tsc_hz?: number;
   mirror?: {
     items?: number;
     canvases?: number;
@@ -93,7 +101,7 @@ export interface SwapRow extends SwapAccounting {
   end_frame: number;
   process_frame: number;
   frames: number;
-  main_cpu_ns_per_frame?: number;
+  main_cpu_ns_per_frame?: number | null;
   callback_ns_per_frame?: number;
 }
 
@@ -182,12 +190,13 @@ export async function loadLeg(
           ? join(ev, "teardown.json")
           : join(ev, `arm-${k}`, "teardown.json");
       leg.teardowns[k - 1] = await readJson<SwapAccounting>(path);
-      if (leg.teardowns[k - 1] === undefined)
+      if (!leg.teardowns[k - 1])
         leg.evidence.push(`arm ${k}: no teardown.json`);
     }
   }
   const csv = await readText(join(dir, "frames.csv"));
   if (csv !== undefined) leg.frames = parseFrames(csv);
+  leg.evidence.push(...platformEvidence(leg));
   return leg;
 }
 
@@ -363,11 +372,46 @@ const armedRows = (leg: SwapLeg) => leg.rows.filter((r) => r.phase === "armed");
 const tag = (leg: SwapLeg, r: SwapRow) =>
   `${leg.dir.split("/").slice(-2).join("/")} ${r.phase} cycle ${r.cycle}`;
 
+/** Validate the discriminator independently of the readings present. */
+function platformEvidence(leg: SwapLeg): string[] {
+  const problems: string[] = [];
+  const platforms = new Set<SwapPlatform>();
+  const inspect = (label: string, a: SwapAccounting) => {
+    if (a.platform !== "linux" && a.platform !== "windows")
+      problems.push(`${label}: invalid platform ${a.platform ?? "missing"}`);
+    else platforms.add(a.platform);
+  };
+  if (leg.rows.length === 0) problems.push(`${leg.dir}: no platform rows`);
+  for (const r of leg.rows) inspect(tag(leg, r), r);
+  leg.teardowns.forEach((t, i) => {
+    if (t) inspect(`arm ${i + 1} teardown`, t);
+  });
+  if (platforms.size > 1)
+    problems.push(`${leg.dir}: mixed platform ${[...platforms].join("/")}`);
+  return problems;
+}
+
+function legEvidence(leg: SwapLeg): string[] {
+  return [...new Set([...leg.evidence, ...platformEvidence(leg)])];
+}
+
+function pairEvidence(swap: SwapLeg, control: SwapLeg): string[] {
+  const evidence = [
+    ...legEvidence(swap).map((e) => `swap: ${e}`),
+    ...legEvidence(control).map((e) => `control: ${e}`),
+  ];
+  if (swap.rows[0]?.platform !== control.rows[0]?.platform)
+    evidence.push(
+      `platform mismatch: swap ${swap.rows[0]?.platform}, control ${control.rows[0]?.platform}`,
+    );
+  return evidence;
+}
+
 /** swap-accounting on a swap leg: every arm's teardown record and every idle row obeys the
  * accounting rule; the armed rows are not vacuous (the viewer pinned bodies in the born first arm). */
 export function judgeAccounting(leg: SwapLeg, n: number): Judged {
   const rule: string[] = [];
-  const evidence = [...leg.evidence];
+  const evidence = legEvidence(leg);
   const name = leg.dir.split("/").slice(-2).join("/");
   for (let k = 1; k <= n; k++) {
     const t = leg.teardowns[k - 1];
@@ -404,10 +448,20 @@ export function judgeAccounting(leg: SwapLeg, n: number): Judged {
  * show at least rs-ws-io and grc-former. */
 export function judgeThreads(leg: SwapLeg, kind: "swap" | "control"): Judged {
   const rule: string[] = [];
-  const evidence = [...leg.evidence];
+  const evidence = legEvidence(leg);
   const rows = kind === "control" ? leg.rows : idleRows(leg);
+  for (const r of leg.rows)
+    if (
+      typeof r.capture_thread_count !== "number" ||
+      !Number.isFinite(r.capture_thread_count)
+    )
+      evidence.push(`${tag(leg, r)}: no valid capture_thread_count`);
   for (const r of rows)
-    if (r.capture_thread_count !== 0)
+    if (
+      typeof r.capture_thread_count === "number" &&
+      Number.isFinite(r.capture_thread_count) &&
+      r.capture_thread_count !== 0
+    )
       rule.push(
         `${tag(leg, r)}: capture_thread_count ${r.capture_thread_count} (${JSON.stringify(r.capture_threads ?? {})})`,
       );
@@ -427,10 +481,17 @@ export function judgeThreads(leg: SwapLeg, kind: "swap" | "control"): Judged {
  * at least one. */
 export function judgeFds(leg: SwapLeg, kind: "swap" | "control"): Judged {
   const rule: string[] = [];
-  const evidence = [...leg.evidence];
+  const evidence = legEvidence(leg);
   const rows = kind === "control" ? leg.rows : idleRows(leg);
+  for (const r of leg.rows)
+    if (typeof r.inet_sockets !== "number" || !Number.isFinite(r.inet_sockets))
+      evidence.push(`${tag(leg, r)}: no valid inet_sockets`);
   for (const r of rows)
-    if (r.inet_sockets !== 0)
+    if (
+      typeof r.inet_sockets === "number" &&
+      Number.isFinite(r.inet_sockets) &&
+      r.inet_sockets !== 0
+    )
       rule.push(`${tag(leg, r)}: inet_sockets ${r.inet_sockets}`);
   if (kind === "swap")
     for (const r of armedRows(leg))
@@ -441,7 +502,10 @@ export function judgeFds(leg: SwapLeg, kind: "swap" | "control"): Judged {
   return {
     rule,
     evidence,
-    detail: `${rows.length} rows with no inet socket; fds ${leg.rows.map((r) => r.fds_total).join("/")}, sockets ${leg.rows.map((r) => r.sockets).join("/")} (unjudged)`,
+    detail:
+      leg.rows[0]?.platform === "windows"
+        ? `${rows.length} rows with no inet socket; handles_total ${leg.rows.map((r) => r.handles_total).join("/")} (unjudged)`
+        : `${rows.length} rows with no inet socket; fds ${leg.rows.map((r) => r.fds_total).join("/")}, sockets ${leg.rows.map((r) => r.sockets).join("/")} (unjudged)`,
   };
 }
 
@@ -468,13 +532,26 @@ export function judgeRss(
   n: number,
   bound: number,
   slopeBound: number,
-): Judged & { pairs: RssPair[]; slope: number | null } {
+): Judged & { pairs: RssPair[] | WindowsRssPair[]; slope: number | null } {
+  if (
+    swap.rows[0]?.platform === "windows" &&
+    control.rows[0]?.platform === "windows"
+  )
+    return judgeWindowsRss(swap, control, n, bound, slopeBound);
   const rule: string[] = [];
-  const evidence = [
-    ...swap.evidence.map((e) => `swap: ${e}`),
-    ...control.evidence.map((e) => `control: ${e}`),
-  ];
+  const evidence = pairEvidence(swap, control);
   const pairs: RssPair[] = [];
+  if (
+    swap.rows[0]?.platform !== "linux" ||
+    control.rows[0]?.platform !== "linux"
+  )
+    return {
+      rule,
+      evidence: [...evidence, "no matching explicit platform for RSS fields"],
+      pairs,
+      slope: null,
+      detail: "RSS field set requires matching explicit platform",
+    };
   for (let k = 1; k <= n; k++) {
     const s = idleRows(swap).find((r) => r.cycle === k);
     const c = idleRows(control).find((r) => r.cycle === k);
@@ -554,6 +631,96 @@ export function judgeRss(
   };
 }
 
+export interface WindowsRssPair {
+  cycle: number;
+  private_bytes: RssComponent;
+  process_heap_allocated: RssComponent;
+  rss: RssComponent;
+  process_heap_committed: RssComponent;
+}
+
+function judgeWindowsRss(
+  swap: SwapLeg,
+  control: SwapLeg,
+  n: number,
+  bound: number,
+  slopeBound: number,
+): Judged & { pairs: WindowsRssPair[]; slope: number | null } {
+  const rule: string[] = [];
+  const evidence = pairEvidence(swap, control);
+  const pairs: WindowsRssPair[] = [];
+  for (let k = 1; k <= n; k++) {
+    const s = idleRows(swap).find((r) => r.cycle === k);
+    const c = idleRows(control).find((r) => r.cycle === k);
+    const component = (
+      name: string,
+      sv: number | undefined,
+      cv: number | undefined,
+    ): RssComponent | undefined => {
+      if (
+        typeof sv !== "number" ||
+        !Number.isFinite(sv) ||
+        sv < 0 ||
+        typeof cv !== "number" ||
+        !Number.isFinite(cv) ||
+        cv < 0
+      ) {
+        evidence.push(
+          `cycle ${k}: no valid idle ${name} (swap ${sv}, control ${cv})`,
+        );
+        return undefined;
+      }
+      return { swap_mb: sv / MB, control_mb: cv / MB, diff_mb: (sv - cv) / MB };
+    };
+    const anon = component("private_bytes", s?.private_bytes, c?.private_bytes);
+    const inUse = component(
+      "process_heap.allocated_bytes",
+      s?.process_heap?.allocated_bytes,
+      c?.process_heap?.allocated_bytes,
+    );
+    const rss = component("rss_bytes", s?.rss_bytes, c?.rss_bytes);
+    const committed = component(
+      "process_heap.committed_bytes",
+      s?.process_heap?.committed_bytes,
+      c?.process_heap?.committed_bytes,
+    );
+    if (anon && inUse && rss && committed)
+      pairs.push({
+        cycle: k,
+        private_bytes: anon,
+        process_heap_allocated: inUse,
+        rss,
+        process_heap_committed: committed,
+      });
+  }
+  for (const p of pairs)
+    if (p.process_heap_allocated.diff_mb > bound)
+      rule.push(
+        `cycle ${p.cycle}: process_heap.allocated_bytes delta ${p.process_heap_allocated.diff_mb.toFixed(2)} MiB (bound ${bound})`,
+      );
+  let sl: number | null = null;
+  const later = pairs.filter((p) => p.cycle >= 2);
+  // Heap decommit makes short private-byte slopes noisy; wait for four pairs before judging.
+  const judgeSlope = later.length >= 4;
+  if (later.length >= 2) {
+    sl = slope(
+      later.map((p) => p.cycle),
+      later.map((p) => p.private_bytes.diff_mb),
+    );
+    if (judgeSlope && sl > slopeBound)
+      rule.push(
+        `private_bytes slope over cycles 2-${n}: ${sl.toFixed(2)} MiB/cycle (bound ${slopeBound})`,
+      );
+  }
+  return {
+    rule,
+    evidence,
+    pairs,
+    slope: sl,
+    detail: `Process heap allocated deltas ${pairs.map((p) => p.process_heap_allocated.diff_mb.toFixed(3)).join(", ")} MiB (bound ${bound}); private_bytes deltas ${pairs.map((p) => p.private_bytes.diff_mb.toFixed(2)).join(", ")} MiB (absolute offset unbounded; slope over cycles 2-${n}: ${sl === null ? "n/a" : sl.toFixed(2)} MiB/cycle${judgeSlope ? ` (bound ${slopeBound})` : ", not judged: needs >= 4 pairs"}); rss_bytes deltas ${pairs.map((p) => p.rss.diff_mb.toFixed(2)).join(", ")} MiB; process_heap.committed_bytes deltas ${pairs.map((p) => p.process_heap_committed.diff_mb.toFixed(2)).join(", ")} MiB (reported without bounds)`,
+  };
+}
+
 export interface CpuPhase {
   cycle: number;
   phase: "idle" | "armed";
@@ -604,10 +771,15 @@ export function judgeCpu(
   n: number,
 ): Judged & { deltas: CpuDelta[] } {
   const rule: string[] = [];
-  const evidence = [
-    ...swap.evidence.map((e) => `swap: ${e}`),
-    ...control.evidence.map((e) => `control: ${e}`),
-  ];
+  const evidence = pairEvidence(swap, control);
+  if (
+    swap.rows[0]?.platform === "windows" ||
+    control.rows[0]?.platform === "windows"
+  ) {
+    const detail = "no per-frame main-thread CPU source on Windows (WLS-b)";
+    evidence.push(detail);
+    return { rule, evidence, detail, deltas: [] };
+  }
   if (!swap.frames) evidence.push("swap: no frames.csv");
   if (!control.frames) evidence.push("control: no frames.csv");
   const deltas: CpuDelta[] = [];
@@ -740,11 +912,24 @@ export async function runG8sw(
 
   const shortSwap = await load("short/swap", "swap", SHORT_N);
   const shortControl = await load("short/control", "control", SHORT_N);
+  if (shortSwap.rows[0]?.platform === "windows")
+    report.bounds.notes =
+      "Process heap allocated swap minus control is bounded at 1 MiB per idle sample; private_bytes growth after cycle 1 is bounded at 0.5 MiB/cycle only with >= 4 pairs after cycle 1, otherwise reported without judgment. The absolute private_bytes offset, rss_bytes and process heap committed bytes are reported without bounds";
+  if (shortSwap.rows[0]?.platform !== shortControl.rows[0]?.platform) {
+    const problem = `platform mismatch: swap ${shortSwap.rows[0]?.platform}, control ${shortControl.rows[0]?.platform}`;
+    shortSwap.evidence.push(problem);
+    shortControl.evidence.push(problem);
+  }
   // The cycle legs: a timing group, skipped on a remote runner. Absent entirely (never launched) is
   // the same as skipped for the checks that also have short legs; it fails the cycle-only check.
   const cycleExists = existsSync(join(g, "cycle"));
   const cycleSwap = await load("cycle/swap", "swap", CYCLE_N);
   const cycleControl = await load("cycle/control", "control", CYCLE_N);
+  if (cycleSwap.rows[0]?.platform !== cycleControl.rows[0]?.platform) {
+    const problem = `platform mismatch: swap ${cycleSwap.rows[0]?.platform}, control ${cycleControl.rows[0]?.platform}`;
+    cycleSwap.evidence.push(problem);
+    cycleControl.evidence.push(problem);
+  }
   const cyclePresent =
     cycleExists && cycleSwap.skipped === null && cycleControl.skipped === null;
   const cycleWhy = !cycleExists
@@ -801,7 +986,11 @@ export async function runG8sw(
         arms,
         name === "short/warm-workers" ? leg.teardowns : undefined,
       );
-      j.evidence.push(...leg.evidence);
+      j.evidence.push(...legEvidence(leg));
+      if (leg.rows[0]?.platform !== shortControl.rows[0]?.platform)
+        j.evidence.push(
+          `platform mismatch: ${name} ${leg.rows[0]?.platform}, control ${shortControl.rows[0]?.platform}`,
+        );
       if (leg.exit_code !== "0") j.rule.push(`${name} exit ${leg.exit_code}`);
       judged.push([name, j]);
     }
@@ -858,6 +1047,7 @@ export async function runG8sw(
         inet_sockets: r.inet_sockets,
         sockets: r.sockets,
         fds_total: r.fds_total,
+        ...(r.platform === "windows" ? { handles_total: r.handles_total } : {}),
       })),
     };
     return j;
@@ -913,7 +1103,7 @@ export async function runG8sw(
         "cycle/swap",
         rssFor("cycle/swap", cycleSwap, cycleControl, CYCLE_N, "cycle"),
       ]);
-    checks.push(fromJudged("swap-cycle-rss", RSS_NOTES, judged));
+    checks.push(fromJudged("swap-cycle-rss", report.bounds.notes, judged));
   }
 
   // --- swap-cycle-standby-cpu --------------------------------------------------------------
@@ -930,7 +1120,19 @@ export async function runG8sw(
     const criterion =
       "LS3 (fork F1): on the cycle legs, per cycle, the swap run's idle-phase median hooked-block cost (params + churn, per frame, from frames.csv over the phase's process frames) plus its callback ns a frame, minus the control's, is within 1% of the control idle phase's median per-frame main-thread CPU; the short legs report the same numbers unjudged, as does the whole-frame CPU of every phase";
     const short = cpuFor("short/swap", shortSwap, shortControl, SHORT_N);
-    if (!cyclePresent) {
+    if (
+      shortSwap.rows[0]?.platform === "windows" &&
+      shortControl.rows[0]?.platform === "windows"
+    ) {
+      checks.push({
+        id: "swap-cycle-standby-cpu",
+        criterion,
+        passed: false,
+        status: "not-run",
+        gating: false,
+        detail: `not-judged: ${short.detail}`,
+      });
+    } else if (!cyclePresent) {
       checks.push(
         fail(
           "swap-cycle-standby-cpu",
@@ -963,6 +1165,10 @@ export async function runG8sw(
     rules: [string, (leg: SwapLeg) => Judged][],
   ) => {
     const leg = sabLegs[sab];
+    if (leg.rows[0]?.platform !== shortControl.rows[0]?.platform)
+      leg.evidence.push(
+        `platform mismatch: sabotage ${leg.rows[0]?.platform}, control ${shortControl.rows[0]?.platform}`,
+      );
     if (leg.skipped !== null) {
       checks.push(
         fail(

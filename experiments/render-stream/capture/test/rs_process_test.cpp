@@ -32,12 +32,15 @@ int main() {
     ++out.fields;
   });
 #if defined(_WIN32)
-  check(threads && !threads->named && threads->ids.size() == std::size_t(threads->total),
-        "snapshot ids; names unavailable");
+  check(threads && threads->named && threads->named->count("grc-proc-test") == 1 &&
+            threads->named->at("grc-proc-test") == 1,
+        "capture thread name and count");
   check(rs::private_bytes().value_or(0) > 0, "private bytes");
-  check(!fds, "fd and socket census unavailable");
+  check(fds && fds->fds == -1 && fds->sockets == -1 && fds->inet_sockets >= 0 && fds->handles > 0,
+        "inet and handle census without fd aliases");
   check(!anon && split.fields == 0, "Linux RSS split unavailable");
-  check(!heap && !rs::heap_trim(), "glibc heap unavailable");
+  check(!heap, "glibc heap unavailable");
+  (void)rs::heap_trim();
   check(!rs::dump_memory_info("rs_process_test"), "smaps and malloc info unavailable");
 #else
   check(threads && threads->named && threads->named->count("grc-proc-test") == 1 &&

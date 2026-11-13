@@ -99,11 +99,27 @@ std::uint64_t rss_bytes();
 std::optional<std::uint64_t> private_bytes();
 struct ThreadCensus {
   std::int64_t total = 0;
-  // Named capture threads on POSIX; unavailable from the Win32 snapshot.
+  // Capture threads, filtered by the first 15 UTF-8 bytes of their OS names.
   std::optional<std::map<std::string, std::int64_t>> named;
-  std::vector<std::uint32_t> ids;  // Available from the Win32 snapshot.
 };
-struct FdCensus { std::int64_t fds, sockets, inet_sockets; };
+struct FdCensus {
+  std::int64_t fds = -1, sockets = -1, inet_sockets = -1, handles = -1;
+#if defined(_WIN32)
+  std::map<std::string, std::int64_t> inet_tcp_states;
+#endif
+};
+// Process-heap bytes; absent on platforms with no matching allocator summary.
+struct ProcessHeap { std::uint64_t allocated, committed; };
+struct TscInfo { bool invariant; double hz; };
+struct AnonReading { const char *name; std::int64_t bytes; };
+#if defined(_WIN32)
+std::optional<ProcessHeap> process_heap();
+std::optional<TscInfo> tsc_info();
+AnonReading anon_reading();
+#else
+inline std::optional<ProcessHeap> process_heap() { return std::nullopt; }
+inline std::optional<TscInfo> tsc_info() { return std::nullopt; }
+#endif
 struct HeapStats { std::uint64_t uordblks, fordblks, hblkhd, arena, keepcost; };
 std::optional<ThreadCensus> thread_census();
 using FdCensusVisitor = void (*)(void *, const FdCensus &);
@@ -113,16 +129,31 @@ using RssSplitVisitor = void (*)(void *, const char *, std::int64_t);
 // Visits available Linux RSS fields in status-file order; Windows has no equivalent split.
 void rss_split(void *context, RssSplitVisitor visitor);
 std::optional<std::int64_t> rss_anon_bytes();
+#if !defined(_WIN32)
+inline AnonReading anon_reading() { return {"rss_anon_bytes", rss_anon_bytes().value_or(-1)}; }
+#endif
 std::optional<HeapStats> heap_stats();
 bool heap_trim();
 // Keeps the smaps streams open during the heap dump, preserving allocator evidence lifetimes.
 bool dump_memory_info(const std::string &prefix);
 class ThreadCpuClock {
 public:
+  // Marks are opaque thread counters. Convert the delta once with ns_since();
+  // either operation returns -1 when its reading or calibration is unavailable.
 #if defined(_WIN32)
   bool arm();
+  std::int64_t mark() const;
+  std::int64_t ns_since(std::int64_t mark) const;
   std::int64_t now_ns() const;
 #else
+  std::int64_t mark() const {
+    const auto us = now_us();
+    return us < 0 ? -1 : us * 1000;
+  }
+  std::int64_t ns_since(std::int64_t mark) const {
+    const auto now = this->mark();
+    return mark < 0 || now < 0 ? -1 : now - mark;
+  }
   bool arm() {
     struct timespec ts{};
     armed_ = ::clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0;
@@ -149,7 +180,8 @@ public:
   // timestamp before subtracting, matching the perf.json microsecond baseline.
   std::int64_t elapsed_us() const {
 #if defined(_WIN32)
-    const auto ns = sample_ns(cycles0_);
+    if (!armed_) return -1;
+    const auto ns = ns_since(cycles0_);
     return ns < 0 ? -1 : ns / 1000;
 #else
     if (!armed_) return -1;
@@ -159,10 +191,7 @@ public:
   }
 private:
 #if defined(_WIN32)
-  std::int64_t sample_ns(std::uint64_t cycles0) const;
-  std::int64_t qpc0_ = 0;
-  std::uint64_t tsc0_ = 0;
-  std::uint64_t cycles0_ = 0;
+  std::int64_t cycles0_ = -1;
 #else
   std::int64_t start_us_ = -1;
 #endif

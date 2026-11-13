@@ -13,6 +13,7 @@
 namespace grc {
 class JsonWriter;
 namespace rs {
+struct AnonReading;
 
 constexpr std::size_t kEvictDrainPerFrame = 32;
 constexpr std::size_t kEvictQueueCap = 65536;
@@ -87,8 +88,7 @@ void evict_configure(bool active, bool rss_test, const std::string &state, const
 bool evict_balanced(const EvictStats &s);
 void evict_fields(JsonWriter *json, const EvictStats &s);
 std::string evict_json(const EvictStats &s, bool final, std::uint64_t frame,
-                       std::int64_t rss_bytes, std::int64_t rss_anon_bytes);
-std::int64_t evict_read_rss_anon();
+                       std::int64_t rss_bytes, AnonReading anon);
 
 }  // namespace rs
 }  // namespace grc

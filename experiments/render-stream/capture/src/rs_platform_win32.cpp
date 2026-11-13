@@ -13,6 +13,7 @@
 #include <intrin.h>
 #include <mswsock.h>
 #include <tlhelp32.h>
+#include <iphlpapi.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -399,31 +400,75 @@ std::optional<std::uint64_t> private_bytes() {
     return std::nullopt;
   return info.PrivateUsage;
 }
+namespace {
+// Lazy, process-wide calibration. A re-arm changes only the thread baseline.
+struct TscRate {
+  std::mutex mutex;
+  std::int64_t qpc0 = 0, frequency = 0;
+  std::uint64_t tsc0 = 0;
+  double hz = 0;
+  bool anchored = false, frozen = false;
+  void anchor() {
+    if (anchored) return;
+    LARGE_INTEGER qpc{}, freq{};
+    if (!::QueryPerformanceFrequency(&freq) || freq.QuadPart <= 0 ||
+        !::QueryPerformanceCounter(&qpc)) return;
+    qpc0 = qpc.QuadPart;
+    frequency = freq.QuadPart;
+    tsc0 = __rdtsc();
+    anchored = true;
+  }
+  double sample() {
+    anchor();
+    if (!anchored) return 0;
+    if (frozen) return hz;
+    LARGE_INTEGER qpc{};
+    if (!::QueryPerformanceCounter(&qpc)) return 0;
+    const auto tsc = __rdtsc();
+    const auto elapsed = qpc.QuadPart - qpc0;
+    if (elapsed <= 0 || elapsed * 1000 < frequency || tsc <= tsc0) return 0;
+    hz = static_cast<double>(tsc - tsc0) * frequency / elapsed;
+    frozen = elapsed >= frequency;
+    return hz;
+  }
+};
+TscRate &tsc_rate() { static TscRate rate; return rate; }
+bool invariant_tsc() {
+  int regs[4]{};
+  __cpuid(regs, static_cast<int>(0x80000000u));
+  if (static_cast<unsigned>(regs[0]) < 0x80000007u) return false;
+  __cpuid(regs, static_cast<int>(0x80000007u));
+  return (regs[3] & (1 << 8)) != 0;
+}
+}
 bool ThreadCpuClock::arm() {
-  LARGE_INTEGER now{};
-  ULONG64 cycles = 0;
-  armed_ = ::QueryPerformanceCounter(&now) != 0;
-  qpc0_ = now.QuadPart;
-  tsc0_ = __rdtsc();
-  armed_ = armed_ && ::QueryThreadCycleTime(::GetCurrentThread(), &cycles) != 0;
-  cycles0_ = cycles;
+  cycles0_ = mark();
+  armed_ = cycles0_ >= 0;
   return armed_;
 }
-std::int64_t ThreadCpuClock::now_ns() const { return sample_ns(0); }
-std::int64_t ThreadCpuClock::sample_ns(std::uint64_t cycles0) const {
-  if (!armed_)
-    return -1;
+std::int64_t ThreadCpuClock::mark() const {
+  auto &rate = tsc_rate();
+  { std::lock_guard lock(rate.mutex); rate.anchor(); }
   ULONG64 cycles = 0;
-  LARGE_INTEGER now{}, freq{};
-  if (!::QueryThreadCycleTime(::GetCurrentThread(), &cycles) || !::QueryPerformanceCounter(&now) ||
-      !::QueryPerformanceFrequency(&freq) || freq.QuadPart <= 0)
-    return -1;
-  const auto tsc = __rdtsc() - tsc0_;
-  const auto elapsed = now.QuadPart - qpc0_;
-  if (elapsed < freq.QuadPart / 1000 || tsc == 0 || cycles < cycles0)
-    return -1;
-  return static_cast<std::int64_t>(static_cast<long double>(cycles - cycles0) * elapsed * 1000000000.0L /
-                                   (static_cast<long double>(tsc) * freq.QuadPart));
+  return ::QueryThreadCycleTime(::GetCurrentThread(), &cycles)
+      ? static_cast<std::int64_t>(cycles) : -1;
+}
+std::int64_t ThreadCpuClock::ns_since(std::int64_t baseline) const {
+  if (baseline < 0) return -1;
+  const auto cycles = mark();
+  if (cycles < baseline) return -1;
+  auto &rate = tsc_rate();
+  std::lock_guard lock(rate.mutex);
+  const double hz = rate.sample();
+  return hz > 0 ? static_cast<std::int64_t>((cycles - baseline) * 1000000000.0L / hz) : -1;
+}
+std::int64_t ThreadCpuClock::now_ns() const { return ns_since(0); }
+std::optional<TscInfo> tsc_info() {
+  auto &rate = tsc_rate();
+  std::lock_guard lock(rate.mutex);
+  // Reporting alone must not anchor the clock.
+  if (!rate.anchored) return std::nullopt;
+  return TscInfo{invariant_tsc(), rate.sample()};
 }
 std::int64_t wall_clock_s() {
   return std::chrono::duration_cast<std::chrono::seconds>(
@@ -628,6 +673,10 @@ std::optional<ThreadCensus> thread_census() {
   const HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
   if (snapshot == INVALID_HANDLE_VALUE) return std::nullopt;
   ThreadCensus result;
+  using GetDescription = HRESULT(WINAPI *)(HANDLE, PWSTR *);
+  static const auto get = reinterpret_cast<GetDescription>(
+      ::GetProcAddress(::GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription"));
+  if (get) result.named.emplace();
   THREADENTRY32 entry{};
   entry.dwSize = sizeof(entry);
   if (!::Thread32First(snapshot, &entry)) {
@@ -637,7 +686,19 @@ std::optional<ThreadCensus> thread_census() {
   do {
     if (entry.th32OwnerProcessID == ::GetCurrentProcessId()) {
       ++result.total;
-      result.ids.push_back(entry.th32ThreadID);
+      if (get) {
+        const HANDLE thread = ::OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ThreadID);
+        if (thread) {
+          PWSTR description = nullptr;
+          if (SUCCEEDED(get(thread, &description)) && description) {
+            const auto name = narrow(description).substr(0, 15);
+            if (name.rfind("grc-", 0) == 0 || name.rfind("rs-ws", 0) == 0)
+              ++(*result.named)[name];
+          }
+          if (description) ::LocalFree(description);
+          ::CloseHandle(thread);
+        }
+      }
     }
   } while (::Thread32Next(snapshot, &entry));
   const DWORD error = ::GetLastError();
@@ -645,11 +706,103 @@ std::optional<ThreadCensus> thread_census() {
   if (error != ERROR_NO_MORE_FILES) return std::nullopt;
   return result;
 }
-std::optional<FdCensus> fd_census(void *, FdCensusVisitor) { return std::nullopt; }
+namespace {
+struct InetApi {
+  using Tcp = DWORD(WINAPI *)(PVOID, PDWORD, BOOL, ULONG, TCP_TABLE_CLASS, ULONG);
+  using Udp = DWORD(WINAPI *)(PVOID, PDWORD, BOOL, ULONG, UDP_TABLE_CLASS, ULONG);
+  HMODULE module = ::LoadLibraryExW(L"iphlpapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+  Tcp tcp = module ? reinterpret_cast<Tcp>(::GetProcAddress(module, "GetExtendedTcpTable")) : nullptr;
+  Udp udp = module ? reinterpret_cast<Udp>(::GetProcAddress(module, "GetExtendedUdpTable")) : nullptr;
+};
+template <typename Table, typename Read, typename Visit>
+bool inet_table(Read read, Visit visit) {
+  DWORD size = 0;
+  const auto first = read(nullptr, &size);
+  if (first != ERROR_INSUFFICIENT_BUFFER && first != NO_ERROR) return false;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    std::vector<unsigned char> storage(size);
+    const auto error = read(storage.data(), &size);
+    if (error == ERROR_INSUFFICIENT_BUFFER) continue;
+    if (error != NO_ERROR || storage.size() < sizeof(DWORD)) return false;
+    const auto *table = reinterpret_cast<const Table *>(storage.data());
+    if (table->dwNumEntries > (storage.size() - offsetof(Table, table)) / sizeof(table->table[0]))
+      return false;
+    for (DWORD i = 0; i < table->dwNumEntries; ++i) visit(table->table[i]);
+    return true;
+  }
+  return false;
+}
+const char *tcp_state(DWORD state) {
+  switch (state) {
+    case MIB_TCP_STATE_CLOSED: return "closed";
+    case MIB_TCP_STATE_LISTEN: return "listen";
+    case MIB_TCP_STATE_SYN_SENT: return "syn-sent";
+    case MIB_TCP_STATE_SYN_RCVD: return "syn-received";
+    case MIB_TCP_STATE_ESTAB: return "established";
+    case MIB_TCP_STATE_FIN_WAIT1: return "fin-wait-1";
+    case MIB_TCP_STATE_FIN_WAIT2: return "fin-wait-2";
+    case MIB_TCP_STATE_CLOSE_WAIT: return "close-wait";
+    case MIB_TCP_STATE_CLOSING: return "closing";
+    case MIB_TCP_STATE_LAST_ACK: return "last-ack";
+    case MIB_TCP_STATE_TIME_WAIT: return "time-wait";
+    case MIB_TCP_STATE_DELETE_TCB: return "delete-tcb";
+    default: return "unknown";
+  }
+}
+}
+std::optional<FdCensus> fd_census(void *context, FdCensusVisitor visitor) {
+  static const InetApi api;
+  if (!api.tcp || !api.udp) return std::nullopt;
+  FdCensus result;
+  result.inet_sockets = 0;
+  DWORD handles = 0;
+  if (::GetProcessHandleCount(::GetCurrentProcess(), &handles)) result.handles = handles;
+  const auto tcp = [&](const auto &row) {
+    if (row.dwOwningPid == ::GetCurrentProcessId()) {
+      ++result.inet_sockets;
+      ++result.inet_tcp_states[tcp_state(row.dwState)];
+    }
+  };
+  const auto udp = [&](const auto &row) {
+    if (row.dwOwningPid == ::GetCurrentProcessId()) {
+      ++result.inet_sockets;
+      ++result.inet_tcp_states["udp"];
+    }
+  };
+  const auto readTcp = [&](ULONG family) {
+    return [&, family](void *data, DWORD *size) {
+      return api.tcp(data, size, FALSE, family, TCP_TABLE_OWNER_PID_ALL, 0);
+    };
+  };
+  const auto readUdp = [&](ULONG family) {
+    return [&, family](void *data, DWORD *size) {
+      return api.udp(data, size, FALSE, family, UDP_TABLE_OWNER_PID, 0);
+    };
+  };
+  if (!inet_table<MIB_TCPTABLE_OWNER_PID>(readTcp(AF_INET), tcp) ||
+      !inet_table<MIB_TCP6TABLE_OWNER_PID>(readTcp(AF_INET6), tcp) ||
+      !inet_table<MIB_UDPTABLE_OWNER_PID>(readUdp(AF_INET), udp) ||
+      !inet_table<MIB_UDP6TABLE_OWNER_PID>(readUdp(AF_INET6), udp)) return std::nullopt;
+  if (visitor) visitor(context, result);
+  return result;
+}
 void rss_split(void *, RssSplitVisitor) {}
 std::optional<std::int64_t> rss_anon_bytes() { return std::nullopt; }
 std::optional<HeapStats> heap_stats() { return std::nullopt; }
-bool heap_trim() { return false; }
+std::optional<ProcessHeap> process_heap() {
+  using Summary = BOOL(WINAPI *)(HANDLE, DWORD, LPHEAP_SUMMARY);
+  static const auto summary = reinterpret_cast<Summary>(
+      ::GetProcAddress(::GetModuleHandleW(L"kernel32.dll"), "HeapSummary"));
+  HEAP_SUMMARY info{};
+  info.cb = sizeof(info);
+  if (!summary || !summary(::GetProcessHeap(), 0, &info)) return std::nullopt;
+  return ProcessHeap{info.cbAllocated, info.cbCommitted};
+}
+AnonReading anon_reading() {
+  const auto bytes = private_bytes();
+  return {"private_bytes", bytes ? static_cast<std::int64_t>(*bytes) : -1};
+}
+bool heap_trim() { return ::HeapCompact(::GetProcessHeap(), 0) != 0; }
 bool dump_memory_info(const std::string &) { return false; }
 std::uint32_t process_id() { return ::GetCurrentProcessId(); }
 } // namespace grc::rs

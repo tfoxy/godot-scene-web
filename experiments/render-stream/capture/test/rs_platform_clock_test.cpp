@@ -26,35 +26,52 @@ bool thread_cpu_100ns(std::uint64_t *out) {
 }
 
 int main() {
-  grc::rs::ThreadCpuClock thread;
-  if (thread.elapsed_us() != -1 || !thread.arm()) {
-    std::fprintf(stderr, "FAIL: thread CPU clock must be unavailable before a successful arm\n");
-    return 1;
-  }
-  const auto immediate = thread.elapsed_us();
-  if (immediate < -1) {
-    std::fprintf(stderr, "FAIL: immediate elapsed sample must be -1 or nonnegative\n");
-    return 1;
-  }
-  std::uint64_t start = 0, now = 0;
-  if (!thread_cpu_100ns(&start)) {
-    std::fprintf(stderr, "FAIL: cannot read thread CPU time for spin\n");
-    return 1;
-  }
-  // Use an independent CPU counter so descheduling cannot finish the spin early.
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  do {
-    if (!thread_cpu_100ns(&now) || std::chrono::steady_clock::now() >= deadline) {
-      std::fprintf(stderr, "FAIL: thread CPU spin did not complete\n");
-      return 1;
+  int checks = 0, failures = 0;
+  const auto check = [&](bool ok, const char *name, std::int64_t a = 0, std::int64_t b = 0) {
+    ++checks;
+    if (!ok) {
+      ++failures;
+      std::fprintf(stderr, "FAIL WLS clock %s: observed=%lld/%lld\n", name,
+                   static_cast<long long>(a), static_cast<long long>(b));
     }
-  } while (now - start < 50000);  // At least 5 ms of CPU, at the counter's resolution.
-  if (thread.elapsed_us() < 1000) {
-    std::fprintf(stderr, "FAIL: elapsed thread CPU time must be calibrated after CPU spin\n");
-    return 1;
+  };
+  grc::rs::ThreadCpuClock thread;
+  check(!grc::rs::tsc_info(), "calibration is lazy");
+  check(thread.elapsed_us() == -1, "elapsed before mark", thread.elapsed_us());
+  check(!grc::rs::tsc_info(), "unarmed elapsed does not calibrate");
+  const auto mark = thread.mark();
+  check(mark >= 0, "mark before arm", mark);
+  check(thread.elapsed_us() == -1, "elapsed before arm", thread.elapsed_us());
+  std::uint64_t start = 0, now = 0;
+  const bool readable = thread_cpu_100ns(&start);
+  check(readable, "GetThreadTimes");
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  bool spun = false;
+  if (readable) {
+    do {
+      if (!thread_cpu_100ns(&now)) break;
+      if (now - start >= 50000) { spun = true; break; }
+    } while (std::chrono::steady_clock::now() < deadline);
   }
-  std::puts("4/4 clock cases passed");
-  return 0;
+  check(spun, "five ms independent CPU spin", now - start);
+  const auto delta = thread.ns_since(mark);
+  check(delta >= 1000000, "unarmed CPU delta", delta);
+  check(thread.elapsed_us() == -1, "mark does not arm", thread.elapsed_us());
+  check(thread.arm(), "first arm");
+  const auto freeze = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (std::chrono::steady_clock::now() < freeze) {}
+  const auto info = grc::rs::tsc_info();
+  check(info && info->hz > 0, "frozen rate", info ? info->hz : -1);
+  check(thread.elapsed_us() >= 1000, "armed elapsed", thread.elapsed_us());
+  check(thread.arm(), "second arm");
+  grc::rs::ThreadCpuClock second;
+  check(second.arm(), "another clock arm");
+  const auto after = grc::rs::tsc_info();
+  check(info && after && info->hz == after->hz, "process-wide rate survives arms",
+        info ? info->hz : -1, after ? after->hz : -1);
+  check(thread.ns_since(-1) == -1, "invalid mark");
+  std::printf("rs_platform_clock_test: %d checks, %d failures\n", checks, failures);
+  return failures ? 1 : 0;
 }
 #else
 namespace {
@@ -94,6 +111,12 @@ int main() {
   expected_clock = CLOCK_THREAD_CPUTIME_ID;
   grc::rs::ThreadCpuClock thread;
   check(thread.elapsed_us() == -1, "unarmed thread CPU clock must return -1");
+  const auto mark = thread.mark();
+  check(mark == 123456789987654000LL, "mark truncates POSIX microseconds before conversion");
+  clock_value.tv_nsec = 987655001;
+  check(thread.ns_since(mark) == 1000, "mark delta truncates each reading");
+  check(thread.ns_since(-1) == -1, "invalid mark remains unavailable");
+  clock_value.tv_nsec = 987654321;
   const int before_arm = clock_reads;
   check(thread.arm(), "thread CPU clock must arm");
   check(clock_reads == before_arm + 1, "arm must take one clock sample");
@@ -105,6 +128,8 @@ int main() {
   clock_value = {123456790, 123};
   check(thread.elapsed_us() == 12346, "elapsed must preserve the perf.json second-boundary delta");
   fail_clock = true;
+  check(thread.mark() == -1, "mark read failure remains unavailable");
+  check(thread.ns_since(mark) == -1, "delta read failure remains unavailable");
   check(thread.now_ns() == -1, "thread CPU ns sample failure must return -1");
   check(thread.now_us() == -1, "thread CPU us sample failure must return -1");
   check(thread.elapsed_us() == -1, "elapsed sample failure must return -1");

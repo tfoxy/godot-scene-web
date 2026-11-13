@@ -675,12 +675,22 @@
       "reach": ["native:gate8@*"]
     },
     {
+      "why": "The portable swap driver and bundle run the short swap legs on Windows, with a pure driver and environment drift self-test",
+      "paths": [
+        "experiments/render-stream/scripts/lib/wswap-driver.py",
+        "experiments/render-stream/scripts/lib/wswap-bundle.py",
+        "experiments/render-stream/scripts/test/self-test-wswap-driver.ts"
+      ],
+      "reach": ["pure", "windows"]
+    },
+    {
       "why": "LS3's gate 8 group g8sw (live-swap-design.md Q3): the swap-cycle checks (accounting, threads, sockets, RSS, standby CPU, four GRC_REARM_FAULT sabotages) and their pure self-test reach native gate 8, which runs g8sw whole. The capture sources it exercises (the disarm release, GRC_SWAP_CYCLE) are shared capture files and still reach '*'",
       "paths": [
+        "experiments/render-stream/scripts/check-g8sw.ts",
         "experiments/render-stream/scripts/lib/gate8-swap-checks.ts",
         "experiments/render-stream/scripts/test/self-test-gate8-swap.ts"
       ],
-      "reach": ["pure", "native:gate8@*"]
+      "reach": ["pure", "native:gate8@*", "windows"]
     },
     {
       "why": "REC1's client recorder legs (results/p3/rec1.md): gate 8's g8rec1 group drives web/client-record-check/ (the client package with the recorder on) through scripts/client-record-check.ts against a live tag-scene host with a tap, judged by lib/gate8-rec1-checks.ts",

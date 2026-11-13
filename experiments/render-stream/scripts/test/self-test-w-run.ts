@@ -106,6 +106,8 @@ function run(
   const launcher = `import runpy, subprocess, sys
 real_run = subprocess.run
 def short_run(argv, **kwargs):
+    if any(str(arg).endswith("/wswap/synthetic.py") for arg in argv):
+        kwargs["stdout"].write(f"swap timeout_s={kwargs['timeout']}\\n".encode())
     if str(argv[0]).endswith("/timeout-probe"):
         elapsed = 450
         limit = kwargs["timeout"]
@@ -789,6 +791,7 @@ art.mkdir(parents=True, exist_ok=True)
           "w-imports": { passed: 3, total: 3 },
           "w-1": { passed: 1, total: 2 },
           "w-file": { passed: 2, total: 2 },
+          "w-swap": { passed: 0, total: 0 },
         }),
     grouped.text,
   );
@@ -933,6 +936,125 @@ print("client-carrier-check: leg ws: synthetic success")
     invalidTimeout.rc === 2 && invalidTimeout.text.includes("timeout_s"),
     invalidTimeout.text,
   );
+  mkdirSync(join(bundle, "wswap"), { recursive: true });
+  writeFileSync(
+    join(bundle, "wswap/synthetic.py"),
+    `import json, os, sys
+from pathlib import Path
+assert sys.flags.isolated == 1
+assert os.environ["WSWAP_REPO_ROOT"] == "synthetic checkout"
+assert Path("wswap/manifest.json").is_file()
+p = Path(os.environ["W_RUN_ARTIFACT_DIR"])
+p.mkdir(parents=True)
+(p / "wswap-summary.json").write_text(json.dumps({"platform": "windows"}))
+print("wswap leg swap: exit=0 wall_s=1")
+print("wswap check swap-accounting: PASS synthetic")
+if os.environ.get("WSWAP_TEST_FAIL"):
+    print("swap-failure-detail")
+    sys.exit(7)
+`,
+  );
+  const swapEntry = {
+    name: "wswap",
+    exe: "wswap/synthetic.py",
+    interpreter: "python",
+    timeout_s: 1500,
+    env: {},
+  };
+  const swapManifest = { ...liveManifest, tests: [swapEntry] };
+  const swapPath = join(bundle, "wswap/manifest.json");
+  writeFileSync(swapPath, JSON.stringify(swapManifest));
+  const swapEnv = { WSWAP_REPO_ROOT: "synthetic checkout" };
+  const swap = run("swap-suite", false, swapEnv, ["--suite", "swap"]);
+  check(
+    "swap-suite-runs-one-python-entry",
+    swap.rc === 0 && json(swap.out, "w-run.json").tests.length === 1,
+    swap.text,
+  );
+  check(
+    "swap-suite-skips-imports",
+    swap.rc === 0 &&
+      json(swap.out, "w-run.json").checks.length === 0 &&
+      !existsSync(join(bundle, "imports-calls.jsonl")),
+    swap.text,
+  );
+  check(
+    "swap-success-evidence-kept",
+    existsSync(join(swap.out, "artifacts/wswap/wswap-summary.json")),
+    swap.text,
+  );
+  check(
+    "swap-leg-and-check-lines-printed",
+    swap.text.includes("wswap leg swap:") &&
+      swap.text.includes("wswap check swap-accounting: PASS"),
+    swap.text,
+  );
+  check(
+    "swap-tally",
+    swap.rc === 0 &&
+      JSON.stringify(json(swap.out, "w-run.json").groups["w-swap"]) ===
+        JSON.stringify({ passed: 1, total: 1 }) &&
+      swap.text.includes("w-swap 1/1"),
+    swap.text,
+  );
+  check(
+    "swap-timeout-1500s",
+    swap.rc === 0 &&
+      readFileSync(join(swap.out, "logs/wswap.log"), "utf8").includes(
+        "swap timeout_s=1500",
+      ),
+    swap.text,
+  );
+  const swapBad = run(
+    "swap-fail",
+    false,
+    { ...swapEnv, WSWAP_TEST_FAIL: "1" },
+    ["--suite", "swap"],
+  );
+  check(
+    "swap-failure-summary-and-diagnostic",
+    swapBad.rc === 1 &&
+      json(swapBad.out, "w-run.json").groups["w-swap"].passed === 0 &&
+      readFileSync(
+        join(swapBad.out, "evidence/windows-win/wswap.log"),
+        "utf8",
+      ).includes("swap-failure-detail"),
+    swapBad.text,
+  );
+  const invalidSwaps = [
+    ["empty", { ...swapManifest, tests: [] }],
+    ["duplicate", { ...swapManifest, tests: [swapEntry, swapEntry] }],
+    [
+      "wrong-name",
+      { ...swapManifest, tests: [{ ...swapEntry, name: "other" }] },
+    ],
+    [
+      "native",
+      { ...swapManifest, tests: [{ ...swapEntry, interpreter: undefined }] },
+    ],
+    [
+      "missing-timeout",
+      { ...swapManifest, tests: [{ ...swapEntry, timeout_s: undefined }] },
+    ],
+    [
+      "wrong-timeout",
+      { ...swapManifest, tests: [{ ...swapEntry, timeout_s: 1499 }] },
+    ],
+    ["imports", { ...swapManifest, imports_only: [{ exe: "extra.exe" }] }],
+    ["sabotage", { ...swapManifest, sabotage: [{ exe: "extra.exe" }] }],
+  ] as const;
+  for (const [name, invalid] of invalidSwaps) {
+    writeFileSync(swapPath, JSON.stringify(invalid));
+    const result = run(`swap-invalid-${name}`, false, swapEnv, [
+      "--suite",
+      "swap",
+    ]);
+    check(
+      `swap-${name}-refused`,
+      result.rc === 2 && result.text.includes("swap manifest"),
+      result.text,
+    );
+  }
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }

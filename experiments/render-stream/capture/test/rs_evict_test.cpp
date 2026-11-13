@@ -1,3 +1,4 @@
+#include "rs_platform.h"
 #include "rs_evict.h"
 #include "rs_json_lite.h"
 #include "rs_texture_release.h"
@@ -145,7 +146,8 @@ void accounting() {
 void evidence() {
   EvictStats s;
   JValue v;
-  const auto parse = [&] { v = JValue{}; const auto text = evict_json(s, true, 42, 1234, 5678);
+  const auto parse = [&] { v = JValue{};
+    const auto text = evict_json(s, true, 42, 1234, {"rss_anon_bytes", 5678});
     EXPECT(json_lite::Reader(text).parse(&v)); };
   parse();
   EXPECT(field(v, "schema").text == "render-stream-evict/1");
@@ -185,7 +187,10 @@ void evidence() {
   grc::JsonWriter j; j.object_begin(); evict_fields(&j, s); j.object_end();
   const auto text = j.take(); v = JValue{}; EXPECT(json_lite::Reader(text).parse(&v));
   EXPECT(!v.get("schema") && !v.get("releases") && !v.get("rss_test"));
-  EXPECT(evict_read_rss_anon() > 0);
+  const auto windows = evict_json(s, true, 42, 1234, {"private_bytes", 5678});
+  v = JValue{}; EXPECT(json_lite::Reader(windows).parse(&v));
+  EXPECT(field(v, "private_bytes").text == "5678" && !v.get("rss_anon_bytes"));
+  EXPECT(anon_reading().bytes > 0);
 }
 }  // namespace
 int main() {

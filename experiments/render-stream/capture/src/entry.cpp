@@ -550,7 +550,7 @@ struct SwapCycle {
   uint64_t phase_frame = 0;    // frames_total when the current phase began
   bool idle_phase = true;
   bool requested = false;      // an arm or disarm was asked for and has not landed yet
-  int64_t phase_cpu_ns = 0;    // the main thread's CPU at the phase start
+  int64_t phase_cpu_mark = -1;  // opaque main-thread CPU counter at the phase start
   uint64_t phase_callback_ns = 0;
   uint64_t phase_callbacks = 0;
 };
@@ -649,13 +649,6 @@ struct Perf {
 };
 
 Perf g_perf;
-
-// Main-thread CPU time so far (CLOCK_THREAD_CPUTIME_ID), in microseconds; -1 when unavailable.
-// Correct only when called from the main thread, as every entry point here is (the gdextension
-// frame/arm/disarm callbacks).
-int64_t main_thread_cpu_us() {
-  return g_perf.main_thread_clock.now_us();
-}
 
 // Process resident set size in bytes, or zero when unreadable.
 uint64_t read_rss_bytes() { return rs::rss_bytes(); }
@@ -5479,15 +5472,28 @@ void thread_census(JsonWriter *json) {
 void fd_census(JsonWriter *json) {
   rs::fd_census(json, [](void *context, const rs::FdCensus &census) {
     auto *out = static_cast<JsonWriter *>(context);
-    out->field("fds_total", census.fds);
-    out->field("sockets", census.sockets);
-    out->field("inet_sockets", census.inet_sockets);
+    if (census.fds >= 0) out->field("fds_total", census.fds);
+    if (census.sockets >= 0) out->field("sockets", census.sockets);
+    if (census.inet_sockets >= 0) out->field("inet_sockets", census.inet_sockets);
+    if (census.handles >= 0) out->field("handles_total", census.handles);
+#if defined(_WIN32)
+    if (census.inet_sockets > 0) {
+      out->key("inet_tcp_states").object_begin();
+      for (const auto &[state, count] : census.inet_tcp_states) out->field(state, count);
+      out->object_end();
+    }
+#endif
   });
 }
 
 // What the capture still holds per arm (swap-accounting): every count is 0 after an honest
 // disarm but `canvases` (a fresh mirror's root canvas).
 void accounting_fields(JsonWriter *json) {
+#if defined(_WIN32)
+  json->field("platform", std::string("windows"));
+#else
+  json->field("platform", std::string("linux"));
+#endif
   const rs::MirrorStats m = rs::mirror_stats();
   json->key("mirror").object_begin();
   json->field("items", static_cast<int64_t>(m.live_items));
@@ -5541,10 +5547,27 @@ void accounting_fields(JsonWriter *json) {
   rs::rss_split(json, [](void *context, const char *name, int64_t bytes) {
     static_cast<JsonWriter *>(context)->field(name, bytes);
   });
+#if defined(_WIN32)
+  if (const auto bytes = rs::private_bytes()) {
+    json->field("private_bytes", static_cast<int64_t>(*bytes));
+  }
+  if (const auto tsc = rs::tsc_info()) {
+    json->field("tsc_invariant", tsc->invariant);
+    json->field("tsc_hz", static_cast<int64_t>(tsc->hz));
+  }
+#endif
   thread_census(json);
   fd_census(json);
   // Test-only allocator evidence: separate live allocations from free arena pages and mmap.
   if (env_string("GRC_TEST_MEMORY_ACCOUNTING") == "1") {
+#if defined(_WIN32)
+    if (const auto heap = rs::process_heap()) {
+      json->key("process_heap").object_begin();
+      json->field("allocated_bytes", static_cast<int64_t>(heap->allocated));
+      json->field("committed_bytes", static_cast<int64_t>(heap->committed));
+      json->object_end();
+    }
+#endif
     const auto heap = rs::heap_stats();
     if (heap) {
       json->key("malloc").object_begin();
@@ -5727,7 +5750,7 @@ void api_disarm_post() {
     g_swap.requested = false;
     g_swap.idle_phase = true;
     g_swap.phase_frame = g_state.frames_total;
-    g_swap.phase_cpu_ns = main_thread_cpu_us() * 1000;
+    g_swap.phase_cpu_mark = g_perf.main_thread_clock.mark();
     g_swap.phase_callback_ns = 0;
     g_swap.phase_callbacks = 0;
   }
@@ -5877,10 +5900,12 @@ void swap_cycle_sample(const char *phase) {
   json.field("end_frame", static_cast<int64_t>(g_state.frames_total));
   json.field("process_frame", static_cast<int64_t>(rs::adopt_engine_process_frames()));
   json.field("frames", static_cast<int64_t>(frames));
-  const int64_t cpu_ns = main_thread_cpu_us() * 1000 - g_swap.phase_cpu_ns;
+  const int64_t cpu_ns = g_perf.main_thread_clock.ns_since(g_swap.phase_cpu_mark);
   // Nanoseconds a frame, integers (the checkers divide): the main thread's CPU over the phase and
   // the capture's own frame callbacks.
-  json.field("main_cpu_ns_per_frame", frames != 0 ? cpu_ns / static_cast<int64_t>(frames) : 0);
+  json.key("main_cpu_ns_per_frame");
+  if (cpu_ns < 0) json.null();
+  else json.integer(frames != 0 ? cpu_ns / static_cast<int64_t>(frames) : 0);
   json.field("callback_ns_per_frame",
              g_swap.phase_callbacks != 0
                  ? static_cast<int64_t>(g_swap.phase_callback_ns / g_swap.phase_callbacks)
@@ -5917,7 +5942,7 @@ void swap_cycle_sample(const char *phase) {
 void swap_cycle_phase(bool idle) {
   g_swap.idle_phase = idle;
   g_swap.phase_frame = g_state.frames_total;
-  g_swap.phase_cpu_ns = main_thread_cpu_us() * 1000;
+  g_swap.phase_cpu_mark = g_perf.main_thread_clock.mark();
   g_swap.phase_callback_ns = 0;
   g_swap.phase_callbacks = 0;
 }
@@ -5934,7 +5959,7 @@ void swap_cycle_frame(uint64_t frame_start_ns) {
   if (g_state.frames_total == g_swap.phase_frame) {
     // The callback the phase began in (an arm, or a disarm's release) is not the phase's: its
     // CPU and callback windows open at its end.
-    g_swap.phase_cpu_ns = main_thread_cpu_us() * 1000;
+    g_swap.phase_cpu_mark = g_perf.main_thread_clock.mark();
     g_swap.phase_callback_ns = 0;
     g_swap.phase_callbacks = 0;
     return;
@@ -6013,7 +6038,7 @@ void swap_cycle_configure() {
   g_swap.idle = v[1];
   g_swap.cycles = v[2];
   g_swap.control = rest == "control";
-  g_swap.phase_cpu_ns = main_thread_cpu_us() * 1000;
+  g_swap.phase_cpu_mark = g_perf.main_thread_clock.mark();
   // A born capture starts armed (its first arm is the env's); a standby one starts idle.
   g_swap.idle_phase = g_state.mode != "arm" || g_swap.control;
   log_line("init: swap-cycle armed=" + std::to_string(v[0]) + " idle=" + std::to_string(v[1]) +
@@ -6171,7 +6196,7 @@ void evict_frame() {
   auto &evict = rs::evict_stats();
   evict.queue = rs::evict_queue().counts();
   emit_load("evict.json", rs::evict_json(evict, false, g_state.frames_total, read_rss_bytes(),
-                                       rs::evict_read_rss_anon()));
+                                       rs::anon_reading()));
   g_state.evict_written = true;
   g_state.evict_last_write = g_state.frames_total;
   log_line("evict: released=" + std::to_string(evict.released) +
@@ -6316,7 +6341,7 @@ void on_shutdown() {
     auto &evict = rs::evict_stats();
     evict.queue = rs::evict_queue().counts();
     emit_load("evict.json", rs::evict_json(evict, true, g_state.frames_total, read_rss_bytes(),
-                                         rs::evict_read_rss_anon()));
+                                         rs::anon_reading()));
     log_line("evict: released=" + std::to_string(evict.released) +
              " bytes=" + std::to_string(evict.released_bytes) +
              " pending=" + std::to_string(evict.queue.pending) +

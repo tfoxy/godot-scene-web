@@ -3,13 +3,26 @@
 // missing and skipped evidence fails or is excused as the runner's markers say, and each sabotage
 // check is not vacuous (a sabotage leg the rule does not fail is itself a failure).
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   accountingProblems,
   CPU_BOUND_FRACTION,
   HEAP_IN_USE_BOUND_MIB,
+  judgeCpu,
+  judgeFds,
+  judgeRss,
+  judgeThreads,
   judgeWarmCaptureScale,
+  loadLeg,
   RSS_SLOPE_MB,
   runG8sw,
   slope,
@@ -51,6 +64,7 @@ interface Opts {
 }
 
 const clean = () => ({
+  platform: "linux" as const,
   mirror: {
     items: 0,
     canvases: 1,
@@ -270,6 +284,7 @@ const SABS = [
 ] as const;
 
 /** Build a fresh run directory: honest short legs, the four sabotages and (optionally) the cycle legs. */
+const cases: string[] = [];
 function build(
   name: string,
   tweak: {
@@ -278,6 +293,7 @@ function build(
     sabotage?: Partial<Record<(typeof SABS)[number], Partial<Opts> | "honest">>;
   } = {},
 ) {
+  cases.push(name);
   const root = join(out, name);
   const g = join(root, "g8sw");
   const sabRss: Record<string, (k: number) => number> = {
@@ -295,7 +311,15 @@ function build(
       join(g, `short/sabotage-${s}`),
       t === "honest"
         ? { kind: "swap", n: SHORT }
-        : { kind: "swap", n: SHORT, fault: s, rssAnon: sabRss[s], ...t },
+        : {
+            kind: "swap",
+            n: SHORT,
+            fault: s,
+            rssAnon: sabRss[s],
+            // keep-served also retains the pinned bodies in the process heap (150 MiB on hosted Windows)
+            ...(s === "keep-served" ? { inUse: () => 120 + 150 } : {}),
+            ...t,
+          },
     );
   }
   if (tweak.cycle !== false) {
@@ -303,6 +327,58 @@ function build(
     writeLeg(join(g, "cycle/swap"), { kind: "swap", n: CYCLE, ...tweak.cycle });
   }
   return { root, g };
+}
+
+function rewriteJson(
+  path: string,
+  mutate: (r: Record<string, unknown>, i: number) => void,
+) {
+  const jsonl = path.endsWith(".jsonl");
+  const rows = jsonl
+    ? readFileSync(path, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+    : [JSON.parse(readFileSync(path, "utf8"))];
+  rows.forEach(mutate);
+  writeFileSync(
+    path,
+    jsonl
+      ? `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`
+      : JSON.stringify(rows[0]),
+  );
+}
+
+function windowsTree(dir: string) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) windowsTree(path);
+    else if (
+      entry.name === "swap-cycle.jsonl" ||
+      entry.name === "teardown.json"
+    )
+      rewriteJson(path, (r) => {
+        r.platform = "windows";
+        r.handles_total = 100;
+        delete r.fds_total;
+        delete r.sockets;
+        if (r.malloc) {
+          const heap = r.malloc as { uordblks: number; fordblks: number };
+          r.process_heap = {
+            allocated_bytes: heap.uordblks,
+            committed_bytes: heap.uordblks + heap.fordblks,
+          };
+        }
+        r.private_bytes = r.rss_anon_bytes;
+        for (const key of [
+          "malloc",
+          "rss_anon_bytes",
+          "rss_file_bytes",
+          "rss_shmem_bytes",
+        ])
+          delete r[key];
+      });
+  }
 }
 
 const verdict = async (root: string) => {
@@ -415,6 +491,17 @@ try {
     );
     for (const id of IDS)
       ok(passes(m, id), `honest passes ${id}: ${m.get(id)?.detail}`);
+    const swap = await loadLeg(join(root, "g8sw/short/swap"), "swap", SHORT);
+    const control = await loadLeg(
+      join(root, "g8sw/short/control"),
+      "control",
+      SHORT,
+    );
+    ok(
+      judgeRss(swap, control, SHORT, 1, 0.5).detail ===
+        "Allocator in-use heap deltas 0.000, 0.000, 0.000 MiB (bound 1); RssAnon deltas 4.00, 4.00, 4.00 MiB (absolute offset unbounded: one-time allocator residency accepted as debt; slope over cycles 2-3: 0.00 of 0.5 MiB/cycle); RssFile deltas 15.00, 15.00, 15.00 MiB; RssShmem deltas 0.00, 0.00, 0.00 MiB; allocator fordblks deltas 0.00, 0.00, 0.00 MiB; hblkhd deltas 0.00, 0.00, 0.00 MiB (reported without bounds)",
+      "Linux RSS detail stays byte-identical",
+    );
   }
 
   // --- swap-accounting: each field of the rule, in a teardown and in an idle row ---------------
@@ -642,7 +729,13 @@ try {
   {
     // keep-served must fail BOTH rules: the accounting alone is not enough
     const { root } = build("sab-served-no-rss", {
-      sabotage: { "keep-served": { fault: "keep-served", rssAnon: () => 184 } },
+      sabotage: {
+        "keep-served": {
+          fault: "keep-served",
+          rssAnon: () => 184,
+          inUse: () => 120,
+        },
+      },
     });
     const { m } = await verdict(root);
     ok(
@@ -673,6 +766,367 @@ try {
     );
   }
 
+  // Missing census readings must never count as sabotage catches, even beside a real violation.
+  for (const [field, sab, judge] of [
+    ["capture_thread_count", "keep-hub", judgeThreads],
+    ["inet_sockets", "keep-listener", judgeFds],
+  ] as const) {
+    for (const platform of ["linux", "windows"] as const)
+      for (const value of [undefined, null, "0"]) {
+        const { root, g } = build(
+          `${platform === "windows" ? "windows-" : ""}missing-${field}-${value}`,
+        );
+        if (platform === "windows") windowsTree(g);
+        const path = join(g, `short/sabotage-${sab}/evidence/swap-cycle.jsonl`);
+        rewriteJson(path, (r) => {
+          r[field] = value;
+        });
+        const leg = await loadLeg(
+          join(g, `short/sabotage-${sab}`),
+          "swap",
+          SHORT,
+        );
+        const j = judge(leg, "swap");
+        ok(
+          j.evidence.some((e) => e.includes(field)),
+          `${field} absence is evidence`,
+        );
+        ok(j.rule.length === 0, `${field} absence is never a rule violation`);
+        const { m } = await verdict(root);
+        ok(
+          !passes(m, `sabotage-${sab}-caught`),
+          `missing ${field} cannot catch ${sab}`,
+        );
+        rewriteJson(join(g, "short/swap/evidence/swap-cycle.jsonl"), (r) => {
+          r[field] = value;
+        });
+        const check =
+          field === "inet_sockets" ? "swap-cycle-fds" : "swap-cycle-threads";
+        const bad = await verdict(root);
+        ok(
+          !passes(bad.m, check),
+          `${platform} missing ${field} fails ${check}`,
+        );
+        ok(
+          bad.m.get(check)?.detail?.includes(`no valid ${field}`),
+          `${platform} missing ${field} is evidence`,
+        );
+      }
+  }
+
+  // Every row and teardown is explicitly platform-tagged; never infer a platform from fields.
+  for (const location of ["swap-cycle.jsonl", "teardown.json"]) {
+    for (const platform of [undefined, "plan9"]) {
+      const { root, g } = build(`platform-${location}-${platform}`);
+      rewriteJson(join(g, "short/swap/evidence", location), (r) => {
+        r.platform = platform;
+      });
+      const { m } = await verdict(root);
+      ok(
+        !passes(m, "swap-accounting"),
+        `invalid platform in ${location} fails accounting`,
+      );
+      ok(
+        m.get("swap-accounting")?.detail?.includes("platform"),
+        "names platform evidence",
+      );
+    }
+  }
+  {
+    const { root, g } = build("null-teardown");
+    writeFileSync(join(g, "short/swap/evidence/teardown.json"), "null");
+    ok(
+      !passes((await verdict(root)).m, "swap-accounting"),
+      "null teardown is missing evidence",
+    );
+  }
+  {
+    const { root, g } = build("mixed-platform");
+    rewriteJson(join(g, "short/swap/evidence/swap-cycle.jsonl"), (r, i) => {
+      if (i === 0) r.platform = "windows";
+    });
+    ok(!passes((await verdict(root)).m, "swap-cycle-rss"), "mixed rows fail");
+  }
+  {
+    const { root, g } = build("pair-platform-mismatch");
+    windowsTree(join(g, "short/swap"));
+    const { m } = await verdict(root);
+    ok(!passes(m, "swap-cycle-rss"), "swap/control platform mismatch fails");
+    ok(
+      m.get("swap-cycle-rss")?.detail?.includes("platform"),
+      "pair mismatch names platform",
+    );
+  }
+  {
+    const { root, g } = build("windows-honest");
+    windowsTree(g);
+    const { m, r } = await verdict(root);
+    for (const id of IDS.filter((id) => id !== "swap-cycle-standby-cpu"))
+      ok(passes(m, id), `Windows passes ${id}: ${m.get(id)?.detail}`);
+    const cpu = r.checks.find((c) => c.id === "swap-cycle-standby-cpu");
+    ok(
+      cpu?.status === "not-run" && !cpu.passed && cpu.gating === false,
+      "Windows CPU is not judged",
+    );
+    ok(
+      cpu?.detail?.includes(
+        "no per-frame main-thread CPU source on Windows (WLS-b)",
+      ),
+      "Windows CPU explains missing source",
+    );
+    const swap = await loadLeg(join(g, "short/swap"), "swap", SHORT);
+    const control = await loadLeg(join(g, "short/control"), "control", SHORT);
+    ok(
+      judgeCpu(swap, control, SHORT).evidence.includes(
+        "no per-frame main-thread CPU source on Windows (WLS-b)",
+      ),
+      "Windows judgeCpu fails closed even with frames.csv",
+    );
+    ok(
+      m.get("swap-cycle-fds")?.detail?.includes("handles_total"),
+      "Windows reports handles",
+    );
+    ok(
+      JSON.stringify(r.report.rss).includes("process_heap_allocated"),
+      "Windows report names process heap",
+    );
+    for (const [label, field, mutate] of [
+      [
+        "heap",
+        "process_heap",
+        (r: Record<string, unknown>) => {
+          delete r.process_heap;
+        },
+      ],
+      [
+        "private",
+        "private_bytes",
+        (r: Record<string, unknown>) => {
+          delete r.private_bytes;
+        },
+      ],
+    ] as const) {
+      const path = join(
+        g,
+        "short/sabotage-keep-served/evidence/swap-cycle.jsonl",
+      );
+      const original = readFileSync(path, "utf8");
+      rewriteJson(path, mutate);
+      const bad = await verdict(root);
+      ok(
+        !passes(bad.m, "sabotage-keep-served-caught"),
+        `missing Windows ${label} cannot catch sabotage`,
+      );
+      ok(
+        bad.m.get("sabotage-keep-served-caught")?.detail?.includes(field),
+        `names missing ${field}`,
+      );
+      writeFileSync(path, original);
+    }
+    const cli = (
+      platform: string,
+      checks = IDS.filter((id) => id !== "swap-cycle-standby-cpu").join(","),
+    ) =>
+      spawnSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "--conditions=development",
+          join(import.meta.dirname, "../check-g8sw.ts"),
+          "--out",
+          root,
+          "--checks",
+          checks,
+          "--expect-platform",
+          platform,
+        ],
+        { encoding: "utf8" },
+      );
+    ok(cli("windows").status === 0, "CLI accepts Windows and all nine checks");
+    const wrong = cli("linux");
+    ok(
+      wrong.status !== 0 &&
+        `${wrong.stdout}${wrong.stderr}`.includes("platform"),
+      "CLI rejects wrong expected platform",
+    );
+    ok(
+      cli("windows", "unknown-check").status !== 0,
+      "CLI rejects absent named check",
+    );
+    ok(cli("windows", "").status !== 0, "CLI rejects empty check selection");
+  }
+  {
+    const { root, g } = build("windows-control-no-heap");
+    windowsTree(g);
+    rewriteJson(join(g, "short/control/evidence/swap-cycle.jsonl"), (r) => {
+      delete r.process_heap;
+    });
+    const { m } = await verdict(root);
+    ok(!passes(m, "swap-cycle-rss"), "Windows control needs process_heap");
+    ok(
+      m.get("swap-cycle-rss")?.detail?.includes("no valid idle process_heap"),
+      "missing Windows control process_heap is evidence",
+    );
+  }
+  {
+    const { root, g } = build("windows-private-slope-two-pairs", {
+      short: { rssAnon: (k) => 180 + 1.6 * k },
+    });
+    windowsTree(g);
+    const { m } = await verdict(root);
+    ok(passes(m, "swap-cycle-rss"), "Windows two-pair slope is reported only");
+    ok(
+      m
+        .get("swap-cycle-rss")
+        ?.detail?.includes(
+          "slope over cycles 2-3: 1.60 MiB/cycle, not judged: needs >= 4 pairs",
+        ),
+      "Windows short slope detail reports the value and minimum pair count",
+    );
+    ok(
+      passes(m, "sabotage-keep-served-caught"),
+      "Windows keep-served fails accounting and the heap bound with an unjudged short slope",
+    );
+  }
+  {
+    // Windows keeps the Linux rule: accounting alone does not catch keep-served
+    const { root, g } = build("windows-keep-served-accounting-only", {
+      sabotage: {
+        "keep-served": {
+          fault: "keep-served",
+          rssAnon: () => 184,
+          inUse: () => 120,
+        },
+      },
+    });
+    windowsTree(g);
+    ok(
+      !passes((await verdict(root)).m, "sabotage-keep-served-caught"),
+      "Windows keep-served needs swap-cycle-rss to fail too",
+    );
+  }
+  for (const n of [4, 5]) {
+    const { g } = build(`windows-private-slope-${n - 1}-pairs`);
+    writeLeg(join(g, "short/swap"), {
+      kind: "swap",
+      n,
+      rssAnon: (k) => 180 + 1.6 * k,
+    });
+    writeLeg(join(g, "short/control"), { kind: "control", n });
+    windowsTree(g);
+    const swap = await loadLeg(join(g, "short/swap"), "swap", n);
+    const control = await loadLeg(join(g, "short/control"), "control", n);
+    const j = judgeRss(swap, control, n, 1, 0.5);
+    ok(
+      j.evidence.length === 0,
+      `Windows ${n - 1}-pair slope has complete evidence`,
+    );
+    if (n === 5) {
+      ok(
+        j.rule.some((r) =>
+          r.includes("private_bytes slope over cycles 2-5: 1.60"),
+        ),
+        "Windows four-pair slope over the bound fails",
+      );
+      ok(!j.detail.includes("not judged"), "Windows four-pair slope is judged");
+    } else {
+      ok(j.rule.length === 0, "Windows three-pair slope is reported only");
+      ok(
+        j.detail.includes("not judged: needs >= 4 pairs"),
+        "Windows three-pair detail explains the minimum",
+      );
+    }
+  }
+  {
+    const { root, g } = build("windows-heap-bound-two-pairs", {
+      short: { inUse: () => 122 },
+    });
+    windowsTree(g);
+    const { m } = await verdict(root);
+    ok(!passes(m, "swap-cycle-rss"), "Windows 2 MiB heap delta fails RSS");
+    ok(
+      m
+        .get("swap-cycle-rss")
+        ?.detail?.includes(
+          "process_heap.allocated_bytes delta 2.00 MiB (bound 1)",
+        ),
+      "Windows heap bound stays judged with only two slope pairs",
+    );
+  }
+  {
+    const { root } = build("linux-private-slope-two-pairs", {
+      short: { rssAnon: (k) => 180 + 1.6 * k },
+    });
+    const { m } = await verdict(root);
+    ok(
+      !passes(m, "swap-cycle-rss"),
+      "Linux two-pair RssAnon slope still fails",
+    );
+    ok(
+      m
+        .get("swap-cycle-rss")
+        ?.detail?.includes(
+          "slope over cycles 2-3: +1.60 MiB/cycle (bound 0.5)",
+        ),
+      "Linux slope failure detail is unchanged",
+    );
+  }
+  {
+    const { root, g } = build("windows-zero-private-pairs");
+    windowsTree(g);
+    rewriteJson(join(g, "short/swap/evidence/swap-cycle.jsonl"), (r) => {
+      delete r.private_bytes;
+    });
+    const { m } = await verdict(root);
+    ok(!passes(m, "swap-cycle-rss"), "Windows zero private pairs fail RSS");
+    ok(
+      m.get("swap-cycle-rss")?.detail?.includes("no valid idle private_bytes"),
+      "Windows zero private pairs are missing evidence",
+    );
+  }
+  {
+    const { root, g } = build("windows-keep-served-no-judged-failure", {
+      sabotage: { "keep-served": "honest" },
+    });
+    windowsTree(g);
+    ok(
+      !passes((await verdict(root)).m, "sabotage-keep-served-caught"),
+      "Windows keep-served is not caught when neither judged check fails",
+    );
+  }
+  {
+    const { root, g } = build("windows-fields-not-inferred");
+    windowsTree(g);
+    rewriteJson(join(g, "short/swap/evidence/swap-cycle.jsonl"), (r) => {
+      r.malloc = { uordblks: 120 * MB, fordblks: 20 * MB, hblkhd: 40 * MB };
+      r.rss_anon_bytes = 180 * MB;
+      delete r.process_heap;
+      delete r.private_bytes;
+    });
+    ok(
+      !passes((await verdict(root)).m, "swap-cycle-rss"),
+      "Linux fields cannot substitute Windows fields",
+    );
+  }
+  {
+    const { root, g } = build("zero-rows");
+    writeFileSync(join(g, "short/swap/evidence/swap-cycle.jsonl"), "");
+    for (const id of [
+      "swap-accounting",
+      "swap-cycle-threads",
+      "swap-cycle-fds",
+      "swap-cycle-rss",
+    ])
+      ok(!passes((await verdict(root)).m, id), `zero rows fails ${id}`);
+  }
+  {
+    const { root, g } = build("zero-legs");
+    rmSync(g, { recursive: true });
+    const { m } = await verdict(root);
+    for (const id of IDS) ok(!passes(m, id), `zero legs fails ${id}`);
+  }
+  console.log(`cases: ${cases.join(", ")}`);
   console.log(`self-test-gate8-swap: ${assertions} assertions passed`);
 } finally {
   rmSync(out, { recursive: true, force: true });

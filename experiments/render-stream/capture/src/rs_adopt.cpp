@@ -1,3 +1,4 @@
+#include "rs_platform.h"
 #include "rs_adopt.h"
 
 #include <algorithm>
@@ -2545,11 +2546,11 @@ EvictDrainResult adopt_evict_drain(std::size_t max, std::uint64_t frame) {
     *dest = 0;
     const GDExtensionConstTypePtr set_args[] = {&one, &one, &mipmaps, &format, bytes.ptr()};
     // Only the in-place shrinks run between the RSS reads; all candidates and bytes are ready.
-    const auto before = stats.rss_test ? evict_read_rss_anon() : -1;
+    const auto before = stats.rss_test ? anon_reading().bytes : -1;
     for (const auto &c : candidates) {
       g_iface.object_method_bind_ptrcall(g_reload_bind[kReloadSetData], c.object, set_args, nullptr);
     }
-    const auto after = stats.rss_test ? evict_read_rss_anon() : -1;
+    const auto after = stats.rss_test ? anon_reading().bytes : -1;
     if (stats.rss_test) {
       ++stats.rss_batches;
       if (before >= 0 && after >= 0 && before > after)

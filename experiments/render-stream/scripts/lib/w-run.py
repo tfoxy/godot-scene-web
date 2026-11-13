@@ -33,13 +33,18 @@ def run_check(name, argv, bundle, out, env=None, timeout_s=300):
         for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
             if line.startswith(("client-carrier-check: leg ", "wlive-carriers:", "wlive-wss:")):
                 print(line, flush=True)
+    if name == "wswap":
+        for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith(("wswap leg ", "wswap check ", "wswap:")):
+                print(line, flush=True)
     wall = round(time.monotonic() - start, 3)
     print(f"{'ok  ' if rc == 0 else 'FAIL'} {name}: rc={rc}, {wall:.3f} s", flush=True)
     return {"name": name, "rc": rc, "wall_s": wall, "timed_out": timed_out}
 
 
 def read_manifest(bundle, suite="capture"):
-    manifest = json.loads((bundle / ("wlive/manifest.json" if suite == "live" else "manifest.json")).read_text(encoding="utf-8"))
+    path = {"capture": "manifest.json", "live": "wlive/manifest.json", "swap": "wswap/manifest.json"}[suite]
+    manifest = json.loads((bundle / path).read_text(encoding="utf-8"))
     if manifest.get("schema") != "render-stream-w-manifest/1":
         raise ValueError("unsupported bundle manifest schema")
     for group in ("tests", "imports_only", "sabotage"):
@@ -60,12 +65,18 @@ def read_manifest(bundle, suite="capture"):
         or manifest["imports_only"] or manifest["sabotage"]
     ):
         raise ValueError("live manifest must contain exactly the two Python live legs")
+    if suite == "swap" and (
+        [e["name"] for e in manifest["tests"]] != ["wswap"]
+        or any(e.get("interpreter") != "python" or e.get("timeout_s") != 1500 for e in manifest["tests"])
+        or manifest["imports_only"] or manifest["sabotage"]
+    ):
+        raise ValueError("swap manifest must contain exactly one Python wswap entry with timeout_s 1500")
     return manifest
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--suite", choices=("capture", "live"), default="capture")
+    parser.add_argument("--suite", choices=("capture", "live", "swap"), default="capture")
     parser.add_argument("--bundle", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--id", default="windows")
@@ -124,12 +135,13 @@ def main():
                         stream.write((out / "logs" / (result["name"] + ".log")).read_bytes())
                 checks.append(combined)
         rc = int(any(r["rc"] != 0 for r in tests + checks))
-    groups = {name: {"passed": 0, "total": 0} for name in ("w-ctest", "w-imports", "w-1", "w-file")}
+    groups = {name: {"passed": 0, "total": 0} for name in ("w-ctest", "w-imports", "w-1", "w-file", "w-swap")}
     for result in tests + checks:
         name = result["name"]
         if name == "bundle":
             continue
-        group = ("w-file" if name.startswith("wfile-") else
+        group = ("w-swap" if name == "wswap" else
+                 "w-file" if name.startswith("wfile-") else
                  "w-1" if name.startswith("w1-") else
                  "w-imports" if name.startswith(("w-imports", "w-exports-")) else "w-ctest")
         groups[group]["total"] += 1
