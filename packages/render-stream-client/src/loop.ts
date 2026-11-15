@@ -139,6 +139,9 @@ export const MESSAGE_APPLY_MAX_UNDRAWN = 2;
 /** Backoff before reconnect attempt n (1-based): 1, 2, 4, 8 s, then 10 s. */
 export const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 10000] as const;
 const CLOSE_WAIT_MS = 2000;
+/** Resource GETs in flight at once. The host serves at most 8 HTTP connections and a seat
+ * may have 2 viewers, so 4 each never queues behind the other viewer. */
+const FETCH_PARALLEL = 4;
 const RTT_SAMPLES = 64;
 const APPLY_RING = 256;
 
@@ -555,13 +558,24 @@ export class StreamLoop {
         );
       const transport = conn.transport as RenderStreamTransport;
       const token = this.endpoint.token;
+      // Bodies are staged as they arrive, unless the recorder needs each whole body.
+      const stager =
+        this.recorder === null
+          ? (this.o.core.stageStream?.bind(this.o.core) ?? null)
+          : null;
       this.makeFetcher = () =>
         new LiveFetcher(
-          (path, signal) => transport.fetchResource(path, { token, signal }),
+          (path, signal, opts) =>
+            transport.fetchResource(path, {
+              token,
+              signal,
+              stream: opts?.stream === true,
+            }),
           httpPath,
           this.o.fetchTimeoutMs ?? 10000,
           0,
           (r) => this.stageFetched(r),
+          { maxInFlight: FETCH_PARALLEL, stager },
         );
       this.fetcher = this.makeFetcher();
     }

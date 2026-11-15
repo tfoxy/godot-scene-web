@@ -100,6 +100,10 @@ export interface StreamCore {
   checkFetch(hash: string): string;
   /** A fetched body, verified and decoded on arrival; the refusal, or null. */
   stage(hash: string, bytes: Uint8Array): string | null;
+  /** A fetched body staged as it arrives, each chunk hashed when written, with no copy of
+   * the whole body; `sizeHint` (its `Content-Length`, 0 when unknown) sizes the buffer only.
+   * Absent: the fetcher stages whole bodies through `stage`. */
+  stageStream?(hash: string, sizeHint: number): StagingStream;
   isStaged(hash: string): boolean;
   /** The next needed payload from the stage into the store; the refusal, or null. */
   provideStaged(): string | null;
@@ -117,6 +121,16 @@ export interface StreamCore {
   reset(keepPayloads: boolean): void;
   heapBytes(): number;
   dispose(): void;
+}
+
+/** One payload being staged as it arrives (`StreamCore.stageStream`). After `finish` or `abort`
+ * nothing more is written; an unfinished stream must be aborted, which frees its buffer. */
+export interface StagingStream {
+  /** The body's next bytes (copied into wasm and hashed now). */
+  write(chunk: Uint8Array): void;
+  /** The body is complete: verified and decoded as `stage` would; the refusal, or null. */
+  finish(): string | null;
+  abort(): void;
 }
 
 const STAT_SEQ = STAT_FIELDS.indexOf("seq");
@@ -286,6 +300,42 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     const ptr = this.g.alloc_payload(bytes.length);
     new Uint8Array(this.memory.buffer, ptr, bytes.length).set(bytes);
     return this.g.stage_payload(bytes.length, hash) < 0 ? this.g.error() : null;
+  }
+
+  stageStream(hash: string, sizeHint: number): StagingStream {
+    const g = this.g;
+    const id = g.stream_begin(hash, Math.max(0, Math.floor(sizeHint)) >>> 0);
+    let refused = id < 0 ? g.error() : null;
+    let open = id > 0;
+    // A reconnect that rebuilt the instance (or a dispose) dropped the stream with it.
+    const live = (): boolean => open && this.instance === g;
+    const memory = this.memory;
+    return {
+      write(chunk) {
+        if (!live() || chunk.length === 0) return;
+        const ptr = g.stream_chunk_ptr(id, chunk.length);
+        if (ptr === 0) {
+          open = false; // a reset dropped it
+          refused = "resource-unavailable: the payload stream was dropped";
+          return;
+        }
+        // The view is taken after the reservation, which may have grown the memory.
+        new Uint8Array(memory.buffer, ptr, chunk.length).set(chunk);
+        g.stream_commit(id, chunk.length);
+      },
+      finish() {
+        if (!live())
+          return (
+            refused ?? "resource-unavailable: the payload stream was dropped"
+          );
+        open = false;
+        return g.stream_finish(id) < 0 ? g.error() : null;
+      },
+      abort() {
+        if (live()) g.stream_abort(id);
+        open = false;
+      },
+    };
   }
 
   isStaged(hash: string): boolean {

@@ -167,21 +167,52 @@ pub fn decode_texture(bytes: &[u8]) -> Result<TexturePayload<'_>, Error> {
 
 /// `decodeTexturePayload()` at a protocol `version` (the float formats are sized from /8).
 pub fn decode_texture_v(bytes: &[u8], version: u8) -> Result<TexturePayload<'_>, Error> {
-    if bytes.len() < 16 || bytes[..8] != GRT1_MAGIC {
+    let h = texture_header_v(bytes, bytes.len(), version)?;
+    Ok(TexturePayload {
+        format: h.format,
+        width: h.width,
+        height: h.height,
+        mipmaps: h.mipmaps,
+        data: &bytes[h.data_at..h.data_at + h.data_len],
+    })
+}
+
+/// A GRT1 payload's header, validated against the payload's whole length: everything
+/// [`decode_texture_v`] reads except the data bytes themselves, which start at `data_at`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextureHeader {
+    pub format: String,
+    pub width: i64,
+    pub height: i64,
+    pub mipmaps: bool,
+    pub data_at: usize,
+    pub data_len: usize,
+}
+
+/// [`decode_texture_v`]'s checks, over `head` (the payload's first bytes: all of them, or at least
+/// its whole header, magic to `data_len` inclusive) and the payload's `total_len`. A streamed payload
+/// splits its header off this way and keeps the data bytes in their own buffer; the result, and every
+/// refusal, is the one [`decode_texture_v`] gives the contiguous bytes.
+pub fn texture_header_v(head: &[u8], total_len: usize, version: u8) -> Result<TextureHeader, Error> {
+    if total_len < 16 || head.len() < 16 || head[..8] != GRT1_MAGIC {
         return Err(err(
             "payload-magic",
             "the first 8 bytes are not the GRT1 magic",
         ));
     }
-    let meta_len = le_u32(bytes, 8) as usize;
-    if 12 + meta_len + 4 > bytes.len() {
+    let meta_len = le_u32(head, 8) as usize;
+    if 12 + meta_len + 4 > total_len {
         return Err(err(
             "payload-length",
             "meta_len runs past the end of the payload",
         ));
     }
+    assert!(
+        12 + meta_len + 4 <= head.len(),
+        "texture_header_v needs the whole header"
+    );
     let (format, width, height, mipmaps, data_bytes) =
-        payload_meta(&bytes[12..12 + meta_len], |ck, v| {
+        payload_meta(&head[12..12 + meta_len], |ck, v| {
             let f = ck.fields(
                 v,
                 &["type", "format", "width", "height", "mipmaps", "data_bytes"],
@@ -203,7 +234,7 @@ pub fn decode_texture_v(bytes: &[u8], version: u8) -> Result<TexturePayload<'_>,
             ))
         })?;
     let data_len_at = 12 + meta_len;
-    let data_len = le_u32(bytes, data_len_at) as i64;
+    let data_len = le_u32(head, data_len_at) as i64;
     if data_len != data_bytes {
         return Err(err(
             "payload-length",
@@ -211,7 +242,7 @@ pub fn decode_texture_v(bytes: &[u8], version: u8) -> Result<TexturePayload<'_>,
         ));
     }
     let data_at = data_len_at + 4;
-    if data_at + data_len as usize != bytes.len() {
+    if data_at + data_len as usize != total_len {
         return Err(err(
             "payload-length",
             "the trailing bytes do not equal data_len",
@@ -227,12 +258,13 @@ pub fn decode_texture_v(bytes: &[u8], version: u8) -> Result<TexturePayload<'_>,
             ));
         }
     }
-    Ok(TexturePayload {
+    Ok(TextureHeader {
         format,
         width,
         height,
         mipmaps,
-        data: &bytes[data_at..data_at + data_len as usize],
+        data_at,
+        data_len: data_len as usize,
     })
 }
 

@@ -295,6 +295,56 @@ describe("render-stream client loop", () => {
     });
   });
 
+  it("up to four GETs go out at once; completions in any order provide in wasm's order", async () => {
+    const h = streaming();
+    const t = h.last();
+    const need = ["a1", "a2", "a3", "a4", "a5"];
+    t.on.message(tx(1, need));
+    h.clock.frame();
+    expect(t.gets.map((g) => g.path.split("/").at(-1))).toEqual(
+      need.slice(0, 4),
+    );
+    for (const i of [3, 0, 2]) t.gets[i].resolve(200);
+    await flush();
+    h.clock.frame(); // a5 goes out
+    expect(t.gets).toHaveLength(5);
+    expect(h.core.calls).not.toContain("apply 1");
+    t.gets[4].resolve(200);
+    t.gets[1].resolve(200);
+    await flush();
+    h.clock.frame();
+    expect(
+      h.core.calls.filter((c) => /^(apply|stage|provide)/.test(c)),
+    ).toEqual([
+      "stage a4",
+      "stage a1",
+      "stage a3",
+      "stage a5",
+      "stage a2",
+      "provide",
+      "provide",
+      "provide",
+      "provide",
+      "provide",
+      "apply 1",
+    ]);
+  });
+
+  it("a failed GET aborts the others in flight and fails for its transaction", async () => {
+    const h = streaming();
+    const t = h.last();
+    t.on.message(tx(1, ["b1", "b2", "b3"]));
+    h.clock.frame();
+    t.gets[1].resolve(404);
+    await flush();
+    expect([t.gets[0].aborted, t.gets[2].aborted]).toEqual([true, true]);
+    h.clock.frame();
+    expect(h.statuses.at(-1)).toMatchObject({
+      kind: "failed",
+      reason: "resource-unavailable",
+    });
+  });
+
   it("a context loss holds the loop, and the restore redraws in place", () => {
     const h = streaming();
     const t = h.last();

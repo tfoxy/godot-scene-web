@@ -24,7 +24,7 @@ use gsw_canvas_draw_list::Format;
 use gsw_canvas_draw_list::{Binding, UniformValue};
 use render_stream_core::apply::geom::{self, Xform};
 use render_stream_core::apply::material_residency::MaterialCounts;
-use render_stream_core::apply::payloads::{PayloadStage, PayloadStore};
+use render_stream_core::apply::payloads::{PayloadStage, PayloadStore, PayloadStream};
 use render_stream_core::apply::programs::{ProgramEntry, ProgramInfo};
 use render_stream_core::apply::residency::TextureAccount;
 use render_stream_core::apply::retention::Retention;
@@ -614,6 +614,10 @@ pub struct GswRs {
     needed_bytes: Vec<u8>,
     provide_cursor: usize,
     payload_buf: Vec<u8>,
+    /// Payloads arriving in pieces (`stream_begin` .. `stream_finish`), each in its own buffer
+    /// so concurrent fetches never share one; keyed by the id `stream_begin` returned.
+    streams: HashMap<u32, PayloadStream>,
+    next_stream: u32,
     first_tx: bool,
     /// Record index of each accepted record, session first (the validator's digest order).
     accepted: Vec<usize>,
@@ -871,6 +875,8 @@ impl GswRs {
             needed_bytes: Vec::new(),
             provide_cursor: 0,
             payload_buf: Vec::new(),
+            streams: HashMap::new(),
+            next_stream: 0,
             first_tx: true,
             accepted: Vec::new(),
             digested: 0,
@@ -1113,6 +1119,7 @@ impl GswRs {
         self.w11 = W11Totals::default();
         self.summary_dispose = (0, 0, 0);
         self.stage.clear();
+        self.streams.clear();
         self.verify = VerifyCounts::default();
         self.needed.clear();
         self.accepted.clear();
@@ -1692,6 +1699,7 @@ impl GswRs {
         self.payloads.dynamic.clear();
         self.retention.clear();
         self.stage.clear();
+        self.streams.clear();
         self.needed.clear();
         self.provide_cursor = 0;
         self.accepted.clear();
@@ -1801,6 +1809,84 @@ impl GswRs {
                 -1
             }
         }
+    }
+
+    /// Begin staging the payload fetched for `hash_hex` as it arrives, in pieces (a fetch
+    /// body's chunks), instead of whole through `alloc_payload` and `stage_payload`. `size_hint`
+    /// (the response's `Content-Length`, 0 when unknown) only sizes the buffer reserved for it,
+    /// with no zero fill; a longer body grows it. Returns the stream's id (> 0), or -1 (`error`).
+    /// Each piece: `stream_chunk_ptr`, a write through a view taken after that call (it may grow
+    /// the memory), `stream_commit` (hashes it). Then `stream_finish`, or `stream_abort`.
+    pub fn stream_begin(&mut self, hash_hex: &str, size_hint: usize) -> i32 {
+        let Some(hash) = Hash::from_hex(hash_hex) else {
+            self.error = format!("resource-unavailable: {hash_hex:?} is not a sha256 hex name");
+            return -1;
+        };
+        self.next_stream = if self.next_stream >= i32::MAX as u32 {
+            1
+        } else {
+            self.next_stream + 1
+        };
+        let id = self.next_stream;
+        self.streams.insert(
+            id,
+            PayloadStream::new(hash, self.version, !self.opts.skip_payload_hash, size_hint),
+        );
+        id as i32
+    }
+
+    /// Room for the next `len` bytes of stream `id`, written by the caller through a view of
+    /// the memory taken after this call. 0 when `id` is not open (aborted, or a reset dropped it).
+    pub fn stream_chunk_ptr(&mut self, id: u32, len: usize) -> *mut u8 {
+        match self.streams.get_mut(&id) {
+            Some(s) => s.spare(len),
+            None => std::ptr::null_mut(),
+        }
+    }
+
+    /// The `len` bytes just written at `stream_chunk_ptr(id, n)` (`len <= n`) are the stream's
+    /// next piece: hashed now. -1 when `id` is not open.
+    pub fn stream_commit(&mut self, id: u32, len: usize) -> i32 {
+        let Some(s) = self.streams.get_mut(&id) else {
+            self.error = format!("resource-unavailable: payload stream {id} is not open");
+            return -1;
+        };
+        // SAFETY: the caller wrote these `len` bytes at the spare capacity `stream_chunk_ptr`
+        // returned (the ABI's contract), and wasm linear memory has no uninitialized bytes.
+        unsafe { s.commit(len) };
+        0
+    }
+
+    /// Stream `id` is complete: its SHA-256 (hashed piece by piece) checked against the hash it
+    /// began for, and the payload decoded and staged, exactly as `stage_payload` stages the same
+    /// bytes (and refuses them: `resource-hash`, nothing staged). An unmipmapped RGBA8 texture keeps
+    /// the stream's buffer as its pixels. The buffer is freed either way.
+    pub fn stream_finish(&mut self, id: u32) -> i32 {
+        let Some(s) = self.streams.remove(&id) else {
+            self.error = format!("resource-unavailable: payload stream {id} is not open");
+            return -1;
+        };
+        match self.stage.stage_stream(s) {
+            Ok(()) => {
+                self.verify.staged += 1;
+                0
+            }
+            Err(e) => {
+                self.verify.refused += 1;
+                self.error = fail(e);
+                -1
+            }
+        }
+    }
+
+    /// Drop stream `id` and free its buffer (a failed, aborted or superseded fetch).
+    pub fn stream_abort(&mut self, id: u32) {
+        self.streams.remove(&id);
+    }
+
+    /// The payload streams open now (the shell's leak check).
+    pub fn stream_count(&self) -> u32 {
+        self.streams.len() as u32
     }
 
     /// Whether `hash_hex` is staged (verified, not yet provided).

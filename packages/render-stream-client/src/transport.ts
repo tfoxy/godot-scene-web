@@ -11,11 +11,20 @@ export interface RenderStreamTransport {
   /** One control message (JSON text: the hello, an ack, a resync). */
   send(text: string): void;
   close(code: number, reason: string): void;
-  /** `GET resourceBase + path`; `body` is null when the response had none. */
+  /** `GET resourceBase + path`; `body` is null when the response had none. With `stream`
+   * set, a transport may answer a 200 with `stream` (the body as it arrives, which the caller
+   * reads to its end or cancels) and `body` null instead; `sizeHint` is then its
+   * `Content-Length`, 0 when unknown, and only a hint (a content-encoded body decodes longer).
+   * A transport that ignores `stream` answers with `body` as always. */
   fetchResource(
     path: string,
-    init: { token: string | null; signal: AbortSignal },
-  ): Promise<{ status: number; body: ArrayBuffer | null }>;
+    init: { token: string | null; signal: AbortSignal; stream?: boolean },
+  ): Promise<{
+    status: number;
+    body: ArrayBuffer | null;
+    stream?: ReadableStream<Uint8Array> | null;
+    sizeHint?: number;
+  }>;
 }
 
 export interface RenderStreamTransportEvents {
@@ -77,6 +86,15 @@ export const webSocketTransport: RenderStreamTransportFactory = (
         cache: "default",
         credentials: "omit",
       });
+      if (init.stream === true && res.status === 200 && res.body !== null) {
+        const length = Number(res.headers.get("content-length") ?? "");
+        return {
+          status: res.status,
+          body: null,
+          stream: res.body,
+          sizeHint: Number.isSafeInteger(length) && length > 0 ? length : 0,
+        };
+      }
       return { status: res.status, body: await res.arrayBuffer() };
     },
   };

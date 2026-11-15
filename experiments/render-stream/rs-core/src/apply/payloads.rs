@@ -789,52 +789,52 @@ pub fn verify_decode(
     version: u8,
     verify: bool,
 ) -> Result<Decoded, crate::wire::Error> {
-    use crate::payload::{
-        decode_mesh, decode_shader, decode_texture_v, payload_kind, PayloadKind,
-    };
     use crate::prof;
     let t = prof::start();
     if verify {
-        let actual = crate::wire::sha256(bytes);
-        if actual != *expected {
-            return Err(crate::wire::Error::new(
-                "resource-hash",
-                format!(
-                    "payload sha256 {} disagrees with the wire's {}",
-                    actual.to_hex(),
-                    expected.to_hex()
-                ),
-            ));
-        }
+        check_hash(crate::wire::sha256(bytes), expected)?;
     }
     prof::add(prof::PAYLOAD_HASH, t);
     let t = prof::start();
-    let bad = |e: String| crate::wire::Error::new("resource-payload", e);
-    let d = match payload_kind(bytes, version) {
+    let d = decode_payload(bytes, version)?;
+    prof::add(prof::PAYLOAD_DECODE, t);
+    Ok(d)
+}
+
+/// `resource-hash` unless the payload's `actual` SHA-256 is the wire's `expected` one.
+fn check_hash(actual: Hash, expected: &Hash) -> Result<(), crate::wire::Error> {
+    if actual != *expected {
+        return Err(crate::wire::Error::new(
+            "resource-hash",
+            format!(
+                "payload sha256 {} disagrees with the wire's {}",
+                actual.to_hex(),
+                expected.to_hex()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn bad_payload(e: String) -> crate::wire::Error {
+    crate::wire::Error::new("resource-payload", e)
+}
+
+/// [`verify_decode`]'s decode by magic, of bytes whose hash was already checked.
+fn decode_payload(bytes: &[u8], version: u8) -> Result<Decoded, crate::wire::Error> {
+    use crate::payload::{decode_mesh, decode_shader, decode_texture_v, payload_kind, PayloadKind};
+    let bad = bad_payload;
+    Ok(match payload_kind(bytes, version) {
         PayloadKind::Texture => {
             let t = decode_texture_v(bytes, version)?;
-            if version < 8 && crate::payload::float_pixel_size(&t.format).is_some() {
-                return Err(bad(format!(
-                    "texture format {} is a float format, legal at /8 only",
-                    t.format
-                )));
-            }
-            // G8kp: a block payload (legal only at /9, decode_texture_v sized it) stays compressed.
-            let block = if version >= 9 {
-                texture_block_level0(&t.format, t.width as u32, t.height as u32, t.data)
-            } else {
-                None
-            };
-            // P3-CK: a half-float payload stays half (RGBA16F), as GLES3 keeps it.
-            let block = block
-                .or_else(|| texture_rgba16f(&t.format, t.width as u32, t.height as u32, t.data));
-            let mut px = match block {
-                Some(b) => b.map_err(bad)?,
-                None => texture_rgba8(&t.format, t.width as u32, t.height as u32, t.data)
-                    .map_err(bad)?,
-            };
-            px.mipmaps = t.mipmaps;
-            Decoded::Texture(px)
+            Decoded::Texture(texture_pixels(
+                &t.format,
+                t.width as u32,
+                t.height as u32,
+                t.mipmaps,
+                t.data,
+                version,
+            )?)
         }
         PayloadKind::Mesh => {
             let m = decode_mesh(bytes)?;
@@ -863,9 +863,232 @@ pub fn verify_decode(
                 "a KTX2 payload is a delivery variant, not a drawable texture".to_string(),
             ))
         }
+    })
+}
+
+/// A GRT1 texture's data bytes as the store holds them: block level 0 (/9), RGBA16F for a half
+/// format, else straight RGBA8.
+fn texture_pixels(
+    format: &str,
+    width: u32,
+    height: u32,
+    mipmaps: bool,
+    data: &[u8],
+    version: u8,
+) -> Result<TexturePixels, crate::wire::Error> {
+    let bad = bad_payload;
+    if version < 8 && crate::payload::float_pixel_size(format).is_some() {
+        return Err(bad(format!(
+            "texture format {format} is a float format, legal at /8 only"
+        )));
+    }
+    // G8kp: a block payload (legal only at /9, decode_texture_v sized it) stays compressed.
+    let block = if version >= 9 {
+        texture_block_level0(format, width, height, data)
+    } else {
+        None
     };
-    prof::add(prof::PAYLOAD_DECODE, t);
-    Ok(d)
+    // P3-CK: a half-float payload stays half (RGBA16F), as GLES3 keeps it.
+    let block = block.or_else(|| texture_rgba16f(format, width, height, data));
+    let mut px = match block {
+        Some(b) => b.map_err(bad)?,
+        None => texture_rgba8(format, width, height, data).map_err(bad)?,
+    };
+    px.mipmaps = mipmaps;
+    Ok(px)
+}
+
+/// The most a size hint reserves up front; a longer body grows its buffer as it arrives.
+const STREAM_HINT_MAX: usize = 256 << 20;
+
+/// A GRT1 header longer than this is never split off (the payload stays contiguous).
+const STREAM_SPLIT_HEADER_MAX: usize = 1 << 20;
+
+enum StreamSplit {
+    /// Fewer than 8 bytes so far.
+    Undecided,
+    /// Not GRT1 (or a header too long to split): the body stays one buffer.
+    Contiguous,
+    /// GRT1, its header not complete yet.
+    Pending,
+    /// GRT1: the header is in `header`, and `buf` holds only the data bytes.
+    Split,
+}
+
+/// A payload arriving in pieces (a fetch body's chunks). Each piece is hashed as it arrives
+/// (an incremental SHA-256, so [`PayloadStream::finish`] hashes nothing), and the bytes land in a
+/// buffer reserved once from the size hint with no zero fill. A GRT1 texture's header is split off
+/// as soon as it is complete, so `buf` holds exactly the data bytes and an unmipmapped RGBA8
+/// texture moves that buffer into its pixels instead of copying it. The hint only sizes the
+/// reservation: a body longer than it grows, and correctness never depends on it (a
+/// content-encoded body's decoded length differs from its `Content-Length`).
+pub struct PayloadStream {
+    expected: Hash,
+    version: u8,
+    verify: bool,
+    hasher: Option<sha2::Sha256>,
+    buf: Vec<u8>,
+    header: Vec<u8>,
+    split: StreamSplit,
+    /// Bytes received, header included.
+    total: usize,
+}
+
+impl PayloadStream {
+    pub fn new(expected: Hash, version: u8, verify: bool, size_hint: usize) -> Self {
+        use sha2::Digest;
+        PayloadStream {
+            expected,
+            version,
+            verify,
+            hasher: verify.then(sha2::Sha256::new),
+            buf: Vec::with_capacity(size_hint.min(STREAM_HINT_MAX)),
+            header: Vec::new(),
+            split: StreamSplit::Undecided,
+            total: 0,
+        }
+    }
+
+    pub fn expected(&self) -> &Hash {
+        &self.expected
+    }
+
+    /// Bytes received so far.
+    pub fn len(&self) -> usize {
+        self.total
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+
+    /// Room for the next `len` bytes: a pointer to `len` bytes of spare capacity, which the
+    /// caller fills and then [`commit`](Self::commit)s. The buffer may move (it grows when the
+    /// hint was short), so the pointer is valid only until the next call on this stream.
+    pub fn spare(&mut self, len: usize) -> *mut u8 {
+        self.buf.reserve(len);
+        self.buf.spare_capacity_mut().as_mut_ptr().cast::<u8>()
+    }
+
+    /// The next `len` bytes, written through [`spare`](Self::spare), are part of the payload.
+    ///
+    /// # Safety
+    /// The caller wrote all `len` bytes at the pointer the last `spare(n)` (with `n >= len`)
+    /// returned. (On wasm32, where every byte of linear memory is initialized, a short write
+    /// exposes stale bytes, never uninitialized memory; the hash then refuses them.)
+    pub unsafe fn commit(&mut self, len: usize) {
+        let from = self.buf.len();
+        assert!(len <= self.buf.capacity() - from, "commit past spare");
+        // SAFETY: the caller initialized these `len` bytes of spare capacity.
+        unsafe { self.buf.set_len(from + len) };
+        self.arrived(from);
+    }
+
+    /// The next bytes of the payload, copied in.
+    pub fn write(&mut self, bytes: &[u8]) {
+        let from = self.buf.len();
+        self.buf.extend_from_slice(bytes);
+        self.arrived(from);
+    }
+
+    fn arrived(&mut self, from: usize) {
+        use crate::prof;
+        use sha2::Digest;
+        let t = prof::start();
+        if let Some(h) = self.hasher.as_mut() {
+            h.update(&self.buf[from..]);
+        }
+        prof::add(prof::PAYLOAD_HASH, t);
+        self.total += self.buf.len() - from;
+        loop {
+            match self.split {
+                StreamSplit::Undecided if self.buf.len() >= 8 => {
+                    self.split = if self.buf[..8] == crate::payload::GRT1_MAGIC {
+                        StreamSplit::Pending
+                    } else {
+                        StreamSplit::Contiguous
+                    };
+                }
+                StreamSplit::Pending if self.buf.len() >= 12 => {
+                    let meta_len = crate::wire::le_u32(&self.buf, 8) as usize;
+                    if meta_len > STREAM_SPLIT_HEADER_MAX {
+                        self.split = StreamSplit::Contiguous;
+                        continue;
+                    }
+                    let data_at = 16 + meta_len;
+                    if self.buf.len() < data_at {
+                        return;
+                    }
+                    // Only the bytes already past the header move (at most one piece).
+                    self.header = self.buf[..data_at].to_vec();
+                    let n = self.buf.len();
+                    self.buf.copy_within(data_at..n, 0);
+                    self.buf.truncate(n - data_at);
+                    self.split = StreamSplit::Split;
+                }
+                _ => return,
+            }
+        }
+    }
+
+    /// The whole payload is in: the SHA-256 check (`resource-hash`, as [`verify_decode`]) and the
+    /// decode. Every result and refusal is [`verify_decode`]'s for the same bytes.
+    pub fn finish(self) -> Result<(Decoded, usize), crate::wire::Error> {
+        use crate::prof;
+        use sha2::Digest;
+        let t = prof::start();
+        if let Some(h) = self.hasher {
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&h.finalize());
+            check_hash(Hash(out), &self.expected)?;
+        }
+        prof::add(prof::PAYLOAD_HASH, t);
+        let t = prof::start();
+        let total = self.total;
+        let d = match self.split {
+            StreamSplit::Split => {
+                let h = crate::payload::texture_header_v(&self.header, total, self.version)?;
+                Decoded::Texture(texture_pixels_owned(h, self.buf, self.version)?)
+            }
+            _ => decode_payload(&self.buf, self.version)?,
+        };
+        prof::add(prof::PAYLOAD_DECODE, t);
+        Ok((d, total))
+    }
+}
+
+/// [`texture_pixels`] over the data bytes in their own buffer: an unmipmapped RGBA8 texture takes
+/// the buffer as its pixels (no copy); every other format converts as [`texture_pixels`] does.
+fn texture_pixels_owned(
+    h: crate::payload::TextureHeader,
+    mut data: Vec<u8>,
+    version: u8,
+) -> Result<TexturePixels, crate::wire::Error> {
+    let level0 = h.width as usize * h.height as usize * 4;
+    if h.format == "RGBA8" && !h.mipmaps && data.len() == level0 {
+        if data.capacity() - data.len() > 64 << 10 {
+            data.shrink_to_fit();
+        }
+        return Ok(TexturePixels {
+            width: h.width as u32,
+            height: h.height as u32,
+            data_len: data.len(),
+            rgba: std::sync::Arc::new(data),
+            format: h.format,
+            mipmaps: false,
+            compressed: None,
+            half: None,
+            floats: None,
+        });
+    }
+    texture_pixels(
+        &h.format,
+        h.width as u32,
+        h.height as u32,
+        h.mipmaps,
+        &data,
+        version,
+    )
 }
 
 /// G7o2: payloads verified and decoded when they arrive (a fetch completion, between frames),
@@ -913,6 +1136,32 @@ impl PayloadStage {
             }
             Err(e) => {
                 self.staged.remove(expected);
+                self.refused_count += 1;
+                Err(e)
+            }
+        }
+    }
+
+    /// [`stage`](Self::stage) for a payload that arrived in pieces: hashed as it came, checked
+    /// and decoded here, held until `take`. A refused payload leaves nothing staged under its hash.
+    pub fn stage_stream(&mut self, stream: PayloadStream) -> Result<(), crate::wire::Error> {
+        let expected = *stream.expected();
+        let verify = stream.verify;
+        match stream.finish() {
+            Ok((decoded, bytes)) => {
+                self.staged.insert(
+                    expected,
+                    Staged {
+                        decoded,
+                        bytes,
+                        verified: verify,
+                    },
+                );
+                self.staged_count += 1;
+                Ok(())
+            }
+            Err(e) => {
+                self.staged.remove(&expected);
                 self.refused_count += 1;
                 Err(e)
             }
@@ -1297,6 +1546,207 @@ mod tests {
         // The skip-payload-hash sabotage stages it, marked unverified.
         stage.stage(&bad, &hash, 2, false).unwrap();
         assert!(!stage.take(&hash).unwrap().verified);
+    }
+
+    /// `bytes` streamed in pieces of `chunk` bytes (through `spare`/`commit` on odd pieces,
+    /// `write` on even ones).
+    fn streamed(bytes: &[u8], expected: &Hash, version: u8, verify: bool, chunk: usize, hint: usize)
+        -> Result<(Decoded, usize), crate::wire::Error> {
+        let mut st = PayloadStream::new(*expected, version, verify, hint);
+        for (i, piece) in bytes.chunks(chunk.max(1)).enumerate() {
+            if i % 2 == 0 {
+                let p = st.spare(piece.len());
+                // SAFETY: `spare` reserved `piece.len()` bytes at `p`; all of them are written.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(piece.as_ptr(), p, piece.len());
+                    st.commit(piece.len());
+                }
+            } else {
+                st.write(piece);
+            }
+        }
+        st.finish()
+    }
+
+    /// Every chunking of `bytes` decodes (or is refused) exactly as `verify_decode` does it whole.
+    fn assert_stream_matches(bytes: &[u8], expected: &Hash, version: u8, verify: bool) {
+        let whole = verify_decode(bytes, expected, version, verify);
+        let n = bytes.len();
+        for chunk in [1, 2, 3, 7, 11, 13, 16, 17, 61, 64, 4093, n.max(1)] {
+            for hint in [0, n, n / 2, n * 3] {
+                let got = streamed(bytes, expected, version, verify, chunk, hint);
+                match (&whole, &got) {
+                    (Ok(a), Ok((b, len))) => {
+                        assert_eq!(format!("{a:?}"), format!("{b:?}"), "chunk {chunk} hint {hint}");
+                        assert_eq!(*len, n);
+                    }
+                    (Err(a), Err(b)) => assert_eq!(
+                        (a.code, &a.detail),
+                        (b.code, &b.detail),
+                        "chunk {chunk} hint {hint}"
+                    ),
+                    (a, b) => panic!("chunk {chunk} hint {hint}: whole {a:?} streamed {b:?}"),
+                }
+            }
+        }
+    }
+
+    fn grt1_any(format: &str, width: u32, height: u32, mipmaps: bool, data: &[u8]) -> Vec<u8> {
+        let meta = format!(
+            r#"{{"type":"texture-2d","format":"{format}","width":{width},"height":{height},"mipmaps":{mipmaps},"data_bytes":{}}}"#,
+            data.len()
+        );
+        let mut b = crate::payload::GRT1_MAGIC.to_vec();
+        b.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+        b.extend_from_slice(meta.as_bytes());
+        b.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        b.extend_from_slice(data);
+        b
+    }
+
+    fn noise(n: usize, seed: u32) -> Vec<u8> {
+        let mut x = seed.wrapping_mul(2654435761).max(1);
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                x as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn incremental_sha256_equals_the_one_shot_digest() {
+        use sha2::Digest;
+        let bytes = noise(100_003, 7);
+        let whole = crate::wire::sha256(&bytes);
+        for chunk in [1, 3, 63, 64, 65, 4097, 100_003] {
+            let mut h = sha2::Sha256::new();
+            for p in bytes.chunks(chunk) {
+                h.update(p);
+            }
+            assert_eq!(h.finalize()[..], whole.0[..], "chunk {chunk}");
+        }
+    }
+
+    #[test]
+    fn a_streamed_payload_decodes_as_the_whole_one_at_every_chunking() {
+        let mut payloads: Vec<(Vec<u8>, u8)> = vec![
+            (grt1_any("RGBA8", 33, 7, false, &noise(33 * 7 * 4, 1)), 2),
+            (grt1_any("RGB8", 5, 3, false, &noise(45, 2)), 2),
+            (grt1_any("RGBA8", 4, 4, true, &noise(64 + 16 + 4, 3)), 2),
+            (grt1_any("RGBAH", 3, 2, false, &noise(48, 4)), 8),
+            (grt1_any("RGBAF", 2, 1, false, &f32_bytes(&[0.5, 2.0, -1.0, 0.25, 0.0, 1.0, 0.5, 0.5])), 8),
+        ];
+        payloads.push((include_bytes!("../../../protocol/golden-10/payloads/mesh1-a.grm").to_vec(), 10));
+        payloads.push((include_bytes!("../../../protocol/golden-10/payloads/shader2-tint-v1.grp").to_vec(), 10));
+        payloads.push((include_bytes!("../../../protocol/golden-10/payloads/dxt5-16x16-mips.grt").to_vec(), 10));
+        payloads.push((include_bytes!("../../../protocol/golden-10/payloads/mip16.grt").to_vec(), 10));
+        payloads.push((include_bytes!("../../../protocol/golden-10/payloads/ktx2-4x4.ktx2").to_vec(), 10));
+        for (bytes, version) in &payloads {
+            let hash = crate::wire::sha256(bytes);
+            assert_stream_matches(bytes, &hash, *version, true);
+            assert_stream_matches(bytes, &hash, *version, false);
+        }
+    }
+
+    /// Malformed bodies are refused with `verify_decode`'s very code and detail: a header cut
+    /// short, a body one byte short or long, a bad meta, a float format before /8, an empty body.
+    #[test]
+    fn a_malformed_streamed_payload_is_refused_as_the_whole_one() {
+        let good = grt1_any("RGBA8", 3, 2, false, &noise(24, 5));
+        let mut cases: Vec<(Vec<u8>, u8)> = vec![
+            (Vec::new(), 2),
+            (good[..5].to_vec(), 2),
+            (good[..14].to_vec(), 2),
+            (good[..good.len() - 1].to_vec(), 2),
+            ([good.clone(), vec![0]].concat(), 2),
+            (grt1_any("RGBA8", 3, 2, false, &noise(20, 6)), 2),
+            (grt1_any("RGBAF", 1, 1, false, &noise(16, 7)), 7),
+            (grt1_any("PNG", 1, 1, false, &noise(4, 8)), 2),
+        ];
+        let mut long_meta = good.clone();
+        long_meta[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+        cases.push((long_meta, 2));
+        let mut bad_meta = good.clone();
+        bad_meta[13] = b'!';
+        cases.push((bad_meta, 2));
+        for (bytes, version) in &cases {
+            assert!(verify_decode(bytes, &crate::wire::sha256(bytes), *version, true).is_err());
+            assert_stream_matches(bytes, &crate::wire::sha256(bytes), *version, true);
+            assert_stream_matches(bytes, &crate::wire::sha256(bytes), *version, false);
+        }
+    }
+
+    /// Sabotage: one corrupted byte in any piece is refused at staging (`resource-hash`), nothing is
+    /// staged, and a good copy staged earlier under that hash is dropped, as `stage` does it.
+    #[test]
+    fn a_corrupted_streamed_byte_is_refused_before_use() {
+        let bytes = grt1_any("RGBA8", 16, 16, false, &noise(1024, 9));
+        let hash = crate::wire::sha256(&bytes);
+        for at in [0, 9, 20, bytes.len() / 2, bytes.len() - 1] {
+            let mut bad = bytes.clone();
+            bad[at] ^= 0x01;
+            let e = streamed(&bad, &hash, 2, true, 37, bad.len()).unwrap_err();
+            assert_eq!(e.code, "resource-hash");
+            assert_eq!(
+                e.detail,
+                verify_decode(&bad, &hash, 2, true).unwrap_err().detail
+            );
+        }
+        let stream = |b: &[u8], verify: bool| {
+            let mut st = PayloadStream::new(hash, 2, verify, b.len());
+            st.write(b);
+            st
+        };
+        let mut bad = bytes.clone();
+        bad[bytes.len() - 10] ^= 0x80;
+        let mut stage = PayloadStage::default();
+        stage.stage_stream(stream(&bytes, true)).unwrap();
+        assert!(stage.has(&hash));
+        assert_eq!(stage.stage_stream(stream(&bad, true)).unwrap_err().code, "resource-hash");
+        assert!(!stage.has(&hash));
+        assert_eq!((stage.staged_count, stage.refused_count), (1, 1));
+        // skip-payload-hash stages it, marked unverified.
+        stage.stage_stream(stream(&bad, false)).unwrap();
+        let s = stage.take(&hash).unwrap();
+        assert!(!s.verified);
+        assert_eq!(s.bytes, bad.len());
+    }
+
+    /// The unmipmapped RGBA8 path moves the streamed data buffer into the texture (no copy), and
+    /// its pixels equal the copying path's.
+    #[test]
+    fn an_rgba8_stream_moves_its_buffer_into_the_texture() {
+        let data = noise(64 * 32 * 4, 11);
+        let bytes = grt1_any("RGBA8", 64, 32, false, &data);
+        let hash = crate::wire::sha256(&bytes);
+        let mut st = PayloadStream::new(hash, 2, true, bytes.len());
+        for p in bytes.chunks(1000) {
+            st.write(p);
+        }
+        assert!(matches!(st.split, StreamSplit::Split));
+        assert_eq!(st.buf.len(), data.len());
+        let buf_ptr = st.buf.as_ptr();
+        let (d, len) = st.finish().unwrap();
+        assert_eq!(len, bytes.len());
+        let Decoded::Texture(px) = d else { panic!("a texture") };
+        assert_eq!(px.rgba.as_ptr(), buf_ptr, "moved, not copied");
+        let Decoded::Texture(old) = verify_decode(&bytes, &hash, 2, true).unwrap() else {
+            panic!("a texture")
+        };
+        assert_eq!(px.rgba[..], old.rgba[..]);
+        assert_eq!(px.rgba[..], data[..]);
+        assert_eq!(
+            (px.width, px.height, px.data_len, px.mipmaps, px.held_bytes()),
+            (old.width, old.height, old.data_len, old.mipmaps, old.held_bytes())
+        );
+        // An overlong hint is not kept as slack in the held pixels.
+        let mut st = PayloadStream::new(hash, 2, true, bytes.len() * 4);
+        st.write(&bytes);
+        let Decoded::Texture(px) = st.finish().unwrap().0 else { panic!("a texture") };
+        assert!(px.rgba.capacity() - px.rgba.len() <= 64 << 10);
     }
 
     fn provide_n(store: &mut PayloadStore, n: u8) -> Hash {

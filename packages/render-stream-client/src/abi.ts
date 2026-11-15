@@ -16,6 +16,15 @@ export interface GswRs {
   /** Verify and decode a payload on arrival / provide the next needed one from there. */
   stage_payload(len: number, hash: string): number;
   provide_staged(): number;
+  /** A payload staged as its body arrives, piece by piece, in its own buffer: begin (the id,
+   * or -1), per piece a pointer then a commit (hashed there), then finish (verify, decode,
+   * stage; -1 on a refusal) or abort. `stream_count` is the streams open. */
+  stream_begin(hash: string, sizeHint: number): number;
+  stream_chunk_ptr(id: number, len: number): number;
+  stream_commit(id: number, len: number): number;
+  stream_finish(id: number): number;
+  stream_abort(id: number): void;
+  stream_count(): number;
   /** A KTX2 (uastc) payload: verified, transcoded in the worker, staged; or refused. */
   is_ktx2(hash: string): boolean;
   stage_ktx2(len: number, hash: string): number;
