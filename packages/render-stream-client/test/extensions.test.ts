@@ -8,10 +8,15 @@ import {
   type ExtensionFrame,
   ExtensionHost,
   type ExtensionSession,
+  ITEM_ROW_STRIDE,
   type ItemMetaBatch,
+  type ItemQuery,
   invertAffine,
   mergeWants,
   mulAffine,
+  queryEpoch,
+  queryItemRows,
+  queryVisibleMany,
   type RenderStreamExtension,
 } from "../src/extensions";
 import { clientHello } from "../src/hello";
@@ -70,6 +75,25 @@ class ExtCore extends FakeCore implements ExtensionCore {
   }
   querySubtreeRect(): ArrayLike<number> {
     return [0, 0, 14, 24];
+  }
+  itemVisible(id: number): boolean {
+    return id >= 1 && id <= 3; // the whole tree is visible
+  }
+  queryItems(ids: ArrayLike<number>, out: Float64Array): void {
+    for (let k = 0; k < ids.length; k++) {
+      const f = this.queryItem(ids[k]);
+      out.fill(0, k * 14, k * 14 + 14);
+      if (f.length === 0) out[k * 14] = -1;
+      else for (let i = 0; i < 14; i++) out[k * 14 + i] = f[i];
+    }
+  }
+  itemsVisible(ids: ArrayLike<number>, out: Uint8Array): void {
+    for (let k = 0; k < ids.length; k++)
+      out[k] = this.itemVisible(ids[k]) ? 1 : 0;
+  }
+  epoch = 1;
+  queryEpoch(): number {
+    return this.epoch;
   }
   queryChildren(id: number): Uint32Array {
     return Uint32Array.from(id < 3 ? [id + 1] : []);
@@ -1012,5 +1036,125 @@ describe("render-stream client extensions (TAG2)", () => {
     // Nothing was computed by binding or by a table edit.
     ext.overrides.translate(1, 0, -10);
     expect(core.calls).toEqual([]);
+  });
+});
+
+describe("render-stream client item queries (I1/I2)", () => {
+  /** The public calls alone, over the same core: what any hand-made `ItemQuery` gives. */
+  function plain(core: ExtCore): ItemQuery {
+    const host = new ExtensionHost([]);
+    host.bind(core);
+    const q = host.query;
+    return {
+      parent: q.parent,
+      children: q.children,
+      transform: q.transform,
+      rect: q.rect,
+      subtreeRect: q.subtreeRect,
+      visible: q.visible,
+      meta: q.meta,
+      hitTest: q.hitTest,
+    };
+  }
+
+  it("visible reads the core's visibility walk, not the item query", () => {
+    let queries = 0;
+    class Counting extends ExtCore {
+      override queryItem(id: number): ArrayLike<number> {
+        queries++;
+        return super.queryItem(id);
+      }
+    }
+    const host = new ExtensionHost([]);
+    expect(host.query.visible(3)).toBe(false); // no core yet
+    host.bind(new Counting());
+    expect(host.query.visible(3)).toBe(true);
+    expect(host.query.visible(99)).toBe(false);
+    expect(queries).toBe(0);
+  });
+
+  it("the batch helpers answer what the single calls answer, in one core call", () => {
+    let batches = 0;
+    class Counting extends ExtCore {
+      override queryItems(ids: ArrayLike<number>, out: Float64Array): void {
+        batches++;
+        super.queryItems(ids, out);
+      }
+      override itemsVisible(ids: ArrayLike<number>, out: Uint8Array): void {
+        batches++;
+        super.itemsVisible(ids, out);
+      }
+    }
+    const core = new Counting();
+    const host = new ExtensionHost([]);
+    host.bind(core);
+    const ids = [3, 99, 1, 2];
+    const vis = queryVisibleMany(host.query, ids);
+    expect([...vis]).toEqual([1, 0, 1, 1]);
+    const rows = queryItemRows(host.query, ids);
+    expect(batches).toBe(2);
+    expect(rows).toHaveLength(ids.length * ITEM_ROW_STRIDE);
+    // The fallback (a query with no batch path) reads the same rows id by id.
+    const p = plain(core);
+    expect([...queryVisibleMany(p, ids)]).toEqual([...vis]);
+    expect([...queryItemRows(p, ids)]).toEqual([...rows]);
+    expect(batches).toBe(2);
+    expect([...rows.subarray(0, ITEM_ROW_STRIDE)]).toEqual([
+      2, 1, 1, 1, 0, 0, 1, 10, 20, 1, 10, 20, 4, 4,
+    ]);
+    expect(rows[ITEM_ROW_STRIDE]).toBe(-1); // 99: no such item
+    expect([
+      ...rows.subarray(ITEM_ROW_STRIDE + 1, 2 * ITEM_ROW_STRIDE),
+    ]).toEqual(new Array(ITEM_ROW_STRIDE - 1).fill(0));
+    // A big enough `out` is reused; a short one is replaced.
+    const out = new Uint8Array(8);
+    expect(queryVisibleMany(host.query, ids, out)).toBe(out);
+    expect(queryVisibleMany(host.query, ids, new Uint8Array(1))).toHaveLength(
+      4,
+    );
+    const rowsOut = new Float64Array(4 * ITEM_ROW_STRIDE);
+    expect(queryItemRows(host.query, ids, rowsOut)).toBe(rowsOut);
+  });
+
+  it("the epoch follows the core's, starts past the last on a new core, and is null elsewhere", () => {
+    const host = new ExtensionHost([]);
+    expect(queryEpoch(host.query)).toBe(0);
+    const a = new ExtCore();
+    host.bind(a);
+    const e1 = queryEpoch(host.query)!;
+    expect(queryEpoch(host.query)).toBe(e1);
+    a.epoch = 5;
+    const e2 = queryEpoch(host.query)!;
+    expect(e2).toBeGreaterThan(e1);
+    host.bind(new ExtCore()); // epoch 1 again inside the new core
+    expect(queryEpoch(host.query)!).toBeGreaterThan(e2);
+    expect(queryEpoch(plain(a))).toBeNull();
+  });
+
+  it("the dispatch memo keeps its own copy when the core's scratch row is overwritten", () => {
+    const scratch = new Float64Array(ITEM_ROW_STRIDE);
+    class Scratch extends ExtCore {
+      override queryItem(id: number): ArrayLike<number> {
+        const f = super.queryItem(id);
+        if (f.length === 0) return f;
+        scratch.set(f);
+        return scratch;
+      }
+    }
+    const core = new Scratch();
+    const seen: unknown[] = [];
+    const host = new ExtensionHost([
+      {
+        id: "m",
+        beforeDraw: (f) => {
+          seen.push(f.query.transform(3));
+          core.queryItem(1); // another reader of the same scratch (a pointer resolver)
+          seen.push(f.query.rect(3));
+        },
+      },
+    ]);
+    host.bind(core);
+    host.beforeDraw(1, 0);
+    expect(seen).toEqual([[1, 0, 0, 1, 10, 20], { x: 10, y: 20, w: 4, h: 4 }]);
   });
 });

@@ -104,7 +104,19 @@ export interface GswRs {
   take_removed(): Uint32Array;
   set_overrides(ids: Uint32Array, vals: Float32Array): number;
   refresh_overrides(): number;
-  query_item(id: number): Float64Array;
+  /** 1 when the item's row was written at `query_item_ptr()` (14 f64), 0 for no such item. */
+  query_item(id: number): number;
+  query_item_ptr(): number;
+  /** 1 visible, 0 not, 2 no such item. */
+  item_visible(id: number): number;
+  /** Room for a batch of `n` u32 ids; returns its address. */
+  query_ids(n: number): number;
+  /** The batch's rows (14 f64 per id); returns their address. */
+  query_items(n: number): number;
+  /** The batch's visibility bytes (1, 0, 2 as `item_visible`); returns their address. */
+  items_visible(n: number): number;
+  /** Moves whenever an item query may answer differently. */
+  query_epoch(): number;
   query_subtree_rect(id: number): Float64Array;
   query_children(id: number): Uint32Array;
   // Pointer mapping.
@@ -241,6 +253,12 @@ export const CLIENT_CORE_METHODS = [
   "set_overrides",
   "refresh_overrides",
   "query_item",
+  "query_item_ptr",
+  "item_visible",
+  "query_ids",
+  "query_items",
+  "items_visible",
+  "query_epoch",
   "query_subtree_rect",
   "query_children",
   "hit_test",

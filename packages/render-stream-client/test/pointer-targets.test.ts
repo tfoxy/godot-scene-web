@@ -205,6 +205,7 @@ describe("pointerTargetResolver", () => {
     const q = coreItemQuery(() => ({
       queryItem: (id: number) =>
         id === 3 ? [-1, 1, 1, 1, 0, 0, 1, 100, 50, 0, 0, 0, 0, 0] : [],
+      itemVisible: (id: number) => id === 3,
       queryChildren: () => new Uint32Array(0),
       querySubtreeRect: () => [],
       hitTest: () => 3,

@@ -231,6 +231,25 @@ class TreeCore implements ExtensionCore {
   querySubtreeRect(): ArrayLike<number> {
     return [];
   }
+  itemVisible(id: number): boolean {
+    return this.nodes.has(id);
+  }
+  queryItems(ids: ArrayLike<number>, out: Float64Array): void {
+    for (let k = 0; k < ids.length; k++) {
+      const f = this.queryItem(ids[k]);
+      out.fill(0, k * 14, k * 14 + 14);
+      if (f.length === 0) out[k * 14] = -1;
+      else for (let i = 0; i < 14; i++) out[k * 14 + i] = f[i];
+    }
+  }
+  itemsVisible(ids: ArrayLike<number>, out: Uint8Array): void {
+    for (let k = 0; k < ids.length; k++)
+      out[k] = this.itemVisible(ids[k]) ? 1 : 0;
+  }
+  epoch = 1;
+  queryEpoch(): number {
+    return this.epoch;
+  }
   queryChildren(id: number): Uint32Array {
     this.childQueries++;
     const out: number[] = [];

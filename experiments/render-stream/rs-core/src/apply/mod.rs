@@ -708,6 +708,9 @@ pub struct Applier {
     pub meshes: meshes::MeshResidency,
     /// G7o2: the apply count; an item's `lowered_at` names the apply that last lowered it.
     serial: u64,
+    /// I1: moves when an item record is created or freed or an item is re-lowered
+    /// ([`Applier::items_epoch`]).
+    items_epoch: u64,
     /// G7o2: the previous assembly's buffers, reused (and compared) by the next.
     spare_indices: Vec<u32>,
     spare_draws: Vec<Draw>,
@@ -1166,6 +1169,7 @@ impl Applier {
             material_counts: Default::default(),
             meshes: meshes::MeshResidency::default(),
             serial: 0,
+            items_epoch: 0,
             spare_indices: Vec::new(),
             spare_draws: Vec::new(),
             spare: Spare::default(),
@@ -2281,6 +2285,7 @@ impl Applier {
         // Removed items.
         for id in removed {
             if let Some(rec) = self.items.remove(id) {
+                self.items_epoch += 1;
                 self.free_rows.push(rec.row);
                 self.vertex_holes += rec.vcap;
                 self.stats.freed += 1;
@@ -2307,6 +2312,7 @@ impl Applier {
                 }
                 self.overrides.remove(&id);
                 let rec = self.items.remove(&id).unwrap();
+                self.items_epoch += 1;
                 self.free_rows.push(rec.row);
                 self.back_buffer_items.remove(&id);
                 if self.group_quads.remove(&id).is_some() {
@@ -2370,6 +2376,7 @@ impl Applier {
                 self.deps
                     .note(id, None, (&rec.lowered, &rec.tex_sizes, &rec.mesh_versions));
                 self.items.insert(id, rec);
+                self.items_epoch += 1;
                 self.stats.created += 1;
                 self.count_commands(it);
                 why |= Why::ITEM_ADDED;
@@ -2421,6 +2428,7 @@ impl Applier {
                     self.deps
                         .note(id, Some(rec), (&lowered, &tex_sizes, &mesh_versions));
                     Self::install_lowering(&mut self.spare, rec, lowered, tex_sizes, mesh_versions);
+                    self.items_epoch += 1;
                     rec.content_version = it.content_version;
                     let moved_range =
                         Self::place_vertices(&mut self.list, rec, &mut self.vertex_holes);
@@ -2545,6 +2553,7 @@ impl Applier {
                 self.deps
                     .note(id, Some(rec), (&lowered, &tex_sizes, &mesh_versions));
                 Self::install_lowering(&mut self.spare, rec, lowered, tex_sizes, mesh_versions);
+                self.items_epoch += 1;
                 let moved_range = Self::place_vertices(&mut self.list, rec, &mut self.vertex_holes);
                 Self::sync_row_flags(&mut self.list, rec, self.walk_serial, &mut self.stats);
                 if same && !moved_range {
@@ -4205,6 +4214,8 @@ impl Applier {
 mod cg3_tests;
 #[cfg(test)]
 mod g7t_tests;
+#[cfg(test)]
+mod i1_tests;
 #[cfg(test)]
 mod ordering_model;
 #[cfg(test)]

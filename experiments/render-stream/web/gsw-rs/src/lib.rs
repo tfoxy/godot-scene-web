@@ -36,7 +36,7 @@ use render_stream_core::canon;
 use render_stream_core::state::VariantEncoding;
 use render_stream_core::meta::Stretch;
 use render_stream_core::prof;
-use render_stream_core::state::{Hash, Id, ShaderSource};
+use render_stream_core::state::{Hash, Id, ResolvedState, ShaderSource};
 use render_stream_core::validate::{Accepted, DigestPolicy, Options, Validator};
 use render_stream_core::wire::{self, RecordSpan};
 use std::collections::{HashMap, HashSet};
@@ -578,6 +578,42 @@ pub fn core_profile(
         .join("\n"))
 }
 
+/// I1: the floats of one item-query row (`GswRs::query_item`).
+pub const QUERY_ROW: usize = 14;
+
+/// I1/I2: the item queries' scratch ([`GswRs::query_item`] and the batches).
+#[derive(Default)]
+struct QueryScratch {
+    item: [f64; QUERY_ROW],
+    ids: Vec<u32>,
+    rows: Vec<f64>,
+    vis: Vec<u8>,
+    /// Bumped whenever the validator or the applier is replaced (each starts its epoch at 0).
+    gen: u64,
+    /// `(gen, validator epoch, applier epoch)` when `epoch` last moved.
+    last: (u64, u64, u64),
+    epoch: u64,
+}
+
+/// Item `id`'s facts in `row` ([`QUERY_ROW`] floats); false (the row untouched) when the state
+/// holds no such item.
+fn write_row(a: &Applier, state: &ResolvedState, id: u32, row: &mut [f64]) -> bool {
+    let Some(f) = a.query_item(state, id) else {
+        return false;
+    };
+    row[0] = f.parent.map_or(-1.0, f64::from);
+    row[1] = f64::from(u8::from(f.visible));
+    row[2] = f64::from(u8::from(f.xform.is_some()));
+    for (o, x) in row[3..9].iter_mut().zip(f.xform.unwrap_or([0.0; 6])) {
+        *o = f64::from(x);
+    }
+    row[9] = f64::from(u8::from(f.rect.is_some()));
+    for (o, x) in row[10..14].iter_mut().zip(f.rect.unwrap_or([0.0; 4])) {
+        *o = f64::from(x);
+    }
+    true
+}
+
 #[wasm_bindgen]
 pub struct GswRs {
     canvas: web_sys::HtmlCanvasElement,
@@ -624,6 +660,10 @@ pub struct GswRs {
     digested: usize,
     stats: Stats,
     last_exec: ExecStats,
+    /// I1: the item queries' scratch, empty until an extension queries: one item's
+    /// [`QUERY_ROW`] floats (`query_item`), the batch's ids (`query_ids`) and its rows
+    /// (`query_items`) or visibility bytes (`items_visible`).
+    query: QueryScratch,
     totals: Totals,
     /// G8g: the float payload formats (render-stream/8, D9) this receiver took as RGBA8 through
     /// rs-core's `texture_rgba8` quantization (GSW samples no float texture): the
@@ -882,6 +922,7 @@ impl GswRs {
             digested: 0,
             stats: Stats::default(),
             last_exec: ExecStats::default(),
+            query: QueryScratch::default(),
             totals: Totals::default(),
             quantized_float: std::collections::BTreeSet::new(),
             shot_buf: Vec::new(),
@@ -1113,6 +1154,7 @@ impl GswRs {
     /// Drop the session (state, payloads, list) and keep the GL context: a new repeat.
     pub fn reset(&mut self) -> i32 {
         self.validator = None;
+        self.query.gen += 1;
         self.applier = None;
         self.payloads.clear();
         self.retention.clear();
@@ -1296,6 +1338,7 @@ impl GswRs {
             variant_policy: if applier.delivery.upgrade { "upgrade" } else { "keep" },
             variant_policy_default: self.opts.variant_policy.is_none(),
         };
+        self.query.gen += 1;
         self.applier = Some(applier);
         self.viewport = Some(viewport);
         self.stats.stream = self.stream_index;
@@ -1643,6 +1686,7 @@ impl GswRs {
             }
         }
         applier.prepare(v.state(), v.delta());
+        self.query.gen += 1;
         self.applier = Some(applier);
         self.compute_needed()
     }
@@ -1690,6 +1734,7 @@ impl GswRs {
     /// session on stream `stream_index + 1`.
     pub fn live_reset(&mut self, keep_payloads: bool) -> i32 {
         self.validator = None;
+        self.query.gen += 1;
         self.applier = None;
         if !keep_payloads {
             self.payloads.clear();
@@ -2509,24 +2554,102 @@ impl GswRs {
         }
     }
 
-    /// TAG2 `ItemQuery`: the game's facts of item `id` (no override), from the newest accepted
-    /// state: `[parent (-1: none), visible, has_xform, xform x6, has_rect, rect x4]`, or empty
-    /// when the state holds no such item.
-    pub fn query_item(&self, id: u32) -> Vec<f64> {
+    /// TAG2 `ItemQuery` (I2: no allocation): writes the game's facts of item `id` (no override),
+    /// from the newest accepted state, into the scratch row at `query_item_ptr` ([`QUERY_ROW`]
+    /// floats: `[parent (-1: none), visible, has_xform, xform x6, has_rect, rect x4]`). Returns
+    /// 1, or 0 (the row untouched) when the state holds no such item.
+    pub fn query_item(&mut self, id: u32) -> u32 {
         let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_ref()) else {
-            return Vec::new();
+            return 0;
         };
-        let Some(f) = a.query_item(v.state(), id) else {
-            return Vec::new();
+        u32::from(write_row(a, v.state(), id, &mut self.query.item))
+    }
+
+    /// I2: the address of `query_item`'s row, fixed for this instance's lifetime (a caller's
+    /// view of it is re-derived only when memory grows).
+    pub fn query_item_ptr(&self) -> *const f64 {
+        self.query.item.as_ptr()
+    }
+
+    /// I1: item `id`'s effective visibility (the game's, no override; `query_item`'s `visible`)
+    /// from the ancestor walk alone: 1 visible, 0 not, 2 no such item (or no state).
+    pub fn item_visible(&self, id: u32) -> u32 {
+        let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_ref()) else {
+            return 2;
         };
-        let mut out = Vec::with_capacity(14);
-        out.push(f.parent.map_or(-1.0, f64::from));
-        out.push(f64::from(u8::from(f.visible)));
-        out.push(f64::from(u8::from(f.xform.is_some())));
-        out.extend(f.xform.unwrap_or([0.0; 6]).iter().map(|x| f64::from(*x)));
-        out.push(f64::from(u8::from(f.rect.is_some())));
-        out.extend(f.rect.unwrap_or([0.0; 4]).iter().map(|x| f64::from(*x)));
-        out
+        match a.item_visible(v.state(), id) {
+            Some(true) => 1,
+            Some(false) => 0,
+            None => 2,
+        }
+    }
+
+    /// I1: room for a batch of `n` ids, written by the caller before `query_items` or
+    /// `items_visible` (`n` u32 at the returned address, valid until memory grows).
+    pub fn query_ids(&mut self, n: usize) -> *mut u32 {
+        self.query.ids.resize(n, 0);
+        self.query.ids.as_mut_ptr()
+    }
+
+    /// I1: `query_item` for each of the first `n` batch ids, row after row ([`QUERY_ROW`] floats
+    /// each); an id the state does not hold reads `[-1, 0, ...]` (no parent, not visible, no
+    /// transform, no rect). Returns the rows' address (valid until the next batch or memory
+    /// growth).
+    pub fn query_items(&mut self, n: usize) -> *const f64 {
+        let q = &mut self.query;
+        let n = n.min(q.ids.len());
+        q.rows.clear();
+        q.rows.resize(n * QUERY_ROW, 0.0);
+        if let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_ref()) {
+            for (k, row) in q.rows.chunks_exact_mut(QUERY_ROW).enumerate() {
+                if !write_row(a, v.state(), q.ids[k], row) {
+                    row[0] = -1.0;
+                }
+            }
+        } else {
+            for row in q.rows.chunks_exact_mut(QUERY_ROW) {
+                row[0] = -1.0;
+            }
+        }
+        q.rows.as_ptr()
+    }
+
+    /// I1: `item_visible` for each of the first `n` batch ids, one byte each (1 visible, 0 not,
+    /// 2 no such item). Returns the bytes' address (valid until the next batch or memory growth).
+    pub fn items_visible(&mut self, n: usize) -> *const u8 {
+        let q = &mut self.query;
+        let n = n.min(q.ids.len());
+        q.vis.clear();
+        q.vis.resize(n, 2);
+        if let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_ref()) {
+            for (out, id) in q.vis.iter_mut().zip(&q.ids) {
+                *out = match a.item_visible(v.state(), *id) {
+                    Some(true) => 1,
+                    Some(false) => 0,
+                    None => 2,
+                };
+            }
+        }
+        q.vis.as_ptr()
+    }
+
+    /// I1: a number that changes whenever an item query (`query_item`, `item_visible`,
+    /// `query_children`, `query_subtree_rect`) may answer differently: an accepted transaction
+    /// changed an item or a canvas, an apply created, freed or re-lowered an item record, or the
+    /// state or applier was replaced. A transaction that changes no item (a static scene's new
+    /// seq) keeps it. Only grows; f64 (exact far past any session's count).
+    pub fn query_epoch(&mut self) -> f64 {
+        let q = &mut self.query;
+        let now = (
+            q.gen,
+            self.validator.as_ref().map_or(0, |v| v.items_epoch()),
+            self.applier.as_ref().map_or(0, |a| a.items_epoch()),
+        );
+        if now != q.last {
+            q.last = now;
+            q.epoch += 1;
+        }
+        q.epoch as f64
     }
 
     /// TAG2 `ItemQuery.subtreeRect`: `[x, y, w, h]`, or empty.

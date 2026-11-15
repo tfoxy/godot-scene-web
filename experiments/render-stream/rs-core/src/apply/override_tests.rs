@@ -379,6 +379,87 @@ fn queries_read_the_game_state() {
     assert!(b.query_item(&s, 99).is_none());
 }
 
+// ------------------------------------------------------------------------- I1: cheap visibility
+
+/// `item_visible` is `query_item`'s `visible`, item by item, unknown ids None.
+fn visible_agrees(b: &Applier, s: &ResolvedState) -> Vec<(Id, bool)> {
+    let mut out = Vec::new();
+    for id in [G, P, C1, C2, Q] {
+        let q = b.query_item(s, id).map(|f| f.visible);
+        assert_eq!(b.item_visible(s, id), q, "item {id}");
+        out.push((id, q.unwrap()));
+    }
+    assert_eq!(b.item_visible(s, 99), None);
+    assert!(b.query_item(s, 99).is_none());
+    out
+}
+
+#[test]
+fn item_visible_is_the_query_s_visible_slot() {
+    let store = PayloadStore::default();
+    let all = |v: bool| vec![(G, v), (P, v), (C1, v), (C2, v), (Q, v)];
+    // The plain scene: every item visible.
+    let s = base();
+    let mut b = applier();
+    b.apply(&s, &full_delta(&s), &store);
+    assert_eq!(visible_agrees(&b, &s), all(true));
+    // A hidden ancestor hides its subtree, not its parent or a sibling.
+    let mut h = base();
+    h.items.get_mut(&P).unwrap().visible = false;
+    assert_eq!(
+        visible_agrees(&b, &h),
+        vec![(G, true), (P, false), (C1, false), (C2, false), (Q, true)]
+    );
+    // An ancestor outside the cull mask hides the subtree as well; a leaf's own layer only it.
+    let mut m = base();
+    m.items.get_mut(&P).unwrap().visibility_layer = 2;
+    m.items.get_mut(&Q).unwrap().visibility_layer = 4;
+    let mut bm = Applier::new(Viewport {
+        cull_mask: 0x1 | 0x4,
+        ..*b.viewport()
+    });
+    bm.apply(&m, &full_delta(&m), &store);
+    assert_eq!(
+        visible_agrees(&bm, &m),
+        vec![(G, true), (P, false), (C1, false), (C2, false), (Q, true)]
+    );
+    // A detached canvas hides everything on it.
+    let mut d = base();
+    d.canvases.get_mut(&CANVAS).unwrap().attached = false;
+    assert_eq!(visible_agrees(&b, &d), all(false));
+    // A broken chain (the canvas gone) is known but not visible.
+    let mut k = base();
+    k.canvases.remove(&CANVAS);
+    assert_eq!(visible_agrees(&b, &k), all(false));
+}
+
+#[test]
+fn game_transforms_multiply_root_first() {
+    // Rotated and scaled transforms, so a different multiplication order would round
+    // differently: the composed transform must be the chain folded from the canvas down.
+    let store = PayloadStore::default();
+    let mut s = base();
+    let r = |a: f32, sx: f32, tx: f32, ty: f32| -> Xform {
+        let (sn, cs) = a.sin_cos();
+        [cs * sx, sn * sx, -sn * 1.3, cs * 1.3, tx, ty]
+    };
+    s.items.get_mut(&G).unwrap().xform = r(0.37, 1.1, 10.3, 200.7);
+    s.items.get_mut(&P).unwrap().xform = r(-1.21, 0.7, 5.1, 0.3);
+    s.items.get_mut(&C1).unwrap().xform = r(2.9, 1.9, 2.2, 3.3);
+    s.canvases.get_mut(&CANVAS).unwrap().xform = r(0.05, 0.9, 1.5, -2.5);
+    let mut b = Applier::new(Viewport {
+        global_xform: [1.5, 0.0, 0.0, 1.5, 0.0, 0.0],
+        ..*applier().viewport()
+    });
+    b.apply(&s, &full_delta(&s), &store);
+    let mut want = geom::mul(&b.viewport().global_xform, &s.canvases[&CANVAS].xform);
+    for id in [G, P, C1] {
+        want = geom::mul(&want, &s.items[&id].xform);
+    }
+    let f = b.query_item(&s, C1).unwrap();
+    assert_eq!(f.xform.map(|x| x.map(f32::to_bits)), Some(want.map(f32::to_bits)));
+}
+
 // ------------------------------------------------------------------------- INP1: pointer mapping
 
 fn near(a: [f32; 2], b: [f32; 2]) -> bool {
@@ -987,4 +1068,90 @@ fn a_grandchild_added_with_its_parent_under_a_frozen_root_is_held_in_any_order()
         assert!(!b.items.contains_key(&y), "({x}, {y}): the grandchild was drawn");
         assert_eq!(b.paint_digest(), held, "({x}, {y}): the frozen picture changed");
     }
+}
+
+/// I1 micro-bench (ignored; `cargo test --release --lib -- --ignored --nocapture i1_bench`):
+/// 2,000 item queries over a 2,000-item tree 12 deep, the old gsw-rs shape (`query_item` and a
+/// 14-float Vec per call) against the walk alone and the scratch-row write.
+#[test]
+#[ignore]
+fn i1_bench_two_thousand_queries() {
+
+    use crate::state::*;
+    let mut s = ResolvedState::empty(13);
+    let canvas = Parent { kind: ParentKind::Canvas, id: 1 };
+    let (n, depth) = (2000u32, 12u32);
+    let mut roots = Vec::new();
+    for id in 10..10 + n {
+        let k = id - 10;
+        let parent = if k % depth == 0 { canvas } else { in_item(id - 1) };
+        let kids = if k % depth == depth - 1 || id == 9 + n { vec![] } else { vec![id + 1] };
+        let mut it = item(id, parent, kids, Some([0.0, 0.0, 8.0, 8.0]));
+        it.xform = [1.0, 0.01, -0.01, 1.0, 3.0, 2.0];
+        if k % depth == 0 {
+            roots.push(id);
+        }
+        s.items.insert(id, it);
+    }
+    s.canvases.insert(1, Canvas { id: 1, origin: Origin::RootQuery, root: true, attached: true,
+        layer: 0, sublayer: 0, items: roots, xform: geom::IDENTITY, modulate: [1.0; 4] });
+    let mut a = Applier::new(Viewport { width: 640, height: 360, clear: [0.0, 0.0, 0.0, 1.0],
+        global_xform: geom::IDENTITY, cull_mask: 0xffff_ffff,
+        format: gsw_canvas_draw_list::Format::Rgb10A2 });
+    let delta = crate::state::TxDelta { full: true, canvases_upserted: vec![1],
+        items_upserted: s.items.keys().copied().collect(),
+        items_commands: s.items.keys().copied().collect(), ..Default::default() };
+    a.apply(&s, &delta, &super::payloads::PayloadStore::default());
+    let ids: Vec<u32> = (10..10 + n).collect();
+    let time = |label: &str, f: &mut dyn FnMut() -> f64| {
+        let mut best = f64::MAX;
+        let mut sink = 0.0;
+        for _ in 0..50 {
+            let t = std::time::Instant::now();
+            sink += f();
+            best = best.min(t.elapsed().as_secs_f64() * 1e3);
+        }
+        println!("i1-bench {label}: {best:.4} ms per 2000 (sink {sink})");
+    };
+    time("query_item+vec", &mut || {
+        let mut acc = 0.0;
+        for &id in &ids {
+            let f = a.query_item(&s, id).unwrap();
+            let mut out: Vec<f64> = Vec::with_capacity(14);
+            out.push(f.parent.map_or(-1.0, f64::from));
+            out.push(f64::from(u8::from(f.visible)));
+            out.push(f64::from(u8::from(f.xform.is_some())));
+            out.extend(f.xform.unwrap_or([0.0; 6]).iter().map(|x| f64::from(*x)));
+            out.push(f64::from(u8::from(f.rect.is_some())));
+            out.extend(f.rect.unwrap_or([0.0; 4]).iter().map(|x| f64::from(*x)));
+            acc += std::hint::black_box(out)[1];
+        }
+        acc
+    });
+    time("item_visible", &mut || {
+        let mut acc = 0.0;
+        for &id in &ids {
+            acc += f64::from(u8::from(a.item_visible(&s, id).unwrap()));
+        }
+        acc
+    });
+    let mut row = [0.0f64; 14];
+    time("query_item+row", &mut || {
+        let mut acc = 0.0;
+        for &id in &ids {
+            let f = a.query_item(&s, id).unwrap();
+            row[0] = f.parent.map_or(-1.0, f64::from);
+            row[1] = f64::from(u8::from(f.visible));
+            row[2] = f64::from(u8::from(f.xform.is_some()));
+            for (o, x) in row[3..9].iter_mut().zip(f.xform.unwrap_or([0.0; 6])) {
+                *o = f64::from(x);
+            }
+            row[9] = f64::from(u8::from(f.rect.is_some()));
+            for (o, x) in row[10..14].iter_mut().zip(f.rect.unwrap_or([0.0; 4])) {
+                *o = f64::from(x);
+            }
+            acc += std::hint::black_box(&row)[1];
+        }
+        acc
+    });
 }

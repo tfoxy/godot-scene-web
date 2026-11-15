@@ -13,7 +13,7 @@
 use super::geom::{self, Rect, Xform};
 use super::{Applier, IdMap, Why};
 use crate::apply::payloads::PayloadStore;
-use crate::state::{Id, ParentKind, ResolvedState, TxDelta};
+use crate::state::{Canvas, Id, ParentKind, ResolvedState, TxDelta};
 
 /// Floats per item in [`Applier::set_overrides`]' packed table: 6 affine (Godot's column order:
 /// x axis, y axis, origin), 4 modulate, 1 visible (0 hides the subtree), 1 frozen (FRZ-HOOK: hold
@@ -480,31 +480,49 @@ impl Applier {
 
     // ------------------------------------------------------------------------- queries
 
-    /// The game's transform chain of `id`: `(final_xform, draw_xform)` with no override, from the
-    /// resolved state (the canvas transform times every ancestor's transform).
-    fn game_xforms(&self, state: &ResolvedState, id: Id) -> Option<(Xform, Xform, bool)> {
-        let mut chain: Vec<Id> = Vec::new();
+    /// The walk from `id` up to its canvas: the effective visibility (every item on the chain
+    /// visible and in the cull mask, on an attached canvas) and the canvas, or None when the
+    /// state holds no such item or the chain breaks (a missing parent or canvas, or a cycle).
+    /// No allocation and no transform: [`Applier::item_visible`] is this walk alone.
+    fn chain_walk<'s>(&self, state: &'s ResolvedState, id: Id) -> Option<(bool, &'s Canvas)> {
         let mut cur = id;
         let mut visible = true;
+        let mut depth = 0usize;
         let canvas = loop {
             let it = state.items.get(&cur)?;
             visible &= it.visible && it.visibility_layer & self.viewport.cull_mask != 0;
-            chain.push(cur);
+            depth += 1;
             let p = it.parent?;
             match p.kind {
                 ParentKind::Item => cur = p.id,
                 _ => break state.canvases.get(&p.id)?,
             }
-            if chain.len() > state.items.len() {
+            if depth > state.items.len() {
                 return None;
             }
         };
-        visible &= canvas.attached;
-        let canvas_xf = geom::mul(&self.viewport.global_xform, &canvas.xform);
-        let mut xf = canvas_xf;
-        for k in chain.iter().rev() {
-            xf = geom::mul(&xf, &state.items[k].xform);
+        Some((visible && canvas.attached, canvas))
+    }
+
+    /// `base · xform(root) · … · xform(id)`, multiplied root first (the order a chain walk down
+    /// the tree multiplies in, so the floats are the same). The caller has walked the chain
+    /// ([`Applier::chain_walk`]), so every item exists and the recursion ends at the canvas.
+    fn compose_down(state: &ResolvedState, id: Id, base: &Xform) -> Xform {
+        let it = &state.items[&id];
+        match it.parent {
+            Some(p) if p.kind == ParentKind::Item => {
+                geom::mul(&Self::compose_down(state, p.id, base), &it.xform)
+            }
+            _ => geom::mul(base, &it.xform),
         }
+    }
+
+    /// The game's transform chain of `id`: `(final_xform, draw_xform, visible)` with no override,
+    /// from the resolved state (the canvas transform times every ancestor's transform).
+    fn game_xforms(&self, state: &ResolvedState, id: Id) -> Option<(Xform, Xform, bool)> {
+        let (visible, canvas) = self.chain_walk(state, id)?;
+        let canvas_xf = geom::mul(&self.viewport.global_xform, &canvas.xform);
+        let xf = Self::compose_down(state, id, &canvas_xf);
         let it = &state.items[&id];
         let draw = if it.use_identity_transform && !self.sabotage.ignore_identity_transform {
             canvas_xf
@@ -512,6 +530,21 @@ impl Applier {
             xf
         };
         Some((xf, draw, visible))
+    }
+
+    /// The effective visibility of item `id` (the game's, no override): what
+    /// [`Applier::query_item`] answers in `visible`, from the ancestor walk alone. None when the
+    /// state holds no such item.
+    pub fn item_visible(&self, state: &ResolvedState, id: Id) -> Option<bool> {
+        state.items.get(&id)?;
+        Some(self.chain_walk(state, id).is_some_and(|c| c.0))
+    }
+
+    /// A counter that moves whenever the applier's part of an item query may have changed: an
+    /// item record created or freed, or an item re-lowered (its own rect). The resolved state's
+    /// part moves [`crate::validate::Validator::items_epoch`].
+    pub fn items_epoch(&self) -> u64 {
+        self.items_epoch
     }
 
     /// The game's facts of item `id` (none of the table's overrides), or None when the state

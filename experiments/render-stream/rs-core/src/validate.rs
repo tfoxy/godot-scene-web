@@ -632,6 +632,8 @@ pub struct Validator {
     bytes_total: u64,
     max_record_bytes: u64,
     tx_count: i64,
+    /// I1: accepted transactions that changed an item or a canvas ([`Validator::items_epoch`]).
+    items_epoch: u64,
     full_count: i64,
     patch_count: i64,
     resource_records: i64,
@@ -1785,6 +1787,7 @@ impl Validator {
             bytes_total: (MAGIC_LEN + session_record.len()) as u64,
             max_record_bytes: session_record.len() as u64,
             tx_count: 0,
+            items_epoch: 0,
             full_count: 0,
             patch_count: 0,
             resource_records: 0,
@@ -1859,6 +1862,15 @@ impl Validator {
         &self.state
     }
     /// What the last accepted transaction changed.
+    /// I1: a counter that moves whenever an accepted transaction changed an item or a canvas
+    /// (an entry added, removed or replaced by a different one). A transaction that re-sends
+    /// identical entries, or changes only resources, leaves it: a static scene keeps one epoch
+    /// across new seqs. With [`crate::apply::Applier::items_epoch`] it bounds when an item query
+    /// may answer differently.
+    pub fn items_epoch(&self) -> u64 {
+        self.items_epoch
+    }
+
     pub fn delta(&self) -> &TxDelta {
         &self.delta
     }
@@ -5968,8 +5980,11 @@ impl Validator {
             self.commit_names();
         }
         self.skipping = false;
-        // Recycle the replaced items' and materials' buffers.
+        // Recycle the replaced items' and materials' buffers. I1: an item or canvas entry in the
+        // log (an identical entry is never logged) moves the items epoch.
+        let mut items_changed = false;
         for u in self.undo.drain(..) {
+            items_changed |= matches!(u, Undo::Item(..) | Undo::Canvas(..));
             match u {
                 Undo::Item(_, Some(it), _) if self.item_pool.len() < 4096 => {
                     self.item_pool.push(it);
@@ -5979,6 +5994,9 @@ impl Validator {
                 }
                 _ => {}
             }
+        }
+        if items_changed {
+            self.items_epoch += 1;
         }
     }
 }

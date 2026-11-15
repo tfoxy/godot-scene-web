@@ -15,7 +15,7 @@ import {
   STAT_FIELDS,
 } from "./abi";
 import type { RenderStreamProtocol } from "./endpoint";
-import type { ExtensionCore } from "./extensions";
+import { type ExtensionCore, ITEM_ROW_STRIDE } from "./extensions";
 import { GswParticles } from "./particles";
 import { definePrograms, type ProgramCounts, ProgramError } from "./programs";
 
@@ -142,6 +142,15 @@ export interface StagingStream {
   abort(): void;
 }
 
+/** `queryItem`'s answer for an item the state does not hold. */
+const NO_ROW: ArrayLike<number> = new Float64Array(0);
+
+/** `n` rows of an item the state does not hold: no parent, nothing else. */
+function fillUnknownRows(out: Float64Array, n: number): void {
+  out.fill(0, 0, n * ITEM_ROW_STRIDE);
+  for (let k = 0; k < n; k++) out[k * ITEM_ROW_STRIDE] = -1;
+}
+
 const STAT_SEQ = STAT_FIELDS.indexOf("seq");
 const STAT_FRAME = STAT_FIELDS.indexOf("frame");
 const STAT_ENCODING = STAT_FIELDS.indexOf("encoding");
@@ -165,6 +174,11 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   };
   private lastAcceptedSeq = 0;
   private statsView: Uint32Array | null = null;
+  /** The view of `query_item`'s scratch row, re-derived on a new instance or memory growth. */
+  private itemView: Float64Array | null = null;
+  /** `queryEpoch` = base + the instance's epoch; a new instance starts past the last answer. */
+  private epochBase = 1;
+  private epochLast = 1;
   private disposed = false;
   /** The decoded bytes of the last `receive`, only when `copyDecoded` asked. */
   private decoded: Uint8Array | null = null;
@@ -195,6 +209,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       this.instance = null;
       old?.free();
       this.statsView = null;
+      this.retireQueries();
       this.decoded = null;
       this.lastAcceptedSeq = 0;
       this.particles = new GswParticles();
@@ -437,8 +452,58 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     return this.g.refresh_overrides();
   }
 
+  /** A view of the core's one scratch row (no copy, no allocation): valid until the next
+   * `queryItem` on this core. */
   queryItem(id: number): ArrayLike<number> {
-    return this.instance?.query_item(id) ?? [];
+    const g = this.instance;
+    if (g === null || g.query_item(id) === 0) return NO_ROW;
+    let v = this.itemView;
+    if (v === null || v.buffer !== this.memory.buffer) {
+      v = new Float64Array(
+        this.memory.buffer,
+        g.query_item_ptr(),
+        ITEM_ROW_STRIDE,
+      );
+      this.itemView = v;
+    }
+    return v;
+  }
+
+  itemVisible(id: number): boolean {
+    return this.instance !== null && this.instance.item_visible(id) === 1;
+  }
+
+  queryItems(ids: ArrayLike<number>, out: Float64Array): void {
+    const g = this.instance;
+    const n = ids.length;
+    if (g === null) {
+      fillUnknownRows(out, n);
+      return;
+    }
+    if (n === 0) return;
+    new Uint32Array(this.memory.buffer, g.query_ids(n), n).set(ids);
+    const p = g.query_items(n);
+    out.set(new Float64Array(this.memory.buffer, p, n * ITEM_ROW_STRIDE));
+  }
+
+  itemsVisible(ids: ArrayLike<number>, out: Uint8Array): void {
+    const g = this.instance;
+    const n = ids.length;
+    if (g === null || n === 0) {
+      out.fill(0, 0, n);
+      return;
+    }
+    new Uint32Array(this.memory.buffer, g.query_ids(n), n).set(ids);
+    const v = new Uint8Array(this.memory.buffer, g.items_visible(n), n);
+    for (let k = 0; k < n; k++) out[k] = v[k] === 1 ? 1 : 0;
+  }
+
+  /** Strictly greater on a new instance than anything the old one answered. */
+  queryEpoch(): number {
+    const g = this.instance;
+    const e = this.epochBase + (g === null ? 0 : g.query_epoch());
+    this.epochLast = e;
+    return e;
   }
 
   querySubtreeRect(id: number): ArrayLike<number> {
@@ -484,7 +549,15 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     this.instance?.free();
     this.instance = null;
     this.statsView = null;
+    this.retireQueries();
     this.decoded = null;
+  }
+
+  /** The instance is going: its scratch view dies and the next epoch starts past its last. */
+  private retireQueries(): void {
+    this.itemView = null;
+    this.epochBase = this.epochLast + 1;
+    this.epochLast = this.epochBase;
   }
 
   private seqOrNull(): number | null {

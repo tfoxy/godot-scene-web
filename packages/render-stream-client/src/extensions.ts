@@ -164,7 +164,9 @@ export interface OverrideTable {
 }
 
 /** Reads the game's resolved state (the newest accepted transaction; while a transaction waits
- * for its payloads that is one ahead of the drawn picture). No override is applied. */
+ * for its payloads that is one ahead of the drawn picture). No override is applied. For many ids
+ * per frame use `queryVisibleMany` / `queryItemRows` (one core call per list), and skip the work
+ * while `queryEpoch` holds. */
 export interface ItemQuery {
   parent(id: number): number | null;
   children(id: number): Uint32Array;
@@ -217,6 +219,9 @@ export interface RenderStreamExtension {
 
 // --------------------------------------------------------------------------- the host side
 
+/** Floats per row of `queryItemRows` (and of the core's item query, gsw-rs `QUERY_ROW`). */
+export const ITEM_ROW_STRIDE = 14;
+
 /** Internal (not in the package barrel): the host query's raw `queryItem` read, so a whole-scene
  * walk (the spread module) reads each item once, with no tuple or object per item. The layout is
  * `ExtensionCore.queryItem`'s. A query without it (a test's hand-made frame) is read through the
@@ -224,6 +229,93 @@ export interface RenderStreamExtension {
 export const RAW_ITEM: unique symbol = Symbol("render-stream raw item");
 export interface RawItemQuery {
   readonly [RAW_ITEM]?: (id: number) => ArrayLike<number>;
+}
+
+/** Internal: a query's batched reads (the extension host's), behind `queryVisibleMany`,
+ * `queryItemRows` and `queryEpoch`. A query without them is read through the public calls. */
+export const BATCH_QUERY: unique symbol = Symbol("render-stream batch query");
+export interface BatchItemQuery {
+  readonly [BATCH_QUERY]?: {
+    visibleMany(ids: ArrayLike<number>, out: Uint8Array): void;
+    rows(ids: ArrayLike<number>, out: Float64Array): void;
+    epoch(): number;
+  };
+}
+
+/**
+ * `query.visible(id)` for every id, as bytes: `out[k]` is 1 when `ids[k]` is visible, 0 when it
+ * is not or the state holds no such item. One core call for the whole list on the client's own
+ * query; any other `ItemQuery` (a test's) is read id by id. `out` is reused when it holds
+ * `ids.length` bytes, else a new array is returned.
+ */
+export function queryVisibleMany(
+  query: ItemQuery,
+  ids: ArrayLike<number>,
+  out?: Uint8Array,
+): Uint8Array {
+  const n = ids.length;
+  const o = out !== undefined && out.length >= n ? out : new Uint8Array(n);
+  const batch = (query as BatchItemQuery)[BATCH_QUERY];
+  if (batch !== undefined) batch.visibleMany(ids, o);
+  else for (let k = 0; k < n; k++) o[k] = query.visible(ids[k]) ? 1 : 0;
+  return o;
+}
+
+/**
+ * The game's facts of every id (no override), `ITEM_ROW_STRIDE` floats per id, row `k` at
+ * `k * ITEM_ROW_STRIDE`: `[parent (-1: none), visible (0/1), hasTransform (0/1), transform a b c d
+ * e f, hasRect (0/1), rect x y w h]`, the values `parent`, `visible`, `transform` and `rect`
+ * answer. An id the state does not hold reads `[-1, 0, ...]`. One core call for the whole list on
+ * the client's own query. `out` is reused when it holds `ids.length` rows, else a new array is
+ * returned.
+ */
+export function queryItemRows(
+  query: ItemQuery,
+  ids: ArrayLike<number>,
+  out?: Float64Array,
+): Float64Array {
+  const n = ids.length;
+  const len = n * ITEM_ROW_STRIDE;
+  const o =
+    out !== undefined && out.length >= len ? out : new Float64Array(len);
+  const batch = (query as BatchItemQuery)[BATCH_QUERY];
+  if (batch !== undefined) {
+    batch.rows(ids, o);
+    return o;
+  }
+  o.fill(0, 0, len);
+  for (let k = 0; k < n; k++) {
+    const id = ids[k];
+    const b = k * ITEM_ROW_STRIDE;
+    o[b] = query.parent(id) ?? -1;
+    o[b + 1] = query.visible(id) ? 1 : 0;
+    const t = query.transform(id);
+    if (t !== null) {
+      o[b + 2] = 1;
+      for (let i = 0; i < 6; i++) o[b + 3 + i] = t[i];
+    }
+    const r = query.rect(id);
+    if (r !== null) {
+      o[b + 9] = 1;
+      o[b + 10] = r.x;
+      o[b + 11] = r.y;
+      o[b + 12] = r.w;
+      o[b + 13] = r.h;
+    }
+  }
+  return o;
+}
+
+/**
+ * A number that changes whenever `parent`, `children`, `transform`, `rect`, `subtreeRect` or
+ * `visible` may answer differently: an applied or accepted transaction changed an item or a
+ * canvas, or the session changed. A transaction that changes no item (a static scene still gets a
+ * new `seq` every frame) keeps it, so a module may keep what it computed from the query while the
+ * epoch holds. `meta` and `hitTest` are not covered. Null for a query that has no epoch (any
+ * `ItemQuery` but the client's own): treat every frame as changed.
+ */
+export function queryEpoch(query: ItemQuery): number | null {
+  return (query as BatchItemQuery)[BATCH_QUERY]?.epoch() ?? null;
 }
 
 /** The core calls the extension host makes (core.ts `WasmStreamCore`). */
@@ -236,8 +328,18 @@ export interface ExtensionCore {
   setOverrides(ids: Uint32Array, vals: Float32Array): void;
   /** Compose a changed table now (0 clean, 1 deferred to the pending apply, 2 moved, 3 walked). */
   refreshOverrides(): number;
-  /** `[parent, visible, has_xform, xform x6, has_rect, rect x4]`, or empty. */
+  /** `[parent, visible, has_xform, xform x6, has_rect, rect x4]`, or empty. The answer may be
+   * the core's one scratch row: read it before the next `queryItem`. */
   queryItem(id: number): ArrayLike<number>;
+  /** `queryItem`'s `visible` from the ancestor walk alone (false for no such item). */
+  itemVisible(id: number): boolean;
+  /** `queryItem` for every id, `ITEM_ROW_STRIDE` floats each into `out` (an unknown id:
+   * `[-1, 0, ...]`). */
+  queryItems(ids: ArrayLike<number>, out: Float64Array): void;
+  /** `itemVisible` for every id into `out` (1 visible, 0 not or no such item). */
+  itemsVisible(ids: ArrayLike<number>, out: Uint8Array): void;
+  /** Moves whenever an item query may answer differently; equal values, equal answers. */
+  queryEpoch(): number;
   querySubtreeRect(id: number): ArrayLike<number>;
   queryChildren(id: number): Uint32Array;
   /** The topmost drawn item under a presentation-space point, or null. */
@@ -535,6 +637,11 @@ export class ExtensionHost {
   private memoOn = false;
   private memoId = -1;
   private memo: ArrayLike<number> = EMPTY;
+  /** The memo's own copy (the core's row is a scratch other readers overwrite). */
+  private readonly memoRow = new Float64Array(ITEM_ROW_STRIDE);
+  /** `queryEpoch` = base + the bound core's epoch: a newly bound core starts past the last. */
+  private epochBase = 0;
+  private epochLast = 0;
   /** Callback errors caught (evidence; the first is logged). */
   errors = 0;
   /** Redraws drawn (no transaction) and table copies into the core. */
@@ -545,7 +652,7 @@ export class ExtensionHost {
     this.request = mergeWants(exts);
     this.listensRemoved = exts.some((e) => e.onItemsRemoved !== undefined);
     this.drawers = exts.filter((e) => e.beforeDraw !== undefined);
-    const query: ItemQuery & RawItemQuery = {
+    const query: ItemQuery & RawItemQuery & BatchItemQuery = {
       parent: (id) => {
         const f = this.item(id);
         return f.length > 0 && f[0] >= 0 ? f[0] : null;
@@ -567,16 +674,32 @@ export class ExtensionHost {
           ? { x: r[0], y: r[1], w: r[2], h: r[3] }
           : null;
       },
-      visible: (id) => {
-        const f = this.item(id);
-        return f.length > 0 && f[1] !== 0;
-      },
+      visible: (id) => this.core?.itemVisible(id) ?? false,
       meta: (id) => this.metas.get(id) ?? null,
       hitTest: (x, y) => {
         this.flushHitFilters();
         return this.core?.hitTest(x, y) ?? null;
       },
       [RAW_ITEM]: (id) => this.item(id),
+      [BATCH_QUERY]: {
+        visibleMany: (ids, out) => {
+          if (this.core === null) out.fill(0, 0, ids.length);
+          else this.core.itemsVisible(ids, out);
+        },
+        rows: (ids, out) => {
+          if (this.core !== null) {
+            this.core.queryItems(ids, out);
+            return;
+          }
+          out.fill(0, 0, ids.length * ITEM_ROW_STRIDE);
+          for (let k = 0; k < ids.length; k++) out[k * ITEM_ROW_STRIDE] = -1;
+        },
+        epoch: () => {
+          const e = this.epochBase + (this.core?.queryEpoch() ?? 0);
+          this.epochLast = e;
+          return e;
+        },
+      },
     };
     this.query = query;
     this.table = new Table(this.query);
@@ -589,7 +712,11 @@ export class ExtensionHost {
     const f = this.core?.queryItem(id) ?? EMPTY;
     if (this.memoOn) {
       this.memoId = id;
-      this.memo = f;
+      if (f.length === ITEM_ROW_STRIDE) {
+        for (let i = 0; i < ITEM_ROW_STRIDE; i++) this.memoRow[i] = f[i];
+        this.memo = this.memoRow;
+      } else this.memo = f;
+      return this.memo;
     }
     return f;
   }
@@ -601,6 +728,8 @@ export class ExtensionHost {
   /** A fresh core instance (a client's one, after load). */
   bind(core: ExtensionCore): void {
     this.core = core;
+    this.epochBase = this.epochLast + 1;
+    this.epochLast = this.epochBase;
     if (this.listensRemoved) core.setLogRemoved(true);
     this.hitFiltersDirty =
       this.hitFilters.size > 0 || this.hostHitFilters.size > 0;

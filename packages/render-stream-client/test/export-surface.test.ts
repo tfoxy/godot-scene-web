@@ -14,6 +14,7 @@ RECONNECT_BACKOFF_MS webSocketTransport
 webTransportAvailable isAndroidPage invertAffine mulAffine createRecorder
 computeSpreadItem containerHAlignFactor createSpreadExtension fieldDx rootSpreadContext spreadDelta
 pointerTargetIdentity pointerTargetResolver
+ITEM_ROW_STRIDE queryEpoch queryItemRows queryVisibleMany
 `
   .trim()
   .split(/\s+/);

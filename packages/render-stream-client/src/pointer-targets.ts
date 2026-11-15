@@ -103,7 +103,11 @@ export function pointerTargetIdentity(): RenderStreamExtension {
 export function coreItemQuery(
   core: () => Pick<
     ExtensionCore,
-    "queryItem" | "queryChildren" | "querySubtreeRect" | "hitTest"
+    | "queryItem"
+    | "itemVisible"
+    | "queryChildren"
+    | "querySubtreeRect"
+    | "hitTest"
   > | null,
 ): ItemQuery {
   const item = (id: number): ArrayLike<number> => core()?.queryItem(id) ?? [];
@@ -129,10 +133,7 @@ export function coreItemQuery(
         ? { x: r[0], y: r[1], w: r[2], h: r[3] }
         : null;
     },
-    visible: (id) => {
-      const f = item(id);
-      return f.length > 0 && f[1] !== 0;
-    },
+    visible: (id) => core()?.itemVisible(id) ?? false,
     meta: () => null,
     hitTest: (x, y) => core()?.hitTest(x, y) ?? null,
   };
