@@ -1547,6 +1547,93 @@ void test_http_coexists_with_websocket() {
   server.stop(1000);
 }
 
+// A texture-sized body (the size of a real 40.7 MB RGBA8 GET) while the frame thread keeps
+// sending WebSocket frames: the body arrives byte-exact, the live socket keeps receiving during
+// the whole download, and send_binary() (the frame thread's enqueue) never waits long on the
+// I/O thread. Prints the loopback GET time. The bounds are loose for a loaded runner; a send path
+// that copies the body under the I/O lock, or shifts its backlog per pass, holds the frame
+// thread's sends (and so the live socket) for about 100 ms here.
+void test_http_big_body_keeps_websocket_live() {
+  constexpr std::size_t kBody = 40685559;
+  FakeResourceSource source;
+  const std::string hash = make_hash('b');
+  source.set(hash, pattern_bytes(kBody, 9));
+  const auto expected = source.lookup(hash);
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  std::string error;
+  check(server.start(config, &source, &error), "server starts: " + error);
+
+  const SocketHandle ws_fd = connect_loopback(server.port());
+  do_handshake(ws_fd, "dGhlIHNhbXBsZSBub25jZQ==");
+  const std::uint32_t conn = expect_opened(server);
+  check(conn != 0, "WebSocket session opened before the big GET");
+
+  using Clock = std::chrono::steady_clock;
+  std::atomic<bool> stop_sending{false};
+  double max_send_ms = 0;
+  std::thread sender([&] {
+    std::vector<std::uint8_t> frame(512, 0x11);
+    while (!stop_sending.load()) {
+      const auto a = Clock::now();
+      server.send_binary(conn, frame);
+      max_send_ms = std::max(max_send_ms, std::chrono::duration<double, std::milli>(Clock::now() - a).count());
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    server.send_binary(conn, std::vector<std::uint8_t>(1, 0xEE));  // the reader's end marker
+  });
+  std::vector<Clock::time_point> arrivals;
+  bool reader_ok = true;
+  std::thread reader([&] {
+    for (;;) {
+      const ServerFrame f = read_server_frame(ws_fd);
+      if (!f.ok) {
+        reader_ok = false;
+        return;
+      }
+      if (f.payload.size() == 1 && f.payload[0] == 0xEE) return;
+      arrivals.push_back(Clock::now());
+    }
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+  const SocketHandle http_fd = connect_loopback(server.port());
+  const std::string req = plain_http_request("GET", config.resource_prefix + hash);
+  const auto t0 = Clock::now();
+  grc::rs::socket_send(http_fd, req.data(), req.size());
+  const HttpResponse resp = read_http_response(http_fd);
+  const auto t1 = Clock::now();
+  grc::rs::socket_close(http_fd);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  stop_sending = true;
+  sender.join();
+  reader.join();
+
+  check(resp.ok && resp.status == 200, "the big GET completes with 200");
+  check(resp.body == *expected, "the big body arrives byte-exact");
+  check(reader_ok, "the WebSocket reader saw every frame up to the end marker");
+  int during = 0;
+  double max_gap_ms = 0;
+  Clock::time_point prev = t0;
+  for (const auto &t : arrivals) {
+    if (t < t0) continue;
+    if (t > t1) break;
+    ++during;
+    max_gap_ms = std::max(max_gap_ms, std::chrono::duration<double, std::milli>(t - prev).count());
+    prev = t;
+  }
+  max_gap_ms = std::max(max_gap_ms, std::chrono::duration<double, std::milli>(t1 - prev).count());
+  const double get_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+  std::printf("big-body: GET %zu B in %.1f ms (%.0f MB/s); %d WebSocket frames during it, max gap %.1f ms; "
+              "max send_binary %.3f ms\n",
+              kBody, get_ms, static_cast<double>(kBody) / 1e6 / (get_ms / 1e3), during, max_gap_ms, max_send_ms);
+  check(during >= 1, "WebSocket frames arrive while the big body downloads");
+  check(max_gap_ms < 50.0, "no WebSocket gap of 50 ms or more during the big GET");
+  check(max_send_ms < 50.0, "send_binary never waits 50 ms or more on the I/O thread");
+  grc::rs::socket_close(ws_fd);
+  server.stop(1000);
+}
+
 // --- Bearer-token authorization. ---
 
 void test_constant_time_equals() {
@@ -3053,12 +3140,19 @@ int main(int argc, char **argv) {
   bool linger_only = false;
   bool tls_only = false;
   bool tls_bench_only = false;
+  bool big_body_only = false;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--linger-only") linger_only = true;
     if (arg == "--require-tls") g_require_tls = true;
     if (arg == "--tls-only") tls_only = true;
     if (arg == "--tls-bench") tls_bench_only = true;
+    if (arg == "--big-body") big_body_only = true;
+  }
+  if (big_body_only) {
+    test_http_big_body_keeps_websocket_live();
+    std::printf("rs_ws_test big-body: %d/%d checks passed, %d failed\n", g_checks - g_failures, g_checks, g_failures);
+    return g_failures == 0 ? 0 : 1;
   }
   if (linger_only) {
     test_linger();
@@ -3110,6 +3204,7 @@ int main(int argc, char **argv) {
   test_http_connection_close_honoured();
   test_http_max_http_clients_503();
   test_http_coexists_with_websocket();
+  test_http_big_body_keeps_websocket_live();
   test_constant_time_equals();
   test_ws_auth_missing_token_401();
   test_ws_auth_wrong_token_401();

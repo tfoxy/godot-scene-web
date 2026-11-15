@@ -8,7 +8,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -559,6 +561,88 @@ Event make_auth_rejected_event(std::uint32_t conn) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
+// Outbound byte queue: a FIFO of segments with an offset into the front one. Sending a byte or
+// queueing one costs O(1) amortized whatever the backlog, so a large body never shifts the bytes
+// behind it. Small writes (frames, response heads) coalesce into an owned tail segment of at most
+// kCoalesceBytes, so a busy WebSocket does not grow one segment per frame and a partly sent front
+// segment never pins more than that much already-sent memory. A large write is moved in whole,
+// and a shared body (a resource held by the ResourceSource) is referenced, never copied.
+// ---------------------------------------------------------------------------
+
+class SendQueue {
+ public:
+  static constexpr std::size_t kCoalesceBytes = 64u << 10;
+
+  bool empty() const { return bytes_ == 0; }
+  std::uint64_t size() const { return bytes_; }
+
+  void append(const std::uint8_t *data, std::size_t len) {
+    if (len == 0) return;
+    if (!tail_coalesces(len)) segs_.emplace_back();
+    std::vector<std::uint8_t> &own = segs_.back().own;
+    own.insert(own.end(), data, data + len);
+    bytes_ += len;
+  }
+  void append(const std::string &s) { append(reinterpret_cast<const std::uint8_t *>(s.data()), s.size()); }
+  void append(std::vector<std::uint8_t> &&bytes) {
+    if (bytes.empty()) return;
+    if (tail_coalesces(bytes.size())) {
+      append(bytes.data(), bytes.size());
+      return;
+    }
+    segs_.emplace_back();
+    segs_.back().own = std::move(bytes);
+    bytes_ += segs_.back().own.size();
+  }
+  void append(std::shared_ptr<const std::vector<std::uint8_t>> body) {
+    if (body == nullptr || body->empty()) return;
+    if (body->size() <= kCoalesceBytes / 4) {
+      append(body->data(), body->size());  // cheaper to copy than to hold a segment
+      return;
+    }
+    bytes_ += body->size();
+    segs_.emplace_back();
+    segs_.back().shared = std::move(body);
+  }
+
+  // The unsent bytes of the front segment (empty only when the queue is).
+  const std::uint8_t *front_data() const { return segs_.front().data() + front_off_; }
+  std::size_t front_size() const { return segs_.empty() ? 0 : segs_.front().size() - front_off_; }
+
+  // Marks `n` bytes of the front segment (n <= front_size()) as sent.
+  void consume(std::size_t n) {
+    front_off_ += n;
+    bytes_ -= n;
+    if (front_off_ == segs_.front().size()) {
+      segs_.pop_front();
+      front_off_ = 0;
+    }
+  }
+
+  void clear() {
+    segs_.clear();
+    front_off_ = 0;
+    bytes_ = 0;
+  }
+
+ private:
+  struct Segment {
+    std::vector<std::uint8_t> own;
+    std::shared_ptr<const std::vector<std::uint8_t>> shared;
+    const std::uint8_t *data() const { return shared ? shared->data() : own.data(); }
+    std::size_t size() const { return shared ? shared->size() : own.size(); }
+  };
+
+  bool tail_coalesces(std::size_t len) const {
+    return !segs_.empty() && segs_.back().shared == nullptr && segs_.back().own.size() + len <= kCoalesceBytes;
+  }
+
+  std::deque<Segment> segs_;
+  std::size_t front_off_ = 0;
+  std::uint64_t bytes_ = 0;
+};
+
+// ---------------------------------------------------------------------------
 // Connection state (I/O thread only, guarded by Impl::mu).
 // ---------------------------------------------------------------------------
 
@@ -569,8 +653,7 @@ struct Conn {
   // WebSocket one) never leaves this phase, since every request on it is parsed the same way.
   enum class Phase { Handshaking, Open, Lingering, Closed } phase = Phase::Handshaking;
   std::vector<std::uint8_t> recv_buf;
-  std::vector<std::uint8_t> send_buf;
-  std::size_t send_off = 0;
+  SendQueue send_q;
   bool opened = false;              // an Opened event awaits its Closed event (WebSocket only).
   bool http_slot_held = false;      // this connection counts against max_http_clients.
   bool admission_held = false;      // CAR1: holds a ServerConfig::admission slot (D6).
@@ -584,7 +667,7 @@ struct Conn {
   std::uint64_t sent_messages = 0;
   std::uint64_t received_text = 0;
   // CAR4 (D12). peer_loopback: the peer's address is 127/8, ::1 or ::ffff:127/104. sniffed: the
-  // first byte was judged (only with ServerConfig::tls). With `tls`, send_buf still holds the
+  // first byte was judged (only with ServerConfig::tls). With `tls`, send_q still holds the
   // plaintext queue and tls_out the ciphertext taken from the session but not yet sent.
   bool peer_loopback = false;
   bool sniffed = false;
@@ -600,6 +683,11 @@ struct Conn {
 // encrypted only once tls_out is on the socket, so at most this much (plus record overhead) is
 // ciphertext waiting; queued_bytes counts it too (pending_bytes).
 constexpr std::size_t kTlsChunk = 64u << 10;
+// Plaintext bytes one try_flush() pass hands a connection's socket (or TLS session) at most. A
+// pass holds Impl::mu, which the frame thread's sends also take; the bound keeps a large body
+// from holding it, or the I/O thread, for longer than one slice. The poll loop comes straight back
+// (the socket is still writable), so a lone transfer loses one poll call per slice.
+constexpr std::size_t kFlushSliceBytes = 256u << 10;
 constexpr int kCloseLingerMs = 1000;
 
 bool peer_is_loopback(const rs::IpAddress &addr) {
@@ -611,9 +699,9 @@ bool peer_is_loopback(const rs::IpAddress &addr) {
 }
 
 // Bytes queued for the peer and not yet on the socket: plaintext not yet encrypted plus, with
-// TLS, ciphertext not yet sent. Without TLS exactly send_buf's unflushed bytes, as before CAR4.
+// TLS, ciphertext not yet sent. Without TLS exactly send_q's unflushed bytes, as before CAR4.
 std::uint64_t pending_bytes(const Conn &c) {
-  return (c.send_buf.size() - c.send_off) + (c.tls_out.size() - c.tls_out_off);
+  return c.send_q.size() + (c.tls_out.size() - c.tls_out_off);
 }
 
 struct Server::Impl {
@@ -664,7 +752,7 @@ struct Server::Impl {
     const std::uint64_t current = pending_bytes(c);
     const std::uint64_t add = bytes.size();
     if (!bypass_limit && current + add > config.max_queued_bytes) return false;
-    c.send_buf.insert(c.send_buf.end(), bytes.begin(), bytes.end());
+    c.send_q.append(std::move(bytes));
     c.max_queued_bytes_seen = std::max(c.max_queued_bytes_seen, current + add);
     return true;
   }
@@ -728,7 +816,7 @@ struct Server::Impl {
   // read/write pass for a connection.
   void maybe_finalize(Conn &c) {
     if (!c.shutdown_after_flush || c.phase == Conn::Phase::Lingering || c.phase == Conn::Phase::Closed) return;
-    if (c.send_off < c.send_buf.size()) return;
+    if (!c.send_q.empty()) return;
     if (c.tls) {
       // CAR4: everything encrypted and sent, then close_notify, sent too, before the TCP close.
       if (c.tls_out_off < c.tls_out.size()) return;
@@ -769,8 +857,7 @@ struct Server::Impl {
     if (c.tls_failed) return;
     c.tls_failed = true;
     tls_stats.tls_failed++;
-    c.send_buf.clear();
-    c.send_off = 0;
+    c.send_q.clear();
     take_ciphertext(c);
     c.shutdown_after_flush = true;
     if (c.opened) {
@@ -780,10 +867,12 @@ struct Server::Impl {
   }
 
   // CAR4: the TLS half of try_flush. Sends pending ciphertext; when it is all on the socket,
-  // encrypts the next kTlsChunk of plaintext and goes on, until the socket would block or both
-  // queues are empty. No plaintext is written while the handshake runs (the queue is empty then:
-  // nothing is parsed before the handshake completes).
+  // encrypts the next kTlsChunk of plaintext (at most up to a segment's end) and goes on, until
+  // the socket would block, both queues are empty, or this pass has encrypted kFlushSliceBytes.
+  // No plaintext is written while the handshake runs (the queue is empty then: nothing is parsed
+  // before the handshake completes).
   void try_flush_tls(Conn &c) {
+    std::size_t budget = kFlushSliceBytes;
     for (;;) {
       while (c.tls_out_off < c.tls_out.size()) {
         const std::ptrdiff_t n = rs::socket_send(c.fd, c.tls_out.data() + c.tls_out_off, c.tls_out.size() - c.tls_out_off);
@@ -797,54 +886,41 @@ struct Server::Impl {
       }
       c.tls_out.clear();
       c.tls_out_off = 0;
-      if (c.tls_failed || c.send_off >= c.send_buf.size() ||
-          (c.tls->state() & TlsSession::Handshaking) != 0) {
+      if (c.tls_failed || c.send_q.empty() || budget == 0 || (c.tls->state() & TlsSession::Handshaking) != 0) {
         break;
       }
-      const std::size_t len = std::min(kTlsChunk, c.send_buf.size() - c.send_off);
-      if (c.tls->write(c.send_buf.data() + c.send_off, len) < 0) {
+      const std::size_t len = std::min({kTlsChunk, c.send_q.front_size(), budget});
+      if (c.tls->write(c.send_q.front_data(), len) < 0) {
         tls_fail(c);
         continue;  // send the alert
       }
-      c.send_off += len;
+      c.send_q.consume(len);
       c.sent_bytes += len;
+      budget -= len;
       take_ciphertext(c);
-    }
-    if (c.send_off > 0 && c.send_off == c.send_buf.size()) {
-      c.send_buf.clear();
-      c.send_off = 0;
     }
   }
 
+  // Sends queued bytes until the socket would block, the queue is empty, or this pass has sent
+  // kFlushSliceBytes (the next poll pass goes on).
   void try_flush(Conn &c) {
     if (c.tls) {
       try_flush_tls(c);
-      if (c.phase == Conn::Phase::Closed) return;
-      if (c.send_off > (1u << 16)) {
-        c.send_buf.erase(c.send_buf.begin(), c.send_buf.begin() + static_cast<std::ptrdiff_t>(c.send_off));
-        c.send_off = 0;
-      }
       return;
     }
-    while (c.send_off < c.send_buf.size()) {
-      const std::ptrdiff_t n = rs::socket_send(c.fd, c.send_buf.data() + c.send_off, c.send_buf.size() - c.send_off);
+    std::size_t budget = kFlushSliceBytes;
+    while (!c.send_q.empty() && budget > 0) {
+      const std::size_t len = std::min(c.send_q.front_size(), budget);
+      const std::ptrdiff_t n = rs::socket_send(c.fd, c.send_q.front_data(), len);
       if (n > 0) {
-        c.send_off += static_cast<std::size_t>(n);
+        c.send_q.consume(static_cast<std::size_t>(n));
         c.sent_bytes += static_cast<std::uint64_t>(n);
+        budget -= static_cast<std::size_t>(n);
         continue;
       }
-      if (n < 0 && (rs::last_socket_error().kind == rs::SockErr::WouldBlock)) break;
+      if (n < 0 && (rs::last_socket_error().kind == rs::SockErr::WouldBlock)) return;
       finalize_now(c, 1006, "send error");
       return;
-    }
-    if (c.send_off > 0) {
-      if (c.send_off == c.send_buf.size()) {
-        c.send_buf.clear();
-        c.send_off = 0;
-      } else if (c.send_off > (1u << 16)) {
-        c.send_buf.erase(c.send_buf.begin(), c.send_buf.begin() + static_cast<std::ptrdiff_t>(c.send_off));
-        c.send_off = 0;
-      }
     }
   }
 
@@ -855,7 +931,7 @@ struct Server::Impl {
     (void)detail;
     std::string resp = "HTTP/1.1 " + std::to_string(status) + " " + http_status_text(status) +
                         "\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-    c.send_buf.insert(c.send_buf.end(), resp.begin(), resp.end());
+    c.send_q.append(resp);
     c.shutdown_after_flush = true;
     c.pending_close_code = 0;  // unused: opened stays false, so no Closed event is pushed.
   }
@@ -903,10 +979,12 @@ struct Server::Impl {
   }
 
   // 200 OK with a body (render-stream-2.md "HTTP (live)"). `coding` (G8kz) is the content coding
-  // `body` is already in: a coded body carries Content-Encoding and the per-coding ETag.
-  void send_http_ok(Conn &c, const std::string &hash, const std::vector<std::uint8_t> &body, bool keep_alive,
-                    const std::vector<std::pair<std::string, std::string>> &cors,
+  // `body` is already in: a coded body carries Content-Encoding and the per-coding ETag. The body
+  // is queued by reference (send_q holds the shared buffer until it is sent), never copied.
+  void send_http_ok(Conn &c, const std::string &hash, std::shared_ptr<const std::vector<std::uint8_t>> body_ref,
+                    bool keep_alive, const std::vector<std::pair<std::string, std::string>> &cors,
                     Coding coding = Coding::Identity) {
+    const std::vector<std::uint8_t> &body = *body_ref;
     std::string resp = "HTTP/1.1 200 OK\r\n";
     // G8ku (render-stream-9.md "KTX2 payload"): a KTX2 body is `image/ktx2` (and never coded: only
     // GRT1 bodies are, ServedResources::lookup_coded); every other payload stays octet-stream.
@@ -923,9 +1001,10 @@ struct Server::Impl {
     for (const auto &h : cors) resp += h.first + ": " + h.second + "\r\n";
     resp += keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
     resp += "\r\n";
-    std::vector<std::uint8_t> out = to_bytes(resp);
-    out.insert(out.end(), body.begin(), body.end());
-    enqueue_raw(c, std::move(out), /*bypass_limit=*/true);
+    // As enqueue_raw(..., bypass_limit=true): never refused, counted in max_queued_bytes_seen.
+    c.send_q.append(resp);
+    c.send_q.append(std::move(body_ref));
+    c.max_queued_bytes_seen = std::max(c.max_queued_bytes_seen, pending_bytes(c));
     if (!keep_alive) {
       c.shutdown_after_flush = true;
       c.pending_close_code = 0;
@@ -1063,17 +1142,17 @@ struct Server::Impl {
       return;
     }
     const Coding used = found.coding;
-    std::vector<std::uint8_t> sabotaged;
-    const std::vector<std::uint8_t> *body = found.bytes.get();
+    std::shared_ptr<const std::vector<std::uint8_t>> body = found.bytes;
     if (used != Coding::Identity && config.corrupt_coded_body && !body->empty()) {
-      sabotaged = *body;
+      std::vector<std::uint8_t> sabotaged = *body;
       sabotaged[sabotaged.size() / 2] ^= 0x5a;
-      body = &sabotaged;
+      body = std::make_shared<const std::vector<std::uint8_t>>(std::move(sabotaged));
     }
-    send_http_ok(c, hash, *body, keep_alive, cors, used);
+    const std::uint64_t coded_bytes = body->size();
+    send_http_ok(c, hash, std::move(body), keep_alive, cors, used);
     Event event = make_http_get_event(c.id, hash, 200, found.identity_bytes, req);
     event.coding = coding_token(used);
-    event.coded_bytes = body->size();
+    event.coded_bytes = coded_bytes;
     push_event_locked(std::move(event));
   }
 
@@ -1142,7 +1221,7 @@ struct Server::Impl {
                               "Connection: Upgrade\r\n"
                               "Sec-WebSocket-Accept: " +
                               accept_key + "\r\n" + "Sec-WebSocket-Protocol: " + up.subprotocol + "\r\n\r\n";
-    c.send_buf.insert(c.send_buf.end(), resp.begin(), resp.end());
+    c.send_q.append(resp);
     c.phase = Conn::Phase::Open;
     c.opened = true;
     c.pool = pool;
@@ -1281,7 +1360,7 @@ struct Server::Impl {
     static const std::string kRefusal =
         "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Type: text/plain\r\n"
         "Content-Length: 13\r\n\r\ntls-required\n";
-    c.send_buf.insert(c.send_buf.end(), kRefusal.begin(), kRefusal.end());
+    c.send_q.append(kRefusal);
     c.shutdown_after_flush = true;
     c.pending_close_code = 0;  // never opened: no Closed event
     return false;
