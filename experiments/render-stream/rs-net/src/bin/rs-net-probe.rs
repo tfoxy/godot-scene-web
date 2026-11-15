@@ -9,7 +9,7 @@
 //!
 //! Usage:
 //!   rs-net-probe --url URL --cert-sha256 HEX --out DIR [--hello JSON] [--origin ORIGIN]
-//!                [--token HEX] [--fetch PATH]... [--gzip] [--close-after-ms N]
+//!                [--token HEX] [--fetch PATH]... [--gzip] [--zstd] [--close-after-ms N]
 //!                [--send TEXT]... [--uplink TEXT]...
 //!
 //! TRK3 (a track session, `?protocol=render-stream-track.1`, `--hello` the track-hello):
@@ -34,6 +34,7 @@ struct Args {
     token: String,
     fetch: Vec<String>,
     gzip: bool,
+    zstd: bool,
     close_after_ms: Option<u64>,
     send: Vec<String>,
     uplink: Vec<String>,
@@ -49,6 +50,7 @@ fn parse() -> Result<Args, String> {
         token: String::new(),
         fetch: vec![],
         gzip: false,
+        zstd: false,
         close_after_ms: None,
         send: vec![],
         uplink: vec![],
@@ -65,6 +67,7 @@ fn parse() -> Result<Args, String> {
             "--token" => a.token = v()?,
             "--fetch" => a.fetch.push(v()?),
             "--gzip" => a.gzip = true,
+            "--zstd" => a.zstd = true,
             "--send" => a.send.push(v()?),
             "--uplink" => a.uplink.push(v()?),
             "--close-after-ms" => a.close_after_ms = Some(v()?.parse().map_err(|_| "bad --close-after-ms")?),
@@ -213,7 +216,7 @@ async fn main() {
         if !fetched && !sizes.is_empty() {
             fetched = true;
             for p in &a.fetch {
-                let r = fetch(&conn, p, &a.token, a.gzip).await;
+                let r = fetch(&conn, p, &a.token, u8::from(a.gzip) | (u8::from(a.zstd) << 1)).await;
                 resources.push(r);
             }
         }
@@ -243,10 +246,11 @@ async fn main() {
     std::process::exit(if framing_error.is_some() { 4 } else { 0 });
 }
 
-async fn fetch(conn: &wtransport::Connection, path: &str, token: &str, gzip: bool) -> String {
+async fn fetch(conn: &wtransport::Connection, path: &str, token: &str, accept: u8) -> String {
+    let t0 = Instant::now();
     let result = async {
         let (mut s, mut r) = conn.open_bi().await.map_err(|e| e.to_string())?.await.map_err(|e| e.to_string())?;
-        let mut req = vec![0x01, u8::from(gzip)];
+        let mut req = vec![0x01, accept];
         req.extend_from_slice(&(path.len() as u16).to_le_bytes());
         req.extend_from_slice(path.as_bytes());
         req.push(token.len() as u8);
@@ -270,8 +274,9 @@ async fn fetch(conn: &wtransport::Connection, path: &str, token: &str, gzip: boo
     .await;
     match result {
         Ok((status, coding, len)) => format!(
-            "{{\"path\":{},\"status\":{status},\"coding\":{coding},\"bytes\":{len}}}",
-            json_str(path)
+            "{{\"path\":{},\"status\":{status},\"coding\":{coding},\"bytes\":{len},\"ms\":{:.3}}}",
+            json_str(path),
+            t0.elapsed().as_secs_f64() * 1000.0
         ),
         Err(e) => format!("{{\"path\":{},\"error\":{}}}", json_str(path), json_str(&e)),
     }

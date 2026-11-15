@@ -136,6 +136,28 @@ impl Host {
         Some(HostBuf::adopt(self.clone(), out))
     }
 
+    /// Whether the host's struct carries `lookup_coded`.
+    pub fn has_lookup_coded(&self) -> bool {
+        self.raw.lookup_coded.is_some()
+    }
+
+    /// grc_carrier.h `lookup_coded`: `hash`'s body as held in `coding` and its identity size,
+    /// never building the identity body. `Missing` for a host without the entry too (callers
+    /// check `has_lookup_coded` first).
+    pub fn lookup_coded(self: &Arc<Self>, hash: &[u8; 64], coding: c_int) -> Coded {
+        let mut out = GrcBuf { data: std::ptr::null(), len: 0, owner: std::ptr::null_mut() };
+        let mut identity = 0u64;
+        let r = self.with(0, |h| match h.lookup_coded {
+            Some(f) => unsafe { f(h.host, hash.as_ptr() as *const c_char, coding, &mut out, &mut identity) },
+            None => 0,
+        });
+        match r {
+            1 => Coded::Held(HostBuf::adopt(self.clone(), out), identity),
+            2 => Coded::Elsewhere(identity),
+            _ => Coded::Missing,
+        }
+    }
+
     pub fn log(&self, level: c_int, msg: &str) {
         self.with((), |h| unsafe { (h.log)(h.host, level, msg.as_ptr() as *const c_char, msg.len()) })
     }
@@ -144,6 +166,16 @@ impl Host {
         self.outstanding.fetch_sub(1, Ordering::AcqRel);
         self.with((), |h| unsafe { (h.release)(h.host, owner) })
     }
+}
+
+/// What `Host::lookup_coded` found.
+pub enum Coded {
+    /// Held in the coding asked for: the body, and the identity size.
+    Held(HostBuf, u64),
+    /// Servable, but not in that coding (the identity size): the body is `lookup(IDENTITY)`'s.
+    Elsewhere(u64),
+    /// Not servable.
+    Missing,
 }
 
 /// A host-owned buffer (a send's message or a lookup's body), released exactly once on drop.

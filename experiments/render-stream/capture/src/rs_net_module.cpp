@@ -273,10 +273,11 @@ CarrierInfo NetWtCarrier::info() const {
 
 // The module (rs-net/src/abi.rs, tests/abi_layout.rs) mirrors these layouts field for field.
 static_assert(sizeof(grc_buf) == 24, "grc_buf layout");
-// TRK1 appended admit_subprotocol (abi_version stays 1, the size rule): the module's mirror still
-// ends at `log` (112 bytes) until TRK3 grows it, and accepts the larger struct by its size rule.
-static_assert(sizeof(grc_carrier_host_v1) == 120, "grc_carrier_host_v1 layout");
+// admit_subprotocol and lookup_coded were appended (abi_version stays 1, the size rule): the
+// module's mirror carries both, and reads only what a host's `size` covers.
+static_assert(sizeof(grc_carrier_host_v1) == 128, "grc_carrier_host_v1 layout");
 static_assert(offsetof(grc_carrier_host_v1, admit_subprotocol) == 112, "grc_carrier_host_v1 layout");
+static_assert(offsetof(grc_carrier_host_v1, lookup_coded) == 120, "grc_carrier_host_v1 layout");
 static_assert(sizeof(grc_carrier_v1) == 88, "grc_carrier_v1 layout");
 static_assert(sizeof(grc_net_wt_info_v1) == 184, "grc_net_wt_info_v1 layout");
 static_assert(offsetof(grc_net_wt_info_v1, port) == 72, "grc_net_wt_info_v1 layout");

@@ -330,6 +330,27 @@ class ResourceSource {
     out.bytes = identity;
     return out;
   }
+
+  // grc_carrier_host_v1.lookup_coded: `hash`'s body as held in `coding` and its identity
+  // size, without building the identity body. False: not servable. True: `out->identity_bytes`
+  // set, and `out->bytes` the body in `coding` (`out->coding`), or null when it is not held in
+  // `coding` (the caller then serves lookup(), which may inflate). Same threading rules as
+  // lookup_coded(). This default composes lookup() and lookup_coded(); ServedResources answers
+  // from the held body's header.
+  virtual bool lookup_coded_body(std::string_view hash, Coding coding, ResourceBody *out) {
+    const std::shared_ptr<const std::vector<std::uint8_t>> identity = lookup(hash);
+    if (identity == nullptr) {
+      return false;
+    }
+    out->identity_bytes = identity->size();
+    if (coding != Coding::Identity) {
+      out->bytes = lookup_coded(hash, coding);
+      if (out->bytes != nullptr) {
+        out->coding = coding;
+      }
+    }
+    return true;
+  }
 };
 
 struct Event {

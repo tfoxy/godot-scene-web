@@ -18,6 +18,11 @@ use wtransport::{ClientConfig, Connection, Endpoint, RecvStream, SendStream};
 const TOKEN: &str = "abababababababababababababababababababababababababababababababab";
 const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+/// Held zstd at rest (the fake's `zstd` map): its identity lookup stands for an inflate.
+const HASH_Z: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+/// Identity only, and its identity lookup sleeps SLOW_MS (a large inflate).
+const HASH_S: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const SLOW_MS: u64 = 1500;
 const SP: &str = "render-stream.13";
 
 // ------------------------------------------------------------------------------ fake host
@@ -43,6 +48,10 @@ struct Fake {
     /// admit_subprotocol().
     admits: Mutex<Vec<(u32, Option<String>)>>,
     resources: HashMap<String, (Arc<Vec<u8>>, Option<Arc<Vec<u8>>>)>,
+    /// Bodies held zstd at rest, by hash (beside their identity in `resources`).
+    zstd: HashMap<String, Arc<Vec<u8>>>,
+    /// Every lookup()/lookup_coded() call: (hash, coding, by lookup_coded).
+    lookups: Mutex<Vec<(String, c_int, bool)>>,
     events: Mutex<Vec<Ev>>,
     slots: Mutex<HashSet<u32>>,
     outstanding: AtomicI64,
@@ -121,20 +130,43 @@ unsafe extern "C" fn h_origin_ok(h: *mut c_void, o: *const c_char, n: usize) -> 
     let o = s(o, n);
     c_int::from(o.is_empty() || fake(h).origins.contains(&o))
 }
-unsafe extern "C" fn h_lookup(h: *mut c_void, hash: *const c_char, coding: c_int, out: *mut GrcBuf) -> c_int {
-    let f = fake(h);
-    let Some((id, gz)) = f.resources.get(&s(hash, 64)) else { return 0 };
-    let body = match coding {
-        GRC_CODING_IDENTITY => id.clone(),
-        GRC_CODING_GZIP => match gz {
-            Some(g) => g.clone(),
-            None => return 0,
-        },
-        _ => return 0,
-    };
+fn held(f: &Fake, hash: &str, coding: c_int) -> Option<Arc<Vec<u8>>> {
+    let (id, gz) = f.resources.get(hash)?;
+    match coding {
+        GRC_CODING_IDENTITY => Some(id.clone()),
+        GRC_CODING_GZIP => gz.clone(),
+        GRC_CODING_ZSTD => f.zstd.get(hash).cloned(),
+        _ => None,
+    }
+}
+unsafe fn hand_out(f: &Fake, body: Arc<Vec<u8>>, out: *mut GrcBuf) {
     f.outstanding.fetch_add(1, Ordering::AcqRel);
     *out = GrcBuf { data: body.as_ptr(), len: body.len(), owner: Box::into_raw(Box::new(Owner::Body(body))) as *mut c_void };
+}
+unsafe extern "C" fn h_lookup(h: *mut c_void, hash: *const c_char, coding: c_int, out: *mut GrcBuf) -> c_int {
+    let f = fake(h);
+    let hash = s(hash, 64);
+    f.lookups.lock().unwrap().push((hash.clone(), coding, false));
+    if hash == HASH_S && coding == GRC_CODING_IDENTITY {
+        std::thread::sleep(Duration::from_millis(SLOW_MS));
+    }
+    let Some(body) = held(f, &hash, coding) else { return 0 };
+    hand_out(f, body, out);
     1
+}
+unsafe extern "C" fn h_lookup_coded(h: *mut c_void, hash: *const c_char, coding: c_int, out: *mut GrcBuf, id: *mut u64) -> c_int {
+    let f = fake(h);
+    let hash = s(hash, 64);
+    f.lookups.lock().unwrap().push((hash.clone(), coding, true));
+    let Some((identity, _)) = f.resources.get(&hash) else { return 0 };
+    *id = identity.len() as u64;
+    match held(f, &hash, coding) {
+        Some(body) if coding != GRC_CODING_IDENTITY => {
+            hand_out(f, body, out);
+            1
+        }
+        _ => 2,
+    }
 }
 unsafe extern "C" fn h_release(h: *mut c_void, owner: *mut c_void) {
     fake(h).outstanding.fetch_sub(1, Ordering::AcqRel);
@@ -149,8 +181,8 @@ struct Opts {
     origins: Vec<String>,
     cap: usize,
     track_cap: usize,
-    /// The `size` the host reports for its struct (None: the real 120 bytes). 112 is a host
-    /// older than TRK1.
+    /// The `size` the host reports for its struct (None: the real 128 bytes). 112 is a host
+    /// older than TRK1, 120 one older than lookup_coded.
     host_size: Option<u32>,
     extra: Vec<(&'static str, String)>,
 }
@@ -227,6 +259,9 @@ impl Harness {
         let a = Arc::new(body(300_000, 7));
         resources.insert(HASH_A.to_string(), (a.clone(), Some(Arc::new(gzip(&a)))));
         resources.insert(HASH_B.to_string(), (Arc::new(body(10, 9)), None));
+        resources.insert(HASH_Z.to_string(), (Arc::new(body(200_000, 3)), None));
+        resources.insert(HASH_S.to_string(), (Arc::new(body(1000, 5)), None));
+        let zstd = HashMap::from([(HASH_Z.to_string(), Arc::new(body(5000, 11)))]);
         let fake = Box::new(Fake {
             config,
             token: o.token,
@@ -236,6 +271,8 @@ impl Harness {
             track_slots: Mutex::new(HashSet::new()),
             admits: Mutex::new(vec![]),
             resources,
+            zstd,
+            lookups: Mutex::new(vec![]),
             events: Mutex::new(vec![]),
             slots: Mutex::new(HashSet::new()),
             outstanding: AtomicI64::new(0),
@@ -258,6 +295,7 @@ impl Harness {
             release: h_release,
             log: h_log,
             admit_subprotocol: Some(h_admit_subprotocol),
+            lookup_coded: Some(h_lookup_coded),
         });
         let module = unsafe { &*render_stream_net::grc_net_module_v1() };
         assert_eq!(module.abi_version, GRC_NET_MODULE_ABI_VERSION);
@@ -697,6 +735,123 @@ where
     out
 }
 
+/// The identity lookups (lookup(IDENTITY)) the fake has seen for `hash`.
+fn identity_lookups(h: &Harness, hash: &str) -> usize {
+    h.fake.lookups.lock().unwrap().iter().filter(|(k, c, coded)| k == hash && *c == GRC_CODING_IDENTITY && !coded).count()
+}
+
+/// A GET that accepts the coding a body is held in is answered from lookup_coded alone: no
+/// identity lookup (the capture's inflate of a body held coded), with the identity size
+/// reported. Only an identity answer looks the identity up; a miss is still 404.
+#[test]
+fn coded_get_never_looks_up_the_identity() {
+    let h = Harness::start(Opts::default());
+    let rt = rt();
+    let c = rt.block_on(connect(&h));
+    h.wait_opened(0);
+    let pz = format!("/resources/sha256/{HASH_Z}");
+    let pa = format!("/resources/sha256/{HASH_A}");
+    let missing = format!("/resources/sha256/{}", "c".repeat(64));
+    rt.block_on(async {
+        // zstd accepted and held: the held body.
+        let (st, co, b) = get(&c, 2, &pz, "").await;
+        assert_eq!((st, co), (200, 2));
+        assert!(b == body(5000, 11));
+        let (st, co, _) = get(&c, 3, &pz, "").await;
+        assert_eq!((st, co), (200, 2));
+        // gzip accepted and held (zstd accepted, not held): gzip.
+        let (st, co, _) = get(&c, 3, &pa, "").await;
+        assert_eq!((st, co), (200, 1));
+        assert_eq!(get(&c, 2, &missing, "").await.0, 404);
+    });
+    assert_eq!(identity_lookups(&h, HASH_Z), 0, "a coded answer never looks up the identity");
+    assert_eq!(identity_lookups(&h, HASH_A), 0, "a coded answer never looks up the identity");
+    assert_eq!(identity_lookups(&h, &"c".repeat(64)), 0, "a coded miss is 404 from lookup_coded");
+    rt.block_on(async {
+        // gzip accepted, only zstd held: the identity, looked up once.
+        let (st, co, b) = get(&c, 1, &pz, "").await;
+        assert_eq!((st, co), (200, 0));
+        assert!(b == body(200_000, 3));
+        let (st, co, b) = get(&c, 0, &pz, "").await;
+        assert_eq!((st, co, b.len()), (200, 0, 200_000));
+        assert_eq!(get(&c, 0, &missing, "").await.0, 404);
+    });
+    assert_eq!(identity_lookups(&h, HASH_Z), 2, "each identity answer looks the identity up once");
+    let served = h.wait("served", |e| {
+        let v: Vec<Ev> = e.iter().filter(|e| matches!(e, Ev::Served { .. })).cloned().collect();
+        (v.len() >= 7).then_some(v)
+    });
+    assert_eq!(served[0], Ev::Served { hash: HASH_Z.into(), status: 200, coding: 2, identity: 200_000, wire: 5000 });
+    assert!(matches!(&served[3], Ev::Served { status: 404, identity: 0, wire: 0, .. }));
+    assert_eq!(served[4], Ev::Served { hash: HASH_Z.into(), status: 200, coding: 0, identity: 200_000, wire: 200_000 });
+    assert!(matches!(&served[6], Ev::Served { status: 404, coding: 0, identity: 0, wire: 0, .. }));
+}
+
+/// A host struct older than lookup_coded (120 bytes) gets the original order -- the identity
+/// first, then the codings -- with the same answers.
+#[test]
+fn a_host_without_lookup_coded_keeps_the_original_order() {
+    let h = Harness::start(Opts { host_size: Some(120), ..Default::default() });
+    let rt = rt();
+    let c = rt.block_on(connect(&h));
+    h.wait_opened(0);
+    let pz = format!("/resources/sha256/{HASH_Z}");
+    rt.block_on(async {
+        let (st, co, b) = get(&c, 2, &pz, "").await;
+        assert_eq!((st, co), (200, 2));
+        assert!(b == body(5000, 11));
+        assert_eq!(get(&c, 2, &format!("/resources/sha256/{}", "c".repeat(64)), "").await.0, 404);
+    });
+    assert!(h.fake.lookups.lock().unwrap().iter().all(|(_, _, coded)| !coded), "lookup_coded is never called");
+    assert_eq!(identity_lookups(&h, HASH_Z), 1);
+    let served = h.wait("served", |e| {
+        let v: Vec<Ev> = e.iter().filter(|e| matches!(e, Ev::Served { .. })).cloned().collect();
+        (v.len() >= 2).then_some(v)
+    });
+    assert_eq!(served[0], Ev::Served { hash: HASH_Z.into(), status: 200, coding: 2, identity: 200_000, wire: 5000 });
+    assert!(matches!(&served[1], Ev::Served { status: 404, .. }));
+}
+
+/// Identity lookups (an inflate in the capture) run off the runtime's two workers: while two
+/// slow ones are in flight, coded GETs on the same session are still answered at once.
+#[test]
+fn slow_identity_lookups_leave_the_workers_free() {
+    let h = Harness::start(Opts::default());
+    let rt = rt();
+    let c = rt.block_on(connect(&h));
+    h.wait_opened(0);
+    let ps = format!("/resources/sha256/{HASH_S}");
+    let pz = format!("/resources/sha256/{HASH_Z}");
+    rt.block_on(async {
+        let slow: Vec<_> = (0..2)
+            .map(|_| {
+                let (c2, p) = (c.clone(), ps.clone());
+                tokio::spawn(async move { get(&c2, 0, &p, "").await })
+            })
+            .collect();
+        // Both slow lookups have started before the coded GETs go out.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while identity_lookups(&h, HASH_S) < 2 {
+            assert!(Instant::now() < deadline, "the slow lookups never started");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let t0 = Instant::now();
+        for _ in 0..4 {
+            let (st, co, _) = get(&c, 2, &pz, "").await;
+            assert_eq!((st, co), (200, 2));
+        }
+        let fast = t0.elapsed();
+        assert!(
+            fast < Duration::from_millis(SLOW_MS / 2),
+            "coded GETs waited {fast:?} behind identity lookups ({SLOW_MS} ms each)"
+        );
+        for s in slow {
+            let (st, co, b) = s.await.unwrap();
+            assert_eq!((st, co, b.len()), (200, 0, 1000));
+        }
+    });
+}
+
 #[test]
 fn wrong_certificate_hash_is_refused() {
     let h = Harness::start(Opts::default());
@@ -945,6 +1100,8 @@ fn start_refusals_are_typed() {
             track_slots: Mutex::new(HashSet::new()),
             admits: Mutex::new(vec![]),
             resources: HashMap::new(),
+            zstd: HashMap::new(),
+            lookups: Mutex::new(vec![]),
             events: Mutex::new(vec![]),
             slots: Mutex::new(HashSet::new()),
             outstanding: AtomicI64::new(0),
@@ -967,6 +1124,7 @@ fn start_refusals_are_typed() {
             release: h_release,
             log: h_log,
             admit_subprotocol: Some(h_admit_subprotocol),
+            lookup_coded: Some(h_lookup_coded),
         };
         let module = unsafe { &*render_stream_net::grc_net_module_v1() };
         let mut vt = std::mem::MaybeUninit::<GrcCarrierV1>::zeroed();
@@ -1515,6 +1673,8 @@ fn a_host_struct_shorter_than_the_base_is_refused() {
         track_slots: Mutex::new(HashSet::new()),
         admits: Mutex::new(vec![]),
         resources: HashMap::new(),
+        zstd: HashMap::new(),
+        lookups: Mutex::new(vec![]),
         events: Mutex::new(vec![]),
         slots: Mutex::new(HashSet::new()),
         outstanding: AtomicI64::new(0),
@@ -1537,6 +1697,7 @@ fn a_host_struct_shorter_than_the_base_is_refused() {
         release: h_release,
         log: h_log,
         admit_subprotocol: None,
+        lookup_coded: None,
     };
     let module = unsafe { &*render_stream_net::grc_net_module_v1() };
     let mut vt = std::mem::MaybeUninit::<GrcCarrierV1>::zeroed();

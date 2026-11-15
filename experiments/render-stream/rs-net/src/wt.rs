@@ -31,7 +31,7 @@ use wtransport::{Connection, Endpoint, RecvStream, SendStream, ServerConfig, Var
 
 use crate::abi::*;
 use crate::cert;
-use crate::host::{Host, HostBuf};
+use crate::host::{Coded, Host, HostBuf};
 
 pub const STREAM_LIVE: u8 = 0x00;
 pub const STREAM_RESOURCE: u8 = 0x01;
@@ -1126,29 +1126,8 @@ async fn resource(shared: Arc<Shared>, conn: Arc<Conn>, mut send: SendStream, mu
                 if !shared.host.token_ok(&token) {
                     (401, GRC_CODING_IDENTITY, None, 0, Some(hash))
                 } else {
-                    let identity = shared.host.lookup(&hash, GRC_CODING_IDENTITY);
-                    match identity {
-                        None => (404, GRC_CODING_IDENTITY, None, 0, Some(hash)),
-                        Some(id) => {
-                            let id_len = id.len() as u64;
-                            let coded = if accept & 2 != 0 {
-                                shared.host.lookup(&hash, GRC_CODING_ZSTD).map(|b| (GRC_CODING_ZSTD, b))
-                            } else {
-                                None
-                            }
-                            .or_else(|| {
-                                if accept & 1 != 0 {
-                                    shared.host.lookup(&hash, GRC_CODING_GZIP).map(|b| (GRC_CODING_GZIP, b))
-                                } else {
-                                    None
-                                }
-                            });
-                            match coded {
-                                Some((c, b)) => (200, c, Some(b), id_len, Some(hash)),
-                                None => (200, GRC_CODING_IDENTITY, Some(id), id_len, Some(hash)),
-                            }
-                        }
-                    }
+                    let (status, coding, body, identity_len) = find_body(&shared.host, accept, &hash).await;
+                    (status, coding, body, identity_len, Some(hash))
                 }
             }
         }
@@ -1170,6 +1149,55 @@ async fn resource(shared: Arc<Shared>, conn: Arc<Conn>, mut send: SendStream, mu
     }
     if ok {
         let _ = tokio::time::timeout(Duration::from_secs(10), send.finish()).await;
+    }
+}
+
+/// The answer to an authorized resource GET: (status, coding, body, identity size).
+///
+/// A request that accepts a coding asks `lookup_coded` first, which never builds the identity
+/// body, so a body the capture holds coded (zstd at rest) is served as held without the inflate an
+/// identity lookup does. Only an identity answer calls `lookup(IDENTITY)`, and on a blocking-pool
+/// thread: inflating a large texture body there leaves the two runtime workers serving every
+/// other session. A host older than `lookup_coded` gets the original order (identity, then the
+/// codings), also off the workers.
+async fn find_body(host: &Arc<Host>, accept: u8, hash: &[u8; 64]) -> (u16, c_int, Option<HostBuf>, u64) {
+    if host.has_lookup_coded() {
+        for (bit, coding) in [(2u8, GRC_CODING_ZSTD), (1u8, GRC_CODING_GZIP)] {
+            if accept & bit == 0 {
+                continue;
+            }
+            match host.lookup_coded(hash, coding) {
+                Coded::Held(b, identity) => return (200, coding, Some(b), identity),
+                Coded::Elsewhere(_) => {}
+                Coded::Missing => return (404, GRC_CODING_IDENTITY, None, 0),
+            }
+        }
+        let (h, k) = (host.clone(), *hash);
+        return match tokio::task::spawn_blocking(move || h.lookup(&k, GRC_CODING_IDENTITY)).await {
+            Ok(Some(id)) => {
+                let len = id.len() as u64;
+                (200, GRC_CODING_IDENTITY, Some(id), len)
+            }
+            Ok(None) => (404, GRC_CODING_IDENTITY, None, 0),
+            Err(_) => (503, GRC_CODING_IDENTITY, None, 0),
+        };
+    }
+    let (h, k) = (host.clone(), *hash);
+    let found = tokio::task::spawn_blocking(move || {
+        let id = h.lookup(&k, GRC_CODING_IDENTITY)?;
+        let len = id.len() as u64;
+        let coded = if accept & 2 != 0 { h.lookup(&k, GRC_CODING_ZSTD).map(|b| (GRC_CODING_ZSTD, b)) } else { None }
+            .or_else(|| if accept & 1 != 0 { h.lookup(&k, GRC_CODING_GZIP).map(|b| (GRC_CODING_GZIP, b)) } else { None });
+        Some(match coded {
+            Some((c, b)) => (c, b, len),
+            None => (GRC_CODING_IDENTITY, id, len),
+        })
+    })
+    .await;
+    match found {
+        Ok(Some((c, b, len))) => (200, c, Some(b), len),
+        Ok(None) => (404, GRC_CODING_IDENTITY, None, 0),
+        Err(_) => (503, GRC_CODING_IDENTITY, None, 0),
     }
 }
 

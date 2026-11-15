@@ -1769,6 +1769,28 @@ void test_served_coded_bodies() {
   const grc::live::ResourceBody body_gzip = served.lookup_body(kH1, Coding::Gzip);
   check(body_gzip.bytes != nullptr && body_gzip.coding == Coding::Identity && *body_gzip.bytes == *big_identity,
         "lookup_body(gzip) of a zstd body is the inflated identity");
+  // The carrier ABI's lookup_coded: the stored body or the identity size, and never an inflate.
+  const grc::rs::RestStats before_probe = grc::rs::rest_stats();
+  grc::live::ResourceBody coded_zstd;
+  check(served.lookup_coded_body(kH1, Coding::Zstd, &coded_zstd) && coded_zstd.bytes == big &&
+            coded_zstd.coding == Coding::Zstd && coded_zstd.identity_bytes == big_identity->size(),
+        "lookup_coded_body(zstd) is the stored body and its identity size");
+  grc::live::ResourceBody coded_gzip;
+  check(served.lookup_coded_body(kH1, Coding::Gzip, &coded_gzip) && coded_gzip.bytes == nullptr &&
+            coded_gzip.identity_bytes == big_identity->size(),
+        "lookup_coded_body(gzip) of a zstd body is its identity size alone");
+  grc::live::ResourceBody coded_identity;
+  check(served.lookup_coded_body(kH1, Coding::Identity, &coded_identity) && coded_identity.bytes == nullptr &&
+            coded_identity.identity_bytes == big_identity->size(),
+        "lookup_coded_body(identity) is a size probe");
+  grc::live::ResourceBody coded_tiny;
+  check(served.lookup_coded_body(kH2, Coding::Zstd, &coded_tiny) && coded_tiny.bytes == nullptr &&
+            coded_tiny.identity_bytes == tiny->size(),
+        "lookup_coded_body of a body held identity is its size alone");
+  grc::live::ResourceBody coded_miss;
+  check(!served.lookup_coded_body(std::string(64, '9'), Coding::Zstd, &coded_miss), "lookup_coded_body miss");
+  check(grc::rs::rest_stats().inflate[0].count == before_probe.inflate[0].count,
+        "lookup_coded_body never inflates");
   check(served.lookup(kH2) == tiny && served.lookup_coded(kH2, Coding::Zstd) == nullptr,
         "a short body is served as is");
   check(served.lookup_coded(kH3, Coding::Zstd) == nullptr, "a payload that is not GRT1 is served as is");

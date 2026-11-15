@@ -38,6 +38,8 @@
 //   --mem-fault=F       double-release: the third binary buffer is released twice (sabotage)
 //   --mem-out=DIR       where each in-memory carrier writes mem-<name>.json and its bytes
 //   --skip-register=NAME a listed name left unregistered (carrier-unregistered; exit 2)
+//   --big-resource-mib=N also serves hash 22...2: a GRT1 body of N MiB held zstd at rest in a
+//                     ServedResources, as the capture holds a texture body (resource-path costs)
 //   --register-checks   first registers the refused cases (bad version, short size, a null entry
 //                       point, a bad name, ws, wt, a duplicate) and prints each result
 //   stdout, CAR6: "RS_LIVE_HOST_REGISTER <case> <result>" per registration, including `late`
@@ -99,7 +101,9 @@
 #include "rs_live.h"
 #include "rs_track_caps.h"
 #include "rs_tracks.h"
+#include "rs_payload_rest.h"
 #include "rs_publish.h"
+#include "rs_resource_store.h"
 #include "rs_ws.h"
 
 namespace {
@@ -120,12 +124,57 @@ class FixedSource : public grc::live::ResourceSource {
     for (std::size_t i = 0; i < body.size(); ++i) body[i] = static_cast<std::uint8_t>(i % 251);
     body_ = std::make_shared<const std::vector<std::uint8_t>>(std::move(body));
   }
+  // --big-resource-mib: a GRT1 body of `mib` MiB of texture-like texels, coded zstd at rest and
+  // held in a ServedResources exactly as the capture holds a texture body, under kBigHash.
+  void hold_big(std::size_t mib) {
+    const std::size_t data = mib << 20;
+    std::vector<std::uint8_t> b = {'G', 'R', 'T', '1', '\r', '\n', 0x1a, '\n', 2, 0, 0, 0, '{', '}'};
+    for (int shift = 0; shift < 32; shift += 8) b.push_back(static_cast<std::uint8_t>((data >> shift) & 0xff));
+    b.reserve(b.size() + data);
+    std::uint32_t noise = 0x9e3779b9u;
+    for (std::size_t i = 0; i < data; ++i) {
+      noise = noise * 1664525u + 1013904223u;
+      const std::size_t texel = i / 4;
+      const std::uint8_t base = static_cast<std::uint8_t>((i % 4 == 3) ? 255 : (texel % 2048) / 8 + (texel / 2048) % 64);
+      b.push_back(static_cast<std::uint8_t>(base + ((noise >> 28) & 3)));
+    }
+    grc::rs::RestConfig rest;
+    rest.coding = grc::rs::RestCoding::Zstd;
+    grc::rs::set_rest_config(rest);
+    grc::rs::PayloadPtr payload = std::make_shared<grc::rs::PayloadBytes>(std::move(b));
+    grc::rs::code_at_rest(&payload);
+    std::fprintf(stderr, "rs_live_host: big resource %s identity %llu held %llu (%s)\n", std::string(kBigHash).c_str(),
+                 static_cast<unsigned long long>(payload->identity_size()),
+                 static_cast<unsigned long long>(payload->size()), payload->coded() ? "zstd" : "identity");
+    big_ = std::make_unique<grc::rs::ServedResources>();
+    const grc::rs::PayloadMap map = {{std::string(kBigHash), payload}};
+    std::vector<grc::rs::ServeEvent> events;
+    big_->pin({&map}, 1, &events);
+  }
   std::shared_ptr<const std::vector<std::uint8_t>> lookup(std::string_view hash) override {
-    return hash == kHash ? body_ : nullptr;
+    if (hash == kHash) return body_;
+    return big_ != nullptr ? big_->lookup(hash) : nullptr;
+  }
+  std::shared_ptr<const std::vector<std::uint8_t>> lookup_coded(std::string_view hash,
+                                                                grc::live::Coding coding) override {
+    return big_ != nullptr ? big_->lookup_coded(hash, coding) : nullptr;
+  }
+  bool contains(std::string_view hash) override {
+    return hash == kHash || (big_ != nullptr && big_->contains(hash));
+  }
+  grc::live::ResourceBody lookup_body(std::string_view hash, grc::live::Coding accepted) override {
+    if (hash != kHash && big_ != nullptr) return big_->lookup_body(hash, accepted);
+    return ResourceSource::lookup_body(hash, accepted);
+  }
+  bool lookup_coded_body(std::string_view hash, grc::live::Coding coding, grc::live::ResourceBody *out) override {
+    if (hash != kHash && big_ != nullptr) return big_->lookup_coded_body(hash, coding, out);
+    return ResourceSource::lookup_coded_body(hash, coding, out);
   }
 
  private:
+  static constexpr std::string_view kBigHash = "2222222222222222222222222222222222222222222222222222222222222222";
   std::shared_ptr<const std::vector<std::uint8_t>> body_;
+  std::unique_ptr<grc::rs::ServedResources> big_;
 };
 
 // golden-7's rate scene (one root canvas, one item, one add_rect), as a V6 snapshot.
@@ -268,6 +317,7 @@ int main(int argc, char **argv) {
   std::string track_down_formats;
   bool track_echo = false;
   std::string track_caps;
+  unsigned long big_resource_mib = 0;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     const auto value_of = [&](const char *flag) -> const char * {
@@ -325,6 +375,8 @@ int main(int argc, char **argv) {
       track_caps = v;
     } else if (arg == "--register-checks") {
       register_checks = true;
+    } else if (const char *v = value_of("--big-resource-mib")) {
+      big_resource_mib = std::strtoul(v, nullptr, 10);
     }
   }
 
@@ -505,6 +557,7 @@ int main(int argc, char **argv) {
   std::signal(SIGTERM, on_signal);
 
   FixedSource source;
+  if (big_resource_mib > 0) source.hold_big(big_resource_mib);
   grc::live::CarrierServices services;
   services.auth_token = token;
   services.allowed_origins = server_config.allowed_origins;

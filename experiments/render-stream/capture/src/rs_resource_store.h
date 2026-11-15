@@ -272,6 +272,8 @@ class ServedResources : public live::ResourceSource {
                                                                 live::Coding coding) override;
   // TDR: one probe for a GET: the stored body when `accepted` is its coding, else the identity.
   live::ResourceBody lookup_body(std::string_view hash, live::Coding accepted) override;
+  // Never inflates (the identity size is the held body's header).
+  bool lookup_coded_body(std::string_view hash, live::Coding coding, live::ResourceBody *out) override;
   bool contains(std::string_view hash) override;
   // served-at-rest: every retained body into `out` (each distinct body once, across `seen`).
   void census(RestCensus *out, std::unordered_set<const void *> *seen) const;

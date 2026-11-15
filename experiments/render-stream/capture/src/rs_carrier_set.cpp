@@ -518,6 +518,32 @@ struct AbiCarrier::Thunks {
     return 1;
   }
 
+  static int lookup_coded(void *host, const char hash[64], grc_coding coding, grc_buf *out,
+                          std::uint64_t *identity_bytes) {
+    AbiCarrier *c = self(host);
+    if (hash == nullptr || identity_bytes == nullptr || c->ctx_ == nullptr) return 0;
+    if (out == nullptr && coding != GRC_CODING_IDENTITY) return 0;
+    ResourceSource *source = c->ctx_->services().resources;
+    if (source == nullptr) return 0;
+    Coding wanted = Coding::Identity;
+    if (coding == GRC_CODING_GZIP) {
+      wanted = Coding::Gzip;
+    } else if (coding == GRC_CODING_ZSTD) {
+      wanted = Coding::Zstd;
+    } else if (coding != GRC_CODING_IDENTITY) {
+      return 0;
+    }
+    ResourceBody body;
+    if (!source->lookup_coded_body(std::string_view(hash, 64), wanted, &body)) return 0;
+    *identity_bytes = body.identity_bytes;
+    if (body.bytes == nullptr || wanted == Coding::Identity) return 2;
+    auto *owner = new SharedOwner(body.bytes);
+    out->data = owner->bytes->data();
+    out->len = owner->bytes->size();
+    out->owner = c->ledger_add(static_cast<BufOwner *>(owner));
+    return 1;
+  }
+
   static void release(void *host, void *owner) {
     AbiCarrier *c = self(host);
     if (owner == nullptr) return;
@@ -568,7 +594,8 @@ AbiCarrier::AbiCarrier(const grc_carrier_v1 &vt) : vt_(vt), name_(vt.name) {
   host_.host = this;
   host_.config = &Thunks::config;
   host_.admit = &Thunks::admit;
-  host_.admit_subprotocol = &Thunks::admit_subprotocol;  // TRK1, at the struct's end
+  host_.admit_subprotocol = &Thunks::admit_subprotocol;  // TRK1
+  host_.lookup_coded = &Thunks::lookup_coded;            // at the struct's end
   host_.opened = &Thunks::opened;
   host_.text = &Thunks::text;
   host_.closed = &Thunks::closed;

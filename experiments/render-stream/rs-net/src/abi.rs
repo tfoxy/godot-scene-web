@@ -54,14 +54,18 @@ pub struct GrcCarrierHostV1 {
     /// size; a host older than TRK1 has 112 bytes and no such field, so `read_host` leaves it
     /// `None` and the carrier offers no track subprotocol.
     pub admit_subprotocol: Option<unsafe extern "C" fn(*mut c_void, u32, *const c_char, usize) -> c_int>,
+    /// grc_carrier.h `lookup_coded`: a body as held in a coding, with its identity size, without
+    /// building the identity body. A host whose `size` stops before it (120 bytes or less) gets
+    /// `None` from `read_host`, and the carrier answers a coded fetch with `lookup` alone.
+    pub lookup_coded: Option<unsafe extern "C" fn(*mut c_void, *const c_char, c_int, *mut GrcBuf, *mut u64) -> c_int>,
 }
 
 /// Bytes of grc_carrier_host_v1 before TRK1's `admit_subprotocol` (the CAR1 struct).
 pub const HOST_V1_BASE_SIZE: usize = std::mem::offset_of!(GrcCarrierHostV1, admit_subprotocol);
 
 /// Reads the host's struct without reading past its own `size`: abi_version 1, at least the CAR1
-/// base, and `admit_subprotocol` only when `size` covers it. A host older than TRK1 yields
-/// `admit_subprotocol: None`. Returns None for a wrong version or a short struct.
+/// base, and each appended entry only when `size` covers it. A host older than TRK1 yields
+/// `admit_subprotocol: None`, and one older than `lookup_coded` yields `lookup_coded: None`. Returns None for a wrong version or a short struct.
 ///
 /// # Safety
 /// `host` points at `size` readable bytes, where `size` is the second u32 at `host`.

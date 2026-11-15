@@ -568,6 +568,25 @@ live::ResourceBody ServedResources::lookup_body(std::string_view hash, live::Cod
   return out;
 }
 
+bool ServedResources::lookup_coded_body(std::string_view hash, live::Coding coding,
+                                        live::ResourceBody *out) {
+  PayloadPtr held;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    held = held_locked(hash);
+  }
+  if (held == nullptr) {
+    return false;
+  }
+  out->identity_bytes = held->identity_size();
+  if (coding != live::Coding::Identity && held->coded() &&
+      static_cast<std::uint8_t>(held->rest) == static_cast<std::uint8_t>(coding)) {
+    out->bytes = held;
+    out->coding = coding;
+  }
+  return true;
+}
+
 void ServedResources::census(RestCensus *out, std::unordered_set<const void *> *seen) const {
   std::lock_guard<std::mutex> lock(mutex_);
   for (const auto &entry : served_) {

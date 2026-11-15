@@ -143,7 +143,9 @@ typedef struct grc_carrier_host_v1 {
   /* The body of `hash` (64 lowercase hex, not NUL-terminated) in `coding`. 1 = found and *out
    * set (release it with release(host, out->owner)); 0 = not servable in that coding (for a
    * non-identity coding: serve identity instead). The first coded lookup of a hash may compress
-   * on the calling thread. */
+   * on the calling thread, and an identity lookup of a body the capture holds coded inflates it
+   * there: a carrier calls lookup(IDENTITY) off any thread that serves other peers. A carrier that
+   * may serve a coded body asks lookup_coded() first (below). */
   int (*lookup)(void *host, const char hash[64], grc_coding coding, grc_buf *out);
   /* Releases any grc_buf the host handed out: lookup()'s, and every send_*()'s message. */
   void (*release)(void *host, void *owner);
@@ -158,6 +160,16 @@ typedef struct grc_carrier_host_v1 {
      sizeof(void *)`. opened() with a subprotocol of the other pool than the one that admitted
      `local` is closed 1011 (fault `admit-pool-mismatch`). */
   int (*admit_subprotocol)(void *host, uint32_t local, const char *subprotocol, size_t sp_len);
+
+  /* `hash`'s body as the capture holds it in `coding`, and its identity size, without building
+     the identity body (memory-speed, like lookup()'s coded form). 1 = held in `coding`: *out set
+     (release it as lookup()'s) and *identity_bytes set; 2 = servable, but not in `coding`:
+     *identity_bytes set, *out untouched, and the body is lookup(IDENTITY)'s; 0 = not servable
+     (404). GRC_CODING_IDENTITY asks for the size alone (2 or 0). Read it only when
+     `size >= offsetof(grc_carrier_host_v1, lookup_coded) + sizeof(void *)`; an older host
+     answers a coded fetch with lookup() alone. */
+  int (*lookup_coded)(void *host, const char hash[64], grc_coding coding, grc_buf *out,
+                      uint64_t *identity_bytes);
 } grc_carrier_host_v1;
 
 /* The carrier's side. */

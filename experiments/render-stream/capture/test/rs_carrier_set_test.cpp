@@ -387,6 +387,12 @@ struct MapSource final : grc::live::ResourceSource {
     auto it = bodies.find(std::string(hash));
     return it == bodies.end() ? nullptr : it->second;
   }
+  std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> zstd;
+  std::shared_ptr<const std::vector<std::uint8_t>> lookup_coded(std::string_view hash,
+                                                                grc::live::Coding coding) override {
+    auto it = zstd.find(std::string(hash));
+    return coding != grc::live::Coding::Zstd || it == zstd.end() ? nullptr : it->second;
+  }
 };
 
 void test_resources_and_services() {
@@ -429,6 +435,34 @@ void test_resources_and_services() {
   check(fb->outstanding_buffers() == 0, "host: lookup buffer released");
   const std::string miss(64, 'b');
   check(host->lookup(host->host, miss.data(), GRC_CODING_IDENTITY, &buf) == 0, "host: lookup miss");
+  // lookup_coded: the held coded body with its identity size; 2 when servable in another form.
+  const std::string hz(64, 'c');
+  source.bodies[hz] = std::make_shared<const std::vector<std::uint8_t>>(std::vector<std::uint8_t>(40, 1));
+  source.zstd[hz] = std::make_shared<const std::vector<std::uint8_t>>(std::vector<std::uint8_t>{9, 9});
+  std::uint64_t identity_bytes = 0;
+  grc_buf held{};
+  check(host->size >= offsetof(grc_carrier_host_v1, lookup_coded) + sizeof(void *) && host->lookup_coded != nullptr,
+        "host: lookup_coded is offered");
+  check(host->lookup_coded(host->host, hz.data(), GRC_CODING_ZSTD, &held, &identity_bytes) == 1 && held.len == 2 &&
+            held.data[0] == 9 && identity_bytes == 40,
+        "host: lookup_coded gives the held body and the identity size");
+  check(fb->outstanding_buffers() == 1, "host: lookup_coded buffer counted");
+  host->release(host->host, held.owner);
+  check(fb->outstanding_buffers() == 0, "host: lookup_coded buffer released");
+  identity_bytes = 0;
+  grc_buf untouched{};
+  check(host->lookup_coded(host->host, hz.data(), GRC_CODING_GZIP, &untouched, &identity_bytes) == 2 &&
+            untouched.data == nullptr && identity_bytes == 40,
+        "host: lookup_coded of a coding not held is 2 with the identity size");
+  identity_bytes = 0;
+  check(host->lookup_coded(host->host, h.data(), GRC_CODING_IDENTITY, nullptr, &identity_bytes) == 2 &&
+            identity_bytes == 3,
+        "host: lookup_coded(identity) is a size probe");
+  check(host->lookup_coded(host->host, miss.data(), GRC_CODING_ZSTD, &untouched, &identity_bytes) == 0,
+        "host: lookup_coded miss");
+  check(host->lookup_coded(host->host, hz.data(), static_cast<grc_coding>(7), &untouched, &identity_bytes) == 0,
+        "host: lookup_coded of an unknown coding refuses");
+  check(fb->outstanding_buffers() == 0, "host: lookup_coded leaves no buffer");
   host->resource_served(host->host, 4, h.data(), 200, GRC_CODING_GZIP, 3, 2);
   host->rejected(host->host, 5, GRC_REJECT_AUTH, "", 0);
   host->rejected(host->host, 6, GRC_REJECT_ORIGIN, "http://evil:1", 13);
