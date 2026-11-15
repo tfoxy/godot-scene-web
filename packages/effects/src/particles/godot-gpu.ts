@@ -24,7 +24,10 @@
 // (drawn in index / reversed lifetime order).
 //
 // Pure, DOM-free and GL-free: a caller steps it with the host's frame delta and packs the result
-// into a 2D multimesh-layout instance buffer (`packGodotGpuInstances`).
+// into a 2D multimesh-layout instance buffer (`packGodotGpuInstances`). The per-particle pass
+// runs every frame for every emitter, so it allocates nothing and reads the material through
+// fields resolved once per configuration; it is bit-identical to the shader as written (same
+// float64 operations, same operand order), which `test/particles-godot-gpu-digest.test.ts` pins.
 
 /** A sampled curve or gradient texture: `width` x `height` texels of RGBA floats, row-major. */
 export interface GodotCurveTexture {
@@ -93,6 +96,12 @@ interface GpuParticle {
   velocity: Float64Array;
   color: Float64Array;
   custom: Float64Array;
+  /** The spawn values the shader re-derives each pass (`INIT_*`), cached for `initHash`. */
+  init: Float64Array;
+  /** The seed hash `init` was drawn from (-1: none). */
+  initHash: number;
+  /** The emitter's material epoch `init` was drawn under. */
+  initEpoch: number;
 }
 
 // The generated shader's own `float pi = 3.14159;` (not Math.PI: the angles are Godot's).
@@ -131,7 +140,9 @@ function mix(a: number, b: number, t: number): number {
 
 // ------------------------------------------------------------------------- turbulence's noise
 // The generated `grad`, `noise`, `noise_3x` and `curl_3d` (particle_process_material.cpp), in
-// float32 where the hash lives (`fract` of a product by 2365.95 is where precision shows).
+// float32 where the hash lives (`fract` of a product by 2365.95 is where precision shows). Scalar
+// arguments and module scratch keep the 18 `noise` calls per sample allocation-free; every
+// expression keeps the generated code's operand order.
 
 const f32 = Math.fround;
 
@@ -139,79 +150,114 @@ function fract(x: number): number {
   return f32(x - Math.floor(x));
 }
 
-function grad(p: readonly number[], out: number[]): void {
-  const d = (a: readonly number[]) =>
-    f32(p[0] * a[0] + p[1] * a[1] + p[2] * a[2] + p[3] * a[3]);
-  const q = [
-    fract(d([0.143081, 0.001724, 0.280166, 0.262771])),
-    fract(d([0.645401, -0.047791, -0.146698, 0.595016])),
-    fract(d([-0.499665, -0.095734, 0.425674, -0.207367])),
-    fract(d([-0.013596, -0.848588, 0.423736, 0.17044])),
-  ];
+const GRAD_Q = new Float64Array(4);
+const GRAD = new Float64Array(4);
+
+/** `grad(p)` into `GRAD`. */
+function grad(p0: number, p1: number, p2: number, p3: number): void {
+  const q = GRAD_Q;
+  q[0] = fract(
+    f32(p0 * 0.143081 + p1 * 0.001724 + p2 * 0.280166 + p3 * 0.262771),
+  );
+  q[1] = fract(
+    f32(p0 * 0.645401 + p1 * -0.047791 + p2 * -0.146698 + p3 * 0.595016),
+  );
+  q[2] = fract(
+    f32(p0 * -0.499665 + p1 * -0.095734 + p2 * 0.425674 + p3 * -0.207367),
+  );
+  q[3] = fract(
+    f32(p0 * -0.013596 + p1 * -0.848588 + p2 * 0.423736 + p3 * 0.17044),
+  );
   for (let i = 0; i < 4; i++)
-    out[i] = fract(f32(f32(q[i] * q[(i + 1) % 4]) * 2365.952041)) * 2 - 1;
+    GRAD[i] = fract(f32(f32(q[i] * q[(i + 1) & 3]) * 2365.952041)) * 2 - 1;
 }
 
-const CORNERS: readonly (readonly number[])[] = Array.from(
-  { length: 16 },
-  (_, k) => [k & 1, (k >> 1) & 1, (k >> 2) & 1, (k >> 3) & 1],
-);
+const NOISE_R = new Float64Array(16);
 
-function noise4(c: readonly number[]): number {
-  const s =
-    c[0] * -0.1666667 + c[1] * -0.1666667 + c[2] * -0.1666667 + c[3] * -0.5;
-  const coord = [
-    c[0] + s,
-    c[1] + s,
-    c[2] + s,
-    (c[0] + c[1] + c[2] + c[3]) * 0.5,
-  ];
-  const base = coord.map(Math.floor);
-  const delta = coord.map((v, i) => v - base[i]);
-  const r: number[] = [];
-  const g = [0, 0, 0, 0];
-  for (const k of CORNERS) {
-    grad([base[0] + k[0], base[1] + k[1], base[2] + k[2], base[3] + k[3]], g);
-    r.push(
-      (delta[0] - k[0]) * g[0] +
-        (delta[1] - k[1]) * g[1] +
-        (delta[2] - k[2]) * g[2] +
-        (delta[3] - k[3]) * g[3],
-    );
+function noise4(c0: number, c1: number, c2: number, c3: number): number {
+  const s = c0 * -0.1666667 + c1 * -0.1666667 + c2 * -0.1666667 + c3 * -0.5;
+  const k0 = c0 + s;
+  const k1 = c1 + s;
+  const k2 = c2 + s;
+  const k3 = (c0 + c1 + c2 + c3) * 0.5;
+  const b0 = Math.floor(k0);
+  const b1 = Math.floor(k1);
+  const b2 = Math.floor(k2);
+  const b3 = Math.floor(k3);
+  const d0 = k0 - b0;
+  const d1 = k1 - b1;
+  const d2 = k2 - b2;
+  const d3 = k3 - b3;
+  const r = NOISE_R;
+  const g = GRAD;
+  // Corner k is (k & 1, k >> 1 & 1, k >> 2 & 1, k >> 3 & 1): r is indexed x + 2y + 4z + 8w.
+  for (let k = 0; k < 16; k++) {
+    const x = k & 1;
+    const y = (k >> 1) & 1;
+    const z = (k >> 2) & 1;
+    const w = (k >> 3) & 1;
+    grad(b0 + x, b1 + y, b2 + z, b3 + w);
+    r[k] =
+      (d0 - x) * g[0] + (d1 - y) * g[1] + (d2 - z) * g[2] + (d3 - w) * g[3];
   }
-  const fade = delta.map((d) => d * d * d * (10 + d * (-15 + d * 6)));
-  // r is indexed x + 2y + 4z + 8w: mix over w, then z, then y, then x.
-  const w = r.slice(0, 8).map((v, i) => mix(v, r[i + 8], fade[3]));
-  const z = w.slice(0, 4).map((v, i) => mix(v, w[i + 4], fade[2]));
-  const y = [mix(z[0], z[2], fade[1]), mix(z[1], z[3], fade[1])];
-  return mix(y[0], y[1], fade[0]);
+  const f0 = d0 * d0 * d0 * (10 + d0 * (-15 + d0 * 6));
+  const f1 = d1 * d1 * d1 * (10 + d1 * (-15 + d1 * 6));
+  const f2 = d2 * d2 * d2 * (10 + d2 * (-15 + d2 * 6));
+  const f3 = d3 * d3 * d3 * (10 + d3 * (-15 + d3 * 6));
+  // Mix over w, then z, then y, then x.
+  const w0 = mix(r[0], r[8], f3);
+  const w1 = mix(r[1], r[9], f3);
+  const w2 = mix(r[2], r[10], f3);
+  const w3 = mix(r[3], r[11], f3);
+  const w4 = mix(r[4], r[12], f3);
+  const w5 = mix(r[5], r[13], f3);
+  const w6 = mix(r[6], r[14], f3);
+  const w7 = mix(r[7], r[15], f3);
+  const z0 = mix(w0, w4, f2);
+  const z1 = mix(w1, w5, f2);
+  const z2 = mix(w2, w6, f2);
+  const z3 = mix(w3, w7, f2);
+  return mix(mix(z0, z2, f1), mix(z1, z3, f1), f0);
 }
 
-function noise3x(p: readonly number[], out: number[]): void {
-  const o = 1.7320508 * 2048.333333;
-  out[0] = noise4(p);
-  out[1] = noise4([p[0], p[1], p[2], p[3] + o]);
-  out[2] = noise4([p[0], p[1], p[2], p[3] - o]);
+const NOISE3X_OFFSET = 1.7320508 * 2048.333333;
+
+/** `noise_3x(p)` into `out[at..at + 2]`. */
+function noise3x(
+  p0: number,
+  p1: number,
+  p2: number,
+  p3: number,
+  out: Float64Array,
+  at: number,
+): void {
+  out[at] = noise4(p0, p1, p2, p3);
+  out[at + 1] = noise4(p0, p1, p2, p3 + NOISE3X_OFFSET);
+  out[at + 2] = noise4(p0, p1, p2, p3 - NOISE3X_OFFSET);
 }
 
-function curl3d(p: readonly number[], c: number, out: number[]): void {
+/** The six `noise_3x` samples of `curl_3d`: x0, x1, y0, y1, z0, z1 (3 each). */
+const CURL = new Float64Array(18);
+
+function curl3d(
+  p0: number,
+  p1: number,
+  p2: number,
+  p3: number,
+  c: number,
+  out: Float64Array,
+): void {
   const e = 0.001 + c;
-  const at = (i: number, sgn: number) => {
-    const q = [p[0], p[1], p[2], p[3]];
-    q[i] += sgn * e;
-    const r = [0, 0, 0];
-    noise3x(q, r);
-    return r;
-  };
-  const x0 = at(0, -1);
-  const x1 = at(0, 1);
-  const y0 = at(1, -1);
-  const y1 = at(1, 1);
-  const z0 = at(2, -1);
-  const z1 = at(2, 1);
-  const x = y1[2] - y0[2] - (z1[1] - z0[1]);
-  const y = z1[0] - z0[0] - (x1[2] - x0[2]);
-  const z = x1[1] - x0[1] - (y1[0] - y0[0]);
+  const n = CURL;
+  noise3x(p0 + -1 * e, p1, p2, p3, n, 0);
+  noise3x(p0 + 1 * e, p1, p2, p3, n, 3);
+  noise3x(p0, p1 + -1 * e, p2, p3, n, 6);
+  noise3x(p0, p1 + 1 * e, p2, p3, n, 9);
+  noise3x(p0, p1, p2 + -1 * e, p3, n, 12);
+  noise3x(p0, p1, p2 + 1 * e, p3, n, 15);
+  const x = n[9 + 2] - n[6 + 2] - (n[15 + 1] - n[12 + 1]);
+  const y = n[15] - n[12] - (n[3 + 2] - n[0 + 2]);
+  const z = n[3 + 1] - n[0 + 1] - (n[9] - n[6]);
   const l = Math.hypot(x, y, z) || 1;
   out[0] = x / l;
   out[1] = y / l;
@@ -225,7 +271,7 @@ function sampleCurve(
   t: GodotCurveTexture,
   u: number,
   v: number,
-  out: number[],
+  out: Float64Array,
 ): void {
   const w = Math.max(1, t.width);
   const h = Math.max(1, t.height);
@@ -247,97 +293,316 @@ function sampleCurve(
   }
 }
 
+const TEX = new Float64Array(4);
+
+/** `texture(sampler, vec2(t))`, channel `c`. */
+function tex(s: GodotCurveTexture, t: number, c = 0): number {
+  sampleCurve(s, t, t, TEX);
+  return TEX[c];
+}
+
 // ------------------------------------------------------------------------------- the material
 
-/** The material's uniforms and samplers resolved once per configuration. */
+type Vec3 = readonly [number, number, number];
+
+/**
+ * The material's uniforms, samplers and uniform-only derived values, resolved once per
+ * configuration (`GodotGpuEmitter.configure` builds a new one when the material object changes):
+ * the per-particle shader reads fields, never names. A material is therefore read as immutable;
+ * change one by passing a new object.
+ */
 class Material {
-  readonly m: GodotProcessMaterial;
+  readonly shape: GodotProcessMaterial["emissionShape"];
+  readonly turbulence: boolean;
   readonly disableZ: boolean;
   readonly alignY: boolean;
   readonly rotateY: boolean;
   readonly friction: boolean;
-  private readonly tmp = [0, 0, 0, 0];
+
+  // Display.
+  readonly scaleMin: number;
+  readonly scaleMax: number;
+  readonly hueMin: number;
+  readonly hueMax: number;
+  readonly animSpeedMin: number;
+  readonly animSpeedMax: number;
+  readonly animOffsetMin: number;
+  readonly animOffsetMax: number;
+  readonly lifetimeRandomness: number;
+  readonly colorValue: readonly [number, number, number, number];
+  // Dynamics.
+  readonly angleMin: number;
+  readonly angleMax: number;
+  readonly angularVelocityMin: number;
+  readonly angularVelocityMax: number;
+  readonly linearVelocityMin: number;
+  readonly linearVelocityMax: number;
+  readonly directionalVelocityMin: number;
+  readonly directionalVelocityMax: number;
+  readonly radialVelocityMin: number;
+  readonly radialVelocityMax: number;
+  readonly orbitVelocityMin: number;
+  readonly orbitVelocityMax: number;
+  readonly turbInfluenceMin: number;
+  readonly turbInfluenceMax: number;
+  // Physical.
+  readonly linearAccelMin: number;
+  readonly linearAccelMax: number;
+  readonly radialAccelMin: number;
+  readonly radialAccelMax: number;
+  readonly tangentAccelMin: number;
+  readonly tangentAccelMax: number;
+  readonly dampingMin: number;
+  readonly dampingMax: number;
+  // Emission shape.
+  readonly sphereRadius: number;
+  readonly boxExtents: Vec3;
+  readonly shapeScale: Vec3;
+  readonly shapeOffset: Vec3;
+  readonly ringRadius: number;
+  readonly ringInner: number;
+  readonly ringHeight: number;
+  readonly ringTop: number;
+  readonly ringSkew: number;
+  readonly ringAxis: Vec3;
+  readonly ringOrtho: Vec3;
+  // Direction and spread.
+  readonly spread: number;
+  readonly flatness: number;
+  /** `disable_z`'s base angle of `direction`. */
+  readonly directionAngle: number;
+  /** The 3D spread's frame around `direction`: normal, binormal, `cross(binormal, normal)`. */
+  readonly spreadN: Vec3;
+  readonly spreadBi: Vec3;
+  readonly spreadNm: Vec3;
+  // Process.
+  readonly inheritVelocityRatio: number;
+  readonly velocityPivot: Vec3;
+  readonly directionalVelocityGlobal: boolean;
+  readonly gravity: Vec3;
+  readonly gravityLength: number;
+  readonly scaleOverVelocityRange: number;
+  readonly turbDisplacementMin: number;
+  readonly turbDisplacementMax: number;
+  // Turbulence's `get_noise_direction`.
+  readonly noiseScale: number;
+  readonly noiseSpeed: Vec3;
+  readonly noiseSpeedRandom: number;
+  readonly noiseContrast: number;
+  readonly noiseGain: number;
+
+  // Samplers (undefined: the shader's no-texture path).
+  readonly colorInitialRamp: GodotCurveTexture | undefined;
+  readonly scaleCurve: GodotCurveTexture | undefined;
+  readonly hueRotCurve: GodotCurveTexture | undefined;
+  readonly animationOffsetCurve: GodotCurveTexture | undefined;
+  readonly animationSpeedCurve: GodotCurveTexture | undefined;
+  readonly colorRamp: GodotCurveTexture | undefined;
+  readonly alphaCurve: GodotCurveTexture | undefined;
+  readonly emissionCurve: GodotCurveTexture | undefined;
+  readonly orbitVelocityCurve: GodotCurveTexture | undefined;
+  readonly radialVelocityCurve: GodotCurveTexture | undefined;
+  readonly directionalVelocityCurve: GodotCurveTexture | undefined;
+  readonly linearAccelTexture: GodotCurveTexture | undefined;
+  readonly radialAccelTexture: GodotCurveTexture | undefined;
+  readonly tangentAccelTexture: GodotCurveTexture | undefined;
+  readonly dampingTexture: GodotCurveTexture | undefined;
+  readonly turbInfluenceOverLife: GodotCurveTexture | undefined;
+  readonly velocityLimitCurve: GodotCurveTexture | undefined;
+  readonly angleTexture: GodotCurveTexture | undefined;
+  readonly angularVelocityTexture: GodotCurveTexture | undefined;
+  readonly scaleOverVelocityCurve: GodotCurveTexture | undefined;
 
   constructor(m: GodotProcessMaterial) {
-    this.m = m;
+    const u = m.uniforms;
+    const f = (name: string, fallback = 0): number => {
+      const v = u[name];
+      if (typeof v === "number") return v;
+      if (Array.isArray(v) && typeof v[0] === "number") return v[0];
+      return fallback;
+    };
+    const v3 = (name: string, fallback: Vec3): Vec3 => {
+      const v = u[name];
+      if (Array.isArray(v) && v.length >= 3) return [v[0], v[1], v[2]];
+      return fallback;
+    };
+    const curve = (name: string): GodotCurveTexture | undefined =>
+      m.curves[name] || undefined;
+    this.shape = m.emissionShape;
+    this.turbulence = m.turbulence === true;
     this.disableZ = m.flags.includes("disable_z");
     this.alignY = m.flags.includes("align_y_to_velocity");
     this.rotateY = m.flags.includes("rotate_y");
     this.friction = m.flags.includes("damping_as_friction");
-  }
 
-  f(name: string, fallback = 0): number {
-    const v = this.m.uniforms[name];
-    if (typeof v === "number") return v;
-    if (Array.isArray(v) && typeof v[0] === "number") return v[0];
-    return fallback;
-  }
+    this.scaleMin = f("scale_min", 1);
+    this.scaleMax = f("scale_max", 1);
+    this.hueMin = f("hue_variation_min");
+    this.hueMax = f("hue_variation_max");
+    this.animSpeedMin = f("anim_speed_min");
+    this.animSpeedMax = f("anim_speed_max");
+    this.animOffsetMin = f("anim_offset_min");
+    this.animOffsetMax = f("anim_offset_max");
+    this.lifetimeRandomness = f("lifetime_randomness");
+    const cv = u.color_value;
+    this.colorValue =
+      Array.isArray(cv) && cv.length >= 4
+        ? [cv[0], cv[1], cv[2], cv[3]]
+        : [1, 1, 1, 1];
 
-  v3(name: string, fallback: readonly number[]): [number, number, number] {
-    const v = this.m.uniforms[name];
-    if (Array.isArray(v) && v.length >= 3) return [v[0], v[1], v[2]];
-    return [fallback[0], fallback[1], fallback[2]];
-  }
+    this.angleMin = f("initial_angle_min");
+    this.angleMax = f("initial_angle_max");
+    this.angularVelocityMin = f("angular_velocity_min");
+    this.angularVelocityMax = f("angular_velocity_max");
+    this.linearVelocityMin = f("initial_linear_velocity_min");
+    this.linearVelocityMax = f("initial_linear_velocity_max");
+    this.directionalVelocityMin = f("directional_velocity_min");
+    this.directionalVelocityMax = f("directional_velocity_max");
+    this.radialVelocityMin = f("radial_velocity_min");
+    this.radialVelocityMax = f("radial_velocity_max");
+    this.orbitVelocityMin = f("orbit_velocity_min");
+    this.orbitVelocityMax = f("orbit_velocity_max");
+    this.turbInfluenceMin = f("turbulence_influence_min");
+    this.turbInfluenceMax = f("turbulence_influence_max");
 
-  v4(
-    name: string,
-    fallback: readonly number[],
-  ): [number, number, number, number] {
-    const v = this.m.uniforms[name];
-    if (Array.isArray(v) && v.length >= 4) return [v[0], v[1], v[2], v[3]];
-    return [fallback[0], fallback[1], fallback[2], fallback[3]];
+    this.linearAccelMin = f("linear_accel_min");
+    this.linearAccelMax = f("linear_accel_max");
+    this.radialAccelMin = f("radial_accel_min");
+    this.radialAccelMax = f("radial_accel_max");
+    this.tangentAccelMin = f("tangent_accel_min");
+    this.tangentAccelMax = f("tangent_accel_max");
+    this.dampingMin = f("damping_min");
+    this.dampingMax = f("damping_max");
+
+    this.sphereRadius = f("emission_sphere_radius");
+    this.boxExtents = v3("emission_box_extents", [1, 1, 1]);
+    this.shapeScale = v3("emission_shape_scale", [1, 1, 1]);
+    this.shapeOffset = v3("emission_shape_offset", [0, 0, 0]);
+    // The ring's uniform-only terms of `calculate_initial_position`.
+    const radius = Math.max(0.001, f("emission_ring_radius"));
+    const height = f("emission_ring_height");
+    const cone = f("emission_ring_cone_angle", 90);
+    const top = Math.max(
+      radius - Math.tan(((90 - cone) * Math.PI) / 180) * height,
+      0,
+    );
+    this.ringRadius = radius;
+    this.ringInner = f("emission_ring_inner_radius");
+    this.ringHeight = height;
+    this.ringTop = top;
+    this.ringSkew = Math.max(
+      Math.min(radius, top) / Math.max(radius, top),
+      0.5,
+    );
+    const ax = v3("emission_ring_axis", [0, 0, 1]);
+    const al = Math.hypot(ax[0], ax[1], ax[2]);
+    const axis: Vec3 =
+      al === 0 ? [0, 0, 1] : [ax[0] / al, ax[1] / al, ax[2] / al];
+    const ortho: Vec3 =
+      Math.abs(axis[0]) === 1 && axis[1] === 0 && axis[2] === 0
+        ? [-axis[2], 0, axis[0]]
+        : [0, axis[2], -axis[1]];
+    const ol = Math.hypot(ortho[0], ortho[1], ortho[2]) || 1;
+    this.ringAxis = axis;
+    this.ringOrtho = [ortho[0] / ol, ortho[1] / ol, ortho[2] / ol];
+
+    this.spread = f("spread");
+    this.flatness = f("flatness");
+    const dir = v3("direction", [1, 0, 0]);
+    this.directionAngle =
+      dir[0] !== 0
+        ? Math.atan2(dir[1], dir[0])
+        : Math.sign(dir[1]) * (PI_SHADER / 2);
+    const dl = Math.hypot(dir[0], dir[1], dir[2]);
+    const n: Vec3 =
+      dl > 0 ? [dir[0] / dl, dir[1] / dl, dir[2] / dl] : [0, 0, 1];
+    let bi: Vec3 = [n[2], 0, -n[0]]; // cross((0,1,0), n)
+    let bl = Math.hypot(bi[0], bi[1], bi[2]);
+    if (bl < 0.0001) {
+      bi = [0, 0, 1];
+      bl = 1;
+    }
+    bi = [bi[0] / bl, bi[1] / bl, bi[2] / bl];
+    this.spreadN = n;
+    this.spreadBi = bi;
+    this.spreadNm = [
+      bi[1] * n[2] - bi[2] * n[1],
+      bi[2] * n[0] - bi[0] * n[2],
+      bi[0] * n[1] - bi[1] * n[0],
+    ];
+
+    this.inheritVelocityRatio = f("inherit_emitter_velocity_ratio");
+    this.velocityPivot = v3("velocity_pivot", [0, 0, 0]);
+    this.directionalVelocityGlobal = f("directional_velocity_global") !== 0;
+    const g = v3("gravity", [0, -9.8, 0]);
+    this.gravity = g;
+    this.gravityLength = Math.hypot(g[0], g[1], g[2]);
+    this.scaleOverVelocityRange =
+      f("scale_over_velocity_max", 5) - f("scale_over_velocity_min", 0);
+    this.turbDisplacementMin = f("turbulence_initial_displacement_min");
+    this.turbDisplacementMax = f("turbulence_initial_displacement_max");
+
+    const strength = f("turbulence_noise_strength", 1);
+    this.noiseScale = f("turbulence_noise_scale", 9);
+    this.noiseSpeed = v3("turbulence_noise_speed", [0, 0, 0]);
+    this.noiseSpeedRandom = f("turbulence_noise_speed_random", 0.2);
+    this.noiseContrast = Math.max(strength - 1, 0) * 70;
+    this.noiseGain = mix(0.9, 1, strength - 9);
+
+    this.colorInitialRamp = curve("color_initial_ramp");
+    this.scaleCurve = curve("scale_curve");
+    this.hueRotCurve = curve("hue_rot_curve");
+    this.animationOffsetCurve = curve("animation_offset_curve");
+    this.animationSpeedCurve = curve("animation_speed_curve");
+    this.colorRamp = curve("color_ramp");
+    this.alphaCurve = curve("alpha_curve");
+    this.emissionCurve = curve("emission_curve");
+    this.orbitVelocityCurve = curve("orbit_velocity_curve");
+    this.radialVelocityCurve = curve("radial_velocity_curve");
+    this.directionalVelocityCurve = curve("directional_velocity_curve");
+    this.linearAccelTexture = curve("linear_accel_texture");
+    this.radialAccelTexture = curve("radial_accel_texture");
+    this.tangentAccelTexture = curve("tangent_accel_texture");
+    this.dampingTexture = curve("damping_texture");
+    this.turbInfluenceOverLife = curve("turbulence_influence_over_life");
+    this.velocityLimitCurve = curve("velocity_limit_curve");
+    this.angleTexture = curve("angle_texture");
+    this.angularVelocityTexture = curve("angular_velocity_texture");
+    this.scaleOverVelocityCurve = curve("scale_over_velocity_curve");
   }
 
   /** The generated `get_noise_direction` at the shader's `TIME`. */
-  noiseDirection(pos: readonly number[], time: number, out: number[]): void {
-    const strength = this.f("turbulence_noise_strength", 1);
-    const scale = this.f("turbulence_noise_scale", 9);
-    const speed = this.v3("turbulence_noise_speed", [0, 0, 0]);
-    const speedRandom = this.f("turbulence_noise_speed_random", 0.2);
-    const contrast = Math.max(strength - 1, 0) * 70;
+  noiseDirection(
+    p0: number,
+    p1: number,
+    p2: number,
+    time: number,
+    out: Float64Array,
+  ): void {
+    const scale = this.noiseScale;
+    const speed = this.noiseSpeed;
     curl3d(
-      [
-        pos[0] * scale + time * speed[0],
-        pos[1] * scale + time * speed[1],
-        pos[2] * scale + time * speed[2],
-        time * speedRandom,
-      ],
-      contrast,
+      p0 * scale + time * speed[0],
+      p1 * scale + time * speed[1],
+      p2 * scale + time * speed[2],
+      time * this.noiseSpeedRandom,
+      this.noiseContrast,
       out,
     );
-    const k = mix(0.9, 1, strength - 9);
+    const k = this.noiseGain;
     out[0] *= k;
     out[1] *= k;
     out[2] *= k;
   }
-
-  has(sampler: string): boolean {
-    return this.m.curves[sampler] !== undefined;
-  }
-
-  /** `texture(sampler, vec2(t))`, channel `c`; `fallback` when the sampler is not compiled in. */
-  tex(sampler: string, t: number, c = 0): number {
-    const s = this.m.curves[sampler];
-    if (!s) return 1;
-    sampleCurve(s, t, t, this.tmp);
-    return this.tmp[c];
-  }
-
-  tex4(sampler: string, t: number, out: number[]): boolean {
-    const s = this.m.curves[sampler];
-    if (!s) return false;
-    sampleCurve(s, t, t, out);
-    return true;
-  }
 }
 
 interface Display {
-  scale: [number, number, number];
+  scale: Float64Array;
   hue: number;
   animSpeed: number;
   animOffset: number;
   lifetime: number;
-  color: [number, number, number, number];
+  color: Float64Array;
 }
 
 interface Dynamics {
@@ -357,49 +622,33 @@ interface Physical {
   damping: number;
 }
 
+const RAMP = new Float64Array(4);
+
 function initialDisplay(m: Material, seed: { v: number }, out: Display): void {
-  const s = mix(
-    m.f("scale_min", 1),
-    m.f("scale_max", 1),
-    godotRandFromSeed(seed),
-  );
+  const s = mix(m.scaleMin, m.scaleMax, godotRandFromSeed(seed));
   const sc = Math.sign(s) * Math.max(Math.abs(s), 0.001);
   out.scale[0] = sc;
   out.scale[1] = sc;
   out.scale[2] = sc;
-  out.hue =
-    PI_SHADER *
-    2 *
-    mix(
-      m.f("hue_variation_min"),
-      m.f("hue_variation_max"),
-      godotRandFromSeed(seed),
-    );
-  out.animSpeed = mix(
-    m.f("anim_speed_min"),
-    m.f("anim_speed_max"),
-    godotRandFromSeed(seed),
-  );
+  out.hue = PI_SHADER * 2 * mix(m.hueMin, m.hueMax, godotRandFromSeed(seed));
+  out.animSpeed = mix(m.animSpeedMin, m.animSpeedMax, godotRandFromSeed(seed));
   out.animOffset = mix(
-    m.f("anim_offset_min"),
-    m.f("anim_offset_max"),
+    m.animOffsetMin,
+    m.animOffsetMax,
     godotRandFromSeed(seed),
   );
-  out.lifetime = 1 - m.f("lifetime_randomness") * godotRandFromSeed(seed);
-  const c = m.v4("color_value", [1, 1, 1, 1]);
+  out.lifetime = 1 - m.lifetimeRandomness * godotRandFromSeed(seed);
+  const c = m.colorValue;
   out.color[0] = c[0];
   out.color[1] = c[1];
   out.color[2] = c[2];
   out.color[3] = c[3];
-  if (m.has("color_initial_ramp")) {
-    const r = [0, 0, 0, 0];
-    m.tex4("color_initial_ramp", godotRandFromSeed(seed), r);
-    for (let i = 0; i < 4; i++) out.color[i] *= r[i];
+  if (m.colorInitialRamp) {
+    const t = godotRandFromSeed(seed);
+    sampleCurve(m.colorInitialRamp, t, t, RAMP);
+    for (let i = 0; i < 4; i++) out.color[i] *= RAMP[i];
   }
-  if (
-    m.m.emissionShape === "points" ||
-    m.m.emissionShape === "directed_points"
-  ) {
+  if (m.shape === "points" || m.shape === "directed_points") {
     godotRandFromSeed(seed); // emission_texture_position
   }
 }
@@ -409,42 +658,34 @@ function initialDynamics(
   seed: { v: number },
   out: Dynamics,
 ): void {
-  out.angle = mix(
-    m.f("initial_angle_min"),
-    m.f("initial_angle_max"),
-    godotRandFromSeed(seed),
-  );
+  out.angle = mix(m.angleMin, m.angleMax, godotRandFromSeed(seed));
   out.angularVelocity = mix(
-    m.f("angular_velocity_min"),
-    m.f("angular_velocity_max"),
+    m.angularVelocityMin,
+    m.angularVelocityMax,
     godotRandFromSeed(seed),
   );
   out.initialVelocity = mix(
-    m.f("initial_linear_velocity_min"),
-    m.f("initial_linear_velocity_max"),
+    m.linearVelocityMin,
+    m.linearVelocityMax,
     godotRandFromSeed(seed),
   );
   out.directionalVelocity = mix(
-    m.f("directional_velocity_min"),
-    m.f("directional_velocity_max"),
+    m.directionalVelocityMin,
+    m.directionalVelocityMax,
     godotRandFromSeed(seed),
   );
   out.radialVelocity = mix(
-    m.f("radial_velocity_min"),
-    m.f("radial_velocity_max"),
+    m.radialVelocityMin,
+    m.radialVelocityMax,
     godotRandFromSeed(seed),
   );
   out.orbitVelocity = mix(
-    m.f("orbit_velocity_min"),
-    m.f("orbit_velocity_max"),
+    m.orbitVelocityMin,
+    m.orbitVelocityMax,
     godotRandFromSeed(seed),
   );
-  out.turbInfluence = m.m.turbulence
-    ? mix(
-        m.f("turbulence_influence_min"),
-        m.f("turbulence_influence_max"),
-        godotRandFromSeed(seed),
-      )
+  out.turbInfluence = m.turbulence
+    ? mix(m.turbInfluenceMin, m.turbInfluenceMax, godotRandFromSeed(seed))
     : 0;
 }
 
@@ -453,83 +694,70 @@ function initialPhysical(
   seed: { v: number },
   out: Physical,
 ): void {
-  out.linear = mix(
-    m.f("linear_accel_min"),
-    m.f("linear_accel_max"),
-    godotRandFromSeed(seed),
-  );
-  out.radial = mix(
-    m.f("radial_accel_min"),
-    m.f("radial_accel_max"),
-    godotRandFromSeed(seed),
-  );
+  out.linear = mix(m.linearAccelMin, m.linearAccelMax, godotRandFromSeed(seed));
+  out.radial = mix(m.radialAccelMin, m.radialAccelMax, godotRandFromSeed(seed));
   out.tangent = mix(
-    m.f("tangent_accel_min"),
-    m.f("tangent_accel_max"),
+    m.tangentAccelMin,
+    m.tangentAccelMax,
     godotRandFromSeed(seed),
   );
-  out.damping = mix(
-    m.f("damping_min"),
-    m.f("damping_max"),
-    godotRandFromSeed(seed),
-  );
+  out.damping = mix(m.dampingMin, m.dampingMax, godotRandFromSeed(seed));
 }
 
+// `rotate_hue`'s matrix for the last angle: emitters without hue variation (or with one hue per
+// emitter) rotate every particle by the same angle, and the same angle builds the same matrix.
+let hueAngle = 0;
+let hueValid = false;
+const HUE = new Float64Array(9);
+
 /** The generated `rotate_hue` (its matrices are column-major, as written). */
-function rotateHue(c: number[], angle: number): void {
-  const hc = Math.cos(angle);
-  const hs = Math.sin(angle);
-  const col = (a: number[], b: number[], d: number[]) => [
-    a[0] + b[0] * hc + d[0] * hs,
-    a[1] + b[1] * hc + d[1] * hs,
-    a[2] + b[2] * hc + d[2] * hs,
-  ];
-  const c0 = col(
-    [0.299, 0.587, 0.114],
-    [0.701, -0.587, -0.114],
-    [0.168, 0.33, -0.497],
-  );
-  const c1 = col(
-    [0.299, 0.587, 0.114],
-    [-0.299, 0.413, -0.114],
-    [-0.328, 0.035, 0.292],
-  );
-  const c2 = col(
-    [0.299, 0.587, 0.114],
-    [-0.3, -0.588, 0.886],
-    [1.25, -1.05, -0.203],
-  );
+function rotateHue(c: Float64Array, angle: number): void {
+  const k = HUE;
+  if (!hueValid || !Object.is(angle, hueAngle)) {
+    const hc = Math.cos(angle);
+    const hs = Math.sin(angle);
+    k[0] = 0.299 + 0.701 * hc + 0.168 * hs;
+    k[1] = 0.587 + -0.587 * hc + 0.33 * hs;
+    k[2] = 0.114 + -0.114 * hc + -0.497 * hs;
+    k[3] = 0.299 + -0.299 * hc + -0.328 * hs;
+    k[4] = 0.587 + 0.413 * hc + 0.035 * hs;
+    k[5] = 0.114 + -0.114 * hc + 0.292 * hs;
+    k[6] = 0.299 + -0.3 * hc + 1.25 * hs;
+    k[7] = 0.587 + -0.588 * hc + -1.05 * hs;
+    k[8] = 0.114 + 0.886 * hc + -0.203 * hs;
+    hueAngle = angle;
+    hueValid = true;
+  }
   const r = c[0];
   const g = c[1];
   const b = c[2];
-  c[0] = c0[0] * r + c1[0] * g + c2[0] * b;
-  c[1] = c0[1] * r + c1[1] * g + c2[1] * b;
-  c[2] = c0[2] * r + c1[2] * g + c2[2] * b;
+  c[0] = k[0] * r + k[3] * g + k[6] * b;
+  c[1] = k[1] * r + k[4] * g + k[7] * b;
+  c[2] = k[2] * r + k[5] * g + k[8] * b;
 }
+
+const DISPLAY_TEX = new Float64Array(4);
 
 /** The generated `process_display_param`. */
 function processDisplay(m: Material, p: Display, t: number): void {
-  if (m.has("scale_curve")) {
-    const s = [0, 0, 0, 0];
-    m.tex4("scale_curve", t, s);
+  const s = DISPLAY_TEX;
+  if (m.scaleCurve) {
+    sampleCurve(m.scaleCurve, t, t, s);
     p.scale[0] *= s[0];
     p.scale[1] *= s[1];
     p.scale[2] *= s[2];
   }
-  if (m.has("hue_rot_curve")) p.hue *= m.tex("hue_rot_curve", t);
-  if (m.has("animation_offset_curve"))
-    p.animOffset += m.tex("animation_offset_curve", t);
-  if (m.has("animation_speed_curve"))
-    p.animSpeed *= m.tex("animation_speed_curve", t);
-  if (m.has("color_ramp")) {
-    const r = [0, 0, 0, 0];
-    m.tex4("color_ramp", t, r);
-    for (let i = 0; i < 4; i++) p.color[i] *= r[i];
+  if (m.hueRotCurve) p.hue *= tex(m.hueRotCurve, t);
+  if (m.animationOffsetCurve) p.animOffset += tex(m.animationOffsetCurve, t);
+  if (m.animationSpeedCurve) p.animSpeed *= tex(m.animationSpeedCurve, t);
+  if (m.colorRamp) {
+    sampleCurve(m.colorRamp, t, t, s);
+    for (let i = 0; i < 4; i++) p.color[i] *= s[i];
   }
-  if (m.has("alpha_curve")) p.color[3] *= m.tex("alpha_curve", t);
+  if (m.alphaCurve) p.color[3] *= tex(m.alphaCurve, t);
   rotateHue(p.color, p.hue);
-  if (m.has("emission_curve")) {
-    const e = 1 + m.tex("emission_curve", t);
+  if (m.emissionCurve) {
+    const e = 1 + tex(m.emissionCurve, t);
     p.color[0] *= e;
     p.color[1] *= e;
     p.color[2] *= e;
@@ -540,14 +768,14 @@ function processDisplay(m: Material, p: Display, t: number): void {
 function initialPosition(
   m: Material,
   seed: { v: number },
-  out: number[],
+  out: Float64Array,
 ): void {
   let x = 0;
   let y = 0;
   let z = 0;
-  const shape = m.m.emissionShape;
+  const shape = m.shape;
   if (shape === "sphere") {
-    const r0 = m.f("emission_sphere_radius");
+    const r0 = m.sphereRadius;
     const s = godotRandFromSeed(seed) * 2 - 1;
     const t = godotRandFromSeed(seed) * 2 * PI_SHADER;
     const p = godotRandFromSeed(seed);
@@ -556,7 +784,7 @@ function initialPosition(
     y = radius * Math.sin(t) * p;
     z = r0 * s * p;
   } else if (shape === "sphere_surface") {
-    const r0 = m.f("emission_sphere_radius");
+    const r0 = m.sphereRadius;
     const s = godotRandFromSeed(seed) * 2 - 1;
     const t = godotRandFromSeed(seed) * 2 * PI_SHADER;
     const radius = r0 * Math.sqrt(1 - s * s);
@@ -564,21 +792,17 @@ function initialPosition(
     y = radius * Math.sin(t);
     z = r0 * s;
   } else if (shape === "box") {
-    const e = m.v3("emission_box_extents", [1, 1, 1]);
+    const e = m.boxExtents;
     x = (godotRandFromSeed(seed) * 2 - 1) * e[0];
     y = (godotRandFromSeed(seed) * 2 - 1) * e[1];
     z = (godotRandFromSeed(seed) * 2 - 1) * e[2];
   } else if (shape === "ring") {
-    const radius = Math.max(0.001, m.f("emission_ring_radius"));
-    const inner = m.f("emission_ring_inner_radius");
-    const height = m.f("emission_ring_height");
-    const cone = m.f("emission_ring_cone_angle", 90);
-    const top = Math.max(
-      radius - Math.tan(((90 - cone) * Math.PI) / 180) * height,
-      0,
-    );
+    const radius = m.ringRadius;
+    const inner = m.ringInner;
+    const height = m.ringHeight;
+    const top = m.ringTop;
     let yPos = godotRandFromSeed(seed);
-    const skew = Math.max(Math.min(radius, top) / Math.max(radius, top), 0.5);
+    const skew = m.ringSkew;
     yPos = radius < top ? yPos ** skew : 1 - yPos ** skew;
     const angle = godotRandFromSeed(seed) * 2 * PI_SHADER;
     let rr = Math.sqrt(
@@ -586,46 +810,37 @@ function initialPosition(
         inner * inner,
     );
     rr = mix(rr, rr * (top / radius), yPos);
-    let axis = m.v3("emission_ring_axis", [0, 0, 1]);
-    const al = Math.hypot(axis[0], axis[1], axis[2]);
-    axis = al === 0 ? [0, 0, 1] : [axis[0] / al, axis[1] / al, axis[2] / al];
-    let ortho: number[];
-    if (Math.abs(axis[0]) === 1 && axis[1] === 0 && axis[2] === 0)
-      ortho = [-axis[2], 0, axis[0]];
-    else ortho = [0, axis[2], -axis[1]];
-    let ol = Math.hypot(ortho[0], ortho[1], ortho[2]) || 1;
-    ortho = ortho.map((v) => v / ol);
+    const a0 = m.ringAxis[0];
+    const a1 = m.ringAxis[1];
+    const a2 = m.ringAxis[2];
+    const t0 = m.ringOrtho[0];
+    const t1 = m.ringOrtho[1];
+    const t2 = m.ringOrtho[2];
     const s = Math.sin(angle);
     const c = Math.cos(angle);
     const oc = 1 - c;
     // mat3(columns) * ortho
-    const col0 = [
-      c + axis[0] * axis[0] * oc,
-      axis[0] * axis[1] * oc - axis[2] * s,
-      axis[0] * axis[2] * oc + axis[1] * s,
-    ];
-    const col1 = [
-      axis[0] * axis[1] * oc + s * axis[2],
-      c + axis[1] * axis[1] * oc,
-      axis[1] * axis[2] * oc - axis[0] * s,
-    ];
-    const col2 = [
-      axis[2] * axis[0] * oc - axis[1] * s,
-      axis[2] * axis[1] * oc + axis[0] * s,
-      c + axis[2] * axis[2] * oc,
-    ];
-    const o = [0, 1, 2].map(
-      (i) => col0[i] * ortho[0] + col1[i] * ortho[1] + col2[i] * ortho[2],
-    );
-    ol = Math.hypot(o[0], o[1], o[2]) || 1;
+    const o0 =
+      (c + a0 * a0 * oc) * t0 +
+      (a0 * a1 * oc + s * a2) * t1 +
+      (a2 * a0 * oc - a1 * s) * t2;
+    const o1 =
+      (a0 * a1 * oc - a2 * s) * t0 +
+      (c + a1 * a1 * oc) * t1 +
+      (a2 * a1 * oc + a0 * s) * t2;
+    const o2 =
+      (a0 * a2 * oc + a1 * s) * t0 +
+      (a1 * a2 * oc - a0 * s) * t1 +
+      (c + a2 * a2 * oc) * t2;
+    const ol = Math.hypot(o0, o1, o2) || 1;
     const h = yPos * height - height / 2;
-    x = (o[0] / ol) * rr + h * axis[0];
-    y = (o[1] / ol) * rr + h * axis[1];
-    z = (o[2] / ol) * rr + h * axis[2];
+    x = (o0 / ol) * rr + h * a0;
+    y = (o1 / ol) * rr + h * a1;
+    z = (o2 / ol) * rr + h * a2;
   }
   // point, and points / directed_points (no emission texture here): the origin.
-  const scale = m.v3("emission_shape_scale", [1, 1, 1]);
-  const offset = m.v3("emission_shape_offset", [0, 0, 0]);
+  const scale = m.shapeScale;
+  const offset = m.shapeOffset;
   out[0] = x * scale[0] + offset[0];
   out[1] = y * scale[1] + offset[1];
   out[2] = z * scale[2] + offset[2];
@@ -636,61 +851,50 @@ function spreadDirection(
   m: Material,
   seed: { v: number },
   spreadDeg: number,
-  out: number[],
+  out: Float64Array,
 ): void {
   const spread = spreadDeg * (PI_SHADER / 180);
-  const dir = m.v3("direction", [1, 0, 0]);
   if (m.disableZ) {
     let a = randM1P1(seed) * spread;
-    a +=
-      dir[0] !== 0
-        ? Math.atan2(dir[1], dir[0])
-        : Math.sign(dir[1]) * (PI_SHADER / 2);
+    a += m.directionAngle;
     out[0] = Math.cos(a);
     out[1] = Math.sin(a);
     out[2] = 0;
     return;
   }
-  const flatness = m.f("flatness");
   const a1 = randM1P1(seed) * spread;
-  const a2 = randM1P1(seed) * spread * (1 - flatness);
-  const xz = [Math.sin(a1), 0, Math.cos(a1)];
-  const yz = [0, Math.sin(a2), Math.cos(a2)];
-  yz[2] = yz[2] / Math.max(0.0001, Math.sqrt(Math.abs(yz[2])));
-  const sd = [xz[0] * yz[2], yz[1], xz[2] * yz[2]];
-  const dl = Math.hypot(dir[0], dir[1], dir[2]);
-  const n = dl > 0 ? [dir[0] / dl, dir[1] / dl, dir[2] / dl] : [0, 0, 1];
-  let bi = [n[2], 0, -n[0]]; // cross((0,1,0), n)
-  let bl = Math.hypot(bi[0], bi[1], bi[2]);
-  if (bl < 0.0001) {
-    bi = [0, 0, 1];
-    bl = 1;
-  }
-  bi = bi.map((v) => v / bl);
-  const nm = [
-    bi[1] * n[2] - bi[2] * n[1],
-    bi[2] * n[0] - bi[0] * n[2],
-    bi[0] * n[1] - bi[1] * n[0],
-  ];
-  const r = [0, 1, 2].map((i) => bi[i] * sd[0] + nm[i] * sd[1] + n[i] * sd[2]);
-  const rl = Math.hypot(r[0], r[1], r[2]) || 1;
-  out[0] = r[0] / rl;
-  out[1] = r[1] / rl;
-  out[2] = r[2] / rl;
+  const a2 = randM1P1(seed) * spread * (1 - m.flatness);
+  const xz0 = Math.sin(a1);
+  const xz2 = Math.cos(a1);
+  const yz1 = Math.sin(a2);
+  let yz2 = Math.cos(a2);
+  yz2 = yz2 / Math.max(0.0001, Math.sqrt(Math.abs(yz2)));
+  const sd0 = xz0 * yz2;
+  const sd1 = yz1;
+  const sd2 = xz2 * yz2;
+  const bi = m.spreadBi;
+  const nm = m.spreadNm;
+  const n = m.spreadN;
+  const r0 = bi[0] * sd0 + nm[0] * sd1 + n[0] * sd2;
+  const r1 = bi[1] * sd0 + nm[1] * sd1 + n[1] * sd2;
+  const r2 = bi[2] * sd0 + nm[2] * sd1 + n[2] * sd2;
+  const rl = Math.hypot(r0, r1, r2) || 1;
+  out[0] = r0 / rl;
+  out[1] = r1 / rl;
+  out[2] = r2 / rl;
 }
 
 // ------------------------------------------------------------------------------- the emitter
 
 /** `Transform3D` (memory order) applied to a point (w = 1) or a vector (w = 0). */
 function xf(
-  t: readonly number[],
-  v: readonly number[],
+  t: ArrayLike<number>,
+  x: number,
+  y: number,
+  z: number,
   w: number,
-  out: number[],
+  out: Float64Array,
 ): void {
-  const x = v[0];
-  const y = v[1];
-  const z = v[2];
   out[0] = t[0] * x + t[1] * y + t[2] * z + t[9] * w;
   out[1] = t[3] * x + t[4] * y + t[5] * z + t[10] * w;
   out[2] = t[6] * x + t[7] * y + t[8] * z + t[11] * w;
@@ -698,28 +902,37 @@ function xf(
 
 const IDENTITY: readonly number[] = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
 
-function affineInverse(t: readonly number[]): number[] {
-  const [a, b, c, d, e, f, g, h, i] = t;
+/** `affine_inverse` of a `Transform3D` (memory order) into `out`. */
+function affineInverse(t: readonly number[], out: Float64Array): void {
+  const a = t[0];
+  const b = t[1];
+  const c = t[2];
+  const d = t[3];
+  const e = t[4];
+  const f = t[5];
+  const g = t[6];
+  const h = t[7];
+  const i = t[8];
   const det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-  if (det === 0) return [...IDENTITY];
-  const r = [
-    (e * i - f * h) / det,
-    (c * h - b * i) / det,
-    (b * f - c * e) / det,
-    (f * g - d * i) / det,
-    (a * i - c * g) / det,
-    (c * d - a * f) / det,
-    (d * h - e * g) / det,
-    (b * g - a * h) / det,
-    (a * e - b * d) / det,
-  ];
-  const o = [t[9], t[10], t[11]];
-  return [
-    ...r,
-    -(r[0] * o[0] + r[1] * o[1] + r[2] * o[2]),
-    -(r[3] * o[0] + r[4] * o[1] + r[5] * o[2]),
-    -(r[6] * o[0] + r[7] * o[1] + r[8] * o[2]),
-  ];
+  if (det === 0) {
+    out.set(IDENTITY);
+    return;
+  }
+  out[0] = (e * i - f * h) / det;
+  out[1] = (c * h - b * i) / det;
+  out[2] = (b * f - c * e) / det;
+  out[3] = (f * g - d * i) / det;
+  out[4] = (a * i - c * g) / det;
+  out[5] = (c * d - a * f) / det;
+  out[6] = (d * h - e * g) / det;
+  out[7] = (b * g - a * h) / det;
+  out[8] = (a * e - b * d) / det;
+  const o0 = t[9];
+  const o1 = t[10];
+  const o2 = t[11];
+  out[9] = -(out[0] * o0 + out[1] * o1 + out[2] * o2);
+  out[10] = -(out[3] * o0 + out[4] * o1 + out[5] * o2);
+  out[11] = -(out[6] * o0 + out[7] * o1 + out[8] * o2);
 }
 
 /** Evidence of what one emitter did (counters since it was made). */
@@ -743,14 +956,44 @@ export function godotGpuApproximateFeatures(
   return out;
 }
 
+// The cached spawn values (`GpuParticle.init`): display, dynamics, physical, then the seed after
+// their draws.
+const INIT_SCALE = 0;
+const INIT_HUE = 1;
+const INIT_ANIM_SPEED = 2;
+const INIT_ANIM_OFFSET = 3;
+const INIT_LIFETIME = 4;
+const INIT_COLOR = 5; // 4 values
+const INIT_ANGLE = 9;
+const INIT_ANGULAR_VELOCITY = 10;
+const INIT_VELOCITY = 11;
+const INIT_DIRECTIONAL_VELOCITY = 12;
+const INIT_RADIAL_VELOCITY = 13;
+const INIT_ORBIT_VELOCITY = 14;
+const INIT_TURB_INFLUENCE = 15;
+const INIT_LINEAR = 16;
+const INIT_RADIAL = 17;
+const INIT_TANGENT = 18;
+const INIT_DAMPING = 19;
+const INIT_SEED = 20;
+const INIT_FLOATS = 21;
+
 /**
  * One emitter, as gl_compatibility's `ParticlesStorage` holds it. Configure with `configure`
  * (the setters), `restart` (`particles_restart`), `requestProcess` (`particles_request_process_time`),
  * then `update(frameDelta)` once per drawn frame and `pack` the instances.
+ *
+ * The per-particle pass allocates nothing: scratch vectors are the emitter's, the material is
+ * resolved once per configuration, and each particle's spawn values (the generated shader
+ * re-derives them from its seed on every process pass) are cached by seed hash and material, so a
+ * pass draws them once per particle life. The results are bit-identical to evaluating the shader
+ * as written.
  */
 export class GodotGpuEmitter {
   config: GodotGpuEmitterConfig;
   private mat: Material;
+  /** Moves with `mat`: a particle's cached spawn values are valid for one material. */
+  private matEpoch = 0;
   private particles: GpuParticle[] = [];
   emitting = false;
   private phase = 0;
@@ -765,6 +1008,38 @@ export class GodotGpuEmitter {
   private time = 0;
   readonly stats: GodotGpuStats = { steps: 0, restarts: 0, processRequests: 0 };
 
+  // Per-pass and per-particle scratch.
+  private readonly seed = { v: 0 };
+  private readonly d: Display = {
+    scale: new Float64Array(3),
+    hue: 0,
+    animSpeed: 0,
+    animOffset: 0,
+    lifetime: 1,
+    color: new Float64Array(4),
+  };
+  private readonly dy: Dynamics = {
+    angle: 0,
+    angularVelocity: 0,
+    initialVelocity: 0,
+    directionalVelocity: 0,
+    radialVelocity: 0,
+    orbitVelocity: 0,
+    turbInfluence: 0,
+  };
+  private readonly ph: Physical = {
+    linear: 0,
+    radial: 0,
+    tangent: 0,
+    damping: 0,
+  };
+  private readonly v3 = new Float64Array(3);
+  private readonly v3b = new Float64Array(3);
+  private readonly s4 = new Float64Array(4);
+  /** `velocity_pivot` through this pass's emission transform. */
+  private readonly pivot = new Float64Array(3);
+  private readonly inv = new Float64Array(12);
+
   constructor(config: GodotGpuEmitterConfig) {
     this.config = config;
     this.mat = new Material(config.material);
@@ -774,15 +1049,18 @@ export class GodotGpuEmitter {
 
   /** Apply a new configuration (the setters that changed). `emitting` is set only when the
    * caller's value changed (`setEmitting`), as a RenderingServer setter is. An amount change
-   * clears the emitter, as `particles_set_amount` does. */
+   * clears the emitter, as `particles_set_amount` does. A material is read once, when its object
+   * changes: pass a new object to change one. */
   configure(config: GodotGpuEmitterConfig): void {
     if (config.amount !== this.config.amount) {
       this.resize(config.amount);
       this.phase = 0;
       this.clear = true;
     }
-    if (config.material !== this.config.material)
+    if (config.material !== this.config.material) {
       this.mat = new Material(config.material);
+      this.matEpoch++;
+    }
     this.config = config;
   }
 
@@ -818,6 +1096,9 @@ export class GodotGpuEmitter {
         velocity: new Float64Array(3),
         color: new Float64Array([1, 1, 1, 1]),
         custom: new Float64Array(4),
+        init: new Float64Array(INIT_FLOATS),
+        initHash: -1,
+        initEpoch: -1,
       });
   }
 
@@ -851,7 +1132,7 @@ export class GodotGpuEmitter {
       const ft = 1 / (fixed > 0 ? fixed : 30);
       let todo = c.preProcessTime;
       while (todo >= 0) {
-        this.process(ft, c.speedScale);
+        this.process(ft);
         todo -= ft;
       }
     }
@@ -863,18 +1144,18 @@ export class GodotGpuEmitter {
       else if (delta <= 0) delta = 0.001;
       let todo = this.frameRemainder + delta * timeScale;
       while (todo >= ft) {
-        this.process(ft, c.speedScale);
+        this.process(ft);
         todo -= ft;
       }
       this.frameRemainder = todo;
     } else {
-      this.process(frameDelta * timeScale, c.speedScale);
+      this.process(frameDelta * timeScale);
     }
     if (this.requestTime > 0) {
       const ft = 1 / (fixed > 0 ? fixed : 30);
       let todo = this.requestTime;
       while (todo >= 0) {
-        this.process(ft, 1);
+        this.process(ft);
         todo -= ft;
       }
       this.requestTime = 0;
@@ -882,7 +1163,7 @@ export class GodotGpuEmitter {
   }
 
   /** `_particles_process(delta)`: one pass of the process shader over every particle. */
-  private process(delta: number, _speedScale: number): void {
+  private process(delta: number): void {
     const c = this.config;
     this.stats.steps++;
     const lifetime = c.lifetime > 0 ? c.lifetime : 1;
@@ -896,10 +1177,13 @@ export class GodotGpuEmitter {
     const prevPhase = this.phase;
     this.phase = newPhase;
     const emission = c.localCoords ? IDENTITY : c.emissionTransform;
-    const total = this.particles.length;
+    const vp = this.mat.velocityPivot;
+    xf(emission, vp[0], vp[1], vp[2], 1, this.pivot);
+    const particles = this.particles;
+    const total = particles.length;
     for (let index = 0; index < total; index++) {
       this.shade(
-        this.particles[index],
+        particles[index],
         index,
         total,
         delta,
@@ -910,6 +1194,72 @@ export class GodotGpuEmitter {
       );
     }
     this.clear = false;
+  }
+
+  /** The generated shader's `generate_display_param`, `generate_dynamics_param` and
+   * `generate_physical_param` from seed `hash` into the scratch `d`, `dy`, `ph` and `seed` (left
+   * where those draws leave it): computed once per particle seed and material, then copied. */
+  private initial(p: GpuParticle, hash: number): void {
+    const seed = this.seed;
+    const d = this.d;
+    const dy = this.dy;
+    const ph = this.ph;
+    const k = p.init;
+    if (p.initHash === hash && p.initEpoch === this.matEpoch) {
+      const sc = k[INIT_SCALE];
+      d.scale[0] = sc;
+      d.scale[1] = sc;
+      d.scale[2] = sc;
+      d.hue = k[INIT_HUE];
+      d.animSpeed = k[INIT_ANIM_SPEED];
+      d.animOffset = k[INIT_ANIM_OFFSET];
+      d.lifetime = k[INIT_LIFETIME];
+      d.color[0] = k[INIT_COLOR];
+      d.color[1] = k[INIT_COLOR + 1];
+      d.color[2] = k[INIT_COLOR + 2];
+      d.color[3] = k[INIT_COLOR + 3];
+      dy.angle = k[INIT_ANGLE];
+      dy.angularVelocity = k[INIT_ANGULAR_VELOCITY];
+      dy.initialVelocity = k[INIT_VELOCITY];
+      dy.directionalVelocity = k[INIT_DIRECTIONAL_VELOCITY];
+      dy.radialVelocity = k[INIT_RADIAL_VELOCITY];
+      dy.orbitVelocity = k[INIT_ORBIT_VELOCITY];
+      dy.turbInfluence = k[INIT_TURB_INFLUENCE];
+      ph.linear = k[INIT_LINEAR];
+      ph.radial = k[INIT_RADIAL];
+      ph.tangent = k[INIT_TANGENT];
+      ph.damping = k[INIT_DAMPING];
+      seed.v = k[INIT_SEED];
+      return;
+    }
+    const m = this.mat;
+    seed.v = hash;
+    initialDisplay(m, seed, d);
+    initialDynamics(m, seed, dy);
+    initialPhysical(m, seed, ph);
+    k[INIT_SCALE] = d.scale[0];
+    k[INIT_HUE] = d.hue;
+    k[INIT_ANIM_SPEED] = d.animSpeed;
+    k[INIT_ANIM_OFFSET] = d.animOffset;
+    k[INIT_LIFETIME] = d.lifetime;
+    k[INIT_COLOR] = d.color[0];
+    k[INIT_COLOR + 1] = d.color[1];
+    k[INIT_COLOR + 2] = d.color[2];
+    k[INIT_COLOR + 3] = d.color[3];
+    k[INIT_ANGLE] = dy.angle;
+    k[INIT_ANGULAR_VELOCITY] = dy.angularVelocity;
+    k[INIT_VELOCITY] = dy.initialVelocity;
+    k[INIT_DIRECTIONAL_VELOCITY] = dy.directionalVelocity;
+    k[INIT_RADIAL_VELOCITY] = dy.radialVelocity;
+    k[INIT_ORBIT_VELOCITY] = dy.orbitVelocity;
+    k[INIT_TURB_INFLUENCE] = dy.turbInfluence;
+    k[INIT_LINEAR] = ph.linear;
+    k[INIT_RADIAL] = ph.radial;
+    k[INIT_TANGENT] = ph.tangent;
+    k[INIT_DAMPING] = ph.damping;
+    k[INIT_SEED] = seed.v;
+    p.initHash = hash;
+    p.initEpoch = this.matEpoch;
   }
 
   /** particles.glsl `main` with the material's START and PROCESS for one particle. */
@@ -970,36 +1320,20 @@ export class GodotGpuEmitter {
     }
     if (!p.active) return;
     const number = (Math.imul(p.cycle, total) + index) >>> 0;
+    const hash = godotParticleHash((number + 1 + (c.seed >>> 0)) >>> 0);
     const DELTA = localDelta;
     const ev = c.emitterVelocity;
-    const v3 = [0, 0, 0];
-    const v3b = [0, 0, 0];
+    const v3 = this.v3;
+    const v3b = this.v3b;
+    const seed = this.seed;
+    const d = this.d;
+    const dy = this.dy;
+    const ph = this.ph;
+    const x = p.xform;
+    const v = p.velocity;
     if (restart) {
       // START
-      const seed = {
-        v: godotParticleHash((number + 1 + (c.seed >>> 0)) >>> 0),
-      };
-      const d: Display = {
-        scale: [1, 1, 1],
-        hue: 0,
-        animSpeed: 0,
-        animOffset: 0,
-        lifetime: 1,
-        color: [1, 1, 1, 1],
-      };
-      initialDisplay(m, seed, d);
-      const dy: Dynamics = {
-        angle: 0,
-        angularVelocity: 0,
-        initialVelocity: 0,
-        directionalVelocity: 0,
-        radialVelocity: 0,
-        orbitVelocity: 0,
-        turbInfluence: 0,
-      };
-      initialDynamics(m, seed, dy);
-      const ph: Physical = { linear: 0, radial: 0, tangent: 0, damping: 0 };
-      initialPhysical(m, seed, ph);
+      this.initial(p, hash);
       processDisplay(m, d, 0);
       if (godotRandFromSeed(seed) > c.amountRatio) p.active = false;
       p.custom.fill(0);
@@ -1008,100 +1342,80 @@ export class GodotGpuEmitter {
       p.color.set(d.color);
       // RESTART_ROT_SCALE then RESTART_POSITION: TRANSFORM = EMISSION_TRANSFORM * TRANSFORM.
       initialPosition(m, seed, v3);
-      if (m.m.turbulence) {
+      if (m.turbulence) {
         const disp = mix(
-          m.f("turbulence_initial_displacement_min"),
-          m.f("turbulence_initial_displacement_max"),
+          m.turbDisplacementMin,
+          m.turbDisplacementMax,
           godotRandFromSeed(seed),
         );
-        m.noiseDirection(v3, this.time, v3b);
+        m.noiseDirection(v3[0], v3[1], v3[2], this.time, v3b);
         v3[0] += v3b[0] * disp;
         v3[1] += v3b[1] * disp;
         v3[2] += v3b[2] * disp;
       }
-      for (let i = 0; i < 9; i++) p.xform[i] = 0;
       // basis columns = emission basis columns (E * identity)
-      p.xform[0] = emission[0];
-      p.xform[1] = emission[3];
-      p.xform[2] = emission[6];
-      p.xform[3] = emission[1];
-      p.xform[4] = emission[4];
-      p.xform[5] = emission[7];
-      p.xform[6] = emission[2];
-      p.xform[7] = emission[5];
-      p.xform[8] = emission[8];
-      xf(emission, v3, 1, v3b);
-      p.xform[9] = v3b[0];
-      p.xform[10] = v3b[1];
-      p.xform[11] = v3b[2];
-      spreadDirection(m, seed, m.f("spread"), v3);
+      x[0] = emission[0];
+      x[1] = emission[3];
+      x[2] = emission[6];
+      x[3] = emission[1];
+      x[4] = emission[4];
+      x[5] = emission[7];
+      x[6] = emission[2];
+      x[7] = emission[5];
+      x[8] = emission[8];
+      xf(emission, v3[0], v3[1], v3[2], 1, v3b);
+      x[9] = v3b[0];
+      x[10] = v3b[1];
+      x[11] = v3b[2];
+      spreadDirection(m, seed, m.spread, v3);
       v3[0] *= dy.initialVelocity;
       v3[1] *= dy.initialVelocity;
       v3[2] *= dy.initialVelocity;
-      xf(emission, v3, 0, v3b);
-      const inherit = m.f("inherit_emitter_velocity_ratio");
-      p.velocity[0] = v3b[0] + (ev[0] ?? 0) * inherit;
-      p.velocity[1] = v3b[1] + (ev[1] ?? 0) * inherit;
-      p.velocity[2] = v3b[2] + (ev[2] ?? 0) * inherit;
+      xf(emission, v3[0], v3[1], v3[2], 0, v3b);
+      const inherit = m.inheritVelocityRatio;
+      v[0] = v3b[0] + (ev[0] ?? 0) * inherit;
+      v[1] = v3b[1] + (ev[1] ?? 0) * inherit;
+      v[2] = v3b[2] + (ev[2] ?? 0) * inherit;
       if (m.disableZ) {
-        p.velocity[2] = 0;
-        p.xform[11] = 0;
+        v[2] = 0;
+        x[11] = 0;
       }
       if (!p.active) return;
     }
     // PROCESS
-    const seed = { v: godotParticleHash((number + 1 + (c.seed >>> 0)) >>> 0) };
-    const d: Display = {
-      scale: [1, 1, 1],
-      hue: 0,
-      animSpeed: 0,
-      animOffset: 0,
-      lifetime: 1,
-      color: [1, 1, 1, 1],
-    };
-    initialDisplay(m, seed, d);
-    const dy: Dynamics = {
-      angle: 0,
-      angularVelocity: 0,
-      initialVelocity: 0,
-      directionalVelocity: 0,
-      radialVelocity: 0,
-      orbitVelocity: 0,
-      turbInfluence: 0,
-    };
-    initialDynamics(m, seed, dy);
-    const ph: Physical = { linear: 0, radial: 0, tangent: 0, damping: 0 };
-    initialPhysical(m, seed, ph);
+    this.initial(p, hash);
     const LIFETIME = lifetime;
     p.custom[1] += DELTA / LIFETIME;
     p.custom[1] = mix(p.custom[1], 1, c.interpToEnd);
     const lp = p.custom[1] / d.lifetime;
     if (p.custom[1] > p.custom[3]) p.active = false;
-    const pos = [p.xform[9], p.xform[10], p.xform[11]];
-    const org = [emission[9], emission[10], emission[11]];
-    const ctrl = [0, 0, 0];
+    const pos0 = x[9];
+    const pos1 = x[10];
+    const pos2 = x[11];
+    const org0 = emission[9];
+    const org1 = emission[10];
+    const org2 = emission[11];
+    let ctrl0 = 0;
+    let ctrl1 = 0;
+    let ctrl2 = 0;
     // orbit (2D: disable_z, or an orbit curve)
-    if (m.disableZ || m.has("orbit_velocity_curve")) {
+    if (m.disableZ || m.orbitVelocityCurve) {
       if (!(Math.abs(dy.orbitVelocity) < 0.01 || DELTA < 0.001)) {
         if (m.disableZ) {
           let amount = dy.orbitVelocity;
-          if (m.has("orbit_velocity_curve"))
-            amount *= m.tex("orbit_velocity_curve", lp, 0);
+          if (m.orbitVelocityCurve) amount *= tex(m.orbitVelocityCurve, lp, 0);
           if (amount !== 0) {
-            const dx = pos[0] - org[0];
-            const dyy = pos[1] - org[1];
+            const dx = pos0 - org0;
+            const dyy = pos1 - org1;
             const ang = amount * PI_SHADER * 2 * DELTA;
             const cs = Math.cos(ang);
             const sn = Math.sin(ang);
-            const disp = [
-              cs * dx + sn * dyy - dx,
-              -sn * dx + cs * dyy - dyy,
-              0,
-            ];
-            xf(emission, [disp[0] / DELTA, disp[1] / DELTA, 0], 0, v3);
-            ctrl[0] += v3[0];
-            ctrl[1] += v3[1];
-            ctrl[2] += v3[2];
+            const disp0 = cs * dx + sn * dyy - dx;
+            const disp1 = -sn * dx + cs * dyy - dyy;
+            xf(emission, disp0 / DELTA, disp1 / DELTA, 0, 0, v3);
+            ctrl0 += v3[0];
+            ctrl1 += v3[1];
+            ctrl2 += v3[2];
           }
         }
         // 3D orbit over a curve: not modelled (a 2D canvas emitter is disable_z).
@@ -1109,91 +1423,110 @@ export class GodotGpuEmitter {
     }
     // radial velocity
     if (DELTA >= 0.001) {
-      const mult = m.has("radial_velocity_curve")
-        ? m.tex("radial_velocity_curve", lp, 0)
+      const mult = m.radialVelocityCurve
+        ? tex(m.radialVelocityCurve, lp, 0)
         : 1;
-      const pivot = [0, 0, 0];
-      xf(emission, m.v3("velocity_pivot", [0, 0, 0]), 1, pivot);
-      const rel = [pos[0] - pivot[0], pos[1] - pivot[1], pos[2] - pivot[2]];
-      const rl = Math.hypot(rel[0], rel[1], rel[2]);
-      let rd: number[];
-      if (rl > 0.01) rd = rel.map((v) => (v / rl) * mult * dy.radialVelocity);
-      else {
+      const pivot = this.pivot;
+      const rel0 = pos0 - pivot[0];
+      const rel1 = pos1 - pivot[1];
+      const rel2 = pos2 - pivot[2];
+      const rl = Math.hypot(rel0, rel1, rel2);
+      let rd0: number;
+      let rd1: number;
+      let rd2: number;
+      if (rl > 0.01) {
+        rd0 = (rel0 / rl) * mult * dy.radialVelocity;
+        rd1 = (rel1 / rl) * mult * dy.radialVelocity;
+        rd2 = (rel2 / rl) * mult * dy.radialVelocity;
+      } else {
         spreadDirection(m, seed, 360, v3);
-        rd = [
-          v3[0] * dy.radialVelocity,
-          v3[1] * dy.radialVelocity,
-          v3[2] * dy.radialVelocity,
-        ];
+        rd0 = v3[0] * dy.radialVelocity;
+        rd1 = v3[1] * dy.radialVelocity;
+        rd2 = v3[2] * dy.radialVelocity;
       }
       if (mult * dy.radialVelocity < 0) {
-        const l = Math.hypot(rd[0], rd[1], rd[2]) || 1;
+        const l = Math.hypot(rd0, rd1, rd2) || 1;
         const k = Math.min(Math.abs(mult * dy.radialVelocity), rl / DELTA);
-        rd = rd.map((v) => (v / l) * k);
+        rd0 = (rd0 / l) * k;
+        rd1 = (rd1 / l) * k;
+        rd2 = (rd2 / l) * k;
       }
-      ctrl[0] += rd[0];
-      ctrl[1] += rd[1];
-      ctrl[2] += rd[2];
+      ctrl0 += rd0;
+      ctrl1 += rd1;
+      ctrl2 += rd2;
     }
-    if (m.has("directional_velocity_curve")) {
-      const s = [0, 0, 0, 0];
-      m.tex4("directional_velocity_curve", lp, s);
-      let dv = [
-        s[0] * dy.directionalVelocity,
-        s[1] * dy.directionalVelocity,
-        s[2] * dy.directionalVelocity,
-      ];
-      if (m.f("directional_velocity_global") !== 0) {
-        xf(emission, dv, 0, v3);
-        dv = [v3[0], v3[1], v3[2]];
+    if (m.directionalVelocityCurve) {
+      const s = this.s4;
+      sampleCurve(m.directionalVelocityCurve, lp, lp, s);
+      let dv0 = s[0] * dy.directionalVelocity;
+      let dv1 = s[1] * dy.directionalVelocity;
+      let dv2 = s[2] * dy.directionalVelocity;
+      if (m.directionalVelocityGlobal) {
+        xf(emission, dv0, dv1, dv2, 0, v3);
+        dv0 = v3[0];
+        dv1 = v3[1];
+        dv2 = v3[2];
       }
-      ctrl[0] += dv[0];
-      ctrl[1] += dv[1];
-      ctrl[2] += dv[2];
+      ctrl0 += dv0;
+      ctrl1 += dv1;
+      ctrl2 += dv2;
     }
-    if (m.has("linear_accel_texture"))
-      ph.linear *= m.tex("linear_accel_texture", lp);
-    if (m.has("radial_accel_texture"))
-      ph.radial *= m.tex("radial_accel_texture", lp);
-    if (m.has("tangent_accel_texture"))
-      ph.tangent *= m.tex("tangent_accel_texture", lp);
-    if (m.has("damping_texture")) ph.damping *= m.tex("damping_texture", lp);
+    if (m.linearAccelTexture) ph.linear *= tex(m.linearAccelTexture, lp);
+    if (m.radialAccelTexture) ph.radial *= tex(m.radialAccelTexture, lp);
+    if (m.tangentAccelTexture) ph.tangent *= tex(m.tangentAccelTexture, lp);
+    if (m.dampingTexture) ph.damping *= tex(m.dampingTexture, lp);
     {
-      const g = m.v3("gravity", [0, -9.8, 0]);
-      const f = [g[0], g[1], g[2]];
-      const v = p.velocity;
+      const g = m.gravity;
+      let f0 = g[0];
+      let f1 = g[1];
+      let f2 = g[2];
       const vl = Math.hypot(v[0], v[1], v[2]);
-      if (vl > 0) for (let i = 0; i < 3; i++) f[i] += (v[i] / vl) * ph.linear;
-      const diff = [pos[0] - org[0], pos[1] - org[1], pos[2] - org[2]];
-      const dl = Math.hypot(diff[0], diff[1], diff[2]);
-      if (dl > 0)
-        for (let i = 0; i < 3; i++) f[i] += (diff[i] / dl) * ph.radial;
+      if (vl > 0) {
+        f0 += (v[0] / vl) * ph.linear;
+        f1 += (v[1] / vl) * ph.linear;
+        f2 += (v[2] / vl) * ph.linear;
+      }
+      const diff0 = pos0 - org0;
+      const diff1 = pos1 - org1;
+      const diff2 = pos2 - org2;
+      const dl = Math.hypot(diff0, diff1, diff2);
+      if (dl > 0) {
+        f0 += (diff0 / dl) * ph.radial;
+        f1 += (diff1 / dl) * ph.radial;
+        f2 += (diff2 / dl) * ph.radial;
+      }
       if (m.disableZ) {
-        const tl = Math.hypot(diff[1], diff[0]);
+        const tl = Math.hypot(diff1, diff0);
         if (tl > 0) {
-          f[0] += (-diff[1] / tl) * ph.tangent;
-          f[1] += (diff[0] / tl) * ph.tangent;
+          f0 += (-diff1 / tl) * ph.tangent;
+          f1 += (diff0 / tl) * ph.tangent;
         }
-        f[2] = 0;
+        f2 = 0;
       } else if (dl > 0) {
-        const gl = Math.hypot(g[0], g[1], g[2]);
+        const gl = m.gravityLength;
         if (gl > 0) {
-          const a = diff.map((x) => x / dl);
-          const b = g.map((x) => x / gl);
-          const cr = [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-          ];
-          const cl = Math.hypot(cr[0], cr[1], cr[2]);
-          if (cl > 0)
-            for (let i = 0; i < 3; i++) f[i] += (cr[i] / cl) * ph.tangent;
+          const a0 = diff0 / dl;
+          const a1 = diff1 / dl;
+          const a2 = diff2 / dl;
+          const b0 = g[0] / gl;
+          const b1 = g[1] / gl;
+          const b2 = g[2] / gl;
+          const cr0 = a1 * b2 - a2 * b1;
+          const cr1 = a2 * b0 - a0 * b2;
+          const cr2 = a0 * b1 - a1 * b0;
+          const cl = Math.hypot(cr0, cr1, cr2);
+          if (cl > 0) {
+            f0 += (cr0 / cl) * ph.tangent;
+            f1 += (cr1 / cl) * ph.tangent;
+            f2 += (cr2 / cl) * ph.tangent;
+          }
         }
       }
-      for (let i = 0; i < 3; i++) v[i] += f[i] * DELTA;
+      v[0] += f0 * DELTA;
+      v[1] += f1 * DELTA;
+      v[2] += f2 * DELTA;
     }
     if (ph.damping > 0) {
-      const v = p.velocity;
       let s = Math.hypot(v[0], v[1], v[2]);
       if (!m.friction) s -= ph.damping * DELTA;
       else if (s > 0.001) s -= s * s * ph.damping * 0.05 * DELTA;
@@ -1203,88 +1536,100 @@ export class GodotGpuEmitter {
         if (l > 0) for (let i = 0; i < 3; i++) v[i] = (v[i] / l) * s;
       }
     }
-    if (m.m.turbulence) {
+    if (m.turbulence) {
       // Turbulence before limiting (no collision here, so always applied).
-      const influence = m.has("turbulence_influence_over_life")
-        ? m.tex("turbulence_influence_over_life", lp)
+      const influence = m.turbInfluenceOverLife
+        ? tex(m.turbInfluenceOverLife, lp)
         : 1;
-      const nd = [0, 0, 0];
-      m.noiseDirection([p.xform[9], p.xform[10], p.xform[11]], this.time, nd);
+      const nd = v3b;
+      m.noiseDirection(x[9], x[10], x[11], this.time, nd);
       const nl = Math.hypot(nd[0], nd[1], nd[2]) || 1;
       const infl =
         Math.min(Math.max(dy.turbInfluence * influence, 0), 1) *
         (DELTA <= 0 ? 0 : 1);
-      const v = p.velocity;
       let mag = Math.hypot(v[0], v[1], v[2]);
       for (let i = 0; i < 3; i++)
         v[i] = mix(v[i], (nd[i] / nl) * mag * (1 + (1 - infl) * 0.2), infl);
-      mag = Math.hypot(ctrl[0], ctrl[1], ctrl[2]);
-      for (let i = 0; i < 3; i++)
-        ctrl[i] = mix(
-          ctrl[i],
-          (nd[i] / nl) * mag * (1 + (1 - infl) * 0.2),
-          infl,
-        );
+      mag = Math.hypot(ctrl0, ctrl1, ctrl2);
+      ctrl0 = mix(ctrl0, (nd[0] / nl) * mag * (1 + (1 - infl) * 0.2), infl);
+      ctrl1 = mix(ctrl1, (nd[1] / nl) * mag * (1 + (1 - infl) * 0.2), infl);
+      ctrl2 = mix(ctrl2, (nd[2] / nl) * mag * (1 + (1 - infl) * 0.2), infl);
     }
-    const fv = [
-      ctrl[0] + p.velocity[0],
-      ctrl[1] + p.velocity[1],
-      ctrl[2] + p.velocity[2],
-    ];
-    if (m.has("velocity_limit_curve")) {
-      const l = Math.hypot(fv[0], fv[1], fv[2]);
+    let fv0 = ctrl0 + v[0];
+    let fv1 = ctrl1 + v[1];
+    let fv2 = ctrl2 + v[2];
+    if (m.velocityLimitCurve) {
+      const l = Math.hypot(fv0, fv1, fv2);
       if (l > 0.001) {
         const k = Math.min(
           Math.abs(l),
-          Math.abs(m.tex("velocity_limit_curve", lp)),
+          Math.abs(tex(m.velocityLimitCurve, lp)),
         );
-        for (let i = 0; i < 3; i++) fv[i] = (fv[i] / l) * k;
+        fv0 = (fv0 / l) * k;
+        fv1 = (fv1 / l) * k;
+        fv2 = (fv2 / l) * k;
       }
     }
-    if (m.disableZ) fv[2] = 0;
-    p.xform[9] += fv[0] * DELTA;
-    p.xform[10] += fv[1] * DELTA;
-    p.xform[11] += fv[2] * DELTA;
+    if (m.disableZ) fv2 = 0;
+    x[9] += fv0 * DELTA;
+    x[10] += fv1 * DELTA;
+    x[11] += fv2 * DELTA;
     processDisplay(m, d, lp);
     let angle = dy.angle;
-    if (m.has("angle_texture")) angle *= m.tex("angle_texture", lp);
+    if (m.angleTexture) angle *= tex(m.angleTexture, lp);
     angle +=
       p.custom[1] *
       LIFETIME *
       dy.angularVelocity *
-      (m.has("angular_velocity_texture")
-        ? m.tex("angular_velocity_texture", lp)
-        : 1);
+      (m.angularVelocityTexture ? tex(m.angularVelocityTexture, lp) : 1);
     p.custom[0] = angle * (PI_SHADER / 180);
     p.color.set(d.color);
-    const x = p.xform;
     if (m.disableZ) {
       if (m.alignY) {
-        const fl = Math.hypot(fv[0], fv[1], fv[2]);
-        let yv: number[];
-        if (fl > 0) yv = fv.map((q) => q / fl);
-        else {
+        const fl = Math.hypot(fv0, fv1, fv2);
+        let y0: number;
+        let y1: number;
+        let y2: number;
+        if (fl > 0) {
+          y0 = fv0 / fl;
+          y1 = fv1 / fl;
+          y2 = fv2 / fl;
+        } else {
           const l = Math.hypot(x[3], x[4], x[5]) || 1;
-          yv = [x[3] / l, x[4] / l, x[5] / l];
+          y0 = x[3] / l;
+          y1 = x[4] / l;
+          y2 = x[5] / l;
         }
         // x = normalize(cross(y, z)), z = (0, 0, 1)
-        const zc = [x[6], x[7], x[8]];
-        const cr = [
-          yv[1] * zc[2] - yv[2] * zc[1],
-          yv[2] * zc[0] - yv[0] * zc[2],
-          yv[0] * zc[1] - yv[1] * zc[0],
-        ];
-        const cl = Math.hypot(cr[0], cr[1], cr[2]) || 1;
-        x.set(
-          [cr[0] / cl, cr[1] / cl, cr[2] / cl, yv[0], yv[1], yv[2], 0, 0, 1],
-          0,
-        );
+        const z0 = x[6];
+        const z1 = x[7];
+        const z2 = x[8];
+        const cr0 = y1 * z2 - y2 * z1;
+        const cr1 = y2 * z0 - y0 * z2;
+        const cr2 = y0 * z1 - y1 * z0;
+        const cl = Math.hypot(cr0, cr1, cr2) || 1;
+        x[0] = cr0 / cl;
+        x[1] = cr1 / cl;
+        x[2] = cr2 / cl;
+        x[3] = y0;
+        x[4] = y1;
+        x[5] = y2;
+        x[6] = 0;
+        x[7] = 0;
+        x[8] = 1;
       } else {
         const a = p.custom[0];
-        x.set(
-          [Math.cos(a), -Math.sin(a), 0, Math.sin(a), Math.cos(a), 0, 0, 0, 1],
-          0,
-        );
+        const ca = Math.cos(a);
+        const sa = Math.sin(a);
+        x[0] = ca;
+        x[1] = -sa;
+        x[2] = 0;
+        x[3] = sa;
+        x[4] = ca;
+        x[5] = 0;
+        x[6] = 0;
+        x[7] = 0;
+        x[8] = 1;
       }
     } else {
       for (let k = 0; k < 3; k++) {
@@ -1295,21 +1640,26 @@ export class GodotGpuEmitter {
       }
       if (m.rotateY) {
         const a = p.custom[0];
-        x.set(
-          [Math.cos(a), 0, -Math.sin(a), 0, 1, 0, Math.sin(a), 0, Math.cos(a)],
-          0,
-        );
+        const ca = Math.cos(a);
+        const sa = Math.sin(a);
+        x[0] = ca;
+        x[1] = 0;
+        x[2] = -sa;
+        x[3] = 0;
+        x[4] = 1;
+        x[5] = 0;
+        x[6] = sa;
+        x[7] = 0;
+        x[8] = ca;
       }
     }
     if (m.disableZ) x[11] = 0;
-    if (m.has("scale_over_velocity_curve")) {
-      const s = [0, 0, 0, 0];
-      const l = Math.hypot(fv[0], fv[1], fv[2]);
-      const range =
-        m.f("scale_over_velocity_max", 5) - m.f("scale_over_velocity_min", 0);
+    if (m.scaleOverVelocityCurve) {
+      const s = this.s4;
+      const l = Math.hypot(fv0, fv1, fv2);
+      const range = m.scaleOverVelocityRange;
       const u = l > 0.001 ? Math.min(Math.max(l / range, 0), 1) : 0;
-      const t = m.m.curves.scale_over_velocity_curve;
-      sampleCurve(t, u, 0, s);
+      sampleCurve(m.scaleOverVelocityCurve, u, 0, s);
       d.scale[0] *= s[0];
       d.scale[1] *= s[1];
       d.scale[2] *= s[2];
@@ -1333,7 +1683,11 @@ export class GodotGpuEmitter {
   pack(out: Float32Array): number {
     const c = this.config;
     const n = this.particles.length;
-    const inv = c.localCoords ? null : affineInverse(c.emissionTransform);
+    let inv: Float64Array | null = null;
+    if (!c.localCoords) {
+      inv = this.inv;
+      affineInverse(c.emissionTransform, inv);
+    }
     const rem = c.interpolate ? this.frameRemainder : 0;
     let split = 0;
     if (
@@ -1342,7 +1696,7 @@ export class GodotGpuEmitter {
     ) {
       split = (Math.min(Math.floor(n * this.phase), n - 1) + 1) % n;
     }
-    const col = [0, 0, 0];
+    const col = this.v3;
     for (let k = 0; k < n; k++) {
       let i = k;
       if (c.drawOrder === "lifetime") i = (split + k) % n;
@@ -1354,31 +1708,34 @@ export class GodotGpuEmitter {
         continue;
       }
       const x = p.xform;
+      const v = p.velocity;
       // columns X, Y, Z, O
-      let cols = [
-        [x[0], x[1], x[2]],
-        [x[3], x[4], x[5]],
-        [x[6], x[7], x[8]],
-        [
-          x[9] + p.velocity[0] * rem,
-          x[10] + p.velocity[1] * rem,
-          x[11] + p.velocity[2] * rem,
-        ],
-      ];
+      const ox = x[9] + v[0] * rem;
+      const oy = x[10] + v[1] * rem;
+      const oz = x[11] + v[2] * rem;
       if (inv) {
-        cols = cols.map((v, j) => {
-          xf(inv, v, j === 3 ? 1 : 0, col);
-          return [col[0], col[1], col[2]];
-        });
+        xf(inv, x[0], x[1], x[2], 0, col);
+        out[o] = col[0];
+        out[o + 4] = col[1];
+        xf(inv, x[3], x[4], x[5], 0, col);
+        out[o + 1] = col[0];
+        out[o + 5] = col[1];
+        xf(inv, x[6], x[7], x[8], 0, col);
+        out[o + 2] = col[0];
+        out[o + 6] = col[1];
+        xf(inv, ox, oy, oz, 1, col);
+        out[o + 3] = col[0];
+        out[o + 7] = col[1];
+      } else {
+        out[o] = x[0];
+        out[o + 1] = x[3];
+        out[o + 2] = x[6];
+        out[o + 3] = ox;
+        out[o + 4] = x[1];
+        out[o + 5] = x[4];
+        out[o + 6] = x[7];
+        out[o + 7] = oy;
       }
-      out[o] = cols[0][0];
-      out[o + 1] = cols[1][0];
-      out[o + 2] = cols[2][0];
-      out[o + 3] = cols[3][0];
-      out[o + 4] = cols[0][1];
-      out[o + 5] = cols[1][1];
-      out[o + 6] = cols[2][1];
-      out[o + 7] = cols[3][1];
       out[o + 8] = p.color[0];
       out[o + 9] = p.color[1];
       out[o + 10] = p.color[2];
