@@ -51,7 +51,10 @@ check() {
 	if "$@"; then pass "$name"; else fail "$name"; fi
 }
 
-V1_SHA="e511cfccb4c79d85354ecfac5d355c0ca8aa7692bbe2c611cf62e84b77c13887"
+# The pin is of the fixture file as committed: the v1 code of 821606d3 with its header comment
+# trimmed by 6ccba728 (no code change). Re-pin only for a comment-only edit; a code edit breaks the
+# fixture's whole point.
+V1_SHA="55332ac3755f645995234abf2c7521ddb95db76c10b01a1945f893a51a8a89fe"
 check "fixture: quiet-v1.sh is the frozen v1 lock code (sha256 ${V1_SHA:0:12})" \
 	bash -c "[ \"\$(sha256sum '$QV1' | cut -d' ' -f1)\" = '$V1_SHA' ]"
 
