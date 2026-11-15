@@ -40,6 +40,8 @@ import census as call_census
 
 CALIBRATOR_VERSION = "9"
 SCHEMA = "render-stream-calibration/1"
+ABI_TABLE_SCHEMA = "render-stream-abi-table/1"
+ANCHOR_SELECTION = "all-non-pure-new-virtuals"
 
 # Slots the capture library needs, as `record key -> accepted header names`.
 # Hooked slots plus read-only probe slots used for the behavioural method-bind
@@ -1028,12 +1030,67 @@ def wanted_indices(new_slots: list[dict], prefix: int, abstract_class: str) -> d
     return wanted
 
 
+def build_abi_table(header_path: str, abstract_class: str, defines: set[str],
+                    version_name: str = DEFAULT_VERSION_NAME) -> dict:
+    """Only header-derived facts; no executable identities or addresses."""
+    virtuals = parse_virtuals(header_path, abstract_class, defines)
+    new_slots = [v for v in virtuals if not v["override"] and not v["destructor"]]
+    return {
+        "schema": ABI_TABLE_SCHEMA,
+        "version_name": version_name,
+        "abstract_class": abstract_class,
+        "header_sha256": sha256_file(header_path),
+        "defines": sorted(defines),
+        "virtuals": virtuals,
+        "wanted_slots": wanted_indices(new_slots, 0, abstract_class),
+        "wanted_slot_aliases": {key: list(accepted) for key, accepted in WANTED_SLOTS},
+        "anchor_selection": ANCHOR_SELECTION,
+    }
+
+
+def load_abi_table(path: str, abstract_class: str, defines: set[str]) -> dict:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            table = json.load(handle)
+        if table["schema"] != ABI_TABLE_SCHEMA:
+            raise ValueError("unsupported schema")
+        if table["abstract_class"] != abstract_class:
+            raise ValueError("abstract class differs")
+        if table["defines"] != sorted(defines):
+            raise ValueError("preprocessor defines differ")
+        if not isinstance(table["version_name"], str) or not table["version_name"]:
+            raise ValueError("missing version name")
+        if not re.fullmatch(r"[0-9a-f]{64}", table["header_sha256"]):
+            raise ValueError("invalid header sha256")
+        if table["anchor_selection"] != ANCHOR_SELECTION:
+            raise ValueError("unsupported anchor selection")
+        virtuals = table["virtuals"]
+        if not isinstance(virtuals, list) or not virtuals:
+            raise ValueError("empty virtual list")
+        for virtual in virtuals:
+            if (not isinstance(virtual["name"], str) or not virtual["name"]
+                    or any(type(virtual[key]) is not bool for key in ("pure", "override", "destructor"))
+                    or type(virtual["line"]) is not int or virtual["line"] < 1):
+                raise ValueError("invalid virtual declaration")
+        new_slots = [v for v in virtuals if not v["override"] and not v["destructor"]]
+        wanted = table["wanted_slots"]
+        if table["wanted_slot_aliases"] != {key: list(accepted) for key, accepted in WANTED_SLOTS}:
+            raise ValueError("wanted slot aliases differ from accepted header names")
+        if (not isinstance(wanted, dict) or any(type(v) is not int for v in wanted.values())
+                or wanted != wanted_indices(new_slots, 0, abstract_class)):
+            raise ValueError("wanted slots differ from virtual list")
+        return table
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise CalibrationError(f"{path}: invalid ABI table: {exc}") from exc
+
+
 def derive(
     elf: Elf,
-    header_path: str,
+    header_path: str | None,
     abstract_class: str,
     concrete_class: str,
     defines: set[str],
+    abi_table: dict | None = None,
 ) -> dict:
     _name_vaddr, abstract_ti = find_typeinfo(elf, abstract_class)
     _name_vaddr2, concrete_ti = find_typeinfo(elf, concrete_class)
@@ -1059,7 +1116,9 @@ def derive(
     if concrete_pure:
         raise CalibrationError(f"{concrete_class}: unexpected non-code slots at {concrete_pure}")
 
-    virtuals = parse_virtuals(header_path, abstract_class, defines)
+    if abi_table is None:
+        abi_table = build_abi_table(header_path, abstract_class, defines)
+    virtuals = abi_table["virtuals"]
     new_slots = [v for v in virtuals if not v["override"] and not v["destructor"]]
     expected_pure = [v["pure"] for v in new_slots]
     if len(new_slots) > slot_count:
@@ -1090,7 +1149,7 @@ def derive(
     anchors = {
         v["name"]: prefix + i for i, v in enumerate(new_slots) if not v["pure"]
     }
-    wanted = wanted_indices(new_slots, prefix, abstract_class)
+    wanted = {key: prefix + index for key, index in abi_table["wanted_slots"].items()}
     for key, index in wanted.items():
         # The library replaces every recorded slot (or, for the probe, calls it
         # through the concrete table), and re-checks exactly this at runtime:
@@ -1122,8 +1181,11 @@ def derive(
 
 
 def build_record(args: argparse.Namespace, census: bool = True) -> tuple[dict, dict]:
+    table_path = getattr(args, "abi_table", None)
+    table = (load_abi_table(table_path, args.abstract_class, set(args.define)) if table_path
+             else build_abi_table(args.header, args.abstract_class, set(args.define), args.version_name))
     elf = open_image(args.binary)
-    derived = derive(elf, args.header, args.abstract_class, args.concrete_class, set(args.define))
+    derived = derive(elf, args.header, args.abstract_class, args.concrete_class, set(args.define), table)
     flavor = args.flavor
     if flavor == "auto":
         flavor = "template_debug" if "debug" in os.path.basename(args.binary) else "template_release"
@@ -1150,7 +1212,7 @@ def build_record(args: argparse.Namespace, census: bool = True) -> tuple[dict, d
         "anchors": derived["anchors"],
         "calibrator": {
             "version": CALIBRATOR_VERSION,
-            "header_sha256": sha256_file(args.header),
+            "header_sha256": table["header_sha256"],
         },
     }
     if isinstance(elf, Pe):
@@ -1403,7 +1465,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--binary", help="Godot ELF or PE binary to calibrate against")
     parser.add_argument("--pe-identity", metavar="BINARY", help="print the PE file identity")
     parser.add_argument("--verify-record", metavar="RECORD", help="verify a record offline")
-    parser.add_argument("--header", help="matching RenderingServer header (required for calibration and the devirtualized check)")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--header", help="matching RenderingServer header")
+    source.add_argument("--abi-table", help="header-derived ABI table (instead of --header)")
+    parser.add_argument("--emit-abi-table", action="store_true",
+                        help="emit a header-derived ABI table without a binary")
     parser.add_argument(
         "--mask-only",
         action="store_true",
@@ -1438,6 +1504,24 @@ def main(argv: list[str]) -> int:
                 raise CalibrationError("--pe-identity requires a PE image")
             print(json.dumps(pe_identity(image), sort_keys=True))
             return 0
+        if args.emit_abi_table:
+            if not args.header:
+                parser.error("--emit-abi-table requires --header")
+            table = build_abi_table(args.header, args.abstract_class, set(args.define),
+                                    args.version_name or DEFAULT_VERSION_NAME)
+            text = json.dumps(table, indent=2) + "\n"
+            # Keep short alias arrays inline, matching the repository's JSON formatter.
+            for key, aliases in table["wanted_slot_aliases"].items():
+                inline = json.dumps(aliases)
+                if len(f"    {json.dumps(key)}: {inline},") <= 80:
+                    expanded = json.dumps(aliases, indent=2).replace("\n", "\n    ")
+                    text = text.replace(expanded, inline)
+            if args.out:
+                with open(args.out, "w", encoding="utf-8") as handle:
+                    handle.write(text)
+            else:
+                sys.stdout.write(text)
+            return 0
         if not args.binary:
             parser.error("--binary is required")
         if args.verify_record:
@@ -1445,11 +1529,14 @@ def main(argv: list[str]) -> int:
                 return verify_record(json.load(handle), open_image(args.binary), version_name=args.version_name,
                                      header=args.header,
                                      abstract_class=args.abstract_class, defines=set(args.define))
+        if args.abi_table:
+            table = load_abi_table(args.abi_table, args.abstract_class, set(args.define))
+            args.version_name = args.version_name or table["version_name"]
         args.version_name = args.version_name or DEFAULT_VERSION_NAME
         if args.mask_only:
             return report_mask(args)
-        if not args.header:
-            parser.error("--header is required unless --mask-only is given")
+        if not args.header and not args.abi_table:
+            parser.error("--header or --abi-table is required unless --mask-only is given")
         record, derived = build_record(args)
     except CalibrationError as exc:
         print(f"calibrate: {exc}", file=sys.stderr)

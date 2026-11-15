@@ -120,6 +120,12 @@ for name in ('SCALE_MIRROR_ENV', 'G8A_VLC_ENV', 'G8SW_ENV'):
         arrays[name].extend(arrays[ref[1]] if ref else [word])
 body = re.search(r'^run_capture\(\) \{(.*?)^\}', legs, re.M | re.S)[1]
 base_words = shlex.split(re.search(r'LEG_ENV=\((.*?)\)', body, re.S)[1], comments=True)
+# The ABI fallback is optional; record-based swap legs leave ABI_TABLE unset.
+abi_branch = re.search(r'if \[ -n "\$\{ABI_TABLE:-\}" \]; then\s+LEG_ENV\+=\((.*?)\)\s+fi', body)
+assert abi_branch, 'ABI_TABLE append must remain conditional on a nonempty value'
+abi_words = shlex.split(abi_branch[1])
+check('run_capture conditional ABI env forwarding guarded', abi_words == ['GRC_ABI_TABLE=$ABI_TABLE'])
+body = body[:abi_branch.start()] + body[abi_branch.end():]
 # Include the store, no patch, nonempty quit, and CAPTURE_EXTRA_ENV as run_g8sw_leg does.
 append = re.findall(r'LEG_ENV\+=\((.*?)\)', body, re.S)
 check('run_capture env append structure guarded', len(append) == 4 and [shlex.split(x)[0].split('=')[0] for x in append[:3]] == ['GRC_RESOURCE_STORE_DIR', 'GRC_STREAM_PATCH_OUT', 'RS_FIXTURE_QUIT_FRAME'] and shlex.split(append[3]) == ['$' + '{CAPTURE_EXTRA_ENV[@]}'])
@@ -131,13 +137,22 @@ config = {'target': 'linux', 'extension': '../w1/ext/capture.gdextension', 'reco
 variables = {'armed': '240', 'idle': '240', 'n': '3', 'EXTENSION': str(base / config['extension']), 'CALIBRATION': str(base / config['record']), 'dir': str(run), 'RECORDING_NAME': 'recording.rs8', 'store': str(run / 'store'), 'quit': str(d.quit_frames('swap'))}
 def resolve(word):
     return re.sub(r'\$(\w+)|\$\{(\w+)\}', lambda m: variables[m[1] or m[2]], word)
+def capture_words():
+    optional = abi_words if variables.get('ABI_TABLE', '') else []
+    return base_words + optional + shlex.split(append[0]) + shlex.split(append[2])
+for value in (None, '', '/bundle/abi.json'):
+    if value is None: variables.pop('ABI_TABLE', None)
+    else: variables['ABI_TABLE'] = value
+    env = dict(resolve(word).split('=', 1) for word in capture_words())
+    check('run_capture ABI_TABLE ' + repr(value), env.get('GRC_ABI_TABLE') == (value or None))
+variables.pop('ABI_TABLE', None)
 expected = {}
 branches = re.search(r'if \[ \"\$kind\" = control \]; then(.*?)\n\telse(.*?)\n\tfi', run_body, re.S)
 assert branches, 'swap/control env branches'
 swap_words = shlex.split(re.search(r'CAPTURE_EXTRA_ENV\+=\((.*?)\)', branches[2], re.S)[1])
 prealloc = shlex.split(re.search(r'CAPTURE_EXTRA_ENV\+=\((RS_SCALE_PREALLOC_FRAMES=.*?)\)', run_body, re.S)[1])
 check('run_g8sw extra env expansion and forwarding guarded', extra_words[0] == '$' + '{G8SW_ENV[@]}' and prealloc[-1] == '$@')
-for word in base_words + shlex.split(append[0]) + shlex.split(append[2]) + arrays['G8SW_ENV'] + extra_words[1:] + swap_words + prealloc[:-1]:
+for word in capture_words() + arrays['G8SW_ENV'] + extra_words[1:] + swap_words + prealloc[:-1]:
     k, v = resolve(word).split('=', 1); expected[k] = v
 actual = d.leg_env(base, config, run, 'swap')
 check('Linux env equals parsed G8SW/G8A_VLC/SCALE_MIRROR/run_capture words', actual == expected)
@@ -157,7 +172,7 @@ for leg in d.LEGS:
     check(leg + ': runner phase counts guarded', invocation[2:6] == ['240', '240', '3', 'control' if leg == 'control' else 'swap'])
     mode_words = shlex.split(re.search(r'CAPTURE_EXTRA_ENV\+=\((.*?)\)', branches[1 if leg == 'control' else 2], re.S)[1])
     expected_leg = {}
-    for word in base_words + shlex.split(append[0]) + shlex.split(append[2]) + arrays['G8SW_ENV'] + extra_words[1:] + mode_words + prealloc[:-1] + invocation[6:]:
+    for word in capture_words() + arrays['G8SW_ENV'] + extra_words[1:] + mode_words + prealloc[:-1] + invocation[6:]:
         k, v = resolve(word).split('=', 1); expected_leg[k] = v
     config['target'] = 'linux'
     check(leg + ': exact parsed Linux env', d.leg_env(base, config, run, leg) == expected_leg)

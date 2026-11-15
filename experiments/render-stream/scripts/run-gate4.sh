@@ -3,11 +3,11 @@
 # for the groups that have landed, then runs check-gate4.ts.
 #
 #   bash run-gate4.sh --extension /abs/path/render_stream_capture.gdextension \
-#     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
+#     (--calibration /abs/path/record.json | --abi-table /abs/path/table.json) [--binary /abs/path/linux_release.x86_64] [--out DIR] \
 #     [--legs g4a,g4b]
 #
-# --extension and --calibration are required; without them the runner refuses before doing
-# anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
+# --extension and one of --calibration or --abi-table are required; without them the runner
+# refuses before doing anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
 # artifacts/render-stream/gate4/<UTC>/ and must not already hold files. --legs selects leg groups
 # (comma-separated); the default is every group whose increment has landed: g4a (G4a: font
 # provisioning and the Latin grayscale fixture's import, a 400-frame headless capture with both
@@ -74,6 +74,7 @@ step_frame4d() { echo $((START_FRAME4 + STEP_FRAMES4 * $1)); }
 
 EXTENSION=""
 CALIBRATION=""
+ABI_TABLE=""
 BINARY="$HOME/.cache/godot-render-stream/templates/4.5.1-stable/linux_release.x86_64"
 OUT=""
 LEGS_ARG=""
@@ -97,6 +98,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--calibration)
 		CALIBRATION="${2:-}"
+		shift 2
+		;;
+	--abi-table)
+		ABI_TABLE="${2:-}"
 		shift 2
 		;;
 	--binary)
@@ -130,12 +135,19 @@ if [ -z "$EXTENSION" ] || [ ! -f "$EXTENSION" ]; then
 	echo "run-gate4: extension not found -- pass --extension /abs/path/to/render_stream_capture.gdextension" >&2
 	exit 1
 fi
-if [ -z "$CALIBRATION" ] || [ ! -f "$CALIBRATION" ]; then
-	echo "run-gate4: calibration not found -- pass --calibration /abs/path/to/record.json" >&2
+if { [ -z "$CALIBRATION" ] && [ -z "$ABI_TABLE" ]; } ||
+   { [ -n "$CALIBRATION" ] && [ -n "$ABI_TABLE" ]; }; then
+	echo "run-gate4: pass exactly one of --calibration or --abi-table" >&2
 	exit 1
 fi
 EXTENSION="$(realpath "$EXTENSION")"
-CALIBRATION="$(realpath "$CALIBRATION")"
+if [ -n "$CALIBRATION" ]; then
+	[ -f "$CALIBRATION" ] || { echo "run-gate4: calibration not found: $CALIBRATION" >&2; exit 1; }
+	CALIBRATION="$(realpath "$CALIBRATION")"
+else
+	[ -f "$ABI_TABLE" ] || { echo "run-gate4: ABI table not found: $ABI_TABLE" >&2; exit 1; }
+	ABI_TABLE="$(realpath "$ABI_TABLE")"
+fi
 if [ ! -x "$BINARY" ]; then
 	echo "run-gate4: binary not found or not executable: $BINARY" >&2
 	exit 1
@@ -281,7 +293,7 @@ run_reference() {
 	if [ "$armed" = "1" ]; then
 		mkdir -p "$dir/evidence"
 		LEG_ENV+=(
-			GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+			GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_ABI_TABLE="$ABI_TABLE" GRC_MODE=arm
 			GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
 			GRC_RESOURCE_STORE_DIR="$dir/store"
 		)
@@ -524,7 +536,7 @@ run_rich_reference() {
 	if [ "$armed" = "1" ]; then
 		mkdir -p "$dir/evidence"
 		LEG_ENV+=(
-			GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+			GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_ABI_TABLE="$ABI_TABLE" GRC_MODE=arm
 			GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
 			GRC_RESOURCE_STORE_DIR="$dir/store"
 		)

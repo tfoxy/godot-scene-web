@@ -22,7 +22,7 @@ from this tree, so keep those buildable on their own.
 | Path                          | What it is                                                                                                                                                                                                                                                                                                                                                                               |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `capture/`                    | The capture GDExtension (C++, CMake): `RenderingServer` hooks, the mirror, codecs for every wire version, the live listener and HTTP payload server, texture decode/encode workers. `capture/test/` holds its ctest unit tests; `capture/vendor/` the vendored `gdextension_interface.h`, zlib and zstd (see `PROVENANCE.md`); `capture/tools/calibrate.py` derives calibration records. |
-| `calibration/`                | Committed Linux and Windows x86-64 calibration records, keyed by the engine binary's sha256. The capture refuses to arm on a binary whose record does not match.                                                                                                                                                                                                                         |
+| `calibration/`                | Committed Linux and Windows x86-64 calibration records, keyed by the engine binary's sha256. Records must match the exact binary; `abi/` holds engine-version ABI tables for the optional live fallback.                                                                                                                                                                                 |
 | `rs-core/`                    | `render-stream-core`, the shared Rust core: decode, validation, resolution, the packed draw list, plus the `rs-core-check` CLI.                                                                                                                                                                                                                                                          |
 | `rs-core-capi/`               | The core's C ABI as a staticlib, linked into the native receiver's GDExtension adapter and the web export's side module.                                                                                                                                                                                                                                                                 |
 | `rs-net/`                     | `render-stream-net`, an optional runtime-loaded Rust module for the capture: WebTransport and TLS for the live listener (patched `wtransport` vendored under `rs-net/vendor/`).                                                                                                                                                                                                          |
@@ -95,6 +95,35 @@ fills the capture's persisted texture cache before a session runs.
 
 Build outputs and run evidence go under the repo's ignored `artifacts/render-stream/` (or the
 ignored `build/` directories next to the sources). Nothing generated is committed.
+
+## Calibration records and hook versions
+
+`GRC_CALIBRATION=<record.json>` selects the preferred offline calibration record. Its exact engine
+identity must match; an unreadable, invalid or mismatched record refuses to arm. A committed offline
+record, with call census where the platform supports it, stays the preferred path.
+
+On Linux and Windows x86-64, when `GRC_CALIBRATION` is empty, `GRC_ABI_TABLE=<table.json>` enables a fallback that
+derives the record from the running process's Itanium RTTI and read-only main-image mappings. For
+Godot 4.5.1 use `calibration/abi/godot-4.5.1-rendering-server.json`. Derivation requires the concrete
+and base type names, a unique abstract vtable and a complete match of the header's virtual-slot
+pattern. It then runs the same live slot-mask and behavioural checks and hook plan as the record
+path. Any derivation failure refuses with `derive-failed` and its detail; no engine memory is
+written before all checks pass. A set `GRC_CALIBRATION` always takes priority over `GRC_ABI_TABLE`.
+A dynamically linked PIE engine whose pure slots resolve outside the executable is unsupported by live
+derivation and refuses with `derive-failed`.
+
+`result.json` and `calibration-check.json` report `calibration_source: "record"` or `"derived"`.
+Derived mode reports `derive_census: "not-run"` and includes a passing informational check with that
+name and detail: runtime derivation does not disassemble the executable or run a call census.
+The derived record omits `devirtualized_slots` and `dropped_families` on Linux and writes empty
+arrays on Windows. Windows reads sections from the loaded main module's PE headers and requires
+Itanium RTTI; MSVC layouts refuse. The Windows record carries both the PE image hash and the
+whole-file hash; deriving it requires the executable file to remain readable.
+With `GRC_EVIDENCE_DIR` set, a successful derivation writes `derived-calibration.json` in the same
+schema as `capture/tools/calibrate.py`. Use that record as the input for producing and reviewing a
+committed offline record, including an offline census on supported platforms. The record's
+`calibrator.version` describes its hook coverage; missing required hooks still refuse to arm.
+`run-gate4.sh` accepts `--abi-table <table>` in place of `--calibration <record>` to exercise the fallback.
 
 ## Testing
 

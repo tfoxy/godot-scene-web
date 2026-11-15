@@ -766,6 +766,9 @@ run_capture() {
 		# GRC_VALIDATION_LOG=off in CAPTURE_EXTRA_ENV (later words win).
 		GRC_VALIDATION_LOG=on
 	)
+	if [ -n "${ABI_TABLE:-}" ]; then
+		LEG_ENV+=(GRC_ABI_TABLE="$ABI_TABLE")
+	fi
 	if [ "$store" != "none" ]; then
 		LEG_ENV+=(GRC_RESOURCE_STORE_DIR="$store")
 	fi

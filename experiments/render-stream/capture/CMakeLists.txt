@@ -80,6 +80,8 @@ include(cmake/capture-deps.cmake)
 # Linux-only: Python PE fixture generation runs on the build host.
 if(NOT GRC_WINDOWS)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+grc_add_test(NAME abi_table COMMAND ${Python3_EXECUTABLE} -I
+  ${CMAKE_CURRENT_SOURCE_DIR}/test/abi_table_test.py)
 add_executable(pe_image_test test/pe_image_test.cpp src/pe_image.cpp src/rs_sha256.cpp)
 target_include_directories(pe_image_test PRIVATE src)
 target_link_libraries(pe_image_test PRIVATE grc_warnings grc_platform)
@@ -96,12 +98,34 @@ grc_add_test(NAME calib_pe_checks COMMAND ${Python3_EXECUTABLE} -I
   ${CMAKE_CURRENT_SOURCE_DIR}/tools)
 
 else()
-  grc_linux_only("pe_image_test;calib_pe_checks_test" "Python PE fixture generation runs on the build host.")
+  grc_linux_only("abi_table;pe_image_test;calib_pe_checks_test" "Python PE fixture generation runs on the build host.")
+endif()
+
+# The derivation core is engine-free; the file reader handles both ELF and PE on the host.
+if(NOT GRC_WINDOWS)
+add_executable(calib_derive_test test/calib_derive_test.cpp src/calib_derive.cpp
+  src/pe_image.cpp src/rs_sha256.cpp)
+target_include_directories(calib_derive_test PRIVATE src)
+target_link_libraries(calib_derive_test PRIVATE grc_warnings grc_platform)
+grc_add_test(NAME calib_derive COMMAND calib_derive_test
+  ${CMAKE_CURRENT_SOURCE_DIR}/../calibration/abi/godot-4.5.1-rendering-server.json)
+grc_add_test(NAME calib_derive_files COMMAND ${Python3_EXECUTABLE} -I
+  ${CMAKE_CURRENT_SOURCE_DIR}/test/calib_derive_test.py $<TARGET_FILE:calib_derive_test>)
+else()
+  grc_linux_only("calib_derive;calib_derive_files" "File-reader fixture and parity tests run on the build host.")
 endif()
 
 file(GLOB GRC_CALIBRATION_RECORDS "${CMAKE_CURRENT_SOURCE_DIR}/../calibration/*.json")
+add_executable(calib_live_pe_test test/calib_live_pe_test.cpp src/calib.cpp
+  ${GRC_FINGERPRINT_SOURCES} src/iface.cpp src/rs_sha256.cpp src/calib_live.cpp src/calib_derive.cpp
+  $<$<NOT:$<BOOL:${GRC_WINDOWS}>>:src/pe_image.cpp>)
+target_include_directories(calib_live_pe_test PRIVATE src vendor)
+target_link_libraries(calib_live_pe_test PRIVATE grc_warnings grc_platform)
+grc_add_test(NAME calib_live_pe COMMAND calib_live_pe_test)
+
 add_executable(calib_slot_mask_test test/calib_slot_mask_test.cpp src/calib.cpp
-  ${GRC_FINGERPRINT_SOURCES} src/iface.cpp src/rs_sha256.cpp)
+  ${GRC_FINGERPRINT_SOURCES} src/iface.cpp src/rs_sha256.cpp src/calib_live.cpp src/calib_derive.cpp
+  $<$<NOT:$<BOOL:${GRC_WINDOWS}>>:src/pe_image.cpp>)
 target_include_directories(calib_slot_mask_test PRIVATE src vendor)
 target_link_libraries(calib_slot_mask_test PRIVATE grc_warnings grc_platform)
 if(GRC_WINDOWS)
@@ -129,6 +153,10 @@ include(cmake/capture-sources.cmake)
 if(GRC_WINDOWS)
   list(REMOVE_ITEM GRC_CAPTURE_SOURCES src/rs_platform_posix.cpp src/calib_fingerprint_posix.cpp)
   list(APPEND GRC_CAPTURE_SOURCES src/rs_platform_win32.cpp ${GRC_FINGERPRINT_SOURCES})
+endif()
+list(APPEND GRC_CAPTURE_SOURCES src/calib_live.cpp src/calib_derive.cpp)
+if(NOT GRC_WINDOWS)
+  list(APPEND GRC_CAPTURE_SOURCES src/pe_image.cpp)
 endif()
 add_library(render_stream_capture SHARED ${GRC_CAPTURE_SOURCES})
 target_include_directories(render_stream_capture PRIVATE src vendor ${GRC_INJECT_GEN})

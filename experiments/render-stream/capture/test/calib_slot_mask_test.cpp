@@ -1,10 +1,16 @@
 #include "calib.h"
+#include "abi.h"
+#include "calib_live.h"
 #include "iface.h"
 #include "rs_platform.h"
 #include <array>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#if !defined(_WIN32)
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 namespace {
 int total = 0, failed = 0;
@@ -22,6 +28,106 @@ const grc::CheckResult &find(const std::vector<grc::CheckResult> &checks, const 
   static const grc::CheckResult missing{};
   return missing;
 }
+#if !defined(_WIN32)
+grc::Color clear_color(void *) { return {0.25f, 0.5f, 0.75f, 1.0f}; }
+bool wrong_color = false;
+GDExtensionMethodBindPtr color_bind(GDExtensionConstStringNamePtr,
+                                   GDExtensionConstStringNamePtr, GDExtensionInt) {
+  return reinterpret_cast<GDExtensionMethodBindPtr>(1);
+}
+void color_ptrcall(GDExtensionMethodBindPtr, GDExtensionObjectPtr,
+                  const GDExtensionConstTypePtr *, GDExtensionTypePtr out) {
+  auto color = clear_color(nullptr);
+  if (wrong_color) color.r = 1.0f;
+  std::memcpy(out, &color, sizeof(color));
+}
+void live_derive() {
+  using namespace grc;
+  const size_t size = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+  auto *page = static_cast<uint64_t *>(::mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+  check(page != MAP_FAILED, "allocate live read-only image fixture");
+  if (page == MAP_FAILED) return;
+  const auto addr = [&](size_t word) { return reinterpret_cast<uint64_t>(page + word); };
+  std::memcpy(page + 8, "15RenderingServer", 18);
+  std::memcpy(page + 16, "22RenderingServerDefault", 25);
+  page[32] = page[40] = reinterpret_cast<uint64_t>(&code);
+  page[33] = addr(8); page[41] = addr(16); page[42] = addr(32);
+  page[65] = addr(32); page[81] = addr(40);
+  for (int i = 0; i < 4; ++i) {
+    page[66 + i] = i == 2 ? 0 : reinterpret_cast<uint64_t>(&code);
+    page[82 + i] = reinterpret_cast<uint64_t>(&code);
+  }
+  page[84] = reinterpret_cast<uint64_t>(&clear_color);
+  page[70] = page[86] = 1;  // Non-code sentinels terminate both tables.
+  check(::mprotect(page, size, PROT_READ) == 0, "protect live fixture read-only");
+  ProcessFingerprint fp;
+  fp.exe_sha256 = std::string(64, 'a'); fp.version_string = "fixture release";
+  fp.build_id = "fixture"; fp.exe_path = "/fixture/linux_release";
+  fp.load_bias = addr(0) - 0x1000; fp.pie = true;
+  fp.exec_ranges = {{reinterpret_cast<uint64_t>(&code), reinterpret_cast<uint64_t>(&code) + 1},
+                    {reinterpret_cast<uint64_t>(&clear_color), reinterpret_cast<uint64_t>(&clear_color) + 1}};
+  char map[160];
+  std::snprintf(map, sizeof(map), "%llx-%llx r--p 00000000 00:00 0 /fixture/linux_release",
+                static_cast<unsigned long long>(addr(0)), static_cast<unsigned long long>(addr(0) + size));
+  fp.exe_maps = {map};
+  AbiTable table;
+  table.header_sha256 = std::string(64, 'b');
+  table.new_virtuals = {{"anchor_a", false}, {"hook", true}, {"anchor_b", false}};
+  table.wanted_slots = {{"hook", 1}, {"get_default_clear_color", 1}};
+  void *vptr = page + 82; object = &vptr;
+  Calibration c; std::vector<CheckResult> checks; std::string error;
+  check(derive_live_calibration(table, fp, &c, &checks, &error), "derive live singleton via fake iface");
+  check(find(checks, "derive_census").ok && find(checks, "derive_census").detail == "not-run",
+        "derive census is informational not-run");
+  check(find(checks, "derive_typeinfo").ok && find(checks, "derive_abstract_vtable_unique").ok &&
+        find(checks, "derive_slot_pattern").detail == "3/3 matched", "all derive checks reported");
+  check(c.sha256 == fp.exe_sha256 && c.version_string == fp.version_string && c.pie &&
+        c.build_id_present && c.build_id == fp.build_id && c.flavor == "template_release" &&
+        c.concrete_vtable_vaddr == 0x1280, "derived identity and load bias");
+  LiveVtableFacts facts;
+  check(check_slot_mask(c, fp, &facts, &checks), "unchanged slot mask accepts derived record");
+  g_iface.classdb_get_method_bind = color_bind;
+  g_iface.object_method_bind_ptrcall = color_ptrcall;
+  check(check_behaviour(c, facts, &checks), "unchanged behaviour accepts derived record");
+  check(find(checks, "behaviour_probe").detail.starts_with("bind ("), "derived behaviour actually calls both getters");
+  wrong_color = true; checks.clear();
+  check(!check_behaviour(c, facts, &checks), "unchanged behaviour rejects mismatched derived probe");
+  wrong_color = false;
+  g_iface.classdb_get_method_bind = nullptr;
+  g_iface.object_method_bind_ptrcall = nullptr;
+  check(vptr == page + 82 && page[65] == addr(32), "derivation and checks never write engine memory");
+  const auto record = serialize_derived_calibration(c, table);
+  check(record.find("devirtualized_slots") == std::string::npos &&
+        record.find("dropped_families") == std::string::npos, "derived Linux record omits census fields");
+  CalibLiveReader reader(fp);
+  check(reader.read_u64(0).kind == CalibWord::unmapped &&
+        reader.read_u64(UINT64_MAX - 3).kind == CalibWord::unmapped &&
+        reader.read_u64(addr(0) + size - 7).kind == CalibWord::unmapped &&
+        reader.read_u64(addr(0) + size - 8).kind == CalibWord::value,
+        "live reader refuses unmapped and crossing words");
+  auto invalid = fp;
+  invalid.exe_maps.clear(); checks.clear();
+  check(!derive_live_calibration(table, invalid, &c, &checks, &error) && c.slots.empty(),
+        "missing main-image maps refuses and clears output");
+  invalid.exe_maps = {std::string(map).replace(std::string(map).find("r--p"), 4, "rw-p")};
+  check(CalibLiveReader(invalid).readonly_ranges().empty(), "writable mappings excluded from scan");
+  invalid = fp; invalid.platform = "windows-x86_64";
+  check(!derive_live_calibration(table, invalid, &c, &checks, &error), "PE live derivation refuses pending reader");
+  object = nullptr;
+  check(!derive_live_calibration(table, fp, &c, &checks, &error), "missing singleton refuses");
+  object = &vptr;
+  check(::mprotect(page, size, PROT_READ | PROT_WRITE) == 0, "unprotect fixture for refusal injection");
+  page[66 + 2] = reinterpret_cast<uint64_t>(&code);
+  check(::mprotect(page, size, PROT_READ) == 0, "reprotect mutated fixture");
+  checks.clear();
+  check(!derive_live_calibration(table, fp, &c, &checks, &error) &&
+        !find(checks, "derive_slot_pattern").ok && c.slots.empty() && vptr == page + 82,
+        "live slot-pattern mismatch refuses without writing vptr");
+  ::munmap(page, size);
+}
+#endif
+
 }
 int main(int argc, char **argv) {
   using namespace grc;
@@ -105,6 +211,9 @@ int main(int argc, char **argv) {
             !find(checks, "hooked_slots_pure_in_abstract").ok, "placeholder must equal recorded value plus bias");
     }
   }
+#if !defined(_WIN32)
+  live_derive();
+#endif
   std::printf("calib_slot_mask: %d passed, %d failed\n", total - failed, failed);
   return failed ? 1 : 0;
 }

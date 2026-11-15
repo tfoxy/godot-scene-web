@@ -205,6 +205,7 @@
 #include <vector>
 
 #include "calib.h"
+#include "calib_live.h"
 #include "hooks.h"
 #include "iface.h"
 #include "report.h"
@@ -253,6 +254,9 @@ namespace {
 struct State {
   // Configuration, read once at SCENE initialisation.
   std::string calibration_path;
+  std::string abi_table_path;
+  std::string calibration_source = "record";
+  std::string derived_record, derive_error;
   std::string evidence_dir;
   std::string mode = "validate";
   int64_t disarm_after_frames = -1;
@@ -864,6 +868,11 @@ std::string result_json() {
   json.object_begin();
   json.field("schema", std::string("render-stream-capture-result/1"));
   json.field("status", g_state.status);
+  json.field("calibration_source", g_state.calibration_source);
+  if (g_state.calibration_source == "derived") {
+    json.field("derive_census", std::string("not-run"));
+    json.field_or_null("derive_error", g_state.derive_error);
+  }
   json.field_or_null("reason", g_state.reason);
   json.field("vptr_written", g_state.vptr_written);
   json.field("disarmed", g_state.disarmed);
@@ -1303,6 +1312,12 @@ std::string calibration_check_json() {
   JsonWriter json;
   json.object_begin();
   json.field("calibration_path", g_state.calibration_path);
+  json.field("calibration_source", g_state.calibration_source);
+  if (g_state.calibration_source == "derived") {
+    json.field("abi_table_path", g_state.abi_table_path);
+    json.field("derive_census", std::string("not-run"));
+    json.field_or_null("derive_error", g_state.derive_error);
+  }
   json.field("mode", g_state.mode);
   json.field("schema", g_state.calib.schema);
   json.field("object_prefix", g_state.calib.object_prefix);
@@ -1407,6 +1422,7 @@ void decide(const std::string &status, const std::string &reason) {
   g_state.status = status;
   g_state.reason = reason;
   g_state.decided = true;
+  if (!g_state.derived_record.empty()) emit_load("derived-calibration.json", g_state.derived_record);
   emit_load("calibration-check.json", calibration_check_json());
   emit_load("fingerprint.json", fingerprint_json());
   emit_load("result.json", result_json());
@@ -4957,12 +4973,13 @@ bool attempt(const char *phase) {
     refuse("interface-incomplete");
     return true;
   }
-  if (g_state.calibration_path.empty()) {
+  const bool derived = g_state.calibration_source == "derived";
+  if (g_state.calibration_path.empty() && !derived) {
     refuse("no-calibration");
     return true;
   }
   std::string error;
-  if (!load_calibration(g_state.calibration_path, &g_state.calib, &error)) {
+  if (!derived && !load_calibration(g_state.calibration_path, &g_state.calib, &error)) {
     log_line("calibration: " + error);
     // An absent or unreadable record and a malformed one are different
     // failures; both refuse.
@@ -4971,12 +4988,17 @@ bool attempt(const char *phase) {
   }
   if (!collect_fingerprint(&g_state.fp, &error)) {
     log_line("fingerprint: " + error);
-    refuse("fingerprint-unavailable");
+    if (derived) {
+      g_state.derive_error = error;
+      g_state.checks.push_back({"derive_census", true, "not-run"});
+      g_state.checks.push_back({"derive_identity", false, error});
+    }
+    refuse(derived ? "derive-failed" : "fingerprint-unavailable");
     return true;
   }
   collect_environment_description();
 
-  if (!check_fingerprint(g_state.calib, g_state.fp, &g_state.checks)) {
+  if (!derived && !check_fingerprint(g_state.calib, g_state.fp, &g_state.checks)) {
     refuse("fingerprint-mismatch");
     return true;
   }
@@ -4987,6 +5009,24 @@ bool attempt(const char *phase) {
     log_line("RenderingServer singleton not registered yet; deferring");
     g_state.checks.clear();
     return false;
+  }
+  if (derived) {
+    AbiTable table;
+    if (!load_abi_table(g_state.abi_table_path, &table, &error)) {
+      g_state.checks.push_back({"derive_census", true, "not-run"});
+      g_state.checks.push_back({"derive_abi_table", false, error});
+      g_state.derive_error = error;
+      log_line("derive: " + error);
+      refuse("derive-failed");
+      return true;
+    }
+    if (!derive_live_calibration(table, g_state.fp, &g_state.calib, &g_state.checks, &error)) {
+      g_state.derive_error = error;
+      log_line("derive: " + error);
+      refuse("derive-failed");
+      return true;
+    }
+    g_state.derived_record = serialize_derived_calibration(g_state.calib, table);
   }
   if (!check_slot_mask(g_state.calib, g_state.fp, &g_state.facts, &g_state.checks)) {
     refuse("slot-mask-mismatch");
@@ -6394,6 +6434,9 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   g_api = std::make_unique<cap::Api>(g_api_main);
   apply_low_processor_sleep();
   g_state.calibration_path = env_string("GRC_CALIBRATION");
+  g_state.abi_table_path = env_string("GRC_ABI_TABLE");
+  g_state.calibration_source = g_state.calibration_path.empty() && !g_state.abi_table_path.empty()
+                                   ? "derived" : "record";
   g_state.evidence_dir = env_string("GRC_EVIDENCE_DIR");
   const std::string mode = env_string("GRC_MODE");
   g_state.mode = mode.empty() ? std::string("validate") : mode;

@@ -1,0 +1,4276 @@
+{
+  "schema": "render-stream-abi-table/1",
+  "version_name": "Godot Engine",
+  "abstract_class": "RenderingServer",
+  "header_sha256": "3e01fb10af9abb6955314abacd65d45b697a8ea57c7bf651e59c29e8a399b9d7",
+  "defines": [],
+  "virtuals": [
+    {
+      "name": "_global_shader_parameter_get_list",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 71
+    },
+    {
+      "name": "texture_2d_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 136
+    },
+    {
+      "name": "texture_2d_layered_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 137
+    },
+    {
+      "name": "texture_3d_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 138
+    },
+    {
+      "name": "texture_external_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 139
+    },
+    {
+      "name": "texture_proxy_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 140
+    },
+    {
+      "name": "texture_create_from_native_handle",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 142
+    },
+    {
+      "name": "texture_2d_update",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 144
+    },
+    {
+      "name": "texture_3d_update",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 145
+    },
+    {
+      "name": "texture_external_update",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 146
+    },
+    {
+      "name": "texture_proxy_update",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 147
+    },
+    {
+      "name": "texture_2d_placeholder_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 150
+    },
+    {
+      "name": "texture_2d_layered_placeholder_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 151
+    },
+    {
+      "name": "texture_3d_placeholder_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 152
+    },
+    {
+      "name": "texture_2d_get",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 154
+    },
+    {
+      "name": "texture_2d_layer_get",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 155
+    },
+    {
+      "name": "texture_3d_get",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 156
+    },
+    {
+      "name": "texture_replace",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 158
+    },
+    {
+      "name": "texture_set_size_override",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 159
+    },
+    {
+      "name": "texture_set_path",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 161
+    },
+    {
+      "name": "texture_get_path",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 162
+    },
+    {
+      "name": "texture_get_format",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 164
+    },
+    {
+      "name": "texture_set_detect_3d_callback",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 168
+    },
+    {
+      "name": "texture_set_detect_normal_callback",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 169
+    },
+    {
+      "name": "texture_set_detect_roughness_callback",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 180
+    },
+    {
+      "name": "texture_debug_usage",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 193
+    },
+    {
+      "name": "texture_set_force_redraw_if_visible",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 196
+    },
+    {
+      "name": "texture_rd_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 198
+    },
+    {
+      "name": "texture_get_rd_texture",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 199
+    },
+    {
+      "name": "texture_get_native_handle",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 200
+    },
+    {
+      "name": "shader_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 230
+    },
+    {
+      "name": "shader_create_from_code",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 231
+    },
+    {
+      "name": "shader_set_code",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 233
+    },
+    {
+      "name": "shader_set_path_hint",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 234
+    },
+    {
+      "name": "shader_get_code",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 235
+    },
+    {
+      "name": "get_shader_parameter_list",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 236
+    },
+    {
+      "name": "shader_get_parameter_default",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 237
+    },
+    {
+      "name": "shader_set_default_texture_parameter",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 239
+    },
+    {
+      "name": "shader_get_default_texture_parameter",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 240
+    },
+    {
+      "name": "shader_get_native_source_code",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 253
+    },
+    {
+      "name": "material_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 262
+    },
+    {
+      "name": "material_create_from_shader",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 263
+    },
+    {
+      "name": "material_set_shader",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 265
+    },
+    {
+      "name": "material_set_param",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 267
+    },
+    {
+      "name": "material_get_param",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 268
+    },
+    {
+      "name": "material_set_render_priority",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 270
+    },
+    {
+      "name": "material_set_next_pass",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 272
+    },
+    {
+      "name": "mesh_create_from_surfaces",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 396
+    },
+    {
+      "name": "mesh_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 397
+    },
+    {
+      "name": "mesh_set_blend_shape_count",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 399
+    },
+    {
+      "name": "mesh_surface_get_format_offset",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 401
+    },
+    {
+      "name": "mesh_surface_get_format_vertex_stride",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 402
+    },
+    {
+      "name": "mesh_surface_get_format_normal_tangent_stride",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 403
+    },
+    {
+      "name": "mesh_surface_get_format_attribute_stride",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 404
+    },
+    {
+      "name": "mesh_surface_get_format_skin_stride",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 405
+    },
+    {
+      "name": "mesh_surface_get_format_index_stride",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 406
+    },
+    {
+      "name": "mesh_surface_make_offsets_from_format",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 409
+    },
+    {
+      "name": "mesh_create_surface_data_from_arrays",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 410
+    },
+    {
+      "name": "mesh_add_surface_from_arrays",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 416
+    },
+    {
+      "name": "mesh_add_surface",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 417
+    },
+    {
+      "name": "mesh_get_blend_shape_count",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 419
+    },
+    {
+      "name": "mesh_set_blend_shape_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 426
+    },
+    {
+      "name": "mesh_get_blend_shape_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 427
+    },
+    {
+      "name": "mesh_surface_update_vertex_region",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 429
+    },
+    {
+      "name": "mesh_surface_update_attribute_region",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 430
+    },
+    {
+      "name": "mesh_surface_update_skin_region",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 431
+    },
+    {
+      "name": "mesh_surface_update_index_region",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 432
+    },
+    {
+      "name": "mesh_surface_set_material",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 434
+    },
+    {
+      "name": "mesh_surface_get_material",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 435
+    },
+    {
+      "name": "mesh_get_surface",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 437
+    },
+    {
+      "name": "mesh_get_surface_count",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 439
+    },
+    {
+      "name": "mesh_set_custom_aabb",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 441
+    },
+    {
+      "name": "mesh_get_custom_aabb",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 442
+    },
+    {
+      "name": "mesh_set_path",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 444
+    },
+    {
+      "name": "mesh_get_path",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 445
+    },
+    {
+      "name": "mesh_set_shadow_mesh",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 447
+    },
+    {
+      "name": "mesh_surface_remove",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 449
+    },
+    {
+      "name": "mesh_clear",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 450
+    },
+    {
+      "name": "mesh_debug_usage",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 464
+    },
+    {
+      "name": "multimesh_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 468
+    },
+    {
+      "name": "multimesh_allocate_data",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 485
+    },
+    {
+      "name": "multimesh_get_instance_count",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 486
+    },
+    {
+      "name": "multimesh_set_mesh",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 488
+    },
+    {
+      "name": "multimesh_instance_set_transform",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 489
+    },
+    {
+      "name": "multimesh_instance_set_transform_2d",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 490
+    },
+    {
+      "name": "multimesh_instance_set_color",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 491
+    },
+    {
+      "name": "multimesh_instance_set_custom_data",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 492
+    },
+    {
+      "name": "multimesh_get_mesh",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 494
+    },
+    {
+      "name": "multimesh_get_aabb",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 495
+    },
+    {
+      "name": "multimesh_set_custom_aabb",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 497
+    },
+    {
+      "name": "multimesh_get_custom_aabb",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 498
+    },
+    {
+      "name": "multimesh_instance_get_transform",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 500
+    },
+    {
+      "name": "multimesh_instance_get_transform_2d",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 501
+    },
+    {
+      "name": "multimesh_instance_get_color",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 502
+    },
+    {
+      "name": "multimesh_instance_get_custom_data",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 503
+    },
+    {
+      "name": "multimesh_set_buffer",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 505
+    },
+    {
+      "name": "multimesh_get_command_buffer_rd_rid",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 506
+    },
+    {
+      "name": "multimesh_get_buffer_rd_rid",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 507
+    },
+    {
+      "name": "multimesh_get_buffer",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 508
+    },
+    {
+      "name": "multimesh_set_buffer_interpolated",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 511
+    },
+    {
+      "name": "multimesh_set_physics_interpolated",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 512
+    },
+    {
+      "name": "multimesh_set_physics_interpolation_quality",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 513
+    },
+    {
+      "name": "multimesh_instance_reset_physics_interpolation",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 514
+    },
+    {
+      "name": "multimesh_set_visible_instances",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 516
+    },
+    {
+      "name": "multimesh_get_visible_instances",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 517
+    },
+    {
+      "name": "skeleton_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 521
+    },
+    {
+      "name": "skeleton_allocate_data",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 522
+    },
+    {
+      "name": "skeleton_get_bone_count",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 523
+    },
+    {
+      "name": "skeleton_bone_set_transform",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 524
+    },
+    {
+      "name": "skeleton_bone_get_transform",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 525
+    },
+    {
+      "name": "skeleton_bone_set_transform_2d",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 526
+    },
+    {
+      "name": "skeleton_bone_get_transform_2d",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 527
+    },
+    {
+      "name": "skeleton_set_base_transform_2d",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 528
+    },
+    {
+      "name": "directional_light_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 563
+    },
+    {
+      "name": "omni_light_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 564
+    },
+    {
+      "name": "spot_light_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 565
+    },
+    {
+      "name": "light_set_color",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 567
+    },
+    {
+      "name": "light_set_param",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 568
+    },
+    {
+      "name": "light_set_shadow",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 569
+    },
+    {
+      "name": "light_set_projector",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 570
+    },
+    {
+      "name": "light_set_negative",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 571
+    },
+    {
+      "name": "light_set_cull_mask",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 572
+    },
+    {
+      "name": "light_set_distance_fade",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 573
+    },
+    {
+      "name": "light_set_reverse_cull_face_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 574
+    },
+    {
+      "name": "light_set_shadow_caster_mask",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 575
+    },
+    {
+      "name": "light_set_bake_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 583
+    },
+    {
+      "name": "light_set_max_sdfgi_cascade",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 584
+    },
+    {
+      "name": "light_omni_set_shadow_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 592
+    },
+    {
+      "name": "light_directional_set_shadow_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 607
+    },
+    {
+      "name": "light_directional_set_blend_splits",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 608
+    },
+    {
+      "name": "light_directional_set_sky_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 609
+    },
+    {
+      "name": "shadow_atlas_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 613
+    },
+    {
+      "name": "shadow_atlas_set_size",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 614
+    },
+    {
+      "name": "shadow_atlas_set_quadrant_subdivision",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 615
+    },
+    {
+      "name": "directional_shadow_atlas_set_size",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 617
+    },
+    {
+      "name": "positional_soft_shadow_filter_set_quality",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 629
+    },
+    {
+      "name": "directional_soft_shadow_filter_set_quality",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 630
+    },
+    {
+      "name": "light_projectors_set_filter",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 641
+    },
+    {
+      "name": "reflection_probe_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 645
+    },
+    {
+      "name": "reflection_probe_set_update_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 652
+    },
+    {
+      "name": "reflection_probe_set_intensity",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 653
+    },
+    {
+      "name": "reflection_probe_set_blend_distance",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 654
+    },
+    {
+      "name": "reflection_probe_set_ambient_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 662
+    },
+    {
+      "name": "reflection_probe_set_ambient_color",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 663
+    },
+    {
+      "name": "reflection_probe_set_ambient_energy",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 664
+    },
+    {
+      "name": "reflection_probe_set_max_distance",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 665
+    },
+    {
+      "name": "reflection_probe_set_size",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 666
+    },
+    {
+      "name": "reflection_probe_set_origin_offset",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 667
+    },
+    {
+      "name": "reflection_probe_set_as_interior",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 668
+    },
+    {
+      "name": "reflection_probe_set_enable_box_projection",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 669
+    },
+    {
+      "name": "reflection_probe_set_enable_shadows",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 670
+    },
+    {
+      "name": "reflection_probe_set_cull_mask",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 671
+    },
+    {
+      "name": "reflection_probe_set_reflection_mask",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 672
+    },
+    {
+      "name": "reflection_probe_set_resolution",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 673
+    },
+    {
+      "name": "reflection_probe_set_mesh_lod_threshold",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 674
+    },
+    {
+      "name": "decal_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 686
+    },
+    {
+      "name": "decal_set_size",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 687
+    },
+    {
+      "name": "decal_set_texture",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 688
+    },
+    {
+      "name": "decal_set_emission_energy",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 689
+    },
+    {
+      "name": "decal_set_albedo_mix",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 690
+    },
+    {
+      "name": "decal_set_modulate",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 691
+    },
+    {
+      "name": "decal_set_cull_mask",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 692
+    },
+    {
+      "name": "decal_set_distance_fade",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 693
+    },
+    {
+      "name": "decal_set_fade",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 694
+    },
+    {
+      "name": "decal_set_normal_fade",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 695
+    },
+    {
+      "name": "decals_set_filter",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 706
+    },
+    {
+      "name": "voxel_gi_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 710
+    },
+    {
+      "name": "voxel_gi_allocate_data",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 712
+    },
+    {
+      "name": "voxel_gi_get_bounds",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 714
+    },
+    {
+      "name": "voxel_gi_get_octree_size",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 715
+    },
+    {
+      "name": "voxel_gi_get_octree_cells",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 716
+    },
+    {
+      "name": "voxel_gi_get_data_cells",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 717
+    },
+    {
+      "name": "voxel_gi_get_distance_field",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 718
+    },
+    {
+      "name": "voxel_gi_get_level_counts",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 719
+    },
+    {
+      "name": "voxel_gi_get_to_cell_xform",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 720
+    },
+    {
+      "name": "voxel_gi_set_dynamic_range",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 722
+    },
+    {
+      "name": "voxel_gi_set_propagation",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 723
+    },
+    {
+      "name": "voxel_gi_set_energy",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 724
+    },
+    {
+      "name": "voxel_gi_set_baked_exposure_normalization",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 725
+    },
+    {
+      "name": "voxel_gi_set_bias",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 726
+    },
+    {
+      "name": "voxel_gi_set_normal_bias",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 727
+    },
+    {
+      "name": "voxel_gi_set_interior",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 728
+    },
+    {
+      "name": "voxel_gi_set_use_two_bounces",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 729
+    },
+    {
+      "name": "voxel_gi_set_quality",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 736
+    },
+    {
+      "name": "sdfgi_reset",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 738
+    },
+    {
+      "name": "lightmap_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 749
+    },
+    {
+      "name": "lightmap_set_textures",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 751
+    },
+    {
+      "name": "lightmap_set_probe_bounds",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 752
+    },
+    {
+      "name": "lightmap_set_probe_interior",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 753
+    },
+    {
+      "name": "lightmap_set_probe_capture_data",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 754
+    },
+    {
+      "name": "lightmap_set_baked_exposure_normalization",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 755
+    },
+    {
+      "name": "lightmap_get_probe_capture_points",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 756
+    },
+    {
+      "name": "lightmap_get_probe_capture_sh",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 757
+    },
+    {
+      "name": "lightmap_get_probe_capture_tetrahedra",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 758
+    },
+    {
+      "name": "lightmap_get_probe_capture_bsp_tree",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 759
+    },
+    {
+      "name": "lightmap_set_probe_capture_update_speed",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 761
+    },
+    {
+      "name": "lightmaps_set_bicubic_filter",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 762
+    },
+    {
+      "name": "lightmap_set_shadowmask_textures",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 764
+    },
+    {
+      "name": "lightmap_get_shadowmask_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 765
+    },
+    {
+      "name": "lightmap_set_shadowmask_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 766
+    },
+    {
+      "name": "particles_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 770
+    },
+    {
+      "name": "particles_set_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 776
+    },
+    {
+      "name": "particles_set_emitting",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 778
+    },
+    {
+      "name": "particles_get_emitting",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 779
+    },
+    {
+      "name": "particles_set_amount",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 780
+    },
+    {
+      "name": "particles_set_amount_ratio",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 781
+    },
+    {
+      "name": "particles_set_lifetime",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 782
+    },
+    {
+      "name": "particles_set_one_shot",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 783
+    },
+    {
+      "name": "particles_set_pre_process_time",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 784
+    },
+    {
+      "name": "particles_request_process_time",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 785
+    },
+    {
+      "name": "particles_set_explosiveness_ratio",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 786
+    },
+    {
+      "name": "particles_set_randomness_ratio",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 787
+    },
+    {
+      "name": "particles_set_custom_aabb",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 788
+    },
+    {
+      "name": "particles_set_speed_scale",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 789
+    },
+    {
+      "name": "particles_set_use_local_coordinates",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 790
+    },
+    {
+      "name": "particles_set_process_material",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 791
+    },
+    {
+      "name": "particles_set_fixed_fps",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 792
+    },
+    {
+      "name": "particles_set_interpolate",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 793
+    },
+    {
+      "name": "particles_set_fractional_delta",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 794
+    },
+    {
+      "name": "particles_set_collision_base_size",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 795
+    },
+    {
+      "name": "particles_set_seed",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 796
+    },
+    {
+      "name": "particles_set_transform_align",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 805
+    },
+    {
+      "name": "particles_set_trails",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 807
+    },
+    {
+      "name": "particles_set_trail_bind_poses",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 808
+    },
+    {
+      "name": "particles_is_inactive",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 810
+    },
+    {
+      "name": "particles_request_process",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 811
+    },
+    {
+      "name": "particles_restart",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 812
+    },
+    {
+      "name": "particles_set_subemitter",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 814
+    },
+    {
+      "name": "particles_emit",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 824
+    },
+    {
+      "name": "particles_set_draw_order",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 833
+    },
+    {
+      "name": "particles_set_draw_passes",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 835
+    },
+    {
+      "name": "particles_set_draw_pass_mesh",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 836
+    },
+    {
+      "name": "particles_get_current_aabb",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 838
+    },
+    {
+      "name": "particles_set_emission_transform",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 840
+    },
+    {
+      "name": "particles_set_emitter_velocity",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 841
+    },
+    {
+      "name": "particles_set_interp_to_end",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 842
+    },
+    {
+      "name": "particles_collision_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 846
+    },
+    {
+      "name": "particles_collision_set_collision_type",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 858
+    },
+    {
+      "name": "particles_collision_set_cull_mask",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 859
+    },
+    {
+      "name": "particles_collision_set_sphere_radius",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 860
+    },
+    {
+      "name": "particles_collision_set_box_extents",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 861
+    },
+    {
+      "name": "particles_collision_set_attractor_strength",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 862
+    },
+    {
+      "name": "particles_collision_set_attractor_directionality",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 863
+    },
+    {
+      "name": "particles_collision_set_attractor_attenuation",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 864
+    },
+    {
+      "name": "particles_collision_set_field_texture",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 865
+    },
+    {
+      "name": "particles_collision_height_field_update",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 867
+    },
+    {
+      "name": "particles_collision_set_height_field_resolution",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 879
+    },
+    {
+      "name": "particles_collision_set_height_field_mask",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 880
+    },
+    {
+      "name": "fog_volume_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 884
+    },
+    {
+      "name": "fog_volume_set_shape",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 895
+    },
+    {
+      "name": "fog_volume_set_size",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 896
+    },
+    {
+      "name": "fog_volume_set_material",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 897
+    },
+    {
+      "name": "visibility_notifier_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 901
+    },
+    {
+      "name": "visibility_notifier_set_aabb",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 902
+    },
+    {
+      "name": "visibility_notifier_set_callbacks",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 903
+    },
+    {
+      "name": "occluder_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 907
+    },
+    {
+      "name": "occluder_set_mesh",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 908
+    },
+    {
+      "name": "camera_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 912
+    },
+    {
+      "name": "camera_set_perspective",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 913
+    },
+    {
+      "name": "camera_set_orthogonal",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 914
+    },
+    {
+      "name": "camera_set_frustum",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 915
+    },
+    {
+      "name": "camera_set_transform",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 916
+    },
+    {
+      "name": "camera_set_cull_mask",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 917
+    },
+    {
+      "name": "camera_set_environment",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 918
+    },
+    {
+      "name": "camera_set_camera_attributes",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 919
+    },
+    {
+      "name": "camera_set_compositor",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 920
+    },
+    {
+      "name": "camera_set_use_vertical_aspect",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 921
+    },
+    {
+      "name": "viewport_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 944
+    },
+    {
+      "name": "viewport_set_use_xr",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 981
+    },
+    {
+      "name": "viewport_set_size",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 982
+    },
+    {
+      "name": "viewport_set_active",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 983
+    },
+    {
+      "name": "viewport_set_parent_viewport",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 984
+    },
+    {
+      "name": "viewport_set_canvas_cull_mask",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 985
+    },
+    {
+      "name": "viewport_attach_to_screen",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 987
+    },
+    {
+      "name": "viewport_set_render_direct_to_screen",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 988
+    },
+    {
+      "name": "viewport_set_scaling_3d_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 990
+    },
+    {
+      "name": "viewport_set_scaling_3d_scale",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 991
+    },
+    {
+      "name": "viewport_set_fsr_sharpness",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 992
+    },
+    {
+      "name": "viewport_set_texture_mipmap_bias",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 993
+    },
+    {
+      "name": "viewport_set_anisotropic_filtering_level",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 994
+    },
+    {
+      "name": "viewport_set_update_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1004
+    },
+    {
+      "name": "viewport_get_update_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1005
+    },
+    {
+      "name": "viewport_set_clear_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1013
+    },
+    {
+      "name": "viewport_get_render_target",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1015
+    },
+    {
+      "name": "viewport_get_texture",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1016
+    },
+    {
+      "name": "viewport_set_environment_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1025
+    },
+    {
+      "name": "viewport_set_disable_3d",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1026
+    },
+    {
+      "name": "viewport_set_disable_2d",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1027
+    },
+    {
+      "name": "viewport_attach_camera",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1029
+    },
+    {
+      "name": "viewport_set_scenario",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1030
+    },
+    {
+      "name": "viewport_attach_canvas",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1031
+    },
+    {
+      "name": "viewport_remove_canvas",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1032
+    },
+    {
+      "name": "viewport_set_canvas_transform",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1033
+    },
+    {
+      "name": "viewport_set_transparent_background",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1034
+    },
+    {
+      "name": "viewport_set_use_hdr_2d",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1035
+    },
+    {
+      "name": "viewport_is_using_hdr_2d",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1036
+    },
+    {
+      "name": "viewport_set_snap_2d_transforms_to_pixel",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1037
+    },
+    {
+      "name": "viewport_set_snap_2d_vertices_to_pixel",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1038
+    },
+    {
+      "name": "viewport_set_default_canvas_item_texture_filter",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1040
+    },
+    {
+      "name": "viewport_set_default_canvas_item_texture_repeat",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1041
+    },
+    {
+      "name": "viewport_set_global_canvas_transform",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1043
+    },
+    {
+      "name": "viewport_set_canvas_stacking",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1044
+    },
+    {
+      "name": "viewport_set_sdf_oversize_and_scale",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1061
+    },
+    {
+      "name": "viewport_set_positional_shadow_atlas_size",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1063
+    },
+    {
+      "name": "viewport_set_positional_shadow_atlas_quadrant_subdivision",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1064
+    },
+    {
+      "name": "viewport_set_msaa_3d",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1074
+    },
+    {
+      "name": "viewport_set_msaa_2d",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1075
+    },
+    {
+      "name": "viewport_set_screen_space_aa",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1084
+    },
+    {
+      "name": "viewport_set_use_taa",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1086
+    },
+    {
+      "name": "viewport_set_use_debanding",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1088
+    },
+    {
+      "name": "viewport_set_force_motion_vectors",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1090
+    },
+    {
+      "name": "viewport_set_mesh_lod_threshold",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1092
+    },
+    {
+      "name": "viewport_set_use_occlusion_culling",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1094
+    },
+    {
+      "name": "viewport_set_occlusion_rays_per_thread",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1095
+    },
+    {
+      "name": "viewport_set_occlusion_culling_build_quality",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1103
+    },
+    {
+      "name": "viewport_get_render_info",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1119
+    },
+    {
+      "name": "viewport_set_debug_draw",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1151
+    },
+    {
+      "name": "viewport_set_measure_render_time",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1153
+    },
+    {
+      "name": "viewport_get_measured_render_time_cpu",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1154
+    },
+    {
+      "name": "viewport_get_measured_render_time_gpu",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1155
+    },
+    {
+      "name": "viewport_find_from_screen_attachment",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1157
+    },
+    {
+      "name": "viewport_set_vrs_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1173
+    },
+    {
+      "name": "viewport_set_vrs_update_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1174
+    },
+    {
+      "name": "viewport_set_vrs_texture",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1175
+    },
+    {
+      "name": "sky_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1186
+    },
+    {
+      "name": "sky_set_radiance_size",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1187
+    },
+    {
+      "name": "sky_set_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1188
+    },
+    {
+      "name": "sky_set_material",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1189
+    },
+    {
+      "name": "sky_bake_panorama",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1190
+    },
+    {
+      "name": "compositor_effect_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1212
+    },
+    {
+      "name": "compositor_effect_set_enabled",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1213
+    },
+    {
+      "name": "compositor_effect_set_callback",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1214
+    },
+    {
+      "name": "compositor_effect_set_flag",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1215
+    },
+    {
+      "name": "compositor_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1219
+    },
+    {
+      "name": "compositor_set_compositor_effects",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1221
+    },
+    {
+      "name": "environment_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1225
+    },
+    {
+      "name": "environment_set_background",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1250
+    },
+    {
+      "name": "environment_set_sky",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1251
+    },
+    {
+      "name": "environment_set_sky_custom_fov",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1252
+    },
+    {
+      "name": "environment_set_sky_orientation",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1253
+    },
+    {
+      "name": "environment_set_bg_color",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1254
+    },
+    {
+      "name": "environment_set_bg_energy",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1255
+    },
+    {
+      "name": "environment_set_canvas_max_layer",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1256
+    },
+    {
+      "name": "environment_set_ambient_light",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1257
+    },
+    {
+      "name": "environment_set_camera_feed_id",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1258
+    },
+    {
+      "name": "environment_set_glow",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1268
+    },
+    {
+      "name": "environment_glow_set_use_bicubic_upscale",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1270
+    },
+    {
+      "name": "environment_set_tonemap",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1280
+    },
+    {
+      "name": "environment_set_adjustment",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1281
+    },
+    {
+      "name": "environment_set_ssr",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1283
+    },
+    {
+      "name": "environment_set_ssr_roughness_quality",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1292
+    },
+    {
+      "name": "environment_set_ssao",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1294
+    },
+    {
+      "name": "environment_set_ssao_quality",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1304
+    },
+    {
+      "name": "environment_set_ssil",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1306
+    },
+    {
+      "name": "environment_set_ssil_quality",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1316
+    },
+    {
+      "name": "environment_set_sdfgi",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1324
+    },
+    {
+      "name": "environment_set_sdfgi_ray_count",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1337
+    },
+    {
+      "name": "environment_set_sdfgi_frames_to_converge",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1349
+    },
+    {
+      "name": "environment_set_sdfgi_frames_to_update_light",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1360
+    },
+    {
+      "name": "environment_set_fog",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1367
+    },
+    {
+      "name": "environment_set_fog_depth",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1368
+    },
+    {
+      "name": "environment_set_volumetric_fog",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1370
+    },
+    {
+      "name": "environment_set_volumetric_fog_volume_size",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1371
+    },
+    {
+      "name": "environment_set_volumetric_fog_filter_active",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1372
+    },
+    {
+      "name": "environment_bake_panorama",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1374
+    },
+    {
+      "name": "screen_space_roughness_limiter_set_active",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1376
+    },
+    {
+      "name": "sub_surface_scattering_set_quality",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1385
+    },
+    {
+      "name": "sub_surface_scattering_set_scale",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1386
+    },
+    {
+      "name": "camera_attributes_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1390
+    },
+    {
+      "name": "camera_attributes_set_dof_blur_quality",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1399
+    },
+    {
+      "name": "camera_attributes_set_dof_blur_bokeh_shape",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1407
+    },
+    {
+      "name": "camera_attributes_set_dof_blur",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1409
+    },
+    {
+      "name": "camera_attributes_set_exposure",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1410
+    },
+    {
+      "name": "camera_attributes_set_auto_exposure",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1411
+    },
+    {
+      "name": "scenario_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1415
+    },
+    {
+      "name": "scenario_set_environment",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1417
+    },
+    {
+      "name": "scenario_set_fallback_environment",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1418
+    },
+    {
+      "name": "scenario_set_camera_attributes",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1419
+    },
+    {
+      "name": "scenario_set_compositor",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1420
+    },
+    {
+      "name": "instance_create2",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 1443
+    },
+    {
+      "name": "instance_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1445
+    },
+    {
+      "name": "instance_set_base",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1447
+    },
+    {
+      "name": "instance_set_scenario",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1448
+    },
+    {
+      "name": "instance_set_layer_mask",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1449
+    },
+    {
+      "name": "instance_set_pivot_data",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1450
+    },
+    {
+      "name": "instance_set_transform",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1451
+    },
+    {
+      "name": "instance_attach_object_instance_id",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1452
+    },
+    {
+      "name": "instance_set_blend_shape_weight",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1453
+    },
+    {
+      "name": "instance_set_surface_override_material",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1454
+    },
+    {
+      "name": "instance_set_visible",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1455
+    },
+    {
+      "name": "instance_teleport",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1457
+    },
+    {
+      "name": "instance_set_custom_aabb",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1459
+    },
+    {
+      "name": "instance_attach_skeleton",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1461
+    },
+    {
+      "name": "instance_set_extra_visibility_margin",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1463
+    },
+    {
+      "name": "instance_set_visibility_parent",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1464
+    },
+    {
+      "name": "instance_set_ignore_culling",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1466
+    },
+    {
+      "name": "instances_cull_aabb",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1469
+    },
+    {
+      "name": "instances_cull_ray",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1470
+    },
+    {
+      "name": "instances_cull_convex",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1471
+    },
+    {
+      "name": "instance_geometry_set_flag",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1498
+    },
+    {
+      "name": "instance_geometry_set_cast_shadows_setting",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1499
+    },
+    {
+      "name": "instance_geometry_set_material_override",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1500
+    },
+    {
+      "name": "instance_geometry_set_material_overlay",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1501
+    },
+    {
+      "name": "instance_geometry_set_visibility_range",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1502
+    },
+    {
+      "name": "instance_geometry_set_lightmap",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1503
+    },
+    {
+      "name": "instance_geometry_set_lod_bias",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1504
+    },
+    {
+      "name": "instance_geometry_set_transparency",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1505
+    },
+    {
+      "name": "instance_geometry_set_shader_parameter",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1507
+    },
+    {
+      "name": "instance_geometry_get_shader_parameter",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1508
+    },
+    {
+      "name": "instance_geometry_get_shader_parameter_default_value",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1509
+    },
+    {
+      "name": "instance_geometry_get_shader_parameter_list",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1510
+    },
+    {
+      "name": "bake_render_uv2",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1521
+    },
+    {
+      "name": "canvas_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1525
+    },
+    {
+      "name": "canvas_set_item_mirroring",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1526
+    },
+    {
+      "name": "canvas_set_item_repeat",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1527
+    },
+    {
+      "name": "canvas_set_modulate",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1528
+    },
+    {
+      "name": "canvas_set_parent",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1529
+    },
+    {
+      "name": "canvas_set_disable_scale",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1531
+    },
+    {
+      "name": "canvas_texture_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1534
+    },
+    {
+      "name": "canvas_texture_set_channel",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1541
+    },
+    {
+      "name": "canvas_texture_set_shading_parameters",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1542
+    },
+    {
+      "name": "canvas_texture_set_texture_filter",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1545
+    },
+    {
+      "name": "canvas_texture_set_texture_repeat",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1546
+    },
+    {
+      "name": "canvas_item_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1550
+    },
+    {
+      "name": "canvas_item_set_parent",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1551
+    },
+    {
+      "name": "canvas_item_set_default_texture_filter",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1553
+    },
+    {
+      "name": "canvas_item_set_default_texture_repeat",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1554
+    },
+    {
+      "name": "canvas_item_set_visible",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1556
+    },
+    {
+      "name": "canvas_item_set_light_mask",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1557
+    },
+    {
+      "name": "canvas_item_set_update_when_visible",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1559
+    },
+    {
+      "name": "canvas_item_set_transform",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1561
+    },
+    {
+      "name": "canvas_item_set_clip",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1562
+    },
+    {
+      "name": "canvas_item_set_distance_field_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1563
+    },
+    {
+      "name": "canvas_item_set_custom_rect",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1564
+    },
+    {
+      "name": "canvas_item_set_modulate",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1565
+    },
+    {
+      "name": "canvas_item_set_self_modulate",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1566
+    },
+    {
+      "name": "canvas_item_set_visibility_layer",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1567
+    },
+    {
+      "name": "canvas_item_set_draw_behind_parent",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1569
+    },
+    {
+      "name": "canvas_item_set_use_identity_transform",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1570
+    },
+    {
+      "name": "canvas_item_add_line",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1578
+    },
+    {
+      "name": "canvas_item_add_polyline",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1579
+    },
+    {
+      "name": "canvas_item_add_multiline",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1580
+    },
+    {
+      "name": "canvas_item_add_rect",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1581
+    },
+    {
+      "name": "canvas_item_add_circle",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1582
+    },
+    {
+      "name": "canvas_item_add_texture_rect",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1583
+    },
+    {
+      "name": "canvas_item_add_texture_rect_region",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1584
+    },
+    {
+      "name": "canvas_item_add_msdf_texture_rect_region",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1585
+    },
+    {
+      "name": "canvas_item_add_lcd_texture_rect_region",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1586
+    },
+    {
+      "name": "canvas_item_add_nine_patch",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1587
+    },
+    {
+      "name": "canvas_item_add_primitive",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1588
+    },
+    {
+      "name": "canvas_item_add_polygon",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1589
+    },
+    {
+      "name": "canvas_item_add_triangle_array",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1590
+    },
+    {
+      "name": "canvas_item_add_mesh",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1591
+    },
+    {
+      "name": "canvas_item_add_multimesh",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1592
+    },
+    {
+      "name": "canvas_item_add_particles",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1593
+    },
+    {
+      "name": "canvas_item_add_set_transform",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1594
+    },
+    {
+      "name": "canvas_item_add_clip_ignore",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1595
+    },
+    {
+      "name": "canvas_item_add_animation_slice",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1596
+    },
+    {
+      "name": "canvas_item_set_sort_children_by_y",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1598
+    },
+    {
+      "name": "canvas_item_set_z_index",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1599
+    },
+    {
+      "name": "canvas_item_set_z_as_relative_to_parent",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1600
+    },
+    {
+      "name": "canvas_item_set_copy_to_backbuffer",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1601
+    },
+    {
+      "name": "canvas_item_attach_skeleton",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1603
+    },
+    {
+      "name": "canvas_item_clear",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1605
+    },
+    {
+      "name": "canvas_item_set_draw_index",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1606
+    },
+    {
+      "name": "canvas_item_set_material",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1608
+    },
+    {
+      "name": "canvas_item_set_use_parent_material",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1610
+    },
+    {
+      "name": "canvas_item_set_instance_shader_parameter",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1612
+    },
+    {
+      "name": "canvas_item_get_instance_shader_parameter",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1613
+    },
+    {
+      "name": "canvas_item_get_instance_shader_parameter_default_value",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1614
+    },
+    {
+      "name": "canvas_item_get_instance_shader_parameter_list",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1615
+    },
+    {
+      "name": "canvas_item_set_visibility_notifier",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1617
+    },
+    {
+      "name": "canvas_item_set_canvas_group_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1626
+    },
+    {
+      "name": "canvas_item_set_debug_redraw",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1628
+    },
+    {
+      "name": "canvas_item_get_debug_redraw",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1629
+    },
+    {
+      "name": "canvas_item_set_interpolated",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1631
+    },
+    {
+      "name": "canvas_item_reset_physics_interpolation",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1632
+    },
+    {
+      "name": "canvas_item_transform_physics_interpolation",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1633
+    },
+    {
+      "name": "canvas_light_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1636
+    },
+    {
+      "name": "canvas_light_set_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1643
+    },
+    {
+      "name": "canvas_light_attach_to_canvas",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1645
+    },
+    {
+      "name": "canvas_light_set_enabled",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1646
+    },
+    {
+      "name": "canvas_light_set_transform",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1647
+    },
+    {
+      "name": "canvas_light_set_color",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1648
+    },
+    {
+      "name": "canvas_light_set_height",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1649
+    },
+    {
+      "name": "canvas_light_set_energy",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1650
+    },
+    {
+      "name": "canvas_light_set_z_range",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1651
+    },
+    {
+      "name": "canvas_light_set_layer_range",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1652
+    },
+    {
+      "name": "canvas_light_set_item_cull_mask",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1653
+    },
+    {
+      "name": "canvas_light_set_item_shadow_cull_mask",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1654
+    },
+    {
+      "name": "canvas_light_set_directional_distance",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1656
+    },
+    {
+      "name": "canvas_light_set_texture_scale",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1658
+    },
+    {
+      "name": "canvas_light_set_texture",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1659
+    },
+    {
+      "name": "canvas_light_set_texture_offset",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1660
+    },
+    {
+      "name": "canvas_light_set_blend_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1668
+    },
+    {
+      "name": "canvas_light_set_shadow_enabled",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1677
+    },
+    {
+      "name": "canvas_light_set_shadow_filter",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1678
+    },
+    {
+      "name": "canvas_light_set_shadow_color",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1679
+    },
+    {
+      "name": "canvas_light_set_shadow_smooth",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1680
+    },
+    {
+      "name": "canvas_light_set_interpolated",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1682
+    },
+    {
+      "name": "canvas_light_reset_physics_interpolation",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1683
+    },
+    {
+      "name": "canvas_light_transform_physics_interpolation",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1684
+    },
+    {
+      "name": "canvas_light_occluder_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1688
+    },
+    {
+      "name": "canvas_light_occluder_attach_to_canvas",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1689
+    },
+    {
+      "name": "canvas_light_occluder_set_enabled",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1690
+    },
+    {
+      "name": "canvas_light_occluder_set_polygon",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1691
+    },
+    {
+      "name": "canvas_light_occluder_set_as_sdf_collision",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1692
+    },
+    {
+      "name": "canvas_light_occluder_set_transform",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1693
+    },
+    {
+      "name": "canvas_light_occluder_set_light_mask",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1694
+    },
+    {
+      "name": "canvas_light_occluder_set_interpolated",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1696
+    },
+    {
+      "name": "canvas_light_occluder_reset_physics_interpolation",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1697
+    },
+    {
+      "name": "canvas_light_occluder_transform_physics_interpolation",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1698
+    },
+    {
+      "name": "canvas_occluder_polygon_create",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1702
+    },
+    {
+      "name": "canvas_occluder_polygon_set_shape",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1703
+    },
+    {
+      "name": "canvas_occluder_polygon_set_cull_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1711
+    },
+    {
+      "name": "canvas_set_shadow_texture_size",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1713
+    },
+    {
+      "name": "_debug_canvas_item_get_rect",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1716
+    },
+    {
+      "name": "global_shader_parameter_add",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1753
+    },
+    {
+      "name": "global_shader_parameter_remove",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1754
+    },
+    {
+      "name": "global_shader_parameter_get_list",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1755
+    },
+    {
+      "name": "global_shader_parameter_set",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1757
+    },
+    {
+      "name": "global_shader_parameter_set_override",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1758
+    },
+    {
+      "name": "global_shader_parameter_get",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1760
+    },
+    {
+      "name": "global_shader_parameter_get_type",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1761
+    },
+    {
+      "name": "global_shader_parameters_load_settings",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1763
+    },
+    {
+      "name": "global_shader_parameters_clear",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1764
+    },
+    {
+      "name": "free",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1770
+    },
+    {
+      "name": "set_physics_interpolation_enabled",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1774
+    },
+    {
+      "name": "request_frame_drawn_callback",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1778
+    },
+    {
+      "name": "draw",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1780
+    },
+    {
+      "name": "sync",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1781
+    },
+    {
+      "name": "has_changed",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1782
+    },
+    {
+      "name": "init",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 1783
+    },
+    {
+      "name": "finish",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1784
+    },
+    {
+      "name": "tick",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1785
+    },
+    {
+      "name": "pre_draw",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1786
+    },
+    {
+      "name": "get_rendering_info",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1805
+    },
+    {
+      "name": "get_video_adapter_name",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1806
+    },
+    {
+      "name": "get_video_adapter_vendor",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1807
+    },
+    {
+      "name": "get_video_adapter_type",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1808
+    },
+    {
+      "name": "get_video_adapter_api_version",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1809
+    },
+    {
+      "name": "set_frame_profiling_enabled",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1817
+    },
+    {
+      "name": "get_frame_profile",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1818
+    },
+    {
+      "name": "get_frame_profile_frame",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1819
+    },
+    {
+      "name": "get_frame_setup_time_cpu",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1821
+    },
+    {
+      "name": "gi_set_use_half_resolution",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1823
+    },
+    {
+      "name": "get_test_cube",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1827
+    },
+    {
+      "name": "get_test_texture",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 1829
+    },
+    {
+      "name": "get_white_texture",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 1830
+    },
+    {
+      "name": "sdfgi_set_debug_probe_select",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1832
+    },
+    {
+      "name": "make_sphere_mesh",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 1834
+    },
+    {
+      "name": "mesh_add_surface_from_mesh_data",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 1836
+    },
+    {
+      "name": "mesh_add_surface_from_planes",
+      "pure": false,
+      "override": false,
+      "destructor": false,
+      "line": 1837
+    },
+    {
+      "name": "set_boot_image",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1839
+    },
+    {
+      "name": "get_default_clear_color",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1840
+    },
+    {
+      "name": "set_default_clear_color",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1841
+    },
+    {
+      "name": "has_feature",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1849
+    },
+    {
+      "name": "has_os_feature",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1851
+    },
+    {
+      "name": "set_debug_generate_wireframes",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1853
+    },
+    {
+      "name": "call_set_vsync_mode",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1855
+    },
+    {
+      "name": "is_low_end",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1857
+    },
+    {
+      "name": "set_print_gpu_profile",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1859
+    },
+    {
+      "name": "get_maximum_viewport_size",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1861
+    },
+    {
+      "name": "is_on_render_thread",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1869
+    },
+    {
+      "name": "call_on_render_thread",
+      "pure": true,
+      "override": false,
+      "destructor": false,
+      "line": 1870
+    },
+    {
+      "name": "~RenderingServer",
+      "pure": false,
+      "override": false,
+      "destructor": true,
+      "line": 1880
+    }
+  ],
+  "wanted_slots": {
+    "canvas_item_add_rect": 442,
+    "canvas_item_add_texture_rect": 444,
+    "canvas_item_add_texture_rect_region": 445,
+    "canvas_item_add_msdf_texture_rect_region": 446,
+    "canvas_item_add_polygon": 450,
+    "texture_2d_create": 1,
+    "texture_2d_update": 7,
+    "free": 526,
+    "get_default_clear_color": 554,
+    "canvas_item_add_triangle_array": 451,
+    "canvas_item_add_mesh": 452,
+    "canvas_item_add_multimesh": 453,
+    "canvas_item_add_nine_patch": 448,
+    "canvas_item_add_primitive": 449,
+    "canvas_item_add_line": 439,
+    "canvas_item_add_polyline": 440,
+    "canvas_item_add_circle": 443,
+    "canvas_item_add_set_transform": 455,
+    "canvas_item_set_transform": 430,
+    "canvas_item_set_modulate": 434,
+    "canvas_item_create": 423,
+    "canvas_item_clear": 463,
+    "canvas_item_set_material": 465,
+    "mesh_create": 48,
+    "mesh_add_surface": 59,
+    "mesh_surface_update_vertex_region": 63,
+    "mesh_surface_update_attribute_region": 64,
+    "mesh_clear": 77,
+    "mesh_set_custom_aabb": 71,
+    "shader_create_from_code": 31,
+    "shader_set_code": 32,
+    "material_set_param": 43,
+    "viewport_attach_canvas": 290,
+    "viewport_set_canvas_transform": 292,
+    "canvas_create": 412,
+    "canvas_item_set_parent": 424,
+    "canvas_item_set_visible": 427,
+    "canvas_item_set_clip": 431,
+    "canvas_item_set_custom_rect": 433,
+    "canvas_item_set_self_modulate": 435,
+    "canvas_item_set_visibility_layer": 436,
+    "canvas_item_set_z_index": 459,
+    "canvas_item_set_draw_index": 464,
+    "canvas_item_set_z_as_relative_to_parent": 460,
+    "canvas_item_set_draw_behind_parent": 437,
+    "texture_2d_placeholder_create": 11,
+    "texture_replace": 17,
+    "viewport_set_default_canvas_item_texture_filter": 298,
+    "viewport_set_default_canvas_item_texture_repeat": 299,
+    "canvas_texture_create": 418,
+    "canvas_texture_set_channel": 419,
+    "canvas_texture_set_texture_filter": 421,
+    "canvas_texture_set_texture_repeat": 422,
+    "canvas_item_set_default_texture_filter": 425,
+    "canvas_item_set_default_texture_repeat": 426,
+    "canvas_item_add_lcd_texture_rect_region": 447,
+    "canvas_item_add_clip_ignore": 456,
+    "canvas_item_add_multiline": 441,
+    "canvas_item_add_particles": 454,
+    "canvas_item_add_animation_slice": 457,
+    "canvas_item_attach_skeleton": 462,
+    "mesh_create_from_surfaces": 47,
+    "mesh_surface_update_skin_region": 65,
+    "mesh_surface_update_index_region": 66,
+    "mesh_surface_remove": 76,
+    "shader_create": 30,
+    "shader_set_default_texture_parameter": 37,
+    "material_create": 40,
+    "material_create_from_shader": 41,
+    "material_set_shader": 42,
+    "canvas_set_modulate": 415,
+    "canvas_item_set_use_parent_material": 466,
+    "canvas_item_set_instance_shader_parameter": 467,
+    "canvas_light_attach_to_canvas": 480,
+    "viewport_remove_canvas": 291,
+    "viewport_set_global_canvas_transform": 300,
+    "viewport_set_canvas_stacking": 301,
+    "canvas_set_item_mirroring": 413,
+    "canvas_set_item_repeat": 414,
+    "canvas_set_parent": 416,
+    "texture_set_path": 19,
+    "canvas_item_set_copy_to_backbuffer": 461,
+    "canvas_item_set_canvas_group_mode": 472,
+    "draw": 529,
+    "multimesh_create": 79,
+    "multimesh_allocate_data": 80,
+    "multimesh_set_mesh": 82,
+    "multimesh_instance_set_transform": 83,
+    "multimesh_instance_set_transform_2d": 84,
+    "multimesh_instance_set_color": 85,
+    "multimesh_instance_set_custom_data": 86,
+    "multimesh_set_custom_aabb": 89,
+    "multimesh_set_buffer": 95,
+    "multimesh_set_buffer_interpolated": 99,
+    "multimesh_set_physics_interpolated": 100,
+    "multimesh_set_visible_instances": 103,
+    "particles_create": 200,
+    "particles_set_mode": 201,
+    "particles_set_emitting": 202,
+    "particles_set_amount": 204,
+    "particles_set_amount_ratio": 205,
+    "particles_set_lifetime": 206,
+    "particles_set_one_shot": 207,
+    "particles_set_pre_process_time": 208,
+    "particles_request_process_time": 209,
+    "particles_set_explosiveness_ratio": 210,
+    "particles_set_randomness_ratio": 211,
+    "particles_set_custom_aabb": 212,
+    "particles_set_speed_scale": 213,
+    "particles_set_use_local_coordinates": 214,
+    "particles_set_process_material": 215,
+    "particles_set_fixed_fps": 216,
+    "particles_set_interpolate": 217,
+    "particles_set_fractional_delta": 218,
+    "particles_set_collision_base_size": 219,
+    "particles_set_seed": 220,
+    "particles_set_transform_align": 221,
+    "particles_set_trails": 222,
+    "particles_set_trail_bind_poses": 223,
+    "particles_request_process": 225,
+    "particles_restart": 226,
+    "particles_set_subemitter": 227,
+    "particles_emit": 228,
+    "particles_set_draw_order": 229,
+    "particles_set_draw_passes": 230,
+    "particles_set_draw_pass_mesh": 231,
+    "particles_set_emission_transform": 233,
+    "particles_set_emitter_velocity": 234,
+    "particles_set_interp_to_end": 235,
+    "canvas_item_set_use_identity_transform": 438
+  },
+  "wanted_slot_aliases": {
+    "canvas_item_add_rect": ["canvas_item_add_rect"],
+    "canvas_item_add_texture_rect": ["canvas_item_add_texture_rect"],
+    "canvas_item_add_texture_rect_region": [
+      "canvas_item_add_texture_rect_region"
+    ],
+    "canvas_item_add_msdf_texture_rect_region": [
+      "canvas_item_add_msdf_texture_rect_region"
+    ],
+    "canvas_item_add_polygon": ["canvas_item_add_polygon"],
+    "texture_2d_create": ["texture_2d_create"],
+    "texture_2d_update": ["texture_2d_update"],
+    "free": ["free", "free_rid"],
+    "get_default_clear_color": ["get_default_clear_color"],
+    "canvas_item_add_triangle_array": ["canvas_item_add_triangle_array"],
+    "canvas_item_add_mesh": ["canvas_item_add_mesh"],
+    "canvas_item_add_multimesh": ["canvas_item_add_multimesh"],
+    "canvas_item_add_nine_patch": ["canvas_item_add_nine_patch"],
+    "canvas_item_add_primitive": ["canvas_item_add_primitive"],
+    "canvas_item_add_line": ["canvas_item_add_line"],
+    "canvas_item_add_polyline": ["canvas_item_add_polyline"],
+    "canvas_item_add_circle": ["canvas_item_add_circle"],
+    "canvas_item_add_set_transform": ["canvas_item_add_set_transform"],
+    "canvas_item_set_transform": ["canvas_item_set_transform"],
+    "canvas_item_set_modulate": ["canvas_item_set_modulate"],
+    "canvas_item_create": ["canvas_item_create"],
+    "canvas_item_clear": ["canvas_item_clear"],
+    "canvas_item_set_material": ["canvas_item_set_material"],
+    "mesh_create": ["mesh_create"],
+    "mesh_add_surface": ["mesh_add_surface"],
+    "mesh_surface_update_vertex_region": ["mesh_surface_update_vertex_region"],
+    "mesh_surface_update_attribute_region": [
+      "mesh_surface_update_attribute_region"
+    ],
+    "mesh_clear": ["mesh_clear"],
+    "mesh_set_custom_aabb": ["mesh_set_custom_aabb"],
+    "shader_create_from_code": ["shader_create_from_code"],
+    "shader_set_code": ["shader_set_code"],
+    "material_set_param": ["material_set_param"],
+    "viewport_attach_canvas": ["viewport_attach_canvas"],
+    "viewport_set_canvas_transform": ["viewport_set_canvas_transform"],
+    "canvas_create": ["canvas_create"],
+    "canvas_item_set_parent": ["canvas_item_set_parent"],
+    "canvas_item_set_visible": ["canvas_item_set_visible"],
+    "canvas_item_set_clip": ["canvas_item_set_clip"],
+    "canvas_item_set_custom_rect": ["canvas_item_set_custom_rect"],
+    "canvas_item_set_self_modulate": ["canvas_item_set_self_modulate"],
+    "canvas_item_set_visibility_layer": ["canvas_item_set_visibility_layer"],
+    "canvas_item_set_z_index": ["canvas_item_set_z_index"],
+    "canvas_item_set_draw_index": ["canvas_item_set_draw_index"],
+    "canvas_item_set_z_as_relative_to_parent": [
+      "canvas_item_set_z_as_relative_to_parent"
+    ],
+    "canvas_item_set_draw_behind_parent": [
+      "canvas_item_set_draw_behind_parent"
+    ],
+    "texture_2d_placeholder_create": ["texture_2d_placeholder_create"],
+    "texture_replace": ["texture_replace"],
+    "viewport_set_default_canvas_item_texture_filter": [
+      "viewport_set_default_canvas_item_texture_filter"
+    ],
+    "viewport_set_default_canvas_item_texture_repeat": [
+      "viewport_set_default_canvas_item_texture_repeat"
+    ],
+    "canvas_texture_create": ["canvas_texture_create"],
+    "canvas_texture_set_channel": ["canvas_texture_set_channel"],
+    "canvas_texture_set_texture_filter": ["canvas_texture_set_texture_filter"],
+    "canvas_texture_set_texture_repeat": ["canvas_texture_set_texture_repeat"],
+    "canvas_item_set_default_texture_filter": [
+      "canvas_item_set_default_texture_filter"
+    ],
+    "canvas_item_set_default_texture_repeat": [
+      "canvas_item_set_default_texture_repeat"
+    ],
+    "canvas_item_add_lcd_texture_rect_region": [
+      "canvas_item_add_lcd_texture_rect_region"
+    ],
+    "canvas_item_add_clip_ignore": ["canvas_item_add_clip_ignore"],
+    "canvas_item_add_multiline": ["canvas_item_add_multiline"],
+    "canvas_item_add_particles": ["canvas_item_add_particles"],
+    "canvas_item_add_animation_slice": ["canvas_item_add_animation_slice"],
+    "canvas_item_attach_skeleton": ["canvas_item_attach_skeleton"],
+    "mesh_create_from_surfaces": ["mesh_create_from_surfaces"],
+    "mesh_surface_update_skin_region": ["mesh_surface_update_skin_region"],
+    "mesh_surface_update_index_region": ["mesh_surface_update_index_region"],
+    "mesh_surface_remove": ["mesh_surface_remove"],
+    "shader_create": ["shader_create"],
+    "shader_set_default_texture_parameter": [
+      "shader_set_default_texture_parameter"
+    ],
+    "material_create": ["material_create"],
+    "material_create_from_shader": ["material_create_from_shader"],
+    "material_set_shader": ["material_set_shader"],
+    "canvas_set_modulate": ["canvas_set_modulate"],
+    "canvas_item_set_use_parent_material": [
+      "canvas_item_set_use_parent_material"
+    ],
+    "canvas_item_set_instance_shader_parameter": [
+      "canvas_item_set_instance_shader_parameter"
+    ],
+    "canvas_light_attach_to_canvas": ["canvas_light_attach_to_canvas"],
+    "viewport_remove_canvas": ["viewport_remove_canvas"],
+    "viewport_set_global_canvas_transform": [
+      "viewport_set_global_canvas_transform"
+    ],
+    "viewport_set_canvas_stacking": ["viewport_set_canvas_stacking"],
+    "canvas_set_item_mirroring": ["canvas_set_item_mirroring"],
+    "canvas_set_item_repeat": ["canvas_set_item_repeat"],
+    "canvas_set_parent": ["canvas_set_parent"],
+    "texture_set_path": ["texture_set_path"],
+    "canvas_item_set_copy_to_backbuffer": [
+      "canvas_item_set_copy_to_backbuffer"
+    ],
+    "canvas_item_set_canvas_group_mode": ["canvas_item_set_canvas_group_mode"],
+    "draw": ["draw"],
+    "multimesh_create": ["multimesh_create"],
+    "multimesh_allocate_data": ["multimesh_allocate_data"],
+    "multimesh_set_mesh": ["multimesh_set_mesh"],
+    "multimesh_instance_set_transform": ["multimesh_instance_set_transform"],
+    "multimesh_instance_set_transform_2d": [
+      "multimesh_instance_set_transform_2d"
+    ],
+    "multimesh_instance_set_color": ["multimesh_instance_set_color"],
+    "multimesh_instance_set_custom_data": [
+      "multimesh_instance_set_custom_data"
+    ],
+    "multimesh_set_custom_aabb": ["multimesh_set_custom_aabb"],
+    "multimesh_set_buffer": ["multimesh_set_buffer"],
+    "multimesh_set_buffer_interpolated": ["multimesh_set_buffer_interpolated"],
+    "multimesh_set_physics_interpolated": [
+      "multimesh_set_physics_interpolated"
+    ],
+    "multimesh_set_visible_instances": ["multimesh_set_visible_instances"],
+    "particles_create": ["particles_create"],
+    "particles_set_mode": ["particles_set_mode"],
+    "particles_set_emitting": ["particles_set_emitting"],
+    "particles_set_amount": ["particles_set_amount"],
+    "particles_set_amount_ratio": ["particles_set_amount_ratio"],
+    "particles_set_lifetime": ["particles_set_lifetime"],
+    "particles_set_one_shot": ["particles_set_one_shot"],
+    "particles_set_pre_process_time": ["particles_set_pre_process_time"],
+    "particles_request_process_time": ["particles_request_process_time"],
+    "particles_set_explosiveness_ratio": ["particles_set_explosiveness_ratio"],
+    "particles_set_randomness_ratio": ["particles_set_randomness_ratio"],
+    "particles_set_custom_aabb": ["particles_set_custom_aabb"],
+    "particles_set_speed_scale": ["particles_set_speed_scale"],
+    "particles_set_use_local_coordinates": [
+      "particles_set_use_local_coordinates"
+    ],
+    "particles_set_process_material": ["particles_set_process_material"],
+    "particles_set_fixed_fps": ["particles_set_fixed_fps"],
+    "particles_set_interpolate": ["particles_set_interpolate"],
+    "particles_set_fractional_delta": ["particles_set_fractional_delta"],
+    "particles_set_collision_base_size": ["particles_set_collision_base_size"],
+    "particles_set_seed": ["particles_set_seed"],
+    "particles_set_transform_align": ["particles_set_transform_align"],
+    "particles_set_trails": ["particles_set_trails"],
+    "particles_set_trail_bind_poses": ["particles_set_trail_bind_poses"],
+    "particles_request_process": ["particles_request_process"],
+    "particles_restart": ["particles_restart"],
+    "particles_set_subemitter": ["particles_set_subemitter"],
+    "particles_emit": ["particles_emit"],
+    "particles_set_draw_order": ["particles_set_draw_order"],
+    "particles_set_draw_passes": ["particles_set_draw_passes"],
+    "particles_set_draw_pass_mesh": ["particles_set_draw_pass_mesh"],
+    "particles_set_emission_transform": ["particles_set_emission_transform"],
+    "particles_set_emitter_velocity": ["particles_set_emitter_velocity"],
+    "particles_set_interp_to_end": ["particles_set_interp_to_end"],
+    "canvas_item_set_use_identity_transform": [
+      "canvas_item_set_use_identity_transform"
+    ]
+  },
+  "anchor_selection": "all-non-pure-new-virtuals"
+}
