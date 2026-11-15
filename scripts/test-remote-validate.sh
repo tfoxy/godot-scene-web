@@ -56,6 +56,10 @@ case "$1 $2" in
 	;;
 "run watch")
 	if [ "${FAKE_GH_MODE:-ok}" = hang ]; then touch "$FAKE_BARE/../watching"; exec sleep 120; fi
+	[ "${FAKE_GH_MODE:-ok}" = watch-dies ] && { echo "HTTP 403: API rate limit exceeded" >&2; exit 1; }
+	;;
+"run view")
+	echo "${FAKE_GH_STATUS:-completed}"
 	;;
 "run download")
 	name=""; dir=""; prev=""
@@ -184,6 +188,20 @@ check "nothing pushed or dispatched names the worktree" bash -c \
 check "the summary landed under artifacts/render-stream/remote/" bash -c "ls '$CLONE'/artifacts/render-stream/remote/*/validate-summary.json"
 check "the branch is deleted after a normal finish" test -z "$(remote_branches)"
 check "the output names the results directory" grep -q 'results in .*artifacts/render-stream/remote/' "$TMP/ok.out"
+check "the watch polls once a minute by default" grep -q 'run watch 4242 --interval 60' "$FAKE_GH_LOG"
+
+: >"$FAKE_GH_LOG"
+FAKE_GH_MODE=watch-dies FAKE_GH_STATUS=in_progress bash "$WRAP" >"$TMP/lost.out" 2>&1; rc=$?
+check "a watcher that dies mid-run exits 4 (unjudged), not 1" test "$rc" = 4
+check "a lost watch says how to collect the run" grep -q -- '--collect rv-' "$TMP/lost.out"
+check "a lost watch never cancels the run" bash -c "! grep -q 'run cancel' '$FAKE_GH_LOG'"
+check "a lost watch keeps the branch the run still uses" test -n "$(remote_branches)"
+for b in $(remote_branches); do git --git-dir="$BARE" update-ref -d "$b"; done
+FAKE_GH_MODE=watch-dies FAKE_GH_STATUS=completed bash "$WRAP" >"$TMP/lost-done.out" 2>&1; rc=$?
+check "a watcher that dies after the run ended still downloads and judges it" bash -c "test $rc = 0 && grep -q 'results in ' '$TMP/lost-done.out'"
+RV_WATCH_S=5 FAKE_GH_MODE=ok bash "$WRAP" >/dev/null 2>&1
+check "RV_WATCH_S sets the watch interval" grep -q 'run watch 4242 --interval 5' "$FAKE_GH_LOG"
+
 FAKE_GH_FAILED=1 FAKE_GH_MODE=ok bash "$WRAP" >"$TMP/red.out" 2>&1; rc=$?
 check "a summary with failed > 0 exits non-zero" test "$rc" != 0
 check "failing evidence is downloaded" bash -c "ls '$CLONE'/artifacts/render-stream/remote/*/failing-evidence/pure-evidence.txt"

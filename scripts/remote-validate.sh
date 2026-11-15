@@ -35,7 +35,9 @@
 # Cleanup: a failed push or dispatch, SIGINT/SIGTERM and a normal finish (unless --no-wait) cancel the
 # run when needed and delete the branch through scripts/remote-run-branch.sh.
 # Test seams: RV_PLANNER (planner script), RV_REMOTE (git remote, default origin), RV_POLL_S,
-# RV_FIND_TRIES.
+# RV_FIND_TRIES, RV_WATCH_S (gh run watch interval, default 60 s).
+# Exit 4: the watcher died before the run ended (e.g. the API rate limit); the run is unjudged and
+# --collect RUN_KEY picks it up.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,6 +46,9 @@ PLANNER="${RV_PLANNER:-$REPO/experiments/render-stream/scripts/validate-incremen
 SMOKE_MAP="$REPO/experiments/render-stream/scripts/smoke-map.json"
 REMOTE="${RV_REMOTE:-origin}"
 POLL_S="${RV_POLL_S:-4}"
+# gh run watch's poll interval. Each poll lists the run's jobs; several agents' watchers at 10 s
+# exhausted the shared 5,000/h API limit, so the default is a minute.
+WATCH_S="${RV_WATCH_S:-60}"
 FIND_TRIES="${RV_FIND_TRIES:-30}"
 WORKFLOW=remote-validate.yml
 
@@ -131,10 +136,24 @@ trap 'on_signal TERM 143' TERM
 wait_and_download() {
 	local id="$1" dir="$3"
 	echo "remote-validate: watching $2"
-	gh run watch "$id" --interval 10 >"$TMP/watch.log" 2>&1 &
+	gh run watch "$id" --interval "$WATCH_S" >"$TMP/watch.log" 2>&1 &
 	WATCH_PID=$!
 	wait "$WATCH_PID"
+	local watch_rc=$?
 	WATCH_PID=""
+	# gh run watch exits 0 when the run ends, whatever its verdict, so non-zero means the watcher itself
+	# died (most often the shared API rate limit). The run may still be going: say so instead of
+	# reporting a missing summary as a failure.
+	if [ "$watch_rc" -ne 0 ]; then
+		local status
+		status="$(gh run view "$id" --json status -q .status 2>/dev/null)" || status=""
+		if [ "$status" != completed ]; then
+			echo "remote-validate: lost the watch on $2 (status: ${status:-unknown}; API rate limit?)." >&2
+			echo "remote-validate: the run is not judged; collect it later with: scripts/remote-validate.sh --collect $RUN_KEY" >&2
+			KEEP_BRANCH=1 # still in use; as with --no-wait, the workflow's cleanup job deletes it
+			return 4
+		fi
+	fi
 	mkdir -p "$dir"
 	rm -f "$dir/validate-summary.json" "$dir/determinism.json" # a same-second earlier run's
 	gh run download "$id" -n summary -D "$dir" >/dev/null 2>&1
@@ -442,4 +461,5 @@ lrc=0
 [ -n "$LOCAL_PID" ] && { wait "$LOCAL_PID"; lrc=$?; LOCAL_PID=""; }
 echo "remote-validate: results in $OUTDIR"
 [ "$rrc" = 0 ] && [ "$lrc" = 0 ] && exit 0
+[ "$rrc" = 4 ] && [ "$lrc" = 0 ] && exit 4 # unjudged: --collect it
 exit 1
