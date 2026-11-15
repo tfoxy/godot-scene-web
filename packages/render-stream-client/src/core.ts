@@ -107,8 +107,17 @@ export interface StreamCore {
   isStaged(hash: string): boolean;
   /** The next needed payload from the stage into the store; the refusal, or null. */
   provideStaged(): string | null;
-  /** A staged payload into the store out of needed order (a fold's leftover, a restore). */
+  /** A staged payload into the store out of needed order (a fold's leftover, a restore, a
+   * deferred payload's arrival). */
   takeStaged(hash: string): string | null;
+  /** The loop stops waiting for the needed texture or mesh payload `hash`, still being fetched:
+   * the apply goes ahead without it and what draws it is not drawn until it is in the store
+   * (`takeStaged`); the refusal (shader code, or not needed), or null. In needed order with
+   * `provideStaged`. */
+  deferPayload(hash: string): string | null;
+  /** With nothing accepted and unapplied: makes the deferred payloads now in the store drawable
+   * (an apply of no change over the same state); true when it applied (the caller draws). */
+  revisit(seq: number): boolean;
   /** Programs for the accepted state's shaders, and the /12 particles step (before `apply`). */
   prepareApply(seq: number): void;
   apply(seq: number): void;
@@ -348,6 +357,14 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
 
   takeStaged(hash: string): string | null {
     return this.g.restore_take(hash) < 0 ? this.g.error() : null;
+  }
+
+  deferPayload(hash: string): string | null {
+    return this.g.defer_payload(hash) < 0 ? this.g.error() : null;
+  }
+
+  revisit(_seq: number): boolean {
+    return this.g.revisit() > 0;
   }
 
   prepareApply(seq: number): void {

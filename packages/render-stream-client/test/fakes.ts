@@ -96,6 +96,16 @@ export class FakeCore implements StreamCore {
     this.staged.delete(hash);
     return null;
   }
+  deferPayload(hash: string): string | null {
+    this.calls.push(`defer ${hash}`);
+    return null;
+  }
+  /** What `revisit` answers (a real core: whether a deferred payload reached the store). */
+  revisitResult = true;
+  revisit(seq: number): boolean {
+    this.calls.push(`revisit ${seq}`);
+    return this.revisitResult;
+  }
   prepareApply(): void {}
   apply(seq: number): void {
     this.calls.push(`apply ${seq}`);
@@ -233,7 +243,7 @@ export function harness(
   creditWindow: 1 | 2 = 2,
   pacing: Pick<
     LoopOptions,
-    "creditStage" | "applyOn" | "ext" | "recorder"
+    "creditStage" | "applyOn" | "ext" | "recorder" | "resourceHoldMs"
   > = {},
   core: FakeCore = new FakeCore(),
   endpoint: RenderStreamEndpoint = ENDPOINT,

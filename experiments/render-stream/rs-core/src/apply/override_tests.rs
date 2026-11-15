@@ -7,15 +7,15 @@ use super::overrides::{OverrideSabotage, Refresh, HIT_IGNORE, HIT_INPUT, OVERRID
 use super::*;
 use crate::state::*;
 
-const CANVAS: Id = 1;
+pub(super) const CANVAS: Id = 1;
 /// G (top) > P (overridden) > C1, C2; Q a sibling of G.
-const G: Id = 10;
-const P: Id = 11;
-const C1: Id = 12;
-const C2: Id = 13;
-const Q: Id = 14;
+pub(super) const G: Id = 10;
+pub(super) const P: Id = 11;
+pub(super) const C1: Id = 12;
+pub(super) const C2: Id = 13;
+pub(super) const Q: Id = 14;
 
-fn item(id: Id, parent: Parent, children: Vec<Id>, rect: Option<[f32; 4]>) -> Item {
+pub(super) fn item(id: Id, parent: Parent, children: Vec<Id>, rect: Option<[f32; 4]>) -> Item {
     Item {
         id,
         origin: Origin::Created,
@@ -57,7 +57,7 @@ fn item(id: Id, parent: Parent, children: Vec<Id>, rect: Option<[f32; 4]>) -> It
     }
 }
 
-fn in_item(id: Id) -> Parent {
+pub(super) fn in_item(id: Id) -> Parent {
     Parent {
         kind: ParentKind::Item,
         id,
@@ -65,7 +65,7 @@ fn in_item(id: Id) -> Parent {
 }
 
 /// The base scene: G at (10, 200), P at (5, 0) under it, its children drawing, Q beside G.
-fn base() -> ResolvedState {
+pub(super) fn base() -> ResolvedState {
     let mut s = ResolvedState::empty(13);
     let canvas_parent = Parent {
         kind: ParentKind::Canvas,
@@ -99,7 +99,7 @@ fn base() -> ResolvedState {
     s
 }
 
-fn full_delta(s: &ResolvedState) -> TxDelta {
+pub(super) fn full_delta(s: &ResolvedState) -> TxDelta {
     TxDelta {
         full: true,
         canvases_upserted: vec![CANVAS],
@@ -109,7 +109,7 @@ fn full_delta(s: &ResolvedState) -> TxDelta {
     }
 }
 
-fn applier() -> Applier {
+pub(super) fn applier() -> Applier {
     Applier::new(Viewport {
         width: 640,
         height: 360,
@@ -589,7 +589,7 @@ fn frozen_table(id: Id) -> (Vec<u32>, Vec<f32>) {
 }
 
 /// The base scene with C1 drawing texture 5, and the store holding its payload. Returns the hash.
-fn tex_scene() -> (ResolvedState, PayloadStore, Hash) {
+pub(super) fn tex_scene() -> (ResolvedState, PayloadStore, Hash) {
     let mut s = base();
     let hash = Hash([7; 32]);
     s.textures.insert(
@@ -643,7 +643,7 @@ fn tex_scene() -> (ResolvedState, PayloadStore, Hash) {
     (s, store, hash)
 }
 
-fn full_delta_tex(s: &ResolvedState) -> TxDelta {
+pub(super) fn full_delta_tex(s: &ResolvedState) -> TxDelta {
     TxDelta {
         full: true,
         canvases_upserted: vec![CANVAS],
@@ -867,7 +867,7 @@ fn a_freeze_survives_a_coding_rebuild() {
 
 /// The base scene with C1 drawing mesh 5 (one triangle). Returns the store and the mesh's
 /// surface hash.
-fn mesh_scene() -> (ResolvedState, PayloadStore, Hash) {
+pub(super) fn mesh_scene() -> (ResolvedState, PayloadStore, Hash) {
     use super::payloads::{mesh_geometry, MeshBuffers};
     let mut s = base();
     let h = Hash([9; 32]);

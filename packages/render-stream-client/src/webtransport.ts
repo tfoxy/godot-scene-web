@@ -160,12 +160,14 @@ function hexBytes(hex: string): Uint8Array<ArrayBuffer> {
 
 async function readAll(
   reader: ReadableStreamDefaultReader<Uint8Array>,
+  progress?: () => void,
 ): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   let total = 0;
   for (;;) {
     const r = await reader.read();
     if (r.done) break;
+    progress?.();
     chunks.push(r.value);
     total += r.value.length;
   }
@@ -482,7 +484,7 @@ export function createWebTransportTransport(
           buf.set(t, 5 + p.length);
           await w.write(buf);
           await w.close();
-          const res = await readAll(r);
+          const res = await readAll(r, req.progress);
           if (req.signal.aborted) throw new Error("aborted");
           if (res.length < 7)
             throw new Error("resource-unavailable: truncated response");

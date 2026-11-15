@@ -19,6 +19,16 @@
 // each folded one is acked with it. Window 1 (the host's grant may be 1) keeps the superseded path:
 // the newest is applied by a fresh applier.
 //
+// Bounded hold: a transaction waits for its payloads at most `resourceHoldMs` (from the first
+// callback that found one missing). Then it applies without the texture and mesh payloads still in
+// flight ("deferred"): what draws them is not drawn (never an older payload in its place), the rest
+// is, and acks flow, so the host keeps publishing. A later transaction needing a deferred payload
+// does not wait for it again. The fetches go on; each deferred payload that arrives goes into the
+// store, and the next apply, or with none waiting a revisit (an apply over the same state, no ack),
+// draws what needs it. Shader code is never deferred: a material without its program would draw
+// something else, so a transaction missing one keeps waiting. A fetch failure fails the stream, as
+// before.
+//
 // Loss: a close without an end record, other than 1002/1008/1009, reconnects as a fresh session
 // (the applier is reset, the payload store, the compiled module and the browser's
 // HTTP cache are kept), after 1, 2, 4, 8 s and then every 10 s; the count resets once a connection
@@ -74,6 +84,9 @@ export interface RenderStreamStats {
    * that does not name one). `stats()` always sets it; it is optional so that code building a
    * `RenderStreamStats` of its own (a consumer's test double) need not. */
   carrier?: "websocket" | "webtransport" | null;
+  /** Payloads the drawn state went without (the resource hold ran out) and still being fetched:
+   * what draws them is not on screen yet. `stats()` always sets it (optional as `carrier`). */
+  deferredPayloads?: number;
 }
 
 /** The frame and timer functions the loop runs on (the page's, or a test's). */
@@ -108,7 +121,13 @@ export interface LoopOptions {
   canvas: () => HelloCanvas;
   clock: LoopClock;
   connectTimeoutMs?: number;
+  /** A resource GET with no progress (no response, no body bytes) for this long fails
+   * `resource-unavailable`; default 10000. */
   fetchTimeoutMs?: number;
+  /** The longest a transaction waits for its payloads before it applies without the texture and
+   * mesh payloads still in flight (their items drawn once they arrive); default
+   * `DEFAULT_RESOURCE_HOLD_MS`. 0 never waits; `Infinity` always waits for every payload. */
+  resourceHoldMs?: number;
   /** The extension list's runtime; null (the pure client) costs one branch per frame. */
   ext?: ExtensionHost | null;
   /** The session record, once per session (the client keeps its presentation size). */
@@ -136,6 +155,10 @@ export const MESSAGE_APPLY_MAX_FRAME_GAP_MS = 100;
  * absorbs a host frame rate a little above the panel's (60 Hz against a panel just under it). */
 export const MESSAGE_APPLY_MAX_UNDRAWN = 2;
 
+/** The default `resourceHoldMs`: a payload that arrives within this is drawn with the
+ * transaction that needs it, a slower one pops in after it. */
+export const DEFAULT_RESOURCE_HOLD_MS = 150;
+
 /** Backoff before reconnect attempt n (1-based): 1, 2, 4, 8 s, then 10 s. */
 export const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 10000] as const;
 const CLOSE_WAIT_MS = 2000;
@@ -159,6 +182,8 @@ interface Pending {
   bodies: Map<string, string | null>;
   /** The seq each payload was requested for (a folded one's failure is reported at it). */
   requester: Map<string, number>;
+  /** When a callback first found a payload missing (the hold's start), or -1. */
+  since: number;
 }
 
 type Phase =
@@ -219,8 +244,14 @@ export class StreamLoop {
   private readonly rtts = new Float64Array(RTT_SAMPLES);
   private rttCount = 0;
   private lastCreditAt: number | null = null;
+  /** Payloads an applied transaction went without (the hold ran out), still being fetched, with
+   * the seq that needed each (a failure's seq). */
+  private readonly deferred = new Map<string, number>();
+  /** A revisit drew deferred payloads in: the callback draws once with no transaction. */
+  private revisitDraw = false;
 
   private readonly creditStage: CreditStage;
+  private readonly resourceHoldMs: number;
   private readonly ext: ExtensionHost | null;
   private readonly recorder: RenderStreamRecorder | null;
 
@@ -229,6 +260,8 @@ export class StreamLoop {
     this.creditStage = o.creditStage ?? DEFAULT_CREDIT_STAGE;
     this.ext = o.ext ?? null;
     this.recorder = o.recorder ?? null;
+    const hold = o.resourceHoldMs ?? DEFAULT_RESOURCE_HOLD_MS;
+    this.resourceHoldMs = hold >= 0 ? hold : DEFAULT_RESOURCE_HOLD_MS;
   }
 
   // ----------------------------------------------------------------------- public
@@ -297,6 +330,7 @@ export class StreamLoop {
         this.conn?.opened && this.conn.closeInfo === null
           ? (this.conn.transport?.carrier ?? null)
           : null,
+      deferredPayloads: this.deferred.size,
     };
   }
 
@@ -507,6 +541,7 @@ export class StreamLoop {
       // one and is applied by a fresh applier (takeQueued's rebuild).
       this.pending = null;
       this.fetcher?.cancel();
+      this.deferred.clear(); // their GETs went with the cancel; the rebuild needs them again
       this.rebuildDue = true;
     }
     this.queue.push(item);
@@ -570,6 +605,7 @@ export class StreamLoop {
               token,
               signal,
               stream: opts?.stream === true,
+              progress: opts?.progress,
             }),
           httpPath,
           this.o.fetchTimeoutMs ?? 10000,
@@ -637,22 +673,33 @@ export class StreamLoop {
     }
     if (this.ctx !== "ok") {
       this.stepContext();
-    } else if (this.pending !== null) {
-      this.advancePending();
-      if (this.pending?.stage === "ready") this.applyReady(true);
-    } else if (this.queue.length > 0) {
-      this.takeQueued(true);
+    } else {
+      if (this.pending !== null) {
+        this.advancePending();
+        if (this.pending?.stage === "ready") this.applyReady(true);
+      } else if (this.queue.length > 0) {
+        this.takeQueued(true);
+      }
+      if (
+        this.deferred.size > 0 &&
+        this.pending === null &&
+        this.queue.length === 0
+      )
+        this.pollDeferred();
     }
     if (this.ctx === "ok" && this.undrawn.length > 0) this.drawApplied();
+    else if (this.ctx === "ok" && this.revisitDraw) this.drawRevisit(now);
     else if (this.ext && this.ctx === "ok") this.extensionRedraw(now);
     if (this.phase !== "streaming") return;
     if (
       this.ctx === "ok" &&
       this.endSeen &&
       this.queue.length === 0 &&
-      this.pending === null
+      this.pending === null &&
+      (this.deferred.size === 0 || conn.closeInfo !== null)
     ) {
-      // The receiver closes first (the host lingers for it after the end record).
+      // The receiver closes first (the host lingers for it after the end record), once the
+      // deferred payloads are drawn (unless the host closed already).
       this.phase = "draining";
       conn.transport?.close(1000, "end seen");
       this.deadline = now + CLOSE_WAIT_MS;
@@ -727,6 +774,8 @@ export class StreamLoop {
     this.pending = null;
     this.queue = [];
     this.coalesced = [];
+    this.deferred.clear();
+    this.revisitDraw = false;
     this.undrawn.length = 0;
     this.endSeen = false;
     this.rebuildDue = false;
@@ -779,7 +828,9 @@ export class StreamLoop {
       .map((n) => n.hash)
       .filter((h) => !p.bodies.has(h) && !asked.has(h));
     for (const h of misses) p.requester.set(h, next.seq);
-    this.fetcher?.retain(new Set(next.needed.map((n) => n.hash)));
+    const keep = new Set(next.needed.map((n) => n.hash));
+    for (const h of this.deferred.keys()) keep.add(h);
+    this.fetcher?.retain(keep);
     if (misses.length > 0) {
       const fetcher = this.needFetcher(next.seq, misses[0]);
       this.checkFetches(next.seq, misses);
@@ -812,12 +863,18 @@ export class StreamLoop {
       requester: new Map(
         item.needed.map((n) => [n.hash, firstNeeder.get(n.hash) ?? item.seq]),
       ),
+      since: -1,
     };
     const misses = item.needed.map((n) => n.hash);
     if (misses.length > 0) {
       const fetcher = this.needFetcher(item.seq, misses[0]);
       this.checkFetches(item.seq, misses);
-      fetcher.start(misses);
+      if (this.deferred.size === 0) fetcher.start(misses);
+      else {
+        // Deferred payloads are still being fetched: keep their GETs and results.
+        const asked = fetcher.requested();
+        fetcher.extend(misses.filter((h) => !asked.has(h)));
+      }
     }
     this.advancePending();
     if (this.pending?.stage === "ready") this.applyReady(draw);
@@ -850,36 +907,100 @@ export class StreamLoop {
     r.data = null; // in wasm now
   }
 
-  /** The pending transaction's fetches (polled); all in, every payload provided in wasm's order. */
+  /** The pending transaction's fetches (polled); all in, or the hold over, every payload in
+   * provided in wasm's order and every other one deferred. */
   private advancePending(): void {
     const p = this.pending as Pending;
     const core = this.o.core;
     const seq = p.item.seq;
+    const deferred = this.deferred;
+    /** Missing and not deferred already (a deferred one is not waited for again). */
+    const waiting = (h: string): boolean =>
+      !p.bodies.has(h) && !deferred.has(h);
     const outstanding = (): boolean =>
-      p.item.needed.some((n) => !p.bodies.has(n.hash)) ||
-      (this.windowTwo() && (this.fetcher?.busy() ?? false));
+      p.item.needed.some((n) => waiting(n.hash)) || this.folding();
     if (outstanding() && this.fetcher !== null) {
       for (const r of this.fetcher.poll().results) {
-        const forSeq = p.requester.get(r.hash) ?? seq;
+        const forSeq = p.requester.get(r.hash) ?? deferred.get(r.hash) ?? seq;
         if (r.error !== "") throw failWith(forSeq, r.error);
         p.bodies.set(r.hash, r.stage_error ?? null);
       }
-      if (outstanding()) return;
+      if (outstanding()) {
+        const now = this.o.clock.now();
+        if (p.since < 0) p.since = now;
+        if (now - p.since < this.resourceHoldMs) return;
+        // The hold is over: what is still missing is deferred, unless it is shader code.
+        for (const n of p.item.needed)
+          if (n.kind === 2 && waiting(n.hash)) return;
+        for (const n of p.item.needed)
+          if (waiting(n.hash))
+            deferred.set(n.hash, p.requester.get(n.hash) ?? seq);
+      }
     }
     for (const n of p.item.needed) {
+      if (deferred.size > 0 && !p.bodies.has(n.hash) && deferred.has(n.hash)) {
+        const err = core.deferPayload(n.hash);
+        if (err !== null)
+          throw new StreamFailure(
+            p.requester.get(n.hash) ?? seq,
+            "receiver-error",
+            err,
+          );
+        continue;
+      }
       const err = p.bodies.get(n.hash) ?? core.provideStaged();
       if (err !== null && err !== undefined)
         throw refusal(p.requester.get(n.hash) ?? seq, err);
     }
     // A body fetched for a folded transaction the newest no longer needs goes to the store
-    // too, so it is never refetched. Empty at window 1.
+    // too, so it is never refetched (a deferred one is then drawn by this apply). Empty at
+    // window 1.
     for (const [hash, stageError] of p.bodies) {
       if (p.item.needed.some((n) => n.hash === hash)) continue;
       if (stageError === null && !core.isStaged(hash)) continue;
       const err = stageError ?? core.takeStaged(hash);
-      if (err !== null) throw refusal(p.requester.get(hash) ?? seq, err);
+      if (err !== null)
+        throw refusal(p.requester.get(hash) ?? deferred.get(hash) ?? seq, err);
     }
+    if (deferred.size > 0) for (const h of p.bodies.keys()) deferred.delete(h);
     p.stage = "ready";
+  }
+
+  /** Window 2: GETs of a folded transaction's payloads still going (not a deferred one's). */
+  private folding(): boolean {
+    const f = this.fetcher;
+    if (f === null || !this.windowTwo()) return false;
+    if (this.deferred.size === 0) return f.busy();
+    for (const h of f.requested()) if (!this.deferred.has(h)) return true;
+    return false;
+  }
+
+  /** Nothing waiting to apply: the deferred payloads fetched since go into the store, and a
+   * revisit (an apply over the same state, no ack) makes what draws them drawable; the callback
+   * then draws. Another fetched body (a folded one's) goes into the store too. */
+  private pollDeferred(): void {
+    const f = this.fetcher;
+    if (f === null) return;
+    const core = this.o.core;
+    let arrived = false;
+    for (const r of f.poll().results) {
+      const forSeq = this.deferred.get(r.hash) ?? this.lastAppliedSeq;
+      if (r.error !== "") throw failWith(forSeq, r.error);
+      if (r.stage_error) throw refusal(forSeq, r.stage_error);
+      if (core.isStaged(r.hash)) {
+        const err = core.takeStaged(r.hash);
+        if (err !== null) throw refusal(forSeq, err);
+      }
+      if (this.deferred.delete(r.hash)) arrived = true;
+    }
+    if (arrived && core.revisit(this.lastAppliedSeq)) this.revisitDraw = true;
+  }
+
+  /** The revisited state drawn, with no transaction: acks nothing, asks no credit. */
+  private drawRevisit(now: number): void {
+    this.revisitDraw = false;
+    if (this.ext) this.ext.beforeDraw(null, now);
+    this.o.core.draw(this.lastAppliedSeq);
   }
 
   /** The pending transaction, every payload in: apply and ack applied; then, in a frame callback
@@ -920,6 +1041,7 @@ export class StreamLoop {
     const now = this.o.clock.now();
     for (const s of this.undrawn) this.ack(s, "submitted", now);
     this.undrawn.length = 0;
+    this.revisitDraw = false;
     if (this.creditStage !== "applied") this.lastCreditAt = now;
     this.attempt = 0;
     if (!this.firstFrameSent) {

@@ -14,9 +14,12 @@
 // `stage_error` is the stager's verdict and `onBody` is not called for it. A response without a
 // stream (a transport that ignores the ask) goes through `onBody` as before.
 //
-// A non-200 status, a request that cannot be made, and one not complete within `timeoutMs` of its
-// start are `resource-unavailable`; the first error stops the queue and aborts the other GETs in
-// flight (rs_resource_fetcher.gd).
+// A non-200 status, a request that cannot be made, and one that stalls (no progress for
+// `timeoutMs`: no response yet, or no body bytes since the last ones) are `resource-unavailable`;
+// the first error stops the queue and aborts the other GETs in flight (rs_resource_fetcher.gd).
+// The stall timeout counts from the last progress, not from the start, so a large body that keeps
+// arriving over a shared, slow link is never cut off mid-way. Progress is the response, each
+// streamed chunk, and each `progress()` call of a request that reports its whole-body reads.
 //
 // The request is injectable: the client passes its transport's `fetchResource`, and the harness passes
 // its own `fetch` with the token, the cache mode its sabotages need and the response headers its
@@ -35,12 +38,13 @@ export interface ResourceResponse {
   sizeHint?: number;
 }
 
-/** `GET <path>`, aborted through `signal` (the fetcher's timeout, or `abort`). `opts.stream`:
- * the fetcher can take the body as a stream. */
+/** `GET <path>`, aborted through `signal` (the fetcher's stall timeout, or `abort`).
+ * `opts.stream`: the fetcher can take the body as a stream. `opts.progress`: a request that reads
+ * a whole body itself may call it as bytes arrive, which restarts the stall timeout. */
 export type ResourceRequest = (
   path: string,
   signal: AbortSignal,
-  opts?: { stream: boolean },
+  opts?: { stream: boolean; progress?: () => void },
 ) => Promise<ResourceResponse>;
 
 export interface FetchResult {
@@ -246,11 +250,27 @@ export class LiveFetcher {
     const entry: InFlight = { abort };
     this.inFlight.set(hash, entry);
     this.aborts.add(abort);
-    const timer = setTimeout(() => abort.abort(), this.timeoutMs);
+    // The stall timeout: restarted by every sign of progress, so it fires only after
+    // `timeoutMs` with none.
+    let stalled = false;
+    let timer = setTimeout(() => {
+      stalled = true;
+      abort.abort();
+    }, this.timeoutMs);
+    let over = false;
+    const progress = (): void => {
+      if (stalled || over) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        stalled = true;
+        abort.abort();
+      }, this.timeoutMs);
+    };
     /** Whether this GET still counts (not cancelled, not aborted by another's failure). */
     const current = (): boolean =>
       gen === this.generation && this.inFlight.get(hash) === entry;
     const settle = (error: string) => {
+      over = true;
       clearTimeout(timer);
       this.aborts.delete(abort);
       if (!current()) return;
@@ -283,12 +303,14 @@ export class LiveFetcher {
     try {
       started = this.request(path, abort.signal, {
         stream: this.stager !== null,
+        progress,
       });
     } catch (e) {
       started = Promise.reject(e);
     }
     started
       .then(async (res) => {
+        progress();
         r.status = res.status;
         if (res.headers) r.headers = res.headers;
         const stream = res.stream ?? null;
@@ -303,24 +325,34 @@ export class LiveFetcher {
           return;
         }
         if (stream !== null && this.stager) {
-          if (!(await this.streamInto(r, stream, res.sizeHint ?? 0, current)))
+          if (
+            !(await this.streamInto(
+              r,
+              stream,
+              res.sizeHint ?? 0,
+              current,
+              progress,
+              abort.signal,
+            ))
+          )
             return; // cancelled meanwhile: dropped unseen
           settle("");
           return;
         }
-        const body = new Uint8Array(
+        const body =
           stream !== null
-            ? await new Response(stream).arrayBuffer()
-            : (res.body ?? new ArrayBuffer(0)),
-        );
+            ? await readStream(stream, progress, abort.signal)
+            : new Uint8Array(res.body ?? new ArrayBuffer(0));
         r.bytes = body.length;
         r.data = body;
         settle("");
       })
       .catch((e: unknown) => {
-        const why = abort.signal.aborted
-          ? `not complete within ${this.timeoutMs} ms`
-          : `the request failed (${e instanceof Error ? e.message : String(e)})`;
+        const why = stalled
+          ? `stalled, no progress for ${this.timeoutMs} ms`
+          : abort.signal.aborted
+            ? "aborted"
+            : `the request failed (${e instanceof Error ? e.message : String(e)})`;
         settle(`resource-unavailable: GET ${path}: ${why}`);
       });
   }
@@ -334,10 +366,13 @@ export class LiveFetcher {
     stream: ReadableStream<Uint8Array>,
     sizeHint: number,
     current: () => boolean,
+    progress: () => void,
+    signal: AbortSignal,
   ): Promise<boolean> {
     const stager = this.stager as NonNullable<LiveFetcherOptions["stager"]>;
     const sink = stager(r.hash, sizeHint);
     const reader = stream.getReader();
+    const stop = abortRead(reader, signal);
     let finished = false;
     try {
       let sinceYield = 0;
@@ -347,7 +382,9 @@ export class LiveFetcher {
           reader.cancel().catch(() => {});
           return false;
         }
+        if (signal.aborted) throw new Error("aborted");
         if (done) break;
+        progress();
         for (let at = 0; at < value.length; ) {
           if (sinceYield >= this.sliceBytes) {
             await this.yieldTask();
@@ -371,8 +408,55 @@ export class LiveFetcher {
       r.stage_error = sink.finish();
       return true;
     } finally {
+      stop();
       if (!finished) sink.abort();
       reader.releaseLock();
     }
   }
+}
+
+/** A whole body read from `stream`, `progress` called at every chunk. */
+async function readStream(
+  stream: ReadableStream<Uint8Array>,
+  progress: () => void,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const stop = abortRead(reader, signal);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (signal.aborted) throw new Error("aborted");
+      if (done) break;
+      progress();
+      chunks.push(value);
+      total += value.length;
+    }
+  } finally {
+    stop();
+    reader.releaseLock();
+  }
+  if (chunks.length === 1) return chunks[0];
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
+}
+
+/** An abort of `signal` ends `reader`'s pending read (a transport whose body ignores the signal
+ * would otherwise keep it waiting); returns the listener's removal. */
+function abortRead(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): () => void {
+  const onAbort = () => {
+    reader.cancel().catch(() => {});
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  return () => signal.removeEventListener("abort", onAbort);
 }

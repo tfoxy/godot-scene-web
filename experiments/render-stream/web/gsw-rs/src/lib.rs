@@ -2010,6 +2010,70 @@ impl GswRs {
         self.compute_needed()
     }
 
+    /// A live client stops waiting for the needed payload `hash_hex`, still being fetched: it
+    /// leaves the needed set, the apply goes ahead without it, and what draws it is skipped (never
+    /// drawn from the entry's older payload) until it reaches the store (`restore_take`), when
+    /// `revisit` or the next transaction's apply draws it. Shader code is refused: a material
+    /// without its program would draw something else. 0, or -1 (`error`).
+    pub fn defer_payload(&mut self, hash_hex: &str) -> i32 {
+        let Some(hash) = Hash::from_hex(hash_hex) else {
+            self.error = format!("resource-unavailable: {hash_hex:?} is not a sha256 hex name");
+            return -1;
+        };
+        let Some(a) = self.applier.as_mut() else {
+            self.error = "defer before start".into();
+            return -1;
+        };
+        let from = self.provide_cursor.min(self.needed.len());
+        let Some(i) = self.needed[from..]
+            .iter()
+            .position(|h| *h == hash)
+            .map(|i| from + i)
+        else {
+            self.error = format!("resource-defer: payload {hash_hex} is not needed");
+            return -1;
+        };
+        if self.needed_kinds.get(i) == Some(&2) {
+            self.error = format!("resource-defer: shader code {hash_hex} cannot be deferred");
+            return -1;
+        }
+        self.needed.remove(i);
+        if i < self.needed_kinds.len() {
+            self.needed_kinds.remove(i);
+        }
+        if (i + 1) * 32 <= self.needed_bytes.len() {
+            self.needed_bytes.drain(i * 32..(i + 1) * 32);
+        }
+        a.defer(hash);
+        0
+    }
+
+    /// With no transaction accepted and unapplied: the deferred payloads that reached the store
+    /// are made resident and what draws them re-lowered, an apply of an empty delta over the same
+    /// state (no ack, no evidence row). 1 when it applied (the caller draws), else 0.
+    pub fn revisit(&mut self) -> i32 {
+        let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_mut()) else {
+            return 0;
+        };
+        if !a.revisit(v.state(), &self.payloads) {
+            return 0;
+        }
+        let st = &a.stats;
+        self.stats.lowered_draws = st.lowered_draws;
+        self.stats.assembly_skips = st.assembly_skips;
+        self.stats.emitted_draws = st.emitted_draws;
+        self.stats.expected_calls = st.expected_calls;
+        self.stats.vertices = st.vertex_count;
+        self.stats.indices = st.index_count;
+        self.stats.draws = st.emitted_draws;
+        1
+    }
+
+    /// The payloads deferred and not in the store yet.
+    pub fn deferred_count(&self) -> u32 {
+        self.applier.as_ref().map_or(0, |a| a.deferred_len() as u32)
+    }
+
     /// G7o2: provide the next needed payload from the stage (verified when it arrived). Fails when
     /// it was never staged, i.e. never verified: the caller must not apply.
     pub fn provide_staged(&mut self) -> i32 {
@@ -2149,6 +2213,8 @@ impl GswRs {
             self.error = "apply before start".into();
             return -1;
         };
+        // A deferred payload that reached the store since (`defer_payload`) is drawn by this apply.
+        a.absorb_deferred(v.state(), &self.payloads);
         let st = a.apply(v.state(), v.delta(), &self.payloads).clone();
         // W11c: the display moved to S_n, so what only the old display held leaves now.
         if !self.opts.ignore_released {

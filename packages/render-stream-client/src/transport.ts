@@ -15,10 +15,17 @@ export interface RenderStreamTransport {
    * set, a transport may answer a 200 with `stream` (the body as it arrives, which the caller
    * reads to its end or cancels) and `body` null instead; `sizeHint` is then its
    * `Content-Length`, 0 when unknown, and only a hint (a content-encoded body decodes longer).
-   * A transport that ignores `stream` answers with `body` as always. */
+   * A transport that ignores `stream` answers with `body` as always. `progress`, when set, is
+   * called as the bytes of a body the transport reads whole arrive (the caller's stall
+   * timeout restarts on each); a transport may ignore it. */
   fetchResource(
     path: string,
-    init: { token: string | null; signal: AbortSignal; stream?: boolean },
+    init: {
+      token: string | null;
+      signal: AbortSignal;
+      stream?: boolean;
+      progress?: () => void;
+    },
   ): Promise<{
     status: number;
     body: ArrayBuffer | null;
@@ -95,6 +102,11 @@ export const webSocketTransport: RenderStreamTransportFactory = (
           sizeHint: Number.isSafeInteger(length) && length > 0 ? length : 0,
         };
       }
+      if (init.progress !== undefined && res.body !== null)
+        return {
+          status: res.status,
+          body: await readBody(res.body, init.progress),
+        };
       return { status: res.status, body: await res.arrayBuffer() };
     },
   };
@@ -269,4 +281,28 @@ export function carrierTransport(
         (current as RenderStreamTransport).fetchResource(path, init),
     };
   };
+}
+
+/** A whole body, `progress` called at every chunk. */
+async function readBody(
+  stream: ReadableStream<Uint8Array>,
+  progress: () => void,
+): Promise<ArrayBuffer> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    progress();
+    chunks.push(value);
+    total += value.length;
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out.buffer;
 }

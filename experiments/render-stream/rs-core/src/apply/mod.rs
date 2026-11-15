@@ -655,6 +655,11 @@ pub struct Applier {
     /// G8kb (D6): textures `keep` holds on a resident payload D3 no longer chooses (a variant
     /// appeared at the entry's version), and that payload's hash: what they draw from.
     kept: HashMap<Id, Hash, payloads::HashBuild>,
+    /// Payloads a live client chose not to wait for ([`Applier::defer`]): what needs them is not
+    /// drawn (a texture or mesh entry selecting one is not resident, never its older payload)
+    /// until the payload reaches the store and [`Applier::absorb_deferred`] re-syncs it. Empty
+    /// unless a client defers, and then only the residency syncs' missing-payload branches read it.
+    deferred: HashSet<Hash, payloads::HashBuild>,
     attach: Vec<Attach>,
     vertex_holes: u32,
     /// The canvas, material, shader and canvas-texture entries the last walk used: a full
@@ -1132,6 +1137,7 @@ impl Applier {
             sabotage: ApplySabotage::default(),
             delivery: crate::delivery::DeliveryPrefs::default(),
             kept: HashMap::default(),
+            deferred: HashSet::default(),
             stream_version: 6,
             attach: Vec::new(),
             vertex_holes: 0,
@@ -1682,6 +1688,74 @@ impl Applier {
         }
     }
 
+    /// A live client stops waiting for `hash`, which is still being fetched: the transaction
+    /// applies without it. A texture or mesh entry selecting it stays not resident meanwhile (its
+    /// older payload is freed, never drawn in its place), so what draws it is skipped and
+    /// everything else draws. Shader code is never deferred (a material without its program would
+    /// draw something else): the caller refuses it.
+    pub fn defer(&mut self, hash: Hash) {
+        self.deferred.insert(hash);
+    }
+
+    pub fn is_deferred(&self, hash: &Hash) -> bool {
+        self.deferred.contains(hash)
+    }
+
+    /// The payloads deferred and not yet in the store.
+    pub fn deferred_len(&self) -> usize {
+        self.deferred.len()
+    }
+
+    /// The deferred payloads that reached `store` stop being deferred, and the texture entries
+    /// selecting one re-sync at the next apply (a mesh needs nothing: every named mesh is
+    /// compared with the store at each apply). True when one arrived. Between `prepare` and
+    /// `apply`.
+    pub fn absorb_deferred(&mut self, state: &ResolvedState, store: &PayloadStore) -> bool {
+        if self.deferred.is_empty() {
+            return false;
+        }
+        let arrived: Vec<Hash> = self
+            .deferred
+            .iter()
+            .filter(|h| store.has(h))
+            .copied()
+            .collect();
+        if arrived.is_empty() {
+            return false;
+        }
+        for h in &arrived {
+            self.deferred.remove(h);
+        }
+        for (id, t) in &state.textures {
+            if self
+                .delivery
+                .select(t)
+                .is_some_and(|sel| arrived.contains(&sel.hash))
+            {
+                self.pending.insert(*id);
+            }
+        }
+        true
+    }
+
+    /// With no transaction waiting: the deferred payloads that reached `store` since the last
+    /// apply are made resident and what draws them is drawn, by an apply of an empty delta over
+    /// the same state. False (nothing applied) when none arrived, or while a transaction is
+    /// prepared (its own apply absorbs them).
+    pub fn revisit(&mut self, state: &ResolvedState, store: &PayloadStore) -> bool {
+        if self.prepared || !self.deferred.iter().any(|h| store.has(h)) {
+            return false;
+        }
+        let empty = TxDelta {
+            seq: state.seq,
+            ..TxDelta::default()
+        };
+        self.prepare(state, &empty);
+        self.absorb_deferred(state, store);
+        self.apply(state, &empty, store);
+        true
+    }
+
     /// Bring residency in line with the texture table, the native receiver's way (`residency`):
     /// free what left the table or became a tombstone, then create, update or replace each chosen
     /// named texture. Returns the ids whose drawable size changed.
@@ -1832,6 +1906,20 @@ impl Applier {
                         continue;
                     }
                     let Some(px) = payloads.textures.get(&hash) else {
+                        // A deferred payload: the entry's older payload is not drawn in its place.
+                        if self.deferred.contains(&hash) {
+                            let gpu = old.as_ref().is_some_and(|r| {
+                                matches!(r.kind, TextureKind::Image | TextureKind::Placeholder)
+                            });
+                            if gpu {
+                                self.resident.remove(&id);
+                                self.kept.remove(&id);
+                                self.list.free_texture(id);
+                                self.stats.texture_frees += 1;
+                                self.account.freed += 1;
+                                resized.push(id);
+                            }
+                        }
                         continue;
                     };
                     let op = match &old {
@@ -2033,7 +2121,15 @@ impl Applier {
         self.frozen_resources();
         let frozen_res = std::mem::take(&mut self.frozen_res);
         let (frozen_tex, frozen_mesh) = (&frozen_res.0, &frozen_res.1);
-        mesh_res.sync(state, upserted, removed, self.first, frozen_mesh, payloads);
+        mesh_res.sync(
+            state,
+            upserted,
+            removed,
+            self.first,
+            frozen_mesh,
+            payloads,
+            &self.deferred,
+        );
         prof::add(prof::MESH_SYNC, t);
         let t = prof::start();
         let mut why = if self.first { Why::FIRST } else { 0 };
@@ -4127,6 +4223,8 @@ mod window_tests;
 mod w11c_tests;
 #[cfg(test)]
 mod override_tests;
+#[cfg(test)]
+mod deferred_tests;
 #[cfg(test)]
 mod pick_tree_tests;
 #[cfg(test)]

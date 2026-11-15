@@ -82,6 +82,11 @@ export interface GswRs {
   // The in-place context restore.
   restore_missing(): string;
   restore_take(hash: string): number;
+  /** The bounded resource hold: a needed payload the apply goes without (0, or -1 `error`). */
+  defer_payload(hash: string): number;
+  /** The deferred payloads now in the store made drawable with no transaction (1: applied). */
+  revisit(): number;
+  deferred_count(): number;
   /** Whether a payload is staged (verified on arrival, not yet in the store). */
   is_staged(hash: string): boolean;
   restore_json(): string;
@@ -209,6 +214,8 @@ export const CLIENT_CORE_METHODS = [
   "provide_staged",
   "is_staged",
   "restore_take",
+  "defer_payload",
+  "revisit",
   "restore_missing",
   "check_fetch",
   "apply",

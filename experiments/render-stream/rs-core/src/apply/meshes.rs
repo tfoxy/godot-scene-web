@@ -124,6 +124,7 @@ impl MeshResidency {
         first: bool,
         keep: &std::collections::HashSet<Id>,
         payloads: &PayloadStore,
+        deferred: &std::collections::HashSet<Hash, super::payloads::HashBuild>,
     ) {
         self.uploads.clear();
         self.changed.clear();
@@ -219,7 +220,25 @@ impl MeshResidency {
                 continue;
             }
             if surfaces.len() != entry.surfaces.len() {
-                // A payload is missing (the adapter blocks apply until it is provided).
+                // A payload is missing: the adapter blocks apply until it is provided, unless a
+                // live client deferred it (`Applier::defer`), and then the mesh's older surfaces
+                // are not drawn in its place.
+                let waits = !deferred.is_empty()
+                    && entry
+                        .surfaces
+                        .iter()
+                        .filter_map(|s| s.hash)
+                        .any(|h| deferred.contains(&h) && !payloads.meshes.contains_key(&h));
+                if waits && self.resident.remove(&id).is_some() {
+                    self.changed.push(id);
+                    self.uploads.push(MeshUpload {
+                        id,
+                        op: "free",
+                        surfaces: vec![],
+                        buffers: vec![],
+                        bytes: 0,
+                    });
+                }
                 continue;
             }
             let hashes: Vec<Hash> = surfaces.iter().map(|(h, _)| *h).collect();

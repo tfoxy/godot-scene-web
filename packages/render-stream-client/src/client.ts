@@ -86,6 +86,12 @@ export interface RenderStreamClientOptions {
   /** Where a ready transaction is applied: the next frame callback (`frame`) or its own
    * `onmessage` while frames run (`message`, the default; the draw stays on the frame callback). */
   applyOn?: ApplyOn;
+  /** The longest, in ms, a transaction waits for the resources it needs; default 150. Past it,
+   * the transaction applies without the textures and meshes still loading: what draws them is not
+   * drawn (no older picture in its place), everything else is, and they appear once loaded,
+   * redrawn with or without a new transaction. 0 never waits; `Infinity` waits for every
+   * resource (frames hold meanwhile). Shader code is always waited for. */
+  resourceHoldMs?: number;
   /** When set, the client records the decoded messages since the last full and the fetched
    * payloads, exported by `RenderStreamClient.recording()`. Absent: the pure client (no ring, no
    * copies). */
@@ -400,6 +406,7 @@ class Client implements RenderStreamClient {
       creditWindow: this.creditWindow,
       creditStage: this.o.creditStage,
       applyOn: this.o.applyOn,
+      resourceHoldMs: this.o.resourceHoldMs,
       ext: this.ext,
       recorder: this.recorder,
       onSession: (m) => {

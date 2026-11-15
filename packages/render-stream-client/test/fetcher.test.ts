@@ -406,3 +406,83 @@ describe("LiveFetcher staging as bodies arrive", () => {
     ]);
   });
 });
+
+describe("LiveFetcher stall timeout", () => {
+  const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  const timed = (timeoutMs: number, o: LiveFetcherOptions = {}) => {
+    const rq = requests();
+    const f = new LiveFetcher(rq.request, "/r/", timeoutMs, 0, null, o);
+    return { f, ...rq };
+  };
+  const st = () => stager(() => null).make;
+
+  it("a body that keeps arriving outlives the timeout; it counts from the last bytes", async () => {
+    const { f, gets } = timed(60, { stager: st() });
+    f.start(["a"]);
+    f.poll();
+    const b = body([new Uint8Array(4), new Uint8Array(4), new Uint8Array(4)]);
+    await wait(40);
+    gets[0].resolve({ status: 200, body: null, stream: b.stream });
+    for (let i = 0; i < 3; i++) {
+      await wait(40);
+      b.next();
+    }
+    await wait(40);
+    b.next(); // the end, 200 ms after the start
+    await wait(5);
+    const [r] = f.poll().results;
+    expect(r).toMatchObject({ hash: "a", error: "", bytes: 12 });
+  });
+
+  it("no bytes for the timeout is resource-unavailable (stalled)", async () => {
+    const { f, gets } = timed(40, { stager: st() });
+    f.start(["a"]);
+    f.poll();
+    const b = body([new Uint8Array(4)]);
+    gets[0].resolve({ status: 200, body: null, stream: b.stream });
+    await wait(5);
+    b.next();
+    await wait(80);
+    const [r] = f.poll().results;
+    expect(r.error).toMatch(
+      /^resource-unavailable: GET \/r\/a: stalled, no progress for 40 ms$/,
+    );
+    expect(gets[0].signal.aborted).toBe(true);
+    expect(b.cancelled()).toBe(true); // the read ended with the abort
+  });
+
+  it("no response for the timeout is resource-unavailable (stalled)", async () => {
+    const { f } = timed(30);
+    f.start(["a"]);
+    f.poll();
+    await wait(60);
+    const [r] = f.poll().results;
+    expect(r.error).toMatch(/stalled, no progress for 30 ms$/);
+  });
+
+  it("a whole-body request's progress calls restart the timeout", async () => {
+    let progress: (() => void) | undefined;
+    let resolve!: (r: ResourceResponse) => void;
+    const f = new LiveFetcher(
+      (_p, _s, opts) => {
+        progress = opts?.progress;
+        return new Promise<ResourceResponse>((res) => {
+          resolve = res;
+        });
+      },
+      "/r/",
+      50,
+      0,
+    );
+    f.start(["a"]);
+    f.poll();
+    for (let i = 0; i < 4; i++) {
+      await wait(30);
+      progress?.();
+    }
+    resolve({ status: 200, body: new ArrayBuffer(8) });
+    await wait(5);
+    const [r] = f.poll().results;
+    expect(r).toMatchObject({ error: "", bytes: 8 });
+  });
+});
