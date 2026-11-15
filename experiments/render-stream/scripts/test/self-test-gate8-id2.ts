@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PICKED } from "../lib/gate8-id-checks";
 import {
+  helloFor,
   PURE_HELLO,
   restampProblems,
   runG8id2,
@@ -130,6 +131,21 @@ await fails("hello-pure", (d) => {
 await fails("hello-tag1", (d) => {
   d.tag1.hellos[0] = PURE_HELLO;
 });
+// F2: a context that states a block family offers `block,decoded`; one with none, `decoded`.
+await fails("hello-pure", (d) => {
+  d.pure.gpuFormats = "s3tc,bptc,rgtc";
+  d.pure.hellos[0] = PURE_HELLO.replace(
+    '"gpu_formats":"none"',
+    '"gpu_formats":"s3tc,bptc,rgtc"',
+  );
+});
+assert.ok(
+  helloFor(PURE_HELLO, "s3tc,bptc,rgtc").includes(
+    '"texture_encodings":"block,decoded","gpu_formats":"s3tc,bptc,rgtc"',
+  ),
+);
+assert.equal(helloFor(PURE_HELLO, "none"), PURE_HELLO);
+assertions += 2;
 await fails("sabotage-ignore-host-filter-caught", (d) => {
   d["sabotage-ignore-host-filter"].samples = samples;
 });

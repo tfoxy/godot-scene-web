@@ -26,6 +26,19 @@ export function gpuFormatsOf(
   return out.length > 0 ? out.join(",") : "none";
 }
 
+/** The client's texture_encodings offer for a context's gpu_formats (render-stream-9.md D3):
+ * `block,decoded` when the context states any block family, so a host that holds the game's own
+ * block bytes in a matching format sends those (a quarter to a half of the GPU memory, no CPU
+ * decode); `decoded` when it states none (`none`). `decoded` is always the fallback. Never
+ * `uastc`: the client carries no KTX2 transcoder (it never stages a KTX2), and GSW states only
+ * encodings it can transcode. The core's `texture_encodings` start option is `block,decoded`
+ * (the hello's superset; with no family stated the core selects nothing but `decoded`). */
+export function clientTextureEncodings(gpuFormats: string): string {
+  return gpuFormats !== "" && gpuFormats !== "none"
+    ? "block,decoded"
+    : "decoded";
+}
+
 /** The /9 hello: the /7 hello's keys in their order under protocol render-stream/9, then
  * texture_encodings and gpu_formats. CG1: `protocol` "render-stream/10" is /10's hello
  * (render-stream-10.md "Live transport"); W11c: "render-stream/11" is /10's again
@@ -73,7 +86,7 @@ export function coreStartOptions(protocol: number): string {
     digest: "none",
     sabotage: [],
     format: "rgb10a2",
-    texture_encodings: "decoded",
+    texture_encodings: "block,decoded",
     live_protocol: protocol,
     log: "summary",
   });
@@ -123,7 +136,8 @@ function hasV2(itemMeta: ClientHelloFacts["itemMeta"]): boolean {
 
 /** The client's /11 through /14 hello: the GSW receiver's keys in their order (golden-11/12's control
  * hello), `receiver_kind` `gsw-canvas` (the same executor), credit stage `submitted`, texture
- * encodings `decoded` (until the client carries the KTX2 transcoder), no manifest, and the
+ * encodings `block,decoded` or `decoded` (clientTextureEncodings; no `uastc` until the client
+ * carries the KTX2 transcoder), no manifest, and the
  * `zstd-base,zstd` live coding offer last. */
 export function clientHello(f: ClientHelloFacts): Record<string, unknown> {
   const hello = helloV9(
@@ -143,7 +157,7 @@ export function clientHello(f: ClientHelloFacts): Record<string, unknown> {
       presentation_css_h: f.css[1],
       dpr_milli: f.dprMilli,
     },
-    "decoded",
+    clientTextureEncodings(f.gpuFormats),
     f.gpuFormats,
     `render-stream/${f.protocol}` as const,
     CLIENT_LIVE_CODING,

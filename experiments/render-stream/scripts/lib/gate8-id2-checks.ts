@@ -95,6 +95,17 @@ export function restampProblems(
 // Fixed /13 wire bytes. Keep independent of clientHello so serializer changes cannot bless themselves.
 export const PURE_HELLO =
   '{"type":"hello","protocol":"render-stream/13","receiver":"gsw-render-stream-client","receiver_kind":"gsw-canvas","credit_stage":"submitted","credit_window":2,"inbound_buffer_bytes":16777216,"token":null,"manifest_sha256":null,"presentation_backing_w":640,"presentation_backing_h":360,"presentation_css_w":640,"presentation_css_h":360,"dpr_milli":1000,"texture_encodings":"decoded","gpu_formats":"none","live_coding":"zstd-base,zstd"}';
+/** F2: the hello a context with `gpuFormats` sends: the pinned bytes with gpu_formats filled in and
+ * texture_encodings `block,decoded` once any family is stated (`decoded` for `none`). Written out
+ * here, not taken from the client, like the bytes themselves. */
+export function helloFor(pinned: string, gpuFormats: string): string {
+  return pinned
+    .replace('"gpu_formats":"none"', `"gpu_formats":"${gpuFormats}"`)
+    .replace(
+      '"texture_encodings":"decoded"',
+      `"texture_encodings":"${gpuFormats === "none" ? "decoded" : "block,decoded"}"`,
+    );
+}
 export const TAG1_HELLO =
   PURE_HELLO.slice(0, -1) +
   ',"item_meta":{"fields":["class","scene","path"],"groups":[],"meta_keys":[]}}';
@@ -209,11 +220,7 @@ export async function runG8id2(g: string): Promise<G8aCheck[]> {
       r.offers.length === 1 &&
       r.offers[0] === "render-stream.13" &&
       r.hellos.length === 1 &&
-      r.hellos[0] ===
-        PURE_HELLO.replace(
-          '"gpu_formats":"none"',
-          `"gpu_formats":"${r.gpuFormats}"`,
-        )
+      r.hellos[0] === helloFor(PURE_HELLO, r.gpuFormats)
         ? []
         : ["pure offer or hello bytes changed"],
   );
@@ -225,11 +232,7 @@ export async function runG8id2(g: string): Promise<G8aCheck[]> {
       r.offers.length === 1 &&
       r.offers[0] === "render-stream.13" &&
       r.hellos.length === 1 &&
-      r.hellos[0] ===
-        TAG1_HELLO.replace(
-          '"gpu_formats":"none"',
-          `"gpu_formats":"${r.gpuFormats}"`,
-        )
+      r.hellos[0] === helloFor(TAG1_HELLO, r.gpuFormats)
         ? []
         : ["TAG1 offer or hello bytes changed"],
   );

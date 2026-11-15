@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { itemMetaRequestProblem } from "../../../experiments/render-stream/scripts/lib/render-stream-2";
 import { mergeWants } from "../src/extensions";
-import { clientHello, coreStartOptions } from "../src/hello";
+import {
+  clientHello,
+  clientTextureEncodings,
+  coreStartOptions,
+} from "../src/hello";
 
 const golden = (v: 11 | 12) =>
   JSON.parse(
@@ -37,8 +41,30 @@ describe("clientHello", () => {
       receiver: "gsw-render-stream-client",
       receiver_kind: "gsw-canvas",
       credit_window: 2,
-      texture_encodings: "decoded",
+      // Block families stated: the game's own block bytes are welcome (F2).
+      texture_encodings: "block,decoded",
     });
+  });
+
+  it.each([
+    ["s3tc,bptc,rgtc", "block,decoded"],
+    ["etc2,astc", "block,decoded"],
+    ["bptc", "block,decoded"],
+    ["none", "decoded"],
+    ["", "decoded"],
+  ])("offers %s as texture_encodings %s, never uastc (F2)", (gpuFormats, enc) => {
+    const hello = clientHello({
+      protocol: 13,
+      creditWindow: 2,
+      token: null,
+      backing: [640, 360],
+      css: [640, 360],
+      dprMilli: 1000,
+      gpuFormats,
+    });
+    expect(hello.texture_encodings).toBe(enc);
+    expect(hello.texture_encodings).not.toContain("uastc");
+    expect(clientTextureEncodings(gpuFormats)).toBe(enc);
   });
 
   it("offers render-stream/13 with /12's hello under the /13 protocol (W13c)", () => {
@@ -145,7 +171,7 @@ describe("coreStartOptions (PH2)", () => {
         digest: "none",
         sabotage: [],
         format: "rgb10a2",
-        texture_encodings: "decoded",
+        texture_encodings: "block,decoded",
         live_protocol: protocol,
         log: "summary",
       });
