@@ -84,6 +84,9 @@ export interface GswRs {
   restore_take(hash: string): number;
   /** The bounded resource hold: a needed payload the apply goes without (0, or -1 `error`). */
   defer_payload(hash: string): number;
+  names_mask(hashesHex: string): Uint8Array;
+  drop_staged(hash: string): boolean;
+  restore_unavailable(hash: string): number;
   /** The deferred payloads now in the store made drawable with no transaction (1: applied). */
   revisit(): number;
   deferred_count(): number;
@@ -229,6 +232,9 @@ export const CLIENT_CORE_METHODS = [
   "is_staged",
   "restore_take",
   "defer_payload",
+  "names_mask",
+  "drop_staged",
+  "restore_unavailable",
   "revisit",
   "restore_missing",
   "check_fetch",

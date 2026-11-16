@@ -994,11 +994,12 @@ impl GswRs {
     // ------------------------------------------------------------------ G7s: shader programs
 
     /// After `accept` (and every `provide`): the custom shaders the transaction's named materials
-    /// name that have no program yet (`Applier::pending_shaders`). Each must be answered with
+    /// name that have no program yet (`Applier::pending_shaders_held`: not one whose code a live
+    /// client deferred and the store does not hold yet). Each must be answered with
     /// `define_program` or `refuse_program` before `apply`. Returns their count.
     pub fn pending_shaders(&mut self) -> u32 {
         self.pending = match (self.validator.as_ref(), self.applier.as_ref()) {
-            (Some(v), Some(a)) => a.pending_shaders(v.state()),
+            (Some(v), Some(a)) => a.pending_shaders_held(v.state(), &self.payloads),
             _ => Vec::new(),
         };
         self.pending.len() as u32
@@ -1479,6 +1480,11 @@ impl GswRs {
                         self.retention
                             .sweep(v, &mut self.payloads, || shown.referenced_payload_hashes());
                     }
+                }
+                // A deferred payload the newest state names no longer is waited for by nothing:
+                // it leaves the set (a client's failed or obsolete download never holds it).
+                if self.version >= 11 && a.deferred_len() > 0 {
+                    a.prune_deferred(|h| v.names_contains(h));
                 }
                 a.prepare(st, v.delta());
                 self.compute_needed()
@@ -2063,8 +2069,10 @@ impl GswRs {
     /// A live client stops waiting for the needed payload `hash_hex`, still being fetched: it
     /// leaves the needed set, the apply goes ahead without it, and what draws it is skipped (never
     /// drawn from the entry's older payload) until it reaches the store (`restore_take`), when
-    /// `revisit` or the next transaction's apply draws it. Shader code is refused: a material
-    /// without its program would draw something else. 0, or -1 (`error`).
+    /// `revisit` or the next transaction's apply draws it. Shader code may be deferred too: its
+    /// shader gets no program meanwhile and what its materials draw is omitted (never drawn
+    /// shaderless); once the code is in the store the shader is pending again (`pending_shaders`)
+    /// and compiles before the revisit or apply that draws it. 0, or -1 (`error`).
     pub fn defer_payload(&mut self, hash_hex: &str) -> i32 {
         let Some(hash) = Hash::from_hex(hash_hex) else {
             self.error = format!("resource-unavailable: {hash_hex:?} is not a sha256 hex name");
@@ -2083,10 +2091,6 @@ impl GswRs {
             self.error = format!("resource-defer: payload {hash_hex} is not needed");
             return -1;
         };
-        if self.needed_kinds.get(i) == Some(&2) {
-            self.error = format!("resource-defer: shader code {hash_hex} cannot be deferred");
-            return -1;
-        }
         self.needed.remove(i);
         if i < self.needed_kinds.len() {
             self.needed_kinds.remove(i);
@@ -2117,6 +2121,47 @@ impl GswRs {
         self.stats.indices = st.index_count;
         self.stats.draws = st.emitted_draws;
         1
+    }
+
+    /// Names membership for a live client's tracked payloads: `hashes_hex` is whole 64-char hex
+    /// names back to back; one byte per name, 1 when the newest accepted state names it (any
+    /// entry, any variant: `Validator::names_contains`), else 0. Only /11 and later keep the
+    /// names, so below /11 every name answers 1 (nothing is pruned). A malformed name answers 1.
+    pub fn names_mask(&self, hashes_hex: &str) -> Vec<u8> {
+        let n = hashes_hex.len() / 64;
+        let mut out = vec![1u8; n];
+        let Some(v) = self.validator.as_ref().filter(|_| self.version >= 11) else {
+            return out;
+        };
+        for (k, b) in out.iter_mut().enumerate() {
+            let hex = hashes_hex.get(64 * k..64 * k + 64).unwrap_or("");
+            if let Some(h) = Hash::from_hex(hex) {
+                *b = u8::from(v.names_contains(&h));
+            }
+        }
+        out
+    }
+
+    /// A staged payload (verified, not yet in the store) nothing uses any more is dropped. Whether
+    /// one was.
+    pub fn drop_staged(&mut self, hash_hex: &str) -> bool {
+        Hash::from_hex(hash_hex).is_some_and(|h| self.stage.take(&h).is_some())
+    }
+
+    /// A context restore could not fetch `hash_hex` again (a resident texture payload the store
+    /// no longer holds): the textures resident from it leave residency, never drawn from stale
+    /// contents, and what draws them is re-lowered by the next `revisit` (no transaction prepared)
+    /// or apply. Returns how many textures left residency, or -1 before a session.
+    pub fn restore_unavailable(&mut self, hash_hex: &str) -> i32 {
+        let Some(hash) = Hash::from_hex(hash_hex) else {
+            self.error = format!("resource-unavailable: {hash_hex:?} is not a sha256 hex name");
+            return -1;
+        };
+        let Some(a) = self.applier.as_mut() else {
+            self.error = "restore_unavailable before start".into();
+            return -1;
+        };
+        a.restore_unavailable(hash) as i32
     }
 
     /// The payloads deferred and not in the store yet.

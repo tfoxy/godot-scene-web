@@ -93,7 +93,8 @@ env:
 
 jobs:
   plan:
-    runs-on: ubuntu-latest
+    # Pin the supported host for the browser and toolchain setup.
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.expand.outputs.matrix }}
       shards: ${{ steps.expand.outputs.shards }}
@@ -131,7 +132,7 @@ jobs:
   validate:
     name: ${{ matrix.label }}
     needs: plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -508,7 +509,7 @@ jobs:
   windows-equiv:
     needs: [plan, validate, windows]
     if: ${{ !cancelled() && contains(fromJSON(inputs.runs), 'windows') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -634,7 +635,7 @@ jobs:
   determinism:
     if: always() && inputs.determinism != ''
     needs: [plan, validate]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -723,7 +724,7 @@ jobs:
         windows-live,
         windows-swap,
       ]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -803,7 +804,7 @@ jobs:
   cleanup:
     if: always()
     needs: [validate, determinism, merge]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       # deleting the between-job artifacts

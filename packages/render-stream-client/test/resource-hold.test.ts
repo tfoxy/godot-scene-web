@@ -142,21 +142,25 @@ describe("render-stream client bounded resource hold", () => {
     expect(h.core.calls).not.toContain("defer aa");
   });
 
-  it("shader code is never deferred: its transaction keeps waiting", async () => {
+  it("shader code defers too (its materials' draws omitted); it pops in with no transaction", async () => {
     const h = streaming(0);
     const t = h.last();
     t.on.message(txk(1, [{ hash: "sh", kind: 2 }, ...tex("aa")]));
-    for (let i = 0; i < 20; i++) h.clock.frame();
-    expect(h.core.calls).not.toContain("apply 1");
-    expect(h.core.calls.filter((c) => c.startsWith("defer"))).toEqual([]);
-    t.gets[0].resolve(200); // the shader
-    await flush();
     h.clock.frame();
     expect(applyDraw(h.core.calls)).toEqual([
-      "stage sh",
-      "provide",
+      "defer sh",
       "defer aa",
       "apply 1",
+      "draw 1",
+    ]);
+    expect(h.loop.stats().deferredPayloads).toBe(2);
+    t.gets[0].resolve(200); // the shader: into the store, then a revisit (which compiles it first)
+    await flush();
+    h.clock.frame();
+    expect(applyDraw(h.core.calls).slice(4)).toEqual([
+      "stage sh",
+      "take sh",
+      "revisit 1",
       "draw 1",
     ]);
   });
@@ -241,13 +245,30 @@ describe("render-stream client bounded resource hold", () => {
     ]);
   });
 
-  it("a deferred payload's failed GET fails the stream at the seq that needed it", async () => {
+  it("a deferred payload's 404 settles it unavailable; the stream goes on", async () => {
     const h = streaming(0);
     const t = h.last();
     t.on.message(txk(1, tex("aa")));
     h.clock.frame();
     expect(h.core.calls).toContain("apply 1");
     t.gets[0].resolve(404);
+    await flush();
+    h.clock.frame();
+    expect(h.statuses.at(-1)).toEqual({ kind: "streaming", firstFrame: true });
+    expect(h.loop.stats().deferredPayloads).toBe(0);
+    expect(h.loop.stats().resources?.recent[0]).toMatchObject({
+      hash: "aa",
+      seq: 1,
+      reason: "missing",
+    });
+  });
+
+  it("a deferred payload's fatal GET (403) fails the stream at the seq that needed it", async () => {
+    const h = streaming(0);
+    const t = h.last();
+    t.on.message(txk(1, tex("aa")));
+    h.clock.frame();
+    t.gets[0].resolve(403);
     await flush();
     h.clock.frame();
     expect(h.statuses.at(-1)).toMatchObject({

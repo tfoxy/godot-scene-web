@@ -163,6 +163,9 @@ pub enum ApplyShortcut {
     TieAppendOrder,
     /// A draw whose texture had no resident pixels at assembly: not drawn.
     TextureNotResident,
+    /// A material whose shader code is deferred (loading, or unavailable) with no program: what
+    /// it draws is not drawn.
+    ShaderUnavailable,
 }
 
 impl ApplyShortcut {
@@ -172,6 +175,7 @@ impl ApplyShortcut {
             ApplyShortcut::MaterialUnsupportedDefault => "slice-material-unsupported-default",
             ApplyShortcut::TieAppendOrder => "slice-tie-append-order",
             ApplyShortcut::TextureNotResident => "texture-not-resident-skipped",
+            ApplyShortcut::ShaderUnavailable => "shader-unavailable-skipped",
         }
     }
 }
@@ -743,8 +747,13 @@ pub struct Applier {
     /// Payloads a live client chose not to wait for ([`Applier::defer`]): what needs them is not
     /// drawn (a texture or mesh entry selecting one is not resident, never its older payload)
     /// until the payload reaches the store and [`Applier::absorb_deferred`] re-syncs it. Empty
-    /// unless a client defers, and then only the residency syncs' missing-payload branches read it.
+    /// unless a client defers, and then only the residency syncs' missing-payload branches and
+    /// the material resolution (a deferred shader's users) read it.
     deferred: HashSet<Hash, payloads::HashBuild>,
+    /// Textures [`Applier::restore_unavailable`] took out of residency (their payload left the
+    /// store and the client could not fetch it again): the next apply re-lowers what draws them,
+    /// as `sync_textures`' `resized`.
+    restore_resized: Vec<Id>,
     attach: Vec<Attach>,
     vertex_holes: u32,
     /// The canvas, material, shader and canvas-texture entries the last walk used: a full
@@ -1233,6 +1242,7 @@ impl Applier {
             delivery: crate::delivery::DeliveryPrefs::default(),
             kept: HashMap::default(),
             deferred: HashSet::default(),
+            restore_resized: Vec::new(),
             stream_version: 6,
             attach: Vec::new(),
             vertex_holes: 0,
@@ -1340,6 +1350,21 @@ impl Applier {
             if !self.programs.contains_key(&hash) {
                 out.push((sid, hash, source));
             }
+        }
+        out
+    }
+
+    /// [`Applier::pending_shaders`] without the shaders whose code is deferred and not in `store`
+    /// yet (a live client's unavailable code: its users are not drawn until it arrives, when it is
+    /// pending again and compiles before the apply that draws them).
+    pub fn pending_shaders_held(
+        &self,
+        state: &ResolvedState,
+        store: &PayloadStore,
+    ) -> Vec<(Id, Hash, ShaderSource)> {
+        let mut out = self.pending_shaders(state);
+        if !self.deferred.is_empty() {
+            out.retain(|(_, h, _)| !self.deferred.contains(h) || store.shaders.contains_key(h));
         }
         out
     }
@@ -1789,10 +1814,53 @@ impl Applier {
     /// A live client stops waiting for `hash`, which is still being fetched: the transaction
     /// applies without it. A texture or mesh entry selecting it stays not resident meanwhile (its
     /// older payload is freed, never drawn in its place), so what draws it is skipped and
-    /// everything else draws. Shader code is never deferred (a material without its program would
-    /// draw something else): the caller refuses it.
+    /// everything else draws. Deferred shader code (pending, or unavailable) is a distinct state
+    /// from a refused program: a material whose shader has no program and deferred code draws
+    /// nothing of its own, never shaderless or as its builtin (`material_unswapped`), until the
+    /// code arrives and compiles ([`Applier::pending_shaders_held`]).
     pub fn defer(&mut self, hash: Hash) {
         self.deferred.insert(hash);
+    }
+
+    /// Drops every deferred hash `named` rejects (the newest accepted state names it no longer):
+    /// nothing waits for it, so it never holds the set (a live client calls this after each
+    /// accepted transaction, only while the set is not empty).
+    pub fn prune_deferred(&mut self, named: impl Fn(&Hash) -> bool) -> usize {
+        let before = self.deferred.len();
+        self.deferred.retain(|h| named(h));
+        before - self.deferred.len()
+    }
+
+    /// The deferred hashes (diagnostics and tests).
+    pub fn deferred_hashes(&self) -> impl Iterator<Item = &Hash> {
+        self.deferred.iter()
+    }
+
+    /// A context restore found `hash` (a resident texture payload the store no longer holds)
+    /// unavailable: it is deferred, and every texture resident from it leaves residency (its GPU
+    /// object freed, never drawn from stale contents) and is re-lowered by the next apply, a
+    /// [`Applier::revisit`] when no transaction is prepared, else that transaction's own apply.
+    /// Returns how many textures left residency.
+    pub fn restore_unavailable(&mut self, hash: Hash) -> usize {
+        self.deferred.insert(hash);
+        let ids: Vec<Id> = self
+            .resident
+            .iter()
+            .filter(|(_, r)| r.hash == Some(hash))
+            .map(|(id, _)| *id)
+            .collect();
+        for &id in &ids {
+            if let Some(r) = self.resident.remove(&id) {
+                if matches!(r.kind, TextureKind::Image | TextureKind::Placeholder) {
+                    self.list.free_texture(id);
+                    self.stats.texture_frees += 1;
+                }
+                self.account.freed += 1;
+            }
+            self.kept.remove(&id);
+            self.restore_resized.push(id);
+        }
+        ids.len()
     }
 
     pub fn is_deferred(&self, hash: &Hash) -> bool {
@@ -1838,10 +1906,13 @@ impl Applier {
 
     /// With no transaction waiting: the deferred payloads that reached `store` since the last
     /// apply are made resident and what draws them is drawn, by an apply of an empty delta over
-    /// the same state. False (nothing applied) when none arrived, or while a transaction is
-    /// prepared (its own apply absorbs them).
+    /// the same state. Also after [`Applier::restore_unavailable`], to re-lower what drew the
+    /// textures it took out. False (nothing applied) when neither happened, or while a
+    /// transaction is prepared (its own apply absorbs them).
     pub fn revisit(&mut self, state: &ResolvedState, store: &PayloadStore) -> bool {
-        if self.prepared || !self.deferred.iter().any(|h| store.has(h)) {
+        if self.prepared
+            || (self.restore_resized.is_empty() && !self.deferred.iter().any(|h| store.has(h)))
+        {
             return false;
         }
         let empty = TxDelta {
@@ -2306,7 +2377,12 @@ impl Applier {
                 }
             }
         }
-        let resized = self.sync_textures(state, delta, payloads, frozen_tex);
+        let mut resized = self.sync_textures(state, delta, payloads, frozen_tex);
+        if !self.restore_resized.is_empty() {
+            resized.append(&mut self.restore_resized);
+            resized.sort_unstable();
+            resized.dedup();
+        }
         self.frozen_res = frozen_res;
         // G8kb: the kept map after this transaction's residency (restored below, as mesh_res).
         let kept = std::mem::take(&mut self.kept);
@@ -3597,6 +3673,25 @@ impl Applier {
             self.note(ApplyShortcut::MaterialUnsupportedDefault.as_str(), 1);
             return refused(reads_screen);
         }
+        // A shader drawn by its program (custom, or a `particles_animation` template) whose code
+        // a live client deferred (still loading, or unavailable) and that has no program: the
+        // owner's own draws (and every user inheriting the material) are omitted until the code
+        // arrives and compiles; descendants with their own material, and the traversal, stay.
+        if !self.deferred.is_empty() {
+            if let Some(h) = s.hash {
+                let by_program = s
+                    .builtin
+                    .as_ref()
+                    .is_none_or(|b| b.particles_animation && !self.sabotage.no_flipbook);
+                if by_program && self.deferred.contains(&h) && !self.programs.contains_key(&h) {
+                    self.note(ApplyShortcut::ShaderUnavailable.as_str(), 1);
+                    return MaterialEff {
+                        skip: true,
+                        ..NO_MATERIAL
+                    };
+                }
+            }
+        }
         let blend_of = |b: BlendMode| match b {
             BlendMode::Mix => Blend::Mix,
             BlendMode::Add => Blend::Add,
@@ -4371,6 +4466,8 @@ mod w11c_tests;
 mod override_tests;
 #[cfg(test)]
 mod deferred_tests;
+#[cfg(test)]
+mod rm_tests;
 #[cfg(test)]
 mod pick_tree_tests;
 #[cfg(test)]

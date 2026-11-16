@@ -72,8 +72,10 @@ load 7.x.
 
 Full rules, and the release runbook, in [docs/commit-and-release.md](docs/commit-and-release.md).
 
-- **Commit your finished work** — don't leave it uncommitted or ask whether to. Never `git push`, and
-  never create a tag: both are the maintainer's call.
+- **Commit your finished work** — don't leave it uncommitted or ask whether to. Do not push or
+  create tags without an explicit request, except for pushes required by the documented remote
+  validation workflow. Its temporary validation refs and workflow staging are authorized as part
+  of validation; main, release branches and tags are not covered by that exception.
 - On `main`, `scripts/githooks/commit-msg` enforces the format. **Feature branches are unchecked**;
   `main` gets one squash commit per change.
 

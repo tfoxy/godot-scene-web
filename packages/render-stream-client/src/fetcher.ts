@@ -15,8 +15,13 @@
 // stream (a transport that ignores the ask) goes through `onBody` as before.
 //
 // A non-200 status, a request that cannot be made, and one that stalls (no progress for
-// `timeoutMs`: no response yet, or no body bytes since the last ones) are `resource-unavailable`;
-// the first error stops the queue and aborts the other GETs in flight (rs_resource_fetcher.gd).
+// `timeoutMs`: no response yet, or no body bytes since the last ones) are `resource-unavailable`,
+// each with a structured `outcome` (`fetchOutcome`): `missing` (404, 410), `temporary` (408, 429,
+// 5xx, a rejected request, a stall, a read error) or `fatal` (401, 403, any other status, a request
+// function that throws). With `failures: "stop"` (the default, rs_resource_fetcher.gd's evidence
+// order) the first error stops the queue and aborts the other GETs in flight. With `"settle"` (the
+// client) a `missing` or `temporary` GET settles on its own: the queue goes on and the other GETs
+// keep going; only a `fatal` one stops it.
 // The stall timeout counts from the last progress, not from the start, so a large body that keeps
 // arriving over a shared, slow link is never cut off mid-way. Progress is the response, each
 // streamed chunk, and each `progress()` call of a request that reports its whole-body reads.
@@ -58,6 +63,8 @@ export interface FetchResult {
   headers: Record<string, string>;
   /** `resource-unavailable: ...`, or "" */
   error: string;
+  /** What the GET came to (`fetchOutcome`); "ok" with `error` "". */
+  outcome?: FetchOutcome;
   /** Set by `onBody` (the verify and decode on arrival, and its refusal if any). */
   verify_us?: number;
   stage_error?: string | null;
@@ -68,9 +75,28 @@ export interface FetchResult {
   streamed?: boolean;
 }
 
+/** A GET's structured result: `ok` (a 200 body), `missing` (the host does not hold the payload:
+ * 404, 410), `temporary` (it could not be had now: 408, 429, 5xx, a rejected request, a stall, a
+ * read error) or `fatal` (a configuration or protocol error: 401, 403, any other status, a request
+ * that cannot be made). */
+export type FetchOutcome = "ok" | "missing" | "temporary" | "fatal";
+
+/** The outcome of an HTTP status (`FetchOutcome`). */
+export function statusOutcome(status: number): FetchOutcome {
+  if (status === 200) return "ok";
+  if (status === 404 || status === 410) return "missing";
+  if (status === 408 || status === 429 || (status >= 500 && status <= 599))
+    return "temporary";
+  return "fatal";
+}
+
 export interface LiveFetcherOptions {
   /** GETs in flight at once (default 1). */
   maxInFlight?: number;
+  /** `stop` (default): the first error stops the queue and aborts the other GETs in flight.
+   * `settle`: a `missing` or `temporary` GET is handed back on its own and the rest go on; a
+   * `fatal` one still stops the queue. */
+  failures?: "stop" | "settle";
   /** Stage bodies as they arrive (absent: whole bodies through `onBody`). */
   stager?: ((hash: string, sizeHint: number) => StagingStream) | null;
   /** Streamed bytes written between two yielded tasks (default 256 KiB: a short task
@@ -120,6 +146,7 @@ export class LiveFetcher {
   /** Every request's abort controller (`abort` aborts them; a reconnect's `cancel` keeps them). */
   private readonly aborts = new Set<AbortController>();
   private readonly maxInFlight: number;
+  private readonly settleFailures: boolean;
   private readonly stager: LiveFetcherOptions["stager"];
   private readonly sliceBytes: number;
   private readonly yieldTask: () => Promise<void>;
@@ -138,6 +165,7 @@ export class LiveFetcher {
     options: LiveFetcherOptions = {},
   ) {
     this.maxInFlight = Math.max(1, Math.floor(options.maxInFlight ?? 1));
+    this.settleFailures = options.failures === "settle";
     this.stager = options.stager ?? null;
     this.sliceBytes = Math.max(1, options.sliceBytes ?? DEFAULT_SLICE_BYTES);
     this.yieldTask = options.yieldTask ?? yieldTask;
@@ -152,9 +180,34 @@ export class LiveFetcher {
   }
 
   /** Credit window 2 (a fold in place): queues more misses after those already queued,
-   * keeping the GETs in flight and every completed result not yet polled. */
-  extend(hashes: string[]): void {
-    this.queue.push(...hashes);
+   * keeping the GETs in flight and every completed result not yet polled. A hash already queued,
+   * in flight or completed and not yet polled is not queued twice. */
+  extend(hashes: readonly string[]): void {
+    for (const h of hashes) if (!this.has(h)) this.queue.push(h);
+  }
+
+  /** `hash` is queued, in flight, or completed and not yet polled. */
+  has(hash: string): boolean {
+    if (this.inFlight.has(hash) || this.staging.has(hash)) return true;
+    if (this.queue.includes(hash)) return true;
+    for (const r of this.done) if (r.hash === hash) return true;
+    return false;
+  }
+
+  /** `hash` is in flight (issued, or its body being staged), not merely queued. */
+  active(hash: string): boolean {
+    return this.inFlight.has(hash) || this.staging.has(hash);
+  }
+
+  /** Drops `hash` from the queue (not yet issued); one in flight is kept. */
+  unqueue(hash: string): void {
+    const at = this.queue.indexOf(hash);
+    if (at >= 0) this.queue.splice(at, 1);
+  }
+
+  /** The hashes queued and not yet issued. */
+  queued(): readonly string[] {
+    return this.queue;
   }
 
   /** Every hash queued, in flight, or completed and not yet polled (a fold queues only the
@@ -269,15 +322,18 @@ export class LiveFetcher {
     /** Whether this GET still counts (not cancelled, not aborted by another's failure). */
     const current = (): boolean =>
       gen === this.generation && this.inFlight.get(hash) === entry;
-    const settle = (error: string) => {
+    const settle = (error: string, outcome: FetchOutcome) => {
       over = true;
       clearTimeout(timer);
       this.aborts.delete(abort);
       if (!current()) return;
       r.end_us = us();
       r.error = error;
+      r.outcome = outcome;
       this.inFlight.delete(hash);
-      if (error !== "") {
+      if (error !== "" && this.settleFailures && outcome !== "fatal") {
+        // Settled on its own: the queue goes on, the other GETs keep going.
+      } else if (error !== "") {
         this.failed = true;
         this.queue = [];
         // The first error ends the queue: the other GETs in flight are aborted, unseen.
@@ -300,12 +356,15 @@ export class LiveFetcher {
       this.done.push(r);
     };
     let started: Promise<ResourceResponse>;
+    /** The request function threw: the request cannot be made at all (a configuration error). */
+    let unmade = false;
     try {
       started = this.request(path, abort.signal, {
         stream: this.stager !== null,
         progress,
       });
     } catch (e) {
+      unmade = true;
       started = Promise.reject(e);
     }
     started
@@ -321,6 +380,7 @@ export class LiveFetcher {
           } else r.bytes = res.body?.byteLength ?? 0;
           settle(
             `resource-unavailable: GET ${path} answered HTTP ${res.status}`,
+            statusOutcome(res.status),
           );
           return;
         }
@@ -336,7 +396,7 @@ export class LiveFetcher {
             ))
           )
             return; // cancelled meanwhile: dropped unseen
-          settle("");
+          settle("", "ok");
           return;
         }
         const body =
@@ -345,7 +405,7 @@ export class LiveFetcher {
             : new Uint8Array(res.body ?? new ArrayBuffer(0));
         r.bytes = body.length;
         r.data = body;
-        settle("");
+        settle("", "ok");
       })
       .catch((e: unknown) => {
         const why = stalled
@@ -353,7 +413,10 @@ export class LiveFetcher {
           : abort.signal.aborted
             ? "aborted"
             : `the request failed (${e instanceof Error ? e.message : String(e)})`;
-        settle(`resource-unavailable: GET ${path}: ${why}`);
+        settle(
+          `resource-unavailable: GET ${path}: ${why}`,
+          unmade ? "fatal" : "temporary",
+        );
       });
   }
 

@@ -1,6 +1,11 @@
 // Test doubles for the protocol loop: a scripted core, a recording transport and a manual clock.
 
-import type { CoreApplyStats, CoreMessage, StreamCore } from "../src/core";
+import type {
+  CoreApplyStats,
+  CoreMessage,
+  Needed,
+  StreamCore,
+} from "../src/core";
 import type { RenderStreamEndpoint } from "../src/endpoint";
 import {
   type LoopClock,
@@ -72,17 +77,22 @@ export class FakeCore implements StreamCore {
   transportSkip(): void {
     this.calls.push("transport_skip");
   }
+  /** What `rebuild` answers (the rebuilt applier's needed set). */
+  rebuildNeeded: Needed[] = [];
   rebuild(seq: number) {
     this.calls.push(`rebuild ${seq}`);
-    return [];
+    return this.rebuildNeeded;
   }
   checkFetch(): string {
     return "";
   }
+  /** Refusals `stage` answers by hash (a body failing verification or decoding). */
+  stageErrors = new Map<string, string>();
   stage(hash: string): string | null {
-    this.staged.add(hash);
     this.calls.push(`stage ${hash}`);
-    return null;
+    const err = this.stageErrors.get(hash) ?? null;
+    if (err === null) this.staged.add(hash);
+    return err;
   }
   isStaged(hash: string): boolean {
     return this.staged.has(hash);
@@ -98,6 +108,24 @@ export class FakeCore implements StreamCore {
   }
   deferPayload(hash: string): string | null {
     this.calls.push(`defer ${hash}`);
+    return null;
+  }
+  /** Hashes the newest accepted state does not name (`named` answers 0 for them). */
+  unnamed = new Set<string>();
+  /** How many `named` calls, and how many hashes they asked (the warm stream asks none). */
+  namedCalls = 0;
+  namedHashes = 0;
+  named(hashes: readonly string[]): Uint8Array {
+    this.namedCalls++;
+    this.namedHashes += hashes.length;
+    return Uint8Array.from(hashes, (h) => (this.unnamed.has(h) ? 0 : 1));
+  }
+  dropStaged(hash: string): boolean {
+    this.calls.push(`drop ${hash}`);
+    return this.staged.delete(hash);
+  }
+  restoreUnavailable(hash: string): string | null {
+    this.calls.push(`restore-unavailable ${hash}`);
     return null;
   }
   /** What `revisit` answers (a real core: whether a deferred payload reached the store). */
@@ -146,6 +174,8 @@ export class FakeTransport implements RenderStreamTransport {
   readonly gets: {
     path: string;
     resolve: (s: number) => void;
+    /** The request rejects (a network error). */
+    reject: (e: Error) => void;
     aborted: boolean;
   }[] = [];
   constructor(
@@ -171,6 +201,7 @@ export class FakeTransport implements RenderStreamTransport {
           aborted: false,
           resolve: (status: number) =>
             res({ status, body: new ArrayBuffer(4) }),
+          reject: (e: Error) => rej(e),
         };
         init.signal.addEventListener("abort", () => {
           g.aborted = true;
@@ -251,7 +282,12 @@ export function harness(
   creditWindow: 1 | 2 = 2,
   pacing: Pick<
     LoopOptions,
-    "creditStage" | "applyOn" | "ext" | "recorder" | "resourceHoldMs"
+    | "creditStage"
+    | "applyOn"
+    | "ext"
+    | "recorder"
+    | "resourceHoldMs"
+    | "fetchTimeoutMs"
   > = {},
   core: FakeCore = new FakeCore(),
   endpoint: RenderStreamEndpoint = ENDPOINT,

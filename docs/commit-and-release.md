@@ -135,8 +135,11 @@ after changing the check itself.
 
 `publish.yml` typechecks, tests, builds, re-checks the tag against every package version, checks
 that `CHANGELOG.md` has a section for it, and publishes the packages to npm with provenance. It
-creates no GitHub Release, so `CHANGELOG.md` in the repo _is_ the published record. Pushing is
-always explicit; no agent pushes a branch or a tag on its own.
+creates no GitHub Release, so `CHANGELOG.md` in the repo _is_ the published record.
+
+Branch and tag pushes require an explicit request, except for temporary validation refs and
+workflow staging required by the documented remote-validation workflow. Those pushes are
+authorized as part of validation; main, release branches and tags are outside that exception.
 
 ## Reading the history
 

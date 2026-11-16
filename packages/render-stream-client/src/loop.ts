@@ -25,9 +25,23 @@
 // is, and acks flow, so the host keeps publishing. A later transaction needing a deferred payload
 // does not wait for it again. The fetches go on; each deferred payload that arrives goes into the
 // store, and the next apply, or with none waiting a revisit (an apply over the same state, no ack),
-// draws what needs it. Shader code is never deferred: a material without its program would draw
-// something else, so a transaction missing one keeps waiting. A fetch failure fails the stream, as
-// before.
+// draws what needs it. Shader code defers too: a material whose code is not in has no program,
+// and what it draws (and whatever inherits it) is omitted, never drawn shaderless, until the code
+// arrives and compiles before the revisit or apply that draws it.
+//
+// Unavailable payloads: a GET settles on its own (`missing`: 404, 410; `temporary`: 408, 429,
+// 5xx, a rejected request, a stall), the other GETs and the queue go on, and the payload is
+// unavailable: deferred as above (never an older payload in its place), never fetched again while
+// the accepted state keeps naming it, with no timer retry; it is fetched afresh once a transaction
+// names it again after one that did not, or on a reconnect. After each accepted transaction the
+// loop asks the core which of the payloads it tracks (queued, in flight, deferred, unavailable) the
+// state still names (one batched call, none while it tracks nothing): a queued GET of one no longer
+// named is dropped, one in flight goes on (its body is verified and kept if it is named again,
+// dropped if not; its failure is that older naming's and says nothing about a newer one), and a
+// deferred or unavailable one stops being tracked. A `fatal` GET (401, 403, another status, a
+// request that cannot be made), a body that fails verification or decoding, and a protocol error
+// still fail the stream. `stats().resources` reports the unavailable payloads (counts and the last
+// RESOURCE_LOG_MAX, deduplicated by hash); none is ever a failed status.
 //
 // Loss: a close without an end record, other than 1002/1008/1009, reconnects as a fresh session
 // (the applier is reset, the payload store, the compiled module and the browser's
@@ -35,7 +49,9 @@
 // draws. A coding failure asks a `coding` resync in place (W11t, GTS `transport_skip`), and the
 // full it forces is applied by a rebuilt applier that inherits the GPU residency (GRH). A WebGL
 // context loss holds the loop; after the restore, one callback redraws the last applied state
-// in place, refetching any resident payload the store no longer holds.
+// in place, refetching any resident payload the store no longer holds. One that cannot be fetched
+// is unavailable: what drew it leaves residency and is re-lowered (a revisit, or the apply of the
+// transaction waiting), and the rest draws.
 
 import { type AckStage, AckWriter } from "./ack";
 import { type ColdPayload, ColdTracker } from "./cold";
@@ -116,7 +132,49 @@ export interface RenderStreamStats {
   /** The last `COLD_LOG_MAX` missed payloads (newest last), one record each: a frozen array,
    * the same one until a draw adds a record. */
   coldPayloadLog?: readonly ColdPayload[];
+  /** Payloads the host could not serve (`ResourceDiagnostics`): a frozen object, the same one
+   * until one more is found or one stops being tracked. `stats()` always sets it (optional as
+   * `carrier`). */
+  resources?: ResourceDiagnostics;
 }
+
+/** Why a payload was unavailable: `missing` (404, 410) or `temporary` (408, 429, 5xx, a rejected
+ * request, a stall: it could not be had now). */
+export type ResourceUnavailableReason = "missing" | "temporary";
+
+/** One payload found unavailable (deduplicated by hash). */
+export interface ResourceDiagnostic {
+  hash: string;
+  /** wasm's payload kind: 0 texture, 1 mesh, 2 shader, 3 KTX2; -1 unknown. */
+  kind: number;
+  /** The transaction that first needed it, at the first finding (0: none applied yet). */
+  seq: number;
+  reason: ResourceUnavailableReason;
+  /** The GET's HTTP status, or null (no response). */
+  status: number | null;
+  detail: string;
+  /** Found by a context restore's refetch. */
+  restore: boolean;
+  /** How many times it was found unavailable (once per naming: a payload stays unavailable
+   * while the accepted state keeps naming it). */
+  count: number;
+  /** When it was last found (ms, the loop clock). */
+  at: number;
+}
+
+export interface ResourceDiagnostics {
+  /** Payloads unavailable now: named by the accepted state and not fetched again. */
+  unavailable: number;
+  /** Findings since the client started, over all its connections, and by reason. */
+  found: number;
+  missing: number;
+  temporary: number;
+  /** The last RESOURCE_LOG_MAX payloads found (newest last), one record per hash. */
+  recent: readonly ResourceDiagnostic[];
+}
+
+/** Records kept in `ResourceDiagnostics.recent`. */
+export const RESOURCE_LOG_MAX = 32;
 
 /** The frame and timer functions the loop runs on (the page's, or a test's). */
 export interface LoopClock {
@@ -197,6 +255,12 @@ const FETCH_PARALLEL = 4;
 const RTT_SAMPLES = 64;
 const APPLY_RING = 256;
 
+/** A payload the loop tracks: the seq that first needed it (a failure's seq) and its kind. */
+interface Tracked {
+  seq: number;
+  kind: number;
+}
+
 interface Queued {
   seq: number;
   frame: number;
@@ -209,8 +273,9 @@ interface Pending {
   stage: "fetch" | "ready";
   /** Fetched bodies by hash, with the refusal staging gave them (null: staged). */
   bodies: Map<string, string | null>;
-  /** The seq each payload was requested for (a folded one's failure is reported at it). */
-  requester: Map<string, number>;
+  /** The seq each payload was requested for (a folded one's failure is reported at it), and its
+   * kind. */
+  requester: Map<string, Tracked>;
   /** When a callback first found a payload missing (the hold's start), or -1. */
   since: number;
 }
@@ -257,6 +322,8 @@ export class StreamLoop {
   private restoreFetcher: LiveFetcher | null = null;
   private restoreWant: string[] | null = null;
   private readonly restoreBodies = new Map<string, string | null>();
+  /** The restore refetches that settled unavailable. */
+  private readonly restoreFailed = new Map<string, FetchResult>();
   private lastAppliedSeq = 0;
   /** IN12: the transaction on screen (the last draw's), null before one in this session; a
    * pointer target's `frame`. */
@@ -280,7 +347,21 @@ export class StreamLoop {
   private lastCreditAt: number | null = null;
   /** Payloads an applied transaction went without (the hold ran out), still being fetched, with
    * the seq that needed each (a failure's seq). */
-  private readonly deferred = new Map<string, number>();
+  private readonly deferred = new Map<string, Tracked>();
+  /** Payloads whose GET settled unavailable, deferred while the accepted state keeps naming them
+   * (never fetched again meanwhile). */
+  private readonly unavailable = new Map<string, Tracked>();
+  /** GETs (in flight, or completed and not polled) of payloads the accepted state stopped naming
+   * after they were asked: an older naming's, whose failure says nothing about a newer one. */
+  private readonly stale = new Set<string>();
+  /** `stats().resources`. */
+  private readonly diag = {
+    found: 0,
+    missing: 0,
+    temporary: 0,
+    ring: [] as ResourceDiagnostic[],
+    view: null as ResourceDiagnostics | null,
+  };
   /** A revisit drew deferred payloads in: the callback draws once with no transaction. */
   private revisitDraw = false;
   /** Missed payloads, first reference to first draw. */
@@ -340,6 +421,7 @@ export class StreamLoop {
     this.restoreFetcher = null;
     this.restoreWant = null;
     this.restoreBodies.clear();
+    this.restoreFailed.clear();
   }
 
   contextRestored(): void {
@@ -368,6 +450,7 @@ export class StreamLoop {
           ? (this.conn.transport?.carrier ?? null)
           : null,
       deferredPayloads: this.deferred.size,
+      resources: this.resourceDiagnostics(),
       structuralApplies: this.structuralApplies,
       lastApplyWhy: this.lastApplyWhy,
       backBufferItems: this.backBufferItems,
@@ -571,7 +654,16 @@ export class StreamLoop {
       this.lastCreditAt = null;
     }
     this.ack(m.seq, "received");
-    if (m.needed.length > 0) this.cold.referenced(m.seq, m.needed);
+    // Every accepted transaction moves the names: what the loop tracks and the newest state no
+    // longer names stops being tracked (a payload may leave and come back in one batch).
+    this.sweepNames();
+    if (m.needed.length > 0)
+      this.cold.referenced(
+        m.seq,
+        this.unavailable.size === 0
+          ? m.needed
+          : m.needed.filter((n) => !this.unavailable.has(n.hash)),
+      );
     const item: Queued = {
       seq: m.seq,
       frame: m.frame,
@@ -588,6 +680,7 @@ export class StreamLoop {
       this.pending = null;
       this.fetcher?.cancel();
       this.deferred.clear(); // their GETs went with the cancel; the rebuild needs them again
+      this.stale.clear();
       this.rebuildDue = true;
     }
     this.queue.push(item);
@@ -657,7 +750,8 @@ export class StreamLoop {
           this.o.fetchTimeoutMs ?? 10000,
           0,
           (r) => this.stageFetched(r),
-          { maxInFlight: FETCH_PARALLEL, stager },
+          // An unavailable payload's GET settles on its own: the others keep going.
+          { maxInFlight: FETCH_PARALLEL, stager, failures: "settle" },
         );
       this.fetcher = this.makeFetcher();
     }
@@ -730,9 +824,9 @@ export class StreamLoop {
         this.takeQueued(true);
       }
       if (
-        this.deferred.size > 0 &&
         this.pending === null &&
-        this.queue.length === 0
+        this.queue.length === 0 &&
+        (this.deferred.size > 0 || this.fetcher?.busy() === true)
       )
         this.pollDeferred();
     }
@@ -824,6 +918,10 @@ export class StreamLoop {
     this.queue = [];
     this.coalesced = [];
     this.deferred.clear();
+    // A reconnect fetches what was unavailable afresh.
+    this.unavailable.clear();
+    this.stale.clear();
+    this.diag.view = null;
     this.cold.reset();
     this.revisitDraw = false;
     this.undrawn.length = 0;
@@ -868,25 +966,30 @@ export class StreamLoop {
   }
 
   /** `next` folds into the pending transaction in place: the fetches it made are kept, and
-   * only the payloads neither fetched nor requested yet are queued. */
+   * only the payloads neither fetched nor requested yet (nor unavailable) are queued. */
   private foldIntoPending(p: Pending, next: Queued): void {
     this.coalesced.push(p.item);
     p.item = next;
     p.stage = "fetch";
-    const asked = this.fetcher?.requested() ?? new Set<string>();
-    const misses = next.needed
-      .map((n) => n.hash)
-      .filter((h) => !p.bodies.has(h) && !asked.has(h));
-    for (const h of misses) p.requester.set(h, next.seq);
+    const fetcher = this.fetcher;
+    const misses = next.needed.filter(
+      (n) =>
+        !p.bodies.has(n.hash) &&
+        !this.unavailable.has(n.hash) &&
+        !(fetcher?.has(n.hash) ?? false),
+    );
+    for (const n of misses)
+      p.requester.set(n.hash, { seq: next.seq, kind: n.kind });
     const keep = new Set(next.needed.map((n) => n.hash));
     for (const h of this.deferred.keys()) keep.add(h);
-    this.fetcher?.retain(keep);
+    fetcher?.retain(keep);
     for (const h of p.bodies.keys()) keep.add(h);
     this.cold.retain(keep);
     if (misses.length > 0) {
-      const fetcher = this.needFetcher(next.seq, misses[0]);
-      this.checkFetches(next.seq, misses);
-      fetcher.extend(misses);
+      const hashes = misses.map((n) => n.hash);
+      const f = this.needFetcher(next.seq, hashes[0]);
+      this.checkFetches(next.seq, hashes);
+      f.extend(hashes);
     }
   }
 
@@ -910,27 +1013,32 @@ export class StreamLoop {
       // The rebuilt applier needs these (whatever an older transaction named and this one
       // does not is no longer waited for).
       this.cold.retain(new Set(item.needed.map((n) => n.hash)));
-      this.cold.referenced(item.seq, item.needed);
+      this.cold.referenced(
+        item.seq,
+        item.needed.filter((n) => !this.unavailable.has(n.hash)),
+      );
     }
     this.pending = {
       item,
       stage: "fetch",
       bodies: new Map(),
       requester: new Map(
-        item.needed.map((n) => [n.hash, firstNeeder.get(n.hash) ?? item.seq]),
+        item.needed.map((n) => [
+          n.hash,
+          { seq: firstNeeder.get(n.hash) ?? item.seq, kind: n.kind },
+        ]),
       ),
       since: -1,
     };
-    const misses = item.needed.map((n) => n.hash);
+    // An unavailable payload is not fetched again while it stays named; a GET already queued or
+    // in flight (a deferred payload's, a folded one's) is not asked twice.
+    const misses = item.needed
+      .map((n) => n.hash)
+      .filter((h) => !this.unavailable.has(h));
     if (misses.length > 0) {
       const fetcher = this.needFetcher(item.seq, misses[0]);
       this.checkFetches(item.seq, misses);
-      if (this.deferred.size === 0) fetcher.start(misses);
-      else {
-        // Deferred payloads are still being fetched: keep their GETs and results.
-        const asked = fetcher.requested();
-        fetcher.extend(misses.filter((h) => !asked.has(h)));
-      }
+      fetcher.extend(misses);
     }
     this.advancePending();
     if (this.pending?.stage === "ready") this.applyReady(draw);
@@ -965,22 +1073,24 @@ export class StreamLoop {
     r.data = null; // in wasm now
   }
 
-  /** The pending transaction's fetches (polled); all in, or the hold over, every payload in
-   * provided in wasm's order and every other one deferred. */
+  /** The pending transaction's fetches (polled); all in (or unavailable), or the hold over, every
+   * payload in provided in wasm's order and every other one deferred. */
   private advancePending(): void {
     const p = this.pending as Pending;
     const core = this.o.core;
     const seq = p.item.seq;
     const deferred = this.deferred;
-    /** Missing and not deferred already (a deferred one is not waited for again). */
+    const unavailable = this.unavailable;
+    /** Missing, not deferred already (a deferred one is not waited for again) and not
+     * unavailable. */
     const waiting = (h: string): boolean =>
-      !p.bodies.has(h) && !deferred.has(h);
+      !p.bodies.has(h) && !deferred.has(h) && !unavailable.has(h);
     const outstanding = (): boolean =>
       p.item.needed.some((n) => waiting(n.hash)) || this.folding();
     if (outstanding() && this.fetcher !== null) {
       for (const r of this.fetcher.poll().results) {
-        const forSeq = p.requester.get(r.hash) ?? deferred.get(r.hash) ?? seq;
-        if (r.error !== "") throw failWith(forSeq, r.error);
+        const t = p.requester.get(r.hash) ?? deferred.get(r.hash);
+        if (!this.settle(r, t?.seq ?? seq, t?.kind ?? -1)) continue;
         p.bodies.set(r.hash, r.stage_error ?? null);
         this.cold.fetched(r);
       }
@@ -988,20 +1098,25 @@ export class StreamLoop {
         const now = this.o.clock.now();
         if (p.since < 0) p.since = now;
         if (now - p.since < this.resourceHoldMs) return;
-        // The hold is over: what is still missing is deferred, unless it is shader code.
-        for (const n of p.item.needed)
-          if (n.kind === 2 && waiting(n.hash)) return;
+        // The hold is over: what is still missing is deferred (shader code too: its materials'
+        // draws are omitted until it arrives and compiles).
         for (const n of p.item.needed)
           if (waiting(n.hash))
-            deferred.set(n.hash, p.requester.get(n.hash) ?? seq);
+            deferred.set(n.hash, {
+              seq: p.requester.get(n.hash)?.seq ?? seq,
+              kind: n.kind,
+            });
       }
     }
     for (const n of p.item.needed) {
-      if (deferred.size > 0 && !p.bodies.has(n.hash) && deferred.has(n.hash)) {
+      if (
+        !p.bodies.has(n.hash) &&
+        (deferred.has(n.hash) || unavailable.has(n.hash))
+      ) {
         const err = core.deferPayload(n.hash);
         if (err !== null)
           throw new StreamFailure(
-            p.requester.get(n.hash) ?? seq,
+            p.requester.get(n.hash)?.seq ?? seq,
             "receiver-error",
             err,
           );
@@ -1009,17 +1124,34 @@ export class StreamLoop {
       }
       const err = p.bodies.get(n.hash) ?? core.provideStaged();
       if (err !== null && err !== undefined)
-        throw refusal(p.requester.get(n.hash) ?? seq, err);
+        throw refusal(p.requester.get(n.hash)?.seq ?? seq, err);
     }
     // A body fetched for a folded transaction the newest no longer needs goes to the store
-    // too, so it is never refetched (a deferred one is then drawn by this apply). Empty at
-    // window 1.
+    // too, so it is never refetched (a deferred one is then drawn by this apply), while the
+    // state still names it; one it names no longer is dropped. Empty at window 1.
+    let leftover: string[] | null = null;
     for (const [hash, stageError] of p.bodies) {
       if (p.item.needed.some((n) => n.hash === hash)) continue;
       if (stageError === null && !core.isStaged(hash)) continue;
-      const err = stageError ?? core.takeStaged(hash);
-      if (err !== null)
-        throw refusal(p.requester.get(hash) ?? deferred.get(hash) ?? seq, err);
+      const forSeq =
+        p.requester.get(hash)?.seq ?? deferred.get(hash)?.seq ?? seq;
+      if (stageError !== null) throw refusal(forSeq, stageError);
+      if (leftover === null) leftover = [];
+      leftover.push(hash);
+    }
+    if (leftover !== null) {
+      const named = core.named(leftover);
+      for (let i = 0; i < leftover.length; i++) {
+        const hash = leftover[i] as string;
+        if (named[i] === 0) {
+          core.dropStaged(hash);
+          p.bodies.delete(hash);
+          this.cold.forget(hash);
+          continue;
+        }
+        const err = core.takeStaged(hash);
+        if (err !== null) throw refusal(p.requester.get(hash)?.seq ?? seq, err);
+      }
     }
     if (deferred.size > 0) for (const h of p.bodies.keys()) deferred.delete(h);
     // Every fetched body is in the store now: the draw after this apply draws it.
@@ -1027,27 +1159,36 @@ export class StreamLoop {
     p.stage = "ready";
   }
 
-  /** Window 2: GETs of a folded transaction's payloads still going (not a deferred one's). */
+  /** Window 2: GETs of a folded transaction's payloads still going (not a deferred one's, nor
+   * one the state no longer names). */
   private folding(): boolean {
     const f = this.fetcher;
     if (f === null || !this.windowTwo()) return false;
-    if (this.deferred.size === 0) return f.busy();
-    for (const h of f.requested()) if (!this.deferred.has(h)) return true;
+    if (this.deferred.size === 0 && this.stale.size === 0) return f.busy();
+    for (const h of f.requested())
+      if (!this.deferred.has(h) && !this.stale.has(h)) return true;
     return false;
   }
 
   /** Nothing waiting to apply: the deferred payloads fetched since go into the store, and a
    * revisit (an apply over the same state, no ack) makes what draws them drawable; the callback
-   * then draws. Another fetched body (a folded one's) goes into the store too. */
+   * then draws. Another fetched body (a folded one's) goes into the store too while it is named;
+   * one no longer named is dropped. A failure settles its payload unavailable. */
   private pollDeferred(): void {
     const f = this.fetcher;
     if (f === null) return;
     const core = this.o.core;
     let arrived = false;
     for (const r of f.poll().results) {
-      const forSeq = this.deferred.get(r.hash) ?? this.lastAppliedSeq;
-      if (r.error !== "") throw failWith(forSeq, r.error);
+      const t = this.deferred.get(r.hash);
+      const forSeq = t?.seq ?? this.lastAppliedSeq;
+      if (!this.settle(r, forSeq, t?.kind ?? -1)) continue;
       if (r.stage_error) throw refusal(forSeq, r.stage_error);
+      if (t === undefined && !this.isNamed(r.hash)) {
+        core.dropStaged(r.hash);
+        this.cold.forget(r.hash);
+        continue;
+      }
       if (core.isStaged(r.hash)) {
         const err = core.takeStaged(r.hash);
         if (err !== null) throw refusal(forSeq, err);
@@ -1057,6 +1198,132 @@ export class StreamLoop {
       if (this.deferred.delete(r.hash)) arrived = true;
     }
     if (arrived && core.revisit(this.lastAppliedSeq)) this.revisitDraw = true;
+  }
+
+  // ----------------------------------------------------------------------- unavailable payloads
+
+  /** After each accepted transaction: of the payloads tracked (queued, in flight, deferred,
+   * unavailable), each the newest state no longer names stops being tracked. One batched core
+   * call, and none while nothing is tracked (the warm stream's case). */
+  private sweepNames(): void {
+    const f = this.fetcher;
+    const busy = f?.busy() === true;
+    if (!busy && this.deferred.size === 0 && this.unavailable.size === 0)
+      return;
+    const tracked: string[] = [];
+    for (const h of this.deferred.keys()) tracked.push(h);
+    for (const h of this.unavailable.keys()) tracked.push(h);
+    if (busy)
+      for (const h of (f as LiveFetcher).requested())
+        if (!this.deferred.has(h) && !this.unavailable.has(h)) tracked.push(h);
+    if (tracked.length === 0) return;
+    const named = this.o.core.named(tracked);
+    for (let i = 0; i < tracked.length; i++)
+      if (named[i] === 0) this.leave(tracked[i] as string);
+  }
+
+  /** `hash` left the accepted names: its queued GET goes, one in flight goes on as an older
+   * naming's, and it is neither deferred nor unavailable any more (a later naming fetches it
+   * afresh). */
+  private leave(hash: string): void {
+    const f = this.fetcher;
+    if (f !== null) {
+      f.unqueue(hash);
+      if (f.has(hash)) this.stale.add(hash);
+    }
+    this.deferred.delete(hash);
+    if (this.unavailable.delete(hash)) this.diag.view = null;
+    this.cold.forget(hash);
+  }
+
+  private isNamed(hash: string): boolean {
+    return this.o.core.named([hash])[0] !== 0;
+  }
+
+  /** Whether a payload of the newest state is waited for or deferred (a stale GET's failure
+   * then asks it again, for this naming). */
+  private wanted(hash: string): boolean {
+    if (this.deferred.has(hash)) return true;
+    const has = (q: Queued) => q.needed.some((n) => n.hash === hash);
+    if (this.pending !== null && has(this.pending.item)) return true;
+    return this.queue.some(has);
+  }
+
+  /** One completed GET: true for a body (verified on arrival; content-addressed, so it serves
+   * whichever naming wants it), false for a failure settled here (the payload unavailable, or
+   * an older naming's failure dropped). A fatal one throws. */
+  private settle(r: FetchResult, seq: number, kind: number): boolean {
+    const stale = this.stale.delete(r.hash);
+    if (r.error === "") return true;
+    if (r.outcome !== "missing" && r.outcome !== "temporary")
+      throw failWith(seq, r.error);
+    if (stale) {
+      // That naming's answer: the payload is fetched again if the newest state wants it.
+      if (this.wanted(r.hash)) this.fetcher?.extend([r.hash]);
+      return false;
+    }
+    this.markUnavailable(
+      r.hash,
+      seq,
+      kind,
+      r.outcome,
+      r.status,
+      r.error,
+      false,
+    );
+    return false;
+  }
+
+  /** `hash` is unavailable while the accepted state names it: deferred (what draws it omitted),
+   * never fetched again meanwhile, never counted as fetched or drawn; one diagnostic record. */
+  private markUnavailable(
+    hash: string,
+    seq: number,
+    kind: number,
+    reason: ResourceUnavailableReason,
+    status: number | null,
+    detail: string,
+    restore: boolean,
+  ): void {
+    this.deferred.delete(hash);
+    this.cold.forget(hash);
+    this.unavailable.set(hash, { seq, kind });
+    const d = this.diag;
+    d.found++;
+    if (reason === "missing") d.missing++;
+    else d.temporary++;
+    const at = this.o.clock.now();
+    const i = d.ring.findIndex((e) => e.hash === hash);
+    const prev = i >= 0 ? (d.ring.splice(i, 1)[0] as ResourceDiagnostic) : null;
+    if (d.ring.length >= RESOURCE_LOG_MAX) d.ring.shift();
+    d.ring.push(
+      Object.freeze({
+        hash,
+        kind: kind >= 0 ? kind : (prev?.kind ?? kind),
+        seq: prev?.seq ?? seq,
+        reason,
+        status,
+        detail,
+        restore,
+        count: (prev?.count ?? 0) + 1,
+        at,
+      }),
+    );
+    d.view = null;
+  }
+
+  /** `stats().resources`: the same frozen object until it changes. */
+  private resourceDiagnostics(): ResourceDiagnostics {
+    const d = this.diag;
+    if (d.view === null)
+      d.view = Object.freeze({
+        unavailable: this.unavailable.size,
+        found: d.found,
+        missing: d.missing,
+        temporary: d.temporary,
+        recent: Object.freeze(d.ring.slice()),
+      });
+    return d.view;
   }
 
   /** The revisited state drawn, with no transaction: acks nothing, asks no credit. */
@@ -1145,7 +1412,11 @@ export class StreamLoop {
   // ----------------------------------------------------------------------- context loss
 
   /** Nothing while lost; once restored, refetch any evicted resident payload, then redraw
-   * the last applied state with no transaction. Credit resumes with the next transaction. */
+   * the last applied state with no transaction. Credit resumes with the next transaction. A
+   * payload the refetch cannot get is unavailable: what was resident from it leaves residency (the
+   * redraw skips its draws, never stale contents) and is re-lowered by a revisit before the redraw,
+   * or, with a transaction accepted and not applied (never applied over by an empty one), by that
+   * transaction's apply. */
   private stepContext(): void {
     if (this.ctx !== "restoring") return;
     const core = this.o.core;
@@ -1166,21 +1437,48 @@ export class StreamLoop {
         this.restoreFetcher.start(this.restoreWant);
       }
     }
+    let relower = false;
     if (this.restoreFetcher !== null) {
+      const seq = this.lastAppliedSeq;
       for (const r of this.restoreFetcher.poll().results) {
-        if (r.error !== "") throw failWith(this.lastAppliedSeq, r.error);
-        if (r.stage_error) throw refusal(this.lastAppliedSeq, r.stage_error);
+        if (r.error !== "") {
+          if (r.outcome !== "missing" && r.outcome !== "temporary")
+            throw failWith(seq, r.error);
+          this.restoreBodies.set(r.hash, r.error);
+          this.restoreFailed.set(r.hash, r);
+          continue;
+        }
+        if (r.stage_error) throw refusal(seq, r.stage_error);
         this.restoreBodies.set(r.hash, null);
       }
       if (this.restoreWant.some((h) => !this.restoreBodies.has(h))) return;
       for (const h of this.restoreWant) {
+        const failed = this.restoreFailed.get(h);
+        if (failed !== undefined) {
+          const err = core.restoreUnavailable(h);
+          if (err !== null) throw new StreamFailure(seq, "receiver-error", err);
+          this.markUnavailable(
+            h,
+            seq,
+            0,
+            failed.outcome === "missing" ? "missing" : "temporary",
+            failed.status,
+            failed.error,
+            true,
+          );
+          relower = true;
+          continue;
+        }
         const err = core.takeStaged(h);
-        if (err !== null)
-          throw new StreamFailure(this.lastAppliedSeq, "resource-invalid", err);
+        if (err !== null) throw new StreamFailure(seq, "resource-invalid", err);
       }
       this.restoreFetcher = null;
       this.restoreBodies.clear();
+      this.restoreFailed.clear();
     }
+    // Nothing accepted and unapplied: a revisit re-lowers what the unavailable payloads drew.
+    if (relower && this.pending === null && this.queue.length === 0)
+      core.revisit(this.lastAppliedSeq);
     const redrawAt = this.o.clock.now();
     if (core.redraw(this.lastAppliedSeq) === "lost") {
       this.ctx = "lost";

@@ -207,6 +207,12 @@ export class ColdTracker {
       }
   }
 
+  /** `hash` will not be drawn (it is unavailable, or no longer named): dropped unrecorded, so a
+   * failed payload never counts as fetched, in the store or drawn. */
+  forget(hash: string): void {
+    if (this.open.delete(hash)) this.stageMs.delete(hash);
+  }
+
   /** A connection ended: what was missed in it is dropped unrecorded. */
   reset(): void {
     this.open.clear();

@@ -343,12 +343,12 @@ describe("render-stream client loop", () => {
     expect(h.core.calls.slice(-3)).toEqual(["rebuild 4", "apply 4", "draw 4"]);
   });
 
-  it("a GET that fails is resource-unavailable", async () => {
+  it("a GET refused for authorization (401) is fatal resource-unavailable", async () => {
     const h = streaming();
     const t = h.last();
     t.on.message(tx(1, ["aa"]));
     h.clock.frame();
-    t.gets[0].resolve(404);
+    t.gets[0].resolve(401);
     await flush();
     h.clock.frame();
     expect(h.statuses.at(-1)).toMatchObject({
@@ -392,12 +392,12 @@ describe("render-stream client loop", () => {
     ]);
   });
 
-  it("a failed GET aborts the others in flight and fails for its transaction", async () => {
+  it("a fatal GET (403) aborts the others in flight and fails for its transaction", async () => {
     const h = streaming();
     const t = h.last();
     t.on.message(tx(1, ["b1", "b2", "b3"]));
     h.clock.frame();
-    t.gets[1].resolve(404);
+    t.gets[1].resolve(403);
     await flush();
     expect([t.gets[0].aborted, t.gets[2].aborted]).toEqual([true, true]);
     h.clock.frame();

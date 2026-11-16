@@ -7,6 +7,7 @@ import {
   LiveFetcher,
   type LiveFetcherOptions,
   type ResourceResponse,
+  statusOutcome,
 } from "../src/fetcher";
 import { flush } from "./fakes";
 
@@ -182,6 +183,105 @@ describe("LiveFetcher parallel GETs", () => {
     await flush();
     expect(f.poll().results).toEqual([]);
     expect(gets.map((g) => g.path)).toEqual(["/r/a", "/r/b", "/r/c"]);
+  });
+
+  it("settle: a missing or temporary GET settles alone; the queue and the others go on", async () => {
+    const { f, gets, by } = fetcher({ maxInFlight: 3, failures: "settle" });
+    f.start(["a", "b", "c", "d", "e"]);
+    f.poll();
+    by("b").resolve({ status: 404, body: null });
+    by("a").reject(new TypeError("Failed to fetch"));
+    await flush();
+    expect(by("c").signal.aborted).toBe(false);
+    let p = f.poll();
+    expect(p.results.map((r) => [r.hash, r.outcome, r.status])).toEqual([
+      ["b", "missing", 404],
+      ["a", "temporary", null],
+    ]);
+    expect(p.finished).toBe(false);
+    expect(gets.map((g) => g.path)).toEqual([
+      "/r/a",
+      "/r/b",
+      "/r/c",
+      "/r/d",
+      "/r/e",
+    ]);
+    by("c").resolve(ok());
+    by("d").resolve({ status: 503, body: null });
+    by("e").resolve({ status: 403, body: null }); // fatal: stops the queue as before
+    await flush();
+    p = f.poll();
+    expect(p.results.map((r) => [r.hash, r.outcome])).toEqual([
+      ["c", "ok"],
+      ["d", "temporary"],
+      ["e", "fatal"],
+    ]);
+    expect(p.finished).toBe(true);
+  });
+
+  it("settle: a fatal GET still aborts the others in flight", async () => {
+    const { f, by } = fetcher({ maxInFlight: 3, failures: "settle" });
+    f.start(["a", "b", "c"]);
+    f.poll();
+    by("b").resolve({ status: 401, body: null });
+    await flush();
+    expect([by("a").signal.aborted, by("c").signal.aborted]).toEqual([
+      true,
+      true,
+    ]);
+    expect(f.poll().results.map((r) => [r.hash, r.outcome])).toEqual([
+      ["b", "fatal"],
+    ]);
+  });
+
+  it("a request function that throws cannot be made: fatal", async () => {
+    const f = new LiveFetcher(
+      () => {
+        throw new Error("no fetch here");
+      },
+      "/r/",
+      10000,
+      0,
+      null,
+      { failures: "settle" },
+    );
+    f.start(["a"]);
+    f.poll();
+    await flush();
+    expect(f.poll().results.map((r) => r.outcome)).toEqual(["fatal"]);
+  });
+
+  it("statusOutcome: 404/410 missing, 408/429/5xx temporary, the rest fatal", () => {
+    const got = [
+      200, 404, 410, 408, 429, 500, 599, 401, 403, 400, 302, 600,
+    ].map((s) => [s, statusOutcome(s)]);
+    expect(got).toEqual([
+      [200, "ok"],
+      [404, "missing"],
+      [410, "missing"],
+      [408, "temporary"],
+      [429, "temporary"],
+      [500, "temporary"],
+      [599, "temporary"],
+      [401, "fatal"],
+      [403, "fatal"],
+      [400, "fatal"],
+      [302, "fatal"],
+      [600, "fatal"],
+    ]);
+  });
+
+  it("extend never queues a hash twice; unqueue drops a queued one, never one in flight", async () => {
+    const { f, gets } = fetcher({ maxInFlight: 1 });
+    f.start(["a", "b"]);
+    f.poll();
+    f.extend(["a", "b", "c", "c"]);
+    expect([...f.queued()]).toEqual(["b", "c"]);
+    f.unqueue("a"); // in flight: kept
+    f.unqueue("b");
+    expect([...f.queued()]).toEqual(["c"]);
+    expect(f.active("a") && f.has("a") && !f.has("b")).toBe(true);
+    expect(gets).toHaveLength(1);
   });
 
   it("a fold extends the queue without duplicating a GET in flight; retain keeps those in flight", async () => {

@@ -9,6 +9,10 @@
 //
 // Called once per apply (`step`), after the transactions are accepted and before `apply`: a
 // window-2 fold steps once, by the fold's whole time delta.
+//
+// A material whose key comes from process shader code the client has not got is `suspended`:
+// each emitter it drives drops its simulation (its old output is never drawn again) until the code
+// arrives, and then starts a fresh one, as a new emitter would. Other emitters are untouched.
 
 import {
   GODOT_GPU_INSTANCE_FLOATS,
@@ -62,6 +66,10 @@ interface WireEmitter {
 interface WireMaterial {
   id: number;
   version: number;
+  /** Its key comes from process shader code not held yet (still loading, or unavailable): its
+   * emitters are suspended (the wasm dropped their buffers and ignores their uploads) and are
+   * re-created, a fresh simulation, once the code arrives and the material is listed again. */
+  suspended?: boolean;
   builtin: {
     emission_shape: GodotProcessMaterial["emissionShape"];
     particle_flags: string[];
@@ -120,8 +128,10 @@ export class GswParticles {
     approximate_features: [],
   };
 
-  /** Sync with the accepted state, step every emitter by the host's time and upload. */
-  step(g: ParticlesHost): void {
+  /** Sync with the accepted state only (a revisit: no host time passed, so nothing steps or
+   * uploads): a suspended material's emitters drop their simulation, an arrived one's are
+   * re-created, and the next `step` advances and uploads them. */
+  syncOnly(g: ParticlesHost): void {
     const msg = g.particles_sync();
     if (msg !== "")
       this.sync(
@@ -131,6 +141,11 @@ export class GswParticles {
           materials: WireMaterial[];
         },
       );
+  }
+
+  /** Sync with the accepted state, step every emitter by the host's time and upload. */
+  step(g: ParticlesHost): void {
+    this.syncOnly(g);
     const t = g.shader_time();
     let dt = DEFAULT_FRAME;
     if (Number.isFinite(t)) {
@@ -162,6 +177,10 @@ export class GswParticles {
   private material(id: number | null): GodotProcessMaterial | null {
     if (id === null) return null;
     return this.materials.get(id)?.material ?? null;
+  }
+
+  private suspended(id: number | null): boolean {
+    return id !== null && this.materials.get(id)?.wire.suspended === true;
   }
 
   private config(
@@ -207,26 +226,27 @@ export class GswParticles {
     }
     const touched = new Set<number>();
     for (const m of msg.materials) {
-      const material: GodotProcessMaterial | null = m.builtin
-        ? {
-            emissionShape: m.builtin.emission_shape,
-            flags: m.builtin.particle_flags,
-            turbulence: m.builtin.turbulence,
-            uniforms: m.uniforms,
-            curves: Object.fromEntries(
-              Object.entries(m.curves).map(
-                ([k, c]): [string, GodotCurveTexture] => [
-                  k,
-                  {
-                    width: c.width,
-                    height: c.height,
-                    data: Float32Array.from(c.data),
-                  },
-                ],
+      const material: GodotProcessMaterial | null =
+        m.builtin && m.suspended !== true
+          ? {
+              emissionShape: m.builtin.emission_shape,
+              flags: m.builtin.particle_flags,
+              turbulence: m.builtin.turbulence,
+              uniforms: m.uniforms,
+              curves: Object.fromEntries(
+                Object.entries(m.curves).map(
+                  ([k, c]): [string, GodotCurveTexture] => [
+                    k,
+                    {
+                      width: c.width,
+                      height: c.height,
+                      data: Float32Array.from(c.data),
+                    },
+                  ],
+                ),
               ),
-            ),
-          }
-        : null;
+            }
+          : null;
       // Attractors are 3D nodes (a 2D emitter has none to interact with); collision is not modelled.
       if (m.builtin && m.builtin.collision !== "disabled")
         this.features.add("collision");
@@ -271,6 +291,14 @@ export class GswParticles {
       return;
     }
     h.wire = e;
+    if (this.suspended(e.material)) {
+      // Its old simulated output goes (the wasm dropped the buffer); the code's arrival makes a
+      // fresh simulation.
+      if (h.sim) this.evidence.particles_freed++;
+      h.sim = null;
+      h.zeros = false;
+      return;
+    }
     if (!cfg) return;
     if (!h.sim) {
       this.make(h, cfg, e);

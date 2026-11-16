@@ -42,9 +42,13 @@ export {
   type ApplyOn,
   type CreditStage,
   RECONNECT_BACKOFF_MS,
+  RESOURCE_LOG_MAX,
   type RenderStreamFailureReason,
   type RenderStreamStats,
   type RenderStreamStatus,
+  type ResourceDiagnostic,
+  type ResourceDiagnostics,
+  type ResourceUnavailableReason,
 } from "./loop";
 export {
   type PointerTargetResolverOptions,

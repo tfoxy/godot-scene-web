@@ -110,14 +110,27 @@ export interface StreamCore {
   /** A staged payload into the store out of needed order (a fold's leftover, a restore, a
    * deferred payload's arrival). */
   takeStaged(hash: string): string | null;
-  /** The loop stops waiting for the needed texture or mesh payload `hash`, still being fetched:
+  /** The loop stops waiting for the needed payload `hash` (still being fetched, or unavailable):
    * the apply goes ahead without it and what draws it is not drawn until it is in the store
-   * (`takeStaged`); the refusal (shader code, or not needed), or null. In needed order with
+   * (`takeStaged`). Shader code too: its materials' draws are omitted (never shaderless) until
+   * the code arrives and compiles. The refusal (not needed), or null. In needed order with
    * `provideStaged`. */
   deferPayload(hash: string): string | null;
   /** With nothing accepted and unapplied: makes the deferred payloads now in the store drawable
-   * (an apply of no change over the same state); true when it applied (the caller draws). */
+   * (programs for arrived shader code first, then an apply of no change over the same state), or
+   * re-lowers what `restoreUnavailable` took out; true when it applied (the caller draws). */
   revisit(seq: number): boolean;
+  /** Names membership over the newest accepted state, one byte per hash (1 named by any entry
+   * or variant, else 0): the loop asks it for the payloads it tracks, after each accepted
+   * transaction, only while it tracks any. A protocol without the names (below /11) answers 1. */
+  named(hashes: readonly string[]): Uint8Array;
+  /** A staged payload nothing uses any more (an obsolete download that completed) is dropped
+   * unprovided; whether one was. */
+  dropStaged(hash: string): boolean;
+  /** A context restore cannot fetch the resident payload `hash` again: what was resident from it
+   * leaves residency (never drawn from stale contents) and the next `revisit` (nothing accepted
+   * and unapplied) or apply re-lowers what draws it. The refusal, or null. */
+  restoreUnavailable(hash: string): string | null;
   /** Programs for the accepted state's shaders, and the /12 particles step (before `apply`). */
   prepareApply(seq: number): void;
   apply(seq: number): void;
@@ -399,8 +412,32 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     return this.g.defer_payload(hash) < 0 ? this.g.error() : null;
   }
 
-  revisit(_seq: number): boolean {
+  revisit(seq: number): boolean {
+    // Shader code that arrived compiles before the apply that draws its materials; a process
+    // shader's arrival re-creates its emitters, which the next apply steps (no host time passed
+    // here, so nothing is stepped or uploaded).
+    try {
+      definePrograms(this.g, this.programs);
+    } catch (e) {
+      if (e instanceof ProgramError)
+        throw new StreamFailure(seq, e.reason, e.message);
+      throw e;
+    }
+    this.particles.syncOnly(this.g);
     return this.g.revisit() > 0;
+  }
+
+  named(hashes: readonly string[]): Uint8Array {
+    if (hashes.length === 0) return new Uint8Array(0);
+    return this.g.names_mask(hashes.join(""));
+  }
+
+  dropStaged(hash: string): boolean {
+    return this.g.drop_staged(hash);
+  }
+
+  restoreUnavailable(hash: string): string | null {
+    return this.g.restore_unavailable(hash) < 0 ? this.g.error() : null;
   }
 
   prepareApply(seq: number): void {

@@ -298,3 +298,58 @@ describe("WasmStreamCore item queries (I1/I2)", () => {
     expect(core.queryEpoch()).toBeGreaterThan(e2 + 1);
   });
 });
+
+describe("WasmStreamCore unavailable payloads", () => {
+  it("revisit compiles arrived shader code and syncs particles (no step) before the wasm revisit", () => {
+    const h = harness();
+    const g = h.instances[0] as unknown as Record<string, unknown>;
+    const order: string[] = [];
+    let pending = 1;
+    Object.assign(g, {
+      pending_shaders: () => pending,
+      pending_hash: () => "c0de",
+      pending_shader_id: () => 7n,
+      pending_withheld: () => false,
+      pending_code: () => "shader_type canvas_item;\nvoid fragment() {}\n",
+      define_program: () => {
+        order.push("define");
+        pending = 0;
+        return 0;
+      },
+      particles_sync: () => {
+        order.push("particles");
+        return "";
+      },
+      shader_time: () => {
+        order.push("step");
+        return Number.NaN;
+      },
+      revisit: () => {
+        order.push("revisit");
+        return 1;
+      },
+    });
+    expect(h.core.revisit(3)).toBe(true);
+    expect(order).toEqual(["define", "particles", "revisit"]);
+  });
+
+  it("named asks the names of every hash in one call; none for an empty list", () => {
+    const h = harness();
+    const g = h.instances[0] as unknown as Record<string, unknown>;
+    const asked: string[] = [];
+    g.names_mask = (hex: string) => {
+      asked.push(hex);
+      return Uint8Array.from([1, 0]);
+    };
+    const a = "a".repeat(64);
+    const b = "b".repeat(64);
+    expect([...h.core.named([a, b])]).toEqual([1, 0]);
+    expect(h.core.named([])).toHaveLength(0);
+    expect(asked).toEqual([a + b]);
+  });
+
+  it("the adapter exports every new core method", () => {
+    for (const m of ["names_mask", "drop_staged", "restore_unavailable"])
+      expect(libRs).toContain(`pub fn ${m}(`);
+  });
+});

@@ -59,6 +59,10 @@ pub struct ParticleBuffers {
     /// Moves whenever an emitter gains or loses its buffer (an applier re-lowers the items that
     /// draw it: the draw is skipped until the first buffer arrives).
     pub membership: u64,
+    /// Emitters [`describe`] suspended: their process material keys from shader code a live
+    /// client has not got (still loading, or unavailable). They hold no buffer (not drawn) and
+    /// [`ParticleBuffers::set`] ignores them until the code arrives.
+    suspended: Vec<Id>,
 }
 
 impl ParticleBuffers {
@@ -74,8 +78,33 @@ impl ParticleBuffers {
         self.map.get(&id)
     }
 
-    /// The shell's simulated instances for emitter `id` (a whole number of instances).
+    /// The emitters [`describe`] suspended last (sorted).
+    pub fn suspended(&self) -> &[Id] {
+        &self.suspended
+    }
+
+    /// Suspends exactly `ids` (sorted): each one's buffer is dropped, so what draws it is
+    /// re-lowered and skipped, and the old simulated output is never drawn again.
+    fn suspend(&mut self, ids: Vec<Id>) {
+        let mut gone = 0u64;
+        for id in &ids {
+            if self.map.remove(id).is_some() {
+                gone += 1;
+            }
+        }
+        self.freed_total += gone;
+        if gone > 0 {
+            self.membership += 1;
+        }
+        self.suspended = ids;
+    }
+
+    /// The shell's simulated instances for emitter `id` (a whole number of instances); ignored
+    /// while `id` is suspended.
     pub fn set(&mut self, id: Id, floats: &[f32]) {
+        if self.suspended.binary_search(&id).is_ok() {
+            return;
+        }
         self.serial += 1;
         self.sets_total += 1;
         if !self.map.contains_key(&id) {
@@ -253,6 +282,19 @@ pub fn switch_candidate_shader_hashes(state: &ResolvedState) -> Vec<crate::state
         }
     }
     out
+}
+
+/// PSE: whether `params` on `shader` key from the shader's code (a [`switch_candidate`] on an
+/// `ok` process shader whose code is a payload): the materials [`switch_candidate_shader_hashes`]
+/// fetches the code of.
+fn keys_from_code(params: &[Param], shader: Option<&crate::state::Shader>) -> bool {
+    switch_candidate(params)
+        && shader.is_some_and(|s| {
+            s.status == EntryStatus::Ok
+                && s.process.is_some()
+                && s.source == Some(crate::state::ShaderSource::Payload)
+                && s.hash.is_some()
+        })
 }
 
 /// PSE: each switch uniform's name, GLSL type and key field.
@@ -483,6 +525,7 @@ pub fn describe(
     // (a curve payload may arrive after the material), its shader's version and whether the
     // shader's code is held (PSE: it may arrive after the material too).
     let mut mat_keys: Vec<(Id, MaterialKey)> = Vec::new();
+    let mut suspended_mats: Vec<Id> = Vec::new();
     for id in &ids {
         let Some(mid) = state.particles.get(id).and_then(|p| p.process_material) else {
             continue;
@@ -517,6 +560,27 @@ pub fn describe(
         }
         let shader_version = shader.map(|s| s.version).unwrap_or(-1);
         mat_keys.push((mid, (m.version, curves, shader_version, known)));
+        if !shared_key && !known && keys_from_code(&m.params, shader) {
+            suspended_mats.push(mid);
+        }
+    }
+    // A material keyed from process code not held yet is suspended, and so is every emitter it
+    // drives: never simulated with the capture's builtin key in its place. Its emitters are
+    // re-created (a fresh simulation) once the code arrives and the material is listed again.
+    let suspended: Vec<Id> = if suspended_mats.is_empty() {
+        Vec::new()
+    } else {
+        ids.iter()
+            .copied()
+            .filter(|id| {
+                state.particles[id]
+                    .process_material
+                    .is_some_and(|m| suspended_mats.contains(&m))
+            })
+            .collect()
+    };
+    if suspended != store.particles.suspended {
+        store.particles.suspend(suspended);
     }
     let d = &store.particles.described;
     let changed_emitters: Vec<Id> = ids
@@ -601,7 +665,11 @@ pub fn describe(
         if i > 0 {
             out.push(',');
         }
-        let _ = write!(out, "{{\"id\":{mid},\"version\":{},\"builtin\":", m.version);
+        let _ = write!(out, "{{\"id\":{mid},\"version\":{},", m.version);
+        if suspended_mats.contains(mid) {
+            out.push_str("\"suspended\":true,");
+        }
+        out.push_str("\"builtin\":");
         let shader = m.shader.and_then(|s| state.shaders.get(&s));
         // PSE: a uniform-switched process shader's key is each material's own.
         let switched;
@@ -771,6 +839,108 @@ mod pse_tests {
             ty,
             value,
         }
+    }
+
+    fn emitter(id: Id, material: Id) -> crate::state::Particles {
+        crate::state::Particles {
+            id,
+            origin: crate::state::Origin::Created,
+            status: EntryStatus::Ok,
+            reason: None,
+            version: 1,
+            mode: ParticlesMode::D2,
+            emitting: true,
+            amount: 4,
+            one_shot: false,
+            fixed_fps: 0,
+            interpolate: false,
+            fractional_delta: false,
+            local: false,
+            draw_order: crate::state::ParticlesDrawOrder::Index,
+            transform_align: crate::state::ParticlesTransformAlign::Disabled,
+            trails: false,
+            trail_poses: 0,
+            seed: 7,
+            restarts: 0,
+            emits: 0,
+            process_requests: 0,
+            process_material: Some(material),
+            draw_passes: Vec::new(),
+            subemitter: None,
+            floats: None,
+        }
+    }
+
+    fn process_shader(id: Id, hash: crate::state::Hash) -> crate::state::Shader {
+        crate::state::Shader {
+            id,
+            origin: crate::state::Origin::Created,
+            status: EntryStatus::Ok,
+            reason: None,
+            version: 1,
+            mode: Some(crate::state::ShaderMode::Particles),
+            source: Some(crate::state::ShaderSource::Payload),
+            hash: Some(hash),
+            payload_bytes: 64,
+            builtin: None,
+            process: Some(base()),
+            uses: Vec::new(),
+            default_textures: Vec::new(),
+        }
+    }
+
+    fn process_material(id: Id, shader: Id, params: Vec<Param>) -> crate::state::Material {
+        crate::state::Material {
+            id,
+            origin: crate::state::Origin::Created,
+            status: EntryStatus::Ok,
+            reason: None,
+            version: 1,
+            shader: Some(shader),
+            params,
+        }
+    }
+
+    /// Emitter 1 keys from a uniform-switched process shader whose code is not held, emitter 2
+    /// from a stock one: only emitter 1 is suspended (no buffer, `set` ignored, its material
+    /// listed `suspended`), and once the code arrives its material is listed again with its key.
+    #[test]
+    fn a_process_shader_not_held_suspends_only_its_emitters() {
+        let code = crate::state::Hash([0x61; 32]);
+        let stock_code = crate::state::Hash([0x62; 32]);
+        let mut s = ResolvedState::empty(12);
+        s.shaders.insert(30, process_shader(30, code));
+        s.shaders.insert(31, process_shader(31, stock_code));
+        let switched = vec![param("emission_shape", VariantType::Int, ParamValue::Scalar(1.0))];
+        s.materials.insert(20, process_material(20, 30, switched));
+        s.materials.insert(21, process_material(21, 31, Vec::new()));
+        s.particles.insert(1, emitter(1, 20));
+        s.particles.insert(2, emitter(2, 21));
+        assert_eq!(switch_candidate_shader_hashes(&s), vec![code]);
+        let mut store = crate::apply::payloads::PayloadStore::default();
+        // Emitter 1 drew from an earlier simulation (its old output).
+        store.particles.set(1, &[0.0; PT_INSTANCE_FLOATS]);
+        let before = store.particles.membership;
+        let msg = describe(&s, &mut store, false, false);
+        assert_eq!(store.particles.suspended(), &[1]);
+        assert!(store.particles.get(1).is_none(), "the old simulated output survived");
+        assert!(store.particles.membership > before, "the drop did not re-lower its draws");
+        assert!(msg.contains("{\"id\":20,\"version\":1,\"suspended\":true,"), "{msg}");
+        assert!(!msg.contains("{\"id\":21,\"version\":1,\"suspended\""), "{msg}");
+        store.particles.set(1, &[0.0; PT_INSTANCE_FLOATS]);
+        store.particles.set(2, &[0.0; PT_INSTANCE_FLOATS]);
+        assert!(store.particles.get(1).is_none(), "a suspended emitter took a buffer");
+        assert!(store.particles.get(2).is_some(), "the other emitter was suspended");
+        assert_eq!(describe(&s, &mut store, false, false), "", "nothing changed");
+        // The code arrives: nothing is suspended, and material 20 is listed again, keyed.
+        store
+            .shaders
+            .insert(code, "shader_type particles;\nuniform int emission_shape;\n".into());
+        let msg = describe(&s, &mut store, false, false);
+        assert!(store.particles.suspended().is_empty());
+        assert!(msg.contains("{\"id\":20,\"version\":1,\"builtin\":{\"emission_shape\":\"sphere\""), "{msg}");
+        store.particles.set(1, &[0.0; PT_INSTANCE_FLOATS]);
+        assert!(store.particles.get(1).is_some());
     }
 
     #[test]

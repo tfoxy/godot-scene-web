@@ -10,7 +10,7 @@ import tracksSource from "../src/tracks.ts?raw";
 // both runtime and erased type exports are pinned.
 const VALUE_EXPORTS = `
 createRenderStreamClient RenderStreamEndpointError validateEndpoint clientHello CoreLoadError
-RECONNECT_BACKOFF_MS webSocketTransport
+RECONNECT_BACKOFF_MS RESOURCE_LOG_MAX webSocketTransport
 webTransportAvailable isAndroidPage invertAffine mulAffine createRecorder
 computeSpreadItem containerHAlignFactor createSpreadExtension fieldDx rootSpreadContext spreadDelta
 pointerTargetIdentity pointerTargetResolver
@@ -28,7 +28,7 @@ ItemMetaBatch ItemMetaField ItemMetaGrant ItemQuery OverrideTable OverrideValues
 GamePoint SpreadBudget SpreadContext SpreadDeps SpreadOptions SpreadOut SpreadShape
 Recording RecordKind RecorderOptions RenderStreamRecorder
 PointerTargetResolverOptions RenderStreamPointerTarget RenderStreamPointerTargetResolver
-ColdPayload
+ColdPayload ResourceDiagnostic ResourceDiagnostics ResourceUnavailableReason
 `
   .trim()
   .split(/\s+/);

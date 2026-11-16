@@ -87,11 +87,11 @@ export interface RenderStreamClientOptions {
    * `onmessage` while frames run (`message`, the default; the draw stays on the frame callback). */
   applyOn?: ApplyOn;
   /** The longest, in ms, a transaction waits for the resources it needs; default 0. Past it,
-   * the transaction applies without the textures and meshes still loading: what draws them is not
-   * drawn (no older picture in its place), everything else is, and they appear once loaded,
-   * redrawn with or without a new transaction. 0 (the default) never waits, as a web page loads its
-   * images; a small value draws a payload that arrives within it with its transaction; `Infinity` waits for every
-   * resource (frames hold meanwhile). Shader code is always waited for. */
+   * the transaction applies without textures, meshes and shader code still loading: dependent
+   * drawing is omitted (no older picture in its place), and everything else draws. Late arrivals
+   * redraw with or without a new transaction. 0 (the default) never waits, as a web page loads its
+   * images; a small value draws a payload that arrives within it with its transaction; `Infinity`
+   * waits for every resource (frames hold meanwhile). */
   resourceHoldMs?: number;
   /** When set, the client records the decoded messages since the last full and the fetched
    * payloads, exported by `RenderStreamClient.recording()`. Absent: the pure client (no ring, no
