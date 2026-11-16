@@ -156,9 +156,9 @@ export const MESSAGE_APPLY_MAX_FRAME_GAP_MS = 100;
  * absorbs a host frame rate a little above the panel's (60 Hz against a panel just under it). */
 export const MESSAGE_APPLY_MAX_UNDRAWN = 2;
 
-/** The default `resourceHoldMs`: a payload that arrives within this is drawn with the
- * transaction that needs it, a slower one pops in after it. */
-export const DEFAULT_RESOURCE_HOLD_MS = 150;
+/** The default `resourceHoldMs`: never wait. Like images on a web page, a texture or mesh still
+ * loading is not drawn and everything else is; it pops in once it arrives. */
+export const DEFAULT_RESOURCE_HOLD_MS = 0;
 
 /** Backoff before reconnect attempt n (1-based): 1, 2, 4, 8 s, then 10 s. */
 export const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 10000] as const;

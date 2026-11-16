@@ -11,7 +11,7 @@ import { flush, harness, msg, session, tx } from "./fakes";
 /** The frame-paced loop (credit at `submitted`, apply in the frame callback) unless `pacing` says. */
 function streaming(
   window: 1 | 2 = 2,
-  pacing: Pick<LoopOptions, "creditStage" | "applyOn"> = {
+  pacing: Pick<LoopOptions, "creditStage" | "applyOn" | "resourceHoldMs"> = {
     creditStage: "submitted",
     applyOn: "frame",
   },
@@ -22,6 +22,13 @@ function streaming(
   h.last().on.message(session(window));
   return h;
 }
+
+/** Frame-paced and waiting for every payload (`resourceHoldMs: Infinity`; the default is 0). */
+const WAIT: Pick<LoopOptions, "creditStage" | "applyOn" | "resourceHoldMs"> = {
+  creditStage: "submitted",
+  applyOn: "frame",
+  resourceHoldMs: Infinity,
+};
 
 describe("render-stream client loop", () => {
   it("sends the hello on open and credits only from the frame loop", () => {
@@ -84,7 +91,7 @@ describe("render-stream client loop", () => {
   });
 
   it("window 2: a transaction arriving while one fetches folds into it in place", async () => {
-    const h = streaming(2);
+    const h = streaming(2, WAIT);
     const t = h.last();
     t.on.message(tx(1, ["aa"]));
     h.clock.frame(); // takes seq 1, issues the GET
@@ -322,7 +329,7 @@ describe("render-stream client loop", () => {
   });
 
   it("up to four GETs go out at once; completions in any order provide in wasm's order", async () => {
-    const h = streaming();
+    const h = streaming(2, WAIT);
     const t = h.last();
     const need = ["a1", "a2", "a3", "a4", "a5"];
     t.on.message(tx(1, need));
@@ -475,7 +482,7 @@ describe("render-stream client loop", () => {
   });
 
   it("PH3 apply on message: a transaction with payloads fetches at once and applies at a frame", async () => {
-    const h = streaming(2, { applyOn: "message" });
+    const h = streaming(2, { applyOn: "message", resourceHoldMs: Infinity });
     const t = h.last();
     t.on.message(tx(1));
     h.clock.frame();

@@ -7,6 +7,9 @@ import type { Needed } from "../src/core";
 import { DEFAULT_RESOURCE_HOLD_MS, type LoopOptions } from "../src/loop";
 import { flush, harness, msg, session } from "./fakes";
 
+/** The bounded hold these tests exercise (the default is 0, no hold). */
+const HOLD = 150;
+
 const txk = (seq: number, needed: Needed[], full = seq === 1) =>
   msg({ kind: "transaction", seq, frame: seq, full, needed });
 const tex = (...hashes: string[]): Needed[] =>
@@ -40,18 +43,26 @@ const applyDraw = (calls: string[]) =>
   calls.filter((c) => /^(apply|draw|defer|provide|take|revisit|stage)/.test(c));
 
 describe("render-stream client bounded resource hold", () => {
-  it("defaults to 150 ms", () => {
-    expect(DEFAULT_RESOURCE_HOLD_MS).toBe(150);
+  it("defaults to 0: never hold, like images on a web page", () => {
+    expect(DEFAULT_RESOURCE_HOLD_MS).toBe(0);
+  });
+
+  it("with no resourceHoldMs the first callback applies without what is missing", () => {
+    const h = streaming();
+    const t = h.last();
+    t.on.message(txk(1, tex("aa")));
+    h.clock.frame();
+    expect(applyDraw(h.core.calls)).toEqual(["defer aa", "apply 1", "draw 1"]);
   });
 
   it("holds for resourceHoldMs, then applies without the payload and acks; it pops in later with no transaction", async () => {
-    const h = streaming();
+    const h = streaming(HOLD);
     const t = h.last();
     t.on.message(txk(1, tex("aa")));
     h.clock.frame(); // the GET goes out; the hold starts
     const since = h.clock.t;
     expect(t.gets).toHaveLength(1);
-    while (h.clock.t + 16.7 - since < DEFAULT_RESOURCE_HOLD_MS) {
+    while (h.clock.t + 16.7 - since < HOLD) {
       h.clock.frame();
       expect(h.core.calls).not.toContain("apply 1");
     }
@@ -81,7 +92,7 @@ describe("render-stream client bounded resource hold", () => {
   });
 
   it("a payload in within the hold applies with its transaction, exactly as without a hold", async () => {
-    const h = streaming();
+    const h = streaming(HOLD);
     const t = h.last();
     t.on.message(txk(1, tex("aa")));
     h.clock.frame();
@@ -155,7 +166,7 @@ describe("render-stream client bounded resource hold", () => {
     const t = h.last();
     t.on.message(txk(1, tex("aa")));
     h.clock.frame();
-    framesUntil(h, h.clock.t, DEFAULT_RESOURCE_HOLD_MS);
+    framesUntil(h, h.clock.t, HOLD);
     expect(h.core.calls).toContain("apply 1");
     t.on.message(txk(2, tex("aa"), false));
     h.clock.frame();
@@ -178,11 +189,11 @@ describe("render-stream client bounded resource hold", () => {
   });
 
   it("a deferred payload that arrives while a later transaction waits goes in with that apply", async () => {
-    const h = streaming();
+    const h = streaming(HOLD);
     const t = h.last();
     t.on.message(txk(1, tex("aa")));
     h.clock.frame();
-    framesUntil(h, h.clock.t, DEFAULT_RESOURCE_HOLD_MS);
+    framesUntil(h, h.clock.t, HOLD);
     t.on.message(txk(2, tex("bb"), false));
     h.clock.frame(); // bb goes out
     expect(t.gets).toHaveLength(2);
@@ -207,7 +218,7 @@ describe("render-stream client bounded resource hold", () => {
   });
 
   it("the hold counts from the first wait: a fold does not restart it", () => {
-    const h = streaming();
+    const h = streaming(HOLD);
     const t = h.last();
     t.on.message(txk(1, tex("aa")));
     h.clock.frame();
@@ -215,7 +226,7 @@ describe("render-stream client bounded resource hold", () => {
     h.clock.frame();
     h.clock.frame();
     t.on.message(txk(2, tex("aa", "bb"), false)); // folds in
-    framesUntil(h, since, DEFAULT_RESOURCE_HOLD_MS);
+    framesUntil(h, since, HOLD);
     expect(applyDraw(h.core.calls)).toEqual([
       "defer aa",
       "defer bb",
