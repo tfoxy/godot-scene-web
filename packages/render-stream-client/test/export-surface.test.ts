@@ -28,6 +28,7 @@ ItemMetaBatch ItemMetaField ItemMetaGrant ItemQuery OverrideTable OverrideValues
 GamePoint SpreadBudget SpreadContext SpreadDeps SpreadOptions SpreadOut SpreadShape
 Recording RecordKind RecorderOptions RenderStreamRecorder
 PointerTargetResolverOptions RenderStreamPointerTarget RenderStreamPointerTargetResolver
+ColdPayload
 `
   .trim()
   .split(/\s+/);

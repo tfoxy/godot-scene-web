@@ -7,6 +7,7 @@ export {
   type RenderStreamClient,
   type RenderStreamClientOptions,
 } from "./client";
+export type { ColdPayload } from "./cold";
 export {
   type RenderStreamEndpoint,
   RenderStreamEndpointError,

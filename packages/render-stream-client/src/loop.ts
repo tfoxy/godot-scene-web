@@ -38,6 +38,7 @@
 // in place, refetching any resident payload the store no longer holds.
 
 import { type AckStage, AckWriter } from "./ack";
+import { type ColdPayload, ColdTracker } from "./cold";
 import type { Needed, SessionMeta, StreamCore } from "./core";
 import { failWith, StreamFailure } from "./core";
 import type { RenderStreamEndpoint } from "./endpoint";
@@ -101,6 +102,20 @@ export interface RenderStreamStats {
   /** Items in the last applied state holding a canvas group or a back-buffer copy. `stats()`
    * always sets it (optional as `carrier`). */
   backBufferItems?: number;
+  /** Payloads a transaction needed that the store did not hold, drawn since the client started.
+   * The cold-payload fields below are always set by `stats()` (optional as `carrier`). */
+  missedPayloads?: number;
+  /** Missed payloads that went at least one frame unshown: frame callbacks ran between the first
+   * transaction naming one and the draw that first drew it (staged and uploaded). */
+  coldPayloads?: number;
+  /** Those frames, summed over every missed payload, and the most for one. */
+  coldFramesSum?: number;
+  coldFramesMax?: number;
+  /** The longest first reference to first draw, in ms. */
+  coldMsMax?: number;
+  /** The last `COLD_LOG_MAX` missed payloads (newest last), one record each: a frozen array,
+   * the same one until a draw adds a record. */
+  coldPayloadLog?: readonly ColdPayload[];
 }
 
 /** The frame and timer functions the loop runs on (the page's, or a test's). */
@@ -268,6 +283,8 @@ export class StreamLoop {
   private readonly deferred = new Map<string, number>();
   /** A revisit drew deferred payloads in: the callback draws once with no transaction. */
   private revisitDraw = false;
+  /** Missed payloads, first reference to first draw. */
+  private readonly cold: ColdTracker;
 
   private readonly creditStage: CreditStage;
   private readonly resourceHoldMs: number;
@@ -279,6 +296,7 @@ export class StreamLoop {
     this.creditStage = o.creditStage ?? DEFAULT_CREDIT_STAGE;
     this.ext = o.ext ?? null;
     this.recorder = o.recorder ?? null;
+    this.cold = new ColdTracker(() => o.clock.now());
     const hold = o.resourceHoldMs ?? DEFAULT_RESOURCE_HOLD_MS;
     this.resourceHoldMs = hold >= 0 ? hold : DEFAULT_RESOURCE_HOLD_MS;
   }
@@ -353,6 +371,8 @@ export class StreamLoop {
       structuralApplies: this.structuralApplies,
       lastApplyWhy: this.lastApplyWhy,
       backBufferItems: this.backBufferItems,
+      ...this.cold.totals,
+      coldPayloadLog: this.cold.log(),
     };
   }
 
@@ -551,6 +571,7 @@ export class StreamLoop {
       this.lastCreditAt = null;
     }
     this.ack(m.seq, "received");
+    if (m.needed.length > 0) this.cold.referenced(m.seq, m.needed);
     const item: Queued = {
       seq: m.seq,
       frame: m.frame,
@@ -660,12 +681,15 @@ export class StreamLoop {
   private readonly onFrame = (): void => {
     this.frameId = null;
     this.lastFrameAt = this.o.clock.now();
+    this.cold.beginFrame();
     try {
       if (this.ext) this.ext.beginFrame();
       this.step();
     } catch (e) {
       this.fail(e);
       return;
+    } finally {
+      this.cold.endFrame();
     }
     if (
       this.phase === "connecting" ||
@@ -800,6 +824,7 @@ export class StreamLoop {
     this.queue = [];
     this.coalesced = [];
     this.deferred.clear();
+    this.cold.reset();
     this.revisitDraw = false;
     this.undrawn.length = 0;
     this.endSeen = false;
@@ -856,6 +881,8 @@ export class StreamLoop {
     const keep = new Set(next.needed.map((n) => n.hash));
     for (const h of this.deferred.keys()) keep.add(h);
     this.fetcher?.retain(keep);
+    for (const h of p.bodies.keys()) keep.add(h);
+    this.cold.retain(keep);
     if (misses.length > 0) {
       const fetcher = this.needFetcher(next.seq, misses[0]);
       this.checkFetches(next.seq, misses);
@@ -880,6 +907,10 @@ export class StreamLoop {
     if (rebuild) {
       this.rebuildDue = false;
       item.needed = this.o.core.rebuild(item.seq);
+      // The rebuilt applier needs these (whatever an older transaction named and this one
+      // does not is no longer waited for).
+      this.cold.retain(new Set(item.needed.map((n) => n.hash)));
+      this.cold.referenced(item.seq, item.needed);
     }
     this.pending = {
       item,
@@ -928,7 +959,9 @@ export class StreamLoop {
     if (this.phase === "disposed" || r.data === null) return;
     // The recorder keeps the fetched body (before wasm takes ownership and it is dropped).
     this.recorder?.resource(r.hash, r.data);
+    const t0 = this.o.clock.now();
     r.stage_error = this.o.core.stage(r.hash, r.data);
+    this.cold.staged(r.hash, this.o.clock.now() - t0);
     r.data = null; // in wasm now
   }
 
@@ -949,6 +982,7 @@ export class StreamLoop {
         const forSeq = p.requester.get(r.hash) ?? deferred.get(r.hash) ?? seq;
         if (r.error !== "") throw failWith(forSeq, r.error);
         p.bodies.set(r.hash, r.stage_error ?? null);
+        this.cold.fetched(r);
       }
       if (outstanding()) {
         const now = this.o.clock.now();
@@ -988,6 +1022,8 @@ export class StreamLoop {
         throw refusal(p.requester.get(hash) ?? deferred.get(hash) ?? seq, err);
     }
     if (deferred.size > 0) for (const h of p.bodies.keys()) deferred.delete(h);
+    // Every fetched body is in the store now: the draw after this apply draws it.
+    for (const h of p.bodies.keys()) this.cold.inStore(h);
     p.stage = "ready";
   }
 
@@ -1016,6 +1052,8 @@ export class StreamLoop {
         const err = core.takeStaged(r.hash);
         if (err !== null) throw refusal(forSeq, err);
       }
+      this.cold.fetched(r);
+      this.cold.inStore(r.hash);
       if (this.deferred.delete(r.hash)) arrived = true;
     }
     if (arrived && core.revisit(this.lastAppliedSeq)) this.revisitDraw = true;
@@ -1025,7 +1063,7 @@ export class StreamLoop {
   private drawRevisit(now: number): void {
     this.revisitDraw = false;
     if (this.ext) this.ext.beforeDraw(null, now);
-    this.o.core.draw(this.lastAppliedSeq);
+    this.drawCore(this.lastAppliedSeq);
   }
 
   /** The pending transaction, every payload in: apply and ack applied; then, in a frame callback
@@ -1067,7 +1105,7 @@ export class StreamLoop {
   private drawApplied(): void {
     const seq = this.lastAppliedSeq;
     if (this.ext) this.ext.beforeDraw(seq, this.o.clock.now());
-    this.o.core.draw(seq);
+    this.drawCore(seq);
     this.drawnSeq = seq;
     const now = this.o.clock.now();
     this.ackUndrawnSubmitted(now);
@@ -1088,8 +1126,20 @@ export class StreamLoop {
     if (!ext.wantsRedraw || this.connApplied === 0 || this.pending !== null)
       return;
     ext.beforeDraw(null, now);
-    this.o.core.draw(this.lastAppliedSeq);
+    this.drawCore(this.lastAppliedSeq);
     ext.redraws++;
+  }
+
+  /** One draw of the applied state; it closes every missed payload in the store since the last
+   * one (one branch when there is none). */
+  private drawCore(seq: number): void {
+    if (!this.cold.pending) {
+      this.o.core.draw(seq);
+      return;
+    }
+    const start = this.o.clock.now();
+    this.o.core.draw(seq);
+    this.cold.drew(start);
   }
 
   // ----------------------------------------------------------------------- context loss
@@ -1131,11 +1181,13 @@ export class StreamLoop {
       this.restoreFetcher = null;
       this.restoreBodies.clear();
     }
+    const redrawAt = this.o.clock.now();
     if (core.redraw(this.lastAppliedSeq) === "lost") {
       this.ctx = "lost";
       this.restoreWant = null;
       return;
     }
+    if (this.cold.pending) this.cold.drew(redrawAt);
     this.restoreWant = null;
     this.ctx = "ok";
     this.drawnSeq = this.lastAppliedSeq;
