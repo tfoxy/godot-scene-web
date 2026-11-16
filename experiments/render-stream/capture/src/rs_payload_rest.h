@@ -19,14 +19,23 @@
 //
 // Sibling coding. GRC_HTTP_ENCODING may name a second coding (the default `zstd,gzip` does): the
 // sibling. When a coded body becomes servable on a live listener (ServedResources pins its hash),
-// one encode of it in the second coding is queued on the host's sibling pool: it inflates the
-// at-rest body, codes it and keeps the result on the body beside the at-rest form (two small
-// coded bodies, never an identity copy). That runs off the hooks, the frame callback and the I/O
-// thread, once per body, and after the stream already published it: the sibling never delays
-// publication. A request that takes only the second coding is served it once it is made; one that
-// arrives before (or after the encode failed, was not smaller, or was dropped at stream end) gets
-// the identity at once, never waits (counted: `misses`). A host with no live listener, or with
-// one coding, never makes one.
+// one encode of it in the second coding is queued on the host's sibling pool, and its result is
+// kept on the body beside the at-rest form (two small coded bodies, never an identity copy). That
+// runs off the hooks, the frame callback and the I/O thread, once per body, and after the stream
+// already published it: the sibling never delays publication.
+//
+// The encode is streamed, because the first request for a new texture arrives right after its
+// publication, while the encode runs. For the default pair (zstd at rest, gzip sibling) one thread
+// inflates the zstd body while a parallel deflate (http_coding::gzip_parallel: blocks of
+// kSiblingBlockBytes on default_sibling_threads() threads, level kSiblingGzipLevel) follows it,
+// and each finished block is appended in order to the encode's BodyStream (rs_body_stream.h). A
+// GET that takes only the second coding and arrives meanwhile follows that stream (counted:
+// `streamed`): it is answered at once with chunks of the one shared encode, never a second
+// encode, never a wait. Once the encode ends, the chunks are spliced once into the kept body and
+// later requests get it whole. A carrier request (which needs a whole body), or one after the
+// encode failed or was dropped at stream end, gets the identity at once (counted: `misses`). An
+// encode whose result is not smaller keeps nothing, but readers already following it get the
+// whole (larger) member. A host with no live listener, or with one coding, never makes one.
 //
 // Mesh and shader payloads, KTX2 bodies and anything not GRT1 are never coded. Nothing here runs
 // while no stream is armed: the hooks build no body then.
@@ -43,6 +52,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "rs_body_stream.h"
 #include "rs_captured.h"
 
 namespace grc {
@@ -116,7 +126,8 @@ struct RestStats {
     std::uint64_t in_bytes = 0;     // identity bytes of the bodies kept
     std::uint64_t out_bytes = 0;    // their sibling bytes
     std::uint64_t ns = 0;           // time spent coding (inflate excluded: inflate.sibling)
-    std::uint64_t misses = 0;       // requests for the second coding served identity (not made)
+    std::uint64_t misses = 0;       // requests for the second coding served identity (none to give)
+    std::uint64_t streamed = 0;     // GETs that followed an encode in progress
   } sibling;
 };
 RestStats rest_stats();
@@ -129,7 +140,21 @@ struct RestSibling {
   enum class State : std::uint8_t { Pending, Ready, Failed } state = State::Pending;
   RestCoding coding = RestCoding::Identity;
   std::shared_ptr<const std::vector<std::uint8_t>> bytes;  // Ready: the coded body
+  std::shared_ptr<BodyStream> stream;                      // Pending: the encode as it is made
 };
+
+// The streamed gzip sibling's deflate. Level 3 by measurement on a 40.7 MB RGBA atlas: a few
+// times faster than level 6 per block for 1.3x the size, so four threads finish it about as fast
+// as a LAN link carries it.
+constexpr int kSiblingGzipLevel = 3;
+constexpr std::size_t kSiblingBlockBytes = std::size_t{1} << 20;
+// min(4, hardware threads - 1), at least 1: a short burst once per new large body.
+int default_sibling_threads();
+// Tests and benches: the deflate's level, block size and threads (0 or less: the defaults).
+void set_sibling_tuning(int level, std::size_t block_bytes, int threads);
+// The stream's end: encodes in flight stop at their next block (failed, counted as dropped) and
+// readers following them are ended. Cleared when the next stream opens its sibling pool.
+void set_sibling_cancel(bool cancel);
 
 // Queues `work` on the host's sibling pool; false when it cannot (the work is then dropped, never
 // run on the caller's thread).
@@ -141,8 +166,12 @@ using SiblingSubmit = std::function<bool(std::function<void()>)>;
 // counts as dropped and the body is served identity to second-coding readers).
 bool start_sibling(const PayloadPtr &body, const SiblingSubmit &submit);
 
-// `body` in `coding` when that is its sibling and made; null otherwise (serve the identity). Never
-// waits, never codes. A null answer for the host's second coding counts as a miss.
+// `body` in `coding` when that is its sibling and made. Otherwise null, and when `stream` is given
+// and the encode is still running, *stream is set to it (follow it: counted as streamed). Never
+// waits, never codes. A null answer with no stream for the host's second coding counts as a miss.
+std::shared_ptr<const std::vector<std::uint8_t>> sibling_body(const PayloadPtr &body, RestCoding coding,
+                                                              std::shared_ptr<BodyStream> *stream);
+// sibling_body without a stream: a whole body or null (a carrier's lookup).
 std::shared_ptr<const std::vector<std::uint8_t>> sibling_bytes(const PayloadPtr &body, RestCoding coding);
 
 // served-at-rest's census of what a holder keeps: each distinct GRT1 body once.

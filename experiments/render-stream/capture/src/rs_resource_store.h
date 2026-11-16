@@ -272,7 +272,8 @@ class ServedResources : public live::ResourceSource {
   std::shared_ptr<const std::vector<std::uint8_t>> lookup_coded(std::string_view hash,
                                                                 live::Coding coding) override;
   // TDR: one probe for a GET: the stored body when `accepted` is its coding, the sibling body
-  // when `accepted` is the second coding and it is made, else the identity. Never waits.
+  // when `accepted` is the second coding and it is made (or its encode in progress, as `stream`),
+  // else the identity. Never waits.
   live::ResourceBody lookup_body(std::string_view hash, live::Coding accepted) override;
   // Never inflates (the identity size is the held body's header); the sibling body as lookup_coded.
   bool lookup_coded_body(std::string_view hash, live::Coding coding, live::ResourceBody *out) override;

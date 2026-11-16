@@ -420,8 +420,11 @@ A host may answer a payload GET with an HTTP content coding. It is plain HTTP ne
 change to framing, keys or payload bytes, so it applies at every live version >= /2 and needs no
 version of its own. Hosts: `GRC_HTTP_ENCODING=off`, or a list of `zstd` and `gzip` in preference
 order (default `zstd,gzip`; `off` sends identity bytes exactly). A host offering both answers
-`zstd` when the request takes it and `gzip` when it takes only gzip, or identity bytes while its
-gzip copy of that payload is not ready yet. A client must accept any of them.
+`zstd` when the request takes it and `gzip` when it takes only gzip. While its gzip copy of that
+payload is still being made, the gzip answer comes at once with `Transfer-Encoding: chunked` and
+no `Content-Length`, its body following the encode; once made, it has a `Content-Length`. Identity
+bytes answer a gzip-only request only when no gzip copy can be made (the encode failed or the
+stream ended first). A client must accept any of them.
 
 ```
 GET <http_path><hash> HTTP/1.1
@@ -440,12 +443,14 @@ Vary: Accept-Encoding
 - **What is coded.** Only `render-stream-texture/1` (GRT1) bodies of more than 72 bytes. Mesh and
   shader payloads, short bodies, and any body whose coded form is not strictly smaller are sent as
   identity (still with `Vary: Accept-Encoding`, ETag `"<hash>"`). zstd is level 3 and every frame
-  carries its content size; gzip is RFC 1952 at level 6.
+  carries its content size; gzip is RFC 1952, at level 6 when it is the host's first coding, and as
+  a second coding one member deflated in parallel blocks at level 3 (each block ends byte-aligned
+  and the trailer's CRC-32 covers the whole payload, so any gzip reader decodes it as one stream).
 - **Negotiation.** The host picks, in its own order, the first coding it offers that the request's
   `Accept-Encoding` accepts (a named token or `*` with `q` > 0; `q=0` refuses). No header, or no
   match, is identity. A host that offers none (`off`) ignores the header and sends neither
   `Content-Encoding` nor `Vary`.
-- **Headers.** `Content-Length` is the coded length. `Vary: Accept-Encoding` is on every 200 and 304
+- **Headers.** `Content-Length` is the coded length, absent from a chunked answer. `Vary: Accept-Encoding` is on every 200 and 304
   of a host that offers a coding (a second `Vary: Origin` line is CORS's). The strong validator
   differs by coding (RFC 9110 8.8.3.3): `"<hash>"` for identity, `"<hash>-zstd"`, `"<hash>-gzip"`
   per coding. `If-None-Match` matches any of the three for the hash (a comma list is searched),

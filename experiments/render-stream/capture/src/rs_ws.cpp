@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -701,6 +702,15 @@ struct Conn {
   bool tls_handshake_counted = false;
   bool tls_failed = false;
   bool tls_close_sent = false;
+  // A chunked 200 following a coded body still being made (rs_body_stream.h): the stream, the
+  // next chunk to queue, the body bytes queued so far, and the response's HttpGet event, pushed
+  // when it ends. No further request on the connection is parsed until then (HTTP/1.1 order).
+  std::shared_ptr<rs::BodyStream> follow;
+  std::size_t follow_next = 0;
+  std::uint64_t follow_bytes = 0;
+  bool follow_keep_alive = true;
+  bool follow_corrupt = false;
+  Event follow_event;
 };
 
 // CAR4: plaintext handed to TlsSession::write per step while the socket drains. A new chunk is
@@ -746,6 +756,23 @@ struct Server::Impl {
   std::uint32_t next_id = 1;
   std::vector<Event> events;
   Server::TlsStats tls_stats;
+
+  // Wakes the I/O thread from a body stream's producer (an encode thread) when a chunk is
+  // appended. Made per start() and detached at stop(), so a late wake never reaches a stopped
+  // server; it takes only its own mutex, never `mu`.
+  struct IoWaker : rs::StreamWaker {
+    std::mutex m;
+    Impl *impl = nullptr;
+    void wake() override {
+      std::lock_guard<std::mutex> lock(m);
+      if (impl != nullptr) impl->wake();
+    }
+    void detach() {
+      std::lock_guard<std::mutex> lock(m);
+      impl = nullptr;
+    }
+  };
+  std::shared_ptr<IoWaker> io_waker;
 
   // P3-SP: one wake byte per drain, not one per message. The I/O thread drains the pipe, then
   // clears the flag, and only then rebuilds its poll set under `mu`: a message enqueued before
@@ -1035,6 +1062,71 @@ struct Server::Impl {
     }
   }
 
+  // 200 OK for a coded body still being made: the same headers as send_http_ok with
+  // `Transfer-Encoding: chunked` for the unknown length. The body follows as pump_follow() queues
+  // the stream's chunks, each by reference (never copied, never shifted: SendQueue).
+  void start_follow(Conn &c, const std::string &hash, const ResourceBody &found, bool keep_alive,
+                    const std::vector<std::pair<std::string, std::string>> &cors, Event event) {
+    std::string resp = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n";
+    resp += std::string("Content-Encoding: ") + coding_token(found.coding) + "\r\n";
+    resp += "Transfer-Encoding: chunked\r\n";
+    resp += "Cache-Control: private, max-age=31536000, immutable\r\n";
+    resp += "ETag: " + etag_for(hash, found.coding) + "\r\n";
+    if (!config.codings.empty()) resp += "Vary: Accept-Encoding\r\n";
+    for (const auto &h : cors) resp += h.first + ": " + h.second + "\r\n";
+    resp += keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
+    resp += "\r\n";
+    c.send_q.append(resp);
+    c.follow = found.stream;
+    c.follow_next = 0;
+    c.follow_bytes = 0;
+    c.follow_keep_alive = keep_alive;
+    c.follow_corrupt = config.corrupt_coded_body;
+    c.follow_event = std::move(event);
+    // Subscribed before the first read: a chunk appended between the two is in the read, and one
+    // appended after it wakes this thread.
+    c.follow->subscribe(io_waker);
+    pump_follow(c);
+  }
+
+  // Queues the chunks the followed stream has gained since the last pass, and ends the response
+  // when the stream has ended: the last chunk on Done; on Failed the body is cut short and the
+  // connection closes once what was queued has flushed (a client sees an incomplete body).
+  void pump_follow(Conn &c) {
+    if (c.follow == nullptr || c.phase == Conn::Phase::Closed) return;
+    std::vector<rs::BodyStream::Chunk> fresh;
+    const rs::BodyStream::State state = c.follow->read(c.follow_next, &fresh);
+    for (rs::BodyStream::Chunk &chunk : fresh) {
+      if (c.follow_corrupt && c.follow_next == 0 && chunk->size() > 10) {
+        // corrupt-coded-body: one byte flipped inside the deflate data (past the gzip header).
+        std::vector<std::uint8_t> sabotaged = *chunk;
+        sabotaged[10 + (sabotaged.size() - 10) / 2] ^= 0x5a;
+        chunk = std::make_shared<const std::vector<std::uint8_t>>(std::move(sabotaged));
+      }
+      char size_line[24];
+      const int n = std::snprintf(size_line, sizeof size_line, "%zx\r\n", chunk->size());
+      c.send_q.append(reinterpret_cast<const std::uint8_t *>(size_line), static_cast<std::size_t>(n));
+      c.follow_bytes += chunk->size();
+      c.send_q.append(std::move(chunk));
+      c.send_q.append(reinterpret_cast<const std::uint8_t *>("\r\n"), 2);
+      ++c.follow_next;
+    }
+    if (!fresh.empty()) c.max_queued_bytes_seen = std::max(c.max_queued_bytes_seen, pending_bytes(c));
+    if (state == rs::BodyStream::State::Open) return;
+    const bool ok = state == rs::BodyStream::State::Done;
+    if (ok) c.send_q.append(reinterpret_cast<const std::uint8_t *>("0\r\n\r\n"), 5);
+    Event event = std::move(c.follow_event);
+    event.coded_bytes = c.follow_bytes;
+    push_event_locked(std::move(event));
+    c.follow.reset();
+    if (!ok || !c.follow_keep_alive) {
+      c.shutdown_after_flush = true;
+      c.pending_close_code = 0;  // opened stays false on the HTTP route: no Closed event.
+      return;
+    }
+    if (c.phase == Conn::Phase::Handshaking && !c.recv_buf.empty()) try_request(c);
+  }
+
   // The quoted strong validator of one representation: `"<hash>"` for identity, `"<hash>-zstd"`
   // or `"<hash>-gzip"` per coding (RFC 9110 8.8.3.3: validators differ by content coding).
   static std::string etag_for(const std::string &hash, Coding coding) {
@@ -1160,6 +1252,13 @@ struct Server::Impl {
     if (c.phase == Conn::Phase::Closed) {
       return;
     }
+    if (found.stream != nullptr) {
+      // The coded body is still being made (rs_payload_rest.h "Sibling coding"): follow it.
+      Event event = make_http_get_event(c.id, hash, 200, found.identity_bytes, req);
+      event.coding = coding_token(found.coding);
+      start_follow(c, hash, found, keep_alive, cors, std::move(event));
+      return;
+    }
     if (found.bytes == nullptr) {
       send_http_status(c, 404, cors, keep_alive);  // retired since contains()
       push_event_locked(make_http_get_event(c.id, hash, 404, 0, req));
@@ -1258,6 +1357,12 @@ struct Server::Impl {
   // leaves it via dispatch_ws_upgrade(), after which this is never called again for `c`.
   void try_request(Conn &c) {
     static const std::string kTerminator = "\r\n\r\n";
+    if (c.follow != nullptr) {
+      // A response is still streaming: the next request waits in recv_buf (HTTP/1.1 order), up
+      // to the head limit; a peer that keeps sending past that is dropped.
+      if (c.recv_buf.size() > 65536) finalize_now(c, 1006, "request flood while streaming");
+      return;
+    }
     const auto pos = std::search(c.recv_buf.begin(), c.recv_buf.end(), kTerminator.begin(), kTerminator.end());
     if (pos == c.recv_buf.end()) {
       if (c.recv_buf.size() > 8192) reject(c, 400, "headers too large");
@@ -1288,7 +1393,8 @@ struct Server::Impl {
     // still have put the next request's bytes in the same read. Keep parsing while this
     // connection stays an HTTP one (never Open: a WebSocket upgrade already returned above) and
     // isn't closing.
-    if (!c.shutdown_after_flush && c.phase == Conn::Phase::Handshaking && !c.recv_buf.empty()) {
+    if (!c.shutdown_after_flush && c.phase == Conn::Phase::Handshaking && !c.recv_buf.empty() &&
+        c.follow == nullptr) {
       try_request(c);
     }
   }
@@ -1527,6 +1633,16 @@ struct Server::Impl {
       std::vector<PollEntry> entries;
       {
         std::lock_guard<std::mutex> lock(mu);
+        // Chunks appended to followed streams since the last pass (their producer woke this
+        // thread): queued here, after the wake was drained and re-armed, so none is missed.
+        // Only this thread inserts or erases a Conn, so the walk survives pump_follow's
+        // try_request (which releases `mu` around a lookup).
+        for (auto &entry : conns) {
+          if (entry.second.follow == nullptr) continue;
+          pump_follow(entry.second);
+          // A response cut short with nothing left to send has no write pass to close it.
+          maybe_finalize(entry.second);
+        }
         if (!stopping) {
           fds.push_back({listen_fd, rs::kPollIn, 0});
           entries.push_back({listen_fd, 0, true, false});
@@ -1679,6 +1795,8 @@ bool Server::start(const ServerConfig &config, ResourceSource *source, std::stri
 
   impl_->config = config;
   impl_->resource_source = source;
+  impl_->io_waker = std::make_shared<Impl::IoWaker>();
+  impl_->io_waker->impl = impl_.get();
   impl_->listen_fd = fd;
   impl_->wake_pair = wake_pair;
   impl_->bound_port = bound_port;
@@ -1747,6 +1865,8 @@ void Server::stop(int flush_timeout_ms) {
   impl_->stop_requested.store(true);
   impl_->wake();
   if (impl_->io_thread.joinable()) impl_->io_thread.join();
+  if (impl_->io_waker != nullptr) impl_->io_waker->detach();  // encodes may outlive this server
+  impl_->io_waker.reset();
   impl_->running.store(false);
 }
 

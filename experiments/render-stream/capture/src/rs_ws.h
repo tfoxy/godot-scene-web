@@ -145,6 +145,8 @@
 #include <string_view>
 #include <vector>
 
+#include "rs_body_stream.h"
+
 namespace grc {
 namespace rs {
 enum class WinBind : std::uint8_t;
@@ -283,10 +285,13 @@ bool parse_allowed_origins(std::string_view text, std::vector<std::string> *out,
 // from or what they mean.
 // TDR: one GET's body: the bytes to send, the coding they are in (Identity when sent as they are),
 // and the identity payload's size (the logged `payload_bytes`). Null bytes: 404.
+// `stream` (lookup_body only): the body in `coding` is still being made; `bytes` is then null and
+// the GET follows the stream (rs_body_stream.h) with a chunked response instead of waiting.
 struct ResourceBody {
   std::shared_ptr<const std::vector<std::uint8_t>> bytes;
   Coding coding = Coding::Identity;
   std::uint64_t identity_bytes = 0;
+  std::shared_ptr<rs::BodyStream> stream;
 };
 
 class ResourceSource {

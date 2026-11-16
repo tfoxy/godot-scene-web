@@ -5007,11 +5007,11 @@ run_import_g8tdr() {
 
 # run_g8tdr_probe <host dir> <port>: while the live host runs, once its pins are in resources.jsonl
 # (every pinned payload of this fixture is a GRT1 texture body, `payload_bytes` its identity size),
-# three curl GETs of the largest: get-zstd (Accept-Encoding: zstd), get-identity (no
-# Accept-Encoding) and get-lan (gzip, deflate: what Chromium sends to a plain-http LAN host). Under
-# the default GRC_HTTP_ENCODING=zstd,gzip the gzip body is made on the host's sibling pool after
-# the pin, and a GET before that gets the identity, so get-lan is repeated (0.1 s apart, at most
-# 50 tries, the count in get-lan.tries) until it comes back gzip. The hash goes to get.hash.
+# three curl GETs of the largest: get-lan (gzip, deflate: what Chromium sends to a plain-http LAN
+# host), get-zstd (Accept-Encoding: zstd) and get-identity (no Accept-Encoding). Under the default
+# GRC_HTTP_ENCODING=zstd,gzip the gzip body is made on the host's sibling pool after the pin;
+# get-lan goes first, as a browser's cold GET does, and is answered with gzip either way: chunked
+# while the encode runs, with Content-Length once it is made. The hash goes to get.hash.
 run_g8tdr_probe() {
 	local host="$1" port="$2" i=0 hash="" log="$1/evidence/resources.jsonl"
 	while [ "$i" -lt 600 ] && [ -z "$hash" ]; do
@@ -5030,20 +5030,12 @@ run_g8tdr_probe() {
 	fi
 	echo "$hash" >"$host/get.hash"
 	local url="http://127.0.0.1:$port/resources/sha256/$hash"
+	curl -s --max-time 10 -H 'Accept-Encoding: gzip, deflate' -D "$host/get-lan.headers" -o "$host/get-lan.body" "$url" ||
+		echo "curl failed: $?" >"$host/get-lan.error"
 	curl -s --max-time 10 -H 'Accept-Encoding: zstd' -D "$host/get-zstd.headers" -o "$host/get-zstd.body" "$url" ||
 		echo "curl failed: $?" >"$host/get-zstd.error"
 	curl -s --max-time 10 -D "$host/get-identity.headers" -o "$host/get-identity.body" "$url" ||
 		echo "curl failed: $?" >"$host/get-identity.error"
-	local tries=0
-	while [ "$tries" -lt 50 ]; do
-		tries=$((tries + 1))
-		rm -f "$host/get-lan.error"
-		curl -s --max-time 10 -H 'Accept-Encoding: gzip, deflate' -D "$host/get-lan.headers" -o "$host/get-lan.body" "$url" ||
-			echo "curl failed: $?" >"$host/get-lan.error"
-		grep -qi '^content-encoding: *gzip' "$host/get-lan.headers" 2>/dev/null && break
-		sleep 0.1
-	done
-	echo "$tries" >"$host/get-lan.tries"
 }
 
 # run_g8tdr_live <name> <probe 0|1> <env word...>: g8tdr/<name>/host, a live gate8-tex host (no file

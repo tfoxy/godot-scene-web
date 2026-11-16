@@ -570,11 +570,12 @@ struct ServingSummary {
   std::uint64_t http_coded_bytes = 0;
   std::string http_encoding = "off";
   // Every coding offered, most preferred first (GRC_HTTP_ENCODING as parsed; empty: off),
-  // and the sibling bodies made for the second one (rs_payload_rest.h "Sibling coding") with the
-  // GETs that waited for one.
+  // and the sibling bodies made for the second one (rs_payload_rest.h "Sibling coding"), the
+  // requests for one that got the identity (misses), and the GETs that followed its encode.
   std::vector<std::string> http_codings;
   std::uint64_t siblings_made = 0;
   std::uint64_t sibling_misses = 0;
+  std::uint64_t sibling_streamed = 0;  // GETs answered by following an encode in progress
   std::uint64_t http_gets_zstd = 0;
   std::uint64_t http_gets_gzip = 0;
   // TDR: the at-rest coding ("identity", "zstd", "gzip"), and the GETs (and carrier requests)

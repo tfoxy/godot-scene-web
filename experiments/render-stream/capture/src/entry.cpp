@@ -3875,6 +3875,7 @@ void live_close_finish() {
     g_live.serving.identity_inflate_ns = get.ns;
     g_live.serving.siblings_made = rest.sibling.made;
     g_live.serving.sibling_misses = rest.sibling.misses;
+    g_live.serving.sibling_streamed = rest.sibling.streamed;
     g_live.serving.dropped_hash = g_live.served->dropped_hash();
     g_live.serving.corrupted_hash =
         g_stream.store != nullptr ? g_stream.store->corrupted_hash() : std::string();
@@ -3966,10 +3967,11 @@ void live_finish(rs2::EndReason reason, bool blocking) {
 }
 
 // The sibling pool (rs_payload_rest.h "Sibling coding"): one thread, started by the first served
-// body that needs a second coding, so the encodes stay on one core beside the game and the
-// texture workers (one large texture's encode cannot be split anyway). The stream's end drops the
-// queued encodes (their bodies' second-coding readers keep the identity) and joins the one in
-// flight.
+// body that needs a second coding, runs one body's encode at a time. A streamed gzip encode is a
+// short burst on its own threads (an inflate and default_sibling_threads() deflate threads,
+// joined before the next body), so the first body's readers get every core it is given. The
+// stream's end drops the queued encodes (their bodies' second-coding readers keep the identity),
+// stops the one in flight at its next block and joins it.
 constexpr int kSiblingWorkers = 1;
 struct SiblingPoolState {
   std::mutex m;
@@ -3984,6 +3986,7 @@ rs::TextureWorkerPool &sibling_pool() {
 void siblings_open() {
   std::lock_guard<std::mutex> lock(g_siblings.m);
   g_siblings.open = true;
+  rs::set_sibling_cancel(false);
 }
 bool siblings_started() {
   std::lock_guard<std::mutex> lock(g_siblings.m);
@@ -4010,6 +4013,7 @@ void siblings_close_begin() {
     std::lock_guard<std::mutex> lock(g_siblings.m);
     g_siblings.open = false;
   }
+  rs::set_sibling_cancel(true);  // the encode in flight stops at its next block
   sibling_pool().discard_queued();
 }
 // The second half: joins the encodes in flight (a teardown thread may run it).

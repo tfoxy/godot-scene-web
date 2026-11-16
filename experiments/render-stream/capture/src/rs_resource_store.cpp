@@ -569,11 +569,12 @@ live::ResourceBody ServedResources::lookup_body(std::string_view hash, live::Cod
   }
   out.identity_bytes = held->identity_size();
   if (accepted != live::Coding::Identity && held->coded()) {
-    // The stored body when it is held in `accepted`, else the second coding's body once made.
+    // The stored body when it is held in `accepted`, else the second coding's body once made, or
+    // its encode in progress to follow.
     out.bytes = static_cast<std::uint8_t>(held->rest) == static_cast<std::uint8_t>(accepted)
                     ? held
-                    : sibling_bytes(held, static_cast<RestCoding>(accepted));
-    if (out.bytes != nullptr) {
+                    : sibling_body(held, static_cast<RestCoding>(accepted), &out.stream);
+    if (out.bytes != nullptr || out.stream != nullptr) {
       out.coding = accepted;
       return out;
     }

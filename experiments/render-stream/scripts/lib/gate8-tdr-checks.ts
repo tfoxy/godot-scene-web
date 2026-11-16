@@ -10,8 +10,9 @@
 //                                              GETs of the largest pinned texture
 //                                              (host/get-{zstd,identity,lan}.{headers,body}, get.hash);
 //                                              the default GRC_HTTP_ENCODING=zstd,gzip, so the LAN
-//                                              GET (gzip, deflate), repeated until the sibling is
-//                                              made (get-lan.tries), gets gzip
+//                                              GET (gzip, deflate), sent first, right after the
+//                                              pin, gets gzip: chunked while the sibling encode
+//                                              runs, with Content-Length once it is made
 //   sabotage-at-rest-keep-identity/host        the live host with GRC_AT_REST_FAULT=keep-identity
 //
 // Checks: at-rest-legs, served-at-rest, at-rest-get, at-rest-wire-identical and
@@ -82,6 +83,7 @@ export interface ServingResources {
   http_codings?: string[];
   siblings_made?: number;
   sibling_misses?: number;
+  sibling_streamed?: number;
   at_rest: string;
   identity_inflates: number;
   identity_inflate_bytes: number;
@@ -355,7 +357,15 @@ export async function runG8tdr(
           if (p.http.status !== 200)
             problems.push(`get-${k}: status ${p.http.status}`);
           const len = p.http.headers.get("content-length");
-          if (len === undefined || Number(len) !== p.body.length)
+          const te = p.http.headers.get("transfer-encoding");
+          // A LAN GET that arrives while the gzip sibling is still being made follows its encode:
+          // chunked, no Content-Length (curl has removed the chunk framing from the body).
+          if (k === "lan" && te === "chunked") {
+            if (len !== undefined)
+              problems.push(
+                `get-lan: chunked with a Content-Length ${len} as well`,
+              );
+          } else if (len === undefined || Number(len) !== p.body.length)
             problems.push(
               `get-${k}: Content-Length ${len} != body ${p.body.length}`,
             );
@@ -400,10 +410,12 @@ export async function runG8tdr(
           }
         }
         // The LAN browser's `gzip, deflate` takes the host's second coding, made after the pin
-        // on the sibling pool (the probe repeats the GET until it is made).
+        // on the sibling pool: followed while it is made (chunked), whole once it is.
         const lan = parts.lan;
-        const lanTries =
-          (await readText(join(host, "get-lan.tries")))?.trim() ?? "?";
+        const lanTransfer =
+          lan.http?.headers.get("transfer-encoding") === "chunked"
+            ? "chunked (followed the encode)"
+            : "Content-Length (made)";
         let gzipBytes: number | null = null;
         if (lan.http && lan.body) {
           gzipBytes = lan.body.length;
@@ -488,13 +500,13 @@ export async function runG8tdr(
           gzip_bytes: gzipBytes,
           identity_inflates: res?.identity_inflates ?? null,
         };
-        detail = `${hash.slice(0, 12)}: identity ${identityBytes} bytes, zstd body ${zstdBytes} bytes (Content-Encoding ${z.http?.headers.get("content-encoding")}), LAN (gzip, deflate) body ${gzipBytes} bytes (Content-Encoding ${lan.http?.headers.get("content-encoding")}); summary identity_inflates ${res?.identity_inflates} (${res?.identity_inflate_bytes} bytes), siblings_made ${res?.siblings_made}, sibling_misses ${res?.sibling_misses}, LAN tries ${lanTries}; http-get lines ${idLines.length} identity, ${zLines.length} zstd, ${gLines.length} gzip`;
+        detail = `${hash.slice(0, 12)}: identity ${identityBytes} bytes, zstd body ${zstdBytes} bytes (Content-Encoding ${z.http?.headers.get("content-encoding")}), LAN (gzip, deflate) body ${gzipBytes} bytes (Content-Encoding ${lan.http?.headers.get("content-encoding")}); summary identity_inflates ${res?.identity_inflates} (${res?.identity_inflate_bytes} bytes), siblings_made ${res?.siblings_made}, sibling_misses ${res?.sibling_misses}, sibling_streamed ${res?.sibling_streamed}, LAN transfer ${lanTransfer}; http-get lines ${idLines.length} identity, ${zLines.length} zstd, ${gLines.length} gzip`;
       }
     }
     checks.push(
       check(
         "at-rest-get",
-        'a GET taking zstd gets the stored coded bytes (Content-Encoding: zstd, Content-Length equal, smaller than the identity size, inflating to the hash); a GET with no Accept-Encoding gets the identity body (no Content-Encoding, hashing to the name), counted as an identity inflate; the LAN browser\'s `gzip, deflate` gets the gzip body the default GRC_HTTP_ENCODING=zstd,gzip makes after the pin (Content-Encoding: gzip, ETag "<hash>-gzip", smaller than the identity, gunzipping to the hash; summary siblings_made >= 1, http_codings ["zstd","gzip"]); each logged with its coding and coded bytes',
+        'a GET taking zstd gets the stored coded bytes (Content-Encoding: zstd, Content-Length equal, smaller than the identity size, inflating to the hash); a GET with no Accept-Encoding gets the identity body (no Content-Encoding, hashing to the name), counted as an identity inflate; the LAN browser\'s `gzip, deflate`, sent right after the pin, gets the gzip body the default GRC_HTTP_ENCODING=zstd,gzip makes after the pin, chunked while the encode runs or with Content-Length once made (Content-Encoding: gzip, ETag "<hash>-gzip", smaller than the identity, gunzipping to the hash; summary siblings_made >= 1, http_codings ["zstd","gzip"]); each logged with its coding and coded bytes',
         problems,
         detail,
       ),

@@ -3495,6 +3495,7 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
     json.array_end();
     json.field("siblings_made", static_cast<int64_t>(resources->siblings_made));
     json.field("sibling_misses", static_cast<int64_t>(resources->sibling_misses));
+    json.field("sibling_streamed", static_cast<int64_t>(resources->sibling_streamed));
     json.field("http_gets_zstd", static_cast<int64_t>(resources->http_gets_zstd));
     json.field("http_gets_gzip", static_cast<int64_t>(resources->http_gets_gzip));
     json.field("at_rest", resources->at_rest);

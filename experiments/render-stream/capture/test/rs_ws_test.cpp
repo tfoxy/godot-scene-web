@@ -68,6 +68,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
@@ -88,6 +89,7 @@
 #include "rs_net_module.h"
 #include "rs_payload_rest.h"
 #include "rs_resource_store.h"
+#include "rs_sha256.h"
 #include "rs_sha1.h"
 #include "rs_ws.h"
 
@@ -400,6 +402,8 @@ struct HttpResponse {
   int status = 0;
   std::map<std::string, std::string> headers;  // lowercase keys, first occurrence kept.
   std::vector<std::uint8_t> body;
+  bool chunked = false;        // Transfer-Encoding: chunked (body is the decoded payload)
+  std::size_t chunks = 0;      // data chunks read (chunked only)
 };
 
 // Reads exactly one HTTP/1.1 response from `fd`: the status line and headers up to "\r\n\r\n",
@@ -452,6 +456,49 @@ HttpResponse read_http_response(SocketHandle fd) {
     }
     if (line_end == std::string::npos) break;
     line_start = line_end + 2;
+  }
+
+  const auto te = out.headers.find("transfer-encoding");
+  if (te != out.headers.end() && te->second == "chunked") {
+    // RFC 9112 7.1: hex size line, data, CRLF; a zero-size chunk and a CRLF end the body.
+    out.chunked = true;
+    std::vector<std::uint8_t> raw = std::move(body_so_far);
+    std::size_t at = 0;
+    const auto need = [&](std::size_t n) {
+      while (raw.size() < at + n) {
+        const std::ptrdiff_t got = grc::rs::socket_recv(fd, chunk, sizeof(chunk));
+        if (got <= 0) return false;
+        raw.insert(raw.end(), chunk, chunk + got);
+      }
+      return true;
+    };
+    for (;;) {
+      std::size_t eol = std::string::npos;
+      for (;;) {
+        for (std::size_t i = at; i + 1 < raw.size(); ++i) {
+          if (raw[i] == '\r' && raw[i + 1] == '\n') {
+            eol = i;
+            break;
+          }
+        }
+        if (eol != std::string::npos) break;
+        if (!need(raw.size() - at + 1)) return out;
+      }
+      const std::string line(raw.begin() + static_cast<std::ptrdiff_t>(at), raw.begin() + static_cast<std::ptrdiff_t>(eol));
+      char *end = nullptr;
+      const std::size_t size = std::strtoul(line.c_str(), &end, 16);
+      if (line.empty() || end != line.c_str() + line.size()) return out;  // malformed size line
+      at = eol + 2;
+      if (!need(size + 2)) return out;
+      if (raw[at + size] != '\r' || raw[at + size + 1] != '\n') return out;
+      if (size == 0) break;
+      out.body.insert(out.body.end(), raw.begin() + static_cast<std::ptrdiff_t>(at),
+                      raw.begin() + static_cast<std::ptrdiff_t>(at + size));
+      ++out.chunks;
+      at += size + 2;
+    }
+    out.ok = true;
+    return out;
   }
 
   std::size_t content_length = 0;
@@ -1433,6 +1480,17 @@ void test_parse_http_codings() {
   check(grc::live::negotiate_coding("deflate", zg) == Coding::Identity, "default: neither is identity");
 }
 
+// Waits (bounded) until `n` GETs in all have followed a sibling encode: the request reached the
+// server and is attached, so the test can move the encode on without racing the request.
+bool wait_streamed(std::uint64_t n) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (grc::rs::rest_stats().sibling.streamed < n) {
+    if (std::chrono::steady_clock::now() >= deadline) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return true;
+}
+
 void test_http_dual_coding_sibling() {
   using grc::live::Coding;
   grc::rs::RestConfig rest;
@@ -1482,27 +1540,47 @@ void test_http_dual_coding_sibling() {
             resp.body.size() == a->size() && std::equal(resp.body.begin(), resp.body.end(), a->begin()),
         "dual: a zstd client gets the stored zstd body");
 
-  // 2. A LAN GET before the gzip body is made: the identity at once, counted as a miss.
+  // 2. A LAN GET before the encode even ran: answered at once with a chunked gzip response that
+  // follows the one encode, and decodes to the identity. A carrier (whole bodies only) gets none.
+  check(served.lookup_coded(ha, Coding::Gzip) == nullptr && grc::rs::rest_stats().sibling.misses == 1,
+        "dual: a carrier asking before it is made gets none (a miss)");
+  grc::rs::set_sibling_tuning(1, 16384, 2);  // 13 blocks for a 200 kB identity
+  server.take_events();  // step 1's
   const SocketHandle g = connect_loopback(server.port());
   req = plain_http_request("GET", config.resource_prefix + ha, {{"Accept-Encoding", lan}});
   grc::rs::socket_send(g, req.data(), req.size());
-  resp = read_http_response(g);
-  check(resp.ok && resp.status == 200 && resp.headers.count("content-encoding") == 0 &&
-            resp.headers["etag"] == "\"" + ha + "\"" && resp.body.size() == identity_a->size() &&
-            std::equal(resp.body.begin(), resp.body.end(), identity_a->begin()),
-        "dual: a gzip GET before the gzip body exists gets the identity without waiting");
-  check(grc::rs::rest_stats().sibling.misses == 1 && get_inflates() == 1 && pool.size() == 1,
-        "dual: that GET is one miss and one identity inflate, and starts nothing");
-  check(served.lookup_coded(ha, Coding::Gzip) == nullptr && grc::rs::rest_stats().sibling.misses == 2,
-        "dual: a carrier asking before it is made gets none (a second miss)");
-
-  // 3. Once made: gzip, decoding to the identity; 304 per coding.
+  HttpResponse followed;
+  std::thread reader([&] { followed = read_http_response(g); });
+  check(wait_streamed(1), "dual: the gzip GET follows the queued encode");
+  const std::vector<grc::live::Event> head_events = wait_events(server, 1, 100);
+  check(head_events.empty() && pool.size() == 1,
+        "dual: the follower waits on the encode, not on the server (no event until it ends)");
   pool.run_all();
+  reader.join();
+  std::vector<std::uint8_t> decoded;
+  check(followed.ok && followed.status == 200 && followed.chunked && followed.chunks == 13 &&
+            followed.headers["content-encoding"] == "gzip" && followed.headers.count("content-length") == 0 &&
+            followed.headers["etag"] == "\"" + ha + "-gzip\"" && followed.headers["vary"] == "Accept-Encoding" &&
+            grc::rs::http_coding::gzip_decompress(followed.body.data(), followed.body.size(), &decoded) &&
+            decoded.size() == identity_a->size() && std::equal(decoded.begin(), decoded.end(), identity_a->begin()),
+        "dual: a gzip GET during the encode follows it: chunked gzip, one chunk per block, the identity");
+  const std::vector<grc::live::Event> follow_events = wait_events(server, 1, 2000);
+  check(follow_events.size() == 1 && follow_events[0].kind == grc::live::Event::HttpGet &&
+            follow_events[0].http_status == 200 && follow_events[0].coding == "gzip" &&
+            follow_events[0].bytes == identity_a->size() && follow_events[0].coded_bytes == followed.body.size(),
+        "dual: the followed GET is one HttpGet event at its end, with the gzip bytes sent");
+  check(grc::rs::rest_stats().sibling.streamed == 1 && grc::rs::rest_stats().sibling.misses == 1 &&
+            get_inflates() == 0,
+        "dual: counted as streamed, no miss, no identity inflate");
+  grc::rs::set_sibling_tuning(0, 0, 0);
+
+  // 3. Once made: the kept body with Content-Length (the same bytes the follower got); 304 per coding.
   req = plain_http_request("GET", config.resource_prefix + ha, {{"Accept-Encoding", lan}});
   grc::rs::socket_send(g, req.data(), req.size());
   resp = read_http_response(g);
-  std::vector<std::uint8_t> decoded;
-  check(resp.ok && resp.status == 200 && resp.headers["content-encoding"] == "gzip" &&
+  check(resp.body == followed.body, "dual: the kept gzip body is the followed stream, byte for byte");
+  decoded.clear();
+  check(resp.ok && resp.status == 200 && !resp.chunked && resp.headers["content-encoding"] == "gzip" &&
             resp.headers["etag"] == "\"" + ha + "-gzip\"" && resp.headers["vary"] == "Accept-Encoding" &&
             resp.headers["content-length"] == std::to_string(resp.body.size()) &&
             resp.body.size() < identity_a->size() &&
@@ -1522,7 +1600,7 @@ void test_http_dual_coding_sibling() {
   resp = read_http_response(z);
   check(resp.ok && resp.status == 304 && resp.headers["etag"] == "\"" + ha + "-zstd\"", "dual: 304 for the zstd validator");
   grc::rs::RestStats st = grc::rs::rest_stats();
-  check(st.sibling.made == 1 && st.sibling.misses == 2 && get_inflates() == 1 &&
+  check(st.sibling.made == 1 && st.sibling.misses == 1 && get_inflates() == 0 &&
             st.inflate[static_cast<std::size_t>(grc::rs::InflateSite::Sibling)].count == 1 &&
             st.sibling.in_bytes == identity_a->size() && st.sibling.out_bytes > 0,
         "dual: one gzip body made from one inflate; no further GET inflated");
@@ -1532,7 +1610,7 @@ void test_http_dual_coding_sibling() {
         "dual: a carrier gets either coded body");
   grc::live::ResourceBody body;
   check(served.lookup_coded_body(ha, Coding::Gzip, &body) && body.coding == Coding::Gzip && body.bytes != nullptr &&
-            body.identity_bytes == identity_a->size() && get_inflates() == 1,
+            body.identity_bytes == identity_a->size() && get_inflates() == 0,
         "dual: lookup_coded_body answers the gzip body and the identity size without inflating");
   grc::rs::RestCensus census;
   std::unordered_set<const void *> seen;
@@ -1540,11 +1618,79 @@ void test_http_dual_coding_sibling() {
   check(census.siblings == 1 && census.sibling_bytes == st.sibling.out_bytes && census.identity_bytes_held == 0,
         "dual: the census counts the gzip body, no identity held");
 
-  // 5. A dropped encode (the pool stopped first): the identity from then on, nothing retried.
+  // 4b. A `block` variant (GRT1 with a block format's meta, BC data) takes the same streamed path:
+  // a gzip GET during its encode follows it, and the body gunzips to bytes hashing to its name.
+  {
+    std::vector<std::uint8_t> bc(256 * 1024);
+    std::uint32_t x = 88172645u;
+    for (std::size_t i = 0; i < bc.size(); i += 16) {
+      // DXT5-like 16-byte blocks: a few distinct endpoint pairs, noisy index bits.
+      x ^= x << 13;
+      x ^= x >> 17;
+      x ^= x << 5;
+      for (std::size_t k = 0; k < 8; ++k) bc[i + k] = static_cast<std::uint8_t>((x % 7) * 37 + k);
+      for (std::size_t k = 8; k < 16; ++k) bc[i + k] = static_cast<std::uint8_t>((x >> (k * 2)) & 0x55);
+    }
+    const std::string meta = "{\"type\":\"texture-2d\",\"format\":\"DXT5\",\"width\":512,\"height\":512,"
+                             "\"mipmaps\":false,\"data_bytes\":" + std::to_string(bc.size()) + "}";
+    std::vector<std::uint8_t> k = {'G', 'R', 'T', '1', '\r', '\n', 0x1a, '\n'};
+    for (int shift = 0; shift < 32; shift += 8) k.push_back(static_cast<std::uint8_t>((meta.size() >> shift) & 0xff));
+    k.insert(k.end(), meta.begin(), meta.end());
+    for (int shift = 0; shift < 32; shift += 8) k.push_back(static_cast<std::uint8_t>((bc.size() >> shift) & 0xff));
+    k.insert(k.end(), bc.begin(), bc.end());
+    grc::Sha256 sha;
+    sha.update(k.data(), k.size());
+    const std::string hk = grc::sha256_hex(sha.finish());
+    grc::rs::PayloadPtr block = std::make_shared<grc::rs::PayloadBytes>(k.begin(), k.end());
+    grc::rs::code_at_rest(&block);
+    check(block->coded() && block->identity_size() == k.size(), "block: the BC body is zstd at rest");
+    grc::rs::PayloadMap map_k = {{ha, a}, {hk, block}};
+    served.pin({&map_k}, 3, &events);
+    check(pool.size() == 1, "block: its pin queues one gzip encode");
+    grc::rs::set_sibling_tuning(3, 65536, 3);
+    server.take_events();
+    const SocketHandle kf = connect_loopback(server.port());
+    req = plain_http_request("GET", config.resource_prefix + hk, {{"Accept-Encoding", lan}});
+    grc::rs::socket_send(kf, req.data(), req.size());
+    HttpResponse kr;
+    std::thread kreader([&] { kr = read_http_response(kf); });
+    check(wait_streamed(2), "block: the gzip GET follows the BC body's queued encode");
+    pool.run_all();
+    kreader.join();
+    std::vector<std::uint8_t> kd;
+    grc::Sha256 ksha;
+    const bool gunzipped = grc::rs::http_coding::gzip_decompress(kr.body.data(), kr.body.size(), &kd);
+    if (gunzipped) ksha.update(kd.data(), kd.size());
+    check(kr.ok && kr.chunked && kr.chunks == (k.size() + 65535) / 65536 && kr.headers["content-encoding"] == "gzip" &&
+              kr.headers["etag"] == "\"" + hk + "-gzip\"" && gunzipped && grc::sha256_hex(ksha.finish()) == hk &&
+              kr.body.size() < block->size() * 2,
+          "block: a gzip GET during the BC body's encode follows it and gunzips to bytes hashing to its name (" +
+              std::to_string(k.size()) + " identity, " + std::to_string(block->size()) + " zstd, " +
+              std::to_string(kr.body.size()) + " gzip)");
+    grc::rs::socket_close(kf);
+    grc::rs::set_sibling_tuning(0, 0, 0);
+  }
+
+  // 5. A dropped encode (the pool stopped first) while a GET follows it: that response is cut
+  // short (the connection closes, no hang), and the identity is served from then on.
   grc::rs::PayloadMap map_b = {{ha, a}, {hb, b}, {hn, noise}};
   served.pin({&map_b}, 3, &events);
   check(pool.size() == 1, "dual: a newly pinned body queues its encode");
+  const SocketHandle cut = connect_loopback(server.port());
+  req = plain_http_request("GET", config.resource_prefix + hb, {{"Accept-Encoding", lan}});
+  grc::rs::socket_send(cut, req.data(), req.size());
+  HttpResponse cut_resp;
+  std::thread cut_reader([&] { cut_resp = read_http_response(cut); });
+  check(wait_streamed(3), "dual: the gzip GET follows the encode about to be dropped");
+  const auto t_drop = std::chrono::steady_clock::now();
   pool.drop_all();
+  cut_reader.join();
+  const auto cut_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t_drop).count();
+  check(!cut_resp.ok && cut_resp.status == 200 && cut_resp.chunked && cut_ms < 2000,
+        "dual: a follower of a dropped encode is ended by a close, not left hanging (" + std::to_string(cut_ms) +
+            " ms, status " + std::to_string(cut_resp.status) + (cut_resp.ok ? " ok" : " cut") +
+            (cut_resp.chunked ? " chunked" : " length") + " " + cut_resp.headers["content-encoding"] + ")");
+  grc::rs::socket_close(cut);
   check(grc::rs::rest_stats().sibling.dropped == 1, "dual: the dropped encode is counted");
   req = plain_http_request("GET", config.resource_prefix + hb, {{"Accept-Encoding", lan}});
   grc::rs::socket_send(g, req.data(), req.size());
@@ -1585,6 +1731,308 @@ void test_http_dual_coding_sibling() {
   grc::rs::socket_close(s1);
   server1.stop(1000);
   grc::rs::set_rest_config(grc::rs::RestConfig());
+}
+
+// The parallel gzip encoder: one standard member, whatever the block size, edge sizes included,
+// in one chunk per block, the first carrying the header and the last the trailer.
+void test_gzip_parallel_roundtrip() {
+  using grc::rs::http_coding::GzipParallel;
+  int cases = 0;
+  for (const std::size_t block : {std::size_t{7}, std::size_t{4096}, std::size_t{65536}}) {
+    for (const std::size_t size : {std::size_t{0}, std::size_t{1}, block - 1, block, block + 1, 5 * block + 7}) {
+      for (const bool compressible : {true, false}) {
+        std::vector<std::uint8_t> data = compressible ? compressible_bytes(size) : pattern_bytes(size, 9);
+        if (!compressible) {
+          std::uint32_t x = 2463534242u;  // xorshift: incompressible
+          for (std::uint8_t &b : data) {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            b = static_cast<std::uint8_t>(x);
+          }
+        }
+        for (const int threads : {1, 3}) {
+          for (const int level : {1, 6}) {
+            GzipParallel config;
+            config.block_bytes = block;
+            config.threads = threads;
+            config.level = level;
+            std::vector<std::uint8_t> out;
+            std::size_t chunks = 0;
+            bool ordered = true;
+            const bool ok = grc::rs::http_coding::gzip_parallel(data.data(), data.size(), config,
+                                                                [&](std::vector<std::uint8_t> &&c) {
+                                                                  if (chunks == 0 && (c.size() < 10 || c[0] != 0x1f))
+                                                                    ordered = false;
+                                                                  ++chunks;
+                                                                  out.insert(out.end(), c.begin(), c.end());
+                                                                });
+            std::vector<std::uint8_t> back;
+            const std::size_t blocks = size == 0 ? 1 : (size + block - 1) / block;
+            const bool good = ok && ordered && chunks == blocks &&
+                              grc::rs::http_coding::gzip_decompress(out.data(), out.size(), &back) && back == data;
+            check(good, "gzip_parallel: block " + std::to_string(block) + " size " + std::to_string(size) +
+                            (compressible ? " text" : " noise") + " threads " + std::to_string(threads) + " level " +
+                            std::to_string(level) + " gunzips to the input in " + std::to_string(blocks) + " chunks");
+            ++cases;
+          }
+        }
+      }
+    }
+  }
+  // A cancel seen before a block starts: false, and no whole member.
+  const std::vector<std::uint8_t> data = compressible_bytes(100000);
+  std::atomic<bool> cancel{true};
+  GzipParallel config;
+  config.block_bytes = 4096;
+  std::size_t emitted = 0;
+  check(!grc::rs::http_coding::gzip_parallel(data.data(), data.size(), config,
+                                             [&](std::vector<std::uint8_t> &&) { ++emitted; }, &cancel) &&
+            emitted == 0,
+        "gzip_parallel: a cancelled encode is false and emits nothing");
+  // A source that is still being inflated: the encode follows it (zstd_decompress_progressive).
+  std::vector<std::uint8_t> z;
+  check(grc::rs::http_coding::zstd_compress(data.data(), data.size(), &z), "zstd of the follow source");
+  std::vector<std::uint8_t> target(data.size());
+  std::mutex m;
+  std::condition_variable cv;
+  std::size_t avail = 0;
+  bool ended = false;
+  std::thread inflater([&] {
+    grc::rs::http_coding::zstd_decompress_progressive(z.data(), z.size(), target.data(), target.size(),
+                                                      [&](std::size_t w) {
+                                                        {
+                                                          std::lock_guard<std::mutex> lock(m);
+                                                          avail = w;
+                                                        }
+                                                        cv.notify_all();
+                                                        return true;
+                                                      });
+    std::lock_guard<std::mutex> lock(m);
+    ended = true;
+    cv.notify_all();
+  });
+  config.ready = [&](std::size_t end) {
+    std::unique_lock<std::mutex> lock(m);
+    cv.wait(lock, [&] { return avail >= end || ended; });
+    return avail >= end;
+  };
+  config.threads = 3;
+  std::vector<std::uint8_t> out, back;
+  const bool ok = grc::rs::http_coding::gzip_parallel(target.data(), target.size(), config,
+                                                      [&](std::vector<std::uint8_t> &&c) {
+                                                        out.insert(out.end(), c.begin(), c.end());
+                                                      });
+  inflater.join();
+  check(ok && grc::rs::http_coding::gzip_decompress(out.data(), out.size(), &back) && back == data,
+        "gzip_parallel: an encode that follows a progressive inflate gunzips to the identity");
+  check(cases == 3 * 6 * 2 * 2 * 2, "gzip_parallel: every case ran");
+}
+
+// A source whose gzip body is a BodyStream the test drives by hand (what ServedResources hands
+// out while a sibling encode runs).
+class StreamSource : public FakeResourceSource {
+ public:
+  std::mutex m;
+  std::shared_ptr<grc::rs::BodyStream> stream;
+  std::shared_ptr<const std::vector<std::uint8_t>> whole;  // set once "made"
+  grc::live::ResourceBody lookup_body(std::string_view hash, grc::live::Coding accepted) override {
+    grc::live::ResourceBody out;
+    const std::shared_ptr<const std::vector<std::uint8_t>> identity = lookup(hash);
+    if (identity == nullptr) return out;
+    out.identity_bytes = identity->size();
+    std::lock_guard<std::mutex> lock(m);
+    if (accepted == grc::live::Coding::Gzip && (whole != nullptr || stream != nullptr)) {
+      out.coding = grc::live::Coding::Gzip;
+      out.bytes = whole;
+      if (whole == nullptr) out.stream = stream;
+      return out;
+    }
+    out.bytes = identity;
+    return out;
+  }
+};
+
+// Reads from `fd` until the peer closes or the receive timeout fires.
+std::vector<std::uint8_t> read_until_close(SocketHandle fd) {
+  std::vector<std::uint8_t> all;
+  std::uint8_t buf[65536];
+  for (;;) {
+    const std::ptrdiff_t n = grc::rs::socket_recv(fd, buf, sizeof(buf));
+    if (n <= 0) return all;
+    all.insert(all.end(), buf, buf + n);
+  }
+}
+
+// Followers of a stream: answered at once, several joining at different points, each getting the
+// whole chunked body; a live WebSocket keeps flowing meanwhile; a pipelined request waits its
+// turn; once the body is whole, a GET gets it with Content-Length; a failed stream ends its
+// followers with a close.
+void test_http_follow_stream() {
+  using grc::live::Coding;
+  const std::string hash = make_hash('c');
+  const std::vector<std::uint8_t> identity = compressible_bytes(300000);
+  std::vector<std::vector<std::uint8_t>> parts;
+  grc::rs::http_coding::GzipParallel gz;
+  gz.block_bytes = 50000;
+  check(grc::rs::http_coding::gzip_parallel(identity.data(), identity.size(), gz,
+                                            [&](std::vector<std::uint8_t> &&c) { parts.push_back(std::move(c)); }) &&
+            parts.size() == 6,
+        "follow: six gzip chunks to stream");
+  std::vector<std::uint8_t> joined;
+  for (const auto &p : parts) joined.insert(joined.end(), p.begin(), p.end());
+
+  StreamSource source;
+  source.set(hash, identity);
+  source.stream = std::make_shared<grc::rs::BodyStream>();
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  config.codings = {Coding::Zstd, Coding::Gzip};
+  std::string error;
+  check(server.start(config, &source, &error), "follow server starts: " + error);
+  const SocketHandle ws_fd = connect_loopback(server.port());
+  do_handshake(ws_fd, "dGhlIHNhbXBsZSBub25jZQ==");
+  const std::uint32_t ws_conn = expect_opened(server);
+  check(ws_conn != 0, "follow: a WebSocket session is open beside the followers");
+  const std::string lan_get =
+      plain_http_request("GET", config.resource_prefix + hash, {{"Accept-Encoding", "gzip, deflate"}});
+  const auto append = [&](std::size_t i) {
+    source.stream->append(std::make_shared<const std::vector<std::uint8_t>>(parts[i]));
+  };
+
+  // A: before any chunk exists. Its head arrives at once.
+  const SocketHandle a = connect_loopback(server.port());
+  grc::rs::socket_send(a, lan_get.data(), lan_get.size());
+  std::vector<std::uint8_t> a_head = recv_some(a);
+  const std::string a_text(a_head.begin(), a_head.end());
+  check(a_text.rfind("HTTP/1.1 200 OK\r\n", 0) == 0 && a_text.find("Transfer-Encoding: chunked\r\n") != std::string::npos &&
+            a_text.find("Content-Encoding: gzip\r\n") != std::string::npos &&
+            a_text.find("Content-Length") == std::string::npos,
+        "follow: a GET with no chunk made yet is answered at once (chunked gzip head): " + a_text.substr(0, 200));
+  append(0);
+  append(1);
+  // A's first bytes arrive before the encode ends.
+  const std::vector<std::uint8_t> a_more = recv_some(a);
+  check(!a_more.empty() || a_head.size() > a_text.find("\r\n\r\n") + 4,
+        "follow: the first chunk reaches a follower while the encode runs");
+
+  // B after two chunks; the WebSocket carries a frame while both follow.
+  const SocketHandle b = connect_loopback(server.port());
+  grc::rs::socket_send(b, lan_get.data(), lan_get.size());
+  HttpResponse rb;
+  std::thread tb([&] { rb = read_http_response(b); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  check(server.send_text(ws_conn, "while-streaming"), "follow: the frame thread's send is taken");
+  const ServerFrame frame = read_server_frame(ws_fd);
+  check(frame.ok && frame.opcode == 0x1 && std::string(frame.payload.begin(), frame.payload.end()) == "while-streaming",
+        "follow: a WebSocket frame flows while two GETs follow an unfinished stream");
+  append(2);
+  append(3);
+  append(4);
+  // C after five chunks, pipelining a second (identity) request behind it on the same connection.
+  const SocketHandle c = connect_loopback(server.port());
+  const std::string pipelined =
+      lan_get + plain_http_request("GET", config.resource_prefix + hash, {{"Connection", "close"}});
+  grc::rs::socket_send(c, pipelined.data(), pipelined.size());
+  std::vector<std::uint8_t> c_all;
+  std::thread tc([&] { c_all = read_until_close(c); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  append(5);
+  source.stream->finish(true);
+  tb.join();
+  tc.join();
+  // A: the rest of its response (head and early bytes already read above).
+  std::vector<std::uint8_t> a_all = a_head;
+  a_all.insert(a_all.end(), a_more.begin(), a_more.end());
+  for (;;) {
+    const std::string t(a_all.begin(), a_all.end());
+    if (t.size() >= 5 && t.compare(t.size() - 5, 5, "0\r\n\r\n") == 0) break;
+    const std::vector<std::uint8_t> more = recv_some(a);
+    if (more.empty()) break;
+    a_all.insert(a_all.end(), more.begin(), more.end());
+  }
+  const auto dechunk = [](const std::vector<std::uint8_t> &raw, std::size_t *end) {
+    std::vector<std::uint8_t> body;
+    const std::string t(raw.begin(), raw.end());
+    std::size_t at = t.find("\r\n\r\n");
+    if (at == std::string::npos) return body;
+    at += 4;
+    for (;;) {
+      const std::size_t eol = t.find("\r\n", at);
+      if (eol == std::string::npos) return std::vector<std::uint8_t>();
+      const std::size_t n = std::strtoul(t.substr(at, eol - at).c_str(), nullptr, 16);
+      at = eol + 2;
+      if (n == 0) {
+        *end = at + 2;
+        return body;
+      }
+      body.insert(body.end(), raw.begin() + static_cast<std::ptrdiff_t>(at), raw.begin() + static_cast<std::ptrdiff_t>(at + n));
+      at += n + 2;
+    }
+  };
+  std::size_t a_end = 0, c_end = 0;
+  check(dechunk(a_all, &a_end) == joined, "follow: A (joined before any chunk) gets the whole member");
+  check(rb.ok && rb.chunked && rb.body == joined, "follow: B (joined after two chunks) gets the whole member");
+  const std::vector<std::uint8_t> c_body = dechunk(c_all, &c_end);
+  const std::string c_rest = c_end > 0 ? std::string(c_all.begin() + static_cast<std::ptrdiff_t>(c_end), c_all.end()) : "";
+  check(c_body == joined, "follow: C (joined after five chunks) gets the whole member");
+  check(c_rest.rfind("HTTP/1.1 200 OK\r\n", 0) == 0 && c_rest.find("Content-Length: " + std::to_string(identity.size())) != std::string::npos &&
+            c_rest.size() == c_rest.find("\r\n\r\n") + 4 + identity.size(),
+        "follow: a request pipelined behind a followed one is answered after it, in order");
+  std::vector<std::uint8_t> decoded;
+  check(grc::rs::http_coding::gzip_decompress(joined.data(), joined.size(), &decoded) && decoded == identity,
+        "follow: the member gunzips to the identity");
+  std::vector<grc::live::Event> events = wait_events(server, 4, 2000);
+  int followed_events = 0;
+  for (const auto &e : events) {
+    if (e.kind == grc::live::Event::HttpGet && e.coding == "gzip" && e.coded_bytes == joined.size()) ++followed_events;
+  }
+  check(followed_events == 3, "follow: each follower is one HttpGet with the gzip bytes, got " + std::to_string(followed_events));
+
+  // Once whole: Content-Length, the same bytes.
+  {
+    std::lock_guard<std::mutex> lock(source.m);
+    source.whole = std::make_shared<const std::vector<std::uint8_t>>(joined);
+  }
+  grc::rs::socket_send(b, lan_get.data(), lan_get.size());
+  HttpResponse rd = read_http_response(b);
+  check(rd.ok && !rd.chunked && rd.headers["content-length"] == std::to_string(joined.size()) && rd.body == joined,
+        "follow: a GET after the encode gets the whole body with Content-Length");
+
+  // A failed stream: its follower's connection closes, no hang.
+  {
+    std::lock_guard<std::mutex> lock(source.m);
+    source.whole = nullptr;
+    source.stream = std::make_shared<grc::rs::BodyStream>();
+  }
+  const SocketHandle f = connect_loopback(server.port());
+  grc::rs::socket_send(f, lan_get.data(), lan_get.size());
+  HttpResponse rf;
+  std::thread tf([&] { rf = read_http_response(f); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  source.stream->append(std::make_shared<const std::vector<std::uint8_t>>(parts[0]));
+  const auto t0 = std::chrono::steady_clock::now();
+  source.stream->finish(false);
+  tf.join();
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+  check(!rf.ok && rf.status == 200 && rf.chunked && ms < 2000,
+        "follow: a failed stream ends its follower with a close (" + std::to_string(ms) + " ms)");
+  // A follower whose server stops: the server's stop does not wait on the stream.
+  {
+    std::lock_guard<std::mutex> lock(source.m);
+    source.stream = std::make_shared<grc::rs::BodyStream>();
+  }
+  const SocketHandle g = connect_loopback(server.port());
+  grc::rs::socket_send(g, lan_get.data(), lan_get.size());
+  recv_some(g);
+  const auto t_stop = std::chrono::steady_clock::now();
+  server.stop(200);
+  const auto stop_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t_stop).count();
+  source.stream->append(std::make_shared<const std::vector<std::uint8_t>>(parts[0]));  // after stop: no reader
+  source.stream->finish(true);
+  check(stop_ms < 2000, "follow: stop() with a follower attached returns (" + std::to_string(stop_ms) + " ms)");
+  for (SocketHandle fd : {ws_fd, a, b, c, f, g}) grc::rs::socket_close(fd);
 }
 
 void test_http_gzip_and_off_and_sabotage() {
@@ -3445,6 +3893,8 @@ int main(int argc, char **argv) {
   test_http_content_coding();
   test_http_gzip_and_off_and_sabotage();
   test_parse_http_codings();
+  test_gzip_parallel_roundtrip();
+  test_http_follow_stream();
   test_http_dual_coding_sibling();
   test_http_keep_alive_two_requests_one_connection();
   test_http_connection_close_honoured();
