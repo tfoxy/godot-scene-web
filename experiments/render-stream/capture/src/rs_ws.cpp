@@ -331,6 +331,30 @@ Coding negotiate_coding(std::string_view accept_encoding, const std::vector<Codi
   return Coding::Identity;
 }
 
+bool parse_http_codings(const char *text, std::vector<Coding> *out, std::string *error) {
+  const std::string value = text != nullptr ? std::string(text) : std::string();
+  out->clear();
+  if (value == "off") return true;
+  const std::string list = value.empty() ? std::string("zstd,gzip") : value;
+  std::size_t start = 0;
+  while (start <= list.size()) {
+    std::size_t comma = list.find(',', start);
+    if (comma == std::string::npos) comma = list.size();
+    const std::string name = trim(list.substr(start, comma - start));
+    start = comma + 1;
+    const Coding coding = name == "zstd" ? Coding::Zstd : name == "gzip" ? Coding::Gzip : Coding::Identity;
+    if (coding == Coding::Identity || std::find(out->begin(), out->end(), coding) != out->end()) {
+      out->clear();
+      if (error != nullptr) {
+        *error = "invalid GRC_HTTP_ENCODING=" + value + " (off, or a list of distinct zstd and gzip, e.g. zstd,gzip)";
+      }
+      return false;
+    }
+    out->push_back(coding);
+  }
+  return true;
+}
+
 // Defined outside the anonymous namespace: declared in rs_ws.h so its own unit test (and nothing
 // else) can call it directly.
 bool constant_time_equals(std::string_view a, std::string_view b) {

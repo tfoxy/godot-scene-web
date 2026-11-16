@@ -418,8 +418,10 @@ ETag: "<hash>"
 
 A host may answer a payload GET with an HTTP content coding. It is plain HTTP negotiation, not a
 change to framing, keys or payload bytes, so it applies at every live version >= /2 and needs no
-version of its own. Hosts: `GRC_HTTP_ENCODING=off|zstd|gzip` (default `zstd`; `off` sends identity
-bytes exactly).
+version of its own. Hosts: `GRC_HTTP_ENCODING=off`, or a list of `zstd` and `gzip` in preference
+order (default `zstd,gzip`; `off` sends identity bytes exactly). A host offering both answers
+`zstd` when the request takes it and `gzip` when it takes only gzip, or identity bytes while its
+gzip copy of that payload is not ready yet. A client must accept any of them.
 
 ```
 GET <http_path><hash> HTTP/1.1

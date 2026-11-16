@@ -267,13 +267,18 @@ class ServedResources : public live::ResourceSource {
   // is inflated for the caller (counted, rs_payload_rest.h `get`), outside the mutex.
   std::shared_ptr<const std::vector<std::uint8_t>> lookup(std::string_view hash) override;
   // G8kz, TDR: the stored body of a retained payload when it is held coded with `coding` (made
-  // once where it was built, rs_payload_rest.h); null otherwise. Never compresses.
+  // once where it was built, rs_payload_rest.h), or its sibling body when `coding` is the host's
+  // second coding and that is made (queued at pin); null otherwise. Never compresses or waits.
   std::shared_ptr<const std::vector<std::uint8_t>> lookup_coded(std::string_view hash,
                                                                 live::Coding coding) override;
-  // TDR: one probe for a GET: the stored body when `accepted` is its coding, else the identity.
+  // TDR: one probe for a GET: the stored body when `accepted` is its coding, the sibling body
+  // when `accepted` is the second coding and it is made, else the identity. Never waits.
   live::ResourceBody lookup_body(std::string_view hash, live::Coding accepted) override;
-  // Never inflates (the identity size is the held body's header).
+  // Never inflates (the identity size is the held body's header); the sibling body as lookup_coded.
   bool lookup_coded_body(std::string_view hash, live::Coding coding, live::ResourceBody *out) override;
+  // How sibling encodes reach the host's sibling pool (rs_payload_rest.h "Sibling coding"). Set
+  // before the first pin; unset, no sibling is ever made (a gzip-only request gets the identity).
+  void set_sibling_submit(SiblingSubmit submit) { sibling_submit_ = std::move(submit); }
   bool contains(std::string_view hash) override;
   // served-at-rest: every retained body into `out` (each distinct body once, across `seen`).
   void census(RestCensus *out, std::unordered_set<const void *> *seen) const;
@@ -335,6 +340,7 @@ class ServedResources : public live::ResourceSource {
   bool serve_skip_ = false;
   bool shadow_ = false;
   std::string shadow_failure_;
+  SiblingSubmit sibling_submit_;  // set before serving, then only read
 };
 
 }  // namespace rs

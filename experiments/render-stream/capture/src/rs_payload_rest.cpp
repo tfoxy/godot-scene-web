@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <mutex>
 #include <thread>
 
 #include "rs_http_coding.h"
@@ -15,6 +16,9 @@ namespace rs {
 namespace {
 
 std::atomic<std::uint8_t> g_coding{static_cast<std::uint8_t>(RestCoding::Identity)};
+std::atomic<std::uint8_t> g_sibling{static_cast<std::uint8_t>(RestCoding::Identity)};
+// Every PayloadBytes::sibling, and each RestSibling's fields.
+std::mutex g_sibling_mutex;
 std::atomic<bool> g_keep_identity{false};
 std::atomic<std::thread::id> g_main_thread{};
 
@@ -34,6 +38,14 @@ struct AtomicStats {
   std::atomic<std::uint64_t> code_main_thread{0};
   AtomicInflate inflate[static_cast<std::size_t>(InflateSite::kCount)];
   std::atomic<std::uint64_t> inflate_failed{0};
+  std::atomic<std::uint64_t> sib_made{0};
+  std::atomic<std::uint64_t> sib_not_smaller{0};
+  std::atomic<std::uint64_t> sib_failed{0};
+  std::atomic<std::uint64_t> sib_dropped{0};
+  std::atomic<std::uint64_t> sib_in_bytes{0};
+  std::atomic<std::uint64_t> sib_out_bytes{0};
+  std::atomic<std::uint64_t> sib_ns{0};
+  std::atomic<std::uint64_t> sib_misses{0};
 };
 
 AtomicStats &stats() {
@@ -53,12 +65,14 @@ constexpr std::uint8_t kGrt1[8] = {0x47, 0x52, 0x54, 0x31, 0x0D, 0x0A, 0x1A, 0x0
 
 void set_rest_config(const RestConfig &config) {
   g_coding.store(static_cast<std::uint8_t>(config.coding), std::memory_order_release);
+  g_sibling.store(static_cast<std::uint8_t>(config.sibling), std::memory_order_release);
   g_keep_identity.store(config.keep_identity, std::memory_order_release);
 }
 
 RestConfig rest_config() {
   RestConfig out;
   out.coding = static_cast<RestCoding>(g_coding.load(std::memory_order_acquire));
+  out.sibling = static_cast<RestCoding>(g_sibling.load(std::memory_order_acquire));
   out.keep_identity = g_keep_identity.load(std::memory_order_acquire);
   return out;
 }
@@ -149,6 +163,8 @@ const char *inflate_site_name(InflateSite site) {
       return "sabotage";
     case InflateSite::Restore:
       return "restore";
+    case InflateSite::Sibling:
+      return "sibling";
     case InflateSite::kCount:
       break;
   }
@@ -198,6 +214,14 @@ RestStats rest_stats() {
     out.inflate[i].ns = s.inflate[i].ns.load(std::memory_order_relaxed);
   }
   out.inflate_failed = s.inflate_failed.load(std::memory_order_relaxed);
+  out.sibling.made = s.sib_made.load(std::memory_order_relaxed);
+  out.sibling.not_smaller = s.sib_not_smaller.load(std::memory_order_relaxed);
+  out.sibling.failed = s.sib_failed.load(std::memory_order_relaxed);
+  out.sibling.dropped = s.sib_dropped.load(std::memory_order_relaxed);
+  out.sibling.in_bytes = s.sib_in_bytes.load(std::memory_order_relaxed);
+  out.sibling.out_bytes = s.sib_out_bytes.load(std::memory_order_relaxed);
+  out.sibling.ns = s.sib_ns.load(std::memory_order_relaxed);
+  out.sibling.misses = s.sib_misses.load(std::memory_order_relaxed);
   return out;
 }
 
@@ -216,6 +240,112 @@ void reset_rest_stats() {
     slot.ns.store(0);
   }
   s.inflate_failed.store(0);
+  for (std::atomic<std::uint64_t> *n : {&s.sib_made, &s.sib_not_smaller, &s.sib_failed, &s.sib_dropped,
+                                        &s.sib_in_bytes, &s.sib_out_bytes, &s.sib_ns, &s.sib_misses}) {
+    n->store(0);
+  }
+}
+
+namespace {
+
+// Ends a sibling encode: Ready with `bytes`, or Failed (none made, never retried for this body).
+void sibling_end(const std::shared_ptr<RestSibling> &sib, std::shared_ptr<const std::vector<std::uint8_t>> bytes) {
+  std::lock_guard<std::mutex> lock(g_sibling_mutex);
+  sib->bytes = std::move(bytes);
+  sib->state = sib->bytes != nullptr ? RestSibling::State::Ready : RestSibling::State::Failed;
+}
+
+// One sibling encode as queued. Destroyed without having run (the pool dropped it at stream end,
+// or refused it), it ends the encode as failed: its body's readers keep getting the identity.
+struct SiblingTask {
+  PayloadPtr body;
+  std::shared_ptr<RestSibling> sib;
+  bool ran = false;
+  SiblingTask() = default;
+  SiblingTask(const SiblingTask &) = delete;
+  SiblingTask &operator=(const SiblingTask &) = delete;
+  ~SiblingTask() {
+    if (!ran && sib != nullptr) {
+      stats().sib_dropped.fetch_add(1, std::memory_order_relaxed);
+      sibling_end(sib, nullptr);
+    }
+  }
+  void run() {
+    ran = true;
+    AtomicStats &s = stats();
+    std::shared_ptr<const std::vector<std::uint8_t>> kept;
+    std::atomic<std::uint64_t> *outcome = &s.sib_failed;  // inflate or coder failed
+    std::uint64_t identity_size = 0;
+    {
+      const std::shared_ptr<const std::vector<std::uint8_t>> identity = identity_of(body, InflateSite::Sibling);
+      if (identity != nullptr) {
+        identity_size = identity->size();
+        const std::uint64_t t0 = now_ns();
+        std::vector<std::uint8_t> out;
+        const bool ok = sib->coding == RestCoding::Zstd
+                            ? http_coding::zstd_compress(identity->data(), identity->size(), &out)
+                            : http_coding::gzip_compress(identity->data(), identity->size(), &out);
+        s.sib_ns.fetch_add(now_ns() - t0, std::memory_order_relaxed);
+        if (ok && out.size() >= identity->size()) {
+          outcome = &s.sib_not_smaller;
+        } else if (ok) {
+          // Exact size, as code_at_rest(): the coder's buffer has about the identity's capacity.
+          kept = std::make_shared<const std::vector<std::uint8_t>>(out.begin(), out.end());
+          outcome = &s.sib_made;
+        }
+      }
+    }  // the identity and the coder's buffer are freed before the body is published
+    const std::uint64_t kept_size = kept != nullptr ? kept->size() : 0;
+    sibling_end(sib, std::move(kept));
+    // Counted after the body is visible: a reader that sees `made` also gets the body.
+    if (outcome == &s.sib_made) {
+      s.sib_in_bytes.fetch_add(identity_size, std::memory_order_relaxed);
+      s.sib_out_bytes.fetch_add(kept_size, std::memory_order_relaxed);
+    }
+    outcome->fetch_add(1, std::memory_order_relaxed);
+    body.reset();  // the pool may keep the closure a while; the body is not its to hold
+  }
+};
+
+}  // namespace
+
+bool start_sibling(const PayloadPtr &body, const SiblingSubmit &submit) {
+  const RestCoding coding = static_cast<RestCoding>(g_sibling.load(std::memory_order_acquire));
+  if (!submit || body == nullptr || !body->coded() || coding == RestCoding::Identity || coding == body->rest) {
+    return false;
+  }
+  auto task = std::make_shared<SiblingTask>();
+  {
+    std::lock_guard<std::mutex> lock(g_sibling_mutex);
+    if (body->sibling != nullptr) {
+      return false;  // already made, being made, or failed: one encode per body
+    }
+    body->sibling = std::make_shared<RestSibling>();
+    body->sibling->coding = coding;
+    task->sib = body->sibling;
+  }
+  task->body = body;
+  // Outside the mutex: a refused task is destroyed here, which marks the encode failed.
+  return submit([task] { task->run(); });
+}
+
+std::shared_ptr<const std::vector<std::uint8_t>> sibling_bytes(const PayloadPtr &body, RestCoding coding) {
+  if (body == nullptr || coding == RestCoding::Identity) {
+    return nullptr;
+  }
+  std::shared_ptr<const std::vector<std::uint8_t>> out;
+  {
+    std::lock_guard<std::mutex> lock(g_sibling_mutex);
+    const std::shared_ptr<RestSibling> &sib = body->sibling;
+    if (sib != nullptr && sib->state == RestSibling::State::Ready && sib->coding == coding) {
+      out = sib->bytes;
+    }
+  }
+  if (out == nullptr && body->coded() && coding != body->rest &&
+      coding == static_cast<RestCoding>(g_sibling.load(std::memory_order_acquire))) {
+    stats().sib_misses.fetch_add(1, std::memory_order_relaxed);  // not made (yet): identity instead
+  }
+  return out;
 }
 
 void set_rest_main_thread() { g_main_thread.store(std::this_thread::get_id()); }
@@ -231,6 +361,13 @@ void RestCensus::add(const PayloadPtr &body, std::unordered_set<const void *> *s
   held_bytes += body->held_bytes();
   capacity_slack_bytes += body->capacity() - body->size();
   identity_bytes += body->identity_size();
+  {
+    std::lock_guard<std::mutex> lock(g_sibling_mutex);
+    if (body->sibling != nullptr && body->sibling->state == RestSibling::State::Ready) {
+      ++siblings;
+      sibling_bytes += body->sibling->bytes->size();
+    }
+  }
   if (body->coded()) {
     ++coded;
     if (body->kept_identity != nullptr) {

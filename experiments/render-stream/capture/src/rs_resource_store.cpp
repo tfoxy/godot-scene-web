@@ -256,6 +256,7 @@ void ServedResources::corrupt(const std::string &hash) {
   if (it != served_.end() && it->second != nullptr) {
     bytes_ -= std::min(bytes_, it->second->held_bytes());
     it->second = corrupted_copy(it->second);
+    start_sibling(it->second, sibling_submit_);
     bytes_ += it->second->held_bytes();
   }
 }
@@ -282,6 +283,8 @@ bool ServedResources::add_locked(const std::string &hash, const PayloadPtr &payl
   if (hash == corrupt_) {
     entry.first->second = corrupted_copy(payload);
   }
+  // The second coding's body, queued once per body now that it is served (never on this thread).
+  start_sibling(entry.first->second, sibling_submit_);
   bytes_ += entry.first->second->held_bytes();  // TDR: the bytes held (coded at rest)
   ++totals_.pinned;
   if (events != nullptr) {
@@ -537,14 +540,21 @@ std::shared_ptr<const std::vector<std::uint8_t>> ServedResources::lookup_coded(
   if (coding == live::Coding::Identity) {
     return nullptr;
   }
-  std::lock_guard<std::mutex> lock(mutex_);
-  const PayloadPtr held = held_locked(hash);
+  PayloadPtr held;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    held = held_locked(hash);
+  }
   // TDR: the stored body, exactly as it is held, when it is held in `coding`; nothing is ever
   // compressed here (the body was coded where it was built).
-  if (held == nullptr || static_cast<std::uint8_t>(held->rest) != static_cast<std::uint8_t>(coding)) {
+  if (held == nullptr) {
     return nullptr;
   }
-  return held;
+  if (static_cast<std::uint8_t>(held->rest) == static_cast<std::uint8_t>(coding)) {
+    return held;
+  }
+  // The sibling body when made; otherwise null, and the caller serves the identity.
+  return sibling_bytes(held, static_cast<RestCoding>(coding));
 }
 
 live::ResourceBody ServedResources::lookup_body(std::string_view hash, live::Coding accepted) {
@@ -558,11 +568,15 @@ live::ResourceBody ServedResources::lookup_body(std::string_view hash, live::Cod
     return out;
   }
   out.identity_bytes = held->identity_size();
-  if (accepted != live::Coding::Identity && held->coded() &&
-      static_cast<std::uint8_t>(held->rest) == static_cast<std::uint8_t>(accepted)) {
-    out.bytes = held;
-    out.coding = accepted;
-    return out;
+  if (accepted != live::Coding::Identity && held->coded()) {
+    // The stored body when it is held in `accepted`, else the second coding's body once made.
+    out.bytes = static_cast<std::uint8_t>(held->rest) == static_cast<std::uint8_t>(accepted)
+                    ? held
+                    : sibling_bytes(held, static_cast<RestCoding>(accepted));
+    if (out.bytes != nullptr) {
+      out.coding = accepted;
+      return out;
+    }
   }
   out.bytes = identity_of(held, InflateSite::Get);
   return out;
@@ -579,10 +593,13 @@ bool ServedResources::lookup_coded_body(std::string_view hash, live::Coding codi
     return false;
   }
   out->identity_bytes = held->identity_size();
-  if (coding != live::Coding::Identity && held->coded() &&
-      static_cast<std::uint8_t>(held->rest) == static_cast<std::uint8_t>(coding)) {
-    out->bytes = held;
-    out->coding = coding;
+  if (coding != live::Coding::Identity && held->coded()) {
+    out->bytes = static_cast<std::uint8_t>(held->rest) == static_cast<std::uint8_t>(coding)
+                     ? held
+                     : sibling_bytes(held, static_cast<RestCoding>(coding));
+    if (out->bytes != nullptr) {
+      out->coding = coding;
+    }
   }
   return true;
 }

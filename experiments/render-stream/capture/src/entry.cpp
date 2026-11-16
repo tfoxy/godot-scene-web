@@ -486,7 +486,8 @@ struct Live {
   uint64_t credit_window_max = 2;
   std::string listener_sabotage;
   std::string live_coding = "zstd-base";  // W11t: GRC_LIVE_CODING (what /11 hellos may get)
-  // G8kz: GRC_HTTP_ENCODING (default zstd): the codings the host offers on resource GETs.
+  // G8kz: GRC_HTTP_ENCODING (default zstd,gzip): the codings the host offers on resource
+  // GETs, most preferred first.
   std::vector<live::Coding> http_codings;
   bool http_coding_on = false;
 };
@@ -575,22 +576,17 @@ std::vector<std::string> comma_names(const std::string &text) {
 }
 
 
-// GRC_HTTP_ENCODING = off | zstd | gzip, default zstd (the
-// default is safe because the coding is negotiated per request: a client that sends no
-// Accept-Encoding gets today's identity bytes).
+// GRC_HTTP_ENCODING: live::parse_http_codings (rs_ws.h), default `zstd,gzip`. The first entry is
+// how texture bodies are held at rest; the second is made per served body on the sibling pool
+// (rs_payload_rest.h "Sibling coding"), which is what a plain-http LAN browser (`gzip, deflate`,
+// never zstd) is served.
 bool parse_http_encoding(const char *text, std::vector<live::Coding> *out, std::string *error) {
-  const std::string value = text != nullptr ? std::string(text) : std::string();
-  out->clear();
-  if (value.empty() || value == "zstd") {
-    out->push_back(live::Coding::Zstd);
-  } else if (value == "gzip") {
-    out->push_back(live::Coding::Gzip);
-  } else if (value != "off") {
-    *error = "invalid GRC_HTTP_ENCODING=" + value + " (off, zstd or gzip)";
-    return false;
-  }
-  return true;
+  return live::parse_http_codings(text, out, error);
 }
+
+// The sibling pool (defined with the stream's teardown, below).
+void siblings_open();
+bool sibling_submit(std::function<void()> work);
 
 // G7n: the GRC_SABOTAGE kinds that act on the listener only (see the header comment).
 bool is_listener_sabotage(const char *kind) {
@@ -2525,11 +2521,18 @@ void stream_start() {
     }
     rest.coding = codings.empty() ? rs::RestCoding::Identity
                                   : static_cast<rs::RestCoding>(codings.front());
+    rest.sibling = codings.size() > 1 ? static_cast<rs::RestCoding>(codings[1]) : rs::RestCoding::Identity;
     rs::reset_rest_stats();
     rs::set_rest_main_thread();
     rs::set_rest_config(rest);
     g_stream.rest = rest;
+    if (rest.sibling != rs::RestCoding::Identity) {
+      siblings_open();  // a thread only once a served body needs the second coding
+    }
     log_line(std::string("stream: at_rest=") + rs::rest_coding_token(rest.coding) +
+             (rest.sibling != rs::RestCoding::Identity
+                  ? std::string(" sibling=") + rs::rest_coding_token(rest.sibling)
+                  : std::string()) +
              (rest.keep_identity ? " fault=keep-identity" : ""));
   }
   // GRC_TEXTURE_CACHE_DIR and GRC_TEXTURE_CACHE_MAX_BYTES,
@@ -2843,6 +2846,10 @@ void stream_start() {
     g_live.live_coding = rs::live_coding::to_token(live_config.live_coding);
     g_live.serving.http_encoding =
         g_live.http_codings.empty() ? "off" : live::coding_token(g_live.http_codings[0]);
+    g_live.serving.http_codings.clear();
+    for (live::Coding coding : g_live.http_codings) {
+      g_live.serving.http_codings.emplace_back(live::coding_token(coding));
+    }
     // G2e: generated only once every other live setting is known good, so a usage error never
     // burns a token or writes evidence/live-token for a listener that will not actually start.
     if (live_ok && auth_mode == "token") {
@@ -3531,6 +3538,7 @@ void stream_start() {
     std::string error;
     // G2c2: the served payloads answer every resource GET on this listener.
     g_live.served = std::make_unique<rs::ServedResources>();
+    g_live.served->set_sibling_submit(sibling_submit);
     // HC4b: the serve-skip sabotage and the serving half of the shadow oracle.
     {
       const char *hc = grc::rs::env("GRC_HC_SABOTAGE");
@@ -3865,6 +3873,8 @@ void live_close_finish() {
     g_live.serving.identity_inflates = get.count;
     g_live.serving.identity_inflate_bytes = get.identity_bytes;
     g_live.serving.identity_inflate_ns = get.ns;
+    g_live.serving.siblings_made = rest.sibling.made;
+    g_live.serving.sibling_misses = rest.sibling.misses;
     g_live.serving.dropped_hash = g_live.served->dropped_hash();
     g_live.serving.corrupted_hash =
         g_stream.store != nullptr ? g_stream.store->corrupted_hash() : std::string();
@@ -3955,6 +3965,60 @@ void live_finish(rs2::EndReason reason, bool blocking) {
   live_linger(blocking);
 }
 
+// The sibling pool (rs_payload_rest.h "Sibling coding"): one thread, started by the first served
+// body that needs a second coding, so the encodes stay on one core beside the game and the
+// texture workers (one large texture's encode cannot be split anyway). The stream's end drops the
+// queued encodes (their bodies' second-coding readers keep the identity) and joins the one in
+// flight.
+constexpr int kSiblingWorkers = 1;
+struct SiblingPoolState {
+  std::mutex m;
+  bool open = false;     // a stream is armed with a second coding
+  bool started = false;  // the pool's threads run
+};
+SiblingPoolState g_siblings;
+rs::TextureWorkerPool &sibling_pool() {
+  static rs::TextureWorkerPool pool("grc-sib");
+  return pool;
+}
+void siblings_open() {
+  std::lock_guard<std::mutex> lock(g_siblings.m);
+  g_siblings.open = true;
+}
+bool siblings_started() {
+  std::lock_guard<std::mutex> lock(g_siblings.m);
+  return g_siblings.started;
+}
+bool sibling_submit(std::function<void()> work) {
+  std::lock_guard<std::mutex> lock(g_siblings.m);
+  if (!g_siblings.open) {
+    return false;
+  }
+  if (!g_siblings.started) {
+    g_siblings.started = sibling_pool().start(kSiblingWorkers, 0);
+    if (!g_siblings.started) {
+      g_siblings.open = false;
+      log_line("stream: the sibling coding pool failed to start (second-coding requests get identity)");
+      return false;
+    }
+  }
+  return sibling_pool().submit(std::move(work));
+}
+// The first half of the close (any thread): no submit from now on, and nothing queued runs.
+void siblings_close_begin() {
+  {
+    std::lock_guard<std::mutex> lock(g_siblings.m);
+    g_siblings.open = false;
+  }
+  sibling_pool().discard_queued();
+}
+// The second half: joins the encodes in flight (a teardown thread may run it).
+void siblings_close_wait() {
+  sibling_pool().stop();
+  std::lock_guard<std::mutex> lock(g_siblings.m);
+  g_siblings.started = false;
+}
+
 // Writes each sink's end record and closes the recordings. Only the first call
 // while the stream is open does anything, so disarm, shutdown and deinitialize
 // can all call it.
@@ -3997,6 +4061,7 @@ void workers_finish() {
 // starts what the last callback did not (drain) or drops the queue, the wait joins the pool, and
 // the main thread then abandons what is left.
 std::size_t encoders_finish_begin() {
+  siblings_close_begin();  // the sibling pool closes with the encode pool
   if (g_stream.basis_config.drain && g_stream.encoders_started) {
     // G8kf: the prepare step's end. Start what the last callback did not, then wait for every
     // queued encode: each one stores its result in the persisted cache (D8).
@@ -4008,6 +4073,7 @@ std::size_t encoders_finish_begin() {
 }
 
 void encoders_finish_wait() {
+  siblings_close_wait();
   if (g_stream.basis_config.drain && g_stream.encoders_started) {
     rs::texture_encode_pool().drain();
   }
@@ -4032,7 +4098,8 @@ void encoders_finish_end(std::size_t dropped) {
 // G8ku: a lazy encode nobody will publish is dropped at stream end (the pool discards what is
 // queued and waits only for the encodes in flight); the mirror forgets its submitter.
 void encoders_finish() {
-  if (!g_stream.basis) {
+  if (!g_stream.basis && !siblings_started()) {
+    siblings_close_begin();  // a stream whose pool never started only closes the gate
     return;
   }
   const std::size_t dropped = encoders_finish_begin();
@@ -4054,6 +4121,8 @@ void census_fields(JsonWriter *json, const rs::RestCensus &c) {
   json->field("held_bytes", static_cast<int64_t>(c.held_bytes));
   json->field("identity_bytes", static_cast<int64_t>(c.identity_bytes));
   json->field("capacity_slack_bytes", static_cast<int64_t>(c.capacity_slack_bytes));
+  json->field("siblings", static_cast<int64_t>(c.siblings));
+  json->field("sibling_bytes", static_cast<int64_t>(c.sibling_bytes));
   json->object_end();
 }
 
@@ -4086,6 +4155,18 @@ void emit_at_rest() {
   }
   json.object_end();
   json.field("inflate_failed", static_cast<int64_t>(st.inflate_failed));
+  // The second coding's bodies (rs_payload_rest.h "Sibling coding").
+  json.key("sibling").object_begin();
+  json.field("coding", std::string(rs::rest_coding_token(g_stream.rest.sibling)));
+  json.field("made", static_cast<int64_t>(st.sibling.made));
+  json.field("not_smaller", static_cast<int64_t>(st.sibling.not_smaller));
+  json.field("failed", static_cast<int64_t>(st.sibling.failed));
+  json.field("dropped", static_cast<int64_t>(st.sibling.dropped));
+  json.field("in_bytes", static_cast<int64_t>(st.sibling.in_bytes));
+  json.field("out_bytes", static_cast<int64_t>(st.sibling.out_bytes));
+  json.field("ns", static_cast<int64_t>(st.sibling.ns));
+  json.field("misses", static_cast<int64_t>(st.sibling.misses));
+  json.object_end();
   std::unordered_set<const void *> seen_mirror;
   rs::RestCensus mirror;
   rs::mirror_instance().at_rest_census(&mirror, &seen_mirror);
@@ -5828,7 +5909,7 @@ void api_teardown_advance(bool blocking) {
       t.step = TeardownStep::Encoders;
       continue;
     case TeardownStep::Encoders:
-      if (!t.encoders_pending && g_stream.basis && g_stream.status == "open") {
+      if (!t.encoders_pending && (g_stream.basis || siblings_started()) && g_stream.status == "open") {
         t.callback_phase = "encode-wait";
         t.encoders_dropped = encoders_finish_begin();
         t.encoders_pending = true;

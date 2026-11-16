@@ -34,6 +34,12 @@
 //     byte for byte as an unknown subprotocol; with them, a track upgrade is 101 without the
 //     bearer check, has its own max_tracks pool (503 past it while a view upgrade still succeeds),
 //     and a client offering both a view and a track subprotocol gets the view one.
+//   - Dual coding: GRC_HTTP_ENCODING's list parse (default, `off`, either order, spaces, bad
+//     entries); a real ServedResources under codings {zstd, gzip}: a pin queues one gzip encode per
+//     coded body (none for an identity-at-rest body, none on a re-pin, none with one coding), zstd
+//     to a `zstd` request, the identity at once to a `gzip, deflate` request before the gzip body
+//     exists (a counted miss, no wait), gzip after (per-coding ETag and 304), carriers get either
+//     coded body without an inflate, and a dropped encode leaves the identity for good.
 //   - CAR2 (Security): allow_non_loopback binds 0.0.0.0, "::" and a host
 //     address and serves through a non-loopback address; a hostname still refuses; the Origin
 //     allow-list holds there; and a malformed-input set (headers over 8 KiB, bad lengths,
@@ -67,15 +73,21 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
+#include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "rs_http_coding.h"
 #include "rs_net_module.h"
+#include "rs_payload_rest.h"
+#include "rs_resource_store.h"
 #include "rs_sha1.h"
 #include "rs_ws.h"
 
@@ -1341,6 +1353,238 @@ void test_http_content_coding() {
   }
   check(coded_events == 1, "exactly one zstd 200 event");
   server.stop(1000);
+}
+
+// A GRT1-shaped body of `len` compressible data bytes (what code_at_rest() codes).
+grc::rs::PayloadPtr grt1_body(std::size_t len, bool compressible) {
+  std::vector<std::uint8_t> b = {'G', 'R', 'T', '1', '\r', '\n', 0x1a, '\n', 2, 0, 0, 0, '{', '}'};
+  for (int shift = 0; shift < 32; shift += 8) b.push_back(static_cast<std::uint8_t>((len >> shift) & 0xff));
+  std::vector<std::uint8_t> data = compressible_bytes(len);
+  if (!compressible) {
+    std::uint32_t x = 0x9e3779b9u;  // xorshift32: incompressible
+    for (std::uint8_t &v : data) {
+      x ^= x << 13;
+      x ^= x >> 17;
+      x ^= x << 5;
+      v = static_cast<std::uint8_t>(x);
+    }
+  }
+  b.insert(b.end(), data.begin(), data.end());
+  return std::make_shared<grc::rs::PayloadBytes>(std::move(b));
+}
+
+// The test's own sibling pool: queued work runs only when the test says so.
+struct ManualPool {
+  std::mutex m;
+  std::vector<std::function<void()>> queue;
+  grc::rs::SiblingSubmit submit() {
+    return [this](std::function<void()> work) {
+      std::lock_guard<std::mutex> lock(m);
+      queue.push_back(std::move(work));
+      return true;
+    };
+  }
+  std::size_t size() {
+    std::lock_guard<std::mutex> lock(m);
+    return queue.size();
+  }
+  void run_all() {
+    std::vector<std::function<void()>> work;
+    {
+      std::lock_guard<std::mutex> lock(m);
+      work.swap(queue);
+    }
+    for (auto &w : work) w();
+  }
+  void drop_all() {  // what a stopping pool does: the work is destroyed without running
+    std::vector<std::function<void()>> work;
+    {
+      std::lock_guard<std::mutex> lock(m);
+      work.swap(queue);
+    }
+  }
+};
+
+void test_parse_http_codings() {
+  using grc::live::Coding;
+  using grc::live::parse_http_codings;
+  std::vector<Coding> out;
+  std::string error;
+  const std::vector<Coding> zg = {Coding::Zstd, Coding::Gzip};
+  check(parse_http_codings(nullptr, &out, &error) && out == zg, "codings: unset is zstd,gzip");
+  check(parse_http_codings("", &out, &error) && out == zg, "codings: empty is zstd,gzip");
+  check(parse_http_codings("off", &out, &error) && out.empty(), "codings: off is none");
+  check(parse_http_codings("zstd", &out, &error) && out == std::vector<Coding>{Coding::Zstd}, "codings: zstd");
+  check(parse_http_codings("gzip", &out, &error) && out == std::vector<Coding>{Coding::Gzip}, "codings: gzip");
+  check(parse_http_codings("gzip,zstd", &out, &error) && out == std::vector<Coding>{Coding::Gzip, Coding::Zstd},
+        "codings: gzip,zstd keeps its order");
+  check(parse_http_codings(" zstd , gzip ", &out, &error) && out == zg, "codings: spaces around entries");
+  for (const char *bad : {"br", "zstd,br", "zstd,zstd", "zstd,", ",gzip", "off,zstd", "ZSTD", "identity"}) {
+    out = zg;
+    error.clear();
+    check(!parse_http_codings(bad, &out, &error) && out.empty() &&
+              error.find("invalid GRC_HTTP_ENCODING=") == 0,
+          std::string("codings: refuses '") + bad + "'");
+  }
+  // The default list against real browser headers.
+  check(grc::live::negotiate_coding("gzip, deflate", zg) == Coding::Gzip, "default: plain-http LAN Chromium gets gzip");
+  check(grc::live::negotiate_coding("gzip, deflate, br, zstd", zg) == Coding::Zstd, "default: https Chromium gets zstd");
+  check(grc::live::negotiate_coding("gzip;q=1, zstd;q=0.1", zg) == Coding::Zstd, "default: any positive q, host order wins");
+  check(grc::live::negotiate_coding("deflate", zg) == Coding::Identity, "default: neither is identity");
+}
+
+void test_http_dual_coding_sibling() {
+  using grc::live::Coding;
+  grc::rs::RestConfig rest;
+  rest.coding = grc::rs::RestCoding::Zstd;
+  rest.sibling = grc::rs::RestCoding::Gzip;
+  grc::rs::set_rest_config(rest);
+  grc::rs::reset_rest_stats();
+  const auto get_inflates = [] {
+    return grc::rs::rest_stats().inflate[static_cast<std::size_t>(grc::rs::InflateSite::Get)].count;
+  };
+
+  const grc::rs::PayloadPtr identity_a = grt1_body(200000, true);
+  grc::rs::PayloadPtr a = identity_a;
+  grc::rs::code_at_rest(&a);
+  grc::rs::PayloadPtr b = grt1_body(100000, true);
+  const std::vector<std::uint8_t> identity_b(b->begin(), b->end());
+  grc::rs::code_at_rest(&b);
+  grc::rs::PayloadPtr noise = grt1_body(4000, false);  // zstd cannot shrink noise: identity at rest
+  grc::rs::code_at_rest(&noise);
+  check(a->coded() && b->coded() && !noise->coded(), "dual: bodies coded at rest as zstd (noise stays identity)");
+  const std::string ha = make_hash('d'), hb = make_hash('e'), hn = make_hash('f');
+
+  grc::rs::ServedResources served;
+  ManualPool pool;
+  served.set_sibling_submit(pool.submit());
+  grc::rs::PayloadMap map = {{ha, a}, {hn, noise}};
+  std::vector<grc::rs::ServeEvent> events;
+  served.pin({&map}, 1, &events);
+  check(pool.size() == 1, "dual: a pin queues one gzip encode per coded body, got " + std::to_string(pool.size()));
+  served.pin({&map}, 2, &events);
+  check(pool.size() == 1, "dual: a re-pin queues nothing");
+
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  config.codings = {Coding::Zstd, Coding::Gzip};
+  std::string error;
+  check(server.start(config, &served, &error), "dual server starts: " + error);
+  const std::string lan = "gzip, deflate";  // Chromium to a plain-http LAN host
+
+  // 1. zstd to a zstd client: the stored body.
+  const SocketHandle z = connect_loopback(server.port());
+  std::string req = plain_http_request("GET", config.resource_prefix + ha, {{"Accept-Encoding", "gzip, deflate, br, zstd"}});
+  grc::rs::socket_send(z, req.data(), req.size());
+  HttpResponse resp = read_http_response(z);
+  check(resp.ok && resp.status == 200 && resp.headers["content-encoding"] == "zstd" &&
+            resp.headers["etag"] == "\"" + ha + "-zstd\"" && resp.headers["vary"] == "Accept-Encoding" &&
+            resp.body.size() == a->size() && std::equal(resp.body.begin(), resp.body.end(), a->begin()),
+        "dual: a zstd client gets the stored zstd body");
+
+  // 2. A LAN GET before the gzip body is made: the identity at once, counted as a miss.
+  const SocketHandle g = connect_loopback(server.port());
+  req = plain_http_request("GET", config.resource_prefix + ha, {{"Accept-Encoding", lan}});
+  grc::rs::socket_send(g, req.data(), req.size());
+  resp = read_http_response(g);
+  check(resp.ok && resp.status == 200 && resp.headers.count("content-encoding") == 0 &&
+            resp.headers["etag"] == "\"" + ha + "\"" && resp.body.size() == identity_a->size() &&
+            std::equal(resp.body.begin(), resp.body.end(), identity_a->begin()),
+        "dual: a gzip GET before the gzip body exists gets the identity without waiting");
+  check(grc::rs::rest_stats().sibling.misses == 1 && get_inflates() == 1 && pool.size() == 1,
+        "dual: that GET is one miss and one identity inflate, and starts nothing");
+  check(served.lookup_coded(ha, Coding::Gzip) == nullptr && grc::rs::rest_stats().sibling.misses == 2,
+        "dual: a carrier asking before it is made gets none (a second miss)");
+
+  // 3. Once made: gzip, decoding to the identity; 304 per coding.
+  pool.run_all();
+  req = plain_http_request("GET", config.resource_prefix + ha, {{"Accept-Encoding", lan}});
+  grc::rs::socket_send(g, req.data(), req.size());
+  resp = read_http_response(g);
+  std::vector<std::uint8_t> decoded;
+  check(resp.ok && resp.status == 200 && resp.headers["content-encoding"] == "gzip" &&
+            resp.headers["etag"] == "\"" + ha + "-gzip\"" && resp.headers["vary"] == "Accept-Encoding" &&
+            resp.headers["content-length"] == std::to_string(resp.body.size()) &&
+            resp.body.size() < identity_a->size() &&
+            grc::rs::http_coding::gzip_decompress(resp.body.data(), resp.body.size(), &decoded) &&
+            decoded.size() == identity_a->size() && std::equal(decoded.begin(), decoded.end(), identity_a->begin()),
+        "dual: a gzip GET after the encode gets the gzip body, decoding to the identity");
+  req = plain_http_request("GET", config.resource_prefix + ha,
+                           {{"Accept-Encoding", lan}, {"If-None-Match", "\"" + ha + "-gzip\""}});
+  grc::rs::socket_send(g, req.data(), req.size());
+  resp = read_http_response(g);
+  check(resp.ok && resp.status == 304 && resp.body.empty() && resp.headers["etag"] == "\"" + ha + "-gzip\"" &&
+            resp.headers["vary"] == "Accept-Encoding",
+        "dual: 304 for the gzip validator");
+  req = plain_http_request("GET", config.resource_prefix + ha,
+                           {{"Accept-Encoding", "zstd"}, {"If-None-Match", "\"" + ha + "-zstd\""}});
+  grc::rs::socket_send(z, req.data(), req.size());
+  resp = read_http_response(z);
+  check(resp.ok && resp.status == 304 && resp.headers["etag"] == "\"" + ha + "-zstd\"", "dual: 304 for the zstd validator");
+  grc::rs::RestStats st = grc::rs::rest_stats();
+  check(st.sibling.made == 1 && st.sibling.misses == 2 && get_inflates() == 1 &&
+            st.inflate[static_cast<std::size_t>(grc::rs::InflateSite::Sibling)].count == 1 &&
+            st.sibling.in_bytes == identity_a->size() && st.sibling.out_bytes > 0,
+        "dual: one gzip body made from one inflate; no further GET inflated");
+
+  // 4. Carriers: either coded body, and lookup_coded_body (the WT path) never inflates.
+  check(served.lookup_coded(ha, Coding::Gzip) != nullptr && served.lookup_coded(ha, Coding::Zstd) == a,
+        "dual: a carrier gets either coded body");
+  grc::live::ResourceBody body;
+  check(served.lookup_coded_body(ha, Coding::Gzip, &body) && body.coding == Coding::Gzip && body.bytes != nullptr &&
+            body.identity_bytes == identity_a->size() && get_inflates() == 1,
+        "dual: lookup_coded_body answers the gzip body and the identity size without inflating");
+  grc::rs::RestCensus census;
+  std::unordered_set<const void *> seen;
+  served.census(&census, &seen);
+  check(census.siblings == 1 && census.sibling_bytes == st.sibling.out_bytes && census.identity_bytes_held == 0,
+        "dual: the census counts the gzip body, no identity held");
+
+  // 5. A dropped encode (the pool stopped first): the identity from then on, nothing retried.
+  grc::rs::PayloadMap map_b = {{ha, a}, {hb, b}, {hn, noise}};
+  served.pin({&map_b}, 3, &events);
+  check(pool.size() == 1, "dual: a newly pinned body queues its encode");
+  pool.drop_all();
+  check(grc::rs::rest_stats().sibling.dropped == 1, "dual: the dropped encode is counted");
+  req = plain_http_request("GET", config.resource_prefix + hb, {{"Accept-Encoding", lan}});
+  grc::rs::socket_send(g, req.data(), req.size());
+  resp = read_http_response(g);
+  check(resp.ok && resp.status == 200 && resp.headers.count("content-encoding") == 0 &&
+            resp.headers["etag"] == "\"" + hb + "\"" && resp.body == identity_b && pool.size() == 0,
+        "dual: after a dropped encode a gzip GET gets the identity and starts nothing");
+
+  // 6. A body held as identity is served as identity, without encoding.
+  req = plain_http_request("GET", config.resource_prefix + hn, {{"Accept-Encoding", lan}});
+  grc::rs::socket_send(g, req.data(), req.size());
+  resp = read_http_response(g);
+  check(resp.ok && resp.headers.count("content-encoding") == 0 && pool.size() == 0,
+        "dual: an identity-at-rest body is served identity");
+  for (SocketHandle fd : {z, g}) grc::rs::socket_close(fd);
+  server.stop(1000);
+
+  // 7. One coding only (GRC_HTTP_ENCODING=zstd): a pin queues nothing, a gzip GET is the identity.
+  rest.sibling = grc::rs::RestCoding::Identity;
+  grc::rs::set_rest_config(rest);
+  grc::rs::PayloadPtr c = grt1_body(50000, true);
+  grc::rs::code_at_rest(&c);
+  grc::rs::ServedResources single;
+  single.set_sibling_submit(pool.submit());
+  grc::rs::PayloadMap map_c = {{ha, c}};
+  single.pin({&map_c}, 1, &events);
+  check(pool.size() == 0, "single coding: a pin queues no encode");
+  grc::live::Server server1;
+  config.codings = {Coding::Zstd};
+  check(server1.start(config, &single, &error), "single-coding server starts: " + error);
+  const SocketHandle s1 = connect_loopback(server1.port());
+  req = plain_http_request("GET", config.resource_prefix + ha, {{"Accept-Encoding", lan}});
+  grc::rs::socket_send(s1, req.data(), req.size());
+  resp = read_http_response(s1);
+  check(resp.ok && resp.status == 200 && resp.headers.count("content-encoding") == 0 &&
+            resp.body.size() == c->identity_size(),
+        "single coding: a gzip GET gets the identity");
+  grc::rs::socket_close(s1);
+  server1.stop(1000);
+  grc::rs::set_rest_config(grc::rs::RestConfig());
 }
 
 void test_http_gzip_and_off_and_sabotage() {
@@ -3200,6 +3444,8 @@ int main(int argc, char **argv) {
   test_negotiate_coding();
   test_http_content_coding();
   test_http_gzip_and_off_and_sabotage();
+  test_parse_http_codings();
+  test_http_dual_coding_sibling();
   test_http_keep_alive_two_requests_one_connection();
   test_http_connection_close_honoured();
   test_http_max_http_clients_503();

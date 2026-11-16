@@ -32,6 +32,7 @@ namespace rs {
 // the mirror, the served set and every snapshot then share only that coded body. The content hash
 // and every wire size stay the identity payload's (rs_payload_rest.h).
 enum class RestCoding : std::uint8_t { Identity, Zstd, Gzip };  // live::Coding's values
+struct RestSibling;  // rs_payload_rest.h
 
 // One payload body: the bytes as held (identity, or coded), plus the facts of the coding.
 // Everything that only moves the pointer or weighs it sees a vector; anything that reads the
@@ -52,6 +53,11 @@ class PayloadBytes : public std::vector<std::uint8_t> {
   // The at-rest-keep-identity sabotage (GRC_AT_REST_FAULT=keep-identity) only: the identity body
   // kept beside the coded one, the defect the TDR review found (Review record item 10).
   std::shared_ptr<const std::vector<std::uint8_t>> kept_identity;
+  // The same payload in the host's second HTTP coding (GRC_HTTP_ENCODING's second entry), made
+  // on the sibling pool once the body is served (rs_payload_rest.h "Sibling coding").
+  // Read and written only under that module's mutex; never part of held_bytes(), which a map
+  // caches at insert (the census counts it apart).
+  mutable std::shared_ptr<RestSibling> sibling;
 
   bool coded() const { return rest != RestCoding::Identity; }
   // The identity payload's size: the hash's bytes, every wire `payload_bytes`.

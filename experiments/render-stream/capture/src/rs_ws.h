@@ -162,6 +162,11 @@ const char *coding_token(Coding coding);  // "identity", "zstd" or "gzip"
 // passed as "".
 Coding negotiate_coding(std::string_view accept_encoding, const std::vector<Coding> &offered);
 
+// GRC_HTTP_ENCODING: `off` (no codings), or a comma list of distinct `zstd` and `gzip` (spaces
+// around an entry ignored), most preferred first. Null or empty is the default `zstd,gzip`.
+// Anything else is false with `error` set and `out` empty.
+bool parse_http_codings(const char *text, std::vector<Coding> *out, std::string *error);
+
 // the connection-slot counter every live carrier shares. admit()
 // takes one slot (true) or refuses (false); release() returns one. Both are thread-safe and
 // memory-speed: the server calls them on its I/O thread with its own mutex held.

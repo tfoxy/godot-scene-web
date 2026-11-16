@@ -564,10 +564,17 @@ struct ConnectionSummary {
 struct ServingSummary {
   std::uint64_t http_gets = 0;
   std::uint64_t http_bytes = 0;
-  // G8kz: the bytes that crossed the wire for the same 200s, the coding the host offered
-  // ("off", "zstd" or "gzip"), GETs per coding, and the ServedResources coded-body totals.
+  // G8kz: the bytes that crossed the wire for the same 200s, the coding the host prefers
+  // ("off", "zstd" or "gzip": GRC_HTTP_ENCODING's first entry), GETs per coding, and the
+  // ServedResources coded-body totals.
   std::uint64_t http_coded_bytes = 0;
   std::string http_encoding = "off";
+  // Every coding offered, most preferred first (GRC_HTTP_ENCODING as parsed; empty: off),
+  // and the sibling bodies made for the second one (rs_payload_rest.h "Sibling coding") with the
+  // GETs that waited for one.
+  std::vector<std::string> http_codings;
+  std::uint64_t siblings_made = 0;
+  std::uint64_t sibling_misses = 0;
   std::uint64_t http_gets_zstd = 0;
   std::uint64_t http_gets_gzip = 0;
   // TDR: the at-rest coding ("identity", "zstd", "gzip"), and the GETs (and carrier requests)

@@ -270,7 +270,7 @@ endif()
 # it); without it, or without the module, those cases print `skip` (scripts/test/self-test-wss.ts
 # runs them with --require-tls).
 add_executable(rs_ws_test test/rs_ws_test.cpp src/rs_ws.cpp src/rs_sha1.cpp src/rs_net_module.cpp
-  src/rs_carrier_set.cpp)
+  src/rs_carrier_set.cpp src/rs_resource_store.cpp src/report.cpp)
 target_include_directories(rs_ws_test PRIVATE src)
 target_link_libraries(rs_ws_test PRIVATE grc_warnings grc_codecs Threads::Threads ${CMAKE_DL_LIBS})
 if(NOT GRC_WINDOWS)
@@ -281,6 +281,12 @@ if(OPENSSL_FOUND)
 endif()
 endif()
 grc_add_test(NAME rs_ws COMMAND rs_ws_test)
+# A loopback timing of one large texture GET for a plain-http LAN browser, before and after
+# the dual coding (not a test: run by hand with a raw RGBA file).
+add_executable(rs_http_sibling_bench test/rs_http_sibling_bench.cpp src/rs_ws.cpp src/rs_sha1.cpp
+  src/rs_resource_store.cpp src/report.cpp)
+target_include_directories(rs_http_sibling_bench PRIVATE src)
+target_link_libraries(rs_http_sibling_bench PRIVATE grc_warnings grc_codecs grc_platform Threads::Threads)
 
 # the CarrierSet and the grc_carrier_v1 adapter with two
 # fake C ABI carriers and the real rs_ws server as `ws`; also runs the test-only sabotages

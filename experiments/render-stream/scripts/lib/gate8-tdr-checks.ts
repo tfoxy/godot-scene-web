@@ -8,7 +8,10 @@
 //   live/{host,viewer}                         a /11 live host, two texture workers, hook log on,
 //                                              lib/null-receiver.ts as the viewer, and three curl
 //                                              GETs of the largest pinned texture
-//                                              (host/get-{zstd,identity,lan}.{headers,body}, get.hash)
+//                                              (host/get-{zstd,identity,lan}.{headers,body}, get.hash);
+//                                              the default GRC_HTTP_ENCODING=zstd,gzip, so the LAN
+//                                              GET (gzip, deflate), repeated until the sibling is
+//                                              made (get-lan.tries), gets gzip
 //   sabotage-at-rest-keep-identity/host        the live host with GRC_AT_REST_FAULT=keep-identity
 //
 // Checks: at-rest-legs, served-at-rest, at-rest-get, at-rest-wire-identical and
@@ -17,7 +20,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { zstdDecompressSync } from "node:zlib";
+import { gunzipSync, zstdDecompressSync } from "node:zlib";
 import {
   check,
   exitCode,
@@ -60,7 +63,7 @@ export interface AtRest {
   code_ns: number;
   code_main_thread: number;
   inflate: Record<
-    "get" | "store" | "inline" | "basis" | "sabotage",
+    "get" | "store" | "inline" | "basis" | "sabotage" | "restore" | "sibling",
     InflateSite
   >;
   inflate_failed: number;
@@ -76,6 +79,9 @@ export interface ServingResources {
   http_bytes: number;
   http_coded_bytes: number;
   http_encoding: string;
+  http_codings?: string[];
+  siblings_made?: number;
+  sibling_misses?: number;
   at_rest: string;
   identity_inflates: number;
   identity_inflate_bytes: number;
@@ -209,6 +215,7 @@ export interface G8tdrReport {
     hash: string | null;
     identity_bytes: number | null;
     zstd_bytes: number | null;
+    gzip_bytes: number | null;
     identity_inflates: number | null;
   } | null;
   store_files: number | null;
@@ -378,23 +385,63 @@ export async function runG8tdr(
             problems.push(`get-zstd: zstd decompress failed: ${String(e)}`);
           }
         }
-        for (const k of ["identity", "lan"] as const) {
-          const p = parts[k];
-          if (!p.http || !p.body) continue;
-          const enc = p.http.headers.get("content-encoding");
-          if (enc !== undefined)
-            problems.push(`get-${k}: Content-Encoding ${enc}, want none`);
-          if (sha256(p.body) !== hash)
-            problems.push(`get-${k}: the body does not hash to its name`);
-          if (identityBytes !== null && p.body.length !== identityBytes)
+        {
+          const p = parts.identity;
+          if (p.http && p.body) {
+            const enc = p.http.headers.get("content-encoding");
+            if (enc !== undefined)
+              problems.push(`get-identity: Content-Encoding ${enc}, want none`);
+            if (sha256(p.body) !== hash)
+              problems.push("get-identity: the body does not hash to its name");
+            if (identityBytes !== null && p.body.length !== identityBytes)
+              problems.push(
+                `get-identity: body ${p.body.length} != payload_bytes ${identityBytes}`,
+              );
+          }
+        }
+        // The LAN browser's `gzip, deflate` takes the host's second coding, made after the pin
+        // on the sibling pool (the probe repeats the GET until it is made).
+        const lan = parts.lan;
+        const lanTries =
+          (await readText(join(host, "get-lan.tries")))?.trim() ?? "?";
+        let gzipBytes: number | null = null;
+        if (lan.http && lan.body) {
+          gzipBytes = lan.body.length;
+          const enc = lan.http.headers.get("content-encoding");
+          if (enc !== "gzip")
+            problems.push(`get-lan: Content-Encoding ${enc}, want gzip`);
+          if (lan.http.headers.get("etag") !== `"${hash}-gzip"`)
+            problems.push(`get-lan: ETag ${lan.http.headers.get("etag")}`);
+          if (identityBytes !== null && !(lan.body.length < identityBytes))
             problems.push(
-              `get-${k}: body ${p.body.length} != payload_bytes ${identityBytes}`,
+              `get-lan: body ${lan.body.length} not below identity ${identityBytes}`,
             );
+          try {
+            const plain = gunzipSync(lan.body);
+            if (sha256(plain) !== hash)
+              problems.push(
+                "get-lan: the gunzipped body does not hash to its name",
+              );
+          } catch (e) {
+            problems.push(`get-lan: gunzip failed: ${String(e)}`);
+          }
         }
         const res = (await summary("live/host"))?.resources;
-        if (!res || !(res.identity_inflates >= 2))
+        if (!res || !(res.identity_inflates >= 1))
           problems.push(
-            `summary identity_inflates ${res?.identity_inflates}, want >= 2`,
+            `summary identity_inflates ${res?.identity_inflates}, want >= 1`,
+          );
+        if (!res || !((res.siblings_made ?? 0) >= 1))
+          problems.push(
+            `summary siblings_made ${res?.siblings_made}, want >= 1`,
+          );
+        if (
+          !res ||
+          JSON.stringify(res.http_codings ?? null) !==
+            JSON.stringify(["zstd", "gzip"])
+        )
+          problems.push(
+            `summary http_codings ${JSON.stringify(res?.http_codings)}, want ["zstd","gzip"] (the default)`,
           );
         const gets = hooks.filter(
           (h) =>
@@ -403,8 +450,9 @@ export async function runG8tdr(
         const byCoding = (c: string) => gets.filter((h) => h.coding === c);
         const idLines = byCoding("identity");
         const zLines = byCoding("zstd");
-        if (idLines.length < 2)
-          problems.push(`${idLines.length} identity http-get lines, want >= 2`);
+        const gLines = byCoding("gzip");
+        if (idLines.length < 1)
+          problems.push(`${idLines.length} identity http-get lines, want >= 1`);
         else if (
           !idLines.every(
             (h) =>
@@ -423,19 +471,30 @@ export async function runG8tdr(
           problems.push(
             `no zstd http-get line with coded_bytes ${zstdBytes} (${zLines.map((h) => h.coded_bytes).join(",")})`,
           );
+        if (
+          gzipBytes !== null &&
+          !gLines.some(
+            (h) =>
+              h.coded_bytes === gzipBytes && h.payload_bytes === identityBytes,
+          )
+        )
+          problems.push(
+            `no gzip http-get line with coded_bytes ${gzipBytes} (${gLines.map((h) => h.coded_bytes).join(",")})`,
+          );
         report.get = {
           hash,
           identity_bytes: identityBytes,
           zstd_bytes: zstdBytes,
+          gzip_bytes: gzipBytes,
           identity_inflates: res?.identity_inflates ?? null,
         };
-        detail = `${hash.slice(0, 12)}: identity ${identityBytes} bytes, zstd body ${zstdBytes} bytes (Content-Encoding ${z.http?.headers.get("content-encoding")}); identity and LAN (gzip, deflate) bodies hash to the name with no Content-Encoding; summary identity_inflates ${res?.identity_inflates} (${res?.identity_inflate_bytes} bytes); http-get lines ${idLines.length} identity, ${zLines.length} zstd`;
+        detail = `${hash.slice(0, 12)}: identity ${identityBytes} bytes, zstd body ${zstdBytes} bytes (Content-Encoding ${z.http?.headers.get("content-encoding")}), LAN (gzip, deflate) body ${gzipBytes} bytes (Content-Encoding ${lan.http?.headers.get("content-encoding")}); summary identity_inflates ${res?.identity_inflates} (${res?.identity_inflate_bytes} bytes), siblings_made ${res?.siblings_made}, sibling_misses ${res?.sibling_misses}, LAN tries ${lanTries}; http-get lines ${idLines.length} identity, ${zLines.length} zstd, ${gLines.length} gzip`;
       }
     }
     checks.push(
       check(
         "at-rest-get",
-        "a GET taking zstd gets the stored coded bytes (Content-Encoding: zstd, Content-Length equal, smaller than the identity size, inflating to the hash); a GET with no Accept-Encoding and the LAN browser's `gzip, deflate` get the identity body (no Content-Encoding, hashing to the name), each counted as an identity inflate and logged with its coding and coded bytes",
+        'a GET taking zstd gets the stored coded bytes (Content-Encoding: zstd, Content-Length equal, smaller than the identity size, inflating to the hash); a GET with no Accept-Encoding gets the identity body (no Content-Encoding, hashing to the name), counted as an identity inflate; the LAN browser\'s `gzip, deflate` gets the gzip body the default GRC_HTTP_ENCODING=zstd,gzip makes after the pin (Content-Encoding: gzip, ETag "<hash>-gzip", smaller than the identity, gunzipping to the hash; summary siblings_made >= 1, http_codings ["zstd","gzip"]); each logged with its coding and coded bytes',
         problems,
         detail,
       ),
