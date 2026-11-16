@@ -133,6 +133,8 @@ export class FakeCore implements StreamCore {
 
 export class FakeTransport implements RenderStreamTransport {
   readonly sent: Record<string, unknown>[] = [];
+  /** The sent text as framed, byte for byte. */
+  readonly texts: string[] = [];
   closed: { code: number; reason: string } | null = null;
   closes = 0;
   carrier: "websocket" | "webtransport" | undefined;
@@ -146,6 +148,7 @@ export class FakeTransport implements RenderStreamTransport {
     readonly on: RenderStreamTransportEvents,
   ) {}
   send(text: string): void {
+    this.texts.push(text);
     this.sent.push(JSON.parse(text));
   }
   close(code: number, reason: string): void {

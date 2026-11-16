@@ -37,6 +37,7 @@
 // context loss holds the loop; after the restore, one callback redraws the last applied state
 // in place, refetching any resident payload the store no longer holds.
 
+import { type AckStage, AckWriter } from "./ack";
 import type { Needed, SessionMeta, StreamCore } from "./core";
 import { failWith, StreamFailure } from "./core";
 import type { RenderStreamEndpoint } from "./endpoint";
@@ -235,6 +236,8 @@ export class StreamLoop {
   /** Seqs applied (folded ones included) and not drawn yet; their `submitted` acks wait for
    * the draw. */
   private undrawn: number[] = [];
+  /** Ack text from a prefix cached per stream id (the acks are the steady-state sends). */
+  private readonly acks = new AckWriter();
   /** The start of the last frame callback (null: none on this loop yet). */
   private lastFrameAt: number | null = null;
   // Stats: counters and two fixed rings, no per-frame allocation.
@@ -422,18 +425,21 @@ export class StreamLoop {
 
   /** `at` (ms, the loop clock): acks of one apply or one draw share it, so a fold reads as one
    * instant (the host tap's rule: `applied` acks sharing the receiver's `t_us` applied together). */
-  private ack(
-    seq: number,
-    stage: "received" | "applied" | "submitted",
-    at = this.o.clock.now(),
-  ): void {
-    this.send({
-      type: "ack",
-      stream_id: this.conn?.streamId ?? "",
-      seq,
-      stage,
-      t_us: Math.round(at * 1000),
-    });
+  private ack(seq: number, stage: AckStage, at = this.o.clock.now()): void {
+    const conn = this.conn;
+    const transport = conn?.transport;
+    if (!transport) return;
+    transport.send(
+      this.acks.write(conn.streamId, seq, stage, Math.round(at * 1000)),
+    );
+  }
+
+  /** Acks `submitted` every applied seq waiting for a draw, with one `t_us`, and clears them. */
+  private ackUndrawnSubmitted(now: number): void {
+    const undrawn = this.undrawn;
+    for (let i = 0; i < undrawn.length; i++)
+      this.ack(undrawn[i] as number, "submitted", now);
+    undrawn.length = 0;
   }
 
   private onMessage(conn: Connection, data: ArrayBuffer | string): void {
@@ -1039,8 +1045,7 @@ export class StreamLoop {
     this.o.core.draw(seq);
     this.drawnSeq = seq;
     const now = this.o.clock.now();
-    for (const s of this.undrawn) this.ack(s, "submitted", now);
-    this.undrawn.length = 0;
+    this.ackUndrawnSubmitted(now);
     this.revisitDraw = false;
     if (this.creditStage !== "applied") this.lastCreditAt = now;
     this.attempt = 0;
@@ -1111,8 +1116,7 @@ export class StreamLoop {
     this.drawnSeq = this.lastAppliedSeq;
     // The redraw drew the newest applied state, so every apply waiting for a draw is in it.
     const now = this.o.clock.now();
-    for (const s of this.undrawn) this.ack(s, "submitted", now);
-    this.undrawn.length = 0;
+    this.ackUndrawnSubmitted(now);
   }
 }
 

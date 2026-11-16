@@ -262,6 +262,32 @@ describe("render-stream client loop", () => {
     });
   });
 
+  it("sends each ack as the JSON.stringify text of its object, keys in wire order", () => {
+    const h = streaming();
+    const t = h.last();
+    h.clock.step = 0.37;
+    t.on.message(tx(1));
+    t.on.message(tx(2));
+    h.clock.frame();
+    t.on.message(tx(3));
+    h.clock.frame();
+    const acks = t.texts.filter((x) => x.startsWith('{"type":"ack"'));
+    expect(acks).toHaveLength(9);
+    for (const text of acks) {
+      const m = JSON.parse(text);
+      expect(text).toBe(
+        JSON.stringify({
+          type: "ack",
+          stream_id: "st",
+          seq: m.seq,
+          stage: m.stage,
+          t_us: m.t_us,
+        }),
+      );
+      expect(Number.isInteger(m.t_us)).toBe(true);
+    }
+  });
+
   it("a coding failure asks a coding resync and rebuilds for the full", () => {
     const h = streaming();
     const t = h.last();
