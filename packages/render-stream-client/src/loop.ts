@@ -88,6 +88,19 @@ export interface RenderStreamStats {
   /** Payloads the drawn state went without (the resource hold ran out) and still being fetched:
    * what draws them is not on screen yet. `stats()` always sets it (optional as `carrier`). */
   deferredPayloads?: number;
+  /** Applies that walked the item tree and re-assembled the draw list (the core's slow path),
+   * over all connections: compare with `applied`. `stats()` always sets it (optional as
+   * `carrier`). */
+  structuralApplies?: number;
+  /** Why the last apply walked or re-assembled, as the core's bits: 1 first, 2 defaults,
+   * 4 material, 8 texture-size, 16 item-removed, 32 item-added, 64 content-shape, 128 order-key,
+   * 256 dependency, 512 canvas, 1024 compact, 2048 move-fallback, 4096 move-attach,
+   * 8192 override, 16384 back-buffer (a move or content change reached a canvas group). 0 when
+   * it did neither. `stats()` always sets it (optional as `carrier`). */
+  lastApplyWhy?: number;
+  /** Items in the last applied state holding a canvas group or a back-buffer copy. `stats()`
+   * always sets it (optional as `carrier`). */
+  backBufferItems?: number;
 }
 
 /** The frame and timer functions the loop runs on (the page's, or a test's). */
@@ -242,6 +255,9 @@ export class StreamLoop {
   private lastFrameAt: number | null = null;
   // Stats: counters and two fixed rings, no per-frame allocation.
   private applied = 0;
+  private structuralApplies = 0;
+  private lastApplyWhy = 0;
+  private backBufferItems = 0;
   private readonly applyTimes = new Float64Array(APPLY_RING);
   private applyCount = 0;
   private readonly rtts = new Float64Array(RTT_SAMPLES);
@@ -334,6 +350,9 @@ export class StreamLoop {
           ? (this.conn.transport?.carrier ?? null)
           : null,
       deferredPayloads: this.deferred.size,
+      structuralApplies: this.structuralApplies,
+      lastApplyWhy: this.lastApplyWhy,
+      backBufferItems: this.backBufferItems,
     };
   }
 
@@ -1019,6 +1038,12 @@ export class StreamLoop {
     const seq = p.item.seq;
     core.prepareApply(seq);
     core.apply(seq);
+    const facts = core.applyStats?.();
+    if (facts) {
+      if (facts.structural) this.structuralApplies++;
+      this.lastApplyWhy = facts.why;
+      this.backBufferItems = facts.backBufferItems;
+    }
     if (this.ext) this.ext.applied();
     const folded = this.coalesced;
     this.coalesced = [];

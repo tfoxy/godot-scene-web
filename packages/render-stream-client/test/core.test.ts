@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import libRs from "../../../experiments/render-stream/web/gsw-rs/src/lib.rs?raw";
 import { type GswRs, type GswRsModule, STAT_FIELDS } from "../src/abi";
 import { WasmStreamCore } from "../src/core";
 import type { RenderStreamProtocol } from "../src/endpoint";
@@ -71,6 +72,7 @@ function harness() {
   const core = new WasmStreamCore(mod, memory, build, 12, "zstd", 16777216);
   return {
     core,
+    memory,
     instances,
     build,
     coding,
@@ -110,6 +112,32 @@ describe("WasmStreamCore session protocol", () => {
     expect(instances[1].live_session).toHaveBeenCalledWith(3, 14);
     core.dispose();
     expect(instances.map((g) => g.free.mock.calls.length)).toEqual([1, 1]);
+  });
+
+  it("reads the last apply's walk facts from the stats block", () => {
+    const { core, memory, instances } = harness();
+    core.beginConnection(12);
+    const stats = new Uint32Array(
+      memory.buffer,
+      instances[0].ptr,
+      STAT_FIELDS.length,
+    );
+    stats[STAT_FIELDS.indexOf("structural")] = 1;
+    stats[STAT_FIELDS.indexOf("why")] = 1 << 14;
+    stats[STAT_FIELDS.indexOf("back_buffer_items")] = 3;
+    expect(core.applyStats()).toEqual({
+      structural: true,
+      why: 1 << 14,
+      backBufferItems: 3,
+    });
+    // STAT_FIELDS is lib.rs `Stats`, field for field (`#[repr(C)]`, all u32).
+    const block = /pub struct Stats \{([^}]*)\}/.exec(libRs)?.[1] ?? "";
+    const fields = [...block.matchAll(/^\s*pub (\w+): u32,$/gm)].map(
+      (m) => m[1],
+    );
+    expect(fields).toEqual([...STAT_FIELDS]);
+    expect(block.match(/^\s*pub /gm)).toHaveLength(STAT_FIELDS.length);
+    core.dispose();
   });
 
   it("drops the old stats view and decoded bytes when rebuilding", () => {

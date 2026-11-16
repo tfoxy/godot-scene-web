@@ -61,6 +61,35 @@ describe("render-stream client loop", () => {
     expect(h.loop.stats().applied).toBe(1);
   });
 
+  it("stats() counts the core's structural applies and keeps the last apply's why", () => {
+    const h = streaming(2);
+    const t = h.last();
+    expect(h.loop.stats()).toMatchObject({
+      structuralApplies: 0,
+      lastApplyWhy: 0,
+      backBufferItems: 0,
+    });
+    h.core.facts = { structural: true, why: 1, backBufferItems: 2 };
+    t.on.message(tx(1));
+    h.clock.frame();
+    h.core.facts = { structural: false, why: 0, backBufferItems: 2 };
+    t.on.message(tx(2));
+    h.clock.frame();
+    expect(h.loop.stats()).toMatchObject({
+      applied: 2,
+      structuralApplies: 1,
+      lastApplyWhy: 0,
+      backBufferItems: 2,
+    });
+    h.core.facts = { structural: true, why: 16384, backBufferItems: 2 };
+    t.on.message(tx(3));
+    h.clock.frame();
+    expect(h.loop.stats()).toMatchObject({
+      structuralApplies: 2,
+      lastApplyWhy: 16384,
+    });
+  });
+
   it("stats().carrier names the open connection's carrier, else null", () => {
     const h = streaming(2);
     expect(h.loop.stats().carrier).toBeNull();

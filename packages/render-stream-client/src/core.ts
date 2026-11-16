@@ -121,6 +121,9 @@ export interface StreamCore {
   /** Programs for the accepted state's shaders, and the /12 particles step (before `apply`). */
   prepareApply(seq: number): void;
   apply(seq: number): void;
+  /** What the last `apply` did to the draw list, read after it (`RenderStreamStats`). The
+   * returned object may be reused by the next call. Absent: the loop reports none. */
+  applyStats?(): CoreApplyStats;
   draw(seq: number): void;
   /** The redraw after a context restore; "lost" when the context was lost again. */
   redraw(seq: number): "ok" | "lost";
@@ -130,6 +133,16 @@ export interface StreamCore {
   reset(keepPayloads: boolean): void;
   heapBytes(): number;
   dispose(): void;
+}
+
+/** `StreamCore.applyStats`: the core's apply diagnostics (lib.rs `Stats`). */
+export interface CoreApplyStats {
+  /** The apply walked the item tree and re-assembled the draw list. */
+  structural: boolean;
+  /** Why it walked or re-assembled: `RenderStreamStats.lastApplyWhy`. */
+  why: number;
+  /** Items holding a canvas group or a back-buffer copy. */
+  backBufferItems: number;
 }
 
 /** One payload being staged as it arrives (`StreamCore.stageStream`). After `finish` or `abort`
@@ -154,6 +167,9 @@ function fillUnknownRows(out: Float64Array, n: number): void {
 const STAT_SEQ = STAT_FIELDS.indexOf("seq");
 const STAT_FRAME = STAT_FIELDS.indexOf("frame");
 const STAT_ENCODING = STAT_FIELDS.indexOf("encoding");
+const STAT_STRUCTURAL = STAT_FIELDS.indexOf("structural");
+const STAT_WHY = STAT_FIELDS.indexOf("why");
+const STAT_BACK_BUFFER_ITEMS = STAT_FIELDS.indexOf("back_buffer_items");
 
 const hex = (bytes: Uint8Array): string => {
   let s = "";
@@ -174,6 +190,11 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   };
   private lastAcceptedSeq = 0;
   private statsView: Uint32Array | null = null;
+  private readonly applied: CoreApplyStats = {
+    structural: false,
+    why: 0,
+    backBufferItems: 0,
+  };
   /** The view of `query_item`'s scratch row, re-derived on a new instance or memory growth. */
   private itemView: Float64Array | null = null;
   /** `queryEpoch` = base + the instance's epoch; a new instance starts past the last answer. */
@@ -562,6 +583,15 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
 
   private seqOrNull(): number | null {
     return this.lastAcceptedSeq > 0 ? this.lastAcceptedSeq : null;
+  }
+
+  applyStats(): CoreApplyStats {
+    const st = this.stats();
+    const out = this.applied;
+    out.structural = st[STAT_STRUCTURAL] !== 0;
+    out.why = st[STAT_WHY];
+    out.backBufferItems = st[STAT_BACK_BUFFER_ITEMS];
+    return out;
   }
 
   /** The stats block (lib.rs `Stats`), its view re-derived whenever memory grew. */

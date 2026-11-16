@@ -185,6 +185,8 @@ export const STAT_FIELDS = [
   "draws",
   "encoding",
   "stream",
+  "why",
+  "back_buffer_items",
 ] as const;
 export type StatName = (typeof STAT_FIELDS)[number];
 

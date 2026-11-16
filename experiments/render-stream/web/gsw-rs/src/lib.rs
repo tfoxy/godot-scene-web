@@ -106,6 +106,11 @@ pub struct Stats {
     pub encoding: u32,
     /// G7l: the connection (stream) the accepted record arrived on, 1 in file mode.
     pub stream: u32,
+    /// I4: the last apply's `ApplyStats::why` (rs-core `Why` bits; 0 when it neither walked nor
+    /// re-assembled).
+    pub why: u32,
+    /// I4: items holding /10 `canvas_group` or `copy_to_backbuffer` state after the last apply.
+    pub back_buffer_items: u32,
 }
 
 #[derive(Clone, Default)]
@@ -2417,6 +2422,8 @@ impl GswRs {
         self.totals.relowered += u64::from(st.relowered);
         self.totals.relowered_in_place += u64::from(st.relowered_in_place);
         self.stats.structural = u32::from(st.structural);
+        self.stats.why = st.why;
+        self.stats.back_buffer_items = st.back_buffer_items;
         self.stats.relowered = st.relowered;
         self.stats.rows_written = st.rows_written;
         self.stats.lowered_draws = st.lowered_draws;

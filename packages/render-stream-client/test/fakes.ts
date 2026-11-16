@@ -1,6 +1,6 @@
 // Test doubles for the protocol loop: a scripted core, a recording transport and a manual clock.
 
-import type { CoreMessage, StreamCore } from "../src/core";
+import type { CoreApplyStats, CoreMessage, StreamCore } from "../src/core";
 import type { RenderStreamEndpoint } from "../src/endpoint";
 import {
   type LoopClock,
@@ -109,6 +109,11 @@ export class FakeCore implements StreamCore {
   prepareApply(): void {}
   apply(seq: number): void {
     this.calls.push(`apply ${seq}`);
+  }
+  /** What `applyStats` answers after every apply. */
+  facts: CoreApplyStats = { structural: false, why: 0, backBufferItems: 0 };
+  applyStats(): CoreApplyStats {
+    return this.facts;
   }
   draw(seq: number): void {
     this.calls.push(`draw ${seq}`);

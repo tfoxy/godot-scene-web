@@ -34,7 +34,8 @@ pub mod retention;
 use crate::prof;
 use crate::state::{
     BlendMode, Canvas, CanvasGroup, CanvasGroupMode, EntryStatus, Filter, Hash, Id, Item,
-    LightMode, Param, Repeat, ResolvedState, ShaderSource, ShaderUse, TextureKind, TxDelta,
+    LightMode, Param, Parent, ParentKind, Repeat, ResolvedState, ShaderSource, ShaderUse,
+    TextureKind, TxDelta,
 };
 use geom::{Rect, Xform};
 use gsw_canvas_draw_list::{
@@ -195,7 +196,11 @@ impl Why {
     /// TAG2: the client's override table hid or showed a subtree (or moved one the rows-only
     /// path cannot follow), so the walk ran.
     pub const OVERRIDE: u32 = 1 << 13;
-    pub const NAMES: [&'static str; 14] = [
+    /// I4: a move or a re-lowering reached a canvas group's owner, an item above one or an item
+    /// in one's subtree (whose rects make the group's range, rect and synthesized rect), or
+    /// `back_buffer_always_walks` holds and the state has a group or a copy.
+    pub const BACK_BUFFER: u32 = 1 << 14;
+    pub const NAMES: [&'static str; 15] = [
         "first",
         "defaults",
         "material",
@@ -210,6 +215,7 @@ impl Why {
         "move-fallback",
         "move-attach",
         "override",
+        "back-buffer",
     ];
 }
 
@@ -236,6 +242,8 @@ pub struct ApplyStats {
     pub emitted_draws: u32,
     /// Draw calls an executor that merges adjacent equal-state draws issues.
     pub expected_calls: u32,
+    /// I4: items holding /10 `canvas_group` or `copy_to_backbuffer` state after this apply.
+    pub back_buffer_items: u32,
     pub texture_uploads: u32,
     pub texture_upload_bytes: u64,
     pub texture_frees: u32,
@@ -606,6 +614,83 @@ fn content_needs_walk(
             != rec.on_screen
 }
 
+/// I4: whether `it` sits in the subtree of a canvas group owner of `owners` (not counting itself).
+fn under_group(owners: &HashSet<Id>, state: &ResolvedState, it: &Item) -> bool {
+    let mut p = it.parent;
+    while let Some(Parent {
+        kind: ParentKind::Item,
+        id,
+    }) = p
+    {
+        if owners.contains(&id) {
+            return true;
+        }
+        p = state.items.get(&id).and_then(|i| i.parent);
+    }
+    false
+}
+
+/// I4: whether re-lowering `it`'s content from `old` to `new` without a walk would leave a canvas
+/// group's walk results stale. A group's range and rect are what its subtree attached and those
+/// entries' global rects (renderer_canvas_cull.cpp:186-245): a re-lowered owner (its commands
+/// decide whether it draws a synthesized rect, its rect merges into the group's) or an item in an
+/// owner's subtree whose rect changed walks. Whether something draws at all is
+/// [`content_needs_walk`]'s.
+fn relowering_reaches_group(
+    owners: &HashSet<Id>,
+    state: &ResolvedState,
+    it: &Item,
+    old: &Lowered,
+    new: &Lowered,
+) -> bool {
+    if owners.is_empty() {
+        return false;
+    }
+    if owners.contains(&it.id) {
+        return true;
+    }
+    if it.custom_rect || new.rect == old.rect {
+        return false;
+    }
+    under_group(owners, state, it)
+}
+
+/// I4: whether a rows-only move of the subtrees under `roots` would leave a canvas group's walk
+/// results stale: a root that is an owner, sits above one or sits in one's subtree (the owner's
+/// range rects, and its synthesized rect in the owner's space, move apart). A
+/// `copy_to_backbuffer` item copies its own untransformed rect (rasterizer_canvas_gles3.cpp:413-419)
+/// and is attached wherever it is (renderer_canvas_cull.cpp:249), so its moves are any item's, and
+/// what it samples is read from the target when it draws, not from the walk.
+fn moves_reach_group(owners: &HashSet<Id>, state: &ResolvedState, roots: &[Id]) -> bool {
+    if owners.is_empty() || roots.is_empty() {
+        return false;
+    }
+    for r in roots {
+        if owners.contains(r)
+            || state
+                .items
+                .get(r)
+                .is_some_and(|it| under_group(owners, state, it))
+        {
+            return true;
+        }
+    }
+    owners.iter().any(|g| {
+        let mut p = state.items.get(g).and_then(|i| i.parent);
+        while let Some(Parent {
+            kind: ParentKind::Item,
+            id,
+        }) = p
+        {
+            if roots.contains(&id) {
+                return true;
+            }
+            p = state.items.get(&id).and_then(|i| i.parent);
+        }
+        false
+    })
+}
+
 /// G7o3: the canvas a walk is under, and the modulate its shaded rows multiply in.
 struct WalkCanvas {
     id: Id,
@@ -742,10 +827,17 @@ pub struct Applier {
     /// PH2 sabotage `ph2-park-stale` (`client-diff`): a move on or off screen updates the item's
     /// record but not its parked entry, so it keeps drawing (or not) where it was.
     pub park_stale: bool,
-    /// CG3: items holding /10 `canvas_group` or `copy_to_backbuffer` state. While any does, every
-    /// apply walks: a group's range, rect and synthesized rect depend on its descendants' rects,
-    /// which the rows-only and in-place paths do not revisit.
+    /// CG3: items holding /10 `canvas_group` or `copy_to_backbuffer` state. While any does, the
+    /// walk parks nothing (a parked entry would sit in a group's range).
     back_buffer_items: HashSet<Id>,
+    /// I4: the items of `back_buffer_items` holding `canvas_group` state. A group's range, rect
+    /// and synthesized rect are its descendants' global rects, which the rows-only and in-place
+    /// paths do not revisit: a move or re-lowering that reaches one walks
+    /// ([`moves_reach_group`], [`relowering_reaches_group`]).
+    group_owners: HashSet<Id>,
+    /// I4 diagnostics (the oracle of the scoped rule): every apply walks while the state holds any
+    /// group or copy, as before I4 (`Why::BACK_BUFFER`).
+    pub back_buffer_always_walks: bool,
     /// CG3: the last walk's group owners with a range.
     groups: IdMap<GroupInfo>,
     /// CG3: the four vertices of each `fit_empty` owner's synthesized rect: their first index in
@@ -1183,6 +1275,8 @@ impl Applier {
             move_walks: false,
             park_stale: false,
             back_buffer_items: HashSet::new(),
+            group_owners: HashSet::new(),
+            back_buffer_always_walks: false,
             groups: IdMap::default(),
             group_quads: IdMap::default(),
             spare_emits: Vec::new(),
@@ -2292,6 +2386,7 @@ impl Applier {
                 why |= Why::ITEM_REMOVED;
             }
             self.back_buffer_items.remove(id);
+            self.group_owners.remove(id);
             if self.group_quads.remove(id).is_some() {
                 self.vertex_holes += 4;
             }
@@ -2315,6 +2410,7 @@ impl Applier {
                 self.items_epoch += 1;
                 self.free_rows.push(rec.row);
                 self.back_buffer_items.remove(&id);
+                self.group_owners.remove(&id);
                 if self.group_quads.remove(&id).is_some() {
                     self.vertex_holes += 4;
                 }
@@ -2330,6 +2426,8 @@ impl Applier {
         // stale ids are not in the state).
         let mut moved: Vec<Id> = Vec::new();
         let mut content_walk = false;
+        // I4: a re-lowering of a group owner, or one in a group's subtree that changed its rect.
+        let mut group_content = false;
         for &id in upserted {
             let Some(it) = state.items.get(&id) else {
                 continue;
@@ -2338,6 +2436,11 @@ impl Applier {
                 self.back_buffer_items.insert(id);
             } else {
                 self.back_buffer_items.remove(&id);
+            }
+            if it.canvas_group.is_some() {
+                self.group_owners.insert(id);
+            } else {
+                self.group_owners.remove(&id);
             }
             // G7o3: one record lookup per item (two when its content is re-lowered).
             let Some(rec) = self.items.get_mut(&id) else {
@@ -2420,6 +2523,17 @@ impl Applier {
                     let rec = self.items.get_mut(&id).unwrap();
                     if content_needs_walk(&self.viewport, self.walk_serial, it, rec, &lowered) {
                         content_walk = true;
+                    }
+                    if !group_content
+                        && relowering_reaches_group(
+                            &self.group_owners,
+                            state,
+                            it,
+                            &rec.lowered,
+                            &lowered,
+                        )
+                    {
+                        group_content = true;
                     }
                     // Any other change of shape needs only the index buffer and draw table
                     // re-assembled; the same shape is rewritten in place.
@@ -2548,6 +2662,17 @@ impl Applier {
                     content_walk = true;
                     why |= Why::DEPENDENCY;
                 }
+                if !group_content
+                    && relowering_reaches_group(
+                        &self.group_owners,
+                        state,
+                        it,
+                        &rec.lowered,
+                        &lowered,
+                    )
+                {
+                    group_content = true;
+                }
                 let same = lowered.same_shape(&rec.lowered);
                 rec.lowered_at = self.serial;
                 self.deps
@@ -2653,10 +2778,11 @@ impl Applier {
         if std::mem::take(&mut self.ov_walk) {
             why |= Why::OVERRIDE;
         }
-        let mut walk = why & !Why::CONTENT_SHAPE != 0
-            || content_walk
-            || self.always_walk
-            || !self.back_buffer_items.is_empty();
+        let mut walk = why & !Why::CONTENT_SHAPE != 0 || content_walk || self.always_walk;
+        if !walk && self.back_buffer_always_walks && !self.back_buffer_items.is_empty() {
+            why |= Why::BACK_BUFFER;
+            walk = true;
+        }
         if !walk {
             // Rows only: a moved canvas moves its top-level items' subtrees.
             let mut roots: Vec<Id> = Vec::new();
@@ -2667,6 +2793,12 @@ impl Applier {
             }
             roots.extend(moved);
             roots.extend(ov_changed);
+            // I4: what a canvas group's walk results read moved or changed rect.
+            if group_content || moves_reach_group(&self.group_owners, state, &roots) {
+                why |= Why::BACK_BUFFER;
+                walk = true;
+                roots.clear();
+            }
             self.move_attach = false;
             self.in_apply = true;
             for id in roots {
@@ -2684,6 +2816,7 @@ impl Applier {
         }
         prof::add(prof::CLASSIFY, t);
         self.stats.why = why;
+        self.stats.back_buffer_items = self.back_buffer_items.len() as u32;
         let assembled = walk || why != 0;
         if assembled {
             #[cfg(not(target_arch = "wasm32"))]
@@ -4216,6 +4349,8 @@ mod cg3_tests;
 mod g7t_tests;
 #[cfg(test)]
 mod i1_tests;
+#[cfg(test)]
+mod i4_tests;
 #[cfg(test)]
 mod ordering_model;
 #[cfg(test)]

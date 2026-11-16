@@ -291,9 +291,15 @@ impl Applier {
             return Refresh::Deferred;
         }
         let changed = std::mem::take(&mut self.ov_changed);
-        let mut walk = std::mem::take(&mut self.ov_walk)
-            || self.always_walk
-            || !self.back_buffer_items.is_empty();
+        let mut walk = std::mem::take(&mut self.ov_walk) || self.always_walk;
+        // I4: a changed subtree that reaches a canvas group walks (`moves_reach_group`).
+        if !walk
+            && ((self.back_buffer_always_walks && !self.back_buffer_items.is_empty())
+                || super::moves_reach_group(&self.group_owners, state, &changed))
+        {
+            self.stats.why |= Why::BACK_BUFFER;
+            walk = true;
+        }
         let saved_dirty = self
             .ov_sabotage
             .no_damage
