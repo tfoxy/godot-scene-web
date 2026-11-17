@@ -94,6 +94,15 @@ struct State {
   std::uint64_t particles_capacity = 0;
   std::uint64_t particles_sets = 0;
   std::uint64_t particles_elements = 0;  // live trail-pose floats and draw-pass RIDs, all emitters
+  // VS2: the viewport family's payload (a subset of `map`'s keys, created and erased with the kind
+  // entry): a viewport's render-target RID (`base`), a proxy's base and adjacent viewport.
+  bool viewports = false;  // registry_set_viewports: record and report the family
+  RidMap<RegistryProxy> vp;
+  // VS2: render-target texture RID -> its viewport (registry_note_viewport_texture), for
+  // registry_viewport_of_texture; erased with the viewport's payload.
+  std::unordered_map<std::uint64_t, std::uint64_t> vp_rt;
+  std::uint64_t vp_capacity = 0;
+  std::uint64_t vp_sets = 0;
   RegistryFamilyStats family[kRegistryFamilies];
   std::uint64_t entries = 0;
   std::uint64_t peak = 0;
@@ -246,6 +255,8 @@ constexpr std::uint64_t kParamBytes = sizeof(RegistryParam);
 // LAR5: one slot of the particles payload map; a trail-pose float or draw-pass RID counts 8 B.
 constexpr std::uint64_t kParticlesNodeBytes = sizeof(RidMap<RegistryParticles>::value_type);
 constexpr std::uint64_t kParticlesElementBytes = 8;
+// VS2: one slot of the viewport family's payload map.
+constexpr std::uint64_t kViewportNodeBytes = sizeof(RidMap<RegistryProxy>::value_type);
 
 std::uint64_t particles_elements(const RegistryParticles &p) {
   return p.poses.size() + p.passes.size();
@@ -415,6 +426,12 @@ void payload_create_locked(State &s, std::uint64_t rid, RegistryKind kind, Dropp
     material_create_locked(s, rid, dropped);
   } else if (kind == RegistryKind::Particles) {
     particles_create_locked(s, rid);
+  } else if (kind == RegistryKind::Viewport || kind == RegistryKind::TextureProxy) {
+    // VS2: a fresh payload (a recycled value drops the previous owner's RIDs).
+    if (s.vp.find(rid) == s.vp.end()) {
+      track_growth(s.vp.size(), &s.vp_capacity);
+    }
+    s.vp[rid] = RegistryProxy();
   }
 }
 
@@ -442,6 +459,13 @@ void payload_erase_locked(State &s, std::uint64_t rid, RegistryFamily family, Dr
       s.particles_elements -= particles_elements(it->second);
       s.particles.erase(rid);
     }
+  } else if (family == RegistryFamily::Viewport) {
+    const auto it = s.vp.find(rid);
+    if (it != s.vp.end() && it->second.base != 0) {
+      const auto rt = s.vp_rt.find(it->second.base);
+      if (rt != s.vp_rt.end() && rt->second == rid) s.vp_rt.erase(rt);
+    }
+    s.vp.erase(rid);
   }
 }
 
@@ -482,6 +506,8 @@ RegistryFamily registry_family(RegistryKind kind) {
   case RegistryKind::Shader: return RegistryFamily::Shader;
   case RegistryKind::Material: return RegistryFamily::Material;
   case RegistryKind::Particles: return RegistryFamily::Particles;
+  case RegistryKind::Viewport:
+  case RegistryKind::TextureProxy: return RegistryFamily::Viewport;
   }
   return RegistryFamily::Texture;
 }
@@ -495,6 +521,7 @@ const char *registry_family_name(RegistryFamily family) {
   case RegistryFamily::Shader: return "shader";
   case RegistryFamily::Material: return "material";
   case RegistryFamily::Particles: return "particles";
+  case RegistryFamily::Viewport: return "viewport";
   }
   return "?";
 }
@@ -509,6 +536,8 @@ const char *registry_kind_name(RegistryKind kind) {
   case RegistryKind::Shader: return "shader";
   case RegistryKind::Material: return "material";
   case RegistryKind::Particles: return "particles";
+  case RegistryKind::Viewport: return "viewport";
+  case RegistryKind::TextureProxy: return "texture_proxy";
   }
   return "?";
 }
@@ -568,6 +597,11 @@ void registry_configure(bool adopt, RegistryFault fault, std::size_t cap) {
   s.particles_capacity = 0;
   s.particles_sets = 0;
   s.particles_elements = 0;
+  s.viewports = false;  // VS2: registry_set_viewports, after this
+  s.vp.clear();
+  s.vp_rt.clear();
+  s.vp_capacity = 0;
+  s.vp_sets = 0;
   for (RegistryFamilyStats &f : s.family) {
     f = RegistryFamilyStats();
   }
@@ -629,6 +663,9 @@ void registry_note_create(std::uint64_t rid, RegistryKind kind) {
   Dropped dropped;
   std::lock_guard<std::mutex> lock(s.mutex);
   const RegistryFamily family = registry_family(kind);
+  if (family == RegistryFamily::Viewport && !s.viewports) {
+    return;  // VS2: recorded only when viewports are live (registry_set_viewports)
+  }
   RegistryFamilyStats &f = s.family[index(family)];
   if (rid == 0) {
     ++f.null_creates;
@@ -876,6 +913,9 @@ HoldSkip registry_note_replace(std::uint64_t texture, std::uint64_t by_texture,
   }
   override_erase_locked(s, by_texture, it->second);
   s.map.erase(by_texture);
+  if (family == RegistryFamily::Viewport) {
+    payload_erase_locked(s, by_texture, family, &dropped);  // VS2: a proxy replaced away
+  }
   remove_entry_locked(s, family);
   changed_locked(s);
   return hold ? skip : HoldSkip::None;
@@ -1595,6 +1635,104 @@ bool registry_particles(std::uint64_t rid, RegistryParticles *out) {
   return true;
 }
 
+// --- VS2: the viewport family -------------------------------------------------------------------
+
+void registry_set_viewports(bool live) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  s.viewports = live;
+}
+
+bool registry_viewports() {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  return s.viewports;
+}
+
+std::size_t registry_reported_families() {
+  return registry_viewports() ? kRegistryFamilies : kRegistryFamiliesPreViewports;
+}
+
+void registry_note_proxy_create(std::uint64_t rid, std::uint64_t base, std::uint64_t viewport) {
+  State &s = state();
+  Dropped dropped;  // released after the lock
+  std::lock_guard<std::mutex> lock(s.mutex);
+  if (!s.viewports) return;
+  if (create_locked(s, rid, Entry{RegistryKind::TextureProxy}, &dropped)) {
+    RegistryProxy &p = s.vp.find(rid)->second;
+    p.base = base;
+    p.viewport = viewport;
+    ++s.vp_sets;
+  }
+}
+
+void registry_note_proxy_update(std::uint64_t rid, std::uint64_t base, std::uint64_t viewport) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  if (!s.viewports) return;
+  const auto it = s.map.find(rid);
+  if (it == s.map.end() || it->second.kind != RegistryKind::TextureProxy) return;
+  RegistryProxy &p = s.vp.find(rid)->second;
+  p.base = base;
+  p.viewport = viewport;
+  ++s.vp_sets;
+  changed_locked(s);
+}
+
+void registry_note_viewport_texture(std::uint64_t viewport, std::uint64_t rt) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  if (!s.viewports) return;
+  const auto it = s.map.find(viewport);
+  if (it == s.map.end() || it->second.kind != RegistryKind::Viewport) return;
+  RegistryProxy &p = s.vp.find(viewport)->second;
+  if (p.base != 0) {
+    const auto old = s.vp_rt.find(p.base);
+    if (old != s.vp_rt.end() && old->second == viewport) s.vp_rt.erase(old);
+  }
+  p.base = rt;
+  if (rt != 0) s.vp_rt[rt] = viewport;
+  ++s.vp_sets;
+  changed_locked(s);
+}
+
+bool registry_proxy(std::uint64_t rid, RegistryProxy *out) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.map.find(rid);
+  if (it == s.map.end() || it->second.kind != RegistryKind::TextureProxy) return false;
+  if (out != nullptr) *out = s.vp.find(rid)->second;
+  return true;
+}
+
+bool registry_is_viewport(std::uint64_t rid) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.map.find(rid);
+  return it != s.map.end() && it->second.kind == RegistryKind::Viewport;
+}
+
+bool registry_viewport_of_texture(std::uint64_t rt, std::uint64_t *viewport) {
+  if (rt == 0) return false;
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.vp_rt.find(rt);
+  if (it == s.vp_rt.end()) return false;
+  const auto entry = s.map.find(it->second);
+  if (entry == s.map.end() || entry->second.kind != RegistryKind::Viewport) return false;
+  if (viewport != nullptr) *viewport = it->second;
+  return true;
+}
+
+bool registry_viewport_texture(std::uint64_t viewport, std::uint64_t *rt) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.map.find(viewport);
+  if (it == s.map.end() || it->second.kind != RegistryKind::Viewport) return false;
+  if (rt != nullptr) *rt = s.vp.find(viewport)->second.base;
+  return true;
+}
+
 void registry_frame(std::uint64_t frame) {
   State &s = state();
   const std::uint64_t generation = s.generation.load(std::memory_order_relaxed);
@@ -1644,6 +1782,7 @@ RegistryStats registry_stats() {
                     s.material_params * kParamBytes +
                     static_cast<std::uint64_t>(s.particles.size()) * kParticlesNodeBytes +
                     s.particles_elements * kParticlesElementBytes +
+                    static_cast<std::uint64_t>(s.vp.size()) * kViewportNodeBytes +
                     s.paths.size() * sizeof(RidMap<RegistryValue>::value_type);
   out.shader_payloads = s.shader.size();
   out.shader_payload_sets = s.shader_sets;
@@ -1662,11 +1801,16 @@ RegistryStats registry_stats() {
   out.particles_payload_sets = s.particles_sets;
   out.particles_payload_bytes =
       s.particles_capacity * kParticlesNodeBytes + s.particles_elements * kParticlesElementBytes;
+  out.viewports = s.viewports;
+  out.viewport_payloads = s.vp.size();
+  out.viewport_payload_sets = s.vp_sets;
+  out.viewport_payload_bytes = s.vp_capacity * kViewportNodeBytes;
   // The slot arrays, empty slots included (at most half full, never shrinking: bounded by the
   // peak, not by the current entries).
   out.bytes_estimate = s.capacity * kNodeBytes + out.canvas_payload_bytes +
                        out.multimesh_payload_bytes + out.shader_payload_bytes +
-                       out.material_payload_bytes + out.particles_payload_bytes + out.texture_path_bytes;
+                       out.material_payload_bytes + out.particles_payload_bytes +
+                       out.viewport_payload_bytes + out.texture_path_bytes;
   return out;
 }
 
@@ -1700,8 +1844,11 @@ std::string registry_json() {
   json.key("texture_paths").unsigned_integer(stats.texture_paths);
   json.key("texture_path_sets").unsigned_integer(stats.texture_path_sets);
   json.key("texture_path_bytes").unsigned_integer(stats.texture_path_bytes);
+  // VS2: the viewport family only when viewports are live, so every other run's evidence keeps
+  // its seven families.
+  const std::size_t reported = stats.viewports ? kRegistryFamilies : kRegistryFamiliesPreViewports;
   json.key("families").object_begin();
-  for (std::size_t i = 0; i < kRegistryFamilies; ++i) {
+  for (std::size_t i = 0; i < reported; ++i) {
     const RegistryFamilyStats &f = stats.family[i];
     json.key(registry_family_name(static_cast<RegistryFamily>(i))).object_begin();
     json.key("entries").unsigned_integer(f.entries);
@@ -1725,6 +1872,8 @@ std::string registry_json() {
                                      stats.material_params * kParamBytes
                            : static_cast<RegistryFamily>(i) == RegistryFamily::Particles
                                ? stats.particles_payloads * kParticlesNodeBytes
+                           : static_cast<RegistryFamily>(i) == RegistryFamily::Viewport
+                               ? stats.viewport_payloads * kViewportNodeBytes
                            : static_cast<RegistryFamily>(i) == RegistryFamily::Texture
                                ? stats.texture_paths * sizeof(RidMap<RegistryValue>::value_type)
                                : 0));
@@ -1769,12 +1918,21 @@ std::string registry_json() {
   json.key("node_bytes").unsigned_integer(kParticlesNodeBytes);
   json.key("bytes_estimate").unsigned_integer(stats.particles_payload_bytes);
   json.object_end();
+  if (stats.viewports) {
+    // VS2: the viewport family's payload (render-target RIDs, proxy bases and viewports).
+    json.key("viewport").object_begin();
+    json.key("entries").unsigned_integer(stats.viewport_payloads);
+    json.key("sets").unsigned_integer(stats.viewport_payload_sets);
+    json.key("node_bytes").unsigned_integer(kViewportNodeBytes);
+    json.key("bytes_estimate").unsigned_integer(stats.viewport_payload_bytes);
+    json.object_end();
+  }
   json.object_end();
   // The change timeline: one row per frame callback after which the registry had changed. Columns
   // are per family in `family_order`; `frees` is frees + replaced + recreated.
   json.key("timeline").object_begin();
   json.key("family_order").array_begin();
-  for (std::size_t i = 0; i < kRegistryFamilies; ++i) {
+  for (std::size_t i = 0; i < reported; ++i) {
     json.string(registry_family_name(static_cast<RegistryFamily>(i)));
   }
   json.array_end();
@@ -1785,18 +1943,18 @@ std::string registry_json() {
     json.object_begin();
     json.key("frame").unsigned_integer(row.frame);
     json.key("entries").array_begin();
-    for (std::uint32_t v : row.entries) {
-      json.unsigned_integer(v);
+    for (std::size_t i = 0; i < reported; ++i) {
+      json.unsigned_integer(row.entries[i]);
     }
     json.array_end();
     json.key("creates").array_begin();
-    for (std::uint32_t v : row.creates) {
-      json.unsigned_integer(v);
+    for (std::size_t i = 0; i < reported; ++i) {
+      json.unsigned_integer(row.creates[i]);
     }
     json.array_end();
     json.key("frees").array_begin();
-    for (std::uint32_t v : row.frees) {
-      json.unsigned_integer(v);
+    for (std::size_t i = 0; i < reported; ++i) {
+      json.unsigned_integer(row.frees[i]);
     }
     json.array_end();
     json.object_end();

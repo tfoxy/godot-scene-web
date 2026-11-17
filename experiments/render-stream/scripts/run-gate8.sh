@@ -369,6 +369,16 @@
 #       every hint as the host logs it (`live/host/probe.jsonl`); `v13/capture`, the same at /13;
 #       then, rendered, the unarmed `reference` and the native replay receivers `honest/receiver`
 #       and `v13/receiver` (the size override's control). Judged by lib/gate8-hint-checks.ts.
+#   g8vp (render-stream-16.md: non-root viewport surfaces, fixtures/viewport-scene, armed at birth or
+#       late at frame 12 through the capture's API; every leg under g8vp/<leg>/capture): the fixture
+#       import; headless /16 file-sink captures `born` (res://born.tscn, GRC_MODE=arm at load),
+#       `late` (GRC_MODE=standby GRC_ADOPT=arm: the loader calls RenderStreamCapture.arm() at
+#       frame K, as a consumer arms), `off` (born, GRC_VIEWPORTS=off), `v15` (born at /15) and the
+#       three GRC_VIEWPORT_SABOTAGE captures (`sabotage-no-adjacency` on born,
+#       `sabotage-no-node-route` and `sabotage-wrong-order` on late), all under
+#       GRC_UNKNOWN_ITEM=skip; then `born-rendered` and `late-rendered`, the same captures on the
+#       private gamescope host (render-target RIDs are real there: proxies bind by RID), with the
+#       fixture's own shots. No receiver yet. Judged by lib/gate8-vp-checks.ts.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -390,11 +400,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re g8hint)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re g8hint g8vp)
 # GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
 # is not in the default run: g8w11 already runs the native half of those legs.
-DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re g8hint)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re g8hint)
+DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re g8hint g8vp)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re g8hint g8vp)
 
 EXTENSION=""
 CALIBRATION=""
@@ -5262,11 +5272,100 @@ run_g8hint() {
 	PATCH_RECORDING_NAME=recording-patch.rs8
 }
 
+# --------------------------------------------------------------------------------------- g8vp
+# render-stream-16.md viewport surfaces on fixtures/viewport-scene. `born` arms at load (GRC_MODE=arm,
+# main scene res://born.tscn); `late` loads into standby (GRC_MODE=standby, GRC_ADOPT=arm) and the
+# fixture's loader arms through RenderStreamCapture.arm() at frame K, the consumer's route. Every leg
+# under g8vp/<leg>/capture: /16 file sinks (both encodings, the store), steps.jsonl and the
+# loader's arm.jsonl. The headless legs exercise constructor adjacency and the node route; the
+# rendered legs (the private gamescope) bind proxies by render-target RID.
+G8VP_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/viewport-scene"
+G8VP_ARM_FRAME=12
+G8VP_BORN_ENV=(GRC_STREAM_VERSION=16 GRC_UNKNOWN_ITEM=skip GRC_MODE=arm RS_FIXTURE_ARM=born)
+G8VP_LATE_ENV=(GRC_STREAM_VERSION=16 GRC_UNKNOWN_ITEM=skip GRC_MODE=standby GRC_ADOPT=arm RS_FIXTURE_ARM=late
+	RS_FIXTURE_ARM_FRAME="$G8VP_ARM_FRAME")
+
+run_import_g8vp() {
+	echo "run-gate8: g8vp import (viewport-scene fixture)"
+	LEG_ENV=()
+	run_headless "$OUT/g8vp/import/fixture" none -- mise exec -- godot --headless --path "$G8VP_FIXTURE_DIR" --import
+	[ -f "$OUT/g8vp/import/fixture/skipped-by-tier.txt" ] && return 0
+	if [ "$(cat "$OUT/g8vp/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate8: g8vp import (fixture) failed, see $OUT/g8vp/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+}
+
+# run_capture_g8vp <leg> <born|late> <env word...>: a headless capture of the fixture at
+# g8vp/<leg>/capture (born: main scene res://born.tscn).
+run_capture_g8vp() {
+	local dir="$OUT/g8vp/$1/capture" arm="$2" scene=""
+	shift 2
+	[ "$arm" = born ] && scene="res://born.tscn"
+	mkdir -p "$dir"
+	CAPTURE_FIXTURE_DIR="$G8VP_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=("$@" RS_FIXTURE_ARM_LOG="$dir/arm.jsonl")
+	run_capture "$dir" "" none "$scene"
+}
+
+# run_capture_rendered_g8vp <leg> <born|late> <env word...>: the same capture on the rendered host
+# (the private gamescope), with the fixture's own shots at each settle frame.
+run_capture_rendered_g8vp() {
+	local dir="$OUT/g8vp/$1/capture" arm="$2"
+	shift 2
+	mkdir -p "$dir/evidence" "$dir/store" "$dir/shots"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_VALIDATION_LOG=on "$@"
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+		GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME" GRC_RESOURCE_STORE_DIR="$dir/store"
+		RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" RS_FIXTURE_SHOT_DIR="$dir/shots" RS_FIXTURE_ARM_LOG="$dir/arm.jsonl"
+	)
+	[ "$arm" = born ] && RENDERED_EXTRA_ARGS=(res://born.tscn)
+	run_rendered "$dir" "$G8VP_FIXTURE_DIR"
+}
+
+run_g8vp() {
+	run_import_g8vp
+	local s
+	RECORDING_NAME=recording.rs16
+	PATCH_RECORDING_NAME=recording-patch.rs16
+	echo "run-gate8: g8vp born (/16, armed at birth)"
+	run_capture_g8vp born born "${G8VP_BORN_ENV[@]}"
+	echo "run-gate8: g8vp late (/16, standby, RenderStreamCapture.arm() at frame $G8VP_ARM_FRAME, GRC_ADOPT=arm)"
+	run_capture_g8vp late late "${G8VP_LATE_ENV[@]}"
+	echo "run-gate8: g8vp off (born, GRC_VIEWPORTS=off: the /15 typing on a /16 sink)"
+	run_capture_g8vp off born "${G8VP_BORN_ENV[@]}" GRC_VIEWPORTS=off
+	echo "run-gate8: g8vp sabotage-no-adjacency (born, GRC_VIEWPORT_SABOTAGE=no-adjacency)"
+	run_capture_g8vp sabotage-no-adjacency born "${G8VP_BORN_ENV[@]}" GRC_VIEWPORT_SABOTAGE=no-adjacency
+	for s in no-node-route wrong-order; do
+		echo "run-gate8: g8vp sabotage-$s (late, GRC_VIEWPORT_SABOTAGE=$s)"
+		run_capture_g8vp "sabotage-$s" late "${G8VP_LATE_ENV[@]}" GRC_VIEWPORT_SABOTAGE="$s"
+	done
+	RECORDING_NAME=recording.rs15
+	PATCH_RECORDING_NAME=recording-patch.rs15
+	echo "run-gate8: g8vp v15 (born at /15: the hooks planned, nothing live)"
+	run_capture_g8vp v15 born "${G8VP_BORN_ENV[@]}" GRC_STREAM_VERSION=15
+	RECORDING_NAME=recording.rs16
+	PATCH_RECORDING_NAME=recording-patch.rs16
+
+	echo "run-gate8: bringing up private gamescope for g8vp's rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g8vp"
+	echo "run-gate8: g8vp born-rendered (/16, armed at birth, rendered host)"
+	run_capture_rendered_g8vp born-rendered born "${G8VP_BORN_ENV[@]}"
+	echo "run-gate8: g8vp late-rendered (/16, standby, API arm at frame $G8VP_ARM_FRAME, rendered host)"
+	run_capture_rendered_g8vp late-rendered late "${G8VP_LATE_ENV[@]}"
+	gs_teardown "$OUT/gamescope-g8vp"
+	GS_RUN_DIR=""
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g8htr) run_g8htr ;;
 	g8tdr) run_g8tdr ;;
 	g8hint) run_g8hint ;;
+	g8vp) run_g8vp ;;
 	g8kp) run_g8kp ;;
 	g8kc) run_g8kc ;;
 	g8ku) run_g8ku ;;

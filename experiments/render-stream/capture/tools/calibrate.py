@@ -243,6 +243,32 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # (GRC_STREAM_VERSION=15), like PM1's: it adds no calibrator version, and below /15 it is
     # neither planned nor omitted.
     ("texture_set_size_override", ("texture_set_size_override",)),
+    # viewport-surfaces design (render-stream-16.md) -- the viewport family: texture proxies and
+    # the viewport create/configure/get_texture calls, plus instance_set_scenario. Planned by
+    # capability under GRC_VIEWPORTS (default on) at every stream version, not by version; the
+    # family is indivisible, so a record or engine missing one of them leaves the whole family
+    # unplanned. It adds no calibrator version, and with GRC_VIEWPORTS=off it is neither planned
+    # nor omitted.
+    ("texture_proxy_create", ("texture_proxy_create",)),
+    ("texture_proxy_update", ("texture_proxy_update",)),
+    ("viewport_create", ("viewport_create",)),
+    ("viewport_set_size", ("viewport_set_size",)),
+    ("viewport_set_active", ("viewport_set_active",)),
+    ("viewport_set_parent_viewport", ("viewport_set_parent_viewport",)),
+    ("viewport_set_canvas_cull_mask", ("viewport_set_canvas_cull_mask",)),
+    ("viewport_set_update_mode", ("viewport_set_update_mode",)),
+    ("viewport_set_clear_mode", ("viewport_set_clear_mode",)),
+    ("viewport_get_texture", ("viewport_get_texture",)),
+    ("viewport_set_disable_3d", ("viewport_set_disable_3d",)),
+    ("viewport_set_disable_2d", ("viewport_set_disable_2d",)),
+    ("viewport_attach_camera", ("viewport_attach_camera",)),
+    ("viewport_set_scenario", ("viewport_set_scenario",)),
+    ("viewport_set_transparent_background", ("viewport_set_transparent_background",)),
+    ("viewport_set_use_hdr_2d", ("viewport_set_use_hdr_2d",)),
+    ("viewport_set_snap_2d_transforms_to_pixel", ("viewport_set_snap_2d_transforms_to_pixel",)),
+    ("viewport_set_snap_2d_vertices_to_pixel", ("viewport_set_snap_2d_vertices_to_pixel",)),
+    ("viewport_set_msaa_2d", ("viewport_set_msaa_2d",)),
+    ("instance_set_scenario", ("instance_set_scenario",)),
 )
 
 # Every wanted slot belongs to one indivisible capture family.
@@ -378,6 +404,26 @@ FAMILIES = {
     "particles_set_interp_to_end": "particles",
     "canvas_item_set_use_identity_transform": "canvas_item_state",
     "texture_set_size_override": "texture",
+    "texture_proxy_create": "viewport",
+    "texture_proxy_update": "viewport",
+    "viewport_create": "viewport",
+    "viewport_set_size": "viewport",
+    "viewport_set_active": "viewport",
+    "viewport_set_parent_viewport": "viewport",
+    "viewport_set_canvas_cull_mask": "viewport",
+    "viewport_set_update_mode": "viewport",
+    "viewport_set_clear_mode": "viewport",
+    "viewport_get_texture": "viewport",
+    "viewport_set_disable_3d": "viewport",
+    "viewport_set_disable_2d": "viewport",
+    "viewport_attach_camera": "viewport",
+    "viewport_set_scenario": "viewport",
+    "viewport_set_transparent_background": "viewport",
+    "viewport_set_use_hdr_2d": "viewport",
+    "viewport_set_snap_2d_transforms_to_pixel": "viewport",
+    "viewport_set_snap_2d_vertices_to_pixel": "viewport",
+    "viewport_set_msaa_2d": "viewport",
+    "instance_set_scenario": "viewport",
 }
 
 

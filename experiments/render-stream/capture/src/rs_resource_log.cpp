@@ -470,18 +470,29 @@ void ResourceLog::start(std::uint64_t t0_ns, std::uint64_t root_viewport_rid, bo
   pending_.clear();
   deferred_.clear();
   update_unknown_ = 0;
+  // VS2: the viewport taps the arm walk made before this start, replayed first, in order.
+  viewport_by_rid_.clear();
+  rt_viewport_.clear();
+  std::vector<std::function<void()>> held;
+  held.swap(held_viewport_taps_);
+  hold_viewports_ = false;
+  for (const auto &tap : held) {
+    tap();
+  }
 }
 
 void ResourceLog::stop() {
   std::lock_guard<std::mutex> lock(mutex_);
   // Pairs with OffmainGuard admission and inflight_ready's seq_cst counter poll.
   active_.store(false, std::memory_order_seq_cst);
+  hold_viewports_ = false;
+  held_viewport_taps_.clear();
 }
 
 std::size_t ResourceLog::held() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return by_rid_.size() + mesh_by_rid_.size() + shader_by_rid_.size() + material_by_rid_.size() +
-         deferred_.size() + (pending_.empty() ? 0 : 1);
+         viewport_by_rid_.size() + deferred_.size() + (pending_.empty() ? 0 : 1);
 }
 
 std::size_t ResourceLog::release() {
@@ -491,10 +502,16 @@ std::size_t ResourceLog::release() {
   std::map<std::uint64_t, MaterialEntry> materials;
   std::string pending;
   std::vector<std::shared_ptr<Deferred>> deferred;
+  std::map<std::uint64_t, Entry> viewports;
+  std::vector<std::function<void()>> taps;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     // Pairs with OffmainGuard admission and inflight_ready's seq_cst counter poll.
     active_.store(false, std::memory_order_seq_cst);
+    viewports.swap(viewport_by_rid_);
+    rt_viewport_.clear();
+    taps.swap(held_viewport_taps_);
+    hold_viewports_ = false;
     by_rid.swap(by_rid_);
     meshes.swap(mesh_by_rid_);
     shaders.swap(shader_by_rid_);
@@ -503,7 +520,8 @@ std::size_t ResourceLog::release() {
     deferred.swap(deferred_);
   }
   // Freed outside the lock: the payload copies can be large.
-  return by_rid.size() + meshes.size() + shaders.size() + materials.size() + deferred.size();
+  return by_rid.size() + meshes.size() + shaders.size() + materials.size() + viewports.size() +
+         deferred.size();
 }
 
 namespace {
@@ -624,6 +642,16 @@ void ResourceLog::texture_2d_update(const TapContext &ctx, std::uint64_t rid,
     emit(line, job);
     return;
   }
+  if (entry->kind == "proxy") {
+    // VS2 (as Mirror::texture_2d_update): a proxy has no content of its own; nothing changes.
+    line.id = entry->id;
+    line.version = entry->version;
+    line.kind = entry->kind;
+    line.status = entry->status;
+    line.reason = entry->reason;
+    emit(line, job);
+    return;
+  }
   entry->version += 1;
   entry->job.reset();  // G8kw: superseded (the shape below is the hook's, known either way)
   if (layer != 0) {
@@ -714,6 +742,30 @@ void ResourceLog::texture_replace(const TapContext &ctx, std::uint64_t texture,
     emit(line);
     return;
   }
+  if ((t != nullptr && t->kind == "proxy") || (b != nullptr && b->kind == "proxy")) {
+    // VS2 (as Mirror::texture_replace): GLES3 refuses to replace a proxy or by a proxy.
+    if (t != nullptr) {
+      line.id = t->id;
+      line.version = t->version;
+      line.kind = t->kind;
+      line.status = t->status;
+      line.reason = t->reason;
+    }
+    emit(line);
+    return;
+  }
+  std::vector<std::uint64_t> redirected;  // VS2: proxy RIDs, each logged after this line
+  if (t != nullptr && b != nullptr) {
+    // VS2 (as the mirror): the storage redirects b's `ok` proxies to t, each a new version.
+    for (auto &entry : by_rid_) {
+      Entry &proxy = entry.second;
+      if (proxy.kind == "proxy" && proxy.status == "ok" && proxy.target_id == b->id) {
+        proxy.target_id = t->id;
+        ++proxy.version;
+        redirected.push_back(entry.first);
+      }
+    }
+  }
   std::shared_ptr<TextureJob> replaced_job;  // G8kw: b's pending payload, now t's
   if (t != nullptr) {
     t->version += 1;
@@ -746,6 +798,9 @@ void ResourceLog::texture_replace(const TapContext &ctx, std::uint64_t texture,
     by_rid_.erase(by_texture);
   }
   emit(line, replaced_job);
+  for (std::uint64_t proxy : redirected) {
+    emit_proxy(ctx, "texture_replace", proxy, texture, by_rid_.at(proxy));
+  }
 }
 
 void ResourceLog::free_rid(const TapContext &ctx, std::uint64_t rid, bool omitted) {
@@ -771,6 +826,26 @@ void ResourceLog::free_rid(const TapContext &ctx, std::uint64_t rid, bool omitte
     line.status = "freed";
     emit(line);
     by_rid_.erase(rid);
+    return;
+  }
+  // VS2: a viewport whose `viewport` texture the log holds (kept under the viewport RID).
+  const auto vp = viewport_by_rid_.find(rid);
+  if (vp != viewport_by_rid_.end()) {
+    Line line = base_line(ctx, "free");
+    line.id = vp->second.id;
+    line.rid = rid;
+    line.version = vp->second.version;
+    line.kind = vp->second.kind;
+    if (omitted) {
+      line.status = vp->second.status;
+      line.sabotage = true;
+      line.omitted = true;
+      emit(line);
+      return;
+    }
+    line.status = "freed";
+    emit(line);
+    free_viewport_locked(rid);
     return;
   }
   // G5a: a mesh RID the log knows (every other free -- items, canvases, ... -- changes nothing
@@ -2386,6 +2461,323 @@ std::uint64_t ResourceLog::update_unknown() const {
 ResourceLog &resource_log() {
   static ResourceLog log;
   return log;
+}
+
+
+// --- VS2: viewport surfaces ----------------------------------------------------------------------
+
+bool ResourceLog::queue_viewport_tap(std::function<void()> tap) {
+  if (active_) {
+    return false;
+  }
+  if (hold_viewports_) {
+    held_viewport_taps_.push_back(std::move(tap));
+  }
+  return true;  // inactive: queued or dropped, never applied now
+}
+
+void ResourceLog::hold_viewports_until_start() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  hold_viewports_ = true;
+  held_viewport_taps_.clear();
+}
+
+void ResourceLog::free_viewport_locked(std::uint64_t viewport) {
+  viewport_by_rid_.erase(viewport);
+  for (auto it = rt_viewport_.begin(); it != rt_viewport_.end();) {
+    it = it->second == viewport ? rt_viewport_.erase(it) : std::next(it);
+  }
+}
+
+std::uint64_t ResourceLog::resolve_proxy(std::uint64_t base, std::uint64_t viewport) const {
+  if (viewport != 0) {
+    const auto it = viewport_by_rid_.find(viewport);
+    if (it != viewport_by_rid_.end()) {
+      return it->second.id;
+    }
+  }
+  if (base != 0) {
+    const auto rt = rt_viewport_.find(base);
+    if (rt != rt_viewport_.end()) {
+      const auto it = viewport_by_rid_.find(rt->second);
+      if (it != viewport_by_rid_.end()) {
+        return it->second.id;
+      }
+    }
+    const auto tex = by_rid_.find(base);
+    if (tex != by_rid_.end() && tex->second.kind != "proxy") {  // Godot refuses proxy-of-proxy
+      return tex->second.id;
+    }
+  }
+  return 0;
+}
+
+void ResourceLog::emit_proxy(const TapContext &ctx, const char *op, std::uint64_t proxy,
+                             std::uint64_t base, const Entry &entry) {
+  Line line = base_line(ctx, op);
+  line.id = entry.id;
+  line.rid = proxy;
+  line.version = entry.version;
+  line.kind = entry.kind;
+  line.status = entry.status;
+  line.reason = entry.reason;
+  line.has_target = true;
+  line.target = base;
+  line.ref_id = entry.status == "ok" ? entry.target_id : 0;
+  emit(line);
+}
+
+void ResourceLog::viewport_create_locked(const TapContext &ctx, std::uint64_t viewport,
+                                         bool omitted) {
+  if (viewport == 0) {
+    return;  // the mirror's guard: RID() makes no entry
+  }
+  Line line = base_line(ctx, "viewport_create");
+  line.rid = viewport;
+  if (omitted) {
+    line.kind = "viewport";
+    line.sabotage = true;
+    line.omitted = true;
+    emit(line);
+    return;
+  }
+  if (viewport_by_rid_.count(viewport) != 0) {
+    free_viewport_locked(viewport);  // a recycled RID value: the old viewport is gone
+  }
+  Entry entry;
+  entry.id = next_id_++;
+  entry.kind = "viewport";
+  viewport_by_rid_[viewport] = entry;
+  line.id = entry.id;
+  line.version = entry.version;
+  line.kind = entry.kind;
+  line.status = entry.status;
+  emit(line);
+}
+
+void ResourceLog::viewport_get_texture_locked(std::uint64_t viewport, std::uint64_t rt,
+                                              bool omitted) {
+  if (omitted || rt == 0 || viewport == root_viewport_ ||
+      viewport_by_rid_.count(viewport) == 0) {
+    return;  // as the mirror: only a known non-root viewport's real render target is mapped
+  }
+  rt_viewport_[rt] = viewport;
+}
+
+void ResourceLog::proxy_create_locked(const TapContext &ctx, const char *op, std::uint64_t proxy,
+                                      std::uint64_t base, std::uint64_t viewport, bool omitted) {
+  if (proxy == 0) {
+    return;
+  }
+  if (omitted) {
+    Line line = base_line(ctx, op);
+    line.rid = proxy;
+    line.kind = "proxy";
+    line.sabotage = true;
+    line.omitted = true;
+    emit(line);
+    return;
+  }
+  const std::uint64_t target = resolve_proxy(base, viewport);
+  Entry entry;
+  entry.id = next_id_++;  // a recycled RID value's old entry is simply replaced
+  entry.kind = "proxy";
+  entry.target_id = target;
+  if (target == 0) {
+    entry.status = "unsupported";
+    entry.reason = "proxy-unresolved";
+  }
+  Entry &stored = by_rid_[proxy] = entry;
+  emit_proxy(ctx, op, proxy, base, stored);
+}
+
+void ResourceLog::proxy_update_locked(const TapContext &ctx, std::uint64_t proxy,
+                                      std::uint64_t base, std::uint64_t viewport, bool omitted) {
+  Entry *entry = find(proxy);
+  if (omitted || entry == nullptr || entry->kind != "proxy") {
+    // Omitted, a proxy the log never met, or GLES3's refusal on a non-proxy: nothing changes.
+    Line line = base_line(ctx, "texture_proxy_update");
+    line.rid = proxy;
+    line.has_target = true;
+    line.target = base;
+    if (entry != nullptr) {
+      line.id = entry->id;
+      line.version = entry->version;
+      line.kind = entry->kind;
+      line.status = entry->status;
+      line.reason = entry->reason;
+    }
+    line.sabotage = omitted;
+    line.omitted = omitted;
+    emit(line);
+    return;
+  }
+  const std::uint64_t target = resolve_proxy(base, viewport);
+  const bool was_ok = entry->status == "ok";
+  const bool ok = target != 0;
+  entry->route_tried = false;  // re-pointed: the node route may try it again
+  // Mirror::point_proxy's rule: a change of ok/unresolved, or of an ok target, is a new version.
+  if (was_ok != ok || (ok && entry->target_id != target)) {
+    ++entry->version;
+  }
+  entry->status = ok ? "ok" : "unsupported";
+  entry->reason = ok ? "" : "proxy-unresolved";
+  entry->target_id = target;
+  emit_proxy(ctx, "texture_proxy_update", proxy, base, *entry);
+}
+
+void ResourceLog::viewport_adopt_locked(const TapContext &ctx, std::uint64_t viewport,
+                                        std::uint64_t default_proxy) {
+  if (viewport == 0 || viewport_by_rid_.count(viewport) != 0 ||
+      (viewport == root_viewport_ && root_viewport_ != 0)) {
+    return;  // as Mirror::adopt_viewport
+  }
+  Entry entry;
+  entry.id = next_id_++;
+  entry.kind = "viewport";
+  viewport_by_rid_[viewport] = entry;
+  Line line = base_line(ctx, "adopt");
+  line.id = entry.id;
+  line.rid = viewport;
+  line.version = entry.version;
+  line.kind = entry.kind;
+  line.status = entry.status;
+  emit(line);
+  if (default_proxy != 0 && by_rid_.count(default_proxy) == 0) {
+    Entry proxy;
+    proxy.id = next_id_++;
+    proxy.kind = "proxy";
+    proxy.target_id = entry.id;
+    Entry &stored = by_rid_[default_proxy] = proxy;
+    emit_proxy(ctx, "adopt", default_proxy, 0, stored);
+  }
+}
+
+void ResourceLog::proxy_node_route_locked(const TapContext &ctx, std::uint64_t proxy,
+                                          std::uint64_t viewport) {
+  Entry *entry = find(proxy);
+  if (entry == nullptr || entry->kind != "proxy" || entry->status != "unsupported" ||
+      entry->route_tried) {
+    return;  // as Mirror::proxy_node_route_result: bound meanwhile, or already tried
+  }
+  entry->route_tried = true;
+  const auto vp = viewport != 0 ? viewport_by_rid_.find(viewport) : viewport_by_rid_.end();
+  if (vp == viewport_by_rid_.end()) {
+    return;  // not found: stays proxy-unresolved, no new version, no line
+  }
+  entry->status = "ok";
+  entry->reason.clear();
+  entry->target_id = vp->second.id;
+  ++entry->version;
+  emit_proxy(ctx, "node_route", proxy, 0, *entry);
+}
+
+void ResourceLog::viewport_create(const TapContext &ctx, std::uint64_t viewport, bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (queue_viewport_tap([this, ctx, viewport, omitted] {
+        viewport_create_locked(ctx, viewport, omitted);
+      })) {
+    return;
+  }
+  viewport_create_locked(ctx, viewport, omitted);
+}
+
+void ResourceLog::viewport_get_texture(const TapContext &ctx, std::uint64_t viewport,
+                                       std::uint64_t rt, bool omitted) {
+  (void)ctx;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (queue_viewport_tap([this, viewport, rt, omitted] {
+        viewport_get_texture_locked(viewport, rt, omitted);
+      })) {
+    return;
+  }
+  viewport_get_texture_locked(viewport, rt, omitted);
+}
+
+void ResourceLog::texture_proxy_create(const TapContext &ctx, std::uint64_t proxy,
+                                       std::uint64_t base, std::uint64_t adjacent_viewport,
+                                       bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (queue_viewport_tap([this, ctx, proxy, base, adjacent_viewport, omitted] {
+        proxy_create_locked(ctx, "texture_proxy_create", proxy, base, adjacent_viewport, omitted);
+      })) {
+    return;
+  }
+  proxy_create_locked(ctx, "texture_proxy_create", proxy, base, adjacent_viewport, omitted);
+}
+
+void ResourceLog::texture_proxy_update(const TapContext &ctx, std::uint64_t proxy,
+                                       std::uint64_t base, std::uint64_t adjacent_viewport,
+                                       bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (queue_viewport_tap([this, ctx, proxy, base, adjacent_viewport, omitted] {
+        proxy_update_locked(ctx, proxy, base, adjacent_viewport, omitted);
+      })) {
+    return;
+  }
+  proxy_update_locked(ctx, proxy, base, adjacent_viewport, omitted);
+}
+
+void ResourceLog::viewport_adopt(const TapContext &ctx, std::uint64_t viewport,
+                                 std::uint64_t default_proxy) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (queue_viewport_tap([this, ctx, viewport, default_proxy] {
+        viewport_adopt_locked(ctx, viewport, default_proxy);
+      })) {
+    return;
+  }
+  viewport_adopt_locked(ctx, viewport, default_proxy);
+}
+
+void ResourceLog::proxy_adopt(const TapContext &ctx, std::uint64_t proxy, std::uint64_t base,
+                              std::uint64_t viewport) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto apply = [this, ctx, proxy, base, viewport] {
+    if (proxy != 0 && by_rid_.count(proxy) == 0) {  // as Mirror::adopt_proxy
+      proxy_create_locked(ctx, "adopt", proxy, base, viewport, false);
+    }
+  };
+  if (queue_viewport_tap(apply)) {
+    return;
+  }
+  apply();
+}
+
+void ResourceLog::placeholder_adopt(const TapContext &ctx, std::uint64_t rid) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto apply = [this, ctx, rid] {
+    if (!active_ || rid == 0 || by_rid_.count(rid) != 0) {  // as Mirror::adopt_placeholder
+      return;
+    }
+    Entry entry;
+    entry.id = next_id_++;
+    entry.kind = "placeholder";
+    by_rid_[rid] = entry;
+    Line line = base_line(ctx, "adopt");
+    line.id = entry.id;
+    line.rid = rid;
+    line.version = entry.version;
+    line.kind = entry.kind;
+    line.status = entry.status;
+    line.adopted_content = "current";
+    line.adopt_source = "registry";
+    emit(line);
+  };
+  if (queue_viewport_tap(apply)) {
+    return;
+  }
+  apply();
+}
+
+void ResourceLog::proxy_node_route(const TapContext &ctx, std::uint64_t proxy,
+                                   std::uint64_t viewport) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (queue_viewport_tap([this, ctx, proxy, viewport] {
+        proxy_node_route_locked(ctx, proxy, viewport);
+      })) {
+    return;
+  }
+  proxy_node_route_locked(ctx, proxy, viewport);
 }
 
 }  // namespace rs

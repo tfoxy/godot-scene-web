@@ -124,6 +124,46 @@ bool hooks_multimesh_planned();
 // and the mirror's particles table is on.
 bool hooks_particles_planned();
 
+// VS2 (viewport-surfaces-design.md D3, D6, Q3a): family `viewport`, twenty optional hooks planned
+// by capability at every GRC_STREAM_VERSION.
+//   hooks_set_viewports       before hooks_plan(), at load: GRC_VIEWPORTS!=off (`enabled`; off: the
+//                             family is skipped, neither planned nor omitted) and
+//                             GRC_VIEWPORT_SABOTAGE=no-adjacency (the proxy hooks' adjacent
+//                             viewport is always 0; a test knob, never on the wire).
+//   hooks_viewports_planned   the last hooks_plan() planned all twenty (the family is indivisible).
+//   hooks_set_viewports_live  after hooks_plan(), at load: speaks /16 (and all twenty planned). Only
+//                             then does the registry record the Viewport and TextureProxy kinds
+//                             (standby included).
+void hooks_set_viewports(bool enabled, bool no_adjacency);
+bool hooks_viewports_planned();
+void hooks_set_viewports_live(bool live);
+bool hooks_viewports_live();
+// VS2: the mirror taps that mint or re-version a texture id outside a hooked call
+// (Mirror::adopt_viewport with its default proxy, Mirror::adopt_proxy,
+// Mirror::proxy_node_route_result), paired with the hook log's matching taps under the texture order
+// lock, so the log's ids keep naming the mirror's. rs_adopt.cpp must call these instead of the
+// mirror directly. No-ops when nothing is streaming. Before the log starts (the arm walk) the log
+// queues its half (ResourceLog::hold_viewports_until_start).
+void hooks_adopt_viewport(const rs::Mirror::AdoptedViewport &viewport, uint64_t frame);
+void hooks_adopt_proxy(uint64_t proxy, uint64_t base, uint64_t viewport, uint64_t frame);
+// VS2: a pre-arm placeholder a registered proxy names, adopted in the mirror and the hook log.
+void hooks_adopt_placeholder(uint64_t rid, uint64_t frame);
+// VS2 (D9): whether instance_set_scenario (hooked in standby too, while viewports are live) left a
+// live instance in `scenario`.
+bool hooks_scenario_has_instance(uint64_t scenario);
+// VS2 (D9): seeds the mirror with the instance -> scenario membership the hooks kept before the arm
+// (Mirror::seed_scenario_instances), so a late mirror's renders_3d counts pre-arm instances as a
+// born one does. Main thread, after mirror_enable and set_viewports, before the adoption walk.
+void hooks_seed_mirror_scenarios(uint64_t frame);
+void hooks_proxy_node_route_result(uint64_t proxy, uint64_t viewport, uint64_t frame);
+// VS2: an adopted viewport's render-target RID (rendered host), mapped in the mirror and the hook
+// log as hook_viewport_get_texture's taps map it (no RS call).
+void hooks_adopt_viewport_texture(uint64_t viewport, uint64_t rt, uint64_t frame);
+// VS2: an unresolved proxy re-resolved against its current registry record once its base is known
+// (rs_adopt.cpp resolve_unresolved_proxies): hook_texture_proxy_update's two taps with that base and
+// viewport, under the texture order lock, so log ids and versions stay the mirror's.
+void hooks_reresolve_proxy(uint64_t proxy, uint64_t base, uint64_t viewport, uint64_t frame);
+
 // P3-TM (render-stream-10.md "Shader time"): set before arming when the session is /10. The
 // shader hooks then classify `TIME` as a use, not the `shader-time` reason.
 void hooks_set_shader_time_carried(bool carried);

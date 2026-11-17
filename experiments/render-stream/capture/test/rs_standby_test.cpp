@@ -95,13 +95,15 @@ void census(const char *path) {
   for (std::sregex_iterator it(table.begin(), table.end(), entry), stop; it != stop; ++it) {
     specs[(*it)[1].str()] = (*it)[2].str();
   }
-  expect(specs.size() >= 129, "kSpecs parsed (" + std::to_string(specs.size()) + " hooks)");
+  expect(specs.size() >= 149, "kSpecs parsed (" + std::to_string(specs.size()) + " hooks)");
 
   std::set<std::string> want;
   for (const auto &spec : specs) {
     const std::string body = body_of(lines, spec.second);
     expect(!body.empty(), "body of " + spec.second + " found");
-    const bool by_rule = spec.first == "texture_set_path" || spec.first == "draw";
+    // VS2: instance_set_scenario keeps the hooks' scenario count (hooks.cpp scenario_note), not a registry tap.
+    const bool by_rule = spec.first == "texture_set_path" || spec.first == "draw" ||
+                         spec.first == "instance_set_scenario";
     if (by_rule || tracks(body)) {
       want.insert(spec.first);
     }
@@ -127,6 +129,7 @@ void expected_list() {
       "canvas_texture_set_texture_repeat",
       "draw",
       "free",
+      "instance_set_scenario",
       "material_create",
       "material_create_from_shader",
       "material_set_param",
@@ -183,14 +186,19 @@ void expected_list() {
       "texture_2d_create",
       "texture_2d_placeholder_create",
       "texture_2d_update",
+      "texture_proxy_create",
+      "texture_proxy_update",
       "texture_replace",
       "texture_set_path",
       "texture_set_size_override",
+      "viewport_create",
+      "viewport_get_texture",
   };
   expect(grc::rs::standby_hook_names() == expected, "the standby set equals the expected list");
   expect(!grc::rs::standby_hook("canvas_item_add_rect"), "a draw command is hot");
   expect(!grc::rs::standby_hook("canvas_item_set_transform"), "an item setter is hot");
   expect(!grc::rs::standby_hook("canvas_item_set_material"), "set_material is hot (adoption only)");
+  expect(!grc::rs::standby_hook("viewport_set_size"), "a viewport setter is hot (VS2)");
 }
 
 void faults() {

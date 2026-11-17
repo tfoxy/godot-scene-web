@@ -329,6 +329,9 @@ inline constexpr const char *kSubprotocolV14 = "render-stream.14";
 // render-stream-15.md: /14's live transport under render-stream/15 (resource hints, size
 // override). Opt-in (GRC_STREAM_VERSION=15).
 inline constexpr const char *kSubprotocolV15 = "render-stream.15";
+// VS2 (render-stream-16.md "Who speaks /16"): /15's live transport under render-stream/16
+// (viewport surfaces). Opt-in (GRC_STREAM_VERSION=16), listed alone.
+inline constexpr const char *kSubprotocolV16 = "render-stream.16";
 
 // HC5: where a frame callback's formation jobs run (rs_live.h header, "Formation").
 enum class Formation : std::uint8_t { Inline, Thread };

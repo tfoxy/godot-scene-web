@@ -512,11 +512,34 @@ struct ItemMetaState {
 };
 ItemMetaState g_meta;
 
+// VS2 (viewport-surfaces-design.md D3, D6, Q3b): GRC_VIEWPORTS and GRC_VIEWPORT_SABOTAGE, read at
+// load (before hooks_plan); viewports live = speaks /16 and all twenty `viewport` hooks planned
+// (rs_mirror.h set_viewports, rs_adopt.h adopt_set_viewports_live). A bad value refuses the stream
+// at arm, like every other GRC_* refusal.
+struct ViewportsState {
+  rs::ViewportsPolicy policy;
+  std::string error;  // a bad GRC_VIEWPORTS / GRC_VIEWPORT_SABOTAGE value (refused at arm)
+  bool live = false;  // decided at load (hooks_viewports_live()); the stream's copy below
+  bool stream_live = false;  // this stream's: set at arm, cleared at the next arm
+  uint64_t node_route_calls = 0;  // resolve_unresolved_proxies calls this stream
+  uint64_t node_route_bound = 0;  // their returns, summed
+};
+ViewportsState g_viewports;
+
+// render-stream-16.md "Session: viewports": the session's mode, at any version (encoded at /16).
+rs2::ViewportsMode viewports_mode() {
+  if (!g_viewports.policy.on) return rs2::ViewportsMode::Off;
+  return hooks_viewports_planned() ? rs2::ViewportsMode::On : rs2::ViewportsMode::Unavailable;
+}
+
 // render-stream-15.md "Resource hints": the hint table, the file sinks' hinted set and the
 // evidence. Only a GRC_STREAM_VERSION=15 stream whose payloads are not all inline turns it on;
 // otherwise none of this runs.
 struct HintState {
   bool on = false;
+  // VS2 (viewport-surfaces-design.md D14): GRC_RESOURCE_HINTS, read at arm when the stream speaks
+  // /15 or later; off keeps hints off at /15 and /16.
+  bool resource_hints = true;
   uint64_t budget = rs::hints::kDefaultBudgetBytes;  // GRC_RESOURCE_HINT_BUDGET_BYTES
   uint64_t inline_max = 0;
   rs::hints::Sabotage sabotage = rs::hints::Sabotage::None;  // GRC_HINT_SABOTAGE (never on the wire)
@@ -957,7 +980,8 @@ std::string result_json() {
   if (g_stream.gate8.speaks_v8()) {
     json.key("gate8").object_begin();
     json.field("file_stream_version", static_cast<int64_t>(
-                   g_stream.gate8.speaks_v15()   ? 15
+                   g_stream.gate8.speaks_v16()   ? 16
+                   : g_stream.gate8.speaks_v15() ? 15
                    : g_stream.gate8.speaks_v14() ? 14
                    : g_stream.gate8.speaks_v13() ? 13
                    : g_stream.gate8.speaks_v12() ? 12
@@ -995,6 +1019,30 @@ std::string result_json() {
                                         g_live.served != nullptr
                                             ? g_live.served->hinted_siblings_queued()
                                             : 0));
+      json.object_end();
+    }
+    {
+      // VS2 (viewport-surfaces-design.md Q7): the viewport family's account, at every version
+      // (the family is hooked by capability). Counters from the mirror (zero unless live).
+      const rs::MirrorStats ms = rs::mirror_stats();
+      json.key("viewports").object_begin();
+      json.field("mode", std::string(rs2::to_wire(viewports_mode())));
+      json.field("hooked", hooks_viewports_planned());
+      json.field("live", g_viewports.live);
+      json.field("created", static_cast<int64_t>(ms.created));
+      json.field("adopted", static_cast<int64_t>(ms.adopted));
+      json.field("freed", static_cast<int64_t>(ms.freed));
+      json.field("proxies", static_cast<int64_t>(ms.proxies));
+      json.field("proxies_bound_rid", static_cast<int64_t>(ms.proxies_bound_rid));
+      json.field("proxies_bound_adjacency", static_cast<int64_t>(ms.proxies_bound_adjacency));
+      json.field("proxies_bound_texture", static_cast<int64_t>(ms.proxies_bound_texture));
+      json.field("proxies_bound_node_route", static_cast<int64_t>(ms.proxies_bound_node_route));
+      json.field("proxies_adopted", static_cast<int64_t>(ms.proxies_adopted));
+      json.field("proxies_unresolved", static_cast<int64_t>(ms.proxies_unresolved));
+      json.field("unresolved_now", static_cast<int64_t>(ms.unresolved_now));
+      json.field("node_route_tried", static_cast<int64_t>(ms.node_route_tried));
+      json.field("unknown_viewport_calls", static_cast<int64_t>(ms.unknown_viewport_calls));
+      json.field("renders_3d", static_cast<int64_t>(ms.renders_3d));
       json.object_end();
     }
     if (g_stream.gate8.speaks_v10()) {
@@ -1155,6 +1203,9 @@ std::string result_json() {
         json.field("identity_transforms", static_cast<int64_t>(a.identity_transforms));
       }
       json.field("non_root_viewports", static_cast<int64_t>(a.non_root_viewports));
+      // VS2 (Q4): viewports the walk adopted and the layers inside them (0 unless live).
+      json.field("viewports_adopted", static_cast<int64_t>(a.viewports_adopted));
+      json.field("viewport_layers", static_cast<int64_t>(a.viewport_layers));
       json.field("walk_ns", static_cast<int64_t>(a.walk_ns));
       json.field("apply_ns", static_cast<int64_t>(a.apply_ns));
       json.field("engine_ns", static_cast<int64_t>(a.engine_ns));
@@ -1182,6 +1233,20 @@ std::string result_json() {
       json.field("textures_refused", static_cast<int64_t>(r.textures_refused));
       json.field("refused_no_image", static_cast<int64_t>(r.refused_no_image));
       json.field("refused_canvas_empty", static_cast<int64_t>(r.refused_canvas_empty));
+      // VS2 (viewport-surfaces-design.md Q3b): proxies and viewport textures by registry kind,
+      // and the node route (rs_adopt.h AdoptResourceStats).
+      json.field("refused_viewport", static_cast<int64_t>(r.refused_viewport));
+      json.field("proxies", static_cast<int64_t>(r.proxies));
+      json.field("proxies_viewport", static_cast<int64_t>(r.proxies_viewport));
+      json.field("proxies_render_target", static_cast<int64_t>(r.proxies_render_target));
+      json.field("proxies_base", static_cast<int64_t>(r.proxies_base));
+      json.field("proxies_unbased", static_cast<int64_t>(r.proxies_unbased));
+      json.field("proxies_reresolved", static_cast<int64_t>(r.proxies_reresolved));
+      json.field("node_route_passes", static_cast<int64_t>(r.node_route_passes));
+      json.field("node_route_items", static_cast<int64_t>(r.node_route_items));
+      json.field("node_route_bound", static_cast<int64_t>(r.node_route_bound));
+      json.field("node_route_missed", static_cast<int64_t>(r.node_route_missed));
+      json.field("node_route_ns", static_cast<int64_t>(r.node_route_ns));
       json.field("meshes", static_cast<int64_t>(r.meshes));
       json.field("mesh_surfaces", static_cast<int64_t>(r.mesh_surfaces));
       json.field("meshes_refused", static_cast<int64_t>(r.meshes_refused));
@@ -2534,6 +2599,19 @@ void stream_start() {
       return;
     }
     rs::texture_delivery_set_basis(g_stream.basis, g_stream.basis_config);
+    // VS2 (viewport-surfaces-design.md D3): a bad GRC_VIEWPORTS / GRC_VIEWPORT_SABOTAGE (read at
+    // load) refuses the stream here, like every other GRC_* value.
+    if (!g_viewports.error.empty()) {
+      log_line("stream: refused viewports policy (" + g_viewports.error + ")");
+      g_stream.status = "refused";
+      g_stream.reason = g_viewports.error;
+      if (!g_live.listen.empty()) {
+        live_decided("refused", "stream refused: " + g_viewports.error);
+      }
+      return;
+    }
+    // Viewports live: speaks /16 and all twenty hooks planned (GRC_VIEWPORTS=on implied).
+    g_viewports.stream_live = gate8.speaks_v16() && hooks_viewports_live();
     g_stream.gate8 = gate8;
     g_stream.policy.decode = gate8.decode_engine ? rs2::TextureDecode::Engine : rs2::TextureDecode::Off;
     rs::texture_decode_set_enabled(gate8.decode_engine);
@@ -2652,6 +2730,18 @@ void stream_start() {
     g_stream.max_items = static_cast<size_t>(max_items);
     g_stream.max_commands = static_cast<size_t>(max_commands);
   }
+  // VS2: viewports live for adoption and the node route (rs_adopt.h), set before the readiness
+  // check below, which then also requires the viewport binds (a missing one refuses
+  // `adopt-unavailable` here, up front). It also keeps the node map current from now on.
+  rs::adopt_set_viewports_live(g_viewports.stream_live);
+  // Every return below that leaves the stream unopened (a refusal, an open failure) turns it off
+  // again, so node_added is disconnected and the node map emptied (adopt_set_viewports_live(false)).
+  struct ViewportsLiveUndo {
+    bool keep = false;
+    ~ViewportsLiveUndo() {
+      if (!keep) rs::adopt_set_viewports_live(false);
+    }
+  } viewports_live_undo;
   // adoption reads the scene tree, so it runs on the main thread only
   // (`adopt-thread`), and only when every method bind it needs exists at its 4.5.1 hash
   // (`adopt-unavailable`); both refuse before anything is published.
@@ -2733,6 +2823,10 @@ void stream_start() {
                !rs::hints::parse_sabotage(grc::rs::env("GRC_HINT_SABOTAGE"), &g_hints.sabotage,
                                           &error)) {
       // error names the variable
+    } else if (g_stream.gate8.speaks_v15() &&
+               !rs::parse_resource_hints(grc::rs::env("GRC_RESOURCE_HINTS"),
+                                         &g_hints.resource_hints, &error)) {
+      // error names the variable (VS2, D14)
     } else {
       g_stream.store_dir = env_string("GRC_RESOURCE_STORE_DIR");
       if (!g_stream.store_dir.empty() && g_rearm.arm_index >= 2) {
@@ -3075,7 +3169,9 @@ void stream_start() {
   // snapshots, each sink and connection predicting its own blocks.
   // ID3: GRC_STREAM_VERSION=14 selects /14 (render-stream-14.md): /13 plus item_meta v2.
   // GRC_STREAM_VERSION=15 selects /15 (render-stream-15.md): /14 plus hints and size_override.
-  session.version = g_stream.gate8.speaks_v15()   ? rs2::ProtocolVersion::V15
+  // VS2: GRC_STREAM_VERSION=16 selects /16 (render-stream-16.md): /15 plus viewport surfaces.
+  session.version = g_stream.gate8.speaks_v16()   ? rs2::ProtocolVersion::V16
+                    : g_stream.gate8.speaks_v15() ? rs2::ProtocolVersion::V15
                     : g_stream.gate8.speaks_v14() ? rs2::ProtocolVersion::V14
                     : g_stream.gate8.speaks_v13() ? rs2::ProtocolVersion::V13
                     : g_stream.gate8.speaks_v12() ? rs2::ProtocolVersion::V12
@@ -3132,6 +3228,9 @@ void stream_start() {
     session.sabotage.op = session.sabotage.has_op ? sabotage.config.op : std::string();
   }
   session.unknown_item_policy = g_stream.unknown_item_policy;
+  // render-stream-16.md "Session: viewports" (encoded at /16 only): off under GRC_VIEWPORTS=off,
+  // unavailable when the record lacks a slot of the family, on otherwise.
+  session.viewports = viewports_mode();
 
   if (!stream_open_sink(g_stream.path, &g_stream.full_sink) ||
       !stream_open_sink(g_stream.patch_path, &g_stream.patch_sink)) {
@@ -3219,6 +3318,19 @@ void stream_start() {
   rs::mirror_enable(true);  // off -> on: a fresh mirror session
   // Before the root query, so every hook call the session sees is under the declared policy.
   rs::mirror_set_unknown_item_policy(g_stream.unknown_item_policy);
+  // VS2: the viewport table, viewport/proxy textures and the viewport-* reasons only when live
+  // (speaks /16 and the twenty hooks planned); otherwise every snapshot is /15's. Here, not beside
+  // set_v15 below: the root query's hooked calls and the adoption walk (adopt_viewport,
+  // adopt_proxy) tap the viewport table already. The hook log starts after the walk
+  // (resources_start), so its viewport taps are held until then and replayed first, keeping its
+  // texture ids the mirror's. (adopt_set_viewports_live ran before the adoption readiness check.)
+  rs::mirror_instance().set_viewports(g_viewports.stream_live);
+  if (g_viewports.stream_live) {
+    rs::resource_log().hold_viewports_until_start();
+    hooks_seed_mirror_scenarios(hooks_current_frame());  // D9: pre-arm instances, before the walk
+  }
+  g_viewports.node_route_calls = 0;
+  g_viewports.node_route_bound = 0;
   rs::mirror_set_caps(g_stream.max_items, g_stream.max_commands);
   if (g_stream.unknown_item_policy == rs2::UnknownItemPolicy::Skip) {
     log_line("stream: unknown_item_policy=skip (unknown canvas/item RIDs are withheld, not failed)");
@@ -3425,6 +3537,8 @@ void stream_start() {
     rs::mirror_instance().set_v11(v11);
     // render-stream-15.md "Size override": the mirror carries it at /15 only.
     rs::mirror_instance().set_v15(g_stream.gate8.speaks_v15());
+    // VS2: set_viewports runs beside mirror_enable above, before the root query and the adoption
+    // walk, whose viewport taps must already see it.
     hints_start();
     // HC4a test knobs (never declared on the wire): the shadow oracle, GRC_HC_SHADOW=1 (every
     // snapshot also built by the full walk and compared, the stream ended at the first
@@ -3579,7 +3693,8 @@ void stream_start() {
     // token in the hello like /7's.
     server_config.subprotocols = rs::gate8_live_subprotocols(g_stream.gate8);
     // ID3 (render-stream-14.md "Who speaks /14"): render-stream.14 is listed first only when the
-    // grant names a v2 field and the listener speaks /13; otherwise the list is unchanged.
+    // grant names a v2 field and the listener speaks /13; otherwise the list is unchanged. A /16
+    // list ({render-stream.16}) names no .13, so the insertion never touches it.
     item_meta_configure();
     if ((g_meta.grant & rs::item_meta::kV2Fields) != 0 &&
         std::find(server_config.subprotocols.begin(), server_config.subprotocols.end(),
@@ -3596,7 +3711,7 @@ void stream_start() {
                                                    rs2::kSubprotocolV9, rs2::kSubprotocolV10,
                                                    rs2::kSubprotocolV11, rs2::kSubprotocolV12,
                                                    rs2::kSubprotocolV13, rs2::kSubprotocolV14,
-                                                   rs2::kSubprotocolV15};
+                                                   rs2::kSubprotocolV15, rs2::kSubprotocolV16};
     {
       // ID3: the list itself, for the pure-path check (identical without a v2 grant).
       std::string names;
@@ -3806,6 +3921,7 @@ void stream_start() {
     }
   }
   g_stream.status = "open";
+  viewports_live_undo.keep = true;
   resources_start(root.viewport_rid);
   if (g_stream.gate8.adopt) {
     // every adopted item's material, shader and instance
@@ -4367,6 +4483,24 @@ void stream_finish_after_sinks(rs2::EndReason reason) {
   }
   log_line("stream: resources retained_bytes_max=" + std::to_string(g_stream.retained_bytes_max) +
            " budget=" + std::to_string(g_stream.budget_bytes));
+  if (g_viewports.stream_live) {
+    // VS2: the viewport family's account (result.json stream.gate8.viewports carries the same).
+    const rs::MirrorStats ms = rs::mirror_stats();
+    log_line("viewports: created=" + std::to_string(ms.created) + " adopted=" +
+             std::to_string(ms.adopted) + " freed=" + std::to_string(ms.freed) + " proxies=" +
+             std::to_string(ms.proxies) + " bound_rid=" + std::to_string(ms.proxies_bound_rid) +
+             " bound_adjacency=" + std::to_string(ms.proxies_bound_adjacency) +
+             " bound_texture=" + std::to_string(ms.proxies_bound_texture) +
+             " bound_node_route=" + std::to_string(ms.proxies_bound_node_route) +
+             " proxies_adopted=" + std::to_string(ms.proxies_adopted) +
+             " unresolved=" + std::to_string(ms.proxies_unresolved) +
+             " unresolved_now=" + std::to_string(ms.unresolved_now) +
+             " node_route_tried=" + std::to_string(ms.node_route_tried) +
+             " node_route_calls=" + std::to_string(g_viewports.node_route_calls) +
+             " node_route_bound=" + std::to_string(g_viewports.node_route_bound) +
+             " unknown_viewport_calls=" + std::to_string(ms.unknown_viewport_calls) +
+             " renders_3d=" + std::to_string(ms.renders_3d));
+  }
   for (const rs2::Encoding encoding : {rs2::Encoding::Full, rs2::Encoding::Patch}) {
     if (!g_stream.publisher->has_sink(encoding)) {
       continue;
@@ -4758,7 +4892,8 @@ void item_meta_frame(uint64_t frame) {
 
 void hints_start() {
   const bool inline_only = g_stream.policy.inline_max_bytes >= g_stream.policy.max_payload_bytes;
-  g_hints.on = g_stream.gate8.speaks_v15() && !inline_only;
+  // VS2 (viewport-surfaces-design.md D14): /15 or later, not all inline, GRC_RESOURCE_HINTS!=off.
+  g_hints.on = g_stream.gate8.speaks_v15() && !inline_only && g_hints.resource_hints;
   g_hints.inline_max = g_stream.policy.inline_max_bytes;
   g_hints.table.configure(g_hints.budget);
   rs::mirror_instance().set_hint_watch(g_hints.on);
@@ -5495,7 +5630,35 @@ bool attempt(const char *phase) {
   // it does not name (a record from an older calibrator) is left out and
   // reported, not refused. Pure bookkeeping: nothing is called or written.
   HookPlan &plan = g_state.plan;
+  // VS2 (viewport-surfaces-design.md D3, D6): GRC_VIEWPORTS and GRC_VIEWPORT_SABOTAGE, read here at
+  // load. The `viewport` family is planned by capability at every GRC_STREAM_VERSION unless
+  // GRC_VIEWPORTS=off. A bad value keeps the defaults for the plan and refuses the stream at arm.
+  if (!rs::parse_viewports_policy(grc::rs::env("GRC_VIEWPORTS"),
+                                  grc::rs::env("GRC_VIEWPORT_SABOTAGE"), &g_viewports.policy,
+                                  &g_viewports.error)) {
+    log_line("viewports: " + g_viewports.error + " (the stream will refuse)");
+  }
+  hooks_set_viewports(g_viewports.policy.on,
+                      g_viewports.policy.sabotage == rs::ViewportSabotage::NoAdjacency);
   const bool plan_ok = hooks_plan(g_state.calib, &plan);
+  {
+    // Viewports live = speaks /16 (GRC_STREAM_VERSION=16, as the arm will parse it) and all twenty
+    // hooks planned. Decided at load, so the standby registry records the two new kinds.
+    rs::Gate8Policy version;
+    std::string version_error;
+    const bool v16 = rs::parse_gate8_policy(grc::rs::env("GRC_STREAM_VERSION"), nullptr, nullptr,
+                                            nullptr, &version, &version_error) &&
+                     version.speaks_v16();
+    hooks_set_viewports_live(v16);
+    g_viewports.live = hooks_viewports_live();
+    if (v16 || !g_viewports.policy.on ||
+        g_viewports.policy.sabotage != rs::ViewportSabotage::None) {
+      log_line(std::string("viewports: mode=") + rs2::to_wire(viewports_mode()) +
+               " hooked=" + (hooks_viewports_planned() ? "true" : "false") +
+               " live=" + (g_viewports.live ? "true" : "false") + " sabotage=" +
+               rs::viewport_sabotage_name(g_viewports.policy.sabotage));
+    }
+  }
   g_state.checks.push_back({"hook_plan", plan_ok, hooks_plan_detail(plan)});
   if (!plan.omitted.empty()) {
     log_line("hooks: " + hooks_plan_detail(plan));
@@ -5722,6 +5885,8 @@ bool attempt(const char *phase) {
         }
       }
       rs::registry_configure(adopt, registry_fault);
+      // VS2: the viewport family is recorded (standby included) only when viewports are live.
+      rs::registry_set_viewports(g_viewports.live);
       if (adopt) {
         g_state.hold_configured = true;
         g_state.hold_state = "ignored";
@@ -6168,6 +6333,7 @@ void arm_release() {
   if (g_state.htr_mode == rs::TextureReleaseMode::Always) rs::evict_queue().unpark_all();
   const std::size_t log_freed = rs::resource_log().release();
   const std::size_t mesh_freed = hooks_release_arm();
+  rs::adopt_set_viewports_live(false);  // VS2: whatever path ended the arm (refused, failed, disarm)
   const std::size_t adopt_freed = rs::adopt_release();
   g_meta.host.release();
   g_meta.on = false;
@@ -6582,7 +6748,9 @@ cap::Value::Object api_state() {
   if (std::this_thread::get_id() != g_api_main) return g_api->state();
   const auto stats = rs::registry_stats();
   cap::Value::Object registry;
-  for (std::size_t i = 0; i < rs::kRegistryFamilies; ++i) {
+  // VS2: the viewport family only when viewports are live (registry_reported_families).
+  const std::size_t families = rs::registry_reported_families();
+  for (std::size_t i = 0; i < families; ++i) {
     registry[rs::registry_family_name(static_cast<rs::RegistryFamily>(i))] =
         cap::Value::Object{{"entries", std::int64_t(stats.family[i].entries)}};
   }
@@ -6768,6 +6936,14 @@ void on_frame() {
     api_arm_point();
   }
   if (armed_at_start) {
+    // VS2 (viewport-surfaces-design.md Q3b(3), the node route): on the main thread, every armed
+    // frame, before this frame's snapshot (stream_publish). The arm's adoption ran inside the
+    // callback that armed (attempt/api_arm_point above, which publishes nothing), so on the first
+    // publishing frame it has already run; this frame's hooked calls and adopt_frame_drain too.
+    if (g_viewports.stream_live && g_stream.status == "open") {
+      ++g_viewports.node_route_calls;
+      g_viewports.node_route_bound += rs::resolve_unresolved_proxies(g_state.frames_total);
+    }
     stream_publish(g_state.frames_total);
     if (g_stream.status == "closed" && g_api->phase() == cap::State::Armed) {
       g_api->stream_ended(g_stream.reason);

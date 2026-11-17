@@ -1,0 +1,200 @@
+{
+  "schema": "render-stream-gate8-vp-expected/1",
+  "doc": "Hand-derived from viewport_scene.tscn, viewport_scene.gd and late_drawing.tscn, not measured (README.md 'Expected'); read by lib/gate8-vp-checks.ts. viewports: the fixture's non-root viewports by name and size (pre_arm: the eleven in the scene, an embedded Window included, before K; post_arm: the two made at K+5); renders_3d: the one whose scenario holds an instance under a camera. account: each honest leg's stream.gate8.viewports (exact keys, then `min` floors) and stream.gate8.adopt_stats (null: not judged). born: all 13 created under the hooks; 13 constructor proxies bound by adjacency (the 11 scene viewports, LateVP and LateDrawViewport) and the two scene ViewportTextures (DrawRect's and late_drawing.tscn's), re-pointed to RID() on the dummy, bound by the node route. late: 11 adopted (each default proxy adopted with it), 2 created after the arm (their constructor proxies by adjacency), late_drawing.tscn's ViewportTexture by the node route. Rendered: the same counts, the ViewportTextures re-pointed to a real render-target RID (proxies_bound_rid). off and v15: nothing live, nothing counted. sabotage legs are judged against their base leg's account (born or late). equivalence: born-only empty items allowed (none) and the adoption exceptions as lib/gate8-vp-checks.ts VP_EXCEPTIONS states them. freed is not expected (the evidence is written after the scene's teardown frees every viewport; the checker bounds it and compares the final resolved table with created + adopted), nor unresolved_now (stream-end state; the final resolved state's proxy-unresolved count is judged instead). subwindow_residue: the Popup Window registers before the late arm, so the root's subwindow canvas (layer 1024) and the Window's texture-rect item on it are RS-only residue the walk cannot adopt (excused only in that shape).",
+  "arm_frame": 12,
+  "quit_offset": 44,
+  "checkpoints": [
+    {
+      "step": 0,
+      "applied": 0,
+      "settle": 2
+    },
+    {
+      "step": 1,
+      "applied": 5,
+      "settle": 11
+    },
+    {
+      "step": 2,
+      "applied": 16,
+      "settle": 22
+    },
+    {
+      "step": 3,
+      "applied": 28,
+      "settle": 34
+    }
+  ],
+  "viewports": {
+    "pre_arm": {
+      "DrawViewport": [
+        480,
+        810
+      ],
+      "OuterVP": [
+        200,
+        112
+      ],
+      "InnerVP": [
+        96,
+        54
+      ],
+      "VP3D": [
+        96,
+        96
+      ],
+      "EmptyCamVP": [
+        64,
+        48
+      ],
+      "SnapVP": [
+        48,
+        48
+      ],
+      "AccumVP": [
+        64,
+        64
+      ],
+      "ShareA": [
+        40,
+        40
+      ],
+      "ShareB": [
+        56,
+        40
+      ],
+      "OpaqueVP": [
+        72,
+        40
+      ],
+      "Popup": [
+        120,
+        60
+      ]
+    },
+    "post_arm": {
+      "LateVP": [
+        50,
+        30
+      ],
+      "LateDrawViewport": [
+        44,
+        26
+      ]
+    },
+    "renders_3d": [
+      "VP3D"
+    ]
+  },
+  "account": {
+    "born": {
+      "viewports": {
+        "mode": "on",
+        "hooked": true,
+        "live": true,
+        "created": 13,
+        "adopted": 0,
+        "proxies_adopted": 0,
+        "renders_3d": 1,
+        "unknown_viewport_calls": 0
+      },
+      "min": {
+        "proxies_bound_adjacency": 13,
+        "proxies_bound_node_route": 2
+      },
+      "adopt_stats": null
+    },
+    "late": {
+      "viewports": {
+        "mode": "on",
+        "hooked": true,
+        "live": true,
+        "created": 2,
+        "adopted": 11,
+        "renders_3d": 1,
+        "unknown_viewport_calls": 0
+      },
+      "min": {
+        "proxies_adopted": 11,
+        "proxies_bound_adjacency": 2,
+        "proxies_bound_node_route": 1
+      },
+      "adopt_stats": {
+        "viewports_adopted": 11,
+        "non_root_viewports": 0
+      }
+    },
+    "off": {
+      "viewports": {
+        "mode": "off",
+        "hooked": false,
+        "live": false,
+        "created": 0,
+        "adopted": 0,
+        "proxies": 0,
+        "renders_3d": 0
+      },
+      "adopt_stats": null
+    },
+    "v15": {
+      "viewports": {
+        "mode": "on",
+        "hooked": true,
+        "live": false,
+        "created": 0,
+        "adopted": 0,
+        "proxies": 0,
+        "renders_3d": 0
+      },
+      "adopt_stats": null
+    },
+    "born-rendered": {
+      "viewports": {
+        "mode": "on",
+        "hooked": true,
+        "live": true,
+        "created": 13,
+        "adopted": 0,
+        "renders_3d": 1,
+        "unknown_viewport_calls": 0
+      },
+      "min": {
+        "proxies_bound_adjacency": 13,
+        "proxies_bound_rid": 2
+      },
+      "adopt_stats": null
+    },
+    "late-rendered": {
+      "viewports": {
+        "mode": "on",
+        "hooked": true,
+        "live": true,
+        "created": 2,
+        "adopted": 11,
+        "renders_3d": 1,
+        "unknown_viewport_calls": 0
+      },
+      "min": {
+        "proxies_adopted": 11,
+        "proxies_bound_adjacency": 2,
+        "proxies_bound_rid": 1
+      },
+      "adopt_stats": {
+        "viewports_adopted": 11,
+        "non_root_viewports": 0
+      }
+    }
+  },
+  "equivalence": {
+    "residue": 0,
+    "subwindow_residue": true,
+    "exceptions": [
+      "ids",
+      "origin",
+      "active_seq (sibling order compared)",
+      "once_seq of an adopted viewport (its advance compared)",
+      "adopted_content",
+      "the root's subwindow canvas (layer 1024) only in born, holding only the Popup's texture-rect draw"
+    ]
+  }
+}

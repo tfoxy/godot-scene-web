@@ -441,7 +441,8 @@ std::size_t stage_index(AckStage stage) { return static_cast<std::size_t>(stage)
 
 // The hello `protocol` string of a version (render-stream-N.md "Live transport").
 const char *protocol_string(ProtocolVersion version) {
-  return version == ProtocolVersion::V15   ? kProtocolV15
+  return version == ProtocolVersion::V16   ? kProtocolV16
+         : version == ProtocolVersion::V15 ? kProtocolV15
          : version == ProtocolVersion::V14 ? kProtocolV14
          : version == ProtocolVersion::V13 ? kProtocolV13
          : version == ProtocolVersion::V12 ? kProtocolV12
@@ -1598,7 +1599,9 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       // W13b: render-stream.13 -> /13 (render-stream-13.md "As built (W13b)").
       // ID3: render-stream.14 -> /14 (render-stream-14.md), listed only under a v2 grant.
       // render-stream.15 -> /15 (render-stream-15.md), listed only under GRC_STREAM_VERSION=15.
-      c.version = event.subprotocol == kSubprotocolV15   ? ProtocolVersion::V15
+      // VS2: render-stream.16 -> /16 (render-stream-16.md), listed only under GRC_STREAM_VERSION=16.
+      c.version = event.subprotocol == kSubprotocolV16   ? ProtocolVersion::V16
+                  : event.subprotocol == kSubprotocolV15 ? ProtocolVersion::V15
                   : event.subprotocol == kSubprotocolV14 ? ProtocolVersion::V14
                   : event.subprotocol == kSubprotocolV13 ? ProtocolVersion::V13
                   : event.subprotocol == kSubprotocolV12 ? ProtocolVersion::V12
@@ -2443,7 +2446,8 @@ void Hub::hint_sinks(std::vector<const rs::hints::Sent *> *out) const {
   for (const auto &entry : conns_) {
     const Conn &c = *entry.second;
     // Pin before on_frame_shared() can promote an accepted hello and send its first hints.
-    if (c.version == ProtocolVersion::V15 &&
+    // VS2: a /16 connection gets hints like a /15 one (/16 contains /15's grammar).
+    if (is_v15_or_later(c.version) &&
         (c.state == State::Streaming || (c.state == State::AwaitHello && c.hello_received))) {
       out->push_back(&c.hint_sent);
     }
@@ -3127,7 +3131,7 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
     if (c.state == State::Closed) {
       continue;  // closed by an error above (logged there)
     }
-    if (hints_ != nullptr && c.version == ProtocolVersion::V15 && c.state == State::Streaming &&
+    if (hints_ != nullptr && is_v15_or_later(c.version) && c.state == State::Streaming &&
         c.s.sent > 0) {
       // render-stream-15.md "Placement and ordering": after the connection's first transaction,
       // at most kPerFrame records a callback, behind this callback's transaction.

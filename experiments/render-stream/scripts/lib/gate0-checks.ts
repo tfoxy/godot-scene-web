@@ -97,9 +97,11 @@ export const STORE_DIR_NAME = "store";
  * calibrator 5's eleven texture hooks, calibrator 6's
  * `canvas_item_add_clip_ignore`, calibrator 7's eight hooks,
  * calibrator 8's nine materials/canvas-shader hooks
- * and calibrator 9's six CanvasLayer/canvas-item hooks -- the record is
- * shared by gate -1, gate 0, gate 1, gate 2, gate 3, gate 4 and gate 5, so every one of them
- * plans all 79. */
+ * and calibrator 9's six CanvasLayer/canvas-item hooks, `texture_set_path` (LS1) and the 20-hook
+ * viewport family (VS2: texture proxies, viewport create/configure/get_texture and
+ * `instance_set_scenario`, planned whenever GRC_VIEWPORTS is not off, at every stream version) --
+ * the record is shared by gate -1, gate 0, gate 1, gate 2, gate 3, gate 4 and gate 5, so every one
+ * of them plans all 100. */
 export const GATE0_HOOKS: readonly string[] = [
   "canvas_create",
   "canvas_item_add_animation_slice",
@@ -151,6 +153,7 @@ export const GATE0_HOOKS: readonly string[] = [
   "canvas_texture_set_texture_filter",
   "canvas_texture_set_texture_repeat",
   "free",
+  "instance_set_scenario",
   "material_create",
   "material_create_from_shader",
   "material_set_param",
@@ -172,16 +175,35 @@ export const GATE0_HOOKS: readonly string[] = [
   "texture_2d_create",
   "texture_2d_placeholder_create",
   "texture_2d_update",
+  "texture_proxy_create",
+  "texture_proxy_update",
   "texture_replace",
   // LS1: planned always since LS1 (a standby slot).
   "texture_set_path",
+  "viewport_attach_camera",
   "viewport_attach_canvas",
+  "viewport_create",
+  "viewport_get_texture",
   "viewport_remove_canvas",
+  "viewport_set_active",
+  "viewport_set_canvas_cull_mask",
   "viewport_set_canvas_stacking",
   "viewport_set_canvas_transform",
+  "viewport_set_clear_mode",
   "viewport_set_default_canvas_item_texture_filter",
   "viewport_set_default_canvas_item_texture_repeat",
+  "viewport_set_disable_2d",
+  "viewport_set_disable_3d",
   "viewport_set_global_canvas_transform",
+  "viewport_set_msaa_2d",
+  "viewport_set_parent_viewport",
+  "viewport_set_scenario",
+  "viewport_set_size",
+  "viewport_set_snap_2d_transforms_to_pixel",
+  "viewport_set_snap_2d_vertices_to_pixel",
+  "viewport_set_transparent_background",
+  "viewport_set_update_mode",
+  "viewport_set_use_hdr_2d",
 ];
 
 /** Session `features` of a HEADLESS host at render-stream/4, exactly (render-stream-2.md "Session

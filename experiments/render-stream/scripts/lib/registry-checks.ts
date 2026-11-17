@@ -70,7 +70,20 @@ export const REGISTRY_CREATE_HOOKS: Record<string, string[]> = {
   shader: ["shader_create", "shader_create_from_code"],
   material: ["material_create", "material_create_from_shader"],
   particles: ["particles_create"],
+  // VS2 (rs_registry.h): Viewport and TextureProxy, recorded and reported only when viewports are
+  // live (GRC_STREAM_VERSION=16 and the twenty hooks planned); registry.json then lists this
+  // eighth family last, and otherwise only the seven above.
+  viewport: ["viewport_create", "texture_proxy_create"],
 };
+
+/** The families a registry.json reports: the eighth (`viewport`) only when viewports were live. */
+export function registryFamilies(
+  reg: RegistryEvidence | null | undefined,
+): string[] {
+  const all = Object.keys(REGISTRY_CREATE_HOOKS);
+  const live = (reg?.timeline?.family_order ?? []).includes("viewport");
+  return live ? all : all.filter((f) => f !== "viewport");
+}
 
 export interface LiveBoundOptions {
   /** A deferred leg's arm frame: at least one tracked free must be recorded before it (R5). */
@@ -130,7 +143,7 @@ export function registryLiveBound(
       `${name}: registry not recording (configured ${reg.configured}, enabled ${reg.enabled})`,
     );
   const order = reg.timeline?.family_order ?? [];
-  const families = Object.keys(REGISTRY_CREATE_HOOKS);
+  const families = registryFamilies(reg);
   if (order.join(",") !== families.join(","))
     problems.push(`${name}: timeline family_order ${order.join(",")}`);
   if ((reg.timeline?.dropped ?? 1) !== 0)
@@ -749,6 +762,7 @@ export const STANDBY_HOOKS: readonly string[] = [
   "canvas_texture_set_texture_repeat",
   "draw",
   "free",
+  "instance_set_scenario",
   "material_create",
   "material_create_from_shader",
   "material_set_param",
@@ -805,7 +819,11 @@ export const STANDBY_HOOKS: readonly string[] = [
   "texture_2d_create",
   "texture_2d_placeholder_create",
   "texture_2d_update",
+  "texture_proxy_create",
+  "texture_proxy_update",
   "texture_replace",
   "texture_set_path",
   "texture_set_size_override",
+  "viewport_create",
+  "viewport_get_texture",
 ];

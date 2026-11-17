@@ -2,6 +2,7 @@
 #include "rs_adopt.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <map>
 #include <memory>
@@ -113,10 +114,117 @@ void apply_adopted_item(Mirror &mirror, const AdoptedItem &item, AdoptSabotage s
   }
 }
 
+// VS2 (Q4): one adopted viewport, as the hooks would have declared it: the viewport entry (its
+// default proxy included), then Viewport's NOTIFICATION_ENTER_TREE attach of its World2D canvas
+// and that canvas's transform (viewport.cpp:548-550).
+// `to_adopt`: the world canvases the plan adopts (an entry's adopt_world_canvas); each is adopted by
+// the first viewport applied that names it, whatever the order, then only attached.
+void apply_adopted_viewport(Mirror &mirror, const AdoptedSurface &s, std::uint64_t frame,
+                            std::set<std::uint64_t> *to_adopt) {
+  Mirror::AdoptedViewport v;
+  v.rid = s.rid;
+  v.parent = s.parent;
+  v.active = s.active;
+  v.width = s.width;
+  v.height = s.height;
+  v.transparent = s.transparent;
+  v.update_mode = s.update_mode;
+  v.clear_mode = s.clear_mode;
+  v.disable_2d = s.disable_2d;
+  v.disable_3d = s.disable_3d;
+  v.renders_3d = s.renders_3d;
+  v.scenario = s.scenario;
+  v.has_camera = s.has_camera;
+  v.hdr_2d = s.hdr_2d;
+  v.msaa_2d = s.msaa_2d;
+  v.canvas_cull_mask = s.canvas_cull_mask;
+  v.default_filter = s.default_filter;
+  v.default_repeat = s.default_repeat;
+  v.snap_transforms = s.snap_transforms;
+  v.snap_vertices = s.snap_vertices;
+  v.global_xform = s.global_xform;
+  v.default_proxy = s.default_proxy;
+  // The process-wide mirror adopts through the hooks, which tap the hook log under the same
+  // texture-order lock (log ids stay the mirror's); an engine-free test mirror is driven directly.
+  if (&mirror == &mirror_instance()) {
+    hooks_adopt_viewport(v, frame);
+    if (s.render_target != 0) {
+      hooks_adopt_viewport_texture(s.rid, s.render_target, frame);
+    }
+  } else {
+    mirror.adopt_viewport(v, frame);
+    if (s.render_target != 0) {
+      mirror.viewport_get_texture(s.rid, s.render_target, frame);
+    }
+  }
+  if (s.world_canvas != 0) {
+    if (to_adopt->erase(s.world_canvas) != 0) {
+      mirror.adopt_canvas(s.world_canvas, frame);
+    }
+    mirror.viewport_attach_canvas(s.rid, s.world_canvas, frame);
+    mirror.viewport_set_canvas_transform(s.rid, s.world_canvas, s.canvas_xform, frame);
+  }
+}
+
+// Tree order is the plan's order (the walk is pre-order). Children of each viewport are applied
+// after it; GRC_VIEWPORT_SABOTAGE=wrong-order reverses each sibling run (parents still first), so
+// the mirror's activation order (active_seq) disagrees with Godot's for siblings.
+void apply_viewports_in_order(Mirror &mirror, const std::vector<AdoptedSurface> &all,
+                              std::uint64_t parent, std::vector<bool> *done, bool reverse,
+                              std::uint64_t frame, int depth, std::set<std::uint64_t> *to_adopt) {
+  std::vector<std::size_t> run;
+  for (std::size_t i = 0; i < all.size(); ++i) {
+    if (!(*done)[i] && all[i].parent == parent) {
+      run.push_back(i);
+    }
+  }
+  if (reverse) {
+    std::reverse(run.begin(), run.end());
+  }
+  for (std::size_t i : run) {
+    if ((*done)[i]) continue;
+    (*done)[i] = true;
+    apply_adopted_viewport(mirror, all[i], frame, to_adopt);
+    if (depth < 64) {
+      apply_viewports_in_order(mirror, all, all[i].rid, done, reverse, frame, depth + 1, to_adopt);
+    }
+  }
+}
+
 }  // namespace
 
 void apply_adopt_plan(Mirror &mirror, const AdoptPlan &plan, AdoptSabotage sabotage,
                       std::uint64_t frame, AdoptStats *stats) {
+  // VS2 (Q4): viewports before layers and items, so a layer attaching to a surface and a top-level
+  // item parenting to a surface's world canvas name known objects. A viewport whose parent is not
+  // in the plan hangs off the root (or an unknown viewport); those runs start in plan order.
+  if (!plan.viewports.empty()) {
+    const char *vs = grc::rs::env("GRC_VIEWPORT_SABOTAGE");
+    const bool reverse = vs != nullptr && std::strcmp(vs, "wrong-order") == 0;
+    std::vector<bool> done(plan.viewports.size(), false);
+    std::set<std::uint64_t> in_plan, to_adopt;
+    for (const AdoptedSurface &s : plan.viewports) {
+      in_plan.insert(s.rid);
+      if (s.adopt_world_canvas && s.world_canvas != 0) to_adopt.insert(s.world_canvas);
+    }
+    std::vector<std::uint64_t> outer_parents;
+    for (const AdoptedSurface &s : plan.viewports) {
+      if (in_plan.count(s.parent) == 0 &&
+          std::find(outer_parents.begin(), outer_parents.end(), s.parent) == outer_parents.end()) {
+        outer_parents.push_back(s.parent);
+      }
+    }
+    for (std::uint64_t parent : outer_parents) {
+      apply_viewports_in_order(mirror, plan.viewports, parent, &done, reverse, frame, 0, &to_adopt);
+    }
+    for (std::size_t i = 0; i < plan.viewports.size(); ++i) {
+      if (!done[i]) {  // a parent cycle (impossible from a tree walk): applied in plan order
+        done[i] = true;
+        apply_adopted_viewport(mirror, plan.viewports[i], frame, &to_adopt);
+      }
+    }
+    stats->viewports_adopted = static_cast<std::uint32_t>(plan.viewports.size());
+  }
   // Canvas layers first (D5 "Per layer"), in the order a CanvasLayer's NOTIFICATION_ENTER_TREE and
   // its deferred update_draw_order issue them (canvas_layer.cpp:181-184, :204-207): attach (which
   // resets the stacking to (0,0)), canvas transform, follow-viewport parent, stacking.
@@ -132,6 +240,9 @@ void apply_adopt_plan(Mirror &mirror, const AdoptPlan &plan, AdoptSabotage sabot
                                           frame);
       ++stats->canvases;
       ++stats->layers;
+      if (layer.surface) {
+        ++stats->viewport_layers;
+      }
     }
   }
   // Items in tree order, so every parent exists before its children are appended to it.
@@ -402,8 +513,101 @@ const BindSpec kBinds[kBindCount] = {
     {"Object", "has_method", 2619796661LL},                       // (StringName) -> bool
 };
 
+// VS2 (viewport-surfaces-design.md Q3b(3), Q4): the viewport walk's and the node route's binds,
+// resolved only when viewports are live (a missing one then refuses `adopt-unavailable`; when not
+// live they are never looked up, so an engine without 3D still adopts as before). Same dump as
+// kBinds; every one const and read-only. Viewport.get_viewport_rid and find_world_2d,
+// World2D.get_canvas, CanvasLayer.get_custom_viewport and Resource.get_rid are kBinds'.
+enum VpBindId : int {
+  kVpRsGetUpdateMode,
+  kVpSubGetSize,
+  kVpSubGetClearMode,
+  kVpSubGetUpdateMode,
+  kVpWindowGetSize,
+  kVpWindowIsVisible,
+  kVpHasTransparentBg,
+  kVpIs3dDisabled,
+  kVpGetCanvasCullMask,
+  kVpGetDefaultFilter,
+  kVpGetDefaultRepeat,
+  kVpSnapTransforms,
+  kVpSnapVertices,
+  kVpGetCanvasTransform,
+  kVpGetFinalTransform,
+  kVpIsUsingHdr2d,
+  kVpGetMsaa2d,
+  kVpGetCamera3d,
+  kVpFindWorld3d,
+  kVpWorld3dGetScenario,
+  kVpGetTexture,
+  kVpWindowIsEmbedded,
+  kVpIsEmbeddingSubwindows,
+  kVpRsGetTexture,
+  // the node route
+  kVpObjectGetPropertyList,
+  kVpObjectGet,
+  kVpResourceGetLocalScene,
+  kVpVtGetViewportPath,
+  kVpNodeGetNodeOrNull,
+  kVpBindCount,
+};
+
+const BindSpec kVpBinds[kVpBindCount] = {
+    {"RenderingServer", "viewport_get_update_mode", 3803901472LL},  // (RID) -> ViewportUpdateMode
+    {"SubViewport", "get_size", 3690982128LL},                      // -> Vector2i
+    {"SubViewport", "get_clear_mode", 331324495LL},                 // -> SubViewport.ClearMode
+    {"SubViewport", "get_update_mode", 2980171553LL},               // -> SubViewport.UpdateMode
+    {"Window", "get_size", 3690982128LL},                           // -> Vector2i
+    {"Window", "is_visible", 36873697LL},                           // -> bool
+    {"Viewport", "has_transparent_background", 36873697LL},
+    {"Viewport", "is_3d_disabled", 36873697LL},
+    {"Viewport", "get_canvas_cull_mask", 3905245786LL},             // -> int
+    {"Viewport", "get_default_canvas_item_texture_filter", 896601198LL},
+    {"Viewport", "get_default_canvas_item_texture_repeat", 4049774160LL},
+    {"Viewport", "is_snap_2d_transforms_to_pixel_enabled", 36873697LL},
+    {"Viewport", "is_snap_2d_vertices_to_pixel_enabled", 36873697LL},
+    {"Viewport", "get_canvas_transform", 3814499831LL},             // -> Transform2D
+    {"Viewport", "get_final_transform", 3814499831LL},              // stretch * global canvas
+    {"Viewport", "is_using_hdr_2d", 36873697LL},
+    {"Viewport", "get_msaa_2d", 2542055527LL},                      // -> Viewport.MSAA
+    {"Viewport", "get_camera_3d", 2285090890LL},                    // -> Camera3D (an Object)
+    {"Viewport", "find_world_3d", 317588385LL},                     // -> World3D (a Ref)
+    {"World3D", "get_scenario", 2944877500LL},                      // -> RID
+    {"Viewport", "get_texture", 1746695840LL},                      // -> ViewportTexture (a Ref)
+    {"Window", "is_embedded", 36873697LL},                          // -> bool
+    {"Viewport", "is_embedding_subwindows", 36873697LL},            // -> bool
+    // Hooked: the walk's one RS call, made after the plan is applied (adopt_at_arm), so the
+    // hook's own taps map a rendered host's render target to the now-known viewport.
+    {"RenderingServer", "viewport_get_texture", 3814569979LL},      // (RID) -> RID
+    {"Object", "get_property_list", 3995934104LL},                  // -> Array[Dictionary]
+    {"Object", "get", 2760726917LL},                                // (StringName) -> Variant
+    {"Resource", "get_local_scene", 3160264692LL},                  // -> Node
+    {"ViewportTexture", "get_viewport_path_in_scene", 4075236667LL},  // -> NodePath
+    {"Node", "get_node_or_null", 2734337346LL},                     // (NodePath) -> Node
+};
+
 GDExtensionMethodBindPtr g_bind[kBindCount] = {};
 bool g_binds_resolved = false;
+GDExtensionMethodBindPtr g_vp_bind[kVpBindCount] = {};
+bool g_vp_binds_resolved = false;
+std::atomic<bool> g_vp_live{false};
+std::thread::id g_vp_main;
+// Render-target texture RID -> its adopted viewport, learned at arm through the hooked
+// viewport_get_texture (rendered host; the registry has no record of a viewport created before the
+// hooks). Main thread; cleared at each arm.
+std::unordered_map<std::uint64_t, std::uint64_t> g_adopted_rt;
+
+bool render_target_viewport(std::uint64_t rt, std::uint64_t *viewport) {
+  if (rt == 0) return false;
+  std::uint64_t vp = 0;
+  if (!rs::registry_viewport_of_texture(rt, &vp)) {
+    const auto it = g_adopted_rt.find(rt);
+    if (it == g_adopted_rt.end()) return false;
+    vp = it->second;
+  }
+  if (viewport != nullptr) *viewport = vp;
+  return true;
+}
 std::unordered_map<std::uint64_t, std::uint64_t> g_item_nodes;
 // Entered RIDs are always a subset of the node map, even while no viewer asks for a pass.
 std::unordered_set<std::uint64_t> g_tag_entered;
@@ -444,8 +648,26 @@ bool resolve_binds(std::string *missing) {
   return true;
 }
 
+bool resolve_vp_binds(std::string *missing) {
+  for (int i = 0; i < kVpBindCount; ++i) {
+    if (g_vp_bind[i] == nullptr) {
+      g_vp_bind[i] = method_bind(kVpBinds[i].cls, kVpBinds[i].method, kVpBinds[i].hash);
+    }
+    if (g_vp_bind[i] == nullptr) {
+      *missing = std::string(kVpBinds[i].cls) + "." + kVpBinds[i].method;
+      return false;
+    }
+  }
+  g_vp_binds_resolved = true;
+  return true;
+}
+
 void ptrcall(BindId id, void *instance, const GDExtensionConstTypePtr *args, void *ret) {
   g_iface.object_method_bind_ptrcall(g_bind[id], instance, args, ret);
+}
+
+void vp_ptrcall(VpBindId id, void *instance, const GDExtensionConstTypePtr *args, void *ret) {
+  g_iface.object_method_bind_ptrcall(g_vp_bind[id], instance, args, ret);
 }
 
 std::int64_t get_int(BindId id, void *instance) {
@@ -537,7 +759,8 @@ std::uint64_t world_canvas_of(void *viewport) {
 struct Tags {
   void *viewport = nullptr, *canvas_item = nullptr, *canvas_layer = nullptr, *light = nullptr,
        *parallax_layer = nullptr, *parallax2d = nullptr, *canvas_modulate = nullptr,
-       *canvas_group = nullptr, *back_buffer_copy = nullptr, *cpu_particles_2d = nullptr;
+       *canvas_group = nullptr, *back_buffer_copy = nullptr, *cpu_particles_2d = nullptr,
+       *sub_viewport = nullptr, *window = nullptr;  // VS2
   static void *tag(const char *name) {
     StringName n(name);
     return g_iface.classdb_get_class_tag(n.ptr());
@@ -553,6 +776,8 @@ struct Tags {
     canvas_group = tag("CanvasGroup");
     back_buffer_copy = tag("BackBufferCopy");
     cpu_particles_2d = tag("CPUParticles2D");
+    sub_viewport = tag("SubViewport");
+    window = tag("Window");
   }
 };
 
@@ -667,11 +892,21 @@ AdoptedItem read_item(void *node, void *item, void *parent_item, std::int32_t pa
 Tags g_item_tags;
 ItemReadOptions g_item_read;
 
+// VS2 (Q4): one non-root viewport's RS state, read through kVpBinds (defined below, after the
+// variant helpers). `enclosing`: the viewport the walk is inside (the RS parent).
+AdoptedSurface read_viewport(void *vp, std::uint64_t enclosing, const Tags &tags);
+
 struct Walker {
   Tags tags;
   void *root = nullptr;
   ItemReadOptions opts;
   AdoptPlan plan;
+  // VS2: descend into non-root viewports (adopt_set_viewports_live), the root's RID, and the world
+  // canvases already known (the root's, then each adopted surface's), so a shared World2D is
+  // attached to every viewport that uses it but adopted once.
+  bool viewports_live = false;
+  std::uint64_t root_rid = 0;
+  std::vector<std::uint64_t> world_canvases;
   // canvas RID -> the canvas group's members (top-level items) in tree order
   std::vector<std::pair<std::uint64_t, std::vector<void *>>> groups;
   std::vector<void *> item_nodes;  // every adopted item node, tree order
@@ -688,10 +923,41 @@ struct Walker {
   }
 
   // `parent_item`: the parent node when it is a CanvasItem (else null); `parent_filter` and
-  // `parent_repeat` its resolved texture filter/repeat caches.
-  void visit(void *node, void *parent_item, std::int32_t parent_filter, std::int32_t parent_repeat) {
+  // `parent_repeat` its resolved texture filter/repeat caches. `enclosing`: the RID of the viewport
+  // the node draws into (the root's for the root's subtree).
+  //
+  // VS2: a Viewport is a Node, never a CanvasItem, so its children have no parent item: top-level
+  // items join their canvas's group (get_canvas() is the surface's World2D canvas) and their
+  // filter/repeat cache is the RS Default, which the surface's own default_filter/_repeat (read
+  // into its AdoptedSurface) resolves at draw time, as Godot's does (canvas_item.cpp:1590-1596).
+  void visit(void *node, void *parent_item, std::int32_t parent_filter, std::int32_t parent_repeat,
+             std::uint64_t enclosing) {
     if (node != root && as(node, tags.viewport) != nullptr) {
-      ++plan.non_root_viewports;  // its subtree draws into another viewport: never walked (D5)
+      if (!viewports_live) {
+        ++plan.non_root_viewports;  // its subtree draws into another viewport: never walked (D5)
+        return;
+      }
+      AdoptedSurface surface = read_viewport(as(node, tags.viewport), enclosing, tags);
+      if (surface.rid == 0) {
+        ++plan.non_root_viewports;
+        return;
+      }
+      surface.adopt_world_canvas =
+          surface.world_canvas != 0 &&
+          std::find(world_canvases.begin(), world_canvases.end(), surface.world_canvas) ==
+              world_canvases.end();
+      if (surface.adopt_world_canvas) {
+        world_canvases.push_back(surface.world_canvas);
+      }
+      plan.viewports.push_back(surface);
+      const std::uint64_t inner = surface.rid;
+      const std::int64_t count = child_count(node);
+      for (std::int64_t i = 0; i < count; ++i) {
+        void *child = child_at(node, i);
+        if (child != nullptr) {
+          visit(child, nullptr, 0, 0, inner);
+        }
+      }
       return;
     }
     void *item = as(node, tags.canvas_item);
@@ -706,6 +972,7 @@ struct Walker {
         vp = get_object(kNodeGetViewport, node);
       }
       layer.viewport = vp != nullptr ? get_rid(kViewportGetViewportRid, vp) : 0;
+      layer.surface = layer.viewport != 0 && layer.viewport != root_rid;
       layer.xform = get_xform(kLayerGetTransform, node);
       layer.layer = static_cast<std::int32_t>(get_int(kLayerGetLayer, node));
       layer.index = node_index(node);
@@ -751,7 +1018,7 @@ struct Walker {
     for (std::int64_t i = 0; i < count; ++i) {
       void *child = child_at(node, i);
       if (child != nullptr) {
-        visit(child, item, filter_cache, repeat_cache);
+        visit(child, item, filter_cache, repeat_cache, enclosing);
       }
     }
   }
@@ -766,11 +1033,12 @@ std::uint64_t now_ns() {
 }  // namespace
 
 bool adopt_binds_ready(std::string *missing) {
-  if (g_binds_resolved) {
-    return true;
-  }
   std::string what;
-  const bool ok = resolve_binds(&what);
+  bool ok = g_binds_resolved || resolve_binds(&what);
+  // VS2: the viewport walk's binds count only when viewports are live.
+  if (ok && g_vp_live.load(std::memory_order_acquire) && !g_vp_binds_resolved) {
+    ok = resolve_vp_binds(&what);
+  }
   if (!ok && missing != nullptr) {
     *missing = what;
   }
@@ -845,9 +1113,29 @@ AdoptStats adopt_at_arm(const AdoptConfig &config) {
   walker.opts.identity_transform = config.identity_transform;
   g_item_tags = walker.tags;  // LATE-RES: node_added reads a pooled item as the walk does
   g_item_read = walker.opts;
-  walker.visit(root, nullptr, 0, 0);
+  walker.viewports_live = g_vp_live.load(std::memory_order_acquire);
+  walker.root_rid = get_rid(kViewportGetViewportRid, root);
+  if (walker.viewports_live) {
+    const std::uint64_t root_world = world_canvas_of(root);
+    if (root_world != 0) walker.world_canvases.push_back(root_world);
+  }
+  walker.visit(root, nullptr, 0, 0, walker.root_rid);
   const std::uint64_t t1 = now_ns();
   apply_adopt_plan(mirror_instance(), walker.plan, config.sabotage, config.arm_frame, &stats);
+  // VS2 (D7, rendered host): each adopted viewport's render target. The call goes through the
+  // hooked viewport_get_texture, whose taps map rt -> the viewport the plan just adopted (mirror and
+  // hook log), as the constructor's call did for a born capture; RID() on the dummy.
+  g_adopted_rt.clear();
+  if (walker.viewports_live) {
+    void *rs_singleton = singleton_object("RenderingServer");
+    for (const AdoptedSurface &v : walker.plan.viewports) {
+      if (rs_singleton == nullptr) break;
+      const GDExtensionConstTypePtr args[1] = {&v.rid};
+      std::uint64_t rt = 0;
+      vp_ptrcall(kVpRsGetTexture, rs_singleton, args, &rt);
+      if (rt != 0) g_adopted_rt[rt] = v.rid;
+    }
+  }
   const std::uint64_t t2 = now_ns();
   // D3's two engine requests. Every queue_redraw is deferred to this iteration's MessageQueue
   // flush, which runs before the frame callback publishes (D4); the re-raise runs now, through
@@ -1084,6 +1372,143 @@ struct VariantSlot {
     return g_iface.variant_get_type(const_cast<unsigned char *>(data));
   }
 };
+
+// ------------------------------------------------------------------ VS2: the viewport walk
+
+bool vp_bool(VpBindId id, void *instance) {
+  std::uint8_t out = 0;
+  vp_ptrcall(id, instance, nullptr, &out);
+  return out != 0;
+}
+
+std::int64_t vp_int(VpBindId id, void *instance) {
+  std::int64_t out = 0;
+  vp_ptrcall(id, instance, nullptr, &out);
+  return out;
+}
+
+rs2::Xform vp_xform(VpBindId id, void *instance) {
+  alignas(16) float raw[8] = {};
+  vp_ptrcall(id, instance, nullptr, raw);
+  return {raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]};
+}
+
+// The viewport a visible embedded Window registers with (Window::get_embedder, window.cpp:1358-1378:
+// the first viewport up the chain that embeds subwindows); its _sub_window_register re-parents the
+// window's viewport there (viewport.cpp:323), after Viewport's enter-tree parented it to the
+// enclosing one. `fallback` when none is found.
+std::uint64_t embedder_rid(void *window, std::uint64_t fallback) {
+  void *parent = get_object(kNodeGetParent, window);
+  void *vp = parent != nullptr ? get_object(kNodeGetViewport, parent) : nullptr;
+  for (int guard = 0; vp != nullptr && guard < 256; ++guard) {
+    if (vp_bool(kVpIsEmbeddingSubwindows, vp)) {
+      return get_rid(kViewportGetViewportRid, vp);
+    }
+    void *up = get_object(kNodeGetParent, vp);
+    vp = up != nullptr ? get_object(kNodeGetViewport, up) : nullptr;
+  }
+  return fallback;
+}
+
+// The RS state a hooked capture would hold for one non-root viewport (Q4). Sources and why:
+// - active: SubViewport sends viewport_set_active(true) on entering the tree and false on leaving
+//   (viewport.cpp:5533-5547), independent of its update mode; a Window sends its visibility on
+//   entering (window.cpp:1563) and on every visibility change (:981), false on leaving (:1646).
+//   The walk only meets nodes inside the tree, so: SubViewport true, Window is_visible().
+// - update mode: what the last viewport_set_update_mode declared. A SubViewport: its own
+//   get_update_mode (SubViewport::set_update_mode sends it unchanged, viewport.cpp:5466; scene and RS
+//   enums share values) -- not the RS getter, which on a rendered host reads Godot's post-draw
+//   Once -> Disabled flip (renderer_viewport.cpp:911-913) that no hook sees. A Window sets its mode
+//   internally (window.cpp:689/727/948/952/1516/1541), never Once: the RS getter.
+//   (A deviation from Q4, which names the RS getter for both.)
+// - size: SubViewport.get_size; a Window's viewport is sized 0x0 while not visible (window.cpp
+//   _update_window_size's `allocate`), else Window.get_size.
+// - clear mode: SubViewport.get_clear_mode (scene and RS enums share values); Window: always.
+// - parent: the enclosing viewport, or a visible embedded Window's embedder.
+// - default filter/repeat: the scene enums mapped as Viewport::set_default_canvas_item_texture_*
+//   does (viewport.cpp:3911-3926) to the RS values the hooks would carry.
+// - global transform: get_final_transform (stretch * global canvas), what
+//   Viewport::_update_global_transform sends (viewport.cpp:1242-1246): a SubViewport with a 2D size
+//   override has a non-identity stretch.
+// - renders_3d (D9): a current Camera3D, 3D not disabled, and the World3D scenario holds an
+//   instance (the hooks' instance_set_scenario count, kept in standby too).
+AdoptedSurface read_viewport(void *vp, std::uint64_t enclosing, const Tags &tags) {
+  AdoptedSurface s;
+  s.rid = get_rid(kViewportGetViewportRid, vp);
+  if (s.rid == 0) {
+    return s;
+  }
+  s.parent = enclosing;
+  void *rs_singleton = singleton_object("RenderingServer");
+  std::int32_t size[2] = {0, 0};
+  void *sub = as(vp, tags.sub_viewport);
+  void *window = sub == nullptr ? as(vp, tags.window) : nullptr;
+  if (sub == nullptr && rs_singleton != nullptr) {
+    const GDExtensionConstTypePtr args[1] = {&s.rid};
+    std::int64_t mode = 2;
+    vp_ptrcall(kVpRsGetUpdateMode, rs_singleton, args, &mode);
+    s.update_mode = static_cast<std::int32_t>(mode);
+  }
+  // A rendered host's render target, recorded by the registry at viewport_get_texture (standby
+  // included); the dummy's is always 0.
+  rs::registry_viewport_texture(s.rid, &s.render_target);
+  if (sub != nullptr) {
+    s.active = true;
+    s.update_mode = static_cast<std::int32_t>(vp_int(kVpSubGetUpdateMode, sub));
+    vp_ptrcall(kVpSubGetSize, sub, nullptr, size);
+    s.clear_mode = static_cast<std::int32_t>(vp_int(kVpSubGetClearMode, sub));
+  } else if (window != nullptr) {
+    s.active = vp_bool(kVpWindowIsVisible, window);
+    if (s.active) {
+      vp_ptrcall(kVpWindowGetSize, window, nullptr, size);
+      if (vp_bool(kVpWindowIsEmbedded, window)) {
+        s.parent = embedder_rid(window, enclosing);
+      }
+    }
+    s.clear_mode = 0;
+  } else {
+    s.active = true;  // no other Viewport subclass in 4.5.1
+  }
+  s.width = size[0];
+  s.height = size[1];
+  s.transparent = vp_bool(kVpHasTransparentBg, vp);
+  s.disable_3d = vp_bool(kVpIs3dDisabled, vp);
+  s.canvas_cull_mask = static_cast<std::uint32_t>(vp_int(kVpGetCanvasCullMask, vp));
+  static const std::int32_t kRsFilter[] = {1, 2, 4, 3};  // NEAREST, LINEAR, LINEAR_MIP, NEAREST_MIP
+  static const std::int32_t kRsRepeat[] = {1, 2, 3};     // DISABLED, ENABLED, MIRROR
+  const std::int64_t filter = vp_int(kVpGetDefaultFilter, vp);
+  const std::int64_t repeat = vp_int(kVpGetDefaultRepeat, vp);
+  s.default_filter = filter >= 0 && filter < 4 ? kRsFilter[filter] : 2;
+  s.default_repeat = repeat >= 0 && repeat < 3 ? kRsRepeat[repeat] : 1;
+  s.snap_transforms = vp_bool(kVpSnapTransforms, vp);
+  s.snap_vertices = vp_bool(kVpSnapVertices, vp);
+  s.canvas_xform = vp_xform(kVpGetCanvasTransform, vp);
+  s.global_xform = vp_xform(kVpGetFinalTransform, vp);
+  s.hdr_2d = vp_bool(kVpIsUsingHdr2d, vp);
+  s.msaa_2d = static_cast<std::int32_t>(vp_int(kVpGetMsaa2d, vp));
+  s.world_canvas = world_canvas_of(vp);
+  void *camera = nullptr;
+  vp_ptrcall(kVpGetCamera3d, vp, nullptr, &camera);
+  s.has_camera = camera != nullptr;
+  if (rs_singleton != nullptr) {
+    RefHolder world;
+    if (world.call(g_vp_bind[kVpFindWorld3d], vp) && world.object() != nullptr) {
+      vp_ptrcall(kVpWorld3dGetScenario, world.object(), nullptr, &s.scenario);
+    }
+  }
+  if (camera != nullptr && !s.disable_3d && rs_singleton != nullptr) {
+    // The hooks' own instance_set_scenario count (standby included), the mirror's rule: the
+    // server's instances_cull_aabb cannot answer on a headless host, whose instance AABBs only a
+    // draw would update. The mirror was seeded with the same membership at the arm
+    // (hooks_seed_mirror_scenarios), so it keeps answering for this scenario afterwards.
+    s.renders_3d = hooks_scenario_has_instance(s.scenario);
+  }
+  RefHolder texture;
+  if (texture.call(g_vp_bind[kVpGetTexture], vp) && texture.object() != nullptr) {
+    s.default_proxy = get_rid(kResourceGetRid, texture.object());
+  }
+  return s;
+}
 
 std::string utf8_of(const void *string) {
   const GDExtensionInt n = g_iface.string_to_utf8_chars(string, nullptr, 0);
@@ -1857,9 +2282,78 @@ void adopt_texture_locked_out(std::uint64_t rid) {
 // never read back again; otherwise it dispatches on the kind the registry recorded -- a
 // CanvasTexture from its recorded channels, anything else through the texture read-back. Main
 // thread (materialize queues an off-main reference).
+void materialize_texture(std::uint64_t rid);
+
+// VS2 (Q3b(4)): a registered TextureProxy is never read back (texture_2d_get on a proxy returns its
+// target's image, or nothing on the dummy); it is adopted by resolution, as texture_proxy_create
+// resolves it: the recorded (adjacency) viewport, else the base (adopted first when it is a plain
+// texture), else unresolved for the node route. The registry records the kind only when viewports
+// are live, so this never runs otherwise.
+void adopt_proxy_registered(std::uint64_t rid, const rs::RegistryProxy &proxy) {
+  const std::uint64_t t0 = now_ns();
+  const std::uint64_t frame = hooks_current_frame();
+  std::uint64_t rt_viewport = 0;
+  if (proxy.viewport != 0) {
+    hooks_adopt_proxy(rid, 0, proxy.viewport, frame);
+  } else if (proxy.base != 0 && render_target_viewport(proxy.base, &rt_viewport)) {
+    // A rendered host's scene ViewportTexture re-pointed to a render target (D7 "by base RID"):
+    // bound to that viewport, never read back.
+    hooks_adopt_proxy(rid, 0, rt_viewport, frame);
+  } else if (proxy.base != 0) {
+    // A base naming a render target (rendered host) or another proxy is resolved by the mirror
+    // (rt -> its viewport; proxy-of-proxy -> unresolved); only a plain texture is adopted first.
+    rs::RegistryProxy nested;
+    rs::RegistryKind base_kind = rs::RegistryKind::Texture2d;
+    if (rs::registry_lookup(proxy.base, &base_kind) &&
+        base_kind == rs::RegistryKind::TexturePlaceholder) {
+      // A placeholder has no image to read back (texture_2d_get refuses it `no-image`): adopted as
+      // what it is. AnimatedTexture's proxy names one on every headless host (its re-point runs
+      // only in frame_pre_draw, which the dummy never emits).
+      hooks_adopt_placeholder(proxy.base, frame);
+    } else if (!rs::registry_is_viewport(proxy.base) && !rs::registry_proxy(proxy.base, &nested)) {
+      materialize_texture(proxy.base);
+    }
+    hooks_adopt_proxy(rid, proxy.base, 0, frame);
+  } else {
+    hooks_adopt_proxy(rid, 0, 0, frame);
+  }
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  ++g_res_stats.proxies;
+  if (proxy.viewport != 0) ++g_res_stats.proxies_viewport;
+  else if (rt_viewport != 0) ++g_res_stats.proxies_render_target;
+  else if (proxy.base != 0) ++g_res_stats.proxies_base;
+  else ++g_res_stats.proxies_unbased;
+  g_res_stats.lookup_ns += now_ns() - t0;
+}
+
+// VS2 (Q3b(4)): a viewport's render-target texture drawn directly (a RegistryKind::Viewport RID
+// the mirror does not map) is never read back: refused, typed `viewport`, once per stream.
+void refuse_viewport_texture(std::uint64_t rid) {
+  auto record = refusal_record(rid, "viewport");
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  if (refuse_locked(rid, Refusal::Texture)) {
+    ++g_res_stats.textures_refused;
+    ++g_res_stats.refused_viewport;
+    record_refusal_locked(std::move(record));
+  }
+}
+
 void materialize_texture(std::uint64_t rid) {
   if (rid == 0 || mirror_instance().knows_texture(rid) || is_refused(rid)) {
     return;
+  }
+  if (rs::registry_on()) {
+    rs::RegistryProxy proxy;
+    if (rs::registry_proxy(rid, &proxy)) {
+      adopt_proxy_registered(rid, proxy);
+      return;
+    }
+    // A viewport RID, or a rendered host's render-target texture (texture_2d_get on it would read
+    // the render target back, D7): never read back.
+    if (rs::registry_is_viewport(rid) || render_target_viewport(rid, nullptr)) {
+      refuse_viewport_texture(rid);
+      return;
+    }
   }
   rs::RegistryCanvasTexture canvas;
   if (rs::registry_on() && rs::registry_canvas_texture(rid, &canvas)) {
@@ -2710,6 +3204,7 @@ void node_map_disconnect();  // G8m, below
 void adopt_resources_end() {
   // Pairs with post-increment admission reads and inflight_ready's seq_cst counter poll.
   g_res_active.store(false, std::memory_order_seq_cst);
+  g_vp_live.store(false, std::memory_order_seq_cst);  // VS2: the node route ends with the stream
   node_map_disconnect();  // G8m: the SceneTree.node_added callable leaves with the stream
 }
 
@@ -2875,6 +3370,13 @@ void adopt_resource_freed(std::uint64_t rid) {
   if (hooks_offmain_standby()) return;
   if (rid == 0) {
     return;
+  }
+  if (g_vp_live.load(std::memory_order_seq_cst) || g_res_active.load(std::memory_order_seq_cst)) {
+    // VS2: a freed canvas item leaves the node map (RIDs are never reused, so its entry would
+    // otherwise stay for the stream; a viewports-only stream has no prune). TAG-only streams
+    // keep their own prune (tag_prune_map).
+    std::lock_guard<std::mutex> lock(g_node_mutex);
+    if (g_item_nodes.erase(rid) != 0) g_tag_entered.erase(rid);
   }
   if (!g_res_active.load(std::memory_order_seq_cst)) {
     return;
@@ -3289,9 +3791,11 @@ void node_added_call(void * /*userdata*/, const GDExtensionConstVariantPtr *args
   }
   OffmainGuard inflight;
   if (hooks_offmain_standby()) return;
+  // VS2: viewports live keeps the map current for the node route (no adoption, no tags).
   if (g_root_finalized || count < 1 || args == nullptr ||
       !(g_res_active.load(std::memory_order_seq_cst) ||
-        g_tag_active.load(std::memory_order_seq_cst)) ||
+        g_tag_active.load(std::memory_order_seq_cst) ||
+        g_vp_live.load(std::memory_order_seq_cst)) ||
       g_iface.variant_get_type(const_cast<GDExtensionVariantPtr>(args[0])) !=
           GDEXTENSION_VARIANT_TYPE_OBJECT) {
     return;
@@ -3325,7 +3829,10 @@ void node_added_call(void * /*userdata*/, const GDExtensionConstVariantPtr *args
   if (g_tag_before_ready && g_tag_active.load(std::memory_order_seq_cst)) {
     tag_resolve_early(rid);  // sabotage meta-before-ready: the identity before the node's _ready
   }
-  mat_stat([](AdoptMaterialStats &s) { ++s.nodes_added; });
+  if (g_res_active.load(std::memory_order_seq_cst) ||
+      g_tag_active.load(std::memory_order_seq_cst)) {
+    mat_stat([](AdoptMaterialStats &s) { ++s.nodes_added; });
+  }
 }
 
 void *scene_tree() {
@@ -5102,7 +5609,8 @@ void node_map_release_tag() {
     g_tag_entered.clear();
   }
   g_tag_early.clear();
-  if (!g_res_active.load(std::memory_order_acquire)) {
+  if (!g_res_active.load(std::memory_order_acquire) &&
+      !g_vp_live.load(std::memory_order_acquire)) {  // VS2: the node route still needs the map
     node_map_disconnect_now();
     std::lock_guard<std::mutex> lock(g_node_mutex);
     g_item_nodes.clear();
@@ -5347,6 +5855,250 @@ std::size_t adopt_release() {
     std::unordered_set<std::uint64_t>().swap(g_tag_entered);
   }
   return n;
+}
+
+// ===================================================================== VS2: the node route
+//
+// viewport-surfaces-design.md Q3b(3). A scene ViewportTexture's proxy is re-pointed with a base the
+// dummy renderer returns as RID() and no call names its viewport, so the hooks leave it
+// `proxy-unresolved`. The first frame a live item's command names such a proxy, the item's node is
+// asked: its Object-typed properties holding a Resource are read (Object.get_property_list /
+// Object.get), and one level deeper for each such Resource (an AtlasTexture's atlas, a
+// ShaderMaterial's `shader_parameter/*` uniforms, a CanvasTexture's channels, a StyleBoxTexture's
+// texture, a theme override's style box), for a ViewportTexture whose get_rid() is the proxy; its
+// local scene's get_node_or_null(viewport_path) is the Viewport. A ViewportTexture with no local
+// scene or path is skipped before get_rid() (which would mint a placeholder proxy for one never
+// set up). Main thread; every bind is kVpBinds' (hash-pinned).
+
+namespace {
+
+void *g_vt_tag = nullptr;
+void *g_resource_tag = nullptr;
+void *g_viewport_tag = nullptr;
+// (proxy, base, viewport) re-resolutions already made this stream, so a proxy the mirror still
+// leaves unresolved is not re-pointed (and re-versioned) every frame. Main thread only.
+std::set<std::array<std::uint64_t, 3>> g_reresolved;
+
+// Before the node route (rendered late leg, design Q3b(2)): a proxy re-pointed after the arm to a
+// pre-arm texture the mirror never adopted (AnimatedTexture's frame switch names an image nothing
+// drew yet) is unresolved in the mirror, where a born capture knows the image and binds it. Its
+// current registry record (kept by the update hook) names the base: a placeholder is adopted as
+// such, a render target names its viewport, a plain texture is materialized; the proxy is then
+// re-resolved with hook_texture_proxy_update's taps. Returns the proxies re-resolved.
+std::size_t reresolve_from_registry(Mirror &mirror,
+                                    const std::vector<Mirror::UnresolvedProxyUse> &uses,
+                                    std::uint64_t frame) {
+  if (!rs::registry_on()) return 0;
+  std::size_t count = 0;
+  std::set<std::uint64_t> done;
+  for (const auto &use : uses) {
+    if (!done.insert(use.proxy).second) continue;
+    rs::RegistryProxy rec;
+    if (!rs::registry_proxy(use.proxy, &rec)) continue;
+    std::uint64_t base = rec.base, viewport = rec.viewport, rt_viewport = 0;
+    bool ready = viewport != 0;
+    if (!ready && base != 0 && render_target_viewport(base, &rt_viewport)) {
+      viewport = rt_viewport;
+      base = 0;
+      ready = true;
+    } else if (!ready && base != 0 && !rs::registry_proxy(base, nullptr)) {
+      rs::RegistryKind kind = rs::RegistryKind::Texture2d;
+      if (!mirror.knows_texture(base) && rs::registry_lookup(base, &kind)) {
+        if (kind == rs::RegistryKind::TexturePlaceholder) {
+          hooks_adopt_placeholder(base, frame);
+        } else {
+          materialize(base, RefKind::Texture);  // gated as every reference is (GRC_ADOPT=arm)
+        }
+      }
+      ready = mirror.knows_texture(base);
+    }
+    if (!ready || !g_reresolved.insert({use.proxy, base, viewport}).second) continue;
+    hooks_reresolve_proxy(use.proxy, base, viewport, frame);
+    ++count;
+  }
+  return count;
+}
+
+// `object`'s viewport RID when it is a ViewportTexture whose proxy is `proxy` and whose scene path
+// resolves to a Viewport; 0 otherwise (and *matched false).
+std::uint64_t viewport_texture_target(void *object, std::uint64_t proxy, bool *matched) {
+  *matched = false;
+  void *vt = as(object, g_vt_tag);
+  if (vt == nullptr) {
+    return 0;
+  }
+  void *scene = nullptr;
+  vp_ptrcall(kVpResourceGetLocalScene, vt, nullptr, &scene);
+  if (scene == nullptr) {
+    return 0;
+  }
+  Builtin path(GDEXTENSION_VARIANT_TYPE_NODE_PATH);
+  vp_ptrcall(kVpVtGetViewportPath, vt, nullptr, path.ptr());
+  const GDExtensionConstTypePtr args[1] = {path.ptr()};
+  void *node = nullptr;
+  vp_ptrcall(kVpNodeGetNodeOrNull, scene, args, &node);
+  void *vp = as(node, g_viewport_tag);
+  if (vp == nullptr) {
+    return 0;  // an empty or broken path: the texture cannot be this frame's viewport
+  }
+  if (get_rid(kResourceGetRid, vt) != proxy) {
+    return 0;
+  }
+  *matched = true;
+  return get_rid(kViewportGetViewportRid, vp);
+}
+
+// Walks `object`'s Object-typed properties (Resources only, never Nodes) for the ViewportTexture
+// of `proxy`, descending `depth` more Resource levels. `seen` bounds the work and breaks cycles.
+std::uint64_t search_properties(void *object, std::uint64_t proxy, int depth,
+                                std::unordered_set<void *> *seen, bool *matched) {
+  Builtin list(GDEXTENSION_VARIANT_TYPE_ARRAY);
+  vp_ptrcall(kVpObjectGetPropertyList, object, nullptr, list.ptr());
+  const std::int64_t n = array_size(list.ptr());
+  std::vector<std::string> names;
+  for (std::int64_t i = 0; i < n; ++i) {
+    void *entry = g_iface.array_operator_index_const(list.ptr(), i);
+    if (entry == nullptr || g_iface.variant_get_type(entry) != GDEXTENSION_VARIANT_TYPE_DICTIONARY) {
+      continue;
+    }
+    Builtin dict(GDEXTENSION_VARIANT_TYPE_DICTIONARY);
+    g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_DICTIONARY)(dict.ptr(), entry);
+    VariantSlot type;
+    dict_get(dict.ptr(), "type", &type);
+    std::int64_t t = 0;
+    if (!variant_as(&type, GDEXTENSION_VARIANT_TYPE_INT, &t) ||
+        t != GDEXTENSION_VARIANT_TYPE_OBJECT) {
+      continue;
+    }
+    VariantSlot name;
+    dict_get(dict.ptr(), "name", &name);
+    if (name.type() == GDEXTENSION_VARIANT_TYPE_STRING) {
+      Builtin text(GDEXTENSION_VARIANT_TYPE_STRING);
+      g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_STRING)(text.ptr(), name.data);
+      std::string utf8 = utf8_of(text.ptr());
+      // `script` and `theme` hold no draw texture and a Theme's property list is every item.
+      if (!utf8.empty() && utf8 != "script" && utf8 != "theme") names.push_back(std::move(utf8));
+    }
+  }
+  std::vector<std::pair<std::unique_ptr<VariantSlot>, void *>> deeper;
+  for (const std::string &utf8 : names) {
+    if (seen->size() >= 512) break;
+    StringName key(utf8.c_str());
+    const GDExtensionConstTypePtr args[1] = {key.ptr()};
+    auto value = std::make_unique<VariantSlot>();
+    vp_ptrcall(kVpObjectGet, object, args, value->data);
+    if (value->type() != GDEXTENSION_VARIANT_TYPE_OBJECT) continue;
+    void *child = nullptr;
+    g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_OBJECT)(&child, value->data);
+    if (as(child, g_resource_tag) == nullptr || !seen->insert(child).second) continue;
+    const std::uint64_t vp = viewport_texture_target(child, proxy, matched);
+    if (*matched) return vp;
+    if (depth > 0) deeper.emplace_back(std::move(value), child);
+  }
+  for (auto &d : deeper) {
+    const std::uint64_t vp = search_properties(d.second, proxy, depth - 1, seen, matched);
+    if (*matched) return vp;
+  }
+  return 0;
+}
+
+}  // namespace
+
+void adopt_set_viewports_live(bool live) {
+  g_vp_live.store(live, std::memory_order_seq_cst);
+  if (!live) {
+    g_reresolved.clear();
+    if (!g_res_active.load(std::memory_order_seq_cst) &&
+        !g_tag_active.load(std::memory_order_seq_cst)) {
+      // The node route was the map's only user: node_added and the map go with it.
+      node_map_disconnect_now();
+      std::lock_guard<std::mutex> lock(g_node_mutex);
+      g_item_nodes.clear();
+      g_tag_entered.clear();
+    }
+    return;
+  }
+  g_vp_main = std::this_thread::get_id();
+  std::string missing;
+  if (!adopt_binds_ready(&missing)) {
+    return;  // the arm refuses adopt-unavailable; a born stream's node route stays a no-op
+  }
+  g_reresolved.clear();
+  g_mat_tags.resolve();
+  g_vt_tag = Tags::tag("ViewportTexture");
+  g_resource_tag = Tags::tag("Resource");
+  g_viewport_tag = Tags::tag("Viewport");
+  const bool fresh = !g_node_added_connected;
+  node_map_connect();
+  if (fresh && g_node_added_connected) {
+    // Items already in the tree (a stream started after its scene, no arm walk to fill the map).
+    void *tree = scene_tree();
+    void *root = tree != nullptr ? get_object(kSceneTreeGetRoot, tree) : nullptr;
+    if (root != nullptr) {
+      std::lock_guard<std::mutex> lock(g_node_mutex);
+      fill_map(root, g_mat_tags.canvas_item);
+    }
+  }
+}
+
+std::size_t resolve_unresolved_proxies(std::uint64_t frame) {
+  if (!g_vp_live.load(std::memory_order_acquire) || !g_vp_binds_resolved || !g_binds_resolved ||
+      g_vt_tag == nullptr || std::this_thread::get_id() != g_vp_main || !mirror_enabled()) {
+    return 0;
+  }
+  Mirror &mirror = mirror_instance();
+  std::vector<Mirror::UnresolvedProxyUse> uses = mirror.unresolved_proxy_uses();
+  if (uses.empty()) {
+    return 0;
+  }
+  const std::uint64_t t0 = now_ns();
+  const std::size_t reresolved = reresolve_from_registry(mirror, uses, frame);
+  if (reresolved != 0) {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    g_res_stats.proxies_reresolved += static_cast<std::uint32_t>(reresolved);
+    uses = mirror.still_unresolved(std::move(uses));
+  }
+  const char *sabotage = grc::rs::env("GRC_VIEWPORT_SABOTAGE");
+  if (uses.empty() || (sabotage != nullptr && std::strcmp(sabotage, "no-node-route") == 0)) {
+    return 0;
+  }
+  // proxy -> its items, in first-seen order
+  std::vector<std::pair<std::uint64_t, std::vector<std::uint64_t>>> by_proxy;
+  for (const auto &use : uses) {
+    if (use.item == 0) continue;  // a parameter or diffuse consumer: no node to search; a later
+                                  // consumer event with an item routes it
+    auto it = std::find_if(by_proxy.begin(), by_proxy.end(),
+                           [&](const auto &p) { return p.first == use.proxy; });
+    if (it == by_proxy.end()) {
+      by_proxy.push_back({use.proxy, {use.item}});
+    } else if (std::find(it->second.begin(), it->second.end(), use.item) == it->second.end()) {
+      it->second.push_back(use.item);
+    }
+  }
+  std::size_t bound = 0, missed = 0, items = 0;
+  for (const auto &entry : by_proxy) {
+    std::uint64_t viewport = 0;
+    bool matched = false;
+    for (std::uint64_t item_rid : entry.second) {
+      void *item = node_of(item_rid);
+      if (item == nullptr) continue;
+      ++items;
+      std::unordered_set<void *> seen;
+      viewport = search_properties(item, entry.first, 1, &seen, &matched);
+      if (matched) break;
+    }
+    hooks_proxy_node_route_result(entry.first, matched ? viewport : 0, frame);
+    if (matched && viewport != 0) ++bound;
+    else ++missed;
+  }
+  const std::uint64_t ns = now_ns() - t0;
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  ++g_res_stats.node_route_passes;
+  g_res_stats.node_route_items += static_cast<std::uint32_t>(items);
+  g_res_stats.node_route_bound += static_cast<std::uint32_t>(bound);
+  g_res_stats.node_route_missed += static_cast<std::uint32_t>(missed);
+  g_res_stats.node_route_ns += ns;
+  return bound;
 }
 
 }  // namespace rs

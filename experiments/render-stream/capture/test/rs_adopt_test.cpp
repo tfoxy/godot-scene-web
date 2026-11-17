@@ -461,6 +461,24 @@ bool hooks_adopt_material(uint64_t, uint64_t, const std::vector<rs::AdoptParam> 
   return false;
 }
 void hooks_adopt_item_material(uint64_t, uint64_t) {}
+// VS2: the real hooks tap the process-wide mirror and the hook log; here only the mirror.
+void hooks_adopt_viewport(const rs::Mirror::AdoptedViewport &v, uint64_t frame) {
+  rs::mirror_instance().adopt_viewport(v, frame);
+}
+void hooks_adopt_proxy(uint64_t proxy, uint64_t base, uint64_t viewport, uint64_t frame) {
+  rs::mirror_instance().adopt_proxy(proxy, base, viewport, frame);
+}
+bool hooks_scenario_has_instance(uint64_t) { return false; }
+void hooks_adopt_placeholder(uint64_t rid, uint64_t frame) { rs::mirror_instance().adopt_placeholder(rid, frame); }
+void hooks_proxy_node_route_result(uint64_t proxy, uint64_t viewport, uint64_t frame) {
+  rs::mirror_instance().proxy_node_route_result(proxy, viewport, frame);
+}
+void hooks_adopt_viewport_texture(uint64_t viewport, uint64_t rt, uint64_t frame) {
+  rs::mirror_instance().viewport_get_texture(viewport, rt, frame);
+}
+void hooks_reresolve_proxy(uint64_t proxy, uint64_t base, uint64_t viewport, uint64_t frame) {
+  rs::mirror_instance().texture_proxy_update(proxy, base, viewport, frame);
+}
 void hooks_adopt_material_shader(uint64_t, uint64_t) {}
 void hooks_adopt_instance_param(uint64_t, const std::string &, const void *) {}
 // PM7: the emitter path's hooks (likewise never reached).
@@ -2017,6 +2035,8 @@ void test_reload_materialize_guards() {
   grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
 }
 
+GDExtensionCallableCustomInfo2 g_node_added_info{};
+
 void test_reentry_admission() {
   fake::install();
   auto &w = fake::world();
@@ -2038,6 +2058,7 @@ void test_reentry_admission() {
   grc::g_iface.callable_custom_create2 = [](GDExtensionUninitializedTypePtr,
                                            GDExtensionCallableCustomInfo2 *info) {
     *saved = *info;
+    g_node_added_info = *info;  // made once per process: later tests reuse it
   };
   std::string error;
   check(grc::rs::node_map_acquire_tag(&error) && callback.call_func != nullptr,
@@ -2215,6 +2236,240 @@ void test_refusal_records_and_recovery() {
 
 }  // namespace
 
+// ------------------------------------------------------------------ VS2: viewport surfaces
+
+// The adopted viewports of a plan, in snapshot order, keyed by their (distinct) width.
+const grc::rs2::ViewportEntry *viewport_by_width(const Snapshot &s, int32_t width) {
+  for (const auto &v : s.viewports)
+    if (v.size_w == width) return &v;
+  return nullptr;
+}
+
+// Root > A (64 wide: its World2D canvas, a CanvasLayer inside it, a top-level item in its world
+// canvas) > B (65); C (66) and D (67, sharing A's World2D: attached, not adopted again) under root.
+AdoptPlan make_viewport_plan() {
+  constexpr uint64_t kA = 0x5001, kB = 0x5002, kC = 0x5003, kD = 0x5004;
+  AdoptPlan plan;
+  auto surface = [](uint64_t rid, uint64_t parent, int32_t width, uint64_t world, bool adopt_world) {
+    grc::rs::AdoptedSurface v;
+    v.rid = rid;
+    v.parent = parent;
+    v.active = true;
+    v.width = width;
+    v.height = 32;
+    v.update_mode = 4;  // always
+    v.transparent = true;
+    v.world_canvas = world;
+    v.adopt_world_canvas = adopt_world;
+    v.canvas_xform = kMoved;
+    return v;
+  };
+  plan.viewports.push_back(surface(kA, kRootViewport, 64, 0x5101, true));
+  plan.viewports.push_back(surface(kB, kA, 65, 0x5102, true));
+  plan.viewports.push_back(surface(kC, kRootViewport, 66, 0x5103, true));
+  plan.viewports.push_back(surface(kD, kRootViewport, 67, 0x5101, false));
+  AdoptedLayer layer;
+  layer.canvas = 0x5201;
+  layer.viewport = kA;
+  layer.layer = 3;
+  layer.surface = true;
+  plan.layers.push_back(layer);
+  AdoptedItem top;
+  top.rid = 0x5301;
+  top.parent = 0x5101;  // get_canvas(): A's world canvas
+  top.group_member = true;
+  plan.items.push_back(top);
+  AdoptedItem in_layer;
+  in_layer.rid = 0x5302;
+  in_layer.parent = 0x5201;
+  in_layer.group_member = true;
+  plan.items.push_back(in_layer);
+  return plan;
+}
+
+// VS2 (Q4): nested viewports are applied before layers and items, parents first, siblings in tree
+// order (active_seq); a shared World2D canvas is attached to both viewports; a layer inside a
+// surface attaches to it and counts as a viewport layer. GRC_VIEWPORT_SABOTAGE=wrong-order reverses
+// sibling order (parents still first).
+// Portable setenv/unsetenv (mingw has neither); nullptr unsets.
+void set_test_env(const char *name, const char *value) {
+#if defined(_WIN32)
+  _putenv_s(name, value != nullptr ? value : "");
+#else
+  if (value != nullptr) ::setenv(name, value, 1);
+  else ::unsetenv(name);
+#endif
+}
+
+void test_viewport_plan() {
+  for (const bool wrong : {false, true}) {
+    if (wrong) set_test_env("GRC_VIEWPORT_SABOTAGE", "wrong-order");
+    const std::string tag = wrong ? "viewports (wrong-order): " : "viewports: ";
+    Mirror m;
+    m.set_viewports(true);
+    start(&m, grc::rs2::UnknownItemPolicy::Strict);
+    AdoptStats stats;
+    grc::rs::apply_adopt_plan(m, make_viewport_plan(), AdoptSabotage::None, 12, &stats);
+    const Snapshot s = m.snapshot(1, 12).state;
+    check(s.failures.empty(), tag + "no failure");
+    check(stats.viewports_adopted == 4 && stats.viewport_layers == 1 && stats.layers == 1 &&
+              stats.items == 2 && stats.non_root_viewports == 0,
+          tag + "stats: 4 viewports, 1 viewport layer, 2 items, none left unadopted");
+    const auto *a = viewport_by_width(s, 64), *b = viewport_by_width(s, 65),
+               *c = viewport_by_width(s, 66), *d = viewport_by_width(s, 67);
+    check(s.viewports.size() == 4 && a && b && c && d, tag + "four viewport entries");
+    if (!(a && b && c && d)) continue;
+    check(a->origin == Origin::Adopted && b->origin == Origin::Adopted, tag + "origin adopted");
+    check(a->has_parent && a->parent == 0 && c->has_parent && c->parent == 0 && d->parent == 0,
+          tag + "root children name the root (0)");
+    check(b->has_parent && b->parent == a->id, tag + "B's parent is A");
+    check(a->active && b->active && c->active && d->active, tag + "all active");
+    check(a->active_seq < b->active_seq, tag + "a parent activates before its child");
+    if (!wrong) {
+      check(a->active_seq < c->active_seq && c->active_seq < d->active_seq,
+            tag + "siblings activate in tree order");
+    } else {
+      check(d->active_seq < c->active_seq && c->active_seq < a->active_seq,
+            tag + "siblings activate in reverse tree order");
+    }
+    check(a->canvases.size() == 2 && b->canvases.size() == 1 && c->canvases.size() == 1 &&
+              d->canvases.size() == 1,
+          tag + "A holds its world canvas and the layer's; B, C, D one each");
+    bool shared = false;
+    for (const auto &row : a->canvases)
+      shared = shared || (!d->canvases.empty() && row.canvas == d->canvases[0].canvas);
+    check(shared, tag + "D attaches A's shared World2D canvas");
+    bool world_xform = false, layer_row = false;
+    for (const auto &row : a->canvases) {
+      world_xform = world_xform || (row.xform == kMoved && row.layer == 0);
+      layer_row = layer_row || row.layer == 3;
+    }
+    check(world_xform && layer_row, tag + "A's world canvas transform and the layer's stacking");
+    check(a->transparent && a->update == grc::rs2::ViewportUpdate::Always && a->size_h == 32,
+          tag + "adopted fields carried");
+  }
+  set_test_env("GRC_VIEWPORT_SABOTAGE", nullptr);
+  // Not live: a plan without viewports applies exactly as before (the walk counts, never adopts).
+  Mirror m;
+  start(&m, grc::rs2::UnknownItemPolicy::Strict);
+  AdoptPlan plan;
+  plan.non_root_viewports = 3;
+  AdoptStats stats;
+  grc::rs::apply_adopt_plan(m, plan, AdoptSabotage::None, 12, &stats);
+  check(stats.non_root_viewports == 3 && stats.viewports_adopted == 0 &&
+            m.snapshot(1, 12).state.viewports.empty(),
+        "viewports off: non_root_viewports counted, nothing adopted");
+}
+
+// VS2 (Q3b(4)): materialize never reads back a TextureProxy or a Viewport registry kind. A proxy
+// with a recorded viewport binds it; one with a base adopts the base first (the only read); one with
+// neither is left for the node route; a viewport RID drawn directly is refused, typed `viewport`.
+void test_proxy_materialize() {
+  constexpr uint64_t kVp = 0x6001, kP1 = 0x6101, kP2 = 0x6102, kP3 = 0x6103, kImg = 0x6201;
+  constexpr uint64_t kVp2 = 0x6002, kRt = 0x6301, kP4 = 0x6104;
+  std::vector<uint64_t> reads;
+  fake_rendering_server(&reads);
+  grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
+  grc::rs::registry_set_viewports(true);
+  grc::rs::mirror_enable(false);
+  grc::rs::mirror_instance().set_viewports(true);
+  grc::rs::registry_note_create(kVp, grc::rs::RegistryKind::Viewport);  // pre-arm (standby)
+  grc::rs::registry_note_proxy_create(kP1, 0, kVp);
+  grc::rs::registry_note_create(kImg, grc::rs::RegistryKind::Texture2d);
+  grc::rs::registry_note_proxy_create(kP2, kImg, 0);
+  grc::rs::registry_note_proxy_create(kP3, 0, 0);
+  // A rendered host: the viewport's render target recorded at viewport_get_texture, and a scene
+  // ViewportTexture re-pointed to it (no adjacency).
+  grc::rs::registry_note_create(kVp2, grc::rs::RegistryKind::Viewport);
+  grc::rs::registry_note_viewport_texture(kVp2, kRt);
+  grc::rs::registry_note_proxy_create(kP4, kRt, 0);
+  uint64_t rt_viewport = 0;
+  check(grc::rs::registry_viewport_of_texture(kRt, &rt_viewport) && rt_viewport == kVp2 &&
+            !grc::rs::registry_viewport_of_texture(kImg, nullptr),
+        "registry: a render target names its viewport");
+  stream_begin();
+  grc::rs::mirror_instance().viewport_create(kVp, 1);
+  grc::rs::mirror_instance().viewport_create(kVp2, 1);
+  grc::rs::materialize(kP1, grc::rs::RefKind::Texture);
+  check(reads.empty() && grc::rs::mirror_instance().knows_texture(kP1),
+        "proxy: a recorded viewport binds without a read-back");
+  grc::rs::materialize(kP2, grc::rs::RefKind::Texture);
+  check(reads == std::vector<uint64_t>({kImg}), "proxy: only the base is read back");
+  grc::rs::materialize(kP3, grc::rs::RefKind::Texture);
+  check(reads.size() == 1, "proxy: no base, no viewport: nothing read (node route)");
+  grc::rs::materialize(kVp, grc::rs::RefKind::Texture);
+  check(reads.size() == 1, "viewport: a viewport RID drawn directly is never read back");
+  grc::rs::materialize(kP4, grc::rs::RefKind::Texture);
+  check(reads.size() == 1 && grc::rs::mirror_instance().knows_texture(kP4),
+        "proxy: a render-target base binds its viewport, never read back");
+  grc::rs::materialize(kRt, grc::rs::RefKind::Texture);
+  check(reads.size() == 1, "render target: drawn directly, never read back");
+  const grc::rs::AdoptResourceStats st = grc::rs::adopt_resource_stats();
+  check(st.proxies == 4 && st.proxies_viewport == 1 && st.proxies_base == 1 &&
+            st.proxies_unbased == 1 && st.proxies_render_target == 1,
+        "proxy: the four dispatches counted");
+  check(grc::rs::mirror_instance().knows_texture(kVp) || st.refused_viewport == 2,
+        "viewport: refused typed `viewport` (unless the mirror maps it)");
+  check(grc::rs::resolve_unresolved_proxies(2) == 0,
+        "node route: a no-op without adopt_set_viewports_live (no engine)");
+  stream_end();
+  grc::rs::mirror_instance().set_viewports(false);
+  grc::rs::registry_set_viewports(false);
+  grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
+}
+
+// VS2: viewports live without adoption or TAG (a generic /16 stream) keeps the node map for the
+// node route; an entry leaves when its canvas item is freed, and turning viewports off (every
+// refused or failed arm does) disconnects node_added and empties the map.
+void test_viewports_live_node_map() {
+  fake::install();
+  auto &w = fake::world();
+  w.reset_calls();
+  auto &engine = w.make({"Object", "Engine"});
+  auto &tree = w.make({"Object", "SceneTree"});
+  auto &root = w.make({"Object", "Node", "Window", "Viewport"});
+  auto &node = w.make({"Object", "Node", "CanvasItem", "Control"}, 0x99101);
+  w.singletons["Engine"] = &engine;
+  w.overrides["Engine.get_main_loop"] = [&tree](fake::Object *, FakeArgs, void *ret) {
+    fake::put_object(ret, &tree);
+  };
+  w.overrides["SceneTree.get_root"] = [&root](fake::Object *, FakeArgs, void *ret) {
+    fake::put_object(ret, &root);
+  };
+  w.overrides["Object.connect"] = [](fake::Object *, FakeArgs, void *ret) {
+    fake::put_int(ret, 0);  // OK
+  };
+  std::string missing;
+  grc::rs::adopt_set_viewports_live(true);
+  check(grc::rs::adopt_binds_ready(&missing), "vp map: binds ready (" + missing + ")");
+  check(grc::rs::adopt_material_stats().node_map_connected,
+        "vp map: viewports live (no adoption, no TAG) connects node_added");
+  alignas(8) unsigned char variant[24]{};
+  void *object = &node;
+  fake::detail::from_type<void *, GDEXTENSION_VARIANT_TYPE_OBJECT>(variant, &object);
+  const GDExtensionConstVariantPtr args[] = {variant};
+  check(g_node_added_info.call_func != nullptr, "vp map: the node_added callable exists");
+  auto added = [&] {
+    if (g_node_added_info.call_func == nullptr) return;
+    GDExtensionCallError err{};
+    g_node_added_info.call_func(g_node_added_info.callable_userdata, args, 1, nullptr, &err);
+  };
+  added();
+  check(grc::rs::adopted_item_nodes().count(node.rid) == 1, "vp map: node_added maps the item");
+  grc::rs::adopt_resource_freed(node.rid);  // hook_free's path
+  check(grc::rs::adopted_item_nodes().count(node.rid) == 0,
+        "vp map: a freed canvas item leaves the map (no prune runs in this mode)");
+  added();
+  check(grc::rs::adopted_item_nodes().count(node.rid) == 1, "vp map: mapped again");
+  const int disconnects = w.count("Object.disconnect");
+  grc::rs::adopt_set_viewports_live(false);
+  check(w.count("Object.disconnect") == disconnects + 1,
+        "vp map: viewports off disconnects node_added");
+  check(grc::rs::adopted_item_nodes().empty(), "vp map: viewports off empties the map");
+  added();
+  check(grc::rs::adopted_item_nodes().empty(), "vp map: a node added afterwards is not mapped");
+}
+
 int main() {
   test_born_equals_adopted();
   test_sabotages();
@@ -2244,6 +2499,9 @@ int main() {
   test_warm_census_revalidation();
   test_warm_held_images();
   test_refusal_records_and_recovery();
+  test_viewport_plan();
+  test_proxy_materialize();
+  test_viewports_live_node_map();
   std::printf("rs_adopt_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

@@ -50,8 +50,8 @@
 namespace grc {
 namespace rs {
 
-// What a tracked create made. The hooked creates only (hooks.cpp): texture_2d_layered_create,
-// texture_proxy_create and the 3D texture creates are not hooked, so they have no kind yet.
+// What a tracked create made. The hooked creates only (hooks.cpp): texture_2d_layered_create and
+// the 3D texture creates are not hooked, so they have no kind yet.
 enum class RegistryKind : std::uint8_t {
   Texture2d,           // texture_2d_create
   TexturePlaceholder,  // texture_2d_placeholder_create
@@ -61,9 +61,19 @@ enum class RegistryKind : std::uint8_t {
   Shader,              // shader_create, shader_create_from_code
   Material,            // material_create, material_create_from_shader
   Particles,           // particles_create (after the headless shim's private RID)
+  // VS2 (viewport-surfaces-design.md Q3b, Q4; recorded only when viewports are live):
+  Viewport,            // viewport_create; viewport_get_texture records its render-target RID
+  TextureProxy,        // texture_proxy_create; texture_proxy_update re-points it
 };
 
 // The evidence groups kinds into families (both texture kinds are `texture`).
+//
+// VS2: Viewport and TextureProxy are their own family, `viewport`, never `texture`: every texture-
+// family path (registry_texture, registry_textures and the warm, hint and reload walks over them,
+// the update/replace/hold/path/size-override notes) reads a payload through texture_2d_get, which a
+// viewport or a proxy must never reach (viewport-surfaces-design.md D7). The family is reported in
+// evidence (registry.json, the capture API's state) only when viewports are live
+// (registry_set_viewports), so every other run's evidence keeps its seven families.
 enum class RegistryFamily : std::uint8_t {
   Texture,
   CanvasTexture,
@@ -72,8 +82,11 @@ enum class RegistryFamily : std::uint8_t {
   Shader,
   Material,
   Particles,
+  Viewport,
 };
-constexpr std::size_t kRegistryFamilies = 7;
+constexpr std::size_t kRegistryFamilies = 8;
+// The families reported when viewports are not live (all but the last).
+constexpr std::size_t kRegistryFamiliesPreViewports = 7;
 
 RegistryFamily registry_family(RegistryKind kind);
 const char *registry_family_name(RegistryFamily family);
@@ -151,6 +164,12 @@ struct RegistryStats {
   std::uint64_t particles_payloads = 0;      // live RegistryParticles entries
   std::uint64_t particles_payload_sets = 0;  // particles_set_* calls recorded
   std::uint64_t particles_payload_bytes = 0; // its slot array plus the vectors' elements
+  // VS2: the viewport family's payload map (a viewport's render-target RID, a proxy's base and
+  // adjacency-resolved viewport; its own flat map; part of bytes_estimate; empty unless live).
+  bool viewports = false;                    // registry_set_viewports(true)
+  std::uint64_t viewport_payloads = 0;       // live viewport and proxy payload entries
+  std::uint64_t viewport_payload_sets = 0;   // get_texture and proxy create/update calls recorded
+  std::uint64_t viewport_payload_bytes = 0;  // its slot array (in bytes_estimate)
 };
 
 // One timeline row: the per-family counts after a frame in which the registry changed. `frame` is
@@ -480,6 +499,40 @@ void registry_note_particles(std::uint64_t rid, RegistryParticlesOp op, std::int
 
 // The recorded emitter of a live RID (false: `rid` is not a registered emitter).
 bool registry_particles(std::uint64_t rid, RegistryParticles *out);
+
+// VS2 (viewport-surfaces-design.md Q3b, Q4): the viewport family. Recorded only after
+// registry_set_viewports(true) (at load, after registry_configure, which clears it: viewports
+// live = speaks /16 and the twenty hooks planned); before that every note below records nothing
+// and the family stays out of the evidence.
+//   Viewport      viewport_create (registry_note_create with RegistryKind::Viewport); its
+//                 render-target RID from viewport_get_texture (0 until seen, and on the dummy
+//                 renderer always).
+//   TextureProxy  texture_proxy_create(base): `base` as given and `viewport`, the viewport the
+//                 hooks resolved by adjacency (0: none); texture_proxy_update replaces both (the
+//                 last call wins, as the engine re-points). A free erases either kind.
+struct RegistryProxy {
+  std::uint64_t base = 0;
+  std::uint64_t viewport = 0;
+};
+void registry_set_viewports(bool live);
+bool registry_viewports();
+void registry_note_proxy_create(std::uint64_t rid, std::uint64_t base, std::uint64_t viewport);
+// Only for a registered proxy (an untracked or pre-load proxy records nothing).
+void registry_note_proxy_update(std::uint64_t rid, std::uint64_t base, std::uint64_t viewport);
+// Only for a registered viewport.
+void registry_note_viewport_texture(std::uint64_t viewport, std::uint64_t rt);
+// The recorded proxy of a live RID (false: `rid` is not a registered TextureProxy).
+bool registry_proxy(std::uint64_t rid, RegistryProxy *out);
+// Whether `rid` is a registered Viewport.
+bool registry_is_viewport(std::uint64_t rid);
+// The recorded render-target RID of a registered viewport (false: not a registered Viewport).
+bool registry_viewport_texture(std::uint64_t viewport, std::uint64_t *rt);
+// The registered viewport whose recorded render-target RID is `rt` (rendered host only: the dummy
+// renderer's is always 0). False when none.
+bool registry_viewport_of_texture(std::uint64_t rt, std::uint64_t *viewport);
+// The families the evidence reports: kRegistryFamilies when viewports are live, else
+// kRegistryFamiliesPreViewports.
+std::size_t registry_reported_families();
 
 // The frame callback (entry.cpp on_frame): appends a timeline row when anything changed since the
 // last row. Cheap when nothing did (one relaxed load).

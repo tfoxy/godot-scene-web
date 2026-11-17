@@ -158,7 +158,7 @@ void test_v9_policy() {
   check(parse("9", nullptr, nullptr, nullptr, &p, &error) &&
             p.file_version == ProtocolVersion::V9 && !p.any() && p.speaks_v8() && p.speaks_v9(),
         "GRC_STREAM_VERSION=9 is a /9 file sink without a policy (G8k9)");
-  check(!parse("7", nullptr, nullptr, nullptr, &p, &error) && error.find("6, 8, 9, 10, 11, 12, 13, 14 or 15") != std::string::npos,
+  check(!parse("7", nullptr, nullptr, nullptr, &p, &error) && error.find("6, 8, 9, 10, 11, 12, 13, 14, 15 or 16") != std::string::npos,
         "GRC_STREAM_VERSION=7 is still invalid");
   check(parse("8", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v9(), "/8 does not speak /9");
   Gate8Policy policy;
@@ -248,9 +248,9 @@ void test_v10_policy() {
         "GRC_STREAM_VERSION=10 is a /10 file sink without a policy, speaking /8 and /9's keys");
   check(parse("9", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v10(),
         "/9 does not speak /10");
-  check(!parse("16", nullptr, nullptr, nullptr, &p, &error) &&
-            error.find("6, 8, 9, 10, 11, 12, 13, 14 or 15") != std::string::npos,
-        "GRC_STREAM_VERSION=16 is invalid");
+  check(!parse("17", nullptr, nullptr, nullptr, &p, &error) &&
+            error.find("6, 8, 9, 10, 11, 12, 13, 14, 15 or 16") != std::string::npos,
+        "GRC_STREAM_VERSION=17 is invalid, and the error lists 16");
   // render-stream-15.md "Who speaks /15": .15 first, then /13's list; /15 speaks every /14 key.
   check(parse("15", nullptr, nullptr, nullptr, &p, &error) &&
             p.file_version == ProtocolVersion::V15 && p.speaks_v15() && p.speaks_v14() &&
@@ -317,6 +317,82 @@ void test_v10_policy() {
       }
     }
   }
+}
+
+// VS2 (render-stream-16.md "Who speaks /16"; viewport-surfaces-design.md D2, D3, D14).
+void test_v16_policy() {
+  Gate8Policy p;
+  std::string error;
+  check(parse("16", nullptr, nullptr, nullptr, &p, &error) &&
+            p.file_version == ProtocolVersion::V16 && p.speaks_v16() && p.speaks_v15() &&
+            p.speaks_v14() && p.speaks_v13() && p.speaks_v12() && p.speaks_v11() &&
+            p.speaks_v10() && p.speaks_v9() && p.speaks_v8() && !p.any(),
+        "GRC_STREAM_VERSION=16 is a /16 file sink speaking every /15 key");
+  check(grc::rs::gate8_live_subprotocols(p) == std::vector<std::string>{"render-stream.16"},
+        "a /16 listener lists exactly render-stream.16");
+  Gate8Policy narrow;
+  check(parse("16", "arm", nullptr, "RGBAF", &narrow, &error) && narrow.any() &&
+            grc::rs::gate8_live_subprotocols(narrow) ==
+                std::vector<std::string>{"render-stream.16"},
+        "a /16 listener under a gate 8 policy lists exactly render-stream.16");
+  check(grc::rs::gate8_policy_allows(narrow, true, &error), "a gate 8 policy is allowed at /16");
+  check(parse("15", nullptr, nullptr, nullptr, &p, &error) && p.speaks_v15() && !p.speaks_v16(),
+        "/15 does not speak /16");
+  // .16 is never offered otherwise; /15's list is unchanged (no .16).
+  for (const char *version : {static_cast<const char *>(nullptr), "6", "8", "9", "10", "11", "12",
+                              "13", "14", "15"}) {
+    for (const char *adopt : {static_cast<const char *>(nullptr), "arm"}) {
+      Gate8Policy other;
+      check(parse(version, adopt, nullptr, nullptr, &other, &error) && !other.speaks_v16(),
+            "below /16 nothing speaks /16");
+      for (const std::string &name : grc::rs::gate8_live_subprotocols(other)) {
+        check(name != "render-stream.16",
+              "render-stream.16 is offered only under GRC_STREAM_VERSION=16");
+      }
+    }
+  }
+
+  // GRC_VIEWPORTS / GRC_VIEWPORT_SABOTAGE.
+  using grc::rs::ViewportSabotage;
+  using grc::rs::ViewportsPolicy;
+  ViewportsPolicy v;
+  check(grc::rs::parse_viewports_policy(nullptr, nullptr, &v, &error) && v.on &&
+            v.sabotage == ViewportSabotage::None,
+        "viewports: unset is on, no sabotage");
+  check(grc::rs::parse_viewports_policy("", "", &v, &error) && v.on, "viewports: empty is on");
+  check(grc::rs::parse_viewports_policy("on", nullptr, &v, &error) && v.on, "viewports: on");
+  check(grc::rs::parse_viewports_policy("off", nullptr, &v, &error) && !v.on, "viewports: off");
+  error.clear();
+  check(!grc::rs::parse_viewports_policy("yes", nullptr, &v, &error) && v.on &&
+            error == "invalid GRC_VIEWPORTS=yes (expected on or off)",
+        "viewports: any other value refuses");
+  const struct {
+    const char *text;
+    ViewportSabotage kind;
+  } kinds[] = {{"no-adjacency", ViewportSabotage::NoAdjacency},
+               {"no-node-route", ViewportSabotage::NoNodeRoute},
+               {"wrong-order", ViewportSabotage::WrongOrder}};
+  for (const auto &k : kinds) {
+    check(grc::rs::parse_viewports_policy(nullptr, k.text, &v, &error) && v.sabotage == k.kind &&
+              std::string(grc::rs::viewport_sabotage_name(v.sabotage)) == k.text,
+          "viewport sabotage kinds");
+  }
+  error.clear();
+  check(!grc::rs::parse_viewports_policy("off", "bogus", &v, &error) && v.on &&
+            v.sabotage == ViewportSabotage::None &&
+            error == "invalid GRC_VIEWPORT_SABOTAGE=bogus (expected no-adjacency, no-node-route or wrong-order)",
+        "viewport sabotage: an unknown kind refuses and leaves the default");
+
+  // GRC_RESOURCE_HINTS.
+  bool hints = false;
+  check(grc::rs::parse_resource_hints(nullptr, &hints, &error) && hints, "hints: unset is on");
+  check(grc::rs::parse_resource_hints("", &hints, &error) && hints, "hints: empty is on");
+  check(grc::rs::parse_resource_hints("off", &hints, &error) && !hints, "hints: off");
+  check(grc::rs::parse_resource_hints("on", &hints, &error) && hints, "hints: on");
+  error.clear();
+  check(!grc::rs::parse_resource_hints("0", &hints, &error) && hints &&
+            error == "invalid GRC_RESOURCE_HINTS=0 (expected on or off)",
+        "hints: any other value refuses");
 }
 
 // W11b (render-stream-11.md "Opt-in and version policy", "Sabotage kinds").
@@ -575,6 +651,7 @@ int main() {
   test_v10_policy();
   test_v12_policy();
   test_v13_policy();
+  test_v16_policy();
   test_v11_policy();
   test_delivery_seam();
   test_subprotocols();

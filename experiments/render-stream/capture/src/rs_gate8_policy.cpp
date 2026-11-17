@@ -151,9 +151,11 @@ bool parse_gate8_policy(const char *stream_version, const char *adopt, const cha
       parsed.file_version = rs2::ProtocolVersion::V14;  // ID3 (render-stream-14.md)
     } else if (text == "15") {
       parsed.file_version = rs2::ProtocolVersion::V15;  // render-stream-15.md
+    } else if (text == "16") {
+      parsed.file_version = rs2::ProtocolVersion::V16;  // render-stream-16.md
     } else {
       *error = "invalid GRC_STREAM_VERSION=" + text +
-               " (expected 6, 8, 9, 10, 11, 12, 13, 14 or 15)";
+               " (expected 6, 8, 9, 10, 11, 12, 13, 14, 15 or 16)";
       return false;
     }
     parsed.stream_version_set = true;
@@ -182,6 +184,62 @@ bool parse_gate8_policy(const char *stream_version, const char *adopt, const cha
   // the passthrough default (TDP) acts. A plain /6 stream carries no decode fields, so it stays off.
   parsed.apply_decode_default();
   *out = parsed;
+  return true;
+}
+
+bool parse_viewports_policy(const char *viewports, const char *sabotage, ViewportsPolicy *out,
+                            std::string *error) {
+  *out = ViewportsPolicy();
+  ViewportsPolicy parsed;
+  if (viewports != nullptr && *viewports != '\0') {
+    const std::string text(viewports);
+    if (text == "off") {
+      parsed.on = false;
+    } else if (text != "on") {
+      *error = "invalid GRC_VIEWPORTS=" + text + " (expected on or off)";
+      return false;
+    }
+  }
+  if (sabotage != nullptr && *sabotage != '\0') {
+    const std::string text(sabotage);
+    if (text == "no-adjacency") {
+      parsed.sabotage = ViewportSabotage::NoAdjacency;
+    } else if (text == "no-node-route") {
+      parsed.sabotage = ViewportSabotage::NoNodeRoute;
+    } else if (text == "wrong-order") {
+      parsed.sabotage = ViewportSabotage::WrongOrder;
+    } else {
+      *error = "invalid GRC_VIEWPORT_SABOTAGE=" + text +
+               " (expected no-adjacency, no-node-route or wrong-order)";
+      return false;
+    }
+  }
+  *out = parsed;
+  return true;
+}
+
+const char *viewport_sabotage_name(ViewportSabotage sabotage) {
+  switch (sabotage) {
+    case ViewportSabotage::NoAdjacency: return "no-adjacency";
+    case ViewportSabotage::NoNodeRoute: return "no-node-route";
+    case ViewportSabotage::WrongOrder: return "wrong-order";
+    case ViewportSabotage::None: break;
+  }
+  return "none";
+}
+
+bool parse_resource_hints(const char *value, bool *on, std::string *error) {
+  *on = true;
+  if (value == nullptr || *value == '\0') {
+    return true;
+  }
+  const std::string text(value);
+  if (text == "off") {
+    *on = false;
+  } else if (text != "on") {
+    *error = "invalid GRC_RESOURCE_HINTS=" + text + " (expected on or off)";
+    return false;
+  }
   return true;
 }
 
@@ -216,6 +274,11 @@ std::vector<std::string> gate8_live_subprotocols(const Gate8Policy &policy) {
   // `source_format` below /8 and R8/RG8 are legal payload formats at /6, so an older client reads a
   // default-decoded texture as a plain one.
   const bool narrow = policy.any();
+  if (policy.file_version == rs2::ProtocolVersion::V16) {
+    // render-stream-16.md "Who speaks /16": only .16, whatever the policy; no /13 list follows
+    // and the host's .14 insertion (entry.cpp) never applies.
+    return {rs2::kSubprotocolV16};
+  }
   if (policy.file_version == rs2::ProtocolVersion::V15) {
     // render-stream-15.md "Who speaks /15": .15 first, then /13's list. The host adds .14 after
     // .15 under an item_meta v2 grant (entry.cpp), as it does at /13.

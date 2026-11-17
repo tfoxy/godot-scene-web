@@ -170,7 +170,8 @@
         "g8id": 0.9,
         "g8id2": 0.9,
         "g8rec1": 0.2,
-        "g8hint": 0.5
+        "g8hint": 0.5,
+        "g8vp": 0.6
       },
       "together": [
         ["g8mm", "g8pt"],

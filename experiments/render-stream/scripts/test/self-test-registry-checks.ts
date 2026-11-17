@@ -44,7 +44,10 @@ function expect(ok: boolean, what: string): void {
   }
 }
 
-const families = Object.keys(REGISTRY_CREATE_HOOKS);
+// The seven families every non-/16 registry.json reports (VS2: `viewport` only when live).
+const families = Object.keys(REGISTRY_CREATE_HOOKS).filter(
+  (f) => f !== "viewport",
+);
 const zero = () => families.map(() => 0);
 function fam(
   entries: number,
@@ -188,6 +191,52 @@ function good(): {
       p.includes("overflowed"),
     ),
     "overflow fails",
+  );
+}
+{
+  // VS2: a live (/16) registry.json reports the eighth family `viewport` last; its creates are
+  // viewport_create + texture_proxy_create (a viewport and its default proxy, then the proxy freed).
+  const g = good();
+  g.reg.families.viewport = fam(1, 2, 1);
+  g.reg.entries = 3;
+  g.reg.timeline.family_order = [...families, "viewport"];
+  for (const row of g.reg.timeline.rows) {
+    row.entries = [...row.entries, 0];
+    row.creates = [...row.creates, 0];
+    row.frees = [...row.frees, 0];
+  }
+  g.reg.timeline.rows.push({
+    frame: 20,
+    entries: [7, 0, 1, 0, 0, 0, 0, 1],
+    creates: [8, 0, 2, 0, 1, 1, 0, 2],
+    frees: [1, 0, 1, 0, 1, 1, 0, 1],
+  });
+  g.reg.timeline.rows.push({
+    frame: 21,
+    entries: [2, 0, 0, 0, 0, 0, 0, 1],
+    creates: [8, 0, 2, 0, 1, 1, 0, 2],
+    frees: [6, 0, 2, 0, 1, 1, 0, 1],
+  });
+  g.counts.viewport_create = 1;
+  g.counts.texture_proxy_create = 1;
+  const r = registryLiveBound("live", g.reg, g.counts);
+  expect(
+    r.problems.length === 0,
+    `a live registry passes (${r.problems.join("; ")})`,
+  );
+  g.counts.texture_proxy_create = 2; // a proxy create the registry did not record
+  expect(
+    registryLiveBound("live", g.reg, g.counts).problems.some((p) =>
+      p.includes("viewport recorded 2"),
+    ),
+    "a live registry's missed proxy create fails",
+  );
+  const seven = good();
+  expect(
+    !registryLiveBound("seven", seven.reg, seven.counts).problems.some((p) =>
+      p.includes("viewport"),
+    ),
+    "a non-live registry.json is judged on its seven families",
   );
 }
 {
@@ -480,6 +529,7 @@ expect(
     shader: ["Shader"],
     material: ["Material"],
     particles: ["Particles"],
+    viewport: ["Viewport", "TextureProxy"],
   };
   for (const [family, hooks] of Object.entries(REGISTRY_CREATE_HOOKS))
     for (const h of hooks) {
@@ -493,7 +543,11 @@ expect(
           ? /rs::registry_note_texture_create\(result\.id,/.test(b ?? "")
             ? "Texture2d"
             : undefined
-          : m?.[1];
+          : h === "texture_proxy_create"
+            ? /rs::registry_note_proxy_create\(result\.id,/.test(b ?? "")
+              ? "TextureProxy"
+              : undefined
+            : m?.[1];
       expect(
         kind !== undefined && kinds[family].includes(kind),
         `hook_${h} records a ${family} kind (${kind ?? "no registry create"})`,

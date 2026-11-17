@@ -4099,7 +4099,27 @@
     "particles_set_emitter_velocity": 234,
     "particles_set_interp_to_end": 235,
     "canvas_item_set_use_identity_transform": 438,
-    "texture_set_size_override": 18
+    "texture_set_size_override": 18,
+    "texture_proxy_create": 5,
+    "texture_proxy_update": 10,
+    "viewport_create": 267,
+    "viewport_set_size": 269,
+    "viewport_set_active": 270,
+    "viewport_set_parent_viewport": 271,
+    "viewport_set_canvas_cull_mask": 272,
+    "viewport_set_update_mode": 280,
+    "viewport_set_clear_mode": 282,
+    "viewport_get_texture": 284,
+    "viewport_set_disable_3d": 286,
+    "viewport_set_disable_2d": 287,
+    "viewport_attach_camera": 288,
+    "viewport_set_scenario": 289,
+    "viewport_set_transparent_background": 293,
+    "viewport_set_use_hdr_2d": 294,
+    "viewport_set_snap_2d_transforms_to_pixel": 296,
+    "viewport_set_snap_2d_vertices_to_pixel": 297,
+    "viewport_set_msaa_2d": 306,
+    "instance_set_scenario": 382
   },
   "wanted_slot_aliases": {
     "canvas_item_add_rect": ["canvas_item_add_rect"],
@@ -4272,7 +4292,33 @@
     "canvas_item_set_use_identity_transform": [
       "canvas_item_set_use_identity_transform"
     ],
-    "texture_set_size_override": ["texture_set_size_override"]
+    "texture_set_size_override": ["texture_set_size_override"],
+    "texture_proxy_create": ["texture_proxy_create"],
+    "texture_proxy_update": ["texture_proxy_update"],
+    "viewport_create": ["viewport_create"],
+    "viewport_set_size": ["viewport_set_size"],
+    "viewport_set_active": ["viewport_set_active"],
+    "viewport_set_parent_viewport": ["viewport_set_parent_viewport"],
+    "viewport_set_canvas_cull_mask": ["viewport_set_canvas_cull_mask"],
+    "viewport_set_update_mode": ["viewport_set_update_mode"],
+    "viewport_set_clear_mode": ["viewport_set_clear_mode"],
+    "viewport_get_texture": ["viewport_get_texture"],
+    "viewport_set_disable_3d": ["viewport_set_disable_3d"],
+    "viewport_set_disable_2d": ["viewport_set_disable_2d"],
+    "viewport_attach_camera": ["viewport_attach_camera"],
+    "viewport_set_scenario": ["viewport_set_scenario"],
+    "viewport_set_transparent_background": [
+      "viewport_set_transparent_background"
+    ],
+    "viewport_set_use_hdr_2d": ["viewport_set_use_hdr_2d"],
+    "viewport_set_snap_2d_transforms_to_pixel": [
+      "viewport_set_snap_2d_transforms_to_pixel"
+    ],
+    "viewport_set_snap_2d_vertices_to_pixel": [
+      "viewport_set_snap_2d_vertices_to_pixel"
+    ],
+    "viewport_set_msaa_2d": ["viewport_set_msaa_2d"],
+    "instance_set_scenario": ["instance_set_scenario"]
   },
   "anchor_selection": "all-non-pure-new-virtuals"
 }

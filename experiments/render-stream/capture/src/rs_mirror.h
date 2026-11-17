@@ -156,6 +156,23 @@ struct MirrorStats {
   std::uint64_t hc_dirty_marks_dropped_textures = 0;
   std::uint64_t hc_shadow_checked = 0;
   std::uint64_t hc_shadow_mismatches = 0;
+  // VS2 (render-stream-16.md "The viewport table", "Texture kinds"; zero unless viewports are live):
+  // the evidence block stream.gate8.viewports, field for field.
+  std::uint64_t created = 0;    // viewports viewport_create made
+  std::uint64_t adopted = 0;    // viewports adopt_viewport made
+  std::uint64_t freed = 0;      // viewports free() removed
+  std::uint64_t proxies = 0;    // proxy entries made (texture_proxy_create, adopt_proxy, default proxies)
+  std::uint64_t proxies_bound_rid = 0;          // bound through a render-target RID
+  std::uint64_t proxies_bound_adjacency = 0;    // bound through the constructor's call adjacency
+  std::uint64_t proxies_bound_texture = 0;      // bound to a known non-proxy texture
+  std::uint64_t proxies_bound_node_route = 0;   // bound later by proxy_node_route_result
+  std::uint64_t proxies_adopted = 0;            // adopt_proxy / default proxies bound to a viewport
+  std::uint64_t proxies_unresolved = 0;         // transitions into proxy-unresolved
+  std::uint64_t unresolved_now = 0;             // unresolved proxy entries now (computed by stats())
+  std::uint64_t node_route_tried = 0;           // proxy_node_route_result calls (once per pointing)
+  std::uint64_t node_route_scan_items = 0;      // items visited looking for a proxy's consumers
+  std::uint64_t unknown_viewport_calls = 0;     // live calls naming an unknown non-root viewport
+  std::uint64_t renders_3d = 0;                 // viewports whose renders_3d was ever true
 };
 
 // What a mesh hook hands the mirror for one surface: the hook
@@ -869,8 +886,9 @@ class Mirror {
   void set_texture_defaults(rs2::Filter filter, rs2::Repeat repeat);
   // viewport_set_default_canvas_item_texture_filter / _repeat: on the root
   // viewport, the transaction scalars; on any other viewport, the session-level
-  // `non-root-viewport` entry (gate 0's rule). DEFAULT and out-of-range values
-  // are ignored, as renderer_viewport.cpp:1541-1554 refuses them.
+  // `non-root-viewport` entry (gate 0's rule), or with viewports live that viewport entry's
+  // defaults. DEFAULT and out-of-range values are ignored, as renderer_viewport.cpp:1541-1554
+  // refuses them.
   void viewport_set_texture_filter(std::uint64_t viewport, std::int32_t filter,
                                    std::uint64_t frame);
   void viewport_set_texture_repeat(std::uint64_t viewport, std::int32_t repeat,
@@ -958,6 +976,10 @@ class Mirror {
   }
   // texture_2d_placeholder_create: a new id, kind placeholder, version 1.
   void texture_2d_placeholder_create(std::uint64_t rid, std::uint64_t frame);
+  // VS2: a pre-arm placeholder a proxy names (AnimatedTexture's, whose re-point runs only in
+  // frame_pre_draw, never on a headless host), adopted as a placeholder: origin adopted,
+  // adopted_content current (no bytes to distrust). Live only; a known RID is left alone.
+  void adopt_placeholder(std::uint64_t rid, std::uint64_t frame);
   // texture_2d_update: a known id gets version + 1 and, when the layer is 0 and
   // the shape equals the texture's, the new payload; otherwise it becomes
   // `unsupported` (`layered-update`, `update-shape-mismatch`). An unknown RID is
@@ -1045,6 +1067,81 @@ class Mirror {
   // True when the omit-op sabotage drops `op` at `frame` (the hooks also leave
   // such a texture call out of the hook log's registry; rs_resource_log.h).
   bool omits(const char *op, std::uint64_t frame) const;
+
+  // --- viewport surfaces (VS2; render-stream-16.md "The viewport table", "Texture kinds") ---------
+  //
+  // Live exactly when the session speaks /16 and the 20 viewport hooks are planned
+  // (set_viewports(true), before arming; survives reset() like set_v15). Not live, every tap below
+  // is a no-op and the generalized root-only handlers (viewport_attach_canvas, ...) keep typing a
+  // non-root viewport `non-root-viewport`, so a snapshot carries nothing new. Live, the mirror
+  // keeps a viewport table (ids from 1, never reused; reset() restarts them) with Godot's
+  // RendererViewport defaults (update when_visible, clear always, 0x0, inactive, no parent,
+  // opaque, cull mask 0xFFFFFFFF, filter linear, repeat disabled), one `viewport` texture per
+  // viewport (shared texture counter), and `proxy` textures. Calls naming the root viewport are
+  // ignored by the new taps; a call naming an unknown non-root viewport is the unknown-RID rule
+  // (pre-existing-object, or counted under Skip) and counted in unknown_viewport_calls. Creates
+  // (viewport_create, texture_proxy_create) are identity taps (omit-op only), the rest mutations.
+  void set_viewports(bool live);        // survives reset(), like set_v15
+  bool viewports_live() const;
+  void viewport_create(std::uint64_t rid, std::uint64_t frame);   // new entry (origin created) + its `viewport` texture
+  void viewport_get_texture(std::uint64_t viewport, std::uint64_t rt, std::uint64_t frame); // rt!=0: rt -> that viewport (rendered host)
+  void viewport_set_size(std::uint64_t vp, std::int32_t w, std::int32_t h, std::uint64_t frame);
+  void viewport_set_active(std::uint64_t vp, bool active, std::uint64_t frame);  // false->true: active_seq = ++counter
+  void viewport_set_parent_viewport(std::uint64_t vp, std::uint64_t parent, std::uint64_t frame); // root rid -> 0, RID() -> null
+  void viewport_set_canvas_cull_mask(std::uint64_t vp, std::uint32_t mask, std::uint64_t frame);
+  void viewport_set_update_mode(std::uint64_t vp, std::int32_t mode, std::uint64_t frame); // once: ++once_seq every call
+  void viewport_set_clear_mode(std::uint64_t vp, std::int32_t mode, std::uint64_t frame);  // next_frame: ++clear_seq every call
+  void viewport_set_disable_3d(std::uint64_t vp, bool on, std::uint64_t frame);
+  void viewport_set_disable_2d(std::uint64_t vp, bool on, std::uint64_t frame);
+  void viewport_attach_camera(std::uint64_t vp, std::uint64_t camera, std::uint64_t frame);
+  void viewport_set_scenario(std::uint64_t vp, std::uint64_t scenario, std::uint64_t frame);
+  void viewport_set_transparent_background(std::uint64_t vp, bool on, std::uint64_t frame);
+  void viewport_set_use_hdr_2d(std::uint64_t vp, bool on, std::uint64_t frame);   // true: session viewport-hdr-2d
+  void viewport_set_snap_2d_transforms(std::uint64_t vp, bool on, std::uint64_t frame);
+  void viewport_set_snap_2d_vertices(std::uint64_t vp, bool on, std::uint64_t frame);
+  void viewport_set_msaa_2d(std::uint64_t vp, std::int32_t msaa, std::uint64_t frame); // !=0: session viewport-msaa-2d
+  void instance_set_scenario(std::uint64_t instance, std::uint64_t scenario, std::uint64_t frame);
+  // Proxy resolution (create, update, adopt): `adjacent_viewport` (adopt: `viewport`) a known
+  // viewport -> its viewport texture; else `base` a render-target RID viewport_get_texture
+  // reported -> that viewport's texture; else `base` a known non-proxy texture -> it; else
+  // `proxy-unresolved` (a base naming a proxy is unresolved: Godot refuses proxy-of-proxy).
+  // Re-pointing to another target (or between ok and unresolved) raises `version`.
+  void texture_proxy_create(std::uint64_t proxy, std::uint64_t base, std::uint64_t adjacent_viewport, std::uint64_t frame);
+  void texture_proxy_update(std::uint64_t proxy, std::uint64_t base, std::uint64_t adjacent_viewport, std::uint64_t frame);
+  // Node route (main thread; the caller does the engine reads outside the lock):
+  // item: a canvas item RID whose command or instance parameter names it; 0 when the consumer is
+  // a material parameter or a canvas texture's diffuse (no node to search, the registry route only).
+  struct UnresolvedProxyUse { std::uint64_t proxy = 0; std::uint64_t item = 0; };
+  // Takes the queued consumer events of unresolved proxies not yet tried, one per proxy, in texture
+  // id order: a command / parameter / diffuse naming one as it is recorded, or a re-point into
+  // unresolved while consumers exist (found once, at the re-point). O(queued): never walks items.
+  std::vector<UnresolvedProxyUse> unresolved_proxy_uses();
+  // The uses among `uses` whose proxy is still unresolved and untried (after a re-resolution).
+  std::vector<UnresolvedProxyUse> still_unresolved(std::vector<UnresolvedProxyUse> uses) const;
+  void proxy_node_route_result(std::uint64_t proxy, std::uint64_t viewport, std::uint64_t frame); // viewport 0: not found (stays proxy-unresolved, counted once)
+  // Adoption (arm walk / materialize); origin adopted, adopted_content current:
+  struct AdoptedViewport {
+    std::uint64_t rid = 0, parent = 0;   // parent: enclosing viewport RID (root rid -> 0 on the wire)
+    bool active = false; std::int32_t width = 0, height = 0; bool transparent = false;
+    std::int32_t update_mode = 2, clear_mode = 0; bool disable_2d = false, disable_3d = false;
+    bool renders_3d = false; bool hdr_2d = false; std::int32_t msaa_2d = 0; std::uint32_t canvas_cull_mask = 0xFFFFFFFFu;
+    std::int32_t default_filter = 1, default_repeat = 1; bool snap_transforms = false, snap_vertices = false;
+    rs2::Xform global_xform = rs2::kIdentityXform;
+    std::uint64_t default_proxy = 0;     // get_texture().get_rid(): adopted as an ok proxy of this viewport's texture
+    // D9: the World3D scenario RID the viewport renders (0: unknown) and whether it has a current
+    // Camera3D. With a scenario, renders_3d follows the mirror's per-scenario instance membership
+    // (seeded at the arm, seed_scenario_instances) exactly as a born viewport's does; without one,
+    // `renders_3d` stands in for the world until viewport_set_scenario names it.
+    std::uint64_t scenario = 0;
+    bool has_camera = false;
+  };
+  void adopt_viewport(const AdoptedViewport &v, std::uint64_t frame);  // active_seq in call order (tree order); once -> once_seq 1
+  // D9 (late equals born): the hooks' instance -> scenario membership from before the arm (kept
+  // since load, standby included), merged into the mirror's at the arm, before the adoption walk.
+  // An instance the mirror already places is left as it is (its own tap is newer).
+  void seed_scenario_instances(const std::vector<std::pair<std::uint64_t, std::uint64_t>> &members,
+                               std::uint64_t frame);
+  void adopt_proxy(std::uint64_t proxy, std::uint64_t base, std::uint64_t viewport, std::uint64_t frame); // same resolution as create
 
   // --- publication -----------------------------------------------------------
 
@@ -1213,6 +1310,13 @@ class Mirror {
     // Kept across texture_2d_update; texture_replace takes the source's (GLES3 copies the struct).
     std::uint16_t override_w = 0;
     std::uint16_t override_h = 0;
+    // VS2 (render-stream-16.md "Texture kinds"): kind Viewport names its viewport (wire id; `rid`
+    // stays 0, the entry is the mirror's own); kind Proxy its target (has_target false: an
+    // unresolved proxy) and whether the node route already tried it for this pointing.
+    std::uint32_t viewport_id = 0;
+    bool has_target = false;
+    std::uint32_t target_id = 0;
+    bool route_tried = false;
   };
   // One mesh surface (G5e): `ok` with its payload, or refused (D7) with its reason only.
   //
@@ -1341,6 +1445,21 @@ class Mirror {
     std::uint64_t buffer_serial = 1;
     std::uint64_t noted_version = 0;  // the version of its last state note
   };
+  // VS2: one non-root viewport (render-stream-16.md "Viewport entry"). `entry` holds every wire
+  // field (renders_3d derived by update_3d); the rest is what that derivation reads.
+  struct ViewportRec {
+    rs2::ViewportEntry entry;
+    std::uint64_t rid = 0;
+    std::uint32_t texture = 0;     // its `viewport` texture id
+    std::uint64_t camera = 0;      // viewport_attach_camera (0: none)
+    std::uint64_t scenario = 0;    // viewport_set_scenario (0: none)
+    bool disable_3d = false;
+    // An adopted renders_3d stands in for the camera / world the walk did not hand over, until
+    // viewport_attach_camera / viewport_set_scenario names the real one.
+    bool adopt_camera = false;
+    bool adopt_world = false;
+    bool ever_3d = false;
+  };
   enum class Kind : std::uint8_t { Canvas, Item };
   struct Target {
     Kind kind;
@@ -1401,6 +1520,37 @@ class Mirror {
   // gone otherwise.
   void retire_texture(std::uint32_t id);
   static rs2::TextureEntry wire_entry(const Texture &texture);
+  // VS2 (mutex_ held). The live entry `vp` names for a new tap, or null: the root (ignored) or an
+  // unknown RID (the unknown-RID rule, counted).
+  ViewportRec *viewport_for(std::uint64_t vp, const char *op, std::uint64_t frame);
+  // renders_3d from the camera, disable_3d and the scenario's instances; turning true adds the
+  // sticky viewport-3d entry.
+  void update_3d(ViewportRec *v);
+  void scenario_moved(std::uint64_t scenario);  // update_3d of every viewport on `scenario`
+  void instance_leave(std::uint64_t instance);  // the instance leaves its scenario
+  // A new viewport entry (and its texture) for `rid`; null when `rid` is 0 or already known.
+  ViewportRec *make_viewport(std::uint64_t rid, rs2::Origin origin);
+  void free_viewport(std::uint32_t id);
+  // The proxy resolution order; returns 0 adjacency/adopt, 1 rid, 2 texture, -1 unresolved.
+  int resolve_proxy(std::uint64_t base, std::uint64_t viewport, std::uint32_t *target) const;
+  // VS2 node route events (unresolved_proxy_uses): `tex` named by a consumer (item RID, 0 none);
+  // the consumers of a proxy that just turned unresolved and untried, found by one scan.
+  void note_proxy_use(std::uint32_t tex, std::uint64_t item) {
+    if (!unresolved_untried_.empty() && unresolved_untried_.count(tex) != 0) queue_proxy_use(tex, item);
+  }
+  void queue_proxy_use(std::uint32_t tex, std::uint64_t item);
+  void queue_existing_consumers(std::uint32_t id);
+  // Points proxy `t` (id `id`) at `target` (`ok`) or unresolved; true when the entry changed.
+  bool point_proxy(std::uint32_t id, Texture *t, bool ok, std::uint32_t target);
+  void count_route(int route, bool adopt);
+  // A new proxy entry for `proxy` (a recycled RID's old entry retired first).
+  Texture *make_proxy(std::uint64_t proxy, rs2::Origin origin);
+  // One hop through an `ok` proxy (render-stream-16.md "Derived unsupported-texture").
+  std::uint32_t read_through(std::uint32_t id) const;
+  // The generalized root-only handlers' viewport resolution: 0 the root, 1 a live entry (*out),
+  // 2 not live (non-root-viewport recorded), 3 unknown (unknown-RID rule applied).
+  int handler_viewport(std::uint64_t viewport, const char *op, std::uint64_t frame,
+                       ViewportRec **out);
   // G8kw: a finished job's hash and bytes move into the entry (no-op without one).
   static void settle(Texture *texture);
   // G8kf: a texture a snapshot carried as `delivery-pending`, once its job is gone, takes its next
@@ -1591,6 +1741,16 @@ class Mirror {
   V11Options v11_;                  // W11b (survives reset())
   bool v15_ = false;                // render-stream-15.md size override (survives reset())
   bool hint_watch_ = false;         // render-stream-15.md hints (survives reset())
+  bool viewports_live_ = false;     // VS2 (survives reset())
+  std::map<std::uint32_t, ViewportRec> viewports_;  // by id
+  std::unordered_map<std::uint64_t, std::uint32_t> viewport_by_rid_;
+  std::unordered_map<std::uint64_t, std::uint32_t> rt_viewport_;  // render-target RID -> viewport id
+  std::uint32_t next_viewport_id_ = 1;
+  std::uint64_t activation_counter_ = 0;
+  std::unordered_map<std::uint64_t, std::uint64_t> instance_scenario_;  // instance -> scenario
+  std::unordered_map<std::uint64_t, std::uint64_t> scenario_instances_;  // scenario -> count
+  std::set<std::uint32_t> unresolved_untried_;  // unresolved proxies the node route has not tried
+  std::map<std::uint32_t, std::uint64_t> proxy_uses_;  // queued consumer events: proxy id -> item RID (0: none)
   struct HintWatch {
     std::uint32_t id = 0;
     std::shared_ptr<TextureJob> job;

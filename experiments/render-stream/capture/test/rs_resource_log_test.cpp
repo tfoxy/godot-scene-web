@@ -4,9 +4,12 @@
 // by-texture, free logging only known textures, the root-viewport flag, the
 // exact line shape, and a fresh session restarting ids.
 #include <cstdio>
+#include <cstdlib>
+#include <map>
 #include <string>
 #include <vector>
 
+#include "rs_mirror.h"
 #include "rs_resource_log.h"
 
 namespace {
@@ -50,6 +53,110 @@ grc::rs::PayloadCopy rgba8(std::int64_t w, std::int64_t h, const char *hash) {
   copy.copy_ns = 1200;
   copy.hash_ns = 3400;
   return copy;
+}
+
+
+// VS2: a numeric key's value on a log line (-1: null or absent).
+long long num_field(const std::string &line, const std::string &key) {
+  const std::string k = "\"" + key + "\":";
+  const std::size_t at = line.find(k);
+  if (at == std::string::npos || line.compare(at + k.size(), 4, "null") == 0) return -1;
+  return std::strtoll(line.c_str() + at + k.size(), nullptr, 10);
+}
+
+std::string str_field(const std::string &line, const std::string &key) {
+  const std::string k = "\"" + key + "\":\"";
+  const std::size_t at = line.find(k);
+  if (at == std::string::npos) return "";
+  const std::size_t end = line.find('"', at + k.size());
+  return line.substr(at + k.size(), end - at - k.size());
+}
+
+// VS2 `log ids = mirror ids`: the same call sequence driven through a live Mirror and the log, as
+// hooks.cpp drives them (viewport creates, adjacency/base/unresolved proxies, re-pointing, the node
+// route, an adopted viewport with its default proxy, texture_replace redirecting a proxy, a viewport
+// free, image creates around them); after it, every texture the mirror's snapshot carries has the
+// same id, kind, status and version as the log's last line for that id, and the log holds no other.
+void viewport_ids_match_mirror() {
+  using grc::rs::Mirror;
+  using grc::rs::ResourceLog;
+  using grc::rs::TapContext;
+  constexpr std::uint64_t kRoot = 0x1000, kRootCanvas = 0x2000;
+  constexpr std::uint64_t kV1 = 0x3001, kV2 = 0x3002, kPh = 0x7001, kImg = 0x7002,
+                          kImg2 = 0x7003;
+  constexpr std::uint64_t kP1 = 0x8001, kP2 = 0x8002, kP3 = 0x8003, kP4 = 0x8004, kP5 = 0x8005;
+  Mirror m;
+  m.set_viewports(true);
+  m.reset();
+  m.set_root(kRoot, kRootCanvas, {1, 0, 0, 1, 0, 0});
+  ResourceLog log;
+  const TapContext ctx{3, 2000000, true};
+  // The arm walk adopts before the log starts: its taps are held and replayed first by start().
+  log.hold_viewports_until_start();
+  Mirror::AdoptedViewport adopted;
+  adopted.rid = kV2;
+  adopted.default_proxy = kP5;
+  m.adopt_viewport(adopted, 1);                       // texture 1 (viewport), 2 (its default proxy)
+  log.viewport_adopt(ctx, kV2, kP5);
+  log.start(1000000, kRoot);
+  grc::rs::PayloadCopy refused;
+  refused.status = "unsupported";
+  refused.reason = "unsupported-format";
+  refused.format = 11;
+  refused.width = 4;
+  refused.height = 4;
+  refused.mipmaps_known = true;
+  refused.data_bytes = 256;
+  m.texture_2d_placeholder_create(kPh, 3);            // 3
+  log.texture_2d_placeholder_create(ctx, kPh);
+  m.viewport_create(kV1, 3);                          // 4
+  log.viewport_create(ctx, kV1);
+  m.viewport_get_texture(kV1, 0, 3);                  // the dummy's RID(): nothing mapped
+  log.viewport_get_texture(ctx, kV1, 0);
+  m.texture_proxy_create(kP1, 0, kV1, 3);             // 5: adjacency -> V1's texture
+  log.texture_proxy_create(ctx, kP1, 0, kV1);
+  m.texture_2d_create(kImg, refused, nullptr, 3);     // 6
+  log.texture_2d_create(ctx, kImg, refused);
+  m.texture_proxy_create(kP2, kImg, 0, 3);            // 7: by texture
+  log.texture_proxy_create(ctx, kP2, kImg, 0);
+  m.texture_proxy_create(kP3, 0, 0, 3);               // 8: unresolved
+  log.texture_proxy_create(ctx, kP3, 0, 0);
+  m.texture_proxy_update(kP3, kPh, 0, 3);             // v2: bound to the placeholder
+  log.texture_proxy_update(ctx, kP3, kPh, 0);
+  m.texture_proxy_update(kP3, kPh, 0, 3);             // unchanged: no new version
+  log.texture_proxy_update(ctx, kP3, kPh, 0);
+  m.texture_proxy_create(kP4, 0, 0, 3);               // 9: unresolved, then the node route
+  log.texture_proxy_create(ctx, kP4, 0, 0);
+  m.proxy_node_route_result(kP4, kV2, 3);             // v2 -> V2's texture
+  log.proxy_node_route(ctx, kP4, kV2);
+  m.texture_replace(kPh, kImg, 3);                    // P2 now reads through the placeholder: v2
+  log.texture_replace(ctx, kPh, kImg);
+  m.free_rid(kV1, 3);                                 // V1's texture: a tombstone (P1 names it)
+  log.free_rid(ctx, kV1);
+  m.texture_2d_create(kImg2, refused, nullptr, 3);    // 10
+  log.texture_2d_create(ctx, kImg2, refused);
+
+  struct Seen { long long version; std::string kind, status; };
+  std::map<long long, Seen> logged;
+  for (const std::string &line : split_lines(log.take_lines())) {
+    const long long id = num_field(line, "id");
+    if (id <= 0) continue;
+    logged[id] = {num_field(line, "version"), str_field(line, "kind"), str_field(line, "status")};
+  }
+  // The texture_replace by-texture leaves the log; the mirror drops it too (nothing names it).
+  logged.erase(6);
+  const grc::rs2::Snapshot snap = m.snapshot(1, 3).state;
+  EXPECT(snap.textures.size() == 9);
+  for (const auto &t : snap.textures) {
+    const auto it = logged.find(t.id);
+    EXPECT(it != logged.end());
+    if (it == logged.end()) continue;
+    EXPECT(it->second.kind == grc::rs2::to_wire(t.kind));
+    EXPECT(it->second.status == grc::rs2::to_wire(t.status));
+    EXPECT(it->second.version == static_cast<long long>(t.version));
+    logged.erase(it);
+  }
+  EXPECT(logged.empty());
 }
 
 }  // namespace
@@ -625,6 +732,8 @@ int main() {
            has(lines[2], "\"kind\":\"particles\",\"call\":\"state\",\"rid\":null,\"id\":1,"
                          "\"status\":\"freed\",\"reason\":null,\"version\":5,\"floats\":null}"));
   }
+
+  viewport_ids_match_mirror();
 
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_resource_log_test: %d failure(s)\n", g_failures);

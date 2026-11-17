@@ -136,11 +136,28 @@
 // local, draw_order, transform_align, trails, trail_poses, seed, restarts, emits,
 // process_requests, process_material, draw_passes, subemitter, then `floats` (31 + 12 x
 // trail_poses floats in wire order, null when freed); rid is null once freed.
+//
+// VS2 (render-stream-16.md "Texture kinds"; viewport-surfaces-design.md D5, Q3b): while viewports
+// are live (the hooks call these taps only then) the log spends a texture id exactly where the
+// mirror mints one, so its ids keep naming the mirror's: a `viewport` texture at viewport_create
+// (kept under the viewport RID, so a free of the viewport logs it freed) and a `proxy` texture at
+// texture_proxy_create, both from the shared texture counter. A proxy's status (`ok`, or
+// `unsupported`/`proxy-unresolved`), `target`/`ref_id` (its base RID and the texture id it reads
+// through) and version follow the mirror's resolution rule (Mirror::resolve_proxy, point_proxy):
+// the adjacent viewport's texture, else a base naming a viewport's render target, else a base
+// naming a known non-proxy texture, else unresolved; re-pointing or an ok/unresolved change raises
+// the version. Ops: "viewport_create", "texture_proxy_create", "texture_proxy_update", "adopt"
+// (kind "viewport" or "proxy") and "node_route" (the node route's result for an unresolved proxy).
+// viewport_get_texture writes no line: it only records the render-target RID resolution reads.
+// The arm walk adopts viewports before the log starts (resources_start follows the walk), so after
+// hold_viewports_until_start() these taps are queued while the log is inactive and replayed first
+// by start(), in order, as the mirror applied them.
 #ifndef GRC_RS_RESOURCE_LOG_H
 #define GRC_RS_RESOURCE_LOG_H
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -341,7 +358,30 @@ class ResourceLog {
   void texture_replace(const TapContext &ctx, std::uint64_t texture, std::uint64_t by_texture,
                        bool omitted = false);
   // Logs only RIDs it knows as a texture or a mesh (every other free changes nothing here).
+  // VS2: a viewport RID whose `viewport` texture the log holds logs that texture freed.
   void free_rid(const TapContext &ctx, std::uint64_t rid, bool omitted = false);
+
+  // --- VS2: viewport surfaces (see the header comment); call only while viewports are live ---
+  void viewport_create(const TapContext &ctx, std::uint64_t viewport, bool omitted = false);
+  void viewport_get_texture(const TapContext &ctx, std::uint64_t viewport, std::uint64_t rt,
+                            bool omitted = false);
+  void texture_proxy_create(const TapContext &ctx, std::uint64_t proxy, std::uint64_t base,
+                            std::uint64_t adjacent_viewport, bool omitted = false);
+  void texture_proxy_update(const TapContext &ctx, std::uint64_t proxy, std::uint64_t base,
+                            std::uint64_t adjacent_viewport, bool omitted = false);
+  // Mirror::adopt_viewport (with its default proxy, 0: none) and Mirror::adopt_proxy.
+  void viewport_adopt(const TapContext &ctx, std::uint64_t viewport, std::uint64_t default_proxy);
+  // VS2: op "adopt", kind "placeholder", as Mirror::adopt_placeholder (a new id unless known),
+  // `adopted_content` "current", `adopt_source` "registry".
+  void placeholder_adopt(const TapContext &ctx, std::uint64_t rid);
+  void proxy_adopt(const TapContext &ctx, std::uint64_t proxy, std::uint64_t base,
+                   std::uint64_t viewport);
+  // Mirror::proxy_node_route_result (`viewport` 0: not found).
+  void proxy_node_route(const TapContext &ctx, std::uint64_t proxy, std::uint64_t viewport);
+  // From now until the next start() (which replays them first) or release(), the viewport taps
+  // above made while the log is inactive are queued. entry.cpp calls it when the mirror is enabled
+  // for an arm, before the walk.
+  void hold_viewports_until_start();
   // spurious-texture-update sabotage (G2b2): `rid`'s version + 1 with the same
   // payload, logged as a texture_2d_update marked "sabotage":true.
   void spurious_update(const TapContext &ctx, std::uint64_t rid);
@@ -531,7 +571,26 @@ class ResourceLog {
     std::int32_t filter = 0;  // kind canvas
     std::int32_t repeat = 0;
     std::map<std::int32_t, std::uint64_t> channels;
+    std::uint64_t target_id = 0;  // VS2, kind proxy: the texture id an `ok` proxy reads through
+    bool route_tried = false;     // VS2, kind proxy: the node route tried this pointing
   };
+  // VS2: the viewport taps' bodies (caller holds the mutex; the log is active).
+  void viewport_create_locked(const TapContext &ctx, std::uint64_t viewport, bool omitted);
+  void viewport_get_texture_locked(std::uint64_t viewport, std::uint64_t rt, bool omitted);
+  void proxy_create_locked(const TapContext &ctx, const char *op, std::uint64_t proxy,
+                           std::uint64_t base, std::uint64_t viewport, bool omitted);
+  void proxy_update_locked(const TapContext &ctx, std::uint64_t proxy, std::uint64_t base,
+                           std::uint64_t viewport, bool omitted);
+  void viewport_adopt_locked(const TapContext &ctx, std::uint64_t viewport,
+                             std::uint64_t default_proxy);
+  void proxy_node_route_locked(const TapContext &ctx, std::uint64_t proxy, std::uint64_t viewport);
+  // Mirror::resolve_proxy: the target texture id, or 0 (unresolved).
+  std::uint64_t resolve_proxy(std::uint64_t base, std::uint64_t viewport) const;
+  void emit_proxy(const TapContext &ctx, const char *op, std::uint64_t proxy, std::uint64_t base,
+                  const Entry &entry);
+  void free_viewport_locked(std::uint64_t viewport);
+  // True (queuing `tap`) when the log is inactive and holding.
+  bool queue_viewport_tap(std::function<void()> tap);
 
   // Formats `line` into the buffer, or (G8kw) holds it behind a pending `job` or behind an
   // earlier held line. Caller holds the mutex.
@@ -605,6 +664,11 @@ class ResourceLog {
   std::uint64_t root_viewport_ = 0;
   std::uint64_t next_id_ = 1;
   std::map<std::uint64_t, Entry> by_rid_;
+  // VS2: viewport RID -> its `viewport` texture (id, version); render-target RID -> viewport RID.
+  std::map<std::uint64_t, Entry> viewport_by_rid_;
+  std::map<std::uint64_t, std::uint64_t> rt_viewport_;
+  bool hold_viewports_ = false;
+  std::vector<std::function<void()>> held_viewport_taps_;
   std::uint64_t next_mesh_id_ = 1;
   std::map<std::uint64_t, MeshEntry> mesh_by_rid_;
   std::uint64_t next_shader_id_ = 1;

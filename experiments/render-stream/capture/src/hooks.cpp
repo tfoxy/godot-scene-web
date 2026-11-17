@@ -332,6 +332,37 @@ using FnCanvasSetItemMirroring = void (*)(void *, RID, RID, const Point2 *);
 using FnCanvasSetItemRepeat = void (*)(void *, RID, const Point2 *, int32_t);
 //   1529: virtual void canvas_set_parent(RID p_canvas, RID p_parent, float p_scale) = 0;
 using FnCanvasSetParent = void (*)(void *, RID, RID, float);
+//
+// --- VS2 (viewport-surfaces-design.md Q3a): family `viewport`, planned by capability (every
+// GRC_STREAM_VERSION) unless GRC_VIEWPORTS=off --------------------------------------------------
+//
+//    140: virtual RID texture_proxy_create(RID p_base) = 0;
+//   1016: virtual RID viewport_get_texture(RID p_viewport) const = 0;
+using FnRidToRid = RID (*)(void *, RID);
+//    147: virtual void texture_proxy_update(RID p_texture, RID p_proxy_to) = 0;
+//    984: virtual void viewport_set_parent_viewport(RID p_viewport, RID p_parent_viewport) = 0;
+//   1029: virtual void viewport_attach_camera(RID p_viewport, RID p_camera) = 0;
+//   1030: virtual void viewport_set_scenario(RID p_viewport, RID p_scenario) = 0;
+//   1448: virtual void instance_set_scenario(RID p_instance, RID p_scenario) = 0;
+//         (FnSetMaterial: two RIDs)
+//    944: virtual RID viewport_create() = 0;
+//         (FnCreate)
+//    982: virtual void viewport_set_size(RID p_viewport, int p_width, int p_height) = 0;
+using FnViewportSetSize = void (*)(void *, RID, int, int);
+//    983: virtual void viewport_set_active(RID p_viewport, bool p_active) = 0;
+//   1026: virtual void viewport_set_disable_3d(RID p_viewport, bool p_disable) = 0;
+//   1027: virtual void viewport_set_disable_2d(RID p_viewport, bool p_disable) = 0;
+//   1034: virtual void viewport_set_transparent_background(RID p_viewport, bool p_enabled) = 0;
+//   1035: virtual void viewport_set_use_hdr_2d(RID p_viewport, bool p_use_hdr) = 0;
+//   1037: virtual void viewport_set_snap_2d_transforms_to_pixel(RID p_viewport, bool p_enabled) = 0;
+//   1038: virtual void viewport_set_snap_2d_vertices_to_pixel(RID p_viewport, bool p_enabled) = 0;
+//         (FnRidBool)
+//    985: virtual void viewport_set_canvas_cull_mask(RID p_viewport, uint32_t p_canvas_cull_mask) = 0;
+//         (FnRidU32)
+//   1004: virtual void viewport_set_update_mode(RID p_viewport, ViewportUpdateMode p_mode) = 0;
+//   1013: virtual void viewport_set_clear_mode(RID p_viewport, ViewportClearMode p_clear_mode) = 0;
+//   1075: virtual void viewport_set_msaa_2d(RID p_viewport, ViewportMSAA p_msaa) = 0;
+//         (FnRidEnum)
 
 // Hook ids. The first eight are the gate -1 set and are required; the rest are
 // optional (see hooks.h).
@@ -484,6 +515,28 @@ enum HookId : size_t {
   kSetUseIdentityTransform,
   // render-stream-15.md "Size override": conditional, /15 only (hooks_plan)
   kTextureSetSizeOverride,
+  // VS2 (viewport-surfaces-design.md Q3a, family `viewport`): conditional on GRC_VIEWPORTS only,
+  // see hooks_plan. Contiguous, kFirstViewportHook..kLastViewportHook.
+  kTextureProxyCreate,
+  kTextureProxyUpdate,
+  kViewportCreate,
+  kViewportSetSize,
+  kViewportSetActive,
+  kViewportSetParentViewport,
+  kViewportSetCanvasCullMask,
+  kViewportSetUpdateMode,
+  kViewportSetClearMode,
+  kViewportGetTexture,
+  kViewportSetDisable3d,
+  kViewportSetDisable2d,
+  kViewportAttachCamera,
+  kViewportSetScenario,
+  kViewportSetTransparentBackground,
+  kViewportSetUseHdr2d,
+  kViewportSetSnap2dTransformsToPixel,
+  kViewportSetSnap2dVerticesToPixel,
+  kViewportSetMsaa2d,
+  kInstanceSetScenario,
   kHookCount,
 };
 
@@ -493,6 +546,12 @@ bool is_multimesh_hook(size_t id) { return id >= kFirstMultimeshHook && id <= kL
 constexpr HookId kFirstParticlesHook = kParticlesCreate;
 constexpr HookId kLastParticlesHook = kParticlesSetInterpToEnd;
 bool is_particles_hook(size_t id) { return id >= kFirstParticlesHook && id <= kLastParticlesHook; }
+constexpr HookId kFirstViewportHook = kTextureProxyCreate;
+constexpr HookId kLastViewportHook = kInstanceSetScenario;
+constexpr size_t kViewportHookCount = 20;
+static_assert(kLastViewportHook - kFirstViewportHook + 1 == kViewportHookCount,
+              "family `viewport` is twenty contiguous hooks");
+bool is_viewport_hook(size_t id) { return id >= kFirstViewportHook && id <= kLastViewportHook; }
 
 void *g_original[kHookCount] = {};
 std::atomic<uint64_t> g_count[kHookCount];
@@ -518,6 +577,14 @@ std::atomic<uint64_t> g_pt_accepted[kHookCount];
 std::atomic<uint64_t> g_pt_changed[kHookCount];
 std::vector<std::string> g_planned_names;
 std::vector<std::string> g_omitted_names;
+// VS2 (family `viewport`): GRC_VIEWPORTS!=off (set before hooks_plan; off: the twenty hooks are
+// skipped), all twenty planned (hooks_viewports_planned()), viewports live (speaks /16 and all
+// planned; hooks_set_viewports_live, at load: the registry records the two new kinds only then,
+// standby included), and GRC_VIEWPORT_SABOTAGE=no-adjacency (never on the wire).
+bool g_viewports_enabled = true;
+bool g_viewports_hooked = false;
+std::atomic<bool> g_viewports_live{false};
+bool g_viewport_no_adjacency = false;
 
 std::atomic<uint64_t> g_frame{1};
 
@@ -526,7 +593,14 @@ Fn original(HookId id) {
   return reinterpret_cast<Fn>(g_original[id]);
 }
 
-void bump(HookId id) { g_count[id].fetch_add(1, std::memory_order_relaxed); }
+// VS2 "Hooks layer adjacency": every hooked call on this thread, in order (bump() is the first
+// thing each counted thunk does).
+thread_local uint64_t t_hook_seq GRC_INITIAL_EXEC_TLS = 0;
+
+void bump(HookId id) {
+  g_count[id].fetch_add(1, std::memory_order_relaxed);
+  ++t_hook_seq;
+}
 
 // the registry's create tap, beside bump() in every tracked
 // create hook and at the same guard level (t_internal creates are neither counted nor recorded).
@@ -2810,6 +2884,8 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
   }
 }
 
+void scenario_note(uint64_t instance, uint64_t scenario);  // VS2, defined below
+
 void hook_free(void *self, RID rid) {
   OffmainGuard inflight(true, "free");
   if (g_test_admission_delay_ms.load(std::memory_order_relaxed) != 0 && inflight.counted())
@@ -2835,6 +2911,9 @@ void hook_free(void *self, RID rid) {
   rs::adopt_resource_freed(rid.id);      // late-arm adoption's per-stream refusals
   if (rs::registry_on()) {
     rs::registry_note_free(rid.id);  // LAR0 (design R5): erased before the call is forwarded
+  }
+  if (g_viewports_live.load(std::memory_order_relaxed)) {
+    scenario_note(rid.id, 0);  // VS2: a freed instance leaves its scenario
   }
   // Arm publishes mirror-enabled and resource-log active with release semantics. Reading both
   // false orders this no-op free before those stores, just as the old locked check could do.
@@ -4244,6 +4323,307 @@ void hook_texture_set_size_override(void *self, RID texture, int width, int heig
   }
 }
 
+// --- VS2: family `viewport` (viewport-surfaces-design.md Q3a, Q3b) ------------------------------
+//
+// Every thunk counts (bump, first), passes the call through, then taps the mirror while streaming;
+// the mirror ignores every viewport tap unless viewports are live (rs_mirror.h set_viewports), so a
+// session below /16 is what it was. The registry records the two new kinds only when viewports are
+// live, standby included (rs_standby.cpp installs the four recording slots), so a late arm knows
+// the pre-arm viewports and proxies without reading them back. The texture-identity taps (the
+// viewport's own texture entry, the proxies) hold g_texture_order with the usual re-check.
+
+bool viewports_record() {
+  return g_viewports_live.load(std::memory_order_relaxed) && rs::registry_on();
+}
+
+// "Hooks layer adjacency": the last viewport_get_texture on this thread, consumed (cleared) by the
+// next texture_proxy_create/_update on it. Viewport's constructor makes its default ViewportTexture
+// as viewport_get_texture(V) immediately followed by texture_proxy_create(that result); on the dummy
+// renderer the result is RID(), so this adjacency is the only way to bind it headless.
+struct PendingViewportTexture {
+  uint64_t viewport = 0;
+  uint64_t rt = 0;
+  uint64_t seq = 0;
+};
+thread_local PendingViewportTexture t_vp_pending GRC_INITIAL_EXEC_TLS;
+
+// Called right after bump(), so t_hook_seq is this hook's own sequence number.
+uint64_t take_adjacent_viewport(uint64_t base) {
+  const PendingViewportTexture pending = t_vp_pending;
+  t_vp_pending = PendingViewportTexture();
+  if (g_viewport_no_adjacency || pending.viewport == 0) return 0;
+  return pending.seq + 1 == t_hook_seq && pending.rt == base ? pending.viewport : 0;
+}
+
+RID hook_texture_proxy_create(void *self, RID base) {
+  OffmainGuard inflight;
+
+  bump(kTextureProxyCreate);
+  const uint64_t adjacent = take_adjacent_viewport(base.id);
+  const RID result = original<FnRidToRid>(kTextureProxyCreate)(self, base);
+  if (viewports_record()) {
+    rs::registry_note_proxy_create(result.id, base.id, adjacent);
+  }
+  if (streaming()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
+    if (streaming()) {
+      mirror().texture_proxy_create(result.id, base.id, adjacent, current_frame());
+      if (g_viewports_live.load(std::memory_order_relaxed)) {  // a log id where the mirror mints one
+        resources().texture_proxy_create(tap_context(), result.id, base.id, adjacent,
+                                         omitted("texture_proxy_create"));
+      }
+    }
+  }
+  return result;
+}
+
+void hook_texture_proxy_update(void *self, RID proxy, RID base) {
+  OffmainGuard inflight;
+
+  bump(kTextureProxyUpdate);
+  const uint64_t adjacent = take_adjacent_viewport(base.id);
+  original<FnSetMaterial>(kTextureProxyUpdate)(self, proxy, base);
+  if (viewports_record()) {
+    rs::registry_note_proxy_update(proxy.id, base.id, adjacent);
+  }
+  if (streaming()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
+    if (streaming()) {
+      mirror().texture_proxy_update(proxy.id, base.id, adjacent, current_frame());
+      if (g_viewports_live.load(std::memory_order_relaxed)) {
+        resources().texture_proxy_update(tap_context(), proxy.id, base.id, adjacent,
+                                         omitted("texture_proxy_update"));
+      }
+    }
+  }
+}
+
+RID hook_viewport_create(void *self) {
+  OffmainGuard inflight;
+
+  bump(kViewportCreate);
+  const RID result = original<FnCreate>(kViewportCreate)(self);
+  if (g_viewports_live.load(std::memory_order_relaxed)) {
+    registry_create(result.id, rs::RegistryKind::Viewport);
+  }
+  if (streaming()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
+    if (streaming()) {
+      mirror().viewport_create(result.id, current_frame());
+      if (g_viewports_live.load(std::memory_order_relaxed)) {
+        resources().viewport_create(tap_context(), result.id, omitted("viewport_create"));
+      }
+    }
+  }
+  return result;
+}
+
+RID hook_viewport_get_texture(void *self, RID viewport) {
+  OffmainGuard inflight;
+
+  bump(kViewportGetTexture);
+  const RID result = original<FnRidToRid>(kViewportGetTexture)(self, viewport);
+  t_vp_pending = PendingViewportTexture{viewport.id, result.id, t_hook_seq};
+  if (viewports_record()) {
+    rs::registry_note_viewport_texture(viewport.id, result.id);
+  }
+  if (streaming()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
+    if (streaming()) {
+      mirror().viewport_get_texture(viewport.id, result.id, current_frame());
+      if (g_viewports_live.load(std::memory_order_relaxed)) {
+        resources().viewport_get_texture(tap_context(), viewport.id, result.id,
+                                         omitted("viewport_get_texture"));
+      }
+    }
+  }
+  return result;
+}
+
+void hook_viewport_set_size(void *self, RID viewport, int width, int height) {
+  OffmainGuard inflight;
+
+  bump(kViewportSetSize);
+  original<FnViewportSetSize>(kViewportSetSize)(self, viewport, width, height);
+  if (streaming()) {
+    mirror().viewport_set_size(viewport.id, width, height, current_frame());
+  }
+}
+
+void hook_viewport_set_active(void *self, RID viewport, bool active) {
+  OffmainGuard inflight;
+
+  bump(kViewportSetActive);
+  original<FnRidBool>(kViewportSetActive)(self, viewport, active);
+  if (streaming()) {
+    mirror().viewport_set_active(viewport.id, active, current_frame());
+  }
+}
+
+void hook_viewport_set_parent_viewport(void *self, RID viewport, RID parent) {
+  OffmainGuard inflight;
+
+  bump(kViewportSetParentViewport);
+  original<FnSetMaterial>(kViewportSetParentViewport)(self, viewport, parent);
+  if (streaming()) {
+    mirror().viewport_set_parent_viewport(viewport.id, parent.id, current_frame());
+  }
+}
+
+void hook_viewport_set_canvas_cull_mask(void *self, RID viewport, uint32_t mask) {
+  OffmainGuard inflight;
+
+  bump(kViewportSetCanvasCullMask);
+  original<FnRidU32>(kViewportSetCanvasCullMask)(self, viewport, mask);
+  if (streaming()) {
+    mirror().viewport_set_canvas_cull_mask(viewport.id, mask, current_frame());
+  }
+}
+
+void hook_viewport_set_update_mode(void *self, RID viewport, int32_t mode) {
+  OffmainGuard inflight;
+
+  bump(kViewportSetUpdateMode);
+  original<FnRidEnum>(kViewportSetUpdateMode)(self, viewport, mode);
+  if (streaming()) {
+    mirror().viewport_set_update_mode(viewport.id, mode, current_frame());
+  }
+}
+
+void hook_viewport_set_clear_mode(void *self, RID viewport, int32_t mode) {
+  OffmainGuard inflight;
+
+  bump(kViewportSetClearMode);
+  original<FnRidEnum>(kViewportSetClearMode)(self, viewport, mode);
+  if (streaming()) {
+    mirror().viewport_set_clear_mode(viewport.id, mode, current_frame());
+  }
+}
+
+void hook_viewport_set_disable_3d(void *self, RID viewport, bool disable) {
+  OffmainGuard inflight;
+
+  bump(kViewportSetDisable3d);
+  original<FnRidBool>(kViewportSetDisable3d)(self, viewport, disable);
+  if (streaming()) {
+    mirror().viewport_set_disable_3d(viewport.id, disable, current_frame());
+  }
+}
+
+void hook_viewport_set_disable_2d(void *self, RID viewport, bool disable) {
+  OffmainGuard inflight;
+
+  bump(kViewportSetDisable2d);
+  original<FnRidBool>(kViewportSetDisable2d)(self, viewport, disable);
+  if (streaming()) {
+    mirror().viewport_set_disable_2d(viewport.id, disable, current_frame());
+  }
+}
+
+void hook_viewport_attach_camera(void *self, RID viewport, RID camera) {
+  OffmainGuard inflight;
+
+  bump(kViewportAttachCamera);
+  original<FnSetMaterial>(kViewportAttachCamera)(self, viewport, camera);
+  if (streaming()) {
+    mirror().viewport_attach_camera(viewport.id, camera.id, current_frame());
+  }
+}
+
+void hook_viewport_set_scenario(void *self, RID viewport, RID scenario) {
+  OffmainGuard inflight;
+
+  bump(kViewportSetScenario);
+  original<FnSetMaterial>(kViewportSetScenario)(self, viewport, scenario);
+  if (streaming()) {
+    mirror().viewport_set_scenario(viewport.id, scenario.id, current_frame());
+  }
+}
+
+void hook_viewport_set_transparent_background(void *self, RID viewport, bool enabled) {
+  OffmainGuard inflight;
+
+  bump(kViewportSetTransparentBackground);
+  original<FnRidBool>(kViewportSetTransparentBackground)(self, viewport, enabled);
+  if (streaming()) {
+    mirror().viewport_set_transparent_background(viewport.id, enabled, current_frame());
+  }
+}
+
+void hook_viewport_set_use_hdr_2d(void *self, RID viewport, bool use_hdr) {
+  OffmainGuard inflight;
+
+  bump(kViewportSetUseHdr2d);
+  original<FnRidBool>(kViewportSetUseHdr2d)(self, viewport, use_hdr);
+  if (streaming()) {
+    mirror().viewport_set_use_hdr_2d(viewport.id, use_hdr, current_frame());
+  }
+}
+
+void hook_viewport_set_snap_2d_transforms_to_pixel(void *self, RID viewport, bool enabled) {
+  OffmainGuard inflight;
+
+  bump(kViewportSetSnap2dTransformsToPixel);
+  original<FnRidBool>(kViewportSetSnap2dTransformsToPixel)(self, viewport, enabled);
+  if (streaming()) {
+    mirror().viewport_set_snap_2d_transforms(viewport.id, enabled, current_frame());
+  }
+}
+
+void hook_viewport_set_snap_2d_vertices_to_pixel(void *self, RID viewport, bool enabled) {
+  OffmainGuard inflight;
+
+  bump(kViewportSetSnap2dVerticesToPixel);
+  original<FnRidBool>(kViewportSetSnap2dVerticesToPixel)(self, viewport, enabled);
+  if (streaming()) {
+    mirror().viewport_set_snap_2d_vertices(viewport.id, enabled, current_frame());
+  }
+}
+
+void hook_viewport_set_msaa_2d(void *self, RID viewport, int32_t msaa) {
+  OffmainGuard inflight;
+
+  bump(kViewportSetMsaa2d);
+  original<FnRidEnum>(kViewportSetMsaa2d)(self, viewport, msaa);
+  if (streaming()) {
+    mirror().viewport_set_msaa_2d(viewport.id, msaa, current_frame());
+  }
+}
+
+// VS2 (D9): which scenario each 3D instance is in, kept while viewports are live, standby
+// included, so an arm can tell whether a pre-arm viewport's world holds 3D content. A headless
+// host cannot answer that from the server (instances_cull_aabb reads AABBs only a draw updates).
+std::mutex g_scenario_mutex;
+std::unordered_map<uint64_t, uint64_t> g_instance_scenario;    // instance -> scenario
+std::unordered_map<uint64_t, uint32_t> g_scenario_instances;   // scenario -> instance count
+
+void scenario_note(uint64_t instance, uint64_t scenario) {
+  std::lock_guard<std::mutex> lock(g_scenario_mutex);
+  const auto it = g_instance_scenario.find(instance);
+  if (it != g_instance_scenario.end()) {
+    auto count = g_scenario_instances.find(it->second);
+    if (count != g_scenario_instances.end() && --count->second == 0) g_scenario_instances.erase(count);
+    g_instance_scenario.erase(it);
+  }
+  if (instance != 0 && scenario != 0) {
+    g_instance_scenario[instance] = scenario;
+    ++g_scenario_instances[scenario];
+  }
+}
+
+void hook_instance_set_scenario(void *self, RID instance, RID scenario) {
+  OffmainGuard inflight;
+
+  bump(kInstanceSetScenario);
+  original<FnSetMaterial>(kInstanceSetScenario)(self, instance, scenario);
+  if (g_viewports_live.load(std::memory_order_relaxed)) {
+    scenario_note(instance.id, scenario.id);
+  }
+  if (streaming()) {
+    mirror().instance_set_scenario(instance.id, scenario.id, current_frame());
+  }
+}
+
 void hook_draw(void *self, bool swap_buffers, double frame_step) {
   OffmainGuard inflight;
 
@@ -5573,6 +5953,31 @@ const HookSpec kSpecs[] = {
      as_ptr(&hook_set_use_identity_transform)},
     {kTextureSetSizeOverride, "texture_set_size_override",
      as_ptr(&hook_texture_set_size_override)},
+    {kTextureProxyCreate, "texture_proxy_create", as_ptr(&hook_texture_proxy_create)},
+    {kTextureProxyUpdate, "texture_proxy_update", as_ptr(&hook_texture_proxy_update)},
+    {kViewportCreate, "viewport_create", as_ptr(&hook_viewport_create)},
+    {kViewportSetSize, "viewport_set_size", as_ptr(&hook_viewport_set_size)},
+    {kViewportSetActive, "viewport_set_active", as_ptr(&hook_viewport_set_active)},
+    {kViewportSetParentViewport, "viewport_set_parent_viewport",
+     as_ptr(&hook_viewport_set_parent_viewport)},
+    {kViewportSetCanvasCullMask, "viewport_set_canvas_cull_mask",
+     as_ptr(&hook_viewport_set_canvas_cull_mask)},
+    {kViewportSetUpdateMode, "viewport_set_update_mode", as_ptr(&hook_viewport_set_update_mode)},
+    {kViewportSetClearMode, "viewport_set_clear_mode", as_ptr(&hook_viewport_set_clear_mode)},
+    {kViewportGetTexture, "viewport_get_texture", as_ptr(&hook_viewport_get_texture)},
+    {kViewportSetDisable3d, "viewport_set_disable_3d", as_ptr(&hook_viewport_set_disable_3d)},
+    {kViewportSetDisable2d, "viewport_set_disable_2d", as_ptr(&hook_viewport_set_disable_2d)},
+    {kViewportAttachCamera, "viewport_attach_camera", as_ptr(&hook_viewport_attach_camera)},
+    {kViewportSetScenario, "viewport_set_scenario", as_ptr(&hook_viewport_set_scenario)},
+    {kViewportSetTransparentBackground, "viewport_set_transparent_background",
+     as_ptr(&hook_viewport_set_transparent_background)},
+    {kViewportSetUseHdr2d, "viewport_set_use_hdr_2d", as_ptr(&hook_viewport_set_use_hdr_2d)},
+    {kViewportSetSnap2dTransformsToPixel, "viewport_set_snap_2d_transforms_to_pixel",
+     as_ptr(&hook_viewport_set_snap_2d_transforms_to_pixel)},
+    {kViewportSetSnap2dVerticesToPixel, "viewport_set_snap_2d_vertices_to_pixel",
+     as_ptr(&hook_viewport_set_snap_2d_vertices_to_pixel)},
+    {kViewportSetMsaa2d, "viewport_set_msaa_2d", as_ptr(&hook_viewport_set_msaa_2d)},
+    {kInstanceSetScenario, "instance_set_scenario", as_ptr(&hook_instance_set_scenario)},
 };
 
 const char *hook_name(HookId id) { return kSpecs[id].name; }
@@ -6043,6 +6448,103 @@ bool hooks_multimesh_planned() { return g_multimesh_hooked; }
 
 bool hooks_particles_planned() { return g_particles_hooked; }
 
+void hooks_set_viewports(bool enabled, bool no_adjacency) {
+  g_viewports_enabled = enabled;
+  g_viewport_no_adjacency = no_adjacency;
+}
+
+bool hooks_viewports_planned() { return g_viewports_hooked; }
+
+void hooks_set_viewports_live(bool live) {
+  g_viewports_live.store(live && g_viewports_hooked, std::memory_order_relaxed);
+}
+
+bool hooks_viewports_live() { return g_viewports_live.load(std::memory_order_relaxed); }
+
+// VS2: the adoption and node-route taps that mint or re-version texture ids, through the mirror and
+// the hook log together under the texture order lock, as every identity tap is.
+void hooks_adopt_viewport(const rs::Mirror::AdoptedViewport &viewport, uint64_t frame) {
+  OffmainGuard inflight;
+  if (inflight.standby() || !streaming()) return;
+  std::lock_guard<std::mutex> order(g_texture_order);
+  if (!streaming()) return;
+  mirror().adopt_viewport(viewport, frame);
+  if (g_viewports_live.load(std::memory_order_relaxed)) {
+    resources().viewport_adopt(tap_context(), viewport.rid, viewport.default_proxy);
+  }
+}
+
+void hooks_adopt_proxy(uint64_t proxy, uint64_t base, uint64_t viewport, uint64_t frame) {
+  OffmainGuard inflight;
+  if (inflight.standby() || !streaming()) return;
+  std::lock_guard<std::mutex> order(g_texture_order);
+  if (!streaming()) return;
+  mirror().adopt_proxy(proxy, base, viewport, frame);
+  if (g_viewports_live.load(std::memory_order_relaxed)) {
+    resources().proxy_adopt(tap_context(), proxy, base, viewport);
+  }
+}
+
+void hooks_seed_mirror_scenarios(uint64_t frame) {
+  if (!streaming() || !g_viewports_live.load(std::memory_order_relaxed)) return;
+  std::vector<std::pair<uint64_t, uint64_t>> members;
+  // Held across the mirror call (g_scenario_mutex, then the mirror's; no path takes them the other
+  // way): a concurrent instance tap either lands in the copy or reaches the mirror after the seed,
+  // whose merge never overrides a membership the mirror's own tap already holds.
+  std::lock_guard<std::mutex> lock(g_scenario_mutex);
+  members.assign(g_instance_scenario.begin(), g_instance_scenario.end());
+  mirror().seed_scenario_instances(members, frame);
+}
+
+bool hooks_scenario_has_instance(uint64_t scenario) {
+  std::lock_guard<std::mutex> lock(g_scenario_mutex);
+  return scenario != 0 && g_scenario_instances.count(scenario) != 0;
+}
+
+void hooks_adopt_placeholder(uint64_t rid, uint64_t frame) {
+  OffmainGuard inflight;
+  if (inflight.standby() || !streaming()) return;
+  std::lock_guard<std::mutex> order(g_texture_order);
+  if (!streaming()) return;
+  mirror().adopt_placeholder(rid, frame);
+  if (g_viewports_live.load(std::memory_order_relaxed)) {
+    resources().placeholder_adopt(tap_context(), rid);
+  }
+}
+
+void hooks_proxy_node_route_result(uint64_t proxy, uint64_t viewport, uint64_t frame) {
+  OffmainGuard inflight;
+  if (inflight.standby() || !streaming()) return;
+  std::lock_guard<std::mutex> order(g_texture_order);
+  if (!streaming()) return;
+  mirror().proxy_node_route_result(proxy, viewport, frame);
+  if (g_viewports_live.load(std::memory_order_relaxed)) {
+    resources().proxy_node_route(tap_context(), proxy, viewport);
+  }
+}
+
+void hooks_adopt_viewport_texture(uint64_t viewport, uint64_t rt, uint64_t frame) {
+  OffmainGuard inflight;
+  if (inflight.standby() || !streaming()) return;
+  std::lock_guard<std::mutex> order(g_texture_order);
+  if (!streaming()) return;
+  mirror().viewport_get_texture(viewport, rt, frame);
+  if (g_viewports_live.load(std::memory_order_relaxed)) {
+    resources().viewport_get_texture(tap_context(), viewport, rt, false);
+  }
+}
+
+void hooks_reresolve_proxy(uint64_t proxy, uint64_t base, uint64_t viewport, uint64_t frame) {
+  OffmainGuard inflight;
+  if (inflight.standby() || !streaming()) return;
+  std::lock_guard<std::mutex> order(g_texture_order);
+  if (!streaming()) return;
+  mirror().texture_proxy_update(proxy, base, viewport, frame);
+  if (g_viewports_live.load(std::memory_order_relaxed)) {
+    resources().texture_proxy_update(tap_context(), proxy, base, viewport, false);
+  }
+}
+
 void hooks_set_shader_time_carried(bool carried) {
   g_shader_time_carried.store(carried, std::memory_order_relaxed);
 }
@@ -6437,13 +6939,16 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   // PM5: /12 installs /10's and /11's conditional hooks too, plus the 33 particles hooks.
   // W13b: /13 is /12 with predicted blocks: the same hooks. /14 and /15 are /13 plus records
   // that need none of these hooks, so they install the same set.
+  // VS2: /16 is /15 plus viewport surfaces, so it installs /15's set too.
   const bool v12_wanted =
       stream_version != nullptr &&
       (std::strcmp(stream_version, "12") == 0 || std::strcmp(stream_version, "13") == 0 ||
-       std::strcmp(stream_version, "14") == 0 || std::strcmp(stream_version, "15") == 0);
-  // render-stream-15.md "Size override": texture_set_size_override is /15's only (its key and
-  // its version bump are /15's), so below /15 it is neither planned nor omitted.
-  const bool v15_wanted = stream_version != nullptr && std::strcmp(stream_version, "15") == 0;
+       std::strcmp(stream_version, "14") == 0 || std::strcmp(stream_version, "15") == 0 ||
+       std::strcmp(stream_version, "16") == 0);
+  // render-stream-15.md "Size override": texture_set_size_override is /15's (its key and its
+  // version bump are /15's; /16 carries them too), so below /15 it is neither planned nor omitted.
+  const bool v15_wanted = stream_version != nullptr && (std::strcmp(stream_version, "15") == 0 ||
+                                                        std::strcmp(stream_version, "16") == 0);
   const bool backbuffer_hooks_wanted =
       stream_version != nullptr &&
       (std::strcmp(stream_version, "10") == 0 || std::strcmp(stream_version, "11") == 0 ||
@@ -6501,6 +7006,13 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
       --g_hooks_total;
       continue;
     }
+    if (is_viewport_hook(spec.id) && !g_viewports_enabled) {
+      // VS2 (viewport-surfaces-design.md D3, D6): planned by capability at every version;
+      // GRC_VIEWPORTS=off leaves the family neither planned nor omitted.
+      g_skipped[spec.id] = true;
+      --g_hooks_total;
+      continue;
+    }
     if (index < 0) {
       if (required) {
         if (plan->missing_required.empty()) {
@@ -6535,6 +7047,14 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   for (size_t id = kFirstParticlesHook; id <= kLastParticlesHook; ++id) {
     g_particles_hooked = g_particles_hooked && !g_skipped[id] && !g_omitted[id];
   }
+  // VS2: the family is indivisible: viewports are hooked only when every one of the twenty is
+  // planned (a record lacking any slot gives the session's `unavailable`). Whether they are live
+  // (/16) is set by the caller after the plan (hooks_set_viewports_live).
+  g_viewports_hooked = g_viewports_enabled;
+  for (size_t id = kFirstViewportHook; id <= kLastViewportHook; ++id) {
+    g_viewports_hooked = g_viewports_hooked && !g_skipped[id] && !g_omitted[id];
+  }
+  g_viewports_live.store(false, std::memory_order_relaxed);
   // P3-CK: the shader clock sums the hooked draws' steps once the host draws (rs_shader_clock.h).
   rs::shader_clock_set_draw_hooked(!g_skipped[kDraw] && !g_omitted[kDraw]);
   return plan->missing_required.empty();

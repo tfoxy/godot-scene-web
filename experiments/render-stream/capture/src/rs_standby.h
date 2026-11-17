@@ -12,6 +12,9 @@
 //   - texture_set_path (D5: the reload path, recorded from LS4), planned always;
 //   - draw: on a rendered host the shader clock advances only through the hooked draw
 //     (rs_shader_clock.cpp), so without it TIME would freeze in standby.
+//   - VS2: texture_proxy_create/_update, viewport_create and viewport_get_texture reach the
+//     registry (its Viewport and TextureProxy kinds, recorded only when viewports are live) and so
+//     are tracked slots by the first rule.
 //
 // rs_standby_test (`standby-slot-census`) checks this list against hooks.cpp: a hook whose body
 // reaches the registry or a shim is in the set, and nothing else but texture_set_path and draw.

@@ -85,6 +85,14 @@ std::vector<std::string> make_names() {
       "texture_set_size_override",
       // D4: the shader clock on a rendered host.
       "draw",
+      // VS2 (viewport-surfaces-design.md Q3b, Q4): the registry's Viewport and TextureProxy
+      // kinds (recorded only when viewports are live), so an arm knows pre-arm viewports and
+      // proxies.
+      "instance_set_scenario",  // D9: renders_3d of a pre-arm viewport
+      "texture_proxy_create",
+      "texture_proxy_update",
+      "viewport_create",
+      "viewport_get_texture",
   };
   std::sort(names.begin(), names.end());
   return names;

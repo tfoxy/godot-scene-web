@@ -132,7 +132,10 @@ function capture(
       .map((l) => JSON.stringify({ ...l, path: path(l.name, l.family) }))
       .join("\n")}\n`,
   );
-  const planned = Array.from({ length: o.planned ?? 80 }, (_, i) => `hook${i}`);
+  const planned = Array.from(
+    { length: o.planned ?? 100 },
+    (_, i) => `hook${i}`,
+  );
   // LS1: texture_set_path is planned with or without a cache directory.
   if (o.planned === undefined) planned[planned.length - 1] = "texture_set_path";
   const counts: Record<string, number> = {};

@@ -115,7 +115,10 @@ struct AdoptStats {
   std::uint32_t redraws = 0;    // queue_redraw requests made
   std::uint32_t canvas_modulates = 0;  // canvases given a CanvasModulate colour
   std::uint32_t lights = 0;             // Light2D nodes declared (canvas-light, sticky)
-  std::uint32_t non_root_viewports = 0; // viewport subtrees not walked (non-root-viewport)
+  std::uint32_t non_root_viewports = 0; // viewport subtrees not adopted (non-root-viewport; 0
+                                        //   when viewports are live and every one resolved)
+  std::uint32_t viewports_adopted = 0;  // VS2: non-root viewports adopted (viewports live)
+  std::uint32_t viewport_layers = 0;    // VS2: adopted CanvasLayers attached to a non-root viewport
   std::uint32_t materials = 0;          // adopted items with a material (resolved by G8m)
   std::uint32_t canvas_groups = 0;      // CG1: items given a canvas group (clip_children/CanvasGroup)
   std::uint32_t backbuffer_copies = 0;  // CG1: BackBufferCopy items given a copy
@@ -159,6 +162,7 @@ struct AdoptedLayer {
   bool follow_viewport = false;
   float follow_scale = 1.0f;
   std::uint64_t follow_parent = 0;  // the world canvas a following layer parents to
+  bool surface = false;  // VS2: `viewport` is a non-root viewport (counted in viewport_layers)
 };
 
 // One adopted CanvasItem (D5 "Per item"), in tree order (parents before children).
@@ -205,7 +209,45 @@ struct AdoptedItem {
   bool use_identity_transform = false;
 };
 
+// VS2 (viewport-surfaces-design.md Q4): one adopted non-root viewport (a SubViewport or a Window,
+// embedded or not), in tree order (parents before children). The first block is field for field
+// Mirror::AdoptedViewport (rs_mirror.h), kept separate so this header does not depend on the
+// mirror's; values are the RenderingServer's (what the hooks would have seen), not the scene enums.
+struct AdoptedSurface {
+  std::uint64_t rid = 0;     // Viewport.get_viewport_rid()
+  std::uint64_t parent = 0;  // the enclosing viewport's RID (the root's RID; the mirror maps it to 0)
+  bool active = false;       // SubViewport: in the tree; Window: is_visible()
+  std::int32_t width = 0, height = 0;
+  bool transparent = false;
+  std::int32_t update_mode = 2;  // RS viewport_get_update_mode
+  std::int32_t clear_mode = 0;   // SubViewport.get_clear_mode (RS enum, same values); Window: always
+  bool disable_2d = false, disable_3d = false;
+  bool renders_3d = false;
+  std::uint64_t scenario = 0;  // find_world_3d().get_scenario() (0: unknown)
+  bool has_camera = false;     // get_camera_3d() is not null
+  bool hdr_2d = false;
+  std::int32_t msaa_2d = 0;
+  std::uint32_t canvas_cull_mask = 0xFFFFFFFFu;
+  std::int32_t default_filter = 2, default_repeat = 1;  // RS CanvasItemTextureFilter / Repeat
+  bool snap_transforms = false, snap_vertices = false;
+  rs2::Xform global_xform = rs2::kIdentityXform;
+  std::uint64_t default_proxy = 0;  // get_texture().get_rid()
+  // A rendered host's render-target texture RID (the registry's record of viewport_get_texture; 0
+  // on the dummy): mapped to this viewport as that hook would have (rt -> its viewport texture).
+  std::uint64_t render_target = 0;
+  // The viewport's own World2D canvas (find_world_2d().get_canvas()) and its canvas transform, as
+  // Viewport's NOTIFICATION_ENTER_TREE attaches it (viewport.cpp:548-550).
+  std::uint64_t world_canvas = 0;
+  rs2::Xform canvas_xform = rs2::kIdentityXform;
+  // False when the world canvas is the root's World2D or one an earlier surface in this plan already
+  // claimed: it is attached, not adopted a second time. Apply adopts each claimed canvas once, at
+  // the first viewport naming it in application order (wrong-order may apply a sharer first).
+  bool adopt_world_canvas = true;
+};
+
 struct AdoptPlan {
+  // VS2: applied before layers and items (empty unless viewports are live).
+  std::vector<AdoptedSurface> viewports;
   std::vector<AdoptedLayer> layers;
   std::vector<AdoptedItem> items;
   // The active CanvasModulate colour per canvas (the first visible-in-tree one in tree order).
@@ -214,7 +256,8 @@ struct AdoptPlan {
 };
 
 // Drives `mirror` through the hooks' own setters for every object in `plan` (engine-free). Fills
-// the canvas/layer/item/hidden/... counts of `stats`.
+// the canvas/layer/item/hidden/... counts of `stats`. Viewports first, in tree order (parents
+// before children); GRC_VIEWPORT_SABOTAGE=wrong-order applies siblings in reverse tree order.
 void apply_adopt_plan(Mirror &mirror, const AdoptPlan &plan, AdoptSabotage sabotage,
                       std::uint64_t frame, AdoptStats *stats);
 
@@ -236,6 +279,22 @@ AdoptStats adopt_at_arm(const AdoptConfig &config);
 
 // The adopted item RID -> node ObjectID map the walk built (D11's node map; G8m keeps it current).
 const std::unordered_map<std::uint64_t, std::uint64_t> &adopted_item_nodes();
+
+// VS2 (viewport-surfaces-design.md Q3b, Q4): called at stream start (main thread) with
+// `viewports live` (speaks_v16 && hooks_viewports_planned). Live: the arm walk descends into
+// non-root viewports, and the node map (CanvasItem RID -> node) is kept current through
+// SceneTree.node_added even without GRC_ADOPT=arm, for the node route. Not live: today's behaviour.
+// The connection leaves with the stream (adopt_resources_end).
+void adopt_set_viewports_live(bool live);
+// VS2 (Q3b(3)): the node route, main thread, each armed frame before the snapshot: every unresolved
+// proxy a live item's command names, not yet tried, is looked up through the item's node (its
+// Texture2D-valued properties, one Resource level deeper: an AtlasTexture's atlas, a ShaderMaterial's
+// shader_parameter/*, a StyleBoxTexture's texture) for a ViewportTexture whose RID is the proxy, then
+// its scene's viewport; the result goes to Mirror::proxy_node_route_result. Returns the proxies bound.
+// Before that, each such proxy whose current registry base became resolvable (a placeholder, a
+// render target, a plain texture materialized now) is re-resolved through hooks_reresolve_proxy.
+// No-op when not live; GRC_VIEWPORT_SABOTAGE=no-node-route skips only the node route.
+std::size_t resolve_unresolved_proxies(std::uint64_t frame);
 
 // ------------------------------------------------------------------- G8r: resources by RID
 
@@ -315,6 +374,20 @@ struct AdoptResourceStats {
   std::uint32_t textures_refused = 0;  // RIDs nothing could read: unknown-texture stays; typed:
   std::uint32_t refused_no_image = 0;  //   unregistered, no image, no cached `.tres` (F1)
   std::uint32_t refused_canvas_empty = 0;  // a registered CanvasTexture with no diffuse set
+  std::uint32_t refused_viewport = 0;  // VS2: a viewport/render-target RID drawn directly (never
+                                       //   read back: texture_2d_get on it is not a texture's image)
+  std::uint32_t proxies = 0;           // VS2: registered TextureProxy RIDs handed to adopt_proxy:
+  std::uint32_t proxies_viewport = 0;  //   ... with a recorded (adjacency) viewport
+  std::uint32_t proxies_render_target = 0;  // ... whose base is a known viewport's render target
+  std::uint32_t proxies_base = 0;      //   ... with another recorded non-null base
+  std::uint32_t proxies_reresolved = 0;  // VS2: unresolved proxies re-resolved from the registry
+                                         //   before the node route (their base adopted first)
+  std::uint32_t proxies_unbased = 0;   //   ... with neither (the node route's)
+  std::uint32_t node_route_passes = 0;   // VS2: resolve_unresolved_proxies calls with work
+  std::uint32_t node_route_items = 0;    //   item nodes inspected
+  std::uint32_t node_route_bound = 0;    //   proxies bound to a viewport
+  std::uint32_t node_route_missed = 0;   //   proxies reported not found
+  std::uint64_t node_route_ns = 0;       //   time in the node route
   std::uint32_t meshes = 0;            // adopted meshes (creation)
   std::uint32_t mesh_surfaces = 0;
   std::uint32_t meshes_refused = 0;    // RIDs mesh_get_surface_count could not read

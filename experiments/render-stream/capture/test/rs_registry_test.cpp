@@ -1440,6 +1440,109 @@ int main() {
     expect(registry_particles(kPt, &p) && p.amount == 0, "skip-particles: no setter recorded");
   }
 
+  // VS2: the viewport family (Viewport, TextureProxy): its own family, recorded and reported only
+  // when viewports are live, never reachable through a texture-family read.
+  {
+    registry_configure(true, RegistryFault::None);
+    expect(registry_family(RegistryKind::Viewport) == RegistryFamily::Viewport &&
+               registry_family(RegistryKind::TextureProxy) == RegistryFamily::Viewport &&
+               std::string(registry_family_name(RegistryFamily::Viewport)) == "viewport" &&
+               std::string(registry_kind_name(RegistryKind::TextureProxy)) == "texture_proxy" &&
+               std::string(registry_kind_name(RegistryKind::Viewport)) == "viewport",
+           "vp: kinds and family names");
+    // Not live: nothing is recorded and the evidence keeps its seven families.
+    registry_note_create(0x500000001, RegistryKind::Viewport);
+    registry_note_proxy_create(0x500000002, 0, 0x500000001);
+    registry_note_viewport_texture(0x500000001, 0x500000009);
+    expect(!registry_lookup(0x500000001, nullptr) && !registry_lookup(0x500000002, nullptr) &&
+               !registry_is_viewport(0x500000001) && !registry_proxy(0x500000002, nullptr) &&
+               registry_stats().family[fam(RegistryFamily::Viewport)].creates == 0 &&
+               registry_stats().family[fam(RegistryFamily::Viewport)].null_creates == 0,
+           "vp: not live records nothing");
+    {
+      const std::string json = registry_json();
+      expect(!contains(json, "\"viewport\"") && registry_reported_families() == 7 &&
+                 contains(json, "\"particles\": {"),
+             "vp: not live, the evidence has seven families");
+    }
+
+    registry_set_viewports(true);
+    expect(registry_viewports() && registry_reported_families() == 8, "vp: live");
+    const std::uint64_t kVp = 0x500000011, kRt = 0x500000012, kProxy = 0x500000013,
+                        kScene = 0x500000014, kImage = 0x500000015;
+    registry_note_create(kVp, RegistryKind::Viewport);
+    std::uint64_t rt = 99;
+    expect(registry_is_viewport(kVp) && registry_viewport_texture(kVp, &rt) && rt == 0,
+           "vp: a viewport, render target unknown");
+    registry_note_viewport_texture(kVp, kRt);
+    expect(registry_viewport_texture(kVp, &rt) && rt == kRt, "vp: get_texture records the rt");
+    registry_note_viewport_texture(0x5000000ff, kRt);  // unregistered: nothing
+    expect(!registry_is_viewport(0x5000000ff), "vp: an unregistered viewport stays unknown");
+    // The constructor's proxy: base RID() (dummy), adjacency-resolved viewport.
+    registry_note_proxy_create(kProxy, 0, kVp);
+    RegistryProxy proxy;
+    expect(registry_proxy(kProxy, &proxy) && proxy.base == 0 && proxy.viewport == kVp &&
+               !registry_is_viewport(kProxy) && !registry_proxy(kVp, nullptr),
+           "vp: the default proxy");
+    // A scene proxy, then re-pointed (last call wins); update on an unknown RID records nothing.
+    registry_note_proxy_create(kScene, kRt, 0);
+    registry_note_proxy_update(kScene, kImage, 0);
+    expect(registry_proxy(kScene, &proxy) && proxy.base == kImage && proxy.viewport == 0,
+           "vp: update re-points");
+    registry_note_proxy_update(0x5000000fe, kImage, kVp);
+    expect(!registry_proxy(0x5000000fe, nullptr), "vp: update of an unknown proxy");
+    // Never a texture-family record: no texture_2d_get path can see them.
+    RegistryTextureRecord rec;
+    std::vector<RegistryTextureRecord> records;
+    registry_textures(&records);
+    expect(!registry_texture(kProxy, &rec) && !registry_texture(kVp, &rec) && records.empty() &&
+               registry_stats().family[fam(RegistryFamily::Texture)].entries == 0,
+           "vp: never a texture record");
+    registry_note_texture_update(kProxy);
+    registry_note_texture_size_override(kProxy, 4, 4);
+    RegistryKind k = RegistryKind::Texture2d;
+    bool updated = true;
+    expect(registry_lookup(kProxy, &k, &updated) && k == RegistryKind::TextureProxy && !updated,
+           "vp: texture notes leave a proxy alone");
+    const grc::rs::RegistryStats st = registry_stats();
+    expect(st.family[fam(RegistryFamily::Viewport)].creates == 3 &&
+               st.family[fam(RegistryFamily::Viewport)].entries == 3 && st.viewport_payloads == 3 &&
+               st.viewport_payload_sets == 4 && st.viewport_payload_bytes > 0,
+           "vp: accounting");
+    registry_frame(5);
+    {
+      const std::string json = registry_json();
+      std::size_t mentions = 0;
+      for (std::size_t at = json.find("\"viewport\""); at != std::string::npos;
+           at = json.find("\"viewport\"", at + 1)) {
+        ++mentions;
+      }
+      // families.viewport, payloads.viewport and timeline.family_order's last column.
+      expect(contains(json, "\"viewport\": {") && mentions == 3,
+             "vp: live, the evidence has the eighth family and its payload block");
+    }
+    // Free erases either kind (the existing free path), payload included; a null create counts.
+    registry_note_free(kProxy);
+    registry_note_free(kVp);
+    expect(!registry_proxy(kProxy, nullptr) && !registry_is_viewport(kVp) &&
+               registry_stats().viewport_payloads == 1 &&
+               registry_stats().family[fam(RegistryFamily::Viewport)].frees == 2,
+           "vp: free erases");
+    registry_note_proxy_create(0, 0, 0);
+    expect(registry_stats().family[fam(RegistryFamily::Viewport)].null_creates == 1,
+           "vp: a null proxy create counts");
+    // A recycled value of another family drops the payload.
+    registry_note_create(kScene, RegistryKind::Mesh);
+    expect(!registry_proxy(kScene, nullptr) && registry_stats().viewport_payloads == 0 &&
+               registry_stats().family[fam(RegistryFamily::Viewport)].recreated == 1,
+           "vp: a recreate as another kind drops the payload");
+    registry_frame(6);
+    expect(identity_holds(), "vp: identity holds");
+    // registry_configure clears the live flag.
+    registry_configure(true, RegistryFault::None);
+    expect(!registry_viewports() && registry_stats().viewport_payloads == 0, "vp: configure clears");
+  }
+
   // Reconfigure resets everything (a test-only path: the capture configures once).
   registry_configure(false, RegistryFault::None);
   expect(registry_stats().entries == 0 && registry_timeline(nullptr).empty() &&

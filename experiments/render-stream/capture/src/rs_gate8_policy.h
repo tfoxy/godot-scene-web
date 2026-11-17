@@ -3,7 +3,7 @@
 // Pure C++17, no engine types, so it is unit-testable without a Godot process (the ctest
 // rs_gate8_policy_test). The environment variables it reads:
 //
-//   GRC_STREAM_VERSION    6 | 8 | 9 | 10 | 11 | 12, default 6. The wire version of FILE sinks only (render-stream-8.md
+//   GRC_STREAM_VERSION    6 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16, default 6. The wire version of FILE sinks only (render-stream-8.md
 //                         "Which sinks speak /8"); the live listener negotiates per connection.
 //                         9 (G8k9, render-stream-9.md) is /8 plus the texture-delivery wire; it is the
 //                         only way `render-stream.9` is ever offered. 10 (CG1, render-stream-10.md)
@@ -40,7 +40,7 @@ namespace grc {
 namespace rs {
 
 struct Gate8Policy {
-  // GRC_STREAM_VERSION: the wire version of file sinks. V6 (the default), V8 to V15.
+  // GRC_STREAM_VERSION: the wire version of file sinks. V6 (the default), V8 to V16.
   rs2::ProtocolVersion file_version = rs2::ProtocolVersion::V6;
   bool stream_version_set = false;  // GRC_STREAM_VERSION was present and non-empty
   bool adopt = false;               // GRC_ADOPT=arm
@@ -85,9 +85,35 @@ struct Gate8Policy {
   // true at /15, which is /14 plus hints and the size override.
   bool speaks_v14() const { return rs2::is_v14_or_later(file_version); }
   // Whether the stream speaks /15: GRC_STREAM_VERSION=15 (render-stream-15.md). The switch for
-  // the hint table and the size override's wire key and version bump.
-  bool speaks_v15() const { return file_version == rs2::ProtocolVersion::V15; }
+  // the hint table and the size override's wire key and version bump. VS2: also true at /16,
+  // which is /15 plus viewport surfaces.
+  bool speaks_v15() const { return rs2::is_v15_or_later(file_version); }
+  // Whether the stream speaks /16: GRC_STREAM_VERSION=16 (render-stream-16.md "Who speaks /16"):
+  // file sinks write /16 and the live listener lists only render-stream.16.
+  bool speaks_v16() const { return rs2::is_v16(file_version); }
 };
+
+// VS2 (viewport-surfaces-design.md D3; render-stream-16.md "Session: viewports"), read at load:
+//   GRC_VIEWPORTS          on | off, default on. off: the twenty `viewport` hooks are not planned
+//                          and a /16 session says "viewports":"off".
+//   GRC_VIEWPORT_SABOTAGE  empty | no-adjacency | no-node-route | wrong-order (test knobs, never on
+//                          the wire): no-adjacency zeroes the hooks' adjacent viewport (hooks.cpp);
+//                          the other two act in rs_adopt.cpp.
+enum class ViewportSabotage : unsigned char { None, NoAdjacency, NoNodeRoute, WrongOrder };
+struct ViewportsPolicy {
+  bool on = true;
+  ViewportSabotage sabotage = ViewportSabotage::None;
+};
+// Each may be null or empty. On a bad value returns false with *error naming the variable and its
+// accepted values, and leaves *out default.
+bool parse_viewports_policy(const char *viewports, const char *sabotage, ViewportsPolicy *out,
+                            std::string *error);
+const char *viewport_sabotage_name(ViewportSabotage sabotage);
+
+// VS2 (viewport-surfaces-design.md D14): GRC_RESOURCE_HINTS = on | off, default on (null or empty:
+// on), read when the stream speaks /15 or later. Hints are on when the stream speaks /15 or later,
+// its payloads are not all inline and this is not off.
+bool parse_resource_hints(const char *value, bool *on, std::string *error);
 
 // Parses the four variables (each may be null). On a bad value returns false with *error naming
 // the variable and its accepted values, and leaves *out default.
@@ -124,6 +150,8 @@ bool gate8_policy_allows(const Gate8Policy &policy, bool files, std::string *err
 // it is never offered otherwise (G8k9). Under GRC_STREAM_VERSION=10 "render-stream.10" leads
 // (then .9, .8, .7, .6; under a gate 8 policy .10, .9, .8): never offered otherwise (CG1).
 // Under GRC_STREAM_VERSION=11 "render-stream.11" leads, then /10's list (W11b).
+// Under GRC_STREAM_VERSION=16 the list is exactly {"render-stream.16"} (render-stream-16.md "Who
+// speaks /16": no per-connection downgrade).
 std::vector<std::string> gate8_live_subprotocols(const Gate8Policy &policy);
 
 }  // namespace rs

@@ -3,7 +3,7 @@
   "engine": {
     "version_string": "Godot Engine v4.5.1.stable.synthetic",
     "build_id": null,
-    "sha256": "7a3e3f509e098da22d7d54cac0a5e8becdb94635b1e8a459f3c73d875e725e06",
+    "sha256": "e6091f6f5da2fc6baae8895501053ba8a8c0c4b930ffbcec2bc75164c0d898a0",
     "platform": "linux-x86_64",
     "flavor": "template_release",
     "pie": true
@@ -11,9 +11,9 @@
   "rendering_server": {
     "abstract_vtable_vaddr": "0x4180",
     "concrete_class": "RenderingServerDefault",
-    "concrete_vtable_vaddr": "0x45f8",
+    "concrete_vtable_vaddr": "0x4698",
     "object_prefix": 5,
-    "slot_count": 141,
+    "slot_count": 161,
     "anchors_total": 5,
     "anchors_matched": 5
   },
@@ -148,7 +148,27 @@
     "particles_set_emitter_velocity": 137,
     "particles_set_interp_to_end": 138,
     "canvas_item_set_use_identity_transform": 139,
-    "texture_set_size_override": 140
+    "texture_set_size_override": 140,
+    "texture_proxy_create": 141,
+    "texture_proxy_update": 142,
+    "viewport_create": 143,
+    "viewport_set_size": 144,
+    "viewport_set_active": 145,
+    "viewport_set_parent_viewport": 146,
+    "viewport_set_canvas_cull_mask": 147,
+    "viewport_set_update_mode": 148,
+    "viewport_set_clear_mode": 149,
+    "viewport_get_texture": 150,
+    "viewport_set_disable_3d": 151,
+    "viewport_set_disable_2d": 152,
+    "viewport_attach_camera": 153,
+    "viewport_set_scenario": 154,
+    "viewport_set_transparent_background": 155,
+    "viewport_set_use_hdr_2d": 156,
+    "viewport_set_snap_2d_transforms_to_pixel": 157,
+    "viewport_set_snap_2d_vertices_to_pixel": 158,
+    "viewport_set_msaa_2d": 159,
+    "instance_set_scenario": 160
   },
   "anchors": {
     "synth_anchor_0": 5,
@@ -159,6 +179,6 @@
   },
   "calibrator": {
     "version": "9",
-    "header_sha256": "6735befb41b263d612c6cb1c87035f63e1f3f36ded99540e3ce8377a3fc1a249"
+    "header_sha256": "e836bf462c4d989d71a5e5f403cd6a1a4aeafbcce55debb41dcab114f157d97e"
   }
 }

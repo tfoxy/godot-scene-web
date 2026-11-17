@@ -228,6 +228,17 @@ grc_add_test(NAME rs_mirror COMMAND rs_mirror_test)
 # HC4a: the same cases with the shadow oracle on (every snapshot compared with the full walk).
 grc_add_test(NAME rs_mirror_shadow COMMAND rs_mirror_test)
 set_tests_properties(rs_mirror_shadow PROPERTIES ENVIRONMENT "RS_MIRROR_TEST_SHADOW=1")
+# VS2 (render-stream-16.md): the mirror's viewport table, viewport / proxy textures, the node
+# route, adoption and the derived entries through proxies, encoded at /16 and resolved back; and
+# again with the shadow oracle on.
+add_executable(rs_mirror_viewport_test test/rs_mirror_viewport_test.cpp src/rs_mirror.cpp
+  src/rs_texture_delivery.cpp src/rs_shader_payload.cpp src/rs_texture_payload.cpp
+  src/rs_mesh_payload.cpp src/rs_sha256.cpp src/rs2_diff.cpp src/rs2_codec.cpp src/rs13_predict.cpp)
+target_include_directories(rs_mirror_viewport_test PRIVATE src)
+target_link_libraries(rs_mirror_viewport_test PRIVATE grc_warnings grc_codecs Threads::Threads)
+grc_add_test(NAME rs_mirror_viewport COMMAND rs_mirror_viewport_test)
+grc_add_test(NAME rs_mirror_viewport_shadow COMMAND rs_mirror_viewport_test)
+set_tests_properties(rs_mirror_viewport_shadow PROPERTIES ENVIRONMENT "RS_MIRROR_TEST_SHADOW=1")
 
 # Gate 1 (G1b2) / gate 2 (G2b2): the render-stream/2 publisher -- full and patch sinks from one
 # snapshot per frame, patch/full equivalence, sabotages, per-sink stats, the store directory and
@@ -918,11 +929,13 @@ target_compile_definitions(rs_texture_payload_test PRIVATE
 target_link_libraries(rs_texture_payload_test PRIVATE grc_warnings)
 grc_add_test(NAME rs_texture_payload COMMAND rs_texture_payload_test)
 
+# VS2: also a real mirror, so the viewport taps' ids are checked against the mirror's.
 add_executable(rs_resource_log_test
   test/rs_resource_log_test.cpp src/rs_resource_log.cpp src/rs_texture_payload.cpp
-  src/rs_mesh_payload.cpp src/rs_sha256.cpp)
+  src/rs_mesh_payload.cpp src/rs_sha256.cpp src/rs_mirror.cpp src/rs_texture_delivery.cpp
+  src/rs_shader_payload.cpp src/rs2_diff.cpp src/rs2_codec.cpp src/rs13_predict.cpp)
 target_include_directories(rs_resource_log_test PRIVATE src)
-target_link_libraries(rs_resource_log_test PRIVATE grc_warnings Threads::Threads)
+target_link_libraries(rs_resource_log_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 grc_add_test(NAME rs_resource_log COMMAND rs_resource_log_test)
 
 # Gate 5: the GRM1 mesh payload encoder and its format classification.

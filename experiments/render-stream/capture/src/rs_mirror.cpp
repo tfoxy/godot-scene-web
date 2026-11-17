@@ -134,6 +134,15 @@ void Mirror::reset() {
   dynamic_hash_readers_ = true;  // HC3
   default_filter_ = Filter::Linear;
   default_repeat_ = Repeat::Disabled;
+  viewports_.clear();  // VS2 (viewports_live_ survives)
+  viewport_by_rid_.clear();
+  rt_viewport_.clear();
+  next_viewport_id_ = 1;
+  activation_counter_ = 0;
+  instance_scenario_.clear();
+  scenario_instances_.clear();
+  unresolved_untried_.clear();
+  proxy_uses_.clear();
   failures_.clear();
   session_unsupported_.clear();
   stats_ = MirrorStats();
@@ -637,6 +646,9 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     const std::uint32_t id = item->state.id;
     item_by_rid_.erase(rid);
     items_.erase(id);
+    for (auto &use : proxy_uses_) {
+      if (use.second == rid) use.second = 0;  // VS2: a freed consumer has no node to search
+    }
     return;
   }
   const auto canvas_it = canvas_by_rid_.find(rid);
@@ -652,6 +664,13 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     canvas.state.items.clear();
     const std::uint32_t id = canvas.state.id;
     canvas_by_rid_.erase(canvas_it);
+    // VS2: the engine removes a freed canvas from every viewport it was attached to.
+    for (auto &entry : viewports_) {
+      std::vector<ViewportCanvasRow> &rows = entry.second.entry.canvases;
+      rows.erase(std::remove_if(rows.begin(), rows.end(),
+                                [id](const ViewportCanvasRow &r) { return r.canvas == id; }),
+                 rows.end());
+    }
     if (id == kRootCanvasId) {
       // The root canvas stays in every snapshot (invariant `root-canvas`); it
       // only stops matching the freed RID.
@@ -659,6 +678,30 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     } else {
       canvases_.erase(id);
     }
+    return;
+  }
+  const auto viewport_it = viewport_by_rid_.find(rid);
+  if (viewport_it != viewport_by_rid_.end()) {
+    // VS2: the entry leaves the table (removed_viewports on the next patch), its viewport texture
+    // is retired in the same snapshot, children lose their parent.
+    ++epoch_;
+    free_viewport(viewport_it->second);
+    forget_unknown(rid);
+    return;
+  }
+  if (instance_scenario_.count(rid) != 0) {
+    ++epoch_;
+    instance_leave(rid);  // VS2: a freed instance leaves its scenario
+    return;
+  }
+  if (scenario_instances_.count(rid) != 0) {
+    // VS2: freeing a scenario takes every instance out of it (RendererSceneCull::free).
+    ++epoch_;
+    for (auto it = instance_scenario_.begin(); it != instance_scenario_.end();) {
+      it = it->second == rid ? instance_scenario_.erase(it) : std::next(it);
+    }
+    scenario_instances_.erase(rid);
+    scenario_moved(rid);
     return;
   }
   if (forget_unknown(rid)) {
@@ -770,13 +813,28 @@ void Mirror::viewport_attach_canvas(std::uint64_t viewport, std::uint64_t canvas
   if (dropped(kOp, frame)) {
     return;
   }
-  if (viewport != root_viewport_rid_ || root_viewport_rid_ == 0) {
-    session_unsupported(kOp, UnsupportedReason::NonRootViewport);
+  ViewportRec *vp = nullptr;
+  const int where = handler_viewport(viewport, kOp, frame, &vp);
+  if (where != 0 && where != 1) {
     return;
   }
   const auto it = canvas_by_rid_.find(canvas);
   if (it == canvas_by_rid_.end()) {
     unknown(canvas, kOp, frame);
+    return;
+  }
+  if (vp != nullptr) {
+    // RendererViewport::viewport_attach_canvas: refused when already attached; otherwise a new
+    // CanvasData, stacking (0,0) and the identity transform.
+    std::vector<ViewportCanvasRow> &rows = vp->entry.canvases;
+    const auto at = std::lower_bound(
+        rows.begin(), rows.end(), it->second,
+        [](const ViewportCanvasRow &r, std::uint32_t id) { return r.canvas < id; });
+    if (at == rows.end() || at->canvas != it->second) {
+      ViewportCanvasRow row;
+      row.canvas = it->second;
+      rows.insert(at, row);
+    }
     return;
   }
   Canvas &target = canvases_.at(it->second);
@@ -795,13 +853,22 @@ void Mirror::viewport_remove_canvas(std::uint64_t viewport, std::uint64_t canvas
   if (dropped(kOp, frame)) {
     return;
   }
-  if (viewport != root_viewport_rid_ || root_viewport_rid_ == 0) {
-    session_unsupported(kOp, UnsupportedReason::NonRootViewport);
+  ViewportRec *vp = nullptr;
+  const int where = handler_viewport(viewport, kOp, frame, &vp);
+  if (where != 0 && where != 1) {
     return;
   }
   const auto it = canvas_by_rid_.find(canvas);
   if (it == canvas_by_rid_.end()) {
     unknown(canvas, kOp, frame);
+    return;
+  }
+  if (vp != nullptr) {
+    std::vector<ViewportCanvasRow> &rows = vp->entry.canvases;
+    const std::uint32_t id = it->second;
+    rows.erase(std::remove_if(rows.begin(), rows.end(),
+                              [id](const ViewportCanvasRow &r) { return r.canvas == id; }),
+               rows.end());
     return;
   }
   // Q3b: its items stay in the table (undrawn), as gate 0 keeps a detached canvas.
@@ -816,13 +883,23 @@ void Mirror::viewport_set_canvas_stacking(std::uint64_t viewport, std::uint64_t 
   if (dropped(kOp, frame)) {
     return;
   }
-  if (viewport != root_viewport_rid_ || root_viewport_rid_ == 0) {
-    session_unsupported(kOp, UnsupportedReason::NonRootViewport);
+  ViewportRec *vp = nullptr;
+  const int where = handler_viewport(viewport, kOp, frame, &vp);
+  if (where != 0 && where != 1) {
     return;
   }
   const auto it = canvas_by_rid_.find(canvas);
   if (it == canvas_by_rid_.end()) {
     unknown(canvas, kOp, frame);
+    return;
+  }
+  if (vp != nullptr) {
+    for (ViewportCanvasRow &row : vp->entry.canvases) {
+      if (row.canvas == it->second) {  // refused for a canvas not attached to this viewport
+        row.layer = layer;
+        row.sublayer = sublayer;
+      }
+    }
     return;
   }
   Canvas &target = canvases_.at(it->second);
@@ -837,8 +914,13 @@ void Mirror::viewport_set_global_canvas_transform(std::uint64_t viewport, const 
   if (dropped(kOp, frame)) {
     return;
   }
-  if (viewport != root_viewport_rid_ || root_viewport_rid_ == 0) {
-    session_unsupported(kOp, UnsupportedReason::NonRootViewport);
+  ViewportRec *vp = nullptr;
+  const int where = handler_viewport(viewport, kOp, frame, &vp);
+  if (where == 1) {
+    vp->entry.global_xform = xform;
+    return;
+  }
+  if (where != 0) {
     return;
   }
   global_current_ = xform;
@@ -905,13 +987,22 @@ void Mirror::viewport_set_canvas_transform(std::uint64_t viewport, std::uint64_t
   if (dropped(kOp, frame)) {
     return;
   }
-  if (viewport != root_viewport_rid_ || root_viewport_rid_ == 0) {
-    session_unsupported(kOp, UnsupportedReason::NonRootViewport);
+  ViewportRec *vp = nullptr;
+  const int where = handler_viewport(viewport, kOp, frame, &vp);
+  if (where != 0 && where != 1) {
     return;
   }
   const auto it = canvas_by_rid_.find(canvas);
   if (it == canvas_by_rid_.end()) {
     unknown(canvas, kOp, frame);
+    return;
+  }
+  if (vp != nullptr) {
+    for (ViewportCanvasRow &row : vp->entry.canvases) {
+      if (row.canvas == it->second) {  // refused for a canvas not attached to this viewport
+        row.xform = xform;
+      }
+    }
     return;
   }
   canvases_.at(it->second).state.xform = xform;
@@ -1332,6 +1423,11 @@ bool Mirror::texture_referenced(std::uint32_t id) const {
         texture.diffuse_id == id) {
       return true;
     }
+    // VS2 (VS1 decision 3): a proxy keeps its target, a freed one included, as a tombstone.
+    if (texture.kind == TextureKind::Proxy && texture.status != TextureStatus::Freed &&
+        texture.has_target && texture.target_id == id) {
+      return true;
+    }
   }
   return false;
 }
@@ -1346,6 +1442,8 @@ void Mirror::retire_texture(std::uint32_t id) {
     texture_by_rid_.erase(texture.rid);
     texture.rid = 0;
   }
+  unresolved_untried_.erase(id);  // VS2: a retired proxy is no longer routed
+  proxy_uses_.erase(id);
   if (!texture_referenced(id)) {
     textures_.erase(id);
     return;
@@ -1576,6 +1674,18 @@ TextureEntry Mirror::wire_entry(const Texture &texture) {
     }
     return out;
   }
+  if (texture.kind == TextureKind::Viewport || texture.kind == TextureKind::Proxy) {
+    // render-stream-16.md "Texture kinds": no shape, hash, format, payload or variants; the kind
+    // key (a freed entry keeps its last value); an unsupported proxy's reason.
+    out.viewport = texture.kind == TextureKind::Viewport ? texture.viewport_id : 0;
+    out.has_target = texture.kind == TextureKind::Proxy && texture.has_target;
+    out.target = out.has_target ? texture.target_id : 0;
+    if (texture.status == TextureStatus::Unsupported) {
+      out.has_reason = texture.has_reason;
+      out.reason = texture.reason;
+    }
+    return out;
+  }
   if (texture.status == TextureStatus::Freed || texture.kind != TextureKind::Image) {
     // render-stream-2.md "Texture" field table: placeholders and tombstones carry no shape.
     return out;
@@ -1656,6 +1766,7 @@ void Mirror::add_texture_rect(std::uint64_t rid, const Rect4 &rect, std::uint64_
     command.unsupported_reason = UnsupportedCmdReason::UnknownTexture;
     note_recover_locked(texture, {item->state.id, 1, kOp});
   } else {
+    note_proxy_use(command.tex, item->rid);  // VS2: an unresolved proxy gains a consumer
     command.kind = CommandKind::AddTextureRect;
     command.tile = tile;
     command.transpose = transpose;
@@ -1692,6 +1803,7 @@ void Mirror::add_texture_rect_region(std::uint64_t rid, const Rect4 &rect, std::
     command.unsupported_reason = UnsupportedCmdReason::UnknownTexture;
     note_recover_locked(texture, {item->state.id, 1, kOp});
   } else {
+    note_proxy_use(command.tex, item->rid);  // VS2: an unresolved proxy gains a consumer
     command.kind = CommandKind::AddTextureRectRegion;
     command.transpose = transpose;
     command.clip_uv = clip_uv;
@@ -1730,6 +1842,7 @@ void Mirror::add_msdf_texture_rect_region(std::uint64_t rid, const Rect4 &rect,
     command.unsupported_reason = UnsupportedCmdReason::UnknownTexture;
     note_recover_locked(texture, {item->state.id, 1, kOp});
   } else {
+    note_proxy_use(command.tex, item->rid);  // VS2: an unresolved proxy gains a consumer
     command.kind = CommandKind::AddMsdfTextureRectRegion;
     command.rect = perturbed_glyph(rect, frame);
     command.src = src;
@@ -1774,6 +1887,7 @@ bool Mirror::geometry_texture(std::uint64_t texture, const char *op, const Item 
     note_recover_locked(texture, {item.state.id, 1, op});
     return false;
   }
+  note_proxy_use(command->tex, item.rid);  // VS2: an unresolved proxy gains a consumer
   return true;
 }
 
@@ -4062,14 +4176,15 @@ void Mirror::viewport_set_texture_filter(std::uint64_t viewport, std::int32_t fi
   if (dropped(kOp, frame)) {
     return;
   }
-  if (viewport != root_viewport_rid_ || root_viewport_rid_ == 0) {
-    session_unsupported(kOp, UnsupportedReason::NonRootViewport);
+  ViewportRec *vp = nullptr;
+  const int where = handler_viewport(viewport, kOp, frame, &vp);
+  if (where != 0 && where != 1) {
     return;
   }
   if (filter <= 0 || filter > static_cast<std::int32_t>(Filter::LinearMipmapsAnisotropic)) {
     return;
   }
-  default_filter_ = static_cast<Filter>(filter);
+  (vp != nullptr ? vp->entry.default_texture_filter : default_filter_) = static_cast<Filter>(filter);
 }
 
 void Mirror::viewport_set_texture_repeat(std::uint64_t viewport, std::int32_t repeat,
@@ -4079,14 +4194,15 @@ void Mirror::viewport_set_texture_repeat(std::uint64_t viewport, std::int32_t re
   if (dropped(kOp, frame)) {
     return;
   }
-  if (viewport != root_viewport_rid_ || root_viewport_rid_ == 0) {
-    session_unsupported(kOp, UnsupportedReason::NonRootViewport);
+  ViewportRec *vp = nullptr;
+  const int where = handler_viewport(viewport, kOp, frame, &vp);
+  if (where != 0 && where != 1) {
     return;
   }
   if (repeat <= 0 || repeat > static_cast<std::int32_t>(Repeat::Mirror)) {
     return;
   }
-  default_repeat_ = static_cast<Repeat>(repeat);
+  (vp != nullptr ? vp->entry.default_texture_repeat : default_repeat_) = static_cast<Repeat>(repeat);
 }
 
 void Mirror::texture_2d_create(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
@@ -4436,6 +4552,25 @@ void Mirror::texture_2d_placeholder_create(std::uint64_t rid, std::uint64_t fram
   textures_.emplace(texture.id, std::move(texture));
 }
 
+void Mirror::adopt_placeholder(std::uint64_t rid, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  (void)frame;
+  if (!viewports_live_ || rid == 0 || texture_by_rid_.count(rid) != 0) {
+    return;
+  }
+  ++epoch_;
+  Texture texture;
+  texture.id = next_texture_id_++;
+  texture.rid = rid;
+  texture.kind = TextureKind::Placeholder;
+  texture.status = TextureStatus::Ok;
+  texture.version = 1;
+  texture.origin = Origin::Adopted;
+  texture.adopted_content = AdoptedContent::Current;
+  texture_by_rid_[rid] = texture.id;
+  textures_.emplace(texture.id, std::move(texture));
+}
+
 void Mirror::texture_2d_update(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
                                int layer, std::uint64_t frame, std::shared_ptr<TextureJob> job) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -4448,6 +4583,9 @@ void Mirror::texture_2d_update(std::uint64_t rid, const PayloadCopy &copy, Paylo
     // An update to a texture the capture never saw created changes nothing the stream shows.
     ++stats_.texture_update_unknown;
     return;
+  }
+  if (texture->kind == TextureKind::Proxy) {
+    return;  // VS2: a proxy has no content of its own (the dummy and GLES3 keep the target's)
   }
   ++epoch_;
   texture->version += 1;
@@ -4540,7 +4678,7 @@ bool Mirror::texture_replace_recover(std::uint64_t t_rid, std::uint64_t b_rid,
   if (t_rid == b_rid || omit_op_matches("texture_replace", frame) ||
       texture_by_rid_.count(t_rid) != 0) return false;
   const Texture *b = find_texture(b_rid);
-  if (b == nullptr) return false;
+  if (b == nullptr || b->kind == TextureKind::Proxy) return false;  // GLES3 refuses a proxy
   Texture t;
   t.id = next_texture_id_++;
   t.rid = t_rid;
@@ -4552,7 +4690,17 @@ bool Mirror::texture_replace_recover(std::uint64_t t_rid, std::uint64_t b_rid,
   ++epoch_;
   const auto b_id = b->id;
   texture_by_rid_[t_rid] = t.id;
+  const std::uint32_t t_id = t.id;
   textures_.emplace(t.id, std::move(t));
+  for (auto &entry : textures_.unmarked()) {  // VS2: b's proxies now alias t (texture_storage.cpp)
+    Texture &proxy = entry.second;
+    if (proxy.kind == TextureKind::Proxy && proxy.status == TextureStatus::Ok &&
+        proxy.has_target && proxy.target_id == b_id) {
+      textures_.mark(entry.first, &proxy);
+      proxy.target_id = t_id;
+      ++proxy.version;
+    }
+  }
   retire_texture(b_id);
   *out = resolve_recover_locked(t_rid, RecoverBy::Replace);
   return true;
@@ -4572,6 +4720,10 @@ void Mirror::texture_replace(std::uint64_t t_rid, std::uint64_t b_rid, std::uint
   if (t == nullptr && b == nullptr) {
     return;
   }
+  if ((t != nullptr && t->kind == TextureKind::Proxy) ||
+      (b != nullptr && b->kind == TextureKind::Proxy)) {
+    return;  // VS2: GLES3 refuses to replace a proxy or by a proxy (texture_storage.cpp)
+  }
   ++epoch_;
   if (t != nullptr) {
     t->version += 1;
@@ -4589,6 +4741,20 @@ void Mirror::texture_replace(std::uint64_t t_rid, std::uint64_t b_rid, std::uint
       t->bytes.reset();
       t->job.reset();
       reset_basis(t);
+    }
+  }
+  if (t != nullptr && b != nullptr) {
+    // VS2: the storage redirects b's proxies to t (texture_storage.cpp:1430-1432).
+    const std::uint32_t b_id = b->id;
+    const std::uint32_t t_id = t->id;
+    for (auto &entry : textures_.unmarked()) {
+      Texture &proxy = entry.second;
+      if (proxy.kind == TextureKind::Proxy && proxy.status == TextureStatus::Ok &&
+          proxy.has_target && proxy.target_id == b_id) {
+        textures_.mark(entry.first, &proxy);
+        proxy.target_id = t_id;
+        ++proxy.version;
+      }
     }
   }
   if (b != nullptr) {
@@ -4654,6 +4820,7 @@ void Mirror::canvas_texture_adopt(std::uint64_t rid, std::uint64_t diffuse, std:
     texture.has_diffuse = it != texture_by_rid_.end();
     texture.diffuse_id = it != texture_by_rid_.end() ? it->second : 0;
     texture.diffuse_unknown = it == texture_by_rid_.end();
+    if (texture.has_diffuse) note_proxy_use(texture.diffuse_id, 0);  // VS2: a proxy's consumer
   }
   texture.normal_set = normal != 0;
   texture.specular_set = specular != 0;
@@ -4702,6 +4869,7 @@ void Mirror::canvas_texture_set_channel(std::uint64_t rid, std::int32_t channel,
       canvas->diffuse_id = new_diffuse_id;
       canvas->diffuse_unknown = new_unknown;
       changed = true;
+      if (new_has_diffuse) note_proxy_use(new_diffuse_id, 0);  // VS2: a proxy's consumer
     }
   } else {  // CANVAS_TEXTURE_CHANNEL_NORMAL / _SPECULAR: only non-null-ness is wire-visible
     const bool non_null = texture_rid != 0;
@@ -5531,6 +5699,7 @@ void Mirror::material_set_param(std::uint64_t rid, const std::string &name,
     MaterialReason ignored = MaterialReason::ParamType;
     param.v12_ok = to_param(name, packed, &param.v12_param, &ignored);
   }
+  if (param.ok && param.param.has_tex) note_proxy_use(param.param.tex, 0);  // VS2: no item
   material->params[name] = std::move(param);
   ++material->version;
 }
@@ -5669,6 +5838,7 @@ void Mirror::set_instance_shader_parameter(std::uint64_t rid, const std::string 
   // A rid names the texture table like a material parameter; an unresolvable one is a param-type
   // entry (the wire has no instance-level unknown-texture reason).
   if (to_param(name, value, &param, &reason)) {
+    if (param.has_tex) note_proxy_use(param.tex, item->rid);  // VS2: a proxy's consumer
     item->instance_params[name] = std::move(param);
   } else {
     item->instance_param_unsupported.insert(name);
@@ -5847,19 +6017,21 @@ void Mirror::set_hc_sabotage(bool skip_dirty, bool stale_derived) {
 
 bool Mirror::texture_entry_unsupported(std::uint32_t id) const {
   // render-stream-2.md "Item-level unsupported entries": the command's own tex is unsupported (or
-  // G8kf delivery-pending), or (G2d) it names a canvas entry whose diffuse is.
-  const auto texture = textures_.all().find(id);
+  // G8kf delivery-pending), or (G2d) it names a canvas entry whose diffuse is. VS2
+  // (render-stream-16.md "Texture kinds"): each reference reads through an `ok` proxy, once.
+  const std::uint32_t tid = read_through(id);
+  const auto texture = textures_.all().find(tid);
   if (texture == textures_.all().end()) {
     return false;
   }
-  if (texture->second.status == TextureStatus::Unsupported || pending_ids_.count(id) != 0) {
+  if (texture->second.status == TextureStatus::Unsupported || pending_ids_.count(tid) != 0) {
     return true;
   }
   if (texture->second.kind == TextureKind::Canvas && texture->second.has_diffuse) {
-    const auto diffuse = textures_.all().find(texture->second.diffuse_id);
+    const std::uint32_t did = read_through(texture->second.diffuse_id);
+    const auto diffuse = textures_.all().find(did);
     return diffuse != textures_.all().end() &&
-           (diffuse->second.status == TextureStatus::Unsupported ||
-            pending_ids_.count(texture->second.diffuse_id) != 0);
+           (diffuse->second.status == TextureStatus::Unsupported || pending_ids_.count(did) != 0);
   }
   return false;
 }
@@ -7218,6 +7390,10 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
       if (t->kind == TextureKind::Canvas && t->has_diffuse) {
         key |= (static_cast<std::uint64_t>(t->diffuse_id) + 1) << 1;
       }
+      // VS2: an `ok` proxy's target is read through by the derived rule, like a diffuse link.
+      if (t->kind == TextureKind::Proxy && t->status == TextureStatus::Ok && t->has_target) {
+        key |= (static_cast<std::uint64_t>(t->target_id) + 1) << 1;
+      }
       return key;
     };
     const auto check = [&](std::uint32_t id) {
@@ -7443,6 +7619,10 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
       if (texture.kind == TextureKind::Canvas && texture.has_diffuse) {
         referenced.insert(texture.diffuse_id);
       }
+      if (texture.kind == TextureKind::Proxy && texture.status != TextureStatus::Freed &&
+          texture.has_target) {
+        referenced.insert(texture.target_id);  // VS2: a proxy keeps its target's tombstone
+      }
     }
     for (const auto &entry : materials_.all()) {
       for (std::uint32_t tex : wire_params(entry.second).textures) {
@@ -7516,6 +7696,13 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   out.unsupported.insert(out.unsupported.end(), item_level_.begin(), item_level_.end());
   out.canvases = pub_canvases_;
   out.items = pub_items_;
+  if (viewports_live_) {
+    // VS2 (render-stream-16.md "The viewport table"): every entry, by id (the codec assigns `f`).
+    out.viewports.reserve(viewports_.size());
+    for (const auto &entry : viewports_) {
+      out.viewports.push_back(entry.second.entry);
+    }
+  }
   // HC4b: the resource tables, the payload map and the name index, updated for the entries that
   // moved (res_publish_resources); this snapshot shares the rest.
   std::vector<std::pair<std::uint32_t, std::shared_ptr<TextureJob>>> jobs;
@@ -7734,6 +7921,7 @@ RecoverInfo Mirror::resolve_recover_locked(std::uint64_t rid, RecoverBy path) {
       param.unknown_tex_rid = 0;
       changed = true;
       ++out.params;
+      note_proxy_use(out.published_id, 0);  // VS2: an unresolved proxy gains a consumer
     }
     if (changed) {
       ++material->version;
@@ -7816,6 +8004,12 @@ MirrorStats Mirror::stats() const {
       out.texture_payload_bytes += texture.job->bytes()->held_bytes();  // G8kw: finished, not settled
     }
   }
+  for (const auto &entry : textures_) {
+    if (entry.second.kind == TextureKind::Proxy &&
+        entry.second.status == TextureStatus::Unsupported) {
+      ++out.unresolved_now;  // VS2
+    }
+  }
   out.live_shaders = shaders_.size();
   out.live_materials = materials_.size();
   std::set<std::string> shader_hashes;
@@ -7845,6 +8039,764 @@ MirrorStats Mirror::stats() const {
     }
   }
   return out;
+}
+
+// --- viewport surfaces (VS2; render-stream-16.md "The viewport table", "Texture kinds") ----------
+
+void Mirror::set_viewports(bool live) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  viewports_live_ = live;
+}
+
+bool Mirror::viewports_live() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return viewports_live_;
+}
+
+int Mirror::handler_viewport(std::uint64_t viewport, const char *op, std::uint64_t frame,
+                             ViewportRec **out) {
+  if (viewport == root_viewport_rid_ && root_viewport_rid_ != 0) {
+    return 0;
+  }
+  if (!viewports_live_) {
+    session_unsupported(op, UnsupportedReason::NonRootViewport);  // exactly /15's typing
+    return 2;
+  }
+  if (viewport == 0) {
+    return 3;  // RID(): the engine refuses it and nothing changes
+  }
+  const auto it = viewport_by_rid_.find(viewport);
+  if (it != viewport_by_rid_.end()) {
+    *out = &viewports_.at(it->second);
+    return 1;
+  }
+  ++stats_.unknown_viewport_calls;
+  unknown(viewport, op, frame);
+  return 3;
+}
+
+Mirror::ViewportRec *Mirror::viewport_for(std::uint64_t vp, const char *op, std::uint64_t frame) {
+  if (vp == 0 || (vp == root_viewport_rid_ && root_viewport_rid_ != 0)) {
+    return nullptr;  // RID() is refused by the engine; the root is the session's, not an entry
+  }
+  const auto it = viewport_by_rid_.find(vp);
+  if (it != viewport_by_rid_.end()) {
+    return &viewports_.at(it->second);
+  }
+  ++stats_.unknown_viewport_calls;
+  unknown(vp, op, frame);
+  return nullptr;
+}
+
+void Mirror::update_3d(ViewportRec *v) {
+  // D9: a camera is attached, 3D is not disabled and the viewport's scenario holds an instance.
+  bool world = v->adopt_world;
+  if (!world && v->scenario != 0) {
+    const auto it = scenario_instances_.find(v->scenario);
+    world = it != scenario_instances_.end() && it->second != 0;
+  }
+  const bool now = (v->camera != 0 || v->adopt_camera) && !v->disable_3d && world;
+  if (now) {
+    if (!v->ever_3d) {
+      v->ever_3d = true;
+      ++stats_.renders_3d;
+    }
+    session_unsupported("viewport_attach_camera", UnsupportedReason::Viewport3d);  // sticky
+  }
+  v->entry.renders_3d = now;
+}
+
+void Mirror::scenario_moved(std::uint64_t scenario) {
+  for (auto &entry : viewports_) {
+    if (entry.second.scenario == scenario) {
+      update_3d(&entry.second);
+    }
+  }
+}
+
+void Mirror::instance_leave(std::uint64_t instance) {
+  const auto it = instance_scenario_.find(instance);
+  if (it == instance_scenario_.end()) {
+    return;
+  }
+  const std::uint64_t scenario = it->second;
+  instance_scenario_.erase(it);
+  const auto count = scenario_instances_.find(scenario);
+  if (count != scenario_instances_.end() && --count->second == 0) {
+    scenario_instances_.erase(count);
+    scenario_moved(scenario);
+  }
+}
+
+Mirror::ViewportRec *Mirror::make_viewport(std::uint64_t rid, Origin origin) {
+  ViewportRec rec;
+  rec.rid = rid;
+  ViewportEntry &e = rec.entry;
+  e.id = next_viewport_id_++;
+  e.origin = origin;
+  // RendererViewport::Viewport's defaults (renderer_viewport.h).
+  e.has_parent = false;
+  e.update = ViewportUpdate::WhenVisible;
+  e.clear = ViewportClear::Always;
+  e.canvas_cull_mask = 0xFFFFFFFFu;
+  e.default_texture_filter = Filter::Linear;
+  e.default_texture_repeat = Repeat::Disabled;
+  // Its `viewport` texture: the mirror's own entry (no RID), from the shared texture counter.
+  Texture texture;
+  texture.id = next_texture_id_++;
+  texture.kind = TextureKind::Viewport;
+  texture.status = TextureStatus::Ok;
+  texture.version = 1;
+  texture.origin = origin;
+  texture.adopted_content =
+      origin == Origin::Adopted ? AdoptedContent::Current : AdoptedContent::None;
+  texture.viewport_id = e.id;
+  rec.texture = texture.id;
+  textures_.emplace(texture.id, std::move(texture));
+  viewport_by_rid_[rid] = e.id;
+  return &viewports_.emplace(e.id, std::move(rec)).first->second;
+}
+
+void Mirror::free_viewport(std::uint32_t id) {
+  const auto it = viewports_.find(id);
+  if (it == viewports_.end()) {
+    return;
+  }
+  viewport_by_rid_.erase(it->second.rid);
+  for (auto rt = rt_viewport_.begin(); rt != rt_viewport_.end();) {
+    rt = rt->second == id ? rt_viewport_.erase(rt) : std::next(rt);
+  }
+  for (auto &entry : viewports_) {
+    ViewportEntry &child = entry.second.entry;
+    if (child.has_parent && child.parent == id) {
+      child.has_parent = false;  // its parent RID names nothing any more
+      child.parent = 0;
+    }
+  }
+  const std::uint32_t texture = it->second.texture;
+  viewports_.erase(it);
+  retire_texture(texture);  // a `freed` tombstone while something names it, gone otherwise
+  ++stats_.freed;
+}
+
+int Mirror::resolve_proxy(std::uint64_t base, std::uint64_t viewport,
+                          std::uint32_t *target) const {
+  if (viewport != 0) {
+    const auto it = viewport_by_rid_.find(viewport);
+    if (it != viewport_by_rid_.end()) {
+      *target = viewports_.at(it->second).texture;
+      return 0;
+    }
+  }
+  if (base != 0) {
+    const auto rt = rt_viewport_.find(base);
+    if (rt != rt_viewport_.end()) {
+      *target = viewports_.at(rt->second).texture;
+      return 1;
+    }
+    const auto tex = texture_by_rid_.find(base);
+    if (tex != texture_by_rid_.end()) {
+      const Texture *t = textures_.find(tex->second);
+      if (t != nullptr && t->kind != TextureKind::Proxy) {  // Godot refuses proxy-of-proxy
+        *target = tex->second;
+        return 2;
+      }
+    }
+  }
+  *target = 0;
+  return -1;
+}
+
+void Mirror::count_route(int route, bool adopt) {
+  if (route == 0) {
+    ++(adopt ? stats_.proxies_adopted : stats_.proxies_bound_adjacency);
+  } else if (route == 1) {
+    ++stats_.proxies_bound_rid;
+  } else if (route == 2) {
+    ++stats_.proxies_bound_texture;
+  }
+}
+
+bool Mirror::point_proxy(std::uint32_t id, Texture *t, bool ok, std::uint32_t target) {
+  const bool was_ok = t->status == TextureStatus::Ok;
+  const bool changed = was_ok != ok || (ok && (!t->has_target || t->target_id != target));
+  t->status = ok ? TextureStatus::Ok : TextureStatus::Unsupported;
+  t->has_reason = !ok;
+  t->reason = TextureReason::ProxyUnresolved;
+  t->has_target = ok;
+  t->target_id = ok ? target : 0;
+  if (ok) {
+    unresolved_untried_.erase(id);
+    proxy_uses_.erase(id);
+  } else {
+    if (was_ok) {
+      ++stats_.proxies_unresolved;  // a transition into proxy-unresolved (a new one included)
+    }
+    if (!t->route_tried) {
+      unresolved_untried_.insert(id);
+    }
+  }
+  return changed;
+}
+
+Mirror::Texture *Mirror::make_proxy(std::uint64_t proxy, Origin origin) {
+  const auto stale = texture_by_rid_.find(proxy);
+  if (stale != texture_by_rid_.end()) {
+    retire_texture(stale->second);  // a recycled RID value: the old id is gone
+  }
+  Texture texture;
+  texture.id = next_texture_id_++;
+  texture.rid = proxy;
+  texture.kind = TextureKind::Proxy;
+  texture.status = TextureStatus::Ok;  // point_proxy decides (an unresolved start is a transition)
+  texture.version = 1;
+  texture.origin = origin;
+  texture.adopted_content =
+      origin == Origin::Adopted ? AdoptedContent::Current : AdoptedContent::None;
+  texture_by_rid_[proxy] = texture.id;
+  const std::uint32_t id = texture.id;
+  ++stats_.proxies;
+  return &textures_.emplace(id, std::move(texture));
+}
+
+std::uint32_t Mirror::read_through(std::uint32_t id) const {
+  const Texture *t = textures_.find(id);
+  if (t != nullptr && t->kind == TextureKind::Proxy && t->status == TextureStatus::Ok &&
+      t->has_target) {
+    return t->target_id;
+  }
+  return id;
+}
+
+void Mirror::viewport_create(std::uint64_t rid, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!viewports_live_ || rid == 0 || dropped_identity("viewport_create", frame)) {
+    return;
+  }
+  const auto stale = viewport_by_rid_.find(rid);
+  if (stale != viewport_by_rid_.end()) {
+    free_viewport(stale->second);  // a recycled RID value: the old viewport is gone
+  }
+  forget_unknown(rid);  // Skip: a recycled RID value is a new object
+  make_viewport(rid, Origin::Created);
+  ++stats_.created;
+}
+
+void Mirror::viewport_get_texture(std::uint64_t viewport, std::uint64_t rt, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_get_texture";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  ViewportRec *v = viewport_for(viewport, kOp, frame);
+  if (v == nullptr || rt == 0) {
+    return;  // the dummy's render_target_get_texture is RID(): nothing to map
+  }
+  rt_viewport_[rt] = v->entry.id;
+}
+
+void Mirror::viewport_set_size(std::uint64_t vp, std::int32_t w, std::int32_t h,
+                               std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_size";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  ViewportRec *v = viewport_for(vp, kOp, frame);
+  if (v == nullptr || w < 0 || h < 0) {
+    return;  // a negative size is refused (ERR_FAIL_COND)
+  }
+  v->entry.size_w = w;
+  v->entry.size_h = h;
+}
+
+void Mirror::viewport_set_active(std::uint64_t vp, bool active, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_active";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  ViewportRec *v = viewport_for(vp, kOp, frame);
+  if (v == nullptr || v->entry.active == active) {
+    return;  // activating an active viewport is refused; deactivating an inactive one is a no-op
+  }
+  v->entry.active = active;
+  if (active) {
+    v->entry.active_seq = ++activation_counter_;  // kept while inactive: the latest activation
+  }
+}
+
+void Mirror::viewport_set_parent_viewport(std::uint64_t vp, std::uint64_t parent,
+                                          std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_parent_viewport";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  ViewportRec *v = viewport_for(vp, kOp, frame);
+  if (v == nullptr) {
+    return;
+  }
+  if (parent == 0) {
+    v->entry.has_parent = false;
+    v->entry.parent = 0;
+  } else if (parent == root_viewport_rid_) {
+    v->entry.has_parent = true;
+    v->entry.parent = 0;
+  } else {
+    const auto it = viewport_by_rid_.find(parent);
+    if (it == viewport_by_rid_.end()) {
+      ++stats_.unknown_viewport_calls;
+      unknown(parent, kOp, frame);
+      return;
+    }
+    v->entry.has_parent = true;
+    v->entry.parent = it->second;
+  }
+}
+
+void Mirror::viewport_set_canvas_cull_mask(std::uint64_t vp, std::uint32_t mask,
+                                           std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_canvas_cull_mask";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  if (ViewportRec *v = viewport_for(vp, kOp, frame)) {
+    v->entry.canvas_cull_mask = mask;
+  }
+}
+
+void Mirror::viewport_set_update_mode(std::uint64_t vp, std::int32_t mode, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_update_mode";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  ViewportRec *v = viewport_for(vp, kOp, frame);
+  if (v == nullptr || mode < 0 || mode > static_cast<std::int32_t>(ViewportUpdate::Always)) {
+    return;
+  }
+  v->entry.update = static_cast<ViewportUpdate>(mode);
+  if (v->entry.update == ViewportUpdate::Once) {
+    ++v->entry.once_seq;  // one more render owed (the dummy never flips Once to Disabled)
+  }
+}
+
+void Mirror::viewport_set_clear_mode(std::uint64_t vp, std::int32_t mode, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_clear_mode";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  ViewportRec *v = viewport_for(vp, kOp, frame);
+  if (v == nullptr || mode < 0 || mode > static_cast<std::int32_t>(ViewportClear::NextFrame)) {
+    return;
+  }
+  v->entry.clear = static_cast<ViewportClear>(mode);
+  if (v->entry.clear == ViewportClear::NextFrame) {
+    ++v->entry.clear_seq;
+  }
+}
+
+void Mirror::viewport_set_disable_3d(std::uint64_t vp, bool on, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_disable_3d";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  if (ViewportRec *v = viewport_for(vp, kOp, frame)) {
+    v->disable_3d = on;
+    update_3d(v);
+  }
+}
+
+void Mirror::viewport_set_disable_2d(std::uint64_t vp, bool on, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_disable_2d";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  if (ViewportRec *v = viewport_for(vp, kOp, frame)) {
+    v->entry.disable_2d = on;
+  }
+}
+
+void Mirror::viewport_attach_camera(std::uint64_t vp, std::uint64_t camera, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_attach_camera";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  if (ViewportRec *v = viewport_for(vp, kOp, frame)) {
+    v->camera = camera;
+    v->adopt_camera = false;
+    update_3d(v);
+  }
+}
+
+void Mirror::viewport_set_scenario(std::uint64_t vp, std::uint64_t scenario, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_scenario";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  if (ViewportRec *v = viewport_for(vp, kOp, frame)) {
+    v->scenario = scenario;
+    v->adopt_world = false;
+    update_3d(v);
+  }
+}
+
+void Mirror::viewport_set_transparent_background(std::uint64_t vp, bool on, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_transparent_background";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  if (ViewportRec *v = viewport_for(vp, kOp, frame)) {
+    v->entry.transparent = on;
+  }
+}
+
+void Mirror::viewport_set_use_hdr_2d(std::uint64_t vp, bool on, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_use_hdr_2d";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  if (ViewportRec *v = viewport_for(vp, kOp, frame)) {
+    v->entry.hdr_2d = on;
+    if (on) {
+      session_unsupported(kOp, UnsupportedReason::ViewportHdr2d);  // sticky
+    }
+  }
+}
+
+void Mirror::viewport_set_snap_2d_transforms(std::uint64_t vp, bool on, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_snap_2d_transforms_to_pixel";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  if (ViewportRec *v = viewport_for(vp, kOp, frame)) {
+    v->entry.snap_2d_transforms = on;
+  }
+}
+
+void Mirror::viewport_set_snap_2d_vertices(std::uint64_t vp, bool on, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_snap_2d_vertices_to_pixel";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  if (ViewportRec *v = viewport_for(vp, kOp, frame)) {
+    v->entry.snap_2d_vertices = on;
+  }
+}
+
+void Mirror::viewport_set_msaa_2d(std::uint64_t vp, std::int32_t msaa, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "viewport_set_msaa_2d";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  ViewportRec *v = viewport_for(vp, kOp, frame);
+  if (v == nullptr || msaa < 0 || msaa > 3) {
+    return;  // RS::ViewportMSAA 0..3 (MSAA_MAX is a count, not a mode)
+  }
+  v->entry.msaa_2d = static_cast<std::uint8_t>(msaa);
+  if (msaa != 0) {
+    session_unsupported(kOp, UnsupportedReason::ViewportMsaa2d);  // sticky
+  }
+}
+
+void Mirror::instance_set_scenario(std::uint64_t instance, std::uint64_t scenario,
+                                   std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "instance_set_scenario";
+  if (!viewports_live_ || instance == 0 || dropped(kOp, frame)) {
+    return;
+  }
+  const auto it = instance_scenario_.find(instance);
+  if (it != instance_scenario_.end() && it->second == scenario) {
+    return;
+  }
+  instance_leave(instance);
+  if (scenario != 0) {
+    instance_scenario_[instance] = scenario;
+    if (++scenario_instances_[scenario] == 1) {
+      scenario_moved(scenario);
+    }
+  }
+}
+
+void Mirror::texture_proxy_create(std::uint64_t proxy, std::uint64_t base,
+                                  std::uint64_t adjacent_viewport, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!viewports_live_ || proxy == 0 || dropped_identity("texture_proxy_create", frame)) {
+    return;
+  }
+  std::uint32_t target = 0;
+  const int route = resolve_proxy(base, adjacent_viewport, &target);
+  Texture *t = make_proxy(proxy, Origin::Created);
+  point_proxy(t->id, t, route >= 0, target);
+  count_route(route, false);
+}
+
+void Mirror::texture_proxy_update(std::uint64_t proxy, std::uint64_t base,
+                                  std::uint64_t adjacent_viewport, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "texture_proxy_update";
+  if (!viewports_live_ || dropped(kOp, frame)) {
+    return;
+  }
+  const auto it = texture_by_rid_.find(proxy);
+  if (it == texture_by_rid_.end()) {
+    return;  // a proxy the mirror never met: adoption reads the registry's latest pointing
+  }
+  const std::uint32_t id = it->second;
+  const Texture *seen = textures_.find(id);
+  if (seen == nullptr || seen->kind != TextureKind::Proxy) {
+    return;  // GLES3 refuses texture_proxy_update on a non-proxy
+  }
+  std::uint32_t target = 0;
+  const int route = resolve_proxy(base, adjacent_viewport, &target);
+  Texture *t = textures_.mut(id);  // HC4b: marks
+  t->route_tried = false;          // re-pointed: the node route may try it again
+  const bool was_untried = unresolved_untried_.count(id) != 0;
+  if (point_proxy(id, t, route >= 0, target)) {
+    ++t->version;
+    count_route(route, false);
+  }
+  if (!was_untried && unresolved_untried_.count(id) != 0) {
+    queue_existing_consumers(id);  // turned unresolved under consumers recorded earlier: once
+  }
+}
+
+void Mirror::queue_proxy_use(std::uint32_t tex, std::uint64_t item) {
+  const auto placed = proxy_uses_.emplace(tex, item);
+  if (!placed.second && placed.first->second == 0) {
+    placed.first->second = item;  // an item to search beats none
+  }
+}
+
+void Mirror::queue_existing_consumers(std::uint32_t id) {
+  // One scan at the event (a re-point into unresolved), never per frame: the first item whose
+  // command or instance parameter names the proxy, else whether a material parameter or a canvas
+  // texture's diffuse does (no item).
+  for (const auto &entry : items_.all()) {
+    ++stats_.node_route_scan_items;
+    for (const Command &command : entry.second.state.commands) {
+      if (names_texture(command) && command.has_tex && command.tex == id) {
+        queue_proxy_use(id, entry.second.rid);
+        return;
+      }
+    }
+    for (const auto &param : entry.second.instance_params) {
+      if (param.second.has_tex && param.second.tex == id) {
+        queue_proxy_use(id, entry.second.rid);
+        return;
+      }
+    }
+  }
+  for (const auto &entry : materials_) {
+    for (const auto &param : entry.second.params) {
+      if (param.second.ok && param.second.param.has_tex && param.second.param.tex == id) {
+        queue_proxy_use(id, 0);
+        return;
+      }
+    }
+  }
+  for (const auto &entry : textures_) {
+    if (entry.second.kind == TextureKind::Canvas && entry.second.has_diffuse &&
+        entry.second.diffuse_id == id) {
+      queue_proxy_use(id, 0);
+      return;
+    }
+  }
+}
+
+std::vector<Mirror::UnresolvedProxyUse> Mirror::unresolved_proxy_uses() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<UnresolvedProxyUse> out;
+  if (proxy_uses_.empty()) {
+    return out;  // no consumer event since the last call: nothing to route
+  }
+  if (viewports_live_) {
+    out.reserve(proxy_uses_.size());
+    for (const auto &use : proxy_uses_) {
+      const Texture *t = unresolved_untried_.count(use.first) != 0 ? textures_.find(use.first)
+                                                                   : nullptr;
+      if (t != nullptr && t->rid != 0) {
+        out.push_back({t->rid, use.second});
+      }
+    }
+  }
+  proxy_uses_.clear();
+  return out;
+}
+
+std::vector<Mirror::UnresolvedProxyUse> Mirror::still_unresolved(
+    std::vector<UnresolvedProxyUse> uses) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  uses.erase(std::remove_if(uses.begin(), uses.end(),
+                            [this](const UnresolvedProxyUse &use) {
+                              const auto it = texture_by_rid_.find(use.proxy);
+                              return it == texture_by_rid_.end() ||
+                                     unresolved_untried_.count(it->second) == 0;
+                            }),
+             uses.end());
+  return uses;
+}
+
+void Mirror::proxy_node_route_result(std::uint64_t proxy, std::uint64_t viewport,
+                                     std::uint64_t frame) {
+  (void)frame;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!viewports_live_) {
+    return;
+  }
+  const auto it = texture_by_rid_.find(proxy);
+  if (it == texture_by_rid_.end()) {
+    return;
+  }
+  const std::uint32_t id = it->second;
+  const Texture *seen = textures_.find(id);
+  if (seen == nullptr || seen->kind != TextureKind::Proxy ||
+      seen->status != TextureStatus::Unsupported || seen->route_tried) {
+    return;  // bound meanwhile, or already tried for this pointing
+  }
+  ++stats_.node_route_tried;
+  unresolved_untried_.erase(id);
+  proxy_uses_.erase(id);
+  const auto vp = viewport != 0 ? viewport_by_rid_.find(viewport) : viewport_by_rid_.end();
+  if (vp == viewport_by_rid_.end()) {
+    textures_.unmarked().at(id).route_tried = true;  // no wire change: stays proxy-unresolved
+    return;
+  }
+  ++epoch_;
+  Texture *t = textures_.mut(id);
+  t->route_tried = true;
+  point_proxy(id, t, true, viewports_.at(vp->second).texture);
+  ++t->version;
+  ++stats_.proxies_bound_node_route;
+}
+
+void Mirror::adopt_viewport(const AdoptedViewport &v, std::uint64_t frame) {
+  (void)frame;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!viewports_live_ || v.rid == 0 || viewport_by_rid_.count(v.rid) != 0 ||
+      (v.rid == root_viewport_rid_ && root_viewport_rid_ != 0)) {
+    return;
+  }
+  ++epoch_;
+  forget_unknown(v.rid);
+  ViewportRec *rec = make_viewport(v.rid, Origin::Adopted);
+  ViewportEntry &e = rec->entry;
+  if (v.parent != 0 && v.parent == root_viewport_rid_) {
+    e.has_parent = true;
+    e.parent = 0;
+  } else if (v.parent != 0) {
+    const auto parent = viewport_by_rid_.find(v.parent);
+    e.has_parent = parent != viewport_by_rid_.end();  // the walk adopts a parent first
+    e.parent = e.has_parent ? parent->second : 0;
+  }
+  if (v.active) {
+    e.active = true;
+    e.active_seq = ++activation_counter_;  // tree order (Q4)
+  }
+  e.size_w = std::max<std::int32_t>(v.width, 0);
+  e.size_h = std::max<std::int32_t>(v.height, 0);
+  e.transparent = v.transparent;
+  if (v.update_mode >= 0 && v.update_mode <= static_cast<std::int32_t>(ViewportUpdate::Always)) {
+    e.update = static_cast<ViewportUpdate>(v.update_mode);
+  }
+  if (e.update == ViewportUpdate::Once) {
+    e.once_seq = 1;  // render-stream-16.md: an adopted `once` viewport has once_seq 1
+  }
+  if (v.clear_mode >= 0 && v.clear_mode <= static_cast<std::int32_t>(ViewportClear::NextFrame)) {
+    e.clear = static_cast<ViewportClear>(v.clear_mode);
+  }
+  if (e.clear == ViewportClear::NextFrame) {
+    e.clear_seq = 1;  // as once_seq: the one clear the host still owes
+  }
+  e.disable_2d = v.disable_2d;
+  rec->disable_3d = v.disable_3d;
+  // D9: with the scenario known, the world test is the mirror's own membership (pre-arm instances
+  // seeded at the arm), so later taps and frees keep it exact; `renders_3d` stands in otherwise.
+  rec->scenario = v.scenario;
+  rec->adopt_camera = v.has_camera || v.renders_3d;
+  rec->adopt_world = v.renders_3d && v.scenario == 0;
+  update_3d(rec);
+  e.hdr_2d = v.hdr_2d;
+  if (v.hdr_2d) {
+    session_unsupported("viewport_set_use_hdr_2d", UnsupportedReason::ViewportHdr2d);
+  }
+  if (v.msaa_2d >= 1 && v.msaa_2d <= 3) {
+    e.msaa_2d = static_cast<std::uint8_t>(v.msaa_2d);
+    session_unsupported("viewport_set_msaa_2d", UnsupportedReason::ViewportMsaa2d);
+  }
+  e.canvas_cull_mask = v.canvas_cull_mask;
+  if (v.default_filter > 0 &&
+      v.default_filter <= static_cast<std::int32_t>(Filter::LinearMipmapsAnisotropic)) {
+    e.default_texture_filter = static_cast<Filter>(v.default_filter);
+  }
+  if (v.default_repeat > 0 && v.default_repeat <= static_cast<std::int32_t>(Repeat::Mirror)) {
+    e.default_texture_repeat = static_cast<Repeat>(v.default_repeat);
+  }
+  e.snap_2d_transforms = v.snap_transforms;
+  e.snap_2d_vertices = v.snap_vertices;
+  e.global_xform = v.global_xform;
+  ++stats_.adopted;
+  if (v.default_proxy != 0 && texture_by_rid_.count(v.default_proxy) == 0) {
+    const std::uint32_t target = rec->texture;
+    Texture *t = make_proxy(v.default_proxy, Origin::Adopted);
+    point_proxy(t->id, t, true, target);
+    count_route(0, true);
+    if (!recover_index_.empty()) resolve_recover_locked(v.default_proxy, RecoverBy::Adopt);
+  }
+}
+
+void Mirror::seed_scenario_instances(
+    const std::vector<std::pair<std::uint64_t, std::uint64_t>> &members, std::uint64_t frame) {
+  (void)frame;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!viewports_live_) {
+    return;
+  }
+  std::set<std::uint64_t> occupied;  // scenarios that gained their first instance
+  for (const auto &member : members) {
+    if (member.first == 0 || member.second == 0 || instance_scenario_.count(member.first) != 0) {
+      continue;
+    }
+    instance_scenario_[member.first] = member.second;
+    if (++scenario_instances_[member.second] == 1) {
+      occupied.insert(member.second);
+    }
+  }
+  if (!occupied.empty()) {
+    ++epoch_;
+    for (const std::uint64_t scenario : occupied) {
+      scenario_moved(scenario);
+    }
+  }
+}
+
+void Mirror::adopt_proxy(std::uint64_t proxy, std::uint64_t base, std::uint64_t viewport,
+                         std::uint64_t frame) {
+  (void)frame;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!viewports_live_ || proxy == 0 || texture_by_rid_.count(proxy) != 0) {
+    return;  // adoption only ever names a RID the table does not hold
+  }
+  ++epoch_;
+  std::uint32_t target = 0;
+  const int route = resolve_proxy(base, viewport, &target);
+  Texture *t = make_proxy(proxy, Origin::Adopted);
+  point_proxy(t->id, t, route >= 0, target);
+  count_route(route, true);
+  if (!recover_index_.empty()) resolve_recover_locked(proxy, RecoverBy::Adopt);
 }
 
 // --- process-wide mirror ----------------------------------------------------------

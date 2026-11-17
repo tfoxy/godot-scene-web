@@ -3488,6 +3488,52 @@ void test_v15_hint_pins_before_first_frame() {
   hub.finish(EndReason::Shutdown, 4, 4 * 16000000ULL);
 }
 
+// VS2 (render-stream-16.md "Who speaks /16"; viewport-surfaces-design.md D14): render-stream.16
+// selects /16 (hello `render-stream/16`), and a /16 connection gets hints like a /15 one.
+void test_v16_hints() {
+  namespace hints = grc::rs::hints;
+  FakeTransport transport;
+  Session tmpl = make_template(Delivery::OutOfBand);
+  tmpl.version = ProtocolVersion::V16;
+  observe_multimesh_features(&tmpl.features);
+  Hub hub(&transport, LiveConfig(), tmpl);
+  hints::Table table;
+  hints::Source src;
+  src.hint.hash = std::string(63, '0') + "7";
+  src.hint.format = "RGBA8";
+  src.hint.width = 4;
+  src.hint.height = 4;
+  src.hint.payload_bytes = 100;
+  src.rid = 7;
+  src.body = std::make_shared<grc::rs::PayloadBytes>(std::vector<std::uint8_t>(100, 1));
+  table.add(std::move(src));
+  table.walk();
+  hub.set_hints(&table, hints::Sabotage::None);
+  std::string hello16 =
+      read_file(std::string(GRC_GOLDEN12_DIR) + "/control/valid/hello-native-block.json");
+  hello16.replace(hello16.find("render-stream/12"), 16, "render-stream/16");
+  hub.on_event(opened_with(1, "render-stream.16"), 1);
+  hub.on_event(text(1, hello16), 1);
+  std::vector<const hints::Sent *> sinks;
+  hub.hint_sinks(&sinks);
+  check(sinks.size() == 1, "V16: an accepted /16 hello has a hint sink");
+  hub.on_frame_shared(1, 16000000ULL, w13_state(1), 1, 0);
+  hub.sync();
+  std::size_t hinted = 0;
+  for (const auto &e : hub.take_hint_events()) {
+    if (e.connection == 1 && !e.unhint) ++hinted;
+  }
+  check(hinted == 1, "V16: the /16 connection is hinted with its first transaction");
+  bool session16 = false;
+  for (const Sent &x : transport.of(Sent::Binary)) {
+    const std::string b(x.bytes.begin(), x.bytes.end());
+    session16 = session16 || (!x.bytes.empty() && x.bytes[0] == 'G' &&
+                              b.find("render-stream/16") != std::string::npos);
+  }
+  check(session16, "V16: the session is render-stream/16");
+  hub.finish(EndReason::Shutdown, 2, 2 * 16000000ULL);
+}
+
 // render-stream-15.md "Resource hints" on the hub: a /15 connection gets the table's hints after
 // its first transaction, never ahead of a frame's transaction, at most kPerFrame a callback, in
 // priority order, with an unhint once an entry leaves; a /13 connection on the same hub gets none.
@@ -4193,6 +4239,7 @@ int main(int argc, char **argv) {
   test_hc5_formation_thread();
   test_w13_connections();
   test_v15_hint_pins_before_first_frame();
+  test_v16_hints();
   test_v15_hints();
   std::printf("rs_live_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
