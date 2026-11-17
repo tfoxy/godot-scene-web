@@ -329,6 +329,10 @@ impl Applier {
             }
             Refresh::Moved
         };
+        // The cover walk reads the rows this refresh moved: what it left out may show now.
+        if self.cull_covered() {
+            self.expected_calls = Some(self.list.merged_draw_count() as u32);
+        }
         if let Some(saved) = saved_dirty {
             self.list.dirty.items = saved;
         }

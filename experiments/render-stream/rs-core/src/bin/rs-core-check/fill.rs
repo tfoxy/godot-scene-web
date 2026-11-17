@@ -22,6 +22,9 @@ use std::process::ExitCode;
 /// `--draws <dir>` writes, for each printed transaction, `<dir>/draws-<seq>.jsonl`: one line per
 /// draw (class, fragments, bounds, blend, texture, program, the opaque share of its sampled
 /// texels and its first vertex's colour and modulate alpha).
+/// The applier's cover walk runs as it does in a client (`--cover off` turns it off): the list
+/// accounted is what an executor would draw. Each line also reports `covered_draws` and
+/// `covered_ops`, what the walk left out of that transaction's list.
 /// `--damage <file>` also compares every transaction's draws with the previous one's
 /// (`fill::signature`, `fill::damage`) and writes a summary: how many transactions changed
 /// nothing, the damaged area's distribution, and the fill a redraw scissored to the damage
@@ -31,7 +34,6 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
     use gsw_canvas_draw_list::TextureOp;
     use render_stream_core::apply::geom;
     use render_stream_core::apply::payloads::PayloadStore;
-    use render_stream_core::apply::programs::{ProgramEntry, ProgramInfo};
     use render_stream_core::apply::{Applier, Viewport};
     use std::collections::{HashMap, HashSet};
     let Some(path) = args.positional.first() else {
@@ -80,6 +82,7 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
             cull_mask: vp.canvas_cull_mask as u32,
             format: gsw_canvas_draw_list::Format::Rgb10A2,
         });
+        a.cover_walk = args.get("cover") != Some("off");
         let mut payloads = PayloadStore::default();
         let mut need = Vec::new();
         let mut out = std::io::stdout().lock();
@@ -130,25 +133,17 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                             }
                         }
                     }
-                    for (sid, hash, _) in a.pending_shaders(v.state()) {
-                        let code = payloads.shaders.get(&hash).cloned().unwrap_or_default();
-                        let screen = code.contains("hint_screen_texture");
-                        let mips = screen && code.contains("filter_linear_mipmap");
-                        let time = code.contains("TIME");
-                        shader_use.insert(hash, (screen, time));
-                        let mut meta = synthetic_meta(v.state(), sid, &hash);
-                        meta["vertexStage"] = J::Bool(false);
-                        meta["time"] = J::Bool(time);
-                        if screen {
-                            meta["screenTexture"] =
-                                json!({"names": ["screen_texture"], "mipmaps": mips});
-                        }
-                        let info = ProgramInfo::from_meta_json(programs, &meta.to_string())
-                            .map_err(|e| wire::Error::new("program", e.to_string()))?;
-                        programs += 1;
-                        a.set_program(hash, ProgramEntry::Ready(info));
-                    }
-                    a.apply(v.state(), v.delta(), &payloads);
+                    register_synthetic_programs(
+                        &mut a,
+                        v.state(),
+                        &payloads,
+                        &mut programs,
+                        Some(&mut shader_use),
+                    )?;
+                    let covered = {
+                        let st = a.apply(v.state(), v.delta(), &payloads);
+                        (st.covered_draws, st.covered_ops)
+                    };
                     for op in &a.list.texture_ops {
                         match *op {
                             TextureOp::Upload {
@@ -402,6 +397,7 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                                 "p50": r.layers_p50, "p95": r.layers_p95, "max": r.layers_max},
                             "hidden_screens": (r.hidden_px / screen * 1000.0).round() / 1000.0,
                             "empty_draws": r.empty_draws,
+                            "covered_draws": covered.0, "covered_ops": covered.1,
                             "large": large, "ops": ops,
                         });
                         let _ = writeln!(out, "{line}");
@@ -579,4 +575,43 @@ fn draw_sums(l: &gsw_canvas_draw_list::DrawList, d: usize) -> J {
         });
     }
     json!([pos, uv, col, md])
+}
+
+/// Natively there is no transpiler: every shader `a` waits for gets a synthetic program whose
+/// screen sampling (with mipmaps) and `TIME` use come from its code, its id taken from the code's
+/// hash; `*next` counts the programs registered.
+/// `shader_use` records (samples the screen, reads TIME) per shader hash.
+pub(crate) fn register_synthetic_programs(
+    a: &mut render_stream_core::apply::Applier,
+    state: &render_stream_core::state::ResolvedState,
+    payloads: &render_stream_core::apply::payloads::PayloadStore,
+    next: &mut u32,
+    mut shader_use: Option<
+        &mut std::collections::HashMap<render_stream_core::state::Hash, (bool, bool)>,
+    >,
+) -> Result<(), wire::Error> {
+    use render_stream_core::apply::programs::{ProgramEntry, ProgramInfo};
+    for (sid, hash, _) in a.pending_shaders(state) {
+        let code = payloads.shaders.get(&hash).cloned().unwrap_or_default();
+        let screen = code.contains("hint_screen_texture");
+        let mips = screen && code.contains("filter_linear_mipmap");
+        let time = code.contains("TIME");
+        if let Some(u) = shader_use.as_deref_mut() {
+            u.insert(hash, (screen, time));
+        }
+        let mut meta = synthetic_meta(state, sid, &hash);
+        meta["vertexStage"] = J::Bool(false);
+        meta["time"] = J::Bool(time);
+        if screen {
+            meta["screenTexture"] = json!({"names": ["screen_texture"], "mipmaps": mips});
+        }
+        // The id follows the code, not the order shaders arrive in, so appliers replaying the same
+        // recording side by side (`walk-diff --cover`) name every program alike.
+        let id = u32::from_le_bytes([hash.0[0], hash.0[1], hash.0[2], hash.0[3] & 0x7f]).max(1);
+        let info = ProgramInfo::from_meta_json(id, &meta.to_string())
+            .map_err(|e| wire::Error::new("program", e.to_string()))?;
+        *next += 1;
+        a.set_program(hash, ProgramEntry::Ready(info));
+    }
+    Ok(())
 }

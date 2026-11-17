@@ -63,6 +63,17 @@ pub const ACCEPT_RESOURCE_HINT: i32 = 6;
 /// A /15 `resource_unhint` record: the hash left the hint table. `hint_json` reads it.
 pub const ACCEPT_RESOURCE_UNHINT: i32 = 7;
 
+/// The applier's cover walk follows the executor's real `MAX_TEXTURE_SIZE` (textures over it are
+/// reduced at upload); without a context that reports one it keeps the applier's conservative
+/// default.
+fn set_max_texture_side(applier: &mut Applier, executor: Option<&CanvasItemsExecutor>) {
+    if let Some(side) = executor.map(CanvasItemsExecutor::max_texture_side) {
+        if side > 0 {
+            applier.max_texture_side = side;
+        }
+    }
+}
+
 /// W13c: a transaction message's `seq` and whether it is full, read from its meta's canonical
 /// prefix (`{"type":"transaction","seq":N,"frame":N,"encoding":"…"`, every version's key order).
 /// `None` for any other record (or one too short to say).
@@ -193,6 +204,9 @@ struct Opts {
     no_prune: bool,
     /// GRH `rebuild-reupload`: `live_rebuild` leaves the fresh applier's residency empty.
     rebuild_reupload: bool,
+    /// `no-cover-walk`: the applier's cover walk off, so the list holds every draw and
+    /// back-buffer operation (an A/B of the walk; it changes no pixel).
+    no_cover_walk: bool,
     /// PM6a's receiver sabotage `ignore-particle-emits` on GSW: every wire emit is dropped
     /// (counted `emits_dropped`) instead of consumed.
     ignore_particle_emits: bool,
@@ -389,6 +403,8 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 // GRH: a coding resync's fresh applier does not inherit the resident textures, so
                 // its full transaction uploads every texture again (the pre-GRH behaviour).
                 "rebuild-reupload" => o.rebuild_reupload = true,
+                // Not a sabotage: the cover walk off (the same pixels, more fill).
+                "no-cover-walk" => o.no_cover_walk = true,
                 // GLJ: every texture upload copied into the draw list's byte arena (pre-GLJ), so
                 // a viewer's first apply holds a second copy of the whole texture set at once.
                 "arena-upload" => o.apply.arena_upload = true,
@@ -1309,6 +1325,8 @@ impl GswRs {
         }
         let mut applier = Applier::new(viewport);
         applier.sabotage = self.opts.apply;
+        applier.cover_walk = !self.opts.no_cover_walk;
+        set_max_texture_side(&mut applier, self.executor.as_ref());
         applier.ov_sabotage = self.opts.ov;
         applier.log_removed(self.log_removed);
         // Checked when it was set; an applier cannot refuse it.
@@ -1760,6 +1778,8 @@ impl GswRs {
         };
         let mut applier = Applier::new(viewport);
         applier.sabotage = self.opts.apply;
+        applier.cover_walk = !self.opts.no_cover_walk;
+        set_max_texture_side(&mut applier, self.executor.as_ref());
         applier.half_instances = v.session().engine.rendering_method == "gl_compatibility";
         // GRH: the executor still holds the GPU textures; the fresh applier reconciles against
         // them instead of uploading all of them again. The old applier's other state goes first.

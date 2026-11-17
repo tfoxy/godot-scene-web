@@ -656,25 +656,9 @@ pub fn godot_screen_transform(width: u32, height: u32) -> [f32; 16] {
     ]
 }
 
-/// The integer factor a `width`x`height` upload is reduced by to fit a context whose
-/// `MAX_TEXTURE_SIZE` is `max_side` (1 when it fits). A GLES3-class phone has 4096 where a desktop
-/// has 16384, and a host can send a wider image (STS2's character-select background is 5380x1320),
-/// which the context would refuse. Draws sample with normalized UVs, so a reduced texture draws the
-/// same image at a lower resolution; only shaders that read the texel size (`TEXTURE_PIXEL_SIZE`,
-/// `textureSize`) see the reduced size. A `max_side` of 0 (a lost context) reduces nothing.
-pub fn downscale_factor(width: u32, height: u32, max_side: u32) -> u32 {
-    let side = width.max(height);
-    if max_side == 0 || side <= max_side {
-        1
-    } else {
-        side.div_ceil(max_side)
-    }
-}
-
-/// The size of a `width`x`height` image reduced by `k` (each side rounded up, so no texel is lost).
-pub fn downscaled_size(width: u32, height: u32, k: u32) -> (u32, u32) {
-    (width.div_ceil(k), height.div_ceil(k))
-}
+/// How an image over `MAX_TEXTURE_SIZE` is reduced at upload: the draw list's contract, which
+/// the cover walk reads to know which texels a reduced texture holds.
+pub use gsw_canvas_draw_list::{downscale_factor, downscaled_size};
 
 /// Reduce a straight-alpha RGBA8 image by `k` with a box filter weighted by alpha (the mean of
 /// the premultiplied texels, un-premultiplied), so transparent texels do not darken an edge. A

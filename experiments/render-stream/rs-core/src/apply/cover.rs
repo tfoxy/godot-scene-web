@@ -1,0 +1,216 @@
+//! The applier's side of the cover walk (`gsw_canvas_draw_list::cover`): after every apply the
+//! assembled draw table is walked back to front and the list the executor reads holds only what
+//! can still change a pixel. The assembled table is kept beside it, so a transaction that moves
+//! rows only (a cover drifting by a fraction of a pixel, a modulate fading) walks again without
+//! re-assembling.
+//!
+//! The walk reads the frame's final rows, vertices and instances, the uploaded textures' opaque
+//! texels ([`super::residency::Resident::opacity`]) and each binding's program (whether it samples
+//! the screen or has its own vertex stage). Nothing on the wire or in the state changes.
+
+use super::programs::ProgramEntry;
+use super::{residency, Applier, IdMap};
+use gsw_canvas_draw_list::cover::{CoverFacts, ProgramFacts};
+use gsw_canvas_draw_list::opacity::Opacity;
+use gsw_canvas_draw_list::{Draw, DrawList, InstancedDraw, ScreenOp};
+
+/// One draw table: draws, screen operations, instanced ranges.
+#[derive(Default)]
+pub(super) struct Table {
+    draws: Vec<Draw>,
+    ops: Vec<ScreenOp>,
+    instanced: Vec<InstancedDraw>,
+}
+
+fn swap_table(list: &mut DrawList, t: &mut Table) {
+    std::mem::swap(&mut list.draws, &mut t.draws);
+    std::mem::swap(&mut list.screen_ops, &mut t.ops);
+    std::mem::swap(&mut list.instanced, &mut t.instanced);
+}
+
+fn same_table(list: &DrawList, t: &Table) -> bool {
+    list.draws == t.draws && list.screen_ops == t.ops && list.instanced == t.instanced
+}
+
+/// The cover walk's state between applies.
+#[derive(Default)]
+pub(super) struct CoverState {
+    /// Boxed (made on first use): [`Applier::cull_covered`] takes it out of the applier for
+    /// every walk.
+    walk: Option<Box<gsw_canvas_draw_list::cover::CoverWalk>>,
+    /// The assembled table while the list holds the culled one (`culled`).
+    full: Table,
+    /// The table the executor last saw, while `shown_valid` (it differed from the full table).
+    shown: Table,
+    culled: bool,
+    shown_valid: bool,
+}
+
+struct Facts<'a> {
+    resident: &'a IdMap<residency::Resident>,
+    applier: &'a Applier,
+}
+
+impl CoverFacts for Facts<'_> {
+    fn opacity(&self, texture: u32) -> Option<&Opacity> {
+        self.resident.get(&texture)?.opacity.as_deref()
+    }
+
+    fn program(&self, slot: u32) -> ProgramFacts {
+        let Some(key) = self.applier.binding_key(slot) else {
+            return ProgramFacts::UNKNOWN;
+        };
+        match self.applier.programs.get(&key.hash) {
+            Some(ProgramEntry::Ready(info)) => ProgramFacts {
+                reads_screen: info.screen.is_some(),
+                vertex_stage: info.vertex,
+            },
+            _ => ProgramFacts::UNKNOWN,
+        }
+    }
+
+    fn max_texture_side(&self) -> u32 {
+        self.applier.max_texture_side
+    }
+}
+
+impl Applier {
+    /// Before `assemble` rebuilds the table: the list takes back the assembled table it was culled
+    /// from (so the assembly marks the table dirty only when the assembled table changed), and the
+    /// culled one is kept as what the executor last saw.
+    pub(super) fn cover_unswap(&mut self) {
+        let c = &mut self.cover;
+        if c.culled {
+            swap_table(&mut self.list, &mut c.full);
+            std::mem::swap(&mut c.full, &mut c.shown);
+            c.culled = false;
+            c.shown_valid = true;
+        }
+    }
+
+    /// After the apply wrote its rows and instances: walks the assembled table and leaves the list
+    /// holding what can change a pixel ([`Applier::cover_walk`] off: the whole table). Marks the
+    /// draw table dirty when what the executor reads changed; returns whether it did.
+    pub(super) fn cull_covered(&mut self) -> bool {
+        self.cover_unswap();
+        let mut walk = self.cover.walk.take().unwrap_or_default();
+        let dropped = if self.cover_walk {
+            let facts = Facts {
+                resident: &self.resident,
+                applier: self,
+            };
+            walk.run(&self.list, &facts)
+        } else {
+            // What the walk remembers holds only while it sees every change.
+            walk.forget();
+            false
+        };
+        let c = &mut self.cover;
+        self.stats.covered_draws = 0;
+        self.stats.covered_ops = 0;
+        self.stats.covers = walk.covers;
+        if dropped && walk.reused && c.shown_valid {
+            // The walk kept its last answer over the same table, so the table the executor last
+            // saw is the one a compaction would make: the list takes it back.
+            swap_table(&mut self.list, &mut c.full);
+            swap_table(&mut self.list, &mut c.shown);
+            c.culled = true;
+            c.shown_valid = false;
+            self.stats.covered_draws = walk.dropped_draws;
+            self.stats.covered_ops = walk.dropped_ops;
+            self.cover.walk = Some(walk);
+            return false;
+        }
+        if dropped {
+            swap_table(&mut self.list, &mut c.full);
+            walk.compact(
+                &c.full.draws,
+                &c.full.ops,
+                &c.full.instanced,
+                &mut self.list.draws,
+                &mut self.list.screen_ops,
+                &mut self.list.instanced,
+            );
+            c.culled = true;
+            self.stats.covered_draws = walk.dropped_draws;
+            self.stats.covered_ops = walk.dropped_ops;
+        }
+        self.cover.walk = Some(walk);
+        let c = &mut self.cover;
+        let changed = if c.shown_valid {
+            !same_table(&self.list, &c.shown)
+        } else {
+            // The executor last saw the full table (or what `assemble` already compared).
+            dropped
+        };
+        c.shown_valid = false;
+        if changed {
+            self.list.dirty.draws = true;
+        }
+        changed
+    }
+
+    /// The smallest cover the walk analyses, in target pixels
+    /// (`gsw_canvas_draw_list::cover::DEFAULT_MIN_COVER_AREA` by default).
+    pub fn set_cover_min_area(&mut self, px: u32) {
+        self.cover
+            .walk
+            .get_or_insert_with(Default::default)
+            .min_cover_area = px;
+    }
+
+    /// The assembled draw table, before the cover walk: the list's own when nothing was culled.
+    pub fn assembled_draws(&self) -> &[Draw] {
+        if self.cover.culled {
+            &self.cover.full.draws
+        } else {
+            &self.list.draws
+        }
+    }
+}
+
+impl Applier {
+    /// Diagnostics (`rs-core-check walk-diff --cover`): what every target pixel of the list as it
+    /// stands depends on (`gsw_canvas_draw_list::cover::oracle`), with this applier's textures and
+    /// programs.
+    pub fn cover_provenance(&self) -> gsw_canvas_draw_list::cover::oracle::Provenance {
+        let facts = Facts {
+            resident: &self.resident,
+            applier: self,
+        };
+        gsw_canvas_draw_list::cover::oracle::provenance(&self.list, &facts)
+    }
+
+    /// Diagnostics (`rs-core-check walk-diff --cover`): whether the list as it stands is what a
+    /// walk that remembers nothing makes of the assembled table, i.e. whether what the applier's
+    /// walk kept across applies changed no answer.
+    pub fn cover_recheck(&self) -> bool {
+        let mut full = self.list.clone();
+        if self.cover.culled {
+            full.draws.clone_from(&self.cover.full.draws);
+            full.screen_ops.clone_from(&self.cover.full.ops);
+            full.instanced.clone_from(&self.cover.full.instanced);
+        }
+        let facts = Facts {
+            resident: &self.resident,
+            applier: self,
+        };
+        let mut walk = gsw_canvas_draw_list::cover::CoverWalk::default();
+        if let Some(w) = &self.cover.walk {
+            walk.min_cover_area = w.min_cover_area;
+        }
+        if !(self.cover_walk && walk.run(&full, &facts)) {
+            return !self.cover.culled;
+        }
+        let mut t = Table::default();
+        walk.compact(
+            &full.draws,
+            &full.screen_ops,
+            &full.instanced,
+            &mut t.draws,
+            &mut t.ops,
+            &mut t.instanced,
+        );
+        self.cover.culled && same_table(&self.list, &t)
+    }
+}

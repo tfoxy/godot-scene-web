@@ -139,6 +139,8 @@ fn hp_bar() -> ResolvedState {
 fn clip_group_draws_its_range_into_the_back_buffer_then_the_mask_through_the_clip_program() {
     let s = hp_bar();
     let mut a = Applier::new(viewport());
+    // The assembly under test, not the cover walk (which would drop the covered rects).
+    a.cover_walk = false;
     a.apply(&s, &full_delta(&s), &PayloadStore::default());
     // The mask's subtree first (all of it before the owner), then the owner, then item 6.
     assert_eq!(
@@ -182,6 +184,8 @@ fn clip_group_draws_its_range_into_the_back_buffer_then_the_mask_through_the_cli
 fn drop_canvas_group_draws_the_tree_plainly_and_full_backbuffer_copy_copies_everything() {
     let s = hp_bar();
     let mut a = Applier::new(viewport());
+    // The assembly under test, not the cover walk (which would drop the covered rects).
+    a.cover_walk = false;
     a.sabotage.drop_canvas_group = true;
     a.sabotage.full_backbuffer_copy = true;
     a.apply(&s, &full_delta(&s), &PayloadStore::default());

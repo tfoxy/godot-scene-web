@@ -196,6 +196,10 @@ impl Trio {
             oracle: Applier::new(viewport()),
             store: PayloadStore::default(),
         };
+        // The walk and assembly under test, not the cover walk (which would drop covered rects).
+        for a in [&mut t.scoped, &mut t.before, &mut t.oracle] {
+            a.cover_walk = false;
+        }
         t.before.back_buffer_always_walks = true;
         t.oracle.always_walk = true;
         t.apply(s, &full_delta(s));

@@ -18,6 +18,7 @@
 //!   walk re-runs over the state and the index buffer and draw table are rebuilt; vertices stay in
 //!   each item's slab range, so only changed items' vertices move.
 
+mod cover;
 pub mod dynamic;
 pub mod geom;
 pub mod lower;
@@ -272,6 +273,11 @@ pub struct ApplyStats {
     /// Item-space program bindings live after this transaction, and how many changed.
     pub bindings: u32,
     pub bindings_changed: u32,
+    /// The cover walk ([`Applier::cover_walk`]): covers found, and the draws and back-buffer
+    /// operations of the assembled table left out of the list because nothing they paint is seen.
+    pub covers: u32,
+    pub covered_draws: u32,
+    pub covered_ops: u32,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -904,6 +910,17 @@ pub struct Applier {
     unfrozen: Vec<Id>,
     /// FRZ-HOOK: a root was unfrozen; the next apply re-reads every item and drops stale records.
     reconcile_frozen: bool,
+    /// The cover walk (`gsw_canvas_draw_list::cover`, applier side in `cover.rs`): after every
+    /// apply, draws and back-buffer operations whose every pixel a later opaque draw overwrites
+    /// before anything reads it are left out of the list. It changes no pixel. On by default;
+    /// off for A/B measurements and as the oracle the culled list is compared against.
+    pub cover_walk: bool,
+    /// The executor's largest texture side (`MAX_TEXTURE_SIZE`): it reduces a larger texture at
+    /// upload (`gsw_canvas_draw_list::downscale_factor`), and the cover walk then counts a texel
+    /// opaque only where the whole block it was reduced from is. An adapter sets the real value;
+    /// the default, 2048, is the smallest a WebGL2 or GLES3 context may report. 0: no limit.
+    pub max_texture_side: u32,
+    cover: cover::CoverState,
 }
 
 /// PM3: one instanced draw's range in `list.instances` and what fills it.
@@ -1321,6 +1338,9 @@ impl Applier {
             frozen_dirty: false,
             unfrozen: Vec::new(),
             reconcile_frozen: false,
+            cover_walk: true,
+            max_texture_side: 2048,
+            cover: cover::CoverState::default(),
         }
     }
 
@@ -1567,7 +1587,14 @@ impl Applier {
         for (id, hash) in ids {
             if let Some(px) = payloads.textures.get(&hash) {
                 upload_pixels(&mut self.list, id, px, self.sabotage.arena_upload);
+            } else if let Some(r) = self.resident.get_mut(&id) {
+                // Not on the GPU any more: nothing it draws may hide what lies beneath.
+                r.opacity = None;
             }
+        }
+        // A cover whose pixels could not be re-uploaded no longer hides anything.
+        if self.cull_covered() {
+            self.expected_calls = Some(self.list.merged_draw_count() as u32);
         }
     }
 
@@ -1881,6 +1908,11 @@ impl Applier {
             self.kept.remove(&id);
             self.restore_resized.push(id);
         }
+        // A cover drawing from a freed texture draws nothing until the next apply: what it hid
+        // must be in the list meanwhile.
+        if !ids.is_empty() && self.cull_covered() {
+            self.expected_calls = Some(self.list.merged_draw_count() as u32);
+        }
         ids.len()
     }
 
@@ -2019,6 +2051,7 @@ impl Applier {
                         height: 0,
                         mipmaps: false,
                         version: t.version,
+                        opacity: None,
                     };
                     match self.resident.insert(id, placeholder) {
                         Some(_) => self.account.replaced += 1,
@@ -2054,6 +2087,7 @@ impl Applier {
                             height: 0,
                             mipmaps: false,
                             version: t.version,
+                            opacity: None,
                         },
                     );
                     self.account.created += 1;
@@ -2150,6 +2184,7 @@ impl Applier {
                             height: px.height,
                             mipmaps: px.mipmaps,
                             version: t.version,
+                            opacity: px.opacity.clone(),
                         },
                     );
                     self.kept.remove(&id);
@@ -2946,12 +2981,16 @@ impl Applier {
         self.first = false;
         self.meshes = mesh_res;
         self.kept = kept;
+        // The frame's rows, vertices and instances are final: the cover walk reads them, and the
+        // dirty ranges (before they are merged across gaps) for what it remembers.
+        let culled_changed = self.cull_covered();
         self.coalesce_dirty();
         self.stats.vertex_count = self.list.vertices.len() as u32;
         self.stats.index_count = self.list.indices.len() as u32;
         self.stats.emitted_draws = self.list.draws.len() as u32;
-        // G7o4: only `assemble` writes the draws, so the merged count is kept until it runs again.
-        if assembled || self.expected_calls.is_none() {
+        // G7o4: only `assemble` and the cover walk write the draws, so the merged count is kept
+        // until one of them changes them.
+        if assembled || culled_changed || self.expected_calls.is_none() {
             self.expected_calls = Some(self.list.merged_draw_count() as u32);
         }
         self.stats.expected_calls = self.expected_calls.unwrap_or(0);
@@ -3909,6 +3948,8 @@ impl Applier {
     // ------------------------------------------------------------------------------- assembly
 
     fn assemble(&mut self, state: &ResolvedState) {
+        // The table the cover walk culled is rebuilt from the assembled one.
+        self.cover_unswap();
         // G7o2: the previous index buffer and draw table, to mark only what changed.
         let old_indices = std::mem::take(&mut self.list.indices);
         let old_draws = std::mem::take(&mut self.list.draws);

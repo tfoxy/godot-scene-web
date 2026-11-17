@@ -24,6 +24,7 @@ fn pixels(seed: u8) -> payloads::TexturePixels {
         compressed: None,
         half: None,
         floats: None,
+        opacity: None,
     }
 }
 

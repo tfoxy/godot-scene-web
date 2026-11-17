@@ -103,6 +103,7 @@ fn pixels(size: u32) -> payloads::TexturePixels {
         compressed: None,
         half: None,
         floats: None,
+        opacity: None,
     }
 }
 

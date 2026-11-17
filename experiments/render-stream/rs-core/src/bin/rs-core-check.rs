@@ -8,16 +8,16 @@
 //!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]
 //!   rs-core-check validate <recording>... [--version 2..16] [--recover]
 //!                          [--item-meta-asked <request json>|none] [--item-meta-dump <path>]
-//!   rs-core-check apply-bench <recording> --store <dir> [--repeats N]
+//!   rs-core-check apply-bench <recording> --store <dir> [--repeats N] [--cover off] [--programs synthetic] [--max-texture-side N]
 //!   rs-core-check pick-bench <recording> --store <dir> [--seq N] [--repeats N]
 //!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred] [--clock time|allocs]
-//!   rs-core-check walk-diff <recording>... [--store <dir>] [--digests <file>]
+//!   rs-core-check walk-diff <recording>... [--store <dir>] [--digests <file>] [--cover 1 [--cover-every N]] [--cover-lists <file>] [--max-texture-side N]
 //!   rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]
 //!   rs-core-check scissors <recording> [--store <dir>]
 //!   rs-core-check lowered <recording> --seqs 8,18,... [--store <dir>]
 //!   rs-core-check state-dump <recording> --seqs 8,18,... --out <dir>
 //!   rs-core-check fill <recording> [--store <dir>] [--seqs 8,18,...] [--every N] [--cell 8]
-//!                      [--damage <summary.json>] [--draws <dir>]
+//!                      [--damage <summary.json>] [--draws <dir>] [--cover off]
 //!
 //! `goldens` runs golden-2 ... golden-16 (exits non-zero on any failing check). `transcode` (W13a,
 //! render-stream-13.md "Forms and transcode") converts a /12 recording to /13 or back, refusing an
@@ -99,7 +99,7 @@ fn usage() -> ExitCode {
          rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]\n  \
          rs-core-check client-diff <recording>... [--store <dir>] [--sabotage ph2-skip-body-digest|ph2-skip-dep-texture|ph2-park-stale|ph2-skip-material-textures]\n  \
          rs-core-check draw-skip-diff <recording>... [--store <dir>] [--every N] [--sabotage ph3-drop-pending]\n  \
-         rs-core-check fill <recording> [--store <dir>] [--seqs a,b] [--every N] [--cell 8] [--damage <summary.json>] [--draws <dir>]\n  \
+         rs-core-check fill <recording> [--store <dir>] [--seqs a,b] [--every N] [--cell 8] [--damage <summary.json>] [--draws <dir>] [--cover off]\n  \
          rs-core-check live-decode <coded> [--expect <recording>] [--bases keep|none] [--repeats N] [--stats <jsonl>] [--sabotage drop-base|wrong-prefix]"
     );
     ExitCode::from(2)
@@ -844,7 +844,9 @@ fn recover_chain(data: &[u8], version: u8) -> Result<(usize, usize, String), wir
 
 /// `apply-bench <recording> --store <dir>`: accept, provide (from the capture's store) and apply
 /// every transaction natively (no GL), timing `Applier::apply` and counting why each structural
-/// walk ran ([`render_stream_core::apply::Why`]). A diagnostic for the applier's paths.
+/// walk ran ([`render_stream_core::apply::Why`]). A diagnostic for the applier's paths. `--cover
+/// off` turns the cover walk off (an A/B of its cost); `--programs synthetic` registers fill's
+/// synthetic programs, so screen readers and shader overlays are what a client walks over.
 /// ID2 : µs per pick, HIT1's draw order against the
 /// tree order, on one transaction of a recording (`--seq`, default the one holding the most items):
 /// replays the recording through the applier to it, then picks at the centres of a 24x16 grid,
@@ -1058,6 +1060,14 @@ fn cmd_apply_bench(args: &Args) -> ExitCode {
             cull_mask: s.viewport.canvas_cull_mask as u32,
             format: gsw_canvas_draw_list::Format::Rgb10A2,
         });
+        a.cover_walk = args.get("cover") != Some("off");
+        if let Some(side) = args.get("max-texture-side").and_then(|s| s.parse().ok()) {
+            a.max_texture_side = side;
+        }
+        // `--programs synthetic`: every shader gets fill's synthetic program (screen readers read
+        // the screen, as in a client); by default shaders wait and their items draw builtin.
+        let synthetic = args.get("programs") == Some("synthetic");
+        let mut programs = 1u32;
         let mut payloads = PayloadStore::default();
         let mut need = Vec::new();
         let (mut times, mut whys) = (Vec::new(), Vec::new());
@@ -1091,6 +1101,15 @@ fn cmd_apply_bench(args: &Args) -> ExitCode {
                         let b = bytes
                             .ok_or_else(|| wire::Error::new("resource-unavailable", h.to_hex()))?;
                         payloads.provide(&b, h, version, true)?;
+                    }
+                    if synthetic {
+                        fill_cmd::register_synthetic_programs(
+                            &mut a,
+                            v.state(),
+                            &payloads,
+                            &mut programs,
+                            None,
+                        )?;
                     }
                     let t = Instant::now();
                     let st = a.apply(v.state(), v.delta(), &payloads);
@@ -1228,6 +1247,32 @@ fn cmd_profile(args: &Args) -> ExitCode {
 /// the recording, the seq, its paint digest, a digest of its whole packed list as it stands
 /// (buffers, dirty ranges, texture operations) and its stats less the timings: two builds that
 /// write the same file produce the same output.
+/// `--cover` (with `--cover-every N`) also replays an applier with the cover walk off and compares,
+/// per checked transaction, what every target pixel of the two lists depends on
+/// (`gsw_canvas_draw_list::cover::oracle`): any pixel whose provenance differs fails the run, as
+/// does a list that differs from what a walk remembering nothing makes of the same table.
+/// `--cover-lists <file>` writes, per transaction of the incremental applier, one line: the
+/// recording, the seq, the cover walk's stats (covers, draws and operations left out) and a digest
+/// of the draw table, operations and instanced ranges its list holds (each draw's binding slot
+/// reduced to builtin or not, since slot numbers follow hash-set order): two builds that cull
+/// alike write the same file.
+/// `--max-texture-side N` sets the executor limit the appliers' cover walks assume
+/// (`Applier::max_texture_side`; 0: none).
+/// `walk-diff --cover`: what the cover-walk comparison saw over one recording.
+#[derive(Default)]
+struct CoverDiff {
+    /// Transactions whose list left something out, and the most draws and operations it did.
+    culled_txs: u32,
+    culled_draws: u32,
+    culled_ops: u32,
+    checked: u32,
+    /// (seq, pixels whose provenance differs).
+    bad: Vec<(i64, usize)>,
+    /// Seqs whose list is not what a walk that remembers nothing makes of the assembled table
+    /// (`Applier::cover_recheck`).
+    stale: Vec<i64>,
+}
+
 fn cmd_walk_diff(args: &Args) -> ExitCode {
     use render_stream_core::apply::geom;
     use render_stream_core::apply::payloads::PayloadStore;
@@ -1236,7 +1281,28 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
         return usage();
     }
     let store = args.get("store").map(PathBuf::from);
+    // `--cover [N]`: also compare, every Nth transaction (`--cover-every`, default 1), the culled
+    // list's per-pixel provenance with an uncut applier's.
+    let cover_every: Option<usize> = args.get("cover").map(|_| {
+        args.get("cover-every")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1usize)
+            .max(1)
+    });
     let mut digests: Option<std::io::BufWriter<std::fs::File>> = match args.get("digests") {
+        Some(f) => match std::fs::File::create(f) {
+            Ok(file) => Some(std::io::BufWriter::new(file)),
+            Err(e) => {
+                eprintln!("rs-core-check walk-diff: {f}: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
+    // `--max-texture-side N`: the executor limit the appliers' cover walks assume (0: none).
+    let max_side: Option<u32> = args.get("max-texture-side").and_then(|s| s.parse().ok());
+    let mut cover_lists: Option<std::io::BufWriter<std::fs::File>> = match args.get("cover-lists")
+    {
         Some(f) => match std::fs::File::create(f) {
             Ok(file) => Some(std::io::BufWriter::new(file)),
             Err(e) => {
@@ -1248,7 +1314,7 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
     };
     let mut failed = false;
     for path in &args.positional {
-        let mut run = || -> Result<(usize, usize, usize, Vec<i64>), wire::Error> {
+        let mut run = || -> Result<(usize, usize, usize, Vec<i64>, CoverDiff), wire::Error> {
             let data =
                 std::fs::read(path).map_err(|e| wire::Error::new("io", format!("{path}: {e}")))?;
             let version = wire::version_of_magic(&data)
@@ -1275,10 +1341,26 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
             let mut inc = Applier::new(vp);
             let mut oracle = Applier::new(vp);
             oracle.always_walk = true;
+            if let Some(side) = max_side {
+                inc.max_texture_side = side;
+                oracle.max_texture_side = side;
+            }
+            // `--cover`: a third applier with the cover walk off, whose list paints every pixel the
+            // culled one must.
+            let mut uncut = cover_every.map(|_| {
+                let mut a = Applier::new(vp);
+                a.cover_walk = false;
+                if let Some(side) = max_side {
+                    a.max_texture_side = side;
+                }
+                a
+            });
             let mut payloads = PayloadStore::default();
             let mut need = Vec::new();
             let (mut n, mut walks, mut rows_only) = (0, 0, 0);
             let mut bad = Vec::new();
+            let mut cover = CoverDiff::default();
+            let (mut programs, mut programs_after) = (1u32, 1u32);
             for span in &spans[1..] {
                 match v.accept(span.bytes(&data), span.offset)? {
                     Accepted::Resource { hash } => {
@@ -1297,6 +1379,10 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                         inc.needed(v.state(), v.delta(), &payloads, &mut need);
                         let mut more = Vec::new();
                         oracle.needed(v.state(), v.delta(), &payloads, &mut more);
+                        if let Some(u) = uncut.as_mut() {
+                            u.prepare(v.state(), v.delta());
+                            u.needed(v.state(), v.delta(), &payloads, &mut more);
+                        }
                         for h in more {
                             if !need.contains(&h) {
                                 need.push(h);
@@ -1319,8 +1405,43 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                                 })?;
                             payloads.provide(&b, h, version, true)?;
                         }
+                        if uncut.is_some() {
+                            // `--cover`: screen readers and their copies must be what the walk
+                            // sees, so every shader gets fill's synthetic program in all three.
+                            for a in [&mut inc, &mut oracle].into_iter().chain(uncut.as_mut()) {
+                                let mut next = programs;
+                                fill_cmd::register_synthetic_programs(
+                                    a,
+                                    v.state(),
+                                    &payloads,
+                                    &mut next,
+                                    None,
+                                )?;
+                                programs_after = next;
+                            }
+                            programs = programs_after;
+                        }
                         let st = inc.apply(v.state(), v.delta(), &payloads).clone();
                         oracle.apply(v.state(), v.delta(), &payloads);
+                        if let Some(u) = uncut.as_mut() {
+                            u.apply(v.state(), v.delta(), &payloads);
+                            cover.culled_draws = cover.culled_draws.max(st.covered_draws);
+                            cover.culled_ops = cover.culled_ops.max(st.covered_ops);
+                            if st.covered_draws + st.covered_ops > 0 {
+                                cover.culled_txs += 1;
+                            }
+                            if n % cover_every.unwrap_or(1) == 0 {
+                                cover.checked += 1;
+                                let m = inc.cover_provenance().mismatches(&u.cover_provenance());
+                                if m > 0 {
+                                    cover.bad.push((v.state().seq, m));
+                                }
+                                if !inc.cover_recheck() {
+                                    cover.stale.push(v.state().seq);
+                                }
+                            }
+                            u.list.consumed();
+                        }
                         n += 1;
                         if st.structural {
                             walks += 1;
@@ -1330,6 +1451,29 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                         let paint = inc.paint_digest();
                         if paint != oracle.paint_digest() {
                             bad.push(v.state().seq);
+                        }
+                        if let Some(w) = cover_lists.as_mut() {
+                            let mut b = String::new();
+                            for d in &inc.list.draws {
+                                let mut d = *d;
+                                d.program = u32::from(d.program != 0);
+                                b.push_str(&format!("{d:?}\n"));
+                            }
+                            for o in &inc.list.screen_ops {
+                                b.push_str(&format!("{o:?}\n"));
+                            }
+                            for r in &inc.list.instanced {
+                                b.push_str(&format!("{r:?}\n"));
+                            }
+                            let _ = writeln!(
+                                w,
+                                "{path} {} {} {} {} {}",
+                                v.state().seq,
+                                st.covers,
+                                st.covered_draws,
+                                st.covered_ops,
+                                sha_hex(b.as_bytes())
+                            );
                         }
                         if let Some(w) = digests.as_mut() {
                             let mut st = st.clone();
@@ -1349,21 +1493,44 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                     }
                 }
             }
-            Ok((n, walks, rows_only, bad))
+            Ok((n, walks, rows_only, bad, cover))
         };
         match run() {
-            Ok((n, walks, rows_only, bad)) => {
+            Ok((n, walks, rows_only, bad, cover)) => {
                 println!(
-                    "{path}: {n} transactions, {walks} walked, {rows_only} rows-only, {} re-assembled; {} mismatching{}",
+                    "{path}: {n} transactions, {walks} walked, {rows_only} rows-only, {} re-assembled; {} mismatching{}{}",
                     n - walks - rows_only,
                     bad.len(),
                     if bad.is_empty() {
                         String::new()
                     } else {
                         format!(" (seqs {:?})", &bad[..bad.len().min(20)])
+                    },
+                    if cover_every.is_some() {
+                        format!(
+                            "; cover: {} culled (up to {} draws, {} operations), {} checked, {} with pixels differing{}, {} unlike a fresh walk{}",
+                            cover.culled_txs,
+                            cover.culled_draws,
+                            cover.culled_ops,
+                            cover.checked,
+                            cover.bad.len(),
+                            if cover.bad.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" (seq, pixels) {:?}", &cover.bad[..cover.bad.len().min(20)])
+                            },
+                            cover.stale.len(),
+                            if cover.stale.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" (seqs {:?})", &cover.stale[..cover.stale.len().min(20)])
+                            }
+                        )
+                    } else {
+                        String::new()
                     }
                 );
-                failed |= !bad.is_empty();
+                failed |= !bad.is_empty() || !cover.bad.is_empty() || !cover.stale.is_empty();
             }
             Err(e) => {
                 println!("{path}: error {e}");

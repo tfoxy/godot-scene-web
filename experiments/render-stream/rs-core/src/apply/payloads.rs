@@ -34,6 +34,11 @@ pub struct TexturePixels {
     /// process material names (render-stream-12.md "Curve textures"). GSW's particle simulation
     /// samples them on the CPU at their stored values (`rgba` clamps them to [0, 1]).
     pub floats: Option<Vec<f32>>,
+    /// Which texels of `rgba` are fully opaque, made beside the RGBA8 pixels and built from them
+    /// when first asked (None for a block, half-float or empty texture: those never count as
+    /// opaque). The applier's cover walk reads it to prove that a draw sampling this texture
+    /// overwrites what lies beneath.
+    pub opacity: Option<std::sync::Arc<gsw_canvas_draw_list::opacity::Opacity>>,
     /// The payload's own `Image.Format` name, mipmaps flag and `data` length (every level): what
     /// the native receiver's upload accounting reads (the former GDScript applier, `rs_applier.gd`, removed in G7gd; `uploads[].data_bytes`).
     pub format: String,
@@ -206,7 +211,9 @@ pub fn texture_rgba8(
             compressed: None,
             half: None,
             floats,
-        });
+            opacity: None,
+        }
+        .with_opacity());
     }
     match format {
         "RGBA8" => rgba.extend_from_slice(src),
@@ -246,10 +253,28 @@ pub fn texture_rgba8(
         compressed: None,
         half: None,
         floats: None,
-    })
+        opacity: None,
+    }
+    .with_opacity())
 }
 
 impl TexturePixels {
+    /// [`TexturePixels::opacity`] over `rgba` (shared, not copied; the table is built on first
+    /// need).
+    pub fn with_opacity(mut self) -> Self {
+        let n = 4 * self.width as usize * self.height as usize;
+        self.opacity =
+            (self.compressed.is_none() && self.half.is_none() && n > 0 && self.rgba.len() == n)
+                .then(|| {
+                    std::sync::Arc::new(gsw_canvas_draw_list::opacity::Opacity::lazy(
+                        self.width,
+                        self.height,
+                        self.rgba.clone(),
+                    ))
+                });
+        self
+    }
+
     /// The bytes this store holds for the texture (G7k's budget): RGBA8 pixels, or a block
     /// variant's level 0.
     pub fn held_bytes(&self) -> u64 {
@@ -304,6 +329,7 @@ pub fn texture_rgba16f(
         compressed: None,
         half: Some(half.into()),
         floats: None,
+        opacity: None,
         format: format.to_string(),
         mipmaps: false,
         data_len: data.len(),
@@ -334,6 +360,7 @@ pub fn texture_block_level0(
         compressed: Some(data[..len].to_vec().into()),
         half: None,
         floats: None,
+        opacity: None,
         format: format.to_string(),
         mipmaps: false,
         data_len: data.len(),
@@ -1079,7 +1106,9 @@ fn texture_pixels_owned(
             compressed: None,
             half: None,
             floats: None,
-        });
+            opacity: None,
+        }
+        .with_opacity());
     }
     texture_pixels(
         &h.format,

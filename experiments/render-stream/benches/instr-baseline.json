@@ -2,33 +2,33 @@
   "schema": "render-stream-instr-baseline/1",
   "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
   "valgrind": "valgrind-3.22.0",
-  "cpu_model": "median of 3 runners: Intel Xeon 6975P-C, AMD EPYC 9V45, Intel Xeon Platinum 8573C (cross-runner spread <= 0.003% at 640f9bf8; docs/remote-compute.md R4)",
+  "cpu_model": "Intel Xeon 6975P-C (one runner; cross-runner spread <= 0.003% measured at 640f9bf8; docs/remote-compute.md R4)",
   "repeats": 3,
   "cases": {
     "g3-inline": {
       "recording": "golden-3/inline.rs3",
-      "ir": 16646059
+      "ir": 16813469
     },
     "g4-inline": {
       "recording": "golden-4/inline.rs4",
-      "ir": 73299677
+      "ir": 73625439
     },
     "g5-inline": {
       "recording": "golden-5/inline.rs5",
-      "ir": 94170872
+      "ir": 94194312
     },
     "g6-inline": {
       "recording": "golden-6/inline.rs6",
-      "ir": 111198976
+      "ir": 111555556
     },
     "g6-snap": {
       "recording": "golden-6/snap.rs6",
-      "ir": 2764078
+      "ir": 2786689
     },
     "g7-window2": {
       "recording": "golden-7/window2.rs7",
-      "ir": 2916313
+      "ir": 2946584
     }
   },
-  "refreshed": "640f9bf8: landings since cbfc1649 grew the decode+apply path (g5-inline +1.06%, g3 +0.71%, g7-window2 +0.9%, g6-snap +0.79%, g4 +0.40%; g6-inline -0.32%). Median of three runner types (runs 44097211508 and 44098246702); the three types agree within 0.003%."
+  "refreshed": "cover walk (draws hidden under opaque covers left out of the list): its per-applier setup and per-apply walk add g3 +1.01%, g7-window2 +1.04%, g6-snap +0.82%, g4 +0.44%, g6-inline +0.32%, g5 +0.02% over 640f9bf8's baseline. Taken deliberately: on fill-bound phones the walk removes more GPU time than the instructions cost. Values from one Xeon 6975P-C run (44149710145); runner types agree within 0.003%."
 }

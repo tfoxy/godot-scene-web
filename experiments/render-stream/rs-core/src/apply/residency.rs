@@ -46,6 +46,9 @@ pub struct Resident {
     /// G8kb (D6): the entry's `version` when this payload was uploaded (or last kept): `keep`
     /// holds a resident payload only while the entry's version is unchanged.
     pub version: i64,
+    /// The uploaded pixels' opaque texels ([`super::payloads::TexturePixels::opacity`]): what the
+    /// GPU holds for this id, for the cover walk. None for anything but an RGBA8 image.
+    pub opacity: Option<std::sync::Arc<gsw_canvas_draw_list::opacity::Opacity>>,
 }
 
 /// One `uploads[]` entry of applied.json (`{id, hash, op, data_bytes}`; the adapter adds `stream`

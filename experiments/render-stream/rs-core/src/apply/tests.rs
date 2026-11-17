@@ -139,6 +139,8 @@ fn transform_only_patch_moves_one_row_and_no_vertex() {
         item(2, ON_ROOT, rect_cmds([0.0, 0.0, 4.0, 4.0], [1.0; 4])),
     ]);
     let mut a = Applier::new(viewport());
+    // The assembly under test, not the cover walk (which would drop the covered rects).
+    a.cover_walk = false;
     let store = PayloadStore::default();
     a.apply(&s, &full_delta(&s), &store);
     a.list.consumed();
@@ -217,6 +219,8 @@ fn behind_child_draws_before_parent_and_z_orders_items() {
     );
     let s = state_with(vec![parent, behind, high, low]);
     let mut a = Applier::new(viewport());
+    // The assembly under test, not the cover walk (which would drop the covered rects).
+    a.cover_walk = false;
     a.apply(&s, &full_delta(&s), &PayloadStore::default());
     let colors: Vec<[f32; 4]> = a
         .list
@@ -328,6 +332,7 @@ fn texture_region_uses_texpixel_size_and_flips() {
             compressed: None,
             half: None,
             floats: None,
+            opacity: None,
         },
     );
     let mut a = Applier::new(viewport());
@@ -401,6 +406,7 @@ fn rebuilt_applier_inherits_resident_textures_and_uploads_nothing_again() {
             compressed: None,
             half: None,
             floats: None,
+            opacity: None,
         },
     );
     let mut old = Applier::new(viewport());
@@ -452,6 +458,8 @@ fn custom_rect_off_screen_hides_on_screen_content_and_moving_on_screen_reassembl
         it.custom_rect_rect = [-100.0, 0.0, 10.0, 10.0];
         let mut s = state_with(vec![it]);
         let mut a = Applier::new(viewport());
+        // The assembly under test, not the cover walk (which would drop the covered rects).
+        a.cover_walk = false;
         a.move_walks = move_walks;
         let store = PayloadStore::default();
         a.apply(&s, &full_delta(&s), &store);
@@ -530,6 +538,7 @@ fn clip_uv_splits_the_quad_where_the_uv_meets_the_half_texel_inset() {
             compressed: None,
             half: None,
             floats: None,
+            opacity: None,
         },
     );
     let mut a = Applier::new(viewport());
@@ -544,4 +553,146 @@ fn clip_uv_splits_the_quad_where_the_uv_meets_the_half_texel_inset() {
     // The cut is where the uv reaches the inset: half a texel of 8 is 1/16 of the 32-px rect.
     assert!(a.list.vertices.iter().any(|v| (v.pos[0] - 2.0).abs() < 1e-5));
     assert!(a.list.vertices.iter().any(|v| (v.pos[0] - 30.0).abs() < 1e-5));
+}
+
+/// The cover walk: a full-viewport opaque rect leaves the rect under it out of the list, a
+/// rows-only move that uncovers it brings it back (and marks the table and call count), and the
+/// walk can be turned off.
+#[test]
+fn an_opaque_cover_leaves_what_it_hides_out_of_the_list() {
+    let mut s = state_with(vec![
+        item(
+            1,
+            ON_ROOT,
+            rect_cmds([2.0, 2.0, 4.0, 4.0], [1.0, 0.0, 0.0, 0.5]),
+        ),
+        item(
+            2,
+            ON_ROOT,
+            rect_cmds([0.0, 0.0, 64.0, 32.0], [0.0, 1.0, 0.0, 1.0]),
+        ),
+        item(
+            3,
+            ON_ROOT,
+            rect_cmds([8.0, 8.0, 4.0, 4.0], [0.0, 0.0, 1.0, 0.5]),
+        ),
+    ]);
+    let store = PayloadStore::default();
+    let mut a = Applier::new(viewport());
+    // The 64x32 viewport is below the default smallest cover.
+    a.set_cover_min_area(0);
+    let st = a.apply(&s, &full_delta(&s), &store).clone();
+    assert_eq!((st.covered_draws, st.emitted_draws), (1, 2));
+    let mut off = Applier::new(viewport());
+    off.cover_walk = false;
+    assert_eq!(off.apply(&s, &full_delta(&s), &store).emitted_draws, 3);
+    assert_eq!(a.assembled_draws().len(), 3);
+    a.list.consumed();
+    // Move the cover right by 10: item 1 shows again, without a walk.
+    s.items.get_mut(&2).unwrap().xform = [1.0, 0.0, 0.0, 1.0, 10.0, 0.0];
+    let delta = TxDelta {
+        items_upserted: vec![2],
+        ..TxDelta::default()
+    };
+    let st = a.apply(&s, &delta, &store).clone();
+    assert!(!st.structural && !st.reassembled);
+    assert_eq!((st.covered_draws, st.emitted_draws), (0, 3));
+    assert!(a.list.dirty.draws);
+    assert_eq!(st.expected_calls, a.list.merged_draw_count() as u32);
+    a.list.consumed();
+    // Back: covered again.
+    s.items.get_mut(&2).unwrap().xform = geom::IDENTITY;
+    let st = a.apply(&s, &delta, &store).clone();
+    assert_eq!((st.covered_draws, st.emitted_draws), (1, 2));
+    assert!(a.list.dirty.draws);
+    a.list.consumed();
+    // Nothing moves: the table stays as the executor has it.
+    let st = a.apply(&s, &TxDelta::default(), &store).clone();
+    assert_eq!(st.emitted_draws, 2);
+    assert!(!a.list.dirty.draws);
+}
+
+/// A textured cover counts only when every texel its draw samples is opaque: an atlas region
+/// inside a transparent frame covers, one translucent texel in it does not.
+#[test]
+fn a_textured_cover_needs_every_sampled_texel_opaque() {
+    for hole in [false, true] {
+        let mut s = state_with(vec![
+            item(
+                1,
+                ON_ROOT,
+                rect_cmds([2.0, 2.0, 4.0, 4.0], [1.0, 0.0, 0.0, 1.0]),
+            ),
+            item(
+                2,
+                ON_ROOT,
+                Commands {
+                    list: vec![Command::TextureRectRegion {
+                        tex: Some(5),
+                        transpose: false,
+                        clip_uv: false,
+                        rect: [0.0, 0.0, 64.0, 32.0],
+                        src: [4.0, 4.0, 8.0, 8.0],
+                        modulate: [1.0; 4],
+                    }],
+                    ..Commands::default()
+                },
+            ),
+        ]);
+        let hash = Hash([9; 32]);
+        s.textures.insert(
+            5,
+            Texture {
+                id: 5,
+                origin: Origin::Created,
+                adopted_content: None,
+                kind: TextureKind::Image,
+                status: EntryStatus::Ok,
+                reason: None,
+                version: 1,
+                hash: Some(hash),
+                format: Some("RGBA8".into()),
+                source_format: None,
+                width: 16,
+                height: 16,
+                mipmaps: false,
+                payload_bytes: 1024,
+                variants: Vec::new(),
+                size_override: None,
+                canvas: None,
+                target: None,
+                viewport: None,
+            },
+        );
+        // A 16x16 texture: a transparent 2-texel frame around an opaque core.
+        let mut px = vec![255u8; 16 * 16 * 4];
+        for y in 0..16 {
+            for x in 0..16 {
+                if !(2..14).contains(&x) || !(2..14).contains(&y) || (hole && (x, y) == (8, 8)) {
+                    px[4 * (y * 16 + x) + 3] = 0;
+                }
+            }
+        }
+        let mut store = PayloadStore::default();
+        store.textures.insert(
+            hash,
+            payloads::TexturePixels {
+                width: 16,
+                height: 16,
+                rgba: px.into(),
+                format: "RGBA8".into(),
+                mipmaps: false,
+                data_len: 16 * 16 * 4,
+                compressed: None,
+                half: None,
+                floats: None,
+                opacity: None,
+            }
+            .with_opacity(),
+        );
+        let mut a = Applier::new(viewport());
+        a.set_cover_min_area(0);
+        let st = a.apply(&s, &full_delta(&s), &store).clone();
+        assert_eq!(st.covered_draws, u32::from(!hole), "hole {hole}");
+    }
 }

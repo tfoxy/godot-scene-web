@@ -386,6 +386,28 @@ pub struct Binding {
 /// (`Arc<[u8]>::from` would copy it once more).
 pub type SharedBytes = std::sync::Arc<Vec<u8>>;
 
+/// The integer factor a `width`x`height` texture upload is reduced by to fit a context whose
+/// `MAX_TEXTURE_SIZE` is `max_side` (1 when it fits): the side over the limit divided by it,
+/// rounded up. A GLES3-class phone has 4096 where a desktop has 16384, and a host can send a wider
+/// image, which the context would refuse. An executor reduces such an image with a box filter over
+/// `k`x`k` blocks ([`downscaled_size`]); draws sample with normalized coordinates, so a reduced
+/// texture draws the same image at a lower resolution. A `max_side` of 0 (a lost context, or a
+/// caller that does not know) reduces nothing.
+pub fn downscale_factor(width: u32, height: u32, max_side: u32) -> u32 {
+    let side = width.max(height);
+    if max_side == 0 || side <= max_side {
+        1
+    } else {
+        side.div_ceil(max_side)
+    }
+}
+
+/// The size of a `width`x`height` image reduced by `k` (each side rounded up, so no texel is lost:
+/// reduced texel `x` holds source texels `k x` to `min(k x + k, width) - 1`).
+pub fn downscaled_size(width: u32, height: u32, k: u32) -> (u32, u32) {
+    (width.div_ceil(k), height.div_ceil(k))
+}
+
 /// Where a [`TextureOp`]'s bytes are ([`DrawList::texture_data`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TextureBytes {
@@ -890,6 +912,9 @@ pub fn merged(run: &Draw, next: &Draw) -> Draw {
     }
     out
 }
+
+pub mod cover;
+pub mod opacity;
 
 /// `PDL1`: a byte dump of one frame's list for tests and evidence. Never on the frame path. It
 /// holds the POD arrays only: [`DrawList::bindings`] are not in it.

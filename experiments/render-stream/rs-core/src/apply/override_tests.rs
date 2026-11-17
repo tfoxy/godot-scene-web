@@ -722,6 +722,7 @@ pub(super) fn tex_scene() -> (ResolvedState, PayloadStore, Hash) {
             compressed: None,
             half: None,
             floats: None,
+            opacity: None,
         },
     );
     (s, store, hash)

@@ -55,7 +55,8 @@
       "uses": ["canvas_group"],
       "steps": [2]
     },
-    "PLAIN": { "region": [328, 136, 391, 199], "uses": [], "steps": [] }
+    "PLAIN": { "region": [328, 136, 391, 199], "uses": [], "steps": [] },
+    "COVER": { "region": [448, 128, 631, 351], "uses": [], "steps": [] }
   },
   "removes": {
     "receiver-v9": ["canvas_group", "copy_viewport", "copy_rect"],

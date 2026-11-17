@@ -1356,6 +1356,12 @@ impl CanvasItemsExecutor {
         })
     }
 
+    /// This context's `MAX_TEXTURE_SIZE`: a texture over it is reduced at upload
+    /// ([`downscale_factor`]). 0 when the context was lost before it was read.
+    pub fn max_texture_side(&self) -> u32 {
+        self.max_side
+    }
+
     /// Register item-space program `id` (> 0): the module `@godot-scene-web/effects`'s
     /// `transpileGodotItemShader` emits, compiled at once around [`item_program_fragment`]. A
     /// compile or link failure is returned with GL's log and registers nothing. Redefining an id

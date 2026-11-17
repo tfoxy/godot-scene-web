@@ -30,6 +30,16 @@ extends Node
 ##                     disabled -> clip-only (state only: no redraw, so a patch carries it with
 ##                     `commands: null`).
 ##   PLAIN   (328,136) a plain sprite (no /10 state: the control cell).
+##   COVER   (448,128) in its own CanvasLayer (so its screen reader takes a fresh whole-target
+##                     copy): backdrop sprites, a full-cell screen reader whose shader reads the
+##                     back buffer's mips, then two opaque meshes over the cell's 144x144 core: the
+##                     top half a wobbly 4x2 grid sampling an atlas region inside a transparent frame,
+##                     reaching past a clip_contents Control's scissor; the bottom half an untextured
+##                     grid whose outer edges are straight and whose inner vertices wobble. Then a
+##                     translucent overlay, and below the core a sprite under a quad at modulate
+##                     alpha 0.99. No /10 state. A receiver may leave out what the meshes hide
+##                     (the backdrop under them, the reader, its copy and mips); the pixels are the
+##                     same either way.
 ##
 ## The root is a plain `Node`: every CanvasItem is created in `_ready`, after the loader armed the
 ## capture in its `_enter_tree` (gate 0's rule), or before a late arm at frame 12 (RS_FIXTURE_ARM=late,
@@ -84,6 +94,7 @@ func _ready() -> void:
 	_toggle = _sprite("TglMask", _root, ImageTexture.create_from_image(_diamond()), Vector2(232, 136), 4.0)
 	_sprite("TglChild", _toggle, ImageTexture.create_from_image(_pattern(5)), Vector2(4, 4), 1.0)
 	_sprite("Plain", _root, ImageTexture.create_from_image(_pattern(6)), Vector2(328, 136), 4.0)
+	_cover()
 	print("[fixture] gate8-cg ready: quit=%d" % _quit_frame)
 
 
@@ -215,6 +226,96 @@ func _bbr(invert: ShaderMaterial) -> void:
 	var reader: ColorRect = _color_rect("BbrReader", Color(1, 1, 1, 1), Vector2(136, 136), Vector2(64, 64))
 	reader.material = invert
 	_root.add_child(reader)
+
+
+## COVER: see the header. Every vertex sits on an integer or half-integer and every texture a
+## mesh samples is one colour where it is sampled, so no pixel rests on a tie.
+func _cover() -> void:
+	var layer: CanvasLayer = CanvasLayer.new()
+	layer.name = "CoverLayer"
+	layer.layer = 1
+	add_child(layer)
+	var cell: Node2D = Node2D.new()
+	cell.name = "Cover"
+	layer.add_child(cell)
+	# The backdrop: one sprite inside the core, one straddling its top-left corner (its outer part
+	# stays visible), one across both halves.
+	_sprite("CoverBack0", cell, ImageTexture.create_from_image(_pattern(7)), Vector2(480, 160), 4.0)
+	_sprite("CoverBack1", cell, ImageTexture.create_from_image(_pattern(8)), Vector2(448, 128), 2.0)
+	_sprite("CoverBack2", cell, ImageTexture.create_from_image(_pattern(9)), Vector2(520, 176), 3.0)
+	var blur: ShaderMaterial = ShaderMaterial.new()
+	var shader_resource: Resource = load("res://shaders/blur.gdshader")
+	blur.shader = shader_resource as Shader
+	var reader: ColorRect = _color_rect("CoverReader", Color(0.9, 0.3, 0.2, 1), Vector2(456, 136), Vector2(144, 144))
+	reader.material = blur
+	cell.add_child(reader)
+	# Top half: the clip holds the scissor; the mesh reaches 12 px past it on every side.
+	var clip: Control = Control.new()
+	clip.name = "CoverClip"
+	clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	clip.clip_contents = true
+	clip.position = Vector2(456, 136)
+	clip.size = Vector2(144, 72)
+	cell.add_child(clip)
+	var top: MeshInstance2D = MeshInstance2D.new()
+	top.name = "CoverTop"
+	top.mesh = _grid_mesh(Rect2(-12, -12, 168, 96), 4, 2, true, true)
+	top.texture = ImageTexture.create_from_image(_framed_atlas())
+	clip.add_child(top)
+	# Bottom half: an untextured grid tiling exactly the core's bottom half.
+	var bottom: MeshInstance2D = MeshInstance2D.new()
+	bottom.name = "CoverBottom"
+	bottom.mesh = _grid_mesh(Rect2(456, 208, 144, 72), 4, 2, false, false)
+	bottom.modulate = Color(0.25, 0.6, 0.35, 1.0)
+	cell.add_child(bottom)
+	# A translucent overlay over both halves: it is no cover, and blends over them.
+	cell.add_child(_color_rect("CoverOverlay", Color(1.0, 1.0, 1.0, 0.5), Vector2(504, 184), Vector2(48, 48)))
+	# Below the core: a sprite under an opaque-texture quad at alpha 0.99 (no cover).
+	_sprite("CoverUnder", cell, ImageTexture.create_from_image(_pattern(10)), Vector2(464, 296), 2.0)
+	var almost: Sprite2D = _sprite("CoverAlmost", cell, ImageTexture.create_from_image(_pattern(11)), Vector2(456, 288), 3.0)
+	almost.modulate = Color(1.0, 1.0, 1.0, 0.99)
+
+
+## A `cols x rows` grid of two-triangle cells over `r`. `wobble_edges`: every vertex but the
+## corners moves by up to 3 px (a jagged boundary); else only the inner vertices move (the outer
+## edges stay straight). `textured`: texture coordinates inside the framed atlas's opaque core.
+static func _grid_mesh(r: Rect2, cols: int, rows: int, wobble_edges: bool, textured: bool) -> ArrayMesh:
+	var vertices: PackedVector2Array = PackedVector2Array()
+	var uvs: PackedVector2Array = PackedVector2Array()
+	for j: int in range(rows + 1):
+		for i: int in range(cols + 1):
+			var p: Vector2 = r.position + Vector2(r.size.x * i / cols, r.size.y * j / rows)
+			var inner: bool = i > 0 and i < cols and j > 0 and j < rows
+			var corner: bool = (i == 0 or i == cols) and (j == 0 or j == rows)
+			if inner or (wobble_edges and not corner):
+				p += Vector2(float((i * 7 + j * 3) % 7) - 3.0, float((i * 5 + j * 11) % 5) - 2.0) * 0.5
+			vertices.append(p)
+			uvs.append(Vector2(0.25 + 0.5 * i / cols, 0.25 + 0.5 * j / rows))
+	var indices: PackedInt32Array = PackedInt32Array()
+	for j: int in range(rows):
+		for i: int in range(cols):
+			var a: int = j * (cols + 1) + i
+			indices.append_array(PackedInt32Array([a, a + 1, a + cols + 2, a, a + cols + 2, a + cols + 1]))
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	if textured:
+		arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh: ArrayMesh = ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+## A 32x32 atlas: a transparent 4-texel frame around one opaque colour (the top mesh samples
+## from 8 to 24 only).
+static func _framed_atlas() -> Image:
+	var image: Image = Image.create_empty(32, 32, false, Image.FORMAT_RGBA8)
+	for y: int in range(32):
+		for x: int in range(32):
+			var frame: bool = x < 4 or x >= 28 or y < 4 or y >= 28
+			image.set_pixel(x, y, Color8(200, 120, 40, 0) if frame else Color8(60, 90, 200, 255))
+	return image
 
 
 func _process(_delta: float) -> void:
