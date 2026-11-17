@@ -993,12 +993,15 @@ mod tests {
             draws: 3,
             fence_issued: 1,
             binding_uploads: 5,
+            screen_mipmaps: 7,
             ..ExecStats::default()
         };
-        assert_eq!(ExecStats::WORDS, 22);
+        // The word block is read by position: a new field goes last and bumps WORDS.
+        assert_eq!(ExecStats::WORDS, 24);
         assert_eq!(stats.as_words()[0], 3);
-        assert_eq!(stats.as_words()[ExecStats::WORDS - 3], 1);
-        assert_eq!(stats.as_words()[ExecStats::WORDS - 1], 5);
+        assert_eq!(stats.as_words()[19], 1);
+        assert_eq!(stats.as_words()[21], 5);
+        assert_eq!(stats.as_words()[ExecStats::WORDS - 1], 7);
         assert!(stats.to_json().starts_with("{\"draws\":3,"));
     }
 
