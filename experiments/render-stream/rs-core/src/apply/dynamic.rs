@@ -61,6 +61,12 @@ pub struct DynamicMeshes {
     pub body_bytes_total: u64,
     /// PH2: geometries replaced by newer bodies, whose buffers the next bodies decode into.
     spare: Vec<MeshGeometry>,
+    /// Measure how far each ingested body moved (`moved`); off by default (it reads every
+    /// position of every body).
+    pub measure: bool,
+    /// With `measure`, the last ingest's bodies: (mesh, how the body differs from the one it
+    /// replaced: [`crate::motion::body_delta`], or `BodyDelta::NEW` when the surface held none).
+    pub moved: Vec<(Id, crate::motion::BodyDelta)>,
 }
 
 impl DynamicMeshes {
@@ -70,6 +76,7 @@ impl DynamicMeshes {
         self.serial = 0;
         self.bodies_total = 0;
         self.body_bytes_total = 0;
+        self.moved.clear();
     }
 
     /// Dynamic meshes held.
@@ -112,6 +119,7 @@ impl DynamicMeshes {
         bodies: &[BodyRef],
         record: &[u8],
     ) -> Result<u32, Error> {
+        self.moved.clear();
         for b in bodies {
             let surface = state
                 .meshes
@@ -166,6 +174,13 @@ impl DynamicMeshes {
             if m.surfaces.len() <= k {
                 m.surfaces.resize(k + 1, None);
                 m.serials.resize(k + 1, 0);
+            }
+            if self.measure {
+                let d = match &m.surfaces[k] {
+                    Some(old) => crate::motion::body_delta(old, &g),
+                    None => crate::motion::BodyDelta::NEW,
+                };
+                self.moved.push((b.mesh, d));
             }
             self.bytes += g.data_bytes();
             if let Some(old) = m.surfaces[k].replace(g) {

@@ -303,6 +303,43 @@ fn sorted_dedup<T: Ord>(v: &mut Vec<T>) {
     v.dedup();
 }
 
+/// One committed transaction's motion facts from its undo log (`crate::motion`): a full
+/// transaction is all new, a patch is measured entry by entry against the resolved state.
+fn measure_motion(
+    m: &mut crate::motion::TxMotion,
+    p: &crate::motion::MotionParams,
+    st: &ResolvedState,
+    undo: &[Undo],
+    delta: &TxDelta,
+) {
+    use crate::motion::{self, Change};
+    m.clear();
+    if delta.full {
+        m.changes = Change::FULL;
+        return;
+    }
+    if delta.defaults_changed {
+        m.changes |= Change::RESOURCE;
+    }
+    for u in undo {
+        match u {
+            Undo::Item(id, prev, moved) => {
+                motion::item(m, p, st, prev.as_ref(), st.items.get(id), !*moved)
+            }
+            Undo::Canvas(id, prev) => {
+                motion::canvas(m, p, st, prev.as_ref(), st.canvases.get(id))
+            }
+            Undo::Mesh(id, prev) => motion::mesh(m, prev.as_ref(), st.meshes.get(id)),
+            Undo::Texture(..)
+            | Undo::Shader(..)
+            | Undo::Material(..)
+            | Undo::Multimesh(..)
+            | Undo::Particles(..) => m.changes |= Change::RESOURCE,
+            Undo::Viewport(id, prev) => motion::viewport(m, prev.as_ref(), st.viewports.get(id)),
+        }
+    }
+}
+
 impl Index {
     fn group_add(&mut self, p: PKey, di: i64, id: Id) {
         let g = self.groups.entry((p, di)).or_default();
@@ -715,6 +752,9 @@ pub struct Validator {
     /// `content-version-stable` (WB): the first patch item whose commands equal the base's under
     /// a moved `content_version`, found while resolving.
     cv_stable: Option<Id>,
+    /// The motion facts of the last accepted transaction (`set_motion`), measured from its undo log
+    /// at commit; `None` (the default) measures nothing.
+    motion: Option<(crate::motion::MotionParams, crate::motion::TxMotion)>,
     // ---- /13 (render-stream-13.md "As built (W13a)"); unused below /13.
     /// The prediction history (H1, H2), advanced by each accepted transaction.
     history: crate::predict::History,
@@ -1907,6 +1947,7 @@ impl Validator {
             pt_emits: Vec::new(),
             pt_op_declared,
             cv_stable: None,
+            motion: None,
             history: Default::default(),
             pred_scratch: Default::default(),
             plain_ok: false,
@@ -1970,6 +2011,25 @@ impl Validator {
 
     pub fn delta(&self) -> &TxDelta {
         &self.delta
+    }
+    /// Measure each accepted transaction's motion (`crate::motion`) with `params`, or stop (`None`).
+    /// Off by default; on, it costs O(changed) per transaction at commit.
+    pub fn set_motion(&mut self, params: Option<crate::motion::MotionParams>) {
+        self.motion = params.map(|p| (p, crate::motion::TxMotion::default()));
+    }
+    /// The motion params `set_motion` gave, or `None` while off.
+    pub fn motion_params(&self) -> Option<&crate::motion::MotionParams> {
+        self.motion.as_ref().map(|(p, _)| p)
+    }
+    /// The last accepted transaction's motion facts (its items, canvases and resources; a dynamic
+    /// mesh body's displacement is the receiver's to add, `crate::motion::dynamic_mesh`), or `None`
+    /// while off. Read right after `accept` returns `Accepted::Transaction`.
+    pub fn motion(&self) -> Option<&crate::motion::TxMotion> {
+        self.motion.as_ref().map(|(_, m)| m)
+    }
+    /// The items of the newest accepted state whose commands `add_mesh` the mesh `mesh`.
+    pub fn mesh_users(&self, mesh: Id) -> impl Iterator<Item = Id> + '_ {
+        users(&self.idx.mesh_users, mesh)
     }
     /// The verified payload of the last accepted resource record, when it carried `hash` (P3-SP:
     /// only the last one is kept; read it right after `accept` returns `Accepted::Resource`).
@@ -6614,6 +6674,9 @@ impl Validator {
             self.commit_names();
         }
         self.skipping = false;
+        if let Some((p, m)) = self.motion.as_mut() {
+            measure_motion(m, p, &self.state, &self.undo, &self.delta);
+        }
         // Recycle the replaced items' and materials' buffers. I1: an item or canvas entry in the
         // log (an identical entry is never logged) moves the items epoch.
         let mut items_changed = false;

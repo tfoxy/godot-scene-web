@@ -11,6 +11,7 @@ import tracksSource from "../src/tracks.ts?raw";
 const VALUE_EXPORTS = `
 createRenderStreamClient RenderStreamEndpointError validateEndpoint clientHello CoreLoadError
 RECONNECT_BACKOFF_MS RESOURCE_LOG_MAX webSocketTransport
+FRAME_CAP_QUIET_MS IDLE_COLOR_STEP_MAX IDLE_MOTION_MAX_PX
 webTransportAvailable isAndroidPage invertAffine mulAffine createRecorder
 computeSpreadItem containerHAlignFactor createSpreadExtension fieldDx rootSpreadContext spreadDelta
 pointerTargetIdentity pointerTargetResolver
@@ -30,6 +31,7 @@ Recording RecordKind RecorderOptions RenderStreamRecorder
 PointerTargetResolverOptions RenderStreamPointerTarget RenderStreamPointerTargetResolver
 ColdPayload ResourceDiagnostic ResourceDiagnostics ResourceUnavailableReason
 HintEntry HintLead HintState ResourceHintRecord ResourceHintVariant
+RenderStreamFrameCap
 `
   .trim()
   .split(/\s+/);

@@ -4,6 +4,40 @@ A browser client for a render-stream host: it connects, applies the stream's tra
 wasm core, draws them on a WebGL2 canvas and returns credit. `createRenderStreamClient` is the entry
 point; `client.stats()` reports what it is doing.
 
+## Idle frame cap
+
+`frameCap` trades ambient smoothness for battery and heat over long sessions on a GPU-bound device:
+presenting half the frames halves the fill. Change it at runtime with `client.setFrameCap(mode)`
+(`setFrameCap` and `wake` are optional on the `RenderStreamClient` type, so test doubles need not
+implement them; a created client always has both).
+
+| Value           | Behaviour                                                                                                                                                                                                                                                      |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `off` (default) | Every frame callback presents. Nothing is measured.                                                                                                                                                                                                            |
+| `automatic`     | After `FRAME_CAP_QUIET_MS` (1.5 s) with no input and only ambient motion, the client presents every other frame callback (30 fps on a 60 Hz panel). The first frame callback after an input or a real change presents again, and the quiet period starts over. |
+
+- **Ambient motion** is judged per transaction from how far changed visible content moved on screen
+  and how much its colours stepped, not from damage area. Up to `IDLE_MOTION_MAX_PX` (1 px) of
+  displacement and `IDLE_COLOR_STEP_MAX` (4/255) of colour per transaction counts as ambient: a
+  background drifting by a fraction of a pixel, an idle pose, a slow fade. Shaders driven by time
+  are ambient too.
+- **A real change** wakes the cap: an item added, removed, reordered, shown or hidden, a change of
+  content (new text, a sprite frame, another shape), material, clip or resource, motion or a colour
+  step past the thresholds, a payload that arrives late, a resync or a new session.
+- **Input** wakes the cap: a pointer, touch, key or wheel event anywhere in the canvas's document.
+  A consumer with its own input layer, or a gamepad, calls `client.wake()` for each input.
+- **The stream is unaffected.** Every transaction is still received, applied and acked as it
+  arrives, and fetches, holds and revisits run as before, so the host keeps its rate. A transaction
+  first shown by a later frame is acked `submitted` with that frame. With
+  `creditStage: "submitted"` and credit window 1 the host is paced by the presented frames, as it
+  always is at that stage.
+- A core built without the motion measure never engages the cap.
+
+`stats()` reports `frameCap`, `frameCapEngaged` (capped right now), `cappedFrames` (frame callbacks
+while engaged), `skippedFrames` (those that presented nothing) and `frameCapWake`, what last woke
+the cap or kept it awake (`input`, `session`, `payload`, `motion`, `colour`, `resource`, ...): when
+the cap never engages on a scene that looks idle, it names what the scene keeps changing.
+
 ## Payloads that arrive late or not at all
 
 Textures, meshes and shader code are content-addressed payloads, fetched over HTTP when a

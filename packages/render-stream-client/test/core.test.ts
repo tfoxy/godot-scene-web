@@ -5,13 +5,15 @@ import {
   ACCEPT_RESOURCE_UNHINT,
   type GswRs,
   type GswRsModule,
+  MOTION_FIELDS,
   STAT_FIELDS,
 } from "../src/abi";
 import { WasmStreamCore } from "../src/core";
 import type { RenderStreamProtocol } from "../src/endpoint";
 import { coreStartOptions } from "../src/hello";
 
-function harness() {
+/** `motion`: the fake core has the motion measure (a core built before it has not). */
+function harness(motion = true) {
   const memory = new WebAssembly.Memory({ initial: 1 });
   const instances: FakeGswRs[] = [];
   let throws = false;
@@ -21,6 +23,8 @@ function harness() {
     readonly free = vi.fn();
     readonly live_reset = vi.fn();
     readonly set_log_removed = vi.fn();
+    set_motion?: ReturnType<typeof vi.fn>;
+    motion_ptr?: () => number;
     readonly live_session = vi.fn((_len: number, protocol: number) =>
       protocol === this.options.live_protocol ? 0 : -1,
     );
@@ -34,6 +38,10 @@ function harness() {
         STAT_FIELDS.length,
       );
       stats[STAT_FIELDS.indexOf("seq")] = instances.length + 1;
+      if (motion) {
+        this.set_motion = vi.fn();
+        this.motion_ptr = () => this.ptr + 128;
+      }
       instances.push(this);
     }
     rx() {
@@ -101,6 +109,47 @@ function harness() {
 }
 
 const bytes = new Uint8Array([1, 2, 3]).buffer;
+
+describe("WasmStreamCore motion facts", () => {
+  it("reads the facts block only while measuring, and keeps the measure across instances", () => {
+    const { core, memory, instances } = harness();
+    core.beginConnection(12);
+    expect(core.motion()).toBeNull();
+    expect(core.setMotion(true)).toBe(true);
+    expect(instances[0].set_motion).toHaveBeenCalledWith(true);
+    const at = instances[0].ptr + 128;
+    new Uint32Array(memory.buffer, at, 2).set([41, 2]);
+    new Float32Array(memory.buffer, at + 8, 2).set([0.25, 0.5]);
+    expect(core.motion()).toEqual({
+      seq: 41,
+      changes: 2,
+      maxPx: 0.25,
+      colorStep: 0.5,
+    });
+    // A rebuilt instance (another protocol) measures from the start.
+    core.beginConnection(14);
+    expect(instances[1].set_motion).toHaveBeenCalledWith(true);
+    expect(core.setMotion(false)).toBe(true);
+    expect(instances[1].set_motion).toHaveBeenLastCalledWith(false);
+    expect(core.motion()).toBeNull();
+    // MOTION_FIELDS is lib.rs `MotionFacts`, field for field (`#[repr(C)]`).
+    const block = /pub struct MotionFacts \{([^}]*)\}/.exec(libRs)?.[1] ?? "";
+    const fields = [...block.matchAll(/^\s*pub (\w+): (u32|f32),$/gm)];
+    expect(fields.map((m) => m[1])).toEqual([...MOTION_FIELDS]);
+    expect(fields.map((m) => m[2])).toEqual(["u32", "u32", "f32", "f32"]);
+    expect(libRs).toContain("pub fn set_motion(");
+    expect(libRs).toContain("pub fn motion_ptr(");
+    core.dispose();
+  });
+
+  it("answers that a core built without the measure cannot measure", () => {
+    const { core } = harness(false);
+    core.beginConnection(12);
+    expect(core.setMotion(true)).toBe(false);
+    expect(core.motion()).toBeNull();
+    core.dispose();
+  });
+});
 
 describe("WasmStreamCore session protocol", () => {
   it("keeps the instance and its payloads on the same protocol", () => {

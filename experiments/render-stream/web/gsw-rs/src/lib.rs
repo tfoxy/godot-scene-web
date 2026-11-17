@@ -118,6 +118,21 @@ pub struct Stats {
     pub back_buffer_items: u32,
 }
 
+/// `motion_ptr`'s block, `#[repr(C)]`: the last accepted transaction's motion facts
+/// (rs-core `motion::TxMotion`), measured while `set_motion(true)`.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct MotionFacts {
+    /// The transaction they describe (0: none measured on this connection yet).
+    pub seq: u32,
+    /// `motion::Change` bits.
+    pub changes: u32,
+    /// The largest displacement of changed visible content, in presentation px (may be infinite).
+    pub max_px: f32,
+    /// The largest modulate or colour channel step (0..1).
+    pub color_step: f32,
+}
+
 #[derive(Clone, Default)]
 struct Opts {
     digest_inline: bool,
@@ -726,6 +741,9 @@ pub struct GswRs {
     /// GLJ: the texture bytes the last `draw` uploaded from the draw list's byte arena (copied
     /// there by `apply`) and from shared payloads (no copy), for `last_upload_bytes_json`.
     last_upload_bytes: (u64, u64),
+    /// `set_motion`: measure each accepted transaction's motion (off by default).
+    motion_on: bool,
+    motion: MotionFacts,
 }
 
 /// G7g: the session's presentation as this receiver adopted it (receiver.gd
@@ -961,6 +979,8 @@ impl GswRs {
             presentation: Presentation::default(),
             last_restore_draw: false,
             last_upload_bytes: (0, 0),
+            motion_on: false,
+            motion: MotionFacts::default(),
         })
     }
 
@@ -1358,7 +1378,25 @@ impl GswRs {
         self.validator = Some(v);
         self.accepted.push(0);
         self.stats.accepted_records = 1;
+        self.sync_motion();
         Ok(())
+    }
+
+    /// Hands `motion_on` to the validator (with the session viewport's params) and to the dynamic
+    /// mesh store; a fresh connection starts with no facts.
+    fn sync_motion(&mut self) {
+        let params = match (self.motion_on, self.viewport) {
+            (true, Some(vp)) => Some(render_stream_core::motion::MotionParams {
+                global: vp.global_xform,
+                size: [vp.width as f32, vp.height as f32],
+            }),
+            _ => None,
+        };
+        if let Some(v) = self.validator.as_mut() {
+            v.set_motion(params);
+        }
+        self.payloads.dynamic.measure = params.is_some();
+        self.motion = MotionFacts::default();
     }
 
     /// Step 2: decode, validate and resolve record `index`. Returns `ACCEPT_*`, or -1 (`error`).
@@ -1494,6 +1532,33 @@ impl GswRs {
                 // it leaves the set (a client's failed or obsolete download never holds it).
                 if self.version >= 11 && a.deferred_len() > 0 {
                     a.prune_deferred(|h| v.names_contains(h));
+                }
+                if self.motion_on {
+                    // The undo log's facts, plus how far each replaced dynamic body moved on
+                    // screen through the items that draw it. No facts (measuring started at this
+                    // very commit) count as a full change: never idle by default.
+                    let mut m = v.motion().copied().unwrap_or(render_stream_core::motion::TxMotion {
+                        changes: render_stream_core::motion::Change::FULL,
+                        ..Default::default()
+                    });
+                    if let Some(p) = v.motion_params() {
+                        for &(mesh, d) in &self.payloads.dynamic.moved {
+                            render_stream_core::motion::dynamic_mesh(
+                                &mut m,
+                                p,
+                                st,
+                                mesh,
+                                d,
+                                v.mesh_users(mesh),
+                            );
+                        }
+                    }
+                    self.motion = MotionFacts {
+                        seq: st.seq as u32,
+                        changes: m.changes,
+                        max_px: m.max_px,
+                        color_step: m.color_step,
+                    };
                 }
                 a.prepare(st, v.delta());
                 self.compute_needed()
@@ -2954,6 +3019,19 @@ impl GswRs {
 
     pub fn stats_ptr(&self) -> *const Stats {
         &self.stats
+    }
+
+    /// Measure each accepted transaction's motion (`motion_ptr`), or stop. Off by default: it
+    /// costs O(changed) per transaction plus a read of every replaced dynamic body's positions.
+    /// Kept across connections.
+    pub fn set_motion(&mut self, on: bool) {
+        self.motion_on = on;
+        self.sync_motion();
+    }
+
+    /// The `MotionFacts` block: the last accepted transaction's facts while `set_motion(true)`.
+    pub fn motion_ptr(&self) -> *const MotionFacts {
+        &self.motion
     }
 
     /// D31: digest every accepted record that has none yet (the deferred policy; with inline there

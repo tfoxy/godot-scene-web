@@ -37,6 +37,11 @@ export interface GswRs {
    * (copied by apply) and from the payload store's own bytes (shared). */
   last_upload_bytes_json(): string;
   stats_ptr(): number;
+  /** Measure each accepted transaction's motion (`motion_ptr`), or stop. Optional: a core built
+   * before it has neither method, and the client then reads no motion facts. */
+  set_motion?(on: boolean): void;
+  /** The motion facts block (`MOTION_FIELDS`) of the last accepted transaction. */
+  motion_ptr?(): number;
   digest(): number;
   poll_fence(): number;
   shot(): number;
@@ -205,6 +210,15 @@ export const STAT_FIELDS = [
   "back_buffer_items",
 ] as const;
 export type StatName = (typeof STAT_FIELDS)[number];
+
+/** lib.rs `MotionFacts`, `#[repr(C)]`, in this order: `seq` and `changes` u32, `max_px` and
+ * `color_step` f32. */
+export const MOTION_FIELDS = [
+  "seq",
+  "changes",
+  "max_px",
+  "color_step",
+] as const;
 
 /** A reader of the stats block, its view re-derived whenever memory grew. */
 export function statsReader(

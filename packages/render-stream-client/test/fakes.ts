@@ -3,6 +3,7 @@
 import type {
   CoreApplyStats,
   CoreMessage,
+  CoreMotion,
   Needed,
   StreamCore,
 } from "../src/core";
@@ -69,7 +70,32 @@ export class FakeCore implements StreamCore {
     const m = JSON.parse(new TextDecoder().decode(data)) as CoreMessage;
     if (!sessionSeen && m.kind !== "session")
       throw new Error("first message is not a session");
+    if (m.kind === "transaction") this.motionSeq = m.seq;
     return m;
+  }
+  /** `setMotion`: on (the loop asked), and what it answers (false: a core that cannot measure). */
+  motionOn = false;
+  motionSupported = true;
+  setMotionCalls: boolean[] = [];
+  setMotion(on: boolean): boolean {
+    this.setMotionCalls.push(on);
+    this.motionOn = on;
+    return this.motionSupported;
+  }
+  /** What `motion` answers for every transaction received while on (its `seq` is the last
+   * transaction's); default ambient: a hundredth of a pixel of drift. null: nothing measured. */
+  motionFacts: Omit<CoreMotion, "seq"> | null = {
+    changes: 0,
+    maxPx: 0.01,
+    colorStep: 0,
+  };
+  motionReads = 0;
+  private motionSeq = 0;
+  motion(): CoreMotion | null {
+    this.motionReads++;
+    if (!this.motionOn || !this.motionSupported || this.motionFacts === null)
+      return null;
+    return { seq: this.motionSeq, ...this.motionFacts };
   }
   takeDecoded(): Uint8Array | null {
     return this.decoded;
@@ -298,6 +324,7 @@ export function harness(
     | "resourceHoldMs"
     | "fetchTimeoutMs"
     | "resourceHints"
+    | "frameCap"
   > = {},
   core: FakeCore = new FakeCore(),
   endpoint: RenderStreamEndpoint = ENDPOINT,

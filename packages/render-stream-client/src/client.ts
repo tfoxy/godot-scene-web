@@ -17,6 +17,7 @@ import {
   type Rect,
   type RenderStreamExtension,
 } from "./extensions";
+import type { RenderStreamFrameCap } from "./frame-cap";
 import {
   CLIENT_INBOUND_BYTES,
   CLIENT_LIVE_CODING,
@@ -111,6 +112,19 @@ export interface RenderStreamClientOptions {
    * /15 offer, no table, and the offer, the hello and the core's calls are the client's without
    * the option. Nothing is fetched ahead of a transaction yet. */
   resourceHints?: boolean;
+  /** The idle frame cap, for battery and heat over long sessions on a GPU-bound device; change it
+   * at runtime with `setFrameCap`. `off` (the default): every frame callback presents, and nothing
+   * is measured. `automatic`: once nobody has interacted for `FRAME_CAP_QUIET_MS` and the stream
+   * shows only ambient motion (sub-pixel drift, an idle pose, a time-driven shader, a slow fade),
+   * the client presents every other frame callback (30 fps on a 60 Hz panel), and the first frame
+   * callback after an input or a real change presents again. A real change is anything added,
+   * removed, reordered, shown or hidden, any content, material or resource change, or motion past
+   * `IDLE_MOTION_MAX_PX` per transaction. Input is a pointer, touch, key or wheel event anywhere in
+   * the canvas's document, or `wake()`. Transactions are still applied and acked as they arrive,
+   * so the host's rate is unchanged (with `creditStage: "submitted"` and credit window 1, the host
+   * is paced by the presented frames, as it always is at that stage). A core built without the
+   * motion measure never engages the cap. */
+  frameCap?: RenderStreamFrameCap;
   onStatus?: (s: RenderStreamStatus) => void;
 }
 
@@ -156,7 +170,29 @@ export interface RenderStreamClient {
    * `priority`, then arrival): a frozen array, the same one until the table changes. Empty
    * without `resourceHints`. */
   hints(): readonly HintEntry[];
+  /** The idle frame cap from now on (`frameCap`). Switching counts as an interaction: an
+   * `automatic` cap engages only after a quiet period. A client `createRenderStreamClient` returns
+   * always has it; it is optional so that a consumer's test double need not. */
+  setFrameCap?(mode: RenderStreamFrameCap): void;
+  /** An input the canvas's document does not see (a consumer's own input layer, a gamepad, a
+   * second device): an engaged frame cap presents from the next frame callback, and the quiet
+   * period starts over. Cheap enough to call on every input event; nothing under `off`. Always
+   * there on a created client (optional as `setFrameCap`). */
+  wake?(): void;
 }
+
+/** The events that count as input for the frame cap, listened to on the canvas's document. */
+const WAKE_EVENTS = [
+  "pointerdown",
+  "pointermove",
+  "pointerup",
+  "touchstart",
+  "touchmove",
+  "keydown",
+  "keyup",
+  "wheel",
+] as const;
+const WAKE_LISTEN: AddEventListenerOptions = { capture: true, passive: true };
 
 const pageClock: LoopClock = {
   now: () => performance.now(),
@@ -207,6 +243,7 @@ export function createRenderStreamClient(
       "render-stream client: resourceHints must be a boolean",
     );
   clientProtocol(endpoint.protocol, ext?.request, resourceHints);
+  checkFrameCap(options.frameCap ?? "off");
   // Absent the option there is no recorder (and no per-message copy); present, one ring.
   const recorder = options.recorder ? createRecorder(options.recorder) : null;
   return new Client(
@@ -217,6 +254,13 @@ export function createRenderStreamClient(
     ext,
     recorder,
   );
+}
+
+function checkFrameCap(mode: unknown): asserts mode is RenderStreamFrameCap {
+  if (mode !== "off" && mode !== "automatic")
+    throw new TypeError(
+      'render-stream client: frameCap must be "off" or "automatic"',
+    );
 }
 
 const NO_HINTS: readonly HintEntry[] = Object.freeze([]);
@@ -246,6 +290,11 @@ class Client implements RenderStreamClient {
     this.loop?.contextLost();
   };
   private readonly onRestored = () => this.loop?.contextRestored();
+  /** The frame cap in effect (the loop's, once there is one). */
+  private frameCap: RenderStreamFrameCap;
+  /** The document the wake listeners are on (null: none, the cap is off). */
+  private wakeDoc: Document | null = null;
+  private readonly onInput = () => this.loop?.wake();
 
   constructor(
     private readonly o: RenderStreamClientOptions,
@@ -256,6 +305,34 @@ class Client implements RenderStreamClient {
     private readonly recorder: RenderStreamRecorder | null,
   ) {
     this.carrierFactory = o.transport ?? carrierTransport(o.carrier ?? "auto");
+    this.frameCap = o.frameCap ?? "off";
+    this.listenInput();
+  }
+
+  setFrameCap(mode: RenderStreamFrameCap): void {
+    checkFrameCap(mode);
+    if (this.disposed) return;
+    this.frameCap = mode;
+    this.listenInput();
+    this.loop?.setFrameCap(mode);
+  }
+
+  wake(): void {
+    if (this.frameCap !== "off") this.loop?.wake();
+  }
+
+  /** Input listeners on the canvas's document exactly while the cap is `automatic`. */
+  private listenInput(): void {
+    const want =
+      this.frameCap === "automatic" && !this.disposed
+        ? (this.o.canvas.ownerDocument ?? null)
+        : null;
+    if (want === this.wakeDoc) return;
+    for (const t of WAKE_EVENTS) {
+      this.wakeDoc?.removeEventListener(t, this.onInput, WAKE_LISTEN);
+      want?.addEventListener(t, this.onInput, WAKE_LISTEN);
+    }
+    this.wakeDoc = want;
   }
 
   connect(): void {
@@ -349,6 +426,7 @@ class Client implements RenderStreamClient {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.listenInput();
     this.loadAbort?.abort();
     this.loadAbort = null;
     const canvas = this.o.canvas;
@@ -438,6 +516,7 @@ class Client implements RenderStreamClient {
       ext: this.ext,
       recorder: this.recorder,
       resourceHints: this.o.resourceHints === true,
+      frameCap: this.frameCap,
       onSession: (m) => {
         const v = m.viewport;
         this.presentation = v?.presentation_size ?? v?.logical_size ?? null;

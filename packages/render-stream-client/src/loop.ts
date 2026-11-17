@@ -60,6 +60,7 @@ import { failWith, StreamFailure } from "./core";
 import type { RenderStreamEndpoint } from "./endpoint";
 import type { ExtensionHost } from "./extensions";
 import { type FetchResult, LiveFetcher } from "./fetcher";
+import { FrameCap, motionWake, type RenderStreamFrameCap } from "./frame-cap";
 import { clientHello, clientProtocol } from "./hello";
 import { type HintLead, HintTable } from "./hints";
 import type { RenderStreamRecorder } from "./recorder";
@@ -156,6 +157,22 @@ export interface RenderStreamStats {
   /** The last `HINT_LEAD_LOG_MAX` referenced hints (newest last): a frozen array, the same one
    * until a reference adds a record. */
   hintLeadLog?: readonly HintLead[];
+  /** The frame cap in effect (`frameCap`). The frame-cap fields are always set by `stats()`
+   * (optional as `carrier`). */
+  frameCap?: RenderStreamFrameCap;
+  /** The cap is engaged now: idle under `automatic`, presenting every other frame callback. */
+  frameCapEngaged?: boolean;
+  /** Frame callbacks run while the cap was engaged, over every connection. */
+  cappedFrames?: number;
+  /** Of those, the ones that presented nothing because of the cap (about half). */
+  skippedFrames?: number;
+  /** What last woke the cap or kept it awake, for diagnosis: `mode` (a switch), `input`, `session`,
+   * `restore` (a context restore), `rebuild`, `payload` (a late payload drawn in), `end` (the
+   * stream's end, drawn before draining), `extension` (an extension animating), `unmeasured` (no
+   * motion facts), a transaction's change (`full`, `structure`, `visibility`, `content`,
+   * `appearance`, `resource`, `reshape`, `viewport`), or `motion` / `colour` past the ambient
+   * bounds. */
+  frameCapWake?: string;
 }
 
 /** Why a payload was unavailable: `missing` (404, 410) or `temporary` (408, 429, 5xx, a rejected
@@ -243,6 +260,8 @@ export interface LoopOptions {
   recorder?: RenderStreamRecorder | null;
   /** Offer render-stream/15 and keep its resource hints in a table (`hints`). Default false. */
   resourceHints?: boolean;
+  /** The idle frame cap (frame-cap.ts); default `off`. */
+  frameCap?: RenderStreamFrameCap;
 }
 
 /** The ack the host's credit waits on (render-stream-1.md hello `credit_stage`). */
@@ -390,6 +409,8 @@ export class StreamLoop {
   private readonly cold: ColdTracker;
   /** /15 resource hints; null unless `resourceHints` (nothing hint-related runs then). */
   readonly hints: HintTable | null;
+  /** The idle frame cap; under `off` one branch per frame callback and nothing measured. */
+  private readonly cap: FrameCap;
 
   private readonly creditStage: CreditStage;
   private readonly resourceHoldMs: number;
@@ -411,6 +432,8 @@ export class StreamLoop {
       : null;
     const hold = o.resourceHoldMs ?? DEFAULT_RESOURCE_HOLD_MS;
     this.resourceHoldMs = hold >= 0 ? hold : DEFAULT_RESOURCE_HOLD_MS;
+    this.cap = new FrameCap(o.frameCap ?? "off", o.clock.now());
+    if (this.cap.mode === "automatic") o.core.setMotion?.(true);
   }
 
   // ----------------------------------------------------------------------- public
@@ -445,6 +468,19 @@ export class StreamLoop {
     }
   }
 
+  /** The idle frame cap from now on. Switching is itself activity: the cap engages only after a
+   * quiet period. `off` stops the core's motion measure too. */
+  setFrameCap(mode: RenderStreamFrameCap): void {
+    if (this.phase === "disposed") return;
+    this.cap.setMode(mode, this.o.clock.now());
+    this.o.core.setMotion?.(mode === "automatic");
+  }
+
+  /** An input: an engaged cap presents from the next frame callback, and idle starts over. */
+  wake(): void {
+    this.cap.activity(this.o.clock.now(), "input");
+  }
+
   contextLost(): void {
     if (this.phase === "disposed") return;
     this.ctx = "lost";
@@ -458,6 +494,7 @@ export class StreamLoop {
   contextRestored(): void {
     if (this.phase === "disposed" || this.ctx === "ok") return;
     this.ctx = "restoring";
+    this.cap.activity(this.o.clock.now(), "restore");
   }
 
   stats(): RenderStreamStats {
@@ -488,6 +525,11 @@ export class StreamLoop {
       ...this.cold.totals,
       coldPayloadLog: this.cold.log(),
       ...(this.hints !== null ? this.hintStats(this.hints) : {}),
+      frameCap: this.cap.mode,
+      frameCapEngaged: this.cap.engaged,
+      cappedFrames: this.cap.cappedFrames,
+      skippedFrames: this.cap.skippedFrames,
+      frameCapWake: this.cap.wake,
     };
   }
 
@@ -708,6 +750,12 @@ export class StreamLoop {
       this.lastCreditAt = null;
     }
     this.ack(m.seq, "received");
+    // The cap's measure, at receipt: a real change wakes it before the next frame callback (a
+    // folded or superseded transaction counts as much as one applied alone).
+    if (this.cap.mode === "automatic") {
+      const why = motionWake(this.o.core.motion?.() ?? null, m.seq);
+      if (why !== null) this.cap.activity(now, why);
+    }
     // Every accepted transaction moves the names: what the loop tracks and the newest state no
     // longer names stops being tracked (a payload may leave and come back in one batch).
     this.sweepNames();
@@ -750,7 +798,9 @@ export class StreamLoop {
       this.ctx !== "ok" ||
       this.pending !== null ||
       this.rebuildDue ||
-      this.undrawn.length >= MESSAGE_APPLY_MAX_UNDRAWN ||
+      // An engaged cap draws every other callback on purpose: twice as many applies may wait.
+      this.undrawn.length >=
+        MESSAGE_APPLY_MAX_UNDRAWN * (this.cap.engaged ? 2 : 1) ||
       this.lastFrameAt === null ||
       now - this.lastFrameAt > MESSAGE_APPLY_MAX_FRAME_GAP_MS
     )
@@ -764,6 +814,7 @@ export class StreamLoop {
     this.hints?.clear();
     this.o.onSession?.(session);
     this.drawnSeq = null;
+    this.cap.activity(this.o.clock.now(), "session");
     if (this.ext)
       this.ext.beginSession(session.session_id ?? "", conn.streamId);
     this.grantedWindow = session.publication?.credit_window ?? 1;
@@ -870,14 +921,17 @@ export class StreamLoop {
       default:
         return;
     }
+    // The idle cap: whether this callback presents. A skipped one still applies and acks.
+    let present = true;
     if (this.ctx !== "ok") {
       this.stepContext();
     } else {
+      present = this.presents(now);
       if (this.pending !== null) {
         this.advancePending();
-        if (this.pending?.stage === "ready") this.applyReady(true);
+        if (this.pending?.stage === "ready") this.applyReady(present);
       } else if (this.queue.length > 0) {
-        this.takeQueued(true);
+        this.takeQueued(present);
       }
       if (
         this.pending === null &&
@@ -885,10 +939,19 @@ export class StreamLoop {
         (this.deferred.size > 0 || this.fetcher?.busy() === true)
       )
         this.pollDeferred();
+      // A payload that just arrived is a real change: drawn in this callback. So is the end: a
+      // skipped callback that sees it would drain without ever drawing (or acking `submitted`)
+      // the last applied state.
+      if (!present && (this.revisitDraw || this.endSeen)) {
+        this.cap.activity(now, this.revisitDraw ? "payload" : "end");
+        present = true;
+      }
     }
-    if (this.ctx === "ok" && this.undrawn.length > 0) this.drawApplied();
-    else if (this.ctx === "ok" && this.revisitDraw) this.drawRevisit(now);
-    else if (this.ext && this.ctx === "ok") this.extensionRedraw(now);
+    if (this.ctx === "ok" && present) {
+      if (this.undrawn.length > 0) this.drawApplied();
+      else if (this.revisitDraw) this.drawRevisit(now);
+      else if (this.ext) this.extensionRedraw(now);
+    }
     if (this.phase !== "streaming") return;
     if (
       this.ctx === "ok" &&
@@ -922,6 +985,13 @@ export class StreamLoop {
         );
       this.scheduleReconnect();
     }
+  }
+
+  /** The cap's answer for this callback; an extension animating (asking redraws) is activity. */
+  private presents(now: number): boolean {
+    if (this.cap.mode === "off") return true;
+    if (this.ext?.wantsRedraw) this.cap.activity(now, "extension");
+    return this.cap.present(now);
   }
 
   private connectFailed(conn: Connection): void {
@@ -1066,6 +1136,8 @@ export class StreamLoop {
     } else if (queued.length > 1) rebuild = true; // superseded
     if (rebuild) {
       this.rebuildDue = false;
+      // A rebuilt applier (a resync, a superseded window-1 transaction) is a real change.
+      this.cap.activity(this.o.clock.now(), "rebuild");
       item.needed = this.o.core.rebuild(item.seq);
       // The rebuilt applier needs these (whatever an older transaction named and this one
       // does not is no longer waited for).

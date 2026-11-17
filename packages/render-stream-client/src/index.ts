@@ -36,6 +36,12 @@ export {
   type RenderStreamExtension,
   type RGBA,
 } from "./extensions";
+export {
+  FRAME_CAP_QUIET_MS,
+  IDLE_COLOR_STEP_MAX,
+  IDLE_MOTION_MAX_PX,
+  type RenderStreamFrameCap,
+} from "./frame-cap";
 export { type ClientHelloFacts, clientHello } from "./hello";
 export type {
   HintEntry,

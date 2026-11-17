@@ -19,6 +19,7 @@ pub mod idtable;
 pub mod item_meta;
 pub mod json;
 pub mod meta;
+pub mod motion;
 pub mod payload;
 pub mod predict;
 pub mod prof;

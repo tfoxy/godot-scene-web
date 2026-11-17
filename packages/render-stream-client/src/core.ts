@@ -13,6 +13,7 @@ import {
   type GswRs,
   type GswRsModule,
   type LiveCoding,
+  MOTION_FIELDS,
   STAT_FIELDS,
 } from "./abi";
 import type { RenderStreamProtocol } from "./endpoint";
@@ -148,6 +149,12 @@ export interface StreamCore {
   /** What the last `apply` did to the draw list, read after it (`RenderStreamStats`). The
    * returned object may be reused by the next call. Absent: the loop reports none. */
   applyStats?(): CoreApplyStats;
+  /** Measure each accepted transaction's motion (`motion`), or stop; kept across connections.
+   * Returns whether the core can (a core built before the measure cannot). Absent: it cannot. */
+  setMotion?(on: boolean): boolean;
+  /** The last accepted transaction's motion facts, read right after `receive` answered it; null
+   * while not measuring. The returned object may be reused by the next call. */
+  motion?(): CoreMotion | null;
   draw(seq: number): void;
   /** The redraw after a context restore; "lost" when the context was lost again. */
   redraw(seq: number): "ok" | "lost";
@@ -167,6 +174,25 @@ export interface CoreApplyStats {
   why: number;
   /** Items holding a canvas group or a back-buffer copy. */
   backBufferItems: number;
+}
+
+/** `StreamCore.motion`: one transaction's motion facts (rs-core `motion::TxMotion`). */
+export interface CoreMotion {
+  /** The transaction they describe. */
+  seq: number;
+  /** rs-core `motion::Change` bits: 1 full, 2 structure (added, removed, reparented, reordered),
+   * 4 visibility, 8 content (commands other than positions and colours), 16 appearance
+   * (material, clip, a clipping custom rect, filter, groups, a changed viewport entry), 32
+   * resource (texture, shader, material, static mesh, multimesh, particles, defaults), 64 reshape (a dynamic mesh body that
+   * cannot be measured: another vertex count, other UVs or indices, or drawn by a multimesh or
+   * particles), 128 viewport (content a sub-viewport draws). 0: only positions and colours
+   * moved. */
+  changes: number;
+  /** The largest displacement of changed visible content, in presentation px (a bound; may be
+   * `Infinity`). */
+  maxPx: number;
+  /** The largest step of a modulate or colour channel (0..1). */
+  colorStep: number;
 }
 
 /** One payload being staged as it arrives (`StreamCore.stageStream`). After `finish` or `abort`
@@ -194,6 +220,10 @@ const STAT_ENCODING = STAT_FIELDS.indexOf("encoding");
 const STAT_STRUCTURAL = STAT_FIELDS.indexOf("structural");
 const STAT_WHY = STAT_FIELDS.indexOf("why");
 const STAT_BACK_BUFFER_ITEMS = STAT_FIELDS.indexOf("back_buffer_items");
+const MOTION_SEQ = MOTION_FIELDS.indexOf("seq");
+const MOTION_CHANGES = MOTION_FIELDS.indexOf("changes");
+const MOTION_MAX_PX = MOTION_FIELDS.indexOf("max_px");
+const MOTION_COLOR_STEP = MOTION_FIELDS.indexOf("color_step");
 
 const hex = (bytes: Uint8Array): string => {
   let s = "";
@@ -205,6 +235,16 @@ const hex = (bytes: Uint8Array): string => {
 export class WasmStreamCore implements StreamCore, ExtensionCore {
   private instance: GswRs | null = null;
   private logRemoved = false;
+  /** `setMotion`: re-applied to every new instance. */
+  private motionOn = false;
+  private motionU32: Uint32Array | null = null;
+  private motionF32: Float32Array | null = null;
+  private readonly motionOut: CoreMotion = {
+    seq: 0,
+    changes: 0,
+    maxPx: 0,
+    colorStep: 0,
+  };
   private coding: LiveCoding | null = null;
   private particles = new GswParticles();
   private readonly programs: ProgramCounts = {
@@ -254,6 +294,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       this.instance = null;
       old?.free();
       this.statsView = null;
+      this.motionU32 = null;
       this.retireQueries();
       this.decoded = null;
       this.lastAcceptedSeq = 0;
@@ -264,6 +305,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       const next = this.build(protocol);
       try {
         if (this.logRemoved) next.set_log_removed(true);
+        if (this.motionOn) next.set_motion?.(true);
       } catch (e) {
         next.free();
         throw e;
@@ -547,6 +589,49 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     return this.g.item_meta_json();
   }
 
+  setMotion(on: boolean): boolean {
+    this.motionOn = on;
+    const g = this.instance;
+    if (g === null) return true;
+    if (
+      typeof g.set_motion !== "function" ||
+      typeof g.motion_ptr !== "function"
+    )
+      return false;
+    g.set_motion(on);
+    return true;
+  }
+
+  motion(): CoreMotion | null {
+    const g = this.instance;
+    if (!this.motionOn || g === null || typeof g.motion_ptr !== "function")
+      return null;
+    if (
+      this.motionU32 === null ||
+      this.motionU32.buffer !== this.memory.buffer
+    ) {
+      const ptr = g.motion_ptr();
+      this.motionU32 = new Uint32Array(
+        this.memory.buffer,
+        ptr,
+        MOTION_FIELDS.length,
+      );
+      this.motionF32 = new Float32Array(
+        this.memory.buffer,
+        ptr,
+        MOTION_FIELDS.length,
+      );
+    }
+    const u = this.motionU32;
+    const f = this.motionF32 as Float32Array;
+    const out = this.motionOut;
+    out.seq = u[MOTION_SEQ];
+    out.changes = u[MOTION_CHANGES];
+    out.maxPx = f[MOTION_MAX_PX];
+    out.colorStep = f[MOTION_COLOR_STEP];
+    return out;
+  }
+
   setLogRemoved(on: boolean): void {
     this.logRemoved = on;
     this.instance?.set_log_removed(on);
@@ -662,6 +747,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     this.instance?.free();
     this.instance = null;
     this.statsView = null;
+    this.motionU32 = null;
     this.retireQueries();
     this.decoded = null;
   }

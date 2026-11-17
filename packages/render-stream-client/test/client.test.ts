@@ -8,7 +8,7 @@ import {
   RenderStreamEndpointError,
 } from "../src/index";
 import type { LoaderEnv } from "../src/loader";
-import type { RenderStreamStatus } from "../src/loop";
+import { type RenderStreamStatus, StreamLoop } from "../src/loop";
 import type {
   RenderStreamTransportEvents,
   RenderStreamTransportFactory,
@@ -489,6 +489,57 @@ describe("endpoint protocol changes", () => {
     const st = h.c.stats();
     expect("hintsReceived" in st).toBe(hints === true);
     h.c.dispose();
+  });
+
+  it("frameCap: validated, switched at runtime, and woken by input on the canvas's document", async () => {
+    const canvas = document.createElement("canvas");
+    expect(() =>
+      createRenderStreamClient({
+        canvas,
+        core,
+        endpoint,
+        frameCap: "sometimes" as never,
+      }),
+    ).toThrow(/frameCap must be "off" or "automatic"/);
+    const wake = vi.spyOn(StreamLoop.prototype, "wake");
+    const setCap = vi.spyOn(StreamLoop.prototype, "setFrameCap");
+    try {
+      const h = mount(13);
+      h.c.connect();
+      await vi.advanceTimersByTimeAsync(0);
+      h.open();
+      expect(h.c.stats()).toMatchObject({
+        frameCap: "off",
+        frameCapEngaged: false,
+        cappedFrames: 0,
+        skippedFrames: 0,
+      });
+      expect(typeof h.c.setFrameCap).toBe("function");
+      expect(typeof h.c.wake).toBe("function");
+      // Off: no listener, and wake() does nothing.
+      document.dispatchEvent(new Event("pointerdown"));
+      h.c.wake?.();
+      expect(wake).not.toHaveBeenCalled();
+      h.c.setFrameCap?.("automatic");
+      expect(setCap).toHaveBeenLastCalledWith("automatic");
+      expect(h.c.stats().frameCap).toBe("automatic");
+      for (const t of ["pointerdown", "touchstart", "keydown", "wheel"])
+        document.dispatchEvent(new Event(t));
+      expect(wake).toHaveBeenCalledTimes(4);
+      h.c.wake?.();
+      expect(wake).toHaveBeenCalledTimes(5);
+      expect(() => h.c.setFrameCap?.("fast" as never)).toThrow(/frameCap/);
+      h.c.setFrameCap?.("off");
+      document.dispatchEvent(new Event("keydown"));
+      expect(wake).toHaveBeenCalledTimes(5);
+      h.c.setFrameCap?.("automatic");
+      h.c.dispose();
+      document.dispatchEvent(new Event("keydown"));
+      expect(wake).toHaveBeenCalledTimes(5);
+    } finally {
+      wake.mockRestore();
+      setCap.mockRestore();
+    }
   });
 
   it("refuses resourceHints below protocol 13, at creation and on setEndpoint", async () => {
