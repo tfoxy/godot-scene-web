@@ -16,12 +16,15 @@ matrix=, shards= and max_parallel= to --github-output). Three things happen here
    split into k jobs by gate 8 group, each running `--legs` of one part (RS_VALIDATE_LEGS). A part
    written ["*"] takes every group of the runner's own list (read from the runner script) that no
    other part names, so a group added to a runner lands in a shard rather than nowhere. k is chosen
-   by simulating the matrix on --max-parallel slots: the choice with the shortest simulated makespan,
-   when it beats the unsharded matrix by more than a minute. Every shard repeats its job's setup
+   first to keep expected validate minutes within WATCHDOG_SHARE (0.6) of each job's watchdog:
+   a job over that share must take the smallest safe k, even if makespan grows. Above that minimum,
+   simulation on --max-parallel slots chooses a shorter makespan when it saves more than a minute.
+   Every shard repeats its job's setup
    (8-11 min on a hosted runner), so sharding is a loss when the run is throughput-bound and a win when a long job is the critical
-   path: a scoped run gets shards, a full tier that already fills every slot may not. `off` never
+   path: a scoped run gets shards, a busy full tier shards when needed for watchdog safety. `off` never
    shards, `force` takes each run's largest k. Determinism mode and the smoke tier never shard (a
    smoke job runs a few representative legs, which a part of the groups may not hold).
+   If no listed partition fits the watchdog share, auto reports an error rather than an unsafe plan.
 3. Order: GitHub starts a matrix's jobs in `include` order as max-parallel slots free up, i.e. list
    scheduling, so `include` is sorted by expected minutes, longest first (LPT). Expected minutes come
    from the table (median job minutes, setup included, of named finished runs: `provenance`); a
@@ -40,6 +43,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_TABLE = os.path.join(HERE, "..", "remote-jobs.json")
 DEFAULT_REPO = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
 WATCHDOG_MIN, WATCHDOG_MAX = 35, 60
+WATCHDOG_SHARE = 0.6  # maximum expected validate time as a fraction of a job's watchdog
 GAIN_MIN = 1.0  # a leg shard must cut the simulated makespan by more than this many minutes
 
 
@@ -191,10 +195,23 @@ def expand(runs, run_groups=None, determinism=(), pure_shards=6, max_parallel=16
     if leg_shards == "force":
         choice = {n: max(o) for n, o in opts.items()}
     elif opts:
+        # Safety precedes throughput. Keep only safe partitions for an at-risk job, so the
+        # makespan search cannot undo the minimum or pick a larger but unbalanced unsafe part.
+        for n, o in opts.items():
+            label = jobs[n]["base"]
+            def safe(parts):
+                return all(max(0.0, m - setup_minutes(table, label))
+                           <= WATCHDOG_SHARE * float(watchdog(table, m, label)) for _, m in parts)
+            if not safe(o[1]):
+                eligible = {k: parts for k, parts in o.items() if k > 1 and safe(parts)}
+                if not eligible:
+                    raise ValueError(f"{label}: no partition fits the watchdog share; refresh weights or partitions")
+                opts[n] = eligible
+                choice[n] = min(eligible)
         # a global search, not greedy: several long poles only shorten the makespan together. For
         # each target T (every shard estimate seen), every job takes its smallest k whose longest
         # shard fits T; keep the choice with the shortest simulated makespan (ties: fewer job-min),
-        # and only when it beats the unsharded matrix by more than GAIN_MIN.
+        # and only when it beats the watchdog-safe baseline by more than GAIN_MIN.
         def score(ch):
             js = with_choice(ch)
             return (sim(js, max_parallel), sum(j["est"] for j in js))
@@ -261,6 +278,8 @@ def refresh(table_path, run_ids):
 # --------------------------------------------------------------------------------- --self-test
 
 def self_test():
+    import fnmatch
+    import importlib.util
     import tempfile
     fails = []
 
@@ -298,6 +317,34 @@ def self_test():
                   all(m < o[1][0][1] for _, m in parts))
         check(f"{label}: the weights name only the runner's groups", set(spec.get("weights", {})) <= set(groups))
     check("the real table resolves without warnings", not warns)
+    # A complete, busy matrix used to hide gate 8's watchdog risk behind throughput.
+    loader = importlib.util.spec_from_file_location("smoke_plan", os.path.join(HERE, "smoke-plan.py"))
+    planner = importlib.util.module_from_spec(loader)
+    loader.loader.exec_module(planner)
+    smap = json.load(open(os.path.join(HERE, "..", "smoke-map.json")))
+    sweep = planner.plan(smap, [], DEFAULT_REPO, milestone=True)
+    remote, refuse = smap["remote"], smap["remote"]["refuse"]
+    full_runs, full_groups = [], {}
+    for run in sweep["runs"]:
+        label = run["id"]
+        if (not any(fnmatch.fnmatch(label, pat) for pat in remote["capable"])
+                or run.get("phase") in refuse.get("phases", {}) or label in refuse.get("ids", {})
+                or any(re.search(pat, json.dumps(run)) for pat in refuse.get("match", {}))):
+            continue
+        if run.get("kind") in ("g7", "g7live"):
+            blocked = {g for pat, gs in refuse.get("groups", {}).items()
+                       if fnmatch.fnmatch(label, pat) for g in gs}
+            groups = [g for g in run["groups"] if g not in blocked]
+            if not groups:
+                continue
+            full_groups[label] = groups
+        full_runs.append(label)
+    complete = expand(full_runs, full_groups, tier="full", leg_shards="auto")
+    gate8 = [e for e in complete["include"] if e["id"] == "native-rust-gate8"]
+    check("full-tier auto shards native-rust-gate8", len(gate8) > 1 and all(e["legs"] for e in gate8))
+    check("full-tier gate 8 shard watchdogs cover at least 1.5x expected validate minutes",
+          all(float(e["watchdog"]) >= 1.5 * (e["est_min"] - setup_minutes(real, e["id"]))
+              and float(e["watchdog"]) <= WATCHDOG_MAX for e in gate8))
 
     with tempfile.TemporaryDirectory() as d:
         os.makedirs(os.path.join(d, "s"))
@@ -333,9 +380,32 @@ def self_test():
               next(e["est_min"] for e in r["include"] if e["legs"] == "ga") == round(10 + 2 + 48 * 3 / 6, 1))
         busy = ["mid"] * 1 + [f"j{n}" for n in range(40)]
         tab["minutes"].update({f"j{n}": 30 for n in range(40)})
-        r = ex(["long"] + busy, max_parallel=4)
-        check("auto on a throughput-bound matrix: no leg shards (each costs a setup)",
-              not any(e["legs"] for e in r["include"]) and r["include"][0]["label"] == "long")
+        r = ex(["long"] + busy, max_parallel=1)
+        off = ex(["long"] + busy, max_parallel=1, leg_shards="off")
+        check("auto over the watchdog share: smallest safe k even when makespan grows",
+              r["shards"] == {"long": 2}
+              and r["estimate"]["makespan_min"] > off["estimate"]["makespan_min"])
+        tab["minutes"]["long"] = 40
+        r = ex(["long"] + busy, max_parallel=1)
+        check("auto under the watchdog share: throughput-bound matrix keeps the old makespan rule",
+              not any(e["legs"] for e in r["include"]))
+        r = ex(["long", "mid"], max_parallel=10)
+        check("auto under the watchdog share: free slots still favor a shorter makespan",
+              r["shards"] == {"long": 2})
+        tab["minutes"]["long"] = 75
+        tab["leg_shards"]["long"]["weights"] = {"ga": 2, "gb": 2, "gc": 1, "gd": 1}
+        r = ex(["long"] + busy, max_parallel=1)
+        check("auto: two unsafe shards grow to the smallest safe count, three",
+              r["shards"] == {"long": 3})
+        tab["minutes"]["long"] = 150
+        try:
+            ex(["long"], max_parallel=10)
+            no_safe_partition = False
+        except ValueError as err:
+            no_safe_partition = "no partition fits the watchdog share" in str(err)
+        check("auto: no safe partition reports the table problem", no_safe_partition)
+        tab["leg_shards"]["long"]["weights"] = {"ga": 3, "gb": 1, "gc": 1, "gd": 1}
+        tab["minutes"]["long"] = 60
         r = ex(["long"] + busy, max_parallel=4, leg_shards="force")
         check("force: the largest valid k regardless", r["shards"] == {"long": 3})
         r = ex(["long", "mid"], max_parallel=10, leg_shards="force", tier="smoke")

@@ -145,6 +145,9 @@ def content_names_sabotage(repo, path, diff_base, rx, untracked):
             mode = "its whole content names a sabotage/mutation (git diff failed)"
         elif diff_base is not None:
             mode = "new untracked file names a sabotage/mutation"
+    # Session metadata records the absence of a sabotage as JSON null. Ignore only that field;
+    # another sabotage name (or tamper) on the same line still selects the legs.
+    text = re.sub(r'"sabotage"\s*:\s*null\b', "", text)
     return mode if rx.search(text) else ""
 
 
@@ -352,6 +355,7 @@ def sabotage_diff_self_test(m):
     cm = "experiments/render-stream/capture/CMakeLists.txt"
     src = "experiments/render-stream/capture/src/hooks.cpp"
     new = "experiments/render-stream/capture/src/new_thing.cpp"
+    golden = "experiments/render-stream/protocol/golden-99/session.json"
     res = {}
     with tempfile.TemporaryDirectory() as d:
         g = lambda *a: subprocess.run(["git", "-C", d, *a], capture_output=True, text=True, check=True).stdout.strip()
@@ -377,6 +381,24 @@ def sabotage_diff_self_test(m):
         w(new, "// tamper with it\n")
         res["untracked"] = P([new])
         res["badbase"] = P([cm], "no-such-ref")
+        w(golden, '{"sabotage":null}\n')
+        res["golden_untracked_null"] = P([golden])
+        g("add", golden); g("commit", "-qm", "golden session")
+        res["golden_null"] = P([golden])
+        res["golden_null_nobase"] = P([golden], None)
+        w(golden, '{"sabotage" : \n null}\n')
+        res["golden_null_space"] = P([golden])
+        w(golden, '{"sabotage":"hint-unknown-hash"}\n')
+        res["golden_kind"] = P([golden])
+        g("commit", "-qam", "real sabotage")
+        w(golden, '{"sabotage":null}\n')
+        res["golden_removed_kind"] = P([golden], "HEAD")
+        w(golden, '{"sabotage":null,"kind":"sabotage-hint-unknown-hash"}\n')
+        res["golden_null_and_kind"] = P([golden])
+        w(golden, '{"sabotage":"null"}\n')
+        res["golden_null_string"] = P([golden])
+        w(golden, '{"sabotage":null,"note":"tamper"}\n')
+        res["golden_null_and_tamper"] = P([golden])
     return res
 
 
@@ -562,6 +584,10 @@ def self_test(m):
           sd["untracked"]["run"] and "untracked" in sd["untracked"]["why"][0])
     check("diff-scoped sabotage: an unusable base falls back to the whole file, and the why says so",
           sd["badbase"]["run"] and "git diff failed" in sd["badbase"]["why"][0])
+    for case in ("golden_untracked_null", "golden_null", "golden_null_nobase", "golden_null_space"):
+        check(f"golden session: {case} leaves sabotage legs off", not sd[case]["run"])
+    for case in ("golden_kind", "golden_removed_kind", "golden_null_and_kind", "golden_null_string", "golden_null_and_tamper"):
+        check(f"golden session: {case} keeps sabotage legs on", sd[case]["run"])
     dd = P("experiments/render-stream/protocol/gate7-design.md")
     check("a doc naming sabotage does not run the sabotage legs", not dd["sabotage"]["run"])
     print(f"smoke-plan self-test: {'all pass' if not fails else f'{fails} FAIL'}")
