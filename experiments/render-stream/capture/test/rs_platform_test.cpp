@@ -13,16 +13,19 @@
 #include <thread>
 
 #ifndef _WIN32
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #else
 #include <winsock2.h>
 #include <windows.h>
 #include <process.h>
+#include <io.h>
 #endif
 
 using namespace grc::rs;
@@ -35,6 +38,37 @@ void check(bool ok, const char *name) {
   else
     std::fprintf(stderr, "FAIL %s\n", name);
 }
+bool non_inheritable(SocketHandle socket) {
+#ifdef _WIN32
+  DWORD flags = 0;
+  return ::GetHandleInformation(reinterpret_cast<HANDLE>(socket), &flags) &&
+         !(flags & HANDLE_FLAG_INHERIT);
+#else
+  const int flags = ::fcntl(socket, F_GETFD);
+  return flags >= 0 && (flags & FD_CLOEXEC);
+#endif
+}
+#ifndef _WIN32
+void listener_exec_case(SocketHandle listener) {
+  // The shell checks the descriptor directly, without opening a directory at that fd number.
+  const auto command = "test ! -e /proc/self/fd/" + std::to_string(listener);
+  const auto child = ::fork();
+  if (child == 0) {
+    ::execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char *>(nullptr));
+    ::_exit(127);
+  }
+  check(child > 0, "listener fork");
+  if (child > 0) {
+    int status = 0;
+    pid_t waited;
+    do {
+      waited = ::waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    check(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "listener absent after exec");
+  }
+}
+#endif
 std::string read(const std::string &path) {
   std::ifstream in(fs_path(path), std::ios::binary);
   return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
@@ -243,10 +277,28 @@ int main() {
   auto *out = open_file(file, "wb");
   check(out != nullptr, "open_file UTF-8");
   if (out) {
+#ifdef _WIN32
+    check(non_inheritable(static_cast<SocketHandle>(::_get_osfhandle(::_fileno(out)))),
+          "open_file non-inheritable");
+#else
+    check(non_inheritable(::fileno(out)), "open_file non-inheritable");
+#endif
     check(std::fwrite("before", 1, 6, out) == 6, "write UTF-8 path");
     std::fclose(out);
   }
   check(read(file) == "before", "UTF-8 path round trip");
+  for (const char *mode : {"r", "rb", "r+b", "w", "wb", "w+", "a", "ab", "a+"}) {
+    auto *handle = open_file(file, mode);
+    check(handle != nullptr, "open_file mode");
+    if (!handle) continue;
+#ifdef _WIN32
+    check(non_inheritable(static_cast<SocketHandle>(::_get_osfhandle(::_fileno(handle)))),
+          "open_file mode non-inheritable");
+#else
+    check(non_inheritable(::fileno(handle)), "open_file mode non-inheritable");
+#endif
+    std::fclose(handle);
+  }
   check(!make_directories(file + "/child") && !is_directory(file),
         "directory through regular file fails");
   const auto source = root + "/source";
@@ -313,7 +365,9 @@ int main() {
         tcp_listen(loopback, 0, 16, WinBind::ExclusiveAddrUse, &listener, &port, &error);
     check(listening && port != 0, "tcp_listen ephemeral port");
     if (listening) {
+      check(non_inheritable(listener), "listener non-inheritable");
 #ifndef _WIN32
+      listener_exec_case(listener);
       int reuse = 0;
       socklen_t length = sizeof(reuse);
       check(::getsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &reuse, &length) == 0 && reuse == 1,
@@ -321,11 +375,13 @@ int main() {
 #endif
       const auto client = tcp_connect(loopback, port, &error);
       check(client != kInvalidSocket, "tcp_connect");
+      check(non_inheritable(client), "outgoing socket non-inheritable");
       PollEntry p{listener, kPollIn, 0};
       const bool ready = poll_sockets(&p, 1, 1000) == 1 && (p.revents & kPollIn);
       check(ready, "listener readable");
       const auto peer = ready ? tcp_accept(listener) : kInvalidSocket;
       check(peer != kInvalidSocket, "tcp_accept");
+      check(non_inheritable(peer), "accepted socket non-inheritable");
       if (client != kInvalidSocket && peer != kInvalidSocket) {
         check(set_nonblocking(peer), "set_nonblocking");
         set_tcp_nodelay(peer);
@@ -349,6 +405,8 @@ int main() {
     const bool opened = wake_open(&wake, &error);
     check(opened, "wake_open");
     if (opened) {
+      check(non_inheritable(wake.poll_handle), "wake read handle non-inheritable");
+      check(non_inheritable(wake.write_handle), "wake write handle non-inheritable");
       wake_signal(wake);
       PollEntry p{wake.poll_handle, kPollIn, 0};
       check(poll_sockets(&p, 1, 1000) == 1 && (p.revents & kPollIn), "wake readable");

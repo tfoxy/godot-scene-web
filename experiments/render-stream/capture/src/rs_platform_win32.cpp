@@ -214,7 +214,8 @@ bool tcp_listen(const IpAddress &addr, std::uint16_t port, int backlog, WinBind 
   int size;
   auto address = socket_address(addr, port, &size);
   const int family = addr.family == AddrFamily::IPv4 ? AF_INET : AF_INET6;
-  const auto fd = ::socket(family, SOCK_STREAM, 0);
+  const auto fd = ::WSASocketW(family, SOCK_STREAM, 0, nullptr, 0,
+                              WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
   if (fd == INVALID_SOCKET) {
     fail(error, "socket", ::WSAGetLastError());
     return false;
@@ -264,6 +265,13 @@ SocketHandle tcp_accept(SocketHandle listener, IpAddress *peer) {
   sockaddr_storage address{};
   int len = sizeof(address);
   const auto fd = ::accept(listener, reinterpret_cast<sockaddr *>(&address), &len);
+  if (fd != kInvalidSocket &&
+      !::SetHandleInformation(reinterpret_cast<HANDLE>(fd), HANDLE_FLAG_INHERIT, 0)) {
+    const auto error = ::GetLastError();
+    ::closesocket(fd);
+    ::WSASetLastError(static_cast<int>(error));
+    return kInvalidSocket;
+  }
   if (fd != kInvalidSocket && peer) {
     peer->family = address.ss_family == AF_INET ? AddrFamily::IPv4 : AddrFamily::IPv6;
     if (peer->family == AddrFamily::IPv4)
@@ -276,7 +284,9 @@ SocketHandle tcp_accept(SocketHandle listener, IpAddress *peer) {
 SocketHandle tcp_connect(const IpAddress &addr, std::uint16_t port, std::string *error) {
   int size;
   auto address = socket_address(addr, port, &size);
-  const auto fd = ::socket(addr.family == AddrFamily::IPv4 ? AF_INET : AF_INET6, SOCK_STREAM, 0);
+  const auto fd = ::WSASocketW(addr.family == AddrFamily::IPv4 ? AF_INET : AF_INET6,
+                              SOCK_STREAM, 0, nullptr, 0,
+                              WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
   if (fd == INVALID_SOCKET) {
     fail(error, "socket", ::WSAGetLastError());
     return kInvalidSocket;
@@ -322,7 +332,8 @@ int poll_sockets(PollEntry *entries, std::size_t count, int timeout_ms) {
   return ::WSAPoll(reinterpret_cast<WSAPOLLFD *>(entries), static_cast<ULONG>(count), timeout_ms);
 }
 bool wake_open(Wake *out, std::string *error) {
-  const auto fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+  const auto fd = ::WSASocketW(AF_INET, SOCK_DGRAM, 0, nullptr, 0,
+                              WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
   if (fd == INVALID_SOCKET) {
     fail(error, "socket", ::WSAGetLastError());
     return false;
@@ -538,10 +549,11 @@ std::filesystem::path fs_path(const std::string &utf8) {
       std::u8string(reinterpret_cast<const char8_t *>(utf8.data()), utf8.size()));
 }
 std::FILE *open_file(const std::string &path, const char *mode) {
+  const std::string noinherit_mode = std::string(mode) + "N";
   if (file_fault() == FileFault::NarrowPath)
-    return std::fopen(path.c_str(), mode);
+    return std::fopen(path.c_str(), noinherit_mode.c_str());
   std::wstring wide, wmode;
-  if (!widen(path, &wide) || !widen(mode, &wmode)) {
+  if (!widen(path, &wide) || !widen(noinherit_mode, &wmode)) {
     errno = EINVAL;
     return nullptr;
   }

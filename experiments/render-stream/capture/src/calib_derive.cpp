@@ -3,8 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstring>
-#include <fstream>
-#include <iterator>
+#include "rs_file.h"
 #include <set>
 #include <sstream>
 
@@ -123,10 +122,11 @@ const J *field(const J &j, const char *key, J::Kind kind) {
 
 bool load_abi_table(const std::string &path, AbiTable *out, std::string *error) {
   *out = {};
-  std::ifstream file(path, std::ios::binary);
-  std::string text((std::istreambuf_iterator<char>(file)), {});
+  rs::File file(rs::open_file(path, "rb"));
+  std::string text;
+  const bool read = rs::file_read_all(file.get(), &text);
   J root;
-  if (!file || text.size() > (4u << 20) || !rs::json_lite::Reader(text).parse(&root) ||
+  if (!read || text.size() > (4u << 20) || !rs::json_lite::Reader(text).parse(&root) ||
       root.kind != J::Object || !unique_json(root)) return fail(error, "invalid ABI table JSON");
   auto schema = field(root, "schema", J::String);
   auto abstract = field(root, "abstract_class", J::String);
@@ -284,11 +284,22 @@ bool derive_calibration(const CalibMemoryReader &m, uint64_t cv, const AbiTable 
 bool CalibFileReader::open(const std::string &path, std::string *error) {
   *this = {};
   path_ = path;
-  std::ifstream file(path, std::ios::binary | std::ios::ate);
-  if (!file || file.tellg() < 0) return fail(error, "cannot read image: " + path);
-  bytes_.resize(static_cast<size_t>(file.tellg()));
-  file.seekg(0);
-  if (!file.read(reinterpret_cast<char *>(bytes_.data()), bytes_.size())) return fail(error, "cannot read image");
+  rs::File file(rs::open_file(path, "rb"));
+#ifdef _WIN32
+  const auto seek = ::_fseeki64;
+  const auto tell = ::_ftelli64;
+#else
+  const auto seek = ::fseeko;
+  const auto tell = ::ftello;
+#endif
+  if (!file || seek(file.get(), 0, SEEK_END) != 0)
+    return fail(error, "cannot read image: " + path);
+  const auto size = tell(file.get());
+  if (size < 0) return fail(error, "cannot read image: " + path);
+  bytes_.resize(static_cast<size_t>(size));
+  if (seek(file.get(), 0, SEEK_SET) != 0 ||
+      std::fread(bytes_.data(), 1, bytes_.size(), file.get()) != bytes_.size())
+    return fail(error, "cannot read image");
   const auto *d = bytes_.data();
   const uint64_t n = bytes_.size();
   if (n < 64) return fail(error, "truncated image");

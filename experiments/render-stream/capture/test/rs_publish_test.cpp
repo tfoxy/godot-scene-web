@@ -24,6 +24,12 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#endif
+
 #include "report.h"
 #include "rs13_predict.h"
 #include "rs2_codec.h"
@@ -2000,9 +2006,49 @@ void test_file_writer() {
   store.close();
 }
 
+#ifndef _WIN32
+void check_writer_cloexec(const std::string &path) {
+  struct stat target{};
+  check(::stat(path.c_str(), &target) == 0, "writer file exists: " + path);
+  DIR *fds = ::opendir("/proc/self/fd");
+  check(fds != nullptr, "enumerate writer descriptors");
+  if (!fds) return;
+  int matches = 0;
+  while (const auto *entry = ::readdir(fds)) {
+    char *end = nullptr;
+    const auto fd = std::strtol(entry->d_name, &end, 10);
+    if (end == entry->d_name || *end || fd < 0) continue;
+    struct stat info{};
+    if (::fstat(static_cast<int>(fd), &info) != 0 || info.st_dev != target.st_dev ||
+        info.st_ino != target.st_ino) continue;
+    ++matches;
+    const int flags = ::fcntl(static_cast<int>(fd), F_GETFD);
+    check(flags >= 0 && (flags & FD_CLOEXEC), "writer FD_CLOEXEC: " + path);
+  }
+  ::closedir(fds);
+  check(matches == 1, "exactly one live writer descriptor: " + path);
+}
+
+void test_writer_cloexec() {
+  const std::string dir = tmp_dir("cloexec");
+  FileRecordSink sink;
+  grc::rs::ResourceStore store;
+  std::string error;
+  check(sink.open(dir + "/recording.rs2"), "open inheritance test record sink");
+  check(store.open(dir + "/store", &error), "open inheritance test resource index");
+  check_writer_cloexec(dir + "/recording.rs2");
+  check_writer_cloexec(dir + "/store/index.jsonl");
+  sink.close();
+  store.close();
+}
+#endif
+
 int main() {
   grc::rs13::set_verify_meta(true);  // W13p: predict_meta() == the meta JSON
   test_tmp_dir_cleanup();
+#ifndef _WIN32
+  test_writer_cloexec();
+#endif
   test_file_writer();
   test_lane_former();
   test_start_two_sinks();

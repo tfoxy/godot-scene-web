@@ -224,10 +224,12 @@ inline std::string parent_path(const std::string &path) {
 #if defined(_WIN32)
 std::FILE *open_file(const std::string &utf8_path, const char *mode);
 #else
-// Keep replaced fopen calls direct, including literal paths that must not allocate a string.
-inline std::FILE *open_file(const char *path, const char *mode) { return std::fopen(path, mode); }
+// Set close-on-exec atomically at open, including for short-lived readers.
+inline std::FILE *open_file(const char *path, const char *mode) {
+  return std::fopen(path, (std::string(mode) + "e").c_str());
+}
 inline std::FILE *open_file(const std::string &path, const char *mode) {
-  return std::fopen(path.c_str(), mode);
+  return open_file(path.c_str(), mode);
 }
 #endif
 bool make_directories(const std::string &utf8_path);

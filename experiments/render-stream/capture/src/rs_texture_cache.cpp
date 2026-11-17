@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
+#include "rs_file.h"
 #include <set>
 #include <sstream>
 
@@ -148,10 +148,10 @@ bool TextureCache::open(const CacheConfig &config, std::string *error) {
     return false;
   }
   const std::string index = config.dir + "/index-v1.jsonl";
-  std::ifstream in(fs_path(index));
+  File in(open_file(index, "r"));
   std::string line;
   std::map<std::string, std::string> f;
-  while (std::getline(in, line)) {
+  while (file_getline(in.get(), &line)) {
     if (line.empty()) continue;
     ++lines_;
     if (!parse_row(line, &f)) continue;
@@ -172,7 +172,7 @@ bool TextureCache::open(const CacheConfig &config, std::string *error) {
     rows_[key] = row;
   }
   // Windows readers deny replacement until closed; compaction replaces this index.
-  in.close();
+  in.reset();
   enabled_ = true;
   if (lines_ > static_cast<std::int64_t>(rows_.size()) * 2 + 16) {
     compact_locked();
@@ -197,17 +197,23 @@ std::string TextureCache::dir() const {
 }
 
 void TextureCache::append_row(const CacheKey &key, const Row &row) {
-  std::ofstream out(fs_path(config_.dir + "/index-v1.jsonl"), std::ios::app);
+  File file(open_file(config_.dir + "/index-v1.jsonl", "a"));
+  std::ostringstream out;
   out << "{\"v\":1,\"source\":\"" << key.source << "\",\"encoding\":\"" << key.encoding
       << "\",\"params\":\"" << key.params << "\",\"hash\":\"" << row.hash << "\",\"bytes\":"
       << row.bytes << ",\"ext\":\"" << row.ext << "\",\"use\":" << row.use << "}\n";
+  const auto text = out.str();
+  if (file) (void)std::fwrite(text.data(), 1, text.size(), file.get());
   ++lines_;
 }
 
 void TextureCache::append_delete(const CacheKey &key) {
-  std::ofstream out(fs_path(config_.dir + "/index-v1.jsonl"), std::ios::app);
+  File file(open_file(config_.dir + "/index-v1.jsonl", "a"));
+  std::ostringstream out;
   out << "{\"v\":1,\"del\":1,\"source\":\"" << key.source << "\",\"encoding\":\"" << key.encoding
       << "\",\"params\":\"" << key.params << "\"}\n";
+  const auto text = out.str();
+  if (file) (void)std::fwrite(text.data(), 1, text.size(), file.get());
   ++lines_;
 }
 
@@ -215,12 +221,15 @@ void TextureCache::compact_locked() {
   const std::string index = config_.dir + "/index-v1.jsonl";
   const std::string tmp = index + ".tmp." + std::to_string(process_id());
   {
-    std::ofstream out(fs_path(tmp), std::ios::trunc);
+    File file(open_file(tmp, "w"));
     for (const auto &kv : rows_) {
+      std::ostringstream out;
       out << "{\"v\":1,\"source\":\"" << kv.first.source << "\",\"encoding\":\""
           << kv.first.encoding << "\",\"params\":\"" << kv.first.params << "\",\"hash\":\""
           << kv.second.hash << "\",\"bytes\":" << kv.second.bytes << ",\"ext\":\""
           << kv.second.ext << "\",\"use\":" << kv.second.use << "}\n";
+      const auto text = out.str();
+      if (file) (void)std::fwrite(text.data(), 1, text.size(), file.get());
     }
   }
   std::error_code ec;
@@ -307,14 +316,14 @@ CacheResult TextureCache::get(const CacheKey &key, std::vector<std::uint8_t> *by
     path = file_path(row.hash, row.ext);
   }
   // The read and the verify run outside the lock: workers hit the cache in parallel.
-  std::ifstream in(fs_path(path), std::ios::binary);
+  File in(open_file(path, "rb"));
   std::vector<std::uint8_t> data;
   const bool present = static_cast<bool>(in);
   if (present) {
-    data.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    (void)file_read_all(in.get(), &data);
   }
   // Release the reader before corrupt-file deletion, which Windows otherwise refuses.
-  in.close();
+  in.reset();
   const bool good =
       present && data.size() == row.bytes && sha256_hex(data.data(), data.size()) == row.hash;
   std::lock_guard<std::mutex> lock(mutex_);
@@ -355,10 +364,9 @@ bool TextureCache::put(const CacheKey &key, const std::string &hash, const std::
     const std::string tmp = path + ".tmp." + std::to_string(process_id()) + "." +
                             std::to_string(++tmp_counter_);
     {
-      std::ofstream out(fs_path(tmp), std::ios::binary | std::ios::trunc);
-      out.write(reinterpret_cast<const char *>(data), static_cast<std::streamsize>(size));
-      if (!out) {
-        out.close();
+      File out(open_file(tmp, "wb"));
+      if (!out || std::fwrite(data, 1, size, out.get()) != size) {
+        out.reset();
         fs::remove(fs_path(tmp), ec);
         return false;
       }

@@ -20,7 +20,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
+#include "rs_file.h"
 #include <dirent.h>
 #include <malloc.h>
 #include <map>
@@ -85,7 +85,7 @@ bool tcp_listen(const IpAddress &addr, std::uint16_t port, int backlog, WinBind,
   socklen_t size;
   auto address = socket_address(addr, port, &size);
   const int family = addr.family == AddrFamily::IPv4 ? AF_INET : AF_INET6;
-  const int fd = ::socket(family, SOCK_STREAM, 0);
+  const int fd = ::socket(family, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (fd < 0) {
     fail(error, "socket");
     return false;
@@ -114,7 +114,7 @@ bool tcp_listen(const IpAddress &addr, std::uint16_t port, int backlog, WinBind,
 SocketHandle tcp_accept(SocketHandle listener, IpAddress *peer) {
   sockaddr_storage address{};
   socklen_t len = sizeof(address);
-  const auto fd = ::accept(listener, reinterpret_cast<sockaddr *>(&address), &len);
+  const auto fd = ::accept4(listener, reinterpret_cast<sockaddr *>(&address), &len, SOCK_CLOEXEC);
   if (fd != kInvalidSocket && peer) {
     peer->family = address.ss_family == AF_INET ? AddrFamily::IPv4 : AddrFamily::IPv6;
     if (peer->family == AddrFamily::IPv4)
@@ -127,7 +127,8 @@ SocketHandle tcp_accept(SocketHandle listener, IpAddress *peer) {
 SocketHandle tcp_connect(const IpAddress &addr, std::uint16_t port, std::string *error) {
   socklen_t size;
   auto address = socket_address(addr, port, &size);
-  const int fd = ::socket(addr.family == AddrFamily::IPv4 ? AF_INET : AF_INET6, SOCK_STREAM, 0);
+  const int fd = ::socket(addr.family == AddrFamily::IPv4 ? AF_INET : AF_INET6,
+                          SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (fd < 0) {
     fail(error, "socket");
     return kInvalidSocket;
@@ -168,8 +169,8 @@ int poll_sockets(PollEntry *entries, std::size_t count, int timeout_ms) {
 }
 bool wake_open(Wake *out, std::string *error) {
   int fds[2];
-  if (::pipe(fds) != 0) {
-    fail(error, "pipe");
+  if (::pipe2(fds, O_CLOEXEC) != 0) {
+    fail(error, "pipe2");
     return false;
   }
   set_nonblocking(fds[0]);
@@ -207,12 +208,9 @@ bool fill_random(void *buf, std::size_t n) {
   return true;
 }
 std::uint64_t rss_bytes() {
-  std::ifstream in("/proc/self/statm");
-  if (!in)
-    return 0;
-  std::uint64_t pages = 0, resident_pages = 0;
-  in >> pages >> resident_pages;
-  if (!in)
+  File in(open_file("/proc/self/statm", "r"));
+  unsigned long long pages = 0, resident_pages = 0;
+  if (!in || std::fscanf(in.get(), "%llu %llu", &pages, &resident_pages) != 2)
     return 0;
   const long page_size = sysconf(_SC_PAGESIZE);
   return page_size > 0 ? resident_pages * static_cast<std::uint64_t>(page_size) : 0;
@@ -409,9 +407,9 @@ void rss_split(void *context, RssSplitVisitor visitor) {
   }
 }
 std::optional<std::int64_t> rss_anon_bytes() {
-  std::ifstream status("/proc/self/status");
+  File status(open_file("/proc/self/status", "r"));
   std::string line;
-  while (std::getline(status, line)) {
+  while (file_getline(status.get(), &line)) {
     if (line.compare(0, 8, "RssAnon:") != 0) continue;
     std::istringstream value(line.substr(8));
     std::int64_t kb = -1;
@@ -427,13 +425,18 @@ std::optional<HeapStats> heap_stats() {
 }
 bool heap_trim() { return malloc_trim(0) != 0; }
 bool dump_memory_info(const std::string &prefix) {
-  std::ifstream maps("/proc/self/smaps");
-  std::ofstream dump(fs_path(prefix + ".smaps"));
-  dump << maps.rdbuf();
+  File maps(open_file("/proc/self/smaps", "r"));
+  File dump(open_file(prefix + ".smaps", "w"));
+  bool copied = maps && dump;
+  char buffer[8192];
+  std::size_t n;
+  while (copied && (n = std::fread(buffer, 1, sizeof(buffer), maps.get())) != 0)
+    copied = std::fwrite(buffer, 1, n, dump.get()) == n;
+  copied = copied && !std::ferror(maps.get()) && std::fflush(dump.get()) == 0;
   if (std::FILE *f = open_file(prefix + ".malloc.xml", "w")) {
     const int result = malloc_info(0, f);
     std::fclose(f);
-    return maps.good() && dump.good() && result == 0;
+    return copied && result == 0;
   }
   return false;
 }

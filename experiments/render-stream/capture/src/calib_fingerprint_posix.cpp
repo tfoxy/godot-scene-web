@@ -13,7 +13,7 @@ namespace grc {
 namespace {
 
 bool read_file(const std::string &path, std::string *out) {
-  FILE *handle = std::fopen(path.c_str(), "rb");
+  FILE *handle = rs::open_file(path, "rb");
   if (handle == nullptr) {
     return false;
   }
