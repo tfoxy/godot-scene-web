@@ -36,6 +36,7 @@ centre's colour rests on a texel-boundary tie.
 | `CLIPDRAW` | (336,16)  | a clip-and-draw `Sprite2D` owner (16x16 at scale 4, four alpha rings 255/192/128/64) over an opaque child overflowing it by 16 px                                                                                                                                                                                                                                                                                                                               | clip-and-draw with partial alpha                                                                                                                                                                              |
 | `GROUP`    | (448,16)  | a `CanvasGroup` (fit_margin 6, clear_margin 12, use_mipmaps, self-modulate alpha 0.6) over two overlapping 0.7-alpha `ColorRect`s                                                                                                                                                                                                                                                                                                                               | the group composites its children as one layer; non-default margins and `blur_mipmaps` travel                                                                                                                 |
 | `NESTED`   | (544,16)  | a clip-only `Sprite2D` (a disc, scale 3) with a child, inside a `CanvasGroup` (defaults, self-modulate alpha 0.7) over a green backdrop                                                                                                                                                                                                                                                                                                                         | GLES3 keeps one open group: the inner owner draws plainly over its unclipped child                                                                                                                            |
+| `BLEND`    | (40,240)  | a `CanvasGroup` (defaults) over a translucent blue base, with a SUB-blend and an ADD-blend `ColorRect` child, each overflowing the base                                                                                                                                                                                                                                                                                                                         | on the group's transparent target SUB removes coverage (it never adds it) and ADD keeps Godot's alpha factors; past the base the destination alpha is 0                                                       |
 | `BBV`      | (40,136)  | a backdrop, a `BackBufferCopy` in viewport mode, a yellow overlay, then a screen reader (invert) over the cell                                                                                                                                                                                                                                                                                                                                                  | the copy predates the overlay, so the reader hides it; without the copy the reader's own automatic copy would show it                                                                                         |
 | `BBR`      | (136,136) | a backdrop, a `BackBufferCopy` in rect mode over the cell's left half (the node at the origin: GLES3 reads the rect untransformed), then a screen reader over the cell                                                                                                                                                                                                                                                                                          | the left half reads the backdrop; the right half reads what BBV's whole-target copy left in the back buffer there, the clear colour. A whole-target copy instead (dropping the rect) shows the backdrop there |
 | `TGL`      | (232,136) | a diamond-mask `Sprite2D` with a child, `clip_children` disabled until step 2, then clip only                                                                                                                                                                                                                                                                                                                                                                   | a state-only change: `set_clip_children_mode` does not redraw, so the patch carries the item with `commands: null`                                                                                            |
@@ -51,11 +52,11 @@ colour appears on none of the fill's 8 rows outside the mask.
 
 ## What each leg loses
 
-| leg                                      | loses                              | differs from the reference in                                  |
-| ---------------------------------------- | ---------------------------------- | -------------------------------------------------------------- |
-| `receiver-v9` (the /9 capture)           | every /10 state                    | HPBAR, HPLOW, CLIPDRAW, GROUP, NESTED, BBV, BBR; TGL at step 2 |
-| `sabotage-drop-canvas-group/receiver`    | `canvas_group`                     | HPBAR, HPLOW, CLIPDRAW, GROUP, NESTED; TGL at step 2           |
-| `sabotage-full-backbuffer-copy/receiver` | the rect of every copy (`Rect2()`) | BBR                                                            |
+| leg                                      | loses                              | differs from the reference in                                         |
+| ---------------------------------------- | ---------------------------------- | --------------------------------------------------------------------- |
+| `receiver-v9` (the /9 capture)           | every /10 state                    | HPBAR, HPLOW, CLIPDRAW, GROUP, NESTED, BLEND, BBV, BBR; TGL at step 2 |
+| `sabotage-drop-canvas-group/receiver`    | `canvas_group`                     | HPBAR, HPLOW, CLIPDRAW, GROUP, NESTED, BLEND; TGL at step 2           |
+| `sabotage-full-backbuffer-copy/receiver` | the rect of every copy (`Rect2()`) | BBR                                                                   |
 
 Each equals the reference everywhere else.
 
@@ -77,22 +78,22 @@ the references and receivers in one private 640x360 gamescope.
 
 At checkpoints 0 and 1 (and 2, with TGL's mask added as a fourth commands-bearing clip-only item):
 
-| `canvas_group`                                  | items                                    |
-| ----------------------------------------------- | ---------------------------------------- |
-| `clip_only`, 5, false, 0, false; no commands    | 2 (`ForegroundContainer`)                |
-| the same; commands                              | 3 (`Mask` x2, NESTED's owner)            |
-| `clip_and_draw`, 5, false, 0, false; commands   | 3 (`HpForeground` x2, CLIPDRAW's owner)  |
-| `transparent`, 12, true, 6, true; no commands   | 1 (GROUP)                                |
-| `transparent`, 10, true, 10, false; no commands | 1 (NESTED's `CanvasGroup`, the defaults) |
+| `canvas_group`                                  | items                                                |
+| ----------------------------------------------- | ---------------------------------------------------- |
+| `clip_only`, 5, false, 0, false; no commands    | 2 (`ForegroundContainer`)                            |
+| the same; commands                              | 3 (`Mask` x2, NESTED's owner)                        |
+| `clip_and_draw`, 5, false, 0, false; commands   | 3 (`HpForeground` x2, CLIPDRAW's owner)              |
+| `transparent`, 12, true, 6, true; no commands   | 1 (GROUP)                                            |
+| `transparent`, 10, true, 10, false; no commands | 2 (NESTED's and BLEND's `CanvasGroup`, the defaults) |
 
 | `copy_to_backbuffer` | items                  |
 | -------------------- | ---------------------- |
 | `[0, 0, 0, 0]`       | 1 (BBV, viewport mode) |
 | `[136, 136, 32, 64]` | 1 (BBR)                |
 
-Every other item carries `null` for both. The capture counts 14 `canvas_item_set_canvas_group_mode`
+Every other item carries `null` for both. The capture counts 15 `canvas_item_set_canvas_group_mode`
 calls while armed (GROUP 4: the `CanvasGroup` constructor's `set_fit_margin(10)` and three setters;
-NESTED's group 1; 8 `clip_children` setters; the toggle) and 5
+NESTED's group 1; BLEND's group 1; 8 `clip_children` setters; the toggle) and 5
 `canvas_item_set_copy_to_backbuffer` calls (each `BackBufferCopy` constructor sends its default rect
 mode, `Rect2(-100, -100, 200, 200)`; then BBV's mode, BBR's mode and rect); teardown may add one
 disabling call per `CanvasGroup`.

@@ -162,6 +162,7 @@ const BLEND_STATES: Record<BlendMode, BlendState> = {
     srcAlpha: "ONE",
     dstAlpha: "ONE",
   },
+  // NB: the Rust `canvas_items` executor follows Godot's render-target alpha for ADD and SUB on transparent targets, on purpose.
   // SUB: `dst - src` on COLOUR only. The alpha equation stays `FUNC_ADD` — a
   // reverse-subtract on alpha would eat the destination's coverage as well, so a
   // dark smoke sprite would punch a transparent hole in the scene instead of

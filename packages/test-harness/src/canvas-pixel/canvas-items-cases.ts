@@ -525,17 +525,22 @@ function wrapModes(): ItemsCase {
 
 /** One blend over a background with an opaque and a translucent half (and a transparent strip at
  *  the bottom), drawn with a texture, a vertex gradient and a translucent modulate. */
-function blendCase(blend: Blend, format: TargetFormat = "rgb10a2"): ItemsCase {
+function blendCase(
+  blend: Blend,
+  format: TargetFormat = "rgb10a2",
+  opaque = false,
+): ItemsCase {
   const premul = blend === "premul_alpha";
   const top: Rgba = premul ? [0.5, 0.25, 0.1, 0.5] : [1, 0.6, 0.2, 0.9];
   const bottom: Rgba = premul ? [0.1, 0.3, 0.6, 0.75] : [0.2, 0.7, 1, 0.4];
-  const name = `blend${blend === "premul_alpha" ? "PremulAlpha" : blend[0].toUpperCase() + blend.slice(1)}${format === "rgba8" ? "Rgba8" : ""}`;
+  const name = `blend${blend === "premul_alpha" ? "PremulAlpha" : blend[0].toUpperCase() + blend.slice(1)}${format === "rgba8" ? "Rgba8" : ""}${opaque ? "Opaque" : ""}`;
   return {
     name,
     width: S,
     height: S,
     format,
-    clear: [0, 0, 0, 0],
+    ...(opaque ? { opaque } : {}),
+    clear: [0, 0, 0, opaque ? 1 : 0],
     textures: [texture(1, 2, 2, premul ? PREMUL_CONTENT : CHECKER)],
     meshes: [
       quad(0, 0, 32, 56, { item: 0, colors: solid([0.6, 0.4, 0.2, 1]) }),
@@ -767,8 +772,12 @@ export function buildCases(): ItemsCase[] {
     filter("linear"),
     wrapModes(),
     blendCase("mix"),
-    blendCase("add"),
-    blendCase("sub"),
+    // add and sub run alpha on a TRANSPARENT target through Godot's render-target factors in the
+    // Rust executor, but as page coverage (FUNC_ADD, ONE/ONE) in the TypeScript one, on purpose:
+    // those two are judged against native Godot by gate 8 g8cg (g7-8 @gsw), not against each
+    // other. On an opaque target both keep the destination alpha, so they must still agree.
+    blendCase("add", "rgb10a2", true),
+    blendCase("sub", "rgb10a2", true),
     blendCase("mul"),
     blendCase("premul_alpha"),
     blendCase("mix", "rgba8"),

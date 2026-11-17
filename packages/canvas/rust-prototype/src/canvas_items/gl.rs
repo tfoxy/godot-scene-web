@@ -17,10 +17,10 @@
 //! `dirty.all` and every texture re-queued.
 use super::{
     CANVAS_INVERSE_UNIFORM, CANVAS_MATRIX_UNIFORM, Call, ExecOptions, ExecStats,
-    FIRST_SAMPLER_UNIT, ITEM_TEXELS, ITEMS_PER_ROW, MAX_PROGRAM_SAMPLERS, Sabotage,
-    downscale_factor, downscale_rgba8, downscale_texels_nearest, downscaled_size, gl_scissor,
-    gl_scissor_y_up, godot_screen_transform, item_program_fragment, item_program_vertex,
-    item_rows_for, item_upload_rects, msdf_fragment, plan_calls,
+    FIRST_SAMPLER_UNIT, ITEM_TEXELS, ITEMS_PER_ROW, MAX_PROGRAM_SAMPLERS, Sabotage, blend_state,
+    downscale_factor, downscale_rgba8, downscale_texels_nearest, downscaled_size, gl_enum,
+    gl_scissor, gl_scissor_y_up, godot_screen_transform, item_program_fragment,
+    item_program_vertex, item_rows_for, item_upload_rects, msdf_fragment, plan_calls,
 };
 use crate::present::{
     ContextAttributes,
@@ -2801,10 +2801,19 @@ fn set_vertex_projection(
     }
 }
 
+const _: () = {
+    assert!(gl_enum::ZERO == glow::ZERO);
+    assert!(gl_enum::ONE == glow::ONE);
+    assert!(gl_enum::SRC_ALPHA == glow::SRC_ALPHA);
+    assert!(gl_enum::ONE_MINUS_SRC_ALPHA == glow::ONE_MINUS_SRC_ALPHA);
+    assert!(gl_enum::DST_ALPHA == glow::DST_ALPHA);
+    assert!(gl_enum::DST_COLOR == glow::DST_COLOR);
+    assert!(gl_enum::FUNC_ADD == glow::FUNC_ADD);
+    assert!(gl_enum::FUNC_REVERSE_SUBTRACT == glow::FUNC_REVERSE_SUBTRACT);
+};
+
 /// `executor-webgl.ts`'s `BLEND_STATES`; `PremulAlpha` is MIX's GL state, `Disabled` no blending.
-/// On an `opaque` target (Godot's non-transparent render target) every blend keeps the
-/// destination's alpha, `GL_ZERO, GL_ONE`, as Godot's GLES3 canvas renderer sets it there
-/// (rasterizer_canvas_gles3.cpp:755-798).
+/// The state itself is [`blend_state`].
 fn set_blend(gl: &Gl, cache: &mut Cache, blend: Blend, opaque: bool, stats: &mut ExecStats) {
     let enabled = blend != Blend::Disabled;
     if cache.blend_enabled != Some(enabled) {
@@ -2820,52 +2829,19 @@ fn set_blend(gl: &Gl, cache: &mut Cache, blend: Blend, opaque: bool, stats: &mut
     if !enabled {
         return;
     }
-    let (mut func, equation_rgb, src_rgb, dst_rgb, mut src_alpha, mut dst_alpha) = match blend {
-        Blend::Add => (
-            1u8,
-            glow::FUNC_ADD,
-            glow::ONE,
-            glow::ONE,
-            glow::ONE,
-            glow::ONE,
-        ),
-        Blend::Sub => (
-            2,
-            glow::FUNC_REVERSE_SUBTRACT,
-            glow::ONE,
-            glow::ONE,
-            glow::ONE,
-            glow::ONE,
-        ),
-        Blend::Mul => (
-            3,
-            glow::FUNC_ADD,
-            glow::DST_COLOR,
-            glow::ZERO,
-            glow::DST_ALPHA,
-            glow::ZERO,
-        ),
-        _ => (
-            0,
-            glow::FUNC_ADD,
-            glow::ONE,
-            glow::ONE_MINUS_SRC_ALPHA,
-            glow::ONE,
-            glow::ONE_MINUS_SRC_ALPHA,
-        ),
-    };
-    if opaque {
-        src_alpha = glow::ZERO;
-        dst_alpha = glow::ONE;
-        func |= 0x10;
-    }
-    if cache.blend_func != Some(func) {
+    let state = blend_state(blend, opaque);
+    if cache.blend_func != Some(state.func) {
         unsafe {
-            gl.c().blend_equation_separate(equation_rgb, glow::FUNC_ADD);
             gl.c()
-                .blend_func_separate(src_rgb, dst_rgb, src_alpha, dst_alpha);
+                .blend_equation_separate(state.equation, state.equation);
+            gl.c().blend_func_separate(
+                state.src_rgb,
+                state.dst_rgb,
+                state.src_alpha,
+                state.dst_alpha,
+            );
         }
-        cache.blend_func = Some(func);
+        cache.blend_func = Some(state.func);
         stats.blend_changes += 1;
     }
 }

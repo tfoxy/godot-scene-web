@@ -43,6 +43,86 @@ pub use gl::{gpu_families, CanvasItemsExecutor, ContextState, ExecError, FenceSt
 #[cfg(all(target_arch = "wasm32", feature = "canvas-items-test"))]
 pub mod test_harness;
 
+/// The GL enums [`blend_state`] names, as numbers so the choice is testable off wasm32 (glow is a
+/// wasm-only dependency); `gl.rs` asserts each equals glow's at compile time.
+pub(crate) mod gl_enum {
+    pub const ZERO: u32 = 0;
+    pub const ONE: u32 = 1;
+    pub const SRC_ALPHA: u32 = 0x0302;
+    pub const ONE_MINUS_SRC_ALPHA: u32 = 0x0303;
+    pub const DST_ALPHA: u32 = 0x0304;
+    pub const DST_COLOR: u32 = 0x0306;
+    pub const FUNC_ADD: u32 = 0x8006;
+    pub const FUNC_REVERSE_SUBTRACT: u32 = 0x800B;
+}
+
+/// One blend unit setting: the cache key, the equation (both channels) and the four factors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BlendState {
+    pub(crate) func: u8,
+    pub(crate) equation: u32,
+    pub(crate) src_rgb: u32,
+    pub(crate) dst_rgb: u32,
+    pub(crate) src_alpha: u32,
+    pub(crate) dst_alpha: u32,
+}
+
+/// Godot's GLES3 canvas blend switch (rasterizer_canvas_gles3.cpp:755-798) for `blend`, with the
+/// colour premultiplied as [`premultiplies`] says: `GL_SRC_ALPHA` over a straight colour equals
+/// `GL_ONE` over the premultiplied one, but the alpha channel is never premultiplied, so its factor
+/// stays `GL_SRC_ALPHA`. On a transparent target `Add`/`Sub` run alpha through the same factors and
+/// equation as colour (`Sub` removes alpha, as Godot's does); on an `opaque` target every blend
+/// keeps the destination's alpha, `GL_ZERO, GL_ONE`.
+pub(crate) fn blend_state(blend: Blend, opaque: bool) -> BlendState {
+    let (mut func, equation, src_rgb, dst_rgb, mut src_alpha, mut dst_alpha) = match blend {
+        Blend::Add => (
+            1u8,
+            gl_enum::FUNC_ADD,
+            gl_enum::ONE,
+            gl_enum::ONE,
+            gl_enum::SRC_ALPHA,
+            gl_enum::ONE,
+        ),
+        Blend::Sub => (
+            2,
+            gl_enum::FUNC_REVERSE_SUBTRACT,
+            gl_enum::ONE,
+            gl_enum::ONE,
+            gl_enum::SRC_ALPHA,
+            gl_enum::ONE,
+        ),
+        Blend::Mul => (
+            3,
+            gl_enum::FUNC_ADD,
+            gl_enum::DST_COLOR,
+            gl_enum::ZERO,
+            gl_enum::DST_ALPHA,
+            gl_enum::ZERO,
+        ),
+        _ => (
+            0,
+            gl_enum::FUNC_ADD,
+            gl_enum::ONE,
+            gl_enum::ONE_MINUS_SRC_ALPHA,
+            gl_enum::ONE,
+            gl_enum::ONE_MINUS_SRC_ALPHA,
+        ),
+    };
+    if opaque {
+        src_alpha = gl_enum::ZERO;
+        dst_alpha = gl_enum::ONE;
+        func |= 0x10;
+    }
+    BlendState {
+        func,
+        equation,
+        src_rgb,
+        dst_rgb,
+        src_alpha,
+        dst_alpha,
+    }
+}
+
 /// Items per row of the item data texture. Its width is `3 · ITEMS_PER_ROW` texels (1536, inside
 /// WebGL2's guaranteed 2048), so item `i` is texels `3·(i % 512) .. +3` of row `i / 512`, and a
 /// run of whole rows is one contiguous slice of `DrawList::items`.
@@ -1106,5 +1186,69 @@ mod tests {
         let out = downscale_texels_nearest(&src, 5, 3, 2, 8);
         let firsts: Vec<u8> = out.chunks_exact(8).map(|t| t[0]).collect();
         assert_eq!(firsts, vec![0, 2, 4, 10, 12, 14]);
+    }
+
+    fn factors(s: BlendState) -> (u32, u32, u32, u32, u32) {
+        (s.equation, s.src_rgb, s.dst_rgb, s.src_alpha, s.dst_alpha)
+    }
+
+    #[test]
+    fn transparent_add_and_sub_run_alpha_through_godots_factors_and_equation() {
+        use gl_enum::*;
+        assert_eq!(
+            factors(blend_state(Blend::Add, false)),
+            (FUNC_ADD, ONE, ONE, SRC_ALPHA, ONE)
+        );
+        // Reverse-subtract covers alpha too: a Sub draw removes coverage, it never adds it.
+        assert_eq!(
+            factors(blend_state(Blend::Sub, false)),
+            (FUNC_REVERSE_SUBTRACT, ONE, ONE, SRC_ALPHA, ONE)
+        );
+    }
+
+    #[test]
+    fn opaque_target_keeps_the_destination_alpha_for_every_blend() {
+        for blend in [
+            Blend::Mix,
+            Blend::Add,
+            Blend::Sub,
+            Blend::Mul,
+            Blend::PremulAlpha,
+        ] {
+            let s = blend_state(blend, true);
+            assert_eq!(
+                (s.src_alpha, s.dst_alpha),
+                (gl_enum::ZERO, gl_enum::ONE),
+                "{blend:?}"
+            );
+        }
+        assert_eq!(
+            blend_state(Blend::Sub, true).equation,
+            gl_enum::FUNC_REVERSE_SUBTRACT
+        );
+    }
+
+    #[test]
+    fn mix_and_mul_transparent_states_are_unchanged() {
+        use gl_enum::*;
+        assert_eq!(
+            factors(blend_state(Blend::Mix, false)),
+            (FUNC_ADD, ONE, ONE_MINUS_SRC_ALPHA, ONE, ONE_MINUS_SRC_ALPHA)
+        );
+        assert_eq!(
+            factors(blend_state(Blend::Mul, false)),
+            (FUNC_ADD, DST_COLOR, ZERO, DST_ALPHA, ZERO)
+        );
+    }
+
+    #[test]
+    fn cache_keys_distinguish_blend_and_target_kind() {
+        let mut keys: Vec<u8> = [Blend::Mix, Blend::Add, Blend::Sub, Blend::Mul]
+            .into_iter()
+            .flat_map(|b| [blend_state(b, false).func, blend_state(b, true).func])
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), 8);
     }
 }

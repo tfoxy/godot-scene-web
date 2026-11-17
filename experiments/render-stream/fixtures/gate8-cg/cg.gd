@@ -18,6 +18,9 @@ extends Node
 ##                     alpha 0.6) over two overlapping translucent ColorRects.
 ##   NESTED  (544,16)  a clip-only Sprite2D (circle mask) with a child, inside an open CanvasGroup:
 ##                     GLES3 keeps one open group, so the inner owner draws plainly over its child.
+##   BLEND   (40,240)  a CanvasGroup (defaults) over a translucent base, with a SUB-blend child and
+##                     an ADD-blend child each overflowing it: on the group's transparent target
+##                     the eraser removes coverage and the adder keeps its own alpha factor.
 ##   BBV     (40,136)  a backdrop, a BackBufferCopy in viewport mode, an overlay square, then a
 ##                     screen reader (invert) over the cell: the copy predates the overlay.
 ##   BBR     (136,136) a backdrop, a BackBufferCopy in rect mode over the LEFT half of the cell,
@@ -71,6 +74,7 @@ func _ready() -> void:
 	_clip_draw()
 	_group()
 	_nested()
+	_blend_group()
 	var invert: ShaderMaterial = ShaderMaterial.new()
 	var shader_resource: Resource = load("res://shaders/invert.gdshader")
 	invert.shader = shader_resource as Shader
@@ -164,6 +168,26 @@ func _nested() -> void:
 	var inner: Sprite2D = _sprite("NestedMask", outer, ImageTexture.create_from_image(_circle()), Vector2(8, 8), 3.0)
 	inner.clip_children = CanvasItem.CLIP_CHILDREN_ONLY
 	_sprite("NestedChild", inner, ImageTexture.create_from_image(_pattern(2)), Vector2(2, 2), 1.0)
+
+
+## BLEND: blend-mode children inside a transparent canvas group, over translucent content and past
+## its edge (where the destination alpha is 0).
+func _blend_group() -> void:
+	var group: CanvasGroup = CanvasGroup.new()
+	group.name = "BlendGroup"
+	group.position = Vector2(40, 240)
+	_root.add_child(group)
+	group.add_child(_color_rect("BlendBase", Color(0.2, 0.4, 0.9, 0.6), Vector2(0, 0), Vector2(96, 48)))
+	var sub: ColorRect = _color_rect("BlendSub", Color(0.6, 0.5, 0.4, 0.8), Vector2(8, 24), Vector2(32, 40))
+	var sub_material: CanvasItemMaterial = CanvasItemMaterial.new()
+	sub_material.blend_mode = CanvasItemMaterial.BLEND_MODE_SUB
+	sub.material = sub_material
+	group.add_child(sub)
+	var add: ColorRect = _color_rect("BlendAdd", Color(0.7, 0.3, 0.1, 0.8), Vector2(56, -8), Vector2(32, 40))
+	var add_material: CanvasItemMaterial = CanvasItemMaterial.new()
+	add_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	add.material = add_material
+	group.add_child(add)
 
 
 ## BBV: backdrop, a viewport-mode BackBufferCopy, an overlay drawn after the copy, a screen reader.
