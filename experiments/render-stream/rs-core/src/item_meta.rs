@@ -666,20 +666,64 @@ const PROTOCOL_14: &[u8] = b"\"protocol\":\"render-stream/14\"";
 /// every other byte as it is (render-stream-14.md: /13 re-stamped /14 is the /14 stream of the
 /// same records, valid exactly when the /13 one is; a /14 stream with no v2 grant re-stamped /13
 /// is its /13 stream). Not validated.
+///
+/// render-stream-16.md "Validators and golden vectors": across /16 the session also gains or
+/// loses its last key before `blocks`, `"viewports":"on"` (any value is dropped going down), so
+/// every later record moves and the end record's `stats.bytes_total` and `max_record_bytes`
+/// follow ([`crate::predict::fix_end`]). A test re-stamp, not a transcode: a /16 stream that uses
+/// viewports does not become a valid lower stream by it.
 pub fn restamp(data: &[u8], from: u8, to: u8) -> Result<Vec<u8>, Error> {
     let spans = crate::wire::split_records(data, from)?;
     let key = |v: u8| format!("\"protocol\":\"{}\"", crate::wire::protocol(v));
     let (old, new) = (key(from), key(to));
+    let viewports = (from >= 16) != (to >= 16);
     let mut out = crate::wire::magic(to).to_vec();
     out.reserve(data.len());
+    let (mut in_lens, mut out_lens) = (Vec::new(), Vec::new());
     for (i, span) in spans.iter().enumerate() {
+        let rec = span.bytes(data);
+        let at = out.len();
         if i == 0 {
-            crate::predict::swap_protocol(span.bytes(data), old.as_bytes(), new.as_bytes(), &mut out)?;
+            if viewports {
+                let mut session = Vec::with_capacity(rec.len());
+                crate::predict::swap_protocol(rec, old.as_bytes(), new.as_bytes(), &mut session)?;
+                restamp_viewports(&session, to >= 16, &mut out)?;
+            } else {
+                crate::predict::swap_protocol(rec, old.as_bytes(), new.as_bytes(), &mut out)?;
+            }
+        } else if viewports && crate::wire::frame(rec, span.offset)?.meta.starts_with(b"{\"type\":\"end\"") {
+            crate::predict::fix_end(rec, &out_lens, &in_lens, &mut out);
         } else {
-            out.extend_from_slice(span.bytes(data));
+            out.extend_from_slice(rec);
         }
+        out_lens.push(out.len() - at);
+        in_lens.push(rec.len());
     }
     Ok(out)
+}
+
+/// The session record `rec` with `,"viewports":"on"` inserted before `,"blocks":` (`add`), or
+/// with its `,"viewports":"<value>"` removed.
+fn restamp_viewports(rec: &[u8], add: bool, out: &mut Vec<u8>) -> Result<(), Error> {
+    const BLOCKS: &[u8] = b",\"blocks\":[";
+    const KEY: &[u8] = b",\"viewports\":\"";
+    let meta_len = crate::wire::le_u32(rec, 4) as usize;
+    let meta = &rec[8..8 + meta_len];
+    let body = &rec[8 + meta_len..];
+    let bad = || Error::new("meta-schema", "the session record has no \"blocks\" key to re-stamp around");
+    let b = meta.windows(BLOCKS.len()).rposition(|w| w == BLOCKS).ok_or_else(bad)?;
+    if add {
+        crate::predict::make_record(out, &[&meta[..b], b",\"viewports\":\"on\"", &meta[b..]], body);
+        return Ok(());
+    }
+    let Some(k) = meta[..b].windows(KEY.len()).rposition(|w| w == KEY) else {
+        return Err(Error::new(
+            "meta-schema",
+            "a render-stream/16 session record has no \"viewports\" key",
+        ));
+    };
+    crate::predict::make_record(out, &[&meta[..k], &meta[b..]], body);
+    Ok(())
 }
 
 /// ID3: a /13 recording re-stamped /14 ([`restamp`]).

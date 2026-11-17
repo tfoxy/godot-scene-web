@@ -1,0 +1,2508 @@
+{
+  "schema": "render-stream-16-golden-index/1",
+  "protocol": "render-stream/16",
+  "valid": [
+    {
+      "file": "full.rs16",
+      "hex": "full.hex",
+      "decoded": "full.decoded.json",
+      "sha256": "8542e2292d2bdeb3767d0f0f4e9ee5f30a26d0515fd757be0b1e45c54c09b139",
+      "rs12": "../golden-12/full.rs12",
+      "rs13": "../golden-13/full.rs13",
+      "rs15": "../golden-15/full.rs15"
+    },
+    {
+      "file": "patch.rs16",
+      "hex": "patch.hex",
+      "decoded": "patch.decoded.json",
+      "sha256": "80cabeba253c02a3b384f538a1c853c4ee08dbb89605ee95245555173ee1da21",
+      "rs12": "../golden-12/patch.rs12",
+      "rs13": "../golden-13/patch.rs13",
+      "rs15": "../golden-15/patch.rs15"
+    },
+    {
+      "file": "inline.rs16",
+      "hex": "inline.hex",
+      "decoded": "inline.decoded.json",
+      "sha256": "05134d72cd65aecdf93b776fc089c6e5757808db45b88365d7c7ec79c0e8dda6",
+      "rs12": "../golden-12/inline.rs12",
+      "rs13": "../golden-13/inline.rs13",
+      "rs15": "../golden-15/inline.rs15"
+    }
+  ],
+  "resolved": "resolved.json",
+  "predict": {
+    "file": "predict.rs16",
+    "hex": "predict.hex",
+    "decoded": "predict.decoded.json",
+    "resolved": "predict-resolved.json",
+    "sha256": "f8fcdfeab9b41340f19ea105b6b13904b0917a722bc8025cca9873360428cf04",
+    "rs12": "../golden-13/predict.rs12",
+    "rs12_sha256": "db67180a66780e079401b38d31211fd63a2d1b62920cd4e07cc6dd7d263a5759",
+    "fulls": [
+      1,
+      7
+    ],
+    "rs13": "../golden-13/predict.rs13",
+    "rs15": "../golden-15/predict.rs15"
+  },
+  "predict_trace": {
+    "patch.rs16": [
+      {
+        "seq": 1,
+        "units": []
+      },
+      {
+        "seq": 2,
+        "units": []
+      },
+      {
+        "seq": 3,
+        "units": []
+      },
+      {
+        "seq": 4,
+        "units": [
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 5,
+        "units": [
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 6,
+        "units": []
+      },
+      {
+        "seq": 7,
+        "units": []
+      },
+      {
+        "seq": 8,
+        "units": []
+      },
+      {
+        "seq": 9,
+        "units": []
+      },
+      {
+        "seq": 10,
+        "units": []
+      },
+      {
+        "seq": 11,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 12,
+        "units": [
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          }
+        ]
+      },
+      {
+        "seq": 13,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 2
+          }
+        ]
+      },
+      {
+        "seq": 14,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          }
+        ]
+      },
+      {
+        "seq": 15,
+        "units": []
+      },
+      {
+        "seq": 16,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 17,
+        "units": [
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mm_f32",
+            "id": 2,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 18,
+        "units": [
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 1
+          }
+        ]
+      },
+      {
+        "seq": 19,
+        "units": [
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 20,
+        "units": []
+      },
+      {
+        "seq": 21,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 22,
+        "units": []
+      },
+      {
+        "seq": 23,
+        "units": []
+      },
+      {
+        "seq": 24,
+        "units": []
+      },
+      {
+        "seq": 25,
+        "units": []
+      },
+      {
+        "seq": 26,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      }
+    ],
+    "predict.rs16": [
+      {
+        "seq": 1,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 0
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 2,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 1
+          },
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 1
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 1
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 1
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 1
+          }
+        ]
+      },
+      {
+        "seq": 3,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 2
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 4,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 2
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 1
+          }
+        ]
+      },
+      {
+        "seq": 5,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 1
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 2
+          }
+        ]
+      },
+      {
+        "seq": 6,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 2
+          }
+        ]
+      },
+      {
+        "seq": 7,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 0
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 8,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 1
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 1
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 1
+          },
+          {
+            "block": "mm_f32",
+            "id": 2,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 9,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mm_f32",
+            "id": 2,
+            "order": 1
+          }
+        ]
+      },
+      {
+        "seq": 10,
+        "units": [
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mm_f32",
+            "id": 2,
+            "order": 2
+          }
+        ]
+      }
+    ]
+  },
+  "zero_runs": {
+    "file": "zero-runs.json",
+    "min_run": 4,
+    "blocks": [
+      "mesh_f32",
+      "mesh_u8",
+      "mm_f32"
+    ]
+  },
+  "sabotage": {
+    "predict-stale": {
+      "vector": "invalid/predict-stale.rs16",
+      "code": "predict-check",
+      "seq": 2
+    },
+    "zr-overrun": {
+      "vector": "invalid/zr-overrun.rs16",
+      "code": "zr-length",
+      "seq": 1
+    },
+    "zr-short-run": {
+      "vector": "invalid/zr-short-run.rs16",
+      "code": "zr-noncanonical",
+      "seq": 1
+    },
+    "no-predict-reset": {
+      "code": "predict-check",
+      "fails": [
+        {
+          "file": "predict.rs16",
+          "seq": 7
+        },
+        {
+          "file": "patch.rs16",
+          "seq": 16
+        }
+      ]
+    }
+  },
+  "corrupt": [
+    {
+      "file": "corrupt-meta.rs16",
+      "code": "meta-json",
+      "record_index": 3,
+      "seq": 3,
+      "description": "patch.rs16 transaction seq 3: first meta byte set to 0x00; framing intact"
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/bad-magic.rs16",
+      "code": "bad-magic",
+      "version": 16,
+      "seq": null,
+      "description": "golden-15's full.rs15: magic byte 3 is 'F' (GRSF), not 'G'"
+    },
+    {
+      "file": "invalid/predict-check-u8.rs16",
+      "code": "predict-check",
+      "version": 16,
+      "seq": 3,
+      "description": "predict.rs16 seq 3: bit 0 of mesh_u8's first residual byte (mesh 1's geometry, second order) flipped"
+    },
+    {
+      "file": "invalid/predict-check-aabb.rs16",
+      "code": "predict-check",
+      "version": 16,
+      "seq": 2,
+      "description": "predict.rs16 seq 2: bit 3 of mesh_f32 byte 5 (a first-order AABB residual, transposed) flipped"
+    },
+    {
+      "file": "invalid/predict-check-mm.rs16",
+      "code": "predict-check",
+      "version": 16,
+      "seq": 5,
+      "description": "predict.rs16 seq 5: bit 1 of mm_f32 byte 0 (multimesh 1, second order) flipped"
+    },
+    {
+      "file": "invalid/predict-check-raw.rs16",
+      "code": "predict-check",
+      "version": 16,
+      "seq": 1,
+      "description": "predict.rs16 seq 1 (full, raw units): bit 7 of mesh_u8 byte 50 flipped"
+    },
+    {
+      "file": "invalid/predict-stale.rs16",
+      "code": "predict-check",
+      "version": 16,
+      "seq": 2,
+      "description": "the predict-stale encoder sabotage over predict.rs12: every patch predicts from T-2 as if it were T-1 (first order); seq 2 is the first it touches"
+    },
+    {
+      "file": "invalid/predict-check-missing.rs16",
+      "code": "meta-schema",
+      "version": 16,
+      "seq": 2,
+      "description": "patch.rs16 seq 2 carries no predict_check (a /12 transaction meta at /13)"
+    },
+    {
+      "file": "invalid/predict-check-upper.rs16",
+      "code": "meta-schema",
+      "version": 16,
+      "seq": 2,
+      "description": "patch.rs16 seq 2's predict_check in uppercase hex"
+    },
+    {
+      "file": "invalid/predict-check-short.rs16",
+      "code": "meta-schema",
+      "version": 16,
+      "seq": 2,
+      "description": "patch.rs16 seq 2's predict_check has 15 hex digits"
+    },
+    {
+      "file": "invalid/pass-mesh-u8-offset.rs16",
+      "code": "mesh-u8-offset",
+      "version": 16,
+      "seq": 3,
+      "description": "predict.rs16 seq 3, mesh 2's u8 is 136, the running count 132: mesh_u8 passes through as /12 carries it"
+    },
+    {
+      "file": "invalid/pass-payload-size.rs16",
+      "code": "payload-size",
+      "version": 16,
+      "seq": 3,
+      "description": "predict.rs16 seq 3, mesh 1's surface claims 5 vertices: its shape needs 152 bytes, payload_bytes 132: mesh_u8 passes through as /12 carries it"
+    },
+    {
+      "file": "invalid/pass-mesh-offset.rs16",
+      "code": "mesh-offset",
+      "version": 16,
+      "seq": 3,
+      "description": "predict.rs16 seq 3, mesh 2's f is 7, the running count 6: mesh_f32 passes through as /12 carries it"
+    },
+    {
+      "file": "invalid/pass-mm-offset.rs16",
+      "code": "mm-offset",
+      "version": 16,
+      "seq": 3,
+      "description": "predict.rs16 seq 3, multimesh 1's buffer_f is 7, the running count 6: mm_f32 passes through as /12 carries it"
+    },
+    {
+      "file": "invalid/zr-overrun.rs16",
+      "code": "zr-length",
+      "version": 16,
+      "seq": 1,
+      "description": "the zr-overrun writer sabotage over predict.rs12: each transaction's first zero run is one zero too long, so its tokens pass the plain length; seq 1 is the first"
+    },
+    {
+      "file": "invalid/zr-short-run.rs16",
+      "code": "zr-noncanonical",
+      "version": 16,
+      "seq": 1,
+      "description": "the zr-short-run writer sabotage over predict.rs12: each transaction's first 3-byte zero run is elided as a token"
+    },
+    {
+      "file": "invalid/zr-truncated.rs16",
+      "code": "zr-length",
+      "version": 16,
+      "seq": 2,
+      "description": "predict.rs16 seq 2: mesh_u8's token stream lacks its last byte (it ends short)"
+    },
+    {
+      "file": "invalid/zr-trailing.rs16",
+      "code": "zr-length",
+      "version": 16,
+      "seq": 2,
+      "description": "predict.rs16 seq 2: mesh_u8's token stream has one byte after the plain length is covered"
+    },
+    {
+      "file": "invalid/zr-overlong.rs16",
+      "code": "zr-noncanonical",
+      "version": 16,
+      "seq": 2,
+      "description": "predict.rs16 seq 2: mesh_f32's first token codes its zero count in two bytes (not minimal)"
+    },
+    {
+      "file": "invalid/zr-literal-run.rs16",
+      "code": "zr-noncanonical",
+      "version": 16,
+      "seq": 2,
+      "description": "predict.rs16 seq 2: mm_f32's first zero-run token is merged into the previous literal (a literal holds four or more zero bytes)"
+    },
+    {
+      "file": "invalid/zr-split-run.rs16",
+      "code": "zr-noncanonical",
+      "version": 16,
+      "seq": 2,
+      "description": "predict.rs16 seq 2: mesh_u8's first zero-run token is split in two: an empty literal before a zero run"
+    },
+    {
+      "file": "invalid/zr-plain-cap.rs16",
+      "code": "zr-length",
+      "version": 16,
+      "seq": 2,
+      "description": "predict.rs16 seq 2: mesh_f32's count makes its plain length 2^28 + 4, past the decoder cap; its stream is the single token (L, 0)"
+    },
+    {
+      "file": "invalid/zr-plain-huge.rs16",
+      "code": "zr-length",
+      "version": 16,
+      "seq": 2,
+      "description": "predict.rs16 seq 2: mesh_f32's count makes its plain length 6e9 (past u32); its stream is the single token (L, 0)"
+    },
+    {
+      "file": "invalid/zr-uvarint-overflow.rs16",
+      "code": "zr-length",
+      "version": 16,
+      "seq": 2,
+      "description": "predict.rs16 seq 2: mesh_u8's first token's zero count is a ten-byte uvarint past 2^64"
+    },
+    {
+      "file": "invalid/zr-block-order.rs16",
+      "code": "zr-noncanonical",
+      "version": 16,
+      "seq": 2,
+      "description": "predict.rs16 seq 2: mesh_f32 is non-canonical and mesh_u8 truncated: descriptor order reports mesh_f32's error first"
+    },
+    {
+      "file": "invalid/g12-pt-offset-wrong.rs16",
+      "code": "pt-offset",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/pt-offset-wrong.rs12 transcoded: emitter 2's f is 32, expected 31 (emitter 1 claims 31 floats)"
+    },
+    {
+      "file": "invalid/g12-pt-offset-short.rs16",
+      "code": "pt-offset",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/pt-offset-short.rs12 transcoded: pt_f32 carries 84 floats (count 84), the entries and the emit claim 85"
+    },
+    {
+      "file": "invalid/g12-pt-offset-empty.rs16",
+      "code": "pt-offset",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/pt-offset-empty.rs12 transcoded: seq 2 (a patch that carries no particles float) carries an empty pt_f32 block (the block is present only when non-empty)"
+    },
+    {
+      "file": "invalid/g12-pt-offset-missing.rs16",
+      "code": "pt-offset",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/pt-offset-missing.rs12 transcoded: seq 1's entries and emit claim 85 floats, but it carries no pt_f32 block"
+    },
+    {
+      "file": "invalid/g12-particles-entry.rs16",
+      "code": "particles-entry",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particles-entry.rs12 transcoded: emitter 1 is ok with reason \"particles-3d\" (ok needs null)"
+    },
+    {
+      "file": "invalid/g12-particles-entry-freed-floats.rs16",
+      "code": "particles-entry",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particles-entry-freed-floats.rs12 transcoded: emitter 2 is a freed tombstone that carries f 31 and its 31 floats (freed needs f null)"
+    },
+    {
+      "file": "invalid/g12-particles-entry-trails.rs16",
+      "code": "particles-entry",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particles-entry-trails.rs12 transcoded: emitter 2 has trail_poses 1 (and its 43 floats) with trails false"
+    },
+    {
+      "file": "invalid/g12-particles-version.rs16",
+      "code": "particles-version",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particles-version.rs12 transcoded: seq 2 carries emitter 1 (a moved emission transform) at version 4, below the base's 5"
+    },
+    {
+      "file": "invalid/g12-particles-version-json.rs16",
+      "code": "particles-version",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particles-version-json.rs12 transcoded: seq 2 carries emitter 1 with emitting false (and moved floats) at the base's version 5"
+    },
+    {
+      "file": "invalid/g12-particles-version-floats.rs16",
+      "code": "particles-version",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particles-version-floats.rs12 transcoded: seq 2 carries emitter 1 with a moved emission transform (floats only) at the base's version 5"
+    },
+    {
+      "file": "invalid/g12-particles-ref-command.rs16",
+      "code": "particles-ref",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particles-ref-command.rs12 transcoded: item 1 also draws add_particles 9, which has no particles entry"
+    },
+    {
+      "file": "invalid/g12-particles-ref-material.rs16",
+      "code": "particles-ref",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particles-ref-material.rs12 transcoded: emitter 1's process_material is 7, which has no material entry"
+    },
+    {
+      "file": "invalid/g12-particles-ref-mesh.rs16",
+      "code": "particles-ref",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particles-ref-mesh.rs12 transcoded: emitter 1's draw pass names mesh 7, which has no mesh entry"
+    },
+    {
+      "file": "invalid/g12-particles-ref-subemitter.rs16",
+      "code": "particles-ref",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particles-ref-subemitter.rs12 transcoded: emitter 2's subemitter is 9, which has no particles entry"
+    },
+    {
+      "file": "invalid/g12-particle-emits-count.rs16",
+      "code": "particle-emits",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particle-emits-count.rs12 transcoded: a full transaction lists two emits on emitter 1, whose emits counter is 1"
+    },
+    {
+      "file": "invalid/g12-particle-emits-unknown.rs16",
+      "code": "particle-emits",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particle-emits-unknown.rs12 transcoded: the emit names emitter 9, which has no particles entry"
+    },
+    {
+      "file": "invalid/g12-particle-emits-restarts.rs16",
+      "code": "particle-emits",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particle-emits-restarts.rs12 transcoded: the emit's restarts is 1, above emitter 1's restarts 0"
+    },
+    {
+      "file": "invalid/g12-builtin-entry-order.rs16",
+      "code": "builtin-entry",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/builtin-entry-order.rs12 transcoded: shader 1's particle_process_material builtin has color_ramp before textures"
+    },
+    {
+      "file": "invalid/g12-builtin-entry-list.rs16",
+      "code": "builtin-entry",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/builtin-entry-list.rs12 transcoded: shader 1's builtin textures is [\"scale\", \"angle\"], not in Parameter enum order"
+    },
+    {
+      "file": "invalid/g12-builtin-entry-canvas.rs16",
+      "code": "builtin-entry",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/builtin-entry-canvas.rs12 transcoded: shader 1 carries the particle_process_material builtin but its mode is canvas_item"
+    },
+    {
+      "file": "invalid/g12-particles-empty-key.rs16",
+      "code": "meta-schema",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particles-empty-key.rs12 transcoded: an unchanged patch carries \"particles\": [] (the key is present only when non-empty)"
+    },
+    {
+      "file": "invalid/g12-particles-removed-empty-key.rs16",
+      "code": "meta-schema",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particles-removed-empty-key.rs12 transcoded: a patch carries \"removed_particles\": [] (the key is present only when non-empty)"
+    },
+    {
+      "file": "invalid/g12-particle-emits-empty-key.rs16",
+      "code": "meta-schema",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particle-emits-empty-key.rs12 transcoded: a patch carries \"particle_emits\": [] (the key is present only when non-empty)"
+    },
+    {
+      "file": "invalid/g12-particles-removed-full.rs16",
+      "code": "patch-encoding",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particles-removed-full.rs12 transcoded: a full transaction carries \"removed_particles\": [3]"
+    },
+    {
+      "file": "invalid/g12-particles-feature.rs16",
+      "code": "meta-schema",
+      "version": 16,
+      "seq": null,
+      "description": "golden-12's invalid/particles-feature.rs12 transcoded: item 1 draws add_particles in a session whose features.ops lacks add_particles (the session record from before PM5)"
+    },
+    {
+      "file": "item-meta.rs16",
+      "code": "item-meta-unexpected",
+      "version": 16,
+      "seq": null,
+      "record_index": 1,
+      "item_meta": "none",
+      "description": "item-meta.rs16 validated as a live viewer that asked for no item_meta (no hello key): its first item_meta record is unexpected"
+    },
+    {
+      "file": "invalid/item-meta-orphan.rs16",
+      "code": "item-meta-orphan",
+      "version": 16,
+      "seq": null,
+      "record_index": 39,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta.rs16 with an empty delta after the last transaction: the end record follows it, not a transaction"
+    },
+    {
+      "file": "invalid/item-meta-form.rs16",
+      "code": "item-meta-form",
+      "version": 16,
+      "seq": 4,
+      "record_index": 6,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta.rs16 with the delta before patch seq 4 replaced by a full record"
+    },
+    {
+      "file": "invalid/item-meta-missing.rs16",
+      "code": "item-meta-missing",
+      "version": 16,
+      "seq": 5,
+      "record_index": 7,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta.rs16 without the full item_meta record before full seq 5 (the grant came at seq 1)"
+    },
+    {
+      "file": "invalid/item-meta-id.rs16",
+      "code": "item-meta-id",
+      "version": 16,
+      "seq": 4,
+      "record_index": 6,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta.rs16 with the delta before patch seq 4 also carrying a row for item 99, not an item of seq 4's target state"
+    },
+    {
+      "file": "invalid/item-meta-string.rs16",
+      "code": "item-meta-string",
+      "version": 16,
+      "seq": null,
+      "record_index": 5,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta.rs16 with the delta before patch seq 4 at strings_from 11, the table holding 10 strings"
+    },
+    {
+      "file": "invalid/item-meta-schema.rs16",
+      "code": "item-meta-schema",
+      "version": 16,
+      "seq": null,
+      "record_index": 1,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta.rs16 with item 1's row in the first full record one column short of the grant's five"
+    },
+    {
+      "file": "invalid/item-meta-v2-instance-id-number.rs16",
+      "code": "item-meta-schema",
+      "version": 16,
+      "seq": null,
+      "record_index": 1,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path",
+          "instance_id",
+          "mouse_filter"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta-v2.rs16 with item 1's instance_id in the first full is a JSON number, not a string"
+    },
+    {
+      "file": "invalid/item-meta-v2-instance-id-zero.rs16",
+      "code": "item-meta-schema",
+      "version": 16,
+      "seq": null,
+      "record_index": 5,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path",
+          "instance_id",
+          "mouse_filter"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta-v2.rs16 with item 6's instance_id in the delta before seq 4 is \"0\""
+    },
+    {
+      "file": "invalid/item-meta-v2-instance-id-leading-zero.rs16",
+      "code": "item-meta-schema",
+      "version": 16,
+      "seq": null,
+      "record_index": 1,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path",
+          "instance_id",
+          "mouse_filter"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta-v2.rs16 with item 1's instance_id in the first full has a leading zero"
+    },
+    {
+      "file": "invalid/item-meta-v2-instance-id-long.rs16",
+      "code": "item-meta-schema",
+      "version": 16,
+      "seq": null,
+      "record_index": 1,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path",
+          "instance_id",
+          "mouse_filter"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta-v2.rs16 with item 2's instance_id in the first full has 21 digits"
+    },
+    {
+      "file": "invalid/item-meta-v2-instance-id-empty.rs16",
+      "code": "item-meta-schema",
+      "version": 16,
+      "seq": null,
+      "record_index": 7,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path",
+          "instance_id",
+          "mouse_filter"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta-v2.rs16 with item 4's instance_id in the full before seq 5 is the empty string"
+    },
+    {
+      "file": "invalid/item-meta-v2-mouse-filter-7.rs16",
+      "code": "item-meta-schema",
+      "version": 16,
+      "seq": null,
+      "record_index": 18,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path",
+          "instance_id",
+          "mouse_filter"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta-v2.rs16 with item 7's re-stamped mouse_filter in the delta before seq 12 is 7, past 0..6"
+    },
+    {
+      "file": "invalid/item-meta-v2-mouse-filter-string.rs16",
+      "code": "item-meta-schema",
+      "version": 16,
+      "seq": null,
+      "record_index": 1,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path",
+          "instance_id",
+          "mouse_filter"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta-v2.rs16 with item 1's mouse_filter in the first full is the string \"1\""
+    },
+    {
+      "file": "invalid/item-meta-v2-mouse-filter-missing.rs16",
+      "code": "item-meta-schema",
+      "version": 16,
+      "seq": null,
+      "record_index": 1,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path",
+          "instance_id",
+          "mouse_filter"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta-v2.rs16 with item 4's row in the first full lacks its mouse_filter column (six columns, the grant seven)"
+    },
+    {
+      "file": "invalid/item-meta-v2-string-column.rs16",
+      "code": "item-meta-schema",
+      "version": 16,
+      "seq": null,
+      "record_index": 5,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path",
+          "instance_id",
+          "mouse_filter"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta-v2.rs16 with item 7's class in the delta before seq 4 is an inline string, not a string index"
+    },
+    {
+      "file": "../golden-14/invalid/item-meta-v2-grant-at-13.rs13",
+      "code": "item-meta-schema",
+      "version": 13,
+      "seq": null,
+      "record_index": 1,
+      "description": "item-meta-v2.rs14 stamped render-stream/13 (GRSD, protocol render-stream/13): the first full's grant names instance_id and mouse_filter, unknown fields below /14"
+    },
+    {
+      "file": "../golden-15/invalid/hint-at-14.rs14",
+      "code": "meta-schema",
+      "version": 14,
+      "seq": null,
+      "record_index": 1,
+      "description": "hints.rs15 stamped render-stream/14 (GRSE, protocol render-stream/14): its first resource_hint is an unknown record type below /15"
+    },
+    {
+      "file": "invalid/hint-duplicate.rs16",
+      "code": "hint-duplicate",
+      "version": 16,
+      "seq": null,
+      "record_index": 6,
+      "description": "hints.rs16 with a second resource_hint of texture 1's payload (still hinted since before seq 1) before seq 3"
+    },
+    {
+      "file": "invalid/hint-unknown.rs16",
+      "code": "hint-unknown",
+      "version": 16,
+      "seq": null,
+      "record_index": 8,
+      "description": "hints.rs16 with a resource_unhint before seq 5 of texture 8's payload, which was never hinted"
+    },
+    {
+      "file": "invalid/hint-inline.rs16",
+      "code": "hint-inline",
+      "version": 16,
+      "seq": null,
+      "record_index": 3,
+      "description": "inline.rs16 (resources.delivery \"inline\") with a resource_hint of texture 1's payload before seq 1"
+    },
+    {
+      "file": "invalid/hint-meta.rs16",
+      "code": "hint-meta",
+      "version": 16,
+      "seq": 3,
+      "record_index": 6,
+      "description": "hints.rs16 whose hint of seq 3's texture 1 payload says width 15 (the entry seq 3 resolves is 16 wide)"
+    },
+    {
+      "file": "invalid/hint-blocks.rs16",
+      "code": "meta-schema",
+      "version": 16,
+      "seq": null,
+      "record_index": 2,
+      "description": "hints.rs16 whose hint of texture 5's payload carries a one-byte u8 block (blocks must be [])"
+    },
+    {
+      "file": "invalid/hint-cause.rs16",
+      "code": "meta-schema",
+      "version": 16,
+      "seq": null,
+      "record_index": 1,
+      "description": "hints.rs16 whose first hint has cause \"game\""
+    },
+    {
+      "file": "invalid/hint-orphan.rs16",
+      "code": "item-meta-orphan",
+      "version": 16,
+      "seq": null,
+      "record_index": 2,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta.rs16 with a resource_hint between its first item_meta record and that record's transaction"
+    },
+    {
+      "file": "invalid/size-override-equal.rs16",
+      "code": "texture-entry",
+      "version": 16,
+      "seq": 9,
+      "record_index": 13,
+      "description": "hints.rs16 with texture 11's size_override [16, 16], its payload's size"
+    },
+    {
+      "file": "invalid/size-override-placeholder.rs16",
+      "code": "texture-entry",
+      "version": 16,
+      "seq": 1,
+      "record_index": 3,
+      "description": "hints.rs16 whose seq 1 gives placeholder texture 4 a size_override [4, 4]"
+    },
+    {
+      "file": "invalid/size-override-range.rs16",
+      "code": "meta-schema",
+      "version": 16,
+      "seq": 9,
+      "record_index": 13,
+      "description": "hints.rs16 with texture 11's size_override [16385, 13], past 16384"
+    },
+    {
+      "file": "../golden-15/invalid/size-override-at-14.rs14",
+      "code": "meta-schema",
+      "version": 14,
+      "seq": 9,
+      "record_index": 9,
+      "description": "patch.rs15 with texture 11's size_override from seq 9 (no hints), stamped render-stream/14: the key is unknown below /15"
+    },
+    {
+      "file": "invalid/viewport-entry-enum.rs16",
+      "code": "viewport-entry",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "viewport 1's update is \"sometimes\", not one of the five modes"
+    },
+    {
+      "file": "invalid/viewport-entry-id-zero.rs16",
+      "code": "viewport-entry",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "viewport 1's id is 0, not an integer >= 1"
+    },
+    {
+      "file": "invalid/viewport-entry-id-negative.rs16",
+      "code": "viewport-entry",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "viewport 1's id is -3, not an integer >= 1"
+    },
+    {
+      "file": "invalid/viewport-entry-id-string.rs16",
+      "code": "viewport-entry",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "viewport 1's id is \"x\", not an integer >= 1"
+    },
+    {
+      "file": "invalid/viewport-entry-order.rs16",
+      "code": "viewport-entry",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "seq 1 lists viewports 3, 2, 1 (offsets follow the listed order)"
+    },
+    {
+      "file": "invalid/viewport-entry-canvas.rs16",
+      "code": "viewport-entry",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "viewport 1 gains a canvases row [9, 0, 0] (with its 6 floats); no canvas 9 exists"
+    },
+    {
+      "file": "invalid/viewport-entry-parent.rs16",
+      "code": "viewport-entry",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "viewport 2's parent is 7, neither null, 0 nor a viewport"
+    },
+    {
+      "file": "invalid/viewport-entry-no-texture.rs16",
+      "code": "viewport-entry",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "viewport 4 (viewport 3's values, parent 0) exists from seq 1 with no viewport texture"
+    },
+    {
+      "file": "invalid/viewport-entry-two-textures.rs16",
+      "code": "viewport-entry",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "texture 10, a second ok viewport texture of viewport 1, from seq 1"
+    },
+    {
+      "file": "invalid/viewport-parent-cycle.rs16",
+      "code": "viewport-parent-cycle",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "viewport 1's parent is 2 while viewport 2's parent is 1"
+    },
+    {
+      "file": "invalid/viewport-parent-self.rs16",
+      "code": "viewport-parent-cycle",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "viewport 3 is its own parent (seqs 1-7)"
+    },
+    {
+      "file": "invalid/viewport-offset-wrong.rs16",
+      "code": "viewport-offset",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "seq 1: viewport 2's f is 19, expected 18 (viewport 1 claims 18 floats)"
+    },
+    {
+      "file": "invalid/viewport-offset-missing.rs16",
+      "code": "viewport-offset",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "seq 1 lists three viewports but carries no viewport_f32 block"
+    },
+    {
+      "file": "invalid/viewport-offset-stray.rs16",
+      "code": "viewport-offset",
+      "version": 16,
+      "seq": 5,
+      "record_index": 5,
+      "description": "seq 5 (no viewports key) carries a viewport_f32 block of 6 floats"
+    },
+    {
+      "file": "invalid/proxy-target-proxy.rs16",
+      "code": "proxy-target",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "seqs 1-4: ok proxy 5 targets proxy 6"
+    },
+    {
+      "file": "invalid/proxy-target-null.rs16",
+      "code": "proxy-target",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "seqs 1-4: ok proxy 5's target is null"
+    },
+    {
+      "file": "invalid/proxy-target-unsupported.rs16",
+      "code": "proxy-target",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "unsupported proxy 8 (proxy-unresolved) has target 1"
+    },
+    {
+      "file": "invalid/proxy-target-dangling.rs16",
+      "code": "proxy-target",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "seqs 1-4: ok proxy 5 targets 99, no entry"
+    },
+    {
+      "file": "invalid/proxy-unresolved-image.rs16",
+      "code": "texture-entry",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "unsupported image 2's reason is proxy-unresolved"
+    },
+    {
+      "file": "invalid/viewport-texture-unsupported.rs16",
+      "code": "texture-entry",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "texture 10, a viewport texture of viewport 1 with status unsupported (reason payload-unavailable), from seq 1 (texture 3 stays viewport 1's ok one)"
+    },
+    {
+      "file": "invalid/viewport-texture-dangling.rs16",
+      "code": "texture-ref",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "texture 10, an ok viewport texture of viewport 7, which does not exist"
+    },
+    {
+      "file": "invalid/viewport-diffuse-canvas.rs16",
+      "code": "texture-ref",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "texture 10, a canvas texture whose diffuse is canvas texture 7"
+    },
+    {
+      "file": "invalid/viewport-non-root.rs16",
+      "code": "unsupported-mismatch",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "a session-level non-root-viewport entry from seq 1 under \"viewports\":\"on\""
+    },
+    {
+      "file": "invalid/viewport-3d-op.rs16",
+      "code": "unsupported-mismatch",
+      "version": 16,
+      "seq": 6,
+      "record_index": 6,
+      "description": "from seq 6 the viewport-3d entry's op is viewport_set_msaa_2d"
+    },
+    {
+      "file": "invalid/proxy-derived-missing.rs16",
+      "code": "unsupported-mismatch",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "item 4 draws ok proxy 6 of unsupported image 2 with no derived unsupported-texture entry"
+    },
+    {
+      "file": "invalid/viewport-key-off.rs16",
+      "code": "meta-schema",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "viewports.rs16 with the session's viewports \"off\": seq 1's viewport table"
+    },
+    {
+      "file": "invalid/viewport-empty-list.rs16",
+      "code": "meta-schema",
+      "version": 16,
+      "seq": 5,
+      "record_index": 5,
+      "description": "seq 5 carries \"viewports\":[]"
+    },
+    {
+      "file": "invalid/viewport-kind-key.rs16",
+      "code": "meta-schema",
+      "version": 16,
+      "seq": 1,
+      "record_index": 1,
+      "description": "image texture 1 carries a \"viewport\" key"
+    },
+    {
+      "file": "invalid/viewport-session-missing.rs16",
+      "code": "meta-schema",
+      "version": 16,
+      "seq": null,
+      "record_index": 0,
+      "description": "viewports.rs16 whose session has no viewports key"
+    },
+    {
+      "file": "invalid/viewport-removed-absent.rs16",
+      "code": "patch-removed",
+      "version": 16,
+      "seq": 3,
+      "record_index": 3,
+      "description": "seq 3 lists removed_viewports [5]; seq 2's state has no viewport 5"
+    },
+    {
+      "file": "invalid/viewport-at-15.rs15",
+      "code": "meta-schema",
+      "version": 15,
+      "seq": 1,
+      "record_index": 1,
+      "description": "golden-15's patch.rs15 whose seq 1 carries a viewports key (one entry) and a viewport_f32 block: unknown below /16"
+    }
+  ],
+  "item_meta_valid": [
+    {
+      "name": "item-meta",
+      "file": "item-meta.rs16",
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "sha256": "c769f62c24a1d330393f5d98faefd1c54986f45f72372e28abcb39142eff0e04",
+      "rs12": "../golden-12/patch.rs12",
+      "dump": {
+        "grant": {
+          "fields": [
+            "class",
+            "scene",
+            "path"
+          ],
+          "groups": [
+            "rs_hand",
+            "rs_ui"
+          ],
+          "meta_keys": [
+            "rs_tag"
+          ]
+        },
+        "strings": [
+          "Label",
+          "res://scenes/s1.tscn",
+          "Box/Node1",
+          "Sprite2D",
+          "res://scenes/s2.tscn",
+          "Box/Node2",
+          "tag2",
+          "Control",
+          "Box/Node0",
+          "tag4",
+          "TextureRect",
+          "Box/Node3",
+          "res://scenes/s0.tscn",
+          ".",
+          "tag0"
+        ],
+        "rows": {
+          "1": {
+            "class": "Label",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node1",
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "2": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node2",
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "3": null,
+          "4": {
+            "class": "Control",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node0",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "5": {
+            "class": "Label",
+            "scene": null,
+            "path": null,
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "7": {
+            "class": "TextureRect",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node3",
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "8": {
+            "class": "Control",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node0",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "9": {
+            "class": "Label",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "10": {
+            "class": "Sprite2D",
+            "scene": null,
+            "path": null,
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "12": {
+            "class": "Control",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag0"
+            }
+          },
+          "13": null,
+          "14": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node2",
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "16": {
+            "class": "Control",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node0",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "17": {
+            "class": "Label",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node1",
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "18": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag0"
+            }
+          },
+          "19": {
+            "class": "TextureRect",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node3",
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          }
+        },
+        "seen": {
+          "1": {
+            "class": "Label",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node1",
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "2": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node2",
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "3": null,
+          "4": {
+            "class": "Control",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node0",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "5": {
+            "class": "Label",
+            "scene": null,
+            "path": null,
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "6": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag0"
+            }
+          },
+          "7": {
+            "class": "TextureRect",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node3",
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "8": {
+            "class": "Control",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node0",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "9": {
+            "class": "Label",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "10": {
+            "class": "Sprite2D",
+            "scene": null,
+            "path": null,
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "11": {
+            "class": "TextureRect",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node3",
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "12": {
+            "class": "Control",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag0"
+            }
+          },
+          "13": null,
+          "14": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node2",
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "15": {
+            "class": "TextureRect",
+            "scene": null,
+            "path": null,
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "16": {
+            "class": "Control",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node0",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "17": {
+            "class": "Label",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node1",
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "18": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag0"
+            }
+          },
+          "19": {
+            "class": "TextureRect",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node3",
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          }
+        },
+        "full_records": 5,
+        "delta_records": 6
+      },
+      "description": "patch.rs16 with a full item_meta record before each full transaction and a delta before each patch that adds items (rows with null columns, items 3 and 13 with no node, rows of removed items 6, 11 and 15 dropped); the grant omits the requested `script`",
+      "rs13": "../golden-13/item-meta.rs13",
+      "rs15": "../golden-15/item-meta.rs15"
+    },
+    {
+      "name": "item-meta-refused",
+      "file": "patch.rs16",
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "a viewer asked and the host granted nothing: no item_meta record at all is valid"
+    },
+    {
+      "name": "item-meta-v2",
+      "file": "item-meta-v2.rs16",
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path",
+          "instance_id",
+          "mouse_filter"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "sha256": "2556b5f97e56848d5e4dea5cef68aef9cfe7faa0f8cb23ce3f2c4166cc49452c",
+      "rs12": "../golden-12/patch.rs12",
+      "rs13": "../golden-14/item-meta-v2.rs13",
+      "dump": {
+        "grant": {
+          "fields": [
+            "class",
+            "scene",
+            "path",
+            "instance_id",
+            "mouse_filter"
+          ],
+          "groups": [
+            "rs_hand",
+            "rs_ui"
+          ],
+          "meta_keys": [
+            "rs_tag"
+          ]
+        },
+        "strings": [
+          "Label",
+          "res://scenes/s1.tscn",
+          "Box/Node1",
+          "Sprite2D",
+          "res://scenes/s2.tscn",
+          "Box/Node2",
+          "tag2",
+          "Control",
+          "Box/Node0",
+          "tag4",
+          "TextureRect",
+          "Box/Node3",
+          "res://scenes/s0.tscn",
+          ".",
+          "tag0"
+        ],
+        "rows": {
+          "1": {
+            "class": "Label",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node1",
+            "instance_id": "30001000003",
+            "mouse_filter": 2,
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "2": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node2",
+            "instance_id": "30002000006",
+            "mouse_filter": null,
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "3": null,
+          "4": {
+            "class": "Control",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node0",
+            "instance_id": "30004000012",
+            "mouse_filter": 1,
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "5": {
+            "class": "Label",
+            "scene": null,
+            "path": null,
+            "instance_id": "18446744073709551615",
+            "mouse_filter": 6,
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "7": {
+            "class": "TextureRect",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node3",
+            "instance_id": "30007000021",
+            "mouse_filter": 4,
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "8": {
+            "class": "Control",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node0",
+            "instance_id": "30008000024",
+            "mouse_filter": 2,
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "9": {
+            "class": "Label",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "instance_id": "30009000027",
+            "mouse_filter": 0,
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "10": {
+            "class": "Sprite2D",
+            "scene": null,
+            "path": null,
+            "instance_id": null,
+            "mouse_filter": null,
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "12": {
+            "class": "Control",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "instance_id": "30012000036",
+            "mouse_filter": 0,
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag0"
+            }
+          },
+          "13": null,
+          "14": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node2",
+            "instance_id": "30014000042",
+            "mouse_filter": null,
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "16": {
+            "class": "Control",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node0",
+            "instance_id": "30016000048",
+            "mouse_filter": 1,
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "17": {
+            "class": "Label",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node1",
+            "instance_id": "30017000051",
+            "mouse_filter": 2,
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "18": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "instance_id": "30018000054",
+            "mouse_filter": null,
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag0"
+            }
+          },
+          "19": {
+            "class": "TextureRect",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node3",
+            "instance_id": "30019000057",
+            "mouse_filter": 1,
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          }
+        },
+        "seen": {
+          "1": {
+            "class": "Label",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node1",
+            "instance_id": "30001000003",
+            "mouse_filter": 2,
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "2": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node2",
+            "instance_id": "30002000006",
+            "mouse_filter": null,
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "3": null,
+          "4": {
+            "class": "Control",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node0",
+            "instance_id": "30004000012",
+            "mouse_filter": 1,
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "5": {
+            "class": "Label",
+            "scene": null,
+            "path": null,
+            "instance_id": "18446744073709551615",
+            "mouse_filter": 6,
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "6": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "instance_id": "30006000018",
+            "mouse_filter": null,
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag0"
+            }
+          },
+          "7": {
+            "class": "TextureRect",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node3",
+            "instance_id": "30007000021",
+            "mouse_filter": 4,
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "8": {
+            "class": "Control",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node0",
+            "instance_id": "30008000024",
+            "mouse_filter": 2,
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "9": {
+            "class": "Label",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "instance_id": "30009000027",
+            "mouse_filter": 0,
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "10": {
+            "class": "Sprite2D",
+            "scene": null,
+            "path": null,
+            "instance_id": null,
+            "mouse_filter": null,
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "11": {
+            "class": "TextureRect",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node3",
+            "instance_id": "30011000033",
+            "mouse_filter": 2,
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "12": {
+            "class": "Control",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "instance_id": "30012000036",
+            "mouse_filter": 0,
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag0"
+            }
+          },
+          "13": null,
+          "14": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node2",
+            "instance_id": "30014000042",
+            "mouse_filter": null,
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "15": {
+            "class": "TextureRect",
+            "scene": null,
+            "path": null,
+            "instance_id": "30015000045",
+            "mouse_filter": 0,
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "16": {
+            "class": "Control",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node0",
+            "instance_id": "30016000048",
+            "mouse_filter": 1,
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "17": {
+            "class": "Label",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node1",
+            "instance_id": "30017000051",
+            "mouse_filter": 2,
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "18": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "instance_id": "30018000054",
+            "mouse_filter": null,
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag0"
+            }
+          },
+          "19": {
+            "class": "TextureRect",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node3",
+            "instance_id": "30019000057",
+            "mouse_filter": 1,
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          }
+        },
+        "full_records": 5,
+        "delta_records": 7
+      },
+      "description": "patch.rs16 with a v2 grant (class, scene, path, instance_id, mouse_filter, groups, rs_tag): a full before each full transaction, a delta before each patch that adds items, a re-stamp-only delta before seq 12 (item 7's mouse_filter 5 -> 4) and a delta before seq 17 adding items 16, 17 and re-stamping item 1 (1 -> 2); null mouse_filter for Sprite2D rows, _has_point values 5 and 6, a 20-digit and a null instance_id. rs13 is its transcode --to 13",
+      "rs15": "../golden-15/item-meta-v2.rs15"
+    },
+    {
+      "name": "item-meta-v2-refused",
+      "file": "patch.rs16",
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path",
+          "instance_id",
+          "mouse_filter"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "a viewer asked for v2 fields and the host granted nothing: no item_meta record at all is valid"
+    }
+  ],
+  "hints": {
+    "file": "hints.rs16",
+    "hex": "hints.hex",
+    "decoded": "hints.decoded.json",
+    "resolved": "hints-resolved.json",
+    "sha256": "61c6a0b6eb0bd5ca7d21a9d3972233383f7a637c5e1ca56f407b6a836883ba31",
+    "rs14": "../golden-15/hints.rs14",
+    "rs15": "../golden-15/hints.rs15",
+    "hints_at_end": [
+      "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+      "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+      "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9"
+    ],
+    "description": "patch.rs16 with hints: warm hints of texture 1's payload (with a path) and texture 5's (without) before seq 1, a create hint of the payload seq 3 first names before seq 3, a create hint with a path and a block variant of texture 11's payload before seq 7 (which creates it), an unhint of texture 5's payload after seq 12; texture 11 draws at 15x13 from seq 9 (size_override, version 1 -> 2). rs14 is its transcode --to 14"
+  },
+  "viewports": {
+    "file": "viewports.rs16",
+    "hex": "viewports.hex",
+    "decoded": "viewports.decoded.json",
+    "resolved": "viewports-resolved.json",
+    "sha256": "e91ad8bb6324b876fd26286aa0b281443eabda032d3ab759931bbdb2dedb2773",
+    "description": "a patch stream (seqs 1 and 9 full) over canvas 1 (root: items 1, 2, 6), canvas 2 (attached only to viewports: items 3, 4) and canvas 3 (on the root at layer 1 and on viewport 1: item 5). Viewports: 1 adopted (parent 0, canvases 2 and 3), 2 nested in 1 (canvas 2), 3 out of the tree (parent null, no canvas). Textures: 1 image, 2 unsupported image, 3 adopted viewport texture of viewport 1 (adopted_content current), 4 of viewport 2, 9 of viewport 3, 5 an ok proxy of 9, 6 an ok proxy of 2 (item 4 draws it: the derived unsupported-texture entry), 7 a canvas texture whose diffuse is proxy 5, 8 an unresolved proxy. 2: viewport 1's global transform moves; 3: viewport 2 resizes 32x32 -> 48x40; 4: viewport 3 switches to once (once_seq 1); 5: proxy 5 re-points to image 1 (version 2); 6: viewport 2 renders 3D (the sticky viewport-3d entry); 7: image 1 freed, kept as a tombstone by proxy 5; 8: viewport 3 removed and texture 9 freed (item 6 keeps it); 9: full"
+  }
+}

@@ -26,6 +26,8 @@ fn adopted_canvas(id: Id, diffuse: Id) -> Texture {
         payload_bytes: 0,
         variants: Vec::new(),
         size_override: None,
+        viewport: None,
+        target: None,
         canvas: Some(CanvasTexture {
             diffuse: Some(diffuse),
             filter: Filter::Default,
@@ -52,6 +54,8 @@ fn adopted_image(id: Id, hash: Hash) -> Texture {
         payload_bytes: 1024,
         variants: Vec::new(),
         size_override: None,
+        viewport: None,
+        target: None,
         canvas: None,
     }
 }

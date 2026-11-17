@@ -97,7 +97,25 @@ wire_enum!(CanvasGroupMode {
 });
 wire_enum!(Repeat { Default = "default", Disabled = "disabled", Enabled = "enabled", Mirror = "mirror" });
 wire_enum!(Axis { Stretch = "stretch", Tile = "tile", TileFit = "tile_fit" });
-wire_enum!(TextureKind { Image = "image", Placeholder = "placeholder", Canvas = "canvas" });
+// render-stream-16.md "Texture kinds": /16 adds `viewport` and `proxy` (meta-schema below /16).
+wire_enum!(TextureKind {
+    Image = "image",
+    Placeholder = "placeholder",
+    Canvas = "canvas",
+    Viewport = "viewport",
+    Proxy = "proxy",
+});
+// render-stream-16.md "Viewport entry": Godot's update and clear modes.
+wire_enum!(ViewportUpdate {
+    Disabled = "disabled",
+    Once = "once",
+    WhenVisible = "when_visible",
+    WhenParentVisible = "when_parent_visible",
+    Always = "always",
+});
+wire_enum!(ViewportClear { Always = "always", Never = "never", NextFrame = "next_frame" });
+// render-stream-16.md "Session: `viewports`".
+wire_enum!(ViewportsMode { On = "on", Off = "off", Unavailable = "unavailable" });
 wire_enum!(EntryStatus { Ok = "ok", Unsupported = "unsupported", Freed = "freed" });
 wire_enum!(Primitive {
     Points = "points",
@@ -588,6 +606,12 @@ pub struct Texture {
     /// always below /15). Texel-size math (region UVs, nine-patch, `TEXTURE_PIXEL_SIZE`) uses it;
     /// the payload keeps `width`/`height`.
     pub size_override: Option<[u32; 2]>,
+    /// /16 only (render-stream-16.md "Texture kinds"): a `viewport` entry's viewport id; `Some`
+    /// exactly on kind `viewport` (written exactly there).
+    pub viewport: Option<Id>,
+    /// /16 only: a `proxy` entry's `target` (null on an unsupported proxy); the key is written
+    /// exactly on kind `proxy`, so `None` there is the wire's null.
+    pub target: Option<Id>,
     pub canvas: Option<CanvasTexture>,
 }
 
@@ -1018,6 +1042,59 @@ pub struct UnknownItems {
     pub unknown_calls: i64,
 }
 
+/// /16 (render-stream-16.md "Viewport entry"): one `canvases` row of a viewport entry.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ViewportCanvas {
+    pub canvas: Id,
+    pub layer: i64,
+    pub sublayer: i64,
+}
+
+/// /16 (render-stream-16.md "The viewport table"): one resolved non-root viewport, the entry's
+/// JSON fields in wire order (without `f`) plus its `viewport_f32` floats.
+#[derive(Clone, PartialEq, Debug)]
+pub struct ViewportSurface {
+    pub id: Id,
+    pub origin: Origin,
+    /// `None` is null (out of the tree), `Some(0)` the root viewport, else a viewport id.
+    pub parent: Option<Id>,
+    pub active: bool,
+    pub active_seq: i64,
+    pub size: [i64; 2],
+    pub transparent: bool,
+    pub update: ViewportUpdate,
+    pub once_seq: i64,
+    pub clear: ViewportClear,
+    pub clear_seq: i64,
+    pub disable_2d: bool,
+    pub renders_3d: bool,
+    pub hdr_2d: bool,
+    /// Godot's `MSAA` enum, 0..=3.
+    pub msaa_2d: u8,
+    pub canvas_cull_mask: u32,
+    pub default_texture_filter: Filter,
+    pub default_texture_repeat: Repeat,
+    /// `[transforms, vertices]`.
+    pub snap_2d: [bool; 2],
+    pub canvases: Vec<ViewportCanvas>,
+    /// The viewport's global canvas transform (`canvas_f32`'s layout).
+    pub global_xform: [f32; 6],
+    /// One transform per `canvases` row, in row order.
+    pub canvas_xforms: Vec<[f32; 6]>,
+}
+
+impl ViewportSurface {
+    /// Bitwise equality of the floats (render-stream-16.md "Patches": compared by bit pattern).
+    pub fn floats_bits_eq(&self, o: &ViewportSurface) -> bool {
+        let b = |x: &[f32], y: &[f32]| {
+            x.len() == y.len() && x.iter().zip(y).all(|(a, b)| a.to_bits() == b.to_bits())
+        };
+        b(&self.global_xform, &o.global_xform)
+            && self.canvas_xforms.len() == o.canvas_xforms.len()
+            && self.canvas_xforms.iter().zip(&o.canvas_xforms).all(|(x, y)| b(x, y))
+    }
+}
+
 /// The resolved state after the last accepted transaction (`state(seq)`), plus that
 /// transaction's complete, never-patched fields.
 #[derive(Clone, PartialEq, Debug)]
@@ -1049,6 +1126,8 @@ pub struct ResolvedState {
     pub multimeshes: IdTable<Multimesh>,
     /// /12 (render-stream-12.md "Particles table"): empty below /12.
     pub particles: IdTable<Particles>,
+    /// /16 (render-stream-16.md "The viewport table"): empty below /16. Receivers ignore it so far.
+    pub viewports: IdTable<ViewportSurface>,
 }
 
 impl ResolvedState {
@@ -1073,6 +1152,7 @@ impl ResolvedState {
             materials: IdTable::new(),
             multimeshes: IdTable::new(),
             particles: IdTable::new(),
+            viewports: IdTable::new(),
         }
     }
 }

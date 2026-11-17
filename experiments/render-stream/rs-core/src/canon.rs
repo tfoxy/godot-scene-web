@@ -768,6 +768,21 @@ fn texture(w: &mut W, t: &Texture, v: u8) {
         w.int(sh as i64);
         w.raw("],");
     }
+    // render-stream-16.md "Texture kinds": the kind key, right after variants, exactly on its
+    // kind (a proxy's target may be null).
+    match t.kind {
+        TextureKind::Viewport => {
+            w.key("viewport");
+            w.opt_id(t.viewport);
+            w.raw(",");
+        }
+        TextureKind::Proxy => {
+            w.key("target");
+            w.opt_id(t.target);
+            w.raw(",");
+        }
+        _ => {}
+    }
     w.key("canvas");
     match &t.canvas {
         Some(c) => {
@@ -1071,6 +1086,94 @@ fn particles(w: &mut W, p: &Particles) {
     w.raw("}");
 }
 
+/// render-stream-16.md "Forms": a resolved viewport, the entry's JSON fields in wire order
+/// without `f`, plus its floats.
+fn viewport(w: &mut W, v: &ViewportSurface) {
+    w.raw("{");
+    w.key("id");
+    w.int(v.id as i64);
+    w.raw(",");
+    w.key("origin");
+    w.str(v.origin.as_str());
+    w.raw(",");
+    w.key("parent");
+    w.opt_id(v.parent);
+    w.raw(",");
+    w.key("active");
+    w.bool(v.active);
+    w.raw(",");
+    w.key("active_seq");
+    w.int(v.active_seq);
+    w.raw(",");
+    w.key("size");
+    w.raw("[");
+    w.int(v.size[0]);
+    w.raw(",");
+    w.int(v.size[1]);
+    w.raw("],");
+    w.key("transparent");
+    w.bool(v.transparent);
+    w.raw(",");
+    w.key("update");
+    w.str(v.update.as_str());
+    w.raw(",");
+    w.key("once_seq");
+    w.int(v.once_seq);
+    w.raw(",");
+    w.key("clear");
+    w.str(v.clear.as_str());
+    w.raw(",");
+    w.key("clear_seq");
+    w.int(v.clear_seq);
+    w.raw(",");
+    w.key("disable_2d");
+    w.bool(v.disable_2d);
+    w.raw(",");
+    w.key("renders_3d");
+    w.bool(v.renders_3d);
+    w.raw(",");
+    w.key("hdr_2d");
+    w.bool(v.hdr_2d);
+    w.raw(",");
+    w.key("msaa_2d");
+    w.int(v.msaa_2d as i64);
+    w.raw(",");
+    w.key("canvas_cull_mask");
+    w.int(v.canvas_cull_mask as i64);
+    w.raw(",");
+    w.key("default_texture_filter");
+    w.str(v.default_texture_filter.as_str());
+    w.raw(",");
+    w.key("default_texture_repeat");
+    w.str(v.default_texture_repeat.as_str());
+    w.raw(",");
+    w.key("snap_2d");
+    w.raw("[");
+    w.bool(v.snap_2d[0]);
+    w.raw(",");
+    w.bool(v.snap_2d[1]);
+    w.raw("],");
+    w.key("canvases");
+    list(w, v.canvases.iter(), |w, c| {
+        w.raw("[");
+        w.int(c.canvas as i64);
+        w.raw(",");
+        w.int(c.layer);
+        w.raw(",");
+        w.int(c.sublayer);
+        w.raw("]");
+    });
+    w.raw(",");
+    w.key("floats");
+    w.raw("{");
+    w.key("global_xform");
+    w.floats(&v.global_xform);
+    w.raw(",");
+    w.key("canvas_xforms");
+    list(w, v.canvas_xforms.iter(), |w, x| w.floats(x));
+    w.raw("}}");
+}
+
 fn shader(w: &mut W, s: &Shader, v: u8) {
     w.raw("{");
     w.key("id");
@@ -1285,6 +1388,12 @@ fn write_state_as(out: &mut Vec<u8>, st: &ResolvedState, godot: bool) {
         w.raw(",");
         w.key("particles");
         list(w, st.particles.values(), particles);
+    }
+    // render-stream-16.md "Forms": right after `particles`, only when non-empty.
+    if v >= 16 && !st.viewports.is_empty() {
+        w.raw(",");
+        w.key("viewports");
+        list(w, st.viewports.values(), viewport);
     }
     w.raw("}");
 }

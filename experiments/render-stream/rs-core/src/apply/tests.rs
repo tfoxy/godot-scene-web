@@ -310,6 +310,8 @@ fn texture_region_uses_texpixel_size_and_flips() {
             payload_bytes: 100,
             variants: Vec::new(),
             size_override: None,
+            viewport: None,
+            target: None,
             canvas: None,
         },
     );
@@ -381,6 +383,8 @@ fn rebuilt_applier_inherits_resident_textures_and_uploads_nothing_again() {
         payload_bytes: 100,
         variants: Vec::new(),
         size_override: None,
+        viewport: None,
+        target: None,
         canvas: None,
     };
     s.textures.insert(5, texture(5, hash));
@@ -508,6 +512,8 @@ fn clip_uv_splits_the_quad_where_the_uv_meets_the_half_texel_inset() {
             payload_bytes: 100,
             variants: Vec::new(),
             size_override: None,
+            viewport: None,
+            target: None,
             canvas: None,
         },
     );

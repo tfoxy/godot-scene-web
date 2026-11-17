@@ -606,6 +606,70 @@ const TEXTURE_KEYS_V15: &[&str] = &[
     "size_override",
     "canvas",
 ];
+// render-stream-16.md "Texture kinds": the kind key of a `viewport` or `proxy` entry, right after
+// "variants" (where /15's "size_override" stands on an ok image; the two never meet).
+const TEXTURE_KEYS_V16_VIEWPORT: &[&str] = &[
+    "id",
+    "origin",
+    "adopted_content",
+    "kind",
+    "status",
+    "reason",
+    "version",
+    "hash",
+    "format",
+    "source_format",
+    "width",
+    "height",
+    "mipmaps",
+    "payload_bytes",
+    "variants",
+    "viewport",
+    "canvas",
+];
+const TEXTURE_KEYS_V16_PROXY: &[&str] = &[
+    "id",
+    "origin",
+    "adopted_content",
+    "kind",
+    "status",
+    "reason",
+    "version",
+    "hash",
+    "format",
+    "source_format",
+    "width",
+    "height",
+    "mipmaps",
+    "payload_bytes",
+    "variants",
+    "target",
+    "canvas",
+];
+// render-stream-16.md "Viewport entry": keys in exactly this order (`meta-schema` otherwise).
+const VIEWPORT_ENTRY_KEYS: &[&str] = &[
+    "id",
+    "origin",
+    "parent",
+    "active",
+    "active_seq",
+    "size",
+    "transparent",
+    "update",
+    "once_seq",
+    "clear",
+    "clear_seq",
+    "disable_2d",
+    "renders_3d",
+    "hdr_2d",
+    "msaa_2d",
+    "canvas_cull_mask",
+    "default_texture_filter",
+    "default_texture_repeat",
+    "snap_2d",
+    "canvases",
+    "f",
+];
 /// render-stream-15.md "Size override": each side of a texture's logical size is in 1..=16384.
 pub const SIZE_OVERRIDE_MAX: i64 = 16384;
 const CANVAS_TEXTURE_KEYS: &[&str] = &["diffuse", "filter", "repeat"];
@@ -727,6 +791,10 @@ pub fn transaction_block_count(version: u8) -> usize {
 /// /12: the index of the optional tenth transaction block `pt_f32`.
 pub const PT_F32_BLOCK: usize = 9;
 
+/// /16 (render-stream-16.md "`viewport_f32`"): the optional last transaction block, after every
+/// /15 block (after `pt_f32` when present), type `f32`.
+pub const VIEWPORT_F32_NAME: &str = "viewport_f32";
+
 const FAILURE_REASONS: &[&str] = &[
     "root-query-failed",
     "pre-existing-object",
@@ -752,6 +820,18 @@ const TEXTURE_REASONS_V9: &[&str] = &[
     "unknown-texture",
     "canvas-texture-channel",
     "delivery-pending",
+];
+/// render-stream-16.md "Texture kinds": /16 adds `proxy-unresolved`.
+const TEXTURE_REASONS_V16: &[&str] = &[
+    "unsupported-format",
+    "payload-too-large",
+    "payload-unavailable",
+    "update-shape-mismatch",
+    "layered-update",
+    "unknown-texture",
+    "canvas-texture-channel",
+    "delivery-pending",
+    "proxy-unresolved",
 ];
 const UNSUPPORTED_RESOURCE_REASONS: &[&str] = &["canvas-texture-headless"];
 const SESSION_UNSUPPORTED_REASONS: &[&str] =
@@ -833,6 +913,23 @@ const SESSION_UNSUPPORTED_REASONS_V6: &[&str] = &[
     "canvas-follow-viewport",
     "global-canvas-transform",
     "snap-2d",
+];
+/// render-stream-16.md "Session-level unsupported reasons": /16 adds the three `viewport-*`
+/// reasons (legal only under `"viewports":"on"`, which the validator checks).
+pub const VIEWPORT_SESSION_REASONS: &[&str] = &["viewport-3d", "viewport-hdr-2d", "viewport-msaa-2d"];
+const SESSION_UNSUPPORTED_REASONS_V16: &[&str] = &[
+    "non-root-viewport",
+    "extra-canvas",
+    "degenerate-host-size",
+    "canvas-light",
+    "canvas-stacking-tie",
+    "canvas-repeat",
+    "canvas-follow-viewport",
+    "global-canvas-transform",
+    "snap-2d",
+    "viewport-3d",
+    "viewport-hdr-2d",
+    "viewport-msaa-2d",
 ];
 pub const MESH_REASONS: &[&str] = &["mesh-format", "mesh-blend-shapes", "payload-too-large"];
 pub const SHADER_REASONS: &[&str] = &[
@@ -1366,6 +1463,8 @@ pub struct Session {
     pub adoption: Option<Adoption>,
     /// The session declared `unknown_item_policy: "skip"`.
     pub unknown_item_skip: bool,
+    /// /16 only (render-stream-16.md "Session: `viewports`"): always `Some` at /16.
+    pub viewports: Option<ViewportsMode>,
     pub clear_color: [f32; 4],
     pub root_canvas_xform: [f32; 6],
     pub host_visible_rect: [f32; 4],
@@ -1585,6 +1684,12 @@ fn check_session(
         };
         let at = keys.iter().position(|&k| k == after).unwrap() + 1;
         keys.insert(at, "adoption");
+    }
+    if version >= 16 {
+        // render-stream-16.md "Session: `viewports`": the last key before "blocks", after
+        // "adoption"; always present.
+        let at = keys.iter().position(|&k| k == "blocks").unwrap();
+        keys.insert(at, "viewports");
     }
     let Some(f) = ck.fields(meta, &keys) else {
         return Err(ck.schema("session has the wrong top-level keys or order"));
@@ -1943,6 +2048,17 @@ fn check_session(
         }
     }
 
+    let mut viewports = None;
+    if version >= 16 {
+        let Some(m) = enum_of(ck, at("viewports"), ViewportsMode::ALL, ViewportsMode::as_str) else {
+            return Err(ck.schema(format!(
+                "\"viewports\" must be \"on\", \"off\" or \"unavailable\", got {}",
+                lossy(ck, at("viewports"))
+            )));
+        };
+        viewports = Some(m);
+    }
+
     ck.blocks(at("blocks"), SESSION_BLOCK_NAMES, None, blocks)?;
     for (i, &expected) in SESSION_BLOCK_COUNTS.iter().enumerate() {
         if blocks[i].count != expected {
@@ -1979,6 +2095,7 @@ fn check_session(
         sabotage,
         adoption,
         unknown_item_skip: skip_declared,
+        viewports,
         clear_color: [0.0; 4],
         root_canvas_xform: [0.0; 6],
         host_visible_rect: [0.0; 4],
@@ -2277,6 +2394,45 @@ impl ParticlesMeta {
     }
 }
 
+/// /16: one `viewports[]` entry (render-stream-16.md "Viewport entry"), keys verbatim. Its key
+/// set and order are `meta-schema`; a value that breaks a type, enum or range is held in `bad`
+/// (every other field then a placeholder) and reported as `viewport-entry` on the resolved state,
+/// after /15's rules (render-stream-16.md "Codes").
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewportMeta {
+    pub id: Id,
+    pub origin: Origin,
+    pub parent: Option<Id>,
+    pub active: bool,
+    pub active_seq: i64,
+    pub size: [i64; 2],
+    pub transparent: bool,
+    pub update: ViewportUpdate,
+    pub once_seq: i64,
+    pub clear: ViewportClear,
+    pub clear_seq: i64,
+    pub disable_2d: bool,
+    pub renders_3d: bool,
+    pub hdr_2d: bool,
+    pub msaa_2d: u8,
+    pub canvas_cull_mask: u32,
+    pub default_texture_filter: Filter,
+    pub default_texture_repeat: Repeat,
+    pub snap_2d: [bool; 2],
+    pub canvases: Vec<ViewportCanvas>,
+    /// Offset of the entry's floats in `viewport_f32`.
+    pub f: u64,
+    /// The first value error (`viewport-entry`), if any.
+    pub bad: Option<Box<str>>,
+}
+
+impl ViewportMeta {
+    /// The entry's float count in `viewport_f32`: 6 + 6 per `canvases` row.
+    pub fn float_count(&self) -> u64 {
+        6 + 6 * self.canvases.len() as u64
+    }
+}
+
 /// /12: one `particle_emits[]` element (render-stream-12.md "The emit list").
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EmitMeta {
@@ -2354,7 +2510,15 @@ pub struct TxMeta {
     /// /12: `particles` and `particle_emits` (each absent when empty).
     pub particles: Vec<ParticlesMeta>,
     pub particle_emits: Vec<EmitMeta>,
+    /// /16 (render-stream-16.md "The viewport table"): `removed_viewports` and `viewports` (each
+    /// absent when empty).
+    pub removed_viewports: Vec<i64>,
+    pub viewports: Vec<ViewportMeta>,
     pub blocks: Vec<BlockDesc>,
+    /// /12: `blocks` lists the optional `pt_f32` (at [`PT_F32_BLOCK`]).
+    pub has_pt_f32: bool,
+    /// /16: `blocks` ends with the optional `viewport_f32` (after `pt_f32` when present).
+    pub has_viewport_f32: bool,
 }
 
 impl TxMeta {
@@ -2386,7 +2550,30 @@ impl TxMeta {
         self.multimeshes.clear();
         self.particles.clear();
         self.particle_emits.clear();
+        self.removed_viewports.clear();
+        self.viewports.clear();
         self.blocks.clear();
+        self.has_pt_f32 = false;
+        self.has_viewport_f32 = false;
+    }
+
+    /// /12: `pt_f32`'s descriptor, when the transaction lists it.
+    pub fn pt_f32(&self) -> Option<&BlockDesc> {
+        self.has_pt_f32.then(|| &self.blocks[PT_F32_BLOCK])
+    }
+
+    /// /16: the index of `viewport_f32` in `blocks`, when the transaction lists it.
+    pub fn viewport_f32_index(&self) -> Option<usize> {
+        self.has_viewport_f32.then(|| self.blocks.len() - 1)
+    }
+
+    /// A transaction block's name by index (for messages).
+    pub fn block_name(&self, i: usize) -> &'static str {
+        if self.viewport_f32_index() == Some(i) {
+            VIEWPORT_F32_NAME
+        } else {
+            TRANSACTION_BLOCK_NAMES.get(i).copied().unwrap_or("?")
+        }
     }
     pub fn encoding(&self) -> Encoding {
         self.encoding.unwrap_or(Encoding::Full)
@@ -2582,10 +2769,18 @@ fn check_texture(ck: &mut Ck, t: Value, version: u8) -> Result<Texture, Error> {
     let v9 = version >= 9;
     // render-stream-15.md "Size override": an optional key, so the key list follows its presence.
     let so = version >= 15 && ck.has_key(t, "size_override");
+    // render-stream-16.md "Texture kinds": a `viewport` entry's "viewport" or a `proxy` entry's
+    // "target", in size_override's place (present exactly on its kind, checked below).
+    let vk = version >= 16 && ck.has_key(t, "viewport");
+    let pk = version >= 16 && ck.has_key(t, "target");
     let (s1, s2) = if v8 { (1, 2) } else { (0, 0) };
     let Some(f) = ck.fields(
         t,
-        if so {
+        if vk {
+            TEXTURE_KEYS_V16_VIEWPORT
+        } else if pk {
+            TEXTURE_KEYS_V16_PROXY
+        } else if so {
             TEXTURE_KEYS_V15
         } else if v9 {
             TEXTURE_KEYS_V9
@@ -2622,9 +2817,17 @@ fn check_texture(ck: &mut Ck, t: Value, version: u8) -> Result<Texture, Error> {
             return Err(err(ck, "\"source_format\" is neither null nor an Image format name"));
         };
     }
-    let Some(kind) = enum_of(ck, f.at(2 + s1), TextureKind::ALL, TextureKind::as_str) else {
+    let Some(kind) = enum_of(ck, f.at(2 + s1), TextureKind::ALL, TextureKind::as_str)
+        .filter(|k| version >= 16 || !matches!(k, TextureKind::Viewport | TextureKind::Proxy))
+    else {
         return Err(err(ck, "has an invalid kind"));
     };
+    if vk != (kind == TextureKind::Viewport) || pk != (kind == TextureKind::Proxy) {
+        return Err(err(
+            ck,
+            "carries \"viewport\" or \"target\" other than exactly on its kind (render-stream/16)",
+        ));
+    }
     let Some(status) = enum_of(ck, f.at(3 + s1), EntryStatus::ALL, EntryStatus::as_str) else {
         return Err(err(ck, "has an invalid status"));
     };
@@ -2632,7 +2835,13 @@ fn check_texture(ck: &mut Ck, t: Value, version: u8) -> Result<Texture, Error> {
         None
     } else if let Some(r) = ck.one_of_str(
         f.at(4 + s1),
-        if v9 { TEXTURE_REASONS_V9 } else { TEXTURE_REASONS },
+        if version >= 16 {
+            TEXTURE_REASONS_V16
+        } else if v9 {
+            TEXTURE_REASONS_V9
+        } else {
+            TEXTURE_REASONS
+        },
     ) {
         Some(r)
     } else {
@@ -2695,6 +2904,20 @@ fn check_texture(ck: &mut Ck, t: Value, version: u8) -> Result<Texture, Error> {
         size_override = Some([w as u32, h as u32]);
         cs += 1;
     }
+    let (mut viewport, mut target) = (None, None);
+    if vk {
+        let Some(v) = ck.id1(f.at(12 + s2 + cs)) else {
+            return Err(err(ck, "\"viewport\" is not an integer >= 1"));
+        };
+        viewport = Some(v);
+        cs += 1;
+    } else if pk {
+        let Some(v) = ck.opt_id1(f.at(12 + s2 + cs)) else {
+            return Err(err(ck, "\"target\" is neither null nor an integer >= 1"));
+        };
+        target = v;
+        cs += 1;
+    }
     let canvas = if ck.null(f.at(12 + s2 + cs)) {
         None
     } else {
@@ -2736,6 +2959,8 @@ fn check_texture(ck: &mut Ck, t: Value, version: u8) -> Result<Texture, Error> {
         payload_bytes,
         variants,
         size_override,
+        viewport,
+        target,
         canvas,
     })
 }
@@ -3306,6 +3531,10 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
     // render-stream-13.md "As built (W13a)": /13's `predict_check`, on every transaction, right
     // before `blocks` (after `shader_time` when present).
     let has_pc = version >= 13;
+    // render-stream-16.md "The viewport table": /16's optional `removed_viewports` and
+    // `viewports`, after `shader_time` (when present) and before `predict_check`.
+    let has_rv = version >= 16 && ck.has_key(meta, "removed_viewports");
+    let has_vp = version >= 16 && ck.has_key(meta, "viewports");
     let mut keys_buf: Vec<&str>;
     let keys: &[&str] = if has_unknown
         || has_time
@@ -3329,6 +3558,8 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
             (has_rp, "removed_particles"),
             (has_pe, "particle_emits"),
             (has_time, "shader_time"),
+            (has_rv, "removed_viewports"),
+            (has_vp, "viewports"),
             (has_pc, "predict_check"),
         ] {
             if on {
@@ -3352,6 +3583,8 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         + has_pt as usize
         + has_rp as usize
         + has_pe as usize
+        + has_rv as usize
+        + has_vp as usize
         + has_pc as usize;
     let pos = |name: &str| -> usize {
         let i = base.iter().position(|&k| k == name).unwrap();
@@ -3458,7 +3691,9 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
             return Err(ck.schema("an unsupported[] entry is malformed"));
         };
         let allowed = if v6 {
-            if item.is_none() {
+            if item.is_none() && version >= 16 {
+                SESSION_UNSUPPORTED_REASONS_V16
+            } else if item.is_none() {
                 SESSION_UNSUPPORTED_REASONS_V6
             } else if version >= 12 {
                 ITEM_UNSUPPORTED_REASONS_V12
@@ -3877,6 +4112,32 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         };
         tx.shader_time_f = Some(t as u64);
     }
+    if has_rv {
+        let at = keys.iter().position(|&k| k == "removed_viewports").unwrap();
+        if !ck.int_array(f.at(at), &mut tx.removed_viewports) {
+            return Err(ck.schema("\"removed_viewports\" is not an array of integers"));
+        }
+        if tx.removed_viewports.is_empty() {
+            return Err(ck.schema(
+                "\"removed_viewports\" is empty (an empty list is the absent key)",
+            ));
+        }
+    }
+    if has_vp {
+        let at = keys.iter().position(|&k| k == "viewports").unwrap();
+        let Some(vps) = ck.arr(f.at(at)) else {
+            return Err(ck.schema("\"viewports\" is not an array"));
+        };
+        if vps.is_empty() {
+            return Err(ck.schema(
+                "\"viewports\" is empty (an empty table is the absent key)",
+            ));
+        }
+        for &v in vps {
+            let v = check_viewport(ck, v)?;
+            tx.viewports.push(v);
+        }
+    }
     if has_pc {
         let at = keys.iter().position(|&k| k == "predict_check").unwrap();
         let v = ck
@@ -3891,22 +4152,149 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         tx.predict_check = Some(v);
     }
     let mut n = transaction_block_count(version);
-    // /12: the optional tenth block `pt_f32` (its presence and count are `pt-offset`'s).
-    if version >= 12 && ck.arr(f.at(pos("blocks"))).is_some_and(|a| a.len() == n + 1) {
+    let listed = ck.arr(f.at(pos("blocks"))).map_or(0, |a| a.len());
+    if version >= 16 && listed > n {
+        // render-stream-16.md "`viewport_f32`": after every /15 block (after `pt_f32` when
+        // present); one extra block is `pt_f32` only when it is so named.
+        let first_extra = ck
+            .arr(f.at(pos("blocks")))
+            .and_then(|a| ck.doc.get(a[n], "name"))
+            .and_then(|v| ck.string(v));
+        let pt = listed == n + 2 || first_extra == Some(b"pt_f32".as_slice());
+        tx.has_pt_f32 = pt;
+        tx.has_viewport_f32 = listed == n + 2 || !pt;
+    } else if version >= 12 && listed == n + 1 {
+        // /12: the optional tenth block `pt_f32` (its presence and count are `pt-offset`'s).
+        tx.has_pt_f32 = true;
+    }
+    let mut names: [&str; 11] = [""; 11];
+    let mut types_buf: [BlockType; 11] = [BlockType::F32; 11];
+    names[..n].copy_from_slice(&TRANSACTION_BLOCK_NAMES[..n]);
+    types_buf[..n].copy_from_slice(&TRANSACTION_BLOCK_TYPES[..n]);
+    if tx.has_pt_f32 {
+        names[n] = TRANSACTION_BLOCK_NAMES[PT_F32_BLOCK];
+        types_buf[n] = TRANSACTION_BLOCK_TYPES[PT_F32_BLOCK];
         n += 1;
     }
-    let types = if v4 {
-        Some(&TRANSACTION_BLOCK_TYPES[..n])
-    } else {
-        None
+    if tx.has_viewport_f32 {
+        names[n] = VIEWPORT_F32_NAME;
+        types_buf[n] = BlockType::F32;
+        n += 1;
+    }
+    let types = if v4 { Some(&types_buf[..n]) } else { None };
+    let r = ck.blocks(f.at(pos("blocks")), &names[..n], types, &mut tx.blocks);
+    if r.is_err() {
+        tx.has_pt_f32 = false;
+        tx.has_viewport_f32 = false;
+    }
+    r
+}
+
+/// /16: one `viewports[]` entry (render-stream-16.md "Viewport entry"). The key set and order are
+/// `meta-schema`; the first wrong value is kept in [`ViewportMeta::bad`] for `viewport-entry`.
+fn check_viewport(ck: &mut Ck, v: Value) -> Result<ViewportMeta, Error> {
+    let Some(f) = ck.fields(v, VIEWPORT_ENTRY_KEYS) else {
+        return Err(ck.schema("a viewports[] entry has the wrong keys or key order"));
     };
-    ck.blocks(
-        f.at(pos("blocks")),
-        &TRANSACTION_BLOCK_NAMES[..n],
-        types,
-        &mut tx.blocks,
-    )?;
-    Ok(())
+    let mut bad: Option<Box<str>> = None;
+    let mut note = |ok: bool, d: &str| {
+        if !ok && bad.is_none() {
+            bad = Some(d.into());
+        }
+    };
+    let id = ck.id1(f.at(0));
+    note(id.is_some(), "\"id\" is not an integer >= 1");
+    let origin = ck.one_of(f.at(1), &["created", "adopted"]);
+    note(origin.is_some(), "\"origin\" must be \"created\" or \"adopted\"");
+    let parent = if ck.null(f.at(2)) {
+        Some(None)
+    } else {
+        ck.id(f.at(2)).map(Some)
+    };
+    note(parent.is_some(), "\"parent\" is neither null nor an integer >= 0");
+    let active = ck.boolean(f.at(3));
+    note(active.is_some(), "\"active\" is not a boolean");
+    let active_seq = ck.int_ge(f.at(4), 0);
+    note(active_seq.is_some(), "\"active_seq\" is not an integer >= 0");
+    let size = ck.arr(f.at(5)).and_then(|a| match a {
+        &[w, h] => Some([ck.int_ge(w, 0)?, ck.int_ge(h, 0)?]),
+        _ => None,
+    });
+    note(size.is_some(), "\"size\" is not two integers >= 0");
+    let transparent = ck.boolean(f.at(6));
+    note(transparent.is_some(), "\"transparent\" is not a boolean");
+    let update = enum_of(ck, f.at(7), ViewportUpdate::ALL, ViewportUpdate::as_str);
+    note(update.is_some(), "\"update\" is not an update mode");
+    let once_seq = ck.int_ge(f.at(8), 0);
+    note(once_seq.is_some(), "\"once_seq\" is not an integer >= 0");
+    let clear = enum_of(ck, f.at(9), ViewportClear::ALL, ViewportClear::as_str);
+    note(clear.is_some(), "\"clear\" is not a clear mode");
+    let clear_seq = ck.int_ge(f.at(10), 0);
+    note(clear_seq.is_some(), "\"clear_seq\" is not an integer >= 0");
+    let flags = [11, 12, 13].map(|i| ck.boolean(f.at(i)));
+    note(
+        flags.iter().all(|x| x.is_some()),
+        "\"disable_2d\"/\"renders_3d\"/\"hdr_2d\" is not a boolean",
+    );
+    let msaa_2d = ck.int(f.at(14)).filter(|x| (0..=3).contains(x));
+    note(msaa_2d.is_some(), "\"msaa_2d\" is not 0, 1, 2 or 3");
+    let mask = ck.int(f.at(15)).and_then(|x| u32::try_from(x).ok());
+    note(mask.is_some(), "\"canvas_cull_mask\" is not an integer in 0..4294967295");
+    let dtf = filter(ck, f.at(16)).filter(|&x| x != Filter::Default);
+    note(dtf.is_some(), "\"default_texture_filter\" is invalid or \"default\"");
+    let dtr = repeat(ck, f.at(17)).filter(|&x| x != Repeat::Default);
+    note(dtr.is_some(), "\"default_texture_repeat\" is invalid or \"default\"");
+    let snap = ck.arr(f.at(18)).and_then(|a| match a {
+        &[t, v] => Some([ck.boolean(t)?, ck.boolean(v)?]),
+        _ => None,
+    });
+    note(snap.is_some(), "\"snap_2d\" is not two booleans");
+    let canvases = ck.arr(f.at(19)).and_then(|rows| {
+        rows.iter()
+            .map(|&r| match ck.arr(r)? {
+                &[c, l, sl] => Some(ViewportCanvas {
+                    canvas: ck.id(c)?,
+                    layer: ck.int(l)?,
+                    sublayer: ck.int(sl)?,
+                }),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+    });
+    note(
+        canvases.is_some(),
+        "\"canvases\" is not an array of [canvas id, layer, sublayer] integer rows",
+    );
+    let fo = ck.uint(f.at(20));
+    note(fo.is_some(), "\"f\" is not an integer >= 0");
+    Ok(ViewportMeta {
+        id: id.unwrap_or(0),
+        origin: if origin == Some(1) {
+            Origin::Adopted
+        } else {
+            Origin::Created
+        },
+        parent: parent.flatten(),
+        active: active.unwrap_or(false),
+        active_seq: active_seq.unwrap_or(0),
+        size: size.unwrap_or([0, 0]),
+        transparent: transparent.unwrap_or(false),
+        update: update.unwrap_or(ViewportUpdate::Disabled),
+        once_seq: once_seq.unwrap_or(0),
+        clear: clear.unwrap_or(ViewportClear::Always),
+        clear_seq: clear_seq.unwrap_or(0),
+        disable_2d: flags[0].unwrap_or(false),
+        renders_3d: flags[1].unwrap_or(false),
+        hdr_2d: flags[2].unwrap_or(false),
+        msaa_2d: msaa_2d.unwrap_or(0) as u8,
+        canvas_cull_mask: mask.unwrap_or(0),
+        default_texture_filter: dtf.unwrap_or(Filter::Nearest),
+        default_texture_repeat: dtr.unwrap_or(Repeat::Disabled),
+        snap_2d: snap.unwrap_or([false, false]),
+        canvases: canvases.unwrap_or_default(),
+        f: fo.unwrap_or(0),
+        bad,
+    })
 }
 
 /// /11: one `multimeshes[]` entry's schema (render-stream-11.md "As built (PM1)" rule 2). Key set,
@@ -4543,11 +4931,7 @@ pub fn decode_record_with(
                 .copied()
                 .unwrap_or("?")
                 .to_string(),
-            Decoded::Transaction => TRANSACTION_BLOCK_NAMES
-                .get(i)
-                .copied()
-                .unwrap_or("?")
-                .to_string(),
+            Decoded::Transaction => tx.block_name(i).to_string(),
             Decoded::Resource(_) => "payload".to_string(),
             Decoded::End(_)
             | Decoded::ItemMeta(_)

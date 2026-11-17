@@ -179,8 +179,16 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV15 = {0x47, 0x52, 0x53, 0x46
                                                            0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV15 = "render-stream/15";
 
+// render-stream/16 (render-stream-16.md): /15 plus the session's `viewports` key, the viewport
+// table (`removed_viewports`, `viewports`, the `viewport_f32` block) and the `viewport` / `proxy`
+// texture kinds. A /16 transaction with none of those is /15's byte for byte, so every "/15 or
+// later" cascade includes V16. Spoken only under GRC_STREAM_VERSION=16.
+inline constexpr std::array<std::uint8_t, 8> kMagicV16 = {0x47, 0x52, 0x53, 0x47,
+                                                           0x0D, 0x0A, 0x1A, 0x0A};
+inline constexpr const char *kProtocolV16 = "render-stream/16";
+
 enum class ProtocolVersion : std::uint8_t {
-  V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15
+  V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16
 };
 
 // True for /7 to /11, the versions whose live transport is the /7 one (token hello, credit
@@ -190,53 +198,69 @@ inline constexpr bool is_v7_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V7 || v == ProtocolVersion::V8 || v == ProtocolVersion::V9 ||
          v == ProtocolVersion::V10 || v == ProtocolVersion::V11 || v == ProtocolVersion::V12 ||
          v == ProtocolVersion::V13 ||
-         v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
+         v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
+         v == ProtocolVersion::V16;
 }
 
 // True for /8 to /11: the versions that carry render-stream-8.md's keys.
 inline constexpr bool is_v8_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V8 || v == ProtocolVersion::V9 || v == ProtocolVersion::V10 ||
          v == ProtocolVersion::V11 || v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
-         v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
+         v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
+         v == ProtocolVersion::V16;
 }
 
 // True for /9 to /11: the versions that carry render-stream-9.md's keys.
 inline constexpr bool is_v9_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V9 || v == ProtocolVersion::V10 || v == ProtocolVersion::V11 ||
          v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
-         v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
+         v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
+         v == ProtocolVersion::V16;
 }
 
 // True for /10 and /11: the versions that carry render-stream-10.md's keys.
 inline constexpr bool is_v10_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V10 || v == ProtocolVersion::V11 || v == ProtocolVersion::V12 ||
          v == ProtocolVersion::V13 ||
-         v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
+         v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
+         v == ProtocolVersion::V16;
 }
 
 // True for /11 and /12: the versions that carry render-stream-11.md's keys (PM5: every "/11"
 // cascade means "/11 or later").
 inline constexpr bool is_v11_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V11 || v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
-         v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
+         v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
+         v == ProtocolVersion::V16;
 }
 
 // True for /12: the versions that carry render-stream-12.md's keys.
 inline constexpr bool is_v12_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
-         v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
+         v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
+         v == ProtocolVersion::V16;
 }
 
-// ID3: /13 to /15, the versions whose transactions are predicted (rs13_predict.h) and whose
+// ID3: /13 to /16, the versions whose transactions are predicted (rs13_predict.h) and whose
 // hello may carry `item_meta`.
 inline constexpr bool is_v13_or_later(ProtocolVersion v) {
-  return v == ProtocolVersion::V13 || v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
+  return v == ProtocolVersion::V13 || v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
+         v == ProtocolVersion::V16;
 }
 
-// /14 and /15: the versions whose item_meta may carry the v2 fields (render-stream-14.md).
+// /14 to /16: the versions whose item_meta may carry the v2 fields (render-stream-14.md).
 inline constexpr bool is_v14_or_later(ProtocolVersion v) {
-  return v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
+  return v == ProtocolVersion::V14 || v == ProtocolVersion::V15 ||
+         v == ProtocolVersion::V16;
 }
+
+// /15 and /16: the versions that carry render-stream-15.md's keys (`size_override`).
+inline constexpr bool is_v15_or_later(ProtocolVersion v) {
+  return v == ProtocolVersion::V15 || v == ProtocolVersion::V16;
+}
+
+// /16 (render-stream-16.md): the viewport table, `viewport_f32` and the two texture kinds.
+inline constexpr bool is_v16(ProtocolVersion v) { return v == ProtocolVersion::V16; }
 
 // Floats per entry in the transaction blocks (render-stream-2.md "Transaction record"). Item and
 // canvas float layouts are unchanged from /1; texture entries carry no floats at all.
@@ -369,6 +393,10 @@ enum class UnsupportedReason : std::uint8_t {
   // --- new at /12 (PM5, render-stream-12.md "The command") -----------------------------------
   UnknownParticles,      // derived from an unsupported "unknown-particles" command
   UnsupportedParticles,  // an add_particles command naming an `unsupported` particles entry
+  // --- new at /16 (render-stream-16.md "Session-level unsupported reasons"), session-level ---------
+  Viewport3d,      // viewport_attach_camera: a viewport renders 3D content
+  ViewportHdr2d,   // viewport_set_use_hdr_2d
+  ViewportMsaa2d,  // viewport_set_msaa_2d
 };
 
 enum class SabotageKind : std::uint8_t {
@@ -436,7 +464,8 @@ enum class HostSizeStatus : std::uint8_t { Match, DegenerateVisible, DegenerateW
 
 // --- new at /2: textures, filter/repeat, resource delivery -----------------------------------
 
-enum class TextureKind : std::uint8_t { Image, Placeholder, Canvas };
+// Viewport and Proxy are new at /16 (render-stream-16.md "Texture kinds").
+enum class TextureKind : std::uint8_t { Image, Placeholder, Canvas, Viewport, Proxy };
 enum class TextureStatus : std::uint8_t { Ok, Unsupported, Freed };
 // new at /9 (render-stream-9.md "Texture entries"), in wire order.
 enum class VariantEncoding : std::uint8_t { Block, Uastc, Etc1s };
@@ -450,6 +479,7 @@ enum class TextureReason : std::uint8_t {
   UnknownTexture,
   CanvasTextureChannel,
   DeliveryPending,  // new at /9 (render-stream-9.md): the async worker path had no hash yet
+  ProxyUnresolved,  // new at /16 (render-stream-16.md): an unsupported proxy texture
 };
 
 // RenderingServer.CanvasItemTextureFilter / CanvasItemTextureRepeat order (servers/rendering_
@@ -576,6 +606,9 @@ inline const char *to_wire(UnsupportedReason v) {
   case UnsupportedReason::UnsupportedMultimesh: return "unsupported-multimesh";
   case UnsupportedReason::UnknownParticles: return "unknown-particles";
   case UnsupportedReason::UnsupportedParticles: return "unsupported-particles";
+  case UnsupportedReason::Viewport3d: return "viewport-3d";
+  case UnsupportedReason::ViewportHdr2d: return "viewport-hdr-2d";
+  case UnsupportedReason::ViewportMsaa2d: return "viewport-msaa-2d";
   }
   return "unsupported-op";
 }
@@ -673,6 +706,8 @@ inline const char *to_wire(TextureKind v) {
   case TextureKind::Image: return "image";
   case TextureKind::Placeholder: return "placeholder";
   case TextureKind::Canvas: return "canvas";
+  case TextureKind::Viewport: return "viewport";
+  case TextureKind::Proxy: return "proxy";
   }
   return "image";
 }
@@ -694,6 +729,7 @@ inline const char *to_wire(TextureReason v) {
   case TextureReason::UnknownTexture: return "unknown-texture";
   case TextureReason::CanvasTextureChannel: return "canvas-texture-channel";
   case TextureReason::DeliveryPending: return "delivery-pending";
+  case TextureReason::ProxyUnresolved: return "proxy-unresolved";
   }
   return "unsupported-format";
 }
@@ -1090,6 +1126,17 @@ struct MaterialsInfo {
   ShaderPolicy shader_policy = ShaderPolicy::Source;
 };
 
+// render-stream-16.md "Session: viewports".
+enum class ViewportsMode : std::uint8_t { On, Off, Unavailable };
+inline const char *to_wire(ViewportsMode v) {
+  switch (v) {
+  case ViewportsMode::On: return "on";
+  case ViewportsMode::Off: return "off";
+  case ViewportsMode::Unavailable: return "unavailable";
+  }
+  return "off";
+}
+
 struct Session {
   // Which wire format encode_session()/encode_transaction() produce (render-stream-3.md
   // "render-stream/3"). Defaults to V2, so existing /2 callers that never set this field are
@@ -1112,6 +1159,9 @@ struct Session {
   // render-stream-8.md "Session": always encoded at /8, right after unknown_item_policy (or after
   // sabotage when that key is absent); never encoded below /8.
   AdoptionInfo adoption;
+  // render-stream-16.md "Session": always encoded at /16, the last key before `blocks` (after
+  // `adoption`); never encoded below /16.
+  ViewportsMode viewports = ViewportsMode::Off;
   Color4 clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
   Xform root_canvas_xform = kIdentityXform;
   Rect4 host_visible_rect = kZeroRect;
@@ -1834,6 +1884,7 @@ struct TextureEntry {
   TextureStatus status = TextureStatus::Ok;
   bool has_reason = false;
   TextureReason reason = TextureReason::UnsupportedFormat;
+  bool has_target = false;  // new at /16: a proxy's `target` is non-null (fits the padding here)
   std::uint64_t version = 1;
   bool has_hash = false;  // false -> "hash": null
   std::string hash;       // 64 lowercase hex
@@ -1855,6 +1906,73 @@ struct TextureEntry {
   std::vector<TextureVariant> variants;
   bool has_canvas = false;  // false -> "canvas": null
   CanvasTextureInfo canvas;
+  // new at /16 (render-stream-16.md "Texture kinds"): `viewport` kind's viewport id, written as
+  // "viewport" right after variants; a freed entry keeps its last value.
+  std::uint32_t viewport = 0;
+  // `proxy` kind's target, written as "target" in the same place (null when `has_target` is false,
+  // an unresolved proxy); a freed entry keeps its last value. The two kind keys never co-occur.
+  std::uint32_t target = 0;
+};
+
+// --- new at /16: the viewport table (render-stream-16.md "The viewport table") ---------------
+
+enum class ViewportUpdate : std::uint8_t { Disabled, Once, WhenVisible, WhenParentVisible, Always };
+enum class ViewportClear : std::uint8_t { Always, Never, NextFrame };
+inline const char *to_wire(ViewportUpdate v) {
+  switch (v) {
+  case ViewportUpdate::Disabled: return "disabled";
+  case ViewportUpdate::Once: return "once";
+  case ViewportUpdate::WhenVisible: return "when_visible";
+  case ViewportUpdate::WhenParentVisible: return "when_parent_visible";
+  case ViewportUpdate::Always: return "always";
+  }
+  return "disabled";
+}
+inline const char *to_wire(ViewportClear v) {
+  switch (v) {
+  case ViewportClear::Always: return "always";
+  case ViewportClear::Never: return "never";
+  case ViewportClear::NextFrame: return "next_frame";
+  }
+  return "always";
+}
+
+// One `canvases` row of a viewport entry: [canvas id, layer, sublayer] plus that canvas's
+// transform on this viewport (its six floats in `viewport_f32`).
+struct ViewportCanvasRow {
+  std::uint32_t canvas = 0;
+  std::int32_t layer = 0;
+  std::int32_t sublayer = 0;
+  Xform xform = kIdentityXform;
+};
+
+// One viewport-table entry. Performs no validation (it can represent invalid vectors too). `f`
+// is not stored: the codec assigns it as the running float count, as every `f` since /10.
+struct ViewportEntry {
+  std::uint32_t id = 0;
+  Origin origin = Origin::Created;  // Created or Adopted; RootQuery is never written
+  bool has_parent = false;          // false -> "parent": null
+  std::uint32_t parent = 0;         // 0 is the root viewport
+  bool active = false;
+  std::uint64_t active_seq = 0;
+  std::int32_t size_w = 0;
+  std::int32_t size_h = 0;
+  bool transparent = false;
+  ViewportUpdate update = ViewportUpdate::Disabled;
+  std::uint64_t once_seq = 0;
+  ViewportClear clear = ViewportClear::Always;
+  std::uint64_t clear_seq = 0;
+  bool disable_2d = false;
+  bool renders_3d = false;
+  bool hdr_2d = false;
+  std::uint8_t msaa_2d = 0;  // 0..3
+  std::uint32_t canvas_cull_mask = 0xFFFFFFFFu;
+  Filter default_texture_filter = Filter::Nearest;  // never Default on the wire
+  Repeat default_texture_repeat = Repeat::Disabled;
+  bool snap_2d_transforms = false;
+  bool snap_2d_vertices = false;
+  std::vector<ViewportCanvasRow> canvases;  // strictly ascending by canvas id
+  Xform global_xform = kIdentityXform;      // the viewport's global canvas transform
 };
 
 // --- new at /4: the mesh table (render-stream-4.md "Mesh table") ------------------------------
@@ -2109,6 +2227,8 @@ struct Snapshot {
   SharedTable<MeshEntry> meshes;         // sorted by id ascending; new at /4
   SharedTable<ShaderEntry> shaders;      // sorted by id ascending; new at /5
   SharedTable<MaterialEntry> materials;  // sorted by id ascending; new at /5
+  // render-stream-16.md: the host's non-root viewports, sorted by id ascending. Encoded at /16 only.
+  std::vector<ViewportEntry> viewports;
   // PM1 (render-stream-11.md "As built (PM1)" rule 9): the multimeshes an add_multimesh command
   // of this state names, sorted by id ascending. Encoded at /11 only.
   std::vector<MultimeshEntry> multimeshes;
@@ -2198,6 +2318,11 @@ struct Transaction {
   std::vector<ParticlesEntry> particles;
   std::vector<std::uint32_t> removed_particles;
   std::vector<ParticleEmit> particle_emits;
+  // render-stream-16.md "The viewport table": the viewport entries (full entries, ascending by
+  // id) and, on a patch, the base ids no longer in the table (ascending). Each key is encoded only
+  // when non-empty, at /16 only; their floats go in the trailing block viewport_f32.
+  std::vector<ViewportEntry> viewports;
+  std::vector<std::uint32_t> removed_viewports;
   // Sabotage perturb-seed: the encoder adds 1 to the seed of the first particles entry it writes.
   bool perturb_seed = false;
 

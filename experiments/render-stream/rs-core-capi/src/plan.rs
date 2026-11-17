@@ -1622,6 +1622,10 @@ impl Planner {
                 continue;
             }
             match e.kind {
+                // render-stream-16.md: no native viewport surface yet, so a viewport or proxy
+                // entry gets no RID and a command naming it is refused as an unsupported texture
+                // (`texture_for_inner`).
+                TextureKind::Viewport | TextureKind::Proxy => {}
                 TextureKind::Placeholder => {
                     if self
                         .textures

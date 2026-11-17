@@ -24,7 +24,7 @@
 //
 // render-stream/3 (../../protocol/render-stream-3.md, G4e1), render-stream/4
 // (../../protocol/render-stream-4.md, G5w) and render-stream/5 (../../protocol/render-stream-5.md,
-// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15` parameter
+// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16` parameter
 // on every exported entry point (splitRecords/decodeRecording/validateRecording/
 // resolveRecording), rather than forked render-stream-3.ts/-4.ts/-5.ts modules -- /3 is /2 plus
 // one draw command (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), /4 is /3
@@ -153,7 +153,11 @@ export type UnsupportedReason =
   | "unsupported-multimesh"
   // new at /12 (PM5, render-stream-12.md "The command")
   | "unknown-particles"
-  | "unsupported-particles";
+  | "unsupported-particles"
+  // new at /16 (render-stream-16.md "Session-level unsupported reasons"), under "viewports":"on"
+  | "viewport-3d"
+  | "viewport-hdr-2d"
+  | "viewport-msaa-2d";
 /** canvas-texture-headless (G2d): a texture draw naming RID() on a headless host, whose dummy
  * storage never allocates a canvas texture.
  * unknown-mesh/skinned-geometry: new at /4 (render-stream-4.md "Command"). */
@@ -237,7 +241,13 @@ export type Repeat = "default" | "disabled" | "enabled" | "mirror";
 export type Delivery = "out-of-band" | "inline" | "mixed";
 export type Fetch = "http" | "directory" | "none";
 export type Auth = "none" | "bearer";
-export type TextureKind = "image" | "placeholder" | "canvas";
+/** "viewport" and "proxy": new at /16 (render-stream-16.md "Texture kinds"). */
+export type TextureKind =
+  | "image"
+  | "placeholder"
+  | "canvas"
+  | "viewport"
+  | "proxy";
 export type TextureStatus = "ok" | "unsupported" | "freed";
 export type TextureReason =
   | "unsupported-format"
@@ -248,7 +258,9 @@ export type TextureReason =
   | "unknown-texture"
   | "canvas-texture-channel"
   /** new at /9 (render-stream-9.md "Texture reasons"). */
-  | "delivery-pending";
+  | "delivery-pending"
+  /** new at /16 (render-stream-16.md "Texture kinds"): an unsupported proxy's only reason. */
+  | "proxy-unresolved";
 
 /** render-stream-4.md "Command": add_nine_patch's per-axis stretch mode. */
 export type AxisStretchMode = "stretch" | "tile" | "tile_fit";
@@ -577,8 +589,46 @@ export interface SessionMeta {
   /** render-stream-8.md "Session": always present at /8 (null = adoption off), right after
    * `unknown_item_policy`/`sabotage`; absent below /8. */
   adoption?: AdoptionDeclaration | null;
+  /** render-stream-16.md "Session: viewports": always present at /16, right after `adoption`. */
+  viewports?: ViewportsMode;
   blocks: BlockDescriptor[];
 }
+
+/** render-stream-16.md "Session: viewports". */
+export type ViewportsMode = "on" | "off" | "unavailable";
+
+/** render-stream-16.md "Viewport entry": one non-root viewport; its global canvas transform and one
+ * transform per `canvases` row are in viewport_f32 at `f`. */
+export interface TransactionViewport {
+  id: number;
+  origin: TableOrigin;
+  parent: number | null;
+  active: boolean;
+  active_seq: number;
+  size: [number, number];
+  transparent: boolean;
+  update: ViewportUpdateMode;
+  once_seq: number;
+  clear: ViewportClearMode;
+  clear_seq: number;
+  disable_2d: boolean;
+  renders_3d: boolean;
+  hdr_2d: boolean;
+  msaa_2d: number;
+  canvas_cull_mask: number;
+  default_texture_filter: Filter;
+  default_texture_repeat: Repeat;
+  snap_2d: [boolean, boolean];
+  canvases: Array<[number, number, number]>;
+  f: number;
+}
+export type ViewportUpdateMode =
+  | "disabled"
+  | "once"
+  | "when_visible"
+  | "when_parent_visible"
+  | "always";
+export type ViewportClearMode = "always" | "never" | "next_frame";
 
 /** : what a skip session's transaction left out. */
 export interface UnknownItemsMeta {
@@ -820,6 +870,12 @@ export interface TransactionTexture {
   /** new at /15 (render-stream-15.md "Size override"): the logical size Godot draws an "ok"
    * image at, present only when it differs from width/height. */
   size_override?: [number, number];
+  /** new at /16 (render-stream-16.md "Texture kinds"): present exactly on a "viewport" entry, right
+   * after variants: the viewport whose render target it is. */
+  viewport?: number;
+  /** new at /16: present exactly on a "proxy" entry, right after variants: the aliased texture
+   * (null exactly on an unsupported proxy; a freed proxy keeps its last value). */
+  target?: number | null;
   canvas: CanvasTextureMeta | null;
 }
 
@@ -1050,6 +1106,11 @@ export interface TransactionMeta {
    * before `blocks`: the XXH64 of the reconstructed mesh_f32 || mesh_u8 || mm_f32, 16 lowercase
    * hex digits. */
   predict_check?: string;
+  /** new at /16 (render-stream-16.md "The viewport table"): a patch's removed viewport ids, present
+   * only when non-empty, after `shader_time` and before `predict_check`. */
+  removed_viewports?: number[];
+  /** new at /16: present only when non-empty, after `removed_viewports`. */
+  viewports?: TransactionViewport[];
   blocks: BlockDescriptor[];
 }
 
@@ -1227,14 +1288,20 @@ export const MAGIC_V14: Uint8Array = new Uint8Array([
 export const MAGIC_V15: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x46, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
+// render-stream-16.md: the GRSG magic (byte 3 'G' is 16), selected by `version: 16` (golden-16/;
+// /16 is /15 plus viewport surfaces: the viewport table, viewport_f32 and the viewport/proxy kinds).
+export const MAGIC_V16: Uint8Array = new Uint8Array([
+  0x47, 0x52, 0x53, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 /** G7l: the wire version of a live stream's bytes: 7 when they start with GRS7 (a /7 receiver's
  * received.rs7, or a /7 connection's host tap), 8 when they start with GRS8 (G8w), 9 for GRS9
  * (G8k9), 10 for GRSA (CG1), 11 for GRSB (W11a), 12 for GRSC (PM5), 13 for GRSD (W13d), 14 for GRSE
- * (ID3: a /14 file sink or a v2 viewer's tap), 15 for GRSF (a /15 file sink), else 6 -- so every other
+ * (ID3: a /14 file sink or a v2 viewer's tap), 15 for GRSF (a /15 file sink), 16 for GRSG (a /16
+ * file sink), else 6 -- so every other
  * magic still meets the /6 decoder's own refusal, exactly as before. */
 export function wireVersionOf(
   data: Uint8Array | undefined,
-): 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 {
+): 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 {
   if (!data || data.length < MAGIC_V7.length) return 6;
   const startsWith = (magic: Uint8Array) => {
     for (let i = 0; i < magic.length; i++)
@@ -1251,6 +1318,7 @@ export function wireVersionOf(
   if (startsWith(MAGIC_V13)) return 13;
   if (startsWith(MAGIC_V14)) return 14;
   if (startsWith(MAGIC_V15)) return 15;
+  if (startsWith(MAGIC_V16)) return 16;
   return 6;
 }
 /** render-stream-9.md "KTX2 payload": the 12-byte KTX2 file identifier (KTX 2.0 section 2.1). */
@@ -1722,6 +1790,55 @@ const TEXTURE_KEYS_V15 = [
 ];
 /** render-stream-15.md "Size override": each side of a logical size is in 1..16384. */
 const SIZE_OVERRIDE_MAX = 16384;
+// render-stream-16.md "Texture kinds": a viewport or proxy entry's kind key ("viewport" or
+// "target") right after "variants" and before "canvas" (never with size_override).
+function textureKeysV16(kindKey: "viewport" | "target"): string[] {
+  return [
+    ...TEXTURE_KEYS_V9.slice(0, TEXTURE_KEYS_V9.indexOf("variants") + 1),
+    kindKey,
+    "canvas",
+  ];
+}
+const TEXTURE_KEYS_V16_VIEWPORT = textureKeysV16("viewport");
+const TEXTURE_KEYS_V16_PROXY = textureKeysV16("target");
+// render-stream-16.md "Viewport entry": the key set, in exactly this order (meta-schema).
+const VIEWPORT_ENTRY_KEYS = [
+  "id",
+  "origin",
+  "parent",
+  "active",
+  "active_seq",
+  "size",
+  "transparent",
+  "update",
+  "once_seq",
+  "clear",
+  "clear_seq",
+  "disable_2d",
+  "renders_3d",
+  "hdr_2d",
+  "msaa_2d",
+  "canvas_cull_mask",
+  "default_texture_filter",
+  "default_texture_repeat",
+  "snap_2d",
+  "canvases",
+  "f",
+];
+const VIEWPORT_UPDATE_MODES = [
+  "disabled",
+  "once",
+  "when_visible",
+  "when_parent_visible",
+  "always",
+] as const;
+const VIEWPORT_CLEAR_MODES = ["always", "never", "next_frame"] as const;
+export const VIEWPORTS_MODES = ["on", "off", "unavailable"] as const;
+/** render-stream-16.md "viewport_f32": a viewport's floats, its global canvas transform then one
+ * transform per canvases row (6 floats each). */
+export function viewportFloatCount(rows: number): number {
+  return 6 + 6 * rows;
+}
 const VARIANT_KEYS = ["encoding", "hash", "payload_bytes", "format", "params"];
 const VARIANT_ENCODINGS = ["block", "uastc", "etc1s"] as const;
 const TEXTURE_DELIVERY_KEYS = ["mode", "encoder"];
@@ -1948,6 +2065,26 @@ const TRANSACTION_BLOCK_TYPES_V12: Array<"f32" | "i32" | "f64" | "u8"> = [
 ];
 /** render-stream-12.md: the index of the optional tenth transaction block, pt_f32. */
 export const PT_F32_BLOCK = 9;
+/** render-stream-16.md "viewport_f32": the optional last transaction block (after pt_f32 when
+ * present), type "f32". */
+export const VIEWPORT_F32_NAME = "viewport_f32";
+/** The decoded index of pt_f32 in a transaction, or -1 when it has none (at /16 block 9 may be
+ * viewport_f32 instead). A meta without descriptors (a caller's synthetic transaction) keeps the
+ * positional block 9. */
+export function ptF32Index(meta: {
+  blocks?: readonly BlockDescriptor[];
+}): number {
+  if (!Array.isArray(meta.blocks)) return PT_F32_BLOCK;
+  return meta.blocks[PT_F32_BLOCK]?.name === "pt_f32" ? PT_F32_BLOCK : -1;
+}
+/** The decoded index of viewport_f32 in a /16 transaction, or -1 when it has none. */
+export function viewportF32Index(meta: {
+  blocks?: readonly BlockDescriptor[];
+}): number {
+  if (!Array.isArray(meta.blocks)) return -1;
+  const last = meta.blocks.length - 1;
+  return last >= 9 && meta.blocks[last]?.name === VIEWPORT_F32_NAME ? last : -1;
+}
 
 const FILTERS = [
   "default",
@@ -1975,6 +2112,12 @@ const TEXTURE_REASONS = [
 ] as const;
 // render-stream-9.md "Texture reasons": legal at /9 only.
 const TEXTURE_REASONS_V9 = [...TEXTURE_REASONS, "delivery-pending"] as const;
+// render-stream-16.md "Texture kinds": two kinds and one reason, legal at /16 only.
+const TEXTURE_KINDS_V16 = [...TEXTURE_KINDS, "viewport", "proxy"] as const;
+const TEXTURE_REASONS_V16 = [
+  ...TEXTURE_REASONS_V9,
+  "proxy-unresolved",
+] as const;
 const UNSUPPORTED_CMD_REASONS = [
   "unsupported-op",
   "unknown-texture",
@@ -2135,6 +2278,19 @@ const SESSION_UNSUPPORTED_REASONS_V6 = [
   "global-canvas-transform",
   "snap-2d",
 ] as const;
+// render-stream-16.md "Session-level unsupported reasons": three new session-level entries,
+// legal only at /16 (and, the validator's call, only under "viewports":"on"), each with one op.
+const SESSION_UNSUPPORTED_REASONS_V16 = [
+  ...SESSION_UNSUPPORTED_REASONS_V6,
+  "viewport-3d",
+  "viewport-hdr-2d",
+  "viewport-msaa-2d",
+] as const;
+const VIEWPORT_REASON_OPS: Readonly<Record<string, string>> = {
+  "viewport-3d": "viewport_attach_camera",
+  "viewport-hdr-2d": "viewport_set_use_hdr_2d",
+  "viewport-msaa-2d": "viewport_set_msaa_2d",
+};
 const AXIS_STRETCH_MODES = ["stretch", "tile", "tile_fit"] as const;
 const PRIMITIVES = [
   "points",
@@ -2497,7 +2653,7 @@ function intPair(value: unknown): value is [number, number] {
 function checkResourcesSchema(
   resources: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: resources ${detail}`,
@@ -2629,7 +2785,7 @@ function checkResourcesSchema(
 function checkSessionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
@@ -2681,8 +2837,16 @@ function checkSessionSchema(
       ADOPTION_KEY,
     );
   }
+  // render-stream-16.md "Session: viewports": always present at /16, the last key before
+  // "blocks", right after "adoption".
+  if (version >= 16)
+    expectedKeys = keysWith(expectedKeys, ADOPTION_KEY, "viewports");
   if (!hasExactKeys(meta, expectedKeys))
     return err("session has the wrong top-level keys or order");
+  if (version >= 16 && !isOneOf(meta.viewports, VIEWPORTS_MODES))
+    return err(
+      `"viewports" is ${JSON.stringify(meta.viewports)}, not "on", "off" or "unavailable"`,
+    );
   if (skipDeclared && meta.unknown_item_policy !== "skip")
     return err('"unknown_item_policy" must be "skip" when present');
   const expectedProtocol = isV13
@@ -3046,19 +3210,30 @@ function checkTextureEntrySchema(
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: a textures[] entry ${detail}`,
   ];
+  // render-stream-16.md "Texture kinds": a viewport or proxy entry carries its kind key (and never
+  // size_override); every other kind never does.
+  const kindKeyed =
+    version >= 16 &&
+    isPlainObject(t) &&
+    (t.kind === "viewport" || t.kind === "proxy");
   // render-stream-15.md "Size override": an optional key, so the key list follows its presence.
-  const hasOverride = version >= 15 && isPlainObject(t) && "size_override" in t;
+  const hasOverride =
+    version >= 15 && !kindKeyed && isPlainObject(t) && "size_override" in t;
   if (
     !isPlainObject(t) ||
     !hasExactKeys(
       t,
-      hasOverride
-        ? TEXTURE_KEYS_V15
-        : version >= 9
-          ? TEXTURE_KEYS_V9
-          : version >= 8
-            ? TEXTURE_KEYS_V8
-            : TEXTURE_KEYS,
+      kindKeyed
+        ? t.kind === "viewport"
+          ? TEXTURE_KEYS_V16_VIEWPORT
+          : TEXTURE_KEYS_V16_PROXY
+        : hasOverride
+          ? TEXTURE_KEYS_V15
+          : version >= 9
+            ? TEXTURE_KEYS_V9
+            : version >= 8
+              ? TEXTURE_KEYS_V8
+              : TEXTURE_KEYS,
     )
   ) {
     return err("has the wrong keys");
@@ -3079,15 +3254,33 @@ function checkTextureEntrySchema(
       return err('"source_format" is neither null nor an Image format name');
     }
   }
-  if (!isOneOf(t.kind, TEXTURE_KINDS)) return err("has an invalid kind");
+  if (!isOneOf(t.kind, version >= 16 ? TEXTURE_KINDS_V16 : TEXTURE_KINDS))
+    return err("has an invalid kind");
   if (!isOneOf(t.status, TEXTURE_STATUSES)) return err("has an invalid status");
   if (
     !(
       t.reason === null ||
-      isOneOf(t.reason, version >= 9 ? TEXTURE_REASONS_V9 : TEXTURE_REASONS)
+      isOneOf(
+        t.reason,
+        version >= 16
+          ? TEXTURE_REASONS_V16
+          : version >= 9
+            ? TEXTURE_REASONS_V9
+            : TEXTURE_REASONS,
+      )
     )
   ) {
     return err('"reason" is neither null nor a valid texture reason');
+  }
+  if (kindKeyed) {
+    // render-stream-16.md "Texture kinds": "viewport":<int >= 1>, "target":null|<int >= 1>.
+    if (t.kind === "viewport" && !(isInt(t.viewport) && t.viewport >= 1))
+      return err('"viewport" is not an integer >= 1');
+    if (
+      t.kind === "proxy" &&
+      !(t.target === null || (isInt(t.target) && t.target >= 1))
+    )
+      return err('"target" is neither null nor an integer >= 1');
   }
   if (!isInt(t.version) || t.version < 1)
     return err('"version" is not an integer >= 1');
@@ -3533,7 +3726,7 @@ function checkParticlesEntrySchema(p: unknown): string | null {
 function checkTransactionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
@@ -3606,6 +3799,22 @@ function checkTransactionSchema(
     if (hasParticles)
       expectedKeys = keysWith(expectedKeys, anchor, "particles");
   }
+  // render-stream-16.md "The viewport table": the optional removed_viewports and viewports, after
+  // shader_time (the last optional key so far) and before predict_check, each only when non-empty.
+  const hasRemovedViewports = version >= 16 && "removed_viewports" in meta;
+  const hasViewports = version >= 16 && "viewports" in meta;
+  for (const [present, key] of [
+    [hasRemovedViewports, "removed_viewports"],
+    [hasViewports, "viewports"],
+  ] as const) {
+    if (!present) continue;
+    const at = expectedKeys.indexOf("blocks");
+    expectedKeys = [
+      ...expectedKeys.slice(0, at),
+      key,
+      ...expectedKeys.slice(at),
+    ];
+  }
   // W13a (render-stream-13.md "As built (W13a)"): predict_check on every /13 transaction, right
   // before "blocks".
   if (isV13) {
@@ -3620,6 +3829,25 @@ function checkTransactionSchema(
     return err("transaction has the wrong top-level keys or order");
   if (isV13 && !isLowerHex(meta.predict_check, 16))
     return err('"predict_check" is not 16 lowercase hex digits');
+  if (hasRemovedViewports) {
+    if (
+      !isIntArray(meta.removed_viewports) ||
+      meta.removed_viewports.length === 0
+    )
+      return err(
+        '"removed_viewports" must be a non-empty array of integers when present',
+      );
+  }
+  if (hasViewports) {
+    // The key set and order are meta-schema; every value is viewport-entry (the validator's).
+    if (!Array.isArray(meta.viewports) || meta.viewports.length === 0)
+      return err(
+        '"viewports" must be a non-empty array when present (an empty table is the absent key)',
+      );
+    for (const v of meta.viewports)
+      if (!isPlainObject(v) || !hasExactKeys(v, VIEWPORT_ENTRY_KEYS))
+        return err("a viewports[] entry has the wrong keys or order");
+  }
   if (hasParticles) {
     if (!Array.isArray(meta.particles) || meta.particles.length === 0)
       return err(
@@ -3775,7 +4003,9 @@ function checkTransactionSchema(
     }
     const allowedReasons = isV6
       ? u.item === null
-        ? SESSION_UNSUPPORTED_REASONS_V6
+        ? version >= 16
+          ? SESSION_UNSUPPORTED_REASONS_V16
+          : SESSION_UNSUPPORTED_REASONS_V6
         : isV12
           ? ITEM_UNSUPPORTED_REASONS_V12
           : isV11
@@ -4180,19 +4410,32 @@ function checkTransactionSchema(
 
   const blocksError = checkBlocksField(meta.blocks, offset);
   if (blocksError !== null) return [blocksError];
+  // render-stream-16.md "viewport_f32": the optional last block, after every /15 block (its
+  // presence and count are viewport-offset's, checked by the validator).
+  let txBlocks = meta.blocks as BlockDescriptor[];
+  if (version >= 16 && txBlocks.length > 9) {
+    const last = txBlocks[txBlocks.length - 1];
+    if (last.name === VIEWPORT_F32_NAME) {
+      if (last.type !== "f32")
+        return err(
+          `block "${VIEWPORT_F32_NAME}" has type "${last.type}", expected "f32"`,
+        );
+      txBlocks = txBlocks.slice(0, -1);
+    }
+  }
   // render-stream-12.md: pt_f32 is the optional tenth block (its presence and count are
   // pt-offset's, checked by the validator).
-  const withPtF32 = isV12 && (meta.blocks as BlockDescriptor[]).length === 10;
+  const withPtF32 = isV12 && txBlocks.length === 10;
   const nameError = withPtF32
     ? checkFixedBlockNames(
-        meta.blocks as BlockDescriptor[],
+        txBlocks,
         TRANSACTION_BLOCK_NAMES_V12,
         offset,
         TRANSACTION_BLOCK_TYPES_V12,
       )
     : isV11
       ? checkFixedBlockNames(
-          meta.blocks as BlockDescriptor[],
+          txBlocks,
           TRANSACTION_BLOCK_NAMES_V11,
           offset,
           TRANSACTION_BLOCK_TYPES_V11,
@@ -4670,7 +4913,7 @@ export function itemMetaRowJson(
 function checkMetaSchema(
   meta: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16,
 ): string[] {
   if (!isPlainObject(meta))
     return [
@@ -4702,39 +4945,41 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 = 6,
 ): {
   records: RawRecord[];
   errors: string[];
 } {
   const expectedMagic =
-    version === 15
-      ? MAGIC_V15
-      : version === 14
-        ? MAGIC_V14
-        : version === 13
-          ? MAGIC_V13
-          : version === 12
-            ? MAGIC_V12
-            : version === 11
-              ? MAGIC_V11
-              : version === 10
-                ? MAGIC_V10
-                : version === 9
-                  ? MAGIC_V9
-                  : version === 8
-                    ? MAGIC_V8
-                    : version === 7
-                      ? MAGIC_V7
-                      : version === 6
-                        ? MAGIC_V6
-                        : version === 5
-                          ? MAGIC_V5
-                          : version === 4
-                            ? MAGIC_V4
-                            : version === 3
-                              ? MAGIC_V3
-                              : MAGIC;
+    version === 16
+      ? MAGIC_V16
+      : version === 15
+        ? MAGIC_V15
+        : version === 14
+          ? MAGIC_V14
+          : version === 13
+            ? MAGIC_V13
+            : version === 12
+              ? MAGIC_V12
+              : version === 11
+                ? MAGIC_V11
+                : version === 10
+                  ? MAGIC_V10
+                  : version === 9
+                    ? MAGIC_V9
+                    : version === 8
+                      ? MAGIC_V8
+                      : version === 7
+                        ? MAGIC_V7
+                        : version === 6
+                          ? MAGIC_V6
+                          : version === 5
+                            ? MAGIC_V5
+                            : version === 4
+                              ? MAGIC_V4
+                              : version === 3
+                                ? MAGIC_V3
+                                : MAGIC;
   if (
     data.length < expectedMagic.length ||
     !bytesEqual(data.subarray(0, expectedMagic.length), expectedMagic)
@@ -4835,7 +5080,7 @@ export function withRecordMemo<T>(
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 = 6,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const memo = recordMemo;
@@ -4854,7 +5099,7 @@ export function decodeRecord(
 
 function decodeRecordOnce(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const view = new DataView(
@@ -5026,7 +5271,7 @@ function decodeRecordOnce(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 = 6,
 ): {
   schema:
     | "render-stream-2-decoded/1"
@@ -5042,7 +5287,8 @@ export function decodeRecording(
     | "render-stream-12-decoded/1"
     | "render-stream-13-decoded/1"
     | "render-stream-14-decoded/1"
-    | "render-stream-15-decoded/1";
+    | "render-stream-15-decoded/1"
+    | "render-stream-16-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
@@ -5051,8 +5297,8 @@ export function decodeRecording(
   // render-stream-13.md "Forms and transcode": /13's decoded form is /12's over the reconstructed
   // blocks, each record's sha256 still the /13 record's own.
   const plain =
-    version === 13 || version === 14 || version === 15
-      ? rs13PlainRecords(split.records, version)
+    version >= 13
+      ? rs13PlainRecords(split.records, version as 13 | 14 | 15 | 16)
       : split.records;
   const records: DecodedRecord[] = [];
   for (let r = 0; r < split.records.length; r++) {
@@ -5075,62 +5321,66 @@ export function decodeRecording(
     );
   }
   const magic =
-    version === 15
-      ? MAGIC_V15
-      : version === 14
-        ? MAGIC_V14
-        : version === 13
-          ? MAGIC_V13
-          : version === 12
-            ? MAGIC_V12
-            : version === 11
-              ? MAGIC_V11
-              : version === 10
-                ? MAGIC_V10
-                : version === 9
-                  ? MAGIC_V9
-                  : version === 8
-                    ? MAGIC_V8
-                    : version === 7
-                      ? MAGIC_V7
-                      : version === 6
-                        ? MAGIC_V6
-                        : version === 5
-                          ? MAGIC_V5
-                          : version === 4
-                            ? MAGIC_V4
-                            : version === 3
-                              ? MAGIC_V3
-                              : MAGIC;
+    version === 16
+      ? MAGIC_V16
+      : version === 15
+        ? MAGIC_V15
+        : version === 14
+          ? MAGIC_V14
+          : version === 13
+            ? MAGIC_V13
+            : version === 12
+              ? MAGIC_V12
+              : version === 11
+                ? MAGIC_V11
+                : version === 10
+                  ? MAGIC_V10
+                  : version === 9
+                    ? MAGIC_V9
+                    : version === 8
+                      ? MAGIC_V8
+                      : version === 7
+                        ? MAGIC_V7
+                        : version === 6
+                          ? MAGIC_V6
+                          : version === 5
+                            ? MAGIC_V5
+                            : version === 4
+                              ? MAGIC_V4
+                              : version === 3
+                                ? MAGIC_V3
+                                : MAGIC;
   return {
     schema:
-      version === 15
-        ? "render-stream-15-decoded/1"
-        : version === 14
-          ? "render-stream-14-decoded/1"
-          : version === 13
-            ? "render-stream-13-decoded/1"
-            : version === 12
-              ? "render-stream-12-decoded/1"
-              : version === 11
-                ? "render-stream-11-decoded/1"
-                : version === 10
-                  ? "render-stream-10-decoded/1"
-                  : version === 9
-                    ? "render-stream-9-decoded/1"
-                    : version === 8
-                      ? "render-stream-8-decoded/1"
-                      : version === 7
-                        ? "render-stream-7-decoded/1"
-                        : version === 6
-                          ? "render-stream-6-decoded/1"
-                          : version === 5
-                            ? "render-stream-5-decoded/1"
-                            : version === 4
-                              ? "render-stream-4-decoded/1"
-                              : version === 3
-                                ? "render-stream-3-decoded/1"
-                                : "render-stream-2-decoded/1",
+      version === 16
+        ? "render-stream-16-decoded/1"
+        : version === 15
+          ? "render-stream-15-decoded/1"
+          : version === 14
+            ? "render-stream-14-decoded/1"
+            : version === 13
+              ? "render-stream-13-decoded/1"
+              : version === 12
+                ? "render-stream-12-decoded/1"
+                : version === 11
+                  ? "render-stream-11-decoded/1"
+                  : version === 10
+                    ? "render-stream-10-decoded/1"
+                    : version === 9
+                      ? "render-stream-9-decoded/1"
+                      : version === 8
+                        ? "render-stream-8-decoded/1"
+                        : version === 7
+                          ? "render-stream-7-decoded/1"
+                          : version === 6
+                            ? "render-stream-6-decoded/1"
+                            : version === 5
+                              ? "render-stream-5-decoded/1"
+                              : version === 4
+                                ? "render-stream-4-decoded/1"
+                                : version === 3
+                                  ? "render-stream-3-decoded/1"
+                                  : "render-stream-2-decoded/1",
     magic: toHex(magic),
     records,
   };
@@ -6485,7 +6735,7 @@ export function createRs13Unpredictor(
  * blocks in the /13 framing); throws the first decode, meta or predict-check error. */
 function rs13PlainRecords(
   records: RawRecord[],
-  version: 13 | 14 | 15 = 13,
+  version: 13 | 14 | 15 | 16 = 13,
 ): RawRecord[] {
   const unpredictor = createRs13Unpredictor();
   return records.map((raw) => {
@@ -7133,6 +7383,34 @@ export interface ResolvedParticles {
   floats: ResolvedParticlesFloats | null;
 }
 
+/** new at /16 (render-stream-16.md "Forms"): a resolved viewport is the entry's JSON fields in
+ * wire order without `f`, plus its viewport_f32 floats by name. */
+export interface ResolvedViewport extends Omit<TransactionViewport, "f"> {
+  floats: {
+    global_xform: number[];
+    canvas_xforms: number[][];
+  };
+}
+
+/** render-stream-16.md "Forms": lifts one viewport entry; its floats are viewport_f32's at `f`
+ * (a global transform, then one per canvases row). Tolerates a malformed entry (viewport-offset
+ * and viewport-entry refuse it after the lift). */
+function liftViewport(
+  v: TransactionViewport,
+  vpF32: readonly number[],
+): ResolvedViewport {
+  const { f, ...fields } = v;
+  const at = isInt(f) && f >= 0 ? f : 0;
+  const rows = Array.isArray(v.canvases) ? v.canvases.length : 0;
+  const canvas_xforms: number[][] = [];
+  for (let r = 0; r < rows; r++)
+    canvas_xforms.push(vpF32.slice(at + 6 + 6 * r, at + 12 + 6 * r));
+  return {
+    ...fields,
+    floats: { global_xform: vpF32.slice(at, at + 6), canvas_xforms },
+  };
+}
+
 export interface ResolvedState {
   canvases: Map<number, ResolvedCanvas>;
   items: Map<number, ResolvedItem>;
@@ -7144,6 +7422,8 @@ export interface ResolvedState {
   multimeshes: Map<number, ResolvedMultimesh>;
   /** new at /12 (PM5): empty below /12 and in a /12 stream that holds no emitter. */
   particles: Map<number, ResolvedParticles>;
+  /** new at /16 (render-stream-16.md "The viewport table"): empty below /16. */
+  viewports: Map<number, ResolvedViewport>;
   default_texture_filter: Filter;
   default_texture_repeat: Repeat;
 }
@@ -7158,6 +7438,7 @@ export function emptyResolvedState(): ResolvedState {
     materials: new Map(),
     multimeshes: new Map(),
     particles: new Map(),
+    viewports: new Map(),
     default_texture_filter: "nearest",
     default_texture_repeat: "disabled",
   };
@@ -7843,8 +8124,9 @@ export function transactionParticles(
   meta: TransactionMeta,
   blocks: DecodedBlock[],
 ): TransactionParticlesFloats[] {
+  const pt = ptF32Index(meta);
   const ptF32 = (
-    Array.isArray(blocks[PT_F32_BLOCK]) ? blocks[PT_F32_BLOCK] : []
+    pt >= 0 && Array.isArray(blocks[pt]) ? blocks[pt] : []
   ) as number[];
   return (meta.particles ?? []).map((entry) => ({
     entry,
@@ -7875,8 +8157,9 @@ export function transactionParticleEmits(
   meta: TransactionMeta,
   blocks: DecodedBlock[],
 ): TransactionParticleEmitFloats[] {
+  const pt = ptF32Index(meta);
   const ptF32 = (
-    Array.isArray(blocks[PT_F32_BLOCK]) ? blocks[PT_F32_BLOCK] : []
+    pt >= 0 && Array.isArray(blocks[pt]) ? blocks[pt] : []
   ) as number[];
   return (meta.particle_emits ?? []).map((emit) => {
     const f = ptF32.slice(emit.f, emit.f + PARTICLE_EMIT_FLOAT_COUNT);
@@ -7954,7 +8237,14 @@ export function applyTransaction(
     meta.encoding === "full"
       ? new Map<number, ResolvedParticles>()
       : new Map(base.particles);
+  // render-stream-16.md "Patches": a carried set, like canvases.
+  const viewports =
+    meta.encoding === "full"
+      ? new Map<number, ResolvedViewport>()
+      : new Map(base.viewports);
+  const ptIndex = ptF32Index(meta);
   if (meta.encoding === "patch") {
+    for (const id of meta.removed_viewports ?? []) viewports.delete(id);
     for (const id of meta.removed_particles ?? []) particles.delete(id);
     for (const id of meta.removed_multimeshes ?? []) multimeshes.delete(id);
     for (const id of meta.removed_canvases) canvases.delete(id);
@@ -8034,10 +8324,15 @@ export function applyTransaction(
       p.id,
       liftParticles(
         p,
-        (blocks[PT_F32_BLOCK] ?? []) as number[],
+        ptIndex >= 0 ? ((blocks[ptIndex] ?? []) as number[]) : [],
         base.particles.get(p.id),
       ),
     );
+  }
+  if (meta.viewports !== undefined) {
+    const vp = viewportF32Index(meta);
+    const vpF32 = vp >= 0 ? ((blocks[vp] ?? []) as number[]) : [];
+    for (const v of meta.viewports) viewports.set(v.id, liftViewport(v, vpF32));
   }
   return {
     canvases,
@@ -8048,6 +8343,7 @@ export function applyTransaction(
     materials,
     multimeshes,
     particles,
+    viewports,
     default_texture_filter: meta.default_texture_filter,
     default_texture_repeat: meta.default_texture_repeat,
   };
@@ -8085,6 +8381,12 @@ export function sortedResolvedMaterials(
   state: ResolvedState,
 ): ResolvedMaterial[] {
   return [...state.materials.values()].sort((a, b) => a.id - b.id);
+}
+
+export function sortedResolvedViewports(
+  state: ResolvedState,
+): ResolvedViewport[] {
+  return [...state.viewports.values()].sort((a, b) => a.id - b.id);
 }
 
 export function sortedResolvedTextures(
@@ -8145,6 +8447,12 @@ function textureEntryFieldErrors(
     if (t.size_override[0] === t.width && t.size_override[1] === t.height)
       return err('"size_override" equals the payload\'s width and height');
   }
+  // render-stream-16.md "Texture kinds": proxy-unresolved only on an unsupported proxy.
+  if (
+    t.reason === "proxy-unresolved" &&
+    !(t.kind === "proxy" && t.status === "unsupported")
+  )
+    return err('"proxy-unresolved" needs an "unsupported" proxy entry');
   if (t.status === "freed") {
     if (
       t.hash !== null ||
@@ -8160,6 +8468,12 @@ function textureEntryFieldErrors(
         'a "freed" entry must have hash/format/canvas/reason null and width/height/payload_bytes 0, mipmaps false',
       );
     }
+    // render-stream-16.md "Texture kinds": a freed viewport or proxy keeps variants [].
+    if (
+      (t.kind === "viewport" || t.kind === "proxy") &&
+      (t.variants ?? []).length > 0
+    )
+      return err('a "freed" viewport or proxy entry must have variants []');
     return [];
   }
   if (t.kind === "image") {
@@ -8208,6 +8522,34 @@ function textureEntryFieldErrors(
         'kind "placeholder" status "unsupported" must have a non-null reason',
       );
     }
+    return [];
+  }
+  if (t.kind === "viewport" || t.kind === "proxy") {
+    // render-stream-16.md "Texture kinds": no bytes, no size, no canvas; a viewport entry is
+    // never unsupported, and an unsupported proxy's reason is proxy-unresolved.
+    if (
+      t.hash !== null ||
+      t.format !== null ||
+      (t.source_format ?? null) !== null ||
+      t.width !== 0 ||
+      t.height !== 0 ||
+      t.mipmaps !== false ||
+      t.payload_bytes !== 0 ||
+      (t.variants ?? []).length > 0 ||
+      t.canvas !== null
+    ) {
+      return err(
+        `kind "${t.kind}" must have hash/format/source_format/canvas null, width/height/payload_bytes 0, mipmaps false and variants []`,
+      );
+    }
+    if (t.kind === "viewport" && t.status === "unsupported")
+      return err('kind "viewport" is never "unsupported"');
+    if (t.status === "ok" && t.reason !== null)
+      return err(`kind "${t.kind}" status "ok" must have reason null`);
+    if (t.status === "unsupported" && t.reason !== "proxy-unresolved")
+      return err(
+        'kind "proxy" status "unsupported" must have reason "proxy-unresolved"',
+      );
     return [];
   }
   // kind === "canvas"
@@ -8383,6 +8725,8 @@ function checkAdoptionInvariants(
   adoptionDeclared: boolean,
   decodeEngine: boolean,
   offset: number,
+  /** The transaction's own texture entries (render-stream-16.md's adopted viewport/proxy rule). */
+  listedTextures: readonly TransactionTexture[] = [],
 ): string[] {
   if (!adoptionDeclared) {
     const tables: Array<[string, Iterable<{ id: number; origin: string }>]> = [
@@ -8393,6 +8737,15 @@ function checkAdoptionInvariants(
       ["shader", state.shaders.values()],
       ["material", state.materials.values()],
       ["particles", state.particles.values()],
+      // A viewport entry with a wrong value is viewport-entry's (reported later), as rs-core.
+      [
+        "viewport",
+        [...state.viewports.values()].filter(
+          (v) =>
+            viewportValueError({ ...v, f: 0 } as Record<string, unknown>) ===
+            null,
+        ),
+      ],
     ];
     for (const [what, entries] of tables) {
       for (const e of entries) {
@@ -8404,6 +8757,17 @@ function checkAdoptionInvariants(
       }
     }
   }
+  // render-stream-16.md "Texture kinds": an adopted viewport or proxy entry holds no bytes to
+  // distrust, so its adopted_content is "current".
+  for (const t of listedTextures)
+    if (
+      (t.kind === "viewport" || t.kind === "proxy") &&
+      t.origin === "adopted" &&
+      t.adopted_content !== "current"
+    )
+      return [
+        `adoption-entry: record at offset ${offset}: texture ${t.id}: an adopted ${t.kind} entry's adopted_content must be "current"`,
+      ];
   for (const t of state.textures.values()) {
     if (t.source_format === undefined || t.source_format === null) continue;
     if (t.kind !== "image" || t.status !== "ok") {
@@ -8507,8 +8871,11 @@ function checkResolvedInvariants(
   offset: number,
   isV6 = false,
   snapDeclared = false,
+  /** render-stream-16.md: the session's "viewports" (null below /16). */
+  viewportsMode: ViewportsMode | null = null,
 ): string[] {
-  const where = `transaction seq ${meta.seq}`;
+  const where = `record at offset ${offset}, transaction seq ${meta.seq}`;
+  const isV16 = viewportsMode !== null;
   const isV5 = meta.shaders !== undefined;
   const canvases = sortedResolvedCanvases(state);
   const items = sortedResolvedItems(state);
@@ -8688,9 +9055,14 @@ function checkResolvedInvariants(
           `texture-ref: ${where}: canvas texture ${t.id}'s diffuse names texture ${t.canvas.diffuse}, which has no entry`,
         ];
       }
-      if (diffuse.kind !== "image" && diffuse.kind !== "placeholder") {
+      // render-stream-16.md "Texture kinds": at /16 a diffuse may also name a viewport or proxy.
+      if (
+        diffuse.kind !== "image" &&
+        diffuse.kind !== "placeholder" &&
+        !(isV16 && (diffuse.kind === "viewport" || diffuse.kind === "proxy"))
+      ) {
         return [
-          `texture-ref: ${where}: canvas texture ${t.id}'s diffuse names texture ${diffuse.id}, whose kind is "${diffuse.kind}" (must be image or placeholder)`,
+          `texture-ref: ${where}: canvas texture ${t.id}'s diffuse names texture ${diffuse.id}, whose kind is "${diffuse.kind}" (must be image or placeholder${isV16 ? ", viewport or proxy" : ""})`,
         ];
       }
     }
@@ -8753,6 +9125,18 @@ function checkResolvedInvariants(
     add_mesh: "canvas_item_add_mesh",
     add_multimesh: "canvas_item_add_multimesh",
     add_particles: "canvas_item_add_particles",
+  };
+  const readTexRef = (id: number): ResolvedTexture | undefined => {
+    const t = textureById.get(id);
+    if (
+      isV16 &&
+      t !== undefined &&
+      t.kind === "proxy" &&
+      t.status === "ok" &&
+      typeof t.target === "number"
+    )
+      return textureById.get(t.target);
+    return t;
   };
   const actualUnsupportedOps = new Map<string, UnsupportedReason>();
   const actualUnsupportedTexture = new Set<string>();
@@ -8850,13 +9234,16 @@ function checkResolvedInvariants(
         command.tex !== null &&
         command.tex !== undefined
       ) {
-        const target = textureById.get(command.tex);
+        // render-stream-16.md "Derived unsupported-texture": a reference to an ok proxy reads
+        // as a reference to its target, once, before /2's rule (the tex, and a canvas
+        // texture's diffuse).
+        const target = readTexRef(command.tex);
         const unsupportedViaDiffuse =
           target !== undefined &&
           target.kind === "canvas" &&
           target.canvas !== null &&
           target.canvas.diffuse !== null &&
-          textureById.get(target.canvas.diffuse)?.status === "unsupported";
+          readTexRef(target.canvas.diffuse)?.status === "unsupported";
         if (
           (target !== undefined && target.status === "unsupported") ||
           unsupportedViaDiffuse
@@ -8925,6 +9312,19 @@ function checkResolvedInvariants(
       // render-stream-6.md "Session-level unsupported reasons": extra-canvas never legitimately
       // occurs at /6 (a canvas attached to the root viewport is supported) -- /6 decoders reject
       // it outright, exactly as /5 rejects unsupported-state naming canvas_item_set_material.
+      // render-stream-16.md: each viewport-* reason has one op, and under "viewports":"on" the
+      // host captures non-root viewports, so non-root-viewport never occurs.
+      const viewportOp = VIEWPORT_REASON_OPS[entry.reason];
+      if (viewportOp !== undefined && entry.op !== viewportOp) {
+        return [
+          `unsupported-mismatch: ${where}: ${entry.reason} entry names op ${entry.op}, expected ${viewportOp}`,
+        ];
+      }
+      if (viewportsMode === "on" && entry.reason === "non-root-viewport") {
+        return [
+          `unsupported-mismatch: ${where}: non-root-viewport entry (op ${entry.op}) under "viewports":"on"`,
+        ];
+      }
       if (isV6 && entry.reason === "extra-canvas") {
         return [
           `unsupported-mismatch: ${where}: extra-canvas entry (op ${entry.op}) is never valid at /6 (a canvas attached to the root viewport is supported)`,
@@ -9786,7 +10186,8 @@ function checkParticlesPreResolve(
       );
     running += PARTICLE_EMIT_FLOAT_COUNT;
   }
-  const block = meta.blocks[PT_F32_BLOCK];
+  const ptIndex = ptF32Index(meta);
+  const block = ptIndex >= 0 ? meta.blocks[ptIndex] : undefined;
   if (block === undefined) {
     if (running > 0)
       return offsetErr(
@@ -9872,6 +10273,239 @@ function checkParticlesResolved(
 }
 
 /** render-stream-11.md "Mesh entry" (mesh-dynamic): the four shape fields of two surfaces agree. */
+/** render-stream-16.md "Viewport entry": one entry's value rule (types, enums, ranges), or null.
+ * The key set and order were meta-schema's; the canvases rows' order and canvases are checked on
+ * the resolved state (rs-core meta.rs `check_viewport` keeps the same first wrong value). */
+function viewportValueError(v: Record<string, unknown>): string | null {
+  const natural = (x: unknown) => isInt(x) && x >= 0;
+  if (!isInt(v.id) || v.id < 1) return '"id" is not an integer >= 1';
+  if (v.origin !== "created" && v.origin !== "adopted")
+    return '"origin" is not "created" or "adopted"';
+  if (!(v.parent === null || natural(v.parent)))
+    return '"parent" is neither null nor an integer >= 0';
+  if (typeof v.active !== "boolean") return '"active" is not a boolean';
+  if (!natural(v.active_seq)) return '"active_seq" is not an integer >= 0';
+  if (
+    !Array.isArray(v.size) ||
+    v.size.length !== 2 ||
+    !v.size.every((x) => natural(x))
+  )
+    return '"size" is not two integers >= 0';
+  if (typeof v.transparent !== "boolean")
+    return '"transparent" is not a boolean';
+  if (!isOneOf(v.update, VIEWPORT_UPDATE_MODES))
+    return `"update" ${JSON.stringify(v.update)} is not an update mode`;
+  if (!natural(v.once_seq)) return '"once_seq" is not an integer >= 0';
+  if (!isOneOf(v.clear, VIEWPORT_CLEAR_MODES))
+    return `"clear" ${JSON.stringify(v.clear)} is not a clear mode`;
+  if (!natural(v.clear_seq)) return '"clear_seq" is not an integer >= 0';
+  for (const key of ["disable_2d", "renders_3d", "hdr_2d"] as const)
+    if (typeof v[key] !== "boolean") return `"${key}" is not a boolean`;
+  if (!isInt(v.msaa_2d) || v.msaa_2d < 0 || v.msaa_2d > 3)
+    return '"msaa_2d" is not 0, 1, 2 or 3';
+  if (
+    !isInt(v.canvas_cull_mask) ||
+    v.canvas_cull_mask < 0 ||
+    v.canvas_cull_mask > 4294967295
+  )
+    return '"canvas_cull_mask" is not an integer in 0..4294967295';
+  if (
+    !isOneOf(v.default_texture_filter, FILTERS) ||
+    v.default_texture_filter === "default"
+  )
+    return '"default_texture_filter" is invalid or "default"';
+  if (
+    !isOneOf(v.default_texture_repeat, REPEATS) ||
+    v.default_texture_repeat === "default"
+  )
+    return '"default_texture_repeat" is invalid or "default"';
+  if (
+    !Array.isArray(v.snap_2d) ||
+    v.snap_2d.length !== 2 ||
+    !v.snap_2d.every((x) => typeof x === "boolean")
+  )
+    return '"snap_2d" is not two booleans';
+  if (
+    !Array.isArray(v.canvases) ||
+    !v.canvases.every(
+      (row) =>
+        Array.isArray(row) &&
+        row.length === 3 &&
+        natural(row[0]) &&
+        isInt(row[1]) &&
+        isInt(row[2]),
+    )
+  )
+    return '"canvases" is not an array of [canvas id, layer, sublayer] integer rows';
+  if (!natural(v.f)) return '"f" is not an integer >= 0';
+  return null;
+}
+
+/**
+ * render-stream-16.md "Codes", in its check order, after every /15 rule of the transaction:
+ * viewport-offset (on the transaction), then on the resolved state viewport-entry,
+ * viewport-parent-cycle, the viewport half of texture-ref and proxy-target. `vpFloatCount` is the
+ * decoded viewport_f32's length (0 without the block).
+ */
+function checkViewports(
+  meta: TransactionMeta,
+  state: ResolvedState,
+  vpFloatCount: number,
+  offset: number,
+): string[] {
+  const at = `record at offset ${offset}, transaction seq ${meta.seq}`;
+  // --- viewport-offset ------------------------------------------------------------------------
+  // An entry with a wrong value has no judgeable offset: the running count stops there (and the
+  // block's count is not judged), and viewport-entry reports the value (rs-core validate.rs
+  // `check_viewports`).
+  const offsetErr = (detail: string) => [`viewport-offset: ${at}: ${detail}`];
+  const listed = meta.viewports ?? [];
+  const valueErrors = listed.map((v) =>
+    viewportValueError(v as unknown as Record<string, unknown>),
+  );
+  const firstBad = valueErrors.findIndex((e) => e !== null);
+  let running = 0;
+  for (const v of firstBad < 0 ? listed : listed.slice(0, firstBad)) {
+    if (v.f !== running)
+      return offsetErr(`viewport ${v.id} f=${v.f}, expected ${running}`);
+    running += viewportFloatCount(v.canvases.length);
+  }
+  const vp = viewportF32Index(meta);
+  if (meta.viewports === undefined) {
+    if (vp >= 0)
+      return offsetErr(`a "${VIEWPORT_F32_NAME}" block without "viewports"`);
+  } else {
+    if (vp < 0)
+      return offsetErr(
+        `the viewports claim ${running} floats, but there is no "${VIEWPORT_F32_NAME}" block`,
+      );
+    if (
+      firstBad < 0 &&
+      (meta.blocks[vp].count !== running || vpFloatCount !== running)
+    )
+      return offsetErr(
+        `block "${VIEWPORT_F32_NAME}" declares count ${meta.blocks[vp].count}, the viewports claim ${running}`,
+      );
+  }
+  // --- viewport-entry -------------------------------------------------------------------------
+  // The listed entries' values and order, then every resolved viewport's rows and parent (a
+  // removed canvas or viewport can leave any of them dangling), then exactly one ok viewport
+  // texture per resolved viewport.
+  const entryErr = (detail: string) => [`viewport-entry: ${at}: ${detail}`];
+  let previousId = 0;
+  for (let i = 0; i < listed.length; i++) {
+    const v = listed[i];
+    if (valueErrors[i] !== null)
+      return entryErr(`viewport ${String(v.id)}: ${valueErrors[i]}`);
+    if (v.id <= previousId)
+      return entryErr(
+        `viewports are not strictly ascending by id (${v.id} after ${previousId})`,
+      );
+    previousId = v.id;
+  }
+  const viewports = sortedResolvedViewports(state);
+  for (const v of viewports) {
+    for (let r = 1; r < v.canvases.length; r++)
+      if (v.canvases[r][0] <= v.canvases[r - 1][0])
+        return entryErr(
+          `viewport ${v.id}'s canvases are not strictly ascending by canvas id`,
+        );
+    for (const [canvas] of v.canvases)
+      if (!state.canvases.has(canvas))
+        return entryErr(
+          `viewport ${v.id}'s canvases row names canvas ${canvas}, which has no entry`,
+        );
+    if (v.parent !== null && v.parent !== 0 && !state.viewports.has(v.parent))
+      return entryErr(
+        `viewport ${v.id}'s parent ${v.parent} is neither null, 0 nor a viewport of the state`,
+      );
+  }
+  const textures = sortedResolvedTextures(state);
+  const okViewportTextures = new Map<number, number>();
+  for (const t of textures)
+    if (t.kind === "viewport" && t.status === "ok" && t.viewport !== undefined)
+      okViewportTextures.set(
+        t.viewport,
+        (okViewportTextures.get(t.viewport) ?? 0) + 1,
+      );
+  for (const v of viewports) {
+    const n = okViewportTextures.get(v.id) ?? 0;
+    if (n !== 1)
+      return entryErr(
+        `viewport ${v.id} has ${n} "ok" viewport textures, not exactly one`,
+      );
+  }
+  // --- viewport-parent-cycle ------------------------------------------------------------------
+  for (const start of viewports) {
+    const visited = new Set<number>([start.id]);
+    let parent = start.parent;
+    while (parent !== null && parent !== 0) {
+      if (visited.has(parent))
+        return [
+          `viewport-parent-cycle: ${at}: following parent from viewport ${start.id} revisits viewport ${parent}`,
+        ];
+      visited.add(parent);
+      const next = state.viewports.get(parent);
+      if (next === undefined) break;
+      parent = next.parent;
+    }
+  }
+  // --- texture-ref, the viewport half ---------------------------------------------------------
+  for (const t of textures)
+    if (
+      t.kind === "viewport" &&
+      t.status === "ok" &&
+      (t.viewport === undefined || !state.viewports.has(t.viewport))
+    )
+      return [
+        `texture-ref: ${at}: viewport texture ${t.id} names viewport ${String(t.viewport)}, which is not a viewport of the state`,
+      ];
+  // --- proxy-target ---------------------------------------------------------------------------
+  const textureById = new Map(textures.map((t) => [t.id, t] as const));
+  for (const t of textures) {
+    if (t.kind !== "proxy" || t.status === "freed") continue;
+    const target = t.target ?? null;
+    if (t.status === "unsupported") {
+      if (target !== null)
+        return [
+          `proxy-target: ${at}: unsupported proxy ${t.id}'s target is ${target}, not null`,
+        ];
+      continue;
+    }
+    if (target === null)
+      return [`proxy-target: ${at}: ok proxy ${t.id}'s target is null`];
+    const named = textureById.get(target);
+    if (named === undefined)
+      return [
+        `proxy-target: ${at}: ok proxy ${t.id}'s target ${target} has no entry`,
+      ];
+    if (named.kind === "proxy")
+      return [
+        `proxy-target: ${at}: ok proxy ${t.id}'s target ${target} is a proxy`,
+      ];
+  }
+  return [];
+}
+
+/** render-stream-16.md "Session: viewports": under "off" or "unavailable" a /16 transaction carries
+ * no viewport key, no viewport_f32, no viewport or proxy texture and no viewport-* reason
+ * (meta-schema); returns what it carries, or null. */
+function viewportsOffWhat(meta: TransactionMeta): string | null {
+  if (meta.removed_viewports !== undefined) return 'a "removed_viewports" key';
+  if (meta.viewports !== undefined) return 'a "viewports" key';
+  if (viewportF32Index(meta) >= 0) return `a "${VIEWPORT_F32_NAME}" block`;
+  for (const t of meta.textures)
+    if (t.kind === "viewport" || t.kind === "proxy")
+      return `a "${t.kind}" texture (${t.id})`;
+  for (const t of meta.textures)
+    if (t.reason === "proxy-unresolved")
+      return `texture ${t.id}'s reason "proxy-unresolved"`;
+  for (const u of meta.unsupported ?? [])
+    if (u.item === null && VIEWPORT_REASON_OPS[u.reason] !== undefined)
+      return `a "${u.reason}" unsupported entry`;
+  return null;
+}
+
 function sameSurfaceShape(
   a: TransactionMeshSurface,
   b: TransactionMeshSurface,
@@ -9924,7 +10558,7 @@ export function setValidatorPhaseTimer(
 
 export function createRecordingValidator(
   records: RawRecord[],
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 = 6,
   options?: RecordingValidatorOptions,
 ): RecordingValidator {
   const recordDigest = options?.recordDigest ?? "inline";
@@ -10043,6 +10677,7 @@ export function createRecordingValidator(
     mesh: 0,
     shader: 0,
     material: 0,
+    viewport: 0,
   };
   // Below /11: every hash ever carried in this stream. At /11: the carried set C
   // (render-stream-11.md "Resource retention"), pruned to names(S) after every transaction.
@@ -10450,6 +11085,13 @@ export function createRecordingValidator(
               ),
             ]
           : []),
+        // render-stream-16.md: removed_viewports as the other removed lists (the viewports
+        // list's own order is viewport-entry's).
+        ...checkIdListAscendingNoDup(
+          "removed_viewports",
+          meta.removed_viewports ?? [],
+          offset,
+        ),
       ];
       if (idOrderErrors.length > 0) return idOrderErrors;
       // PM1 rule 8: an add_multimesh in a session whose features.ops lacks it.
@@ -10471,7 +11113,7 @@ export function createRecordingValidator(
               ? 'a "removed_particles" key'
               : meta.particle_emits !== undefined
                 ? 'a "particle_emits" key'
-                : meta.blocks.length > PT_F32_BLOCK
+                : ptF32Index(meta) >= 0
                   ? 'a "pt_f32" block'
                   : meta.items.some((it) =>
                         (it.commands ?? []).some(
@@ -10483,6 +11125,15 @@ export function createRecordingValidator(
         if (what !== null)
           return [
             `meta-schema: record at offset ${offset}: ${what} in a session whose features.ops lacks "add_particles"`,
+          ];
+      }
+      // render-stream-16.md "Session: viewports": every /16 addition is meta-schema under a
+      // "viewports" other than "on".
+      if (version >= 16 && sessionMeta.viewports !== "on") {
+        const what = viewportsOffWhat(meta);
+        if (what !== null)
+          return [
+            `meta-schema: record at offset ${offset}: ${what} in a session whose "viewports" is ${JSON.stringify(sessionMeta.viewports)}`,
           ];
       }
 
@@ -10580,7 +11231,10 @@ export function createRecordingValidator(
           meta,
           state,
           lastSeenParticles,
-          ((decoded.record.blocks as number[][])[PT_F32_BLOCK] ?? []).length,
+          ptF32Index(meta) >= 0
+            ? ((decoded.record.blocks as number[][])[ptF32Index(meta)] ?? [])
+                .length
+            : 0,
           offset,
         );
         if (ptErrors.length > 0) return ptErrors;
@@ -10754,6 +11408,7 @@ export function createRecordingValidator(
         offset,
         isV6,
         snapDeclared,
+        version >= 16 ? (sessionMeta.viewports ?? null) : null,
       );
       if (resolvedErrors.length > 0) return resolvedErrors;
       if (isV11 && meta.encoding === "patch") {
@@ -10802,6 +11457,7 @@ export function createRecordingValidator(
           sessionMeta.adoption !== null && sessionMeta.adoption !== undefined,
           sessionMeta.resources.decode === "engine",
           offset,
+          meta.textures,
         );
         if (adoptionErrors.length > 0) return adoptionErrors;
       }
@@ -11015,6 +11671,18 @@ export function createRecordingValidator(
       const previousMeshIds = new Set(state.meshes.keys());
       const previousShaderIds = new Set(state.shaders.keys());
       const previousMaterialIds = new Set(state.materials.keys());
+      // A viewport entry with a wrong value (a bad id included) is viewport-entry's, reported
+      // later, never id-reused (as rs-core's check_id_reuse).
+      const currentViewportIds = new Set(
+        [...nextState.viewports.values()]
+          .filter(
+            (v) =>
+              viewportValueError({ ...v, f: 0 } as Record<string, unknown>) ===
+              null,
+          )
+          .map((v) => v.id),
+      );
+      const previousViewportIds = new Set(state.viewports.keys());
       for (const [kind, currentIds, previousIds] of [
         ["canvas", currentCanvasIds, previousCanvasIds] as const,
         ["item", currentItemIds, previousItemIds] as const,
@@ -11022,6 +11690,8 @@ export function createRecordingValidator(
         ["mesh", currentMeshIds, previousMeshIds] as const,
         ["shader", currentShaderIds, previousShaderIds] as const,
         ["material", currentMaterialIds, previousMaterialIds] as const,
+        // render-stream-16.md "Viewport entry": viewport ids are never reused, as item ids.
+        ["viewport", currentViewportIds, previousViewportIds] as const,
       ]) {
         if (kind === "mesh" && !isV4) continue;
         if ((kind === "shader" || kind === "material") && !isV5) continue;
@@ -11056,6 +11726,20 @@ export function createRecordingValidator(
           `record at offset ${offset}, transaction seq ${meta.seq}`,
         );
         if (hintError !== null) return [hintError];
+      }
+      // render-stream-16.md "Codes": after every /15 rule, viewport-offset, then the resolved
+      // viewport rules.
+      if (version >= 16) {
+        const vp = viewportF32Index(meta);
+        const vpErrors = checkViewports(
+          meta,
+          nextState,
+          vp >= 0
+            ? ((decoded.record.blocks as number[][])[vp] ?? []).length
+            : 0,
+          offset,
+        );
+        if (vpErrors.length > 0) return vpErrors;
       }
       if (imPending !== null) {
         if (imPending.form === "full") {
@@ -11175,7 +11859,7 @@ export function createRecordingValidator(
 /** Whole-file validation: `createRecordingValidator` over every record of `data`, in order. */
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 = 6,
   options?: RecordingValidatorOptions,
 ): string[] {
   const split = splitRecords(data, version);
@@ -11210,7 +11894,8 @@ function checkPatchRules(
         ((meta.removed_shaders?.length ?? 0) > 0 ||
           (meta.removed_materials?.length ?? 0) > 0)) ||
       (meta.removed_multimeshes?.length ?? 0) > 0 ||
-      (meta.removed_particles?.length ?? 0) > 0
+      (meta.removed_particles?.length ?? 0) > 0 ||
+      (meta.removed_viewports?.length ?? 0) > 0
     ) {
       return [
         `patch-encoding: record at offset ${offset}: a full transaction carries a non-null base_seq or a non-empty removed list`,
@@ -11405,6 +12090,29 @@ function checkPatchRules(
       ];
     }
   }
+  // render-stream-16.md "Patches": removed_viewports are ids of the base table, never also in
+  // viewports.
+  const removedViewportSet = new Set<number>();
+  for (const id of meta.removed_viewports ?? []) {
+    if (removedViewportSet.has(id)) {
+      return [
+        `patch-removed: record at offset ${offset}: viewport ${id} is removed twice`,
+      ];
+    }
+    removedViewportSet.add(id);
+    if (!baseState.viewports.has(id)) {
+      return [
+        `patch-removed: record at offset ${offset}: removed viewport ${id} is absent from the base`,
+      ];
+    }
+  }
+  for (const v of meta.viewports ?? []) {
+    if (removedViewportSet.has(v.id)) {
+      return [
+        `patch-removed: record at offset ${offset}: viewport ${v.id} is both removed and present`,
+      ];
+    }
+  }
 
   for (const it of meta.items) {
     const base = baseState.items.get(it.id);
@@ -11453,6 +12161,9 @@ export interface ResolvedTransaction {
     /** new at /12 (PM5, "Resolved form"): present only when the particles table is non-empty,
      * right after "multimeshes". */
     particles?: ResolvedParticles[];
+    /** new at /16 (render-stream-16.md "Forms"): present only when the viewport table is
+     * non-empty, right after "particles". */
+    viewports?: ResolvedViewport[];
   };
 }
 
@@ -11480,7 +12191,8 @@ export interface ResolvedRecording {
     | "render-stream-12-resolved/1"
     | "render-stream-13-resolved/1"
     | "render-stream-14-resolved/1"
-    | "render-stream-15-resolved/1";
+    | "render-stream-15-resolved/1"
+    | "render-stream-16-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
@@ -11489,7 +12201,7 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 = 6,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
@@ -11501,9 +12213,7 @@ export function resolveRecording(
   // /13 its reconstructed /12 block.
   const raws = isV11 ? splitRecords(data, version).records : [];
   const plainRaws =
-    version === 13 || version === 14 || version === 15
-      ? rs13PlainRecords(raws, version)
-      : raws;
+    version >= 13 ? rs13PlainRecords(raws, version as 13 | 14 | 15 | 16) : raws;
 
   let state = emptyResolvedState();
   const transactions: ResolvedTransaction[] = [];
@@ -11565,38 +12275,43 @@ export function resolveRecording(
         ...(state.particles.size > 0
           ? { particles: sortedResolvedParticles(state) }
           : {}),
+        ...(state.viewports.size > 0
+          ? { viewports: sortedResolvedViewports(state) }
+          : {}),
       },
     });
   }
   return {
     schema:
-      version === 15
-        ? "render-stream-15-resolved/1"
-        : version === 14
-          ? "render-stream-14-resolved/1"
-          : version === 13
-            ? "render-stream-13-resolved/1"
-            : version === 12
-              ? "render-stream-12-resolved/1"
-              : version === 11
-                ? "render-stream-11-resolved/1"
-                : version === 10
-                  ? "render-stream-10-resolved/1"
-                  : version === 9
-                    ? "render-stream-9-resolved/1"
-                    : version === 8
-                      ? "render-stream-8-resolved/1"
-                      : version === 7
-                        ? "render-stream-7-resolved/1"
-                        : version === 6
-                          ? "render-stream-6-resolved/1"
-                          : version === 5
-                            ? "render-stream-5-resolved/1"
-                            : version === 4
-                              ? "render-stream-4-resolved/1"
-                              : version === 3
-                                ? "render-stream-3-resolved/1"
-                                : "render-stream-2-resolved/1",
+      version === 16
+        ? "render-stream-16-resolved/1"
+        : version === 15
+          ? "render-stream-15-resolved/1"
+          : version === 14
+            ? "render-stream-14-resolved/1"
+            : version === 13
+              ? "render-stream-13-resolved/1"
+              : version === 12
+                ? "render-stream-12-resolved/1"
+                : version === 11
+                  ? "render-stream-11-resolved/1"
+                  : version === 10
+                    ? "render-stream-10-resolved/1"
+                    : version === 9
+                      ? "render-stream-9-resolved/1"
+                      : version === 8
+                        ? "render-stream-8-resolved/1"
+                        : version === 7
+                          ? "render-stream-7-resolved/1"
+                          : version === 6
+                            ? "render-stream-6-resolved/1"
+                            : version === 5
+                              ? "render-stream-5-resolved/1"
+                              : version === 4
+                                ? "render-stream-4-resolved/1"
+                                : version === 3
+                                  ? "render-stream-3-resolved/1"
+                                  : "render-stream-2-resolved/1",
     session_id: sessionMeta.session_id,
     stream_id: sessionMeta.stream.stream_id,
     transactions,

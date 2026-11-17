@@ -207,6 +207,8 @@ fn rs_method(cmd: &Command) -> Option<u8> {
 struct TexIdx {
     status: EntryStatus,
     diffuse: Option<Id>,
+    /// /16: a proxy entry's `target` (render-stream-16.md "Texture kinds").
+    target: Option<Id>,
     /// The texture makes a tex-bearing command derive `unsupported-texture` (it is unsupported, or
     /// a canvas texture whose diffuse is).
     u: bool,
@@ -272,6 +274,8 @@ struct Index {
     mat_users: BTreeSet<(Id, Id)>,
     eff_users: BTreeSet<(Id, Id)>,
     diffuse_users: BTreeSet<(Id, Id)>,
+    /// /16: (target, proxy) for every proxy entry with a non-null `target`.
+    proxy_users: BTreeSet<(Id, Id)>,
     shader_users: BTreeSet<(Id, Id)>,
     mat_tex_users: BTreeSet<(Id, Id)>,
     shader_tex_users: BTreeSet<(Id, Id)>,
@@ -389,6 +393,8 @@ struct Removed {
     materials: Vec<Id>,
     multimeshes: Vec<Id>,
     particles: Vec<Id>,
+    /// /16.
+    viewports: Vec<Id>,
 }
 
 impl Removed {
@@ -401,6 +407,7 @@ impl Removed {
         self.materials.clear();
         self.multimeshes.clear();
         self.particles.clear();
+        self.viewports.clear();
     }
 }
 
@@ -414,6 +421,8 @@ enum Undo {
     Material(Id, Option<Material>),
     Multimesh(Id, Option<Multimesh>),
     Particles(Id, Option<Particles>),
+    /// /16.
+    Viewport(Id, Option<ViewportSurface>),
 }
 
 /// A resource payload's decoded shape, for `resource-payload`.
@@ -725,6 +734,13 @@ pub struct Validator {
     /// whole resolved state at the next one (the entries it touches are checked against every
     /// hint).
     hints_fresh: Vec<Hash>,
+    // ---- /16 (render-stream-16.md); unused below /16.
+    /// The session's `viewports` is `on`.
+    viewports_on: bool,
+    /// The largest viewport id seen (`id-reused`).
+    max_viewport_id: i64,
+    /// Per tx viewport entry: it was absent from the previous state.
+    viewport_new: Vec<bool>,
 }
 
 fn where_(seq: i64) -> String {
@@ -795,6 +811,8 @@ fn texture_core_equal(a: &Texture, b: &Texture) -> bool {
         && a.mipmaps == b.mipmaps
         && ieq(a.payload_bytes, b.payload_bytes)
         && a.size_override == b.size_override
+        && a.viewport == b.viewport
+        && a.target == b.target
         && match (&a.canvas, &b.canvas) {
             (None, None) => true,
             (Some(x), Some(y)) => {
@@ -920,13 +938,37 @@ fn texture_entry_error(t: &Texture) -> Option<&'static str> {
             return Some("\"size_override\" equals the payload's width and height");
         }
     }
+    // render-stream-16.md "Texture kinds": `proxy-unresolved` only on an unsupported proxy.
+    if t.reason == Some("proxy-unresolved") && !(t.kind == Proxy && t.status == Unsupported) {
+        return Some("reason \"proxy-unresolved\" needs an \"unsupported\" proxy entry");
+    }
     if t.status == Freed {
         if !blank || t.canvas.is_some() || t.reason.is_some() {
             return Some("a \"freed\" entry must have hash/format/canvas/reason null and width/height/payload_bytes 0, mipmaps false");
         }
+        if matches!(t.kind, Viewport | Proxy) && !t.variants.is_empty() {
+            return Some("a \"freed\" viewport or proxy entry must have variants []");
+        }
         return None;
     }
     match t.kind {
+        Viewport | Proxy => {
+            // Both kinds hold no bytes: every payload field blank, variants [], canvas null.
+            if !blank || t.source_format.is_some() || !t.variants.is_empty() || t.canvas.is_some()
+            {
+                return Some("kind \"viewport\"/\"proxy\" must have hash/format/source_format/canvas null, width/height/payload_bytes 0, mipmaps false and variants []");
+            }
+            if t.kind == Viewport && t.status == Unsupported {
+                return Some("a \"viewport\" entry is never \"unsupported\"");
+            }
+            if t.status == Ok && t.reason.is_some() {
+                return Some("kind \"viewport\"/\"proxy\" status \"ok\" must have reason null");
+            }
+            if t.status == Unsupported && t.reason != Some("proxy-unresolved") {
+                return Some("an \"unsupported\" proxy entry must have reason \"proxy-unresolved\"");
+            }
+            None
+        }
         Image => {
             if t.canvas.is_some() {
                 return Some("kind \"image\" must have canvas null");
@@ -1265,8 +1307,18 @@ fn walk_eff(st: &ResolvedState, id: Id) -> Option<Id> {
     st.items.get(&cur).and_then(|i| i.material)
 }
 
+/// render-stream-16.md "Derived `unsupported-texture`": a reference to an `ok` proxy reads as a
+/// reference to its `target`, once (no proxy exists below /16, so this is the entry itself there).
+fn hop<'a>(st: &'a ResolvedState, t: &'a Texture) -> Option<&'a Texture> {
+    match (t.kind, t.status, t.target) {
+        (TextureKind::Proxy, EntryStatus::Ok, Some(x)) => st.textures.get(&x),
+        (TextureKind::Proxy, EntryStatus::Ok, None) => None,
+        _ => Some(t),
+    }
+}
+
 fn compute_u(st: &ResolvedState, id: Id) -> bool {
-    let Some(t) = st.textures.get(&id) else {
+    let Some(t) = st.textures.get(&id).and_then(|t| hop(st, t)) else {
         return false;
     };
     if t.status == EntryStatus::Unsupported {
@@ -1277,6 +1329,7 @@ fn compute_u(st: &ResolvedState, id: Id) -> bool {
             .as_ref()
             .and_then(|c| c.diffuse)
             .and_then(|d| st.textures.get(&d))
+            .and_then(|d| hop(st, d))
             .is_some_and(|d| d.status == EntryStatus::Unsupported)
 }
 
@@ -1795,6 +1848,7 @@ impl Validator {
             opts.version >= 11 && session.features.ops.iter().any(|o| o == "add_multimesh");
         let pt_op_declared =
             opts.version >= 12 && session.features.ops.iter().any(|o| o == "add_particles");
+        let session_viewports_on = session.viewports == Some(ViewportsMode::On);
         let digest = match opts.digest {
             DigestPolicy::Inline => Some(wire::record_sha256(session_record)),
             DigestPolicy::Deferred | DigestPolicy::Never => None,
@@ -1860,6 +1914,9 @@ impl Validator {
             item_meta_pending: None,
             hints: HashMap::new(),
             hints_fresh: Vec::new(),
+            viewports_on: session_viewports_on,
+            max_viewport_id: 0,
+            viewport_new: Vec::new(),
         })
     }
 
@@ -2507,6 +2564,14 @@ impl Validator {
                 .map(|b| &record[b.start..b.start + b.len])
                 .unwrap_or(&[])
         };
+        // `bl[9]` is /12's optional `pt_f32`, `bl[10]` /16's optional `viewport_f32` (each empty
+        // when absent).
+        let tx = &self.tx;
+        let pt = if tx.has_pt_f32 { blk(meta::PT_F32_BLOCK) } else { &[] };
+        let vp = match tx.viewport_f32_index() {
+            Some(i) => blk(i),
+            None => &[],
+        };
         let bl = [
             blk(0),
             blk(1),
@@ -2517,7 +2582,8 @@ impl Validator {
             blk(6),
             blk(7),
             blk(8),
-            blk(9),
+            pt,
+            vp,
         ];
         let u8_start = blocks.get(7).map(|b| b.start).unwrap_or(0);
         let mm_start = blocks.get(8).map(|b| b.start).unwrap_or(0);
@@ -2716,7 +2782,7 @@ impl Validator {
                 Some("a \"removed_particles\" key")
             } else if !tx.particle_emits.is_empty() {
                 Some("a \"particle_emits\" key")
-            } else if tx.blocks.len() > meta::PT_F32_BLOCK {
+            } else if tx.has_pt_f32 {
                 Some("a \"pt_f32\" block")
             } else if tx.cmds.iter().any(|c| c.op == Op::Particles) {
                 Some("an add_particles command")
@@ -2726,6 +2792,38 @@ impl Validator {
             if let Some(what) = what {
                 return Err(schema(format!(
                     "{what} in a session whose features.ops lacks \"add_particles\""
+                )));
+            }
+        }
+        // render-stream-16.md "Session: `viewports`": under "off" or "unavailable" every /16
+        // addition is unknown.
+        if v >= 16 && !self.viewports_on {
+            let what = if !tx.removed_viewports.is_empty() {
+                Some("a \"removed_viewports\" key")
+            } else if !tx.viewports.is_empty() {
+                Some("a \"viewports\" key")
+            } else if tx.has_viewport_f32 {
+                Some("a \"viewport_f32\" block")
+            } else if tx
+                .textures
+                .iter()
+                .any(|t| matches!(t.kind, TextureKind::Viewport | TextureKind::Proxy))
+            {
+                Some("a \"viewport\" or \"proxy\" texture")
+            } else if tx.textures.iter().any(|t| t.reason == Some("proxy-unresolved")) {
+                Some("texture reason \"proxy-unresolved\"")
+            } else if tx
+                .unsupported
+                .iter()
+                .any(|u| meta::VIEWPORT_SESSION_REASONS.contains(&u.reason))
+            {
+                Some("a \"viewport-*\" unsupported reason")
+            } else {
+                None
+            };
+            if let Some(what) = what {
+                return Err(schema(format!(
+                    "{what} in a session whose \"viewports\" is not \"on\""
                 )));
             }
         }
@@ -2777,6 +2875,11 @@ impl Validator {
         if v >= 12 {
             ordering("particles", &mut tx.particles.iter().map(|c| c.id as i64))?;
             ascending("removed_particles", &tx.removed_particles)?;
+        }
+        // /16: `removed_viewports` as the other removed lists; the order of `viewports` is
+        // `viewport-entry`'s (render-stream-16.md "Codes").
+        if v >= 16 {
+            ascending("removed_viewports", &tx.removed_viewports)?;
         }
         // W11d: after a transport skip ([`Validator::transport_skip`]) the next transaction is
         // the full one the resync forces, at any later seq.
@@ -3396,7 +3499,7 @@ impl Validator {
             }
             running = running.saturating_add(PARTICLE_EMIT_FLOATS);
         }
-        match tx.blocks.get(meta::PT_F32_BLOCK) {
+        match tx.pt_f32() {
             None if running > 0 => Err(po(format!(
                 "the particles claim {running} floats, but there is no \"pt_f32\" block"
             ))),
@@ -3428,6 +3531,7 @@ impl Validator {
                 || (v >= 5 && (!tx.removed_shaders.is_empty() || !tx.removed_materials.is_empty()))
                 || !tx.removed_multimeshes.is_empty()
                 || !tx.removed_particles.is_empty()
+                || !tx.removed_viewports.is_empty()
             {
                 return Err(e(
                     "patch-encoding",
@@ -3547,6 +3651,14 @@ impl Validator {
                 &mut tx.particles.iter().map(|c| c.id),
             ))?;
         }
+        if v >= 16 {
+            pr(absent("viewport", &tx.removed_viewports, &st.viewports))?;
+            pr(both(
+                "viewport",
+                &tx.removed_viewports,
+                &mut tx.viewports.iter().map(|c| c.id),
+            ))?;
+        }
         for it in &tx.items {
             if it.commands.is_none() {
                 match st.items.get(&it.id) {
@@ -3580,8 +3692,9 @@ impl Validator {
     /// a full transaction costs what it changes beyond reading it.
     /// `u8_start`: where `mesh_u8` (`bl[7]`) starts in the record, for [`BodyRef`]s; `mm_start`
     /// where `mm_f32` (`bl[8]`) starts, for [`MmBufferRef`]s.
-    /// `bl[9]` is /12's optional `pt_f32` (empty when absent).
-    fn apply(&mut self, bl: [&[u8]; 10], u8_start: usize, mm_start: usize) {
+    /// `bl[9]` is /12's optional `pt_f32`, `bl[10]` /16's optional `viewport_f32` (each empty when
+    /// absent).
+    fn apply(&mut self, bl: [&[u8]; 11], u8_start: usize, mm_start: usize) {
         let v = self.opts.version;
         // PH2: under `DigestPolicy::Never` the body digests are a cheaper identity.
         let body_digest = if self.opts.digest == DigestPolicy::Never {
@@ -3673,6 +3786,11 @@ impl Validator {
                 tx.particles.iter().map(|c| c.id),
                 &mut r.particles,
             );
+            omitted(
+                st.viewports.keys().copied(),
+                tx.viewports.iter().map(|c| c.id),
+                &mut r.viewports,
+            );
         } else {
             r.canvases
                 .extend(tx.removed_canvases.iter().map(|&i| i as Id));
@@ -3688,6 +3806,8 @@ impl Validator {
                 .extend(tx.removed_multimeshes.iter().map(|&i| i as Id));
             r.particles
                 .extend(tx.removed_particles.iter().map(|&i| i as Id));
+            r.viewports
+                .extend(tx.removed_viewports.iter().map(|&i| i as Id));
         }
         let d = &mut self.dirty;
         let undo = &mut self.undo;
@@ -3722,6 +3842,9 @@ impl Validator {
         for &id in &r.particles {
             undo.push(Undo::Particles(id, st.particles.remove(&id)));
             d.particles.push(id);
+        }
+        for &id in &r.viewports {
+            undo.push(Undo::Viewport(id, st.viewports.remove(&id)));
         }
 
         for (i, c) in tx.canvases.iter().enumerate() {
@@ -4100,6 +4223,56 @@ impl Validator {
                     .push(ParticleEmit::from_wire(e.particles, e.restarts, e.flags, &f));
             }
         }
+        // render-stream-16.md "The viewport table": a carried set (each listed entry replaces or
+        // inserts), its floats at `f` in `viewport_f32`. Offsets are judged after resolving
+        // (`viewport-offset`), so a float past the block reads 0 here.
+        self.viewport_new.clear();
+        if v >= 16 {
+            let vf = bl[10];
+            let at = |i: u64| -> f32 {
+                usize::try_from(i)
+                    .ok()
+                    .and_then(|i| i.checked_mul(4))
+                    .and_then(|o| vf.get(o..o + 4))
+                    .map_or(0.0, |b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            };
+            let six = |f: u64| -> [f32; 6] { std::array::from_fn(|k| at(f.saturating_add(k as u64))) };
+            for m in &tx.viewports {
+                let vs = ViewportSurface {
+                    id: m.id,
+                    origin: m.origin,
+                    parent: m.parent,
+                    active: m.active,
+                    active_seq: m.active_seq,
+                    size: m.size,
+                    transparent: m.transparent,
+                    update: m.update,
+                    once_seq: m.once_seq,
+                    clear: m.clear,
+                    clear_seq: m.clear_seq,
+                    disable_2d: m.disable_2d,
+                    renders_3d: m.renders_3d,
+                    hdr_2d: m.hdr_2d,
+                    msaa_2d: m.msaa_2d,
+                    canvas_cull_mask: m.canvas_cull_mask,
+                    default_texture_filter: m.default_texture_filter,
+                    default_texture_repeat: m.default_texture_repeat,
+                    snap_2d: m.snap_2d,
+                    canvases: m.canvases.clone(),
+                    global_xform: six(m.f),
+                    canvas_xforms: (0..m.canvases.len() as u64)
+                        .map(|k| six(m.f.saturating_add(6 * (k + 1))))
+                        .collect(),
+                };
+                let old = st.viewports.get(&m.id);
+                self.viewport_new.push(old.is_none());
+                if old.is_some_and(|o| *o == vs && o.floats_bits_eq(&vs)) {
+                    continue;
+                }
+                let prev = st.viewports.insert(m.id, vs);
+                undo.push(Undo::Viewport(m.id, prev));
+            }
+        }
         st.default_texture_filter = tx.default_texture_filter.unwrap_or(Filter::Nearest);
         st.default_texture_repeat = tx.default_texture_repeat.unwrap_or(Repeat::Disabled);
     }
@@ -4162,6 +4335,12 @@ impl Validator {
                         None => st.particles.remove(&id),
                     };
                 }
+                Undo::Viewport(id, prev) => {
+                    match prev {
+                        Some(p) => st.viewports.insert(id, p),
+                        None => st.viewports.remove(&id),
+                    };
+                }
             }
         }
         self.reindex(false);
@@ -4214,6 +4393,9 @@ impl Validator {
             if let Some(df) = old.as_ref().and_then(|o| o.diffuse) {
                 ix.diffuse_users.remove(&(df, id));
             }
+            if let Some(tg) = old.as_ref().and_then(|o| o.target) {
+                ix.proxy_users.remove(&(tg, id));
+            }
             let old_status = old.as_ref().map(|o| o.status);
             let old_u = old.as_ref().is_some_and(|o| o.u);
             match st.textures.get(&id) {
@@ -4222,11 +4404,16 @@ impl Validator {
                     if let Some(df) = diffuse {
                         ix.diffuse_users.insert((df, id));
                     }
+                    let target = t.target.filter(|_| t.kind == TextureKind::Proxy);
+                    if let Some(tg) = target {
+                        ix.proxy_users.insert((tg, id));
+                    }
                     ix.tex.insert(
                         id,
                         TexIdx {
                             status: t.status,
                             diffuse,
+                            target,
                             u: old_u,
                         },
                     );
@@ -4248,6 +4435,22 @@ impl Validator {
         if !all {
             for &t in &status_changed {
                 u_check.extend(users(&ix.diffuse_users, t));
+            }
+            // /16: a texture's derived flag reads up to four entries (itself, its proxy target,
+            // the diffuse of that, and the diffuse's proxy target), so every changed entry
+            // re-checks the users three proxy/diffuse links away.
+            if v >= 16 {
+                let mut frontier: Vec<Id> = d.textures.clone();
+                for _ in 0..3 {
+                    let mut next: Vec<Id> = Vec::new();
+                    for &t in &frontier {
+                        next.extend(users(&ix.proxy_users, t));
+                        next.extend(users(&ix.diffuse_users, t));
+                    }
+                    sorted_dedup(&mut next);
+                    u_check.extend_from_slice(&next);
+                    frontier = next;
+                }
             }
         }
         for &t in &u_check {
@@ -4722,7 +4925,11 @@ impl Validator {
         self.check_versions(offset)?;
         self.check_resources(offset)?;
         self.check_unnamed(offset)?;
-        self.check_id_reuse(offset)
+        self.check_id_reuse(offset)?;
+        if self.opts.version >= 16 {
+            self.check_viewports(offset)?;
+        }
+        Ok(())
     }
 
     /// /11: computes the transaction's change to names(S) from its undo log (each changed or
@@ -5011,6 +5218,28 @@ impl Validator {
                     return Err(adopted("particles", p.id));
                 }
             }
+            for vp in &tx.viewports {
+                if vp.origin == Origin::Adopted && vp.bad.is_none() {
+                    return Err(adopted("viewport", vp.id));
+                }
+            }
+        }
+        // render-stream-16.md "Texture kinds": an adopted viewport or proxy entry holds no bytes
+        // to distrust, so its adopted_content is "current".
+        for t in &tx.textures {
+            if matches!(t.kind, TextureKind::Viewport | TextureKind::Proxy)
+                && t.origin == Origin::Adopted
+                && t.adopted_content != Some(AdoptedContent::Current)
+            {
+                return Err(e(
+                    "adoption-entry",
+                    format!(
+                        "texture {}: an adopted {} entry's adopted_content must be \"current\"",
+                        t.id,
+                        t.kind.as_str()
+                    ),
+                ));
+            }
         }
         let decode_engine = self.session.resources.decode == Some("engine");
         for t in &tx.textures {
@@ -5275,10 +5504,18 @@ impl Validator {
             ));
         }
         let mut bad: Vec<Id> = Vec::new();
+        // render-stream-16.md "Texture kinds": at /16 a diffuse may also name a viewport or a
+        // proxy entry (neither kind exists below /16).
         let diffuse_ok = |t: Id| {
-            st.textures
-                .get(&t)
-                .is_some_and(|x| matches!(x.kind, TextureKind::Image | TextureKind::Placeholder))
+            st.textures.get(&t).is_some_and(|x| {
+                matches!(
+                    x.kind,
+                    TextureKind::Image
+                        | TextureKind::Placeholder
+                        | TextureKind::Viewport
+                        | TextureKind::Proxy
+                )
+            })
         };
         for t in &tx.textures {
             if let Some(df) = t.canvas.as_ref().and_then(|c| c.diffuse) {
@@ -5304,7 +5541,7 @@ impl Validator {
                 match st.textures.get(&df) {
                     None => format!("{w}: canvas texture {t}'s diffuse names texture {df}, which has no entry"),
                     Some(x) => format!(
-                        "{w}: canvas texture {t}'s diffuse names texture {df}, whose kind is \"{}\" (must be image or placeholder)",
+                        "{w}: canvas texture {t}'s diffuse names texture {df}, whose kind is \"{}\" (must be image or placeholder, or at /16 viewport or proxy)",
                         x.kind.as_str()
                     ),
                 },
@@ -5497,6 +5734,25 @@ impl Validator {
                 if v >= 6 && reason == "extra-canvas" {
                     return Err(mm(format!(
                         "extra-canvas entry (op {op}) is never valid at /6 (a canvas attached to the root viewport is supported)"
+                    )));
+                }
+                // render-stream-16.md "Session-level unsupported reasons": each `viewport-*`
+                // reason has one op; under "viewports":"on" a non-root viewport is captured, so
+                // `non-root-viewport` never occurs.
+                let viewport_op = match reason {
+                    "viewport-3d" => Some("viewport_attach_camera"),
+                    "viewport-hdr-2d" => Some("viewport_set_use_hdr_2d"),
+                    "viewport-msaa-2d" => Some("viewport_set_msaa_2d"),
+                    _ => None,
+                };
+                if let Some(want) = viewport_op.filter(|&want| op != want) {
+                    return Err(mm(format!(
+                        "{reason} entry names op {op}, expected {want}"
+                    )));
+                }
+                if reason == "non-root-viewport" && self.viewports_on {
+                    return Err(mm(format!(
+                        "non-root-viewport entry (op {op}) under \"viewports\":\"on\" (the host captures non-root viewports)"
                     )));
                 }
                 match reason {
@@ -6002,6 +6258,200 @@ impl Validator {
         Ok(())
     }
 
+    /// /16 (render-stream-16.md "Codes"), after /15's rules: `viewport-offset` over the listed
+    /// entries and `viewport_f32`, then on the resolved state `viewport-entry`,
+    /// `viewport-parent-cycle`, the viewport half of `texture-ref` and `proxy-target`. The
+    /// whole-state rules run when the transaction touched a viewport, a texture or a canvas (an
+    /// untouched state passed them at the transaction that made it).
+    fn check_viewports(&self, offset: usize) -> Result<(), Error> {
+        let tx = &self.tx;
+        let st = &self.state;
+        let r = &self.removed;
+        let e = |code: &'static str, d: String| {
+            Error::new(code, format!("record at offset {offset}, {}: {d}", where_(tx.seq)))
+        };
+        // viewport-offset. An entry with a wrong value has no judgeable offset: the check stops
+        // there and `viewport-entry` reports the value.
+        let first_bad = tx.viewports.iter().position(|v| v.bad.is_some());
+        let mut running = 0u64;
+        for vp in &tx.viewports[..first_bad.unwrap_or(tx.viewports.len())] {
+            if vp.f != running {
+                return Err(e(
+                    "viewport-offset",
+                    format!("viewport {} f={}, expected {running}", vp.id, vp.f),
+                ));
+            }
+            running = running.saturating_add(vp.float_count());
+        }
+        let block = tx.viewport_f32_index().map(|i| tx.blocks[i].count);
+        match (tx.viewports.is_empty(), block) {
+            (false, None) => {
+                return Err(e(
+                    "viewport-offset",
+                    "\"viewports\" is present, but there is no \"viewport_f32\" block".into(),
+                ))
+            }
+            (true, Some(_)) => {
+                return Err(e(
+                    "viewport-offset",
+                    "a \"viewport_f32\" block without \"viewports\"".into(),
+                ))
+            }
+            (false, Some(n)) if first_bad.is_none() && n != running => {
+                return Err(e(
+                    "viewport-offset",
+                    format!("block \"viewport_f32\" declares count {n}, the viewports claim {running}"),
+                ))
+            }
+            _ => {}
+        }
+        let touched = !tx.viewports.is_empty()
+            || !r.viewports.is_empty()
+            || !tx.textures.is_empty()
+            || !r.textures.is_empty()
+            || !r.canvases.is_empty();
+        if !touched {
+            return Ok(());
+        }
+        // viewport-entry: the listed entries' values, then every resolved viewport's rows and
+        // parent (a removed canvas or viewport can leave any of them dangling), then exactly one
+        // ok viewport texture per resolved viewport.
+        let mut prev: Option<Id> = None;
+        for vp in &tx.viewports {
+            if let Some(d) = &vp.bad {
+                return Err(e("viewport-entry", format!("a viewports[] entry: {d}")));
+            }
+            if prev.is_some_and(|p| vp.id <= p) {
+                return Err(e(
+                    "viewport-entry",
+                    format!("viewports are not strictly ascending by id at viewport {}", vp.id),
+                ));
+            }
+            prev = Some(vp.id);
+        }
+        for vp in st.viewports.values() {
+            if vp.canvases.windows(2).any(|w| w[1].canvas <= w[0].canvas) {
+                return Err(e(
+                    "viewport-entry",
+                    format!("viewport {}'s canvases are not strictly ascending by canvas id", vp.id),
+                ));
+            }
+            if let Some(c) = vp.canvases.iter().find(|c| !st.canvases.contains_key(&c.canvas)) {
+                return Err(e(
+                    "viewport-entry",
+                    format!("viewport {}'s canvases row names canvas {}, which has no entry", vp.id, c.canvas),
+                ));
+            }
+            if let Some(p) = vp.parent.filter(|&p| p != 0 && !st.viewports.contains_key(&p)) {
+                return Err(e(
+                    "viewport-entry",
+                    format!("viewport {}'s parent {p} is neither null, 0 nor a viewport", vp.id),
+                ));
+            }
+        }
+        let mut surfaces: FastMap<Id, u32> = FastMap::default();
+        for t in st.textures.values() {
+            if t.kind == TextureKind::Viewport && t.status == EntryStatus::Ok {
+                if let Some(v) = t.viewport {
+                    *surfaces.entry(v).or_insert(0) += 1;
+                }
+            }
+        }
+        for vp in st.viewports.values() {
+            match surfaces.get(&vp.id).copied().unwrap_or(0) {
+                1 => {}
+                n => {
+                    return Err(e(
+                        "viewport-entry",
+                        format!("viewport {} has {n} \"ok\" viewport textures, expected exactly one", vp.id),
+                    ))
+                }
+            }
+        }
+        // viewport-parent-cycle.
+        let mut done: FastMap<Id, ()> = FastMap::default();
+        let mut path: Vec<Id> = Vec::new();
+        for &start in st.viewports.keys() {
+            path.clear();
+            let mut cur = start;
+            loop {
+                if done.contains_key(&cur) {
+                    break;
+                }
+                path.push(cur);
+                let next = match st.viewports.get(&cur).and_then(|v| v.parent) {
+                    Some(p) if p != 0 && st.viewports.contains_key(&p) => p,
+                    _ => break,
+                };
+                if path.contains(&next) {
+                    return Err(e(
+                        "viewport-parent-cycle",
+                        format!("following parent from viewport {start} revisits viewport {next}"),
+                    ));
+                }
+                cur = next;
+            }
+            for &p in &path {
+                done.insert(p, ());
+            }
+        }
+        // texture-ref, the viewport half: an ok viewport texture names a resolved viewport.
+        for t in st.textures.values() {
+            if t.kind == TextureKind::Viewport && t.status == EntryStatus::Ok {
+                let v = t.viewport.unwrap_or(0);
+                if !st.viewports.contains_key(&v) {
+                    return Err(e(
+                        "texture-ref",
+                        format!("viewport texture {} names viewport {v}, which has no entry", t.id),
+                    ));
+                }
+            }
+        }
+        // proxy-target: an ok proxy names (non-null) an entry of the resolved state, freed
+        // included, whose kind is not proxy; an unsupported proxy's target is null; a freed
+        // proxy's is not checked.
+        for t in st.textures.values() {
+            if t.kind != TextureKind::Proxy {
+                continue;
+            }
+            match t.status {
+                EntryStatus::Ok => {
+                    let Some(x) = t.target else {
+                        return Err(e(
+                            "proxy-target",
+                            format!("ok proxy {} has a null target", t.id),
+                        ));
+                    };
+                    match st.textures.get(&x) {
+                        None => {
+                            return Err(e(
+                                "proxy-target",
+                                format!("proxy {} targets texture {x}, which has no entry", t.id),
+                            ))
+                        }
+                        Some(y) if y.kind == TextureKind::Proxy => {
+                            return Err(e(
+                                "proxy-target",
+                                format!("proxy {} targets texture {x}, another proxy", t.id),
+                            ))
+                        }
+                        Some(_) => {}
+                    }
+                }
+                EntryStatus::Unsupported => {
+                    if let Some(x) = t.target {
+                        return Err(e(
+                            "proxy-target",
+                            format!("unsupported proxy {} has target {x} (must be null)", t.id),
+                        ));
+                    }
+                }
+                EntryStatus::Freed => {}
+            }
+        }
+        Ok(())
+    }
+
     /// id-reused, against the previous transaction's ids.
     fn check_id_reuse(&self, offset: usize) -> Result<(), Error> {
         let tx = &self.tx;
@@ -6025,6 +6475,19 @@ impl Validator {
                         format!("record at offset {offset}: {kind} id {id} reappears after not being in the previous transaction"),
                     ));
                 }
+            }
+        }
+        // render-stream-16.md "Viewport entry": viewport ids, likewise. An entry with a wrong value
+        // (a bad id included) is viewport-entry's, reported later, never id-reused.
+        for (j, vp) in tx.viewports.iter().enumerate() {
+            if vp.bad.is_none()
+                && self.viewport_new.get(j) == Some(&true)
+                && vp.id as i64 <= self.max_viewport_id
+            {
+                return Err(Error::new(
+                    "id-reused",
+                    format!("record at offset {offset}: viewport id {} reappears after not being in the previous transaction", vp.id),
+                ));
             }
         }
         Ok(())
@@ -6101,6 +6564,9 @@ impl Validator {
             if let Some(m) = m {
                 self.max_id[k] = self.max_id[k].max(*m as i64);
             }
+        }
+        if let Some(m) = tx.viewports.iter().map(|c| c.id).max() {
+            self.max_viewport_id = self.max_viewport_id.max(m as i64);
         }
 
         let d = &mut self.delta;

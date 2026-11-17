@@ -43,6 +43,13 @@
 //! equal to `hints_at_end`, and its `rs14` twin valid at /14. (Its transcode to that twin,
 //! [`crate::v15::to14_from15`], is a native tool checked by rs-core's unit tests, as ID3's.) The
 //! hint and size-override `invalid` vectors fail at their listed record and seq.
+//!
+//! golden-16 (render-stream-16.md) is golden-15 re-stamped /16 (`"viewports":"on"` in each
+//! session) and runs golden-15's checks: each lane goes down the chain re-stamped
+//! ([`item_meta::restamp`] drops the session key and fixes the end record's stats), and the hints
+//! lane's `rs14` twin is golden-15's. Plus the `viewports` lane: decoded, its sha256, validated,
+//! resolved to its own file, resources `[]`. The viewport and proxy `invalid` vectors fail with
+//! their listed codes.
 
 use crate::canon;
 use crate::item_meta::{self, ItemMetaAsk, ItemMetaDump, ItemMetaRequest};
@@ -400,6 +407,9 @@ impl Suite<'_> {
         }
         if self.version >= 15 {
             self.run_v15(index);
+        }
+        if self.version >= 16 {
+            self.run_v16(index);
         }
         for entry in arr("payload_invalid") {
             let (file, code) = (s(&entry, "file"), s(&entry, "code"));
@@ -1108,6 +1118,57 @@ impl Suite<'_> {
     }
 }
 
+impl Suite<'_> {
+    /// golden-16's `viewports` lane (render-stream-16.md "Validators and golden vectors").
+    fn run_v16(&mut self, index: &J) {
+        let s = |v: &J, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let Some(h) = index.get("viewports") else {
+            self.ok(false, "index.json has a viewports lane", "missing");
+            return;
+        };
+        let (file, decoded, resolved) = (s(h, "file"), s(h, "decoded"), s(h, "resolved"));
+        let Some(data) = self.decoded_check(&file, &decoded) else {
+            return;
+        };
+        self.ok(
+            wire::sha256(&data).to_hex() == s(h, "sha256"),
+            format!("{file} hashes to its listed sha256"),
+            "",
+        );
+        let got = validate_recording(&data, self.opts());
+        self.ok(
+            got.is_ok(),
+            format!("validateRecording({file}) is []"),
+            got.err().map(|e| e.to_string()).unwrap_or_default(),
+        );
+        match (
+            resolve_recording(&data, self.version, self.opts),
+            self.json(&resolved),
+        ) {
+            (Ok((got, resources)), Some(expected)) => {
+                self.ok(
+                    states_equal(&got, &expected),
+                    format!(
+                        "resolveRecording({file}) deep-equals {resolved} (excepted fields aside)"
+                    ),
+                    "",
+                );
+                self.ok(
+                    states_equal(&resources, &J::Array(vec![])),
+                    format!("resolveRecording({file}).resources is []"),
+                    "",
+                );
+            }
+            (Err(e), _) => self.ok(
+                false,
+                format!("resolveRecording({file}) did not throw"),
+                e.to_string(),
+            ),
+            (_, None) => self.ok(false, format!("{resolved} is readable JSON"), ""),
+        }
+    }
+}
+
 /// /15: validates `data` and returns the hashes hinted after its last record, sorted.
 pub fn hints_at_end(data: &[u8], opts: Options) -> Result<Vec<String>, Error> {
     let spans = wire::split_records(data, opts.version)?;
@@ -1314,7 +1375,7 @@ pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> 
     suite.checks
 }
 
-/// golden-2 to golden-15 (or one of them), plus the cross-version `bad-magic` checks.
+/// golden-2 to golden-16 (or one of them), plus the cross-version `bad-magic` checks.
 pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check> {
     let mut checks = Vec::new();
     for v in 2..=wire::LATEST {
@@ -1348,6 +1409,8 @@ pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check
         (14, 13),
         (14, 15),
         (15, 14),
+        (15, 16),
+        (16, 15),
     ] {
         if only.is_some_and(|o| o != file_v && o != as_v) {
             continue;

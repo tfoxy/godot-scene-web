@@ -723,6 +723,14 @@ target_include_directories(rs15_test PRIVATE src test)
 target_link_libraries(rs15_test PRIVATE grc_warnings grc_codecs)
 grc_add_test(NAME rs15 COMMAND rs15_test)
 
+# render-stream/16 on the host: the viewport table, viewport_f32, the viewport / proxy texture kinds
+# and the session's viewports key, written through the /13 predictor.
+add_executable(rs16_test test/rs16_test.cpp src/rs2_codec.cpp src/rs2_diff.cpp
+  src/rs13_predict.cpp)
+target_include_directories(rs16_test PRIVATE src test)
+target_link_libraries(rs16_test PRIVATE grc_warnings grc_codecs)
+grc_add_test(NAME rs16 COMMAND rs16_test)
+
 # Gate 8 (G8w): the GRC_STREAM_VERSION / GRC_ADOPT / GRC_TEXTURE_DECODE parsing, the D2 refusal and
 # the live listener's subprotocol offer, plus the two empty seams.
 add_executable(rs_gate8_policy_test

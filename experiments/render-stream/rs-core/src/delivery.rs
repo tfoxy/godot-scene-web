@@ -286,6 +286,8 @@ mod tests {
             payload_bytes: 10,
             variants,
             size_override: None,
+            viewport: None,
+            target: None,
             canvas: None,
         }
     }

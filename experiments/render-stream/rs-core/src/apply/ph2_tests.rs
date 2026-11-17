@@ -86,6 +86,8 @@ fn texture(id: Id, size: u32, version: i64, hash: Hash) -> Texture {
         payload_bytes: 100,
         variants: Vec::new(),
         size_override: None,
+        viewport: None,
+        target: None,
         canvas: None,
     }
 }

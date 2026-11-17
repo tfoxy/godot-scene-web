@@ -376,7 +376,8 @@ void append_texture_variants(std::string &out, const std::vector<TextureVariant>
   out += "]";
 }
 
-void append_texture_entry(std::string &out, const TextureEntry &t, bool v8, bool v9, bool v15) {
+void append_texture_entry(std::string &out, const TextureEntry &t, bool v8, bool v9, bool v15,
+                          bool v16) {
   out += "{\"id\":";
   append_json_int(out, t.id);
   if (v8) {
@@ -428,8 +429,93 @@ void append_texture_entry(std::string &out, const TextureEntry &t, bool v8, bool
     append_json_int(out, t.size_override_h);
     out += "]";
   }
+  if (v16 && t.kind == TextureKind::Viewport) {
+    // render-stream-16.md "Texture kinds": the kind key, after variants and before canvas.
+    out += ",\"viewport\":";
+    append_json_int(out, t.viewport);
+  } else if (v16 && t.kind == TextureKind::Proxy) {
+    out += ",\"target\":";
+    if (t.has_target) {
+      append_json_int(out, t.target);
+    } else {
+      out += "null";
+    }
+  }
   append_canvas_texture(out, t);
   out += "}";
+}
+
+// render-stream-16.md "The viewport table": one viewport entry in spec key order. Its floats go
+// to `viewport_f32`: the global canvas transform (6), then 6 per `canvases` row; `f` is the
+// running float count.
+void append_viewport_entry(std::string &out, const ViewportEntry &v,
+                           std::vector<float> &viewport_f32) {
+  out += "{\"id\":";
+  append_json_int(out, v.id);
+  out += ",\"origin\":";
+  append_json_string(out, to_wire(v.origin));
+  out += ",\"parent\":";
+  if (v.has_parent) {
+    append_json_int(out, v.parent);
+  } else {
+    out += "null";
+  }
+  out += ",\"active\":";
+  append_json_bool(out, v.active);
+  out += ",\"active_seq\":";
+  append_json_int(out, v.active_seq);
+  out += ",\"size\":[";
+  append_json_int(out, v.size_w);
+  out += ",";
+  append_json_int(out, v.size_h);
+  out += "],\"transparent\":";
+  append_json_bool(out, v.transparent);
+  out += ",\"update\":";
+  append_json_string(out, to_wire(v.update));
+  out += ",\"once_seq\":";
+  append_json_int(out, v.once_seq);
+  out += ",\"clear\":";
+  append_json_string(out, to_wire(v.clear));
+  out += ",\"clear_seq\":";
+  append_json_int(out, v.clear_seq);
+  out += ",\"disable_2d\":";
+  append_json_bool(out, v.disable_2d);
+  out += ",\"renders_3d\":";
+  append_json_bool(out, v.renders_3d);
+  out += ",\"hdr_2d\":";
+  append_json_bool(out, v.hdr_2d);
+  out += ",\"msaa_2d\":";
+  append_json_int(out, static_cast<int>(v.msaa_2d));
+  out += ",\"canvas_cull_mask\":";
+  append_json_int(out, v.canvas_cull_mask);
+  out += ",\"default_texture_filter\":";
+  append_json_string(out, to_wire(v.default_texture_filter));
+  out += ",\"default_texture_repeat\":";
+  append_json_string(out, to_wire(v.default_texture_repeat));
+  out += ",\"snap_2d\":[";
+  append_json_bool(out, v.snap_2d_transforms);
+  out += ",";
+  append_json_bool(out, v.snap_2d_vertices);
+  out += "],\"canvases\":[";
+  for (std::size_t i = 0; i < v.canvases.size(); ++i) {
+    if (i != 0) {
+      out += ",";
+    }
+    out += "[";
+    append_json_int(out, v.canvases[i].canvas);
+    out += ",";
+    append_json_int(out, v.canvases[i].layer);
+    out += ",";
+    append_json_int(out, v.canvases[i].sublayer);
+    out += "]";
+  }
+  out += "],\"f\":";
+  append_json_int(out, viewport_f32.size());
+  out += "}";
+  viewport_f32.insert(viewport_f32.end(), v.global_xform.begin(), v.global_xform.end());
+  for (const ViewportCanvasRow &row : v.canvases) {
+    viewport_f32.insert(viewport_f32.end(), row.xform.begin(), row.xform.end());
+  }
 }
 
 // render-stream-5.md "Material table": appends one <param> object, pushing its floats onto
@@ -928,6 +1014,9 @@ std::vector<std::uint8_t> magic() {
 }
 
 std::vector<std::uint8_t> magic(ProtocolVersion version) {
+  if (version == ProtocolVersion::V16) {
+    return std::vector<std::uint8_t>(kMagicV16.begin(), kMagicV16.end());
+  }
   if (version == ProtocolVersion::V15) {
     return std::vector<std::uint8_t>(kMagicV15.begin(), kMagicV15.end());
   }
@@ -973,7 +1062,9 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   std::string m;
   m += "{\"type\":\"session\",\"protocol\":";
   const char *protocol =
-      session.version == ProtocolVersion::V15
+      session.version == ProtocolVersion::V16
+          ? kProtocolV16
+          : session.version == ProtocolVersion::V15
           ? kProtocolV15
           : session.version == ProtocolVersion::V14
           ? kProtocolV14
@@ -1244,6 +1335,11 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
     } else {
       m += "null";
     }
+  }
+  if (is_v16(session.version)) {
+    // render-stream-16.md "Session: viewports": always present at /16, the last key before blocks.
+    m += ",\"viewports\":";
+    append_json_string(m, to_wire(session.viewports));
   }
   m += ",";
   append_blocks_descriptor(m, {{"clear_color", "f32", 4},
@@ -1539,7 +1635,8 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
       m += ",";
     }
     append_texture_entry(m, transaction.textures[i], v8, v9,
-                         transaction.version == ProtocolVersion::V15);
+                         is_v15_or_later(transaction.version),
+                         is_v16(transaction.version));
   }
   m += "]";
 
@@ -1778,9 +1875,44 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     m += "}";
     param_f64.push_back(*transaction.shader_time);
   }
+  // render-stream-16.md "The viewport table": removed_viewports and viewports after shader_time,
+  // each only when non-empty; their floats in the trailing block viewport_f32.
+  std::vector<float> viewport_f32;
+  if (is_v16(transaction.version) && !transaction.removed_viewports.empty()) {
+    m += ",\"removed_viewports\":";
+    append_json_id_array(m, transaction.removed_viewports);
+  }
+  if (is_v16(transaction.version) && !transaction.viewports.empty()) {
+    m += ",\"viewports\":[";
+    for (std::size_t i = 0; i < transaction.viewports.size(); ++i) {
+      if (i != 0) {
+        m += ",";
+      }
+      append_viewport_entry(m, transaction.viewports[i], viewport_f32);
+    }
+    m += "]";
+  }
 
   m += ",";
-  if (v12 && !pt_f32.empty()) {
+  if (!viewport_f32.empty()) {
+    // render-stream-16.md: viewport_f32 after every other block (after pt_f32 when present),
+    // exactly when `viewports` is non-empty (is_v16 gates viewport_f32 itself).
+    std::vector<std::tuple<const char *, const char *, std::size_t>> descriptor = {
+        {"item_f32", "f32", item_f32.size()},
+        {"canvas_f32", "f32", canvas_f32.size()},
+        {"cmd_f32", "f32", cmd_f32.size()},
+        {"cmd_i32", "i32", cmd_i32.size()},
+        {"mesh_f32", "f32", mesh_f32.size()},
+        {"param_f64", "f64", param_f64.size()},
+        {"backbuffer_f32", "f32", backbuffer_f32.size()},
+        {"mesh_u8", "u8", mesh_u8.size()},
+        {"mm_f32", "f32", mm_f32.size()}};
+    if (!pt_f32.empty()) {
+      descriptor.emplace_back("pt_f32", "f32", pt_f32.size());
+    }
+    descriptor.emplace_back("viewport_f32", "f32", viewport_f32.size());
+    append_blocks_descriptor(m, descriptor);
+  } else if (v12 && !pt_f32.empty()) {
     // PM5: the tenth block pt_f32, present only when it holds a float.
     append_blocks_descriptor(m, {{"item_f32", "f32", item_f32.size()},
                                   {"canvas_f32", "f32", canvas_f32.size()},
@@ -1849,6 +1981,9 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   }
   if (v12 && !pt_f32.empty()) {
     blocks.push_back(f32_payload(std::move(pt_f32)));
+  }
+  if (!viewport_f32.empty()) {
+    blocks.push_back(f32_payload(std::move(viewport_f32)));
   }
   return assemble_record(m, blocks);
 }

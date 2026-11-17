@@ -398,7 +398,11 @@ fn texture(c: &mut Cur) -> O<Texture> {
     c.lit(b"{\"id\":")?;
     let id = c.id1()?;
     c.lit(b",\"origin\":\"created\",\"kind\":")?;
-    let kind = c.enum_of(TextureKind::ALL, TextureKind::as_str)?;
+    // render-stream-16.md: `viewport` and `proxy` entries carry a kind key; the general path
+    // reads them.
+    let kind = c
+        .enum_of(TextureKind::ALL, TextureKind::as_str)
+        .filter(|k| !matches!(k, TextureKind::Viewport | TextureKind::Proxy))?;
     c.lit(b",\"status\":")?;
     let status = c.enum_of(EntryStatus::ALL, EntryStatus::as_str)?;
     c.lit(b",\"reason\":")?;
@@ -456,6 +460,8 @@ fn texture(c: &mut Cur) -> O<Texture> {
         payload_bytes,
         variants: Vec::new(),
         size_override: None,
+        viewport: None,
+        target: None,
         canvas,
     })
 }
@@ -1234,7 +1240,10 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
             ty: BlockType::F32,
             count,
         });
+        tx.has_pt_f32 = true;
     }
+    // /16: the viewport keys and `viewport_f32` are the general path's (the literals above stop
+    // at them).
     c.lit(b"]}")?;
     (c.p == meta.len()).then_some(())
 }
@@ -1318,6 +1327,8 @@ mod tests {
                 "presentation",
                 "snap",
                 "rate",
+                "hints",
+                "viewports",
             ] {
                 if let Ok(data) = std::fs::read(dir.join(format!("{f}.rs{v}"))) {
                     hits += equivalent(&data, v);

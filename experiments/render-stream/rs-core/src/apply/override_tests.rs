@@ -692,6 +692,8 @@ pub(super) fn tex_scene() -> (ResolvedState, PayloadStore, Hash) {
             payload_bytes: 100,
             variants: Vec::new(),
             size_override: None,
+            viewport: None,
+            target: None,
             canvas: None,
         },
     );

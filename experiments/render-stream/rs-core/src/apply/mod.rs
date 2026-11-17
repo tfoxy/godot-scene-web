@@ -955,6 +955,9 @@ impl TableView<'_> {
                 _ => TexDraw::Skip,
             },
             (EntryStatus::Ok, TextureKind::Canvas) => TexDraw::Skip,
+            // render-stream-16.md: receivers do not draw viewport surfaces yet, so a viewport
+            // render target or a proxy of anything draws as a texture they cannot draw.
+            (EntryStatus::Ok, TextureKind::Viewport | TextureKind::Proxy) => TexDraw::Skip,
         }
     }
 }
@@ -2034,6 +2037,9 @@ impl Applier {
                         encoding: None,
                     });
                 }
+                // render-stream-16.md: no receiver surface for a viewport or proxy entry yet; it
+                // holds no bytes and never becomes resident.
+                TextureKind::Viewport | TextureKind::Proxy => {}
                 TextureKind::Canvas => {
                     if self.resident.contains_key(&id) {
                         continue;

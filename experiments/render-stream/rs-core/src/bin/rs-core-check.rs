@@ -6,7 +6,7 @@
 //!   rs-core-check transcode --roundtrip <recording.rs12>...
 //!   rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]
 //!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]
-//!   rs-core-check validate <recording>... [--version 2..8] [--recover]
+//!   rs-core-check validate <recording>... [--version 2..16] [--recover]
 //!                          [--item-meta-asked <request json>|none] [--item-meta-dump <path>]
 //!   rs-core-check apply-bench <recording> --store <dir> [--repeats N]
 //!   rs-core-check pick-bench <recording> --store <dir> [--seq N] [--repeats N]
@@ -19,14 +19,16 @@
 //!   rs-core-check fill <recording> [--store <dir>] [--seqs 8,18,...] [--every N] [--cell 8]
 //!                      [--damage <summary.json>] [--draws <dir>]
 //!
-//! `goldens` runs golden-2 ... golden-15 (exits non-zero on any failing check). `transcode` (W13a,
+//! `goldens` runs golden-2 ... golden-16 (exits non-zero on any failing check). `transcode` (W13a,
 //! render-stream-13.md "Forms and transcode") converts a /12 recording to /13 or back, refusing an
 //! invalid input with the decoder's error code. ID3 (render-stream-14.md "Tools"): `--to 13` of a
 //! /14 recording drops its item_meta v2 columns and grant names (and the records and re-stamped
 //! rows left with nothing to say), `--to 12` of a /14 recording goes through that /13 stream, and
 //! `--to 14` re-stamps a /13 recording (magic and protocol). render-stream-15.md "Tools": `--to 14`
 //! of a /15 recording drops both hint record types and every `size_override` key
-//! ([`render_stream_core::v15::to14_from15`]); `--to 13` and `--to 12` go on through that /14 stream. `--stale` is the encoder sabotage
+//! ([`render_stream_core::v15::to14_from15`]); `--to 13` and `--to 12` go on through that /14 stream.
+//! render-stream-16.md "Tools": there is no transcode to or from /16; a /16 input is refused.
+//! `--stale` is the encoder sabotage
 //! `predict-stale`, `--zr-sabotage` W13r's `zr-overrun` / `zr-short-run`; `--roundtrip` checks /12 → /13 → /12 byte for byte and reports the sizes and
 //! the predicted units by order. `diff` feeds every
 //! record of every input through the validator and writes one JSONL line per record (record sha256,
@@ -88,12 +90,12 @@ static GLOBAL: Counting = Counting;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..15>] [--sabotage skip-payload-hash|early-prune|no-predict-reset]\n  \
+        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..16>] [--sabotage skip-payload-hash|early-prune|no-predict-reset]\n  \
          rs-core-check transcode --to 12|13|14 [--stale] [--zr-sabotage overrun|short-run] <in> <out>\n  \
          rs-core-check transcode --roundtrip <recording.rs12>...\n  \
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
          rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]\n  \
-         rs-core-check validate <recording>... [--version 2..8] [--item-meta-asked <json>|none] [--item-meta-dump <path>]\n  \
+         rs-core-check validate <recording>... [--version 2..16] [--item-meta-asked <json>|none] [--item-meta-dump <path>]\n  \
          rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]\n  \
          rs-core-check client-diff <recording>... [--store <dir>] [--sabotage ph2-skip-body-digest|ph2-skip-dep-texture|ph2-park-stale|ph2-skip-material-textures]\n  \
          rs-core-check draw-skip-diff <recording>... [--store <dir>] [--every N] [--sabotage ph3-drop-pending]\n  \
@@ -359,7 +361,7 @@ fn cmd_diff(args: &Args) -> ExitCode {
         };
         let Some(version) = wire::version_of_magic(&data) else {
             eprintln!(
-                "rs-core-check diff: {}: not a render-stream/2..8 recording",
+                "rs-core-check diff: {}: not a render-stream/2..16 recording",
                 input.recording.display()
             );
             failed = true;
@@ -462,7 +464,7 @@ fn bench_one(
     digest: DigestPolicy,
 ) -> Result<(), wire::Error> {
     let version = wire::version_of_magic(data)
-        .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream/2..8 recording"))?;
+        .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream/2..16 recording"))?;
     let records = wire::split_records(data, version)?;
     let first = records
         .first()
@@ -643,6 +645,13 @@ fn cmd_transcode(args: &Args) -> ExitCode {
         Some(_) => return usage(),
     };
     use render_stream_core::item_meta;
+    // render-stream-16.md "Tools": /16 has one client, which speaks only /16.
+    if wire::version_of_magic(&data) == Some(16) {
+        eprintln!(
+            "rs-core-check transcode: {input}: a render-stream/16 recording: there is no transcode to or from /16 (render-stream-16.md \"Tools\")"
+        );
+        return ExitCode::FAILURE;
+    }
     // render-stream-15.md "Tools": a /15 input goes through its /14 stream (hint records and
     // size_override keys dropped), then on as a /14 input.
     let from15 = wire::version_of_magic(&data) == Some(15);

@@ -64,6 +64,14 @@
 //     predict lane at /15, and hand-made streams for each hint code, hint placement, a fresh
 //     hint against the whole state, and size_override's version gate, entry rule and
 //     texture-version.
+//   - golden-16 (render-stream-16.md): runSuite at version 16 (plus its viewports lane: decoded,
+//     hashed, validated, resolved, no resources; the hints lane's rs14 is golden-15's), then
+//     golden16Cases(): every golden-15 vector re-stamped /16 is its golden-16 vector and back down
+//     (the re-stamp inserts or removes the session's "viewports" and moves the end stats), the
+//     predict lane at /16; and version16Cases(), independent of golden-16: hand-made streams over
+//     patch.rs15 re-stamped /16 for the session key, the table and its patches, viewport_f32 after
+//     pt_f32 and alone, the two kinds, the three reasons, the derived entry through a proxy, the
+//     resolved form, each new code, and the below-/16 and "viewports":"off" gates.
 //
 // Exits non-zero if any assertion fails.
 
@@ -134,6 +142,7 @@ const GOLDEN12_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-12");
 const GOLDEN13_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-13");
 const GOLDEN14_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-14");
 const GOLDEN15_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-15");
+const GOLDEN16_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-16");
 
 interface GoldenIndex {
   valid: Array<{ file: string; hex: string; decoded: string; sha256: string }>;
@@ -157,7 +166,7 @@ interface GoldenIndex {
     file: string;
     code: string;
     description: string;
-    version?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15;
+    version?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
     /** golden-13 on: the seq of the transaction the vector fails at (null when not one). */
     seq?: number | null;
     /** TAG1 (golden-13): the record the vector fails at. */
@@ -226,6 +235,8 @@ interface GoldenIndex {
   }>;
   // golden-15 only (render-stream-15.md "Validators and golden vectors"): the hints lane.
   hints?: IndependentLeg & { rs14: string; hints_at_end: string[] };
+  // golden-16 only (render-stream-16.md "Validators and golden vectors"): the viewports lane.
+  viewports?: IndependentLeg;
 }
 
 interface IndependentLeg {
@@ -277,35 +288,37 @@ function stripExcepted(resolved: ReturnType<typeof resolveRecording>): unknown {
 // threaded into decodeRecording()/validateRecording()/resolveRecording() differ.
 async function runSuite(
   goldenDir: string,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16,
 ): Promise<void> {
-  const label = goldenDir.endsWith("golden-15")
-    ? "golden-15"
-    : goldenDir.endsWith("golden-14")
-      ? "golden-14"
-      : goldenDir.endsWith("golden-13")
-        ? "golden-13"
-        : goldenDir.endsWith("golden-12")
-          ? "golden-12"
-          : goldenDir.endsWith("golden-11")
-            ? "golden-11"
-            : goldenDir.endsWith("golden-10")
-              ? "golden-10"
-              : goldenDir.endsWith("golden-9")
-                ? "golden-9"
-                : goldenDir.endsWith("golden-8")
-                  ? "golden-8"
-                  : goldenDir.endsWith("golden-7")
-                    ? "golden-7"
-                    : goldenDir.endsWith("golden-6")
-                      ? "golden-6"
-                      : goldenDir.endsWith("golden-5")
-                        ? "golden-5"
-                        : goldenDir.endsWith("golden-4")
-                          ? "golden-4"
-                          : goldenDir.endsWith("golden-3")
-                            ? "golden-3"
-                            : "golden-2";
+  const label = goldenDir.endsWith("golden-16")
+    ? "golden-16"
+    : goldenDir.endsWith("golden-15")
+      ? "golden-15"
+      : goldenDir.endsWith("golden-14")
+        ? "golden-14"
+        : goldenDir.endsWith("golden-13")
+          ? "golden-13"
+          : goldenDir.endsWith("golden-12")
+            ? "golden-12"
+            : goldenDir.endsWith("golden-11")
+              ? "golden-11"
+              : goldenDir.endsWith("golden-10")
+                ? "golden-10"
+                : goldenDir.endsWith("golden-9")
+                  ? "golden-9"
+                  : goldenDir.endsWith("golden-8")
+                    ? "golden-8"
+                    : goldenDir.endsWith("golden-7")
+                      ? "golden-7"
+                      : goldenDir.endsWith("golden-6")
+                        ? "golden-6"
+                        : goldenDir.endsWith("golden-5")
+                          ? "golden-5"
+                          : goldenDir.endsWith("golden-4")
+                            ? "golden-4"
+                            : goldenDir.endsWith("golden-3")
+                              ? "golden-3"
+                              : "golden-2";
   const index = JSON.parse(
     await readFile(join(goldenDir, "index.json"), "utf8"),
   ) as GoldenIndex;
@@ -684,6 +697,54 @@ async function runSuite(
       `${label}: ${lane.rs14} (transcode --to 14) validates at /14 (got ${JSON.stringify(errors14)})`,
     );
   }
+
+  // --- golden-16's viewports lane (render-stream-16.md "Validators and golden vectors"): decoded,
+  // hashed, validated clean and resolved, with no resource records ---
+  if (index.viewports !== undefined) {
+    const lane = index.viewports;
+    const bytes = await readBytes(goldenDir, lane.file);
+    ok(
+      sha256Hex(bytes) === lane.sha256,
+      `${label}: ${lane.file} hashes to its listed sha256`,
+    );
+    let decoded: unknown = null;
+    try {
+      decoded = decodeRecording(bytes, version);
+    } catch (error) {
+      decoded = String(error);
+    }
+    ok(
+      isDeepStrictEqual(
+        decoded,
+        JSON.parse(await readFile(join(goldenDir, lane.decoded), "utf8")),
+      ),
+      `${label}: decodeRecording(${lane.file}) deep-equals ${lane.decoded}`,
+    );
+    const errors = validateRecording(bytes, version);
+    ok(
+      errors.length === 0,
+      `${label}: validateRecording(${lane.file}) is [] (got ${JSON.stringify(errors)})`,
+    );
+    let resolved: ReturnType<typeof resolveRecording> | null = null;
+    let threw: string | null = null;
+    try {
+      resolved = resolveRecording(bytes, version);
+    } catch (error) {
+      threw = String(error);
+    }
+    ok(
+      resolved !== null &&
+        statesEqual(
+          stripExcepted(resolved),
+          JSON.parse(await readFile(join(goldenDir, lane.resolved), "utf8")),
+        ),
+      `${label}: resolveRecording(${lane.file}) deep-equals ${lane.resolved} (excepted fields aside)${threw === null ? "" : ` (threw ${threw})`}`,
+    );
+    ok(
+      resolved !== null && resolved.resources.length === 0,
+      `${label}: resolveRecording(${lane.file}).resources is []`,
+    );
+  }
 }
 
 async function main(): Promise<void> {
@@ -891,6 +952,34 @@ async function main(): Promise<void> {
     "golden-15/full.rs15 starts with GRSF",
   );
   await version15Cases();
+
+  // render-stream-16.md: golden-16, and a /16 decode refuses /15 and a /15 decode /16 (GRSG).
+  let golden16 = true;
+  try {
+    await readFile(join(GOLDEN16_DIR, "index.json"), "utf8");
+  } catch {
+    golden16 = false;
+  }
+  ok(golden16, "golden-16/index.json exists");
+  if (golden16) {
+    await runSuite(GOLDEN16_DIR, 16);
+    const full16 = await readBytes(GOLDEN16_DIR, "full.rs16");
+    ok(
+      validateRecording(full15, 16)[0]?.startsWith("bad-magic: ") ?? false,
+      "golden-15/full.rs15 decoded as version 16 is rejected with bad-magic",
+    );
+    ok(
+      validateRecording(full16, 15)[0]?.startsWith("bad-magic: ") ?? false,
+      "golden-16/full.rs16 decoded as version 15 is rejected with bad-magic",
+    );
+    ok(
+      Buffer.from(full16.subarray(0, 4)).toString("latin1") === "GRSG" &&
+        wireVersionOf(full16) === 16,
+      "golden-16/full.rs16 starts with GRSG, and wireVersionOf() reads it as 16",
+    );
+    await golden16Cases();
+  }
+  await version16Cases();
 
   unknownItemCases();
   await helloCases();
@@ -1828,7 +1917,7 @@ async function version12Cases(): Promise<void> {
 // the error names no transaction record.
 function errorSeq(
   bytes: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16,
   error: string,
 ): number | null {
   const m = /record at offset (\d+)/.exec(error);
@@ -1909,7 +1998,7 @@ interface Golden13Index {
 function itemMetaDumpOf(
   data: Uint8Array,
   ask: ItemMetaRequest | null | undefined,
-  version: 13 | 14 | 15 = 13,
+  version: 13 | 14 | 15 | 16 = 13,
 ): unknown {
   const split = splitRecords(data, version);
   const v = createRecordingValidator(split.records, version, {
@@ -2297,11 +2386,15 @@ async function version13Cases(): Promise<void> {
 }
 
 /** ID3: a /13 file re-stamped /14 (or back; render-stream-15.md: /15 too): the magic and the
- * session's protocol, every record keeping its length (render-stream-14.md). */
+ * session's protocol, every record keeping its length (render-stream-14.md). render-stream-16.md:
+ * re-stamping up to /16 also inserts `,"viewports":"on"` as the session's last key before
+ * "blocks", and down from /16 removes its `,"viewports":"<value>"`; the session record then moves
+ * by that key's length, so the end record's bytes_total and max_record_bytes follow (a test
+ * re-stamp, not a transcode). */
 function restamp(
   data: Uint8Array,
-  from: 13 | 14 | 15,
-  to: 13 | 14 | 15,
+  from: 13 | 14 | 15 | 16,
+  to: 13 | 14 | 15 | 16,
 ): Uint8Array {
   const out = Uint8Array.from(data);
   out[3] = 0x44 + (to - 13);
@@ -2311,7 +2404,75 @@ function restamp(
   const at = Buffer.from(out).indexOf(old);
   if (at < 0) throw new Error("no session protocol to re-stamp");
   out.set(enc(to), at);
+  if (from >= 16 === to >= 16) return out;
+  return restampViewportsKey(out, to >= 16);
+}
+
+/** The raw records of a recording (each with its length prefix), by framing alone. */
+function rawFrames(data: Uint8Array): Uint8Array[] {
+  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const out: Uint8Array[] = [];
+  let p = 8;
+  while (p + 4 <= data.length) {
+    const n = 4 + dv.getUint32(p, true);
+    out.push(data.subarray(p, Math.min(p + n, data.length)));
+    p += n;
+  }
   return out;
+}
+
+/** render-stream-16.md "Validators and golden vectors": the session's `viewports` key inserted
+ * ("on") or removed, and the end record's bytes_total and max_record_bytes moved with it. */
+function restampViewportsKey(data: Uint8Array, insert: boolean): Uint8Array {
+  const frames = rawFrames(data);
+  const session = frames[0];
+  const metaLen = new DataView(
+    session.buffer,
+    session.byteOffset,
+    session.byteLength,
+  ).getUint32(4, true);
+  const text = Buffer.from(session.subarray(8, 8 + metaLen)).toString("latin1");
+  let next: string;
+  if (insert) {
+    const k = text.lastIndexOf(',"blocks":[');
+    if (k < 0) throw new Error("no session blocks key to re-stamp before");
+    next = `${text.slice(0, k)},"viewports":"on"${text.slice(k)}`;
+  } else {
+    next = text.replace(/,"viewports":"[a-z]+"(?=,"blocks":\[)/, "");
+    if (next === text) throw new Error("no session viewports key to remove");
+  }
+  const tail = Buffer.from(session.subarray(8 + metaLen));
+  const head = Buffer.alloc(8);
+  const metaBytes = Buffer.from(next, "latin1");
+  head.writeUInt32LE(4 + metaBytes.length + tail.length, 0);
+  head.writeUInt32LE(metaBytes.length, 4);
+  const newSession = new Uint8Array(Buffer.concat([head, metaBytes, tail]));
+  const delta = newSession.length - session.length;
+  frames[0] = newSession;
+  // The end record (the last one, when it decodes as one): bytes_total moves by the key's
+  // length; max_record_bytes is the largest other record, the new session included.
+  const last = frames.length - 1;
+  let end: Record<string, unknown> | null = null;
+  try {
+    end = recordMeta(frames[last]);
+  } catch {
+    end = null;
+  }
+  if (end !== null && end.type === "end" && last > 0) {
+    frames[last] = withRecordMeta(frames[last], (m) => {
+      const stats = m.stats as Record<string, number>;
+      const oldMax = stats.max_record_bytes;
+      stats.bytes_total += delta;
+      const others = frames.slice(1, last).map((r) => r.length);
+      stats.max_record_bytes =
+        oldMax === session.length || newSession.length > oldMax
+          ? Math.max(newSession.length, ...others)
+          : oldMax;
+    });
+  }
+  return new Uint8Array(
+    Buffer.concat([Buffer.from(data.subarray(0, 8)), ...frames]),
+  );
 }
 
 interface Golden14Index extends Golden13Index {
@@ -2517,7 +2678,10 @@ async function version14Cases(): Promise<void> {
 // --------------------------------------------------------------------------------------- /15
 
 /** A recording's records as byte arrays (magic dropped). */
-function recordBytes(data: Uint8Array, version: 13 | 14 | 15): Uint8Array[] {
+function recordBytes(
+  data: Uint8Array,
+  version: 13 | 14 | 15 | 16,
+): Uint8Array[] {
   return splitRecords(data, version).records.map((r) => r.bytes);
 }
 
@@ -2859,6 +3023,1156 @@ async function version15Cases(): Promise<void> {
     ok(
       code(data) === "texture-version" && errorSeq(data, 15, errors[0]) === 5,
       `golden-15: a size_override that appears at an unchanged version is texture-version at seq 5 (got ${JSON.stringify(errors)})`,
+    );
+  }
+}
+
+// --------------------------------------------------------------------------------------- /16
+
+type Meta = Record<string, unknown>;
+
+/** `rec` (a transaction) with a mutated meta and, when `vp` is given, its viewport_f32 replaced:
+ * an array appends the block (after every other one), null drops it. Canonical: JSON.stringify
+ * keeps key order. */
+function editTx(
+  rec: Uint8Array,
+  mutate: (m: Meta) => void,
+  vp?: number[] | null,
+): Uint8Array {
+  const dv = new DataView(rec.buffer, rec.byteOffset, rec.byteLength);
+  const metaLen = dv.getUint32(4, true);
+  const meta = recordMeta(rec);
+  let p = 8 + metaLen;
+  const count = dv.getUint32(p, true);
+  p += 4;
+  const blocks: Uint8Array[] = [];
+  for (let i = 0; i < count; i++) {
+    const n = dv.getUint32(p, true);
+    blocks.push(rec.subarray(p, p + 4 + n));
+    p += 4 + n;
+  }
+  mutate(meta);
+  if (vp !== undefined) {
+    const descriptors = meta.blocks as Array<{ name: string }>;
+    if (descriptors[descriptors.length - 1]?.name === "viewport_f32") {
+      descriptors.pop();
+      blocks.pop();
+    }
+    if (vp !== null) {
+      descriptors.push({
+        name: "viewport_f32",
+        type: "f32",
+        count: vp.length,
+      } as {
+        name: string;
+      });
+      const b = Buffer.alloc(4 + 4 * vp.length);
+      b.writeUInt32LE(4 * vp.length, 0);
+      for (let i = 0; i < vp.length; i++) b.writeFloatLE(vp[i], 4 + 4 * i);
+      blocks.push(new Uint8Array(b));
+    }
+  }
+  const text = Buffer.from(JSON.stringify(meta), "latin1");
+  const countBytes = Buffer.alloc(4);
+  countBytes.writeUInt32LE(blocks.length, 0);
+  const tail = Buffer.concat([
+    countBytes,
+    ...blocks.map((b) => Buffer.from(b)),
+  ]);
+  const head = Buffer.alloc(8);
+  head.writeUInt32LE(4 + text.length + tail.length, 0);
+  head.writeUInt32LE(text.length, 4);
+  return new Uint8Array(Buffer.concat([head, text, tail]));
+}
+
+/** `m` with removed_viewports / viewports set (undefined drops the key), right before
+ * predict_check (render-stream-16.md "The viewport table"). */
+function setViewportKeys(
+  m: Meta,
+  removed: number[] | undefined,
+  viewports: Meta[] | undefined,
+): void {
+  const out: Meta = {};
+  for (const [k, v] of Object.entries(m)) {
+    if (k === "removed_viewports" || k === "viewports") continue;
+    if (k === "predict_check") {
+      if (removed !== undefined) out.removed_viewports = removed;
+      if (viewports !== undefined) out.viewports = viewports;
+    }
+    out[k] = v;
+  }
+  for (const k of Object.keys(m)) delete m[k];
+  Object.assign(m, out);
+}
+
+/** `m`'s textures with `entries` replacing (or inserting, ascending by id) the same ids. */
+function putTextures(m: Meta, entries: Meta[]): void {
+  const list = (m.textures as Meta[]).filter(
+    (t) => !entries.some((e) => e.id === t.id),
+  );
+  list.push(...entries);
+  list.sort((a, b) => (a.id as number) - (b.id as number));
+  m.textures = list;
+}
+
+/** A /16 viewport or proxy texture entry, keys in wire order. */
+function kindTexture(
+  id: number,
+  kind: "viewport" | "proxy",
+  value: number | null,
+  over: Meta = {},
+): Meta {
+  return {
+    id,
+    origin: "created",
+    adopted_content: null,
+    kind,
+    status: "ok",
+    reason: null,
+    version: 1,
+    hash: null,
+    format: null,
+    source_format: null,
+    width: 0,
+    height: 0,
+    mipmaps: false,
+    payload_bytes: 0,
+    variants: [],
+    [kind === "viewport" ? "viewport" : "target"]: value,
+    canvas: null,
+    ...over,
+  };
+}
+
+/** An unsupported 4x4 RGBAF image texture entry, keys in wire order. */
+function unsupportedImage(id: number, reason: string): Meta {
+  const { target: _target, ...rest } = kindTexture(id, "proxy", null);
+  return {
+    ...rest,
+    kind: "image",
+    status: "unsupported",
+    reason,
+    format: "RGBAF",
+    width: 4,
+    height: 4,
+  };
+}
+
+/** A viewport entry (render-stream-16.md "Viewport entry"), keys in wire order. */
+function viewportEntry(over: Meta = {}): Meta {
+  return {
+    id: 1,
+    origin: "created",
+    parent: 0,
+    active: true,
+    active_seq: 1,
+    size: [64, 32],
+    transparent: false,
+    update: "always",
+    once_seq: 0,
+    clear: "always",
+    clear_seq: 0,
+    disable_2d: false,
+    renders_3d: false,
+    hdr_2d: false,
+    msaa_2d: 0,
+    canvas_cull_mask: 4294967295,
+    default_texture_filter: "linear",
+    default_texture_repeat: "disabled",
+    snap_2d: [false, false],
+    canvases: [
+      [1, 0, 0],
+      [2, 1, 0],
+    ],
+    f: 0,
+    ...over,
+  };
+}
+
+/** Floats for viewport entries in order: a global transform, then one per canvases row. */
+function viewportFloats(entries: Meta[]): number[] {
+  const out: number[] = [];
+  for (const e of entries) {
+    out.push(1, 0, 0, 1, 2.5, 0);
+    const rows = (e.canvases as unknown[]).length;
+    for (let r = 0; r < rows; r++) out.push(1, 0, 0, 1, 10 * (r + 1), 4);
+  }
+  return out;
+}
+
+// render-stream-16.md: golden-16 against golden-15. Every golden-15 vector re-stamped /16 is its
+// golden-16 vector, and every golden-16 one re-stamped back down is its golden-15 twin (each
+// lane going down the chain); the predict lane at /16.
+async function golden16Cases(): Promise<void> {
+  const i15 = JSON.parse(
+    await readFile(join(GOLDEN15_DIR, "index.json"), "utf8"),
+  ) as Golden14Index & {
+    item_meta_valid: Array<{ file: string }>;
+    hints: { file: string };
+    corrupt: Array<{ file: string }>;
+  };
+  const files15 = [
+    ...i15.valid.map((l) => l.file),
+    i15.predict.file,
+    ...i15.item_meta_valid.map((l) => l.file),
+    i15.hints.file,
+    ...i15.corrupt.map((l) => l.file),
+    ...i15.invalid
+      .map((e) => e.file)
+      .filter(
+        (f) =>
+          f.endsWith(".rs15") &&
+          !f.startsWith("../") &&
+          !f.endsWith("bad-magic.rs15"),
+      ),
+  ];
+  const pairs = [...new Set(files15)];
+  let up = 0;
+  let down = 0;
+  for (const f15 of pairs) {
+    const f16 = f15.replace(/\.rs15$/, ".rs16");
+    let a: Uint8Array | null = null;
+    try {
+      a = await readBytes(GOLDEN16_DIR, f16);
+    } catch {
+      a = null;
+    }
+    const b = await readBytes(GOLDEN15_DIR, f15);
+    if (a !== null && sameBytes(a, restamp(b, 15, 16))) up++;
+    else ok(false, `golden-16: ${f16} is golden-15's ${f15} re-stamped /16`);
+    if (a !== null && sameBytes(restamp(a, 16, 15), b)) down++;
+    else ok(false, `golden-16: ${f16} re-stamped /15 is golden-15's ${f15}`);
+  }
+  ok(
+    up === pairs.length && down === pairs.length && up > 70,
+    `golden-16: ${up}/${pairs.length} vectors are their golden-15 twins re-stamped /16, ${down} re-stamp back down to them`,
+  );
+  const i16 = JSON.parse(
+    await readFile(join(GOLDEN16_DIR, "index.json"), "utf8"),
+  ) as Golden14Index;
+  const p16 = await readBytes(GOLDEN16_DIR, i16.predict.file);
+  let presolved: ReturnType<typeof resolveRecording> | null = null;
+  try {
+    presolved = resolveRecording(p16, 16);
+  } catch {
+    presolved = null;
+  }
+  ok(
+    validateRecording(p16, 16).length === 0 &&
+      presolved !== null &&
+      presolved.schema === "render-stream-16-resolved/1" &&
+      statesEqual(
+        stripExcepted(presolved),
+        JSON.parse(
+          await readFile(join(GOLDEN16_DIR, i16.predict.resolved), "utf8"),
+        ),
+      ),
+    `golden-16: ${i16.predict.file} validates and resolves to ${i16.predict.resolved}`,
+  );
+}
+
+// render-stream-16.md: the /16 rules over hand-made streams (golden-15's patch lane re-stamped
+// /16, then a viewport, its texture and a proxy added from seq 22): the session key, the table and
+// its patches, viewport_f32 (after pt_f32, and alone as block 9), the two kinds, the three
+// session reasons, the derived entry through a proxy, the resolved form, and every new code and
+// its below-/16 and "viewports":"off" gates. Independent of golden-16.
+async function version16Cases(): Promise<void> {
+  const patch15 = await readBytes(GOLDEN15_DIR, "patch.rs15");
+  const patch16 = restamp(patch15, 15, 16);
+  const magic = patch16.subarray(0, 8);
+  const base = recordBytes(patch16, 16);
+  const code = (data: Uint8Array, version: 15 | 16 = 16) => {
+    const errors = validateRecording(data, version);
+    return errors.length === 0 ? "ok" : errors[0].split(":")[0];
+  };
+  const at = (data: Uint8Array, version: 15 | 16 = 16) => {
+    const errors = validateRecording(data, version);
+    return errors.length === 0 ? null : errorSeq(data, version, errors[0]);
+  };
+  ok(
+    code(patch16) === "ok" &&
+      Buffer.from(patch16.subarray(0, 4)).toString("latin1") === "GRSG" &&
+      wireVersionOf(patch16) === 16 &&
+      sameBytes(restamp(patch16, 16, 15), patch15),
+    `golden-16 (hand-made): golden-15's patch.rs15 re-stamped /16 ("viewports":"on") validates and re-stamps back (got ${JSON.stringify(validateRecording(patch16, 16))})`,
+  );
+  // --- the session key -----------------------------------------------------------------------
+  const sessionWith = (fn: (m: Meta) => void, recs = base) =>
+    assembleRecording(magic, [withRecordMeta(recs[0], fn), ...recs.slice(1)]);
+  {
+    const noKey = Uint8Array.from(patch15);
+    noKey[3] = 0x47;
+    const enc = (v: number) =>
+      new TextEncoder().encode(`"protocol":"render-stream/${v}"`);
+    noKey.set(enc(16), Buffer.from(noKey).indexOf(Buffer.from(enc(15))));
+    ok(
+      code(noKey) === "meta-schema",
+      'golden-16 (hand-made): a /16 session without "viewports" is meta-schema',
+    );
+    ok(
+      code(sessionWith((m) => (m.viewports = "yes"))) === "meta-schema",
+      'golden-16 (hand-made): a session "viewports" other than on/off/unavailable is meta-schema',
+    );
+    ok(
+      code(sessionWith((m) => (m.viewports = "off"))) === "ok" &&
+        code(sessionWith((m) => (m.viewports = "unavailable"))) === "ok",
+      'golden-16 (hand-made): "viewports":"off" and "unavailable" streams without viewport keys validate',
+    );
+  }
+
+  // --- a stream with viewports ------------------------------------------------------------------
+  interface Edit {
+    mutate: (m: Meta) => void;
+    vp?: number[] | null;
+  }
+  const build = (edits: Record<number, Edit>, recs = base): Uint8Array => {
+    const r = [...recs];
+    for (const [seq, e] of Object.entries(edits)) {
+      const i = txIndex(r, Number(seq));
+      r[i] = editTx(r[i], e.mutate, e.vp);
+    }
+    return assembleRecording(magic, r);
+  };
+  const vp1 = viewportEntry();
+  const vp1Big = viewportEntry({ size: [128, 64] });
+  const tex13 = kindTexture(13, "viewport", 1);
+  const tex14 = kindTexture(14, "proxy", 13);
+  const add = (
+    viewports: Meta[],
+    textures: Meta[],
+    removed?: number[],
+  ): Edit => ({
+    mutate: (m) => {
+      setViewportKeys(m, removed, viewports.length > 0 ? viewports : undefined);
+      if (textures.length > 0) putTextures(m, textures);
+    },
+    vp: viewports.length > 0 ? viewportFloats(viewports) : undefined,
+  });
+  // VA: added at seq 22 (after pt_f32), resized at seq 25 (no pt_f32: viewport_f32 is block 9),
+  // re-listed by the full at seq 26.
+  const editsA = (over: Record<number, Edit> = {}) => ({
+    22: add([vp1], [tex13, tex14]),
+    25: add([vp1Big], []),
+    26: add([vp1Big], [tex13, tex14]),
+    ...over,
+  });
+  const va = build(editsA());
+  ok(
+    code(va) === "ok",
+    `golden-16 (hand-made): a viewport, its texture and a proxy added at seq 22, resized at seq 25 and re-listed by the full at seq 26 validate (got ${JSON.stringify(validateRecording(va, 16))})`,
+  );
+  {
+    const resolved = resolveRecording(va, 16);
+    const decoded = decodeRecording(va, 16);
+    const state = (seq: number) =>
+      resolved.transactions.find((t) => t.seq === seq)
+        ?.state as unknown as Meta;
+    const vps = (seq: number) => state(seq)?.viewports as Meta[] | undefined;
+    const keys = Object.keys(vps(22)?.[0] ?? {});
+    const stateKeys = Object.keys(state(22) ?? {});
+    const floats = vps(22)?.[0]?.floats as Meta | undefined;
+    ok(
+      resolved.schema === "render-stream-16-resolved/1" &&
+        decoded.schema === "render-stream-16-decoded/1" &&
+        vps(21) === undefined &&
+        stateKeys[stateKeys.length - 1] === "viewports" &&
+        stateKeys.indexOf("viewports") === stateKeys.indexOf("particles") + 1 &&
+        isDeepStrictEqual(keys, [
+          ...Object.keys(vp1).filter((k) => k !== "f"),
+          "floats",
+        ]) &&
+        isDeepStrictEqual(floats, {
+          global_xform: [1, 0, 0, 1, 2.5, 0],
+          canvas_xforms: [
+            [1, 0, 0, 1, 10, 4],
+            [1, 0, 0, 1, 20, 4],
+          ],
+        }) &&
+        isDeepStrictEqual(vps(24)?.[0]?.size, [64, 32]) &&
+        isDeepStrictEqual(vps(25)?.[0]?.size, [128, 64]) &&
+        isDeepStrictEqual(vps(26)?.[0]?.size, [128, 64]),
+      `golden-16 (hand-made): the resolved form carries "viewports" right after "particles" from seq 22 (entry fields in wire order without f, then floats), carried by patches and resized at seq 25`,
+    );
+    const t14 = (state(23)?.textures as Meta[]).find((t) => t.id === 14) ?? {};
+    const tk = Object.keys(t14);
+    ok(
+      t14.target === 13 && tk.indexOf("target") === tk.indexOf("variants") + 1,
+      "golden-16 (hand-made): a resolved proxy texture carries target after variants, as the wire",
+    );
+  }
+  // VB: removed at seq 25 with its texture freed; the proxy keeps the tombstone as target.
+  const tex13Freed = kindTexture(13, "viewport", 1, {
+    status: "freed",
+    version: 2,
+  });
+  const editsB = (over: Record<number, Edit> = {}) => ({
+    22: add([vp1], [tex13, tex14]),
+    25: add([], [tex13Freed], [1]),
+    26: add([], [tex13Freed, tex14]),
+    ...over,
+  });
+  const vb = build(editsB());
+  ok(
+    code(vb) === "ok",
+    `golden-16 (hand-made): removing the viewport at seq 25 with its texture freed, the proxy keeping the tombstone, validates (got ${JSON.stringify(validateRecording(vb, 16))})`,
+  );
+  {
+    const resolved = resolveRecording(vb, 16);
+    const s25 = resolved.transactions.find((t) => t.seq === 25)
+      ?.state as unknown as Meta;
+    ok(
+      s25 !== undefined && !("viewports" in s25),
+      'golden-16 (hand-made): the resolved state drops "viewports" once the table is empty',
+    );
+  }
+
+  // --- below /16, and under "viewports":"off" ----------------------------------------------------
+  ok(
+    code(restamp(va, 16, 15), 15) === "meta-schema",
+    "golden-16 (hand-made): the viewport stream re-stamped /15 is meta-schema",
+  );
+  {
+    const proxyOnly = build({ 22: add([], [kindTexture(13, "proxy", 1)]) });
+    const reason3d = build({
+      22: {
+        mutate: (m) =>
+          (m.unsupported as Meta[]).unshift({
+            op: "viewport_attach_camera",
+            item: null,
+            reason: "viewport-3d",
+          }),
+      },
+    });
+    ok(
+      code(proxyOnly) === "ok" && code(reason3d) === "ok",
+      `golden-16 (hand-made): a proxy alone, and a viewport-3d entry, validate under "on" (got ${JSON.stringify([validateRecording(proxyOnly, 16), validateRecording(reason3d, 16)])})`,
+    );
+    ok(
+      code(restamp(proxyOnly, 16, 15), 15) === "meta-schema" &&
+        code(restamp(reason3d, 16, 15), 15) === "meta-schema",
+      "golden-16 (hand-made): a proxy texture, and a viewport-3d entry, below /16 are meta-schema",
+    );
+    const off = (data: Uint8Array) => {
+      const recs = recordBytes(data, 16);
+      return assembleRecording(magic, [
+        withRecordMeta(recs[0], (m) => (m.viewports = "off")),
+        ...recs.slice(1),
+      ]);
+    };
+    const vpOnly = build({ 22: { mutate: () => {}, vp: [1, 0, 0, 1, 0, 0] } });
+    ok(
+      code(off(va)) === "meta-schema" &&
+        code(off(proxyOnly)) === "meta-schema" &&
+        code(off(reason3d)) === "meta-schema" &&
+        code(off(vpOnly)) === "meta-schema",
+      'golden-16 (hand-made): under "viewports":"off" the viewport keys, a proxy, a viewport-* reason and viewport_f32 are each meta-schema',
+    );
+    const unresolvedImage = build({
+      22: add([], [unsupportedImage(15, "proxy-unresolved")]),
+    });
+    ok(
+      code(unresolvedImage) === "texture-entry" &&
+        code(off(unresolvedImage)) === "meta-schema",
+      'golden-16 (hand-made): reason "proxy-unresolved" on an image is texture-entry under "on" and meta-schema under "off"',
+    );
+    {
+      // A viewport needs a session adoption to be "adopted" (adoption-entry, as every table): the
+      // stream with every other adopted entry made "created" and the session's adoption null.
+      const unadopt = (v: unknown): void => {
+        if (Array.isArray(v)) v.forEach(unadopt);
+        else if (v !== null && typeof v === "object") {
+          const o = v as Meta;
+          if (o.origin === "adopted") {
+            o.origin = "created";
+            if ("adopted_content" in o) o.adopted_content = null;
+          }
+          for (const x of Object.values(o)) unadopt(x);
+        }
+      };
+      const noAdoption = (recs: Uint8Array[]) =>
+        assembleRecording(magic, [
+          withRecordMeta(recs[0], (m) => (m.adoption = null)),
+          ...recs
+            .slice(1, -1)
+            .map((r) =>
+              recordMeta(r).type === "transaction" ? editTx(r, unadopt) : r,
+            ),
+          recs[recs.length - 1],
+        ]);
+      const baseline = noAdoption(base);
+      const adopted = build(
+        editsA({
+          22: add([viewportEntry({ origin: "adopted" })], [tex13, tex14]),
+        }),
+        recordBytes(baseline, 16),
+      );
+      const first = validateRecording(adopted, 16)[0] ?? "";
+      ok(
+        code(baseline) === "ok" &&
+          first.startsWith("adoption-entry: ") &&
+          /viewport 1 has origin "adopted"/.test(first) &&
+          at(adopted) === 22,
+        `golden-16 (hand-made): an adopted viewport in a session without adoption is adoption-entry at seq 22 (got ${JSON.stringify([validateRecording(baseline, 16)[0] ?? null, first])})`,
+      );
+    }
+    ok(
+      code(vpOnly) === "viewport-offset" && at(vpOnly) === 22,
+      'golden-16 (hand-made): a viewport_f32 without "viewports" is viewport-offset at seq 22',
+    );
+  }
+
+  // --- meta-schema on the table and the kinds ----------------------------------------------------
+  const cases: Array<[string, Record<number, Edit>, string, number | null]> = [
+    [
+      "an empty viewports",
+      { 22: { mutate: (m) => setViewportKeys(m, undefined, []) } },
+      "meta-schema",
+      22,
+    ],
+    [
+      "an empty removed_viewports",
+      editsB({ 25: { mutate: (m) => setViewportKeys(m, [], undefined) } }),
+      "meta-schema",
+      25,
+    ],
+    [
+      "a viewport entry's keys out of order",
+      editsA({
+        22: add(
+          [
+            Object.fromEntries(
+              Object.entries(vp1).sort(([a], [b]) =>
+                a === "active" ? -1 : b === "active" ? 1 : 0,
+              ),
+            ),
+          ],
+          [tex13, tex14],
+        ),
+      }),
+      "meta-schema",
+      22,
+    ],
+    [
+      "a viewport entry missing a key",
+      editsA({
+        22: add(
+          [
+            Object.fromEntries(
+              Object.entries(vp1).filter(([k]) => k !== "hdr_2d"),
+            ),
+          ],
+          [tex13, tex14],
+        ),
+      }),
+      "meta-schema",
+      22,
+    ],
+    [
+      'a "viewport" key on an image',
+      editsA({
+        22: add(
+          [vp1],
+          [
+            tex13,
+            tex14,
+            {
+              ...kindTexture(15, "viewport", 1),
+              kind: "image",
+              status: "unsupported",
+              reason: "unsupported-format",
+            },
+          ],
+        ),
+      }),
+      "meta-schema",
+      22,
+    ],
+    [
+      "a proxy without its target key",
+      editsA({
+        22: add(
+          [vp1],
+          [
+            tex13,
+            Object.fromEntries(
+              Object.entries(tex14).filter(([k]) => k !== "target"),
+            ),
+          ],
+        ),
+      }),
+      "meta-schema",
+      22,
+    ],
+    [
+      "removed_viewports not ascending",
+      editsB({
+        22: add(
+          [vp1, viewportEntry({ id: 2, f: 18 })],
+          [tex13, tex14, kindTexture(15, "viewport", 2)],
+        ),
+        25: add(
+          [],
+          [
+            tex13Freed,
+            kindTexture(15, "viewport", 2, { status: "freed", version: 2 }),
+          ],
+          [2, 1],
+        ),
+        26: add(
+          [],
+          [
+            tex13Freed,
+            tex14,
+            kindTexture(15, "viewport", 2, { status: "freed", version: 2 }),
+          ],
+        ),
+      }),
+      "meta-schema",
+      25,
+    ],
+    // --- viewport-entry ---
+    [
+      'a default_texture_filter "default"',
+      editsA({
+        22: add(
+          [viewportEntry({ default_texture_filter: "default" })],
+          [tex13, tex14],
+        ),
+      }),
+      "viewport-entry",
+      22,
+    ],
+    [
+      "an msaa_2d of 4",
+      editsA({ 22: add([viewportEntry({ msaa_2d: 4 })], [tex13, tex14]) }),
+      "viewport-entry",
+      22,
+    ],
+    [
+      "a negative size",
+      editsA({ 22: add([viewportEntry({ size: [-1, 32] })], [tex13, tex14]) }),
+      "viewport-entry",
+      22,
+    ],
+    [
+      'an update "sometimes"',
+      editsA({
+        22: add([viewportEntry({ update: "sometimes" })], [tex13, tex14]),
+      }),
+      "viewport-entry",
+      22,
+    ],
+    [
+      "viewports not ascending by id",
+      editsA({
+        22: add(
+          [viewportEntry({ id: 2 }), viewportEntry({ id: 1, f: 18 })],
+          [tex13, tex14, kindTexture(15, "viewport", 2)],
+        ),
+      }),
+      "viewport-entry",
+      22,
+    ],
+    [
+      "canvases rows not ascending",
+      editsA({
+        22: add(
+          [
+            viewportEntry({
+              canvases: [
+                [2, 1, 0],
+                [1, 0, 0],
+              ],
+            }),
+          ],
+          [tex13, tex14],
+        ),
+      }),
+      "viewport-entry",
+      22,
+    ],
+    [
+      "a canvases row naming no canvas",
+      editsA({
+        22: add(
+          [viewportEntry({ canvases: [[9, 0, 0]], f: 0 })],
+          [tex13, tex14],
+        ),
+      }),
+      "viewport-entry",
+      22,
+    ],
+    [
+      "a parent naming no viewport",
+      editsA({ 22: add([viewportEntry({ parent: 7 })], [tex13, tex14]) }),
+      "viewport-entry",
+      22,
+    ],
+    [
+      "a viewport without an ok viewport texture",
+      editsA({ 22: add([vp1], [kindTexture(14, "proxy", 4)]) }),
+      "viewport-entry",
+      22,
+    ],
+    [
+      "a viewport with two ok viewport textures",
+      editsA({
+        22: add([vp1], [tex13, tex14, kindTexture(15, "viewport", 1)]),
+      }),
+      "viewport-entry",
+      22,
+    ],
+    // --- viewport-parent-cycle ---
+    [
+      "a viewport that is its own parent",
+      editsA({ 22: add([viewportEntry({ parent: 1 })], [tex13, tex14]) }),
+      "viewport-parent-cycle",
+      22,
+    ],
+    [
+      "two viewports parenting each other",
+      editsA({
+        22: add(
+          [
+            viewportEntry({ parent: 2 }),
+            viewportEntry({ id: 2, parent: 1, f: 18 }),
+          ],
+          [tex13, tex14, kindTexture(15, "viewport", 2)],
+        ),
+      }),
+      "viewport-parent-cycle",
+      22,
+    ],
+    // --- viewport-offset ---
+    [
+      "an f off the running count",
+      editsA({ 22: add([viewportEntry({ f: 1 })], [tex13, tex14]) }),
+      "viewport-offset",
+      22,
+    ],
+    [
+      "a viewport_f32 shorter than the claim",
+      editsA({
+        22: {
+          ...add([vp1], [tex13, tex14]),
+          vp: viewportFloats([vp1]).slice(6),
+        },
+      }),
+      "viewport-offset",
+      22,
+    ],
+    [
+      "viewports without viewport_f32",
+      editsA({ 22: { ...add([vp1], [tex13, tex14]), vp: undefined } }),
+      "viewport-offset",
+      22,
+    ],
+    // --- texture-entry ---
+    [
+      "an unsupported viewport texture",
+      editsA({
+        22: add(
+          [vp1],
+          [
+            tex13,
+            tex14,
+            kindTexture(15, "viewport", 1, {
+              status: "unsupported",
+              reason: "proxy-unresolved",
+            }),
+          ],
+        ),
+      }),
+      "texture-entry",
+      22,
+    ],
+    [
+      "proxy-unresolved on an image",
+      editsA({
+        22: add(
+          [vp1],
+          [tex13, tex14, unsupportedImage(15, "proxy-unresolved")],
+        ),
+      }),
+      "texture-entry",
+      22,
+    ],
+    [
+      "an unsupported proxy with another reason",
+      editsA({
+        22: add(
+          [vp1],
+          [
+            tex13,
+            kindTexture(14, "proxy", null, {
+              status: "unsupported",
+              reason: "unsupported-format",
+            }),
+          ],
+        ),
+      }),
+      "texture-entry",
+      22,
+    ],
+    [
+      "a viewport texture with a variant",
+      editsA({
+        22: add(
+          [vp1],
+          [
+            kindTexture(13, "viewport", 1, {
+              variants: [
+                {
+                  encoding: "block",
+                  hash: "ab".repeat(32),
+                  payload_bytes: 16,
+                  format: "BPTC_RGBA",
+                  params: null,
+                },
+              ],
+            }),
+            tex14,
+          ],
+        ),
+      }),
+      "texture-entry",
+      22,
+    ],
+    [
+      "a viewport texture with a width",
+      editsA({
+        22: add([vp1], [kindTexture(13, "viewport", 1, { width: 64 }), tex14]),
+      }),
+      "texture-entry",
+      22,
+    ],
+    // --- texture-ref ---
+    [
+      "an ok viewport texture naming no viewport",
+      editsA({
+        22: add([vp1], [tex13, tex14, kindTexture(15, "viewport", 9)]),
+      }),
+      "texture-ref",
+      22,
+    ],
+    // --- proxy-target ---
+    [
+      "an ok proxy with a null target",
+      editsA({ 22: add([vp1], [tex13, kindTexture(14, "proxy", null)]) }),
+      "proxy-target",
+      22,
+    ],
+    [
+      "an ok proxy naming no entry",
+      editsA({ 22: add([vp1], [tex13, kindTexture(14, "proxy", 99)]) }),
+      "proxy-target",
+      22,
+    ],
+    [
+      "an ok proxy of a proxy",
+      editsA({
+        22: add([vp1], [tex13, tex14, kindTexture(15, "proxy", 14)]),
+      }),
+      "proxy-target",
+      22,
+    ],
+    [
+      "an unsupported proxy with a target",
+      editsA({
+        22: add(
+          [vp1],
+          [
+            tex13,
+            kindTexture(14, "proxy", 13, {
+              status: "unsupported",
+              reason: "proxy-unresolved",
+            }),
+          ],
+        ),
+      }),
+      "proxy-target",
+      22,
+    ],
+    // --- unsupported-mismatch ---
+    [
+      "a viewport-hdr-2d entry with another op",
+      {
+        22: {
+          mutate: (m) =>
+            (m.unsupported as Meta[]).unshift({
+              op: "viewport_attach_camera",
+              item: null,
+              reason: "viewport-hdr-2d",
+            }),
+        },
+      },
+      "unsupported-mismatch",
+      22,
+    ],
+    [
+      'a non-root-viewport entry under "on"',
+      {
+        22: {
+          mutate: (m) =>
+            (m.unsupported as Meta[]).unshift({
+              op: "viewport_set_parent_viewport",
+              item: null,
+              reason: "non-root-viewport",
+            }),
+        },
+      },
+      "unsupported-mismatch",
+      22,
+    ],
+    [
+      "a proxy of an ok image where an unsupported texture was drawn",
+      {
+        22: add([], [kindTexture(3, "proxy", 1, { version: 2 })]),
+        26: add([], [kindTexture(3, "proxy", 1, { version: 2 })]),
+      },
+      "unsupported-mismatch",
+      22,
+    ],
+    // --- patch rules, ids, adoption ---
+    [
+      "a removed viewport absent from the base",
+      editsB({ 25: add([], [tex13Freed], [5]) }),
+      "patch-removed",
+      25,
+    ],
+    [
+      "a viewport both removed and present",
+      editsB({ 25: add([vp1], [tex13Freed], [1]) }),
+      "patch-removed",
+      25,
+    ],
+    [
+      "removed_viewports in a full transaction",
+      editsA({ 26: add([vp1Big], [tex13, tex14], [1]) }),
+      "patch-encoding",
+      26,
+    ],
+    [
+      "a removed viewport id listed again",
+      editsB({
+        26: add([vp1], [tex13Freed, tex14, kindTexture(15, "viewport", 1)]),
+      }),
+      "id-reused",
+      26,
+    ],
+    [
+      'an adopted viewport texture with adopted_content "creation"',
+      editsA({
+        22: add(
+          [vp1],
+          [
+            kindTexture(13, "viewport", 1, {
+              origin: "adopted",
+              adopted_content: "creation",
+            }),
+            tex14,
+          ],
+        ),
+      }),
+      "adoption-entry",
+      22,
+    ],
+  ];
+  for (const [what, edits, want, seq] of cases) {
+    const data = build(edits);
+    const got = code(data);
+    const gotSeq = at(data);
+    ok(
+      got === want && (seq === null || gotSeq === seq),
+      `golden-16 (hand-made): ${what} is ${want}${seq === null ? "" : ` at seq ${seq}`} (got ${got} at ${gotSeq}: ${JSON.stringify(validateRecording(data, 16)[0] ?? null)})`,
+    );
+  }
+
+  // --- valid edges --------------------------------------------------------------------------------
+  const valid: Array<[string, Record<number, Edit>]> = [
+    [
+      "a proxy of a freed tombstone (texture 10)",
+      editsA({
+        22: add([vp1], [tex13, kindTexture(14, "proxy", 10)]),
+        26: add([vp1Big], [tex13, kindTexture(14, "proxy", 10)]),
+      }),
+    ],
+    [
+      "an unsupported proxy (proxy-unresolved, target null)",
+      editsA({
+        22: add(
+          [vp1],
+          [
+            tex13,
+            kindTexture(14, "proxy", null, {
+              status: "unsupported",
+              reason: "proxy-unresolved",
+            }),
+          ],
+        ),
+        26: add(
+          [vp1Big],
+          [
+            tex13,
+            kindTexture(14, "proxy", null, {
+              status: "unsupported",
+              reason: "proxy-unresolved",
+            }),
+          ],
+        ),
+      }),
+    ],
+    [
+      "a nested viewport (parent 1) and one out of the tree (parent null)",
+      editsA({
+        22: add(
+          [
+            vp1,
+            viewportEntry({ id: 2, parent: 1, f: 18 }),
+            viewportEntry({ id: 3, parent: null, canvases: [], f: 36 }),
+          ],
+          [
+            tex13,
+            tex14,
+            kindTexture(15, "viewport", 2),
+            kindTexture(16, "viewport", 3),
+          ],
+        ),
+        25: add([], []),
+        26: add(
+          [
+            vp1,
+            viewportEntry({ id: 2, parent: 1, f: 18 }),
+            viewportEntry({ id: 3, parent: null, canvases: [], f: 36 }),
+          ],
+          [
+            tex13,
+            tex14,
+            kindTexture(15, "viewport", 2),
+            kindTexture(16, "viewport", 3),
+          ],
+        ),
+      }),
+    ],
+    [
+      "an adopted viewport and its adopted texture (adopted_content current)",
+      editsA({
+        22: add(
+          [viewportEntry({ origin: "adopted" })],
+          [
+            kindTexture(13, "viewport", 1, {
+              origin: "adopted",
+              adopted_content: "current",
+            }),
+            tex14,
+          ],
+        ),
+        25: add([viewportEntry({ origin: "adopted", size: [128, 64] })], []),
+        26: add(
+          [viewportEntry({ origin: "adopted", size: [128, 64] })],
+          [
+            kindTexture(13, "viewport", 1, {
+              origin: "adopted",
+              adopted_content: "current",
+            }),
+            tex14,
+          ],
+        ),
+      }),
+    ],
+    [
+      "a canvas texture whose diffuse names a proxy, and one whose diffuse names a viewport",
+      editsA({
+        22: add(
+          [vp1],
+          [
+            tex13,
+            tex14,
+            {
+              ...kindTexture(15, "proxy", 1),
+              kind: "canvas",
+              target: undefined,
+              canvas: { diffuse: 14, filter: "default", repeat: "default" },
+            },
+          ].map((t) => JSON.parse(JSON.stringify(t)) as Meta),
+        ),
+      }),
+    ],
+    [
+      "the derived unsupported-texture through a proxy of an unsupported image",
+      {
+        22: add(
+          [],
+          [
+            kindTexture(3, "proxy", 15, { version: 2 }),
+            unsupportedImage(15, "unsupported-format"),
+          ],
+        ),
+        26: add(
+          [],
+          [
+            kindTexture(3, "proxy", 15, { version: 2 }),
+            unsupportedImage(15, "unsupported-format"),
+          ],
+        ),
+      },
+    ],
+    [
+      "a viewport-3d, viewport-hdr-2d and viewport-msaa-2d entry with their ops",
+      {
+        22: {
+          mutate: (m) =>
+            (m.unsupported as Meta[]).unshift(
+              {
+                op: "viewport_attach_camera",
+                item: null,
+                reason: "viewport-3d",
+              },
+              {
+                op: "viewport_set_use_hdr_2d",
+                item: null,
+                reason: "viewport-hdr-2d",
+              },
+              {
+                op: "viewport_set_msaa_2d",
+                item: null,
+                reason: "viewport-msaa-2d",
+              },
+            ),
+        },
+      },
+    ],
+  ];
+  for (const [what, edits] of valid) {
+    const data = build(edits);
+    ok(
+      code(data) === "ok",
+      `golden-16 (hand-made): ${what} validates (got ${JSON.stringify(validateRecording(data, 16))})`,
+    );
+  }
+  {
+    // A canvas texture whose diffuse names a viewport is texture-ref below /16's widening: at /16
+    // it validates; a diffuse naming a canvas texture stays texture-ref.
+    const canvasTex = (id: number, diffuse: number) =>
+      JSON.parse(
+        JSON.stringify({
+          ...kindTexture(id, "proxy", 1),
+          kind: "canvas",
+          target: undefined,
+          canvas: { diffuse, filter: "default", repeat: "default" },
+        }),
+      ) as Meta;
+    const ok16 = build(
+      editsA({ 22: add([vp1], [tex13, tex14, canvasTex(15, 13)]) }),
+    );
+    const bad = build(
+      editsA({
+        22: add([vp1], [tex13, tex14, canvasTex(15, 13), canvasTex(16, 15)]),
+      }),
+    );
+    ok(
+      code(ok16) === "ok" && code(bad) === "texture-ref",
+      `golden-16 (hand-made): a diffuse may name a viewport at /16, and still not a canvas texture (got ${code(ok16)}, ${code(bad)})`,
     );
   }
 }

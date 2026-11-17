@@ -1,0 +1,7723 @@
+{
+  "schema": "render-stream-16-resolved/1",
+  "transactions": [
+    {
+      "seq": 1,
+      "frame": 1,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 4,
+            "reason": "unsupported-texture"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              6
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "role": null,
+            "attached": false,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              3,
+              4
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "role": null,
+            "attached": true,
+            "layer": 1,
+            "sublayer": 0,
+            "items": [
+              5
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              128.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 3,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  64.0,
+                  48.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              80.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 7,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              4.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 5,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              24.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 6,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  8.0,
+                  8.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 3
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              8.0,
+              8.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 4,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  32.0,
+                  32.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 2,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              160.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 9,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          }
+        ],
+        "textures": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "unsupported",
+            "reason": "unsupported-format",
+            "version": 1,
+            "hash": null,
+            "format": "RGBAF",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 3,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 1,
+            "canvas": null
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 2,
+            "canvas": null
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 9,
+            "canvas": null
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 2,
+            "canvas": null
+          },
+          {
+            "id": 7,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "canvas",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": {
+              "diffuse": 5,
+              "filter": "default",
+              "repeat": "default"
+            }
+          },
+          {
+            "id": 8,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "unsupported",
+            "reason": "proxy-unresolved",
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": null,
+            "canvas": null
+          },
+          {
+            "id": 9,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 3,
+            "canvas": null
+          }
+        ],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "viewports": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "parent": 0,
+            "active": true,
+            "active_seq": 1,
+            "size": [
+              64,
+              48
+            ],
+            "transparent": false,
+            "update": "always",
+            "once_seq": 0,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ],
+              [
+                3,
+                1,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.5,
+                  0.0,
+                  0.0,
+                  0.5,
+                  8.0,
+                  8.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": 1,
+            "active": true,
+            "active_seq": 2,
+            "size": [
+              32,
+              32
+            ],
+            "transparent": true,
+            "update": "when_parent_visible",
+            "once_seq": 0,
+            "clear": "next_frame",
+            "clear_seq": 1,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 1,
+            "default_texture_filter": "nearest",
+            "default_texture_repeat": "enabled",
+            "snap_2d": [
+              true,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  2.0,
+                  2.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": null,
+            "active": false,
+            "active_seq": 0,
+            "size": [
+              16,
+              16
+            ],
+            "transparent": false,
+            "update": "disabled",
+            "once_seq": 0,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 2,
+      "frame": 2,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 4,
+            "reason": "unsupported-texture"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              6
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "role": null,
+            "attached": false,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              3,
+              4
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "role": null,
+            "attached": true,
+            "layer": 1,
+            "sublayer": 0,
+            "items": [
+              5
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              128.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 3,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  64.0,
+                  48.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              80.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 7,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              4.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 5,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              24.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 6,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  8.0,
+                  8.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 3
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              8.0,
+              8.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 4,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  32.0,
+                  32.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 2,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              160.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 9,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          }
+        ],
+        "textures": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "unsupported",
+            "reason": "unsupported-format",
+            "version": 1,
+            "hash": null,
+            "format": "RGBAF",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 3,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 1,
+            "canvas": null
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 2,
+            "canvas": null
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 9,
+            "canvas": null
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 2,
+            "canvas": null
+          },
+          {
+            "id": 7,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "canvas",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": {
+              "diffuse": 5,
+              "filter": "default",
+              "repeat": "default"
+            }
+          },
+          {
+            "id": 8,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "unsupported",
+            "reason": "proxy-unresolved",
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": null,
+            "canvas": null
+          },
+          {
+            "id": 9,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 3,
+            "canvas": null
+          }
+        ],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "viewports": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "parent": 0,
+            "active": true,
+            "active_seq": 1,
+            "size": [
+              64,
+              48
+            ],
+            "transparent": false,
+            "update": "always",
+            "once_seq": 0,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ],
+              [
+                3,
+                1,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                -4.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.5,
+                  0.0,
+                  0.0,
+                  0.5,
+                  8.0,
+                  8.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": 1,
+            "active": true,
+            "active_seq": 2,
+            "size": [
+              32,
+              32
+            ],
+            "transparent": true,
+            "update": "when_parent_visible",
+            "once_seq": 0,
+            "clear": "next_frame",
+            "clear_seq": 1,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 1,
+            "default_texture_filter": "nearest",
+            "default_texture_repeat": "enabled",
+            "snap_2d": [
+              true,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  2.0,
+                  2.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": null,
+            "active": false,
+            "active_seq": 0,
+            "size": [
+              16,
+              16
+            ],
+            "transparent": false,
+            "update": "disabled",
+            "once_seq": 0,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 3,
+      "frame": 3,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 4,
+            "reason": "unsupported-texture"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              6
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "role": null,
+            "attached": false,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              3,
+              4
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "role": null,
+            "attached": true,
+            "layer": 1,
+            "sublayer": 0,
+            "items": [
+              5
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              128.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 3,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  64.0,
+                  48.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              80.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 7,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              4.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 5,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              24.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 6,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  8.0,
+                  8.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 3
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              8.0,
+              8.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 4,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  32.0,
+                  32.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 2,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              160.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 9,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          }
+        ],
+        "textures": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "unsupported",
+            "reason": "unsupported-format",
+            "version": 1,
+            "hash": null,
+            "format": "RGBAF",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 3,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 1,
+            "canvas": null
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 2,
+            "canvas": null
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 9,
+            "canvas": null
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 2,
+            "canvas": null
+          },
+          {
+            "id": 7,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "canvas",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": {
+              "diffuse": 5,
+              "filter": "default",
+              "repeat": "default"
+            }
+          },
+          {
+            "id": 8,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "unsupported",
+            "reason": "proxy-unresolved",
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": null,
+            "canvas": null
+          },
+          {
+            "id": 9,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 3,
+            "canvas": null
+          }
+        ],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "viewports": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "parent": 0,
+            "active": true,
+            "active_seq": 1,
+            "size": [
+              64,
+              48
+            ],
+            "transparent": false,
+            "update": "always",
+            "once_seq": 0,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ],
+              [
+                3,
+                1,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                -4.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.5,
+                  0.0,
+                  0.0,
+                  0.5,
+                  8.0,
+                  8.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": 1,
+            "active": true,
+            "active_seq": 2,
+            "size": [
+              48,
+              40
+            ],
+            "transparent": true,
+            "update": "when_parent_visible",
+            "once_seq": 0,
+            "clear": "next_frame",
+            "clear_seq": 1,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 1,
+            "default_texture_filter": "nearest",
+            "default_texture_repeat": "enabled",
+            "snap_2d": [
+              true,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  2.0,
+                  2.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": null,
+            "active": false,
+            "active_seq": 0,
+            "size": [
+              16,
+              16
+            ],
+            "transparent": false,
+            "update": "disabled",
+            "once_seq": 0,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 4,
+      "frame": 4,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 4,
+            "reason": "unsupported-texture"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              6
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "role": null,
+            "attached": false,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              3,
+              4
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "role": null,
+            "attached": true,
+            "layer": 1,
+            "sublayer": 0,
+            "items": [
+              5
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              128.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 3,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  64.0,
+                  48.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              80.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 7,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              4.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 5,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              24.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 6,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  8.0,
+                  8.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 3
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              8.0,
+              8.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 4,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  32.0,
+                  32.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 2,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              160.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 9,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          }
+        ],
+        "textures": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "unsupported",
+            "reason": "unsupported-format",
+            "version": 1,
+            "hash": null,
+            "format": "RGBAF",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 3,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 1,
+            "canvas": null
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 2,
+            "canvas": null
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 9,
+            "canvas": null
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 2,
+            "canvas": null
+          },
+          {
+            "id": 7,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "canvas",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": {
+              "diffuse": 5,
+              "filter": "default",
+              "repeat": "default"
+            }
+          },
+          {
+            "id": 8,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "unsupported",
+            "reason": "proxy-unresolved",
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": null,
+            "canvas": null
+          },
+          {
+            "id": 9,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 3,
+            "canvas": null
+          }
+        ],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "viewports": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "parent": 0,
+            "active": true,
+            "active_seq": 1,
+            "size": [
+              64,
+              48
+            ],
+            "transparent": false,
+            "update": "always",
+            "once_seq": 0,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ],
+              [
+                3,
+                1,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                -4.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.5,
+                  0.0,
+                  0.0,
+                  0.5,
+                  8.0,
+                  8.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": 1,
+            "active": true,
+            "active_seq": 2,
+            "size": [
+              48,
+              40
+            ],
+            "transparent": true,
+            "update": "when_parent_visible",
+            "once_seq": 0,
+            "clear": "next_frame",
+            "clear_seq": 1,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 1,
+            "default_texture_filter": "nearest",
+            "default_texture_repeat": "enabled",
+            "snap_2d": [
+              true,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  2.0,
+                  2.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": null,
+            "active": false,
+            "active_seq": 0,
+            "size": [
+              16,
+              16
+            ],
+            "transparent": false,
+            "update": "once",
+            "once_seq": 1,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 5,
+      "frame": 5,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 4,
+            "reason": "unsupported-texture"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              6
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "role": null,
+            "attached": false,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              3,
+              4
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "role": null,
+            "attached": true,
+            "layer": 1,
+            "sublayer": 0,
+            "items": [
+              5
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              128.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 3,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  64.0,
+                  48.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              80.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 7,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              4.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 5,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              24.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 6,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  8.0,
+                  8.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 3
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              8.0,
+              8.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 4,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  32.0,
+                  32.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 2,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              160.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 9,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          }
+        ],
+        "textures": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "unsupported",
+            "reason": "unsupported-format",
+            "version": 1,
+            "hash": null,
+            "format": "RGBAF",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 3,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 1,
+            "canvas": null
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 2,
+            "canvas": null
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 2,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 1,
+            "canvas": null
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 2,
+            "canvas": null
+          },
+          {
+            "id": 7,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "canvas",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": {
+              "diffuse": 5,
+              "filter": "default",
+              "repeat": "default"
+            }
+          },
+          {
+            "id": 8,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "unsupported",
+            "reason": "proxy-unresolved",
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": null,
+            "canvas": null
+          },
+          {
+            "id": 9,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 3,
+            "canvas": null
+          }
+        ],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "viewports": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "parent": 0,
+            "active": true,
+            "active_seq": 1,
+            "size": [
+              64,
+              48
+            ],
+            "transparent": false,
+            "update": "always",
+            "once_seq": 0,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ],
+              [
+                3,
+                1,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                -4.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.5,
+                  0.0,
+                  0.0,
+                  0.5,
+                  8.0,
+                  8.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": 1,
+            "active": true,
+            "active_seq": 2,
+            "size": [
+              48,
+              40
+            ],
+            "transparent": true,
+            "update": "when_parent_visible",
+            "once_seq": 0,
+            "clear": "next_frame",
+            "clear_seq": 1,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 1,
+            "default_texture_filter": "nearest",
+            "default_texture_repeat": "enabled",
+            "snap_2d": [
+              true,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  2.0,
+                  2.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": null,
+            "active": false,
+            "active_seq": 0,
+            "size": [
+              16,
+              16
+            ],
+            "transparent": false,
+            "update": "once",
+            "once_seq": 1,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 6,
+      "frame": 6,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "viewport_attach_camera",
+            "item": null,
+            "reason": "viewport-3d"
+          },
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 4,
+            "reason": "unsupported-texture"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              6
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "role": null,
+            "attached": false,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              3,
+              4
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "role": null,
+            "attached": true,
+            "layer": 1,
+            "sublayer": 0,
+            "items": [
+              5
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              128.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 3,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  64.0,
+                  48.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              80.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 7,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              4.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 5,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              24.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 6,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  8.0,
+                  8.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 3
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              8.0,
+              8.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 4,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  32.0,
+                  32.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 2,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              160.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 9,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          }
+        ],
+        "textures": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "unsupported",
+            "reason": "unsupported-format",
+            "version": 1,
+            "hash": null,
+            "format": "RGBAF",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 3,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 1,
+            "canvas": null
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 2,
+            "canvas": null
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 2,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 1,
+            "canvas": null
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 2,
+            "canvas": null
+          },
+          {
+            "id": 7,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "canvas",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": {
+              "diffuse": 5,
+              "filter": "default",
+              "repeat": "default"
+            }
+          },
+          {
+            "id": 8,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "unsupported",
+            "reason": "proxy-unresolved",
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": null,
+            "canvas": null
+          },
+          {
+            "id": 9,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 3,
+            "canvas": null
+          }
+        ],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "viewports": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "parent": 0,
+            "active": true,
+            "active_seq": 1,
+            "size": [
+              64,
+              48
+            ],
+            "transparent": false,
+            "update": "always",
+            "once_seq": 0,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ],
+              [
+                3,
+                1,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                -4.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.5,
+                  0.0,
+                  0.0,
+                  0.5,
+                  8.0,
+                  8.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": 1,
+            "active": true,
+            "active_seq": 2,
+            "size": [
+              48,
+              40
+            ],
+            "transparent": true,
+            "update": "when_parent_visible",
+            "once_seq": 0,
+            "clear": "next_frame",
+            "clear_seq": 1,
+            "disable_2d": false,
+            "renders_3d": true,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 1,
+            "default_texture_filter": "nearest",
+            "default_texture_repeat": "enabled",
+            "snap_2d": [
+              true,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  2.0,
+                  2.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": null,
+            "active": false,
+            "active_seq": 0,
+            "size": [
+              16,
+              16
+            ],
+            "transparent": false,
+            "update": "once",
+            "once_seq": 1,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 7,
+      "frame": 7,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "viewport_attach_camera",
+            "item": null,
+            "reason": "viewport-3d"
+          },
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 4,
+            "reason": "unsupported-texture"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              6
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "role": null,
+            "attached": false,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              3,
+              4
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "role": null,
+            "attached": true,
+            "layer": 1,
+            "sublayer": 0,
+            "items": [
+              5
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              128.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 3,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  64.0,
+                  48.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              80.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 7,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              4.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 5,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              24.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 6,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  8.0,
+                  8.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 3
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              8.0,
+              8.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 4,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  32.0,
+                  32.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 2,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              160.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 9,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          }
+        ],
+        "textures": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "freed",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "unsupported",
+            "reason": "unsupported-format",
+            "version": 1,
+            "hash": null,
+            "format": "RGBAF",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 3,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 1,
+            "canvas": null
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 2,
+            "canvas": null
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 2,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 1,
+            "canvas": null
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 2,
+            "canvas": null
+          },
+          {
+            "id": 7,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "canvas",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": {
+              "diffuse": 5,
+              "filter": "default",
+              "repeat": "default"
+            }
+          },
+          {
+            "id": 8,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "unsupported",
+            "reason": "proxy-unresolved",
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": null,
+            "canvas": null
+          },
+          {
+            "id": 9,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 3,
+            "canvas": null
+          }
+        ],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "viewports": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "parent": 0,
+            "active": true,
+            "active_seq": 1,
+            "size": [
+              64,
+              48
+            ],
+            "transparent": false,
+            "update": "always",
+            "once_seq": 0,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ],
+              [
+                3,
+                1,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                -4.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.5,
+                  0.0,
+                  0.0,
+                  0.5,
+                  8.0,
+                  8.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": 1,
+            "active": true,
+            "active_seq": 2,
+            "size": [
+              48,
+              40
+            ],
+            "transparent": true,
+            "update": "when_parent_visible",
+            "once_seq": 0,
+            "clear": "next_frame",
+            "clear_seq": 1,
+            "disable_2d": false,
+            "renders_3d": true,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 1,
+            "default_texture_filter": "nearest",
+            "default_texture_repeat": "enabled",
+            "snap_2d": [
+              true,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  2.0,
+                  2.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": null,
+            "active": false,
+            "active_seq": 0,
+            "size": [
+              16,
+              16
+            ],
+            "transparent": false,
+            "update": "once",
+            "once_seq": 1,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 8,
+      "frame": 8,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "viewport_attach_camera",
+            "item": null,
+            "reason": "viewport-3d"
+          },
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 4,
+            "reason": "unsupported-texture"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              6
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "role": null,
+            "attached": false,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              3,
+              4
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "role": null,
+            "attached": true,
+            "layer": 1,
+            "sublayer": 0,
+            "items": [
+              5
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              128.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 3,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  64.0,
+                  48.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              80.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 7,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              4.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 5,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              24.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 6,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  8.0,
+                  8.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 3
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              8.0,
+              8.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 4,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  32.0,
+                  32.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 2,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              160.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 9,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          }
+        ],
+        "textures": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "freed",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "unsupported",
+            "reason": "unsupported-format",
+            "version": 1,
+            "hash": null,
+            "format": "RGBAF",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 3,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 1,
+            "canvas": null
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 2,
+            "canvas": null
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 2,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 1,
+            "canvas": null
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 2,
+            "canvas": null
+          },
+          {
+            "id": 7,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "canvas",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": {
+              "diffuse": 5,
+              "filter": "default",
+              "repeat": "default"
+            }
+          },
+          {
+            "id": 8,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "unsupported",
+            "reason": "proxy-unresolved",
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": null,
+            "canvas": null
+          },
+          {
+            "id": 9,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "freed",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 3,
+            "canvas": null
+          }
+        ],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "viewports": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "parent": 0,
+            "active": true,
+            "active_seq": 1,
+            "size": [
+              64,
+              48
+            ],
+            "transparent": false,
+            "update": "always",
+            "once_seq": 0,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ],
+              [
+                3,
+                1,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                -4.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.5,
+                  0.0,
+                  0.0,
+                  0.5,
+                  8.0,
+                  8.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": 1,
+            "active": true,
+            "active_seq": 2,
+            "size": [
+              48,
+              40
+            ],
+            "transparent": true,
+            "update": "when_parent_visible",
+            "once_seq": 0,
+            "clear": "next_frame",
+            "clear_seq": 1,
+            "disable_2d": false,
+            "renders_3d": true,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 1,
+            "default_texture_filter": "nearest",
+            "default_texture_repeat": "enabled",
+            "snap_2d": [
+              true,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  2.0,
+                  2.0
+                ]
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 9,
+      "frame": 9,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "viewport_attach_camera",
+            "item": null,
+            "reason": "viewport-3d"
+          },
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 4,
+            "reason": "unsupported-texture"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              6
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "role": null,
+            "attached": false,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              3,
+              4
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "role": null,
+            "attached": true,
+            "layer": 1,
+            "sublayer": 0,
+            "items": [
+              5
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              128.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 3,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  64.0,
+                  48.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              80.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 7,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              4.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 5,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              24.0,
+              4.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 6,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  8.0,
+                  8.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 3
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              8.0,
+              8.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 4,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  32.0,
+                  32.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 2,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              160.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 9,
+                "tile": false,
+                "transpose": false,
+                "rect": [
+                  0.0,
+                  0.0,
+                  16.0,
+                  16.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          }
+        ],
+        "textures": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "freed",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "unsupported",
+            "reason": "unsupported-format",
+            "version": 1,
+            "hash": null,
+            "format": "RGBAF",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 3,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 1,
+            "canvas": null
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 2,
+            "canvas": null
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 2,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 1,
+            "canvas": null
+          },
+          {
+            "id": 6,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": 2,
+            "canvas": null
+          },
+          {
+            "id": 7,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "canvas",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": {
+              "diffuse": 5,
+              "filter": "default",
+              "repeat": "default"
+            }
+          },
+          {
+            "id": 8,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "proxy",
+            "status": "unsupported",
+            "reason": "proxy-unresolved",
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "target": null,
+            "canvas": null
+          },
+          {
+            "id": 9,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "viewport",
+            "status": "freed",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "viewport": 3,
+            "canvas": null
+          }
+        ],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "viewports": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "parent": 0,
+            "active": true,
+            "active_seq": 1,
+            "size": [
+              64,
+              48
+            ],
+            "transparent": false,
+            "update": "always",
+            "once_seq": 0,
+            "clear": "always",
+            "clear_seq": 0,
+            "disable_2d": false,
+            "renders_3d": false,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 4294967295,
+            "default_texture_filter": "linear",
+            "default_texture_repeat": "disabled",
+            "snap_2d": [
+              false,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ],
+              [
+                3,
+                1,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                -4.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.5,
+                  0.0,
+                  0.0,
+                  0.5,
+                  8.0,
+                  8.0
+                ]
+              ]
+            }
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": 1,
+            "active": true,
+            "active_seq": 2,
+            "size": [
+              48,
+              40
+            ],
+            "transparent": true,
+            "update": "when_parent_visible",
+            "once_seq": 0,
+            "clear": "next_frame",
+            "clear_seq": 1,
+            "disable_2d": false,
+            "renders_3d": true,
+            "hdr_2d": false,
+            "msaa_2d": 0,
+            "canvas_cull_mask": 1,
+            "default_texture_filter": "nearest",
+            "default_texture_repeat": "enabled",
+            "snap_2d": [
+              true,
+              false
+            ],
+            "canvases": [
+              [
+                2,
+                0,
+                0
+              ]
+            ],
+            "floats": {
+              "global_xform": [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "canvas_xforms": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  2.0,
+                  2.0
+                ]
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

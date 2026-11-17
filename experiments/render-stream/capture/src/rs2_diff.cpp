@@ -302,6 +302,34 @@ bool lowers(const Command &command) {
          (command.kind == CommandKind::Unsupported && command.name == kAddMultimeshOp);
 }
 
+// render-stream-16.md "Patches": a patch lists a viewport entry that is new or differs from the
+// base's in any JSON value (`f` is derived, not stored) or any of its floats, by bit pattern.
+bool viewport_entry_equal(const ViewportEntry &a, const ViewportEntry &b) {
+  if (a.id != b.id || a.origin != b.origin || a.has_parent != b.has_parent ||
+      (a.has_parent && a.parent != b.parent) || a.active != b.active ||
+      a.active_seq != b.active_seq || a.size_w != b.size_w || a.size_h != b.size_h ||
+      a.transparent != b.transparent || a.update != b.update || a.once_seq != b.once_seq ||
+      a.clear != b.clear || a.clear_seq != b.clear_seq || a.disable_2d != b.disable_2d ||
+      a.renders_3d != b.renders_3d || a.hdr_2d != b.hdr_2d || a.msaa_2d != b.msaa_2d ||
+      a.canvas_cull_mask != b.canvas_cull_mask ||
+      a.default_texture_filter != b.default_texture_filter ||
+      a.default_texture_repeat != b.default_texture_repeat ||
+      a.snap_2d_transforms != b.snap_2d_transforms || a.snap_2d_vertices != b.snap_2d_vertices ||
+      a.canvases.size() != b.canvases.size() ||
+      std::memcmp(a.global_xform.data(), b.global_xform.data(), sizeof(a.global_xform)) != 0) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.canvases.size(); ++i) {
+    const ViewportCanvasRow &x = a.canvases[i];
+    const ViewportCanvasRow &y = b.canvases[i];
+    if (x.canvas != y.canvas || x.layer != y.layer || x.sublayer != y.sublayer ||
+        std::memcmp(x.xform.data(), y.xform.data(), sizeof(x.xform)) != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // PM5 (render-stream-12.md "Particles table"): a patch lists an entry whose JSON fields or floats
 // (by bit pattern) differ from the base's.
 bool particles_entry_equal(const ParticlesEntry &a, const ParticlesEntry &b) {
@@ -463,6 +491,14 @@ bool texture_entry_equal(const TextureEntry &a, const TextureEntry &b) {
   if (a.has_canvas && !canvas_texture_info_equal(a.canvas, b.canvas)) {
     return false;
   }
+  // new at /16: the kind key (`viewport` or `target`; a freed entry keeps its last value).
+  if (a.kind == TextureKind::Viewport && a.viewport != b.viewport) {
+    return false;
+  }
+  if (a.kind == TextureKind::Proxy &&
+      (a.has_target != b.has_target || (a.has_target && a.target != b.target))) {
+    return false;
+  }
   // new at /9: variants (empty below /9) take part in the entry's identity, so a variant that
   // appears at an equal version is a patch entry.
   if (a.variants.size() != b.variants.size()) {
@@ -540,6 +576,9 @@ Transaction make_full(const Snapshot &cur, const TxMeta &meta) {
     t.particles = cur.particles;
     append_emits(cur.emit_tail, cur.frame - 1, cur.frame, &t.particle_emits);
     t.perturb_seed = meta.perturb_seed;
+  }
+  if (is_v16(t.version)) {
+    t.viewports = cur.viewports;  // render-stream-16.md: a full lists every entry, no removed
   }
   t.items.reserve(cur.items.size());
   for (const ItemState &item : cur.items) {
@@ -799,6 +838,21 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
     append_emits(cur.emit_tail, base.frame, cur.frame, &t.particle_emits);
   }
 
+  if (is_v16(t.version) && (!cur.viewports.empty() || !base.viewports.empty())) {
+    // render-stream-16.md "Patches": the entries new or differing since the base, and the base ids
+    // the target no longer names.
+    const IdIndex<ViewportEntry> base_vps(base.viewports);
+    const IdIndex<ViewportEntry> cur_vps(cur.viewports);
+    base_vps.removed_from(cur_vps, &t.removed_viewports);
+    for (const ViewportEntry &v : cur.viewports) {
+      const ViewportEntry *prev = base_vps.find(v.id);
+      if (prev != nullptr && viewport_entry_equal(*prev, v)) {
+        continue;
+      }
+      t.viewports.push_back(v);
+    }
+  }
+
   return t;
 }
 
@@ -835,6 +889,9 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
     }
     if (is_v12_or_later(txn.version)) {
       out.particles = txn.particles;
+    }
+    if (is_v16(txn.version)) {
+      out.viewports = txn.viewports;
     }
     out.items.reserve(txn.items.size());
     for (const ItemEntry &entry : txn.items) {
@@ -967,6 +1024,25 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
       out.particles.push_back(p);
     }
   }
+  if (is_v16(txn.version)) {
+    // render-stream-16.md "Patches": base minus the removed ids, each listed entry replacing or
+    // inserting.
+    std::map<std::uint32_t, ViewportEntry> vps;
+    for (const ViewportEntry &v : base.viewports) {
+      vps[v.id] = v;
+    }
+    for (std::uint32_t id : txn.removed_viewports) {
+      vps.erase(id);
+    }
+    for (const ViewportEntry &v : txn.viewports) {
+      vps[v.id] = v;
+    }
+    out.viewports.reserve(vps.size());
+    for (auto &[id, v] : vps) {
+      (void)id;
+      out.viewports.push_back(v);
+    }
+  }
   if (is_v11_or_later(txn.version)) {
     // PM1: as the mesh table; an entry whose buffer_f is null keeps the floats the base held,
     // which a capture's entry already carries (its buffer pointer is the target's own).
@@ -1077,14 +1153,14 @@ static_assert(sizeof(CanvasState) == 80, "CanvasState changed: update canvas_sta
 // HC4b: the resource entries' difference functions below compare every field; a field added to
 // one of these structs must be added there too.
 #if defined(__x86_64__) && defined(__GLIBCXX__)
-static_assert(sizeof(TextureEntry) == 208, "TextureEntry changed: update texture_entry_difference");
+static_assert(sizeof(TextureEntry) == 216, "TextureEntry changed: update texture_entry_difference");
 static_assert(sizeof(TextureVariant) == 128, "TextureVariant changed: update texture_entry_difference");
 static_assert(sizeof(MeshEntry) == 96, "MeshEntry changed: update mesh_entry_difference");
 static_assert(sizeof(MeshSurface) == 88, "MeshSurface changed: update mesh_entry_difference");
 static_assert(sizeof(ShaderEntry) == 160, "ShaderEntry changed: update shader_entry_difference");
 static_assert(sizeof(MaterialEntry) == 56, "MaterialEntry changed: update material_entry_difference");
 #elif defined(__x86_64__) && defined(_LIBCPP_VERSION) && defined(_WIN32)
-static_assert(sizeof(TextureEntry) == 184, "TextureEntry changed: update texture_entry_difference");
+static_assert(sizeof(TextureEntry) == 192, "TextureEntry changed: update texture_entry_difference");
 static_assert(sizeof(TextureVariant) == 104, "TextureVariant changed: update texture_entry_difference");
 static_assert(sizeof(MeshEntry) == 96, "MeshEntry changed: update mesh_entry_difference");
 static_assert(sizeof(MeshSurface) == 80, "MeshSurface changed: update mesh_entry_difference");
@@ -1098,7 +1174,7 @@ const char *texture_entry_difference(const TextureEntry &a, const TextureEntry &
   }
   // texture_entry_equal compares every other field (kind, status, reason, version, hash, format,
   // source_format, shape, size_override, payload_bytes, variants, canvas, origin,
-  // adopted_content).
+  // adopted_content, and /16's viewport / target).
   return texture_entry_equal(a, b) ? nullptr : "entry";
 }
 

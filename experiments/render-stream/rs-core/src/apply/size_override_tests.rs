@@ -24,6 +24,8 @@ fn atlas(size_override: Option<[u32; 2]>) -> Texture {
         payload_bytes: 100,
         variants: Vec::new(),
         size_override,
+        viewport: None,
+        target: None,
         canvas: None,
     }
 }
