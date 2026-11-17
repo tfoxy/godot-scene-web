@@ -903,6 +903,8 @@ pub fn merged(run: &Draw, next: &Draw) -> Draw {
 /// Version 1 draws are 44 bytes ([`Draw`] without [`Draw::msdf`]); version 2 draws are the whole
 /// 52-byte [`Draw`]. [`encode`] writes version 1 unless a draw has [`DRAW_MSDF`], so a list with no
 /// MSDF draw dumps exactly as before; [`decode`] reads both.
+pub mod fill;
+
 pub mod pdl1 {
     use super::*;
 

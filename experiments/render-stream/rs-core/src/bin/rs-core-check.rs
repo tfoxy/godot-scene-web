@@ -16,6 +16,8 @@
 //!   rs-core-check scissors <recording> [--store <dir>]
 //!   rs-core-check lowered <recording> --seqs 8,18,... [--store <dir>]
 //!   rs-core-check state-dump <recording> --seqs 8,18,... --out <dir>
+//!   rs-core-check fill <recording> [--store <dir>] [--seqs 8,18,...] [--every N] [--cell 8]
+//!                      [--damage <summary.json>] [--draws <dir>]
 //!
 //! `goldens` runs golden-2 ... golden-14 (exits non-zero on any failing check). `transcode` (W13a,
 //! render-stream-13.md "Forms and transcode") converts a /12 recording to /13 or back, refusing an
@@ -55,6 +57,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
+#[path = "rs-core-check/fill.rs"]
+mod fill_cmd;
+use fill_cmd::cmd_fill;
+
 /// G7o3: the system allocator, counting allocations (`profile` reports them per transaction).
 struct Counting;
 static ALLOCATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -89,6 +95,7 @@ fn usage() -> ExitCode {
          rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]\n  \
          rs-core-check client-diff <recording>... [--store <dir>] [--sabotage ph2-skip-body-digest|ph2-skip-dep-texture|ph2-park-stale|ph2-skip-material-textures]\n  \
          rs-core-check draw-skip-diff <recording>... [--store <dir>] [--every N] [--sabotage ph3-drop-pending]\n  \
+         rs-core-check fill <recording> [--store <dir>] [--seqs a,b] [--every N] [--cell 8] [--damage <summary.json>] [--draws <dir>]\n  \
          rs-core-check live-decode <coded> [--expect <recording>] [--bases keep|none] [--repeats N] [--stats <jsonl>] [--sabotage drop-base|wrong-prefix]"
     );
     ExitCode::from(2)
@@ -158,6 +165,7 @@ fn main() -> ExitCode {
         "scissors" => cmd_scissors(&args),
         "lowered" => cmd_lowered(&args),
         "state-dump" => cmd_state_dump(&args),
+        "fill" => cmd_fill(&args),
         "validate" => cmd_validate(&args),
         "live-decode" => cmd_live_decode(&args),
         "transcode" => cmd_transcode(&args),
@@ -1845,6 +1853,17 @@ fn synthetic_program(
     hash: &render_stream_core::state::Hash,
     program: u32,
 ) -> render_stream_core::apply::programs::ProgramInfo {
+    let meta = synthetic_meta(state, sid, hash);
+    render_stream_core::apply::programs::ProgramInfo::from_meta_json(program, &meta.to_string())
+        .expect("a synthetic program's metadata parses")
+}
+
+/// [`synthetic_program`]'s transpiler metadata.
+fn synthetic_meta(
+    state: &render_stream_core::state::ResolvedState,
+    sid: render_stream_core::state::Id,
+    hash: &render_stream_core::state::Hash,
+) -> J {
     use render_stream_core::state::{EntryStatus, Param, ParamValue, VariantType};
     let mut seen = std::collections::BTreeSet::new();
     let (mut uniforms, mut samplers) = (Vec::new(), Vec::new());
@@ -1887,11 +1906,9 @@ fn synthetic_program(
             }
         }
     }
-    let meta = json!({"blend": "mix", "lightMode": "normal", "uniforms": uniforms,
+    json!({"blend": "mix", "lightMode": "normal", "uniforms": uniforms,
         "samplers": samplers, "screenTexture": null, "vertexStage": hash.0[0] & 1 == 1,
-        "time": false});
-    render_stream_core::apply::programs::ProgramInfo::from_meta_json(program, &meta.to_string())
-        .expect("a synthetic program's metadata parses")
+        "time": false})
 }
 
 /// A digest of a packed list's whole contents as they stand (its `Debug` form, streamed).
