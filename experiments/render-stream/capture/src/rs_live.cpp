@@ -441,7 +441,8 @@ std::size_t stage_index(AckStage stage) { return static_cast<std::size_t>(stage)
 
 // The hello `protocol` string of a version (render-stream-N.md "Live transport").
 const char *protocol_string(ProtocolVersion version) {
-  return version == ProtocolVersion::V14   ? kProtocolV14
+  return version == ProtocolVersion::V15   ? kProtocolV15
+         : version == ProtocolVersion::V14 ? kProtocolV14
          : version == ProtocolVersion::V13 ? kProtocolV13
          : version == ProtocolVersion::V12 ? kProtocolV12
          : version == ProtocolVersion::V11 ? kProtocolV11
@@ -701,7 +702,7 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
           // ID3 (render-stream-14.md): instance_id and mouse_filter are fields at /14 only (the
           // sabotage v2-at-13 accepts them at /13 too).
           const std::string problem = rs::item_meta::request_problem(
-              request, version == ProtocolVersion::V14 || v2_at_13);
+              request, is_v14_or_later(version) || v2_at_13);
           if (!problem.empty()) {
             return fail(problem);
           }
@@ -845,6 +846,7 @@ void set_default_formation(Formation formation, bool wait) {
 struct Hub::Conn {
   std::uint32_t id = 0;
   ConnectionSummary s;
+  rs::hints::Sent hint_sent;  // render-stream-15.md: the hashes hinted on this /15 connection
   // G7n: the protocol this connection speaks, from its subprotocol (the template's otherwise).
   ProtocolVersion version = ProtocolVersion::V2;
   State state = State::AwaitHello;
@@ -1064,6 +1066,8 @@ struct Hub::Job {
   // since the last submitted job (the callback's first job carries them).
   std::shared_ptr<const rs::item_meta::Request> meta_grant;
   std::vector<std::shared_ptr<const rs::item_meta::Batch>> meta_batches;
+  // render-stream-15.md: hint and unhint records, sent after the transaction (or alone).
+  std::vector<std::shared_ptr<const std::vector<std::uint8_t>>> hints;
   bool send = true;      // false: drop-message (formed, tapped, never sent)
   bool reorder = false;  // HC5 sabotage: the transaction goes out before its records
   // The frame line (log_frame), written when the job completes.
@@ -1593,7 +1597,9 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       // PM5: render-stream.12 -> /12 (render-stream-12.md).
       // W13b: render-stream.13 -> /13 (render-stream-13.md "As built (W13b)").
       // ID3: render-stream.14 -> /14 (render-stream-14.md), listed only under a v2 grant.
-      c.version = event.subprotocol == kSubprotocolV14   ? ProtocolVersion::V14
+      // render-stream.15 -> /15 (render-stream-15.md), listed only under GRC_STREAM_VERSION=15.
+      c.version = event.subprotocol == kSubprotocolV15   ? ProtocolVersion::V15
+                  : event.subprotocol == kSubprotocolV14 ? ProtocolVersion::V14
                   : event.subprotocol == kSubprotocolV13 ? ProtocolVersion::V13
                   : event.subprotocol == kSubprotocolV12 ? ProtocolVersion::V12
                   : event.subprotocol == kSubprotocolV11 ? ProtocolVersion::V11
@@ -2418,6 +2424,32 @@ void Hub::form_item_meta(Job &job, bool full,
   o.max_record_bytes = std::max<std::uint64_t>(o.max_record_bytes, bytes.size());
 }
 
+void Hub::form_hints(Job &job) {
+  FormState &f = *job.form;
+  Counters &o = job.out;
+  for (const auto &record : job.hints) {
+    // One record per binary message, as resource records (render-stream-15.md "Placement").
+    std::shared_ptr<const std::vector<std::uint8_t>> wire;
+    if (f.coding != rs::live_coding::Coding::Off) {
+      wire = coded_plain(&o.coded_shared, &o.coding_ns, *record, "");
+    }
+    form_deliver(job, *record, true, wire.get());
+    o.record_bytes_total += record->size();
+    o.max_record_bytes = std::max<std::uint64_t>(o.max_record_bytes, record->size());
+  }
+}
+
+void Hub::hint_sinks(std::vector<const rs::hints::Sent *> *out) const {
+  for (const auto &entry : conns_) {
+    const Conn &c = *entry.second;
+    // Pin before on_frame_shared() can promote an accepted hello and send its first hints.
+    if (c.version == ProtocolVersion::V15 &&
+        (c.state == State::Streaming || (c.state == State::AwaitHello && c.hello_received))) {
+      out->push_back(&c.hint_sent);
+    }
+  }
+}
+
 void Hub::run_job(Job &job) {
   if (job.batch_end) {
     // P3-SP: the shared work lives for one callback; its snapshots are released by the main
@@ -2455,6 +2487,7 @@ void Hub::run_job(Job &job) {
     form_deliver(job, *job.session, true, wire.get());
   }
   if (!job.has_tx) {
+    form_hints(job);  // render-stream-15.md: a frame with no transaction still sends its hints
     return;
   }
   const rs::Captured &snapshot = *job.target;
@@ -2660,6 +2693,7 @@ void Hub::run_job(Job &job) {
   for (const Held &r : held) {
     deliver_record(r);  // reorder: after the transaction that names them
   }
+  form_hints(job);  // render-stream-15.md: never ahead of the frame's transaction
   job.tx_formed = true;
   job.tx_bytes = bytes.size();
   job.diff_ns = full ? 0 : t1 - t0;
@@ -3092,6 +3126,41 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
     }
     if (c.state == State::Closed) {
       continue;  // closed by an error above (logged there)
+    }
+    if (hints_ != nullptr && c.version == ProtocolVersion::V15 && c.state == State::Streaming &&
+        c.s.sent > 0) {
+      // render-stream-15.md "Placement and ordering": after the connection's first transaction,
+      // at most kPerFrame records a callback, behind this callback's transaction.
+      rs::hints::Diff d;
+      rs::hints::diff(*hints_, &c.hint_sent, frame, hint_sabotage_, rs::hints::kPerFrame, &d);
+      if (!d.records.empty()) {
+        Job &job = batch_job(c);
+        if (!job.has_tx) {
+          job.frame = frame;
+          job.now_ns = now_ns;
+          job.max_message_bytes = c.s.max_message_bytes;
+        }
+        job.hints = std::move(d.records);
+        for (const std::string &hash : d.unhinted) {
+          ++unhints_sent_;
+          HintEvent e;
+          e.connection = c.s.connection;
+          e.frame = frame;
+          e.unhint = true;
+          e.hash = hash;
+          hint_events_.push_back(std::move(e));
+        }
+        for (const rs::hints::Entry *entry : d.hinted) {
+          ++hints_sent_;
+          HintEvent e;
+          e.connection = c.s.connection;
+          e.frame = frame;
+          e.hash = entry->hint.hash;
+          e.cause = entry->hint.cause;
+          e.priority = entry->hint.priority;
+          hint_events_.push_back(std::move(e));
+        }
+      }
     }
     if (c.job != nullptr && c.job->has_tx) {
       // HC5: the frame line names the transaction's bytes; it is written when the job completes

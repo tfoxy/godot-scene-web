@@ -85,6 +85,7 @@ fn texture(id: Id, size: u32, version: i64, hash: Hash) -> Texture {
         mipmaps: false,
         payload_bytes: 100,
         variants: Vec::new(),
+        size_override: None,
         canvas: None,
     }
 }

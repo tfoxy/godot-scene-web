@@ -1412,6 +1412,97 @@ void test_hc4b_skip_dirty_texture() {
   g_expected_shadow_mismatches += m.stats().hc_shadow_mismatches;
 }
 
+// render-stream-15.md "Size override" and the hint watch (the `create` source).
+void test_v15_size_override_and_hint_watch() {
+  {
+    // Below /15 (set_v15 off) the call changes nothing: no key, no version.
+    Mirror m;
+    bind_root(&m);
+    grc::rs::PayloadPtr a;
+    const auto a_copy = rgba8_copy(8, 4, fill(8, 4, 1), &a);
+    m.texture_2d_create(500, a_copy, a, 1);
+    drawing_item(&m, 100, 500, 1);
+    m.texture_set_size_override(500, 6, 4, 1);
+    const Snapshot s = m.snapshot(1, 1).state;
+    check(texture(s, 1) != nullptr && texture(s, 1)->size_override_w == 0 &&
+              texture(s, 1)->version == 1,
+          "v15 off: texture_set_size_override is ignored");
+  }
+  Mirror m;
+  m.set_v15(true);
+  bind_root(&m);
+  grc::rs::PayloadPtr a;
+  const auto a_copy = rgba8_copy(8, 4, fill(8, 4, 1), &a);
+  m.texture_2d_create(500, a_copy, a, 1);
+  drawing_item(&m, 100, 500, 1);
+  m.texture_set_size_override(500, 8, 4, 1);  // the stored size: absent, no version
+  Snapshot s = m.snapshot(1, 1).state;
+  check(texture(s, 1)->size_override_w == 0 && texture(s, 1)->version == 1,
+        "an override equal to the stored size is absent and keeps the version");
+  m.texture_set_size_override(500, 6, 3, 2);
+  s = m.snapshot(2, 2).state;
+  check(texture(s, 1)->size_override_w == 6 && texture(s, 1)->size_override_h == 3 &&
+            texture(s, 1)->version == 2,
+        "a differing override is carried and moves the version (" +
+            std::to_string(texture(s, 1)->size_override_w) + "x" +
+            std::to_string(texture(s, 1)->size_override_h) + " v" +
+            std::to_string(texture(s, 1)->version) + ")");
+  m.texture_set_size_override(500, 6, 3, 3);
+  m.texture_set_size_override(500, 0, 3, 3);      // GLES3 refuses: nothing
+  m.texture_set_size_override(500, 16385, 3, 3);  // likewise
+  s = m.snapshot(3, 3).state;
+  check(texture(s, 1)->version == 2 && texture(s, 1)->size_override_w == 6,
+        "a repeated or refused override changes nothing");
+  grc::rs::PayloadPtr b;
+  const auto b_copy = rgba8_copy(8, 4, fill(8, 4, 2), &b);
+  m.texture_2d_update(500, b_copy, b, 0, 4);
+  s = m.snapshot(4, 4).state;
+  check(texture(s, 1)->size_override_w == 6 && texture(s, 1)->version == 3,
+        "the override survives texture_2d_update");
+  grc::rs::PayloadPtr c;
+  const auto c_copy = rgba8_copy(8, 4, fill(8, 4, 3), &c);
+  m.texture_2d_create(501, c_copy, c, 5);  // id 2
+  m.texture_replace(500, 501, 5);
+  s = m.snapshot(5, 5).state;
+  check(texture(s, 1)->size_override_w == 0 && texture(s, 1)->version == 4,
+        "texture_replace takes the source's override (none)");
+  m.texture_set_size_override(500, 8, 4, 6);
+  s = m.snapshot(6, 6).state;
+  check(texture(s, 1)->version == 4, "the stored size after a replace is no change");
+
+  // The hint watch: a create is handed over once, at rest, with the entry a snapshot carries.
+  Mirror h;
+  h.set_hint_watch(true);
+  bind_root(&h);
+  grc::rs::PayloadPtr d;
+  const auto dc = rgba8_copy(4, 4, fill(4, 4, 7), &d);
+  h.texture_2d_create(600, dc, d, 1);
+  grc::rs::PayloadPtr e;
+  const auto e_copy = rgba8_copy(4, 4, fill(4, 4, 8), &e);
+  h.texture_2d_create(601, e_copy, e, 1);
+  grc::rs::PayloadPtr f;
+  const auto f_copy = rgba8_copy(4, 4, fill(4, 4, 9), &f);
+  h.texture_2d_update(601, f_copy, f, 0, 1);  // changed: dropped
+  std::vector<Mirror::HintSource> sources;
+  h.poll_hint_sources(&sources);
+  check(sources.size() == 1 && sources[0].rid == 600 && sources[0].entry.hash == dc.hash &&
+            sources[0].body == d && sources[0].entry.payload_bytes == static_cast<uint64_t>(dc.payload_bytes),
+        "the hint watch hands over the unchanged create once, with its own body");
+  sources.clear();
+  h.poll_hint_sources(&sources);
+  check(sources.empty(), "a create is handed over only once");
+  std::string hash;
+  check(h.texture_hash(600, &hash) == 1 && hash == dc.hash, "texture_hash names the ok content");
+  check(h.texture_hash(999, &hash) == 0, "texture_hash of an unknown RID is 0");
+  h.free_rid(600, 2);
+  check(h.texture_hash(600, &hash) == 0, "a freed texture's RID is unknown");
+  std::vector<std::pair<std::string, grc::rs::PayloadPtr>> bodies;
+  const grc::rs2::TextureEntry warm = Mirror::ok_image_entry(dc, &bodies);
+  check(warm.has_hash && warm.hash == dc.hash && warm.width == 4 && warm.format == "RGBA8" &&
+            bodies.empty(),
+        "ok_image_entry carries the copy's shape (" + warm.format + ")");
+}
+
 void test_texture_ids_versions_and_payloads() {
   Mirror m;
   bind_root(&m);
@@ -5048,6 +5139,7 @@ int main() {
   const char *shadow = std::getenv("RS_MIRROR_TEST_SHADOW");
   const bool shadow_on = shadow != nullptr && std::string(shadow) == "1";
   Mirror::set_default_hc_shadow(shadow_on);
+  test_v15_size_override_and_hint_watch();
   test_hc4a_persistent_tables();
   test_hc4a_shadow_sabotages();
   test_hc4b_resource_tables();

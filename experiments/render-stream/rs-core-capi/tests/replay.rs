@@ -10,7 +10,8 @@
 use render_stream_core::state::Hash;
 use render_stream_core::wire;
 use rs_core_capi::core::{
-    Core, KIND_ERROR, KIND_HELD, KIND_ITEM_META, KIND_RESOURCE, KIND_SESSION, KIND_TRANSACTION,
+    Core, KIND_ERROR, KIND_HELD, KIND_HINT, KIND_ITEM_META, KIND_RESOURCE, KIND_SESSION,
+    KIND_TRANSACTION,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -57,8 +58,20 @@ fn replay_at(
     full_scan: bool,
     sabotage: &str,
 ) -> Vec<(Vec<u32>, Vec<u8>)> {
-    let name = path.display().to_string();
     let data = std::fs::read(path).unwrap();
+    replay_data(path, &data, version, full_scan, sabotage)
+}
+
+/// `replay_at` of `data`, a recording (possibly edited) that lives at `path`'s golden directory.
+fn replay_data(
+    path: &std::path::Path,
+    data: &[u8],
+    version: u8,
+    full_scan: bool,
+    sabotage: &str,
+) -> Vec<(Vec<u32>, Vec<u8>)> {
+    let name = path.display().to_string();
+    let data = data.to_vec();
     // A golden directory's own payloads when it has them (golden-9, golden-10), else golden-6's.
     // golden-11's own directory holds only dynamic bodies (they travel in `mesh_u8`): its hashed
     // payloads are golden-10's.
@@ -66,8 +79,9 @@ fn replay_at(
     if path.parent().unwrap().ends_with("golden-11") {
         own = path.parent().unwrap().join("../golden-10/payloads");
     }
-    let mut store = if path.parent().unwrap().ends_with("golden-12")
-        || path.parent().unwrap().ends_with("golden-13")
+    let mut store = if ["golden-12", "golden-13", "golden-14", "golden-15"]
+        .iter()
+        .any(|g| path.parent().unwrap().ends_with(g))
     {
         g12_payloads()
     } else if own.is_dir() {
@@ -312,6 +326,13 @@ fn the_session_is_at_the_streams_version() {
     assert_eq!(session_at(&rs12, 12).0, KIND_SESSION);
     assert_eq!(session_at(&rs12, 11).0, KIND_ERROR);
     assert_eq!(session_at(&rs11, 12).0, KIND_ERROR);
+    // /14 and /15 files open at their own version only.
+    let rs14 = golden7().join("../golden-14/full.rs14");
+    let rs15 = golden7().join("../golden-15/full.rs15");
+    assert_eq!(session_at(&rs14, 14).0, KIND_SESSION);
+    assert_eq!(session_at(&rs15, 15).0, KIND_SESSION);
+    assert_eq!(session_at(&rs15, 14).0, KIND_ERROR);
+    assert_eq!(session_at(&rs14, 15).0, KIND_ERROR);
     assert_eq!(session_at(&rs8, 6).0, KIND_ERROR);
     assert_eq!(session_at(&rs6, 8).0, KIND_ERROR);
     // Only 6, 7 and 8: an older version is not a receiver stream.
@@ -329,7 +350,7 @@ fn the_session_is_at_the_streams_version() {
 #[test]
 fn op_table_matches_the_shim() {
     // receiver/ext/rs_core_capi.h's OP_COUNT.
-    assert_eq!(rs_core_capi::ops::OP_COUNT, 92);
+    assert_eq!(rs_core_capi::ops::OP_COUNT, 93);
 }
 
 /// CG1 (render-stream-10.md "Receivers"): golden-10's states 9 and 10 re-issue the canvas-group
@@ -1145,4 +1166,134 @@ fn zero_run_failure_holds_patches_until_the_full() {
     core.state_json();
     plain.state_json();
     assert_eq!(core.text, plain.text, "the resynced stream ends on the unbroken state");
+}
+
+/// The `TextureSetSizeOverride` ops in a call batch: (word index, texture rid word, width,
+/// height). Matched as the op word followed by a texture rid word and two sizes in 1..16384.
+fn size_overrides(words: &[u32]) -> Vec<(usize, u32, u32, u32)> {
+    let op = rs_core_capi::ops::Op::TextureSetSizeOverride as u32;
+    let kind = rs_core_capi::ops::KIND_TEXTURE;
+    let size = |v: u32| (1..=16384).contains(&v);
+    words
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w)| w[0] == op && w[1] >> 29 == kind && size(w[2]) && size(w[3]))
+        .map(|(i, w)| (i, w[1], w[2], w[3]))
+        .collect()
+}
+
+/// `data`'s records up to and including transaction `last_seq`, each meta passed through `edit`
+/// (seq, meta) and re-framed with its body unchanged.
+fn edit_records(
+    data: &[u8],
+    version: u8,
+    last_seq: i64,
+    mut edit: impl FnMut(i64, &[u8]) -> Vec<u8>,
+) -> Vec<u8> {
+    let mut out = data[..wire::MAGIC_LEN].to_vec();
+    for s in wire::split_records(data, version).unwrap() {
+        let rec = &data[s.offset..s.offset + 4 + wire::le_u32(data, s.offset) as usize];
+        let f = wire::frame(rec, 0).unwrap();
+        let meta: serde_json::Value = serde_json::from_slice(f.meta).unwrap();
+        let seq = meta["seq"].as_i64().unwrap_or(-1);
+        let new_meta = edit(seq, f.meta);
+        let body = &rec[f.body..];
+        out.extend_from_slice(&((4 + new_meta.len() + body.len()) as u32).to_le_bytes());
+        out.extend_from_slice(&(new_meta.len() as u32).to_le_bytes());
+        out.extend_from_slice(&new_meta);
+        out.extend_from_slice(body);
+        if seq == last_seq {
+            break;
+        }
+    }
+    out
+}
+
+fn replace_once(hay: &[u8], from: &str, to: &str) -> Vec<u8> {
+    let at = hay
+        .windows(from.len())
+        .position(|w| w == from.as_bytes())
+        .unwrap_or_else(|| panic!("no {from}"));
+    [&hay[..at], to.as_bytes(), &hay[at + from.len()..]].concat()
+}
+
+/// render-stream-15.md "Size override": the native receiver sets a texture's logical size with
+/// `texture_set_size_override` after the call that gave the Godot texture its image, only when
+/// the entry's logical size differs from what the Godot texture has. hints.rs15 is patch.rs15
+/// plus hints and texture 11's override [15, 13] from seq 9 (version 1 -> 2, payload kept), so
+/// its calls are patch.rs15's plus one override at seq 9; the hints apply nothing, and its /14
+/// transcode (hints and override dropped) issues exactly patch.rs15's calls.
+#[test]
+fn golden_15_sets_the_size_override_and_ignores_hints() {
+    let g15 = golden().join("../golden-15");
+    let hints = replay_at(&g15.join("hints.rs15"), 15, false, "");
+    let hints_full = replay_at(&g15.join("hints.rs15"), 15, true, "");
+    let patch = replay_at(&g15.join("patch.rs15"), 15, false, "");
+    let to14 = replay_at(&g15.join("hints.rs14"), 14, false, "");
+    assert_eq!(hints.len(), patch.len(), "batch counts");
+    assert!(hints == hints_full, "delta walk differs from the full scan");
+    assert!(to14 == patch, "hints.rs14 differs from patch.rs15");
+    // Batch 0 is begin_session; batch k is the apply after seq k.
+    let mut tex11 = None;
+    for (k, ((hw, ha), (pw, pa))) in hints.iter().zip(&patch).enumerate() {
+        assert_eq!(ha, pa, "batch {k}: arena");
+        let found = size_overrides(hw);
+        if k != 9 {
+            assert!(found.is_empty(), "batch {k}: unexpected override {found:?}");
+            assert!(hw == pw, "batch {k} differs from patch.rs15's");
+            continue;
+        }
+        assert_eq!(found.len(), 1, "seq 9: {found:?}");
+        let (at, rid, w, h) = found[0];
+        assert_eq!((w, h), (15, 13));
+        tex11 = Some(rid);
+        let mut without = hw.clone();
+        without.drain(at..at + 4);
+        assert!(&without == pw, "seq 9: the override is not the only extra call");
+    }
+    assert!(tex11.is_some());
+    assert!(patch.iter().all(|(w, _)| size_overrides(w).is_empty()));
+
+    // Hints are their own kind and carry their hash.
+    let data = std::fs::read(g15.join("hints.rs15")).unwrap();
+    let spans = wire::split_records(&data, 15).unwrap();
+    let mut core = Core::new();
+    assert_eq!(core.session(&data, spans[0].offset, 15), KIND_SESSION);
+    let mut seen = 0;
+    for s in &spans[1..] {
+        if core.accept(&data, s.offset) == KIND_HINT {
+            assert!(mentions(&core.vt.out, "resource_") && mentions(&core.vt.out, "hint"));
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, 5);
+}
+
+/// A changed override is set again, and a removed one is set back to the payload's size (Godot
+/// cannot clear one): hints.rs15 up to seq 21 with seq 21's full giving texture 11 [14, 13], or
+/// no override, at version 3.
+#[test]
+fn a_changed_or_removed_size_override_is_set_again() {
+    let g15 = golden().join("../golden-15");
+    let path = g15.join("hints.rs15");
+    let data = std::fs::read(&path).unwrap();
+    for (to, want) in [("\"size_override\":[14,13],", (14, 13)), ("", (16, 16))] {
+        let edited = edit_records(&data, 15, 21, |seq, meta| {
+            if seq != 21 {
+                return meta.to_vec();
+            }
+            let tex11 = "\"version\":2,\"hash\":\"4285398666ce";
+            let m = replace_once(meta, tex11, &tex11.replace(":2,", ":3,"));
+            replace_once(&m, "\"size_override\":[15,13],", to)
+        });
+        let batches = replay_data(&path, &edited, 15, false, "");
+        let full = replay_data(&path, &edited, 15, true, "");
+        assert!(batches == full, "{to:?}: delta walk differs from the full scan");
+        let set: Vec<_> = batches
+            .iter()
+            .enumerate()
+            .flat_map(|(k, (w, _))| size_overrides(w).into_iter().map(move |o| (k, o.2, o.3)))
+            .collect();
+        assert_eq!(set, vec![(9, 15, 13), (21, want.0, want.1)], "{to:?}");
+    }
 }

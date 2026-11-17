@@ -72,7 +72,10 @@ fn replay(data: &[u8], apply_every: usize, retain: bool) -> Run {
                     store.provide(&b, &hash, 11, true).unwrap();
                 }
             }
-            Accepted::End | Accepted::ItemMeta => {}
+            Accepted::End
+            | Accepted::ItemMeta
+            | Accepted::ResourceHint { .. }
+            | Accepted::ResourceUnhint { .. } => {}
             Accepted::Transaction => {
                 run.txs += 1;
                 run.bodies += u64::from(store.accept_transaction(&v, rec).unwrap());
@@ -209,7 +212,10 @@ fn golden_11_incremental_paint_equals_a_fresh_applier() {
                     store.provide(&b, &hash, 11, true).unwrap();
                 }
             }
-            Accepted::End | Accepted::ItemMeta => {}
+            Accepted::End
+            | Accepted::ItemMeta
+            | Accepted::ResourceHint { .. }
+            | Accepted::ResourceUnhint { .. } => {}
             Accepted::Transaction => {
                 store.accept_transaction(&v, rec).unwrap();
                 a.apply(v.state(), v.delta(), &store);

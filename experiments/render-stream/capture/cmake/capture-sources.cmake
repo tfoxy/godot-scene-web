@@ -27,6 +27,7 @@ set(GRC_CAPTURE_SOURCES
   src/rs_gate8_policy.cpp
   src/rs_histogram.cpp
   src/rs_live.cpp
+  src/rs_hints.cpp
   src/rs_tracks.cpp
   src/rs_track_caps.cpp
   src/rs_tracks_gd.cpp

@@ -9,6 +9,7 @@ import {
   ACCEPT_ITEM_META,
   ACCEPT_NEEDS_PAYLOADS,
   ACCEPT_RESOURCE,
+  ACCEPT_RESOURCE_HINT,
   type GswRs,
   type GswRsModule,
   type LiveCoding,
@@ -16,6 +17,7 @@ import {
 } from "./abi";
 import type { RenderStreamProtocol } from "./endpoint";
 import { type ExtensionCore, ITEM_ROW_STRIDE } from "./extensions";
+import type { ResourceHintRecord } from "./hints";
 import { GswParticles } from "./particles";
 import { definePrograms, type ProgramCounts, ProgramError } from "./programs";
 
@@ -63,7 +65,13 @@ export type CoreMessage =
   /** An item_meta record (identities for extensions): nothing to apply, no ack. */
   | { kind: "item_meta" }
   /** W11t: a based message that did not decode: ask the host for a `coding` resync. */
-  | { kind: "coding-resync"; seq: number; error: string };
+  | { kind: "coding-resync"; seq: number; error: string }
+  /** A /15 `resource_hint` (render-stream-15.md): advisory, nothing to apply, no ack. `held`:
+   * the payload is already in the store or staged; `named`: the accepted state already names
+   * it (the hint trails its first reference). */
+  | { kind: "hint"; hint: ResourceHintRecord; held: boolean; named: boolean }
+  /** A /15 `resource_unhint`: the host stops serving `hash` under the pin rule. */
+  | { kind: "unhint"; hash: string };
 
 /** The session record's parts the loop reads (`GswRs.session_meta`). */
 export interface SessionMeta {
@@ -91,6 +99,9 @@ export interface StreamCore {
   /** A copy of the last decoded message's bytes (`receive` with `copyDecoded` true), or
    * null. The pure client never asks, so it never copies. */
   takeDecoded(): Uint8Array | null;
+  /** /15: the hinted hashes the last accepted transaction's upserted textures carry. Absent:
+   * the loop learns no reference of a hinted hash. */
+  hintRefs?(): string[];
   /** The coding skipped transactions; the next full may jump the seq. */
   transportSkip(): void;
   /** A fresh applier over the whole resolved state (inheriting the GPU residency); returns
@@ -323,9 +334,13 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
         };
       throw failWith(seq, err);
     }
-    // W13c: a patch dropped while a predict-check resync awaits its full.
-    if (code === ACCEPT_HELD) return { kind: "held" };
-    if (code === ACCEPT_ITEM_META) return { kind: "item_meta" };
+    // One compare for a transaction (0 or 3) to pass the codes from ACCEPT_HELD up.
+    if (code >= ACCEPT_HELD) {
+      // W13c: a patch dropped while a predict-check resync awaits its full.
+      if (code === ACCEPT_HELD) return { kind: "held" };
+      if (code === ACCEPT_ITEM_META) return { kind: "item_meta" };
+      return this.hintMessage(code === ACCEPT_RESOURCE_HINT);
+    }
     if (code === ACCEPT_RESOURCE) return { kind: "resource" };
     if (code === ACCEPT_END) return { kind: "end" };
     const st = this.stats();
@@ -338,6 +353,46 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       full: st[STAT_ENCODING] === 0,
       needed: this.readNeeded(code),
     };
+  }
+
+  /** The hint or unhint record just accepted (render-stream-15.md "Records"; the core checked
+   * every key, so the meta is read as is). */
+  private hintMessage(hint: boolean): CoreMessage {
+    const g = this.g;
+    const m = JSON.parse(g.hint_json()) as Record<string, unknown>;
+    const hash = m.hash as string;
+    if (!hint) return { kind: "unhint", hash };
+    const state = g.hint_state(hash);
+    return {
+      kind: "hint",
+      hint: {
+        hash,
+        format: m.format as string,
+        sourceFormat: m.source_format as string | null,
+        width: m.width as number,
+        height: m.height as number,
+        mipmaps: m.mipmaps as boolean,
+        payloadBytes: m.payload_bytes as number,
+        variants: (m.variants as Record<string, unknown>[]).map((v) => ({
+          encoding: v.encoding as string,
+          hash: v.hash as string,
+          payloadBytes: v.payload_bytes as number,
+          format: (v.format as string | undefined) ?? null,
+        })),
+        path: m.path as string | null,
+        cause: m.cause as ResourceHintRecord["cause"],
+        priority: m.priority as number,
+      },
+      held: (state & 1) !== 0,
+      named: (state & 2) !== 0,
+    };
+  }
+
+  hintRefs(): string[] {
+    const s = this.g.hint_refs();
+    const out: string[] = [];
+    for (let i = 0; i + 64 <= s.length; i += 64) out.push(s.slice(i, i + 64));
+    return out;
   }
 
   transportSkip(): void {

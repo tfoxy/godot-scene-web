@@ -586,6 +586,28 @@ const TEXTURE_KEYS_V9: &[&str] = &[
     "variants",
     "canvas",
 ];
+// render-stream-15.md "Size override": the optional "size_override" right after "variants".
+const TEXTURE_KEYS_V15: &[&str] = &[
+    "id",
+    "origin",
+    "adopted_content",
+    "kind",
+    "status",
+    "reason",
+    "version",
+    "hash",
+    "format",
+    "source_format",
+    "width",
+    "height",
+    "mipmaps",
+    "payload_bytes",
+    "variants",
+    "size_override",
+    "canvas",
+];
+/// render-stream-15.md "Size override": each side of a texture's logical size is in 1..=16384.
+pub const SIZE_OVERRIDE_MAX: i64 = 16384;
 const CANVAS_TEXTURE_KEYS: &[&str] = &["diffuse", "filter", "repeat"];
 const MESH_KEYS: &[&str] = &[
     "id", "origin", "status", "reason", "version", "f", "surfaces",
@@ -2492,6 +2514,65 @@ const IMAGE_FORMAT_NAMES: &[&str] = &[
     "ASTC_4x4", "ASTC_4x4_HDR", "ASTC_8x8", "ASTC_8x8_HDR",
 ];
 
+/// A /9 `variants` array of five-key objects (render-stream-9.md "Texture entries"), `what` naming
+/// the holder in messages; the cross-entry rules are `delivery-entry` (validate.rs).
+fn check_variants(ck: &mut Ck, v: Value, what: &str) -> Result<Vec<TextureVariant>, Error> {
+    let err = |ck: &Ck, d: &str| ck.schema(format!("{what} {d}"));
+    let mut variants = Vec::new();
+    let Some(list) = ck.arr(v) else {
+        return Err(err(ck, "\"variants\" is not an array"));
+    };
+    for &item in list {
+        let Some(v) = ck.fields(item, VARIANT_KEYS) else {
+            return Err(err(ck, "has a \"variants\" entry with the wrong keys"));
+        };
+        let Some(encoding) = enum_of(ck, v.at(0), VariantEncoding::ALL, VariantEncoding::as_str)
+        else {
+            return Err(err(ck, "has a variant with an invalid \"encoding\""));
+        };
+        let Some(hash) = ck.hash(v.at(1)) else {
+            return Err(err(
+                ck,
+                "has a variant \"hash\" that is not 64 lowercase hex digits",
+            ));
+        };
+        let Some(payload_bytes) = ck.int_ge(v.at(2), 0) else {
+            return Err(err(
+                ck,
+                "has a variant \"payload_bytes\" that is not a non-negative integer",
+            ));
+        };
+        let format = if ck.null(v.at(3)) {
+            None
+        } else if let Some(s) = ck.owned(v.at(3)) {
+            Some(s)
+        } else {
+            return Err(err(
+                ck,
+                "has a variant \"format\" that is neither null nor a string",
+            ));
+        };
+        let params = if ck.null(v.at(4)) {
+            None
+        } else if let Some(s) = ck.owned(v.at(4)) {
+            Some(s)
+        } else {
+            return Err(err(
+                ck,
+                "has a variant \"params\" that is neither null nor a string",
+            ));
+        };
+        variants.push(TextureVariant {
+            encoding,
+            hash,
+            payload_bytes,
+            format,
+            params,
+        });
+    }
+    Ok(variants)
+}
+
 /// `checkTextureEntrySchema`.
 fn check_texture(ck: &mut Ck, t: Value, version: u8) -> Result<Texture, Error> {
     let err = |ck: &Ck, d: &str| ck.schema(format!("a textures[] entry {d}"));
@@ -2499,10 +2580,14 @@ fn check_texture(ck: &mut Ck, t: Value, version: u8) -> Result<Texture, Error> {
     // `source_format` follows `format`, so the later keys shift by one, then two.
     let v8 = version >= 8;
     let v9 = version >= 9;
+    // render-stream-15.md "Size override": an optional key, so the key list follows its presence.
+    let so = version >= 15 && ck.has_key(t, "size_override");
     let (s1, s2) = if v8 { (1, 2) } else { (0, 0) };
     let Some(f) = ck.fields(
         t,
-        if v9 {
+        if so {
+            TEXTURE_KEYS_V15
+        } else if v9 {
             TEXTURE_KEYS_V9
         } else if v8 {
             TEXTURE_KEYS_V8
@@ -2592,59 +2677,24 @@ fn check_texture(ck: &mut Ck, t: Value, version: u8) -> Result<Texture, Error> {
     // cross-entry rules are `delivery-entry` (validate.rs).
     let mut variants = Vec::new();
     if v9 {
-        let Some(list) = ck.arr(f.at(12 + s2)) else {
-            return Err(err(ck, "\"variants\" is not an array"));
-        };
-        for &item in list {
-            let Some(v) = ck.fields(item, VARIANT_KEYS) else {
-                return Err(err(ck, "has a \"variants\" entry with the wrong keys"));
-            };
-            let Some(encoding) = enum_of(ck, v.at(0), VariantEncoding::ALL, VariantEncoding::as_str)
-            else {
-                return Err(err(ck, "has a variant with an invalid \"encoding\""));
-            };
-            let Some(hash) = ck.hash(v.at(1)) else {
-                return Err(err(
-                    ck,
-                    "has a variant \"hash\" that is not 64 lowercase hex digits",
-                ));
-            };
-            let Some(payload_bytes) = ck.int_ge(v.at(2), 0) else {
-                return Err(err(
-                    ck,
-                    "has a variant \"payload_bytes\" that is not a non-negative integer",
-                ));
-            };
-            let format = if ck.null(v.at(3)) {
-                None
-            } else if let Some(s) = ck.owned(v.at(3)) {
-                Some(s)
-            } else {
-                return Err(err(
-                    ck,
-                    "has a variant \"format\" that is neither null nor a string",
-                ));
-            };
-            let params = if ck.null(v.at(4)) {
-                None
-            } else if let Some(s) = ck.owned(v.at(4)) {
-                Some(s)
-            } else {
-                return Err(err(
-                    ck,
-                    "has a variant \"params\" that is neither null nor a string",
-                ));
-            };
-            variants.push(TextureVariant {
-                encoding,
-                hash,
-                payload_bytes,
-                format,
-                params,
-            });
-        }
+        variants = check_variants(ck, f.at(12 + s2), "a textures[] entry")?;
     }
-    let cs = if v9 { 1 } else { 0 };
+    let mut cs = if v9 { 1 } else { 0 };
+    let mut size_override = None;
+    if so {
+        let pair = ck.arr(f.at(12 + s2 + cs)).and_then(|a| match a {
+            &[w, h] => Some((
+                ck.int(w).filter(|x| (1..=SIZE_OVERRIDE_MAX).contains(x))?,
+                ck.int(h).filter(|x| (1..=SIZE_OVERRIDE_MAX).contains(x))?,
+            )),
+            _ => None,
+        });
+        let Some((w, h)) = pair else {
+            return Err(err(ck, "\"size_override\" is not two integers in 1..16384"));
+        };
+        size_override = Some([w as u32, h as u32]);
+        cs += 1;
+    }
     let canvas = if ck.null(f.at(12 + s2 + cs)) {
         None
     } else {
@@ -2685,6 +2735,7 @@ fn check_texture(ck: &mut Ck, t: Value, version: u8) -> Result<Texture, Error> {
         mipmaps,
         payload_bytes,
         variants,
+        size_override,
         canvas,
     })
 }
@@ -4196,6 +4247,177 @@ fn check_end(ck: &mut Ck, meta: Value, blocks: &mut Vec<BlockDesc>) -> Result<En
     })
 }
 
+// ------------------------------------------------------------------------------------- hints
+
+const RESOURCE_HINT_KEYS: &[&str] = &[
+    "type",
+    "hash",
+    "kind",
+    "format",
+    "source_format",
+    "width",
+    "height",
+    "mipmaps",
+    "payload_bytes",
+    "variants",
+    "path",
+    "cause",
+    "priority",
+    "blocks",
+];
+const RESOURCE_UNHINT_KEYS: &[&str] = &["type", "hash", "blocks"];
+
+/// A `resource_hint`'s `cause` (render-stream-15.md "Records"), in the spec's spelling order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HintCause {
+    Create,
+    Warm,
+    Predicted,
+    Integrator,
+}
+
+impl HintCause {
+    pub const ALL: &'static [HintCause] = &[
+        HintCause::Create,
+        HintCause::Warm,
+        HintCause::Predicted,
+        HintCause::Integrator,
+    ];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HintCause::Create => "create",
+            HintCause::Warm => "warm",
+            HintCause::Predicted => "predicted",
+            HintCause::Integrator => "integrator",
+        }
+    }
+}
+
+/// A /15 `resource_hint` record (render-stream-15.md "Resource hints"): the `ok` image texture
+/// entry fields of `hash`, plus the texture's pristine `path`, the `cause` and the `priority`
+/// (lower is sooner). `kind` is always `texture`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResourceHint {
+    pub hash: Hash,
+    pub format: Box<str>,
+    pub source_format: Option<Box<str>>,
+    pub width: i64,
+    pub height: i64,
+    pub mipmaps: bool,
+    pub payload_bytes: i64,
+    pub variants: Vec<TextureVariant>,
+    pub path: Option<Box<str>>,
+    pub cause: HintCause,
+    pub priority: i64,
+}
+
+/// `checkResourceHintSchema` (render-stream-15.md "Records"; every failure is `meta-schema`).
+fn check_resource_hint(
+    ck: &mut Ck,
+    meta: Value,
+    blocks: &mut Vec<BlockDesc>,
+) -> Result<ResourceHint, Error> {
+    blocks.clear();
+    let Some(f) = ck.fields(meta, RESOURCE_HINT_KEYS) else {
+        return Err(ck.schema("resource_hint has the wrong top-level keys or order"));
+    };
+    let Some(hash) = ck.hash(f.at(1)) else {
+        return Err(ck.schema("\"hash\" is not 64 lowercase hex digits"));
+    };
+    if ck.string(f.at(2)) != Some(b"texture".as_slice()) {
+        return Err(ck.schema("\"kind\" is not \"texture\""));
+    }
+    let Some(format) = ck.owned(f.at(3)) else {
+        return Err(ck.schema("\"format\" is not a string"));
+    };
+    let source_format = if ck.null(f.at(4)) {
+        None
+    } else if let Some(name) = ck
+        .owned(f.at(4))
+        .filter(|n| IMAGE_FORMAT_NAMES.contains(&&**n))
+    {
+        Some(name)
+    } else {
+        return Err(ck.schema("\"source_format\" is neither null nor an Image format name"));
+    };
+    let Some(width) = ck.int_ge(f.at(5), 1) else {
+        return Err(ck.schema("\"width\" is not an integer >= 1"));
+    };
+    let Some(height) = ck.int_ge(f.at(6), 1) else {
+        return Err(ck.schema("\"height\" is not an integer >= 1"));
+    };
+    let Some(mipmaps) = ck.boolean(f.at(7)) else {
+        return Err(ck.schema("\"mipmaps\" is not a boolean"));
+    };
+    let Some(payload_bytes) = ck.int_ge(f.at(8), 1) else {
+        return Err(ck.schema("\"payload_bytes\" is not an integer >= 1"));
+    };
+    let variants = check_variants(ck, f.at(9), "resource_hint")?;
+    // /9's order rule (sorted by encoding, at most one each) and a variant's payload_bytes >= 1.
+    let mut previous: Option<usize> = None;
+    for v in &variants {
+        let order = VariantEncoding::ALL
+            .iter()
+            .position(|&e| e == v.encoding)
+            .unwrap();
+        if previous.is_some_and(|p| order <= p) || v.payload_bytes < 1 || v.hash == hash {
+            return Err(ck.schema(format!(
+                "resource_hint's variants are not sorted by encoding with at most one each, a {} variant has payload_bytes 0, or repeats the hint's hash",
+                v.encoding.as_str()
+            )));
+        }
+        previous = Some(order);
+    }
+    let path = if ck.null(f.at(10)) {
+        None
+    } else if let Some(p) = ck.owned(f.at(10)).filter(|p| !p.is_empty()) {
+        Some(p)
+    } else {
+        return Err(ck.schema("\"path\" is neither null nor a non-empty string"));
+    };
+    let Some(cause) = enum_of(ck, f.at(11), HintCause::ALL, HintCause::as_str) else {
+        return Err(ck.schema(format!("unknown cause {}", lossy(ck, f.at(11)))));
+    };
+    let Some(priority) = ck.int_ge(f.at(12), 0) else {
+        return Err(ck.schema("\"priority\" is not a non-negative integer"));
+    };
+    if !ck.arr(f.at(13)).is_some_and(|a| a.is_empty()) {
+        return Err(ck.schema("\"blocks\" must be an empty array for a resource_hint record"));
+    }
+    Ok(ResourceHint {
+        hash,
+        format,
+        source_format,
+        width,
+        height,
+        mipmaps,
+        payload_bytes,
+        variants,
+        path,
+        cause,
+        priority,
+    })
+}
+
+/// `checkResourceUnhintSchema` (render-stream-15.md "Records").
+fn check_resource_unhint(
+    ck: &mut Ck,
+    meta: Value,
+    blocks: &mut Vec<BlockDesc>,
+) -> Result<Hash, Error> {
+    blocks.clear();
+    let Some(f) = ck.fields(meta, RESOURCE_UNHINT_KEYS) else {
+        return Err(ck.schema("resource_unhint has the wrong top-level keys or order"));
+    };
+    let Some(hash) = ck.hash(f.at(1)) else {
+        return Err(ck.schema("\"hash\" is not 64 lowercase hex digits"));
+    };
+    if !ck.arr(f.at(2)).is_some_and(|a| a.is_empty()) {
+        return Err(ck.schema("\"blocks\" must be an empty array for a resource_unhint record"));
+    }
+    Ok(hash)
+}
+
 // ------------------------------------------------------------------------------------- decodeRecord
 
 /// What a record decoded as. A transaction's fields are in the caller's [`TxMeta`].
@@ -4207,6 +4429,10 @@ pub enum Decoded {
     End(EndMeta),
     /// TAG1 (/13 only): an `item_meta` record, record-locally valid ([`crate::item_meta`]).
     ItemMeta(Box<crate::item_meta::ItemMetaRecord>),
+    /// /15 only: a `resource_hint` record, record-locally valid.
+    ResourceHint(Box<ResourceHint>),
+    /// /15 only: a `resource_unhint` record's hash.
+    ResourceUnhint(Hash),
 }
 
 /// Reusable storage for [`decode_record`].
@@ -4323,7 +4549,10 @@ pub fn decode_record_with(
                 .unwrap_or("?")
                 .to_string(),
             Decoded::Resource(_) => "payload".to_string(),
-            Decoded::End(_) | Decoded::ItemMeta(_) => "?".to_string(),
+            Decoded::End(_)
+            | Decoded::ItemMeta(_)
+            | Decoded::ResourceHint(_)
+            | Decoded::ResourceUnhint(_) => "?".to_string(),
         }
     };
     let descs = std::mem::take(&mut bufs.descs);
@@ -4382,6 +4611,12 @@ fn check_meta(
         Some(b"item_meta") if version >= 13 => Decoded::ItemMeta(Box::new(
             crate::item_meta::check_record(&mut ck, meta, version, descs)?,
         )),
+        Some(b"resource_hint") if version >= 15 => {
+            Decoded::ResourceHint(Box::new(check_resource_hint(&mut ck, meta, descs)?))
+        }
+        Some(b"resource_unhint") if version >= 15 => {
+            Decoded::ResourceUnhint(check_resource_unhint(&mut ck, meta, descs)?)
+        }
         _ => {
             let shown = doc
                 .get(meta, "type")

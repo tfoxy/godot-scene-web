@@ -81,6 +81,8 @@ std::vector<std::string> make_names() {
       "particles_set_interp_to_end",
       // D5: planned always, recorded from LS4.
       "texture_set_path",
+      // render-stream-15.md: the logical size a late arm adopts with the texture.
+      "texture_set_size_override",
       // D4: the shader clock on a rendered host.
       "draw",
   };

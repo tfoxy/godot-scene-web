@@ -292,6 +292,7 @@ enum Rs : int {
   RS_PARTICLES_RESTART,
   RS_PARTICLES_EMIT,
   RS_CANVAS_ITEM_ADD_PARTICLES,
+  RS_TEXTURE_SET_SIZE_OVERRIDE,
   RS_COUNT,
 };
 
@@ -409,6 +410,7 @@ constexpr RsBind RS_BINDS[RS_COUNT] = {
     {"particles_restart", 2722037293},
     {"particles_emit", 4043136117},
     {"canvas_item_add_particles", 2575754278},
+    {"texture_set_size_override", 4288446313},
 };
 
 // PM6a (render-stream-12.md "As built (PM6a)"): the generic particles setters' binds, by `which`.
@@ -1904,6 +1906,13 @@ int64_t execute(Instance *inst) {
         uint64_t p = r.rid();
         uint64_t tex = r.rid();
         rs_call(RS_CANVAS_ITEM_ADD_PARTICLES, {&item, &p, &tex});
+        break;
+      }
+      case rsc::TextureSetSizeOverride: {
+        uint64_t tex = r.rid();
+        int64_t width = r.u();
+        int64_t height = r.u();
+        rs_call(RS_TEXTURE_SET_SIZE_OVERRIDE, {&tex, &width, &height});
         break;
       }
       default:

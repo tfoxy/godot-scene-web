@@ -10,7 +10,7 @@
 // lib/gate8-adopt-checks.ts, G8h: lib/gate8-size-checks.ts, G8f: lib/gate8-float-checks.ts, G8m:
 // lib/gate8-mat-checks.ts, G8kp: lib/gate8-delivery-checks.ts, G8kc: lib/gate8-cache-checks.ts, P3-CT:
 // lib/gate8-ct-checks.ts, CG1: lib/gate8-cg-checks.ts, W11b: lib/gate8-w11-checks.ts, PM1: lib/gate8-mm-checks.ts, PM5: lib/gate8-pt-checks.ts, G8g: lib/gate8-live-checks.ts, the
-// live group g8l), which scripts/test/self-test-gate8*.ts drive against fabricated evidence.
+// live group g8l, g8hint: lib/gate8-hint-checks.ts), which scripts/test/self-test-gate8*.ts drive against fabricated evidence.
 // buildGate8Report is also check-gate7.ts's gate 8 checker for the GSW receiver's file legs (G8g).
 
 // GRT4b: node:crypto behind the decoders' hash seam (lib/node-hash.ts), before anything decodes.
@@ -33,6 +33,7 @@ import { type G8ctlExpected, runG8ctl } from "./lib/gate8-ct-late-checks";
 import { type G8ctspExpected, runG8ctsp } from "./lib/gate8-ct-spine-checks";
 import { runG8kp } from "./lib/gate8-delivery-checks";
 import { type FloatExpected, runG8f } from "./lib/gate8-float-checks";
+import { type G8hintExpected, runG8hint } from "./lib/gate8-hint-checks";
 import { runG8htr } from "./lib/gate8-htr-checks";
 import { runG8id } from "./lib/gate8-id-checks";
 import { runG8id2 } from "./lib/gate8-id2-checks";
@@ -93,6 +94,7 @@ const KNOWN_GROUPS = [
   "g8tdr",
   "g8sw",
   "g8re",
+  "g8hint",
 ];
 
 function parseArgs(argv: string[]): { out: string } {
@@ -304,6 +306,18 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
     const g8tdr = await runG8tdr(out);
     checks.push(...g8tdr.checks);
     report.g8tdr = g8tdr.report;
+  }
+  if (run.includes("g8hint")) {
+    // render-stream-15.md: resource hints and the size override (lib/gate8-hint-checks.ts).
+    const expected = JSON.parse(
+      await readFile(
+        join(EXPERIMENT_DIR, "fixtures", "hint-scene", "expected.json"),
+        "utf8",
+      ),
+    ) as G8hintExpected;
+    const g8hint = await runG8hint(out, expected);
+    checks.push(...g8hint.checks);
+    report.g8hint = g8hint.report;
   }
   if (run.includes("g8pt")) {
     const expected = JSON.parse(

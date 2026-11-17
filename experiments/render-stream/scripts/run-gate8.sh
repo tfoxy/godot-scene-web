@@ -360,6 +360,15 @@
 #       parameter naming a pre-arm texture, compared against a born capture.
 #       G8RE_ONLY selects adopt,tex,id,tex-htr,tex-evict,tex-htr-faults,tex-warm,float-hold,float-recover.
 #       Judged by lib/gate8-rearm-checks.ts.
+#   g8hint (render-stream-15.md: resource hints and the texture size override, fixtures/hint-scene
+#       armed late at frame 10 with GRC_ADOPT=arm; every leg under g8hint/): the import (sources,
+#       fixture, receiver); headless /15 file-sink captures `honest/capture` and one per
+#       GRC_HINT_SABOTAGE (`sabotage-hint-{unknown-hash,early-unhint,edited-path}/capture`); `live`,
+#       the fixture as a live /15 host (`live/host`, its first armed publish held for the hello),
+#       the native receiver at RS_RECEIVER_PROTOCOL=15 (`live/receiver`, headless) and a curl GET of
+#       every hint as the host logs it (`live/host/probe.jsonl`); `v13/capture`, the same at /13;
+#       then, rendered, the unarmed `reference` and the native replay receivers `honest/receiver`
+#       and `v13/receiver` (the size override's control). Judged by lib/gate8-hint-checks.ts.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -381,11 +390,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re g8hint)
 # GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
 # is not in the default run: g8w11 already runs the native half of those legs.
-DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re)
+DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re g8hint)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re g8hint)
 
 EXTENSION=""
 CALIBRATION=""
@@ -5094,10 +5103,164 @@ run_g8tdr() {
 	run_g8tdr_live sabotage-at-rest-keep-identity 0 GRC_AT_REST_FAULT=keep-identity
 }
 
+# ------------------------------------------------------------------------------------- g8hint
+# render-stream-15.md: resource hints and the texture size override on fixtures/hint-scene, armed
+# late (GRC_ARM_DEFER_FRAMES=K-1, GRC_ADOPT=arm: the pre-arm textures reach the warm pass). Every
+# leg under g8hint/. The captures are headless; the reference and the replay receivers render.
+G8HINT_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/hint-scene"
+G8HINT_ARM_FRAME=10
+G8HINT_LATE_ENV=(GRC_TEXTURE_DECODE=engine GRC_ADOPT=arm GRC_ARM_DEFER_FRAMES=$((G8HINT_ARM_FRAME - 1))
+	RS_FIXTURE_ARM_FRAME="$G8HINT_ARM_FRAME")
+G8HINT_ENV=(GRC_STREAM_VERSION=15 "${G8HINT_LATE_ENV[@]}")
+G8HINT_SABOTAGES=(hint-unknown-hash hint-early-unhint hint-edited-path)
+
+run_import_g8hint() {
+	echo "run-gate8: g8hint import (hint-scene sources and fixture, receiver)"
+	LEG_ENV=()
+	run_headless "$OUT/g8hint/import/sources" none -- mise exec -- godot --headless --path "$G8HINT_FIXTURE_DIR" --script res://make_sources.gd
+	LEG_ENV=()
+	run_headless "$OUT/g8hint/import/fixture" none -- mise exec -- godot --headless --path "$G8HINT_FIXTURE_DIR" --import
+	LEG_ENV=()
+	run_headless "$OUT/g8hint/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	local leg
+	for leg in sources fixture receiver; do
+		if [ "$(cat "$OUT/g8hint/import/$leg/exit-code.txt")" != "0" ]; then
+			echo "run-gate8: g8hint import ($leg) failed, see $OUT/g8hint/import/$leg/stdout.log" >&2
+			exit 1
+		fi
+	done
+}
+
+# run_capture_g8hint <dir> <env word...>: a headless file-sink capture of the fixture (full and
+# patch sinks, the store at <dir>/store).
+run_capture_g8hint() {
+	local dir="$1"
+	shift
+	mkdir -p "$dir"
+	CAPTURE_FIXTURE_DIR="$G8HINT_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=("$@" RS_FIXTURE_TEXTURE_LOG="$dir/textures.jsonl")
+	run_capture "$dir" "" none
+}
+
+# run_g8hint_probe <host dir> <port> <pid>: while the live host runs, a GET for every hint its
+# evidence/hints.jsonl logs on a live connection, as soon as the line appears (the host flushes
+# each line). One probe.jsonl line per hash: the HTTP status, the body's SHA-256 and, for a GET
+# that missed, whether the host had already logged the hash's unhint on that connection by then
+# (an unhint ends the pin, so a later miss is allowed).
+run_g8hint_probe() {
+	local host="$1" port="$2" pid="$3" log="$1/evidence/hints.jsonl" out="$1/probe.jsonl"
+	local -A seen=()
+	local hash status sha unhinted rounds=0
+	: >"$out"
+	while kill -0 "$pid" 2>/dev/null && [ "$rounds" -lt 6000 ]; do
+		rounds=$((rounds + 1))
+		if [ -s "$log" ]; then
+			while read -r hash; do
+				[ -n "$hash" ] && [ -z "${seen[$hash]:-}" ] || continue
+				seen[$hash]=1
+				rm -f "$host/probe.body"
+				status="$(curl -s --max-time 5 -o "$host/probe.body" -w '%{http_code}' \
+					"http://127.0.0.1:$port/resources/sha256/$hash" 2>/dev/null)" || true
+				[[ "$status" =~ ^[0-9]{3}$ ]] || status=000
+				sha=""
+				[ ! -f "$host/probe.body" ] || sha="$(sha256sum "$host/probe.body" | awk '{print $1}')"
+				unhinted=false
+				if [ "$status" != 200 ] && jq -e --arg h "$hash" \
+					'select(.op == "unhint" and .hash == $h and (.sink | startswith("live:")))' "$log" >/dev/null 2>&1; then
+					unhinted=true
+				fi
+				printf '{"hash":"%s","status":%d,"sha256":"%s","unhinted_before":%s}\n' \
+					"$hash" "$((10#$status))" "$sha" "$unhinted" >>"$out"
+			done < <(jq -r 'select(.op == "hint" and (.sink | startswith("live:"))) | .hash' "$log" 2>/dev/null)
+		fi
+		sleep 0.02
+	done
+	rm -f "$host/probe.body"
+}
+
+# run_g8hint_live <dir>: g8hint/live/host, the fixture as a live /15 host (no file sink) holding its
+# first armed publish for the receiver's hello, g8hint/live/receiver, the native receiver at
+# RS_RECEIVER_PROTOCOL=15 (headless, so it fetches what transactions name and ignores the hints),
+# and the probe beside them.
+run_g8hint_live() {
+	local dir="$1" host="$1/host" recv="$1/receiver" waited=0 port="" pid
+	mkdir -p "$host/evidence" "$recv"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$host/evidence" GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_AWAIT_HELLO_MS=20000
+		GRC_VALIDATION_LOG=on "${G8HINT_ENV[@]}" RS_FIXTURE_STEP_LOG="$host/steps.jsonl"
+		RS_FIXTURE_TEXTURE_LOG="$host/textures.jsonl"
+	)
+	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$G8HINT_FIXTURE_DIR"
+	pid="$BG_PID"
+	[ -n "$pid" ] || return 0
+	while [ "$waited" -lt 600 ] && kill -0 "$pid" 2>/dev/null; do
+		if grep -q '"status": "listening"' "$host/evidence/live.json" 2>/dev/null; then
+			port="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$host/evidence/live.json")"
+			[ -n "$port" ] && break
+		fi
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	if [ -z "$port" ]; then
+		echo "the live host is not listening (see g8hint/live/host/evidence/live.json)" >"$recv/skipped.txt"
+	else
+		run_g8hint_probe "$host" "$port" "$pid" &
+		local probe_pid=$!
+		LEG_ENV=(
+			RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$port/render-stream" RS_RECEIVER_PROTOCOL=15
+			RS_RECEIVER_OUT="$recv/applied.json" RS_RECEIVER_CACHE_DIR="$recv/cache"
+		)
+		start_headless_bg "$recv" -- "$BINARY" --headless --path "$RECEIVER_DIR"
+		[ -n "$BG_PID" ] && finish_bg "$recv" "$BG_PID" "$HEADLESS_TIMEOUT_S"
+		wait "$probe_pid" 2>/dev/null || true
+	fi
+	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
+}
+
+run_g8hint() {
+	run_import_g8hint
+	local g="$OUT/g8hint" s
+	RECORDING_NAME=recording.rs15
+	PATCH_RECORDING_NAME=recording-patch.rs15
+	echo "run-gate8: g8hint honest/capture (/15, armed at $G8HINT_ARM_FRAME, GRC_ADOPT=arm)"
+	run_capture_g8hint "$g/honest/capture" "${G8HINT_ENV[@]}"
+	for s in "${G8HINT_SABOTAGES[@]}"; do
+		echo "run-gate8: g8hint sabotage-$s/capture (GRC_HINT_SABOTAGE=$s)"
+		run_capture_g8hint "$g/sabotage-$s/capture" "${G8HINT_ENV[@]}" GRC_HINT_SABOTAGE="$s"
+	done
+	echo "run-gate8: g8hint live (/15 live host, native receiver at /15, a GET per hint)"
+	run_g8hint_live "$g/live"
+	RECORDING_NAME=recording.rs13
+	PATCH_RECORDING_NAME=recording-patch.rs13
+	echo "run-gate8: g8hint v13/capture (the same at /13: no hints, no size override)"
+	run_capture_g8hint "$g/v13/capture" GRC_STREAM_VERSION=13 "${G8HINT_LATE_ENV[@]}"
+
+	echo "run-gate8: bringing up private gamescope for g8hint's rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g8hint"
+	legs_par_begin
+	echo "run-gate8: g8hint reference (unarmed, rendered)"
+	mkdir -p "$g/reference/shots"
+	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$g/reference/shots" RS_FIXTURE_STEP_LOG="$g/reference/steps.jsonl"
+		RS_FIXTURE_ARM_FRAME="$G8HINT_ARM_FRAME")
+	run_rendered "$g/reference" "$G8HINT_FIXTURE_DIR"
+	echo "run-gate8: g8hint receivers (honest /15 and the /13 control)"
+	RECORDING_NAME=recording.rs15
+	run_rendered_receiver "$g/honest/capture" "$g/honest/receiver"
+	RECORDING_NAME=recording.rs13
+	run_rendered_receiver "$g/v13/capture" "$g/v13/receiver"
+	legs_par_end
+	gs_teardown "$OUT/gamescope-g8hint"
+	GS_RUN_DIR=""
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g8htr) run_g8htr ;;
 	g8tdr) run_g8tdr ;;
+	g8hint) run_g8hint ;;
 	g8kp) run_g8kp ;;
 	g8kc) run_g8kc ;;
 	g8ku) run_g8ku ;;

@@ -171,7 +171,17 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV14 = {0x47, 0x52, 0x53, 0x45
                                                            0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV14 = "render-stream/14";
 
-enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14 };
+// render-stream/15 (render-stream-15.md): /14 plus the `resource_hint` / `resource_unhint` records
+// and a texture entry's optional `size_override`. A /15 transaction with no override is /14's byte
+// for byte, apart from the magic "GRSF" and the protocol strings, so every "/13 or later" cascade
+// includes V15. Spoken only under GRC_STREAM_VERSION=15.
+inline constexpr std::array<std::uint8_t, 8> kMagicV15 = {0x47, 0x52, 0x53, 0x46,
+                                                           0x0D, 0x0A, 0x1A, 0x0A};
+inline constexpr const char *kProtocolV15 = "render-stream/15";
+
+enum class ProtocolVersion : std::uint8_t {
+  V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15
+};
 
 // True for /7 to /11, the versions whose live transport is the /7 one (token hello, credit
 // window, CORS). /8 is /7 plus render-stream-8.md's list, /9 is /8 plus render-stream-9.md's and
@@ -180,47 +190,52 @@ inline constexpr bool is_v7_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V7 || v == ProtocolVersion::V8 || v == ProtocolVersion::V9 ||
          v == ProtocolVersion::V10 || v == ProtocolVersion::V11 || v == ProtocolVersion::V12 ||
          v == ProtocolVersion::V13 ||
-         v == ProtocolVersion::V14;
+         v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
 }
 
 // True for /8 to /11: the versions that carry render-stream-8.md's keys.
 inline constexpr bool is_v8_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V8 || v == ProtocolVersion::V9 || v == ProtocolVersion::V10 ||
          v == ProtocolVersion::V11 || v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
-         v == ProtocolVersion::V14;
+         v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
 }
 
 // True for /9 to /11: the versions that carry render-stream-9.md's keys.
 inline constexpr bool is_v9_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V9 || v == ProtocolVersion::V10 || v == ProtocolVersion::V11 ||
          v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
-         v == ProtocolVersion::V14;
+         v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
 }
 
 // True for /10 and /11: the versions that carry render-stream-10.md's keys.
 inline constexpr bool is_v10_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V10 || v == ProtocolVersion::V11 || v == ProtocolVersion::V12 ||
          v == ProtocolVersion::V13 ||
-         v == ProtocolVersion::V14;
+         v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
 }
 
 // True for /11 and /12: the versions that carry render-stream-11.md's keys (PM5: every "/11"
 // cascade means "/11 or later").
 inline constexpr bool is_v11_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V11 || v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
-         v == ProtocolVersion::V14;
+         v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
 }
 
 // True for /12: the versions that carry render-stream-12.md's keys.
 inline constexpr bool is_v12_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V12 || v == ProtocolVersion::V13 ||
-         v == ProtocolVersion::V14;
+         v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
 }
 
-// ID3: /13 and /14, the versions whose transactions are predicted (rs13_predict.h) and whose
+// ID3: /13 to /15, the versions whose transactions are predicted (rs13_predict.h) and whose
 // hello may carry `item_meta`.
 inline constexpr bool is_v13_or_later(ProtocolVersion v) {
-  return v == ProtocolVersion::V13 || v == ProtocolVersion::V14;
+  return v == ProtocolVersion::V13 || v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
+}
+
+// /14 and /15: the versions whose item_meta may carry the v2 fields (render-stream-14.md).
+inline constexpr bool is_v14_or_later(ProtocolVersion v) {
+  return v == ProtocolVersion::V14 || v == ProtocolVersion::V15;
 }
 
 // Floats per entry in the transaction blocks (render-stream-2.md "Transaction record"). Item and
@@ -1830,6 +1845,11 @@ struct TextureEntry {
   std::int32_t width = 0;
   std::int32_t height = 0;
   bool mipmaps = false;
+  // new at /15 (render-stream-15.md "Size override"): the logical size Godot draws an `ok` image
+  // at, set only when it differs from (width, height); 0 x 0 when absent. Written only by a /15
+  // mirror, so every earlier entry keeps it absent. (Fits the padding after `mipmaps`.)
+  std::uint16_t size_override_w = 0;
+  std::uint16_t size_override_h = 0;
   std::uint64_t payload_bytes = 0;
   // new at /9: sorted by encoding (block, uastc, etc1s), at most one each; empty below /9.
   std::vector<TextureVariant> variants;
@@ -2194,6 +2214,38 @@ struct Transaction {
 struct ResourceRecord {
   std::string hash;  // 64 lowercase hex, the sha256 of `payload`
   std::vector<std::uint8_t> payload;
+};
+
+// --- new at /15: resource hints (render-stream-15.md "Resource hints") ------------------------
+
+// The `cause` enum, in its spelling order.
+enum class HintCause : std::uint8_t { Create, Warm, Predicted, Integrator };
+inline const char *to_wire(HintCause c) {
+  switch (c) {
+    case HintCause::Create: return "create";
+    case HintCause::Warm: return "warm";
+    case HintCause::Predicted: return "predicted";
+    case HintCause::Integrator: return "integrator";
+  }
+  return "create";
+}
+
+// A `resource_hint` record: the `ok` image entry's shape fields for `hash` (kind is always
+// `texture`), its resource path while pristine, the cause and the priority.
+struct ResourceHint {
+  std::string hash;  // 64 lowercase hex
+  std::string format;
+  bool has_source_format = false;  // false -> "source_format": null
+  std::string source_format;
+  std::int32_t width = 0;
+  std::int32_t height = 0;
+  bool mipmaps = false;
+  std::uint64_t payload_bytes = 0;
+  std::vector<TextureVariant> variants;
+  bool has_path = false;  // false -> "path": null
+  std::string path;
+  HintCause cause = HintCause::Create;
+  std::uint64_t priority = 0;
 };
 
 // ----------------------------------------------------------------------------------- end

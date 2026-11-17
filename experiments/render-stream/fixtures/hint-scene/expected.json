@@ -1,0 +1,27 @@
+{
+  "doc": "Hand-derived expectations for gate 8 group g8hint (lib/gate8-hint-checks.ts) from hint.gd's timeline and make_sources.gd's sizes. warm: the pre-arm textures the late-arm warm pass prepares (p2 through the headless hold of its update); create: the armed creates. paths: the resource path each pristine texture's hint carries (`prefix:` matches the start of the imported .ctex path); null_path: the hints that carry no path (p2 edited before the arm, a2 created with none); edited_path: the path p2 was given before its update, which no hint may carry. fixture_size: the ImageTextures' size (the engine warms pre-arm textures of its own too; their null-path hints are not the fixture's). step1_drawn: the textures step 1 draws first (each hinted before, and still hinted at, the first transaction that draws it). freed and changed: unhinted while undrawn at step 2. edges: the size-override textures, their stored and logical sizes and the 10x rectangles hint.gd draws them in. s1: the /15 receiver's budget of differing pixels in those rectangles against the reference, and the least the /13 control must differ by.",
+  "arm_frame": 10,
+  "warm": ["p1", "p2", "p3", "p4", "edge_a"],
+  "create": ["a1", "a2", "a3", "a4", "edge_b"],
+  "paths": {
+    "p1": "res://hint/p1.tres",
+    "p3": "res://hint/p3.tres",
+    "p4": "res://hint/p4.tres",
+    "a1": "res://hint/a1.tres",
+    "a3": "res://hint/a3.tres",
+    "a4": "res://hint/a4.tres",
+    "edge_a": "prefix:res://.godot/imported/edge_a.png-",
+    "edge_b": "prefix:res://.godot/imported/edge_b.png-"
+  },
+  "null_path": ["p2", "a2"],
+  "edited_path": "res://hint/p2.tres",
+  "fixture_size": [96, 96],
+  "step1_drawn": ["p1", "p2", "a1", "a2", "edge_a", "edge_b"],
+  "freed": ["p3", "a3"],
+  "changed": ["p4", "a4"],
+  "edges": [
+    { "name": "edge_a", "stored": [32, 20], "logical": [30, 18], "rect": [8, 8, 300, 180] },
+    { "name": "edge_b", "stored": [28, 16], "logical": [26, 14], "rect": [324, 8, 260, 140] }
+  ],
+  "s1": { "steps": [1, 3], "budget_pixels": 0, "control_min_pixels": 2000 }
+}

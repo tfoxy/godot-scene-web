@@ -2,8 +2,8 @@
   "schema": "render-stream-calibration/1",
   "engine": {
     "version_string": "Godot Engine v4.5.1.stable.synthetic",
-    "sha256": "990b4856eef4edf50b7cd1b932893e05975b78fc943bef72e1a82f3e25a250b3",
-    "image_sha256": "c55c66dbd97e1ece1e810c53491e1c40ec09631f1a0cd4a8d26c83cab2406b9f",
+    "sha256": "7e7ba7d8c53d5533c340df13b80537edaa4ba65254aed39d36e98d33fa869891",
+    "image_sha256": "75803d688786366b86c86d855ce21aa3761aee4b1eee362ac4f1eff18f74b6d8",
     "codeview_id": null,
     "time_date_stamp": 1592590337,
     "size_of_image": 32768,
@@ -15,9 +15,9 @@
   "rendering_server": {
     "abstract_vtable_vaddr": "0x140004180",
     "concrete_class": "RenderingServerDefault",
-    "concrete_vtable_vaddr": "0x1400045f0",
+    "concrete_vtable_vaddr": "0x1400045f8",
     "object_prefix": 5,
-    "slot_count": 140,
+    "slot_count": 141,
     "anchors_total": 5,
     "anchors_matched": 5,
     "placeholder_kind": "null",
@@ -153,7 +153,8 @@
     "particles_set_emission_transform": 136,
     "particles_set_emitter_velocity": 137,
     "particles_set_interp_to_end": 138,
-    "canvas_item_set_use_identity_transform": 139
+    "canvas_item_set_use_identity_transform": 139,
+    "texture_set_size_override": 140
   },
   "anchors": {
     "synth_anchor_0": 5,
@@ -166,6 +167,6 @@
   "dropped_families": [],
   "calibrator": {
     "version": "9",
-    "header_sha256": "0de6de6c12393acc7b9ef43ab326a217938b04a0320cb29647ce8e8181d9ccc4"
+    "header_sha256": "6735befb41b263d612c6cb1c87035f63e1f3f36ded99540e3ce8377a3fc1a249"
   }
 }

@@ -208,7 +208,8 @@ enum Op : uint32_t {
   ParticlesRestart = 89,
   ParticlesEmit = 90,
   AddParticles = 91,
-  OP_COUNT = 92,
+  TextureSetSizeOverride = 92,
+  OP_COUNT = 93,
 };
 
 // PM6a: the `which` operand of the generic particles setters (ops.rs PT_*).

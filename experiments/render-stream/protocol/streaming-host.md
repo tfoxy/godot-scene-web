@@ -36,7 +36,7 @@ Set before the capture's GDExtension loads.
 | `GRC_CALIBRATION` | The calibration record for the exact engine binary. The hooks install only when it matches. |
 | `GRC_MODE` | `validate` (default: check the seam, publish nothing), `arm` (hook and stream now), or `standby` (load and wait for an arm). |
 | `GRC_EVIDENCE_DIR` | Where the capture writes `result.json` and its `evidence/` files. |
-| `GRC_STREAM_VERSION` | Wire version of the sinks (default `6`). Later versions are opt-in; the live listener offers the chosen version first and older ones after it. |
+| `GRC_STREAM_VERSION` | Wire version of the sinks (default `6`; `6`, `8` to `15`). Later versions are opt-in; the live listener offers the chosen version first and older ones after it. `15` adds resource hints and the texture size override ([render-stream-15.md](render-stream-15.md)). |
 | `GRC_STREAM_OUT`, `GRC_STREAM_PATCH_OUT` | File sinks: a recording with full transactions, and one with patches. |
 | `GRC_RESOURCE_STORE_DIR` | The out-of-band payload store a file sink's resources are written to. |
 | `GRC_ADOPT` | `arm`: at arm, walk the scene tree and adopt existing canvases, layers, items, textures, meshes, glyph atlases, materials and shaders, so a running game can be captured mid-session. Must arm on the main thread. |
@@ -45,6 +45,7 @@ Set before the capture's GDExtension loads.
 | `GRC_MIRROR_MAX_ITEMS`, `GRC_MIRROR_MAX_COMMANDS` | Mirror caps (items; commands per item). A scene over a cap ends the stream with a typed reason, so raise them for a large game. |
 | `GRC_RESOURCE_MAX_PAYLOAD_BYTES`, `GRC_RESOURCE_BUDGET_BYTES` | Per-payload ceiling and the host resource store's budget. |
 | `GRC_RESOURCE_INLINE_MAX_BYTES` | Live: payloads up to this size ride the connection as resource records ahead of their transaction instead of being fetched by GET (default 0, off). Worth setting for content that creates many small payloads per frame, such as skeletal meshes. |
+| `GRC_RESOURCE_HINT_BUDGET_BYTES` | `GRC_STREAM_VERSION=15` only: the at-rest bytes (coded body, its gzip sibling once made, variant bodies) of hinted payloads the current state does not name yet (default 268435456, 256 MiB). Hints past it, in priority order, are not sent (or are unhinted). Hinted bodies do not count toward `GRC_RESOURCE_BUDGET_BYTES`. |
 | `GRC_RESOURCE_FORMATS` | Float texture formats a stream may carry (off by default; needs `/8` or later). |
 | `GRC_SHADER_POLICY` | `source` (default) serves game shader code to receivers; `params` and `exclude` do not. |
 | `GRC_ITEM_META` | Opt-in per-item metadata, as comma-separated grants (`groups`, `meta`, or column names; `/14` adds identity columns). |

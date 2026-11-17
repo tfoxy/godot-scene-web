@@ -456,7 +456,10 @@ fn gsw_counts_every_add_particles_undrawn() {
                     store.provide(&b, &hash, 12, true).unwrap();
                 }
             }
-            Accepted::End | Accepted::ItemMeta => {}
+            Accepted::End
+            | Accepted::ItemMeta
+            | Accepted::ResourceHint { .. }
+            | Accepted::ResourceUnhint { .. } => {}
             Accepted::Transaction => {
                 txs += 1;
                 store.accept_transaction(&v, rec).unwrap();

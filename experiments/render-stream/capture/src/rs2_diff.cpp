@@ -456,6 +456,7 @@ bool texture_entry_equal(const TextureEntry &a, const TextureEntry &b) {
     return false;
   }
   if (a.width != b.width || a.height != b.height || a.mipmaps != b.mipmaps ||
+      a.size_override_w != b.size_override_w || a.size_override_h != b.size_override_h ||
       a.payload_bytes != b.payload_bytes || a.has_canvas != b.has_canvas) {
     return false;
   }
@@ -1096,7 +1097,8 @@ const char *texture_entry_difference(const TextureEntry &a, const TextureEntry &
     return "id";
   }
   // texture_entry_equal compares every other field (kind, status, reason, version, hash, format,
-  // source_format, shape, payload_bytes, variants, canvas, origin, adopted_content).
+  // source_format, shape, size_override, payload_bytes, variants, canvas, origin,
+  // adopted_content).
   return texture_entry_equal(a, b) ? nullptr : "entry";
 }
 

@@ -11,7 +11,7 @@ ANCHORS = (0, 2, 3, 7, 40)
 GUID = bytes(range(16))
 IMAGE_BASE = 0x140000000
 STAMP = 0x5EED0001
-SLOT_COUNT = 140
+SLOT_COUNT = 141
 PREFIX = 5
 
 
@@ -79,8 +79,13 @@ def build(path, variant, code=None):
             value = placeholder
         if code_placeholder and i in (3, 4):
             value = text_va + (200 + i) * 16
-        if variant == "placeholder-tie" and i in pure_indices[len(pure_indices) // 2:]:
-            value = placeholder + 16
+        if variant == "placeholder-tie":
+            # Two placeholders with equal counts; an odd count leaves its last slot a third value.
+            odd = len(pure_indices) % 2
+            if odd and i == pure_indices[-1]:
+                value = placeholder + 32
+            elif i in pure_indices[len(pure_indices) // 2:len(pure_indices) - odd]:
+                value = placeholder + 16
         if variant == "mixed-placeholder" and i == pure_indices[0]:
             value = 0
         put(av + 16 + i * 8, value, unresolved=variant == "elf-pie" and not mask[i])

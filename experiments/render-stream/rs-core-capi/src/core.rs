@@ -47,8 +47,13 @@ pub const VERSION: u8 = 6;
 /// multimesh blocks at accept into its /12 record (`Validator::record_view`), which is what the
 /// ingest reads, so the planner sees /12's model; a `predict-check` failure holds every patch
 /// until the full transaction (`KIND_HELD`); the live hello offers .13 under
-/// RS_RECEIVER_PROTOCOL=13.
-pub const VERSIONS: [u8; 8] = [6, 7, 8, 9, 10, 11, 12, 13];
+/// RS_RECEIVER_PROTOCOL=13. render-stream/14 adds item_meta v2 rows, which rs-core decodes and
+/// the native receiver never asks for (a recording that carries them stays playable). /15
+/// (render-stream-15.md) adds resource hints, which this receiver accepts and ignores
+/// (`KIND_HINT`), and a texture entry's `size_override`, which the planner applies with
+/// `texture_set_size_override`; the live hello offers .15 under RS_RECEIVER_PROTOCOL=15 (the
+/// native receiver never asks for item_meta v2, so it does not offer .14).
+pub const VERSIONS: [u8; 10] = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 pub const KIND_ERROR: i32 = 0;
 pub const KIND_RESOURCE: i32 = 1;
@@ -63,6 +68,11 @@ pub const KIND_HELD: i32 = 5;
 /// The native receiver does not opt in, so this only keeps a recording that carries the records
 /// playable. (5 is `KIND_HELD` here; GSW's wasm ABI calls it `ACCEPT_ITEM_META` = 5.)
 pub const KIND_ITEM_META: i32 = 6;
+/// a /15 `resource_hint` or `resource_unhint` record (kind "hint"; `record.meta` carries `type`
+/// and `hash`). Hints are advisory (render-stream-15.md "Resource hints"): the validator keeps
+/// its hint table, there is nothing to apply and nothing to ack, and a receiver that never
+/// prefetches may drop every one.
+pub const KIND_HINT: i32 = 7;
 
 /// W13d (as GSW's W13c `peek_transaction`): a transaction record's `seq` and whether it is full,
 /// read from its meta's canonical prefix (`{"type":"transaction","seq":N,"frame":N,"encoding":"…"`,
@@ -305,7 +315,7 @@ impl Core {
         if !VERSIONS.contains(&version) {
             let e = Error::new(
                 "bad-magic",
-                format!("the receiver core speaks render-stream/6, /7, /8, /9, /10, /11, /12 and /13, not /{version}"),
+                format!("the receiver core speaks render-stream/6 to /15, not /{version}"),
             );
             self.write_failure(&[], offset, &e);
             return KIND_ERROR;
@@ -525,6 +535,22 @@ impl Core {
                 v.key("type");
                 v.str("item_meta");
             }
+            Accepted::ResourceHint { hash } => {
+                kind = KIND_HINT;
+                v.dict(2);
+                v.key("type");
+                v.str("resource_hint");
+                v.key("hash");
+                v.str(&hash.to_hex());
+            }
+            Accepted::ResourceUnhint { hash } => {
+                kind = KIND_HINT;
+                v.dict(2);
+                v.key("type");
+                v.str("resource_unhint");
+                v.key("hash");
+                v.str(&hash.to_hex());
+            }
             Accepted::Transaction => {
                 kind = KIND_TRANSACTION;
                 self.planner.touched.merge(validator.delta());
@@ -569,6 +595,7 @@ impl Core {
             KIND_RESOURCE => "resource",
             KIND_END => "end",
             KIND_ITEM_META => "item_meta",
+            KIND_HINT => "hint",
             _ => "transaction",
         });
         kind

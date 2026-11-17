@@ -80,10 +80,11 @@ int main() {
   };
 
   const bool sha_ni = grc::sha256_path_available(grc::Sha256Path::sha_ni);
-  std::vector<grc::Sha256Path> paths = {grc::Sha256Path::portable};
-  if (sha_ni) {
-    paths.push_back(grc::Sha256Path::sha_ni);
-  }
+  // Built whole, never grown: GCC 15's -Warray-bounds misreads a push_back onto a one-element
+  // initializer-list vector.
+  const std::vector<grc::Sha256Path> paths =
+      sha_ni ? std::vector<grc::Sha256Path>{grc::Sha256Path::portable, grc::Sha256Path::sha_ni}
+             : std::vector<grc::Sha256Path>{grc::Sha256Path::portable};
   const grc::Sha256Path def = grc::sha256_default_path();
   std::printf("rs_sha256_test: sha-ni %s, default path %s\n",
               sha_ni ? "available" : "NOT available (fallback only)", grc::sha256_path_name(def));

@@ -6,6 +6,7 @@ import { itemMetaRequestProblem } from "../../../experiments/render-stream/scrip
 import { mergeWants } from "../src/extensions";
 import {
   clientHello,
+  clientProtocol,
   clientTextureEncodings,
   coreStartOptions,
 } from "../src/hello";
@@ -165,7 +166,7 @@ describe("clientHello", () => {
 
 describe("coreStartOptions (PH2)", () => {
   it("asks the core for no record digests, at the endpoint's protocol", () => {
-    for (const protocol of [11, 12, 13, 14]) {
+    for (const protocol of [11, 12, 13, 14, 15]) {
       const o = JSON.parse(coreStartOptions(protocol));
       expect(o).toEqual({
         digest: "none",
@@ -178,5 +179,52 @@ describe("coreStartOptions (PH2)", () => {
     }
     // rs-gsw-wasm reads the option as the exact text `"digest":"none"` (parse_options).
     expect(coreStartOptions(12)).toContain('"digest":"none"');
+  });
+});
+
+describe("clientProtocol and resource hints (render-stream/15)", () => {
+  const v1 = { fields: ["node_path"], groups: [], meta_keys: [] };
+  const v2 = { fields: ["instance_id"], groups: [], meta_keys: [] };
+
+  it("without resourceHints offers what it offered before /15", () => {
+    for (const p of [11, 12, 13, 14] as const) {
+      expect(clientProtocol(p, null)).toBe(p);
+      expect(clientProtocol(p, null, false)).toBe(p);
+    }
+    expect(clientProtocol(13, v1)).toBe(13);
+    expect(clientProtocol(13, v2)).toBe(14);
+    expect(clientProtocol(14, v1)).toBe(14);
+  });
+
+  it("speaks /13 (or /14 for v2 wants) to a /15 endpoint without resourceHints", () => {
+    expect(clientProtocol(15, null)).toBe(13);
+    expect(clientProtocol(15, v1)).toBe(13);
+    expect(clientProtocol(15, v2)).toBe(14);
+  });
+
+  it("offers /15 with resourceHints from protocol 13 up, item_meta v2 included", () => {
+    for (const p of [13, 14, 15] as const) {
+      expect(clientProtocol(p, null, true)).toBe(15);
+      expect(clientProtocol(p, v2, true)).toBe(15);
+    }
+    expect(() => clientProtocol(12, null, true)).toThrow(/13/);
+    expect(() => clientProtocol(11, null, true)).toThrow(/13/);
+  });
+
+  it("states /15 in a hello that is otherwise /14's, v2 fields allowed", () => {
+    const facts = {
+      creditWindow: 2,
+      token: null,
+      backing: [640, 360],
+      css: [640, 360],
+      dprMilli: 1000,
+      gpuFormats: "none",
+      itemMeta: v2,
+    } as const;
+    const h14 = clientHello({ ...facts, protocol: 14 });
+    const h15 = clientHello({ ...facts, protocol: 15 });
+    expect(Object.keys(h15)).toEqual(Object.keys(h14));
+    expect(h15).toEqual({ ...h14, protocol: "render-stream/15" });
+    expect(h15.item_meta).toEqual(v2);
   });
 });

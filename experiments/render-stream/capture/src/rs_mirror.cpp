@@ -63,6 +63,7 @@ Mirror::Mirror(ProcessWide) : process_wide_(true) {
 void Mirror::reset() {
   std::lock_guard<std::mutex> lock(mutex_);
   ++epoch_;
+  hint_watched_.clear();  // render-stream-15.md: a new stream watches its own creates
   recover_on_ = false;
   recover_republish_ = true;
   recover_index_.clear();
@@ -239,6 +240,11 @@ void Mirror::set_v11(const V11Options &options) {
   std::lock_guard<std::mutex> lock(mutex_);
   v11_ = options;
   pub_valid_ = false;  // HC4a: the published content_versions depend on it; rebuild
+}
+
+void Mirror::set_v15(bool on) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  v15_ = on;
 }
 
 void Mirror::set_dynamic_hash_readers(bool readers) {
@@ -1481,6 +1487,14 @@ std::size_t Mirror::service_basis(bool attach, bool wait) {
   return attached;
 }
 
+namespace {
+// The size_override an image entry of this shape carries: the logical size when it differs from
+// the payload's (width, height), else none (render-stream-15.md "Size override").
+bool carried_override(std::uint16_t ow, std::uint16_t oh, std::int64_t width, std::int64_t height) {
+  return ow != 0 && (ow != width || oh != height);
+}
+}  // namespace
+
 void Mirror::settle(Texture *texture) {
   // A mispredicted job stays pending, so the snapshot's resolve_captured() reports it.
   if (texture->job == nullptr || !texture->job->done() || texture->job->mispredict()) {
@@ -1574,6 +1588,10 @@ TextureEntry Mirror::wire_entry(const Texture &texture) {
   out.height = static_cast<std::int32_t>(std::max<std::int64_t>(copy.height, 0));
   out.mipmaps = copy.mipmaps_known && copy.mipmaps;
   if (texture.status == TextureStatus::Ok) {
+    if (carried_override(texture.override_w, texture.override_h, out.width, out.height)) {
+      out.size_override_w = texture.override_w;  // render-stream-15.md (only a /15 mirror sets it)
+      out.size_override_h = texture.override_h;
+    }
     out.has_hash = true;
     out.hash = copy.hash;
     // G8t (render-stream-8.md "Resource tables"): a host decode names its source format; the
@@ -4092,8 +4110,115 @@ void Mirror::texture_2d_create(std::uint64_t rid, const PayloadCopy &copy, Paylo
   if (texture.status == TextureStatus::Ok && job != nullptr) {
     texture.job = std::move(job);
   }
+  if (hint_watch_ && texture.status == TextureStatus::Ok) {
+    hint_watched_.push_back({texture.id, texture.job, texture.bytes});
+  }
   texture_by_rid_[rid] = texture.id;
   textures_.emplace(texture.id, std::move(texture));
+}
+
+void Mirror::set_hint_watch(bool on) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  hint_watch_ = on;
+  hint_watched_.clear();
+}
+
+namespace {
+// The variant bodies the mirror holds for `entry`'s variants (block and uastc).
+void variant_bodies_of(const rs2::TextureEntry &entry, const PayloadCopy &copy,
+                       const std::string &uastc_hash, const PayloadPtr &uastc_bytes,
+                       std::vector<std::pair<std::string, PayloadPtr>> *out) {
+  for (const rs2::TextureVariant &variant : entry.variants) {
+    if (!copy.block_hash.empty() && variant.hash == copy.block_hash &&
+        copy.block_bytes != nullptr) {
+      out->emplace_back(variant.hash, copy.block_bytes);
+    } else if (!uastc_hash.empty() && variant.hash == uastc_hash && uastc_bytes != nullptr) {
+      out->emplace_back(variant.hash, uastc_bytes);
+    }
+  }
+}
+}  // namespace
+
+void Mirror::poll_hint_sources(std::vector<HintSource> *out) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::size_t keep = 0;
+  for (std::size_t i = 0; i < hint_watched_.size(); ++i) {
+    HintWatch &w = hint_watched_[i];
+    const Texture *texture = std::as_const(textures_).find(w.id);
+    if (texture == nullptr || texture->rid == 0 || texture->kind != TextureKind::Image ||
+        texture->status != TextureStatus::Ok || texture->updated) {
+      continue;  // freed, retired, failed or updated: not the created content any more
+    }
+    // Still the created content: its own worker (pending or settled by a snapshot) or bytes.
+    bool same = false;
+    if (w.job != nullptr) {
+      same = texture->job == w.job ||
+             (w.job->done() && texture->job == nullptr && texture->bytes != nullptr &&
+              texture->bytes == w.job->bytes());
+    } else {
+      same = texture->job == nullptr && texture->bytes != nullptr && texture->bytes == w.bytes;
+    }
+    if (!same) {
+      continue;
+    }
+    if (w.job != nullptr && !w.job->done()) {
+      hint_watched_[keep++] = std::move(w);  // not at rest yet
+      continue;
+    }
+    if (w.job != nullptr && w.job->mispredict()) {
+      continue;
+    }
+    Texture settled = *texture;  // a copy: the table is left as it is
+    if (settled.job != nullptr) {
+      settled.job->fill(&settled.copy);
+      settled.bytes = settled.job->bytes();
+      settled.job.reset();
+    }
+    if (settled.bytes == nullptr) {
+      continue;
+    }
+    HintSource source;
+    source.rid = settled.rid;
+    source.entry = wire_entry(settled);
+    source.body = settled.bytes;
+    variant_bodies_of(source.entry, settled.copy, settled.uastc_hash, settled.uastc_bytes,
+                      &source.variant_bodies);
+    out->push_back(std::move(source));
+  }
+  hint_watched_.resize(keep);
+}
+
+int Mirror::texture_hash(std::uint64_t rid, std::string *hash) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  hash->clear();
+  const auto it = texture_by_rid_.find(rid);
+  if (it == texture_by_rid_.end()) {
+    return 0;
+  }
+  const Texture *texture = textures_.find(it->second);
+  if (texture == nullptr || texture->kind != TextureKind::Image ||
+      texture->status != TextureStatus::Ok) {
+    return texture == nullptr ? 0 : 2;
+  }
+  if (texture->job == nullptr) {
+    *hash = texture->copy.hash;
+  } else if (texture->job->done() && !texture->job->mispredict()) {
+    *hash = texture->job->actual().hash;
+  }
+  return 1;
+}
+
+rs2::TextureEntry Mirror::ok_image_entry(const PayloadCopy &copy,
+                                         std::vector<std::pair<std::string, PayloadPtr>> *bodies) {
+  Texture texture;
+  texture.kind = TextureKind::Image;
+  texture.status = TextureStatus::Ok;
+  texture.copy = copy;
+  rs2::TextureEntry entry = wire_entry(texture);
+  if (bodies != nullptr) {
+    variant_bodies_of(entry, copy, std::string(), nullptr, bodies);
+  }
+  return entry;
 }
 
 RecoverInfo Mirror::texture_adopt(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
@@ -4373,6 +4498,40 @@ void Mirror::copy_texture_content(Texture *t, const Texture *b) {
   t->uastc_params = b->uastc_params;
   t->uastc_bytes = b->uastc_bytes;
   t->basis_decided = b->basis_decided;
+  t->override_w = b->override_w;  // GLES3's texture_replace copies the whole struct
+  t->override_h = b->override_h;
+}
+
+void Mirror::texture_set_size_override(std::uint64_t rid, std::int32_t width,
+                                       std::int32_t height, std::uint64_t frame, bool bump) {
+  (void)frame;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!v15_ || width < 1 || width > 16384 || height < 1 || height > 16384) {
+    return;
+  }
+  const auto it = texture_by_rid_.find(rid);
+  if (it == texture_by_rid_.end()) {
+    return;
+  }
+  const Texture *seen = std::as_const(textures_).find(it->second);
+  if (seen == nullptr || seen->kind != TextureKind::Image ||
+      (seen->override_w == width && seen->override_h == height)) {
+    return;
+  }
+  Texture *texture = textures_.mut(it->second);  // HC4b: marks
+  const bool before = carried_override(texture->override_w, texture->override_h,
+                                       texture->copy.width, texture->copy.height);
+  const std::uint16_t old_w = texture->override_w;
+  const std::uint16_t old_h = texture->override_h;
+  texture->override_w = static_cast<std::uint16_t>(width);
+  texture->override_h = static_cast<std::uint16_t>(height);
+  const bool after = carried_override(texture->override_w, texture->override_h,
+                                      texture->copy.width, texture->copy.height);
+  if (bump && (before != after ||
+               (after && (old_w != texture->override_w || old_h != texture->override_h)))) {
+    ++epoch_;
+    texture->version += 1;  // the entry's size_override changed
+  }
 }
 
 bool Mirror::texture_replace_recover(std::uint64_t t_rid, std::uint64_t b_rid,

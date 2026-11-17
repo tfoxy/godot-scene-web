@@ -50,6 +50,11 @@ std::vector<std::uint8_t> encode_end(const End &end);
 // and performs no validation of the payload's contents; `record.hash` is written verbatim.
 std::vector<std::uint8_t> encode_resource(const ResourceRecord &record);
 
+// render-stream-15.md "Resource hints": the two non-transaction records, canonical JSON with no
+// blocks. Nothing is validated; the fields are written verbatim in the spec's key order.
+std::vector<std::uint8_t> encode_resource_hint(const ResourceHint &hint);
+std::vector<std::uint8_t> encode_resource_unhint(const std::string &hash);
+
 }  // namespace rs2
 }  // namespace grc
 

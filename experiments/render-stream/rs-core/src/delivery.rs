@@ -285,6 +285,7 @@ mod tests {
             mipmaps: false,
             payload_bytes: 10,
             variants,
+            size_override: None,
             canvas: None,
         }
     }

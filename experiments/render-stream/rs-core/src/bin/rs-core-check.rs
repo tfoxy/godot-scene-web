@@ -19,12 +19,14 @@
 //!   rs-core-check fill <recording> [--store <dir>] [--seqs 8,18,...] [--every N] [--cell 8]
 //!                      [--damage <summary.json>] [--draws <dir>]
 //!
-//! `goldens` runs golden-2 ... golden-14 (exits non-zero on any failing check). `transcode` (W13a,
+//! `goldens` runs golden-2 ... golden-15 (exits non-zero on any failing check). `transcode` (W13a,
 //! render-stream-13.md "Forms and transcode") converts a /12 recording to /13 or back, refusing an
 //! invalid input with the decoder's error code. ID3 (render-stream-14.md "Tools"): `--to 13` of a
 //! /14 recording drops its item_meta v2 columns and grant names (and the records and re-stamped
 //! rows left with nothing to say), `--to 12` of a /14 recording goes through that /13 stream, and
-//! `--to 14` re-stamps a /13 recording (magic and protocol). `--stale` is the encoder sabotage
+//! `--to 14` re-stamps a /13 recording (magic and protocol). render-stream-15.md "Tools": `--to 14`
+//! of a /15 recording drops both hint record types and every `size_override` key
+//! ([`render_stream_core::v15::to14_from15`]); `--to 13` and `--to 12` go on through that /14 stream. `--stale` is the encoder sabotage
 //! `predict-stale`, `--zr-sabotage` W13r's `zr-overrun` / `zr-short-run`; `--roundtrip` checks /12 → /13 → /12 byte for byte and reports the sizes and
 //! the predicted units by order. `diff` feeds every
 //! record of every input through the validator and writes one JSONL line per record (record sha256,
@@ -86,7 +88,7 @@ static GLOBAL: Counting = Counting;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..14>] [--sabotage skip-payload-hash|early-prune|no-predict-reset]\n  \
+        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..15>] [--sabotage skip-payload-hash|early-prune|no-predict-reset]\n  \
          rs-core-check transcode --to 12|13|14 [--stale] [--zr-sabotage overrun|short-run] <in> <out>\n  \
          rs-core-check transcode --roundtrip <recording.rs12>...\n  \
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
@@ -310,6 +312,8 @@ fn record_type(r: &Accepted) -> &'static str {
         Accepted::Transaction => "transaction",
         Accepted::End => "end",
         Accepted::ItemMeta => "item_meta",
+        Accepted::ResourceHint { .. } => "resource_hint",
+        Accepted::ResourceUnhint { .. } => "resource_unhint",
     }
 }
 
@@ -577,7 +581,7 @@ fn cmd_bench(args: &Args) -> ExitCode {
 }
 
 /// `transcode` (W13a): /12 <-> /13, or `--roundtrip` over /12 recordings; ID3: /14 -> /13 (and
-/// through it /12), /13 -> /14.
+/// through it /12), /13 -> /14; /15 -> /14 (and through it /13, /12).
 fn cmd_transcode(args: &Args) -> ExitCode {
     use render_stream_core::predict;
     if args.get("roundtrip").is_some() {
@@ -639,14 +643,25 @@ fn cmd_transcode(args: &Args) -> ExitCode {
         Some(_) => return usage(),
     };
     use render_stream_core::item_meta;
+    // render-stream-15.md "Tools": a /15 input goes through its /14 stream (hint records and
+    // size_override keys dropped), then on as a /14 input.
+    let from15 = wire::version_of_magic(&data) == Some(15);
     let from14 = wire::version_of_magic(&data) == Some(14);
-    let got = match to {
-        14 => render_stream_core::validate::validate_recording(&data, Options::new(13))
-            .and_then(|()| item_meta::to14_from13(&data)),
-        13 if from14 => item_meta::to13_from14(&data),
-        13 => predict::to13_with(&data, args.get("stale").is_some(), zr, None),
-        _ if from14 => item_meta::to13_from14(&data).and_then(|d| predict::to12(&d, false)),
-        _ => predict::to12(&data, false),
+    let got = if from15 {
+        render_stream_core::v15::to14_from15(&data).and_then(|d14| match to {
+            14 => Ok(d14),
+            13 => item_meta::to13_from14(&d14),
+            _ => item_meta::to13_from14(&d14).and_then(|d| predict::to12(&d, false)),
+        })
+    } else {
+        match to {
+            14 => render_stream_core::validate::validate_recording(&data, Options::new(13))
+                .and_then(|()| item_meta::to14_from13(&data)),
+            13 if from14 => item_meta::to13_from14(&data),
+            13 => predict::to13_with(&data, args.get("stale").is_some(), zr, None),
+            _ if from14 => item_meta::to13_from14(&data).and_then(|d| predict::to12(&d, false)),
+            _ => predict::to12(&data, false),
+        }
     };
     match got {
         Ok(out) => {
@@ -900,7 +915,10 @@ fn cmd_pick_bench(args: &Args) -> ExitCode {
                         payloads.provide(b, &hash, version, true)?;
                     }
                 }
-                Accepted::End | Accepted::ItemMeta => {}
+                Accepted::End
+                | Accepted::ItemMeta
+                | Accepted::ResourceHint { .. }
+                | Accepted::ResourceUnhint { .. } => {}
                 Accepted::Transaction => {
                     payloads.accept_transaction(&v, span.bytes(&data))?;
                     a.prepare(v.state(), v.delta());
@@ -1041,7 +1059,10 @@ fn cmd_apply_bench(args: &Args) -> ExitCode {
                         payloads.provide(b, &hash, version, true)?;
                     }
                 }
-                Accepted::End | Accepted::ItemMeta => {}
+                Accepted::End
+                | Accepted::ItemMeta
+                | Accepted::ResourceHint { .. }
+                | Accepted::ResourceUnhint { .. } => {}
                 Accepted::Transaction => {
                     payloads.accept_transaction(&v, span.bytes(&data))?;
                     a.prepare(v.state(), v.delta());
@@ -1256,7 +1277,10 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                             payloads.provide(b, &hash, version, true)?;
                         }
                     }
-                    Accepted::End | Accepted::ItemMeta => {}
+                    Accepted::End
+                    | Accepted::ItemMeta
+                    | Accepted::ResourceHint { .. }
+                    | Accepted::ResourceUnhint { .. } => {}
                     Accepted::Transaction => {
                         payloads.accept_transaction(&v, span.bytes(&data))?;
                         inc.prepare(v.state(), v.delta());
@@ -1430,7 +1454,10 @@ fn cmd_material_diff(args: &Args) -> ExitCode {
                             payloads.provide(b, &hash, version, true)?;
                         }
                     }
-                    Accepted::End | Accepted::ItemMeta => {}
+                    Accepted::End
+                    | Accepted::ItemMeta
+                    | Accepted::ResourceHint { .. }
+                    | Accepted::ResourceUnhint { .. } => {}
                     Accepted::Transaction => {
                         payloads.accept_transaction(&v, span.bytes(&data))?;
                         inc.prepare(v.state(), v.delta());
@@ -1680,7 +1707,10 @@ fn cmd_client_diff(args: &Args) -> ExitCode {
                             }
                         }
                     }
-                    Accepted::End | Accepted::ItemMeta => {}
+                    Accepted::End
+                    | Accepted::ItemMeta
+                    | Accepted::ResourceHint { .. }
+                    | Accepted::ResourceUnhint { .. } => {}
                     Accepted::Transaction => {
                         n += 1;
                         bodies += h.v.dynamic_bodies().len();
@@ -1979,7 +2009,10 @@ fn cmd_scissors(args: &Args) -> ExitCode {
                         payloads.provide(b, &hash, version, true)?;
                     }
                 }
-                Accepted::End | Accepted::ItemMeta => {}
+                Accepted::End
+                | Accepted::ItemMeta
+                | Accepted::ResourceHint { .. }
+                | Accepted::ResourceUnhint { .. } => {}
                 Accepted::Transaction => {
                     payloads.accept_transaction(&v, span.bytes(&data))?;
                     a.prepare(v.state(), v.delta());
@@ -2065,7 +2098,10 @@ fn cmd_lowered(args: &Args) -> ExitCode {
                         payloads.provide(b, &hash, version, true)?;
                     }
                 }
-                Accepted::End | Accepted::ItemMeta => {}
+                Accepted::End
+                | Accepted::ItemMeta
+                | Accepted::ResourceHint { .. }
+                | Accepted::ResourceUnhint { .. } => {}
                 Accepted::Transaction => {
                     payloads.accept_transaction(&v, span.bytes(&data))?;
                     a.prepare(v.state(), v.delta());
@@ -2675,7 +2711,10 @@ fn cmd_draw_skip_diff(args: &Args) -> ExitCode {
                             }
                         }
                     }
-                    Accepted::End | Accepted::ItemMeta => {}
+                    Accepted::End
+                    | Accepted::ItemMeta
+                    | Accepted::ResourceHint { .. }
+                    | Accepted::ResourceUnhint { .. } => {}
                     Accepted::Transaction => {
                         n += 1;
                         for s in [&mut o, &mut k] {

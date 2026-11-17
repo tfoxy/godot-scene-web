@@ -228,6 +228,15 @@ class Publisher {
     meta_batches_.push_back(std::move(batch));
   }
 
+  // render-stream-15.md "Resource hints": encoded hint and unhint records, written to both sinks
+  // after the next publication's transaction (they wait for one when the hold-back skipped this
+  // frame). Counted in each sink's bytes_total and max_record_bytes only.
+  void add_hint_records(std::vector<std::shared_ptr<const std::vector<std::uint8_t>>> records) {
+    for (auto &record : records) {
+      pending_hints_.push_back(std::move(record));
+    }
+  }
+
   // Writes the magic and a session record to each sink (one flush per sink). Each sink's session
   // is `tmpl` (same session_id) with its own fresh stream_id, transport file, connection null,
   // encoding full / patch, and the file `resources` object of this publisher's policy. Returns
@@ -309,6 +318,7 @@ class Publisher {
     std::uint64_t frame = 0;
     std::uint64_t snapshot_ns = 0;
     std::vector<std::shared_ptr<const rs::item_meta::Batch>> meta_batches;  // TAG1
+    std::vector<std::shared_ptr<const std::vector<std::uint8_t>>> hints;      // after the tx
   };
   // Forms and writes the job's records and transaction. `direct`: on the writer thread (the
   // sinks' write_direct); otherwise through write() with the resource events per record.
@@ -348,6 +358,7 @@ class Publisher {
   TextureEntry stale_entry_;
   rs::PayloadPtr stale_payload_;
   rs::FileWriter *former_ = nullptr;  // HC5: set_former()
+  std::vector<std::shared_ptr<const std::vector<std::uint8_t>>> pending_hints_;
 };
 
 }  // namespace rs2

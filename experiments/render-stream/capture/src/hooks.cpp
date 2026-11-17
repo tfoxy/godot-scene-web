@@ -75,6 +75,9 @@ using FnTexture2dUpdate = void (*)(void *, RID, const Ref *, int);
 //   (G8kc, calibrator 10: the engine calls it after texture_2d_create with the res:// path,
 //   compressed_texture.cpp:91-96, :158-161; installed only under GRC_TEXTURE_CACHE_DIR)
 using FnTextureSetPath = void (*)(void *, RID, const void *);
+//   159: virtual void texture_set_size_override(RID p_texture, int p_width, int p_height) = 0;
+//   (render-stream-15.md "Size override": installed only under GRC_STREAM_VERSION=15)
+using FnTextureSetSizeOverride = void (*)(void *, RID, int, int);
 //   virtual void canvas_item_set_canvas_group_mode(RID p_item, CanvasGroupMode p_mode,
 //       float p_clear_margin = 5.0, bool p_fit_empty = false, float p_fit_margin = 0.0,
 //       bool p_blur_mipmaps = false) = 0;
@@ -479,6 +482,8 @@ enum HookId : size_t {
   kParticlesSetInterpToEnd,
   // UIT (render-stream-11.md "As built (UIT)", record slot 461): conditional like PM1's, /11 only
   kSetUseIdentityTransform,
+  // render-stream-15.md "Size override": conditional, /15 only (hooks_plan)
+  kTextureSetSizeOverride,
   kHookCount,
 };
 
@@ -494,6 +499,10 @@ std::atomic<uint64_t> g_count[kHookCount];
 bool g_omitted[kHookCount] = {};
 size_t g_hooks_total = kHookCount;
 bool g_skipped[kHookCount] = {};  // conditional hooks left out by configuration (not omitted)
+// render-stream-15.md: texture_set_size_override is planned (GRC_STREAM_VERSION=15), so an adopted
+// texture takes the logical size the registry kept for it.
+bool g_size_override_hooked = false;
+void adopt_size_override(uint64_t rid);
 // PM1: all twelve multimesh hooks are planned (hooks_plan), so canvas_item_add_multimesh records
 // /11's add_multimesh command (multimesh_hooks_planned()).
 bool g_multimesh_hooked = false;
@@ -2787,6 +2796,7 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
       }
       const rs::RecoverInfo recovered = mirror().texture_adopt(
           texture.id, copy, bytes, rs2::AdoptedContent::Current, current_frame(), job);
+      adopt_size_override(texture.id);
       resources().texture_adopt(tap_context(), texture.id, copy, "current", "update", job);
       rs::adopt_texture_recovered(texture.id, rs::RecoverPath::Update, current_frame(), recovered);
     }
@@ -4196,6 +4206,44 @@ void hook_set_use_identity_transform(void *self, RID item, bool enable) {
 // engine refuses a call off the main thread before drawing (rendering_server_default.cpp:420), so
 // only a main-thread call reaches the clock.
 
+// --- render-stream-15.md "Size override" -------------------------------------------------------
+//
+// CompressedTexture2D::load calls texture_set_size_override after every create or replace with the
+// size it imported (compressed_texture.cpp load), usually the stored size; a block-compressed image
+// padded to a multiple of 4 is drawn at the smaller one. The registry keeps it for a texture that a
+// late arm adopts (also in standby); the mirror carries it at /15. Conditional: /15 only.
+
+// An adopted texture's logical size from before the arm (or before its adoption), as the
+// registry kept it. Under g_texture_order, right after the mirror adopted `rid`.
+void adopt_size_override(uint64_t rid) {
+  if (!g_size_override_hooked || !rs::registry_on()) return;
+  rs::RegistryTextureRecord record;
+  if (rs::registry_texture(rid, &record) && record.override_w != 0) {
+    mirror().texture_set_size_override(rid, record.override_w, record.override_h, current_frame(),
+                                       false);
+  }
+}
+
+void hook_texture_set_size_override(void *self, RID texture, int width, int height) {
+  OffmainGuard inflight;
+
+  if (reload_work() && reload_temp(texture.id)) {
+    original<FnTextureSetSizeOverride>(kTextureSetSizeOverride)(self, texture, width, height);
+    return;
+  }
+  bump(kTextureSetSizeOverride);
+  if (rs::registry_on()) {
+    rs::registry_note_texture_size_override(texture.id, width, height);
+  }
+  original<FnTextureSetSizeOverride>(kTextureSetSizeOverride)(self, texture, width, height);
+  if (streaming()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
+    if (streaming() && !omitted("texture_set_size_override")) {
+      mirror().texture_set_size_override(texture.id, width, height, current_frame());
+    }
+  }
+}
+
 void hook_draw(void *self, bool swap_buffers, double frame_step) {
   OffmainGuard inflight;
 
@@ -5523,6 +5571,8 @@ const HookSpec kSpecs[] = {
      as_ptr(&hook_particles_set_interp_to_end)},
     {kSetUseIdentityTransform, "canvas_item_set_use_identity_transform",
      as_ptr(&hook_set_use_identity_transform)},
+    {kTextureSetSizeOverride, "texture_set_size_override",
+     as_ptr(&hook_texture_set_size_override)},
 };
 
 const char *hook_name(HookId id) { return kSpecs[id].name; }
@@ -6006,6 +6056,7 @@ static bool adopt_texture_body(uint64_t rid, const rs::PayloadCopy &copy, rs::Pa
     return false;  // a loader thread created or adopted it meanwhile
   }
   mirror().texture_adopt(rid, copy, std::move(bytes), content, current_frame(), job);
+  adopt_size_override(rid);
   resources().texture_adopt(tap_context(), rid, copy,
                             content == rs2::AdoptedContent::Current ? "current" : "creation",
                             source, job);
@@ -6384,9 +6435,15 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   // /11, which carries them too).
   const char *stream_version = grc::rs::env("GRC_STREAM_VERSION");
   // PM5: /12 installs /10's and /11's conditional hooks too, plus the 33 particles hooks.
-  // W13b: /13 is /12 with predicted blocks: the same hooks.
-  const bool v12_wanted = stream_version != nullptr && (std::strcmp(stream_version, "12") == 0 ||
-                                                        std::strcmp(stream_version, "13") == 0);
+  // W13b: /13 is /12 with predicted blocks: the same hooks. /14 and /15 are /13 plus records
+  // that need none of these hooks, so they install the same set.
+  const bool v12_wanted =
+      stream_version != nullptr &&
+      (std::strcmp(stream_version, "12") == 0 || std::strcmp(stream_version, "13") == 0 ||
+       std::strcmp(stream_version, "14") == 0 || std::strcmp(stream_version, "15") == 0);
+  // render-stream-15.md "Size override": texture_set_size_override is /15's only (its key and
+  // its version bump are /15's), so below /15 it is neither planned nor omitted.
+  const bool v15_wanted = stream_version != nullptr && std::strcmp(stream_version, "15") == 0;
   const bool backbuffer_hooks_wanted =
       stream_version != nullptr &&
       (std::strcmp(stream_version, "10") == 0 || std::strcmp(stream_version, "11") == 0 ||
@@ -6416,6 +6473,12 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
         !backbuffer_hooks_wanted) {
       // CG1 (render-stream-10.md "Capture"): conditional like texture_set_path; neither planned
       // nor omitted below /10. P3-CK's draw (the shader clock) is /10's too.
+      g_skipped[spec.id] = true;
+      --g_hooks_total;
+      continue;
+    }
+    if (spec.id == kTextureSetSizeOverride && !v15_wanted) {
+      // render-stream-15.md: conditional like PM1's; neither planned nor omitted below /15.
       g_skipped[spec.id] = true;
       --g_hooks_total;
       continue;
@@ -6460,6 +6523,7 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   }
   g_planned_names = plan->planned;
   g_omitted_names = plan->omitted;
+  g_size_override_hooked = !g_skipped[kTextureSetSizeOverride] && !g_omitted[kTextureSetSizeOverride];
   // PM1: the /11 command needs every multimesh hook (a record that names only some of them keeps
   // canvas_item_add_multimesh `unsupported-op`, and the session's features as before PM1).
   g_multimesh_hooked = multimesh_hooks_wanted;

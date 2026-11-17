@@ -25,6 +25,7 @@ fn adopted_canvas(id: Id, diffuse: Id) -> Texture {
         mipmaps: false,
         payload_bytes: 0,
         variants: Vec::new(),
+        size_override: None,
         canvas: Some(CanvasTexture {
             diffuse: Some(diffuse),
             filter: Filter::Default,
@@ -50,6 +51,7 @@ fn adopted_image(id: Id, hash: Hash) -> Texture {
         mipmaps: false,
         payload_bytes: 1024,
         variants: Vec::new(),
+        size_override: None,
         canvas: None,
     }
 }

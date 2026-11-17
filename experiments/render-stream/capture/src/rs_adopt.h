@@ -349,6 +349,18 @@ void adopt_resources_end();
 ReloadStats adopt_reload_at_arm();
 WarmStats adopt_warm_at_arm(std::uint64_t arm_t0_ns, const std::string &workers);
 bool adopt_warm_poll();
+// render-stream-15.md "Resource hints", the `warm` source: each warm entry whose body is at rest
+// now (a finished, well-predicted worker or a synchronous copy) and not in `offered` yet, with the
+// settled copy and body adoption would publish (nothing is copied, decoded or hashed). Its RID is
+// added to `offered`. Main thread.
+struct WarmHint {
+  std::uint64_t rid = 0;
+  PayloadCopy copy;
+  PayloadPtr body;
+};
+void adopt_warm_hint_sources(std::unordered_set<std::uint64_t> *offered, std::vector<WarmHint> *out);
+// Whether the warm entry of `rid` is still one adoption would take (present, and not stale).
+bool adopt_warm_alive(std::uint64_t rid);
 WarmStats adopt_warm_stats();
 void adopt_warm_cancel();
 WarmStats adopt_warm_finish();

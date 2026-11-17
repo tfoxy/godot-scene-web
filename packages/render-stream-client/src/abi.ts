@@ -103,6 +103,14 @@ export interface GswRs {
   particles_set(id: number, data: Float32Array): void;
   // Client extensions (render-stream-13.md `item_meta`).
   item_meta_json(): string;
+  // render-stream/15 resource hints (only a `resourceHints` client calls these).
+  /** The hint or unhint record just accepted: its meta JSON as received. */
+  hint_json(): string;
+  /** Bit 0: the payload is in the store or staged; bit 1: the accepted state names it. */
+  hint_state(hash: string): number;
+  /** The hinted hashes the last accepted transaction's upserted textures carry (64 hex each,
+   * concatenated). */
+  hint_refs(): string;
   set_log_removed(on: boolean): void;
   take_removed(): Uint32Array;
   set_overrides(ids: Uint32Array, vals: Float32Array): number;
@@ -159,6 +167,11 @@ export const ACCEPT_HELD = 4;
 /** A /13 `item_meta` record (render-stream-13.md): the core holds it for its
  * transaction; nothing to apply, nothing to ack, not a transaction. */
 export const ACCEPT_ITEM_META = 5;
+/** A /15 `resource_hint` record (render-stream-15.md "Resource hints"): advisory; nothing to
+ * apply, nothing to ack, not a transaction. */
+export const ACCEPT_RESOURCE_HINT = 6;
+/** A /15 `resource_unhint` record. */
+export const ACCEPT_RESOURCE_UNHINT = 7;
 
 /** lib.rs `Stats`, `#[repr(C)]`, all u32, in this order. */
 export const STAT_FIELDS = [
@@ -256,6 +269,9 @@ export const CLIENT_CORE_METHODS = [
   "shader_time",
   "particles_set",
   "item_meta_json",
+  "hint_json",
+  "hint_state",
+  "hint_refs",
   "set_log_removed",
   "take_removed",
   "set_overrides",

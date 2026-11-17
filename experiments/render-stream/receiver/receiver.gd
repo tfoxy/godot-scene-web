@@ -231,6 +231,13 @@ extends Node
 ##                               un-predicts every transaction to its /12 record at accept; live,
 ##                               a `predict-check` failure sends `resync` (reason `coding`) and
 ##                               the patches before the full are held (neither accepted nor acked).
+##                               15 is render-stream/15 (render-stream-15.md "Who speaks /15";
+##                               native only, not the web export): subprotocol render-stream.15,
+##                               /13's hello under "render-stream/15", received tap received.rs15.
+##                               The core accepts resource hints and ignores them (kind "hint",
+##                               no ack) and applies each texture's `size_override` with
+##                               texture_set_size_override. In file mode a GRSF recording replays
+##                               at /15 and a GRSE one at /14 (its item_meta v2 rows unread).
 ##   RS_RECEIVER_LIVE_CODING     W11d (W11t's coding, /11 to /13 only): unset offers "zstd-base,zstd"
 ##                               (base-prefix zstd, then per-message zstd), `zstd` offers zstd only,
 ##                               `off` sends no live_coding. Every binary message is decoded by
@@ -663,6 +670,18 @@ func _ready() -> void:
 		_wire_version = 13
 		var receiver_block_v13: Dictionary = _report["receiver"]
 		receiver_block_v13["protocol"] = RsLiveClient.PROTOCOL_V13
+	elif _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_V14_HEX:
+		# A render-stream/14 recording replays at /14: /13's paths (the core holds item_meta v2
+		# rows for their transaction; nothing reads them).
+		_wire_version = 14
+		var receiver_block_v14: Dictionary = _report["receiver"]
+		receiver_block_v14["protocol"] = "render-stream/14"
+	elif _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_V15_HEX:
+		# A render-stream/15 recording (GRC_STREAM_VERSION=15) replays at /15: hints are ignored,
+		# and the core sets each texture's size_override on the Godot texture.
+		_wire_version = 15
+		var receiver_block_v15: Dictionary = _report["receiver"]
+		receiver_block_v15["protocol"] = RsLiveClient.PROTOCOL_V15
 	elif _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_V8_HEX:
 		# G8t: a gate 8 recording (render-stream/8 file sink) replays at /8; the core ignores /8's
 		# additions to the tables, so it draws exactly as a /6 recording would.
@@ -1411,6 +1430,10 @@ func _process(_delta: float) -> void:
 			# identities for client extensions; the core
 			# holds the record for its transaction. Nothing to apply.
 			pass
+		"hint":
+			# A /15 resource_hint or resource_unhint: advisory (render-stream-15.md "Resource
+			# hints"); this receiver never prefetches, so nothing to apply.
+			pass
 		"end":
 			_finish()
 
@@ -1825,8 +1848,8 @@ func _parse_wire_env() -> bool:
 	var protocol_text: String = RsConfig.get_env("RS_RECEIVER_PROTOCOL").strip_edges()
 	if protocol_text == "":
 		protocol_text = "7" if RsConfig.is_web() else "6"
-	if not ["6", "7", "8", "9", "10", "11", "12", "13"].has(protocol_text):
-		_log("error: RS_RECEIVER_PROTOCOL must be 6, 7, 8, 9, 10, 11, 12 or 13 (got %s)" % JSON.stringify(protocol_text))
+	if not ["6", "7", "8", "9", "10", "11", "12", "13", "15"].has(protocol_text):
+		_log("error: RS_RECEIVER_PROTOCOL must be 6, 7, 8, 9, 10, 11, 12, 13 or 15 (got %s)" % JSON.stringify(protocol_text))
 		return false
 	if RsConfig.is_web() and not ["7", "8", "9", "10", "11", "12", "13"].has(protocol_text):
 		_log("error: a web receiver speaks only render-stream/7, /8, (G8ku) /9, (CG1) /10, (W11e) /11, (PM5) /12 or (W13d) /13 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
@@ -1856,7 +1879,7 @@ func _parse_wire_env() -> bool:
 			_log("error: RS_RECEIVER_LIVE_CODING must be zstd or off (got %s)" % JSON.stringify(coding_text))
 			return false
 	if coding_text != "" and _wire_version < 11:
-		_log("error: RS_RECEIVER_LIVE_CODING needs RS_RECEIVER_PROTOCOL=11, 12 or 13")
+		_log("error: RS_RECEIVER_LIVE_CODING needs RS_RECEIVER_PROTOCOL=11, 12, 13 or 15")
 		return false
 	_manifest_sha256 = RsConfig.get_env("RS_RECEIVER_MANIFEST_SHA256").strip_edges()
 	if _wire_version >= 7 and _manifest_sha256 != "" and not RsLiveClient.is_hex64(_manifest_sha256):
@@ -1991,8 +2014,8 @@ func _process_live() -> void:
 					# W11d: /10's hello under render-stream/11, W11t's live_coding last (golden-11's
 					# control hello); the connection's decoder opens with the same offer.
 					# PM5: /12's hello is /11's under render-stream/12; W13d: /13's is /12's under
-					# render-stream/13.
-					var hello_protocol: String = RsLiveClient.PROTOCOL_V13 if _wire_version >= 13 else (RsLiveClient.PROTOCOL_V12 if _wire_version >= 12 else RsLiveClient.PROTOCOL_V11)
+					# render-stream/13; /15's is /13's under render-stream/15.
+					var hello_protocol: String = RsLiveClient.PROTOCOL_V15 if _wire_version >= 15 else (RsLiveClient.PROTOCOL_V13 if _wire_version >= 13 else (RsLiveClient.PROTOCOL_V12 if _wire_version >= 12 else RsLiveClient.PROTOCOL_V11))
 					var hello_v11: Dictionary = RsLiveClient.hello_v9(_hello_v7(), _texture_encodings, _gpu_formats, hello_protocol)
 					if _live_coding != "":
 						hello_v11["live_coding"] = _live_coding
@@ -2386,6 +2409,10 @@ func _receive_binary(message: PackedByteArray) -> void:
 		"item_meta":
 			# TAG1: this receiver never asks for item_meta (no hello key); a record is still
 			# validated and held by the core for its transaction. Nothing to apply, no ack.
+			pass
+		"hint":
+			# A /15 resource_hint or resource_unhint: validated by the core, advisory, and never
+			# acked (render-stream-15.md "Resource hints"); this receiver does not prefetch.
 			pass
 		_:
 			_fail(null, "live-framing", "unexpected %s record" % kind)

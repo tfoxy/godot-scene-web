@@ -176,6 +176,7 @@
 #include "rs2_snapshot.h"
 #include "rs_captured.h"
 #include "rs_carried.h"
+#include "rs_hints.h"
 #include "rs_histogram.h"
 #include "rs_item_meta.h"
 #include "rs_live_coding.h"
@@ -325,6 +326,9 @@ inline constexpr const char *kSubprotocolV12 = "render-stream.12";
 inline constexpr const char *kSubprotocolV13 = "render-stream.13";
 // ID3 (render-stream-14.md): /13's live transport under render-stream/14 (item_meta v2).
 inline constexpr const char *kSubprotocolV14 = "render-stream.14";
+// render-stream-15.md: /14's live transport under render-stream/15 (resource hints, size
+// override). Opt-in (GRC_STREAM_VERSION=15).
+inline constexpr const char *kSubprotocolV15 = "render-stream.15";
 
 // HC5: where a frame callback's formation jobs run (rs_live.h header, "Formation").
 enum class Formation : std::uint8_t { Inline, Thread };
@@ -659,6 +663,28 @@ class Hub {
     meta_batches_.push_back(std::move(batch));
   }
 
+  // render-stream-15.md "Resource hints": the host's hint table, read by every frame callback for
+  // the /15 connections that have had their first transaction (null: no hints). The table and the
+  // sabotage belong to the caller's thread and must outlive the hub's use of them.
+  void set_hints(const rs::hints::Table *table, rs::hints::Sabotage sabotage) {
+    hints_ = table;
+    hint_sabotage_ = sabotage;
+  }
+  // The hinted sets of the open /15 connections (the hint pins, rs::hints::pinned()).
+  void hint_sinks(std::vector<const rs::hints::Sent *> *out) const;
+  // One hint the last frame callbacks sent, for the evidence log (drained by the caller).
+  struct HintEvent {
+    std::uint32_t connection = 0;
+    std::uint64_t frame = 0;
+    bool unhint = false;
+    std::string hash;
+    rs2::HintCause cause = rs2::HintCause::Create;
+    std::uint64_t priority = 0;
+  };
+  std::vector<HintEvent> take_hint_events() { return std::move(hint_events_); }
+  std::uint64_t hints_sent() const { return hints_sent_; }
+  std::uint64_t unhints_sent() const { return unhints_sent_; }
+
   // One frame callback. `snapshot` is the published state for `frame` (required when
   // wants_snapshot() was true; may be null otherwise); `epoch` the mirror's mutation epoch read
   // before it was copied; `snapshot_ns` its copy time (added to each sending stream's stats).
@@ -833,6 +859,13 @@ class Hub {
   std::unique_ptr<Memo> memo_;
   bool wrong_prefix_done_ = false;
   bool predict_stale_done_ = false;  // W13b: predict-stale acted (once per host)
+  // render-stream-15.md: the job's hint and unhint records, after its transaction (or alone).
+  void form_hints(Job &job);
+  const rs::hints::Table *hints_ = nullptr;
+  rs::hints::Sabotage hint_sabotage_ = rs::hints::Sabotage::None;
+  std::vector<HintEvent> hint_events_;
+  std::uint64_t hints_sent_ = 0;
+  std::uint64_t unhints_sent_ = 0;
   // TAG1: the job's item_meta record (null when a delta would be empty), and its coded bytes.
   void form_item_meta(Job &job, bool full, std::shared_ptr<const std::vector<std::uint8_t>> *record,
                       std::shared_ptr<const std::vector<std::uint8_t>> *wire);

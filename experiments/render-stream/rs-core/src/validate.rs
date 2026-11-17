@@ -34,7 +34,9 @@
 //! After a failed `accept` nothing has changed (the TypeScript validator may already have advanced
 //! its last-seen tables; it is never fed again after an error).
 
-use crate::meta::{self, CmdMeta, DecodeBufs, Decoded, EndMeta, Op, ResourceMeta, Session, TxMeta};
+use crate::meta::{
+    self, CmdMeta, DecodeBufs, Decoded, EndMeta, Op, ResourceHint, ResourceMeta, Session, TxMeta,
+};
 use crate::payload::{self, PayloadKind};
 use crate::item_meta;
 use crate::prof;
@@ -109,6 +111,11 @@ pub enum Accepted {
     /// TAG1: an `item_meta` record, held ([`Validator::item_meta_pending`]) until the transaction
     /// it describes is accepted, which then updates [`Validator::item_meta`]. Nothing to apply.
     ItemMeta,
+    /// /15: a `resource_hint` for `hash`, now in [`Validator::hints`] ([`Validator::hint`] reads
+    /// it). Advisory: nothing to apply.
+    ResourceHint { hash: Hash },
+    /// /15: a `resource_unhint` for `hash`, now gone from [`Validator::hints`]. Nothing to apply.
+    ResourceUnhint { hash: Hash },
 }
 
 // ------------------------------------------------------------------------------------- id hashing
@@ -711,6 +718,13 @@ pub struct Validator {
     item_meta: ItemMetaTable,
     /// The accepted `item_meta` record awaiting its transaction.
     item_meta_pending: Option<Box<ItemMetaRecord>>,
+    // ---- /15 (render-stream-15.md "Resource hints"); empty below /15.
+    /// The hints in effect: hinted and not unhinted since.
+    hints: HashMap<Hash, Box<ResourceHint>>,
+    /// Hashes hinted since the last accepted transaction, which `hint-meta` checks against the
+    /// whole resolved state at the next one (the entries it touches are checked against every
+    /// hint).
+    hints_fresh: Vec<Hash>,
 }
 
 fn where_(seq: i64) -> String {
@@ -780,6 +794,7 @@ fn texture_core_equal(a: &Texture, b: &Texture) -> bool {
         && ieq(a.height, b.height)
         && a.mipmaps == b.mipmaps
         && ieq(a.payload_bytes, b.payload_bytes)
+        && a.size_override == b.size_override
         && match (&a.canvas, &b.canvas) {
             (None, None) => true,
             (Some(x), Some(y)) => {
@@ -895,6 +910,16 @@ fn texture_entry_error(t: &Texture) -> Option<&'static str> {
         && t.height == 0
         && !t.mipmaps
         && t.payload_bytes == 0;
+    // render-stream-15.md "Size override": present exactly on an ok image whose logical size
+    // differs from the payload's.
+    if let Some([w, h]) = t.size_override {
+        if t.kind != Image || t.status != Ok {
+            return Some("\"size_override\" needs an \"ok\" image entry");
+        }
+        if w as i64 == t.width && h as i64 == t.height {
+            return Some("\"size_override\" equals the payload's width and height");
+        }
+    }
     if t.status == Freed {
         if !blank || t.canvas.is_some() || t.reason.is_some() {
             return Some("a \"freed\" entry must have hash/format/canvas/reason null and width/height/payload_bytes 0, mipmaps false");
@@ -1713,6 +1738,8 @@ impl Validator {
                     Decoded::Resource(_) => "resource",
                     Decoded::End(_) => "end",
                     Decoded::ItemMeta(_) => "item_meta",
+                    Decoded::ResourceHint(_) => "resource_hint",
+                    Decoded::ResourceUnhint(_) => "resource_unhint",
                     Decoded::Session(_) => "session",
                 };
                 return Err(Error::new(
@@ -1831,7 +1858,20 @@ impl Validator {
             plain_ok: false,
             item_meta: ItemMetaTable::default(),
             item_meta_pending: None,
+            hints: HashMap::new(),
+            hints_fresh: Vec::new(),
         })
+    }
+
+    /// /15: the hint in effect for `hash` (render-stream-15.md "Resource hints"), if any.
+    pub fn hint(&self, hash: &Hash) -> Option<&ResourceHint> {
+        self.hints.get(hash).map(|h| &**h)
+    }
+
+    /// /15: every hint in effect, keyed by hash (unordered; a prefetcher sorts by
+    /// [`ResourceHint::priority`], then by the order it accepted them).
+    pub fn hints(&self) -> impl Iterator<Item = &ResourceHint> {
+        self.hints.values().map(|h| &**h)
     }
 
     pub fn options(&self) -> &Options {
@@ -2120,6 +2160,14 @@ impl Validator {
                 self.accept_end(e)?
             }
             Decoded::ItemMeta(r) => self.accept_item_meta(record, offset, r)?,
+            Decoded::ResourceHint(h) => {
+                self.item_meta_orphan(offset, "a resource_hint record")?;
+                self.accept_hint(record, offset, h)?
+            }
+            Decoded::ResourceUnhint(hash) => {
+                self.item_meta_orphan(offset, "a resource_unhint record")?;
+                self.accept_unhint(record, offset, hash)?
+            }
         };
         let t = prof::start();
         let digest = match self.opts.digest {
@@ -2215,6 +2263,122 @@ impl Validator {
         self.bytes_total += record.len() as u64;
         self.max_record_bytes = self.max_record_bytes.max(record.len() as u64);
         Ok(Accepted::Resource { hash: r.hash })
+    }
+
+    /// /15 `resource_hint` (render-stream-15.md "Invariants and codes"): `hint-inline`, then
+    /// `hint-duplicate`. No `seq`, no credit, not a resource record: it counts only in
+    /// `bytes_total` and `max_record_bytes`.
+    fn accept_hint(
+        &mut self,
+        record: &[u8],
+        offset: usize,
+        h: Box<ResourceHint>,
+    ) -> Result<Accepted, Error> {
+        let res = &self.session.resources;
+        if res.delivery == "inline" || h.payload_bytes <= res.inline_max_bytes {
+            return Err(Error::new(
+                "hint-inline",
+                format!(
+                    "record at offset {offset}: a resource_hint for {} (payload_bytes {}) in a session whose delivery is \"{}\" with inline_max_bytes {}",
+                    h.hash.to_hex(),
+                    h.payload_bytes,
+                    res.delivery,
+                    res.inline_max_bytes
+                ),
+            ));
+        }
+        if self.hints.contains_key(&h.hash) {
+            return Err(Error::new(
+                "hint-duplicate",
+                format!(
+                    "record at offset {offset}: hash {} is already hinted",
+                    h.hash.to_hex()
+                ),
+            ));
+        }
+        let hash = h.hash;
+        self.hints.insert(hash, h);
+        self.hints_fresh.push(hash);
+        self.bytes_total += record.len() as u64;
+        self.max_record_bytes = self.max_record_bytes.max(record.len() as u64);
+        Ok(Accepted::ResourceHint { hash })
+    }
+
+    /// /15 `resource_unhint`: `hint-unknown`.
+    fn accept_unhint(
+        &mut self,
+        record: &[u8],
+        offset: usize,
+        hash: Hash,
+    ) -> Result<Accepted, Error> {
+        if self.hints.remove(&hash).is_none() {
+            return Err(Error::new(
+                "hint-unknown",
+                format!(
+                    "record at offset {offset}: hash {} is not hinted",
+                    hash.to_hex()
+                ),
+            ));
+        }
+        self.hints_fresh.retain(|h| *h != hash);
+        self.bytes_total += record.len() as u64;
+        self.max_record_bytes = self.max_record_bytes.max(record.len() as u64);
+        Ok(Accepted::ResourceUnhint { hash })
+    }
+
+    /// /15 `hint-meta`, on the transaction's resolved state: the `ok` image entries it carries
+    /// against every hint, and every entry against the hints made since the last transaction
+    /// (an untouched entry already held against the older hints).
+    fn check_hint_meta(&self, offset: usize) -> Result<(), Error> {
+        let check = |t: &Texture| -> Result<(), Error> {
+            if t.kind != TextureKind::Image || t.status != EntryStatus::Ok {
+                return Ok(());
+            }
+            let Some(h) = t.hash.and_then(|x| self.hints.get(&x)) else {
+                return Ok(());
+            };
+            let mut differs = t.format.as_deref() != Some(&*h.format)
+                || t.source_format != h.source_format
+                || t.width != h.width
+                || t.height != h.height
+                || t.mipmaps != h.mipmaps
+                || t.payload_bytes != h.payload_bytes;
+            for v in &t.variants {
+                if let Some(hv) = h.variants.iter().find(|x| x.encoding == v.encoding) {
+                    differs |= hv.hash != v.hash || hv.payload_bytes != v.payload_bytes;
+                }
+            }
+            if differs {
+                return Err(Error::new(
+                    "hint-meta",
+                    format!(
+                        "record at offset {offset}, {}: texture {} with hinted hash {} disagrees with its resource_hint",
+                        where_(self.tx.seq),
+                        t.id,
+                        h.hash.to_hex()
+                    ),
+                ));
+            }
+            Ok(())
+        };
+        let mut ids: Vec<Id> = self.tx.textures.iter().map(|t| t.id).collect();
+        if !self.hints_fresh.is_empty() {
+            ids.extend(
+                self.state
+                    .textures
+                    .values()
+                    .filter(|t| t.hash.is_some_and(|x| self.hints_fresh.contains(&x)))
+                    .map(|t| t.id),
+            );
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        for id in ids {
+            if let Some(t) = self.state.textures.get(&id) {
+                check(t)?;
+            }
+        }
+        Ok(())
     }
 
     fn accept_end(&mut self, e: EndMeta) -> Result<Accepted, Error> {
@@ -2367,11 +2531,15 @@ impl Validator {
             // (and rolled back with it).
             result = self.item_meta_ids(offset);
         }
+        if result.is_ok() && !self.hints.is_empty() {
+            result = self.check_hint_meta(offset);
+        }
         if let Err(e) = result {
             self.rollback();
             return Err(e);
         }
         self.commit();
+        self.hints_fresh.clear();
         if self.item_meta_pending.is_some() || !self.item_meta.rows.is_empty() {
             self.item_meta_commit();
         }

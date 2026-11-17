@@ -511,11 +511,55 @@ void ServedResources::retire(const PayloadMap &current,
 
 PayloadPtr ServedResources::held_locked(std::string_view hash) const {
   // SERVED-MAP: the GET's key decodes in place; no std::string is built for the probe.
-  const auto it = served_.find(ServedKey::from(hash));
-  if (it == served_.end() || (!dropped_.empty() && it->first == dropped_key_)) {
+  const ServedKey key = ServedKey::from(hash);
+  const auto it = served_.find(key);
+  if (it == served_.end()) {
+    if (!hinted_.empty()) {
+      const auto hinted = hinted_.find(key);  // render-stream-15.md: a hinted body
+      if (hinted != hinted_.end()) {
+        return hinted->second;
+      }
+    }
+    return nullptr;
+  }
+  if (!dropped_.empty() && it->first == dropped_key_) {
     return nullptr;
   }
   return it->second;
+}
+
+void ServedResources::set_hinted(std::map<std::string, PayloadPtr> hinted,
+                                 const SiblingSubmit &submit) {
+  std::map<ServedKey, PayloadPtr> next;
+  std::vector<PayloadPtr> fresh;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto &entry : hinted) {
+      const ServedKey key = ServedKey::from(entry.first);
+      if (hinted_.count(key) == 0) {
+        fresh.push_back(entry.second);
+      }
+      next.emplace(key, std::move(entry.second));
+    }
+    hinted_.swap(next);
+  }
+  // Outside the mutex; the bodies `next` released are dropped here too.
+  for (const PayloadPtr &body : fresh) {
+    if (start_sibling(body, submit)) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      ++hinted_siblings_;
+    }
+  }
+}
+
+std::uint64_t ServedResources::hinted() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return hinted_.size();
+}
+
+std::uint64_t ServedResources::hinted_siblings_queued() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return hinted_siblings_;
 }
 
 bool ServedResources::contains(std::string_view hash) {

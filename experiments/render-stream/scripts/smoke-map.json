@@ -575,6 +575,15 @@
       "exclusive": true
     },
     {
+      "why": "render-stream-15.md resource hints, the host side: the hint table (rs_hints.*) and the /15 codec ctest (rs15_test.cpp). Off unless GRC_STREAM_VERSION=15, which only gate 8's g8hint group sets, so a change confined to these files moves no /2-/14 run: the build (whose ctests drive them), the pure self-tests and gate 8 (whose g8hint group runs them) are enough. Their call sites in entry.cpp, rs_live.cpp and rs_mirror.cpp are shared capture files and still reach '*'",
+      "paths": [
+        "experiments/render-stream/capture/src/rs_hints.*",
+        "experiments/render-stream/capture/test/rs15_test.cpp"
+      ],
+      "reach": ["capture-build", "pure", "native:gate8@*"],
+      "exclusive": true
+    },
+    {
       "why": "capture library, calibration, toolchain and lockfiles: every leg of every gate",
       "paths": [
         "experiments/render-stream/capture/**",
@@ -660,6 +669,15 @@
       ],
       "reach": ["capture-build", "pure", "native:gate8@*"],
       "exclusive": true
+    },
+    {
+      "why": "render-stream-15.md's gate 8 group g8hint: fixtures/hint-scene, its checks and their self-test reach native gate 8, which runs g8hint whole (its rendered legs replay on the native receiver only)",
+      "paths": [
+        "experiments/render-stream/fixtures/hint-scene/**",
+        "experiments/render-stream/scripts/lib/gate8-hint-checks.ts",
+        "experiments/render-stream/scripts/test/self-test-gate8-hint.ts"
+      ],
+      "reach": ["pure", "native:gate8@*"]
     },
     {
       "why": "TDR (protocol/live-swap-design.md Q5): gate 8's g8tdr checker and its null-receiver viewer. The capture sources it exercises (rs_payload_rest.*, the mirror, the live served set) are shared capture files and still reach '*'",

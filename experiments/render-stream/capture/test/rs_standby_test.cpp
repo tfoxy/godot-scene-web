@@ -185,6 +185,7 @@ void expected_list() {
       "texture_2d_update",
       "texture_replace",
       "texture_set_path",
+      "texture_set_size_override",
   };
   expect(grc::rs::standby_hook_names() == expected, "the standby set equals the expected list");
   expect(!grc::rs::standby_hook("canvas_item_add_rect"), "a draw command is hot");

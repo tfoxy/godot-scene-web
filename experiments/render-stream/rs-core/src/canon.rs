@@ -759,6 +759,15 @@ fn texture(w: &mut W, t: &Texture, v: u8) {
         }
         w.raw("],");
     }
+    // render-stream-15.md "Size override": optional, right after variants (only /15 parses it).
+    if let Some([sw, sh]) = t.size_override {
+        w.key("size_override");
+        w.raw("[");
+        w.int(sw as i64);
+        w.raw(",");
+        w.int(sh as i64);
+        w.raw("],");
+    }
     w.key("canvas");
     match &t.canvas {
         Some(c) => {

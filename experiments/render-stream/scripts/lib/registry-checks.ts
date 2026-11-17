@@ -807,4 +807,5 @@ export const STANDBY_HOOKS: readonly string[] = [
   "texture_2d_update",
   "texture_replace",
   "texture_set_path",
+  "texture_set_size_override",
 ];

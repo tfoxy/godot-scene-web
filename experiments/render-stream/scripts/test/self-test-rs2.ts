@@ -58,6 +58,12 @@
 //     v2 lane with instance_id / mouse_filter and re-stamps) validate, dump to their `dump` and
 //     reach /12 through their /13 twin, a v2 grant below /14 is item-meta-schema, and a re-stamp
 //     replaces the held row at receipt.
+//   - golden-15 (render-stream-15.md): runSuite at version 15 (plus its hints lane: decoded,
+//     validated, resolved, the hint set at the end, its /14 transcode valid at /14), then
+//     version15Cases(): every golden-14 /14 vector re-stamped is its golden-15 vector, the
+//     predict lane at /15, and hand-made streams for each hint code, hint placement, a fresh
+//     hint against the whole state, and size_override's version gate, entry rule and
+//     texture-version.
 //
 // Exits non-zero if any assertion fails.
 
@@ -127,6 +133,7 @@ const GOLDEN11_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-11");
 const GOLDEN12_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-12");
 const GOLDEN13_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-13");
 const GOLDEN14_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-14");
+const GOLDEN15_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-15");
 
 interface GoldenIndex {
   valid: Array<{ file: string; hex: string; decoded: string; sha256: string }>;
@@ -150,7 +157,7 @@ interface GoldenIndex {
     file: string;
     code: string;
     description: string;
-    version?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
+    version?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15;
     /** golden-13 on: the seq of the transaction the vector fails at (null when not one). */
     seq?: number | null;
     /** TAG1 (golden-13): the record the vector fails at. */
@@ -217,6 +224,8 @@ interface GoldenIndex {
     sha256: string;
     bytes: number;
   }>;
+  // golden-15 only (render-stream-15.md "Validators and golden vectors"): the hints lane.
+  hints?: IndependentLeg & { rs14: string; hints_at_end: string[] };
 }
 
 interface IndependentLeg {
@@ -268,33 +277,35 @@ function stripExcepted(resolved: ReturnType<typeof resolveRecording>): unknown {
 // threaded into decodeRecording()/validateRecording()/resolveRecording() differ.
 async function runSuite(
   goldenDir: string,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
 ): Promise<void> {
-  const label = goldenDir.endsWith("golden-14")
-    ? "golden-14"
-    : goldenDir.endsWith("golden-13")
-      ? "golden-13"
-      : goldenDir.endsWith("golden-12")
-        ? "golden-12"
-        : goldenDir.endsWith("golden-11")
-          ? "golden-11"
-          : goldenDir.endsWith("golden-10")
-            ? "golden-10"
-            : goldenDir.endsWith("golden-9")
-              ? "golden-9"
-              : goldenDir.endsWith("golden-8")
-                ? "golden-8"
-                : goldenDir.endsWith("golden-7")
-                  ? "golden-7"
-                  : goldenDir.endsWith("golden-6")
-                    ? "golden-6"
-                    : goldenDir.endsWith("golden-5")
-                      ? "golden-5"
-                      : goldenDir.endsWith("golden-4")
-                        ? "golden-4"
-                        : goldenDir.endsWith("golden-3")
-                          ? "golden-3"
-                          : "golden-2";
+  const label = goldenDir.endsWith("golden-15")
+    ? "golden-15"
+    : goldenDir.endsWith("golden-14")
+      ? "golden-14"
+      : goldenDir.endsWith("golden-13")
+        ? "golden-13"
+        : goldenDir.endsWith("golden-12")
+          ? "golden-12"
+          : goldenDir.endsWith("golden-11")
+            ? "golden-11"
+            : goldenDir.endsWith("golden-10")
+              ? "golden-10"
+              : goldenDir.endsWith("golden-9")
+                ? "golden-9"
+                : goldenDir.endsWith("golden-8")
+                  ? "golden-8"
+                  : goldenDir.endsWith("golden-7")
+                    ? "golden-7"
+                    : goldenDir.endsWith("golden-6")
+                      ? "golden-6"
+                      : goldenDir.endsWith("golden-5")
+                        ? "golden-5"
+                        : goldenDir.endsWith("golden-4")
+                          ? "golden-4"
+                          : goldenDir.endsWith("golden-3")
+                            ? "golden-3"
+                            : "golden-2";
   const index = JSON.parse(
     await readFile(join(goldenDir, "index.json"), "utf8"),
   ) as GoldenIndex;
@@ -615,6 +626,64 @@ async function runSuite(
       );
     }
   }
+
+  // --- golden-15's hints lane (render-stream-15.md): hints of each cause, an unhint, a later
+  // transaction naming a hinted hash and a size override; its /14 transcode validates at /14 ---
+  if (index.hints !== undefined) {
+    const lane = index.hints;
+    const bytes = await readBytes(goldenDir, lane.file);
+    ok(
+      sha256Hex(bytes) === lane.sha256,
+      `${label}: ${lane.file} hashes to its listed sha256`,
+    );
+    let decoded: unknown = null;
+    try {
+      decoded = decodeRecording(bytes, version);
+    } catch (error) {
+      decoded = String(error);
+    }
+    ok(
+      isDeepStrictEqual(
+        decoded,
+        JSON.parse(await readFile(join(goldenDir, lane.decoded), "utf8")),
+      ),
+      `${label}: decodeRecording(${lane.file}) deep-equals ${lane.decoded}`,
+    );
+    const errors = validateRecording(bytes, version);
+    ok(
+      errors.length === 0,
+      `${label}: validateRecording(${lane.file}) is [] (got ${JSON.stringify(errors)})`,
+    );
+    let resolved: unknown = null;
+    try {
+      resolved = stripExcepted(resolveRecording(bytes, version));
+    } catch (error) {
+      resolved = String(error);
+    }
+    ok(
+      statesEqual(
+        resolved,
+        JSON.parse(await readFile(join(goldenDir, lane.resolved), "utf8")),
+      ),
+      `${label}: resolveRecording(${lane.file}) deep-equals ${lane.resolved} (excepted fields aside)`,
+    );
+    const split = splitRecords(bytes, version);
+    const v = createRecordingValidator(split.records, version);
+    let failed: string[] | undefined = v.errors ?? undefined;
+    for (let i = 1; i < split.records.length && failed === undefined; i++)
+      failed = v.accept(i);
+    const atEnd = [...(v.hints?.().keys() ?? [])].sort();
+    ok(
+      failed === undefined && isDeepStrictEqual(atEnd, lane.hints_at_end),
+      `${label}: the hints in effect at the end of ${lane.file} are index.json's hints_at_end (got ${JSON.stringify(failed ?? atEnd)})`,
+    );
+    const rs14 = await readBytes(goldenDir, lane.rs14);
+    const errors14 = validateRecording(rs14, 14);
+    ok(
+      errors14.length === 0,
+      `${label}: ${lane.rs14} (transcode --to 14) validates at /14 (got ${JSON.stringify(errors14)})`,
+    );
+  }
 }
 
 async function main(): Promise<void> {
@@ -805,6 +874,23 @@ async function main(): Promise<void> {
     "golden-14/full.rs14 starts with GRSE, and wireVersionOf() reads it as 14",
   );
   await version14Cases();
+
+  // render-stream-15.md: golden-15, and a /15 decode refuses /14 and a /14 decode /15 (GRSF).
+  await runSuite(GOLDEN15_DIR, 15);
+  const full15 = await readBytes(GOLDEN15_DIR, "full.rs15");
+  ok(
+    validateRecording(full14, 15)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-14/full.rs14 decoded as version 15 is rejected with bad-magic",
+  );
+  ok(
+    validateRecording(full15, 14)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-15/full.rs15 decoded as version 14 is rejected with bad-magic",
+  );
+  ok(
+    Buffer.from(full15.subarray(0, 4)).toString("latin1") === "GRSF",
+    "golden-15/full.rs15 starts with GRSF",
+  );
+  await version15Cases();
 
   unknownItemCases();
   await helloCases();
@@ -1742,7 +1828,7 @@ async function version12Cases(): Promise<void> {
 // the error names no transaction record.
 function errorSeq(
   bytes: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
   error: string,
 ): number | null {
   const m = /record at offset (\d+)/.exec(error);
@@ -1823,7 +1909,7 @@ interface Golden13Index {
 function itemMetaDumpOf(
   data: Uint8Array,
   ask: ItemMetaRequest | null | undefined,
-  version: 13 | 14 = 13,
+  version: 13 | 14 | 15 = 13,
 ): unknown {
   const split = splitRecords(data, version);
   const v = createRecordingValidator(split.records, version, {
@@ -2210,11 +2296,15 @@ async function version13Cases(): Promise<void> {
   }
 }
 
-/** ID3: a /13 file re-stamped /14 (or back): the magic and the session's protocol, every record
- * keeping its length (render-stream-14.md). */
-function restamp(data: Uint8Array, from: 13 | 14, to: 13 | 14): Uint8Array {
+/** ID3: a /13 file re-stamped /14 (or back; render-stream-15.md: /15 too): the magic and the
+ * session's protocol, every record keeping its length (render-stream-14.md). */
+function restamp(
+  data: Uint8Array,
+  from: 13 | 14 | 15,
+  to: 13 | 14 | 15,
+): Uint8Array {
   const out = Uint8Array.from(data);
-  out[3] = to === 14 ? 0x45 : 0x44;
+  out[3] = 0x44 + (to - 13);
   const enc = (v: number) =>
     new TextEncoder().encode(`"protocol":"render-stream/${v}"`);
   const old = Buffer.from(enc(from));
@@ -2420,6 +2510,355 @@ async function version14Cases(): Promise<void> {
     ok(
       restamps.join(",") === "7,1" && after(11) === 5 && after(12) === 4,
       `golden-14: the deltas before seqs 12 and 17 re-stamp items 7 and 1, and item 7's mouse_filter is 5 after seq 11 and 4 after seq 12 (got ${JSON.stringify([restamps, after(11), after(12)])})`,
+    );
+  }
+}
+
+// --------------------------------------------------------------------------------------- /15
+
+/** A recording's records as byte arrays (magic dropped). */
+function recordBytes(data: Uint8Array, version: 13 | 14 | 15): Uint8Array[] {
+  return splitRecords(data, version).records.map((r) => r.bytes);
+}
+
+function recordMeta(rec: Uint8Array): Record<string, unknown> {
+  const metaLen = new DataView(
+    rec.buffer,
+    rec.byteOffset,
+    rec.byteLength,
+  ).getUint32(4, true);
+  return JSON.parse(
+    Buffer.from(rec.subarray(8, 8 + metaLen)).toString("latin1"),
+  ) as Record<string, unknown>;
+}
+
+/** `rec` with a mutated meta, its blocks untouched (canonical: JSON.stringify keeps key order). */
+function withRecordMeta(
+  rec: Uint8Array,
+  mutate: (meta: Record<string, unknown>) => void,
+): Uint8Array {
+  const metaLen = new DataView(
+    rec.buffer,
+    rec.byteOffset,
+    rec.byteLength,
+  ).getUint32(4, true);
+  const meta = recordMeta(rec);
+  mutate(meta);
+  const text = Buffer.from(JSON.stringify(meta), "latin1");
+  const tail = Buffer.from(rec.subarray(8 + metaLen));
+  const head = Buffer.alloc(8);
+  head.writeUInt32LE(4 + text.length + tail.length, 0);
+  head.writeUInt32LE(text.length, 4);
+  return new Uint8Array(Buffer.concat([head, text, tail]));
+}
+
+/** A record with a JSON meta and no blocks (render-stream-15.md's hint records). */
+function jsonRecord(meta: Record<string, unknown>): Uint8Array {
+  const text = Buffer.from(JSON.stringify(meta), "latin1");
+  const head = Buffer.alloc(8);
+  head.writeUInt32LE(8 + text.length, 0);
+  head.writeUInt32LE(text.length, 4);
+  return new Uint8Array(Buffer.concat([head, text, Buffer.alloc(4)]));
+}
+
+/** A recording of `magic` and `recs` (session first, end last), the end record's bytes_total and
+ * max_record_bytes recomputed. */
+function assembleRecording(magic: Uint8Array, recs: Uint8Array[]): Uint8Array {
+  const body = recs.slice(0, -1);
+  const end = withRecordMeta(recs[recs.length - 1], (m) => {
+    const stats = m.stats as Record<string, number>;
+    stats.bytes_total = 8 + body.reduce((n, r) => n + r.length, 0);
+    stats.max_record_bytes = Math.max(...body.map((r) => r.length));
+  });
+  return new Uint8Array(
+    Buffer.concat([Buffer.from(magic.subarray(0, 8)), ...body, end]),
+  );
+}
+
+/** The index of transaction `seq` in `recs`. */
+function txIndex(recs: Uint8Array[], seq: number): number {
+  const i = recs.findIndex((r) => {
+    const m = recordMeta(r);
+    return m.type === "transaction" && m.seq === seq;
+  });
+  if (i < 0) throw new Error(`no transaction seq ${seq}`);
+  return i;
+}
+
+/** A texture entry with `size_override` right after `variants` (render-stream-15.md). */
+function withSizeOverride(
+  entry: Record<string, unknown>,
+  size: unknown,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(entry)) {
+    if (k === "size_override") continue;
+    out[k] = v;
+    if (k === "variants") out.size_override = size;
+  }
+  return out;
+}
+
+function editTexture(
+  rec: Uint8Array,
+  id: number,
+  fn: (t: Record<string, unknown>) => Record<string, unknown>,
+): Uint8Array {
+  return withRecordMeta(rec, (m) => {
+    const list = m.textures as Array<Record<string, unknown>>;
+    const k = list.findIndex((t) => t.id === id);
+    if (k < 0) throw new Error(`no texture ${id} in seq ${String(m.seq)}`);
+    list[k] = fn(list[k]);
+  });
+}
+
+// render-stream-15.md: golden-15 against golden-14 (re-stamped twins), the predict lane at /15,
+// and the /15 rules the golden vectors cannot show by themselves: hint placement, the codes over
+// hand-made streams, and size_override's version gate, entry rule and texture-version.
+async function version15Cases(): Promise<void> {
+  const i14 = JSON.parse(
+    await readFile(join(GOLDEN14_DIR, "index.json"), "utf8"),
+  ) as Golden14Index & {
+    item_meta_valid: Array<{ file: string }>;
+  };
+  // --- every golden-14 /14 vector re-stamped is its golden-15 vector ----------------------------
+  const files14 = [
+    ...i14.valid.map((l) => l.file),
+    i14.predict.file,
+    ...i14.item_meta_valid.map((l) => l.file),
+    ...i14.invalid
+      .map((e) => e.file)
+      .filter((f) => f.endsWith(".rs14") && !f.endsWith("bad-magic.rs14")),
+  ];
+  const pairs = [...new Set(files14)];
+  let restamped = 0;
+  for (const f14 of pairs) {
+    const f15 = f14.replace(/\.rs14$/, ".rs15");
+    let a: Uint8Array | null = null;
+    try {
+      a = await readBytes(GOLDEN15_DIR, f15);
+    } catch {
+      a = null;
+    }
+    const b = await readBytes(GOLDEN14_DIR, f14);
+    if (a !== null && sameBytes(a, restamp(b, 14, 15))) restamped++;
+    else ok(false, `golden-15: ${f15} is golden-14's ${f14} re-stamped /15`);
+  }
+  ok(
+    restamped === pairs.length && restamped > 60,
+    `golden-15: ${restamped}/${pairs.length} vectors are their golden-14 twins re-stamped /15`,
+  );
+  const i15 = JSON.parse(
+    await readFile(join(GOLDEN15_DIR, "index.json"), "utf8"),
+  ) as Golden14Index;
+  const p15 = await readBytes(GOLDEN15_DIR, i15.predict.file);
+  const presolved = resolveRecording(p15, 15);
+  ok(
+    validateRecording(p15, 15).length === 0 &&
+      presolved.schema === "render-stream-15-resolved/1" &&
+      statesEqual(
+        stripExcepted(presolved),
+        JSON.parse(
+          await readFile(join(GOLDEN15_DIR, i15.predict.resolved), "utf8"),
+        ),
+      ),
+    `golden-15: ${i15.predict.file} validates and resolves to ${i15.predict.resolved}`,
+  );
+
+  // --- hand-made streams over golden-14's patch lane re-stamped /15 ------------------------------
+  const patch15 = restamp(await readBytes(GOLDEN14_DIR, "patch.rs14"), 14, 15);
+  const inline15 = restamp(
+    await readBytes(GOLDEN14_DIR, "inline.rs14"),
+    14,
+    15,
+  );
+  const recs = recordBytes(patch15, 15);
+  const magic = patch15.subarray(0, 8);
+  const seq1 = recordMeta(recs[txIndex(recs, 1)]);
+  const tex1 = (seq1.textures as Array<Record<string, unknown>>).find(
+    (t) => t.id === 1,
+  ) as Record<string, unknown>;
+  const hintOf = (over: Record<string, unknown> = {}) => ({
+    type: "resource_hint",
+    hash: tex1.hash,
+    kind: "texture",
+    format: tex1.format,
+    source_format: tex1.source_format,
+    width: tex1.width,
+    height: tex1.height,
+    mipmaps: tex1.mipmaps,
+    payload_bytes: tex1.payload_bytes,
+    variants: tex1.variants,
+    path: "res://icon.png",
+    cause: "warm",
+    priority: 0,
+    blocks: [],
+    ...over,
+  });
+  const hint = jsonRecord(hintOf());
+  const unhint = (hash: unknown) =>
+    jsonRecord({ type: "resource_unhint", hash, blocks: [] });
+  const code = (data: Uint8Array, version: 14 | 15 = 15) => {
+    const errors = validateRecording(data, version);
+    return errors.length === 0 ? "ok" : errors[0].split(":")[0];
+  };
+  const last = recs.length - 1;
+  const hinted = assembleRecording(magic, [
+    recs[0],
+    hint,
+    ...recs.slice(1, last),
+    unhint(tex1.hash),
+    recs[last],
+  ]);
+  ok(
+    code(hinted) === "ok",
+    `golden-15: patch.rs15 with a warm hint of texture 1's hash after the session and its unhint after the last transaction validates (got ${JSON.stringify(validateRecording(hinted, 15))})`,
+  );
+  {
+    const split = splitRecords(hinted, 15);
+    const v = createRecordingValidator(split.records, 15);
+    v.accept(1);
+    const after1 = [...(v.hints?.().keys() ?? [])];
+    ok(
+      after1.length === 1 && after1[0] === tex1.hash,
+      "golden-15: the validator's hint set holds the hash after the hint",
+    );
+  }
+  ok(
+    code(restamp(hinted, 15, 14), 14) === "meta-schema",
+    "golden-15: a resource_hint below /15 is meta-schema",
+  );
+  ok(
+    code(assembleRecording(magic, [recs[0], hint, hint, ...recs.slice(1)])) ===
+      "hint-duplicate",
+    "golden-15: a second hint of a hinted hash is hint-duplicate",
+  );
+  ok(
+    code(
+      assembleRecording(magic, [
+        recs[0],
+        hint,
+        unhint(tex1.hash),
+        hint,
+        ...recs.slice(1),
+      ]),
+    ) === "ok",
+    "golden-15: a hash may be hinted again after its unhint",
+  );
+  ok(
+    code(
+      assembleRecording(magic, [
+        recs[0],
+        unhint("ab".repeat(32)),
+        ...recs.slice(1),
+      ]),
+    ) === "hint-unknown",
+    "golden-15: an unhint of a hash that is not hinted is hint-unknown",
+  );
+  {
+    const irecs = recordBytes(inline15, 15);
+    ok(
+      code(assembleRecording(magic, [irecs[0], hint, ...irecs.slice(1)])) ===
+        "hint-inline",
+      "golden-15: a hint in an inline-delivery session is hint-inline",
+    );
+  }
+  ok(
+    code(
+      assembleRecording(magic, [
+        recs[0],
+        jsonRecord(hintOf({ width: 15 })),
+        ...recs.slice(1),
+      ]),
+    ) === "hint-meta",
+    "golden-15: a hint whose width differs from the entry a later transaction resolves is hint-meta",
+  );
+  {
+    // Hinted after seq 1: seq 2 (a patch that does not carry texture 1) still resolves it.
+    const at = txIndex(recs, 2);
+    const data = assembleRecording(magic, [
+      ...recs.slice(0, at),
+      jsonRecord(hintOf({ width: 15 })),
+      ...recs.slice(at),
+    ]);
+    const errors = validateRecording(data, 15);
+    ok(
+      code(data) === "hint-meta" && errorSeq(data, 15, errors[0]) === 2,
+      `golden-15: a fresh hint is checked against the whole resolved state, not only the next transaction's entries (got ${JSON.stringify(errors)})`,
+    );
+  }
+  ok(
+    code(
+      assembleRecording(magic, [
+        recs[0],
+        jsonRecord(hintOf({ cause: "game" })),
+        ...recs.slice(1),
+      ]),
+    ) === "meta-schema" &&
+      code(
+        assembleRecording(magic, [
+          recs[0],
+          jsonRecord(hintOf({ path: "" })),
+          ...recs.slice(1),
+        ]),
+      ) === "meta-schema",
+    "golden-15: an unknown cause and an empty path are meta-schema",
+  );
+  // --- size_override ----------------------------------------------------------------------------
+  const i1 = txIndex(recs, 1);
+  const withOverride = (size: unknown, version: 14 | 15 = 15) => {
+    const r = [...recs];
+    r[i1] = editTexture(r[i1], 1, (t) => withSizeOverride(t, size));
+    const data = assembleRecording(magic, r);
+    return version === 15 ? data : restamp(data, 15, 14);
+  };
+  ok(
+    code(withOverride([15, 16])) === "ok",
+    `golden-15: texture 1 drawn at 15x16 (a size_override) at seq 1 validates (got ${JSON.stringify(validateRecording(withOverride([15, 16]), 15))})`,
+  );
+  {
+    const resolved = resolveRecording(withOverride([15, 16]), 15);
+    const t = resolved.transactions[1].state.textures.find((x) => x.id === 1);
+    ok(
+      isDeepStrictEqual(t?.size_override, [15, 16]) &&
+        Object.keys(t ?? {}).indexOf("size_override") ===
+          Object.keys(t ?? {}).indexOf("variants") + 1,
+      "golden-15: the resolved texture keeps its size_override after variants through a patch that does not carry it",
+    );
+  }
+  ok(
+    code(withOverride([15, 16], 14), 14) === "meta-schema",
+    "golden-15: a size_override below /15 is meta-schema",
+  );
+  ok(
+    code(withOverride([16, 16])) === "texture-entry",
+    "golden-15: a size_override equal to the payload's size is texture-entry",
+  );
+  ok(
+    code(withOverride([0, 16])) === "meta-schema" &&
+      code(withOverride([16385, 16])) === "meta-schema" &&
+      code(withOverride([15])) === "meta-schema",
+    "golden-15: a size_override outside 1..16384 or not a pair is meta-schema",
+  );
+  {
+    const r = [...recs];
+    r[i1] = editTexture(r[i1], 4, (t) => withSizeOverride(t, [4, 4]));
+    ok(
+      code(assembleRecording(magic, r)) === "texture-entry",
+      "golden-15: a size_override on a placeholder is texture-entry",
+    );
+  }
+  {
+    // seq 3 updates texture 1 to version 2 (no override); full seq 5 re-sends version 2 with
+    // one: a change at an equal version.
+    const r = [...recs];
+    const i5 = txIndex(r, 5);
+    r[i5] = editTexture(r[i5], 1, (t) => withSizeOverride(t, [15, 16]));
+    const data = assembleRecording(magic, r);
+    const errors = validateRecording(data, 15);
+    ok(
+      code(data) === "texture-version" && errorSeq(data, 15, errors[0]) === 5,
+      `golden-15: a size_override that appears at an unchanged version is texture-version at seq 5 (got ${JSON.stringify(errors)})`,
     );
   }
 }

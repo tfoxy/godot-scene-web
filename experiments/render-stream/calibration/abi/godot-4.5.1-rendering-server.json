@@ -4098,7 +4098,8 @@
     "particles_set_emission_transform": 233,
     "particles_set_emitter_velocity": 234,
     "particles_set_interp_to_end": 235,
-    "canvas_item_set_use_identity_transform": 438
+    "canvas_item_set_use_identity_transform": 438,
+    "texture_set_size_override": 18
   },
   "wanted_slot_aliases": {
     "canvas_item_add_rect": ["canvas_item_add_rect"],
@@ -4270,7 +4271,8 @@
     "particles_set_interp_to_end": ["particles_set_interp_to_end"],
     "canvas_item_set_use_identity_transform": [
       "canvas_item_set_use_identity_transform"
-    ]
+    ],
+    "texture_set_size_override": ["texture_set_size_override"]
   },
   "anchor_selection": "all-non-pure-new-virtuals"
 }

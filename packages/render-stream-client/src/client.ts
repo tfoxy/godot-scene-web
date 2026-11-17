@@ -24,6 +24,7 @@ import {
   coreStartOptions,
   gpuFormatsOf,
 } from "./hello";
+import type { HintEntry } from "./hints";
 import {
   CORE_LOAD_TIMEOUT_MS,
   CoreLoadError,
@@ -103,6 +104,13 @@ export interface RenderStreamClientOptions {
    * `glue import`, `core init`), and nothing of it runs on. The connect deadline starts only once
    * the core is up. */
   coreLoadTimeoutMs?: number;
+  /** Ask the host for resource hints (render-stream-15.md): the client offers
+   * `render-stream.15` (the one subprotocol offered, so the host must run
+   * `GRC_STREAM_VERSION=15`) and keeps every hint in effect in a table, read by `hints()`, with
+   * the hint fields of `stats()`. The endpoint's protocol must be 13 or later. Default false: no
+   * /15 offer, no table, and the offer, the hello and the core's calls are the client's without
+   * the option. Nothing is fetched ahead of a transaction yet. */
+  resourceHints?: boolean;
   onStatus?: (s: RenderStreamStatus) => void;
 }
 
@@ -144,6 +152,10 @@ export interface RenderStreamClient {
   dispose(): void;
   /** The recording so far (null when the client was built without `recorder`). */
   recording(): Recording | null;
+  /** The resource hints in effect on the current connection, in prefetch order (ascending
+   * `priority`, then arrival): a frozen array, the same one until the table changes. Empty
+   * without `resourceHints`. */
+  hints(): readonly HintEntry[];
 }
 
 const pageClock: LoopClock = {
@@ -189,7 +201,12 @@ export function createRenderStreamClient(
     ids.add(e.id);
   }
   const ext = exts.length > 0 ? new ExtensionHost(exts) : null;
-  clientProtocol(endpoint.protocol, ext?.request);
+  const resourceHints = options.resourceHints ?? false;
+  if (typeof resourceHints !== "boolean")
+    throw new TypeError(
+      "render-stream client: resourceHints must be a boolean",
+    );
+  clientProtocol(endpoint.protocol, ext?.request, resourceHints);
   // Absent the option there is no recorder (and no per-message copy); present, one ring.
   const recorder = options.recorder ? createRecorder(options.recorder) : null;
   return new Client(
@@ -201,6 +218,8 @@ export function createRenderStreamClient(
     recorder,
   );
 }
+
+const NO_HINTS: readonly HintEntry[] = Object.freeze([]);
 
 const EMPTY_STATS: RenderStreamStats = Object.freeze({
   applied: 0,
@@ -262,7 +281,7 @@ class Client implements RenderStreamClient {
 
   setEndpoint(e: RenderStreamEndpoint): void {
     const next = validateEndpoint(e);
-    clientProtocol(next.protocol, this.ext?.request);
+    clientProtocol(next.protocol, this.ext?.request, this.o.resourceHints);
     if (sameEndpoint(next, this.endpoint)) return;
     this.endpoint = next;
     this.loop?.setEndpoint(next);
@@ -305,6 +324,10 @@ class Client implements RenderStreamClient {
 
   recording(): Recording | null {
     return this.recorder?.export() ?? null;
+  }
+
+  hints(): readonly HintEntry[] {
+    return this.loop?.hints?.entries() ?? NO_HINTS;
   }
 
   /** IN12: what `pointerTargetResolver` reads, on demand (pointer-targets.ts). */
@@ -361,7 +384,11 @@ class Client implements RenderStreamClient {
     this.loadAbort = null;
     if (this.disposed) return;
     const canvas = this.o.canvas;
-    const protocol = clientProtocol(this.endpoint.protocol, this.ext?.request);
+    const protocol = clientProtocol(
+      this.endpoint.protocol,
+      this.ext?.request,
+      this.o.resourceHints,
+    );
     const build = (protocol: RenderStreamProtocol): GswRs => {
       const presentation = this.endpoint.presentation;
       if (presentation) {
@@ -410,6 +437,7 @@ class Client implements RenderStreamClient {
       resourceHoldMs: this.o.resourceHoldMs,
       ext: this.ext,
       recorder: this.recorder,
+      resourceHints: this.o.resourceHints === true,
       onSession: (m) => {
         const v = m.viewport;
         this.presentation = v?.presentation_size ?? v?.logical_size ?? null;

@@ -653,6 +653,39 @@ int main() {
 
   // Texture records preserve creation facts independently of content edits and paths.
   {
+    // render-stream-15.md "Size override": kept for a late arm; survives an update; a replace
+    // hands the target the source's; a re-create, a free or GLES3's refused values reset or skip.
+    registry_configure(true, RegistryFault::None);
+    const RegistryTextureFacts facts{3368, 2048, 17, false, true};
+    RegistryTextureRecord rec;
+    registry_note_texture_create(21, facts, false);
+    expect(registry_texture(21, &rec) && rec.override_w == 0 && rec.override_h == 0,
+           "override: none at create");
+    registry_note_texture_size_override(21, 3366, 2048);
+    registry_note_texture_size_override(21, 0, 5);      // refused
+    registry_note_texture_size_override(21, 3, 16385);  // refused
+    registry_note_texture_size_override(99, 3, 3);      // unregistered
+    expect(registry_texture(21, &rec) && rec.override_w == 3366 && rec.override_h == 2048 &&
+               !registry_texture(99, nullptr),
+           "override: the last accepted value");
+    registry_note_texture_update(21);
+    expect(registry_texture(21, &rec) && rec.override_w == 3366, "override: survives an update");
+    registry_note_texture_create(22, facts, false);
+    registry_note_replace(21, 22);
+    expect(registry_texture(21, &rec) && rec.override_w == 0, "override: a replace takes none");
+    registry_note_texture_create(23, facts, false);
+    registry_note_texture_size_override(23, 7, 9);
+    registry_note_replace(21, 23);
+    expect(registry_texture(21, &rec) && rec.override_w == 7 && rec.override_h == 9,
+           "override: a replace takes the source's");
+    registry_note_texture_create(21, facts, false);
+    expect(registry_texture(21, &rec) && rec.override_w == 0, "override: a re-create resets it");
+    registry_note_texture_size_override(21, 5, 5);
+    registry_note_free(21);
+    registry_note_texture_create(21, facts, false);
+    expect(registry_texture(21, &rec) && rec.override_w == 0, "override: a free drops it");
+  }
+  {
     registry_configure(true, RegistryFault::None);
     const RegistryTextureFacts facts{64, 32, 17, true, true};
     RegistryTextureRecord rec;

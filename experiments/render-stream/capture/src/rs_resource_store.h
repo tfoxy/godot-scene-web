@@ -281,6 +281,14 @@ class ServedResources : public live::ResourceSource {
   // before the first pin; unset, no sibling is ever made (a gzip-only request gets the identity).
   void set_sibling_submit(SiblingSubmit submit) { sibling_submit_ = std::move(submit); }
   bool contains(std::string_view hash) override;
+  // render-stream-15.md "The pin rule": the bodies hinted on some connection, servable besides
+  // the retained set. retire() never touches them and they are not in retained_bytes() (they are
+  // bodies the host holds at rest anyway, bounded by GRC_RESOURCE_HINT_BUDGET_BYTES). Replaces
+  // the previous set; each newly hinted body queues its sibling encode through `submit` (the back
+  // of the sibling pool's queue), unless one is made or queued already.
+  void set_hinted(std::map<std::string, PayloadPtr> hinted, const SiblingSubmit &submit);
+  std::uint64_t hinted() const;
+  std::uint64_t hinted_siblings_queued() const;
   // served-at-rest: every retained body into `out` (each distinct body once, across `seen`).
   void census(RestCensus *out, std::unordered_set<const void *> *seen) const;
 
@@ -342,6 +350,8 @@ class ServedResources : public live::ResourceSource {
   bool shadow_ = false;
   std::string shadow_failure_;
   SiblingSubmit sibling_submit_;  // set before serving, then only read
+  std::map<ServedKey, PayloadPtr> hinted_;  // set_hinted()
+  std::uint64_t hinted_siblings_ = 0;       // sibling encodes set_hinted() queued
 };
 
 }  // namespace rs

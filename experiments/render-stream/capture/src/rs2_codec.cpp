@@ -376,7 +376,7 @@ void append_texture_variants(std::string &out, const std::vector<TextureVariant>
   out += "]";
 }
 
-void append_texture_entry(std::string &out, const TextureEntry &t, bool v8, bool v9) {
+void append_texture_entry(std::string &out, const TextureEntry &t, bool v8, bool v9, bool v15) {
   out += "{\"id\":";
   append_json_int(out, t.id);
   if (v8) {
@@ -419,6 +419,14 @@ void append_texture_entry(std::string &out, const TextureEntry &t, bool v8, bool
   if (v9) {
     // render-stream-9.md "Texture entries": variants, right after payload_bytes.
     append_texture_variants(out, t.variants);
+  }
+  if (v15 && t.size_override_w != 0) {
+    // render-stream-15.md "Size override": optional, after variants and before canvas.
+    out += ",\"size_override\":[";
+    append_json_int(out, t.size_override_w);
+    out += ",";
+    append_json_int(out, t.size_override_h);
+    out += "]";
   }
   append_canvas_texture(out, t);
   out += "}";
@@ -920,6 +928,9 @@ std::vector<std::uint8_t> magic() {
 }
 
 std::vector<std::uint8_t> magic(ProtocolVersion version) {
+  if (version == ProtocolVersion::V15) {
+    return std::vector<std::uint8_t>(kMagicV15.begin(), kMagicV15.end());
+  }
   if (version == ProtocolVersion::V14) {
     return std::vector<std::uint8_t>(kMagicV14.begin(), kMagicV14.end());
   }
@@ -962,7 +973,9 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   std::string m;
   m += "{\"type\":\"session\",\"protocol\":";
   const char *protocol =
-      session.version == ProtocolVersion::V14
+      session.version == ProtocolVersion::V15
+          ? kProtocolV15
+          : session.version == ProtocolVersion::V14
           ? kProtocolV14
           : session.version == ProtocolVersion::V13
           ? kProtocolV13
@@ -1525,7 +1538,8 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     if (i != 0) {
       m += ",";
     }
-    append_texture_entry(m, transaction.textures[i], v8, v9);
+    append_texture_entry(m, transaction.textures[i], v8, v9,
+                         transaction.version == ProtocolVersion::V15);
   }
   m += "]";
 
@@ -1868,6 +1882,45 @@ std::vector<std::uint8_t> encode_end(const End &end) {
   append_blocks_descriptor(m, {});
   m += "}";
 
+  return assemble_record(m, {});
+}
+
+std::vector<std::uint8_t> encode_resource_hint(const ResourceHint &hint) {
+  std::string m;
+  m += "{\"type\":\"resource_hint\",\"hash\":";
+  append_json_string(m, hint.hash);
+  m += ",\"kind\":\"texture\",\"format\":";
+  append_json_string(m, hint.format);
+  m += ",\"source_format\":";
+  append_json_optional_string(m, hint.has_source_format, hint.source_format);
+  m += ",\"width\":";
+  append_json_int(m, hint.width);
+  m += ",\"height\":";
+  append_json_int(m, hint.height);
+  m += ",\"mipmaps\":";
+  append_json_bool(m, hint.mipmaps);
+  m += ",\"payload_bytes\":";
+  append_json_int(m, hint.payload_bytes);
+  append_texture_variants(m, hint.variants);
+  m += ",\"path\":";
+  append_json_optional_string(m, hint.has_path, hint.path);
+  m += ",\"cause\":";
+  append_json_string(m, to_wire(hint.cause));
+  m += ",\"priority\":";
+  append_json_int(m, hint.priority);
+  m += ",";
+  append_blocks_descriptor(m, {});
+  m += "}";
+  return assemble_record(m, {});
+}
+
+std::vector<std::uint8_t> encode_resource_unhint(const std::string &hash) {
+  std::string m;
+  m += "{\"type\":\"resource_unhint\",\"hash\":";
+  append_json_string(m, hash);
+  m += ",";
+  append_blocks_descriptor(m, {});
+  m += "}";
   return assemble_record(m, {});
 }
 

@@ -229,6 +229,7 @@
 #include "rs_payload_rest.h"
 #include "rs_publish.h"
 #include "rs_resource_log.h"
+#include "rs_hints.h"
 #include "rs_resource_store.h"
 #include "rs_root_query.h"
 #include "rs_shader_clock.h"
@@ -510,6 +511,39 @@ struct ItemMetaState {
   rs::item_meta::Host host;
 };
 ItemMetaState g_meta;
+
+// render-stream-15.md "Resource hints": the hint table, the file sinks' hinted set and the
+// evidence. Only a GRC_STREAM_VERSION=15 stream whose payloads are not all inline turns it on;
+// otherwise none of this runs.
+struct HintState {
+  bool on = false;
+  uint64_t budget = rs::hints::kDefaultBudgetBytes;  // GRC_RESOURCE_HINT_BUDGET_BYTES
+  uint64_t inline_max = 0;
+  rs::hints::Sabotage sabotage = rs::hints::Sabotage::None;  // GRC_HINT_SABOTAGE (never on the wire)
+  rs::hints::Table table;
+  rs::hints::Sent file_sent;  // both file sinks write the same records
+  std::unordered_set<uint64_t> warm_offered;
+  rs::PayloadMap in_state;  // the last published state's payloads
+  std::FILE *log = nullptr;  // GRC_EVIDENCE_DIR/hints.jsonl
+  // result.json gate8.hints
+  uint64_t sources_create = 0;
+  uint64_t sources_warm = 0;
+  uint64_t skipped_inline = 0;  // payload_bytes <= inline_max_bytes: never hinted
+  uint64_t added = 0;
+  uint64_t removed_freed = 0;
+  uint64_t removed_changed = 0;
+  uint64_t budget_drops = 0;
+  uint64_t file_hints = 0;
+  uint64_t file_unhints = 0;
+  uint64_t store_writes = 0;
+  uint64_t store_failures = 0;
+  uint64_t table_peak = 0;
+  uint64_t admitted_bytes_max = 0;
+  uint64_t pinned_max = 0;
+};
+HintState g_hints;
+void hints_start();
+void hints_finish();
 
 // LS3 (live-swap-design.md Q3): the per-load facts a re-arm needs, the test-only knobs, and what a
 // GRC_REARM_FAULT sabotage keeps alive on purpose. Arm 1 writes where a capture always did; arm
@@ -923,7 +957,8 @@ std::string result_json() {
   if (g_stream.gate8.speaks_v8()) {
     json.key("gate8").object_begin();
     json.field("file_stream_version", static_cast<int64_t>(
-                   g_stream.gate8.speaks_v14()   ? 14
+                   g_stream.gate8.speaks_v15()   ? 15
+                   : g_stream.gate8.speaks_v14() ? 14
                    : g_stream.gate8.speaks_v13() ? 13
                    : g_stream.gate8.speaks_v12() ? 12
                    : g_stream.gate8.speaks_v11() ? 11
@@ -932,6 +967,36 @@ std::string result_json() {
                        : g_stream.gate8.speaks_v9()
                        ? 9
                        : (g_stream.gate8.file_version == rs2::ProtocolVersion::V8 ? 8 : 6)));
+    if (g_stream.gate8.speaks_v15()) {
+      // render-stream-15.md "Resource hints": additive, /15 streams only.
+      json.key("hints").object_begin();
+      json.field("on", g_hints.on);
+      json.field("budget_bytes", static_cast<int64_t>(g_hints.budget));
+      json.field("sabotage", std::string(rs::hints::sabotage_name(g_hints.sabotage)));
+      json.field("sources_create", static_cast<int64_t>(g_hints.sources_create));
+      json.field("sources_warm", static_cast<int64_t>(g_hints.sources_warm));
+      json.field("skipped_inline", static_cast<int64_t>(g_hints.skipped_inline));
+      json.field("added", static_cast<int64_t>(g_hints.added));
+      json.field("removed_freed", static_cast<int64_t>(g_hints.removed_freed));
+      json.field("removed_changed", static_cast<int64_t>(g_hints.removed_changed));
+      json.field("budget_drops", static_cast<int64_t>(g_hints.budget_drops));
+      json.field("table_peak", static_cast<int64_t>(g_hints.table_peak));
+      json.field("admitted_bytes_max", static_cast<int64_t>(g_hints.admitted_bytes_max));
+      json.field("pinned_max", static_cast<int64_t>(g_hints.pinned_max));
+      json.field("live_hints", static_cast<int64_t>(
+                                   g_live.hub != nullptr ? g_live.hub->hints_sent() : 0));
+      json.field("live_unhints", static_cast<int64_t>(
+                                     g_live.hub != nullptr ? g_live.hub->unhints_sent() : 0));
+      json.field("file_hints", static_cast<int64_t>(g_hints.file_hints));
+      json.field("file_unhints", static_cast<int64_t>(g_hints.file_unhints));
+      json.field("store_writes", static_cast<int64_t>(g_hints.store_writes));
+      json.field("store_failures", static_cast<int64_t>(g_hints.store_failures));
+      json.field("sibling_at_hint", static_cast<int64_t>(
+                                        g_live.served != nullptr
+                                            ? g_live.served->hinted_siblings_queued()
+                                            : 0));
+      json.object_end();
+    }
     if (g_stream.gate8.speaks_v10()) {
       // LAR7: where the carried shader clock began (rs_shader_clock.h). Evidence only: the wire
       // carries the clock's total per transaction and nothing about its origin.
@@ -2293,6 +2358,10 @@ void rearm_record_min_size(void *window, const int32_t set[2]) {
 
 void stream_start() {
   g_stream.arm_t0_ns = monotonic_ns();
+  if (g_hints.log != nullptr) {
+    std::fclose(g_hints.log);
+  }
+  g_hints = HintState();  // render-stream-15.md: every arm starts with an empty table
   // registration closes at the arm, whatever the
   // stream and live do next; a later grc_carrier_register returns -1 (`carrier-late`). Whatever
   // the set does not take is destroyed when this returns.
@@ -2656,6 +2725,14 @@ void stream_start() {
     } else if (!env_positive("GRC_RESOURCE_BUDGET_BYTES", 512ull << 20,
                              &g_stream.budget_bytes)) {
       error = "invalid GRC_RESOURCE_BUDGET_BYTES (a decimal integer >= 1)";
+    } else if (g_stream.gate8.speaks_v15() &&
+               !env_positive("GRC_RESOURCE_HINT_BUDGET_BYTES", rs::hints::kDefaultBudgetBytes,
+                             &g_hints.budget)) {
+      error = "invalid GRC_RESOURCE_HINT_BUDGET_BYTES (a decimal integer >= 1)";
+    } else if (g_stream.gate8.speaks_v15() &&
+               !rs::hints::parse_sabotage(grc::rs::env("GRC_HINT_SABOTAGE"), &g_hints.sabotage,
+                                          &error)) {
+      // error names the variable
     } else {
       g_stream.store_dir = env_string("GRC_RESOURCE_STORE_DIR");
       if (!g_stream.store_dir.empty() && g_rearm.arm_index >= 2) {
@@ -2997,7 +3074,9 @@ void stream_start() {
   // W13b: GRC_STREAM_VERSION=13 selects /13 (render-stream-13.md "As built (W13b)"): /12's
   // snapshots, each sink and connection predicting its own blocks.
   // ID3: GRC_STREAM_VERSION=14 selects /14 (render-stream-14.md): /13 plus item_meta v2.
-  session.version = g_stream.gate8.speaks_v14()   ? rs2::ProtocolVersion::V14
+  // GRC_STREAM_VERSION=15 selects /15 (render-stream-15.md): /14 plus hints and size_override.
+  session.version = g_stream.gate8.speaks_v15()   ? rs2::ProtocolVersion::V15
+                    : g_stream.gate8.speaks_v14() ? rs2::ProtocolVersion::V14
                     : g_stream.gate8.speaks_v13() ? rs2::ProtocolVersion::V13
                     : g_stream.gate8.speaks_v12() ? rs2::ProtocolVersion::V12
                     : g_stream.gate8.speaks_v11() ? rs2::ProtocolVersion::V11
@@ -3344,6 +3423,9 @@ void stream_start() {
     const char *hc_sabotage = grc::rs::env("GRC_HC_SABOTAGE");
     v11.rerecord_stale = hc_sabotage != nullptr && std::string(hc_sabotage) == "rerecord-stale";
     rs::mirror_instance().set_v11(v11);
+    // render-stream-15.md "Size override": the mirror carries it at /15 only.
+    rs::mirror_instance().set_v15(g_stream.gate8.speaks_v15());
+    hints_start();
     // HC4a test knobs (never declared on the wire): the shadow oracle, GRC_HC_SHADOW=1 (every
     // snapshot also built by the full walk and compared, the stream ended at the first
     // difference), and the sabotages
@@ -3504,13 +3586,17 @@ void stream_start() {
                   rs2::kSubprotocolV13) != server_config.subprotocols.end() &&
         std::find(server_config.subprotocols.begin(), server_config.subprotocols.end(),
                   rs2::kSubprotocolV14) == server_config.subprotocols.end()) {
-      server_config.subprotocols.insert(server_config.subprotocols.begin(),
+      // render-stream-15.md "Who speaks /15": under GRC_STREAM_VERSION=15 .14 follows .15.
+      const bool after_v15 = !server_config.subprotocols.empty() &&
+                             server_config.subprotocols.front() == rs2::kSubprotocolV15;
+      server_config.subprotocols.insert(server_config.subprotocols.begin() + (after_v15 ? 1 : 0),
                                         rs2::kSubprotocolV14);
     }
     server_config.hello_token_subprotocols = {rs2::kSubprotocolV7, rs2::kSubprotocolV8,
                                                    rs2::kSubprotocolV9, rs2::kSubprotocolV10,
                                                    rs2::kSubprotocolV11, rs2::kSubprotocolV12,
-                                                   rs2::kSubprotocolV13, rs2::kSubprotocolV14};
+                                                   rs2::kSubprotocolV13, rs2::kSubprotocolV14,
+                                                   rs2::kSubprotocolV15};
     {
       // ID3: the list itself, for the pure-path check (identical without a v2 grant).
       std::string names;
@@ -3992,7 +4078,7 @@ bool siblings_started() {
   std::lock_guard<std::mutex> lock(g_siblings.m);
   return g_siblings.started;
 }
-bool sibling_submit(std::function<void()> work) {
+bool sibling_submit_to(std::function<void()> work, bool front) {
   std::lock_guard<std::mutex> lock(g_siblings.m);
   if (!g_siblings.open) {
     return false;
@@ -4005,7 +4091,15 @@ bool sibling_submit(std::function<void()> work) {
       return false;
     }
   }
-  return sibling_pool().submit(std::move(work));
+  return front ? sibling_pool().submit_front(std::move(work)) : sibling_pool().submit(std::move(work));
+}
+// A served body's encode. With hints on (render-stream-15.md), a GET's demand goes ahead of the
+// encodes queued at hint time, which wait at the back (sibling_submit_back).
+bool sibling_submit(std::function<void()> work) {
+  return sibling_submit_to(std::move(work), g_hints.on);
+}
+bool sibling_submit_back(std::function<void()> work) {
+  return sibling_submit_to(std::move(work), false);
 }
 // The first half of the close (any thread): no submit from now on, and nothing queued runs.
 void siblings_close_begin() {
@@ -4224,6 +4318,7 @@ bool stream_finish_main(rs2::EndReason reason) {
   // connection and clears the change queue and the sweep (no frame forms a record after this);
   // live_close_and_stop then clears the rest of the union with g_meta, as TAG1 does.
   g_meta.host.v2_off();
+  hints_finish();  // render-stream-15.md: the disarm ends every hint (no unhint records needed)
   live_finish(reason, reason == rs2::EndReason::Shutdown);
   if (g_stream.publisher == nullptr) {
     g_stream.status = "closed";
@@ -4653,6 +4748,275 @@ void item_meta_frame(uint64_t frame) {
   }
 }
 
+// --- render-stream-15.md "Resource hints" ------------------------------------------------------
+//
+// One pass per armed frame callback, on the main thread, before the frame's snapshot is sent:
+// the sources (a create's payload now at rest, a warm body now at rest) join the table; entries
+// whose texture was freed or changed leave it; the budget walk runs over the last published
+// state; the file sinks' records are queued behind their next transaction (their payloads stored
+// now); and the hinted bodies are pinned for HTTP before the hub's connections get theirs.
+
+void hints_start() {
+  const bool inline_only = g_stream.policy.inline_max_bytes >= g_stream.policy.max_payload_bytes;
+  g_hints.on = g_stream.gate8.speaks_v15() && !inline_only;
+  g_hints.inline_max = g_stream.policy.inline_max_bytes;
+  g_hints.table.configure(g_hints.budget);
+  rs::mirror_instance().set_hint_watch(g_hints.on);
+  if (!g_hints.on) {
+    return;
+  }
+  if (g_state.evidence_ready) {
+    const std::string path = path_join(g_state.evidence_dir, "hints.jsonl");
+    g_hints.log = grc::rs::open_file(path, "w");
+    if (g_hints.log == nullptr) {
+      log_line("hints: cannot open " + path);
+    }
+  }
+  log_line("hints: on budget=" + std::to_string(g_hints.budget) +
+           (g_hints.sabotage == rs::hints::Sabotage::None
+                ? std::string()
+                : std::string(" (sabotage ") + rs::hints::sabotage_name(g_hints.sabotage) + ")"));
+}
+
+// One evidence line: {"frame","sink","op","hash"[,"cause","priority"]}; `sink` is "file" or
+// "live:<connection>".
+void hints_log(uint64_t frame, const std::string &sink, bool unhint, const std::string &hash,
+               rs2::HintCause cause, uint64_t priority) {
+  if (g_hints.log == nullptr) {
+    return;
+  }
+  std::string line = "{\"frame\":" + std::to_string(frame) + ",\"sink\":\"" + sink +
+                     "\",\"op\":\"" + (unhint ? "unhint" : "hint") + "\",\"hash\":\"" + hash +
+                     "\"";
+  if (!unhint) {
+    line += std::string(",\"cause\":\"") + rs2::to_wire(cause) +
+            "\",\"priority\":" + std::to_string(priority);
+  }
+  line += "}\n";
+  std::fwrite(line.data(), 1, line.size(), g_hints.log);
+  // A gate probe tails the file while the host runs (a GET for every hint as it goes out).
+  std::fflush(g_hints.log);
+}
+
+void hints_drain_live() {
+  if (g_live.hub == nullptr) {
+    return;
+  }
+  for (const rs2::Hub::HintEvent &e : g_live.hub->take_hint_events()) {
+    hints_log(e.frame, "live:" + std::to_string(e.connection), e.unhint, e.hash, e.cause,
+              e.priority);
+  }
+}
+
+// The registry path of `rid` while the texture is pristine (render-stream-15.md "path"), or none.
+bool hints_path(uint64_t rid, std::string *out) {
+  if (!rs::registry_on()) {
+    return false;
+  }
+  rs::RegistryTextureRecord record;
+  if (!rs::registry_texture(rid, &record) || record.path == nullptr) {
+    return false;
+  }
+  if (!rs::hints::keep_path(record.edited, g_hints.sabotage)) {
+    return false;
+  }
+  *out = rs::decode_string(record.path.get());
+  return !out->empty();
+}
+
+void hints_add(const rs2::TextureEntry &entry, uint64_t rid, rs2::HintCause cause,
+               rs::PayloadPtr body, std::vector<std::pair<std::string, rs::PayloadPtr>> bodies) {
+  if (!entry.has_hash || !entry.has_format || entry.payload_bytes <= g_hints.inline_max) {
+    ++g_hints.skipped_inline;  // render-stream-15.md: inline payloads are never hinted
+    return;
+  }
+  rs::hints::Source source;
+  source.hint.hash = entry.hash;
+  source.hint.format = entry.format;
+  source.hint.has_source_format = entry.has_source_format;
+  source.hint.source_format = entry.source_format;
+  source.hint.width = entry.width;
+  source.hint.height = entry.height;
+  source.hint.mipmaps = entry.mipmaps;
+  source.hint.payload_bytes = entry.payload_bytes;
+  source.hint.variants = entry.variants;
+  source.hint.has_path = hints_path(rid, &source.hint.path);
+  source.hint.cause = cause;
+  source.rid = rid;
+  source.body = std::move(body);
+  source.variant_bodies = std::move(bodies);
+  if (g_hints.table.add(std::move(source), g_hints.sabotage)) {
+    ++g_hints.added;
+  }
+}
+
+// The file sinks' records for this frame, queued behind their next transaction, and every newly
+// hinted payload (and variant payload) written to the store now.
+void hints_file(uint64_t frame) {
+  if (g_stream.publisher == nullptr || g_stream.store == nullptr) {
+    return;
+  }
+  rs::hints::Diff d;
+  rs::hints::diff(g_hints.table, &g_hints.file_sent, frame, g_hints.sabotage,
+                  rs::hints::kPerFrame, &d);
+  if (d.records.empty()) {
+    return;
+  }
+  for (const rs::hints::Entry *entry : d.hinted) {
+    ++g_hints.file_hints;
+    hints_log(frame, "file", false, entry->hint.hash, entry->hint.cause, entry->hint.priority);
+    if (entry->body == nullptr) {
+      continue;  // hint-unknown-hash: nothing to store
+    }
+    rs2::TextureEntry shape;
+    shape.hash = entry->hint.hash;
+    shape.format = entry->hint.format;
+    shape.width = entry->hint.width;
+    shape.height = entry->hint.height;
+    shape.mipmaps = entry->hint.mipmaps;
+    std::string error;
+    const auto count = [&error](rs::ResourceStore::Put put) {
+      if (put == rs::ResourceStore::Put::Stored) {
+        ++g_hints.store_writes;
+      } else if (put == rs::ResourceStore::Put::Failed) {
+        ++g_hints.store_failures;
+        log_line("hints: store write failed: " + error);
+      }
+    };
+    if (!g_stream.store->has(shape.hash)) {
+      count(g_stream.store->put(shape, entry->body, frame, &error));
+    }
+    for (const auto &body : entry->variant_bodies) {
+      for (const rs2::TextureVariant &variant : entry->hint.variants) {
+        if (variant.hash == body.first && !g_stream.store->has(variant.hash)) {
+          count(g_stream.store->put_variant(shape, variant, body.second, frame, &error));
+        }
+      }
+    }
+  }
+  for (const std::string &hash : d.unhinted) {
+    ++g_hints.file_unhints;
+    hints_log(frame, "file", true, hash, rs2::HintCause::Create, 0);
+  }
+  g_stream.publisher->add_hint_records(std::move(d.records));
+}
+
+void hints_frame(uint64_t frame) {
+  if (!g_hints.on) {
+    return;
+  }
+  hints_drain_live();  // the previous callback's live hints, dated with their own frame
+  // Sources: a create's payload at rest, a warm body at rest (zero copies, decodes or hashes).
+  {
+    std::vector<rs::Mirror::HintSource> created;
+    rs::mirror_instance().poll_hint_sources(&created);
+    for (rs::Mirror::HintSource &s : created) {
+      ++g_hints.sources_create;
+      hints_add(s.entry, s.rid, rs2::HintCause::Create, std::move(s.body),
+                std::move(s.variant_bodies));
+    }
+    if (rs::adopt_resources_active()) {
+      std::vector<rs::WarmHint> warm;
+      rs::adopt_warm_hint_sources(&g_hints.warm_offered, &warm);
+      // Warm order: RIDs grow with creation, so the oldest texture is hinted first.
+      std::sort(warm.begin(), warm.end(),
+                [](const rs::WarmHint &a, const rs::WarmHint &b) { return a.rid < b.rid; });
+      for (rs::WarmHint &w : warm) {
+        ++g_hints.sources_warm;
+        std::vector<std::pair<std::string, rs::PayloadPtr>> bodies;
+        const rs2::TextureEntry entry = rs::Mirror::ok_image_entry(w.copy, &bodies);
+        hints_add(entry, w.rid, rs2::HintCause::Warm, std::move(w.body), std::move(bodies));
+      }
+    }
+  }
+  // Leavers: a freed texture, or one whose content changed (its old hash is unhinted).
+  {
+    std::vector<std::pair<std::string, bool>> gone;  // (hash, freed)
+    std::string now;
+    for (const rs::hints::Entry *entry : g_hints.table.live()) {
+      if (entry->rid == 0) {
+        continue;  // hint-unknown-hash's entry stays for the session
+      }
+      const int state = rs::mirror_instance().texture_hash(entry->rid, &now);
+      if (state == 1) {
+        if (now != entry->hint.hash) {
+          gone.emplace_back(entry->hint.hash, false);
+        }
+      } else if (state == 2) {
+        gone.emplace_back(entry->hint.hash, false);
+      } else if (entry->hint.cause == rs2::HintCause::Create ||
+                 !rs::adopt_warm_alive(entry->rid)) {
+        gone.emplace_back(entry->hint.hash, entry->hint.cause == rs2::HintCause::Create ||
+                                                !rs::registry_lookup(entry->rid, nullptr));
+      }
+    }
+    for (const auto &g : gone) {
+      if (g_hints.table.remove(g.first)) {
+        ++(g.second ? g_hints.removed_freed : g_hints.removed_changed);
+      }
+    }
+  }
+  g_hints.table.set_in_state(
+      [](const std::string &hash) { return g_hints.in_state.count(hash) != 0; });
+  const rs::RestCoding sibling = rs::rest_config().sibling;
+  g_hints.budget_drops += g_hints.table.walk([sibling](const rs::PayloadPtr &body) -> uint64_t {
+    if (sibling == rs::RestCoding::Identity) {
+      return 0;
+    }
+    const auto made = rs::sibling_bytes(body, sibling);
+    return made != nullptr ? made->size() : 0;
+  });
+  g_hints.table_peak = std::max<uint64_t>(g_hints.table_peak, g_hints.table.size());
+  g_hints.admitted_bytes_max = std::max(g_hints.admitted_bytes_max, g_hints.table.admitted_bytes());
+  hints_file(frame);
+  // Pins: every hinted body is servable before the hub sends this callback's hints, and stays so
+  // until its unhint went out on every connection that hinted it.
+  std::vector<const rs::hints::Sent *> sinks;
+  if (g_live.hub != nullptr && g_live.served != nullptr && !g_live.stopped) {
+    g_live.hub->set_hints(&g_hints.table, g_hints.sabotage);
+    g_live.hub->hint_sinks(&sinks);
+    std::map<std::string, rs::PayloadPtr> pins;
+    if (!sinks.empty()) {
+      rs::hints::pinned(g_hints.table, sinks, &pins);  // only while a /15 viewer is open
+    }
+    g_hints.pinned_max = std::max<uint64_t>(g_hints.pinned_max, pins.size());
+    g_live.served->set_hinted(std::move(pins), sibling_submit_back);
+  }
+  sinks.push_back(&g_hints.file_sent);
+  g_hints.table.collect([&sinks](const std::string &hash) {
+    for (const rs::hints::Sent *sink : sinks) {
+      if (sink->contains(hash)) {
+        return true;
+      }
+    }
+    return false;
+  });
+}
+
+// The stream's end: nothing more is hinted, and nothing stays pinned for a hint (no unhint
+// records are needed at the end of a stream).
+void hints_finish() {
+  if (!g_hints.on) {
+    return;
+  }
+  hints_drain_live();
+  g_hints.table.clear();
+  g_hints.table.collect([](const std::string &) { return false; });
+  if (g_live.hub != nullptr) {
+    g_live.hub->set_hints(nullptr, rs::hints::Sabotage::None);
+  }
+  if (g_live.served != nullptr) {
+    g_live.served->set_hinted({}, nullptr);
+  }
+  rs::mirror_instance().set_hint_watch(false);
+  g_hints.warm_offered.clear();
+  g_hints.in_state = rs::PayloadMap();
+  if (g_hints.log != nullptr) {
+    std::fclose(g_hints.log);
+    g_hints.log = nullptr;
+  }
+}
+
 void stream_publish(uint64_t frame) {
   if (g_stream.status != "open") {
     return;
@@ -4707,6 +5071,7 @@ void stream_publish(uint64_t frame) {
   }
   // P3-TM: this iteration's shader time (a mirror change only while a TIME reader exists).
   rs::mirror_instance().set_shader_time(rs::shader_clock().total);
+  hints_frame(frame);  // render-stream-15.md: off, one branch
   const uint64_t epoch = rs::mirror_epoch();
   // With a live server the served set holds the current state's payloads, pinned
   // before a transaction naming them goes out. only while somebody
@@ -4831,6 +5196,9 @@ void stream_publish(uint64_t frame) {
     published = g_stream.publisher->last_published();
   } else {
     snapshot.state.frame = publish_frame;
+  }
+  if (g_hints.on) {
+    g_hints.in_state = published->payloads;  // the next budget walk's captured state
   }
   if (g_live.hub != nullptr) {
     // P3-SP: the hub holds the published snapshot shared (every connection's base is this one

@@ -444,6 +444,7 @@ add_executable(rs_live_test
   src/rs_canvas_texture_shim.cpp
   src/rs_histogram.cpp
   src/rs_live.cpp
+  src/rs_hints.cpp
   src/rs_item_meta.cpp
   src/rs_publish.cpp
   src/rs13_predict.cpp
@@ -484,6 +485,7 @@ add_executable(rs_live_window_test
   src/rs_canvas_texture_shim.cpp
   src/rs_histogram.cpp
   src/rs_live.cpp
+  src/rs_hints.cpp
   src/rs_item_meta.cpp
   src/rs_publish.cpp
   src/rs13_predict.cpp
@@ -518,6 +520,7 @@ add_executable(rs_live_host
   src/rs_canvas_texture_shim.cpp
   src/rs_histogram.cpp
   src/rs_live.cpp
+  src/rs_hints.cpp
   src/rs_item_meta.cpp
   src/rs_publish.cpp
   src/rs13_predict.cpp
@@ -712,6 +715,13 @@ target_compile_definitions(rs13_codec_test PRIVATE
   GRC_GOLDEN12_DIR="${GRC_DATA_PREFIX}protocol/golden-12"
   GRC_GOLDEN13_DIR="${GRC_DATA_PREFIX}protocol/golden-13")
 grc_add_test(NAME rs13_codec COMMAND rs13_codec_test)
+
+# render-stream/15 on the host: the hint records, size_override and the hint table.
+add_executable(rs15_test test/rs15_test.cpp src/rs2_codec.cpp src/rs2_diff.cpp
+  src/rs13_predict.cpp src/rs_hints.cpp)
+target_include_directories(rs15_test PRIVATE src test)
+target_link_libraries(rs15_test PRIVATE grc_warnings grc_codecs)
+grc_add_test(NAME rs15 COMMAND rs15_test)
 
 # Gate 8 (G8w): the GRC_STREAM_VERSION / GRC_ADOPT / GRC_TEXTURE_DECODE parsing, the D2 refusal and
 # the live listener's subprotocol offer, plus the two empty seams.

@@ -36,6 +36,13 @@
 //! lane's `rs13` twin validates at /13 and transcodes to its `rs12`. (The transcode of a v2 lane
 //! to its twin, [`item_meta::to13_from14`], is a native tool: rs-core's unit tests check it, so
 //! the wasm golden runner does not link it.)
+//!
+//! golden-15 (render-stream-15.md) is golden-14 re-stamped /15 and runs golden-14's checks (each
+//! lane reaches the /13 chain re-stamped, so through its golden-13 twin), plus the `hints` lane:
+//! decoded, validated, resolved to its own file, the validator's hint set after the last record
+//! equal to `hints_at_end`, and its `rs14` twin valid at /14. (Its transcode to that twin,
+//! [`crate::v15::to14_from15`], is a native tool checked by rs-core's unit tests, as ID3's.) The
+//! hint and size-override `invalid` vectors fail at their listed record and seq.
 
 use crate::canon;
 use crate::item_meta::{self, ItemMetaAsk, ItemMetaDump, ItemMetaRequest};
@@ -176,7 +183,10 @@ pub fn resolve_recording(data: &[u8], version: u8, opts: GoldenOptions) -> Resul
                 let bytes = v.inline_payload(&hash).map(|p| p.len()).unwrap_or(0);
                 resources.push(json!({"hash": hash.to_hex(), "bytes": bytes, "record_index": i}));
             }
-            Accepted::End | Accepted::ItemMeta => {}
+            Accepted::End
+            | Accepted::ItemMeta
+            | Accepted::ResourceHint { .. }
+            | Accepted::ResourceUnhint { .. } => {}
         }
     }
     Ok((
@@ -387,6 +397,9 @@ impl Suite<'_> {
         }
         if self.version >= 13 {
             self.run_v13(index, &valid);
+        }
+        if self.version >= 15 {
+            self.run_v15(index);
         }
         for entry in arr("payload_invalid") {
             let (file, code) = (s(&entry, "file"), s(&entry, "code"));
@@ -1020,6 +1033,97 @@ impl Suite<'_> {
     }
 }
 
+impl Suite<'_> {
+    /// golden-15's `hints` lane (render-stream-15.md "Validators and golden vectors").
+    fn run_v15(&mut self, index: &J) {
+        let s = |v: &J, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let Some(h) = index.get("hints") else {
+            self.ok(false, "index.json has a hints lane", "missing");
+            return;
+        };
+        let (file, decoded, resolved) = (s(h, "file"), s(h, "decoded"), s(h, "resolved"));
+        let Some(data) = self.decoded_check(&file, &decoded) else {
+            return;
+        };
+        self.ok(
+            wire::sha256(&data).to_hex() == s(h, "sha256"),
+            format!("{file} hashes to its listed sha256"),
+            "",
+        );
+        let want: Vec<String> = h
+            .get("hints_at_end")
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        match hints_at_end(&data, self.opts()) {
+            Ok(got) => self.ok(
+                got == want,
+                format!("validateRecording({file}) is [] and its hints after the last record are hints_at_end"),
+                format!("{got:?}"),
+            ),
+            Err(e) => self.ok(false, format!("validateRecording({file}) is []"), e.to_string()),
+        }
+        match (
+            resolve_recording(&data, self.version, self.opts),
+            self.json(&resolved),
+        ) {
+            (Ok((got, resources)), Some(expected)) => {
+                self.ok(
+                    states_equal(&got, &expected),
+                    format!(
+                        "resolveRecording({file}) deep-equals {resolved} (excepted fields aside)"
+                    ),
+                    "",
+                );
+                self.ok(
+                    states_equal(&resources, &J::Array(vec![])),
+                    format!("resolveRecording({file}).resources is []"),
+                    "",
+                );
+            }
+            (Err(e), _) => self.ok(
+                false,
+                format!("resolveRecording({file}) did not throw"),
+                e.to_string(),
+            ),
+            (_, None) => self.ok(false, format!("{resolved} is readable JSON"), ""),
+        }
+        let rs14 = s(h, "rs14");
+        let got = self
+            .bytes(&rs14)
+            .map(|d| validate_recording(&d, Options::new(14)));
+        self.ok(
+            matches!(got, Some(Ok(()))),
+            format!("validateRecording({rs14}, 14) is []"),
+            match got {
+                None => "file missing".to_string(),
+                Some(Ok(())) => String::new(),
+                Some(Err(e)) => e.to_string(),
+            },
+        );
+    }
+}
+
+/// /15: validates `data` and returns the hashes hinted after its last record, sorted.
+pub fn hints_at_end(data: &[u8], opts: Options) -> Result<Vec<String>, Error> {
+    let spans = wire::split_records(data, opts.version)?;
+    let first = spans
+        .first()
+        .ok_or_else(|| Error::new("missing-session", "the recording has no records"))?;
+    let mut v = Validator::new(first.bytes(data), first.offset, opts)?;
+    for r in &spans[1..] {
+        v.accept(r.bytes(data), r.offset)?;
+    }
+    v.finish()?;
+    let mut out: Vec<String> = v.hints().map(|h| h.hash.to_hex()).collect();
+    out.sort();
+    Ok(out)
+}
+
 /// TAG1: an index entry's validator ask (`item_meta`: a request object, `"none"`, or absent).
 fn ask_of(entry: &J) -> ItemMetaAsk {
     match entry.get("item_meta") {
@@ -1210,7 +1314,7 @@ pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> 
     suite.checks
 }
 
-/// golden-2 to golden-14 (or one of them), plus the cross-version `bad-magic` checks.
+/// golden-2 to golden-15 (or one of them), plus the cross-version `bad-magic` checks.
 pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check> {
     let mut checks = Vec::new();
     for v in 2..=wire::LATEST {
@@ -1242,6 +1346,8 @@ pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check
         (13, 12),
         (13, 14),
         (14, 13),
+        (14, 15),
+        (15, 14),
     ] {
         if only.is_some_and(|o| o != file_v && o != as_v) {
             continue;

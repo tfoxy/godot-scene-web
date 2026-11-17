@@ -29,6 +29,7 @@ GamePoint SpreadBudget SpreadContext SpreadDeps SpreadOptions SpreadOut SpreadSh
 Recording RecordKind RecorderOptions RenderStreamRecorder
 PointerTargetResolverOptions RenderStreamPointerTarget RenderStreamPointerTargetResolver
 ColdPayload ResourceDiagnostic ResourceDiagnostics ResourceUnavailableReason
+HintEntry HintLead HintState ResourceHintRecord ResourceHintVariant
 `
   .trim()
   .split(/\s+/);

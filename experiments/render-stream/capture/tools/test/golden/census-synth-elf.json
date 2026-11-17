@@ -4,11 +4,11 @@
   "format": "elf",
   "toolchain": [],
   "vtable": {
-    "slots": 140,
+    "slots": 141,
     "prefix": 5,
     "placeholder_kind": "null",
     "pure_placeholder": null,
-    "pure_slots": 132
+    "pure_slots": 133
   },
   "singleton": {
     "global_vaddr": "0x404f00",

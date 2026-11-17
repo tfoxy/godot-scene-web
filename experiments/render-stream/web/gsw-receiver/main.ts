@@ -28,6 +28,8 @@ import {
   ACCEPT_ITEM_META,
   ACCEPT_NEEDS_PAYLOADS,
   ACCEPT_RESOURCE,
+  ACCEPT_RESOURCE_HINT,
+  ACCEPT_RESOURCE_UNHINT,
   ACCEPT_TRANSACTION,
   failWith,
   finish,
@@ -348,6 +350,9 @@ async function run(): Promise<void> {
       }
       // TAG1: an item_meta record: the core holds it for its transaction; nothing to apply.
       if (code === ACCEPT_ITEM_META) continue;
+      // A /15 recording's hint records: advisory, nothing to apply.
+      if (code === ACCEPT_RESOURCE_HINT || code === ACCEPT_RESOURCE_UNHINT)
+        continue;
       if (code === ACCEPT_END) {
         ended = true;
         break;

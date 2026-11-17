@@ -57,6 +57,11 @@ pub const ACCEPT_HELD: i32 = 4;
 /// the transaction it describes; nothing to apply, nothing to ack, not a transaction. GSW's
 /// receivers do not opt in, so this only keeps a stream that carries the records playable.
 pub const ACCEPT_ITEM_META: i32 = 5;
+/// A /15 `resource_hint` record (render-stream-15.md "Resource hints"), now in the validator's
+/// hint table: nothing to apply, nothing to ack, not a transaction. `hint_json` reads it.
+pub const ACCEPT_RESOURCE_HINT: i32 = 6;
+/// A /15 `resource_unhint` record: the hash left the hint table. `hint_json` reads it.
+pub const ACCEPT_RESOURCE_UNHINT: i32 = 7;
 
 /// W13c: a transaction message's `seq` and whether it is full, read from its meta's canonical
 /// prefix (`{"type":"transaction","seq":N,"frame":N,"encoding":"…"`, every version's key order).
@@ -269,7 +274,9 @@ fn parse_options(json: &str) -> Result<Opts, String> {
         o.gpu_format_mask = mask.split(',').map(str::to_string).collect();
     }
     o.summary_log = json.contains("\"log\":\"summary\"");
-    o.live_protocol = if json.contains("\"live_protocol\":14") {
+    o.live_protocol = if json.contains("\"live_protocol\":15") {
+        15
+    } else if json.contains("\"live_protocol\":14") {
         14
     } else if json.contains("\"live_protocol\":13") {
         13
@@ -1408,6 +1415,8 @@ impl GswRs {
             }
             Accepted::End => ACCEPT_END,
             Accepted::ItemMeta => ACCEPT_ITEM_META,
+            Accepted::ResourceHint { .. } => ACCEPT_RESOURCE_HINT,
+            Accepted::ResourceUnhint { .. } => ACCEPT_RESOURCE_UNHINT,
             Accepted::Transaction => {
                 self.last_tx_record = self.accepted.len() - 1;
                 let st = v.state();
@@ -2551,6 +2560,61 @@ impl GswRs {
             .get(8..8 + len)
             .map(|b| String::from_utf8_lossy(b).into_owned())
             .unwrap_or_default()
+    }
+
+    // ------------------------------------------------------------- /15 resource hints
+
+    /// The `resource_hint` or `resource_unhint` record `live_accept` just returned
+    /// `ACCEPT_RESOURCE_HINT` / `ACCEPT_RESOURCE_UNHINT` for: its meta JSON as received (canonical,
+    /// and already checked against render-stream-15.md "Records", so the page parses it as is).
+    /// Valid until the next `rx`.
+    pub fn hint_json(&self) -> String {
+        self.item_meta_json()
+    }
+
+    /// What this receiver already has of a hinted `hash_hex`: bit 0, the payload is in the store
+    /// or staged; bit 1, the newest accepted state already draws it (a texture with this hash is
+    /// named by a command, material or canvas texture: a hint that trails its reference). A texture
+    /// only listed in the table does not count: a host hints a texture created while armed right
+    /// after the transaction that lists it, ahead of its first draw.
+    pub fn hint_state(&self, hash_hex: &str) -> u32 {
+        let Some(h) = Hash::from_hex(hash_hex) else {
+            return 0;
+        };
+        let held = self.payloads.has(&h) || self.stage.has(&h);
+        let named = match (self.validator.as_ref(), self.applier.as_ref()) {
+            (Some(v), Some(a)) if v.names_contains(&h) => v
+                .state()
+                .textures
+                .iter()
+                .any(|(id, t)| t.hash == Some(h) && a.texture_named(*id)),
+            _ => false,
+        };
+        u32::from(held) | (u32::from(named) << 1)
+    }
+
+    /// The hinted hashes whose textures the last accepted transaction made named (first drawn by
+    /// a command, or named by a material or canvas texture), as concatenated 64-hex hashes (empty
+    /// when none). Merely listing an entry in the texture table is not a reference: a texture
+    /// created while armed is listed at once and drawn later, which is what its hint announces.
+    /// The walk is over the applier's prepared textures, never the whole state.
+    pub fn hint_refs(&self) -> String {
+        let mut out = String::new();
+        let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_ref()) else {
+            return out;
+        };
+        if v.hints().next().is_none() {
+            return out;
+        }
+        let textures = &v.state().textures;
+        for id in a.prepared_textures() {
+            if let Some(h) = textures.get(&id).and_then(|t| t.hash) {
+                if v.hint(&h).is_some() {
+                    out.push_str(&h.to_hex());
+                }
+            }
+        }
+        out
     }
 
     /// TAG2 `onItemsRemoved`: log the ids each apply removes (this applier and every later one).

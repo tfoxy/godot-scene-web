@@ -59,7 +59,7 @@ def inject(text, text_va, rdata_va, concrete_offset):
     for opcode in (b'\xe8', b'\xe9', b'\x0f\x85'):
         sites.append(text_va + origin + len(code))
         code.extend(opcode + struct.pack('<i', target - (text_va + origin + len(code) + len(opcode) + 4)))
-    # These displacements exercise the upper bound: this table has only 140 slots.
+    # These displacements exercise the upper bound: this table has only 141 slots.
     code.extend(b'\xff\x90' + struct.pack('<I', 300 * 8))
     code.extend(b'\xff\xa0' + struct.pack('<I', 301 * 8))
     position = text_va + origin + len(code)
@@ -184,7 +184,7 @@ def main():
                 expanded['concrete']['slots'] += [0] * 200
                 expanded['slot_count'] = len(expanded['concrete']['slots'])
                 lines = [' 100: call *0x960(%rax)', ' 110: jmpq *0x968(%rax)',
-                         ' 120: call *0x95f(%rax)', ' 130: call *0xaa0(%rax)',
+                         ' 120: call *0x95f(%rax)', ' 130: call *0xaa8(%rax)',
                          '   140086206:\trex.W jmp *0x9c8(%rax)']
                 scanned = census.scan(image, expanded, lines)
                 require(scanned['band'] == dict(call=1, jmp=2, total=3), str(scanned['band']))

@@ -238,6 +238,11 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # call a global-coordinate CPUParticles2D makes. Hooked only by a /11 session, like PM1's:
     # it adds no calibrator version, and below /11 it is neither planned nor omitted.
     ("canvas_item_set_use_identity_transform", ("canvas_item_set_use_identity_transform",)),
+    # render-stream-15.md "Size override" -- texture_set_size_override(rid, w, h), the logical size
+    # a CompressedTexture2D draws at when its stored image is padded. Hooked only by a /15 session
+    # (GRC_STREAM_VERSION=15), like PM1's: it adds no calibrator version, and below /15 it is
+    # neither planned nor omitted.
+    ("texture_set_size_override", ("texture_set_size_override",)),
 )
 
 # Every wanted slot belongs to one indivisible capture family.
@@ -372,6 +377,7 @@ FAMILIES = {
     "particles_set_emitter_velocity": "particles",
     "particles_set_interp_to_end": "particles",
     "canvas_item_set_use_identity_transform": "canvas_item_state",
+    "texture_set_size_override": "texture",
 }
 
 

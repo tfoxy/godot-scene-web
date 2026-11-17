@@ -1,6 +1,7 @@
 // Unit tests for the gate 8 policy parsing, the D2 refusal, the live subprotocol offer and the
 // decode seam (src/rs_gate8_policy.*, rs_texture_decode.*; G8w; the adoption seam is rs_adopt_test).
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdint>
 #include <string>
@@ -157,7 +158,7 @@ void test_v9_policy() {
   check(parse("9", nullptr, nullptr, nullptr, &p, &error) &&
             p.file_version == ProtocolVersion::V9 && !p.any() && p.speaks_v8() && p.speaks_v9(),
         "GRC_STREAM_VERSION=9 is a /9 file sink without a policy (G8k9)");
-  check(!parse("7", nullptr, nullptr, nullptr, &p, &error) && error.find("6, 8, 9, 10, 11, 12, 13 or 14") != std::string::npos,
+  check(!parse("7", nullptr, nullptr, nullptr, &p, &error) && error.find("6, 8, 9, 10, 11, 12, 13, 14 or 15") != std::string::npos,
         "GRC_STREAM_VERSION=7 is still invalid");
   check(parse("8", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v9(), "/8 does not speak /9");
   Gate8Policy policy;
@@ -247,9 +248,33 @@ void test_v10_policy() {
         "GRC_STREAM_VERSION=10 is a /10 file sink without a policy, speaking /8 and /9's keys");
   check(parse("9", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v10(),
         "/9 does not speak /10");
-  check(!parse("15", nullptr, nullptr, nullptr, &p, &error) &&
-            error.find("6, 8, 9, 10, 11, 12, 13 or 14") != std::string::npos,
-        "GRC_STREAM_VERSION=15 is invalid");
+  check(!parse("16", nullptr, nullptr, nullptr, &p, &error) &&
+            error.find("6, 8, 9, 10, 11, 12, 13, 14 or 15") != std::string::npos,
+        "GRC_STREAM_VERSION=16 is invalid");
+  // render-stream-15.md "Who speaks /15": .15 first, then /13's list; /15 speaks every /14 key.
+  check(parse("15", nullptr, nullptr, nullptr, &p, &error) &&
+            p.file_version == ProtocolVersion::V15 && p.speaks_v15() && p.speaks_v14() &&
+            p.speaks_v13() && p.speaks_v12() && p.speaks_v11(),
+        "GRC_STREAM_VERSION=15 is a /15 file sink speaking every /14 key");
+  {
+    const std::vector<std::string> list = grc::rs::gate8_live_subprotocols(p);
+    Gate8Policy v13;
+    std::string e13;
+    parse("13", nullptr, nullptr, nullptr, &v13, &e13);
+    std::vector<std::string> want = {"render-stream.15"};
+    for (const std::string &name : grc::rs::gate8_live_subprotocols(v13)) {
+      want.push_back(name);
+    }
+    check(list == want, "a /15 file sink's listener offers .15, then exactly /13's list");
+  }
+  {
+    Gate8Policy narrow;
+    parse("15", "arm", nullptr, nullptr, &narrow, &error);
+    const std::vector<std::string> list = grc::rs::gate8_live_subprotocols(narrow);
+    check(list.size() >= 2 && list[0] == "render-stream.15" && list[1] == "render-stream.13" &&
+              std::find(list.begin(), list.end(), "render-stream.7") == list.end(),
+          "/15 under a gate 8 policy offers .15, then /13's narrow list");
+  }
   // ID3 (render-stream-14.md): /14 is /13 plus item_meta v2; its listener offers .14 first.
   check(parse("14", nullptr, nullptr, nullptr, &p, &error) &&
             p.file_version == ProtocolVersion::V14 && p.speaks_v13() && p.speaks_v14() &&
@@ -260,6 +285,9 @@ void test_v10_policy() {
     check(list.size() >= 2 && list[0] == "render-stream.14" && list[1] == "render-stream.13",
           "a /14 file sink's listener offers .14, then /13's list");
   }
+  check(parse("14", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v15() &&
+            grc::rs::gate8_live_subprotocols(p)[0] == "render-stream.14",
+        "/14 does not speak /15, and its list is unchanged");
   check(parse("13", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v14() &&
             grc::rs::gate8_live_subprotocols(p)[0] == "render-stream.13",
         "/13 does not speak /14, and its list is unchanged");

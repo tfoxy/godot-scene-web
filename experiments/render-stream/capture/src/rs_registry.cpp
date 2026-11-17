@@ -20,11 +20,13 @@ namespace {
 
 constexpr std::uint8_t kUpdated = 1, kReleased = 2, kEdited = 4, kFacts = 8,
                        kMipmaps = 16, kHasPath = 32, kHeld = 64, kPending = 128;
+// Entry::extra: the texture has a size override in State::overrides.
+constexpr std::uint8_t kHasOverride = 1;
 struct Entry {
   RegistryKind kind = RegistryKind::Texture2d;
   std::uint8_t flags = 0;
   std::uint8_t format = 0;
-  std::uint8_t reserved = 0;
+  std::uint8_t extra = 0;  // kHasOverride
   std::uint16_t width = 0;
   std::uint16_t height = 0;
 };
@@ -111,6 +113,9 @@ struct State {
   std::uint64_t pending_appended = 0;
   std::atomic<std::uint64_t> hold_generation{0};
   RidMap<RegistryValue> paths;
+  // texture_set_size_override's logical size (width << 16 | height) of textures whose
+  // Entry::extra has kHasOverride (render-stream-15.md "Size override").
+  RidMap<std::uint32_t> overrides;
   std::uint64_t path_capacity = 0;
   std::uint64_t path_sets = 0;
   std::uint64_t texture_facts = 0;
@@ -144,6 +149,14 @@ void path_erase_locked(State &s, std::uint64_t rid, Dropped *dropped) {
   if (it != s.paths.end()) {
     dropped->values.push_back(std::move(it->second));
     s.paths.erase(rid);
+  }
+}
+
+// A texture's size override leaves with its content (free, re-create, replace).
+void override_erase_locked(State &s, std::uint64_t rid, Entry &entry) {
+  if (entry.extra & kHasOverride) {
+    s.overrides.erase(rid);
+    entry.extra &= static_cast<std::uint8_t>(~kHasOverride);
   }
 }
 
@@ -209,6 +222,11 @@ RegistryTextureRecord texture_record_locked(State &s, std::uint64_t rid, const E
   out.updated = (entry.flags & kUpdated) != 0;
   out.held = (entry.flags & kHeld) != 0;
   if (entry.flags & kHasPath) out.path = s.paths.find(rid)->second;
+  if (entry.extra & kHasOverride) {
+    const std::uint32_t packed = s.overrides.find(rid)->second;
+    out.override_w = static_cast<std::int32_t>(packed >> 16);
+    out.override_h = static_cast<std::int32_t>(packed & 0xFFFFu);
+  }
   return out;
 }
 
@@ -518,6 +536,7 @@ void registry_configure(bool adopt, RegistryFault fault, std::size_t cap) {
   std::swap(old_shaders, s.shader);
   std::swap(old_materials, s.material);
   std::swap(old_paths, s.paths);
+  s.overrides.clear();
   std::swap(old_holds, s.holds);
   std::swap(old_pending, s.pending);
   s.holds_capacity = 0;
@@ -579,6 +598,7 @@ bool create_locked(State &s, std::uint64_t rid, Entry entry, Dropped *dropped) {
     if (it->second.flags & (kHasPath | kHeld | kPending)) {
       texture_side_erase_locked(s, rid, it->second, HoldDrop::Recreated, dropped);
     }
+    override_erase_locked(s, rid, it->second);
     it->second = entry;
     ++f.creates;
     add_entry_locked(s, family);
@@ -623,6 +643,7 @@ void registry_note_create(std::uint64_t rid, RegistryKind kind) {
     if (it->second.flags & (kHasPath | kHeld | kPending)) {
       texture_side_erase_locked(s, rid, it->second, HoldDrop::Recreated, &dropped);
     }
+    override_erase_locked(s, rid, it->second);
     it->second = Entry{kind};
     ++f.creates;
     add_entry_locked(s, family);
@@ -685,6 +706,18 @@ void registry_note_texture_path(std::uint64_t rid, RegistryValue path) {
   ++s.path_sets;
 }
 
+void registry_note_texture_size_override(std::uint64_t rid, std::int32_t width,
+                                         std::int32_t height) {
+  // GLES3 refuses anything outside 1..16384 (texture_storage.cpp texture_set_size_override).
+  if (width < 1 || width > 16384 || height < 1 || height > 16384) return;
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.map.find(rid);
+  if (it == s.map.end() || registry_family(it->second.kind) != RegistryFamily::Texture) return;
+  s.overrides[rid] = static_cast<std::uint32_t>(width) << 16 | static_cast<std::uint32_t>(height);
+  it->second.extra |= kHasOverride;
+}
+
 bool registry_texture_set_released(std::uint64_t rid, bool released) {
   State &s = state();
   std::lock_guard<std::mutex> lock(s.mutex);
@@ -739,6 +772,7 @@ void registry_note_free(std::uint64_t rid) {
                               s.fault != RegistryFault::KeepFreed);
   }
   if (s.fault != RegistryFault::KeepFreed) {
+    override_erase_locked(s, rid, it->second);
     s.map.erase(rid);
     payload_erase_locked(s, rid, family, &dropped);
     remove_entry_locked(s, family);
@@ -781,7 +815,11 @@ HoldSkip registry_note_replace(std::uint64_t texture, std::uint64_t by_texture,
     // Preserve a's held bit until the decision can account its displaced image.
     const auto held = into->second.flags & kHeld;
     if (into->second.flags & kHasPath) path_erase_locked(s, texture, &dropped);
+    // GLES3 copies the by-texture's struct (texture_storage.cpp texture_replace), so the target
+    // takes its size override, or none.
+    override_erase_locked(s, texture, into->second);
     into->second = it->second;
+    if (it->second.extra & kHasOverride) s.overrides[texture] = s.overrides.find(by_texture)->second;
     into->second.flags = (it->second.flags & (kReleased | kEdited | kFacts | kMipmaps)) |
                           kUpdated | held;
     if (hold) {
@@ -836,6 +874,7 @@ HoldSkip registry_note_replace(std::uint64_t texture, std::uint64_t by_texture,
   if (it->second.flags & (kHasPath | kHeld | kPending)) {
     texture_side_erase_locked(s, by_texture, it->second, HoldDrop::ReplacedAway, &dropped);
   }
+  override_erase_locked(s, by_texture, it->second);
   s.map.erase(by_texture);
   remove_entry_locked(s, family);
   changed_locked(s);

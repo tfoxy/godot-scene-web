@@ -321,6 +321,7 @@ describe("endpoint protocol changes", () => {
   function mount(
     protocol: RenderStreamProtocol,
     extensions: RenderStreamExtension[] = [],
+    resourceHints?: boolean,
   ) {
     vi.useFakeTimers();
     const memory = new WebAssembly.Memory({ initial: 1 });
@@ -409,6 +410,7 @@ describe("endpoint protocol changes", () => {
       extensions,
       transport,
       applyOn: "frame",
+      ...(resourceHints !== undefined ? { resourceHints } : {}),
       onStatus: (st) => statuses.push(st),
     });
     function open() {
@@ -461,6 +463,42 @@ describe("endpoint protocol changes", () => {
       expect(h.instances[1].set_window).toHaveBeenCalledWith(900, 600);
       expect(h.instances[1].payloads.size).toBe(0);
     } else expect(h.instances[0].payloads.has("resident")).toBe(true);
+    h.c.dispose();
+  });
+
+  it.each([
+    [13, undefined, 13],
+    [15, undefined, 13],
+    [15, false, 13],
+    [13, true, 15],
+    [14, true, 15],
+    [15, true, 15],
+  ] as const)("endpoint /%i with resourceHints %s offers, builds and says /%i", async (protocol, hints, spoken) => {
+    const h = mount(protocol, [], hints);
+    h.c.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.connections[0]).toMatchObject({
+      sub: `render-stream.${spoken}`,
+      builtFor: spoken,
+    });
+    const conn = h.open();
+    expect(JSON.parse(conn.send.mock.calls[0][0]).protocol).toBe(
+      `render-stream/${spoken}`,
+    );
+    expect(h.c.hints()).toEqual([]);
+    const st = h.c.stats();
+    expect("hintsReceived" in st).toBe(hints === true);
+    h.c.dispose();
+  });
+
+  it("refuses resourceHints below protocol 13, at creation and on setEndpoint", async () => {
+    expect(() => mount(12, [], true)).toThrow(
+      /resourceHints needs protocol 13/,
+    );
+    const h = mount(13, [], true);
+    expect(() => h.c.setEndpoint({ ...endpoint, protocol: 12 })).toThrow(
+      /resourceHints needs protocol 13/,
+    );
     h.c.dispose();
   });
 

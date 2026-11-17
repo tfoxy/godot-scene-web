@@ -35,7 +35,7 @@ impl std::error::Error for Error {}
 pub const MAGIC_LEN: usize = 8;
 
 /// The newest render-stream version this crate decodes.
-pub const LATEST: u8 = 14;
+pub const LATEST: u8 = 15;
 
 /// `render-stream/<version>`.
 pub fn protocol(version: u8) -> String {
@@ -44,7 +44,8 @@ pub fn protocol(version: u8) -> String {
 
 /// `GRS<version>\r\n\x1a\n`, the version as one uppercase hex digit (render-stream-10.md "File
 /// layout": /10 is `GRSA`; render-stream-11.md: /11 is `GRSB`; render-stream-12.md: /12 is `GRSC`;
-/// render-stream-13.md: /13 is `GRSD`; render-stream-14.md: /14 is `GRSE`).
+/// render-stream-13.md: /13 is `GRSD`; render-stream-14.md: /14 is `GRSE`; render-stream-15.md:
+/// /15 is `GRSF`).
 pub fn magic(version: u8) -> [u8; 8] {
     let digit = if version < 10 {
         b'0' + version
@@ -432,7 +433,7 @@ mod tests {
 
     #[test]
     fn magic_round_trip() {
-        for v in 2..=14 {
+        for v in 2..=15 {
             assert_eq!(version_of_magic(&magic(v)), Some(v));
         }
         assert_eq!(&magic(10)[..4], b"GRSA");
@@ -442,7 +443,9 @@ mod tests {
         assert_eq!(protocol(13), "render-stream/13");
         assert_eq!(magic(14), [0x47, 0x52, 0x53, 0x45, 0x0D, 0x0A, 0x1A, 0x0A]);
         assert_eq!(protocol(14), "render-stream/14");
-        assert_eq!(version_of_magic(&magic(15)), None);
+        assert_eq!(magic(15), [0x47, 0x52, 0x53, 0x46, 0x0D, 0x0A, 0x1A, 0x0A]);
+        assert_eq!(protocol(15), "render-stream/15");
+        assert_eq!(version_of_magic(&magic(16)), None);
         assert_eq!(version_of_magic(b"GRS6"), None);
     }
 

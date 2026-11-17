@@ -722,6 +722,10 @@ pub fn to13_from14(data14: &[u8]) -> Result<Vec<u8>, Error> {
             }
             Accepted::End => crate::predict::fix_end(rec, &out_lens, &in_lens, &mut out),
             Accepted::Transaction | Accepted::Resource { .. } => out.extend_from_slice(rec),
+            // A /14 stream has no hint records (unknown types below /15).
+            Accepted::ResourceHint { .. } | Accepted::ResourceUnhint { .. } => {
+                unreachable!("hints at /14")
+            }
         }
         out_lens.push(out.len() - at);
         in_lens.push(rec.len());

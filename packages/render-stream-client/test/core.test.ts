@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import libRs from "../../../experiments/render-stream/web/gsw-rs/src/lib.rs?raw";
-import { type GswRs, type GswRsModule, STAT_FIELDS } from "../src/abi";
+import {
+  ACCEPT_RESOURCE_HINT,
+  ACCEPT_RESOURCE_UNHINT,
+  type GswRs,
+  type GswRsModule,
+  STAT_FIELDS,
+} from "../src/abi";
 import { WasmStreamCore } from "../src/core";
 import type { RenderStreamProtocol } from "../src/endpoint";
 import { coreStartOptions } from "../src/hello";
@@ -36,8 +42,20 @@ function harness() {
     rx_ptr() {
       return 0;
     }
+    /** What `live_accept` answers, and the hint calls' answers. */
+    code = 0;
+    meta = "";
+    state = 0;
+    refs = "";
     live_accept() {
-      return 0;
+      return this.code;
+    }
+    hint_json() {
+      return this.meta;
+    }
+    readonly hint_state = vi.fn((_hash: string) => this.state);
+    hint_refs() {
+      return this.refs;
     }
     stats_ptr() {
       return this.ptr;
@@ -351,5 +369,93 @@ describe("WasmStreamCore unavailable payloads", () => {
   it("the adapter exports every new core method", () => {
     for (const m of ["names_mask", "drop_staged", "restore_unavailable"])
       expect(libRs).toContain(`pub fn ${m}(`);
+  });
+});
+
+describe("WasmStreamCore resource hints (render-stream/15)", () => {
+  const h1 = "a".repeat(64);
+  const h2 = "b".repeat(64);
+  const vh = "c".repeat(64);
+  const hintMeta = {
+    type: "resource_hint",
+    hash: h1,
+    kind: "texture",
+    format: "RGBA8",
+    source_format: null,
+    width: 16,
+    height: 8,
+    mipmaps: false,
+    payload_bytes: 512,
+    variants: [
+      { encoding: "block", hash: vh, payload_bytes: 64, format: "BPTC_RGBA" },
+    ],
+    path: "res://icon.png",
+    cause: "warm",
+    priority: 3,
+    blocks: [],
+  };
+
+  it("maps ACCEPT_RESOURCE_HINT to a hint message with the core's held/named bits", () => {
+    const { core, instances } = harness();
+    core.beginConnection(15);
+    const g = instances[1];
+    g.code = 6;
+    g.meta = JSON.stringify(hintMeta);
+    g.state = 2;
+    expect(core.receive(bytes, true)).toEqual({
+      kind: "hint",
+      hint: {
+        hash: h1,
+        format: "RGBA8",
+        sourceFormat: null,
+        width: 16,
+        height: 8,
+        mipmaps: false,
+        payloadBytes: 512,
+        variants: [
+          {
+            encoding: "block",
+            hash: vh,
+            payloadBytes: 64,
+            format: "BPTC_RGBA",
+          },
+        ],
+        path: "res://icon.png",
+        cause: "warm",
+        priority: 3,
+      },
+      held: false,
+      named: true,
+    });
+    expect(g.hint_state).toHaveBeenCalledWith(h1);
+    core.dispose();
+  });
+
+  it("maps ACCEPT_RESOURCE_UNHINT to an unhint without asking the hint state", () => {
+    const { core, instances } = harness();
+    core.beginConnection(15);
+    const g = instances[1];
+    g.code = 7;
+    g.meta = JSON.stringify({ type: "resource_unhint", hash: h2, blocks: [] });
+    expect(core.receive(bytes, true)).toEqual({ kind: "unhint", hash: h2 });
+    expect(g.hint_state).not.toHaveBeenCalled();
+    core.dispose();
+  });
+
+  it("splits hint_refs into hashes", () => {
+    const { core, instances } = harness();
+    core.beginConnection(15);
+    expect(core.hintRefs()).toEqual([]);
+    instances[1].refs = h1 + h2;
+    expect(core.hintRefs()).toEqual([h1, h2]);
+    core.dispose();
+  });
+
+  it("keeps the ACCEPT codes and live_protocol 15 in step with lib.rs", () => {
+    const code = (name: string) =>
+      Number(new RegExp(`pub const ${name}: i32 = (\\d+);`).exec(libRs)?.[1]);
+    expect(code("ACCEPT_RESOURCE_HINT")).toBe(ACCEPT_RESOURCE_HINT);
+    expect(code("ACCEPT_RESOURCE_UNHINT")).toBe(ACCEPT_RESOURCE_UNHINT);
+    expect(libRs).toContain('json.contains("\\"live_protocol\\":15")');
   });
 });

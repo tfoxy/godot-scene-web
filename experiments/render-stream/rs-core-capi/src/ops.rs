@@ -266,6 +266,8 @@ opcodes! {
     ParticlesEmit = 90,
     // item, rid particles, rid tex
     AddParticles = 91,
+    // texture, u32 width, u32 height (render-stream-15.md "Size override"; 1..16384 each)
+    TextureSetSizeOverride = 92,
 }
 
 // PM6a: the `which` operand of the generic particles setters (mirrored in rs_core_capi.h).

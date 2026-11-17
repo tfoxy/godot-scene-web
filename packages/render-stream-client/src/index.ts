@@ -37,6 +37,13 @@ export {
   type RGBA,
 } from "./extensions";
 export { type ClientHelloFacts, clientHello } from "./hello";
+export type {
+  HintEntry,
+  HintLead,
+  HintState,
+  ResourceHintRecord,
+  ResourceHintVariant,
+} from "./hints";
 export { type CoreBuild, CoreLoadError, type RenderStreamCore } from "./loader";
 export {
   type ApplyOn,

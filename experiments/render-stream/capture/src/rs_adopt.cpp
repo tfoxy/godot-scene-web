@@ -2310,6 +2310,38 @@ bool adopt_warm_poll() {
   return true;
 }
 
+void adopt_warm_hint_sources(std::unordered_set<std::uint64_t> *offered,
+                             std::vector<WarmHint> *out) {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  g_warm.for_each([&](const auto &entry) {
+    if (offered->count(entry.first) != 0) return;
+    const WarmBody &body = entry.second.body;
+    WarmHint hint;
+    hint.rid = entry.first;
+    hint.copy = body.copy;
+    if (body.job != nullptr) {
+      if (!body.job->done() || body.job->mispredict()) return;
+      body.job->fill(&hint.copy);
+      hint.body = body.job->bytes();
+    } else {
+      hint.body = body.bytes;
+    }
+    offered->insert(entry.first);
+    if (hint.copy.status != "ok" || hint.body == nullptr) return;
+    out->push_back(std::move(hint));
+  });
+}
+
+bool adopt_warm_alive(std::uint64_t rid) {
+  RegistryKind kind = RegistryKind::Texture2d;
+  bool updated = true;
+  const bool registered = registry_on() && registry_lookup(rid, &kind, &updated);
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  const auto it = g_warm.find(rid);
+  if (it == g_warm.end()) return false;
+  return !warm_stale(it->second.updated_at_warm, registered, updated);
+}
+
 void adopt_warm_cancel() {
   std::vector<std::shared_ptr<WarmTaskBase>> cancelled;
   {

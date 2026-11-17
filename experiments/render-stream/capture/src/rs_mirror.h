@@ -969,6 +969,37 @@ class Mirror {
   // no free call). b unknown: t becomes `unsupported` (`unknown-texture`). t
   // unknown: b's id leaves the table. t == b: nothing.
   void texture_replace(std::uint64_t texture, std::uint64_t by_texture, std::uint64_t frame);
+  // render-stream-15.md "Size override" (set_v15 only; otherwise nothing): the texture's logical
+  // size. A change of the size the entry would carry (set only when it differs from the payload's)
+  // moves the version when `bump`; adoption passes false for the size a pre-arm texture already
+  // had. Outside 1..16384 (GLES3 refuses it) or an unknown RID: nothing.
+  void texture_set_size_override(std::uint64_t rid, std::int32_t width, std::int32_t height,
+                                 std::uint64_t frame, bool bump = true);
+  // Set once before arming (survives reset()): whether texture_set_size_override applies.
+  void set_v15(bool on);
+
+  // --- render-stream-15.md "Resource hints": the `create` source --------------------------------
+  //
+  // While the watch is on (a /15 host; reset() keeps the setting and forgets the watched ids),
+  // every image texture created while armed is watched until its payload is at rest (its worker
+  // done, or a synchronous copy); poll_hint_sources() then hands it over once, with the entry an
+  // `ok` snapshot would carry for it and the bodies already held (no copy, decode or hash). A
+  // texture whose content changed, failed or left the table first is dropped from the watch.
+  void set_hint_watch(bool on);
+  struct HintSource {
+    std::uint64_t rid = 0;
+    rs2::TextureEntry entry;
+    PayloadPtr body;
+    std::vector<std::pair<std::string, PayloadPtr>> variant_bodies;
+  };
+  void poll_hint_sources(std::vector<HintSource> *out);
+  // The content hash of `rid`'s texture now: 0 unknown RID; 1 an `ok` image (`hash` empty while a
+  // newer worker is still running); 2 known but not an ok image.
+  int texture_hash(std::uint64_t rid, std::string *hash) const;
+  // The entry an `ok` image texture with this (settled) copy carries, and its variants' bodies
+  // (the `warm` source: a pre-arm texture the warm pass prepared).
+  static rs2::TextureEntry ok_image_entry(const PayloadCopy &copy,
+                                          std::vector<std::pair<std::string, PayloadPtr>> *bodies);
   // An unknown refused target takes a known by-texture; other cases change nothing.
   bool texture_replace_recover(std::uint64_t texture, std::uint64_t by_texture,
                                std::uint64_t frame, RecoverInfo *out);
@@ -1178,6 +1209,10 @@ class Mirror {
     bool specular_set = false;  // a non-null specular channel is set
     rs2::Filter filter = rs2::Filter::Default;
     rs2::Repeat repeat = rs2::Repeat::Default;
+    // render-stream-15.md "Size override": texture_set_size_override's logical size (0 x 0: none).
+    // Kept across texture_2d_update; texture_replace takes the source's (GLES3 copies the struct).
+    std::uint16_t override_w = 0;
+    std::uint16_t override_h = 0;
   };
   // One mesh surface (G5e): `ok` with its payload, or refused (D7) with its reason only.
   //
@@ -1554,6 +1589,14 @@ class Mirror {
   std::uint64_t perturb_vertex_frame_ = 0;
   bool carry_shader_time_ = false;  // P3-TM
   V11Options v11_;                  // W11b (survives reset())
+  bool v15_ = false;                // render-stream-15.md size override (survives reset())
+  bool hint_watch_ = false;         // render-stream-15.md hints (survives reset())
+  struct HintWatch {
+    std::uint32_t id = 0;
+    std::shared_ptr<TextureJob> job;
+    PayloadPtr bytes;
+  };
+  std::vector<HintWatch> hint_watched_;
   std::uint32_t stale_dynamic_mesh_ = 0;  // W11b stale-dynamic: the frozen mesh (0: none yet)
   bool dynamic_hash_readers_ = true;      // HC3: set_dynamic_hash_readers (reset() restores it)
   std::uint64_t next_surface_key_ = 1;    // HC3: MeshSurf::key (never reused in a session)

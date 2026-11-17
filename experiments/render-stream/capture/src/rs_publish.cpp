@@ -667,7 +667,19 @@ bool Publisher::form_lane(const LaneJob &job, bool direct) {
   }
   transaction.perturb_instance = job.perturb_instance;
   transaction.perturb_seed = job.perturb_seed;
-  return write_transaction(lane, transaction, form_ns, diff_ns, job.snapshot_ns, direct);
+  if (!write_transaction(lane, transaction, form_ns, diff_ns, job.snapshot_ns, direct)) {
+    return false;
+  }
+  for (const auto &record : job.hints) {
+    // render-stream-15.md "Placement and ordering": hints follow the frame's transaction.
+    const bool ok = direct ? lane->sink->write_direct(*record) && lane->sink->flush_direct()
+                           : lane->sink->write(*record) && lane->sink->flush();
+    if (!ok) {
+      return false;
+    }
+    note_record_bytes(&lane->stats, *record);
+  }
+  return true;
 }
 
 bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t frame) {
@@ -974,6 +986,7 @@ bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_
       job.meta_batches = std::move(meta_batches_);  // TAG1: the first lane applies them
       meta_batches_.clear();
     }
+    job.hints = pending_hints_;  // render-stream-15.md: both sinks write the same records
     if (!plan_inline(lane, *target, &job.records)) {
       ok = false;
       continue;
@@ -1006,6 +1019,7 @@ bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_
     }
     ok = queued && ok;
   }
+  pending_hints_.clear();
   // Kept with or without a patch sink: the patch sink's next base, and the copy the live
   // adapter delivers (last_published()).
   previous_ = target;

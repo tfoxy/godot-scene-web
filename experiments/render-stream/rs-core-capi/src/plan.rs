@@ -436,6 +436,23 @@ struct TexM {
     canvas_diffuse_serial: u64,
     /// G8ku (D6 `keep`): the entry version the resident image was uploaded for.
     version: i64,
+    /// The size the Godot texture draws at: its image's after a create or replace (Godot starts
+    /// a new texture without an override, and `texture_replace` takes the replacement's), kept by
+    /// an update, and the last `texture_set_size_override` (render-stream-15.md "Size override").
+    logical: [i64; 2],
+}
+
+/// Brings a resident image's Godot size to the entry's logical size. Godot cannot clear an
+/// override, so a removed one is set back to the payload's size, which is what `want` then is.
+fn sync_logical_size(ops: &mut OpBuf, t: &mut TexM, want: [i64; 2]) {
+    if t.logical == want {
+        return;
+    }
+    ops.op(Op::TextureSetSizeOverride, 1);
+    ops.rid(RidRef::Texture(t.handle));
+    ops.u(want[0] as u32);
+    ops.u(want[1] as u32);
+    t.logical = want;
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1639,6 +1656,7 @@ impl Planner {
                                 canvas_version: -1,
                                 canvas_diffuse_serial: 0,
                                 version: -1,
+                                logical: [0, 0],
                             },
                         );
                         self.created_rids += 1;
@@ -1673,6 +1691,7 @@ impl Planner {
                                 canvas_version: -1,
                                 canvas_diffuse_serial: 0,
                                 version: -1,
+                                logical: [0, 0],
                             },
                         );
                         self.created_rids += 1;
@@ -1708,6 +1727,8 @@ impl Planner {
                     {
                         if let Some(t) = self.textures.get_mut(&id) {
                             t.version = e.version;
+                            // A /15 override can change with the payload kept.
+                            sync_logical_size(ops, t, e.logical_size());
                         }
                         continue;
                     }
@@ -1751,6 +1772,7 @@ impl Planner {
                                     canvas_version: -1,
                                     canvas_diffuse_serial: 0,
                                     version: -1,
+                                    logical: [0, 0],
                                 },
                             );
                             self.created_rids += 1;
@@ -1788,6 +1810,10 @@ impl Planner {
                     t.height = p.height;
                     t.mipmaps = p.mipmaps;
                     t.version = e.version;
+                    if op_name != "update" {
+                        t.logical = [p.width, p.height];
+                    }
+                    sync_logical_size(ops, t, e.logical_size());
                     c.upload_bytes += p.data.len() as i64;
                     uploads.push(Upload {
                         id,

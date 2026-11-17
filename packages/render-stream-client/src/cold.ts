@@ -91,6 +91,11 @@ export class ColdTracker {
 
   constructor(private readonly now: () => number) {}
 
+  /** Frame callbacks begun (the hint table's lead in frames reads it). */
+  get frames(): number {
+    return this.frame;
+  }
+
   beginFrame(): void {
     this.frame++;
     this.inFrame = true;

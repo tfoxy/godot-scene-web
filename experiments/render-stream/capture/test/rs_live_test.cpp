@@ -3396,6 +3396,175 @@ bool same_stream(const std::vector<std::vector<std::uint8_t>> &a,
   return true;
 }
 
+// render-stream-15.md "The pin rule": a /15 hello enables pins before its first frame, even
+// when no /15 connection is streaming yet (first viewer or reconnect).
+void test_v15_hint_pins_before_first_frame() {
+  namespace hints = grc::rs::hints;
+  // Probe serving at send time, rather than after the callback has finished: the I/O thread
+  // can deliver a hint and receive its GET before the next frame can install any missing pins.
+  struct PinTransport : FakeTransport {
+    grc::rs::ServedResources served;
+    unsigned hints_sent = 0;
+    bool send_binary(std::uint32_t conn, std::vector<std::uint8_t> message) override {
+      const std::string bytes(message.begin(), message.end());
+      if (has(bytes, "\"type\":\"resource_hint\"")) {
+        ++hints_sent;
+        check(served.lookup(kH1) != nullptr && served.lookup(kH2) != nullptr,
+              "V15 pins: body and variant are servable when the first hint is sent");
+      }
+      return FakeTransport::send_binary(conn, std::move(message));
+    }
+  } transport;
+  Session tmpl = make_template(Delivery::OutOfBand);
+  tmpl.version = ProtocolVersion::V15;
+  observe_multimesh_features(&tmpl.features);
+  Hub hub(&transport, LiveConfig(), tmpl);
+  hints::Table table;
+  hints::Source source;
+  source.rid = 1001;
+  source.hint.hash = kH1;
+  source.hint.format = "RGBA8";
+  source.hint.width = 4;
+  source.hint.height = 4;
+  source.hint.cause = HintCause::Warm;
+  source.body = grt1(1, 64);
+  source.hint.payload_bytes = grc::rs::identity_of(source.body, grc::rs::InflateSite::Get)->size();
+  TextureVariant variant;
+  variant.encoding = VariantEncoding::Block;
+  variant.hash = kH2;
+  variant.has_format = true;
+  variant.format = "DXT5";
+  const auto variant_body = grt1(2, 16);
+  variant.payload_bytes = grc::rs::identity_of(variant_body, grc::rs::InflateSite::Get)->size();
+  source.hint.variants.push_back(variant);
+  source.variant_bodies.emplace_back(kH2, variant_body);
+  table.add(std::move(source));
+  table.walk();
+  hub.set_hints(&table, hints::Sabotage::None);
+  const auto sinks = [&hub] {
+    std::vector<const hints::Sent *> out;
+    hub.hint_sinks(&out);
+    return out;
+  };
+  // Reproduce entry.cpp's pin pass before on_frame_shared(), including its no-viewer branch.
+  const auto pin = [&] {
+    const auto viewers = sinks();
+    std::map<std::string, grc::rs::PayloadPtr> pins;
+    if (!viewers.empty()) {
+      hints::pinned(table, viewers, &pins);
+    }
+    transport.served.set_hinted(std::move(pins), {});
+  };
+  std::string hello15 =
+      read_file(std::string(GRC_GOLDEN12_DIR) + "/control/valid/hello-native-block.json");
+  hello15.replace(hello15.find("render-stream/12"), 16, "render-stream/15");
+  hub.on_event(opened_with(1, "render-stream.13"), 0);
+  hub.on_event(text(1, hello_of(13, "")), 0);
+  check(sinks().empty(), "V15 pins: an accepted non-V15 hello has no hint sink");
+  for (std::uint32_t conn : {2u, 3u}) {
+    const std::string context = conn == 2 ? "first viewer" : "reconnect";
+    hub.on_event(opened_with(conn, "render-stream.15"), conn);
+    check(sinks().empty(), "V15 pins: " + context + " has no sink before hello");
+    pin();
+    check(transport.served.hinted() == 0, "V15 pins: no pins before hello");
+    hub.on_event(text(conn, hello15), conn);
+    const auto ready = sinks();
+    check(ready.size() == 1 && ready.front()->hinted.empty(),
+          "V15 pins: " + context + " has an empty sink after hello, before its first frame");
+    pin();
+    check(transport.served.hinted() == 2 && transport.served.retained() == 0,
+          "V15 pins: " + context + " pins warm body and variant outside captured state");
+    hub.on_frame_shared(conn, conn * 16000000ULL, w13_state(conn), conn, 0);
+    hub.sync();
+    const auto streaming = sinks();
+    check(streaming.size() == 1 && streaming == ready && streaming.front()->contains(kH1),
+          "V15 pins: " + context + " keeps the same sink after its first hint");
+    check(transport.hints_sent == conn - 1, "V15 pins: one hint on each viewer's first frame");
+    hub.on_event(closed(conn, 1000), conn);
+    check(sinks().empty(), "V15 pins: closed viewer and streaming non-V15 have no hint sinks");
+    pin();
+    check(transport.served.hinted() == 0, "V15 pins: last /15 departure releases hint pins");
+  }
+  hub.finish(EndReason::Shutdown, 4, 4 * 16000000ULL);
+}
+
+// render-stream-15.md "Resource hints" on the hub: a /15 connection gets the table's hints after
+// its first transaction, never ahead of a frame's transaction, at most kPerFrame a callback, in
+// priority order, with an unhint once an entry leaves; a /13 connection on the same hub gets none.
+void test_v15_hints() {
+  namespace hints = grc::rs::hints;
+  FakeTransport transport;
+  Session tmpl = make_template(Delivery::OutOfBand);
+  tmpl.version = ProtocolVersion::V15;
+  observe_multimesh_features(&tmpl.features);
+  Hub hub(&transport, LiveConfig(), tmpl);
+  hints::Table table;
+  for (int i = 0; i < 70; ++i) {
+    hints::Source src;
+    char buf[65];
+    std::snprintf(buf, sizeof buf, "%064x", i + 1);
+    src.hint.hash = buf;
+    src.hint.format = "RGBA8";
+    src.hint.width = 4;
+    src.hint.height = 4;
+    src.hint.payload_bytes = 100;
+    src.rid = static_cast<std::uint64_t>(i + 1);
+    src.body = std::make_shared<grc::rs::PayloadBytes>(std::vector<std::uint8_t>(100, 1));
+    table.add(std::move(src));
+  }
+  table.walk();
+  hub.set_hints(&table, hints::Sabotage::None);
+  std::string hello15 =
+      read_file(std::string(GRC_GOLDEN12_DIR) + "/control/valid/hello-native-block.json");
+  hello15.replace(hello15.find("render-stream/12"), 16, "render-stream/15");
+  hub.on_event(opened_with(1, "render-stream.15"), 1);
+  hub.on_event(text(1, hello15), 1);
+  hub.on_event(opened_with(2, "render-stream.13"), 1);
+  hub.on_event(text(2, hello_of(13, "")), 1);
+  std::map<std::uint64_t, std::size_t> per_frame;
+  std::vector<std::uint64_t> priorities;
+  for (std::uint64_t frame = 1; frame <= 4; ++frame) {
+    if (frame == 3) {
+      table.remove(std::string(63, '0') + "1");
+      table.walk();
+    }
+    const std::uint64_t t = frame * 16000000ULL;
+    hub.on_frame_shared(frame, t, w13_state(frame), frame, 0);  // no acks: one transaction
+    hub.sync();
+    for (const auto &e : hub.take_hint_events()) {
+      check(e.connection == 1, "V15: only the /15 connection is hinted");
+      ++per_frame[e.frame];
+      if (!e.unhint) priorities.push_back(e.priority);
+    }
+  }
+  check(per_frame[1] == hints::kPerFrame && per_frame[2] == 6 && per_frame[3] == 1 &&
+            per_frame.count(4) == 0,
+        "V15: 64 hints with the first transaction, the rest the next frame, an unhint later");
+  bool ordered = priorities.size() == 70;
+  for (std::size_t i = 1; i < priorities.size(); ++i) {
+    ordered = ordered && priorities[i - 1] < priorities[i];
+  }
+  check(ordered, "V15: hints in priority order");
+  std::vector<char> kinds;  // S session, H hint, U unhint, T anything else (transactions)
+  for (const Sent &x : transport.of(Sent::Binary)) {
+    if (x.conn == 2) {
+      const std::string b(x.bytes.begin(), x.bytes.end());
+      check(b.find("resource_hint") == std::string::npos, "V15: the /13 connection gets no hint");
+      continue;
+    }
+    const std::string b(x.bytes.begin(), x.bytes.end());
+    kinds.push_back(!x.bytes.empty() && x.bytes[0] == 'G'                   ? 'S'
+                    : b.find("\"type\":\"resource_hint\"") != std::string::npos   ? 'H'
+                    : b.find("\"type\":\"resource_unhint\"") != std::string::npos ? 'U'
+                                                                                  : 'T');
+  }
+  check(kinds.size() == 2 + 70 + 1 && kinds[0] == 'S' && kinds[1] == 'T' && kinds[2] == 'H' &&
+            kinds.back() == 'U',
+        "V15: session, the first transaction, then its hints; the unhint alone later");
+  hub.finish(EndReason::Shutdown, 5, 5 * 16000000ULL);
+  check(hub.hints_sent() == 70 && hub.unhints_sent() == 1, "V15: the hub counts hints and unhints");
+}
+
 void test_w13_connections() {
   // 1, 2: lockstep /13; 3: /12 in lockstep with them; 4: /13, resyncs at frame 17;
   // 5: /13, joins at frame 3.
@@ -4023,6 +4192,8 @@ int main(int argc, char **argv) {
   test_v11_live_coding();
   test_hc5_formation_thread();
   test_w13_connections();
+  test_v15_hint_pins_before_first_frame();
+  test_v15_hints();
   std::printf("rs_live_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

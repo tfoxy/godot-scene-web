@@ -74,6 +74,15 @@ export class FakeCore implements StreamCore {
   takeDecoded(): Uint8Array | null {
     return this.decoded;
   }
+  /** What `hintRefs` answers next (then empties); `hintRefsCalls` counts the calls. */
+  refs: string[] = [];
+  hintRefsCalls = 0;
+  hintRefs(): string[] {
+    this.hintRefsCalls++;
+    const r = this.refs;
+    this.refs = [];
+    return r;
+  }
   transportSkip(): void {
     this.calls.push("transport_skip");
   }
@@ -288,6 +297,7 @@ export function harness(
     | "recorder"
     | "resourceHoldMs"
     | "fetchTimeoutMs"
+    | "resourceHints"
   > = {},
   core: FakeCore = new FakeCore(),
   endpoint: RenderStreamEndpoint = ENDPOINT,

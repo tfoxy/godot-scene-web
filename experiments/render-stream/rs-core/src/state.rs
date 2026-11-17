@@ -583,7 +583,22 @@ pub struct Texture {
     /// /9 only (render-stream-9.md "Texture entries"): the alternative payloads, sorted by
     /// encoding, at most one each; empty below /9.
     pub variants: Vec<TextureVariant>,
+    /// /15 only (render-stream-15.md "Size override"): the logical `[width, height]` Godot draws an
+    /// `ok` image at when it differs from the payload's `width`/`height`; `None` otherwise (and
+    /// always below /15). Texel-size math (region UVs, nine-patch, `TEXTURE_PIXEL_SIZE`) uses it;
+    /// the payload keeps `width`/`height`.
+    pub size_override: Option<[u32; 2]>,
     pub canvas: Option<CanvasTexture>,
+}
+
+impl Texture {
+    /// The size Godot draws this texture at: `size_override` when set, else `width`/`height`.
+    pub fn logical_size(&self) -> [i64; 2] {
+        match self.size_override {
+            Some([w, h]) => [w as i64, h as i64],
+            None => [self.width, self.height],
+        }
+    }
 }
 
 /// One alternative payload of an ok image texture (render-stream-9.md "Texture entries").

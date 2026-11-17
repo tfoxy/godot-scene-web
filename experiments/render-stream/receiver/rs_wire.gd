@@ -13,7 +13,8 @@ extends RefCounted
 
 ## The GRS2 to GRS9 magics (render-stream-2.md to render-stream-9.md), GRSA (render-stream-10.md:
 ## byte 3 is the version as one uppercase hex digit from /10 on), GRSB (render-stream-11.md) and
-## GRSC (render-stream-12.md) and GRSD (render-stream-13.md), by wire version.
+## GRSC (render-stream-12.md), GRSD (render-stream-13.md), GRSE (render-stream-14.md) and GRSF
+## (render-stream-15.md), by wire version.
 const MAGIC_HEX_BY_VERSION: Dictionary[int, String] = {
 	2: "475253320d0a1a0a",
 	3: "475253330d0a1a0a",
@@ -27,6 +28,8 @@ const MAGIC_HEX_BY_VERSION: Dictionary[int, String] = {
 	11: "475253420d0a1a0a",
 	12: "475253430d0a1a0a",
 	13: "475253440d0a1a0a",
+	14: "475253450d0a1a0a",
+	15: "475253460d0a1a0a",
 }
 const MAGIC_V7_HEX: String = "475253370d0a1a0a"
 ## G8t: render-stream/8 files (gate 8 recordings, render-stream-8.md) replay at /8.
@@ -46,6 +49,11 @@ const MAGIC_V12_HEX: String = "475253430d0a1a0a"
 ## W13d: render-stream/13 files (render-stream-13.md: GRSD, /12 with predicted mesh and multimesh
 ## blocks) replay at /13; the core un-predicts each transaction to its /12 record at accept.
 const MAGIC_V13_HEX: String = "475253440d0a1a0a"
+## render-stream/14 files (render-stream-14.md: GRSE, item_meta v2 rows the receiver never reads)
+## and render-stream/15 files (render-stream-15.md: GRSF, resource hints the receiver ignores and
+## texture size overrides the core applies) replay at their own version.
+const MAGIC_V14_HEX: String = "475253450d0a1a0a"
+const MAGIC_V15_HEX: String = "475253460d0a1a0a"
 const PROTOCOL_V7: String = "render-stream/7"
 const MAX_SAFE_INT: float = 9007199254740991.0
 

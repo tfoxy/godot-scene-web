@@ -91,7 +91,10 @@ fn run(path: &str, version: u8) -> (usize, usize, usize) {
                     store.provide(&b, &hash, version, true).unwrap();
                 }
             }
-            Accepted::End | Accepted::ItemMeta => {}
+            Accepted::End
+            | Accepted::ItemMeta
+            | Accepted::ResourceHint { .. }
+            | Accepted::ResourceUnhint { .. } => {}
             Accepted::Transaction => {
                 txs += 1;
                 observe(&v, &a, &mut last);

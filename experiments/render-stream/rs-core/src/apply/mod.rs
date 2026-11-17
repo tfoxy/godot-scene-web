@@ -945,7 +945,12 @@ impl TableView<'_> {
                 .or_else(|| self.delivery.select(t).map(|s| s.hash))
             {
                 Some(h) if self.payloads.textures.contains_key(&h) => {
-                    TexDraw::Sized(t.width as u32, t.height as u32, t.mipmaps)
+                    // render-stream-15.md "Size override": Godot draws at the logical size
+                    // (GLES3 texture_set_size_override sets width/height, the allocation keeps
+                    // its own), so region UVs, nine-patch and TEXTURE_PIXEL_SIZE follow it; the
+                    // payload and its upload keep the entry's width/height.
+                    let [w, h] = t.logical_size();
+                    TexDraw::Sized(w as u32, h as u32, t.mipmaps)
                 }
                 _ => TexDraw::Skip,
             },
@@ -1748,6 +1753,19 @@ impl Applier {
         }
         self.prepared = true;
         prof::add(prof::PREPARE, t);
+    }
+
+    /// Whether texture `id` is named: drawn by a command of the accepted state, or named by a
+    /// material or canvas texture (an entry only listed in the texture table is not).
+    pub fn texture_named(&self, id: Id) -> bool {
+        self.names.is_named(id)
+    }
+
+    /// The texture ids the prepared transaction(s) look at: those that became named (drawn by a
+    /// command, or named by a material or canvas texture) and the named entries they upserted.
+    /// Call after [`Applier::prepare`]; empty once `apply` ran.
+    pub fn prepared_textures(&self) -> impl Iterator<Item = Id> + '_ {
+        self.pending.iter().copied()
     }
 
     /// The payload hashes this transaction needs that `store` does not hold, in the native
@@ -4472,6 +4490,8 @@ mod rm_tests;
 mod pick_tree_tests;
 #[cfg(test)]
 mod gap2_rx_tests;
+#[cfg(test)]
+mod size_override_tests;
 
 /// G8kp: one texture's upload: RGBA8 pixels, or a `block` variant's level 0 in a format the list
 /// carries. A block format the list cannot carry would have

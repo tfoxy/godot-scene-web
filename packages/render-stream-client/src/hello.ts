@@ -55,7 +55,8 @@ export function helloV9(
     | "render-stream/11"
     | "render-stream/12"
     | "render-stream/13"
-    | "render-stream/14" = "render-stream/9",
+    | "render-stream/14"
+    | "render-stream/15" = "render-stream/9",
   liveCoding = "",
 ): Record<string, unknown> {
   return {
@@ -115,15 +116,29 @@ export interface ClientHelloFacts {
 }
 
 /** The one version offered on the transport and in the hello. A v2 request relies on /14
- * picking semantics, so it never falls back to an older protocol. */
+ * picking semantics, so it never falls back to an older protocol. `resourceHints` offers /15
+ * (render-stream-15.md "Who speaks /15": only a client that asks for hints), which keeps /14's
+ * item_meta v2; without it a /15 endpoint is spoken to as /13, or /14 for v2 wants, which a /15
+ * host also lists. One subprotocol only: the transport seam carries one, the core is built for
+ * it and the hello names it, so a `resourceHints` client needs a host under
+ * `GRC_STREAM_VERSION=15`. */
 export function clientProtocol(
   protocol: RenderStreamProtocol,
   itemMeta: ClientHelloFacts["itemMeta"],
+  resourceHints = false,
 ): RenderStreamProtocol {
   if (itemMeta && protocol < 13)
     throw new TypeError(
-      "render-stream client: item_meta (an extension's wants) needs protocol 13 or 14",
+      "render-stream client: item_meta (an extension's wants) needs protocol 13 or later",
     );
+  if (resourceHints) {
+    if (protocol < 13)
+      throw new TypeError(
+        "render-stream client: resourceHints needs protocol 13 or later",
+      );
+    return 15;
+  }
+  if (protocol === 15) protocol = 13;
   return protocol === 13 && hasV2(itemMeta) ? 14 : protocol;
 }
 
@@ -134,7 +149,7 @@ function hasV2(itemMeta: ClientHelloFacts["itemMeta"]): boolean {
   );
 }
 
-/** The client's /11 through /14 hello: the GSW receiver's keys in their order (golden-11/12's control
+/** The client's /11 through /15 hello (/15's is /14's): the GSW receiver's keys in their order (golden-11/12's control
  * hello), `receiver_kind` `gsw-canvas` (the same executor), credit stage `submitted`, texture
  * encodings `block,decoded` or `decoded` (clientTextureEncodings; no `uastc` until the client
  * carries the KTX2 transcoder), no manifest, and the

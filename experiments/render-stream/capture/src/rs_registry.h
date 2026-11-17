@@ -271,9 +271,17 @@ struct RegistryTextureRecord {
   RegistryTextureFacts facts;
   bool released = false, edited = false, updated = false, held = false;
   RegistryValue path;
+  // texture_set_size_override's last logical size (0 x 0: never set, or reset by a re-create or a
+  // replace whose source had none).
+  std::int32_t override_w = 0, override_h = 0;
 };
 void registry_note_texture_create(std::uint64_t rid, const RegistryTextureFacts &facts, bool released);
 void registry_note_texture_path(std::uint64_t rid, RegistryValue path);
+// render-stream-15.md "Size override": the logical size of a registered texture (a value outside
+// 1..16384 changes nothing, as GLES3 refuses it). It survives updates; a replace hands the target
+// the source's (texture_storage.cpp copies the struct).
+void registry_note_texture_size_override(std::uint64_t rid, std::int32_t width,
+                                         std::int32_t height);
 bool registry_texture_set_released(std::uint64_t rid, bool released);
 bool registry_texture(std::uint64_t rid, RegistryTextureRecord *out);
 // Copies every texture-family record in slot order under the lock. The caller owns the copied

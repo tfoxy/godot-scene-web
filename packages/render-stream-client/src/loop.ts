@@ -61,6 +61,7 @@ import type { RenderStreamEndpoint } from "./endpoint";
 import type { ExtensionHost } from "./extensions";
 import { type FetchResult, LiveFetcher } from "./fetcher";
 import { clientHello, clientProtocol } from "./hello";
+import { type HintLead, HintTable } from "./hints";
 import type { RenderStreamRecorder } from "./recorder";
 import type {
   RenderStreamTransport,
@@ -136,6 +137,25 @@ export interface RenderStreamStats {
    * until one more is found or one stops being tracked. `stats()` always sets it (optional as
    * `carrier`). */
   resources?: ResourceDiagnostics;
+  /** /15 resource hints (`resourceHints`). The hint fields are set by `stats()` only on a
+   * `resourceHints` client. `resource_hint` records received, over every connection. */
+  hintsReceived?: number;
+  /** `resource_unhint` records received. */
+  unhintsReceived?: number;
+  /** Hints in effect whose payload the client neither holds nor has seen a transaction name. */
+  hintsPending?: number;
+  /** Hints a transaction first drew after they arrived (each counted once). */
+  hintsReferenced?: number;
+  /** Hints that arrived for a hash the accepted state already drew. */
+  hintsLate?: number;
+  /** Hints the table's bound (`HINT_TABLE_MAX`) dropped. */
+  hintsDropped?: number;
+  /** The shortest and longest hint-to-first-reference lead in ms, or null before one. */
+  hintLeadMsMin?: number | null;
+  hintLeadMsMax?: number | null;
+  /** The last `HINT_LEAD_LOG_MAX` referenced hints (newest last): a frozen array, the same one
+   * until a reference adds a record. */
+  hintLeadLog?: readonly HintLead[];
 }
 
 /** Why a payload was unavailable: `missing` (404, 410) or `temporary` (408, 429, 5xx, a rejected
@@ -221,6 +241,8 @@ export interface LoopOptions {
   onSession?: (session: SessionMeta) => void;
   /** The recorder (null: the pure client copies nothing). */
   recorder?: RenderStreamRecorder | null;
+  /** Offer render-stream/15 and keep its resource hints in a table (`hints`). Default false. */
+  resourceHints?: boolean;
 }
 
 /** The ack the host's credit waits on (render-stream-1.md hello `credit_stage`). */
@@ -366,6 +388,8 @@ export class StreamLoop {
   private revisitDraw = false;
   /** Missed payloads, first reference to first draw. */
   private readonly cold: ColdTracker;
+  /** /15 resource hints; null unless `resourceHints` (nothing hint-related runs then). */
+  readonly hints: HintTable | null;
 
   private readonly creditStage: CreditStage;
   private readonly resourceHoldMs: number;
@@ -378,6 +402,13 @@ export class StreamLoop {
     this.ext = o.ext ?? null;
     this.recorder = o.recorder ?? null;
     this.cold = new ColdTracker(() => o.clock.now());
+    const cold = this.cold;
+    this.hints = o.resourceHints
+      ? new HintTable(
+          () => o.clock.now(),
+          () => cold.frames,
+        )
+      : null;
     const hold = o.resourceHoldMs ?? DEFAULT_RESOURCE_HOLD_MS;
     this.resourceHoldMs = hold >= 0 ? hold : DEFAULT_RESOURCE_HOLD_MS;
   }
@@ -456,7 +487,12 @@ export class StreamLoop {
       backBufferItems: this.backBufferItems,
       ...this.cold.totals,
       coldPayloadLog: this.cold.log(),
+      ...(this.hints !== null ? this.hintStats(this.hints) : {}),
     };
+  }
+
+  private hintStats(h: HintTable): Partial<RenderStreamStats> {
+    return { ...h.totals, hintsPending: h.pending, hintLeadLog: h.log() };
   }
 
   /** Stops the loop and closes the connection (1000); the caller frees the core. Idempotent. */
@@ -488,7 +524,7 @@ export class StreamLoop {
     };
     this.conn = conn;
     this.firstFrameSent = false;
-    const protocol = clientProtocol(this.endpoint.protocol, this.ext?.request);
+    const protocol = this.protocol();
     try {
       core.beginConnection(protocol);
     } catch (e) {
@@ -528,7 +564,7 @@ export class StreamLoop {
     const c = this.o.canvas();
     this.send(
       clientHello({
-        protocol: clientProtocol(this.endpoint.protocol, this.ext?.request),
+        protocol: this.protocol(),
         creditWindow: this.o.creditWindow,
         creditStage: this.creditStage,
         token: this.endpoint.token,
@@ -538,6 +574,14 @@ export class StreamLoop {
         gpuFormats: c.gpuFormats,
         itemMeta: this.ext?.request ?? null,
       }),
+    );
+  }
+
+  private protocol() {
+    return clientProtocol(
+      this.endpoint.protocol,
+      this.ext?.request,
+      this.hints !== null,
     );
   }
 
@@ -615,6 +659,7 @@ export class StreamLoop {
       else if (m.kind === "resource") rec.record(bytes, "resource", false, 0);
       else if (m.kind === "item_meta") rec.record(bytes, "item_meta", false, 0);
       else if (m.kind === "end") rec.record(bytes, "end", false, 0);
+      // Hints are not recorded: advisory, a recording replays as the same frames without them.
     }
     switch (m.kind) {
       case "item_meta":
@@ -645,8 +690,17 @@ export class StreamLoop {
         return;
       case "transaction":
         break;
+      // After `transaction`: a transaction never reaches these compares.
+      case "hint":
+        this.hints?.hint(m.hint, m.held, m.named);
+        return;
+      case "unhint":
+        this.hints?.unhint(m.hash);
+        return;
     }
     if (this.ext) this.ext.transaction();
+    if (this.hints !== null && this.hints.size > 0)
+      this.hints.referenced(this.o.core.hintRefs?.() ?? []);
     const now = this.o.clock.now();
     if (this.lastCreditAt !== null) {
       this.rtts[this.rttCount % RTT_SAMPLES] = now - this.lastCreditAt;
@@ -706,6 +760,8 @@ export class StreamLoop {
 
   private beginSession(conn: Connection, session: SessionMeta): void {
     conn.streamId = session.stream?.stream_id ?? "";
+    // The pin rule ends with the connection; a new one re-sends the hints still in effect.
+    this.hints?.clear();
     this.o.onSession?.(session);
     this.drawnSeq = null;
     if (this.ext)
@@ -923,6 +979,7 @@ export class StreamLoop {
     this.stale.clear();
     this.diag.view = null;
     this.cold.reset();
+    this.hints?.clear();
     this.revisitDraw = false;
     this.undrawn.length = 0;
     this.endSeen = false;

@@ -1,0 +1,46 @@
+; Gate 8 g8hint fixture (render-stream/15 resource hints and the texture size override): undrawn
+; textures created before and after a late arm, drawn later, freed or changed while undrawn, and two
+; block-compressed textures whose stored size is padded to a multiple of 4, drawn magnified. The
+; sources are generated (make_sources.gd), never committed; see README.md.
+
+config_version=5
+
+[application]
+
+config/name="render-stream-hint-scene-fixture"
+config/features=PackedStringArray("4.5")
+run/main_scene="res://hint.tscn"
+
+[autoload]
+
+GrcLoader="*res://loader.gd"
+
+[debug]
+
+; Typed-GDScript discipline, as every gate fixture (fixtures/gate2/project.godot).
+gdscript/warnings/untyped_declaration=2
+gdscript/warnings/unsafe_property_access=2
+gdscript/warnings/unsafe_method_access=2
+gdscript/warnings/unsafe_cast=2
+gdscript/warnings/unsafe_call_argument=2
+
+[display]
+
+window/size/viewport_width=640
+window/size/viewport_height=360
+window/stretch/mode="disabled"
+window/vsync/vsync_mode=0
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+anti_aliasing/quality/msaa_2d=0
+viewport/hdr_2d=false
+environment/defaults/default_clear_color=Color(0.2, 0.2, 0.4, 1)
+textures/canvas_textures/default_texture_filter=0
+; S3TC only (the fixture loads the .s3tc.ctex by its imported path); CPU encoders, so the import
+; is the same on every host.
+textures/vram_compression/import_s3tc_bptc=true
+textures/vram_compression/import_etc2_astc=false
+textures/vram_compression/compress_with_gpu=false

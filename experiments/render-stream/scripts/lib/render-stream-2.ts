@@ -24,7 +24,7 @@
 //
 // render-stream/3 (../../protocol/render-stream-3.md, G4e1), render-stream/4
 // (../../protocol/render-stream-4.md, G5w) and render-stream/5 (../../protocol/render-stream-5.md,
-// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14` parameter
+// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15` parameter
 // on every exported entry point (splitRecords/decodeRecording/validateRecording/
 // resolveRecording), rather than forked render-stream-3.ts/-4.ts/-5.ts modules -- /3 is /2 plus
 // one draw command (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), /4 is /3
@@ -817,6 +817,9 @@ export interface TransactionTexture {
   /** new at /9 (render-stream-9.md "Texture entries"): the alternative payloads, sorted by
    * encoding, at most one each; present only in a /9 stream. */
   variants?: TextureVariant[];
+  /** new at /15 (render-stream-15.md "Size override"): the logical size Godot draws an "ok"
+   * image at, present only when it differs from width/height. */
+  size_override?: [number, number];
   canvas: CanvasTextureMeta | null;
 }
 
@@ -1111,12 +1114,50 @@ export interface ItemMetaTable {
   rows: Map<number, Array<number | string | null> | null>;
 }
 
+/** render-stream-15.md "Records": a `resource_hint`'s cause, in the spec's spelling order. */
+export const HINT_CAUSES = [
+  "create",
+  "warm",
+  "predicted",
+  "integrator",
+] as const;
+export type HintCause = (typeof HINT_CAUSES)[number];
+
+/** render-stream-15.md "Resource hints": a /15 `resource_hint` record (a JSON meta, no blocks):
+ * the `ok` image texture entry fields of `hash`, the texture's pristine `path`, the `cause` and
+ * the `priority` (lower is sooner). */
+export interface ResourceHintMeta {
+  type: "resource_hint";
+  hash: string;
+  kind: "texture";
+  format: string;
+  source_format: string | null;
+  width: number;
+  height: number;
+  mipmaps: boolean;
+  payload_bytes: number;
+  variants: TextureVariant[];
+  path: string | null;
+  cause: HintCause;
+  priority: number;
+  blocks: BlockDescriptor[];
+}
+
+/** render-stream-15.md "Resource hints": a /15 `resource_unhint` record. */
+export interface ResourceUnhintMeta {
+  type: "resource_unhint";
+  hash: string;
+  blocks: BlockDescriptor[];
+}
+
 export type Rs2Meta =
   | SessionMeta
   | TransactionMeta
   | ResourceMeta
   | EndMeta
-  | ItemMetaRecordMeta;
+  | ItemMetaRecordMeta
+  | ResourceHintMeta
+  | ResourceUnhintMeta;
 
 // --------------------------------------------------------------------------------------- constants
 
@@ -1181,14 +1222,19 @@ export const MAGIC_V13: Uint8Array = new Uint8Array([
 export const MAGIC_V14: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x45, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
+// render-stream-15.md: the GRSF magic (byte 3 'F' is 15), selected by `version: 15` (golden-15/;
+// opt-in, never the default: /15 is /14 plus resource hints and the texture size override).
+export const MAGIC_V15: Uint8Array = new Uint8Array([
+  0x47, 0x52, 0x53, 0x46, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 /** G7l: the wire version of a live stream's bytes: 7 when they start with GRS7 (a /7 receiver's
  * received.rs7, or a /7 connection's host tap), 8 when they start with GRS8 (G8w), 9 for GRS9
  * (G8k9), 10 for GRSA (CG1), 11 for GRSB (W11a), 12 for GRSC (PM5), 13 for GRSD (W13d), 14 for GRSE
- * (ID3: a /14 file sink or a v2 viewer's tap), else 6 -- so every other
+ * (ID3: a /14 file sink or a v2 viewer's tap), 15 for GRSF (a /15 file sink), else 6 -- so every other
  * magic still meets the /6 decoder's own refusal, exactly as before. */
 export function wireVersionOf(
   data: Uint8Array | undefined,
-): 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 {
+): 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 {
   if (!data || data.length < MAGIC_V7.length) return 6;
   const startsWith = (magic: Uint8Array) => {
     for (let i = 0; i < magic.length; i++)
@@ -1204,6 +1250,7 @@ export function wireVersionOf(
   // W13d: every receiver accepts /13 now (GSW W13c, native and web W13d).
   if (startsWith(MAGIC_V13)) return 13;
   if (startsWith(MAGIC_V14)) return 14;
+  if (startsWith(MAGIC_V15)) return 15;
   return 6;
 }
 /** render-stream-9.md "KTX2 payload": the 12-byte KTX2 file identifier (KTX 2.0 section 2.1). */
@@ -1667,6 +1714,14 @@ const TEXTURE_KEYS_V9 = [
   "variants",
   "canvas",
 ];
+// render-stream-15.md "Size override": the optional "size_override" right after "variants".
+const TEXTURE_KEYS_V15 = [
+  ...TEXTURE_KEYS_V9.slice(0, TEXTURE_KEYS_V9.indexOf("variants") + 1),
+  "size_override",
+  "canvas",
+];
+/** render-stream-15.md "Size override": each side of a logical size is in 1..16384. */
+const SIZE_OVERRIDE_MAX = 16384;
 const VARIANT_KEYS = ["encoding", "hash", "payload_bytes", "format", "params"];
 const VARIANT_ENCODINGS = ["block", "uastc", "etc1s"] as const;
 const TEXTURE_DELIVERY_KEYS = ["mode", "encoder"];
@@ -2442,7 +2497,7 @@ function intPair(value: unknown): value is [number, number] {
 function checkResourcesSchema(
   resources: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: resources ${detail}`,
@@ -2574,7 +2629,7 @@ function checkResourcesSchema(
 function checkSessionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
@@ -2991,15 +3046,19 @@ function checkTextureEntrySchema(
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: a textures[] entry ${detail}`,
   ];
+  // render-stream-15.md "Size override": an optional key, so the key list follows its presence.
+  const hasOverride = version >= 15 && isPlainObject(t) && "size_override" in t;
   if (
     !isPlainObject(t) ||
     !hasExactKeys(
       t,
-      version >= 9
-        ? TEXTURE_KEYS_V9
-        : version >= 8
-          ? TEXTURE_KEYS_V8
-          : TEXTURE_KEYS,
+      hasOverride
+        ? TEXTURE_KEYS_V15
+        : version >= 9
+          ? TEXTURE_KEYS_V9
+          : version >= 8
+            ? TEXTURE_KEYS_V8
+            : TEXTURE_KEYS,
     )
   ) {
     return err("has the wrong keys");
@@ -3071,6 +3130,16 @@ function checkTextureEntrySchema(
       if (!(v.params === null || typeof v.params === "string")) {
         return err('has a variant "params" that is neither null nor a string');
       }
+    }
+  }
+  if (hasOverride) {
+    const so = t.size_override;
+    if (
+      !Array.isArray(so) ||
+      so.length !== 2 ||
+      !so.every((x) => isInt(x) && x >= 1 && x <= SIZE_OVERRIDE_MAX)
+    ) {
+      return err('"size_override" is not two integers in 1..16384');
     }
   }
   const canvas = t.canvas;
@@ -3464,7 +3533,7 @@ function checkParticlesEntrySchema(p: unknown): string | null {
 function checkTransactionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
@@ -4223,6 +4292,121 @@ function checkEndSchema(
   return [];
 }
 
+// --------------------------------------------------------------------------------------- resource hints (/15)
+
+const RESOURCE_HINT_KEYS = [
+  "type",
+  "hash",
+  "kind",
+  "format",
+  "source_format",
+  "width",
+  "height",
+  "mipmaps",
+  "payload_bytes",
+  "variants",
+  "path",
+  "cause",
+  "priority",
+  "blocks",
+];
+const RESOURCE_UNHINT_KEYS = ["type", "hash", "blocks"];
+
+/** render-stream-15.md "Records" (every failure is meta-schema; rs-core meta.rs
+ * `check_resource_hint` is the same code). */
+function checkResourceHintSchema(
+  meta: Record<string, unknown>,
+  offset: number,
+): string[] {
+  const err = (detail: string) => [
+    `meta-schema: record at offset ${offset}: ${detail}`,
+  ];
+  if (!hasExactKeys(meta, RESOURCE_HINT_KEYS))
+    return err("resource_hint has the wrong top-level keys or order");
+  if (!isLowerHex(meta.hash, 64))
+    return err('"hash" is not 64 lowercase hex digits');
+  if (meta.kind !== "texture") return err('"kind" is not "texture"');
+  if (typeof meta.format !== "string") return err('"format" is not a string');
+  if (
+    !(
+      meta.source_format === null ||
+      (typeof meta.source_format === "string" &&
+        IMAGE_FORMAT_NAMES.includes(meta.source_format))
+    )
+  )
+    return err('"source_format" is neither null nor an Image format name');
+  if (!isInt(meta.width) || meta.width < 1)
+    return err('"width" is not an integer >= 1');
+  if (!isInt(meta.height) || meta.height < 1)
+    return err('"height" is not an integer >= 1');
+  if (typeof meta.mipmaps !== "boolean")
+    return err('"mipmaps" is not a boolean');
+  if (!isInt(meta.payload_bytes) || meta.payload_bytes < 1)
+    return err('"payload_bytes" is not an integer >= 1');
+  if (!Array.isArray(meta.variants))
+    return err('resource_hint "variants" is not an array');
+  for (const v of meta.variants) {
+    if (!isPlainObject(v) || !hasExactKeys(v, VARIANT_KEYS))
+      return err('resource_hint has a "variants" entry with the wrong keys');
+    if (!isOneOf(v.encoding, VARIANT_ENCODINGS))
+      return err('resource_hint has a variant with an invalid "encoding"');
+    if (!isLowerHex(v.hash, 64))
+      return err(
+        'resource_hint has a variant "hash" that is not 64 lowercase hex digits',
+      );
+    if (!isInt(v.payload_bytes) || v.payload_bytes < 0)
+      return err(
+        'resource_hint has a variant "payload_bytes" that is not a non-negative integer',
+      );
+    if (!(v.format === null || typeof v.format === "string"))
+      return err(
+        'resource_hint has a variant "format" that is neither null nor a string',
+      );
+    if (!(v.params === null || typeof v.params === "string"))
+      return err(
+        'resource_hint has a variant "params" that is neither null nor a string',
+      );
+  }
+  // /9's order rule (sorted by encoding, at most one each) and a variant's payload_bytes >= 1.
+  let previous = -1;
+  for (const v of meta.variants as TextureVariant[]) {
+    const order = VARIANT_ENCODINGS.indexOf(v.encoding);
+    if (order <= previous || v.payload_bytes < 1 || v.hash === meta.hash)
+      return err(
+        `resource_hint's variants are not sorted by encoding with at most one each, a ${v.encoding} variant has payload_bytes 0, or repeats the hint's hash`,
+      );
+    previous = order;
+  }
+  if (
+    !(meta.path === null || (typeof meta.path === "string" && meta.path !== ""))
+  )
+    return err('"path" is neither null nor a non-empty string');
+  if (!isOneOf(meta.cause, HINT_CAUSES))
+    return err(`unknown cause ${JSON.stringify(meta.cause)}`);
+  if (!isInt(meta.priority) || meta.priority < 0)
+    return err('"priority" is not a non-negative integer');
+  if (!Array.isArray(meta.blocks) || meta.blocks.length !== 0)
+    return err('"blocks" must be an empty array for a resource_hint record');
+  return [];
+}
+
+/** render-stream-15.md "Records": `resource_unhint`. */
+function checkResourceUnhintSchema(
+  meta: Record<string, unknown>,
+  offset: number,
+): string[] {
+  const err = (detail: string) => [
+    `meta-schema: record at offset ${offset}: ${detail}`,
+  ];
+  if (!hasExactKeys(meta, RESOURCE_UNHINT_KEYS))
+    return err("resource_unhint has the wrong top-level keys or order");
+  if (!isLowerHex(meta.hash, 64))
+    return err('"hash" is not 64 lowercase hex digits');
+  if (!Array.isArray(meta.blocks) || meta.blocks.length !== 0)
+    return err('"blocks" must be an empty array for a resource_unhint record');
+  return [];
+}
+
 // --------------------------------------------------------------------------------------- item_meta (TAG1)
 //
 // rs-core's item_meta.rs is the same code, rule for rule, and
@@ -4486,7 +4670,7 @@ export function itemMetaRowJson(
 function checkMetaSchema(
   meta: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
 ): string[] {
   if (!isPlainObject(meta))
     return [
@@ -4499,6 +4683,10 @@ function checkMetaSchema(
   if (meta.type === "end") return checkEndSchema(meta, offset);
   if (meta.type === "item_meta" && version >= 13)
     return checkItemMetaSchema(meta, offset, version);
+  if (meta.type === "resource_hint" && version >= 15)
+    return checkResourceHintSchema(meta, offset);
+  if (meta.type === "resource_unhint" && version >= 15)
+    return checkResourceUnhintSchema(meta, offset);
   return [
     `meta-schema: record at offset ${offset}: unknown "type" ${JSON.stringify(meta.type)}`,
   ];
@@ -4514,37 +4702,39 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 = 6,
 ): {
   records: RawRecord[];
   errors: string[];
 } {
   const expectedMagic =
-    version === 14
-      ? MAGIC_V14
-      : version === 13
-        ? MAGIC_V13
-        : version === 12
-          ? MAGIC_V12
-          : version === 11
-            ? MAGIC_V11
-            : version === 10
-              ? MAGIC_V10
-              : version === 9
-                ? MAGIC_V9
-                : version === 8
-                  ? MAGIC_V8
-                  : version === 7
-                    ? MAGIC_V7
-                    : version === 6
-                      ? MAGIC_V6
-                      : version === 5
-                        ? MAGIC_V5
-                        : version === 4
-                          ? MAGIC_V4
-                          : version === 3
-                            ? MAGIC_V3
-                            : MAGIC;
+    version === 15
+      ? MAGIC_V15
+      : version === 14
+        ? MAGIC_V14
+        : version === 13
+          ? MAGIC_V13
+          : version === 12
+            ? MAGIC_V12
+            : version === 11
+              ? MAGIC_V11
+              : version === 10
+                ? MAGIC_V10
+                : version === 9
+                  ? MAGIC_V9
+                  : version === 8
+                    ? MAGIC_V8
+                    : version === 7
+                      ? MAGIC_V7
+                      : version === 6
+                        ? MAGIC_V6
+                        : version === 5
+                          ? MAGIC_V5
+                          : version === 4
+                            ? MAGIC_V4
+                            : version === 3
+                              ? MAGIC_V3
+                              : MAGIC;
   if (
     data.length < expectedMagic.length ||
     !bytesEqual(data.subarray(0, expectedMagic.length), expectedMagic)
@@ -4645,7 +4835,7 @@ export function withRecordMemo<T>(
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 = 6,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const memo = recordMemo;
@@ -4664,7 +4854,7 @@ export function decodeRecord(
 
 function decodeRecordOnce(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const view = new DataView(
@@ -4836,7 +5026,7 @@ function decodeRecordOnce(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 = 6,
 ): {
   schema:
     | "render-stream-2-decoded/1"
@@ -4851,7 +5041,8 @@ export function decodeRecording(
     | "render-stream-11-decoded/1"
     | "render-stream-12-decoded/1"
     | "render-stream-13-decoded/1"
-    | "render-stream-14-decoded/1";
+    | "render-stream-14-decoded/1"
+    | "render-stream-15-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
@@ -4860,7 +5051,7 @@ export function decodeRecording(
   // render-stream-13.md "Forms and transcode": /13's decoded form is /12's over the reconstructed
   // blocks, each record's sha256 still the /13 record's own.
   const plain =
-    version === 13 || version === 14
+    version === 13 || version === 14 || version === 15
       ? rs13PlainRecords(split.records, version)
       : split.records;
   const records: DecodedRecord[] = [];
@@ -4884,58 +5075,62 @@ export function decodeRecording(
     );
   }
   const magic =
-    version === 14
-      ? MAGIC_V14
-      : version === 13
-        ? MAGIC_V13
-        : version === 12
-          ? MAGIC_V12
-          : version === 11
-            ? MAGIC_V11
-            : version === 10
-              ? MAGIC_V10
-              : version === 9
-                ? MAGIC_V9
-                : version === 8
-                  ? MAGIC_V8
-                  : version === 7
-                    ? MAGIC_V7
-                    : version === 6
-                      ? MAGIC_V6
-                      : version === 5
-                        ? MAGIC_V5
-                        : version === 4
-                          ? MAGIC_V4
-                          : version === 3
-                            ? MAGIC_V3
-                            : MAGIC;
+    version === 15
+      ? MAGIC_V15
+      : version === 14
+        ? MAGIC_V14
+        : version === 13
+          ? MAGIC_V13
+          : version === 12
+            ? MAGIC_V12
+            : version === 11
+              ? MAGIC_V11
+              : version === 10
+                ? MAGIC_V10
+                : version === 9
+                  ? MAGIC_V9
+                  : version === 8
+                    ? MAGIC_V8
+                    : version === 7
+                      ? MAGIC_V7
+                      : version === 6
+                        ? MAGIC_V6
+                        : version === 5
+                          ? MAGIC_V5
+                          : version === 4
+                            ? MAGIC_V4
+                            : version === 3
+                              ? MAGIC_V3
+                              : MAGIC;
   return {
     schema:
-      version === 14
-        ? "render-stream-14-decoded/1"
-        : version === 13
-          ? "render-stream-13-decoded/1"
-          : version === 12
-            ? "render-stream-12-decoded/1"
-            : version === 11
-              ? "render-stream-11-decoded/1"
-              : version === 10
-                ? "render-stream-10-decoded/1"
-                : version === 9
-                  ? "render-stream-9-decoded/1"
-                  : version === 8
-                    ? "render-stream-8-decoded/1"
-                    : version === 7
-                      ? "render-stream-7-decoded/1"
-                      : version === 6
-                        ? "render-stream-6-decoded/1"
-                        : version === 5
-                          ? "render-stream-5-decoded/1"
-                          : version === 4
-                            ? "render-stream-4-decoded/1"
-                            : version === 3
-                              ? "render-stream-3-decoded/1"
-                              : "render-stream-2-decoded/1",
+      version === 15
+        ? "render-stream-15-decoded/1"
+        : version === 14
+          ? "render-stream-14-decoded/1"
+          : version === 13
+            ? "render-stream-13-decoded/1"
+            : version === 12
+              ? "render-stream-12-decoded/1"
+              : version === 11
+                ? "render-stream-11-decoded/1"
+                : version === 10
+                  ? "render-stream-10-decoded/1"
+                  : version === 9
+                    ? "render-stream-9-decoded/1"
+                    : version === 8
+                      ? "render-stream-8-decoded/1"
+                      : version === 7
+                        ? "render-stream-7-decoded/1"
+                        : version === 6
+                          ? "render-stream-6-decoded/1"
+                          : version === 5
+                            ? "render-stream-5-decoded/1"
+                            : version === 4
+                              ? "render-stream-4-decoded/1"
+                              : version === 3
+                                ? "render-stream-3-decoded/1"
+                                : "render-stream-2-decoded/1",
     magic: toHex(magic),
     records,
   };
@@ -6290,7 +6485,7 @@ export function createRs13Unpredictor(
  * blocks in the /13 framing); throws the first decode, meta or predict-check error. */
 function rs13PlainRecords(
   records: RawRecord[],
-  version: 13 | 14 = 13,
+  version: 13 | 14 | 15 = 13,
 ): RawRecord[] {
   const unpredictor = createRs13Unpredictor();
   return records.map((raw) => {
@@ -7942,6 +8137,14 @@ function textureEntryFieldErrors(
   const err = (detail: string) => [
     `texture-entry: record at offset ${offset}: texture ${t.id}: ${detail}`,
   ];
+  // render-stream-15.md "Size override": present exactly on an ok image whose logical size
+  // differs from the payload's.
+  if (t.size_override !== undefined) {
+    if (t.kind !== "image" || t.status !== "ok")
+      return err('"size_override" needs an "ok" image entry');
+    if (t.size_override[0] === t.width && t.size_override[1] === t.height)
+      return err('"size_override" equals the payload\'s width and height');
+  }
   if (t.status === "freed") {
     if (
       t.hash !== null ||
@@ -8987,6 +9190,43 @@ function checkResolvedInvariants(
 
 // --------------------------------------------------------------------------------------- validateRecording
 
+/** render-stream-15.md `hint-meta`: the resolved ok image entries a transaction carries (`txIds`)
+ * against every hint, and every entry against the hints made since the last transaction (an
+ * untouched entry already held against the older ones); ascending id, the first disagreement. */
+function hintMetaError(
+  hints: ReadonlyMap<string, ResourceHintMeta>,
+  fresh: ReadonlySet<string>,
+  txIds: readonly number[],
+  textures: ReadonlyMap<number, TransactionTexture>,
+  where: string,
+): string | null {
+  const ids = new Set(txIds);
+  if (fresh.size > 0)
+    for (const t of textures.values())
+      if (t.hash !== null && fresh.has(t.hash)) ids.add(t.id);
+  for (const id of [...ids].sort((a, b) => a - b)) {
+    const t = textures.get(id);
+    if (t === undefined || t.kind !== "image" || t.status !== "ok") continue;
+    const h = t.hash === null ? undefined : hints.get(t.hash);
+    if (h === undefined) continue;
+    let differs =
+      t.format !== h.format ||
+      (t.source_format ?? null) !== h.source_format ||
+      t.width !== h.width ||
+      t.height !== h.height ||
+      t.mipmaps !== h.mipmaps ||
+      t.payload_bytes !== h.payload_bytes;
+    for (const v of t.variants ?? []) {
+      const hv = h.variants.find((x) => x.encoding === v.encoding);
+      if (hv !== undefined)
+        differs ||= hv.hash !== v.hash || hv.payload_bytes !== v.payload_bytes;
+    }
+    if (differs)
+      return `hint-meta: ${where}: texture ${t.id} with hinted hash ${h.hash} disagrees with its resource_hint`;
+  }
+  return null;
+}
+
 /**
  * The incremental form of `validateRecording` (G7d, : a receiver validates one
  * record per message, so the bench times validation per transaction). `records[0]` must be the
@@ -9016,6 +9256,9 @@ export interface RecordingValidator {
   itemMeta?(): ItemMetaTable;
   /** TAG1: the accepted item_meta record awaiting its transaction, if any. */
   itemMetaPending?(): ItemMetaRecordMeta | null;
+  /** /15 (render-stream-15.md "Resource hints"): the hints in effect, by hash, in the order they
+   * were accepted (empty below /15). */
+  hints?(): ReadonlyMap<string, ResourceHintMeta>;
 }
 
 /**
@@ -9681,7 +9924,7 @@ export function setValidatorPhaseTimer(
 
 export function createRecordingValidator(
   records: RawRecord[],
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 = 6,
   options?: RecordingValidatorOptions,
 ): RecordingValidator {
   const recordDigest = options?.recordDigest ?? "inline";
@@ -9848,6 +10091,11 @@ export function createRecordingValidator(
           `item-meta-orphan: record at offset ${offset}: ${what} follows an item_meta record, not a transaction`,
         ]
       : undefined;
+  // /15 (render-stream-15.md "Resource hints"): the hints in effect, and the hashes hinted since
+  // the last accepted transaction (hint-meta checks those against the whole resolved state; the
+  // entries a transaction carries are checked against every hint).
+  const hints = new Map<string, ResourceHintMeta>();
+  const hintsFresh = new Set<string>();
   // D31/G7o1: the whole-record digest, off the frame path in "deferred" mode.
   const digests = new Map<number, string>();
   const pendingDigest = new Set<number>();
@@ -9975,6 +10223,43 @@ export function createRecordingValidator(
         if (indices !== null) return err("item-meta-string", indices);
       }
       imPending = meta;
+      bytesTotal += decoded.record.byte_length;
+      maxRecordBytes = Math.max(maxRecordBytes, decoded.record.byte_length);
+      return undefined;
+    }
+
+    if (meta.type === "resource_hint") {
+      // render-stream-15.md "Invariants and codes": hint-inline, then hint-duplicate. No seq, no
+      // credit, not a resource record: it counts only in bytes_total and max_record_bytes.
+      const orphan = imOrphan(offset, "a resource_hint record");
+      if (orphan) return orphan;
+      const res = sessionMeta.resources;
+      if (
+        res.delivery === "inline" ||
+        meta.payload_bytes <= res.inline_max_bytes
+      )
+        return [
+          `hint-inline: record at offset ${offset}: a resource_hint for ${meta.hash} (payload_bytes ${meta.payload_bytes}) in a session whose delivery is "${res.delivery}" with inline_max_bytes ${res.inline_max_bytes}`,
+        ];
+      if (hints.has(meta.hash))
+        return [
+          `hint-duplicate: record at offset ${offset}: hash ${meta.hash} is already hinted`,
+        ];
+      hints.set(meta.hash, meta);
+      hintsFresh.add(meta.hash);
+      bytesTotal += decoded.record.byte_length;
+      maxRecordBytes = Math.max(maxRecordBytes, decoded.record.byte_length);
+      return undefined;
+    }
+
+    if (meta.type === "resource_unhint") {
+      const orphan = imOrphan(offset, "a resource_unhint record");
+      if (orphan) return orphan;
+      if (!hints.delete(meta.hash))
+        return [
+          `hint-unknown: record at offset ${offset}: hash ${meta.hash} is not hinted`,
+        ];
+      hintsFresh.delete(meta.hash);
       bytesTotal += decoded.record.byte_length;
       maxRecordBytes = Math.max(maxRecordBytes, decoded.record.byte_length);
       return undefined;
@@ -10760,6 +11045,19 @@ export function createRecordingValidator(
           return [
             `item-meta-id: record at offset ${offset}, transaction seq ${meta.seq}: the item_meta record before it has a row for item ${missing[0]}, which its target state does not hold`,
           ];
+      }
+      // /15 hint-meta, on the resolved state (rs-core validate.rs `check_hint_meta`).
+      if (hints.size > 0) {
+        const hintError = hintMetaError(
+          hints,
+          hintsFresh,
+          meta.textures.map((t) => t.id),
+          nextState.textures,
+          `record at offset ${offset}, transaction seq ${meta.seq}`,
+        );
+        if (hintError !== null) return [hintError];
+      }
+      if (imPending !== null) {
         if (imPending.form === "full") {
           imTable.grant = imPending.grant;
           imTable.strings = [...imPending.strings];
@@ -10777,6 +11075,7 @@ export function createRecordingValidator(
       if (imTable.rows.size > 0 && meta.encoding !== "full")
         for (const id of meta.removed_items) imTable.rows.delete(id);
       state = nextState;
+      hintsFresh.clear();
       if (names !== null) {
         // The prune: C <- C ∩ names(S), after S's own checks.
         for (const h of carriedHashes) {
@@ -10844,6 +11143,7 @@ export function createRecordingValidator(
     digestPending: () => Array.from(pendingDigest).sort((a, b) => a - b),
     itemMeta: () => imTable,
     itemMetaPending: () => imPending,
+    hints: () => hints,
     checkInlineFetch: (hash: string): string | null => {
       if (!isV11) return null;
       const nameBytes = nonVariantNameBytes(state, hash);
@@ -10875,7 +11175,7 @@ export function createRecordingValidator(
 /** Whole-file validation: `createRecordingValidator` over every record of `data`, in order. */
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 = 6,
   options?: RecordingValidatorOptions,
 ): string[] {
   const split = splitRecords(data, version);
@@ -11179,7 +11479,8 @@ export interface ResolvedRecording {
     | "render-stream-11-resolved/1"
     | "render-stream-12-resolved/1"
     | "render-stream-13-resolved/1"
-    | "render-stream-14-resolved/1";
+    | "render-stream-14-resolved/1"
+    | "render-stream-15-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
@@ -11188,7 +11489,7 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 = 6,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
@@ -11200,7 +11501,9 @@ export function resolveRecording(
   // /13 its reconstructed /12 block.
   const raws = isV11 ? splitRecords(data, version).records : [];
   const plainRaws =
-    version === 13 || version === 14 ? rs13PlainRecords(raws, version) : raws;
+    version === 13 || version === 14 || version === 15
+      ? rs13PlainRecords(raws, version)
+      : raws;
 
   let state = emptyResolvedState();
   const transactions: ResolvedTransaction[] = [];
@@ -11267,31 +11570,33 @@ export function resolveRecording(
   }
   return {
     schema:
-      version === 14
-        ? "render-stream-14-resolved/1"
-        : version === 13
-          ? "render-stream-13-resolved/1"
-          : version === 12
-            ? "render-stream-12-resolved/1"
-            : version === 11
-              ? "render-stream-11-resolved/1"
-              : version === 10
-                ? "render-stream-10-resolved/1"
-                : version === 9
-                  ? "render-stream-9-resolved/1"
-                  : version === 8
-                    ? "render-stream-8-resolved/1"
-                    : version === 7
-                      ? "render-stream-7-resolved/1"
-                      : version === 6
-                        ? "render-stream-6-resolved/1"
-                        : version === 5
-                          ? "render-stream-5-resolved/1"
-                          : version === 4
-                            ? "render-stream-4-resolved/1"
-                            : version === 3
-                              ? "render-stream-3-resolved/1"
-                              : "render-stream-2-resolved/1",
+      version === 15
+        ? "render-stream-15-resolved/1"
+        : version === 14
+          ? "render-stream-14-resolved/1"
+          : version === 13
+            ? "render-stream-13-resolved/1"
+            : version === 12
+              ? "render-stream-12-resolved/1"
+              : version === 11
+                ? "render-stream-11-resolved/1"
+                : version === 10
+                  ? "render-stream-10-resolved/1"
+                  : version === 9
+                    ? "render-stream-9-resolved/1"
+                    : version === 8
+                      ? "render-stream-8-resolved/1"
+                      : version === 7
+                        ? "render-stream-7-resolved/1"
+                        : version === 6
+                          ? "render-stream-6-resolved/1"
+                          : version === 5
+                            ? "render-stream-5-resolved/1"
+                            : version === 4
+                              ? "render-stream-4-resolved/1"
+                              : version === 3
+                                ? "render-stream-3-resolved/1"
+                                : "render-stream-2-resolved/1",
     session_id: sessionMeta.session_id,
     stream_id: sessionMeta.stream.stream_id,
     transactions,
