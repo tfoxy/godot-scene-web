@@ -131,3 +131,21 @@ answers. The `g8id14` legs (`run-gate8.sh`) run it.
 detached before its first re-entry and again at frames 480–485 in arm 2. The two viewers
 must receive both metadata updates with the same instance id, one filter connection while
 armed, and no connections after either disarm. Other fixture runs keep their original schedule.
+
+## Quiet-window diagnostics
+
+Set `RS_TAG2_DIAGNOSTIC=1` when running `run-gate8.sh --legs g8tag2` to retain a bounded
+transport trace and host publication timeline for the two paused legs. The fixture logs
+`TAG2_DIAG pause_begin` and `pause_end` with system epoch milliseconds, process ticks and frame.
+The driver keeps `client-ext.json` for passing legs as well as failures. Its `diagnostic_clock`
+brackets a browser `performance.timeOrigin + performance.now()` sample with Node monotonic time;
+`round_trip_ms` bounds the clock mapping uncertainty. Linux capture `steady_clock` and Node
+`hrtime` share `CLOCK_MONOTONIC`.
+
+`diagnostic_host.publishes` retains every tap publication's sequence, frame and `t_us`, adds browser
+epoch milliseconds and time since pause begin, and marks publications inside the pause. The tap's
+`t_us` is the publication callback time, not a socket delivery time. Compare it with
+`diagnostic_transport.events` (browser receive/send epoch milliseconds), the animation's
+`counters.anim.startedAt`/`endedAt` plus `diagnostic_transport.timeOrigin`, and the raw
+`host/tap/stream-*.rs2` records when diagnosing delayed delivery or scene changes. Trace overflow
+is explicit in `diagnostic_transport.dropped`. This option changes no pause, trigger or checker limit.

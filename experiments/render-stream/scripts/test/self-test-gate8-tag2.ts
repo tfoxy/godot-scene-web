@@ -9,11 +9,19 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate8-tag2.ts
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { runInNewContext } from "node:vm";
+import { transformSync } from "esbuild";
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
-import { runG8tag2 } from "../lib/gate8-tag2-checks";
+import { runG8tag2, tag2QuietWindow } from "../lib/gate8-tag2-checks";
 
 let failures = 0;
 let assertions = 0;
@@ -296,6 +304,145 @@ const goodTree = () => {
 };
 
 async function main() {
+  // Exercise the real page callback with a fake clock and timers. A cold-payload revisit
+  // also carries seq=null; it must not consume the animation before the silence poll.
+  let now = 0;
+  let requests = 0;
+  let translates = 0;
+  const timers: (() => void)[] = [];
+  const page = readFileSync(
+    new URL("../../web/client-ext-check/page.ts", import.meta.url),
+    "utf8",
+  );
+  const live = runInNewContext(
+    transformSync(
+      `${page}\n;({ extension: extensionOf("redraw")[0], counters, transport });`,
+      { loader: "ts", format: "cjs" },
+    ).code,
+    {
+      require: () => ({}),
+      HTMLCanvasElement: class {
+        getContext() {
+          return null;
+        }
+      },
+      window: {},
+      performance: { now: () => now },
+      setTimeout: (poll: () => void, delay: number) => {
+        expect(delay === 100, "redraw poll keeps its 100 ms interval");
+        timers.push(poll);
+      },
+    },
+  );
+  live.transport.binary = 1;
+  live.transport.lastBinaryAt = 0;
+  live.extension.onSession({
+    itemMeta: null,
+    requestRedraw: () => requests++,
+  });
+  live.extension.onItemMeta({
+    form: "full",
+    items: [
+      {
+        id: 1,
+        node: true,
+        scene: "res://card.tscn",
+        path: ".",
+        meta: { rs_slot: "1" },
+      },
+    ],
+  });
+  const frame = (seq: number | null) =>
+    live.extension.beforeDraw({
+      seq,
+      overrides: { size: 0, translate: () => translates++ },
+      requestRedraw: () => requests++,
+    });
+  now = 50;
+  frame(null);
+  expect(
+    live.counters.anim.startedAt === null,
+    "early revisit does not start animation",
+  );
+  expect(
+    translates === 0 && requests === 0,
+    "early revisit does not lift or request redraw",
+  );
+  now = 400;
+  timers.shift()?.();
+  frame(null);
+  expect(
+    live.counters.anim.startedAt === null && requests === 0,
+    "400 ms is not yet silence",
+  );
+  now = 500;
+  timers.shift()?.();
+  expect(requests === 1, "silence poll requests the first redraw");
+  frame(2);
+  expect(
+    live.counters.anim.startedAt === null,
+    "transaction draw does not start animation",
+  );
+  for (let step = 0; step < 20; step++) {
+    now += 16;
+    frame(null);
+  }
+  expect(
+    live.counters.anim.startedAt === 516,
+    "requested null frame starts animation",
+  );
+  expect(
+    live.counters.anim.steps === 20 && translates === 20,
+    "animation keeps all 20 steps",
+  );
+  expect(
+    requests === 20,
+    "silence request and 19 step requests drive the animation",
+  );
+  frame(null);
+  expect(
+    translates === 20 && requests === 20,
+    "completed animation remains one-shot",
+  );
+
+  const diagnostic = tag2QuietWindow(
+    'TAG2_DIAG pause_begin {"epoch_ms":1000,"frame":160}\n' +
+      'TAG2_DIAG pause_end {"epoch_ms":4000,"frame":160}\n',
+    [
+      JSON.stringify({ t_us: 499000, sent: { seq: 1 } }),
+      JSON.stringify({ t_us: 500000, sent: { seq: 2 } }),
+      JSON.stringify({ t_us: 501000, sent: null, event: "ack", seq: 1 }),
+      JSON.stringify({ t_us: 1500000, frame: 161, sent: { seq: 3 } }),
+      JSON.stringify({ t_us: 3500000, sent: { seq: 4 } }),
+    ].join("\n"),
+    { host_monotonic_ms: 500, browser_epoch_ms: 1000 },
+  );
+  expect(
+    diagnostic.publishes.length === 4,
+    "diagnostic keeps every publish, excludes ACKs",
+  );
+  expect(
+    diagnostic.publishes
+      .filter((p) => p.during_pause)
+      .map((p) => p.sent.seq)
+      .join() === "2,3",
+    "diagnostic uses a half-open pause window",
+  );
+  expect(
+    diagnostic.publishes[2].epoch_ms === 2000 &&
+      diagnostic.publishes[2].since_pause_begin_ms === 1000,
+    "diagnostic maps host monotonic time to browser epoch",
+  );
+  expect(
+    diagnostic.pause_begin?.frame === 160 &&
+      diagnostic.pause_end?.epoch_ms === 4000,
+    "diagnostic retains fixture timestamps",
+  );
+  expect(
+    tag2QuietWindow("", "", { host_monotonic_ms: 0, browser_epoch_ms: 0 })
+      .pause_begin === null,
+    "diagnostic exposes missing pause evidence",
+  );
   const base = await run(goodTree());
   for (const id of IDS) {
     const c = base.find((x) => x.id === id);

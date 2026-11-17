@@ -6,7 +6,7 @@
 //     --dir <leg out> --port <page port> --ws ws://127.0.0.1:<p>/render-stream --http http://127.0.0.1:<p> \
 //     --core <build-web.sh out> --extension none|identity|moved|scaled|hidden|tinted|redraw \
 //     [--sabotage override-no-inherit|override-no-damage|override-fast-path-miss] \
-//     [--mode shot|dispose] [--timeout-s 60] [--pres 640x360] [--css 700x500]
+//     [--diagnostic-host <host dir>] [--mode shot|dispose] [--timeout-s 60] [--pres 640x360] [--css 700x500]
 //
 // `shot` mounts once, waits for the stream to end (the host quits) and reads the drawing buffer
 // back: <dir>/shot.png plus <dir>/client-ext.json (statuses, the page's counters, the transport's
@@ -17,7 +17,13 @@
 // (the package's options stay the pure client's).
 
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -29,6 +35,7 @@ import {
   HarnessServer,
   launchHarnessBrowser,
 } from "./lib/browser-harness";
+import { tag2QuietWindow } from "./lib/gate8-tag2-checks";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..", "..");
@@ -172,10 +179,53 @@ export default function () {
     page.on("console", (m) => {
       if (m.type() === "error") console.log(`[page] ${m.text()}`);
     });
+    if (a["diagnostic-host"]) {
+      // Raw browser source avoids tsx's keepNames helpers escaping into Playwright closures.
+      await page.addInitScript({
+        content: `(() => {
+        const diagnostic = { timeOrigin: performance.timeOrigin, dropped: 0, events: [] };
+        window.__tag2Diagnostic = diagnostic;
+        const trace = (event, data) => {
+          if (diagnostic.events.length < 2000)
+            diagnostic.events.push({ at_ms: performance.timeOrigin + performance.now(), event, data });
+          else diagnostic.dropped++;
+        };
+        const NativeWebSocket = window.WebSocket;
+        window.WebSocket = class extends NativeWebSocket {
+          constructor(url, protocols) {
+            super(url, protocols);
+            this.addEventListener("message", (e) => trace(
+              typeof e.data === "string" ? "text" : "binary",
+              typeof e.data === "string" ? e.data : e.data.byteLength,
+            ));
+          }
+          send(data) {
+            if (typeof data === "string") trace("send", data);
+            super.send(data);
+          }
+        };
+      })();`,
+      });
+    }
     await page.goto(`${origin}/index.html`);
     await page.waitForFunction(
       () => (window as unknown as { __rse?: unknown }).__rse !== undefined,
     );
+    if (a["diagnostic-host"]) {
+      const host_epoch_before_ms = Date.now();
+      const before = Number(process.hrtime.bigint()) / 1e6;
+      const browser_epoch_ms = await page.evaluate(
+        () => performance.timeOrigin + performance.now(),
+      );
+      const after = Number(process.hrtime.bigint()) / 1e6;
+      report.diagnostic_clock = {
+        host_monotonic_ms: (before + after) / 2,
+        browser_epoch_ms,
+        round_trip_ms: after - before,
+        host_epoch_before_ms,
+        host_epoch_after_ms: Date.now(),
+      };
+    }
     const prov = await checkBrowserProvenance(
       page,
       launched,
@@ -223,6 +273,13 @@ export default function () {
           counters: r.counters,
           transport: r.transport,
           stats: r.stats(),
+          ...("__tag2Diagnostic" in window
+            ? {
+                diagnostic_transport: (
+                  window as unknown as { __tag2Diagnostic: unknown }
+                ).__tag2Diagnostic,
+              }
+            : {}),
         };
       });
     if (mode === "shot") {
@@ -321,6 +378,26 @@ export default function () {
   } finally {
     await launched.browser.close().catch(() => {});
     await server.stop().catch(() => {});
+    try {
+      if (a["diagnostic-host"] && report.diagnostic_clock) {
+        const host = resolve(a["diagnostic-host"]);
+        const liveLog = readdirSync(join(host, "tap"))
+          .filter((f) => /^live-.*\.jsonl$/.test(f))
+          .map((f) => readFileSync(join(host, "tap", f), "utf8"))
+          .join("\n");
+        report.diagnostic_host = tag2QuietWindow(
+          readFileSync(join(host, "stdout.log"), "utf8"),
+          liveLog,
+          report.diagnostic_clock as {
+            host_monotonic_ms: number;
+            browser_epoch_ms: number;
+          },
+        );
+      }
+    } catch (error) {
+      report.diagnostic_error = String(error);
+      code = 1;
+    }
     writeFileSync(
       join(dir, "client-ext.json"),
       `${JSON.stringify(report, null, 2)}\n`,

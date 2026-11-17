@@ -34,6 +34,50 @@ import { join } from "node:path";
 import { decodePngRgba } from "./gate-minus1-checks";
 import { type G8aCheck, skipped } from "./gate8-adopt-checks";
 
+// Diagnostic only: Linux capture steady_clock and Node hrtime share CLOCK_MONOTONIC.
+// The driver brackets a browser sample to retain mapping uncertainty; t_us is the host's
+// publication callback time, not a socket delivery timestamp (the browser trace records that).
+export function tag2QuietWindow(
+  stdout: string,
+  liveLog: string,
+  clock: { host_monotonic_ms: number; browser_epoch_ms: number },
+) {
+  const marker = (
+    event: string,
+  ): { epoch_ms: number; frame: number } | null => {
+    const line = stdout
+      .split("\n")
+      .find((l) => l.startsWith(`TAG2_DIAG ${event} `));
+    return line ? JSON.parse(line.slice(`TAG2_DIAG ${event} `.length)) : null;
+  };
+  const pause_begin = marker("pause_begin");
+  const pause_end = marker("pause_end");
+  const publishes = liveLog
+    .split("\n")
+    .filter(Boolean)
+    .flatMap((line) => {
+      const row = JSON.parse(line);
+      if (!row.sent || typeof row.sent.seq !== "number") return [];
+      const epoch_ms =
+        clock.browser_epoch_ms + row.t_us / 1000 - clock.host_monotonic_ms;
+      return [
+        {
+          ...row,
+          epoch_ms,
+          since_pause_begin_ms: pause_begin
+            ? epoch_ms - pause_begin.epoch_ms
+            : null,
+          during_pause:
+            pause_begin !== null &&
+            pause_end !== null &&
+            epoch_ms >= pause_begin.epoch_ms &&
+            epoch_ms < pause_end.epoch_ms,
+        },
+      ];
+    });
+  return { pause_begin, pause_end, publishes };
+}
+
 const INP_LEGS = ["inp", "inp-wide"] as const;
 /** Card.tscn's Art ColorRect colour (0.8, 0.3, 0.2) as the client's canvas shows it. */
 const ART_RGB = [204, 77, 51] as const;

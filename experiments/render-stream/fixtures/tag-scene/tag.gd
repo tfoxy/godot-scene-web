@@ -266,7 +266,11 @@ func _process(_delta: float) -> void:
 				($Hand as Node2D).position.x += 10.0
 		100:
 			if OS.has_environment("RS_FIXTURE_TAG_PAUSE_MS"):
+				if OS.get_environment("RS_TAG2_DIAGNOSTIC") == "1":
+					_tag2_pause_marker("pause_begin")
 				OS.delay_msec(OS.get_environment("RS_FIXTURE_TAG_PAUSE_MS").to_int())
+				if OS.get_environment("RS_TAG2_DIAGNOSTIC") == "1":
+					_tag2_pause_marker("pause_end")
 	if OS.has_environment("RS_FIXTURE_TAG_REARM_REENTRY"):
 		if _frame == 480:
 			_plain_held = $Plain
@@ -391,3 +395,13 @@ func _filter(control: Control) -> int:
 			if m["name"] == "_has_point":
 				return value + 4
 	return value
+
+
+# Opt-in fixture evidence; the pause and frame sequence are unchanged.
+func _tag2_pause_marker(event: String) -> void:
+	print("TAG2_DIAG ", event, " ", JSON.stringify({
+		"epoch_ms": Time.get_unix_time_from_system() * 1000.0,
+		"ticks_us": Time.get_ticks_usec(),
+		"frame": _frame,
+		"pause_ms": OS.get_environment("RS_FIXTURE_TAG_PAUSE_MS").to_int(),
+	}))

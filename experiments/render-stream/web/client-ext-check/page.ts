@@ -206,6 +206,7 @@ function extensionOf(name: string): RenderStreamExtension[] {
     metaKeys: ["rs_slot"],
   };
   const tagged = new Map<number, ItemMeta>();
+  let silenceRequested = false;
   const base: RenderStreamExtension = {
     id: `tag2.${name}`,
     wants: { fields: [...wants.fields], metaKeys: wants.metaKeys },
@@ -222,9 +223,10 @@ function extensionOf(name: string): RenderStreamExtension[] {
             transport.binary > 0 &&
             performance.now() - transport.lastBinaryAt > 400 &&
             tagged.size > 0
-          )
+          ) {
+            silenceRequested = true;
             s.requestRedraw();
-          else setTimeout(poll, 100);
+          } else setTimeout(poll, 100);
         };
         setTimeout(poll, 100);
       }
@@ -324,7 +326,13 @@ function extensionOf(name: string): RenderStreamExtension[] {
             // requestRedraw (below) starts the lift with no transaction: 20 frames, one
             // requestRedraw per step.
             const a = counters.anim;
-            if (anim === null && a.startedAt === null && f.seq === null) {
+            // A deferred-payload revisit also has seq=null. Wait for our silence request.
+            if (
+              silenceRequested &&
+              anim === null &&
+              a.startedAt === null &&
+              f.seq === null
+            ) {
               anim = { from: 0, step: 0 };
               a.startedAt = performance.now();
               a.binaryDuring = transport.binary;

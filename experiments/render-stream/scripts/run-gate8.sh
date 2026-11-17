@@ -2557,6 +2557,7 @@ run_g8tag2_leg() {
 	local dir="$OUT/g8tag2/$1" variant="$2" ext="$3" quit="$4" pause="$5" waited=0 port="" page pid rc
 	shift 5
 	local host="$dir/host"
+	local -a diagnostic_args=()
 	mkdir -p "$host/evidence" "$host/tap"
 	page="$(legs_free_port)"
 	LEG_ENV=(
@@ -2569,6 +2570,11 @@ run_g8tag2_leg() {
 		GRC_LIVE_ALLOWED_ORIGINS="http://127.0.0.1:$page"
 	)
 	[ "$pause" -gt 0 ] && LEG_ENV+=(RS_FIXTURE_TAG_PAUSE_MS="$pause")
+	# Opt-in timestamp evidence; client-ext.json is retained for successful legs too.
+	if [ "${RS_TAG2_DIAGNOSTIC:-0}" = 1 ] && [ "$pause" -gt 0 ]; then
+		LEG_ENV+=(RS_TAG2_DIAGNOSTIC=1)
+		diagnostic_args=(--diagnostic-host "$host")
+	fi
 	[ "${PRES:-640x360}" != 640x360 ] && LEG_ENV+=(RS_FIXTURE_TAG_EXPAND=1)
 	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$TAG_DIR"
 	pid="$BG_PID"
@@ -2586,7 +2592,7 @@ run_g8tag2_leg() {
 		mkdir -p "$dir/page"
 		(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/client-ext-check.ts" \
 			--dir "$dir/page" --port "$page" --ws "ws://127.0.0.1:$port/render-stream" \
-			--http "http://127.0.0.1:$port" --core "$OUT/g8tag2/core" --extension "$ext" --pres "${PRES:-640x360}" "$@") \
+			--http "http://127.0.0.1:$port" --core "$OUT/g8tag2/core" --extension "$ext" --pres "${PRES:-640x360}" "${diagnostic_args[@]}" "$@") \
 			>"$dir/page/stdout.log" 2>&1 && rc=0 || rc=$?
 		echo "$rc" >"$dir/page/exit-code.txt"
 	fi
