@@ -294,6 +294,9 @@ pub struct ApplyStats {
     pub covers: u32,
     pub covered_draws: u32,
     pub covered_ops: u32,
+    /// Of `covered_draws`, the draws left out because they change no pixel at all (a zero source
+    /// alpha under a blend that keeps the destination).
+    pub noop_draws: u32,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -928,8 +931,10 @@ pub struct Applier {
     reconcile_frozen: bool,
     /// The cover walk (`gsw_canvas_draw_list::cover`, applier side in `cover.rs`): after every
     /// apply, draws and back-buffer operations whose every pixel a later opaque draw overwrites
-    /// before anything reads it are left out of the list. It changes no pixel. On by default;
-    /// off for A/B measurements and as the oracle the culled list is compared against.
+    /// before anything reads it are left out of the list, as are draws that change no pixel at
+    /// all (a zero source alpha under a blend that keeps the destination;
+    /// [`Applier::set_cover_noops`]) and the copies only they read. It changes no pixel. On by
+    /// default; off for A/B measurements and as the oracle the culled list is compared against.
     pub cover_walk: bool,
     /// The executor's largest texture side (`MAX_TEXTURE_SIZE`): it reduces a larger texture at
     /// upload (`gsw_canvas_draw_list::downscale_factor`), and the cover walk then counts a texel

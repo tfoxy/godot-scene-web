@@ -40,6 +40,13 @@ extends Node
 ##                     alpha 0.99. No /10 state. A receiver may leave out what the meshes hide
 ##                     (the backdrop under them, the reader, its copy and mips); the pixels are the
 ##                     same either way.
+##   ALPHA0  (176,240) in its own CanvasLayer above COVER's: backdrop sprites; a sprite at
+##                     self-modulate alpha 0 (Godot culls an inherited modulate under 0.007, not a
+##                     self-modulate, so it draws); a screen reader whose alpha is its material's
+##                     `threshold`, 0 until step 2 sets it to 0.5; and over the whole screen a
+##                     `COLOR.a = threshold` overlay whose threshold is never set (0). No /10
+##                     state. A receiver may leave out the zero-alpha draws (and the reader's copy
+##                     while it is one of them); the pixels are the same either way.
 ##
 ## The root is a plain `Node`: every CanvasItem is created in `_ready`, after the loader armed the
 ## capture in its `_enter_tree` (gate 0's rule), or before a late arm at frame 12 (RS_FIXTURE_ARM=late,
@@ -47,9 +54,9 @@ extends Node
 ##
 ## Timeline (fixture frames): checkpoint 0 is _ready's scene (applied 1, settles 4); checkpoint 1
 ## changes nothing (applied 14, settles 17: after a late arm, the adopted scene); step 2 at 20 is
-## TGL's toggle (settles 27); quit at 35. The step log holds {"step", "applied_frame",
-## "settle_frame"} per checkpoint; under RS_FIXTURE_ARM=late only the checkpoints applied after the
-## arm frame are logged (the recording starts there). Environment (all optional):
+## TGL's toggle and ALPHA0's fade to 0.5 (settles 27); quit at 35. The step log holds {"step",
+## "applied_frame", "settle_frame"} per checkpoint; under RS_FIXTURE_ARM=late only the checkpoints
+## applied after the arm frame are logged (the recording starts there). Environment (all optional):
 ## RS_FIXTURE_STEP_LOG, RS_FIXTURE_SHOT_DIR (rendered runs only, shots step-<k>.png),
 ## RS_FIXTURE_QUIT_FRAME (>= 35), RS_FIXTURE_ARM / RS_FIXTURE_ARM_FRAME (loader.gd).
 
@@ -66,6 +73,7 @@ var _step_log_file: FileAccess
 var _failed: bool = false
 var _root: Node2D
 var _toggle: Sprite2D
+var _fade: ShaderMaterial
 
 
 func _ready() -> void:
@@ -95,6 +103,7 @@ func _ready() -> void:
 	_sprite("TglChild", _toggle, ImageTexture.create_from_image(_pattern(5)), Vector2(4, 4), 1.0)
 	_sprite("Plain", _root, ImageTexture.create_from_image(_pattern(6)), Vector2(328, 136), 4.0)
 	_cover()
+	_alpha0()
 	print("[fixture] gate8-cg ready: quit=%d" % _quit_frame)
 
 
@@ -276,6 +285,34 @@ func _cover() -> void:
 	almost.modulate = Color(1.0, 1.0, 1.0, 0.99)
 
 
+## ALPHA0: see the header.
+func _alpha0() -> void:
+	var layer: CanvasLayer = CanvasLayer.new()
+	layer.name = "Alpha0Layer"
+	layer.layer = 2
+	add_child(layer)
+	var cell: Node2D = Node2D.new()
+	cell.name = "Alpha0"
+	layer.add_child(cell)
+	_sprite("Alpha0Back0", cell, ImageTexture.create_from_image(_pattern(12)), Vector2(176, 240), 4.0)
+	_sprite("Alpha0Back1", cell, ImageTexture.create_from_image(_pattern(13)), Vector2(336, 248), 4.0)
+	var ghost: Sprite2D = _sprite("Alpha0Ghost", cell, ImageTexture.create_from_image(_pattern(14)), Vector2(192, 256), 2.0)
+	ghost.self_modulate = Color(1.0, 0.8, 0.6, 0.0)
+	_fade = ShaderMaterial.new()
+	var fade_shader: Resource = load("res://shaders/fade.gdshader")
+	_fade.shader = fade_shader as Shader
+	_fade.set_shader_parameter("threshold", 0.0)
+	var reader: ColorRect = _color_rect("Alpha0Fade", Color(0.9, 0.3, 0.2, 1), Vector2(320, 240), Vector2(96, 96))
+	reader.material = _fade
+	cell.add_child(reader)
+	var overlay_material: ShaderMaterial = ShaderMaterial.new()
+	var overlay_shader: Resource = load("res://shaders/threshold.gdshader")
+	overlay_material.shader = overlay_shader as Shader
+	var overlay: ColorRect = _color_rect("Alpha0Overlay", Color(1, 1, 1, 1), Vector2(0, 0), Vector2(640, 360))
+	overlay.material = overlay_material
+	cell.add_child(overlay)
+
+
 ## A `cols x rows` grid of two-triangle cells over `r`. `wobble_edges`: every vertex but the
 ## corners moves by up to 3 px (a jagged boundary); else only the inner vertices move (the outer
 ## edges stay straight). `textured`: texture coordinates inside the framed atlas's opaque core.
@@ -328,6 +365,7 @@ func _process(_delta: float) -> void:
 		if _frame == applied:
 			if k == 2:
 				_toggle.clip_children = CanvasItem.CLIP_CHILDREN_ONLY
+				_fade.set_shader_parameter("threshold", 0.5)
 			if applied > _log_after:
 				_log_step(k, applied, settle)
 		if _frame == settle:

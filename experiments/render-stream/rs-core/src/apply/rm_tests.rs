@@ -76,6 +76,7 @@ fn ready() -> ProgramEntry {
         screen: None,
         vertex: false,
         time: false,
+        alpha: None,
     })
 }
 
@@ -336,4 +337,134 @@ fn a_restore_mark_with_a_transaction_prepared_waits_for_its_apply() {
         "a user drew stale contents: {ids:?}"
     );
     assert!(ids.contains(&Q));
+}
+
+/// The STS2 overlay's shape: `COLOR.a = threshold`.
+const THRESHOLD_CODE: &str =
+    "shader_type canvas_item;\nuniform float threshold : hint_range(0,1);\nvoid fragment() {\n COLOR.a = threshold;\n}\n";
+
+/// A program for [`THRESHOLD_CODE`] (reading the screen, without mipmaps, when `screen`), its
+/// facts derived from the code as an adapter derives them.
+fn threshold_program(screen: bool) -> ProgramEntry {
+    let meta = format!(
+        r#"{{"blend":"mix","lightMode":"normal","uniforms":[{{"name":"threshold","type":"float","components":1,"instance":false,"integer":false,"unset":[0]}}],"samplers":[],"screenTexture":{}}}"#,
+        if screen {
+            r#"{"names":["s"],"mipmaps":false}"#
+        } else {
+            "null"
+        }
+    );
+    let info = ProgramInfo::from_meta_json(1, &meta)
+        .unwrap()
+        .with_code(THRESHOLD_CODE);
+    assert!(info.alpha.is_some(), "the fact is derived");
+    ProgramEntry::Ready(info)
+}
+
+fn set_threshold(s: &mut ResolvedState, v: Option<f64>) {
+    s.materials.get_mut(&MAT).unwrap().params = v
+        .map(|v| Param {
+            name: "threshold".into(),
+            ty: VariantType::Float,
+            value: ParamValue::Scalar(v),
+        })
+        .into_iter()
+        .collect();
+}
+
+/// F-B: a material whose shader's final alpha is its `threshold` uniform draws nothing while the
+/// uniform is 0 (unset: the default 0, or set): its draws leave the list (and, for a screen
+/// reader, the copy before it), and a material change that raises it brings them back at the next
+/// apply.
+#[test]
+fn a_zero_alpha_uniform_material_leaves_the_list_until_its_uniform_rises() {
+    for screen in [false, true] {
+        let uses = if screen {
+            vec![ShaderUse::ScreenTexture]
+        } else {
+            Vec::new()
+        };
+        let mut s = material_scene(uses);
+        let d = material_delta(&s);
+        let mut store = PayloadStore::default();
+        store.shaders.insert(CODE, THRESHOLD_CODE.into());
+        let mut a = applier();
+        a.prepare(&s, &d);
+        a.set_program(CODE, threshold_program(screen));
+        let programs = |a: &Applier| {
+            a.list
+                .draws
+                .iter()
+                .filter(|d| d.program != BUILTIN_PROGRAM)
+                .count()
+        };
+        let st = a.apply(&s, &d, &store).clone();
+        // P and C1 (which inherits the material) draw with the program; both are no-ops.
+        let assembled = a
+            .assembled_draws()
+            .iter()
+            .filter(|d| d.program != BUILTIN_PROGRAM)
+            .count();
+        assert_eq!(assembled, 2, "screen {screen}");
+        assert_eq!((programs(&a), st.noop_draws), (0, 2), "screen {screen}");
+        assert!(a.list.screen_ops.is_empty(), "no reader left, no copy");
+        a.list.consumed();
+        let mut off = applier();
+        off.cover_walk = false;
+        off.prepare(&s, &d);
+        off.set_program(CODE, threshold_program(screen));
+        off.apply(&s, &d, &store);
+        assert_eq!(programs(&off), 2);
+        assert_eq!(off.list.screen_ops.is_empty(), !screen);
+        let mut no_noops = applier();
+        no_noops.set_cover_noops(false);
+        no_noops.prepare(&s, &d);
+        no_noops.set_program(CODE, threshold_program(screen));
+        assert_eq!(no_noops.apply(&s, &d, &store).noop_draws, 0);
+        assert_eq!(programs(&no_noops), 2);
+        // The material raises the uniform: drawn again, the table marked for the executor.
+        for (v, shown) in [(Some(0.01), 2), (Some(0.0), 0), (Some(0.5), 2), (None, 0)] {
+            set_threshold(&mut s, v);
+            let delta = TxDelta {
+                materials_upserted: vec![MAT],
+                ..TxDelta::default()
+            };
+            a.prepare(&s, &delta);
+            let st = a.apply(&s, &delta, &store).clone();
+            assert_eq!(programs(&a), shown, "threshold {v:?} screen {screen}");
+            assert_eq!(st.noop_draws, 2 - shown as u32);
+            assert!(a.list.dirty.draws, "the executor sees the change");
+            assert_eq!(a.list.screen_ops.is_empty(), !(screen && shown > 0));
+            assert_eq!(st.expected_calls, a.list.merged_draw_count() as u32);
+            a.list.consumed();
+        }
+    }
+}
+
+/// F-B: a builtin draw at self-modulate alpha 0 (which, unlike an inherited modulate under
+/// 0.007, Godot still draws) leaves the list, and comes back with its alpha.
+#[test]
+fn a_zero_modulate_item_leaves_the_list_until_its_alpha_rises() {
+    let mut s = base();
+    let store = PayloadStore::default();
+    let mut a = applier();
+    let d = full_delta(&s);
+    a.prepare(&s, &d);
+    let n = a.apply(&s, &d, &store).emitted_draws;
+    a.list.consumed();
+    for (alpha, dropped) in [(0.0, 1), (0.3, 0), (0.0, 1)] {
+        s.items.get_mut(&Q).unwrap().self_modulate[3] = alpha;
+        let delta = TxDelta {
+            items_upserted: vec![Q],
+            ..TxDelta::default()
+        };
+        a.prepare(&s, &delta);
+        let st = a.apply(&s, &delta, &store).clone();
+        assert_eq!(
+            (st.noop_draws, st.emitted_draws),
+            (dropped, n - dropped),
+            "alpha {alpha}"
+        );
+        a.list.consumed();
+    }
 }

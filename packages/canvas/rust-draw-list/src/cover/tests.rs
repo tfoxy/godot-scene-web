@@ -1,6 +1,6 @@
 use super::oracle::provenance;
 use super::*;
-use crate::{Binding, Item, Sampler, Target, Vertex, DRAW_SCREEN_OPS};
+use crate::{Binding, Item, Sampler, Target, Uniform, UniformValue, Vertex, DRAW_SCREEN_OPS};
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -417,6 +417,7 @@ fn a_custom_program_never_covers_and_a_scissor_cuts_the_claim() {
     facts.programs.push(ProgramFacts {
         reads_screen: false,
         vertex_stage: false,
+        alpha: None,
     });
     let mut l = L::new(true);
     l.list.bindings.push(Binding {
@@ -447,6 +448,7 @@ fn a_screen_copy_and_its_mips_go_only_with_every_reader() {
     facts.programs.push(ProgramFacts {
         reads_screen: true,
         vertex_stage: false,
+        alpha: None,
     });
     let binding = Binding {
         program: 1,
@@ -711,11 +713,17 @@ fn an_incremental_walk_answers_as_a_walk_that_remembers_nothing() {
     // incremental walk must keep exactly what a fresh walk keeps.
     let mut facts = Facts::default();
     facts.opacity.insert(7, atlas(None));
+    // The reader's alpha is its uniform's (a no-op at 0).
     facts.programs.push(ProgramFacts {
         reads_screen: true,
         vertex_stage: false,
+        alpha: Some(AlphaUniform {
+            uniform: 0,
+            component: 0,
+        }),
     });
     let mut l = L::new(true);
+    l.list.bindings.push(threshold_binding(0.5));
     let uv = [3.0 / 64.0, 3.0 / 64.0, 61.0 / 64.0, 61.0 / 64.0];
     for i in 0..6 {
         let x = 8.0 * i as f32;
@@ -755,9 +763,10 @@ fn an_incremental_walk_answers_as_a_walk_that_remembers_nothing() {
         min_cover_area: 0,
         ..CoverWalk::default()
     };
-    let (mut dropped, mut kept) = (0, 0);
-    for step in 0..600 {
-        match rnd(7) {
+    let (mut dropped, mut kept, mut noops) = (0, 0, 0);
+    let n_draws = l.list.draws.len() as u32;
+    for step in 0..1500 {
+        match rnd(11) {
             // A row moves by up to a pixel, or jumps.
             0 => {
                 let r = rnd(n_items);
@@ -766,11 +775,15 @@ fn an_incremental_walk_answers_as_a_walk_that_remembers_nothing() {
                 l.list.items[r as usize].xform[5] += d * (rnd(3) as f32 - 1.0);
                 l.list.dirty.items.add(r, r + 1);
             }
-            // A modulate alpha flips between opaque and not.
+            // A modulate alpha cycles through opaque, translucent and zero.
             1 => {
                 let r = rnd(n_items) as usize;
                 let m = &mut l.list.items[r].modulate[3];
-                *m = if *m >= 1.0 { 0.6 } else { 1.0 };
+                *m = match *m {
+                    1.0 => 0.6,
+                    0.6 => 0.0,
+                    _ => 1.0,
+                };
                 l.list.dirty.items.add(r as u32, r as u32 + 1);
             }
             // A vertex drifts; the dirty range sometimes covers far more than changed.
@@ -792,12 +805,64 @@ fn an_incremental_walk_answers_as_a_walk_that_remembers_nothing() {
                 facts.opacity.insert(7, atlas(hole));
                 l.list.upload_texture(7, 1, 1, &[0, 0, 0, 0]);
             }
-            // A vertex alpha drops and comes back.
+            // A vertex alpha drops, to zero, and comes back; or a whole draw's do.
             5 => {
                 let v = rnd(n_verts) as usize;
                 let a = &mut l.list.vertices[v].color[3];
-                *a = if *a >= 1.0 { 0.5 } else { 1.0 };
+                *a = match *a {
+                    1.0 => 0.5,
+                    0.5 => 0.0,
+                    _ => 1.0,
+                };
                 l.list.dirty.vertices.add(v as u32, v as u32 + 1);
+                if rnd(3) == 0 {
+                    // The rect's four vertices, as an applier rewrites a recoloured item.
+                    let first = v as u32 / 4 * 4;
+                    let a = l.list.vertices[v].color[3];
+                    for x in first..(first + 4).min(n_verts) {
+                        l.list.vertices[x as usize].color[3] = a;
+                    }
+                    l.list.dirty.vertices.add(first, (first + 4).min(n_verts));
+                }
+            }
+            // The reader's uniform goes to zero and back.
+            6 => {
+                let now = match &l.list.bindings[0].uniforms[0].value {
+                    crate::UniformValue::Float(v) => v[0],
+                    crate::UniformValue::Int(_) => unreachable!(),
+                };
+                let next = if now == 0.0 { 0.5 } else { 0.0 };
+                l.list.set_binding(0, threshold_binding(next));
+            }
+            // The table changes at an equal count: two neighbours swap places (a z or tree reorder).
+            8 => {
+                let d = rnd(n_draws - 1) as usize;
+                l.list.draws.swap(d, d + 1);
+                // Screen operations stay where they were, before the same index.
+                l.list.dirty.draws = true;
+            }
+            // A draw's blend changes (mix, add, mul).
+            9 => {
+                let d = rnd(n_draws) as usize;
+                if l.list.draws[d].program == BUILTIN_PROGRAM {
+                    l.list.draws[d].blend =
+                        [Blend::Mix, Blend::Add, Blend::Mul][rnd(3) as usize] as u32;
+                    l.list.dirty.draws = true;
+                }
+            }
+            // A builtin draw takes the reader's program, or a program draw goes builtin.
+            10 => {
+                let d = rnd(n_draws) as usize;
+                let draw = &mut l.list.draws[d];
+                if draw.flags & DRAW_SCREEN_OPS == 0 {
+                    if draw.program == BUILTIN_PROGRAM {
+                        draw.program = 1;
+                        draw.flags &= !DRAW_UNTEXTURED;
+                    } else {
+                        draw.program = BUILTIN_PROGRAM;
+                    }
+                    l.list.dirty.draws = true;
+                }
             }
             // Nothing changes.
             _ => {}
@@ -809,15 +874,22 @@ fn an_incremental_walk_answers_as_a_walk_that_remembers_nothing() {
         };
         fresh.run(&l.list, &facts);
         assert_eq!(
-            (&w.keep_draw, &w.keep_op, w.covers),
-            (&fresh.keep_draw, &fresh.keep_op, fresh.covers),
+            (&w.keep_draw, &w.keep_op, w.covers, w.noop_draws),
+            (
+                &fresh.keep_draw,
+                &fresh.keep_op,
+                fresh.covers,
+                fresh.noop_draws
+            ),
             "step {step}"
         );
         dropped += w.dropped_draws;
+        noops += w.noop_draws;
         kept += l.list.draws.len() as u32 - w.dropped_draws;
         l.list.consumed();
     }
     assert!(dropped > 0 && kept > 0, "the scene both hides and shows");
+    assert!(noops > 0, "and has no-op draws");
 }
 
 #[test]
@@ -915,4 +987,379 @@ fn geometry_placed_past_far_claims_no_cover_and_is_bounded_by_its_scissor() {
     );
     l.rect([0.0, 0.0, 100.0, 50.0], Blend::Mix, 1.0);
     assert_eq!(walk(&l, &f).0, [false, true]);
+}
+
+/// A binding whose one uniform, `threshold`, is `v`.
+fn threshold_binding(v: f32) -> Binding {
+    Binding {
+        program: 1,
+        post_modulate: [1.0; 4],
+        uniforms: vec![Uniform {
+            name: "threshold".into(),
+            value: UniformValue::Float(vec![v]),
+        }],
+        samplers: Vec::new(),
+    }
+}
+
+/// A program whose final alpha is uniform 0 (`COLOR.a = threshold`), reading the screen or not.
+fn threshold_facts(reads_screen: bool) -> Facts {
+    let mut facts = Facts::default();
+    facts.programs.push(ProgramFacts {
+        reads_screen,
+        vertex_stage: false,
+        alpha: Some(AlphaUniform {
+            uniform: 0,
+            component: 0,
+        }),
+    });
+    facts
+}
+
+#[test]
+fn a_zero_alpha_draw_goes_under_every_blend_that_keeps_the_destination() {
+    // Beside a translucent rect, a rect with modulate alpha 0 (colour kept), on
+    // the root target and on a transparent one: mix, add and sub premultiply it to (0,0,0,0) and
+    // keep the destination; premultiplied alpha adds its colour; mul blackens; disabled
+    // overwrites.
+    for opaque in [true, false] {
+        for (blend, gone) in [
+            (Blend::Mix, true),
+            (Blend::Add, true),
+            (Blend::Sub, true),
+            (Blend::PremulAlpha, false),
+            (Blend::Mul, false),
+            (Blend::Disabled, false),
+        ] {
+            let mut l = L::new(opaque);
+            l.rect([10.0, 10.0, 30.0, 30.0], Blend::Mix, 0.5);
+            // Beside the background, not over it (disabled would cover it).
+            let z = l.rect([40.0, 0.0, 100.0, 50.0], blend, 0.0);
+            l.list.items[z].modulate = [0.8, 0.4, 0.2, 0.0];
+            let (k, _) = walk(&l, &Facts::default());
+            assert_eq!(k, [true, !gone], "{blend:?} opaque {opaque}");
+            // The same with every vertex alpha 0 and an opaque modulate.
+            l.list.items[z].modulate = [0.8, 0.4, 0.2, 1.0];
+            l.list.vertices[4..8]
+                .iter_mut()
+                .for_each(|v| v.color[3] = 0.0);
+            assert_eq!(
+                walk(&l, &Facts::default()).0,
+                [true, !gone],
+                "{blend:?} vertex alpha"
+            );
+            // A draw into the back buffer (a transparent target) follows the same rule.
+            l.list.draws[z].flags |= DRAW_TO_BACK_BUFFER;
+            let c = l.rect([0.0, 0.0, 100.0, 50.0], Blend::Mix, 1.0);
+            l.list.draws[c].flags |= DRAW_GROUP_COMPOSITE;
+            assert_eq!(
+                walk(&l, &Facts::default()).0[z],
+                !gone,
+                "{blend:?} back buffer"
+            );
+        }
+    }
+    // Premultiplied alpha goes with nothing to add: a zero colour too.
+    let mut l = L::new(false);
+    l.rect([10.0, 10.0, 30.0, 30.0], Blend::Mix, 0.5);
+    let z = l.rect([0.0, 0.0, 100.0, 50.0], Blend::PremulAlpha, 0.0);
+    l.list.items[z].modulate = [0.0; 4];
+    assert_eq!(walk(&l, &Facts::default()).0, [true, false]);
+    l.list.items[z].modulate = [1.0, 1.0, 1.0, 0.0];
+    l.list.vertices[4..8]
+        .iter_mut()
+        .for_each(|v| v.color = [0.0; 4]);
+    assert_eq!(walk(&l, &Facts::default()).0, [true, false]);
+    // One vertex with alpha left, or a second row with a modulate, keeps it.
+    let mut l = L::new(true);
+    l.rect([10.0, 10.0, 30.0, 30.0], Blend::Mix, 0.5);
+    let z = l.rect([0.0, 0.0, 100.0, 50.0], Blend::Mix, 1.0);
+    l.list.vertices[4..8]
+        .iter_mut()
+        .for_each(|v| v.color[3] = 0.0);
+    l.list.vertices[7].color[3] = 0.01;
+    assert_eq!(walk(&l, &Facts::default()).0, [true, true]);
+    l.list.items[z].modulate[3] = 0.0;
+    l.list.items.push(Item {
+        modulate: [1.0; 4],
+        ..l.list.items[z]
+    });
+    l.list.vertices[7].item = l.list.items.len() as u32 - 1;
+    assert_eq!(walk(&l, &Facts::default()).0, [true, true]);
+}
+
+#[test]
+fn the_oracle_sees_a_premultiplied_zero_alpha_draw_paint() {
+    // Premultiplied alpha with alpha 0 still adds its colour: dropping it changes pixels.
+    let mut l = L::new(true);
+    l.rect([10.0, 10.0, 30.0, 30.0], Blend::Mix, 0.5);
+    let z = l.rect([0.0, 0.0, 100.0, 50.0], Blend::PremulAlpha, 0.0);
+    l.list.items[z].modulate = [0.5, 0.5, 0.5, 0.0];
+    let mut culled = l.list.clone();
+    culled.draws.remove(z);
+    let f = Facts::default();
+    assert!(provenance(&l.list, &f).mismatches(&provenance(&culled, &f)) > 0);
+    // Mix does not.
+    l.list.draws[z].blend = Blend::Mix as u32;
+    assert_eq!(
+        provenance(&l.list, &f).mismatches(&provenance(&culled, &f)),
+        0
+    );
+}
+
+#[test]
+fn a_zero_alpha_draw_is_never_a_cover() {
+    // A full-target rect at modulate alpha 0 over a translucent rect: gone, and hides nothing.
+    let mut l = L::new(false);
+    l.rect([10.0, 10.0, 30.0, 30.0], Blend::Mix, 0.5);
+    l.rect([0.0, 0.0, 100.0, 50.0], Blend::Mix, 0.0);
+    let mut w = CoverWalk {
+        min_cover_area: 0,
+        ..CoverWalk::default()
+    };
+    w.run(&l.list, &Facts::default());
+    assert_eq!((w.covers, w.noop_draws), (0, 1));
+    assert_eq!(walk(&l, &Facts::default()).0, [true, false]);
+    // With no-ops kept the walk leaves everything.
+    let mut w = CoverWalk {
+        min_cover_area: 0,
+        drop_noops: false,
+        ..CoverWalk::default()
+    };
+    assert!(!w.run(&l.list, &Facts::default()));
+}
+
+#[test]
+fn a_uniform_alpha_program_goes_at_zero_and_comes_back_with_its_uniform() {
+    let facts = threshold_facts(false);
+    let build = |v: f32, blend: Blend| {
+        let mut l = L::new(true);
+        l.list.bindings.push(threshold_binding(v));
+        l.rect([10.0, 10.0, 30.0, 30.0], Blend::Mix, 0.5);
+        let p = l.rect([0.0, 0.0, 100.0, 50.0], blend, 1.0);
+        l.list.draws[p].program = 1;
+        l.list.draws[p].flags &= !DRAW_UNTEXTURED;
+        l
+    };
+    assert_eq!(walk(&build(0.0, Blend::Mix), &facts).0, [true, false]);
+    assert_eq!(walk(&build(0.01, Blend::Mix), &facts).0, [true, true]);
+    assert_eq!(walk(&build(-0.0, Blend::Add), &facts).0, [true, false]);
+    assert_eq!(walk(&build(0.0, Blend::Sub), &facts).0, [true, false]);
+    // A program's colour is not premultiplied under premultiplied alpha, and mul and disabled
+    // are never no-ops.
+    for blend in [Blend::PremulAlpha, Blend::Mul, Blend::Disabled] {
+        assert_eq!(
+            walk(&build(0.0, blend), &facts).0,
+            [true, true],
+            "{blend:?}"
+        );
+    }
+    // Without the fact (an unrecognised shader) it stays; a zero post-modulate alpha (the canvas
+    // modulate) makes any program a no-op.
+    let mut unknown = Facts::default();
+    unknown.programs.push(ProgramFacts {
+        alpha: None,
+        ..facts.programs[0]
+    });
+    assert_eq!(walk(&build(0.0, Blend::Mix), &unknown).0, [true, true]);
+    let mut l = build(0.7, Blend::Mix);
+    l.list.bindings[0].post_modulate[3] = 0.0;
+    assert_eq!(walk(&l, &unknown).0, [true, false]);
+    // A uniform the program reads is a float: an integer uniform proves nothing.
+    let mut l = build(0.0, Blend::Mix);
+    l.list.bindings[0].uniforms[0].value = UniformValue::Int(vec![0]);
+    assert_eq!(walk(&l, &facts).0, [true, true]);
+
+    // Across runs: the incremental walk follows the binding (the applier marks it dirty).
+    let mut l = build(0.0, Blend::Mix);
+    let mut w = CoverWalk {
+        min_cover_area: 0,
+        ..CoverWalk::default()
+    };
+    assert!(w.run(&l.list, &facts));
+    assert_eq!(w.keep_draw, [true, false]);
+    l.list.consumed();
+    assert!(w.run(&l.list, &facts) && w.reused, "unchanged: replayed");
+    l.list.consumed();
+    l.list.set_binding(0, threshold_binding(0.5));
+    assert!(!w.run(&l.list, &facts), "the uniform rose: drawn again");
+    assert!(!w.reused);
+    assert_eq!(w.keep_draw, [true, true]);
+    l.list.consumed();
+    l.list.set_binding(0, threshold_binding(0.0));
+    assert!(w.run(&l.list, &facts));
+    assert_eq!(w.keep_draw, [true, false]);
+}
+
+#[test]
+fn a_zero_alpha_screen_reader_takes_its_copy_and_mips_with_it() {
+    let facts = threshold_facts(true);
+    let build = |v: f32| {
+        let mut l = L::new(true);
+        l.list.bindings.push(threshold_binding(v));
+        l.rect([0.0, 0.0, 100.0, 50.0], Blend::Mix, 0.7);
+        let r = l.rect([0.0, 0.0, 100.0, 50.0], Blend::Mix, 1.0);
+        l.list.draws[r].program = 1;
+        l.list.draws[r].flags &= !DRAW_UNTEXTURED;
+        l.op(r, ScreenOpKind::Copy, [0, 0, 100, 50], true);
+        l.rect([20.0, 20.0, 40.0, 40.0], Blend::Mix, 0.5);
+        l
+    };
+    let (k, o) = walk(&build(0.0), &facts);
+    assert_eq!((k, o), (vec![true, false, true], vec![false]));
+    let (k, o) = walk(&build(0.3), &facts);
+    assert_eq!((k, o), (vec![true, true, true], vec![true]));
+    // A second reader of the same copy keeps it.
+    let mut l = build(0.0);
+    l.list.bindings.push(threshold_binding(1.0));
+    let r2 = l.rect([50.0, 20.0, 60.0, 30.0], Blend::Mix, 1.0);
+    l.list.draws[r2].program = 2;
+    l.list.draws[r2].flags &= !DRAW_UNTEXTURED;
+    let mut facts2 = threshold_facts(true);
+    facts2.programs.push(facts2.programs[0]);
+    let (k, o) = walk(&l, &facts2);
+    assert_eq!((k, o), (vec![true, false, true, true], vec![true]));
+}
+
+#[test]
+fn a_zero_alpha_group_composite_takes_its_group_with_it() {
+    // A clip group (copy, a draw into the back buffer, its composite) whose owner fades to 0.
+    let build = |alpha: f32| {
+        let mut l = L::new(true);
+        l.rect([0.0, 0.0, 100.0, 50.0], Blend::Mix, 0.6);
+        let g = l.rect([10.0, 10.0, 30.0, 30.0], Blend::Mix, 1.0);
+        l.list.draws[g].flags |= DRAW_TO_BACK_BUFFER;
+        l.op(g, ScreenOpKind::Copy, [10, 10, 20, 20], false);
+        let c = l.rect([10.0, 10.0, 30.0, 30.0], Blend::PremulAlpha, alpha);
+        l.list.draws[c].flags |= DRAW_GROUP_CLIP;
+        l
+    };
+    let (k, o) = walk(&build(0.0), &Facts::default());
+    assert_eq!((k, o), (vec![true, false, false], vec![false]));
+    let (k, o) = walk(&build(0.5), &Facts::default());
+    assert_eq!((k, o), (vec![true, true, true], vec![true]));
+}
+
+#[test]
+fn the_incremental_no_op_set_follows_first_vertices_rows_and_indices() {
+    // Three translucent rects; each change marked as an applier marks it, and after each the
+    // incremental walk keeps what a fresh walk keeps.
+    let mut l = L::new(true);
+    l.rect([0.0, 0.0, 30.0, 30.0], Blend::Mix, 0.5);
+    let a = l.rect([10.0, 10.0, 40.0, 40.0], Blend::Mix, 0.5);
+    let b = l.rect([50.0, 10.0, 80.0, 40.0], Blend::Mix, 0.5);
+    let f = Facts::default();
+    let mut w = CoverWalk {
+        min_cover_area: 0,
+        ..CoverWalk::default()
+    };
+    let mut check = |l: &mut L, want: [bool; 3], what: &str| {
+        w.run(&l.list, &f);
+        let mut fresh = CoverWalk {
+            min_cover_area: 0,
+            ..CoverWalk::default()
+        };
+        fresh.run(&l.list, &f);
+        assert_eq!(w.keep_draw, fresh.keep_draw, "{what}: unlike a fresh walk");
+        assert_eq!(w.keep_draw, want, "{what}");
+        l.list.consumed();
+    };
+    check(&mut l, [true, true, true], "start");
+    let alpha = |l: &mut L, d: usize, v: f32| {
+        let first = 4 * d as u32;
+        for x in first..first + 4 {
+            l.list.vertices[x as usize].color[3] = v;
+        }
+        l.list.dirty.vertices.add(first, first + 4);
+    };
+    alpha(&mut l, a, 0.0);
+    check(&mut l, [true, false, true], "a's vertices at 0");
+    alpha(&mut l, a, 1.0);
+    check(&mut l, [true, true, true], "a shows again");
+    // Its first vertex must be watched again now that it shows.
+    alpha(&mut l, a, 0.0);
+    check(&mut l, [true, false, true], "a at 0 again");
+    // b's indices now name a's (zero-alpha) vertices: only an index changed.
+    let (fa, fb) = (
+        l.list.draws[a].first_index as usize,
+        l.list.draws[b].first_index as usize,
+    );
+    let ia: Vec<u32> = l.list.indices[fa..fa + 6].to_vec();
+    l.list.indices[fb..fb + 6].copy_from_slice(&ia);
+    l.list.dirty.indices.add(fb as u32, fb as u32 + 6);
+    check(&mut l, [true, false, false], "b reads a's vertices");
+    // A row's modulate goes to 0, then a vertex moves to that row.
+    alpha(&mut l, a, 1.0);
+    l.list.items[0].modulate[3] = 0.0;
+    l.list.dirty.items.add(0, 1);
+    check(&mut l, [false, true, true], "row 0 at 0");
+    // Row 2 (b's own, which b no longer reads) goes to 0; then a's vertices move to it, only
+    // the vertices marked.
+    l.list.items[2].modulate[3] = 0.0;
+    l.list.dirty.items.add(2, 3);
+    check(&mut l, [false, true, true], "an unread row at 0");
+    for x in 4..8 {
+        l.list.vertices[x].item = 2;
+    }
+    l.list.dirty.vertices.add(4, 8);
+    check(
+        &mut l,
+        [false, false, false],
+        "a's vertices on the zero row",
+    );
+    // Rect 0's vertices move to row 1, which then goes to 0.
+    for x in 0..4 {
+        l.list.vertices[x].item = 1;
+    }
+    l.list.dirty.vertices.add(0, 4);
+    l.list.items[1].modulate[3] = 0.0;
+    l.list.dirty.items.add(1, 2);
+    check(&mut l, [false, false, false], "every rect on row 1, at 0");
+}
+
+#[test]
+fn a_reorder_or_a_state_change_at_an_equal_count_reads_every_no_op_again() {
+    // An opaque background, a rect at modulate alpha 0, then a full-target overlay whose alpha is
+    // its uniform, at 0.5. Swapping the last two must not leave the overlay with the zero rect's
+    // answer (it would vanish while visible).
+    let facts = threshold_facts(false);
+    let mut l = L::new(true);
+    l.list.bindings.push(threshold_binding(0.5));
+    l.rect([0.0, 0.0, 100.0, 50.0], Blend::Disabled, 1.0);
+    l.rect([10.0, 10.0, 30.0, 30.0], Blend::Mix, 0.0);
+    let p = l.rect([0.0, 0.0, 100.0, 50.0], Blend::Mix, 1.0);
+    l.list.draws[p].program = 1;
+    l.list.draws[p].flags &= !DRAW_UNTEXTURED;
+    let mut w = CoverWalk {
+        min_cover_area: 0,
+        ..CoverWalk::default()
+    };
+    let mut check = |l: &mut L, want: [bool; 3], what: &str| {
+        w.run(&l.list, &facts);
+        let mut fresh = CoverWalk {
+            min_cover_area: 0,
+            ..CoverWalk::default()
+        };
+        fresh.run(&l.list, &facts);
+        assert_eq!(w.keep_draw, fresh.keep_draw, "{what}: unlike a fresh walk");
+        assert_eq!(w.keep_draw, want, "{what}");
+        l.list.consumed();
+    };
+    check(&mut l, [true, false, true], "the zero rect goes");
+    l.list.draws.swap(1, 2);
+    l.list.dirty.draws = true;
+    check(&mut l, [true, true, false], "swapped: the overlay stays");
+    l.list.draws.swap(1, 2);
+    l.list.dirty.draws = true;
+    check(&mut l, [true, false, true], "swapped back");
+    // The zero rect turns mul (blackens on the root target): drawn.
+    l.list.draws[1].blend = Blend::Mul as u32;
+    l.list.dirty.draws = true;
+    check(&mut l, [true, true, true], "mul at alpha 0 is drawn");
+    // It takes the overlay's program (at 0.5): drawn.
+    l.list.draws[1].blend = Blend::Mix as u32;
+    l.list.draws[1].program = 1;
+    l.list.draws[1].flags &= !DRAW_UNTEXTURED;
+    l.list.dirty.draws = true;
+    check(&mut l, [true, true, true], "a builtin no-op turned program");
 }

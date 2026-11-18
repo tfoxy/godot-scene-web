@@ -45,6 +45,32 @@
 //! operation sets, `ScreenOp::sample_mips`, exactly where a kept reader sees it). So a screen
 //! copy and its mip chain go only when every reader of them is dropped.
 //!
+//! **No-op draws** ([`noop`]) leave every pixel they touch as it was, so the walk drops them
+//! wherever they stand, before anything else: they hide nothing (never a cover), read nothing that
+//! matters (a dropped screen reader or group composite adds nothing to the live set, so a copy and
+//! mip chain only it needed go with it), and nothing they would paint is seen. A draw is one when
+//! every fragment's source is `(0, 0, 0, 0)` under a blend that then keeps the destination:
+//! - [`Blend::Mix`] and [`Blend::PremulAlpha`] (`ONE, ONE_MINUS_SRC_ALPHA` on colour) give
+//!   `d·(1 - 0) + 0 = d`; [`Blend::Add`] gives `d + 0`, and [`Blend::Sub`] (reverse subtract)
+//!   `d - 0`. Their alpha factors are `ZERO, ONE` on a [`Target::opaque`] target, and on a
+//!   transparent one (canvas groups, back buffers, offscreen surfaces) `ONE, ONE_MINUS_SRC_ALPHA`
+//!   (mix) or `SRC_ALPHA, ONE` (add, and sub's reverse subtract), all `d.a` when the source alpha
+//!   is 0. [`Blend::Mul`] (`DST_COLOR, ZERO`) blackens and [`Blend::Disabled`] overwrites, so
+//!   neither is ever a no-op.
+//! - The source alpha is 0 when its last factor is: the builtin program's (MSDF included) is the
+//!   vertex colour's alpha times the item modulate's (times the texel's, an instance's colour, a
+//!   coverage or the back buffer's alpha), so every vertex colour alpha 0, or one item row whose
+//!   modulate alpha is 0, makes it 0. An item-space program's is its own `COLOR.a` times its
+//!   binding's `post_modulate` alpha: a post-modulate alpha of 0, or a program whose final alpha
+//!   is a uniform's value times something ([`ProgramFacts::alpha`]) with that value 0.
+//! - Its colour is then 0 where the executor premultiplies it ([`crate::premultiplies`]: mix, add
+//!   and sub; every group draw), being multiplied by that alpha. A premultiplied-alpha draw's
+//!   colour is its content's, so it is 0 only with every vertex colour or the row's modulate all
+//!   zero (the builtin program; never a program).
+//!
+//! A fragment whose arithmetic meets an infinity or a NaN has no defined value (GLSL ES 3.00
+//! leaves it undefined, in Godot's renderer as here), so the rule speaks for finite inputs.
+//!
 //! Nothing here assumes the target starts opaque or ends on screen: it is per list, so a list
 //! drawn into an offscreen surface that something samples later is walked the same way.
 //!
@@ -86,6 +112,9 @@ pub struct ProgramFacts {
     pub reads_screen: bool,
     /// It has its own vertex stage, so its fragments may land anywhere in its scissor.
     pub vertex_stage: bool,
+    /// Its final `COLOR.a` is this uniform's value times something finite, on every path: a draw
+    /// with it is a no-op wherever its binding holds 0 there ([`noop`]). None: not provable.
+    pub alpha: Option<AlphaUniform>,
 }
 
 impl ProgramFacts {
@@ -93,7 +122,101 @@ impl ProgramFacts {
     pub const UNKNOWN: ProgramFacts = ProgramFacts {
         reads_screen: true,
         vertex_stage: true,
+        alpha: None,
     };
+}
+
+/// One float of a binding's values ([`crate::Binding::uniforms`]): component `component` of
+/// uniform `uniform`, both 0-based.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AlphaUniform {
+    pub uniform: u16,
+    pub component: u8,
+}
+
+/// What [`noop`] reads of a draw, beside whether it is one: `alpha0` says its source alpha is 0
+/// at every fragment (a premultiplied-alpha draw may still paint colour there).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct NoopState {
+    alpha0: bool,
+    noop: bool,
+}
+
+/// Whether draw `d` leaves every pixel it touches as it was (see the module docs, "No-op draws").
+pub fn noop(list: &DrawList, d: usize, facts: &impl CoverFacts) -> bool {
+    noop_state(list, d, facts).noop
+}
+
+fn noop_state(list: &DrawList, d: usize, facts: &impl CoverFacts) -> NoopState {
+    const NONE: NoopState = NoopState {
+        alpha0: false,
+        noop: false,
+    };
+    let draw = &list.draws[d];
+    let range = index_range(list, draw);
+    if range.is_empty() {
+        return NONE;
+    }
+    let group = draw.program == BUILTIN_PROGRAM
+        && draw.flags & (DRAW_GROUP_CLIP | DRAW_GROUP_COMPOSITE) != 0;
+    // Whether the colour reaching the blend unit is premultiplied by the source alpha.
+    let premultiplied = match Blend::from_u32(draw.blend) {
+        Some(Blend::Mix | Blend::Add | Blend::Sub) => true,
+        Some(Blend::PremulAlpha) => group,
+        Some(Blend::Mul | Blend::Disabled) | None => return NONE,
+    };
+    if draw.program != BUILTIN_PROGRAM {
+        let Some(b) = list.bindings.get(draw.program as usize - 1) else {
+            return NONE;
+        };
+        let alpha0 = b.post_modulate[3] == 0.0
+            || facts.program(draw.program - 1).alpha.is_some_and(|a| {
+                matches!(
+                    b.uniforms.get(usize::from(a.uniform)).map(|u| &u.value),
+                    Some(crate::UniformValue::Float(v))
+                        if v.get(usize::from(a.component)) == Some(&0.0)
+                )
+            });
+        return NoopState {
+            alpha0,
+            noop: alpha0 && premultiplied,
+        };
+    }
+    let indices = &list.indices[range];
+    // The modulate alpha of the first vertex's row: when it is not 0, only zero vertex alphas can
+    // make the draw a no-op (a single row is that row; several rows rule a zero modulate out), so
+    // the scan stops at the first vertex alpha that is not 0. Most draws stop at their first.
+    let Some(first) = list.vertices.get(indices[0] as usize) else {
+        return NONE;
+    };
+    let first_row_shows = list
+        .items
+        .get(first.item as usize)
+        .is_some_and(|r| r.modulate[3] != 0.0);
+    let (mut vertex_a0, mut vertex_rgb0) = (true, true);
+    let mut rows = false;
+    for &i in indices {
+        let Some(v) = list.vertices.get(i as usize) else {
+            return NONE;
+        };
+        vertex_a0 &= v.color[3] == 0.0;
+        vertex_rgb0 &= v.color[..3] == [0.0; 3];
+        rows |= v.item != first.item;
+        if !vertex_a0 && (rows || first_row_shows) {
+            return NONE;
+        }
+    }
+    let modulate = if rows {
+        None
+    } else {
+        list.items.get(first.item as usize).map(|r| r.modulate)
+    };
+    let alpha0 = vertex_a0 || modulate.is_some_and(|m| m[3] == 0.0);
+    let rgb0 = premultiplied || vertex_rgb0 || modulate.is_some_and(|m| m[..3] == [0.0; 3]);
+    NoopState {
+        alpha0,
+        noop: alpha0 && rgb0,
+    }
 }
 
 /// What the walk needs beyond the list.
@@ -1408,6 +1531,10 @@ pub struct CoverWalk {
     pub dropped_draws: u32,
     pub dropped_ops: u32,
     pub covers: u32,
+    /// Leave no-op draws out ([`noop`]; default on). Off: only what covers hide goes.
+    pub drop_noops: bool,
+    /// Of `dropped_draws`, the no-op draws.
+    pub noop_draws: u32,
     /// The last [`CoverWalk::run`] found the draw table, operations and instanced ranges equal to
     /// the run's before and every answer that run's walk read unchanged, so it kept that run's
     /// `keep_draw` and `keep_op` as they were: a compaction of the same table with them is the
@@ -1441,6 +1568,22 @@ pub struct CoverWalk {
     replayable: bool,
     /// The region sets [`Answer::Decides`] names, as they stood when the walk read the answer.
     sets: Vec<PxRect>,
+    /// Per draw of the walked table: [`noop_state`], while `noop_valid`. A builtin draw's changes
+    /// only through what the dirty ranges name, and it can become a no-op only where they name a
+    /// zero alpha (see [`CoverWalk::update_noops`]); a program draw's is read again every run.
+    noop: Vec<NoopState>,
+    noop_valid: bool,
+    /// The draws of `noop` with a binding, and how many draws are no-ops or have a zero alpha.
+    noop_programs: Vec<u32>,
+    /// Per draw of `noop`: its first vertex (`u32::MAX` for a program draw or one without a
+    /// triangle), read again whenever an index changes.
+    noop_first: Vec<u32>,
+    /// A bit per vertex: the first vertex of a builtin draw not at alpha 0. And the builtin draws
+    /// at alpha 0.
+    noop_first_bits: Vec<u64>,
+    noop_alpha0: Vec<u32>,
+    noop_count: u32,
+    alpha0_count: u32,
     /// [`CoverWalk::compact`]'s scratch.
     new_index: Vec<u32>,
     pending: Vec<ScreenOp>,
@@ -1652,6 +1795,8 @@ impl Default for CoverWalk {
             dropped_draws: 0,
             dropped_ops: 0,
             covers: 0,
+            drop_noops: true,
+            noop_draws: 0,
             reused: false,
             scratch: Scratch::default(),
             work: Vec::new(),
@@ -1671,6 +1816,14 @@ impl Default for CoverWalk {
             queries: Vec::new(),
             replayable: false,
             sets: Vec::new(),
+            noop: Vec::new(),
+            noop_valid: false,
+            noop_programs: Vec::new(),
+            noop_first: Vec::new(),
+            noop_first_bits: Vec::new(),
+            noop_alpha0: Vec::new(),
+            noop_count: 0,
+            alpha0_count: 0,
             new_index: Vec::new(),
             pending: Vec::new(),
         }
@@ -1686,6 +1839,156 @@ impl CoverWalk {
         self.serial += 1;
         self.class_valid = false;
         self.replayable = false;
+        self.noop_valid = false;
+    }
+
+    /// Brings [`CoverWalk::noop`] up to date with `list` (after [`Dirt::set`]); returns whether
+    /// any draw's answer changed.
+    ///
+    /// A builtin draw whose first vertex shows (a vertex alpha and its row's modulate alpha both
+    /// not 0) is not at alpha 0 ([`noop_state`]: a single row is that row, several rule a zero
+    /// modulate out, and that vertex's alpha rules zero vertex alphas out). So one that is not can
+    /// come to alpha 0 only through what the dirty ranges name: its first vertex (a dirty vertex
+    /// now at alpha 0 or on a zero-modulate row), its row's modulate (a dirty row at 0), or its
+    /// first index (a dirty index). The first vertices of such draws are kept as a bit set; any
+    /// such change reads every builtin draw again, and otherwise only those already at alpha 0
+    /// are (their colour may change, or the zero go). A program draw reads its binding and its
+    /// program's facts, which no dirty range itemises: read every run, and few.
+    fn update_noops(&mut self, list: &DrawList, facts: &impl CoverFacts) -> bool {
+        let n = list.draws.len();
+        if !self.drop_noops {
+            let had = self.noop_count > 0;
+            self.noop.clear();
+            self.noop.resize(n, NoopState::default());
+            self.noop_programs.clear();
+            self.noop_alpha0.clear();
+            (self.noop_count, self.alpha0_count) = (0, 0);
+            self.noop_valid = false;
+            return had;
+        }
+        let first_vertex = |d: usize| {
+            let draw = &list.draws[d];
+            if draw.program != BUILTIN_PROGRAM || index_range(list, draw).is_empty() {
+                u32::MAX
+            } else {
+                list.indices[draw.first_index as usize]
+            }
+        };
+        if !self.noop_valid || self.noop.len() != n {
+            // Whatever the walk last read is unknown here (a changed table, or after `forget`).
+            self.noop.clear();
+            self.noop_programs.clear();
+            self.noop_first.clear();
+            for d in 0..n {
+                self.noop.push(noop_state(list, d, facts));
+                self.noop_first.push(first_vertex(d));
+                if list.draws[d].program != BUILTIN_PROGRAM {
+                    self.noop_programs.push(d as u32);
+                }
+            }
+            self.noop_count = self.noop.iter().map(|s| u32::from(s.noop)).sum();
+            self.alpha0_count = self.noop.iter().map(|s| u32::from(s.alpha0)).sum();
+            self.noop_marks(list.vertices.len());
+            self.noop_valid = true;
+            return true;
+        }
+        let mut changed = false;
+        let mut moved = false;
+        let mut set = |w: &mut CoverWalk, d: usize, s: NoopState| {
+            let old = w.noop[d];
+            if old != s {
+                changed |= old.noop != s.noop;
+                moved |= old.alpha0 != s.alpha0;
+                w.noop_count = w.noop_count + u32::from(s.noop) - u32::from(old.noop);
+                w.alpha0_count = w.alpha0_count + u32::from(s.alpha0) - u32::from(old.alpha0);
+                w.noop[d] = s;
+            }
+        };
+        for k in 0..self.noop_programs.len() {
+            let d = self.noop_programs[k] as usize;
+            set(self, d, noop_state(list, d, facts));
+        }
+        let d = &list.dirty;
+        if d.items.is_empty() && d.vertices.is_empty() && d.indices.is_empty() {
+            return changed;
+        }
+        let row0 = |r: u32| {
+            list.items
+                .get(r as usize)
+                .is_some_and(|r| r.modulate[3] == 0.0)
+        };
+        // The ranges as listed (`Dirt` merges them into running maxima, which would rescan).
+        let span = |&(a, b): &(u32, u32), len: usize| (a as usize).min(len)..(b as usize).min(len);
+        let mut all = !d.indices.is_empty();
+        if all {
+            for k in 0..n {
+                self.noop_first[k] = first_vertex(k);
+            }
+        }
+        all = all
+            || d.items
+                .as_slice()
+                .iter()
+                .any(|r| span(r, list.items.len()).any(|i| row0(i as u32)))
+            || d.vertices.as_slice().iter().any(|r| {
+                span(r, list.vertices.len()).any(|i| {
+                    self.noop_first_bits
+                        .get(i / 64)
+                        .is_some_and(|w| w >> (i % 64) & 1 != 0)
+                        && {
+                            let v = &list.vertices[i];
+                            v.color[3] == 0.0 || row0(v.item)
+                        }
+                })
+            });
+        if all {
+            let (vertices, items) = (&list.vertices, &list.items);
+            for k in 0..n {
+                let f = self.noop_first[k];
+                if f == u32::MAX {
+                    // A program draw (read above), or one that draws no triangle.
+                    continue;
+                }
+                let shows = || {
+                    vertices.get(f as usize).is_some_and(|v| {
+                        v.color[3] != 0.0
+                            && items
+                                .get(v.item as usize)
+                                .is_some_and(|r| r.modulate[3] != 0.0)
+                    })
+                };
+                if self.noop[k].alpha0 || !shows() {
+                    set(self, k, noop_state(list, k, facts));
+                }
+            }
+        } else {
+            for j in 0..self.noop_alpha0.len() {
+                let k = self.noop_alpha0[j] as usize;
+                set(self, k, noop_state(list, k, facts));
+            }
+        }
+        if all || moved {
+            self.noop_marks(list.vertices.len());
+        }
+        changed
+    }
+
+    /// Rebuilds the first-vertex bit set of the builtin draws not at alpha 0, and the list of those
+    /// at alpha 0 (see [`CoverWalk::update_noops`]).
+    fn noop_marks(&mut self, vertices: usize) {
+        self.noop_first_bits.clear();
+        self.noop_first_bits.resize(vertices.div_ceil(64), 0);
+        self.noop_alpha0.clear();
+        for (k, &f) in self.noop_first.iter().enumerate() {
+            if f == u32::MAX {
+                continue;
+            }
+            if self.noop[k].alpha0 {
+                self.noop_alpha0.push(k as u32);
+            } else if let Some(w) = self.noop_first_bits.get_mut(f as usize / 64) {
+                *w |= 1 << (f % 64);
+            }
+        }
     }
 
     /// Draw `d`'s memo, brought up to date (None: not memoised: an item-space program or an
@@ -1843,11 +2146,18 @@ impl CoverWalk {
             self.instanced.clone_from(&list.instanced);
             self.class_valid = false;
             self.replayable = false;
+            // Each draw's no-op answer, its first vertex and which draws are programs are per
+            // position in the table: a reorder, a blend or a program change at an equal count
+            // leaves nothing of them.
+            self.noop_valid = false;
         }
         // Whether a draw can cover depends on its texture's opacity table, which only a texture
         // operation changes.
         if !self.dirt.textures.is_empty() {
             self.class_valid = false;
+            self.replayable = false;
+        }
+        if self.update_noops(list, facts) {
             self.replayable = false;
         }
         if !self.class_valid {
@@ -1873,8 +2183,9 @@ impl CoverWalk {
         self.dropped_draws = 0;
         self.dropped_ops = 0;
         self.covers = 0;
-        // Nothing can be dropped without a cover; most lists have no candidate at all.
-        if !self.class.iter().any(|c| *c >= 0) {
+        self.noop_draws = 0;
+        // Nothing can be dropped without a cover or a no-op; most lists have neither.
+        if self.noop_count == 0 && !self.class.iter().any(|c| *c >= 0) {
             return false;
         }
         let target = PxRect {
@@ -1919,7 +2230,11 @@ impl CoverWalk {
         for d in (0..n).rev() {
             let draw = &list.draws[d];
             if draw.index_count > 0 {
-                if draw.flags & DRAW_TO_BACK_BUFFER != 0 {
+                if self.noop[d].noop {
+                    // It changes nothing: neither a cover nor a reader, whatever it stands over.
+                    self.keep_draw[d] = false;
+                    self.noop_draws += 1;
+                } else if draw.flags & DRAW_TO_BACK_BUFFER != 0 {
                     let keep = !live.0.is_empty() && {
                         let b = self.bounds(list, d, facts);
                         let hit = live.intersects(&b);

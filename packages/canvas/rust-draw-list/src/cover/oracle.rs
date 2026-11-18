@@ -14,6 +14,10 @@
 //! back buffer it reads and the mip state it samples with. Copies, clears and mip chains move
 //! hashes between the target and the back buffer as the executor moves texels.
 //!
+//! A triangle whose every fragment provably leaves its pixel as it was (a source of
+//! `(0, 0, 0, 0)` under a blend that keeps the destination, restated from the executor's arithmetic
+//! per triangle in `silent`) touches nothing.
+//!
 //! Two lists paint the same pixels when their final hashes are equal everywhere: the geometry
 //! here (rasterizing every triangle, the texels per pixel) is independent of the walk's
 //! rectangles, so a walk that drops something a pixel still depends on shows up as a mismatch.
@@ -73,7 +77,7 @@ fn hash_of(vals: &[u64]) -> u64 {
 /// One triangle: screen positions and texture coordinates.
 type Tri = ([[f64; 2]; 3], [[f32; 2]; 3]);
 
-fn triangles(list: &DrawList, d: usize) -> Vec<Tri> {
+fn triangles(list: &DrawList, d: usize, silent: &[bool]) -> Vec<Tri> {
     let draw = &list.draws[d];
     let range = super::index_range(list, draw);
     let mut out = Vec::new();
@@ -94,7 +98,10 @@ fn triangles(list: &DrawList, d: usize) -> Vec<Tri> {
         vec![None]
     };
     for inst in &insts {
-        for t in list.indices[range.clone()].chunks_exact(3) {
+        for (k, t) in list.indices[range.clone()].chunks_exact(3).enumerate() {
+            if silent.get(k) == Some(&true) {
+                continue;
+            }
             let mut p = [[0.0; 2]; 3];
             let mut uv = [[0.0f32; 2]; 3];
             let mut ok = true;
@@ -116,6 +123,54 @@ fn triangles(list: &DrawList, d: usize) -> Vec<Tri> {
         }
     }
     out
+}
+
+/// The walk's no-op rule ([`super::noop`]), restated per triangle `t` (three indices) of draw `d`
+/// from the executor's arithmetic: whether every fragment it makes leaves its pixel as it was. Its
+/// source must be `(0, 0, 0, 0)` under mix, premultiplied alpha, add or sub (each then keeps the
+/// destination's colour and alpha on either kind of target). The builtin program's alpha is the
+/// interpolated vertex alpha times the flat modulate alpha (of the triangle's last vertex's row;
+/// all three rows are asked), its colour premultiplied by it except under premultiplied alpha
+/// outside a group draw; a program's alpha is its own times its post-modulate alpha, the former
+/// known only as a uniform's value ([`super::ProgramFacts::alpha`]).
+fn silent(list: &DrawList, d: usize, facts: &impl CoverFacts, t: &[u32]) -> bool {
+    let draw = &list.draws[d];
+    let group = draw.program == BUILTIN_PROGRAM
+        && draw.flags & (DRAW_GROUP_CLIP | DRAW_GROUP_COMPOSITE) != 0;
+    let premultiplied = match Blend::from_u32(draw.blend) {
+        Some(Blend::Mix | Blend::Add | Blend::Sub) => true,
+        Some(Blend::PremulAlpha) => group,
+        _ => return false,
+    };
+    if draw.program != BUILTIN_PROGRAM {
+        let Some(b) = list.bindings.get(draw.program as usize - 1) else {
+            return false;
+        };
+        let own = facts.program(draw.program - 1).alpha.and_then(|a| {
+            match &b.uniforms.get(usize::from(a.uniform))?.value {
+                crate::UniformValue::Float(v) => v.get(usize::from(a.component)).copied(),
+                crate::UniformValue::Int(_) => None,
+            }
+        });
+        return premultiplied && (b.post_modulate[3] == 0.0 || own == Some(0.0));
+    }
+    let mut vs = Vec::with_capacity(3);
+    let mut mods = Vec::with_capacity(3);
+    for &i in t {
+        let Some(v) = list.vertices.get(i as usize) else {
+            return false;
+        };
+        let Some(r) = list.items.get(v.item as usize) else {
+            return false;
+        };
+        vs.push(v.color);
+        mods.push(r.modulate);
+    }
+    let alpha0 = vs.iter().all(|c| c[3] == 0.0) || mods.iter().all(|m| m[3] == 0.0);
+    let rgb0 = premultiplied
+        || vs.iter().all(|c| c[..3] == [0.0; 3])
+        || mods.iter().all(|m| m[..3] == [0.0; 3]);
+    alpha0 && rgb0
 }
 
 /// Draw `d`'s identity (see the module docs), without the back buffer it may read.
@@ -335,9 +390,17 @@ pub fn provenance(list: &DrawList, facts: &impl CoverFacts) -> Provenance {
         if draw.index_count == 0 {
             continue;
         }
+        let silent_tris: Vec<bool> = list.indices[super::index_range(list, draw)]
+            .chunks_exact(3)
+            .map(|t| silent(list, d, facts, t))
+            .collect();
+        if silent_tris.iter().all(|s| *s) {
+            // Nothing it makes changes a pixel (whatever it reads).
+            continue;
+        }
         let vertex_stage =
             draw.program != BUILTIN_PROGRAM && facts.program(draw.program - 1).vertex_stage;
-        let tris = triangles(list, d);
+        let tris = triangles(list, d, &silent_tris);
         // The pixels any triangle may touch, within the scissor and the target (computed here, not
         // with the walk's bounds, so the two stay independent).
         let clip = super::clip_rect(list, draw);

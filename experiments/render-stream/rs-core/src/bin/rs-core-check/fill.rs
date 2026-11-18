@@ -22,9 +22,10 @@ use std::process::ExitCode;
 /// `--draws <dir>` writes, for each printed transaction, `<dir>/draws-<seq>.jsonl`: one line per
 /// draw (class, fragments, bounds, blend, texture, program, the opaque share of its sampled
 /// texels and its first vertex's colour and modulate alpha).
-/// The applier's cover walk runs as it does in a client (`--cover off` turns it off): the list
-/// accounted is what an executor would draw. Each line also reports `covered_draws` and
-/// `covered_ops`, what the walk left out of that transaction's list.
+/// The applier's cover walk runs as it does in a client (`--cover off` turns it off, `--noop off`
+/// only its no-op drops): the list accounted is what an executor would draw. Each line also
+/// reports `covered_draws` and `covered_ops`, what the walk left out of that transaction's list,
+/// and `noop_draws`, the draws among them that change no pixel at all.
 /// `--damage <file>` also compares every transaction's draws with the previous one's
 /// (`fill::signature`, `fill::damage`) and writes a summary: how many transactions changed
 /// nothing, the damaged area's distribution, and the fill a redraw scissored to the damage
@@ -83,6 +84,7 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
             format: gsw_canvas_draw_list::Format::Rgb10A2,
         });
         a.cover_walk = args.get("cover") != Some("off");
+        a.set_cover_noops(args.get("noop") != Some("off"));
         let mut payloads = PayloadStore::default();
         let mut need = Vec::new();
         let mut out = std::io::stdout().lock();
@@ -142,7 +144,7 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                     )?;
                     let covered = {
                         let st = a.apply(v.state(), v.delta(), &payloads);
-                        (st.covered_draws, st.covered_ops)
+                        (st.covered_draws, st.covered_ops, st.noop_draws)
                     };
                     for op in &a.list.texture_ops {
                         match *op {
@@ -398,7 +400,7 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                                 "p50": r.layers_p50, "p95": r.layers_p95, "max": r.layers_max},
                             "hidden_screens": (r.hidden_px / screen * 1000.0).round() / 1000.0,
                             "empty_draws": r.empty_draws,
-                            "covered_draws": covered.0, "covered_ops": covered.1,
+                            "covered_draws": covered.0, "covered_ops": covered.1, "noop_draws": covered.2,
                             "large": large, "ops": ops,
                         });
                         let _ = writeln!(out, "{line}");
@@ -606,11 +608,40 @@ pub(crate) fn register_synthetic_programs(
         if screen {
             meta["screenTexture"] = json!({"names": ["screen_texture"], "mipmaps": mips});
         }
+        // The blend its render_mode names, as the transpiler reads it (mix without one).
+        for (mode, blend) in [
+            ("blend_add", "add"),
+            ("blend_sub", "sub"),
+            ("blend_mul", "mul"),
+            ("blend_premul_alpha", "premul_alpha"),
+            ("blend_disabled", "disabled"),
+        ] {
+            if code.contains(mode) {
+                meta["blend"] = J::String(blend.into());
+            }
+        }
+        // A final alpha that is a uniform's multiple: the uniform declared as the code declares
+        // it when no material sets it (unset: its default), so its draws are what a client's are.
+        let alpha = render_stream_core::apply::programs::alpha_uniform(&code);
+        if let Some(a) = &alpha {
+            let uniforms = meta["uniforms"].as_array_mut().expect("synthetic uniforms");
+            if !uniforms.iter().any(|u| u["name"] == *a.name) {
+                let n = usize::from(a.components);
+                let mut unset = vec![0.0; n];
+                if let Some(d) = a.default {
+                    unset[0] = d;
+                }
+                let ty = ["float", "vec2", "vec3", "vec4"][n - 1];
+                uniforms.push(json!({"name": &*a.name, "type": ty, "components": n,
+                    "instance": a.instance, "integer": false, "unset": unset}));
+            }
+        }
         // The id follows the code, not the order shaders arrive in, so appliers replaying the same
         // recording side by side (`walk-diff --cover`) name every program alike.
         let id = u32::from_le_bytes([hash.0[0], hash.0[1], hash.0[2], hash.0[3] & 0x7f]).max(1);
         let info = ProgramInfo::from_meta_json(id, &meta.to_string())
-            .map_err(|e| wire::Error::new("program", e.to_string()))?;
+            .map_err(|e| wire::Error::new("program", e.to_string()))?
+            .with_code(&code);
         *next += 1;
         a.set_program(hash, ProgramEntry::Ready(info));
     }

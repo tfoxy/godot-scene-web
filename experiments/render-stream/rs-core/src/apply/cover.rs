@@ -6,7 +6,9 @@
 //!
 //! The walk reads the frame's final rows, vertices and instances, the uploaded textures' opaque
 //! texels ([`super::residency::Resident::opacity`]) and each binding's program (whether it samples
-//! the screen or has its own vertex stage). Nothing on the wire or in the state changes.
+//! the screen, has its own vertex stage, or ends on an alpha that is a uniform's multiple, which
+//! with the binding's value 0 makes its draws no-ops). Nothing on the wire or in the state
+//! changes.
 
 use super::programs::ProgramEntry;
 use super::{residency, Applier, IdMap};
@@ -64,6 +66,7 @@ impl CoverFacts for Facts<'_> {
             Some(ProgramEntry::Ready(info)) => ProgramFacts {
                 reads_screen: info.screen.is_some(),
                 vertex_stage: info.vertex,
+                alpha: info.alpha,
             },
             _ => ProgramFacts::UNKNOWN,
         }
@@ -108,6 +111,7 @@ impl Applier {
         let c = &mut self.cover;
         self.stats.covered_draws = 0;
         self.stats.covered_ops = 0;
+        self.stats.noop_draws = 0;
         self.stats.covers = walk.covers;
         if dropped && walk.reused && c.shown_valid {
             // The walk kept its last answer over the same table, so the table the executor last
@@ -118,6 +122,7 @@ impl Applier {
             c.shown_valid = false;
             self.stats.covered_draws = walk.dropped_draws;
             self.stats.covered_ops = walk.dropped_ops;
+            self.stats.noop_draws = walk.noop_draws;
             self.cover.walk = Some(walk);
             return false;
         }
@@ -134,6 +139,7 @@ impl Applier {
             c.culled = true;
             self.stats.covered_draws = walk.dropped_draws;
             self.stats.covered_ops = walk.dropped_ops;
+            self.stats.noop_draws = walk.noop_draws;
         }
         self.cover.walk = Some(walk);
         let c = &mut self.cover;
@@ -157,6 +163,16 @@ impl Applier {
             .walk
             .get_or_insert_with(Default::default)
             .min_cover_area = px;
+    }
+
+    /// Whether the cover walk also leaves out draws that change no pixel
+    /// (`gsw_canvas_draw_list::cover::noop`: a zero source alpha under a blend that keeps the
+    /// destination). On by default; off for A/B measurements of what covers alone leave out.
+    pub fn set_cover_noops(&mut self, on: bool) {
+        self.cover
+            .walk
+            .get_or_insert_with(Default::default)
+            .drop_noops = on;
     }
 
     /// The assembled draw table, before the cover walk: the list's own when nothing was culled.
@@ -198,6 +214,7 @@ impl Applier {
         let mut walk = gsw_canvas_draw_list::cover::CoverWalk::default();
         if let Some(w) = &self.cover.walk {
             walk.min_cover_area = w.min_cover_area;
+            walk.drop_noops = w.drop_noops;
         }
         if !(self.cover_walk && walk.run(&full, &facts)) {
             return !self.cover.culled;

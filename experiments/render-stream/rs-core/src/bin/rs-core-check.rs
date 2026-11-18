@@ -8,7 +8,7 @@
 //!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]
 //!   rs-core-check validate <recording>... [--version 2..16] [--recover]
 //!                          [--item-meta-asked <request json>|none] [--item-meta-dump <path>]
-//!   rs-core-check apply-bench <recording> --store <dir> [--repeats N] [--cover off] [--programs synthetic] [--max-texture-side N]
+//!   rs-core-check apply-bench <recording> --store <dir> [--repeats N] [--cover off] [--noop off] [--programs synthetic] [--max-texture-side N]
 //!   rs-core-check pick-bench <recording> --store <dir> [--seq N] [--repeats N]
 //!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred] [--clock time|allocs]
 //!   rs-core-check walk-diff <recording>... [--store <dir>] [--digests <file>] [--cover 1 [--cover-every N]] [--cover-lists <file>] [--max-texture-side N]
@@ -17,7 +17,7 @@
 //!   rs-core-check lowered <recording> --seqs 8,18,... [--store <dir>]
 //!   rs-core-check state-dump <recording> --seqs 8,18,... --out <dir>
 //!   rs-core-check fill <recording> [--store <dir>] [--seqs 8,18,...] [--every N] [--cell 8]
-//!                      [--damage <summary.json>] [--draws <dir>] [--cover off]
+//!                      [--damage <summary.json>] [--draws <dir>] [--cover off] [--noop off]
 //!
 //! `goldens` runs golden-2 ... golden-16 (exits non-zero on any failing check). `transcode` (W13a,
 //! render-stream-13.md "Forms and transcode") converts a /12 recording to /13 or back, refusing an
@@ -99,7 +99,7 @@ fn usage() -> ExitCode {
          rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]\n  \
          rs-core-check client-diff <recording>... [--store <dir>] [--sabotage ph2-skip-body-digest|ph2-skip-dep-texture|ph2-park-stale|ph2-skip-material-textures]\n  \
          rs-core-check draw-skip-diff <recording>... [--store <dir>] [--every N] [--sabotage ph3-drop-pending]\n  \
-         rs-core-check fill <recording> [--store <dir>] [--seqs a,b] [--every N] [--cell 8] [--damage <summary.json>] [--draws <dir>] [--cover off]\n  \
+         rs-core-check fill <recording> [--store <dir>] [--seqs a,b] [--every N] [--cell 8] [--damage <summary.json>] [--draws <dir>] [--cover off] [--noop off]\n  \
          rs-core-check live-decode <coded> [--expect <recording>] [--bases keep|none] [--repeats N] [--stats <jsonl>] [--sabotage drop-base|wrong-prefix]"
     );
     ExitCode::from(2)
@@ -1061,6 +1061,7 @@ fn cmd_apply_bench(args: &Args) -> ExitCode {
             format: gsw_canvas_draw_list::Format::Rgb10A2,
         });
         a.cover_walk = args.get("cover") != Some("off");
+        a.set_cover_noops(args.get("noop") != Some("off"));
         if let Some(side) = args.get("max-texture-side").and_then(|s| s.parse().ok()) {
             a.max_texture_side = side;
         }
@@ -1252,10 +1253,10 @@ fn cmd_profile(args: &Args) -> ExitCode {
 /// (`gsw_canvas_draw_list::cover::oracle`): any pixel whose provenance differs fails the run, as
 /// does a list that differs from what a walk remembering nothing makes of the same table.
 /// `--cover-lists <file>` writes, per transaction of the incremental applier, one line: the
-/// recording, the seq, the cover walk's stats (covers, draws and operations left out) and a digest
+/// recording, the seq, the cover walk's stats (covers, draws and operations left out), a digest
 /// of the draw table, operations and instanced ranges its list holds (each draw's binding slot
-/// reduced to builtin or not, since slot numbers follow hash-set order): two builds that cull
-/// alike write the same file.
+/// reduced to builtin or not, since slot numbers follow hash-set order) and how many of the draws
+/// left out are no-ops: two builds that cull alike write the same file.
 /// `--max-texture-side N` sets the executor limit the appliers' cover walks assume
 /// (`Applier::max_texture_side`; 0: none).
 /// `walk-diff --cover`: what the cover-walk comparison saw over one recording.
@@ -1265,6 +1266,9 @@ struct CoverDiff {
     culled_txs: u32,
     culled_draws: u32,
     culled_ops: u32,
+    /// Transactions whose list left a no-op draw out, and the most it did.
+    noop_txs: u32,
+    noop_draws: u32,
     checked: u32,
     /// (seq, pixels whose provenance differs).
     bad: Vec<(i64, usize)>,
@@ -1433,6 +1437,10 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                             if st.covered_draws + st.covered_ops > 0 {
                                 cover.culled_txs += 1;
                             }
+                            cover.noop_draws = cover.noop_draws.max(st.noop_draws);
+                            if st.noop_draws > 0 {
+                                cover.noop_txs += 1;
+                            }
                             if n % cover_every.unwrap_or(1) == 0 {
                                 cover.checked += 1;
                                 let m = inc.cover_provenance().mismatches(&u.cover_provenance());
@@ -1511,12 +1519,13 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                             }
                             let _ = writeln!(
                                 w,
-                                "{path} {} {} {} {} {}",
+                                "{path} {} {} {} {} {} {}",
                                 v.state().seq,
                                 st.covers,
                                 st.covered_draws,
                                 st.covered_ops,
-                                sha_hex(b.as_bytes())
+                                sha_hex(b.as_bytes()),
+                                st.noop_draws
                             );
                         }
                         if let Some(w) = digests.as_mut() {
@@ -1552,10 +1561,12 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                     },
                     if cover_every.is_some() {
                         format!(
-                            "; cover: {} culled (up to {} draws, {} operations), {} checked, {} with pixels differing{}, {} unlike a fresh walk{}",
+                            "; cover: {} culled (up to {} draws, {} operations), {} with no-op draws (up to {}), {} checked, {} with pixels differing{}, {} unlike a fresh walk{}",
                             cover.culled_txs,
                             cover.culled_draws,
                             cover.culled_ops,
+                            cover.noop_txs,
+                            cover.noop_draws,
                             cover.checked,
                             cover.bad.len(),
                             if cover.bad.is_empty() {

@@ -10,6 +10,7 @@
 //! 717-794).
 
 use crate::state::{BlendMode, LightMode, Param, ParamValue};
+use gsw_canvas_draw_list::cover::AlphaUniform;
 use gsw_canvas_draw_list::{
     ANISOTROPY_TEXTURE, BLACK_TEXTURE, NORMAL_TEXTURE, TRANSPARENT_TEXTURE, UniformValue,
     WHITE_TEXTURE,
@@ -79,9 +80,35 @@ pub struct ProgramInfo {
     pub vertex: bool,
     /// P3-TM: the code reads `TIME`, which the executor sets from the list's shader time.
     pub time: bool,
+    /// The uniform the program's final alpha is a multiple of ([`alpha_uniform`], resolved
+    /// against `uniforms` by [`ProgramInfo::with_code`]): a draw with it is a no-op where its
+    /// binding holds 0 there (`gsw_canvas_draw_list::cover::noop`). None: not provable, or not
+    /// derived (the transpiler's metadata does not carry it).
+    pub alpha: Option<AlphaUniform>,
 }
 
 impl ProgramInfo {
+    /// This program with the facts its Godot `code` proves (the code the adapter transpiled):
+    /// [`ProgramInfo::alpha`], when [`alpha_uniform`] names a float uniform this program declares
+    /// (not an array) with the component it reads.
+    pub fn with_code(mut self, code: &str) -> ProgramInfo {
+        self.alpha = alpha_uniform(code).and_then(|a| {
+            let (k, u) = self
+                .uniforms
+                .iter()
+                .enumerate()
+                .find(|(_, u)| *u.name == *a.name)?;
+            (u.kind == UniformKind::Float
+                && u.array.is_none()
+                && u32::from(a.component) < u.components)
+                .then_some(AlphaUniform {
+                    uniform: u16::try_from(k).ok()?,
+                    component: a.component,
+                })
+        });
+        self
+    }
+
     pub fn has_instance_uniforms(&self) -> bool {
         self.uniforms.iter().any(|u| u.instance)
     }
@@ -207,6 +234,7 @@ impl ProgramInfo {
             screen,
             vertex,
             time,
+            alpha: None,
         })
     }
 }
@@ -466,6 +494,425 @@ pub fn without_subparticles(code: &str) -> Option<String> {
     }
 }
 
+/// The uniform a `canvas_item` shader's final alpha provably is a multiple of: [`alpha_uniform`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct AlphaRef {
+    /// The uniform's name, as declared.
+    pub name: Box<str>,
+    /// The component read: 0 for a `float`, the swizzle's for one component of a `vecN`, 3 for
+    /// a whole `vec4` assigned to `COLOR`.
+    pub component: u8,
+    /// Its type's components (1 for `float`).
+    pub components: u8,
+    /// Its declared default when that is a plain number (for a stand-in program's metadata).
+    pub default: Option<f64>,
+    /// `instance uniform`.
+    pub instance: bool,
+}
+
+/// One token of shader code: an identifier or keyword, a number, or one punctuator (`*=`, `==`
+/// and the other two-character operators kept whole).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Tok<'a> {
+    Word(&'a str),
+    Num(&'a str),
+    Punct(&'a str),
+}
+
+/// `code` without comments, as tokens; None when it holds anything a token-level reading cannot
+/// vouch for (a preprocessor line, a string, a stray character).
+fn tokens(code: &str) -> Option<Vec<Tok<'_>>> {
+    let b = code.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    let mut line_start = true;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'\n' {
+            line_start = true;
+            i += 1;
+            continue;
+        }
+        if c.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if b[i..].starts_with(b"//") {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if b[i..].starts_with(b"/*") {
+            let end = code[i + 2..].find("*/")?;
+            i += 2 + end + 2;
+            continue;
+        }
+        // The scene layer's include markers (`@@>path`, `@@<path`) stand on their own lines.
+        if line_start && b[i..].starts_with(b"@@") {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        line_start = false;
+        if c == b'#' || c == b'"' {
+            return None;
+        }
+        let start = i;
+        if c.is_ascii_alphabetic() || c == b'_' {
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                i += 1;
+            }
+            out.push(Tok::Word(&code[start..i]));
+        } else if c.is_ascii_digit() || (c == b'.' && b.get(i + 1).is_some_and(u8::is_ascii_digit))
+        {
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'.') {
+                // An exponent's sign belongs to the number.
+                if (b[i] == b'e' || b[i] == b'E')
+                    && matches!(b.get(i + 1), Some(b'+' | b'-'))
+                    && !code[start..i].starts_with("0x")
+                {
+                    i += 1;
+                }
+                i += 1;
+            }
+            out.push(Tok::Num(&code[start..i]));
+        } else {
+            const TWO: [&str; 18] = [
+                "*=", "/=", "+=", "-=", "%=", "==", "!=", "<=", ">=", "&&", "||", "^^", "++", "--",
+                "<<", ">>", "&=", "|=",
+            ];
+            let two = code.get(i..i + 2).filter(|t| TWO.contains(t));
+            let len = two.map_or(1, str::len);
+            if !c.is_ascii_punctuation() {
+                return None;
+            }
+            out.push(Tok::Punct(&code[i..i + len]));
+            i += len;
+        }
+    }
+    Some(out)
+}
+
+/// The type names a uniform the fact can read may have, with their component counts.
+fn float_components(ty: &str) -> Option<u8> {
+    match ty {
+        "float" => Some(1),
+        "vec2" => Some(2),
+        "vec3" => Some(3),
+        "vec4" => Some(4),
+        _ => None,
+    }
+}
+
+/// The component index a one-letter swizzle names.
+fn swizzle(s: &str) -> Option<u8> {
+    match s {
+        "x" | "r" | "s" => Some(0),
+        "y" | "g" | "t" => Some(1),
+        "z" | "b" | "p" => Some(2),
+        "w" | "a" | "q" => Some(3),
+        _ => None,
+    }
+}
+
+/// The uniform a `canvas_item` shader's final `COLOR.a` provably is a multiple of, when the
+/// code's shape proves it; None for every shape it does not recognise.
+///
+/// Recognised: `fragment()`'s last statement, at the top level of its body, is one of
+/// - `COLOR.a = P;` or `COLOR.a *= P;` (`.w` alike), with `P` a product (`*` only) of factors
+///   finite by construction (numeric literals, declared uniforms, `COLOR`, `texture()` and
+///   `textureLod()` samples, each whole or swizzled; no local, other call, parenthesis or
+///   division, since `0 * inf` is NaN), one of which is a scalar uniform reference `U`: a `float`
+///   uniform's name, or one component of a `vecN` uniform (`tint.a`);
+/// - `COLOR = P;` or `COLOR *= P;` with `P` such a product (every component is `U` times
+///   something), or with `P` a whole `vec4` uniform, alone or times `COLOR` (its alpha is
+///   `U.a` times that);
+/// - `COLOR = vec4(..., P);`, its last argument such a product (the alpha it supplies) and
+///   every other argument a product of such finite factors (the colour is premultiplied by it).
+///
+/// and the body holds no `return` (which could skip that statement), the code no preprocessor
+/// line, the uniform is `uniform`/`instance uniform` (not `global`, not an array), and neither it
+/// nor `COLOR` is declared anew in the body (every use outside the last statement follows an
+/// operator or an opening parenthesis). A scalar factor of 0 makes the product 0 whatever its
+/// other (finite) factors are, matrices included, and the store is the statement's last effect,
+/// so the alpha the program leaves is 0 wherever `U` is: the executor then multiplies by the
+/// post-modulate and premultiplies, which keeps it 0. `light()` never runs in an item-space
+/// renderer, and `vertex()` writes no fragment alpha. What earlier statements leave in `COLOR`
+/// (read by `COLOR.a *= U`, or premultiplied after `COLOR.a = U`) and the values materials give
+/// uniforms are taken to be finite: GLSL ES 3.00 leaves arithmetic on an infinity or a NaN
+/// undefined, in Godot's renderer as in the executor, so no defined pixel rests on one.
+pub fn alpha_uniform(code: &str) -> Option<AlphaRef> {
+    let t = tokens(code)?;
+    // Top-level declarations and the fragment body.
+    let mut uniforms: Vec<(Box<str>, u8, Option<f64>, bool)> = Vec::new();
+    let mut body: Option<(usize, usize)> = None;
+    let (mut i, mut depth) = (0usize, 0i32);
+    while i < t.len() {
+        match t[i] {
+            Tok::Punct("{") => depth += 1,
+            Tok::Punct("}") => depth -= 1,
+            _ if depth != 0 => {}
+            Tok::Word("uniform") => {
+                let qualifier = i.checked_sub(1).map(|k| t[k]);
+                let instance = qualifier == Some(Tok::Word("instance"));
+                let global = qualifier == Some(Tok::Word("global"));
+                let mut k = i + 1;
+                while matches!(t.get(k), Some(Tok::Word("lowp" | "mediump" | "highp"))) {
+                    k += 1;
+                }
+                if let (Some(Tok::Word(ty)), Some(Tok::Word(name))) = (t.get(k), t.get(k + 1)) {
+                    let array = t.get(k + 2) == Some(&Tok::Punct("["));
+                    if let (Some(n), false, false) = (float_components(ty), array, global) {
+                        // A default: `= <number>;` at the end of the declaration.
+                        let end = t[k..]
+                            .iter()
+                            .position(|x| *x == Tok::Punct(";"))
+                            .map(|e| k + e);
+                        let default = end.and_then(|e| match &t[k + 2..e] {
+                            [.., Tok::Punct("="), Tok::Num(v)] => {
+                                v.trim_end_matches('f').parse::<f64>().ok()
+                            }
+                            _ => None,
+                        });
+                        uniforms.push(((*name).into(), n, default, instance));
+                    }
+                }
+            }
+            Tok::Word("fragment")
+                if t.get(i.wrapping_sub(1)) == Some(&Tok::Word("void"))
+                    && t.get(i + 1) == Some(&Tok::Punct("("))
+                    && t.get(i + 2) == Some(&Tok::Punct(")"))
+                    && t.get(i + 3) == Some(&Tok::Punct("{")) =>
+            {
+                if body.is_some() {
+                    return None;
+                }
+                let open = i + 3;
+                let mut d = 0i32;
+                let close = (open..t.len()).find(|&k| {
+                    match t[k] {
+                        Tok::Punct("{") => d += 1,
+                        Tok::Punct("}") => d -= 1,
+                        _ => {}
+                    }
+                    d == 0
+                })?;
+                body = Some((open + 1, close));
+                i = close;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let (b0, b1) = body?;
+    let body = &t[b0..b1];
+    if body.contains(&Tok::Word("return")) {
+        return None;
+    }
+    // The last statement: from after the previous `;`, `{` or `}` at the body's top level.
+    let (last, before) = {
+        let [rest @ .., Tok::Punct(";")] = body else {
+            return None;
+        };
+        let mut d = 0i32;
+        let mut start = 0;
+        for k in (0..rest.len()).rev() {
+            match rest[k] {
+                Tok::Punct(")" | "]") => d += 1,
+                Tok::Punct("(" | "[") => d -= 1,
+                Tok::Punct("}") if d == 0 => {
+                    start = k + 1;
+                    break;
+                }
+                Tok::Punct("}") => d += 1,
+                Tok::Punct("{") if d == 0 => {
+                    start = k + 1;
+                    break;
+                }
+                Tok::Punct("{") => d -= 1,
+                Tok::Punct(";") if d == 0 => {
+                    start = k + 1;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        (&rest[start..], &body[..start])
+    };
+    let uniform = |name: &str| uniforms.iter().find(|u| &*u.0 == name);
+    // A scalar uniform reference: the factor's tokens, whole.
+    let scalar = |f: &[Tok]| -> Option<(Box<str>, u8)> {
+        match *f {
+            [Tok::Word(n)] => uniform(n).filter(|u| u.1 == 1).map(|u| (u.0.clone(), 0)),
+            [Tok::Word(n), Tok::Punct("."), Tok::Word(s)] => {
+                let u = uniform(n).filter(|u| u.1 > 1)?;
+                let c = swizzle(s).filter(|c| *c < u.1)?;
+                Some((u.0.clone(), c))
+            }
+            _ => None,
+        }
+    };
+    // `P`'s factors (split at top-level `*`), or None if anything but `*` joins them.
+    let factors = |p: &'_ [Tok<'_>]| -> Option<Vec<std::ops::Range<usize>>> {
+        if p.is_empty() {
+            return None;
+        }
+        let mut out = Vec::new();
+        let (mut d, mut from) = (0i32, 0usize);
+        for (k, x) in p.iter().enumerate() {
+            match x {
+                Tok::Punct("(" | "[") => d += 1,
+                Tok::Punct(")" | "]") => d -= 1,
+                Tok::Punct("*") if d == 0 => {
+                    out.push(from..k);
+                    from = k + 1;
+                }
+                Tok::Punct(".") => {}
+                Tok::Punct(_) if d == 0 => return None,
+                _ => {}
+            }
+        }
+        out.push(from..p.len());
+        out.iter().all(|r| !r.is_empty()).then_some(out)
+    };
+    // A factor that is finite by construction, so a zero beside it keeps the product 0 (`0 * inf`
+    // is NaN): a numeric literal that fits a float, a declared uniform or COLOR (whole or
+    // swizzled), or a `texture()` / `textureLod()` sample (whole or swizzled). Locals, calls of
+    // anything else, parentheses and division are refused: none is bounded here.
+    let swizzled = |rest: &[Tok]| match rest {
+        [] => true,
+        [Tok::Punct("."), Tok::Word(s)] => s.chars().all(|c| "xyzwrgbastpq".contains(c)),
+        _ => false,
+    };
+    let finite = |f: &[Tok]| -> bool {
+        match f {
+            [Tok::Num(v)] => v
+                .trim_end_matches(['f', 'F', 'u', 'U'])
+                .parse::<f64>()
+                .is_ok_and(|x| (x as f32).is_finite()),
+            [Tok::Word(n), rest @ ..] if *n == "COLOR" || uniform(n).is_some() => swizzled(rest),
+            [Tok::Word("texture" | "textureLod"), Tok::Punct("("), rest @ ..] => {
+                // The call's own closing parenthesis, then at most a swizzle.
+                let mut d = 1i32;
+                let Some(close) = rest.iter().position(|x| {
+                    match x {
+                        Tok::Punct("(" | "[") => d += 1,
+                        Tok::Punct(")" | "]") => d -= 1,
+                        _ => {}
+                    }
+                    d == 0
+                }) else {
+                    return false;
+                };
+                swizzled(&rest[close + 1..])
+            }
+            _ => false,
+        }
+    };
+    // A product of finite factors, one of them a scalar uniform reference.
+    let scalar_factor = |p: &[Tok]| -> Option<(Box<str>, u8)> {
+        let fs = factors(p)?;
+        if !fs.iter().all(|r| finite(&p[r.clone()])) {
+            return None;
+        }
+        fs.into_iter().find_map(|r| scalar(&p[r]))
+    };
+    let found = match last {
+        [Tok::Word("COLOR"), Tok::Punct("."), Tok::Word(s), Tok::Punct("=" | "*="), p @ ..]
+            if swizzle(s) == Some(3) =>
+        {
+            scalar_factor(p)
+        }
+        [Tok::Word("COLOR"), Tok::Punct("="), Tok::Word("vec4"), Tok::Punct("("), args @ .., Tok::Punct(")")] =>
+        {
+            // The parentheses must be the call's own: `vec4(a) * vec4(b)` is a product.
+            let mut d = 0i32;
+            for x in args {
+                match x {
+                    Tok::Punct("(" | "[") => d += 1,
+                    Tok::Punct(")" | "]") => d -= 1,
+                    _ => {}
+                }
+                if d < 0 {
+                    return None;
+                }
+            }
+            // The last top-level argument.
+            let mut d = 0i32;
+            let at = (0..args.len())
+                .rev()
+                .find(|&k| {
+                    match args[k] {
+                        Tok::Punct(")" | "]") => d += 1,
+                        Tok::Punct("(" | "[") => d -= 1,
+                        _ => {}
+                    }
+                    d == 0 && args[k] == Tok::Punct(",")
+                })
+                .map_or(0, |k| k + 1);
+            if d != 0 {
+                return None;
+            }
+            // The colour arguments are premultiplied by the alpha: finite products too.
+            let mut from = 0;
+            let mut d = 0i32;
+            for (k, x) in args[..at].iter().enumerate() {
+                match x {
+                    Tok::Punct("(" | "[") => d += 1,
+                    Tok::Punct(")" | "]") => d -= 1,
+                    Tok::Punct(",") if d == 0 => {
+                        let fs = factors(&args[from..k])?;
+                        if !fs.iter().all(|r| finite(&args[from..k][r.clone()])) {
+                            return None;
+                        }
+                        from = k + 1;
+                    }
+                    _ => {}
+                }
+            }
+            scalar_factor(&args[at..])
+        }
+        [Tok::Word("COLOR"), Tok::Punct("=" | "*="), p @ ..] => scalar_factor(p).or_else(|| {
+            // A whole vec4 uniform, alone or times COLOR.
+            let fs = factors(p)?;
+            let mut u = None;
+            for r in fs {
+                match p[r] {
+                    [Tok::Word("COLOR")] => {}
+                    [Tok::Word(n)] if u.is_none() => {
+                        u = Some(uniform(n).filter(|x| x.1 == 4)?.0.clone());
+                    }
+                    _ => return None,
+                }
+            }
+            u.map(|n| (n, 3))
+        }),
+        _ => None,
+    };
+    let (name, component) = found?;
+    // Neither the uniform nor COLOR declared anew before the statement (a use after a type name
+    // or a comma could be a declaration), and the statement itself starts at COLOR.
+    let redeclared = |w: &str| {
+        before.iter().enumerate().any(|(k, x)| {
+            *x == Tok::Word(w) && k > 0 && matches!(before[k - 1], Tok::Word(_) | Tok::Punct(","))
+        })
+    };
+    if redeclared(&name) || redeclared("COLOR") {
+        return None;
+    }
+    let u = uniform(&name)?;
+    Some(AlphaRef {
+        name,
+        component,
+        components: u.1,
+        default: u.2,
+        instance: u.3,
+    })
+}
+
 /// A wire parameter's numbers, flattened (a packed array's elements in order).
 fn numbers(value: &ParamValue) -> Option<&[f64]> {
     match value {
@@ -639,5 +1086,135 @@ mod tests {
             param(&[p(VariantType::Nil, ParamValue::Nil)], "u").map(|_| ()),
             None
         );
+    }
+
+    fn alpha_of(code: &str) -> Option<(String, u8)> {
+        alpha_uniform(code).map(|a| (a.name.to_string(), a.component))
+    }
+
+    /// The shapes the alpha fact recognises: the last statement of fragment() makes the alpha a
+    /// uniform's value times something.
+    #[test]
+    fn alpha_uniform_recognises_a_final_alpha_that_is_a_uniform_multiple() {
+        let head = "shader_type canvas_item;\nuniform float threshold : hint_range(0,1);\nuniform vec4 tint : source_color = vec4(1.0);\nuniform float fade = 0.5;\ninstance uniform float inst_a = 1.0;\n";
+        let ok = |body: &str| alpha_of(&format!("{head}void fragment() {{\n{body}\n}}\n"));
+        let t = || Some(("threshold".to_string(), 0));
+        // The STS2 overlay, verbatim (the wire's whitespace-collapsed form).
+        assert_eq!(
+            alpha_of("shader_type canvas_item;\n\nuniform float threshold : hint_range(0,1);\n\nvoid fragment() {\n COLOR.a = threshold;\n}\n"),
+            t()
+        );
+        assert_eq!(ok("COLOR.a = threshold;"), t());
+        assert_eq!(ok("COLOR.w = 0.5 * threshold;"), t());
+        assert_eq!(ok("COLOR.a *= threshold;"), t());
+        assert_eq!(
+            ok("COLOR.a = threshold * texture(TEXTURE, UV).a * COLOR.a * fade;"),
+            t()
+        );
+        assert_eq!(
+            ok("COLOR.a = textureLod(TEXTURE, UV, 0.0).r * threshold;"),
+            t()
+        );
+        assert_eq!(
+            ok("if (UV.x > 0.5) { COLOR.a = 1.0; } else { discard; }\nCOLOR.a = threshold;"),
+            t()
+        );
+        assert_eq!(ok("COLOR.a = tint.a;"), Some(("tint".into(), 3)));
+        assert_eq!(ok("COLOR.a = tint.g * 2.0;"), Some(("tint".into(), 1)));
+        assert_eq!(ok("COLOR = tint;"), Some(("tint".into(), 3)));
+        assert_eq!(ok("COLOR *= tint;"), Some(("tint".into(), 3)));
+        assert_eq!(ok("COLOR = COLOR * tint;"), Some(("tint".into(), 3)));
+        assert_eq!(
+            ok("COLOR = texture(TEXTURE, UV) * fade;"),
+            Some(("fade".into(), 0))
+        );
+        assert_eq!(ok("COLOR = vec4(COLOR.rgb, threshold);"), t());
+        assert_eq!(
+            ok("COLOR = vec4(0.2, 0.3, 0.4, fade * COLOR.a);"),
+            Some(("fade".into(), 0))
+        );
+        assert_eq!(ok("COLOR.a = inst_a;"), Some(("inst_a".into(), 0)));
+        // Comments and include markers are not code.
+        assert_eq!(
+            ok("// COLOR.a = 1.0;\nCOLOR.a = /* x */ threshold; // done"),
+            t()
+        );
+        let d = alpha_uniform(&format!("{head}void fragment() {{ COLOR.a = fade; }}")).unwrap();
+        assert_eq!((d.default, d.components, d.instance), (Some(0.5), 1, false));
+    }
+
+    /// Every shape the fact cannot vouch for is refused.
+    #[test]
+    fn alpha_uniform_refuses_what_it_cannot_prove() {
+        let head = "shader_type canvas_item;\nuniform float threshold;\nuniform vec4 tint;\nuniform float arr[2];\nglobal uniform float g;\nuniform mat4 m;\n";
+        let no = |body: &str| {
+            let code = format!("{head}void fragment() {{\n{body}\n}}\n");
+            assert_eq!(alpha_of(&code), None, "{body}");
+        };
+        // A sum, a difference, a quotient, a ternary, a call around it, a negation.
+        no("COLOR.a = threshold + 0.1;");
+        no("COLOR.a = 1.0 - threshold;");
+        no("COLOR.a = threshold / 2.0;");
+        no("COLOR.a = UV.x > 0.5 ? threshold : 1.0;");
+        no("COLOR.a = max(threshold, 0.1);");
+        no("COLOR.a = -threshold;");
+        // Not the last statement, or a later write.
+        no("COLOR.a = threshold;\nCOLOR.rgb = vec3(1.0);");
+        no("COLOR.a = threshold;\nCOLOR = vec4(1.0);");
+        // Conditional, looped, or skippable by a return.
+        no("if (UV.x > 0.5) COLOR.a = threshold;");
+        no("if (UV.x > 0.5) { COLOR.a = 1.0; } else COLOR.a = threshold;");
+        no("for (int i = 0; i < 2; i++) COLOR.a = threshold;");
+        no("if (UV.x > 0.5) { return; }\nCOLOR.a = threshold;");
+        // A shadowing local.
+        no("float threshold = 1.0;\nCOLOR.a = threshold;");
+        no("float a = 1.0, threshold = 1.0;\nCOLOR.a = threshold;");
+        // Arrays, global uniforms, matrices, non-float swizzles, a whole vec4 times a matrix.
+        no("COLOR.a = arr[0];");
+        no("COLOR.a = g;");
+        no("COLOR = m * tint;");
+        no("COLOR.a = tint.xy;");
+        no("COLOR = vec4(1.0) * vec4(threshold);");
+        no("COLOR.rgb = vec3(threshold);");
+        // A factor not finite by construction: a local, a call, a parenthesis, a division, a
+        // literal past a float's range (0 * inf is NaN, not 0).
+        no("float k = 2.0;\nCOLOR.a = threshold * k;");
+        no("COLOR.a = threshold * exp(UV.x * 100.0);");
+        no("COLOR.a = threshold * pow(UV.x, -1.0);");
+        no("COLOR.a = threshold * (1.0 / UV.x);");
+        no("COLOR.a = threshold * 1e40;");
+        no("vec4 c = texture(TEXTURE, UV); COLOR.a = c.a * threshold;");
+        no("COLOR = vec4(vec3(1.0) / UV.x, threshold);");
+        no("COLOR = vec4(exp(UV.x), 0.0, 0.0, threshold);");
+        // Not a uniform at all.
+        no("float k = 0.0;\nCOLOR.a = k;");
+        // A preprocessor line can rename anything.
+        assert_eq!(
+            alpha_of("shader_type canvas_item;\n#define threshold 1.0\nuniform float t2;\nvoid fragment() { COLOR.a = t2; }"),
+            None
+        );
+        // No fragment(), or two.
+        assert_eq!(alpha_of("shader_type canvas_item;\nuniform float threshold;\nvoid vertex() { COLOR.a = threshold; }"), None);
+    }
+
+    /// The fact resolves against the program's declared uniforms: index and component.
+    #[test]
+    fn with_code_resolves_the_alpha_uniform_against_the_declarations() {
+        let meta = r#"{"blend":"mix","lightMode":"normal","uniforms":[{"name":"fade","type":"float","components":1,"instance":false,"integer":false,"unset":[0]},{"name":"tint","type":"vec4","components":4,"instance":false,"integer":false,"unset":[1,1,1,1]}],"samplers":[]}"#;
+        let info = ProgramInfo::from_meta_json(1, meta).unwrap();
+        assert_eq!(info.alpha, None);
+        let a = info.clone().with_code("shader_type canvas_item;\nuniform float fade;\nuniform vec4 tint;\nvoid fragment() { COLOR.a = tint.a; }");
+        assert_eq!(
+            a.alpha,
+            Some(AlphaUniform {
+                uniform: 1,
+                component: 3
+            })
+        );
+        // A uniform the metadata does not declare proves nothing.
+        let b = info.with_code(
+            "shader_type canvas_item;\nuniform float other;\nvoid fragment() { COLOR.a = other; }",
+        );
+        assert_eq!(b.alpha, None);
     }
 }

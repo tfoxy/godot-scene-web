@@ -1174,7 +1174,13 @@ impl GswRs {
         };
         let id = self.next_program;
         let info = match ProgramInfo::from_meta_json(id, meta) {
-            Ok(info) => info,
+            // The facts the transpiler's metadata does not carry come from the code it transpiled
+            // (the store's, or the library's once provided): whether its final alpha is a
+            // uniform's multiple, so its draws are no-ops while that uniform is 0.
+            Ok(info) => match self.payloads.shaders.get(&hash) {
+                Some(code) => info.with_code(code),
+                None => info,
+            },
             Err(e) => {
                 self.error = e;
                 return -1;
