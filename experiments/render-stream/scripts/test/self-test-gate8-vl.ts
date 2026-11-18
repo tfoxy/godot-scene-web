@@ -297,12 +297,34 @@ async function writeLeg(
   name: string,
   s: { data: Uint8Array; width: number; height: number },
   surfaces: unknown,
-  extra: { recvExit?: string; protocol?: string } = {},
+  extra: { recvExit?: string; protocol?: string; account?: string } = {},
 ) {
   const d = join(g, name);
-  mkdirSync(join(d, "host"), { recursive: true });
+  mkdirSync(join(d, "host", "evidence"), { recursive: true });
   mkdirSync(join(d, "receiver"), { recursive: true });
   writeFileSync(join(d, "host", "exit-code.txt"), "0\n");
+  // VS5: the host's own account, as honest as its file twin's (expected.json account)
+  const want =
+    ex.account[
+      extra.account ??
+        {
+          late: "late",
+          rendered: "born-rendered",
+          "late-rendered": "late-rendered",
+        }[name] ??
+        "born"
+    ];
+  writeFileSync(
+    join(d, "host", "evidence", "result.json"),
+    JSON.stringify({
+      stream: {
+        gate8: {
+          viewports: { ...want.viewports, ...want.min },
+          adopt_stats: want.adopt_stats ?? undefined,
+        },
+      },
+    }),
+  );
   writeFileSync(
     join(d, "receiver", "exit-code.txt"),
     `${extra.recvExit ?? "0"}\n`,
@@ -322,9 +344,10 @@ async function writeLeg(
 try {
   const empty = await runG8vl(tmp, ex);
   expect(
-    empty.checks.map((c) => c.id).join() === "vp-live,vp-client-off" &&
+    empty.checks.map((c) => c.id).join() ===
+      "vp-live,vp-live-late,vp-live-rendered,vp-live-late-rendered,vp-client-off" &&
       empty.checks.every((c) => !c.passed),
-    "empty tree: both checks fail (evidence missing), nothing throws",
+    "empty tree: every check fails (evidence missing), nothing throws",
   );
   const g = join(tmp, "g8vl");
   mkdirSync(join(g, "reference", "capture", "shots"), { recursive: true });
@@ -333,7 +356,8 @@ try {
     '{"step":0}\n{"step":1}\n{"step":2}\n{"step":3}\n',
   );
   await png(join(g, "reference", "capture", "shots", "step-3.png"), onShot);
-  await writeLeg(g, "on", onShot, onS);
+  for (const name of ["on", "late", "rendered", "late-rendered"])
+    await writeLeg(g, name, onShot, onS);
   await writeLeg(g, "client-off", offShot, offS);
   const ok = await runG8vl(tmp, ex);
   expect(
@@ -356,6 +380,54 @@ try {
   expect(
     wrong.checks.find((c) => c.id === "vp-live")?.passed === false,
     "an on leg that spoke /13 fails vp-live",
+  );
+  await writeLeg(g, "on", onShot, onS);
+  // VS5 sabotage: the late host armed at birth (its account is born's: nothing adopted)
+  await writeLeg(g, "late", onShot, onS, { account: "born" });
+  const born = await runG8vl(tmp, ex);
+  const failed = (r: typeof born) =>
+    r.checks
+      .filter((c) => !c.passed)
+      .map((c) => c.id)
+      .join();
+  expect(
+    failed(born) === "vp-live-late",
+    `a late host that adopted nothing fails vp-live-late only (${failed(born)})`,
+  );
+  await writeLeg(g, "late", onShot, onS);
+  // VS5 sabotage: the rendered leg's receiver drew no surface (its shot is the off leg's)
+  await writeLeg(g, "rendered", offShot, onS);
+  const undrawn = await runG8vl(tmp, ex);
+  expect(
+    failed(undrawn) === "vp-live-rendered",
+    `a rendered leg whose surfaces are missing from its shot fails vp-live-rendered only (${failed(undrawn)})`,
+  );
+  await writeLeg(g, "rendered", onShot, onS);
+  // VS5: a late leg's shot without the popup passes (reference.late), a born leg's fails
+  const noPopup = {
+    data: onShot.data.slice(),
+    width: onShot.width,
+    height: onShot.height,
+  };
+  // the popup Window at the last step (moved at K+24): 120x60 at (492,282)
+  for (let y = 282; y < 282 + 60; y++)
+    for (let x = 492; x < 492 + 120; x++)
+      noPopup.data[(y * noPopup.width + x) * 4] ^= 0x80;
+  await writeLeg(g, "late", noPopup, onS);
+  await writeLeg(g, "on", noPopup, onS);
+  const residue = await runG8vl(tmp, ex);
+  expect(
+    failed(residue) === "vp-live",
+    `a popup missing from the shot fails the born leg only, the late leg excuses it (${failed(residue)})`,
+  );
+  await writeLeg(g, "late", onShot, onS);
+  await writeLeg(g, "on", onShot, onS);
+  // VS5 sabotage: the late-rendered host's proxies bound by no render-target RID (headless-like)
+  await writeLeg(g, "late-rendered", onShot, onS, { account: "late" });
+  const norid = await runG8vl(tmp, ex);
+  expect(
+    failed(norid) === "vp-live-late-rendered",
+    `a late-rendered host with no RID-bound proxy fails vp-live-late-rendered only (${failed(norid)})`,
   );
 } finally {
   rmSync(tmp, { recursive: true, force: true });

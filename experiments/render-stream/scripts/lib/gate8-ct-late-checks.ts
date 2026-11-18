@@ -330,7 +330,8 @@ export function adoptNamedProblems(
 /** ct-late-residual (LAR1, F1): the late capture -- loaded after every CanvasTexture exists, so the
  * registry holds none -- adopts exactly `late.canvas_residual` canvas textures, all through the
  * residual path (the resource cache), and refuses `late.refused_no_image`, every refusal typed
- * no-image; the refused draws stay unknown-texture, and the last state holds the adopted ones. */
+ * (no-image, canvas-empty or viewport); the refused draws stay unknown-texture, and the last state
+ * holds the adopted ones. */
 export function residualProblems(
   res: Record<string, number> | undefined,
   rec: { rec?: ResolvedRecording; error?: string },
@@ -354,7 +355,13 @@ export function residualProblems(
       problems.push(
         `${res.refused_no_image} no-image refusals, ${late.refused_no_image} expected`,
       );
-    const typed = (res.refused_no_image ?? 0) + (res.refused_canvas_empty ?? 0);
+    // VS2: refuse_viewport_texture (a viewport's render-target texture drawn directly) counts in
+    // textures_refused too, typed `viewport`. Hooks are planned by capability, so it can fire at
+    // any version; evidence older than VS2 has no refused_viewport (0).
+    const typed =
+      (res.refused_no_image ?? 0) +
+      (res.refused_canvas_empty ?? 0) +
+      (res.refused_viewport ?? 0);
     if ((res.textures_refused ?? 0) !== typed)
       problems.push(
         `${res.textures_refused} textures refused, only ${typed} of them typed`,

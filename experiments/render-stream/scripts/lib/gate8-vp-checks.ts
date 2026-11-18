@@ -117,14 +117,67 @@ export interface VpReference {
     class: "exact" | "banded" | "excluded";
     reason?: string;
   }[];
+  /** VS5: the regions a late (API-armed) leg judges under another class, each with its reason
+   * (an adoption limit render-stream-16.md / viewport-surfaces-design.md Q4 names); born legs and
+   * every other region keep `regions`. */
+  late?: {
+    name: string;
+    class: "exact" | "banded" | "excluded";
+    reason: string;
+    /** the region's rect at each step (the object it follows moves); the rest of the region's
+     * own rect is then judged as the pixels outside every region are */
+    by_step?: Record<string, [number, number, number, number]>;
+  }[];
 }
 
-/** The receiver legs vp-reference judges and the reference whose shots they are judged against. */
+/** The reference a receiver leg is judged by at `step`: `ref` itself, or for a late leg `ref` with
+ * its `late` classes (and, under `by_step`, that step's rect) applied. A `late` entry naming no
+ * region, or a `by_step` without the step, is reported, never ignored. */
+export function referenceFor(
+  leg: string,
+  ref: VpReference,
+  step: number,
+): { ref: VpReference; problems: string[] } {
+  if (!leg.startsWith("late") || !ref.late) return { ref, problems: [] };
+  const problems = ref.late
+    .filter((o) => !ref.regions.some((r) => r.name === o.name))
+    .map((o) => `expected.json reference.late names no region ${o.name}`);
+  return {
+    ref: {
+      ...ref,
+      regions: ref.regions.map((r) => {
+        const o = ref.late?.find((x) => x.name === r.name);
+        if (!o) return r;
+        let rect = r.rect;
+        if (o.by_step) {
+          const at = o.by_step[String(step)];
+          if (at) rect = at;
+          else
+            problems.push(
+              `expected.json reference.late ${o.name} has no rect for step ${step}`,
+            );
+        }
+        return { ...r, rect, class: o.class, reason: o.reason };
+      }),
+    },
+    problems,
+  };
+}
+
+/** The receiver legs vp-reference judges, each with the rendered capture whose own Godot shots it
+ * is judged against: the rendered capture of the same arm (born legs: born-rendered; VS5's late
+ * legs: late-rendered, the same scene at the same settle frames, armed at K as the leg was). */
 export const VP_RECEIVER_LEGS = [
   "born/receiver",
   "born-rendered/receiver",
+  "late/receiver",
+  "late-rendered/receiver",
 ] as const;
 export const VP_REFERENCE_DIR = "born-rendered/capture";
+export const VP_LATE_REFERENCE_DIR = "late-rendered/capture";
+export function vpReferenceDirOf(leg: string): string {
+  return leg.startsWith("late") ? VP_LATE_REFERENCE_DIR : VP_REFERENCE_DIR;
+}
 
 export interface VpPixelRow {
   step: number;
@@ -196,10 +249,12 @@ export async function referenceProblems(
     jsonl<{ step: number }>(await readText(join(g, dir, "steps.jsonl"))).map(
       (l) => l.step,
     );
-  const refSteps = await stepsOf(VP_REFERENCE_DIR);
-  if (refSteps.length === 0) return { problems: null, rows, pixels };
+  for (const refDir of new Set(VP_RECEIVER_LEGS.map(vpReferenceDirOf)))
+    if ((await stepsOf(refDir)).length === 0)
+      return { problems: null, rows, pixels };
   for (const leg of VP_RECEIVER_LEGS) {
     const dir = join(g, leg);
+    const refDir = vpReferenceDirOf(leg);
     const exit = (await readText(join(dir, "exit-code.txt")))?.trim();
     if (exit === undefined) return { problems: null, rows, pixels };
     const browser = existsSync(join(dir, "page-config.json"));
@@ -236,7 +291,7 @@ export async function referenceProblems(
       }
       if (!browser) continue;
       const b = await decodePngRgba(
-        join(g, VP_REFERENCE_DIR, "shots", `step-${step}.png`),
+        join(g, refDir, "shots", `step-${step}.png`),
       );
       if (!b) {
         problems.push(`${leg}: step ${step}: no reference shot`);
@@ -247,7 +302,9 @@ export async function referenceProblems(
           `${leg}: step ${step}: ${a.width}x${a.height} against the reference's ${b.width}x${b.height}`,
         );
       compared++;
-      for (const r of regionDiff(a, b, ref)) {
+      const legRef = referenceFor(leg, ref, step);
+      problems.push(...legRef.problems);
+      for (const r of regionDiff(a, b, legRef.ref)) {
         pixels[leg] ??= [];
         pixels[leg].push({ step, ...r });
         if (r.class === "exact" && r.over > 0)
@@ -258,7 +315,7 @@ export async function referenceProblems(
     }
     rows.push(
       browser
-        ? `${leg} (GSW) ${compared}/${steps.length} steps against ${VP_REFERENCE_DIR}`
+        ? `${leg} (GSW) ${compared}/${steps.length} steps against ${refDir}`
         : `${leg} (native: draws no surface; exit and ${steps.length} shots only)`,
     );
   }
@@ -926,11 +983,12 @@ export function validateProblems(
 
 /** vp-account's problems for one leg: stream.gate8.viewports and adopt_stats against `want`; on a
  * headless live leg no proxy-unresolved entry in the final resolved state; on a live leg the final
- * table holds created + adopted - freed viewports. */
+ * table holds created + adopted - freed viewports. `finalState` null: the final state is not
+ * judged here (g8vl's live hosts, whose final state the receiver's shot judges). */
 export function accountProblems(
   result: VpResult | null,
   want: VpLegAccount | undefined,
-  finalState: State | undefined,
+  finalState: State | undefined | null,
   headless: boolean,
 ): string[] {
   if (!want) return ["no expectation for this leg in expected.json"];
@@ -952,7 +1010,7 @@ export function accountProblems(
         if (stats[k] !== v)
           problems.push(`adopt_stats.${k} ${stats[k]}, expected ${v}`);
   }
-  if (vp.live === true) {
+  if (vp.live === true && finalState !== null) {
     if (!finalState) problems.push("no final resolved state");
     else {
       // The evidence is written at stream end, after the scene's teardown freed its viewports,
@@ -1298,7 +1356,7 @@ export async function runG8vp(
     checks.push(
       check(
         "vp-reference",
-        `the born captures (headless: adjacency and node-route proxies; rendered: RID proxies) replayed by a rendered receiver match the rendered host's own Godot shots (${VP_REFERENCE_DIR}/shots) at every step: a GSW receiver draws every reached viewport into its own surface, judged per expected.json reference region (exact: every pixel within ${ex.reference?.channel ?? "?"} channel step(s); banded: counted; excluded: typed content the receiver does not draw); a native receiver draws no surface and is judged on its exit and shots`,
+        `the born and late captures (headless: adjacency and node-route proxies; rendered: RID proxies; late: viewports and proxies adopted at the API arm) replayed by a rendered receiver match the rendered host's own Godot shots of the same arm (${VP_REFERENCE_DIR}/shots for born, ${VP_LATE_REFERENCE_DIR}/shots for late) at every step: a GSW receiver draws every reached viewport into its own surface, judged per expected.json reference region (exact: every pixel within ${ex.reference?.channel ?? "?"} channel step(s); banded: counted; excluded: typed content the receiver does not draw); a native receiver draws no surface and is judged on its exit and shots`,
         r.problems,
         r.rows.join("; "),
       ),

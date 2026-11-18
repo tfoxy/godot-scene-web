@@ -198,7 +198,7 @@
     ]
   },
   "reference": {
-    "doc": "VS3 vp-reference (scripts/lib/gate8-vp-checks.ts referenceProblems): each display node's screen rect, from viewport_scene.tscn's offsets and viewport_scene.gd's positions (the late views at K+5, the popup before and after its K+24 move), and how a receiver's pixels there are judged against born-rendered's Godot shots. View3D shows a viewport that renders 3D (viewport-3d: receivers draw its 2D canvases only); AccumVP clears never (viewport-accumulation: a receiver accumulates per received frame, Godot per host frame). Everything else, the root's own pixels included, is exact within one channel step (fixtures/gsw-tolerance.json P-G1 and P-G3).",
+    "doc": "VS3 vp-reference (scripts/lib/gate8-vp-checks.ts referenceProblems): each display node's screen rect, from viewport_scene.tscn's offsets and viewport_scene.gd's positions (the late views at K+5, the popup before and after its K+24 move), and how a receiver's pixels there are judged against born-rendered's Godot shots. View3D shows a viewport that renders 3D (viewport-3d: receivers draw its 2D canvases only); AccumVP clears never (viewport-accumulation: a receiver accumulates per received frame, Godot per host frame). Everything else, the root's own pixels included, is exact within one channel step (fixtures/gsw-tolerance.json P-G1 and P-G3). late (VS5, the late legs only): the embedded Popup Window registers before the API arm, so the root's subwindow canvas and the Window's texture-rect item on it are RS-only residue the walk cannot adopt (Q4; vp-equivalence excuses the same shape, SUBWINDOW_RESIDUE_LAYER): a late receiver draws the Popup's own surface but nothing shows it on the root, so on late legs the Window's own rect at each step (by_step: 120x60 at (500,270), moved to (492,282) at K+24, before step 3) is excluded, and the rest of the popup region's swept rect is judged exactly; born legs keep the popup region exact.",
     "channel": 1,
     "regions": [
       {
@@ -332,6 +332,39 @@
           72
         ],
         "class": "exact"
+      }
+    ],
+    "late": [
+      {
+        "name": "popup",
+        "class": "excluded",
+        "reason": "subwindow-residue",
+        "by_step": {
+          "0": [
+            500,
+            270,
+            120,
+            60
+          ],
+          "1": [
+            500,
+            270,
+            120,
+            60
+          ],
+          "2": [
+            500,
+            270,
+            120,
+            60
+          ],
+          "3": [
+            492,
+            282,
+            120,
+            60
+          ]
+        }
       }
     ]
   },

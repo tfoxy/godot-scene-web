@@ -115,7 +115,7 @@
       },
       "g7-vp": {
         "legs": ["reference", "on", "client-off"],
-        "full_legs": 3
+        "full_legs": 6
       }
     },
     "defer": ["g7-k"],
@@ -694,7 +694,7 @@
       "reach": ["pure", "g7live:g7-vp@gsw"]
     },
     {
-      "why": "render-stream-16.md's gate 8 group g8vp: fixtures/viewport-scene, its checks and their self-test reach native gate 8, which runs g8vp whole (headless and rendered captures; no receiver leg yet)",
+      "why": "render-stream-16.md's gate 8 group g8vp: fixtures/viewport-scene, its checks and their self-test reach native gate 8, which runs g8vp whole (headless and rendered captures, born and late, and their replay receivers, native there: the native receiver refuses /16), and g7-8 through GSW, whose replays of the born and late captures vp-reference judges",
       "paths": [
         "experiments/render-stream/fixtures/viewport-scene/**",
         "experiments/render-stream/scripts/lib/gate8-vp-checks.ts",

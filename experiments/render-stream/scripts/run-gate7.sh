@@ -145,10 +145,13 @@
 #             practice --receiver gsw: only GSW draws surfaces; the web export and the native receiver
 #             defer /16). Runs gate 8's g8vl in the same live run directory as g7-8's g8l
 #             (<out>/gate8/live-<kind>/): a rendered file-sink reference, a live /16 host and a
-#             browser receiver at RS_RECEIVER_PROTOCOL=16 (`on`), and the same with
-#             RS_RECEIVER_VIEWPORTS=off (`client-off`, the client's `viewports: false`); judged by
-#             check-gate8.ts's vp-live and vp-client-off (lib/gate8-vl-checks.ts). It has no file
-#             half, so without --live it is a usage error.
+#             browser receiver at RS_RECEIVER_PROTOCOL=16 (`on`), the same with
+#             RS_RECEIVER_VIEWPORTS=off (`client-off`, the client's `viewports: false`), and (VS5)
+#             `late` (a standby host armed through the API at frame K), `rendered` and
+#             `late-rendered` (the born and late hosts on the private gamescope); judged by
+#             check-gate8.ts's vp-live, vp-live-late, vp-live-rendered, vp-live-late-rendered and
+#             vp-client-off (lib/gate8-vl-checks.ts). It has no file half, so without --live it is
+#             a usage error.
 #
 # Group landed:
 #   g7-8      gate 8's file receiver legs (g8t, g8a, g8h, g8f, g8m, g8c, g8cg, g8w11, g8mm, g8pt; G8_FILE_LEGS below) in both

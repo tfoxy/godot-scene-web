@@ -113,6 +113,12 @@ void hooks_set_frame(uint64_t frame);
 // The current hook stamp (LATE-RES: a post-arm node_added adoption stamps its mirror taps with the
 // same frame the other hooks of the iteration use).
 uint64_t hooks_current_frame();
+// VS5 (render-stream-16.md Q3b(3)): while non-zero, the hook log stamps main-thread lines with this
+// frame instead of the hook stamp. The frame callback sets it to F around the publish path (the
+// node route and its registry re-resolution, which run after hooks_set_frame(F + 1) and before
+// stream_publish(F)), so their lines carry the frame of the transaction they are published in.
+// The hook log only: the mirror's own stamps, hence the wire, do not move.
+void hooks_set_log_frame(uint64_t frame);
 
 // PM1 (render-stream-11.md "As built (PM1)" rule 8): the last hooks_plan() planned all twelve
 // multimesh hooks (GRC_STREAM_VERSION=11 and a record naming every slot), so the session declares

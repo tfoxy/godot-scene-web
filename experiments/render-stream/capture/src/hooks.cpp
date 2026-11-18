@@ -587,6 +587,8 @@ std::atomic<bool> g_viewports_live{false};
 bool g_viewport_no_adjacency = false;
 
 std::atomic<uint64_t> g_frame{1};
+// VS5: hooks_set_log_frame's override of the hook log's main-thread frame (0: none).
+std::atomic<uint64_t> g_log_frame{0};
 
 template <typename Fn>
 Fn original(HookId id) {
@@ -1594,6 +1596,11 @@ rs::TapContext tap_context() {
   // taken before the log starts formats t_us 0 either way: its time precedes t0.)
   ctx.t_ns = rs::resource_log().wants_lines() ? now_ns() : 0;
   ctx.main_thread = std::this_thread::get_id() == g_main_thread;
+  // VS5: the publish path's lines carry the publishing frame (hooks_set_log_frame).
+  if (ctx.main_thread) {
+    const uint64_t log_frame = g_log_frame.load(std::memory_order_relaxed);
+    if (log_frame != 0) ctx.frame = log_frame;
+  }
   return ctx;
 }
 
@@ -6441,6 +6448,8 @@ void hooks_set_texture_workers(const rs::TextureWorkerConfig &config) {
 }
 
 void hooks_set_frame(uint64_t frame) { g_frame.store(frame, std::memory_order_relaxed); }
+
+void hooks_set_log_frame(uint64_t frame) { g_log_frame.store(frame, std::memory_order_relaxed); }
 
 uint64_t hooks_current_frame() { return g_frame.load(std::memory_order_relaxed); }
 

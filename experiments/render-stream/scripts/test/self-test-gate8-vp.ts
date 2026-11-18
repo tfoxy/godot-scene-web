@@ -32,6 +32,7 @@ import {
   HONEST_LEGS,
   offProblems,
   readLeg,
+  referenceFor,
   regionDiff,
   runG8vp,
   SUBWINDOW_RESIDUE_LAYER,
@@ -1126,6 +1127,70 @@ try {
     expect(
       classes.get("view3d") === "excluded" && classes.get("accum") === "banded",
       "only the 3D view is excluded and only the accumulator banded",
+    );
+    // VS5: the late legs' allowance is the popup Window's own rect at each step (subwindow
+    // residue); born legs keep the popup region exact
+    const windowAt = (x0: number, y0: number) => {
+      const img = blank();
+      for (let y = y0; y < y0 + 60; y++)
+        for (let x = x0; x < x0 + 120; x++) set(img, x, y, 200);
+      return img;
+    };
+    const exactOver = (
+      leg: string,
+      img: ReturnType<typeof blank>,
+      step: number,
+    ) =>
+      regionDiff(img, blank(), referenceFor(leg, ref, step).ref).filter(
+        (r) => r.class === "exact" && r.over > 0,
+      ).length;
+    expect(
+      ref.late?.length === 1 &&
+        ref.late[0].name === "popup" &&
+        ref.late[0].reason === "subwindow-residue",
+      "reference.late holds only the popup, typed subwindow-residue",
+    );
+    const before = windowAt(500, 270);
+    const after = windowAt(492, 282);
+    expect(
+      exactOver("late/receiver", before, 0) === 0 &&
+        exactOver("late-rendered/receiver", before, 2) === 0 &&
+        exactOver("late/receiver", after, 3) === 0,
+      "a late leg missing the popup Window at its rect of the step passes (subwindow residue)",
+    );
+    expect(
+      exactOver("born/receiver", before, 0) === 1 &&
+        exactOver("born-rendered/receiver", after, 3) === 1,
+      "a born leg missing the popup fails",
+    );
+    expect(
+      exactOver("late/receiver", after, 0) > 0 &&
+        exactOver("late/receiver", before, 3) > 0,
+      "a late leg missing the Window where it is not at that step fails (the swept rect is not excused)",
+    );
+    const swept = blank();
+    set(swept, 493, 271, 200); // inside the popup region, outside the Window at step 0
+    expect(
+      exactOver("late/receiver", swept, 0) === 1,
+      "a late leg wrong in the popup region outside the Window's rect fails",
+    );
+    const lateDraw = blank();
+    set(lateDraw, 10, 10, 200);
+    expect(
+      exactOver("late/receiver", lateDraw, 0) === 1,
+      "a late leg wrong in any other region still fails",
+    );
+    expect(
+      referenceFor(
+        "late/receiver",
+        { ...ref, late: [{ name: "nope", class: "excluded", reason: "x" }] },
+        0,
+      ).problems.length === 1,
+      "a reference.late entry naming no region is reported",
+    );
+    expect(
+      referenceFor("late/receiver", ref, 9).problems.length === 1,
+      "a by_step without the step is reported",
     );
   }
 }

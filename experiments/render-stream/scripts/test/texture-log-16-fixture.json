@@ -1,0 +1,3540 @@
+{
+  "doc": "VS5: an excerpt of a real gate 8 g8vp late capture (fixtures/viewport-scene, synthetic content; standby, armed through the API at frame 12): its evidence/resources.jsonl texture-identity lines (the viewport family's viewport_create, texture_proxy_create/update, node_route and adopt, texture creates and frees, and mesh lines whose ids collide with texture ids) and the resolved texture tables of eight of its transactions. Read by self-test-gate2.ts (textureLogDivergence). Cut from a capture whose publish-path lines carry the publishing frame (render-stream-16.md, Validators).",
+  "lines": [
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 1,
+      "by_id": null,
+      "rid": "115964116993",
+      "version": 1,
+      "kind": "viewport",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 2,
+      "by_id": null,
+      "rid": "120259084290",
+      "version": 1,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 3,
+      "by_id": null,
+      "rid": "150323855362",
+      "version": 1,
+      "kind": "viewport",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 4,
+      "by_id": null,
+      "rid": "154618822659",
+      "version": 1,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 5,
+      "by_id": null,
+      "rid": "193273528323",
+      "version": 1,
+      "kind": "viewport",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 6,
+      "by_id": null,
+      "rid": "197568495620",
+      "version": 1,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 7,
+      "by_id": null,
+      "rid": "219043332100",
+      "version": 1,
+      "kind": "viewport",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 8,
+      "by_id": null,
+      "rid": "223338299397",
+      "version": 1,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 9,
+      "by_id": null,
+      "rid": "257698037765",
+      "version": 1,
+      "kind": "viewport",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 10,
+      "by_id": null,
+      "rid": "261993005062",
+      "version": 1,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 11,
+      "by_id": null,
+      "rid": "292057776134",
+      "version": 1,
+      "kind": "viewport",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 12,
+      "by_id": null,
+      "rid": "296352743431",
+      "version": 1,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 13,
+      "by_id": null,
+      "rid": "317827579911",
+      "version": 1,
+      "kind": "viewport",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 14,
+      "by_id": null,
+      "rid": "322122547208",
+      "version": 1,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 15,
+      "by_id": null,
+      "rid": "347892350984",
+      "version": 1,
+      "kind": "viewport",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 16,
+      "by_id": null,
+      "rid": "352187318281",
+      "version": 1,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 17,
+      "by_id": null,
+      "rid": "369367187465",
+      "version": 1,
+      "kind": "viewport",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 18,
+      "by_id": null,
+      "rid": "373662154762",
+      "version": 1,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 19,
+      "by_id": null,
+      "rid": "386547056650",
+      "version": 1,
+      "kind": "viewport",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 20,
+      "by_id": null,
+      "rid": "390842023947",
+      "version": 1,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 21,
+      "by_id": null,
+      "rid": "412316860427",
+      "version": 1,
+      "kind": "viewport",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 22,
+      "by_id": null,
+      "rid": "416611827724",
+      "version": 1,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 23,
+      "by_id": null,
+      "rid": "455266533394",
+      "version": 1,
+      "kind": "proxy",
+      "status": "unsupported",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 24,
+      "by_id": null,
+      "rid": "433791696909",
+      "version": 1,
+      "kind": "image",
+      "status": "ok",
+      "hash": "978f7012ef9b832376c7a87a1dcd65ae2102adcd7d63c515adb0689ce11cb8c8"
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 1,
+      "by_id": null,
+      "rid": "171798691841",
+      "version": 1,
+      "kind": "mesh",
+      "status": "ok",
+      "hash": "9143be4853f0aa0677e12777e653634775e6f3b40cdac1a3385885015808a7c3"
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 2,
+      "by_id": null,
+      "rid": "180388626434",
+      "version": 1,
+      "kind": "mesh",
+      "status": "ok",
+      "hash": "7ad2d3000b1e53df9237b7bc0a8cb7a9dc6afcba76f2e97c8cbd455aea090b04"
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 3,
+      "by_id": null,
+      "rid": "206158430211",
+      "version": 1,
+      "kind": "mesh",
+      "status": "ok",
+      "hash": "297d9be1314a41f00ec0d045ac455314d1807ecb9bb9c11e141bc3879faf1770"
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 4,
+      "by_id": null,
+      "rid": "279172874244",
+      "version": 1,
+      "kind": "mesh",
+      "status": "ok",
+      "hash": "a80b4e554b6a0bfa3ca39ca2cf721743f440b8a86cb47ae29f768e326836f6ce"
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 5,
+      "by_id": null,
+      "rid": "304942678021",
+      "version": 1,
+      "kind": "mesh",
+      "status": "ok",
+      "hash": "a301426f34cb0a17007ee1dd35f1007fb13a16c06e0aba251bf65c6f513bfedc"
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 6,
+      "by_id": null,
+      "rid": "330712481798",
+      "version": 1,
+      "kind": "mesh",
+      "status": "ok",
+      "hash": "be32095fcd18d02d323d93c6f8bab3f473d92db7ebf2b4eb9a0a989d0f6bdc9b"
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 7,
+      "by_id": null,
+      "rid": "360777252871",
+      "version": 1,
+      "kind": "mesh",
+      "status": "ok",
+      "hash": "74ef217e4e5dd588e1092262234a9d00114b29c23a90ce9cbb0c2c2863adeccd"
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 8,
+      "by_id": null,
+      "rid": "399431958536",
+      "version": 1,
+      "kind": "mesh",
+      "status": "ok",
+      "hash": "6b9adf5ff3f9f7e3ff007e88d94afc7f92d26d2343987fd60a34c1b3c80c1ed5"
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 25,
+      "by_id": null,
+      "rid": "438086664206",
+      "version": 1,
+      "kind": "placeholder",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 1,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 2,
+      "kind": "proxy",
+      "status": "unsupported",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "adopt",
+      "id": 27,
+      "by_id": null,
+      "rid": "446676598800",
+      "version": 1,
+      "kind": "image",
+      "status": "ok",
+      "hash": "c507bcef4873c81cf6dbe1521df8cb97487194240af61f0e7a8cc26ca6e8a950"
+    },
+    {
+      "frame": 13,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 3,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 13,
+      "op": "node_route",
+      "id": 23,
+      "by_id": null,
+      "rid": "455266533394",
+      "version": 2,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 14,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 3,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 15,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 3,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 16,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 3,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 17,
+      "op": "viewport_create",
+      "id": 28,
+      "by_id": null,
+      "rid": "481036337164",
+      "version": 1,
+      "kind": "viewport",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 17,
+      "op": "texture_proxy_create",
+      "id": 29,
+      "by_id": null,
+      "rid": "485331304468",
+      "version": 1,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 17,
+      "op": "mesh_create",
+      "id": 9,
+      "by_id": null,
+      "rid": "493921239049",
+      "version": 1,
+      "kind": "mesh",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 17,
+      "op": "viewport_create",
+      "id": 30,
+      "by_id": null,
+      "rid": "515396075533",
+      "version": 1,
+      "kind": "viewport",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 17,
+      "op": "texture_proxy_create",
+      "id": 31,
+      "by_id": null,
+      "rid": "519691042837",
+      "version": 1,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 17,
+      "op": "texture_proxy_create",
+      "id": 32,
+      "by_id": null,
+      "rid": "528280977430",
+      "version": 1,
+      "kind": "proxy",
+      "status": "unsupported",
+      "hash": null
+    },
+    {
+      "frame": 17,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 3,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 17,
+      "op": "node_route",
+      "id": 32,
+      "by_id": null,
+      "rid": "528280977430",
+      "version": 2,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 18,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 3,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 19,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 3,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 20,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 3,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 21,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 3,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 22,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 3,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 23,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 3,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 24,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 3,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 25,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 3,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 26,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 4,
+      "kind": "proxy",
+      "status": "unsupported",
+      "hash": null
+    },
+    {
+      "frame": 26,
+      "op": "adopt",
+      "id": 33,
+      "by_id": null,
+      "rid": "450971566097",
+      "version": 1,
+      "kind": "image",
+      "status": "ok",
+      "hash": "f09db0c15de795222420776eec924f9c7a9bf82480370b8a9fd25bb8fbff859e"
+    },
+    {
+      "frame": 26,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 27,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 28,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 29,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 30,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 31,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 32,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 33,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 34,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 35,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 36,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 37,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 38,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 39,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 40,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 41,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 42,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 43,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 44,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 45,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 46,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 47,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 48,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 49,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 50,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 51,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 52,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 53,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 54,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 55,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 56,
+      "op": "texture_proxy_update",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "ok",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 30,
+      "by_id": null,
+      "rid": "515396075533",
+      "version": 1,
+      "kind": "viewport",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 31,
+      "by_id": null,
+      "rid": "519691042837",
+      "version": 1,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 32,
+      "by_id": null,
+      "rid": "528280977430",
+      "version": 2,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 9,
+      "by_id": null,
+      "rid": "493921239049",
+      "version": 5,
+      "kind": "mesh",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 28,
+      "by_id": null,
+      "rid": "481036337164",
+      "version": 1,
+      "kind": "viewport",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 29,
+      "by_id": null,
+      "rid": "485331304468",
+      "version": 1,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 21,
+      "by_id": null,
+      "rid": "412316860427",
+      "version": 1,
+      "kind": "viewport",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 22,
+      "by_id": null,
+      "rid": "416611827724",
+      "version": 1,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 8,
+      "by_id": null,
+      "rid": "399431958536",
+      "version": 1,
+      "kind": "mesh",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 19,
+      "by_id": null,
+      "rid": "386547056650",
+      "version": 1,
+      "kind": "viewport",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 20,
+      "by_id": null,
+      "rid": "390842023947",
+      "version": 1,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 17,
+      "by_id": null,
+      "rid": "369367187465",
+      "version": 1,
+      "kind": "viewport",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 7,
+      "by_id": null,
+      "rid": "360777252871",
+      "version": 1,
+      "kind": "mesh",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 15,
+      "by_id": null,
+      "rid": "347892350984",
+      "version": 1,
+      "kind": "viewport",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 18,
+      "by_id": null,
+      "rid": "373662154762",
+      "version": 1,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 16,
+      "by_id": null,
+      "rid": "352187318281",
+      "version": 1,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 6,
+      "by_id": null,
+      "rid": "330712481798",
+      "version": 1,
+      "kind": "mesh",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 13,
+      "by_id": null,
+      "rid": "317827579911",
+      "version": 1,
+      "kind": "viewport",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 14,
+      "by_id": null,
+      "rid": "322122547208",
+      "version": 1,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 5,
+      "by_id": null,
+      "rid": "304942678021",
+      "version": 1,
+      "kind": "mesh",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 11,
+      "by_id": null,
+      "rid": "292057776134",
+      "version": 1,
+      "kind": "viewport",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 12,
+      "by_id": null,
+      "rid": "296352743431",
+      "version": 1,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 4,
+      "by_id": null,
+      "rid": "279172874244",
+      "version": 1,
+      "kind": "mesh",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 9,
+      "by_id": null,
+      "rid": "257698037765",
+      "version": 1,
+      "kind": "viewport",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 10,
+      "by_id": null,
+      "rid": "261993005062",
+      "version": 1,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 7,
+      "by_id": null,
+      "rid": "219043332100",
+      "version": 1,
+      "kind": "viewport",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 8,
+      "by_id": null,
+      "rid": "223338299397",
+      "version": 1,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 3,
+      "by_id": null,
+      "rid": "206158430211",
+      "version": 1,
+      "kind": "mesh",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 5,
+      "by_id": null,
+      "rid": "193273528323",
+      "version": 1,
+      "kind": "viewport",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 6,
+      "by_id": null,
+      "rid": "197568495620",
+      "version": 1,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 2,
+      "by_id": null,
+      "rid": "180388626434",
+      "version": 1,
+      "kind": "mesh",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 1,
+      "by_id": null,
+      "rid": "171798691841",
+      "version": 1,
+      "kind": "mesh",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 3,
+      "by_id": null,
+      "rid": "150323855362",
+      "version": 1,
+      "kind": "viewport",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 4,
+      "by_id": null,
+      "rid": "154618822659",
+      "version": 1,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 24,
+      "by_id": null,
+      "rid": "433791696909",
+      "version": 1,
+      "kind": "image",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 2,
+      "by_id": null,
+      "rid": "94489280512",
+      "version": 1,
+      "kind": "shader",
+      "status": "freed",
+      "hash": "b4e2973dde2d6d32a5fba9a966a018337d7ccea37208958442fe3a928bdff0f6"
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 2,
+      "by_id": null,
+      "rid": "137438953473",
+      "version": 3,
+      "kind": "material",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 1,
+      "by_id": null,
+      "rid": "115964116993",
+      "version": 1,
+      "kind": "viewport",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 2,
+      "by_id": null,
+      "rid": "120259084290",
+      "version": 1,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 23,
+      "by_id": null,
+      "rid": "455266533394",
+      "version": 2,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 1,
+      "by_id": null,
+      "rid": "90194313216",
+      "version": 6,
+      "kind": "material",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 26,
+      "by_id": null,
+      "rid": "442381631503",
+      "version": 5,
+      "kind": "proxy",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 25,
+      "by_id": null,
+      "rid": "438086664206",
+      "version": 1,
+      "kind": "placeholder",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 33,
+      "by_id": null,
+      "rid": "450971566097",
+      "version": 1,
+      "kind": "image",
+      "status": "freed",
+      "hash": null
+    },
+    {
+      "frame": 57,
+      "op": "free",
+      "id": 27,
+      "by_id": null,
+      "rid": "446676598800",
+      "version": 1,
+      "kind": "image",
+      "status": "freed",
+      "hash": null
+    }
+  ],
+  "transactions": [
+    {
+      "seq": 1,
+      "frame": 13,
+      "textures": [
+        {
+          "id": 1,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 2,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 3,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 4,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 5,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 6,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 7,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 8,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 9,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 10,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 11,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 12,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 13,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 14,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 15,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 16,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 17,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 18,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 19,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 20,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 21,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 22,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 23,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 2,
+          "hash": null
+        },
+        {
+          "id": 24,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "978f7012ef9b832376c7a87a1dcd65ae2102adcd7d63c515adb0689ce11cb8c8"
+        },
+        {
+          "id": 25,
+          "origin": "adopted",
+          "kind": "placeholder",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 26,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 3,
+          "hash": null
+        },
+        {
+          "id": 27,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "c507bcef4873c81cf6dbe1521df8cb97487194240af61f0e7a8cc26ca6e8a950"
+        }
+      ]
+    },
+    {
+      "seq": 2,
+      "frame": 14,
+      "textures": [
+        {
+          "id": 1,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 2,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 3,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 4,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 5,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 6,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 7,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 8,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 9,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 10,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 11,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 12,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 13,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 14,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 15,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 16,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 17,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 18,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 19,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 20,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 21,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 22,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 23,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 2,
+          "hash": null
+        },
+        {
+          "id": 24,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "978f7012ef9b832376c7a87a1dcd65ae2102adcd7d63c515adb0689ce11cb8c8"
+        },
+        {
+          "id": 25,
+          "origin": "adopted",
+          "kind": "placeholder",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 26,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 3,
+          "hash": null
+        },
+        {
+          "id": 27,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "c507bcef4873c81cf6dbe1521df8cb97487194240af61f0e7a8cc26ca6e8a950"
+        }
+      ]
+    },
+    {
+      "seq": 5,
+      "frame": 17,
+      "textures": [
+        {
+          "id": 1,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 2,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 3,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 4,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 5,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 6,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 7,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 8,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 9,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 10,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 11,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 12,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 13,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 14,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 15,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 16,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 17,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 18,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 19,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 20,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 21,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 22,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 23,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 2,
+          "hash": null
+        },
+        {
+          "id": 24,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "978f7012ef9b832376c7a87a1dcd65ae2102adcd7d63c515adb0689ce11cb8c8"
+        },
+        {
+          "id": 25,
+          "origin": "adopted",
+          "kind": "placeholder",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 26,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 3,
+          "hash": null
+        },
+        {
+          "id": 27,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "c507bcef4873c81cf6dbe1521df8cb97487194240af61f0e7a8cc26ca6e8a950"
+        },
+        {
+          "id": 28,
+          "origin": "created",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 29,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 30,
+          "origin": "created",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 31,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 32,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 2,
+          "hash": null
+        }
+      ]
+    },
+    {
+      "seq": 6,
+      "frame": 18,
+      "textures": [
+        {
+          "id": 1,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 2,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 3,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 4,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 5,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 6,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 7,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 8,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 9,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 10,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 11,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 12,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 13,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 14,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 15,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 16,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 17,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 18,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 19,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 20,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 21,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 22,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 23,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 2,
+          "hash": null
+        },
+        {
+          "id": 24,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "978f7012ef9b832376c7a87a1dcd65ae2102adcd7d63c515adb0689ce11cb8c8"
+        },
+        {
+          "id": 25,
+          "origin": "adopted",
+          "kind": "placeholder",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 26,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 3,
+          "hash": null
+        },
+        {
+          "id": 27,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "c507bcef4873c81cf6dbe1521df8cb97487194240af61f0e7a8cc26ca6e8a950"
+        },
+        {
+          "id": 28,
+          "origin": "created",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 29,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 30,
+          "origin": "created",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 31,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 32,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 2,
+          "hash": null
+        }
+      ]
+    },
+    {
+      "seq": 14,
+      "frame": 26,
+      "textures": [
+        {
+          "id": 1,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 2,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 3,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 4,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 5,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 6,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 7,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 8,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 9,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 10,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 11,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 12,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 13,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 14,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 15,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 16,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 17,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 18,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 19,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 20,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 21,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 22,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 23,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 2,
+          "hash": null
+        },
+        {
+          "id": 24,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "978f7012ef9b832376c7a87a1dcd65ae2102adcd7d63c515adb0689ce11cb8c8"
+        },
+        {
+          "id": 25,
+          "origin": "adopted",
+          "kind": "placeholder",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 26,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 5,
+          "hash": null
+        },
+        {
+          "id": 27,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "c507bcef4873c81cf6dbe1521df8cb97487194240af61f0e7a8cc26ca6e8a950"
+        },
+        {
+          "id": 28,
+          "origin": "created",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 29,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 30,
+          "origin": "created",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 31,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 32,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 2,
+          "hash": null
+        },
+        {
+          "id": 33,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "f09db0c15de795222420776eec924f9c7a9bf82480370b8a9fd25bb8fbff859e"
+        }
+      ]
+    },
+    {
+      "seq": 15,
+      "frame": 27,
+      "textures": [
+        {
+          "id": 1,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 2,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 3,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 4,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 5,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 6,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 7,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 8,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 9,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 10,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 11,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 12,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 13,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 14,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 15,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 16,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 17,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 18,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 19,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 20,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 21,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 22,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 23,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 2,
+          "hash": null
+        },
+        {
+          "id": 24,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "978f7012ef9b832376c7a87a1dcd65ae2102adcd7d63c515adb0689ce11cb8c8"
+        },
+        {
+          "id": 25,
+          "origin": "adopted",
+          "kind": "placeholder",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 26,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 5,
+          "hash": null
+        },
+        {
+          "id": 27,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "c507bcef4873c81cf6dbe1521df8cb97487194240af61f0e7a8cc26ca6e8a950"
+        },
+        {
+          "id": 28,
+          "origin": "created",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 29,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 30,
+          "origin": "created",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 31,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 32,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 2,
+          "hash": null
+        },
+        {
+          "id": 33,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "f09db0c15de795222420776eec924f9c7a9bf82480370b8a9fd25bb8fbff859e"
+        }
+      ]
+    },
+    {
+      "seq": 16,
+      "frame": 28,
+      "textures": [
+        {
+          "id": 1,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 2,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 3,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 4,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 5,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 6,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 7,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 8,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 9,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 10,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 11,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 12,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 13,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 14,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 15,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 16,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 17,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 18,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 19,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 20,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 21,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 22,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 23,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 2,
+          "hash": null
+        },
+        {
+          "id": 24,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "978f7012ef9b832376c7a87a1dcd65ae2102adcd7d63c515adb0689ce11cb8c8"
+        },
+        {
+          "id": 25,
+          "origin": "adopted",
+          "kind": "placeholder",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 26,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 5,
+          "hash": null
+        },
+        {
+          "id": 27,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "c507bcef4873c81cf6dbe1521df8cb97487194240af61f0e7a8cc26ca6e8a950"
+        },
+        {
+          "id": 28,
+          "origin": "created",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 29,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 30,
+          "origin": "created",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 31,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 32,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 2,
+          "hash": null
+        },
+        {
+          "id": 33,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "f09db0c15de795222420776eec924f9c7a9bf82480370b8a9fd25bb8fbff859e"
+        }
+      ]
+    },
+    {
+      "seq": 44,
+      "frame": 56,
+      "textures": [
+        {
+          "id": 1,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 2,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 3,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 4,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 5,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 6,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 7,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 8,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 9,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 10,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 11,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 12,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 13,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 14,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 15,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 16,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 17,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 18,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 19,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 20,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 21,
+          "origin": "adopted",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 22,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 23,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 2,
+          "hash": null
+        },
+        {
+          "id": 24,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "978f7012ef9b832376c7a87a1dcd65ae2102adcd7d63c515adb0689ce11cb8c8"
+        },
+        {
+          "id": 25,
+          "origin": "adopted",
+          "kind": "placeholder",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 26,
+          "origin": "adopted",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 5,
+          "hash": null
+        },
+        {
+          "id": 27,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "c507bcef4873c81cf6dbe1521df8cb97487194240af61f0e7a8cc26ca6e8a950"
+        },
+        {
+          "id": 28,
+          "origin": "created",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 29,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 30,
+          "origin": "created",
+          "kind": "viewport",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 31,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 1,
+          "hash": null
+        },
+        {
+          "id": 32,
+          "origin": "created",
+          "kind": "proxy",
+          "status": "ok",
+          "version": 2,
+          "hash": null
+        },
+        {
+          "id": 33,
+          "origin": "adopted",
+          "kind": "image",
+          "status": "ok",
+          "version": 1,
+          "hash": "f09db0c15de795222420776eec924f9c7a9bf82480370b8a9fd25bb8fbff859e"
+        }
+      ]
+    }
+  ]
+}

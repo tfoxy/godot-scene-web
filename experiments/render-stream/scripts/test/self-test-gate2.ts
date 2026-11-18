@@ -54,7 +54,9 @@ import {
   stepOfFrame,
   synthesizeGate2,
 } from "../lib/gate2-expected";
+import { type HookLine, textureLogDivergence } from "../lib/gate2b-checks";
 import { checkCorruptCodedBody } from "../lib/gate2e-checks";
+import type { ResolvedRecording } from "../lib/render-stream-2";
 import {
   buildModel,
   buildTree,
@@ -112,6 +114,286 @@ function pixel(
 ): string {
   const i = (y * frame.width + x) * 4;
   return [...frame.rgba.subarray(i, i + 4)].join(",");
+}
+
+// VS5: textureLogDivergence on a render-stream/16 table (texture-log-16-fixture.json, an excerpt of
+// a real g8vp late capture). Shard 1 only: fixed assertions.
+async function textureLog16Cases(): Promise<void> {
+  if (!isFirstShard) return;
+  type FixLine = Pick<
+    HookLine,
+    | "frame"
+    | "op"
+    | "id"
+    | "by_id"
+    | "rid"
+    | "version"
+    | "kind"
+    | "status"
+    | "hash"
+  >;
+  type FixTexture = {
+    id: number;
+    origin: string;
+    kind: string;
+    status: string;
+    version: number;
+    hash: string | null;
+  };
+  const fix = JSON.parse(
+    await readFile(join(SCRIPT_DIR, "texture-log-16-fixture.json"), "utf8"),
+  ) as {
+    lines: FixLine[];
+    transactions: { seq: number; frame: number; textures: FixTexture[] }[];
+  };
+  const hook = (l: FixLine): HookLine =>
+    ({
+      thread: "main",
+      reason: null,
+      format: null,
+      width: null,
+      height: null,
+      mipmaps: null,
+      data_bytes: null,
+      payload_bytes: null,
+      copy_ns: null,
+      hash_ns: null,
+      conn: null,
+      target: null,
+      ...l,
+    }) as HookLine;
+  const rec = (
+    txs: { seq: number; frame: number; textures: FixTexture[] }[],
+  ): ResolvedRecording =>
+    ({
+      transactions: txs.map((t) => ({
+        seq: t.seq,
+        frame: t.frame,
+        state: { textures: t.textures },
+      })),
+    }) as unknown as ResolvedRecording;
+  const lines = fix.lines.map(hook);
+  const good = textureLogDivergence(lines, rec(fix.transactions));
+  assert(
+    "texture-log /16: a real g8vp late table (viewports, proxies, adoption, node route) agrees with its hook log",
+    good.length === 0,
+    good.slice(0, 3).join("; "),
+  );
+  const VIEWPORT_FAMILY = [
+    "viewport_create",
+    "texture_proxy_create",
+    "texture_proxy_update",
+    "node_route",
+    "adopt",
+  ];
+  const blind = textureLogDivergence(
+    lines.filter((l) => !VIEWPORT_FAMILY.includes(l.op)),
+    rec(fix.transactions),
+  );
+  assert(
+    "texture-log /16: without the viewport family's lines the table holds textures the log does not",
+    blind.some((p) => p.includes("is not in the hook log")),
+    blind.slice(0, 2).join("; "),
+  );
+  const bumped = fix.transactions.map((t) => ({
+    ...t,
+    textures: t.textures.map((e) =>
+      e.kind === "proxy" && e.status === "ok"
+        ? { ...e, version: e.version + 7 }
+        : e,
+    ),
+  }));
+  const stale = textureLogDivergence(lines, rec(bumped));
+  assert(
+    "texture-log /16: a proxy version the log never reached fails",
+    stale.some((p) => /is proxy\/ok v\d+/.test(p)),
+    stale.slice(0, 2).join("; "),
+  );
+  const unresolved = fix.transactions.map((t) => ({
+    ...t,
+    textures: t.textures.map((e) =>
+      e.kind === "viewport" ? { ...e, status: "unsupported" } : e,
+    ),
+  }));
+  assert(
+    "texture-log /16: a viewport texture whose status the log does not say fails",
+    textureLogDivergence(lines, rec(unresolved)).length > 0,
+  );
+  // VS5 FIX (Codex F1): every transaction has exactly one expected state, the replay of the
+  // lines at or before its frame (the capture stamps the publish path with the publishing frame).
+  // A transaction mixing states that never coexisted, or showing a later frame's state, fails.
+  const mutate = (
+    seq: number,
+    id: number,
+    edit: ((e: FixTexture) => FixTexture) | null,
+  ) =>
+    fix.transactions.map((t) =>
+      t.seq !== seq
+        ? t
+        : {
+            ...t,
+            textures: edit
+              ? t.textures.map((e) => (e.id === id ? edit(e) : e))
+              : t.textures.filter((e) => e.id !== id),
+          },
+    );
+  const has = (seq: number, id: number) =>
+    fix.transactions.some(
+      (t) => t.seq === seq && t.textures.some((e) => e.id === id),
+    );
+  const unsupportedAt = (version: number) => (e: FixTexture) => ({
+    ...e,
+    status: "unsupported",
+    version,
+  });
+  for (const [name, seq, id, edit] of [
+    [
+      "seq 1, proxy 23 at v1 unsupported (before its node route)",
+      1,
+      23,
+      unsupportedAt(1),
+    ],
+    ["seq 1 without adopted image 27", 1, 27, null],
+    [
+      "seq 1, proxy 26 at v2 unsupported (before its re-resolution)",
+      1,
+      26,
+      unsupportedAt(2),
+    ],
+    [
+      "seq 5, proxy 32 at v1 unsupported (before its node route)",
+      5,
+      32,
+      unsupportedAt(1),
+    ],
+    ["seq 14 without adopted image 33", 14, 33, null],
+    [
+      "seq 14, proxy 26 at v4 unsupported (before its re-resolution)",
+      14,
+      26,
+      unsupportedAt(4),
+    ],
+  ] as const) {
+    const p = textureLogDivergence(lines, rec(mutate(seq, id, edit)));
+    assert(
+      `texture-log /16: ${name} fails`,
+      has(seq, id) && p.length > 0,
+      p.slice(0, 2).join("; ") || "accepted",
+    );
+  }
+  // The gate's frame-15 engine-state mutation: an engine texture_proxy_update at frame 15 moves
+  // proxy 26 to v4 unsupported; a transaction at frame 14 showing that state fails, one at frame 15
+  // showing it passes.
+  {
+    const engine = hook({
+      frame: 15,
+      op: "texture_proxy_update",
+      id: 26,
+      by_id: null,
+      rid: "3",
+      version: 4,
+      kind: "proxy",
+      status: "unsupported",
+      hash: null,
+    });
+    const at = lines.findIndex((l) => l.frame > 15);
+    const injected = [...lines.slice(0, at), engine, ...lines.slice(at)];
+    const seq2 = fix.transactions.find((t) => t.seq === 2);
+    const asIf = (frame: number) =>
+      textureLogDivergence(
+        injected,
+        rec([
+          {
+            seq: 2,
+            frame,
+            textures: (seq2?.textures ?? []).map((e) =>
+              e.id === 26 ? unsupportedAt(4)(e) : e,
+            ),
+          },
+        ]),
+      );
+    assert(
+      "texture-log /16: a frame-14 transaction showing a frame-15 engine proxy update fails; at frame 15 it passes",
+      seq2 !== undefined && asIf(14).length > 0 && asIf(15).length === 0,
+      `${asIf(14).slice(0, 1).join("")} | ${asIf(15).slice(0, 1).join("")}`,
+    );
+  }
+  // Exactly the lines at or before the frame: an image (created or adopted) one frame ahead of
+  // its log fails, and a mesh free never tombstones the texture that shares its id.
+  const img = (frame: number, op: string, version: number): HookLine =>
+    hook({
+      frame,
+      op,
+      id: 5,
+      by_id: null,
+      rid: "1",
+      version,
+      kind: "image",
+      status: "ok",
+      hash: `h${version}`,
+    });
+  const ahead = (origin: string) =>
+    textureLogDivergence(
+      [img(5, "texture_2d_create", 1), img(6, "texture_2d_update", 2)],
+      rec([
+        {
+          seq: 1,
+          frame: 5,
+          textures: [
+            {
+              id: 5,
+              origin,
+              kind: "image",
+              status: "ok",
+              version: 2,
+              hash: "h2",
+            },
+          ],
+        },
+      ]),
+    );
+  assert(
+    "texture-log /16: an image one frame ahead of its log fails, created or adopted (no next-frame allowance)",
+    ahead("created").length > 0 && ahead("adopted").length > 0,
+    `${ahead("created").join("; ")} | ${ahead("adopted").join("; ")}`,
+  );
+  const meshFree = textureLogDivergence(
+    [
+      img(5, "texture_2d_create", 1),
+      hook({
+        frame: 5,
+        op: "free",
+        id: 5,
+        by_id: null,
+        rid: "2",
+        version: 3,
+        kind: "mesh",
+        status: "freed",
+        hash: null,
+      }),
+    ],
+    rec([
+      {
+        seq: 1,
+        frame: 5,
+        textures: [
+          {
+            id: 5,
+            origin: "created",
+            kind: "image",
+            status: "ok",
+            version: 1,
+            hash: "h1",
+          },
+        ],
+      },
+    ]),
+  );
+  assert(
+    "texture-log /16: a mesh free with a texture's id leaves the texture live",
+    meshFree.length === 0,
+    meshFree.join("; "),
+  );
 }
 
 function pureCases(): void {
@@ -616,6 +898,7 @@ async function main(): Promise<void> {
     ),
   ) as Gate2Expected;
   pureCases();
+  await textureLog16Cases();
 
   // Missing evidence from a launched leg stays a real failure, byte for byte.
   const tierRoot = await mkdtemp(join(tmpdir(), "gate2-tier-"));

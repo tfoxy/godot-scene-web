@@ -391,12 +391,25 @@ interface LogTexture {
   hash: string | null;
 }
 
-/** Replays the hook log's identity lines in order and calls `visit(frame, state)` before the
- * first line of each later frame and at the end; omitted lines (omit-op) change nothing. */
-function replayLog(
-  lines: readonly HookLine[],
-): Array<{ frame: number; state: Map<number, LogTexture> }> {
-  const out: Array<{ frame: number; state: Map<number, LogTexture> }> = [];
+/** The texture-table kinds a hook-log `adopt` line can enter (render-stream-16.md "Texture kinds"). */
+const LOG_TEXTURE_KINDS: ReadonlySet<string> = new Set([
+  "image",
+  "placeholder",
+  "canvas",
+  "proxy",
+  "viewport",
+]);
+
+/** One frame of the replayed hook log: the state after its last line. */
+interface LogSnapshot {
+  frame: number;
+  state: Map<number, LogTexture>;
+}
+
+/** Replays the hook log's identity lines in order and snapshots the state before the first line
+ * of each later frame and at the end; omitted lines (omit-op) change nothing. */
+function replayLog(lines: readonly HookLine[]): LogSnapshot[] {
+  const out: LogSnapshot[] = [];
   const state = new Map<number, LogTexture>();
   let frame = 0;
   for (const l of lines) {
@@ -435,8 +448,31 @@ function replayLog(
         if (l.id !== null) set(l.id);
         if (l.by_id !== null) state.delete(l.by_id);
         break;
+      // VS2 (render-stream/16): the viewport family. A viewport's `viewport` texture (kind
+      // viewport) enters at viewport_create; a proxy (kind proxy, ok or unsupported
+      // proxy-unresolved) at texture_proxy_create, and texture_proxy_update and node_route carry
+      // its new version and status (an update line for a proxy the log never met has no id). Each
+      // line carries the entry's state after the call, so it replaces the replica's. The publish
+      // path's lines (the node route and its registry re-resolution, adoptions included) carry
+      // the frame of the transaction they are published in (render-stream-16.md Q3b(3)), so a
+      // transaction is exactly the replay of the lines at or before its frame, as before /16.
+      case "viewport_create":
+      case "texture_proxy_create":
+      case "texture_proxy_update":
+      case "node_route":
+        if (l.id !== null) set(l.id);
+        break;
+      case "adopt":
+        // An arm's adoption (G8a, VS2): a texture entry made from the engine's current state --
+        // an adopted viewport and its default proxy, a scene proxy, an image or a placeholder.
+        // Mesh, shader and material adoptions share the op and are not textures.
+        if (l.id !== null && l.kind !== null && LOG_TEXTURE_KINDS.has(l.kind))
+          set(l.id);
+        break;
       case "free":
-        if (l.id !== null)
+        // Texture frees only: a mesh, shader or material id is another registry's (G5a, G55a)
+        // and may equal a texture id.
+        if (l.id !== null && (l.kind === null || LOG_TEXTURE_KINDS.has(l.kind)))
           state.set(l.id, {
             version: l.version,
             kind: l.kind,

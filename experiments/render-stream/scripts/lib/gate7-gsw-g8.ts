@@ -179,11 +179,13 @@ export const GATE8_LEGS: GswLegDef[] = [
     replaces: false,
   },
   // g8vp (VS3, viewport-surfaces-design.md Q5): the born captures (headless: constructor adjacency
-  // and the node route; rendered: proxies bound by RID) replayed by GSW, which draws every
-  // reached viewport into its own surface; vp-reference judges the shots against the rendered
-  // host's own Godot shots.
+  // and the node route; rendered: proxies bound by RID) and (VS5) the late ones (viewports and
+  // proxies adopted at the API arm) replayed by GSW, which draws every reached viewport into its
+  // own surface; vp-reference judges the shots against the rendered host's own Godot shots.
   leg("g8vp/born/receiver"),
   leg("g8vp/born-rendered/receiver"),
+  leg("g8vp/late/receiver"),
+  leg("g8vp/late-rendered/receiver"),
 ];
 
 const IMPORT_NA =

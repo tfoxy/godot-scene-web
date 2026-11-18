@@ -412,6 +412,27 @@ expect(
   );
   expect(
     residualProblems(
+      { ...res, textures_refused: 4, refused_viewport: 1 },
+      { rec: late },
+      LATE,
+    ).length === 0,
+    "residual: a refusal typed viewport (VS2's refuse_viewport_texture) counts as typed",
+  );
+  expect(
+    residualProblems({ ...res, textures_refused: 4 }, { rec: late }, LATE)
+      .length > 0,
+    "residual: an extra refusal with no refused_viewport (older evidence: 0) is untyped and fails",
+  );
+  expect(
+    residualProblems(
+      { ...res, textures_refused: 4, refused_viewport: 2 },
+      { rec: late },
+      LATE,
+    ).length > 0,
+    "residual: more typed refusals than textures_refused fails",
+  );
+  expect(
+    residualProblems(
       {
         ...res,
         textures_canvas: 4,

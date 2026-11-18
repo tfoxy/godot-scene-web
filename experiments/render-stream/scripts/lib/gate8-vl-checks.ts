@@ -10,14 +10,25 @@
 //                       alone), the default client (`viewports` on); shots/final.png, applied.json
 //   client-off/{host,receiver}  the same with RS_RECEIVER_VIEWPORTS=off (the client's
 //                       `viewports: false`)
+//   late/{host,receiver}  (VS5) a headless live host loaded into standby (GRC_ADOPT=arm) and armed
+//                       through RenderStreamCapture.arm() at frame K: its viewports and proxies are
+//                       adopted, not created
+//   rendered/, late-rendered/  (VS5) the born and late hosts on the private gamescope (proxies
+//                       bound by render-target RID), each with the same browser receiver
 //
 // Checks:
 //   vp-live        the on leg's host and receiver exited 0, the receiver spoke render-stream/16 to the
 //                  end record with every surface built (surfaces_rendered > 0, surfaces_skipped 0),
-//                  and its final shot equals the rendered Godot reference's last step shot within
+//                  its final shot equals the rendered Godot reference's last step shot within
 //                  fixtures/viewport-scene/expected.json's reference regions (the file legs' vp-reference
 //                  budget: the scene is static from its last step, so the final live state is that
-//                  step's)
+//                  step's), and (VS5) the host's stream.gate8.viewports and adopt_stats match the
+//                  file leg of the same arm and host (expected.json account: born)
+//   vp-live-late, vp-live-rendered, vp-live-late-rendered  (VS5) the same for the late, rendered and
+//                  late-rendered legs, each host judged against its file twin's account (late,
+//                  born-rendered, late-rendered): the late hosts adopted the scene's viewports, and
+//                  their shots take expected.json's reference.late classes (the popup region:
+//                  subwindow residue), as vp-reference's late file legs do
 //   vp-client-off  the client-off leg's receiver, built with viewports off, applied the whole stream
 //                  and built no surface pass (surfaces_rendered 0, surfaces_allocated 0,
 //                  surfaces_skipped > 0): the final shot differs from the on leg's in the regions
@@ -38,10 +49,43 @@ import {
   readText,
 } from "./gate8-adopt-checks";
 import {
+  accountProblems,
+  referenceFor,
   regionDiff,
   type VpExpected,
   type VpReference,
+  type VpResult,
 } from "./gate8-vp-checks";
+
+/** The live legs judged as vp-live is (a default client, viewports on): each leg's check id, the
+ * expected.json account its host must report (the file leg of the same arm and host), and how it
+ * differs from `on`. */
+export const VL_LIVE_LEGS = [
+  {
+    leg: "on",
+    id: "vp-live",
+    account: "born",
+    what: "a headless host armed at birth",
+  },
+  {
+    leg: "late",
+    id: "vp-live-late",
+    account: "late",
+    what: "a headless host in standby armed through RenderStreamCapture.arm() at frame K (GRC_ADOPT=arm: the scene's viewports and their proxies adopted)",
+  },
+  {
+    leg: "rendered",
+    id: "vp-live-rendered",
+    account: "born-rendered",
+    what: "a host armed at birth on the private gamescope (proxies bound by render-target RID)",
+  },
+  {
+    leg: "late-rendered",
+    id: "vp-live-late-rendered",
+    account: "late-rendered",
+    what: "a host in standby armed through the API at frame K on the private gamescope (adopted viewports, RID proxies)",
+  },
+] as const;
 
 /** expected.json's `client_off`: the reference regions a `viewports: false` client must leave
  * empty (their pixels differ from the on leg's) and those it must not touch. */
@@ -211,6 +255,9 @@ async function leg(g: string, name: string) {
     browser: existsSync(join(dir, "receiver", "page-config.json")),
     applied: await readJson<VlApplied>(join(dir, "receiver", "applied.json")),
     shot: await decodePngRgba(join(dir, "receiver", "shots", "final.png")),
+    hostResult: await readJson<VpResult>(
+      join(dir, "host", "evidence", "result.json"),
+    ),
   };
 }
 
@@ -234,35 +281,50 @@ export async function runG8vl(
           join(g, "reference", "capture", "shots", `step-${last}.png`),
         );
 
-  // --- vp-live ---------------------------------------------------------------------------------
-  {
+  // --- vp-live, and (VS5) vp-live-late, vp-live-rendered, vp-live-late-rendered ---------------
+  for (const spec of VL_LIVE_LEGS) {
+    const l = spec.leg === "on" ? on : await leg(g, spec.leg);
     let problems: string[] | null = null;
     let detail = "";
-    if (on.applied != null || on.hostExit !== undefined) {
+    if (l.applied != null || l.hostExit !== undefined) {
       problems = runProblems(
-        "on",
-        on.hostExit,
-        on.recvExit,
-        on.browser,
-        on.applied,
+        spec.leg,
+        l.hostExit,
+        l.recvExit,
+        l.browser,
+        l.applied,
       );
-      problems.push(...liveSurfaceProblems(on.applied?.live?.gsw?.surfaces));
+      problems.push(...liveSurfaceProblems(l.applied?.live?.gsw?.surfaces));
+      problems.push(
+        ...accountProblems(
+          l.hostResult ?? null,
+          ex.account[spec.account],
+          null,
+          false,
+        ).map((p) => `${spec.leg}/host: ${p}`),
+      );
       if (!ex.reference) problems.push("expected.json has no reference block");
-      else if (!on.shot) problems.push("on/receiver/shots/final.png missing");
+      else if (!l.shot)
+        problems.push(`${spec.leg}/receiver/shots/final.png missing`);
       else if (!ref)
         problems.push("reference/capture has no shot of its last step");
       else {
-        const r = referenceShotProblems("on", on.shot, ref, ex.reference);
+        // VS5: a late leg judges the popup region as reference.late says (subwindow residue)
+        const legRef = referenceFor(spec.leg, ex.reference, last ?? 0);
+        problems.push(...legRef.problems);
+        const r = referenceShotProblems(spec.leg, l.shot, ref, legRef.ref);
         problems.push(...r.problems);
-        report.vp_live = r.rows;
+        report[`${spec.id.replaceAll("-", "_")}`] = r.rows;
       }
-      report.on = on.applied?.live?.gsw?.surfaces ?? null;
-      detail = `final shot against reference step ${last}; surfaces ${JSON.stringify(on.applied?.live?.gsw?.surfaces ?? null)}`;
+      report[spec.leg === "on" ? "on" : spec.leg] =
+        l.applied?.live?.gsw?.surfaces ?? null;
+      const vp = l.hostResult?.stream?.gate8?.viewports;
+      detail = `final shot against reference step ${last}; host created ${vp?.created} adopted ${vp?.adopted} rid ${vp?.proxies_bound_rid}; surfaces ${JSON.stringify(l.applied?.live?.gsw?.surfaces ?? null)}`;
     }
     checks.push(
       check(
-        "vp-live",
-        `a /16 host served live (GRC_STREAM_VERSION=16, render-stream.16 the only subprotocol the receiver offers) to a browser GSW receiver: the receiver spoke render-stream/16 to the end record with every viewport surface built, and its final shot matches the rendered Godot host's own last-step shot in every exact reference region (within ${ex.reference?.channel ?? "?"} channel step(s))`,
+        spec.id,
+        `a /16 host served live (GRC_STREAM_VERSION=16, render-stream.16 the only subprotocol the receiver offers) from ${spec.what} to a browser GSW receiver: the host's stream.gate8.viewports and adopt_stats match expected.json's ${spec.account} account, the receiver spoke render-stream/16 to the end record with every viewport surface built, and its final shot matches the rendered Godot host's own last-step shot in every exact reference region (within ${ex.reference?.channel ?? "?"} channel step(s))`,
         problems,
         detail,
       ),

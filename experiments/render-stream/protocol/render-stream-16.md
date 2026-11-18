@@ -233,6 +233,12 @@ changed viewport entries. Below /16 every rule is /15's, byte for byte.
   the root and a viewport, the 3D flag, an adopted viewport texture, a proxy keeping a freed target,
   a diffuse naming a proxy and the derived entry through a proxy) and `invalid/viewport-*.rs16`,
   `invalid/proxy-*.rs16` and `invalid/viewport-at-15.rs15`.
+- The capture's hook log (`evidence/resources.jsonl`, the oracle of gate 2's
+  `texture-versions-current`) is not wire, but its frame rule is part of the contract: a transaction
+  at frame F is exactly the replay of the lines labelled F or earlier. The publish path (the node
+  route and the registry re-resolution before it, adoptions included) runs after the capture has
+  stamped the next iteration's frame, so it labels its lines with the publishing frame F
+  (`hooks_set_log_frame`), never F + 1. Only the hook log moves: the wire bytes are the same.
 
 ## Tools
 

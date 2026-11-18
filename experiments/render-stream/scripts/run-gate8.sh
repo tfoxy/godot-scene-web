@@ -378,8 +378,9 @@
 #       `sabotage-no-node-route` and `sabotage-wrong-order` on late), all under
 #       GRC_UNKNOWN_ITEM=skip; then `born-rendered` and `late-rendered`, the same captures on the
 #       private gamescope host (render-target RIDs are real there: proxies bind by RID), with the
-#       fixture's own shots; then (VS3) rendered receivers on the born captures,
-#       `born/receiver` and `born-rendered/receiver` (GSW under gate 7's replay: vp-reference).
+#       fixture's own shots; then (VS3, VS5) rendered receivers on the born and late captures,
+#       `born/receiver`, `born-rendered/receiver`, `late/receiver` and `late-rendered/receiver`
+#       (GSW under gate 7's replay: vp-reference, each against the rendered capture of its arm).
 #       Judged by lib/gate8-vp-checks.ts.
 #   g8vl (VS4, render-stream-16.md live: the same fixture served live at /16 to a browser receiver;
 #       every leg under g8vl/, never in the default run: it needs GATE7_LIVE_KIND, which
@@ -388,7 +389,11 @@
 #       shots are the reference; `on/` and `client-off/`, each a headless live host (`host/`,
 #       res://born.tscn, GRC_STREAM_VERSION=16) and a browser GSW receiver at RS_RECEIVER_PROTOCOL=16
 #       (`receiver/`, final shot), `client-off` with RS_RECEIVER_VIEWPORTS=off (the client's
-#       `viewports: false`). Judged by lib/gate8-vl-checks.ts (vp-live, vp-client-off).
+#       `viewports: false`); (VS5) `late/` (a headless live host in standby, GRC_ADOPT=arm, armed
+#       through RenderStreamCapture.arm() at frame K), `rendered/` and `late-rendered/` (the born and
+#       late hosts on the group's private gamescope: proxies bind by render-target RID), each with
+#       the same browser receiver. Judged by lib/gate8-vl-checks.ts (vp-live, vp-live-late,
+#       vp-live-rendered, vp-live-late-rendered, vp-client-off).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -3658,13 +3663,31 @@ g8l_spec() {
 		G8L_ENV=("${G8VP_BORN_ENV[@]}")
 		G8L_VERSION=16
 		;;
+	vp-late)
+		# VS5 (g8vl late): the same fixture loaded into standby (GRC_MODE=standby after the host's
+		# GRC_MODE=arm: the later word wins) and armed through RenderStreamCapture.arm() at frame K.
+		G8L_PROJECT="$G8VP_FIXTURE_DIR"
+		G8L_ENV=("${G8VP_LATE_ENV[@]}")
+		G8L_VERSION=16
+		;;
 	esac
 }
 
 # start_g8l_host <dir> <fixture>: the fixture's live host in the background (header above); sets
 # LIVE_HOST_PID and LIVE_PORT ("" when the host is not listening).
 start_g8l_host() {
-	local dir="$1" waited=0
+	local dir="$1"
+	g8l_host_env "$dir" "$2"
+	local -a argv=("$BINARY" --headless --max-fps 60 --path "$G8L_PROJECT")
+	[ -n "$G8L_SCENE" ] && argv+=("$G8L_SCENE")
+	start_headless_bg "$dir" -- "${argv[@]}"
+	LIVE_HOST_PID="$BG_PID"
+	g8l_await_listening "$dir"
+}
+
+# g8l_host_env <dir> <fixture>: g8l_spec, the host's directories and its LEG_ENV (header above).
+g8l_host_env() {
+	local dir="$1"
 	g8l_spec "$2"
 	mkdir -p "$dir/evidence" "$dir/tap"
 	LEG_ENV=(
@@ -3675,12 +3698,15 @@ start_g8l_host() {
 		RS_FIXTURE_QUIT_FRAME="$G8L_QUIT_FRAME" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" "${G8L_ENV[@]}"
 		${G8L_HOST_EXTRA_ENV[@]+"${G8L_HOST_EXTRA_ENV[@]}"}
 	)
-	local -a argv=("$BINARY" --headless --max-fps 60 --path "$G8L_PROJECT")
-	[ -n "$G8L_SCENE" ] && argv+=("$G8L_SCENE")
-	start_headless_bg "$dir" -- "${argv[@]}"
-	LIVE_HOST_PID="$BG_PID"
+}
+
+# g8l_await_listening <dir>: waits (up to 30 s) for the host at <dir> (LIVE_HOST_PID) to write
+# evidence/live.json, and sets LIVE_PORT ("" when it is not listening).
+g8l_await_listening() {
+	local dir="$1" waited=0
 	LIVE_PORT=""
-	while [ "$waited" -lt 600 ] && [ ! -s "$dir/evidence/live.json" ] && kill -0 "$LIVE_HOST_PID" 2>/dev/null; do
+	while [ "$waited" -lt 600 ] && [ ! -s "$dir/evidence/live.json" ] && [ -n "$LIVE_HOST_PID" ] &&
+		kill -0 "$LIVE_HOST_PID" 2>/dev/null; do
 		sleep 0.05
 		waited=$((waited + 1))
 	done
@@ -5375,13 +5401,18 @@ run_g8vp() {
 	run_capture_rendered_g8vp born-rendered born "${G8VP_BORN_ENV[@]}"
 	echo "run-gate8: g8vp late-rendered (/16, standby, API arm at frame $G8VP_ARM_FRAME, rendered host)"
 	run_capture_rendered_g8vp late-rendered late "${G8VP_LATE_ENV[@]}"
-	# VS3 (vp-reference): the born captures replayed by a rendered receiver, shot at the settle
-	# frames. Under gate 7's GSW replay (lib/gate7-gsw-g8.ts GATE8_LEGS) the GSW receiver draws the
-	# surfaces; lib/gate8-vp-checks.ts compares its shots with born-rendered's own Godot shots.
+	# VS3 (vp-reference): the born and (VS5) late captures replayed by a rendered receiver, shot at
+	# the settle frames. Under gate 7's GSW replay (lib/gate7-gsw-g8.ts GATE8_LEGS) the GSW receiver
+	# draws the surfaces; lib/gate8-vp-checks.ts compares its shots with the rendered capture of the
+	# same arm (born-rendered's or late-rendered's own Godot shots).
 	echo "run-gate8: g8vp born/receiver (the headless born capture, replayed rendered)"
 	run_rendered_receiver "$OUT/g8vp/born/capture" "$OUT/g8vp/born/receiver"
 	echo "run-gate8: g8vp born-rendered/receiver (the rendered born capture, replayed rendered)"
 	run_rendered_receiver "$OUT/g8vp/born-rendered/capture" "$OUT/g8vp/born-rendered/receiver"
+	echo "run-gate8: g8vp late/receiver (the headless late capture, replayed rendered)"
+	run_rendered_receiver "$OUT/g8vp/late/capture" "$OUT/g8vp/late/receiver"
+	echo "run-gate8: g8vp late-rendered/receiver (the rendered late capture, replayed rendered)"
+	run_rendered_receiver "$OUT/g8vp/late-rendered/capture" "$OUT/g8vp/late-rendered/receiver"
 	gs_teardown "$OUT/gamescope-g8vp"
 	GS_RUN_DIR=""
 	RECORDING_NAME=recording.rs8
@@ -5391,7 +5422,52 @@ run_g8vp() {
 # VS4: g8vl, the viewport-scene fixture live at /16 in a browser receiver (header above). The
 # reference is a rendered file-sink capture of the born fixture (its own Godot shots); `on` is the
 # default client, `client-off` the client with `viewports: false` (RS_RECEIVER_VIEWPORTS=off).
-# Both hosts are headless live hosts holding their first publish for the receiver's hello.
+# VS5 completes the live matrix: `late` (standby, armed through the API at frame K), `rendered`
+# and `late-rendered` (the born and late hosts on the private gamescope). Every host is a live host
+# holding its first publish for the receiver's hello; the scene is static from its last step, so
+# every leg's final shot is judged against the reference's last step.
+G8VL_LEGS=(on late rendered late-rendered client-off)
+
+# start_g8vl_rendered_host <dir> <fixture>: the fixture's live host on the rendered host (the
+# group's private gamescope, where render-target RIDs are real), in the background; sets
+# LIVE_HOST_PID and LIVE_PORT as start_g8l_host does, and holds the quiet lock as
+# start_headless_bg holds it for a headless live host (a gate 7 live leg's exclusive hold, or the
+# shared one), released by finish_bg.
+start_g8vl_rendered_host() {
+	local dir="$1" opens=0
+	LIVE_HOST_PID=""
+	LIVE_PORT=""
+	legs_sabotage_skipped "$dir" && return 0
+	g8l_host_env "$dir" "$2"
+	gate7_host_env
+	legs_par_wait
+	if legs__timing_opens; then
+		opens=1
+		timing_leg_begin "${LEGS_TIMING_GROUP:-gate7-live}:$(legs__rel "$dir")"
+	else
+		legs_lock_enter "$dir"
+	fi
+	local -a extra=(--max-fps 60)
+	[ -n "$G8L_SCENE" ] && extra+=("$G8L_SCENE")
+	gs_require_live
+	write_invocation "$dir" "$BINARY" --path "$G8L_PROJECT" --rendering-driver opengl3 --display-driver x11 "${extra[@]}"
+	echo "DISPLAY=$GS_DISPLAY" >>"$dir/env.txt"
+	GS_GODOT_ENV=("${LEG_ENV[@]}")
+	gs_launch_godot "$GS_DISPLAY" "$BINARY" "$G8L_PROJECT" "$dir/stdout.log" "${extra[@]}"
+	LIVE_HOST_PID="$GS_LAST_GODOT_PID"
+	if [ "$opens" = 1 ]; then
+		LEGS_TIMING_OPENER="$LIVE_HOST_PID"
+	elif [ -z "$LEGS_TIMING_LABEL" ]; then
+		LEGS_LOCK_BG+=("$LIVE_HOST_PID")
+	fi
+	sleep 0.3
+	if [ -d "/proc/$LIVE_HOST_PID" ]; then
+		gs_verify_display_ownership "$GS_DISPLAY" "$GS_PID" "$GS_SID" "$LIVE_HOST_PID" "$dir/display-ownership.json" ||
+			echo "run-gate8: WARNING: $dir display ownership check failed, see display-ownership.json" >&2
+	fi
+	g8l_await_listening "$dir"
+}
+
 run_g8vl() {
 	mkdir -p "$OUT/g8vl"
 	if [ -z "${GATE7_LIVE_KIND:-}" ]; then
@@ -5401,20 +5477,30 @@ run_g8vl() {
 		return 0
 	fi
 	[ -f "$OUT/g8vp/import/fixture/exit-code.txt" ] || run_import_g8vp
-	local saved_dir="$G8VP_DIR" leg d
+	local saved_dir="$G8VP_DIR" leg d fixture
 	G8VP_DIR="$OUT/g8vl"
 	RECORDING_NAME=recording.rs16
 	PATCH_RECORDING_NAME=recording-patch.rs16
-	echo "run-gate8: bringing up private gamescope for g8vl's rendered reference"
+	echo "run-gate8: bringing up private gamescope for g8vl's rendered reference and hosts"
 	gs_start 640 360 "$OUT/gamescope-g8vl"
 	echo "run-gate8: g8vl reference (/16, armed at birth, rendered host: the Godot shots)"
 	run_capture_rendered_g8vp reference born "${G8VP_BORN_ENV[@]}"
-	for leg in on client-off; do
+	for leg in "${G8VL_LEGS[@]}"; do
 		d="$OUT/g8vl/$leg"
 		G8L_RECEIVER_EXTRA_ENV=()
 		[ "$leg" = client-off ] && G8L_RECEIVER_EXTRA_ENV=(RS_RECEIVER_VIEWPORTS=off)
-		echo "run-gate8: g8vl $leg (live host at /16, browser receiver over render-stream.16)"
-		start_g8l_host "$d/host" vp
+		fixture=vp
+		case "$leg" in late | late-rendered) fixture=vp-late ;; esac
+		case "$leg" in
+		rendered | late-rendered)
+			echo "run-gate8: g8vl $leg (rendered live host at /16, browser receiver over render-stream.16)"
+			start_g8vl_rendered_host "$d/host" "$fixture"
+			;;
+		*)
+			echo "run-gate8: g8vl $leg (headless live host at /16, browser receiver over render-stream.16)"
+			start_g8l_host "$d/host" "$fixture"
+			;;
+		esac
 		g8l_receiver "$d" "$LIVE_PORT"
 		finish_bg "$d/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
 		LIVE_HOST_PID=""

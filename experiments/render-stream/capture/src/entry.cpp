@@ -6942,7 +6942,11 @@ void on_frame() {
     // publishing frame it has already run; this frame's hooked calls and adopt_frame_drain too.
     if (g_viewports.stream_live && g_stream.status == "open") {
       ++g_viewports.node_route_calls;
+      // VS5: the node route and its re-resolution are this frame's publication, so their hook-log
+      // lines carry frames_total, not the next iteration's stamp set above.
+      hooks_set_log_frame(g_state.frames_total);
       g_viewports.node_route_bound += rs::resolve_unresolved_proxies(g_state.frames_total);
+      hooks_set_log_frame(0);
     }
     stream_publish(g_state.frames_total);
     if (g_stream.status == "closed" && g_api->phase() == cap::State::Armed) {
