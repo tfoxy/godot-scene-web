@@ -46,14 +46,16 @@ import { quietAcquire } from "./quiet-lock";
 
 /** G8g: the file name a browser leg's recording copy takes: a gate 8 receiver's own
  * (`recording.rs8`, `recording.rs9`, CG1's `recording.rs10`, W11d's `recording.rs11`, PM6a's
- * `recording.rs12`), else `recording.rs2` as before (gates 0 to 6). */
+ * `recording.rs12`, W13c's `.rs13`, VS3's `.rs16`), else `recording.rs2` as before (gates 0 to 6). */
 export function recordingFileName(nativePath: string): string {
   const name = basename(nativePath);
-  return /^recording\.rs(8|9|10|11|12|13)$/.test(name) ? name : "recording.rs2";
+  return /^recording\.rs(8|9|10|11|12|13|16)$/.test(name)
+    ? name
+    : "recording.rs2";
 }
 
 /** G8g: the recording a receiver leg directory holds (`recording.rs2`, or gate 8's
- * `.rs8`/`.rs9`/`.rs10`/`.rs11`/`.rs12`, W13c `.rs13`). */
+ * `.rs8`/`.rs9`/`.rs10`/`.rs11`/`.rs12`, W13c `.rs13`, VS3 `.rs16`). */
 export function legRecording(dir: string): string {
   for (const name of [
     "recording.rs2",
@@ -63,6 +65,7 @@ export function legRecording(dir: string): string {
     "recording.rs11",
     "recording.rs12",
     "recording.rs13",
+    "recording.rs16",
   ]) {
     const p = join(dir, name);
     if (existsSync(p)) return p;

@@ -6733,7 +6733,7 @@ export function createRs13Unpredictor(
 
 /** Every record of a /13 (or /14) recording with its transactions' blocks un-predicted (the /12
  * blocks in the /13 framing); throws the first decode, meta or predict-check error. */
-function rs13PlainRecords(
+export function rs13PlainRecords(
   records: RawRecord[],
   version: 13 | 14 | 15 | 16 = 13,
 ): RawRecord[] {

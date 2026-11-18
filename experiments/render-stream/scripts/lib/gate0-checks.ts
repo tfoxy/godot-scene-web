@@ -62,6 +62,7 @@ import {
   type EndMeta as Rs2EndMeta,
   type SessionMeta as Rs2SessionMeta,
   type TransactionMeta as Rs2TransactionMeta,
+  rs13PlainRecords,
   sortedResolvedCanvases,
   sortedResolvedItems,
   sortedResolvedMaterials,
@@ -807,7 +808,18 @@ function summarizeRecordingOnce(
   };
   let state: ResolvedState = emptyResolvedState();
   const lastItems = new Map<number, ResolvedItem>();
-  for (const [k, raw] of split.records.entries()) {
+  // render-stream-13.md "Forms and transcode": a /13+ transaction's blocks are its predicted ones;
+  // the state is applied from the reconstructed /12 blocks (decodeRecording's rule). A recording
+  // that cannot be reconstructed is read as before, and the validator names its first error.
+  let plain = split.records;
+  if (version >= 13 && errors === null) {
+    try {
+      plain = rs13PlainRecords(split.records, version as 13 | 14 | 15 | 16);
+    } catch {
+      plain = split.records;
+    }
+  }
+  for (const [k, raw] of plain.entries()) {
     validateBefore(k + 1);
     const { record } = decodeRecord(raw, version);
     if (!record) break;

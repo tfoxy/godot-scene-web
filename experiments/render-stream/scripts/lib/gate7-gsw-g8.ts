@@ -178,6 +178,12 @@ export const GATE8_LEGS: GswLegDef[] = [
     env: { RS_RECEIVER_TRANSCODE_FAULT: "fail" },
     replaces: false,
   },
+  // g8vp (VS3, viewport-surfaces-design.md Q5): the born captures (headless: constructor adjacency
+  // and the node route; rendered: proxies bound by RID) replayed by GSW, which draws every
+  // reached viewport into its own surface; vp-reference judges the shots against the rendered
+  // host's own Godot shots.
+  leg("g8vp/born/receiver"),
+  leg("g8vp/born-rendered/receiver"),
 ];
 
 const IMPORT_NA =
@@ -282,6 +288,10 @@ export const GATE8_JUDGED_BY_GROUP: Record<string, string[]> = {
   g8ku: [
     // g8ku (G8kb)
     "sabotage-perturb-ktx2",
+  ],
+  g8vp: [
+    // g8vp (VS3: GSW's viewport surfaces against the rendered Godot reference)
+    "vp-reference",
   ],
 };
 

@@ -182,11 +182,13 @@ impl Names {
     ) {
         let mut dirty = all;
         for id in check {
+            // render-stream/16: a named `ok` proxy names its target the same way (a proxy draws
+            // its target, one hop).
             let canvas = self.is_named_directly(id)
-                && state
-                    .textures
-                    .get(&id)
-                    .is_some_and(|t| t.kind == TextureKind::Canvas && t.status == EntryStatus::Ok);
+                && state.textures.get(&id).is_some_and(|t| {
+                    matches!(t.kind, TextureKind::Canvas | TextureKind::Proxy)
+                        && t.status == EntryStatus::Ok
+                });
             if canvas {
                 dirty |= self.canvas_named.insert(id);
             } else {
@@ -200,7 +202,13 @@ impl Names {
         let set: BTreeSet<Id> = self
             .canvas_named
             .iter()
-            .filter_map(|c| state.textures.get(c)?.canvas.as_ref()?.diffuse)
+            .filter_map(|c| {
+                let t = state.textures.get(c)?;
+                match t.kind {
+                    TextureKind::Proxy => t.target,
+                    _ => t.canvas.as_ref()?.diffuse,
+                }
+            })
             .collect();
         for t in set.symmetric_difference(&self.from_canvas) {
             self.changed.insert(*t);

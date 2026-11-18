@@ -1610,7 +1610,8 @@ impl Dirt {
                 crate::TextureOp::Upload { id, .. }
                 | crate::TextureOp::UploadCompressed { id, .. }
                 | crate::TextureOp::UploadHalf { id, .. }
-                | crate::TextureOp::Free { id } => id,
+                | crate::TextureOp::Free { id }
+                | crate::TextureOp::Surface { id, .. } => id,
             }));
         self.textures.sort_unstable();
         self.textures.dedup();

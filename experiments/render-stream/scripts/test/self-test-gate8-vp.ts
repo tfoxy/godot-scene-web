@@ -32,6 +32,7 @@ import {
   HONEST_LEGS,
   offProblems,
   readLeg,
+  regionDiff,
   runG8vp,
   SUBWINDOW_RESIDUE_LAYER,
   sabotageProblems,
@@ -1052,8 +1053,9 @@ try {
   const partial = await runG8vp(tmp, ex);
   const ids = partial.checks.map((c) => c.id).join(",");
   expect(
-    ids === "vp-validate,vp-equivalence,vp-account,vp-off,vp-sabotage",
-    `the group emits its five checks (${ids})`,
+    ids ===
+      "vp-validate,vp-equivalence,vp-account,vp-off,vp-sabotage,vp-reference",
+    `the group emits its six checks (${ids})`,
   );
   expect(
     partial.checks.every((c) => !c.passed),
@@ -1063,7 +1065,7 @@ try {
   try {
     const r = await runG8vp(empty, ex);
     expect(
-      r.checks.length === 5 && r.checks.every((c) => c.status === "fail"),
+      r.checks.length === 6 && r.checks.every((c) => c.status === "fail"),
       "every check fails on an empty tree",
     );
   } finally {
@@ -1071,6 +1073,61 @@ try {
   }
 } finally {
   rmSync(tmp, { recursive: true, force: true });
+}
+
+// VS3 vp-reference: regionDiff judges each region by its class, the rest exactly
+{
+  const ref = ex.reference;
+  expect(
+    ref !== undefined && ref.channel === 1,
+    "expected.json has a reference block, channel 1",
+  );
+  if (ref) {
+    const blank = () => ({
+      data: new Uint8Array(640 * 360 * 4).fill(40),
+      width: 640,
+      height: 360,
+    });
+    const a = blank();
+    const b = blank();
+    const set = (
+      img: ReturnType<typeof blank>,
+      x: number,
+      y: number,
+      v: number,
+    ) => {
+      img.data[(y * 640 + x) * 4] = v;
+    };
+    const over = (name: string) =>
+      regionDiff(a, b, ref).find((r) => r.region === name)?.over ?? -1;
+    expect(
+      regionDiff(a, b, ref).every((r) => r.over === 0),
+      "identical shots: nothing over",
+    );
+    set(a, 10, 10, 41);
+    expect(over("draw") === 0, "a one-step difference is within the allowance");
+    set(a, 10, 10, 60);
+    expect(
+      over("draw") === 1,
+      "a two-step difference in an exact region is counted",
+    );
+    set(a, 350, 20, 200);
+    set(a, 20, 230, 200);
+    expect(
+      over("view3d") === 1 && over("accum") === 1 && over("draw") === 1,
+      "the excluded (3D) and banded (accumulating) regions count their own pixels",
+    );
+    set(a, 630, 5, 200);
+    expect(
+      over("rest") === 1,
+      "a pixel outside every region is the rest's (exact)",
+    );
+    const classes = new Map(ref.regions.map((r) => [r.name, r.class]));
+    expect(
+      classes.get("view3d") === "excluded" && classes.get("accum") === "banded",
+      "only the 3D view is excluded and only the accumulator banded",
+    );
+  }
 }
 
 // expected.json's own shape: the legs it accounts are the honest legs, the viewports add up

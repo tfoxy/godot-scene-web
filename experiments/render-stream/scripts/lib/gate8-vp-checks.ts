@@ -40,6 +40,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { decodePngRgba } from "./gate-minus1-checks";
+
 import {
   type CanonCanvas,
   canonicalState,
@@ -96,6 +98,171 @@ export interface VpExpected {
     subwindow_residue: boolean;
     exceptions: string[];
   };
+  /** VS3's vp-reference budget (hand-derived from the scene's layout, never from a receiver run). */
+  reference?: VpReference;
+}
+
+/** vp-reference: the screen regions each display node of the scene covers, and how a receiver's
+ * pixels there are judged against the rendered Godot reference (fixtures/gsw-tolerance.json's
+ * policy): `exact`, every pixel within `channel` steps (P-G1 with P-G3's translucent-blend
+ * allowance); `banded`, counted and reported (a typed receiver caveat makes it approximate);
+ * `excluded`, reported only (the receiver types the content it cannot draw). Pixels outside every
+ * region are `exact`. Regions are first match. */
+export interface VpReference {
+  doc: string;
+  channel: number;
+  regions: {
+    name: string;
+    rect: [number, number, number, number];
+    class: "exact" | "banded" | "excluded";
+    reason?: string;
+  }[];
+}
+
+/** The receiver legs vp-reference judges and the reference whose shots they are judged against. */
+export const VP_RECEIVER_LEGS = [
+  "born/receiver",
+  "born-rendered/receiver",
+] as const;
+export const VP_REFERENCE_DIR = "born-rendered/capture";
+
+export interface VpPixelRow {
+  step: number;
+  region: string;
+  class: string;
+  /** pixels over the channel allowance, and the largest channel difference */
+  over: number;
+  max: number;
+}
+
+/** Each region's pixels over `channel` and the largest difference, for one shot pair. */
+export function regionDiff(
+  a: { data: Uint8Array; width: number; height: number },
+  b: { data: Uint8Array; width: number; height: number },
+  ref: VpReference,
+): { region: string; class: string; over: number; max: number }[] {
+  const rows = [
+    ...ref.regions.map((r) => ({
+      region: r.name,
+      class: r.class,
+      over: 0,
+      max: 0,
+    })),
+    { region: "rest", class: "exact", over: 0, max: 0 },
+  ];
+  const w = Math.min(a.width, b.width);
+  const h = Math.min(a.height, b.height);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const ia = (y * a.width + x) * 4;
+      const ib = (y * b.width + x) * 4;
+      let d = 0;
+      for (let c = 0; c < 3; c++)
+        d = Math.max(d, Math.abs(a.data[ia + c] - b.data[ib + c]));
+      let k = ref.regions.findIndex(
+        (r) =>
+          x >= r.rect[0] &&
+          y >= r.rect[1] &&
+          x < r.rect[0] + r.rect[2] &&
+          y < r.rect[1] + r.rect[3],
+      );
+      if (k < 0) k = ref.regions.length;
+      const row = rows[k];
+      if (d > ref.channel) row.over++;
+      if (d > row.max) row.max = d;
+    }
+  }
+  return rows;
+}
+
+/** vp-reference's problems for the receiver legs under `g` (null: evidence missing). A browser
+ * (GSW) leg -- one with a page-config.json -- is judged pixel by pixel against the reference's
+ * shot at each step; a native receiver, which draws no viewport surface (render-stream-16.md:
+ * receivers other than GSW defer surfaces), is judged on its exit and its shots. */
+export async function referenceProblems(
+  g: string,
+  ref: VpReference | undefined,
+): Promise<{
+  problems: string[] | null;
+  rows: string[];
+  pixels: Record<string, VpPixelRow[]>;
+}> {
+  const rows: string[] = [];
+  const pixels: Record<string, VpPixelRow[]> = {};
+  if (!ref)
+    return { problems: ["expected.json has no reference block"], rows, pixels };
+  const problems: string[] = [];
+  const stepsOf = async (dir: string) =>
+    jsonl<{ step: number }>(await readText(join(g, dir, "steps.jsonl"))).map(
+      (l) => l.step,
+    );
+  const refSteps = await stepsOf(VP_REFERENCE_DIR);
+  if (refSteps.length === 0) return { problems: null, rows, pixels };
+  for (const leg of VP_RECEIVER_LEGS) {
+    const dir = join(g, leg);
+    const exit = (await readText(join(dir, "exit-code.txt")))?.trim();
+    if (exit === undefined) return { problems: null, rows, pixels };
+    const browser = existsSync(join(dir, "page-config.json"));
+    if (exit !== "0") {
+      // render-stream-16.md / viewport-surfaces-design.md D2: the native receiver does not read
+      // /16 (it refuses the GRSG magic before any record); only GSW draws surfaces.
+      const applied = await readJson<{ status?: string; failure?: unknown }>(
+        join(dir, "applied.json"),
+      );
+      const refused =
+        !browser &&
+        applied?.status === "replay-failure" &&
+        JSON.stringify(applied.failure ?? {}).includes("bad-magic");
+      if (refused) rows.push(`${leg} (native: refuses /16, deferred by D2)`);
+      else problems.push(`${leg}: exit ${exit}`);
+      continue;
+    }
+    const capture = leg.replace(/\/receiver$/, "/capture");
+    const steps = await stepsOf(capture);
+    const seqs = ((await readText(join(dir, "shot-seqs.txt"))) ?? "")
+      .trim()
+      .split(",")
+      .filter(Boolean);
+    let compared = 0;
+    for (const [i, step] of steps.entries()) {
+      const shot =
+        seqs[i] === undefined
+          ? undefined
+          : join(dir, "shots", `seq-${seqs[i]}.png`);
+      const a = shot ? await decodePngRgba(shot) : undefined;
+      if (!a) {
+        problems.push(`${leg}: step ${step}: no shot`);
+        continue;
+      }
+      if (!browser) continue;
+      const b = await decodePngRgba(
+        join(g, VP_REFERENCE_DIR, "shots", `step-${step}.png`),
+      );
+      if (!b) {
+        problems.push(`${leg}: step ${step}: no reference shot`);
+        continue;
+      }
+      if (a.width !== b.width || a.height !== b.height)
+        problems.push(
+          `${leg}: step ${step}: ${a.width}x${a.height} against the reference's ${b.width}x${b.height}`,
+        );
+      compared++;
+      for (const r of regionDiff(a, b, ref)) {
+        pixels[leg] ??= [];
+        pixels[leg].push({ step, ...r });
+        if (r.class === "exact" && r.over > 0)
+          problems.push(
+            `${leg}: step ${step}: ${r.region}: ${r.over} px over ${ref.channel} (max ${r.max})`,
+          );
+      }
+    }
+    rows.push(
+      browser
+        ? `${leg} (GSW) ${compared}/${steps.length} steps against ${VP_REFERENCE_DIR}`
+        : `${leg} (native: draws no surface; exit and ${steps.length} shots only)`,
+    );
+  }
+  return { problems, rows, pixels };
 }
 
 /** The equivalence exceptions of an adopting arm (render-stream-16.md: adopted entries, tree-order activation, an adopted once viewport's once_seq 1), and only they (the criterion text and the self-test name them). */
@@ -1121,6 +1288,19 @@ export async function runG8vp(
         "each GRC_VIEWPORT_SABOTAGE leg fails its target check and passes the others named for it: no-adjacency (born) fails vp-account, passes vp-validate; no-node-route (late) fails vp-account, passes vp-validate; wrong-order (late) fails vp-equivalence, passes vp-validate and vp-account",
         problems,
         rows.join("; "),
+      ),
+    );
+  }
+  // --- vp-reference (VS3) -----------------------------------------------------------------------
+  {
+    const r = await referenceProblems(g, ex.reference);
+    report.reference = r.pixels;
+    checks.push(
+      check(
+        "vp-reference",
+        `the born captures (headless: adjacency and node-route proxies; rendered: RID proxies) replayed by a rendered receiver match the rendered host's own Godot shots (${VP_REFERENCE_DIR}/shots) at every step: a GSW receiver draws every reached viewport into its own surface, judged per expected.json reference region (exact: every pixel within ${ex.reference?.channel ?? "?"} channel step(s); banded: counted; excluded: typed content the receiver does not draw); a native receiver draws no surface and is judged on its exit and shots`,
+        r.problems,
+        r.rows.join("; "),
       ),
     );
   }

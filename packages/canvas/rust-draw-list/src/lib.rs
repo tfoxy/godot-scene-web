@@ -302,7 +302,14 @@ pub struct Target {
     /// source. `false` (the default) is the premultiplied transparent-canvas contract of
     /// `executor-webgl.ts`.
     pub opaque: bool,
+    /// Which target the list draws into: [`ROOT_SURFACE`] (0) the target the executor blits to
+    /// the canvas, any other value an offscreen surface (a Godot non-root viewport's render
+    /// target) that draws sample through [`TextureOp::Surface`] aliases.
+    pub surface: u32,
 }
+
+/// [`Target::surface`] of the list an executor blits to the canvas.
+pub const ROOT_SURFACE: u32 = 0;
 
 impl Default for Target {
     fn default() -> Self {
@@ -312,6 +319,7 @@ impl Default for Target {
             format: Format::Rgb10A2,
             clear: [0.0, 0.0, 0.0, 1.0],
             opaque: false,
+            surface: ROOT_SURFACE,
         }
     }
 }
@@ -455,9 +463,28 @@ pub enum TextureOp {
         height: u32,
         bytes: TextureBytes,
     },
+    /// (Re)define texture `id` as an alias of surface `surface`'s colour texture (the list whose
+    /// [`Target::surface`] is `surface`), resolved at every bind: a resized or re-rendered
+    /// surface needs no new operation, and a surface that has no contents (never rendered,
+    /// refused, freed, or the target being drawn itself) samples as [`TRANSPARENT_TEXTURE`].
+    /// Texels are the surface's raw premultiplied render-target values, sampled with no
+    /// conversion (Godot samples a render target as it holds it). A [`TextureOp::Free`] of `id`
+    /// drops the alias.
+    Surface { id: u32, surface: u32 },
 }
 
 impl TextureOp {
+    /// The texture id the operation defines or frees.
+    pub fn id(&self) -> u32 {
+        match *self {
+            TextureOp::Upload { id, .. }
+            | TextureOp::UploadHalf { id, .. }
+            | TextureOp::UploadCompressed { id, .. }
+            | TextureOp::Free { id }
+            | TextureOp::Surface { id, .. } => id,
+        }
+    }
+
     /// The byte length an upload reads at its `bytes` (None for a free).
     pub fn byte_len(&self) -> Option<(TextureBytes, usize)> {
         match *self {
@@ -474,7 +501,7 @@ impl TextureOp {
                 ..
             } => Some((bytes, 8 * width as usize * height as usize)),
             TextureOp::UploadCompressed { bytes, len, .. } => Some((bytes, len as usize)),
-            TextureOp::Free { .. } => None,
+            TextureOp::Free { .. } | TextureOp::Surface { .. } => None,
         }
     }
 }
@@ -836,6 +863,11 @@ impl DrawList {
         self.texture_ops.push(TextureOp::Free { id });
     }
 
+    /// Queue an alias of texture `id` to surface `surface` ([`TextureOp::Surface`]).
+    pub fn alias_surface(&mut self, id: u32, surface: u32) {
+        self.texture_ops.push(TextureOp::Surface { id, surface });
+    }
+
     /// Set binding slot `slot` (0-based; draws name it as `slot + 1`), growing the table, and mark
     /// it dirty only when it changed. Returns whether it changed.
     pub fn set_binding(&mut self, slot: u32, binding: Binding) -> bool {
@@ -928,12 +960,20 @@ pub mod opacity;
 /// Version 1 draws are 44 bytes ([`Draw`] without [`Draw::msdf`]); version 2 draws are the whole
 /// 52-byte [`Draw`]. [`encode`] writes version 1 unless a draw has [`DRAW_MSDF`], so a list with no
 /// MSDF draw dumps exactly as before; [`decode`] reads both.
+///
+/// `PDL2` (render-stream/16 viewport surfaces) is `PDL1` plus the list's surface facts: the
+/// header's counts are preceded by `u32 surface` ([`Target::surface`]) and followed by
+/// `u32 aliases`, and the arrays by `(u32 id, u32 surface)×aliases`, the list's
+/// [`TextureOp::Surface`] operations in order. [`pdl1::encode`] writes `PDL1` for a root list
+/// without aliases (every list before /16), `PDL2` otherwise; [`pdl1::decode`] reads both.
 pub mod fill;
 
 pub mod pdl1 {
     use super::*;
 
     pub const MAGIC: &[u8; 4] = b"PDL1";
+    /// The `PDL2` dump's magic (a surface list, or one with [`TextureOp::Surface`] aliases).
+    pub const MAGIC2: &[u8; 4] = b"PDL2";
     /// The header's format word carries [`Target::opaque`] in this bit.
     pub const OPAQUE_BIT: u32 = 1 << 8;
 
@@ -958,7 +998,16 @@ pub mod pdl1 {
                 + list.indices.len() * 4
                 + list.draws.len() * draw_bytes,
         );
-        out.extend_from_slice(MAGIC);
+        let aliases: Vec<(u32, u32)> = list
+            .texture_ops
+            .iter()
+            .filter_map(|op| match *op {
+                TextureOp::Surface { id, surface } => Some((id, surface)),
+                _ => None,
+            })
+            .collect();
+        let v2 = list.target.surface != ROOT_SURFACE || !aliases.is_empty();
+        out.extend_from_slice(if v2 { MAGIC2 } else { MAGIC });
         // The format word's bit 8 is `Target::opaque` (the earliest dumps never set it).
         for v in [
             version,
@@ -971,6 +1020,9 @@ pub mod pdl1 {
         for c in list.target.clear {
             out.extend_from_slice(&c.to_le_bytes());
         }
+        if v2 {
+            out.extend_from_slice(&list.target.surface.to_le_bytes());
+        }
         for n in [
             list.items.len(),
             list.vertices.len(),
@@ -979,11 +1031,18 @@ pub mod pdl1 {
         ] {
             out.extend_from_slice(&(n as u32).to_le_bytes());
         }
+        if v2 {
+            out.extend_from_slice(&(aliases.len() as u32).to_le_bytes());
+        }
         out.extend_from_slice(bytemuck::cast_slice(&list.items));
         out.extend_from_slice(bytemuck::cast_slice(&list.vertices));
         out.extend_from_slice(bytemuck::cast_slice(&list.indices));
         for d in &list.draws {
             out.extend_from_slice(&bytemuck::bytes_of(d)[..draw_bytes]);
+        }
+        for (id, surface) in aliases {
+            out.extend_from_slice(&id.to_le_bytes());
+            out.extend_from_slice(&surface.to_le_bytes());
         }
         out
     }
@@ -995,9 +1054,13 @@ pub mod pdl1 {
                 .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                 .ok_or_else(|| "PDL1: truncated header".to_string())
         };
-        if bytes.get(0..4) != Some(MAGIC.as_slice()) {
-            return Err("PDL1: bad magic".into());
-        }
+        let v2 = match bytes.get(0..4) {
+            Some(m) if m == MAGIC.as_slice() => false,
+            Some(m) if m == MAGIC2.as_slice() => true,
+            _ => return Err("PDL1: bad magic".into()),
+        };
+        // PDL2 moves the counts back by its `surface` word.
+        let shift = if v2 { 4 } else { 0 };
         let draw_bytes = match u32_at(4)? {
             1 => DRAW_V1_BYTES,
             2 => DRAW_V2_BYTES,
@@ -1013,13 +1076,15 @@ pub mod pdl1 {
         for (i, c) in clear.iter_mut().enumerate() {
             *c = f32::from_bits(u32_at(20 + 4 * i)?);
         }
+        let surface = if v2 { u32_at(36)? } else { ROOT_SURFACE };
         let counts = [
-            u32_at(36)? as usize,
-            u32_at(40)? as usize,
-            u32_at(44)? as usize,
-            u32_at(48)? as usize,
+            u32_at(36 + shift)? as usize,
+            u32_at(40 + shift)? as usize,
+            u32_at(44 + shift)? as usize,
+            u32_at(48 + shift)? as usize,
         ];
-        let mut o = 52;
+        let alias_count = if v2 { u32_at(52 + shift)? as usize } else { 0 };
+        let mut o = 52 + if v2 { 2 * shift } else { 0 };
         let mut take = |n: usize| -> Result<&[u8], String> {
             let s = bytes
                 .get(o..o + n)
@@ -1038,6 +1103,13 @@ pub mod pdl1 {
                 d
             })
             .collect();
+        let texture_ops: Vec<TextureOp> = take(alias_count * 8)?
+            .chunks_exact(8)
+            .map(|b| TextureOp::Surface {
+                id: u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+                surface: u32::from_le_bytes([b[4], b[5], b[6], b[7]]),
+            })
+            .collect();
         if o != bytes.len() {
             return Err("PDL1: trailing bytes".into());
         }
@@ -1048,6 +1120,7 @@ pub mod pdl1 {
                 format,
                 clear,
                 opaque: word & OPAQUE_BIT != 0,
+                surface,
             },
             items,
             vertices,
@@ -1058,7 +1131,7 @@ pub mod pdl1 {
                 all: true,
                 ..Dirty::default()
             },
-            texture_ops: Vec::new(),
+            texture_ops,
             texture_bytes: Vec::new(),
             texture_shared: Vec::new(),
             shader_time: 0.0,
@@ -1160,6 +1233,47 @@ mod tests {
     }
 
     #[test]
+    fn pdl2_round_trips_a_surface_list_and_its_aliases() {
+        let mut list = DrawList::new(Target {
+            width: 48,
+            height: 24,
+            format: Format::Rgba8,
+            clear: [0.0; 4],
+            opaque: false,
+            surface: 7,
+        });
+        list.indices.extend_from_slice(&[0, 0, 0]);
+        list.draws.push(Draw {
+            index_count: 3,
+            texture: 9,
+            ..Draw::default()
+        });
+        list.alias_surface(9, 3);
+        list.upload_texture(4, 1, 1, &[1, 2, 3, 4]);
+        list.alias_surface(11, 7);
+        let bytes = pdl1::encode(&list);
+        assert_eq!(&bytes[0..4], pdl1::MAGIC2);
+        let back = pdl1::decode(&bytes).unwrap();
+        assert_eq!(back.target, list.target);
+        assert_eq!(back.draws, list.draws);
+        // Only the aliases are dumped (uploads never are).
+        assert_eq!(
+            back.texture_ops,
+            vec![
+                TextureOp::Surface { id: 9, surface: 3 },
+                TextureOp::Surface { id: 11, surface: 7 }
+            ]
+        );
+        // A root list without aliases still dumps as PDL1, byte for byte.
+        list.target.surface = ROOT_SURFACE;
+        list.texture_ops.retain(|op| !matches!(op, TextureOp::Surface { .. }));
+        let bytes = pdl1::encode(&list);
+        assert_eq!(&bytes[0..4], pdl1::MAGIC);
+        assert_eq!(pdl1::decode(&bytes).unwrap().target, list.target);
+        assert!(pdl1::decode(&bytes[..bytes.len() - 1]).is_err());
+    }
+
+    #[test]
     fn pdl1_round_trips() {
         let mut list = DrawList::new(Target {
             width: 64,
@@ -1167,6 +1281,7 @@ mod tests {
             format: Format::Rgb10A2,
             clear: [0.2, 0.2, 0.4, 1.0],
             opaque: true,
+            surface: ROOT_SURFACE,
         });
         list.items.push(Item {
             xform: [1.0, 0.0, 0.0, 1.0, 3.0, 4.0],

@@ -208,6 +208,13 @@ export const STAT_FIELDS = [
   "stream",
   "why",
   "back_buffer_items",
+  // render-stream/16 viewport surfaces: passes rendered, surfacesSkipped (the `viewports: false`
+  // option), due surfaces kept unchanged, targets held and their pixels.
+  "surfaces_rendered",
+  "surfaces_skipped",
+  "surfaces_unchanged",
+  "surfaces_allocated",
+  "surface_pixels",
 ] as const;
 export type StatName = (typeof STAT_FIELDS)[number];
 

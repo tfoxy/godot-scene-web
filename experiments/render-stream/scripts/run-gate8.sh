@@ -378,7 +378,9 @@
 #       `sabotage-no-node-route` and `sabotage-wrong-order` on late), all under
 #       GRC_UNKNOWN_ITEM=skip; then `born-rendered` and `late-rendered`, the same captures on the
 #       private gamescope host (render-target RIDs are real there: proxies bind by RID), with the
-#       fixture's own shots. No receiver yet. Judged by lib/gate8-vp-checks.ts.
+#       fixture's own shots; then (VS3) rendered receivers on the born captures,
+#       `born/receiver` and `born-rendered/receiver` (GSW under gate 7's replay: vp-reference).
+#       Judged by lib/gate8-vp-checks.ts.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -5354,6 +5356,13 @@ run_g8vp() {
 	run_capture_rendered_g8vp born-rendered born "${G8VP_BORN_ENV[@]}"
 	echo "run-gate8: g8vp late-rendered (/16, standby, API arm at frame $G8VP_ARM_FRAME, rendered host)"
 	run_capture_rendered_g8vp late-rendered late "${G8VP_LATE_ENV[@]}"
+	# VS3 (vp-reference): the born captures replayed by a rendered receiver, shot at the settle
+	# frames. Under gate 7's GSW replay (lib/gate7-gsw-g8.ts GATE8_LEGS) the GSW receiver draws the
+	# surfaces; lib/gate8-vp-checks.ts compares its shots with born-rendered's own Godot shots.
+	echo "run-gate8: g8vp born/receiver (the headless born capture, replayed rendered)"
+	run_rendered_receiver "$OUT/g8vp/born/capture" "$OUT/g8vp/born/receiver"
+	echo "run-gate8: g8vp born-rendered/receiver (the rendered born capture, replayed rendered)"
+	run_rendered_receiver "$OUT/g8vp/born-rendered/capture" "$OUT/g8vp/born-rendered/receiver"
 	gs_teardown "$OUT/gamescope-g8vp"
 	GS_RUN_DIR=""
 	RECORDING_NAME=recording.rs8

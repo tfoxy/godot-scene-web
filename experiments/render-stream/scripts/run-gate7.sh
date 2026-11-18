@@ -337,7 +337,7 @@ SCENE_QUIT_FRAME=400
 # GATE8_LEGS). G8kwh: the web half replays g8kp's receiver legs again; it does not replay g8ku's
 # (lib/gate7b-adapters.ts GSW_ONLY_SOURCE_GROUPS: the web export's npot choice differs from native by
 # design, and gate 8 judges its own g8ku-web legs). The web view stays on GATE8_FILE_GROUPS.
-G8_FILE_LEGS=g8t,g8a,g8h,g8f,g8m,g8kp,g8ku,g8c,g8cg,g8w11,g8mm,g8pt
+G8_FILE_LEGS=g8t,g8a,g8h,g8f,g8m,g8kp,g8ku,g8c,g8cg,g8w11,g8mm,g8pt,g8vp
 # GATE7_G8_LEGS (header, g7-8): the groups this run's gate 8 source is made with; validated below.
 G8_SOURCE_LEGS="$G8_FILE_LEGS"
 

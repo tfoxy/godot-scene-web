@@ -19,6 +19,7 @@
 
 use godot_scene_web_rust_prototype::canvas_items::{
     CanvasItemsExecutor, ContextState, ExecError, ExecOptions, ExecStats, FenceState, Sabotage,
+    SurfacePass,
 };
 use gsw_canvas_draw_list::Format;
 use gsw_canvas_draw_list::{Binding, UniformValue};
@@ -66,6 +67,27 @@ pub const ACCEPT_RESOURCE_UNHINT: i32 = 7;
 /// The applier's cover walk follows the executor's real `MAX_TEXTURE_SIZE` (textures over it are
 /// reduced at upload); without a context that reports one it keeps the applier's conservative
 /// default.
+/// The merged calls an execution of the applier's lists issues now: the root's, plus the
+/// surface passes it would run (render-stream/16).
+fn expected_calls(a: &Applier) -> u32 {
+    a.expected_calls() + a.surfaces.as_ref().map_or(0, |s| s.expected_calls())
+}
+
+/// One frame of the applier's lists: its surface passes (render-stream/16; none without a
+/// viewport, which is exactly `execute` of the root) and the root.
+fn execute_lists(x: &mut CanvasItemsExecutor, a: &Applier) -> Result<ExecStats, ExecError> {
+    match a.surfaces.as_ref() {
+        None => x.execute(&a.list),
+        Some(set) => {
+            let passes: Vec<SurfacePass<'_>> = set
+                .passes()
+                .map(|(list, clear)| SurfacePass { list, clear })
+                .collect();
+            x.execute_frame(&a.list, &passes, set.freed())
+        }
+    }
+}
+
 fn set_max_texture_side(applier: &mut Applier, executor: Option<&CanvasItemsExecutor>) {
     if let Some(side) = executor.map(CanvasItemsExecutor::max_texture_side) {
         if side > 0 {
@@ -127,6 +149,30 @@ pub struct Stats {
     pub why: u32,
     /// I4: items holding /10 `canvas_group` or `copy_to_backbuffer` state after the last apply.
     pub back_buffer_items: u32,
+    /// render-stream/16 viewport surfaces (rs-core `surfaces::SurfaceStats`), the last apply's:
+    /// surface passes rendered, `surfacesSkipped` (reached but not built: the `viewports: false`
+    /// option), due surfaces kept because nothing they draw changed, targets held and their
+    /// pixels (saturating).
+    pub surfaces_rendered: u32,
+    pub surfaces_skipped: u32,
+    pub surfaces_unchanged: u32,
+    pub surfaces_allocated: u32,
+    pub surface_pixels: u32,
+}
+
+impl Stats {
+    /// The calls the executor will issue for `a`'s lists (the root's and, render-stream/16, its
+    /// surface passes'), and the surface counters.
+    fn set_expected(&mut self, a: &Applier) {
+        let sf = a.surfaces.as_ref();
+        self.expected_calls = expected_calls(a);
+        let ss = sf.map(|s| s.stats).unwrap_or_default();
+        self.surfaces_rendered = ss.rendered;
+        self.surfaces_skipped = ss.skipped_off;
+        self.surfaces_unchanged = ss.unchanged;
+        self.surfaces_allocated = ss.allocated;
+        self.surface_pixels = ss.allocated_pixels.min(u64::from(u32::MAX)) as u32;
+    }
 }
 
 /// `motion_ptr`'s block, `#[repr(C)]`: the last accepted transaction's motion facts
@@ -221,6 +267,10 @@ struct Opts {
     /// "Sabotages"): a full does not reset the prediction history, so the first full after units
     /// exist fails `predict-check` (rs-core `Options::no_predict_reset`).
     no_predict_reset: bool,
+    /// render-stream/16 (viewport-surfaces-design.md D3): the `viewports` core option off
+    /// (`"viewports":false`): the viewport table is applied, no surface pass is built, and every
+    /// viewport texture samples transparent (stat `surfaces_skipped`).
+    no_viewports: bool,
 }
 
 /// G8kb: every `uastc` variant hash of the state's textures (the KTX2 payloads).
@@ -321,6 +371,7 @@ fn parse_options(json: &str) -> Result<Opts, String> {
         0
     };
     o.transcoder = json.contains("\"transcoder\":true");
+    o.no_viewports = json.contains("\"viewports\":false");
     o.variant_policy = match find_str(json, "variant_policy").as_deref() {
         None | Some("") => None,
         Some("keep") => Some(false),
@@ -851,6 +902,11 @@ pub fn typed_reason(shortcut: &str) -> Option<&'static str> {
         "slice-ninepatch-tile-as-stretch" => "gsw-nine-patch-tile",
         "slice-mesh-primitive-skipped" => "gsw-mesh-primitive",
         "texture-not-resident-skipped" => "gsw-texture-not-resident",
+        // render-stream/16 receiver caveats (viewport-surfaces-design.md Q5a-c).
+        "viewport-accumulation" => "viewport-accumulation",
+        "viewport-feedback" => "viewport-feedback",
+        "viewport-too-large" => "viewport-too-large",
+        "viewport-order" => "viewport-order",
         _ => return None,
     })
 }
@@ -1326,6 +1382,7 @@ impl GswRs {
         let mut applier = Applier::new(viewport);
         applier.sabotage = self.opts.apply;
         applier.cover_walk = !self.opts.no_cover_walk;
+        applier.viewports_enabled = !self.opts.no_viewports;
         set_max_texture_side(&mut applier, self.executor.as_ref());
         applier.ov_sabotage = self.opts.ov;
         applier.log_removed(self.log_removed);
@@ -1390,6 +1447,10 @@ impl GswRs {
             variant_policy_default: self.opts.variant_policy.is_none(),
         };
         self.query.gen += 1;
+        // render-stream/16: a fresh applier holds no surface pass; the old ones' GL objects go.
+        if let Some(x) = self.executor.as_mut() {
+            x.free_all_surfaces();
+        }
         self.applier = Some(applier);
         self.viewport = Some(viewport);
         self.stats.stream = self.stream_index;
@@ -1779,6 +1840,7 @@ impl GswRs {
         let mut applier = Applier::new(viewport);
         applier.sabotage = self.opts.apply;
         applier.cover_walk = !self.opts.no_cover_walk;
+        applier.viewports_enabled = !self.opts.no_viewports;
         set_max_texture_side(&mut applier, self.executor.as_ref());
         applier.half_instances = v.session().engine.rendering_method == "gl_compatibility";
         // GRH: the executor still holds the GPU textures; the fresh applier reconciles against
@@ -1792,6 +1854,10 @@ impl GswRs {
         }
         applier.prepare(v.state(), v.delta());
         self.query.gen += 1;
+        // render-stream/16: a fresh applier holds no surface pass; the old ones' GL objects go.
+        if let Some(x) = self.executor.as_mut() {
+            x.free_all_surfaces();
+        }
         self.applier = Some(applier);
         self.compute_needed()
     }
@@ -2210,10 +2276,10 @@ impl GswRs {
         self.stats.lowered_draws = st.lowered_draws;
         self.stats.assembly_skips = st.assembly_skips;
         self.stats.emitted_draws = st.emitted_draws;
-        self.stats.expected_calls = st.expected_calls;
         self.stats.vertices = st.vertex_count;
         self.stats.indices = st.index_count;
         self.stats.draws = st.emitted_draws;
+        self.stats.set_expected(a);
         1
     }
 
@@ -2568,10 +2634,10 @@ impl GswRs {
         self.stats.lowered_draws = st.lowered_draws;
         self.stats.assembly_skips = st.assembly_skips;
         self.stats.emitted_draws = st.emitted_draws;
-        self.stats.expected_calls = st.expected_calls;
         self.stats.vertices = st.vertex_count;
         self.stats.indices = st.index_count;
         self.stats.draws = st.emitted_draws;
+        self.stats.set_expected(a);
         prof::add(prof::ADAPTER, t);
         0
     }
@@ -2584,7 +2650,8 @@ impl GswRs {
         };
         let t = prof::start();
         self.last_upload_bytes = a.list.queued_texture_bytes();
-        let mut result = x.execute(&a.list);
+        let mut expected = expected_calls(a);
+        let mut result = execute_lists(x, a);
         // A restored context (D14, D29): every GL object is new, so the list goes again with
         // `dirty.all` and every resident texture re-queued from the payload store. A list that
         // already carried `dirty.all` executes on the new objects (`restored == 1`) without its
@@ -2599,13 +2666,17 @@ impl GswRs {
             self.last_upload_bytes.1 += shared;
             self.totals.restores += 1;
             self.last_restore_draw = true;
-            result = x.execute(&a.list);
+            expected = expected_calls(a);
+            result = execute_lists(x, a);
         } else {
             self.last_restore_draw = false;
         }
         match result {
             Ok(es) => {
                 a.list.consumed();
+                if let Some(set) = a.surfaces.as_mut() {
+                    set.consumed();
+                }
                 self.last_exec = es;
                 self.stats.executed_calls = es.draw_calls;
                 self.stats.merged_draws = es.draws_merged;
@@ -2616,8 +2687,11 @@ impl GswRs {
                 self.stats.index_bytes = es.index_bytes;
                 self.totals.draw_calls += u64::from(es.draw_calls);
                 self.totals.texture_uploads += u64::from(es.texture_uploads);
-                // draw-count-parity: executed calls = lowered draws - typed skips - merges.
-                if es.draw_calls != self.stats.expected_calls {
+                // draw-count-parity: executed calls = lowered draws - typed skips - merges, over
+                // the lists this execution ran (the root's and its surface passes'), counted
+                // before they are consumed.
+                self.stats.expected_calls = expected;
+                if es.draw_calls != expected {
                     self.stats.parity_violations += 1;
                     self.totals.parity_violations += 1;
                 }
@@ -2746,7 +2820,7 @@ impl GswRs {
             return 0;
         };
         let r = a.refresh_overrides(v.state(), &self.payloads);
-        self.stats.expected_calls = a.expected_calls();
+        self.stats.set_expected(a);
         match r {
             Refresh::Clean => 0,
             Refresh::Deferred => 1,

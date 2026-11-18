@@ -176,6 +176,7 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                             }
                             TextureOp::UploadCompressed { id, .. }
                             | TextureOp::UploadHalf { id, .. }
+                            | TextureOp::Surface { id, .. }
                             | TextureOp::Free { id } => {
                                 *revisions.entry(id).or_default() += 1;
                                 opaque.remove(&id);

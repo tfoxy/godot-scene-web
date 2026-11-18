@@ -163,6 +163,17 @@ impl Sabotage {
     }
 }
 
+/// One surface pass of [`CanvasItemsExecutor::execute_frame`] (render-stream/16 viewport
+/// surfaces): `list` draws into the offscreen target its [`gsw_canvas_draw_list::Target::surface`]
+/// names.
+#[derive(Clone, Copy)]
+pub struct SurfacePass<'a> {
+    pub list: &'a gsw_canvas_draw_list::DrawList,
+    /// Clear the target before drawing (Godot's clear due this frame). A clear-`never` surface
+    /// keeps what earlier passes drew; a target (re)allocated this pass starts transparent.
+    pub clear: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExecOptions {
     pub sabotage: Option<Sabotage>,

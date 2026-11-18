@@ -21,6 +21,7 @@ use super::{
     downscale_factor, downscale_rgba8, downscale_texels_nearest, downscaled_size, gl_enum,
     gl_scissor, gl_scissor_y_up, godot_screen_transform, item_program_fragment,
     item_program_vertex, item_rows_for, item_upload_rects, msdf_fragment, plan_calls,
+    SurfacePass,
 };
 use crate::present::{
     ContextAttributes,
@@ -31,7 +32,7 @@ use gsw_canvas_draw_list::{
     ANISOTROPY_TEXTURE, BLACK_TEXTURE, BUILTIN_PROGRAM, Binding, Blend, CompressedFormat,
     DRAW_GROUP_CLIP, DRAW_GROUP_COMPOSITE, DRAW_INSTANCED, DRAW_MSDF, DRAW_SCISSOR,
     DRAW_TO_BACK_BUFFER, DRAW_UNTEXTURED, Draw, DrawList, Format, Instance, NORMAL_TEXTURE,
-    SCREEN_TEXTURE, Sampler, ScreenOp, ScreenOpKind, TRANSPARENT_TEXTURE, Target, TextureOp,
+    ROOT_SURFACE, SCREEN_TEXTURE, Sampler, ScreenOp, ScreenOpKind, TRANSPARENT_TEXTURE, Target, TextureOp,
     UniformValue, Vertex, WHITE_TEXTURE, default_texture_texel, premultiplies,
 };
 use std::cell::Cell;
@@ -357,6 +358,25 @@ struct Objects {
     present_program: glow::Program,
     u_flip_rows: Option<glow::UniformLocation>,
     present_vertex_array: glow::VertexArray,
+    white: glow::Texture,
+    /// GLES3's other default textures, in [`DEFAULT_TEXTURE_IDS`] order (1x1, nearest, as
+    /// `white`).
+    defaults: [glow::Texture; 4],
+    /// Index `wrap · 2 + linear` (wrap 0 clamp, 1 repeat, 2 mirror).
+    samplers: [glow::Sampler; 6],
+    /// The active list's objects: the root list's ([`ROOT_SURFACE`]) outside
+    /// [`CanvasItemsExecutor::execute_frame`]'s surface passes.
+    list: ListObjects,
+    /// [`Target::surface`] of `list`.
+    active: u32,
+    /// Every other list's objects, by [`Target::surface`] (the root's while a surface pass runs).
+    parked: HashMap<u32, ListObjects>,
+}
+
+/// One list's GL objects (render-stream/16 viewport surfaces: the root list and each surface
+/// list has its own): its arrays, its target and its back buffer, so a list's dirty ranges
+/// upload into its own buffers and its draws never see another list's rows.
+struct ListObjects {
     vertex_array: glow::VertexArray,
     vertex_buffer: glow::Buffer,
     index_buffer: glow::Buffer,
@@ -368,15 +388,106 @@ struct Objects {
     instance_capacity: usize,
     item_texture: glow::Texture,
     item_rows: u32,
-    white: glow::Texture,
-    /// GLES3's other default textures, in [`DEFAULT_TEXTURE_IDS`] order (1x1, nearest, as
-    /// `white`).
-    defaults: [glow::Texture; 4],
-    /// Index `wrap · 2 + linear` (wrap 0 clamp, 1 repeat, 2 mirror).
-    samplers: [glow::Sampler; 6],
     target: Option<TargetObjects>,
     /// The back buffer, made at the first screen copy for the target's size and format.
     screen: Option<ScreenObjects>,
+    /// The next execution of this list must carry `dirty.all` (fresh objects).
+    needs_full: bool,
+    /// A version per binding slot of this list, bumped whenever the list marks it dirty: a
+    /// program re-sends its uniforms when the (slot, version) it holds differs. Versions come
+    /// from one executor-wide counter, so two lists' equal slots never share a version.
+    binding_versions: Vec<u64>,
+}
+
+impl ListObjects {
+    /// A list's arrays (VAO, vertex, index and instance buffers, the item texture), no target.
+    /// Leaves ARRAY_BUFFER, the vertex array and the active unit changed (the caller forgets
+    /// them in its [`Cache`]), and the item texture bound on [`UNIT_ITEMS`].
+    fn create(gl: &glow::Context) -> Result<ListObjects, String> {
+        unsafe {
+            let vertex_array = gl.create_vertex_array()?;
+            let vertex_buffer = gl.create_buffer()?;
+            let index_buffer = gl.create_buffer()?;
+            gl.bind_vertex_array(Some(vertex_array));
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vertex_buffer));
+            gl.buffer_data_size(
+                glow::ARRAY_BUFFER,
+                (INITIAL_VERTICES * VERTEX_BYTES) as i32,
+                glow::DYNAMIC_DRAW,
+            );
+            let stride = VERTEX_BYTES as i32;
+            for (location, size, offset) in [(0u32, 2, 0), (1, 2, 8), (2, 4, 16)] {
+                gl.enable_vertex_attrib_array(location);
+                gl.vertex_attrib_pointer_f32(location, size, glow::FLOAT, false, stride, offset);
+            }
+            gl.enable_vertex_attrib_array(3);
+            gl.vertex_attrib_pointer_i32(3, 1, glow::UNSIGNED_INT, stride, 32);
+            gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(index_buffer));
+            gl.buffer_data_size(
+                glow::ELEMENT_ARRAY_BUFFER,
+                (INITIAL_INDICES * 4) as i32,
+                glow::DYNAMIC_DRAW,
+            );
+            gl.bind_vertex_array(None);
+            // The instance buffer; attributes 4-7 hold the identity instance as constants
+            // except during an instanced call.
+            let instance_buffer = gl.create_buffer()?;
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
+            gl.buffer_data_size(
+                glow::ARRAY_BUFFER,
+                (INITIAL_INSTANCES * INSTANCE_BYTES) as i32,
+                glow::DYNAMIC_DRAW,
+            );
+            identity_instance(gl);
+            gl.bind_buffer(glow::ARRAY_BUFFER, None);
+
+            let item_texture = gl.create_texture()?;
+            gl.active_texture(glow::TEXTURE0 + UNIT_ITEMS);
+            gl.bind_texture(glow::TEXTURE_2D, Some(item_texture));
+            for (parameter, value) in [
+                (glow::TEXTURE_MIN_FILTER, glow::NEAREST),
+                (glow::TEXTURE_MAG_FILTER, glow::NEAREST),
+                (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+                (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+            ] {
+                gl.tex_parameter_i32(glow::TEXTURE_2D, parameter, value as i32);
+            }
+            allocate_items(gl, 1);
+            Ok(ListObjects {
+                vertex_array,
+                vertex_buffer,
+                index_buffer,
+                instance_buffer,
+                vertex_capacity: INITIAL_VERTICES,
+                index_capacity: INITIAL_INDICES,
+                instance_capacity: INITIAL_INSTANCES,
+                item_texture,
+                item_rows: 1,
+                target: None,
+                screen: None,
+                needs_full: true,
+                binding_versions: Vec::new(),
+            })
+        }
+    }
+
+    /// Delete every object (a live context only).
+    fn delete(self, gl: &glow::Context) {
+        unsafe {
+            gl.delete_vertex_array(self.vertex_array);
+            gl.delete_buffer(self.vertex_buffer);
+            gl.delete_buffer(self.index_buffer);
+            gl.delete_buffer(self.instance_buffer);
+            gl.delete_texture(self.item_texture);
+            if let Some(t) = self.target {
+                gl.delete_framebuffer(t.framebuffer);
+                gl.delete_texture(t.texture);
+            }
+            if let Some(screen) = self.screen {
+                delete_screen(gl, screen);
+            }
+        }
+    }
 }
 
 /// Godot 4.5.1's GLES3 render-target back buffer (`_create_render_target_backbuffer`,
@@ -480,6 +591,10 @@ void main() {
     }
     color *= c;
   }
+  // GLES3 writes the straight colour, and a fixed-point target clamps a fragment output to
+  // [0, 1] before the SRC_ALPHA blend: un-premultiplying a back buffer whose alpha was quantized
+  // (RGB10_A2's two alpha bits) can exceed 1, so clamp before premultiplying for the ONE blend.
+  color = clamp(color, 0.0, 1.0);
   fragColor = vec4(color.rgb * color.a, color.a);
 }"#;
 
@@ -759,13 +874,13 @@ fn screen_op(
     godot: bool,
     stats: &mut ExecStats,
 ) {
-    let Some(target) = objects.target.as_ref() else {
+    let Some(target) = objects.list.target.as_ref() else {
         return;
     };
     let target_fb = target.framebuffer;
     let present_vertex_array = objects.present_vertex_array;
     let linear_clamp = objects.samplers[sampler_index(Sampler::LINEAR | Sampler::CLAMP)];
-    let Some(screen) = ensure_screen(gl, cache, &mut objects.screen, target) else {
+    let Some(screen) = ensure_screen(gl, cache, &mut objects.list.screen, target) else {
         return;
     };
     set_scissor_enabled(gl, cache, false);
@@ -1095,54 +1210,7 @@ impl Objects {
             gl.use_program(None);
             let present_vertex_array = gl.create_vertex_array()?;
 
-            let vertex_array = gl.create_vertex_array()?;
-            let vertex_buffer = gl.create_buffer()?;
-            let index_buffer = gl.create_buffer()?;
-            gl.bind_vertex_array(Some(vertex_array));
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vertex_buffer));
-            gl.buffer_data_size(
-                glow::ARRAY_BUFFER,
-                (INITIAL_VERTICES * VERTEX_BYTES) as i32,
-                glow::DYNAMIC_DRAW,
-            );
-            let stride = VERTEX_BYTES as i32;
-            for (location, size, offset) in [(0u32, 2, 0), (1, 2, 8), (2, 4, 16)] {
-                gl.enable_vertex_attrib_array(location);
-                gl.vertex_attrib_pointer_f32(location, size, glow::FLOAT, false, stride, offset);
-            }
-            gl.enable_vertex_attrib_array(3);
-            gl.vertex_attrib_pointer_i32(3, 1, glow::UNSIGNED_INT, stride, 32);
-            gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(index_buffer));
-            gl.buffer_data_size(
-                glow::ELEMENT_ARRAY_BUFFER,
-                (INITIAL_INDICES * 4) as i32,
-                glow::DYNAMIC_DRAW,
-            );
-            gl.bind_vertex_array(None);
-            // The instance buffer; attributes 4-7 hold the identity instance as constants
-            // except during an instanced call.
-            let instance_buffer = gl.create_buffer()?;
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
-            gl.buffer_data_size(
-                glow::ARRAY_BUFFER,
-                (INITIAL_INSTANCES * INSTANCE_BYTES) as i32,
-                glow::DYNAMIC_DRAW,
-            );
-            identity_instance(gl);
-            gl.bind_buffer(glow::ARRAY_BUFFER, None);
-
-            let item_texture = gl.create_texture()?;
-            gl.active_texture(glow::TEXTURE0 + UNIT_ITEMS);
-            gl.bind_texture(glow::TEXTURE_2D, Some(item_texture));
-            for (parameter, value) in [
-                (glow::TEXTURE_MIN_FILTER, glow::NEAREST),
-                (glow::TEXTURE_MAG_FILTER, glow::NEAREST),
-                (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
-                (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
-            ] {
-                gl.tex_parameter_i32(glow::TEXTURE_2D, parameter, value as i32);
-            }
-            allocate_items(gl, 1);
+            let list = ListObjects::create(gl)?;
 
             let white = gl.create_texture()?;
             gl.active_texture(glow::TEXTURE0 + UNIT_DRAW);
@@ -1231,20 +1299,12 @@ impl Objects {
                 present_program,
                 u_flip_rows,
                 present_vertex_array,
-                vertex_array,
-                vertex_buffer,
-                index_buffer,
-                instance_buffer,
-                vertex_capacity: INITIAL_VERTICES,
-                index_capacity: INITIAL_INDICES,
-                instance_capacity: INITIAL_INSTANCES,
-                item_texture,
-                item_rows: 1,
                 white,
                 defaults,
                 samplers,
-                target: None,
-                screen: None,
+                list,
+                active: ROOT_SURFACE,
+                parked: HashMap::new(),
             })
         }
     }
@@ -1292,8 +1352,13 @@ pub struct CanvasItemsExecutor {
     objects: Option<Objects>,
     cache: Cache,
     textures: HashMap<u32, glow::Texture>,
+    /// [`TextureOp::Surface`] aliases: texture id to the surface whose colour texture it
+    /// samples.
+    surface_aliases: HashMap<u32, u32>,
+    /// A surface pass bound its own texture on [`UNIT_TARGET`] (where the RGB10_A2 blit reads
+    /// the root's): the next blit binds the root's again.
+    target_unit_stale: bool,
     calls: Vec<Call>,
-    needs_full: bool,
     max_side: u32,
     fence: Option<(glow::Fence, u32)>,
     frames: u32,
@@ -1302,9 +1367,7 @@ pub struct CanvasItemsExecutor {
     planned_calls: u64,
     /// Item-space programs by id ([`CanvasItemsExecutor::define_program`]).
     programs: HashMap<u32, ItemProgram>,
-    /// A version per binding slot, bumped whenever the list marks it dirty: a program re-sends
-    /// its uniforms when the (slot, version) it holds differs.
-    binding_versions: Vec<u64>,
+    /// The source of every list's binding versions ([`ListObjects::binding_versions`]).
     version_counter: u64,
 }
 
@@ -1344,14 +1407,14 @@ impl CanvasItemsExecutor {
             objects: Some(objects),
             cache: Cache::default(),
             textures: HashMap::new(),
+            surface_aliases: HashMap::new(),
+            target_unit_stale: false,
             calls: Vec::new(),
-            needs_full: true,
             max_side,
             fence: None,
             frames: 0,
             planned_calls: 0,
             programs: HashMap::new(),
-            binding_versions: Vec::new(),
             version_counter: 0,
         })
     }
@@ -1437,7 +1500,7 @@ impl CanvasItemsExecutor {
     pub fn target_size(&self) -> Option<(u32, u32)> {
         self.objects
             .as_ref()
-            .and_then(|o| o.target.as_ref())
+            .and_then(|o| o.list.target.as_ref())
             .map(|t| (t.width, t.height))
     }
 
@@ -1456,14 +1519,16 @@ impl CanvasItemsExecutor {
             }
             // Every handle belongs to the dead context: forget them without calling GL.
             self.textures.clear();
+            self.surface_aliases.clear();
+            self.target_unit_stale = false;
             self.fence = None;
             self.objects = None;
             self.cache = Cache::default();
             self.gl = Gl::new(glow::Context::from_webgl2_context(self.context.clone()));
             return match Objects::create(&self.gl.raw) {
                 Ok(objects) => {
+                    // Fresh list objects need `dirty.all` (ListObjects::needs_full).
                     self.objects = Some(objects);
-                    self.needs_full = true;
                     // Item-space programs come back from their modules (they compiled before).
                     for p in self.programs.values_mut() {
                         p.compiled =
@@ -1487,8 +1552,26 @@ impl CanvasItemsExecutor {
     /// Run one frame of `list` (see the module note) and blit it to the canvas. The caller calls
     /// `list.consumed()` afterwards. On an error nothing was drawn.
     pub fn execute(&mut self, list: &DrawList) -> Result<ExecStats, ExecError> {
+        self.execute_frame(list, &[], &[])
+    }
+
+    /// render-stream/16 viewport surfaces: free surfaces `freed` (their target, back buffer and
+    /// arrays), run each of `surfaces` into its own offscreen target in the order given (Godot's
+    /// viewport order: children first), then `root` ([`ROOT_SURFACE`]), and blit the root to the
+    /// canvas. A [`TextureOp::Surface`] alias samples a surface as the passes so far left it
+    /// (a surface later in the order: its previous contents; the target being drawn: transparent).
+    /// Texture operations run first, the root's and then each surface's, so every pass sees every
+    /// texture. A surface's objects are made at its first pass, and its target is (re)allocated
+    /// when its size or format changes (contents lost, as Godot's). The caller calls `consumed()`
+    /// on every list it passed. With no surfaces this is exactly [`Self::execute`].
+    pub fn execute_frame(
+        &mut self,
+        root: &DrawList,
+        surfaces: &[SurfacePass<'_>],
+        freed: &[u32],
+    ) -> Result<ExecStats, ExecError> {
         let mut stats = ExecStats {
-            draws: list.draws.len() as u32,
+            draws: root.draws.len() as u32,
             ..ExecStats::default()
         };
         match self.context_state() {
@@ -1496,24 +1579,77 @@ impl CanvasItemsExecutor {
             ContextState::Restored => stats.restored = 1,
             ContextState::Ready => {}
         }
-        if self.needs_full && !list.dirty.all {
+        if self.list_needs_full() && !root.dirty.all {
             return Err(ExecError::NeedsFullUpload);
         }
-        self.validate(list)?;
+        for pass in surfaces {
+            let surface = pass.list.target.surface;
+            if surface == ROOT_SURFACE {
+                return Err(ExecError::Invalid("a surface pass names the root".into()));
+            }
+            let fresh = self
+                .objects
+                .as_ref()
+                .is_none_or(|o| o.parked.get(&surface).is_none_or(|l| l.needs_full));
+            if fresh && !pass.list.dirty.all {
+                return Err(ExecError::NeedsFullUpload);
+            }
+            self.validate(pass.list)?;
+        }
+        self.validate(root)?;
         self.gl.calls.set(0);
         self.frames += 1;
-        self.texture_ops(list, &mut stats);
-        self.ensure_target(&list.target)?;
-        self.upload(list, &mut stats);
+        self.texture_ops(root, &mut stats);
+        for pass in surfaces {
+            self.texture_ops(pass.list, &mut stats);
+        }
+        if !freed.is_empty() {
+            self.free_surfaces(freed);
+        }
+        for pass in surfaces {
+            stats.draws += pass.list.draws.len() as u32;
+            let result = self.activate(pass.list.target.surface).and_then(|()| {
+                self.ensure_target(&pass.list.target, false)?;
+                self.run_list(pass.list, pass.clear, &mut stats);
+                Ok(())
+            });
+            if let Err(e) = result {
+                // The root is active outside a frame, whatever failed.
+                let _ = self.activate(ROOT_SURFACE);
+                return Err(e);
+            }
+        }
+        if !surfaces.is_empty() {
+            self.activate(ROOT_SURFACE)?;
+        }
+        self.ensure_target(&root.target, true)?;
+        self.run_list(root, true, &mut stats);
+        self.blit(root.target.format);
+        if self.fence.is_none()
+            && let Ok(fence) =
+                unsafe { self.gl.c().fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0) }
+        {
+            self.fence = Some((fence, self.frames));
+            stats.fence_issued = 1;
+        }
+        stats.gl_calls = self.gl.calls.get();
+        Ok(stats)
+    }
+
+    /// Upload the active list's dirty ranges, plan its calls and draw them into its target.
+    fn run_list(&mut self, list: &DrawList, clear: bool, stats: &mut ExecStats) {
+        self.upload(list, stats);
         self.version_bindings(list);
         let mut calls = std::mem::take(&mut self.calls);
         let counts = {
             let textures = &self.textures;
+            let aliases = &self.surface_aliases;
             let programs = &self.programs;
             let known_texture = |id: u32| {
                 id == WHITE_TEXTURE
                     || DEFAULT_TEXTURE_IDS.contains(&id)
                     || textures.contains_key(&id)
+                    || aliases.contains_key(&id)
             };
             plan_calls(
                 list,
@@ -1533,21 +1669,132 @@ impl CanvasItemsExecutor {
                 &mut calls,
             )
         };
-        stats.draws_merged = counts.merged;
-        stats.draws_skipped = counts.skipped;
-        self.draw(list, &calls, &mut stats);
+        stats.draws_merged += counts.merged;
+        stats.draws_skipped += counts.skipped;
+        self.draw(list, &calls, clear, stats);
         self.calls = calls;
-        self.blit(list.target.format);
-        if self.fence.is_none()
-            && let Ok(fence) =
-                unsafe { self.gl.c().fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0) }
-        {
-            self.fence = Some((fence, self.frames));
-            stats.fence_issued = 1;
+        if let Some(o) = self.objects.as_mut() {
+            o.list.needs_full = false;
         }
-        self.needs_full = false;
-        stats.gl_calls = self.gl.calls.get();
-        Ok(stats)
+    }
+
+    /// Whether the active list's objects need a `dirty.all` list (fresh, or no objects at all).
+    fn list_needs_full(&self) -> bool {
+        self.objects.as_ref().is_none_or(|o| o.list.needs_full)
+    }
+
+    /// Make surface `surface`'s list objects the active ones (creating them on first use), and
+    /// bind its item texture on [`UNIT_ITEMS`].
+    fn activate(&mut self, surface: u32) -> Result<(), ExecError> {
+        let objects = self.objects.as_mut().ok_or(ExecError::Lost)?;
+        if objects.active == surface {
+            return Ok(());
+        }
+        let next = match objects.parked.remove(&surface) {
+            Some(l) => l,
+            None => {
+                let made = ListObjects::create(&self.gl.raw);
+                // `create` changed bindings the cache tracks.
+                self.cache.vertex_array = None;
+                self.cache.array_buffer = None;
+                self.cache.active_unit = None;
+                made.map_err(|_| {
+                    self.loss.mark_lost();
+                    ExecError::Lost
+                })?
+            }
+        };
+        let prev = std::mem::replace(&mut objects.list, next);
+        objects.parked.insert(objects.active, prev);
+        objects.active = surface;
+        set_active_unit(&self.gl, &mut self.cache, UNIT_ITEMS);
+        unsafe {
+            self.gl
+                .c()
+                .bind_texture(glow::TEXTURE_2D, Some(objects.list.item_texture))
+        };
+        Ok(())
+    }
+
+    /// Delete surfaces' list objects (never the root's, never the active list's).
+    fn free_surfaces(&mut self, freed: &[u32]) {
+        let Some(objects) = self.objects.as_mut() else {
+            return;
+        };
+        let mut any = false;
+        for surface in freed {
+            if *surface == ROOT_SURFACE || *surface == objects.active {
+                continue;
+            }
+            if let Some(l) = objects.parked.remove(surface) {
+                l.delete(&self.gl.raw);
+                any = true;
+            }
+        }
+        if any {
+            // Deleted handles may sit in the cache: forget everything it holds.
+            self.cache = Cache::default();
+        }
+    }
+
+    /// Free every surface's list objects (a producer that starts over: a fresh applier holds no
+    /// surface pass). Nothing when none exists.
+    pub fn free_all_surfaces(&mut self) {
+        let ids: Vec<u32> = self
+            .objects
+            .as_ref()
+            .map(|o| o.parked.keys().copied().filter(|s| *s != ROOT_SURFACE).collect())
+            .unwrap_or_default();
+        if !ids.is_empty() && !self.loss.lost() {
+            self.free_surfaces(&ids);
+        }
+    }
+
+    /// Surfaces whose list objects exist (for tests and diagnostics).
+    pub fn surfaces(&self) -> Vec<u32> {
+        let Some(o) = self.objects.as_ref() else {
+            return Vec::new();
+        };
+        let mut v: Vec<u32> = o
+            .parked
+            .keys()
+            .copied()
+            .chain(std::iter::once(o.active))
+            .filter(|s| *s != ROOT_SURFACE)
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// Read surface `surface`'s target (Godot's orientation keeps design rows; else rows are
+    /// top-down as [`Self::read_target`]'s). An error when it has no target.
+    pub fn read_surface(&mut self, surface: u32, out: &mut [u8]) -> Result<(), ExecError> {
+        if self.context_state() != ContextState::Ready {
+            return Err(ExecError::Lost);
+        }
+        let objects = self.objects.as_ref().ok_or(ExecError::Lost)?;
+        let list = if objects.active == surface {
+            Some(&objects.list)
+        } else {
+            objects.parked.get(&surface)
+        };
+        let Some(t) = list.and_then(|l| l.target.as_ref()) else {
+            return Err(ExecError::Invalid(format!("surface {surface} has no target")));
+        };
+        let (framebuffer, width, height) = (t.framebuffer, t.width, t.height);
+        let swap = !self.options.godot_orientation;
+        self.read(Some(framebuffer), width, height, out, swap)
+    }
+
+    /// Surface `surface`'s target size, once a pass allocated it.
+    pub fn surface_size(&self, surface: u32) -> Option<(u32, u32)> {
+        let o = self.objects.as_ref()?;
+        let l = if o.active == surface {
+            Some(&o.list)
+        } else {
+            o.parked.get(&surface)
+        };
+        l.and_then(|l| l.target.as_ref()).map(|t| (t.width, t.height))
     }
 
     /// Poll the outstanding fence without blocking. WebGL updates a sync's status only between
@@ -1576,7 +1823,7 @@ impl CanvasItemsExecutor {
         if self.context_state() != ContextState::Ready {
             return Err(ExecError::Lost);
         }
-        let Some(target) = self.objects.as_ref().and_then(|o| o.target.as_ref()) else {
+        let Some(target) = self.objects.as_ref().and_then(|o| o.list.target.as_ref()) else {
             return Err(ExecError::Invalid(
                 "no frame has allocated the target yet".into(),
             ));
@@ -1684,7 +1931,7 @@ impl CanvasItemsExecutor {
                     }
                     check_texture_bytes(list, op, id)?;
                 }
-                TextureOp::Free { id } => {
+                TextureOp::Free { id } | TextureOp::Surface { id, .. } => {
                     if id == WHITE_TEXTURE {
                         return Err(ExecError::Invalid("texture id 0 is the white texel".into()));
                     }
@@ -1733,21 +1980,26 @@ impl CanvasItemsExecutor {
 
     /// Bump the version of every binding slot the list marks dirty (every slot on a full upload).
     fn version_bindings(&mut self, list: &DrawList) {
+        let Some(objects) = self.objects.as_mut() else {
+            return;
+        };
+        let versions = &mut objects.list.binding_versions;
         let n = list.bindings.len();
-        let all = list.dirty.all || self.binding_versions.len() != n;
-        self.binding_versions.resize(n, 0);
+        let all = list.dirty.all || versions.len() != n;
+        versions.resize(n, 0);
+        let counter = &mut self.version_counter;
         let mut bump = |slot: usize, versions: &mut Vec<u64>| {
-            self.version_counter += 1;
-            versions[slot] = self.version_counter;
+            *counter += 1;
+            versions[slot] = *counter;
         };
         if all {
             for slot in 0..n {
-                bump(slot, &mut self.binding_versions);
+                bump(slot, versions);
             }
         } else {
             for &(start, end) in list.dirty.bindings.as_slice() {
                 for slot in start as usize..(end as usize).min(n) {
-                    bump(slot, &mut self.binding_versions);
+                    bump(slot, versions);
                 }
             }
         }
@@ -1895,6 +2147,7 @@ impl CanvasItemsExecutor {
                     stats.texture_upload_bytes += len;
                 }
                 TextureOp::Free { id } => {
+                    self.surface_aliases.remove(&id);
                     if let Some(texture) = self.textures.remove(&id) {
                         unsafe { self.gl.c().delete_texture(texture) };
                         if self.cache.draw_texture == Some(texture) {
@@ -1903,13 +2156,25 @@ impl CanvasItemsExecutor {
                         stats.texture_frees += 1;
                     }
                 }
+                TextureOp::Surface { id, surface } => {
+                    // An id is one texture: an alias replaces an image of the same id.
+                    if let Some(texture) = self.textures.remove(&id) {
+                        unsafe { self.gl.c().delete_texture(texture) };
+                        if self.cache.draw_texture == Some(texture) {
+                            self.cache.draw_texture = None;
+                        }
+                    }
+                    self.surface_aliases.insert(id, surface);
+                }
             }
         }
     }
 
-    fn ensure_target(&mut self, target: &Target) -> Result<(), ExecError> {
+    /// The active list's target for `target`, (re)allocated on a size or format change. `root`:
+    /// the canvas follows its size (a surface's never moves the canvas).
+    fn ensure_target(&mut self, target: &Target, root: bool) -> Result<(), ExecError> {
         let objects = self.objects.as_mut().ok_or(ExecError::Lost)?;
-        if let Some(t) = &objects.target
+        if let Some(t) = &objects.list.target
             && t.width == target.width
             && t.height == target.height
             && t.format == target.format
@@ -1917,7 +2182,7 @@ impl CanvasItemsExecutor {
             return Ok(());
         }
         let gl = &self.gl;
-        if let Some(old) = objects.target.take() {
+        if let Some(old) = objects.list.target.take() {
             unsafe {
                 gl.c().delete_framebuffer(old.framebuffer);
                 gl.c().delete_texture(old.texture);
@@ -1961,6 +2226,9 @@ impl CanvasItemsExecutor {
             (texture, framebuffer, complete)
         };
         self.cache.active_unit = Some(UNIT_TARGET);
+        if !root {
+            self.target_unit_stale = true;
+        }
         self.cache.draw_framebuffer = Some(Some(framebuffer));
         self.cache.read_framebuffer = Some(Some(framebuffer));
         if !complete {
@@ -1975,13 +2243,16 @@ impl CanvasItemsExecutor {
                 target.format
             )));
         }
-        objects.target = Some(TargetObjects {
+        objects.list.target = Some(TargetObjects {
             texture,
             framebuffer,
             width: target.width,
             height: target.height,
             format: target.format,
         });
+        if !root {
+            return Ok(());
+        }
         if self.canvas.width() != target.width {
             self.canvas.set_width(target.width);
         }
@@ -1992,21 +2263,21 @@ impl CanvasItemsExecutor {
     }
 
     fn upload(&mut self, list: &DrawList, stats: &mut ExecStats) {
-        let all = list.dirty.all || self.needs_full;
         let Some(objects) = self.objects.as_mut() else {
             return;
         };
+        let all = list.dirty.all || objects.list.needs_full;
         let gl = &self.gl;
         let cache = &mut self.cache;
 
         // Item rows: unit 1 always holds the item texture.
         let rows = item_rows_for(list.items.len());
         let mut items_all = all;
-        if rows > objects.item_rows {
+        if rows > objects.list.item_rows {
             let grown = rows.next_power_of_two();
             set_active_unit(gl, cache, UNIT_ITEMS);
             allocate_items(gl.c(), grown);
-            objects.item_rows = grown;
+            objects.list.item_rows = grown;
             items_all = true;
         }
         let mut upload_items = |start: u32, end: u32, stats: &mut ExecStats| {
@@ -2043,13 +2314,13 @@ impl CanvasItemsExecutor {
 
         // Vertices: ARRAY_BUFFER is not vertex-array state.
         let mut vertices_all = all;
-        if list.vertices.len() > objects.vertex_capacity {
-            objects.vertex_capacity = list.vertices.len().next_power_of_two();
-            bind_array_buffer(gl, cache, objects.vertex_buffer);
+        if list.vertices.len() > objects.list.vertex_capacity {
+            objects.list.vertex_capacity = list.vertices.len().next_power_of_two();
+            bind_array_buffer(gl, cache, objects.list.vertex_buffer);
             unsafe {
                 gl.c().buffer_data_size(
                     glow::ARRAY_BUFFER,
-                    (objects.vertex_capacity * VERTEX_BYTES) as i32,
+                    (objects.list.vertex_capacity * VERTEX_BYTES) as i32,
                     glow::DYNAMIC_DRAW,
                 );
             }
@@ -2066,7 +2337,7 @@ impl CanvasItemsExecutor {
             if start >= end {
                 continue;
             }
-            bind_array_buffer(gl, cache, objects.vertex_buffer);
+            bind_array_buffer(gl, cache, objects.list.vertex_buffer);
             let bytes: &[u8] = bytemuck::cast_slice(&list.vertices[start..end]);
             unsafe {
                 gl.c().buffer_sub_data_u8_slice(
@@ -2081,13 +2352,13 @@ impl CanvasItemsExecutor {
 
         // Indices: ELEMENT_ARRAY_BUFFER is the vertex array's, so bind that first.
         let mut indices_all = all;
-        if list.indices.len() > objects.index_capacity {
-            objects.index_capacity = list.indices.len().next_power_of_two();
-            bind_vertex_array(gl, cache, objects.vertex_array);
+        if list.indices.len() > objects.list.index_capacity {
+            objects.list.index_capacity = list.indices.len().next_power_of_two();
+            bind_vertex_array(gl, cache, objects.list.vertex_array);
             unsafe {
                 gl.c().buffer_data_size(
                     glow::ELEMENT_ARRAY_BUFFER,
-                    (objects.index_capacity * 4) as i32,
+                    (objects.list.index_capacity * 4) as i32,
                     glow::DYNAMIC_DRAW,
                 );
             }
@@ -2104,7 +2375,7 @@ impl CanvasItemsExecutor {
             if start >= end {
                 continue;
             }
-            bind_vertex_array(gl, cache, objects.vertex_array);
+            bind_vertex_array(gl, cache, objects.list.vertex_array);
             let bytes: &[u8] = bytemuck::cast_slice(&list.indices[start..end]);
             unsafe {
                 gl.c().buffer_sub_data_u8_slice(
@@ -2119,13 +2390,13 @@ impl CanvasItemsExecutor {
 
         // Instances (ARRAY_BUFFER, like the vertices).
         let mut instances_all = all;
-        if list.instances.len() > objects.instance_capacity {
-            objects.instance_capacity = list.instances.len().next_power_of_two();
-            bind_array_buffer(gl, cache, objects.instance_buffer);
+        if list.instances.len() > objects.list.instance_capacity {
+            objects.list.instance_capacity = list.instances.len().next_power_of_two();
+            bind_array_buffer(gl, cache, objects.list.instance_buffer);
             unsafe {
                 gl.c().buffer_data_size(
                     glow::ARRAY_BUFFER,
-                    (objects.instance_capacity * INSTANCE_BYTES) as i32,
+                    (objects.list.instance_capacity * INSTANCE_BYTES) as i32,
                     glow::DYNAMIC_DRAW,
                 );
             }
@@ -2142,7 +2413,7 @@ impl CanvasItemsExecutor {
             if start >= end {
                 continue;
             }
-            bind_array_buffer(gl, cache, objects.instance_buffer);
+            bind_array_buffer(gl, cache, objects.list.instance_buffer);
             let bytes: &[u8] = bytemuck::cast_slice(&list.instances[start..end]);
             unsafe {
                 gl.c().buffer_sub_data_u8_slice(
@@ -2156,11 +2427,13 @@ impl CanvasItemsExecutor {
         }
     }
 
-    fn draw(&mut self, list: &DrawList, calls: &[Call], stats: &mut ExecStats) {
+    /// Draw `calls` into the active list's target, cleared first when `clear` (Godot's clear of
+    /// a render target; a surface whose clear mode is not due keeps its contents).
+    fn draw(&mut self, list: &DrawList, calls: &[Call], clear: bool, stats: &mut ExecStats) {
         let Some(objects) = self.objects.as_ref() else {
             return;
         };
-        let Some(target) = objects.target.as_ref() else {
+        let Some(target) = objects.list.target.as_ref() else {
             return;
         };
         let sabotage = self.options.sabotage;
@@ -2173,14 +2446,16 @@ impl CanvasItemsExecutor {
         set_viewport(gl, cache, width, height);
         set_scissor_enabled(gl, cache, false);
         // The list's clear colour is straight; the target holds premultiplied colour.
-        let [r, g, b, a] = list.target.clear;
-        let clear = [r * a, g * a, b * a, a];
-        let bits = clear.map(f32::to_bits);
-        if cache.clear_color != Some(bits) {
-            unsafe { gl.c().clear_color(clear[0], clear[1], clear[2], clear[3]) };
-            cache.clear_color = Some(bits);
+        if clear {
+            let [r, g, b, a] = list.target.clear;
+            let clear = [r * a, g * a, b * a, a];
+            let bits = clear.map(f32::to_bits);
+            if cache.clear_color != Some(bits) {
+                unsafe { gl.c().clear_color(clear[0], clear[1], clear[2], clear[3]) };
+                cache.clear_color = Some(bits);
+            }
+            unsafe { gl.c().clear(glow::COLOR_BUFFER_BIT) };
         }
-        unsafe { gl.c().clear(glow::COLOR_BUFFER_BIT) };
         if calls.is_empty() {
             return;
         }
@@ -2195,7 +2470,7 @@ impl CanvasItemsExecutor {
         // ExecOptions::godot_orientation: Godot's screen_transform instead.
         let godot = self.options.godot_orientation;
         let screen = godot_screen_transform(width, height);
-        bind_vertex_array(gl, cache, objects.vertex_array);
+        bind_vertex_array(gl, cache, objects.list.vertex_array);
         let Some(objects) = self.objects.as_mut() else {
             return;
         };
@@ -2215,7 +2490,7 @@ impl CanvasItemsExecutor {
                 ran_ops = true;
             }
             if ran_ops {
-                bind_vertex_array(gl, cache, objects.vertex_array);
+                bind_vertex_array(gl, cache, objects.list.vertex_array);
             }
             let n = self.planned_calls;
             self.planned_calls += 1;
@@ -2229,7 +2504,7 @@ impl CanvasItemsExecutor {
             let to_back_buffer = draw.flags & DRAW_TO_BACK_BUFFER != 0;
             let opaque = list.target.opaque && !to_back_buffer;
             if to_back_buffer {
-                let Some(bb) = objects.screen.as_mut() else {
+                let Some(bb) = objects.list.screen.as_mut() else {
                     // No back buffer (a target of 40 px or less): GLES3 has none to draw into.
                     stats.calls_dropped += 1;
                     continue;
@@ -2253,7 +2528,7 @@ impl CanvasItemsExecutor {
             let msdf = draw.flags & DRAW_MSDF != 0;
             if group_mode != 0 {
                 // A group owner through Godot's default clip-children or canvas-group shader.
-                let Some(bb) = objects.screen.as_mut() else {
+                let Some(bb) = objects.list.screen.as_mut() else {
                     stats.calls_dropped += 1;
                     continue;
                 };
@@ -2380,7 +2655,8 @@ impl CanvasItemsExecutor {
                     unsafe { gl.c().uniform_1_i32(item.u_msdf_on.as_ref(), 0) };
                     item.msdf_state = Some((false, state));
                 }
-                let version = self
+                let version = objects
+                    .list
                     .binding_versions
                     .get(slot as usize)
                     .copied()
@@ -2440,7 +2716,7 @@ impl CanvasItemsExecutor {
                     let (texture, sampler) = match bound {
                         // The back buffer, with its own fixed sampler; white for a draw
                         // into the back buffer (canvas_begin binds white there).
-                        Some(s) if s.texture == SCREEN_TEXTURE => match objects.screen.as_ref() {
+                        Some(s) if s.texture == SCREEN_TEXTURE => match objects.list.screen.as_ref() {
                             Some(screen) if !to_back_buffer => (screen.texture, screen.sampler),
                             _ => (objects.white, objects.samplers[0]),
                         },
@@ -2453,8 +2729,13 @@ impl CanvasItemsExecutor {
                             (objects.defaults[at], objects.samplers[0])
                         }
                         Some(s) if s.texture != WHITE_TEXTURE => {
-                            match self.textures.get(&s.texture) {
-                                Some(t) => (*t, objects.samplers[sampler_index(s.sampler)]),
+                            match lookup_texture(
+                                &self.textures,
+                                &self.surface_aliases,
+                                objects,
+                                s.texture,
+                            ) {
+                                Some(t) => (t, objects.samplers[sampler_index(s.sampler)]),
                                 None => (objects.white, objects.samplers[0]),
                             }
                         }
@@ -2517,8 +2798,10 @@ impl CanvasItemsExecutor {
             if tex_draw.flags & DRAW_UNTEXTURED != 0 || tex_draw.texture == WHITE_TEXTURE {
                 // A 1×1 white texel samples white under every filter and wrap: keep the sampler.
                 bind_draw_texture_with(gl, cache, objects.white, stats);
-            } else if let Some(texture) = self.textures.get(&tex_draw.texture) {
-                bind_draw_texture_with(gl, cache, *texture, stats);
+            } else if let Some(texture) =
+                lookup_texture(&self.textures, &self.surface_aliases, objects, tex_draw.texture)
+            {
+                bind_draw_texture_with(gl, cache, texture, stats);
                 let sampler = objects.samplers[sampler_index(tex_draw.sampler)];
                 if cache.draw_sampler != Some(sampler) {
                     unsafe { gl.c().bind_sampler(UNIT_DRAW, Some(sampler)) };
@@ -2541,7 +2824,7 @@ impl CanvasItemsExecutor {
                 }) else {
                     continue;
                 };
-                bind_array_buffer(gl, cache, objects.instance_buffer);
+                bind_array_buffer(gl, cache, objects.list.instance_buffer);
                 let base = range.first as usize * INSTANCE_BYTES;
                 unsafe {
                     for k in 0..INSTANCE_ATTRIBUTES {
@@ -2590,7 +2873,7 @@ impl CanvasItemsExecutor {
         let Some(objects) = self.objects.as_ref() else {
             return;
         };
-        let Some(target) = objects.target.as_ref() else {
+        let Some(target) = objects.list.target.as_ref() else {
             return;
         };
         let gl = &self.gl;
@@ -2598,6 +2881,11 @@ impl CanvasItemsExecutor {
         set_scissor_enabled(gl, cache, false);
         match format {
             Format::Rgb10A2 => {
+                // A surface target made since the last blit took UNIT_TARGET.
+                if std::mem::take(&mut self.target_unit_stale) {
+                    set_active_unit(gl, cache, UNIT_TARGET);
+                    unsafe { gl.c().bind_texture(glow::TEXTURE_2D, Some(target.texture)) };
+                }
                 bind_draw_framebuffer(gl, cache, None);
                 set_viewport(gl, cache, target.width, target.height);
                 if cache.blend_enabled != Some(false) {
@@ -2680,11 +2968,6 @@ impl Drop for CanvasItemsExecutor {
                 gl.delete_program(o.msdf.program);
                 gl.delete_program(o.present_program);
                 gl.delete_vertex_array(o.present_vertex_array);
-                gl.delete_vertex_array(o.vertex_array);
-                gl.delete_buffer(o.vertex_buffer);
-                gl.delete_buffer(o.index_buffer);
-                gl.delete_buffer(o.instance_buffer);
-                gl.delete_texture(o.item_texture);
                 gl.delete_texture(o.white);
                 for texture in o.defaults {
                     gl.delete_texture(texture);
@@ -2692,15 +2975,42 @@ impl Drop for CanvasItemsExecutor {
                 for sampler in o.samplers {
                     gl.delete_sampler(sampler);
                 }
-                if let Some(t) = o.target {
-                    gl.delete_framebuffer(t.framebuffer);
-                    gl.delete_texture(t.texture);
-                }
-                if let Some(screen) = o.screen {
-                    delete_screen(gl, screen);
+                o.list.delete(gl);
+                for (_, l) in o.parked {
+                    l.delete(gl);
                 }
             }
         }
+    }
+}
+
+/// The GL texture a draw binds for list texture `id`: a resident texture, or a
+/// [`TextureOp::Surface`] alias's surface colour texture -- transparent when that surface has no
+/// target yet, or is the target being drawn (Godot's `viewport-feedback`: a viewport never samples
+/// itself). None for an id that is neither.
+fn lookup_texture(
+    textures: &HashMap<u32, glow::Texture>,
+    aliases: &HashMap<u32, u32>,
+    objects: &Objects,
+    id: u32,
+) -> Option<glow::Texture> {
+    if let Some(t) = textures.get(&id) {
+        return Some(*t);
+    }
+    if let Some(at) = DEFAULT_TEXTURE_IDS.iter().position(|d| *d == id) {
+        return Some(objects.defaults[at]);
+    }
+    let surface = *aliases.get(&id)?;
+    let transparent = DEFAULT_TEXTURE_IDS
+        .iter()
+        .position(|d| *d == TRANSPARENT_TEXTURE)
+        .map(|at| objects.defaults[at]);
+    if surface == objects.active {
+        return transparent;
+    }
+    match objects.parked.get(&surface).and_then(|l| l.target.as_ref()) {
+        Some(t) => Some(t.texture),
+        None => transparent,
     }
 }
 

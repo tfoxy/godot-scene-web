@@ -196,5 +196,143 @@
       "adopted_content",
       "the root's subwindow canvas (layer 1024) only in born, holding only the Popup's texture-rect draw"
     ]
+  },
+  "reference": {
+    "doc": "VS3 vp-reference (scripts/lib/gate8-vp-checks.ts referenceProblems): each display node's screen rect, from viewport_scene.tscn's offsets and viewport_scene.gd's positions (the late views at K+5, the popup before and after its K+24 move), and how a receiver's pixels there are judged against born-rendered's Godot shots. View3D shows a viewport that renders 3D (viewport-3d: receivers draw its 2D canvases only); AccumVP clears never (viewport-accumulation: a receiver accumulates per received frame, Godot per host frame). Everything else, the root's own pixels included, is exact within one channel step (fixtures/gsw-tolerance.json P-G1 and P-G3).",
+    "channel": 1,
+    "regions": [
+      {
+        "name": "view3d",
+        "rect": [
+          344,
+          8,
+          96,
+          96
+        ],
+        "class": "excluded",
+        "reason": "viewport-3d"
+      },
+      {
+        "name": "accum",
+        "rect": [
+          8,
+          220,
+          64,
+          64
+        ],
+        "class": "banded",
+        "reason": "viewport-accumulation"
+      },
+      {
+        "name": "draw",
+        "rect": [
+          8,
+          8,
+          120,
+          202
+        ],
+        "class": "exact"
+      },
+      {
+        "name": "outer",
+        "rect": [
+          136,
+          8,
+          200,
+          112
+        ],
+        "class": "exact"
+      },
+      {
+        "name": "empty-camera",
+        "rect": [
+          448,
+          8,
+          64,
+          48
+        ],
+        "class": "exact"
+      },
+      {
+        "name": "snap",
+        "rect": [
+          520,
+          8,
+          48,
+          48
+        ],
+        "class": "exact"
+      },
+      {
+        "name": "share-a",
+        "rect": [
+          80,
+          220,
+          40,
+          40
+        ],
+        "class": "exact"
+      },
+      {
+        "name": "share-b",
+        "rect": [
+          128,
+          220,
+          56,
+          40
+        ],
+        "class": "exact"
+      },
+      {
+        "name": "opaque",
+        "rect": [
+          192,
+          220,
+          72,
+          40
+        ],
+        "class": "exact"
+      },
+      {
+        "name": "anim",
+        "rect": [
+          272,
+          220,
+          32,
+          32
+        ],
+        "class": "exact"
+      },
+      {
+        "name": "late",
+        "rect": [
+          312,
+          220,
+          70,
+          30
+        ],
+        "class": "exact"
+      },
+      {
+        "name": "late-drawing",
+        "rect": [
+          400,
+          220,
+          44,
+          26
+        ],
+        "class": "exact"
+      },
+      {
+        "name": "popup",
+        "rect": [
+          492,
+          270,
+          128,
+          72
+        ],
+        "class": "exact"
+      }
+    ]
   }
 }

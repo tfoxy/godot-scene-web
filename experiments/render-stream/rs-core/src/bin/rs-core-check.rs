@@ -1271,6 +1271,8 @@ struct CoverDiff {
     /// Seqs whose list is not what a walk that remembers nothing makes of the assembled table
     /// (`Applier::cover_recheck`).
     stale: Vec<i64>,
+    /// render-stream/16: surface lists compared with their uncut twins.
+    surfaces_checked: u32,
 }
 
 fn cmd_walk_diff(args: &Args) -> ExitCode {
@@ -1314,7 +1316,7 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
     };
     let mut failed = false;
     for path in &args.positional {
-        let mut run = || -> Result<(usize, usize, usize, Vec<i64>, CoverDiff), wire::Error> {
+        let mut run = || -> Result<(usize, usize, usize, Vec<i64>, CoverDiff, u64), wire::Error> {
             let data =
                 std::fs::read(path).map_err(|e| wire::Error::new("io", format!("{path}: {e}")))?;
             let version = wire::version_of_magic(&data)
@@ -1358,6 +1360,7 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
             let mut payloads = PayloadStore::default();
             let mut need = Vec::new();
             let (mut n, mut walks, mut rows_only) = (0, 0, 0);
+            let mut surfaces_compared = 0u64;
             let mut bad = Vec::new();
             let mut cover = CoverDiff::default();
             let (mut programs, mut programs_after) = (1u32, 1u32);
@@ -1439,8 +1442,30 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                                 if !inc.cover_recheck() {
                                     cover.stale.push(v.state().seq);
                                 }
+                                // render-stream/16: every surface pass's list, the same way.
+                                if let (Some(si), Some(su)) =
+                                    (inc.surfaces.as_ref(), u.surfaces.as_ref())
+                                {
+                                    for id in si.ids() {
+                                        let (Some(a), Some(b)) = (si.applier(id), su.applier(id))
+                                        else {
+                                            continue;
+                                        };
+                                        cover.surfaces_checked += 1;
+                                        let m = a.cover_provenance().mismatches(&b.cover_provenance());
+                                        if m > 0 {
+                                            cover.bad.push((v.state().seq, m));
+                                        }
+                                        if !a.cover_recheck() {
+                                            cover.stale.push(v.state().seq);
+                                        }
+                                    }
+                                }
                             }
                             u.list.consumed();
+                            if let Some(set) = u.surfaces.as_mut() {
+                                set.consumed();
+                            }
                         }
                         n += 1;
                         if st.structural {
@@ -1451,6 +1476,25 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                         let paint = inc.paint_digest();
                         if paint != oracle.paint_digest() {
                             bad.push(v.state().seq);
+                        }
+                        // render-stream/16: each surface pass paints what its oracle's does (the
+                        // oracle's surface appliers walk every apply too).
+                        if let (Some(si), Some(so)) = (inc.surfaces.as_ref(), oracle.surfaces.as_ref()) {
+                            if si.ids() != so.ids() {
+                                bad.push(v.state().seq);
+                            }
+                            for id in si.ids() {
+                                surfaces_compared += 1;
+                                let (a, b) = (si.applier(id), so.applier(id));
+                                if a.map(Applier::paint_digest) != b.map(Applier::paint_digest) {
+                                    bad.push(v.state().seq);
+                                }
+                            }
+                        }
+                        for a in [&mut inc, &mut oracle] {
+                            if let Some(set) = a.surfaces.as_mut() {
+                                set.consumed();
+                            }
                         }
                         if let Some(w) = cover_lists.as_mut() {
                             let mut b = String::new();
@@ -1493,12 +1537,12 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                     }
                 }
             }
-            Ok((n, walks, rows_only, bad, cover))
+            Ok((n, walks, rows_only, bad, cover, surfaces_compared))
         };
         match run() {
-            Ok((n, walks, rows_only, bad, cover)) => {
+            Ok((n, walks, rows_only, bad, cover, surfaces_compared)) => {
                 println!(
-                    "{path}: {n} transactions, {walks} walked, {rows_only} rows-only, {} re-assembled; {} mismatching{}{}",
+                    "{path}: {n} transactions, {walks} walked, {rows_only} rows-only, {} re-assembled; {} mismatching{}{}{}",
                     n - walks - rows_only,
                     bad.len(),
                     if bad.is_empty() {
@@ -1525,6 +1569,14 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                             } else {
                                 format!(" (seqs {:?})", &cover.stale[..cover.stale.len().min(20)])
                             }
+                        )
+                    } else {
+                        String::new()
+                    },
+                    if surfaces_compared > 0 {
+                        format!(
+                            "; surfaces: {surfaces_compared} passes compared, {} cover-checked",
+                            cover.surfaces_checked
                         )
                     } else {
                         String::new()
@@ -2627,6 +2679,13 @@ impl GpuMirror {
                 TextureOp::UploadCompressed {
                     id, width, height, ..
                 } => (2, id, width, height),
+                // A surface alias holds no bytes: the mirror keeps it as a sizeless entry.
+                TextureOp::Surface { id, surface } => {
+                    let mut d = [0u8; 32];
+                    d[..4].copy_from_slice(&surface.to_le_bytes());
+                    self.textures.insert(id, (3, 0, 0, d));
+                    continue;
+                }
             };
             let (bytes, len) = op.byte_len().expect("an upload");
             let data = list

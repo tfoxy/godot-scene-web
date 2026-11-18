@@ -31,6 +31,7 @@ pub mod payloads;
 pub mod programs;
 pub mod residency;
 pub mod retention;
+pub mod surfaces;
 
 use crate::prof;
 use crate::state::{
@@ -167,6 +168,17 @@ pub enum ApplyShortcut {
     /// A material whose shader code is deferred (loading, or unavailable) with no program: what
     /// it draws is not drawn.
     ShaderUnavailable,
+    /// render-stream/16 (viewport-surfaces-design.md Q5a): a clear `never` / `next_frame`
+    /// surface drawn once per received frame, not per host frame: approximate.
+    ViewportAccumulation,
+    /// A surface samples itself (transparent) or one later in Godot's order (its previous
+    /// contents, as in Godot).
+    ViewportFeedback,
+    /// A surface larger than the context's largest texture side: refused, samples transparent.
+    ViewportTooLarge,
+    /// A due surface Godot's order cannot place (an inactive parent, or an endless parent
+    /// chain): not drawn.
+    ViewportOrder,
 }
 
 impl ApplyShortcut {
@@ -177,6 +189,10 @@ impl ApplyShortcut {
             ApplyShortcut::TieAppendOrder => "slice-tie-append-order",
             ApplyShortcut::TextureNotResident => "texture-not-resident-skipped",
             ApplyShortcut::ShaderUnavailable => "shader-unavailable-skipped",
+            ApplyShortcut::ViewportAccumulation => "viewport-accumulation",
+            ApplyShortcut::ViewportFeedback => "viewport-feedback",
+            ApplyShortcut::ViewportTooLarge => "viewport-too-large",
+            ApplyShortcut::ViewportOrder => "viewport-order",
         }
     }
 }
@@ -921,6 +937,24 @@ pub struct Applier {
     /// the default, 2048, is the smallest a WebGL2 or GLES3 context may report. 0: no limit.
     pub max_texture_side: u32,
     cover: cover::CoverState,
+    /// render-stream/16 viewport surfaces (surfaces.rs). The `viewports` core option: false
+    /// applies the viewport table but builds no surface pass (every `viewport` texture samples
+    /// transparent).
+    pub viewports_enabled: bool,
+    /// The root's surface passes; None while the state holds no viewport.
+    pub surfaces: Option<Box<surfaces::SurfaceSet>>,
+    /// Set on a surface applier: the viewport it draws and the rows it walks.
+    surface: Option<Box<surfaces::SurfaceView>>,
+    /// Resident `viewport` textures: texture id to viewport id (what a draw of it samples).
+    surface_aliases: IdMap<Id>,
+    /// Bumped by every program registration, so surface appliers copy the root's programs only
+    /// when they changed.
+    programs_epoch: u64,
+    /// A surface applier's rows changed: the next apply walks.
+    force_walk: bool,
+    /// A payload reached the store after an apply that went without it (deferred, restored): the
+    /// next apply rebuilds every surface applier (they keep no deferred set of their own).
+    surfaces_rebuild: bool,
 }
 
 /// PM3: one instanced draw's range in `list.instances` and what fills it.
@@ -972,11 +1006,48 @@ impl TableView<'_> {
                 _ => TexDraw::Skip,
             },
             (EntryStatus::Ok, TextureKind::Canvas) => TexDraw::Skip,
-            // render-stream-16.md: receivers do not draw viewport surfaces yet, so a viewport
-            // render target or a proxy of anything draws as a texture they cannot draw.
-            (EntryStatus::Ok, TextureKind::Viewport | TextureKind::Proxy) => TexDraw::Skip,
+            // render-stream-16.md, viewport-surfaces-design.md Q5: a viewport's render target
+            // draws at the viewport's size (Godot's render-target texture; never mipmapped), its
+            // texels the surface pass's, or transparent until one ran. A proxy draws its target,
+            // one hop (Godot refuses a proxy of a proxy).
+            (EntryStatus::Ok, TextureKind::Viewport) => viewport_draw(self.state, t),
+            (EntryStatus::Ok, TextureKind::Proxy) => match t.target.and_then(|g| self.state.textures.get(&g)) {
+                Some(g) if g.kind == TextureKind::Proxy => TexDraw::Skip,
+                Some(g) if g.kind == TextureKind::Canvas => TexDraw::Skip,
+                Some(g) => self.drawable(g),
+                None => TexDraw::Skip,
+            },
         }
     }
+}
+
+/// How an `ok` `viewport` texture draws: at its viewport's size (at least 1x1), or not at all
+/// when the table no longer holds the viewport.
+fn viewport_draw(state: &ResolvedState, t: &crate::state::Texture) -> lower::TexDraw {
+    match t.viewport.and_then(|v| state.viewports.get(&v)) {
+        Some(vp) => lower::TexDraw::Sized(vp.size[0].max(1) as u32, vp.size[1].max(1) as u32, false),
+        None => lower::TexDraw::Skip,
+    }
+}
+
+/// The texture a draw of wire texture `t` binds (render-stream/16): an `ok` proxy's target, one
+/// hop; anything else itself.
+fn proxy_hop(state: &ResolvedState, t: Id) -> Id {
+    match state.textures.get(&t) {
+        Some(e) if e.kind == TextureKind::Proxy && e.status == EntryStatus::Ok => {
+            e.target.unwrap_or(t)
+        }
+        _ => t,
+    }
+}
+
+/// Whether a resident texture of `kind` can be bound by a draw: an image or placeholder on the
+/// GPU, or (render-stream/16) a viewport's surface alias.
+fn bindable(kind: TextureKind) -> bool {
+    matches!(
+        kind,
+        TextureKind::Image | TextureKind::Placeholder | TextureKind::Viewport
+    )
 }
 
 impl TableView<'_> {
@@ -1249,6 +1320,7 @@ impl Applier {
             // The root viewport is Godot's non-transparent render target (D7; G7s: blends keep
             // its alpha, mul and disabled draw straight colour, rasterizer_canvas_gles3.cpp:742-798).
             opaque: true,
+            surface: gsw_canvas_draw_list::ROOT_SURFACE,
         };
         Applier {
             list: DrawList::new(target),
@@ -1341,6 +1413,13 @@ impl Applier {
             cover_walk: true,
             max_texture_side: 2048,
             cover: cover::CoverState::default(),
+            viewports_enabled: true,
+            surfaces: None,
+            surface: None,
+            surface_aliases: IdMap::default(),
+            programs_epoch: 0,
+            force_walk: false,
+            surfaces_rebuild: false,
         }
     }
 
@@ -1350,6 +1429,7 @@ impl Applier {
         if self.programs.get(&hash) != Some(&entry) {
             self.programs.insert(hash, entry);
             self.programs_dirty = true;
+            self.programs_epoch += 1;
         }
     }
 
@@ -1578,6 +1658,15 @@ impl Applier {
                 self.list
                     .upload_texture(*id, 4, 4, &residency::placeholder_checker());
             }
+        }
+        // render-stream/16: the surface aliases, and every surface pass from scratch.
+        let mut aliases: Vec<(Id, Id)> = self.surface_aliases.iter().map(|(t, v)| (*t, *v)).collect();
+        aliases.sort_unstable();
+        for (t, v) in aliases {
+            self.list.alias_surface(t, v as u32);
+        }
+        if let Some(set) = self.surfaces.as_mut() {
+            set.context_restored();
         }
         let ids: Vec<(Id, crate::state::Hash)> = self
             .resident
@@ -1908,6 +1997,9 @@ impl Applier {
             self.kept.remove(&id);
             self.restore_resized.push(id);
         }
+        if !ids.is_empty() {
+            self.surfaces_rebuild = true;
+        }
         // A cover drawing from a freed texture draws nothing until the next apply: what it hid
         // must be in the list meanwhile.
         if !ids.is_empty() && self.cull_covered() {
@@ -1945,6 +2037,7 @@ impl Applier {
         for h in &arrived {
             self.deferred.remove(h);
         }
+        self.surfaces_rebuild = true;
         for (id, t) in &state.textures {
             if self
                 .delivery
@@ -2018,10 +2111,11 @@ impl Applier {
             }
             self.kept.remove(&id);
             if let Some(r) = self.resident.remove(&id) {
-                if matches!(r.kind, TextureKind::Image | TextureKind::Placeholder) {
+                if bindable(r.kind) {
                     self.list.free_texture(id);
                     self.stats.texture_frees += 1;
                 }
+                self.surface_aliases.remove(&id);
                 self.account.freed += 1;
                 resized.push(id);
             }
@@ -2070,9 +2164,39 @@ impl Applier {
                         encoding: None,
                     });
                 }
-                // render-stream-16.md: no receiver surface for a viewport or proxy entry yet; it
-                // holds no bytes and never becomes resident.
-                TextureKind::Viewport | TextureKind::Proxy => {}
+                // render-stream/16: a viewport's render target is an alias of its surface's
+                // colour texture (TextureOp::Surface), defined once; it holds no bytes. A proxy
+                // never becomes resident: draws bind its target (`proxy_hop`).
+                TextureKind::Viewport => {
+                    let Some(vp) = t.viewport else {
+                        continue;
+                    };
+                    if self
+                        .resident
+                        .get(&id)
+                        .is_some_and(|r| r.kind == TextureKind::Viewport)
+                    {
+                        continue;
+                    }
+                    self.resident.insert(
+                        id,
+                        Resident {
+                            kind: TextureKind::Viewport,
+                            hash: None,
+                            format: String::new(),
+                            width: 0,
+                            height: 0,
+                            mipmaps: false,
+                            version: t.version,
+                            opacity: None,
+                        },
+                    );
+                    self.surface_aliases.insert(id, vp);
+                    self.list.alias_surface(id, vp as u32);
+                    self.account.created += 1;
+                    resized.push(id);
+                }
+                TextureKind::Proxy => {}
                 TextureKind::Canvas => {
                     if self.resident.contains_key(&id) {
                         continue;
@@ -2256,7 +2380,15 @@ impl Applier {
         } else {
             Vec::new()
         };
-        let mut upserted: &[Id] = if self.first || reconcile {
+        // render-stream/16: a surface applier's items are its rows' reach (surfaces.rs).
+        let (surface_ups, surface_rems) = if self.surface.is_some() {
+            self.surface_membership(state, delta)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let mut upserted: &[Id] = if self.surface.is_some() {
+            &surface_ups
+        } else if self.first || reconcile {
             &all_items
         } else {
             &delta.items_upserted
@@ -2264,7 +2396,9 @@ impl Applier {
         // FRZ-HOOK: the removed ids actually dropped. Held items stay (their records are kept);
         // the upsert filter runs after `renamed`, since a rename can re-list upserted items.
         let removed_vec: Vec<Id>;
-        let removed: &[Id] = if frozen {
+        let removed: &[Id] = if self.surface.is_some() {
+            &surface_rems
+        } else if frozen {
             removed_vec = delta
                 .items_removed
                 .iter()
@@ -2314,6 +2448,7 @@ impl Applier {
                 .iter()
                 .filter(|(id, it)| {
                     !upserted.contains(id)
+                        && self.is_member(**id)
                         && it.commands.list.iter().any(|c| {
                             matches!(c, crate::state::Command::Multimesh { multimesh, .. }
                                 if remeshed.contains(multimesh))
@@ -2430,7 +2565,11 @@ impl Applier {
         };
         for &id in texs {
             if let Some(t) = state.textures.get(&id) {
-                if t.kind == TextureKind::Canvas && self.canvas_textures.get(&id) != Some(t) {
+                // render-stream/16: a proxy's target is what its draws bind (`proxy_hop`), so a
+                // re-pointed proxy re-walks like a changed canvas texture.
+                if matches!(t.kind, TextureKind::Canvas | TextureKind::Proxy)
+                    && self.canvas_textures.get(&id) != Some(t)
+                {
                     self.canvas_textures.insert(id, t.clone());
                     why |= Why::MATERIAL;
                 }
@@ -2533,7 +2672,10 @@ impl Applier {
             let stale: Vec<Id> = self
                 .items
                 .keys()
-                .filter(|id| !state.items.contains_key(id) && !self.frozen.contains_key(id))
+                .filter(|id| {
+                    (!state.items.contains_key(id) || !self.is_member(**id))
+                        && !self.frozen.contains_key(id)
+                })
                 .copied()
                 .collect();
             for id in stale {
@@ -2858,6 +3000,10 @@ impl Applier {
             let Some(c) = state.canvases.get(&id) else {
                 continue;
             };
+            // A surface applier follows only the canvases its rows name.
+            if !self.draws_canvas(id) {
+                continue;
+            }
             if !c.root {
                 // rs_applier.gd `_apply_canvas`: an attach or a remove is one call; an attached
                 // canvas whose (layer, sublayer) differs from what was last set (a fresh attach
@@ -2912,6 +3058,9 @@ impl Applier {
         let ov_changed = std::mem::take(&mut self.ov_changed);
         if std::mem::take(&mut self.ov_walk) {
             why |= Why::OVERRIDE;
+        }
+        if std::mem::take(&mut self.force_walk) {
+            why |= Why::CANVAS;
         }
         let mut walk = why & !Why::CONTENT_SHAPE != 0 || content_walk || self.always_walk;
         if !walk && self.back_buffer_always_walks && !self.back_buffer_items.is_empty() {
@@ -2994,6 +3143,11 @@ impl Applier {
             self.expected_calls = Some(self.list.merged_draw_count() as u32);
         }
         self.stats.expected_calls = self.expected_calls.unwrap_or(0);
+        // render-stream/16: the surfaces this frame reaches (nothing without a viewport).
+        if self.surface.is_none() && (self.surfaces.is_some() || !state.viewports.is_empty()) {
+            // Each surface applier's apply adds to the same phases as the root's.
+            self.apply_surfaces(state, delta, payloads);
+        }
         &self.stats
     }
 
@@ -3006,25 +3160,41 @@ impl Applier {
         self.walk_keys.clear();
         self.walk_serial += 1;
         self.groups.clear();
-        let mut canvases: Vec<&Canvas> = state.canvases.values().filter(|c| c.attached).collect();
+        let vp = self.viewport;
+        // The canvases this viewport draws, with their (layer, sublayer) and transform: the root's
+        // attached canvases, or (render-stream/16) a surface's `canvases` rows.
+        let mut canvases: Vec<(&Canvas, i64, i64, Xform)> = match &self.surface {
+            None => state
+                .canvases
+                .values()
+                .filter(|c| c.attached)
+                .map(|c| (c, c.layer, c.sublayer, geom::mul(&vp.global_xform, &c.xform)))
+                .collect(),
+            Some(sv) => sv
+                .rows
+                .iter()
+                .filter_map(|r| {
+                    let c = state.canvases.get(&r.canvas)?;
+                    Some((c, r.layer, r.sublayer, geom::mul(&vp.global_xform, &r.xform)))
+                })
+                .collect(),
+        };
         if self.sabotage.ignore_canvas_stacking {
-            canvases.sort_by_key(|c| c.id);
+            canvases.sort_by_key(|c| c.0.id);
         } else {
-            canvases.sort_by_key(|c| (c.layer, c.sublayer, c.id));
+            canvases.sort_by_key(|c| (c.1, c.2, c.0.id));
         }
         if canvases
             .windows(2)
-            .any(|w| (w[0].layer, w[0].sublayer) == (w[1].layer, w[1].sublayer))
+            .any(|w| (w[0].1, w[0].2) == (w[1].1, w[1].2))
         {
             self.note(ApplyShortcut::TieAppendOrder.as_str(), 1);
         }
-        let vp = self.viewport;
         // G7o3: every item's children in draw order, looked up once, on one stack (a call's
         // children sit above its caller's).
         let mut stack: Vec<(Id, &Item)> = Vec::new();
-        for canvas in canvases {
+        for (canvas, _, _, canvas_xf) in canvases {
             let start = self.attach.len();
-            let canvas_xf = geom::mul(&vp.global_xform, &canvas.xform);
             let cv = WalkCanvas {
                 id: canvas.id,
                 xform: canvas_xf,
@@ -3266,14 +3436,10 @@ impl Applier {
                         Some(e) if e.kind == TextureKind::Canvas => {
                             e.canvas.as_ref().and_then(|c| c.diffuse).unwrap_or(0)
                         }
-                        _ => t,
+                        _ => proxy_hop(state, t),
                     })
                     .inspect(|g| texs.push(*g))
-                    .filter(|g| {
-                        self.resident.get(g).is_some_and(|r| {
-                            matches!(r.kind, TextureKind::Image | TextureKind::Placeholder)
-                        })
-                    })
+                    .filter(|g| self.resident.get(g).is_some_and(|r| bindable(r.kind)))
                     .unwrap_or(WHITE_TEXTURE);
                 let linear = s.linear.unwrap_or(true);
                 let repeat = s.repeat.unwrap_or(false);
@@ -3309,12 +3475,9 @@ impl Applier {
         // (`viewport.global_xform · canvas.xform`) and Godot's float32 `affine_inverse` of it.
         let mut uniforms: Vec<Uniform> = uniforms;
         if info.vertex {
-            let canvas_xf = state
-                .canvases
-                .get(&key.canvas)
-                .map_or(self.viewport.global_xform, |c| {
-                    geom::mul(&self.viewport.global_xform, &c.xform)
-                });
+            let canvas_xf = self
+                .canvas_xform(state, key.canvas)
+                .unwrap_or(self.viewport.global_xform);
             uniforms.push(Uniform {
                 name: "gsw_canvas_matrix".into(),
                 value: UniformValue::Float(geom::to_mat4(&canvas_xf).to_vec()),
@@ -3665,12 +3828,12 @@ impl Applier {
                     blend,
                     program,
                     filter: if it.texture_filter == Filter::Default {
-                        state.default_texture_filter
+                        self.default_filter(state)
                     } else {
                         it.texture_filter
                     },
                     repeat: if it.texture_repeat == Repeat::Default {
-                        state.default_texture_repeat
+                        self.default_repeat(state)
                     } else {
                         it.texture_repeat
                     },
@@ -3965,7 +4128,8 @@ impl Applier {
         let mut attached = 0u32;
         // G7o3: the last wire texture's table facts (consecutive draws mostly share one): its
         // canvas-texture diffuse, filter and repeat, and whether what it draws is resident.
-        type TexFacts = (Option<(Id, Filter, Repeat)>, bool);
+        // render-stream/16: and the texture the draw binds (a proxy's target, one hop).
+        type TexFacts = (Option<(Id, Filter, Repeat)>, bool, Id);
         let mut memo: Option<(Id, TexFacts)> = None;
         // P3-ST, CG3: GLES3's per-item back-buffer bookkeeping (`canvas_render_items`,
         // rasterizer_canvas_gles3.cpp:409-540), reset per canvas (one call each), first as a list
@@ -4198,10 +4362,11 @@ impl Applier {
                 let (texture, filter, repeat) = match tex {
                     TexRef::White => (WHITE_TEXTURE, item_filter, item_repeat),
                     TexRef::Wire(tid) => {
-                        let (canvas, drawable) = match memo {
+                        let (canvas, drawable, gpu) = match memo {
                             Some((t, facts)) if t == tid => facts,
                             _ => {
-                                let canvas = match state.textures.get(&tid) {
+                                let entry = state.textures.get(&tid);
+                                let canvas = match entry {
                                     Some(t) if t.kind == TextureKind::Canvas => {
                                         let ct = t.canvas.as_ref();
                                         Some((
@@ -4212,18 +4377,26 @@ impl Applier {
                                     }
                                     _ => None,
                                 };
-                                let gpu = canvas.map_or(tid, |c| c.0);
-                                let drawable = self.resident.get(&gpu).is_some_and(|r| {
-                                    matches!(r.kind, TextureKind::Image | TextureKind::Placeholder)
-                                });
-                                memo = Some((tid, (canvas, drawable)));
-                                (canvas, drawable)
+                                let gpu = match (canvas, entry) {
+                                    (Some(c), _) => proxy_hop(state, c.0),
+                                    (None, Some(t))
+                                        if t.kind == TextureKind::Proxy
+                                            && t.status == EntryStatus::Ok =>
+                                    {
+                                        t.target.unwrap_or(tid)
+                                    }
+                                    _ => tid,
+                                };
+                                let drawable =
+                                    self.resident.get(&gpu).is_some_and(|r| bindable(r.kind));
+                                memo = Some((tid, (canvas, drawable, gpu)));
+                                (canvas, drawable, gpu)
                             }
                         };
                         // A canvas texture draws its diffuse with its own filter/repeat when set.
                         let (gpu, f, r) = match canvas {
-                            Some((diffuse, cf, cr)) => (
-                                diffuse,
+                            Some((_, cf, cr)) => (
+                                gpu,
                                 if cf != Filter::Default {
                                     cf
                                 } else {
@@ -4235,7 +4408,7 @@ impl Applier {
                                     item_repeat
                                 },
                             ),
-                            None => (tid, item_filter, item_repeat),
+                            None => (gpu, item_filter, item_repeat),
                         };
                         if !drawable {
                             skips += 1;
@@ -4377,8 +4550,8 @@ impl Applier {
                 Some(pr) if pr.walked == self.walk_serial => (pr.final_xform, pr.child_modulate),
                 _ => return true,
             },
-            Some(p) => match state.canvases.get(&p.id) {
-                Some(c) => (geom::mul(&self.viewport.global_xform, &c.xform), WHITE),
+            Some(p) => match self.canvas_xform(state, p.id) {
+                Some(xf) => (xf, WHITE),
                 None => return true,
             },
             None => return true,
@@ -4441,10 +4614,9 @@ impl Applier {
         // a parent's move does not change.
         let identity = it.use_identity_transform && !self.sabotage.ignore_identity_transform;
         let draw_xf = match self.items.get(&id) {
-            Some(rec) if identity => state.canvases.get(&rec.canvas).map_or(
-                self.viewport.global_xform,
-                |c| geom::mul(&self.viewport.global_xform, &c.xform),
-            ),
+            Some(rec) if identity => self
+                .canvas_xform(state, rec.canvas)
+                .unwrap_or(self.viewport.global_xform),
             _ => own_xf.unwrap_or(final_xf),
         };
         if let Some(rec) = self.items.get(&id) {
@@ -4539,6 +4711,8 @@ mod pick_tree_tests;
 mod gap2_rx_tests;
 #[cfg(test)]
 mod size_override_tests;
+#[cfg(test)]
+mod surface_tests;
 
 /// G8kp: one texture's upload: RGBA8 pixels, or a `block` variant's level 0 in a format the list
 /// carries. A block format the list cannot carry would have
