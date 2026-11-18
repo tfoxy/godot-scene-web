@@ -491,7 +491,11 @@ describe("render-stream client loop", () => {
     t.on.message(tx(1));
     h.clock.frame();
     t.on.message(tx(2, [], false));
-    expect(h.core.calls.at(-1)).toBe("apply 2");
+    // Applied (acked) in onmessage; the applier runs before the frame's draw.
+    expect(t.acks().at(-1)).toBe("applied 2");
+    expect(h.core.calls).not.toContain("apply 2");
+    h.clock.frame();
+    expect(h.core.calls.slice(-2)).toEqual(["apply 2", "draw 2"]);
   });
 
   it("PH3 credit stage applied: the hello asks it", () => {
@@ -502,7 +506,7 @@ describe("render-stream client loop", () => {
     });
   });
 
-  it("PH3 apply on message: applies in onmessage once frames run, draws once at the frame", () => {
+  it("PH3 apply on message: applies in onmessage once frames run, runs the applier and draws once at the frame", () => {
     const h = streaming(2, { applyOn: "message", creditStage: "applied" });
     const t = h.last();
     t.on.message(tx(1));
@@ -510,13 +514,12 @@ describe("render-stream client loop", () => {
     expect(h.core.calls).not.toContain("apply 1");
     h.clock.frame();
     expect(t.acks()).toEqual(["received 1", "applied 1", "submitted 1"]);
+    const prepares = h.core.prepareApplies;
     t.on.message(tx(2, [], false));
     t.on.message(tx(3, [], false));
     expect(h.core.calls.filter((c) => /^(apply|draw)/.test(c))).toEqual([
       "apply 1",
       "draw 1",
-      "apply 2",
-      "apply 3",
     ]);
     expect(t.acks().slice(3)).toEqual([
       "received 2",
@@ -525,7 +528,14 @@ describe("render-stream client loop", () => {
       "applied 3",
     ]);
     h.clock.frame();
-    expect(h.core.calls.at(-1)).toBe("draw 3");
+    // Two transactions between frame callbacks: one run of the applier (and of its glue).
+    expect(h.core.calls.filter((c) => /^(apply|draw)/.test(c))).toEqual([
+      "apply 1",
+      "draw 1",
+      "apply 3",
+      "draw 3",
+    ]);
+    expect(h.core.prepareApplies).toBe(prepares + 1);
     expect(t.acks().slice(7)).toEqual(["submitted 2", "submitted 3"]);
     expect(h.loop.stats().applied).toBe(3);
     // A frame with nothing applied draws nothing.
@@ -583,16 +593,22 @@ describe("render-stream client loop", () => {
     t.on.message(tx(3, [], false));
     expect(h.core.calls).not.toContain("apply 3");
     h.clock.frame();
-    expect(h.core.calls.at(-1)).toBe("apply 2");
+    // Nothing runs while lost; 3, accepted meanwhile, is in the core's prepared state, so the
+    // due run waits for it: the restore redraws the last run's state.
+    expect(h.core.calls).not.toContain("apply 2");
     h.loop.contextRestored();
     h.clock.frame();
-    expect(h.core.calls.at(-1)).toBe("redraw 2");
+    expect(h.core.calls.slice(-2)).toEqual(["draw 1", "redraw 2"]);
     expect(t.acks().filter((a) => a.startsWith("submitted"))).toEqual([
       "submitted 1",
-      "submitted 2",
     ]);
     h.clock.frame();
     expect(h.core.calls.slice(-2)).toEqual(["apply 3", "draw 3"]);
+    expect(t.acks().filter((a) => a.startsWith("submitted"))).toEqual([
+      "submitted 1",
+      "submitted 2",
+      "submitted 3",
+    ]);
   });
 
   it("PH3 apply on message: past the undrawn cap, arrivals wait for the frame callback", () => {
@@ -603,16 +619,161 @@ describe("render-stream client loop", () => {
     const n = MESSAGE_APPLY_MAX_UNDRAWN;
     for (let s = 2; s < 2 + n + 2; s++) t.on.message(tx(s, [], false));
     const applies = () => h.core.calls.filter((c) => c.startsWith("apply"));
-    // The first `n` apply at once; the rest wait, unacked `applied` (no credit), for the frame.
-    expect(applies()).toHaveLength(1 + n);
+    // The first `n` apply at once (the applier waits for the frame); the rest wait, unacked
+    // `applied` (no credit), for the frame.
+    expect(applies()).toHaveLength(1);
     expect(t.acks().filter((a) => a.startsWith("applied"))).toHaveLength(1 + n);
     h.clock.frame();
-    // The frame applies the newest waiting one (the older folds into it) and draws once.
-    expect(applies().at(-1)).toBe(`apply ${1 + n + 2}`);
+    // The frame applies the newest waiting one (the older ones fold into it): one run, one draw.
+    expect(applies()).toEqual(["apply 1", `apply ${1 + n + 2}`]);
     expect(h.core.calls.at(-1)).toBe(`draw ${1 + n + 2}`);
     expect(t.acks().filter((a) => a.startsWith("submitted"))).toHaveLength(
       1 + n + 2,
     );
+  });
+
+  it("applied transactions a hidden page leaves undrawn run with the next arrivals at the frame", () => {
+    const h = streaming(2, { applyOn: "message", creditStage: "applied" });
+    const t = h.last();
+    t.on.message(tx(1));
+    h.clock.frame();
+    t.on.message(tx(2, [], false));
+    expect(t.acks().at(-1)).toBe("applied 2");
+    // The page hides: no frame callback, so the next arrival gets no credit.
+    h.clock.t += MESSAGE_APPLY_MAX_FRAME_GAP_MS + 1;
+    t.on.message(tx(3, [], false));
+    expect(t.acks().at(-1)).toBe("received 3");
+    expect(h.core.calls).not.toContain("apply 2");
+    h.clock.frame();
+    expect(h.core.calls.filter((c) => /^(apply|draw)/.test(c))).toEqual([
+      "apply 1",
+      "draw 1",
+      "apply 3",
+      "draw 3",
+    ]);
+    expect(t.acks().slice(-3)).toEqual([
+      "applied 3",
+      "submitted 2",
+      "submitted 3",
+    ]);
+  });
+
+  it("an applied transaction waits, undrawn, with a later one holding for its payloads", async () => {
+    const h = streaming(2, { applyOn: "message", resourceHoldMs: Infinity });
+    const t = h.last();
+    t.on.message(tx(1));
+    h.clock.frame();
+    t.on.message(tx(2, [], false));
+    t.on.message(tx(3, ["aa"], false));
+    expect(t.acks().filter((a) => a.startsWith("applied"))).toEqual([
+      "applied 1",
+      "applied 2",
+    ]);
+    // The core's prepared state holds 2 and 3: nothing runs or draws until 3's payload is in.
+    h.clock.frame();
+    expect(h.core.calls.filter((c) => /^(apply|draw)/.test(c))).toEqual([
+      "apply 1",
+      "draw 1",
+    ]);
+    expect(t.acks()).not.toContain("submitted 2");
+    t.gets[0].resolve(200);
+    await flush();
+    h.clock.frame();
+    const runs = h.core.calls.filter((c) => /^(apply|draw)/.test(c));
+    expect(runs).toEqual(["apply 1", "draw 1", "apply 3", "draw 3"]);
+    expect(t.acks().slice(-3)).toEqual([
+      "applied 3",
+      "submitted 2",
+      "submitted 3",
+    ]);
+  });
+
+  it("a deferred payload arriving while a run is due goes in with that run (no revisit)", async () => {
+    const h = streaming(2, { applyOn: "message", resourceHoldMs: 0 });
+    const t = h.last();
+    t.on.message(tx(1, ["aa"]));
+    h.clock.frame();
+    // The hold is 0: 1 applied without "aa", which stays deferred and in flight.
+    expect(h.core.calls).toContain("defer aa");
+    t.on.message(tx(2, [], false));
+    expect(t.acks().at(-1)).toBe("applied 2");
+    t.gets[0].resolve(200);
+    await flush();
+    h.clock.frame();
+    expect(h.core.calls).not.toContain("revisit 2");
+    expect(h.core.calls.slice(-2)).toEqual(["apply 2", "draw 2"]);
+  });
+
+  it("a transaction queued during a context loss, naming an uncached payload, is fetched before the due run", async () => {
+    const h = streaming(2, {
+      applyOn: "message",
+      creditStage: "applied",
+      resourceHoldMs: Infinity,
+    });
+    h.core.enforceProvided = true;
+    const t = h.last();
+    t.on.message(tx(1));
+    h.clock.frame();
+    t.on.message(tx(2, [], false));
+    expect(t.acks().at(-1)).toBe("applied 2");
+    h.loop.contextLost();
+    t.on.message(tx(3, ["aa"], false));
+    h.clock.frame();
+    h.loop.contextRestored();
+    h.clock.frame();
+    expect(h.loop.state).toBe("streaming");
+    // The restore redraws the last run's state; nothing runs before 3's payload is in.
+    expect(h.core.calls).not.toContain("apply 2");
+    expect(t.acks()).not.toContain("submitted 2");
+    // The next callback takes 3: its fetch starts, and nothing runs or draws without it.
+    h.clock.frame();
+    expect(h.loop.state).toBe("streaming");
+    expect(h.core.calls).not.toContain("apply 2");
+    expect(t.gets.map((g) => g.path)).toEqual(["/resources/sha256/aa"]);
+    t.gets[0].resolve(200);
+    await flush();
+    h.clock.frame();
+    expect(h.loop.state).toBe("streaming");
+    const runs = h.core.calls.filter((c) => /^(apply|draw)/.test(c));
+    expect(runs).toEqual(["apply 1", "draw 1", "apply 3", "draw 3"]);
+    expect(h.core.calls.indexOf("provide")).toBeLessThan(
+      h.core.calls.indexOf("apply 3"),
+    );
+    expect(t.acks().slice(-3)).toEqual([
+      "applied 3",
+      "submitted 2",
+      "submitted 3",
+    ]);
+  });
+
+  it("a payload-free transaction queued during a context loss is taken before the due run", () => {
+    const h = streaming(2, { applyOn: "message", creditStage: "applied" });
+    h.core.enforceProvided = true;
+    const t = h.last();
+    t.on.message(tx(1));
+    h.clock.frame();
+    t.on.message(tx(2, [], false));
+    h.loop.contextLost();
+    t.on.message(tx(3, [], false));
+    h.clock.frame();
+    h.loop.contextRestored();
+    h.clock.frame();
+    expect(h.core.calls).not.toContain("apply 2");
+    h.clock.frame();
+    const runs = h.core.calls.filter((c) => /^(apply|draw|redraw)/.test(c));
+    // The redraw shows the last run's state (labelled with the newest applied seq).
+    expect(runs).toEqual([
+      "apply 1",
+      "draw 1",
+      "redraw 2",
+      "apply 3",
+      "draw 3",
+    ]);
+    expect(t.acks().filter((a) => a.startsWith("submitted"))).toEqual([
+      "submitted 1",
+      "submitted 2",
+      "submitted 3",
+    ]);
   });
 
   it("PH3: the acks of one apply, and of one draw, share their t_us (a fold is one instant)", () => {

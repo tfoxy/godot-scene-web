@@ -765,6 +765,9 @@ pub struct GswRs {
     /// [`QUERY_ROW`] floats (`query_item`), the batch's ids (`query_ids`) and its rows
     /// (`query_items`) or visibility bytes (`items_visible`).
     query: QueryScratch,
+    /// One emitter's simulated instances, packed by the glue through a view on this buffer
+    /// (`particles_scratch`) and taken by `particles_set_scratch`: no allocation per emitter.
+    particles_scratch: Vec<f32>,
     totals: Totals,
     /// G8g: the float payload formats (render-stream/8, D9) this receiver took as RGBA8 through
     /// rs-core's `texture_rgba8` quantization (GSW samples no float texture): the
@@ -1032,6 +1035,7 @@ impl GswRs {
             stats: Stats::default(),
             last_exec: ExecStats::default(),
             query: QueryScratch::default(),
+            particles_scratch: Vec::new(),
             totals: Totals::default(),
             quantized_float: std::collections::BTreeSet::new(),
             shot_buf: Vec::new(),
@@ -3119,6 +3123,22 @@ impl GswRs {
     /// PM6b: emitter `id`'s simulated instances (16 floats each), for the next `apply`.
     pub fn particles_set(&mut self, id: u32, data: &[f32]) {
         self.payloads.particles.set(id, data);
+    }
+
+    /// The scratch buffer for `floats` instance floats (grown, never shrunk): the glue packs one
+    /// emitter into a view on it, then calls `particles_set_scratch`. The pointer is valid until
+    /// the next call that may grow wasm memory.
+    pub fn particles_scratch(&mut self, floats: usize) -> *mut f32 {
+        if self.particles_scratch.len() < floats {
+            self.particles_scratch.resize(floats, 0.0);
+        }
+        self.particles_scratch.as_mut_ptr()
+    }
+
+    /// `particles_set` with the first `floats` floats of the scratch buffer.
+    pub fn particles_set_scratch(&mut self, id: u32, floats: usize) {
+        let n = floats.min(self.particles_scratch.len());
+        self.payloads.particles.set(id, &self.particles_scratch[..n]);
     }
 
     pub fn stats_ptr(&self) -> *const Stats {

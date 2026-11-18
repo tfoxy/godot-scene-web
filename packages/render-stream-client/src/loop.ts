@@ -4,12 +4,20 @@
 // 1. A message decodes and validates in its own event (one copy into wasm, W11t live coding
 //    first), is acked `received`, and queues.
 // 2. With `applyOn: "message"` (the default): while frame callbacks run, nothing waits ahead of
-//    it and fewer than MESSAGE_APPLY_MAX_UNDRAWN applies wait for a draw, the same event applies
-//    it (ack `applied`) when it needs no payload, or starts its fetches.
+//    it and fewer than MESSAGE_APPLY_MAX_UNDRAWN applied transactions wait for a draw, the same
+//    event applies it (ack `applied`) when it needs no payload, or starts its fetches.
 // 3. Otherwise one frame callback (rAF) runs the connection phases, then the pending
 //    transaction's fetches (each payload verified by wasm on arrival), then apply, ack
 //    `applied`. Every frame callback with an apply since its last draw draws the newest applied
 //    state once and acks `submitted` for each of them.
+// Applied, for a transaction that needs no payload, means accepted into the applier's prepared
+// state (the core merges every transaction accepted since its last run): the applier itself
+// (lowering, the cover walk, the draw list) and the per-apply glue (programs, particles) run once,
+// in the frame callback that draws, for every transaction applied since the last one. A host
+// frame rate above the draw rate costs one accept per transaction, not one apply. A transaction
+// that needs payloads runs the applier when its payloads are in (the earlier ones with it), so
+// its payloads go in right before the run that takes them; until then the transactions applied
+// before it wait with it and are not drawn (at most `resourceHoldMs`).
 // Credit (`applied` by default, or `submitted`) never comes on receipt alone: a hidden
 // page runs no frame callback, so after MESSAGE_APPLY_MAX_FRAME_GAP_MS arrivals wait for one, no
 // credit returns and the hub stops publishing to this connection.
@@ -255,9 +263,9 @@ export interface LoopOptions {
   creditWindow: 1 | 2;
   /** The hello's credit stage: the ack the host waits on. Default `applied`. */
   creditStage?: CreditStage;
-  /** Where a transaction with every payload in is applied: `frame` (the next frame
-   * callback) or `message` (its own `onmessage`, while frames run; draw stays on the frame
-   * callback). Default `message`. */
+  /** Where a transaction with every payload in is applied (acked `applied`): `frame` (the next
+   * frame callback) or `message` (its own `onmessage`, while frames run). Either way the applier
+   * runs once per drawn frame, in the frame callback, before the draw. Default `message`. */
   applyOn?: ApplyOn;
   onStatus: (s: RenderStreamStatus) => void;
   canvas: () => HelloCanvas;
@@ -297,8 +305,8 @@ export const DEFAULT_APPLY_ON: ApplyOn = "message";
  * callback for this long (a hidden page) and arrivals queue for the next one, so no credit
  * returns from a page that draws nothing. */
 export const MESSAGE_APPLY_MAX_FRAME_GAP_MS = 100;
-/** `applyOn: "message"` applies in `onmessage` while fewer than this many applies wait for a
- * draw; past it, arrivals wait for the frame callback, so a client whose draws fall behind (a slow
+/** `applyOn: "message"` applies in `onmessage` while fewer than this many applied transactions
+ * wait for a draw; past it, arrivals wait for the frame callback, so a client whose draws fall behind (a slow
  * GPU, a busy thread) is paced by its draws again and never applies far more than it shows. Two
  * absorbs a host frame rate a little above the panel's (60 Hz against a panel just under it). */
 export const MESSAGE_APPLY_MAX_UNDRAWN = 2;
@@ -392,6 +400,9 @@ export class StreamLoop {
   /** Seqs applied (folded ones included) and not drawn yet; their `submitted` acks wait for
    * the draw. */
   private undrawn: number[] = [];
+  /** The newest seq applied since the applier last ran (null: none). Its run (`flushApply`)
+   * comes before the next draw, revisit or context-restore redraw. */
+  private applyDue: number | null = null;
   /** Ack text from a prefix cached per stream id (the acks are the steady-state sends). */
   private readonly acks = new AckWriter();
   /** The start of the last frame callback (null: none on this loop yet). */
@@ -477,6 +488,7 @@ export class StreamLoop {
     )
       return;
     if (this.phase !== "idle") this.o.core.reset(true);
+    this.applyDue = null;
     this.attempt = 0;
     this.status({ kind: "connecting" });
     this.open();
@@ -993,8 +1005,13 @@ export class StreamLoop {
       }
     }
     if (this.ctx === "ok" && present) {
-      if (this.undrawn.length > 0) this.drawApplied();
-      else if (this.revisitDraw) this.drawRevisit(now);
+      if (this.undrawn.length > 0) {
+        // The transactions applied before one accepted and not yet taken (waiting for its
+        // payloads, or queued through a context loss) run with it: the core's prepared state
+        // holds them all.
+        if (this.applyDue === null || !this.acceptedUntaken())
+          this.drawApplied();
+      } else if (this.revisitDraw) this.drawRevisit(now);
       else if (this.ext) this.extensionRedraw(now);
     }
     if (this.phase !== "streaming") return;
@@ -1097,6 +1114,7 @@ export class StreamLoop {
     this.hints?.clear();
     this.revisitDraw = false;
     this.undrawn.length = 0;
+    this.applyDue = null;
     this.endSeen = false;
     this.rebuildDue = false;
     this.lastCreditAt = null;
@@ -1183,6 +1201,8 @@ export class StreamLoop {
       this.rebuildDue = false;
       // A rebuilt applier (a resync, a superseded window-1 transaction) is a real change.
       this.cap.activity(this.o.clock.now(), "rebuild");
+      // The rebuilt applier runs from the accepted state: nothing of the old one's is due.
+      this.applyDue = null;
       item.needed = this.o.core.rebuild(item.seq);
       // The rebuilt applier needs these (whatever an older transaction named and this one
       // does not is no longer waited for).
@@ -1371,7 +1391,12 @@ export class StreamLoop {
       this.cold.inStore(r.hash);
       if (this.deferred.delete(r.hash)) arrived = true;
     }
-    if (arrived && core.revisit(this.lastAppliedSeq)) this.revisitDraw = true;
+    // With a run due, that run takes them in (the core's revisit declines while prepared).
+    if (
+      arrived &&
+      (this.applyDue !== null || core.revisit(this.lastAppliedSeq))
+    )
+      this.revisitDraw = true;
   }
 
   // ----------------------------------------------------------------------- unavailable payloads
@@ -1509,26 +1534,19 @@ export class StreamLoop {
 
   /** The pending transaction, every payload in: apply and ack applied; then, in a frame callback
    * (`draw`), draw and ack submitted. From `onmessage` the draw waits for the next frame
-   * callback, which draws the newest applied state once for every apply since the last draw. */
+   * callback, which draws the newest applied state once for every apply since the last draw.
+   * One that needed no payload leaves the applier's run to that draw (`applyDue`); one whose
+   * payloads just went in runs it now. */
   private applyReady(draw: boolean): void {
     const p = this.pending as Pending;
     this.pending = null;
-    const core = this.o.core;
     const seq = p.item.seq;
-    core.prepareApply(seq);
-    core.apply(seq);
-    const facts = core.applyStats?.();
-    if (facts) {
-      if (facts.structural) this.structuralApplies++;
-      this.lastApplyWhy = facts.why;
-      this.backBufferItems = facts.backBufferItems;
-      this.surfaces.rendered = facts.surfacesRendered ?? 0;
-      this.surfaces.skipped = facts.surfacesSkipped ?? 0;
-      this.surfaces.unchanged = facts.surfacesUnchanged ?? 0;
-      this.surfaces.allocated = facts.surfacesAllocated ?? 0;
-      this.surfaces.pixels = facts.surfacePixels ?? 0;
+    if (!draw && p.item.needed.length === 0 && p.bodies.size === 0)
+      this.applyDue = seq;
+    else {
+      this.applyDue = null;
+      this.runApplier(seq);
     }
-    if (this.ext) this.ext.applied();
     const folded = this.coalesced;
     this.coalesced = [];
     const now = this.o.clock.now();
@@ -1547,8 +1565,43 @@ export class StreamLoop {
     if (draw) this.drawApplied();
   }
 
+  /** Whether a transaction accepted into the core waits to be taken: pending (its payloads) or
+   * queued. The core's prepared state holds it, so the applier runs only with it. */
+  private acceptedUntaken(): boolean {
+    return this.pending !== null || this.queue.length > 0;
+  }
+
+  /** The due run of the applier, if any. */
+  private flushApply(): void {
+    const seq = this.applyDue;
+    if (seq === null) return;
+    this.applyDue = null;
+    this.runApplier(seq);
+  }
+
+  /** One run of the applier over every transaction accepted since the last (`seq` the newest):
+   * programs and particles, the core's apply, its facts, then the extensions' `applied`. */
+  private runApplier(seq: number): void {
+    const core = this.o.core;
+    core.prepareApply(seq);
+    core.apply(seq);
+    const facts = core.applyStats?.();
+    if (facts) {
+      if (facts.structural) this.structuralApplies++;
+      this.lastApplyWhy = facts.why;
+      this.backBufferItems = facts.backBufferItems;
+      this.surfaces.rendered = facts.surfacesRendered ?? 0;
+      this.surfaces.skipped = facts.surfacesSkipped ?? 0;
+      this.surfaces.unchanged = facts.surfacesUnchanged ?? 0;
+      this.surfaces.allocated = facts.surfacesAllocated ?? 0;
+      this.surfaces.pixels = facts.surfacePixels ?? 0;
+    }
+    if (this.ext) this.ext.applied();
+  }
+
   /** Draws the newest applied state and acks submitted every seq applied since the last draw. */
   private drawApplied(): void {
+    this.flushApply();
     const seq = this.lastAppliedSeq;
     if (this.ext) this.ext.beforeDraw(seq, this.o.clock.now());
     this.drawCore(seq);
@@ -1656,8 +1709,18 @@ export class StreamLoop {
       this.restoreFailed.clear();
     }
     // Nothing accepted and unapplied: a revisit re-lowers what the unavailable payloads drew.
-    if (relower && this.pending === null && this.queue.length === 0)
+    // With a run due, that run re-lowers them.
+    if (
+      relower &&
+      this.pending === null &&
+      this.queue.length === 0 &&
+      this.applyDue === null
+    )
       core.revisit(this.lastAppliedSeq);
+    // Not while a transaction accepted since waits (for its payloads, or queued through the
+    // loss): the due run is its run (the redraw then shows the last run's state, and the
+    // transactions due wait for it).
+    if (!this.acceptedUntaken()) this.flushApply();
     const redrawAt = this.o.clock.now();
     if (core.redraw(this.lastAppliedSeq) === "lost") {
       this.ctx = "lost";
@@ -1667,10 +1730,12 @@ export class StreamLoop {
     if (this.cold.pending) this.cold.drew(redrawAt);
     this.restoreWant = null;
     this.ctx = "ok";
-    this.drawnSeq = this.lastAppliedSeq;
-    // The redraw drew the newest applied state, so every apply waiting for a draw is in it.
-    const now = this.o.clock.now();
-    this.ackUndrawnSubmitted(now);
+    // The redraw drew the newest applied state, so every apply waiting for a draw is in it
+    // (unless its run is still due: those wait for the draw after it).
+    if (this.applyDue === null) {
+      this.drawnSeq = this.lastAppliedSeq;
+      this.ackUndrawnSubmitted(this.o.clock.now());
+    }
   }
 }
 

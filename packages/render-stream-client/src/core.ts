@@ -573,7 +573,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
         throw new StreamFailure(seq, e.reason, e.message);
       throw e;
     }
-    this.particles.step(this.g);
+    this.particles.step(this.g, this.memory);
   }
 
   apply(seq: number): void {

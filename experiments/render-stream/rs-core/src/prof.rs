@@ -197,6 +197,23 @@ pub fn replay(
     inline_digest: bool,
     read: &mut dyn FnMut(&crate::state::Hash) -> Option<Vec<u8>>,
 ) -> Result<Vec<TxProfile>, crate::wire::Error> {
+    replay_every(data, inline_digest, read, 1)
+}
+
+/// [`replay`] applying once every `apply_every` transactions (and after the last): the ones in
+/// between are accepted, prepared and provided, and fold into the next apply (the applier merges them), as a
+/// client that applies once per drawn frame does. Their rows carry `apply_us` 0.
+pub fn replay_every(
+    data: &[u8],
+    inline_digest: bool,
+    read: &mut dyn FnMut(&crate::state::Hash) -> Option<Vec<u8>>,
+    apply_every: usize,
+) -> Result<Vec<TxProfile>, crate::wire::Error> {
+    let apply_every = apply_every.max(1);
+    let mut tx_count = 0usize;
+    // The newest transaction's delta while its group waits for its apply (the end record, or the
+    // end of the recording, applies a group left short).
+    let mut held = None;
     use crate::apply::payloads::PayloadStore;
     use crate::apply::{geom, Applier, Viewport};
     use crate::validate::{Accepted, DigestPolicy, Options, Validator};
@@ -285,13 +302,22 @@ pub fn replay(
                     payloads.provide(&b, h, version, true)?;
                     provide_us += now() - t;
                 }
+                tx_count += 1;
+                let due = tx_count % apply_every == 0;
+                held = if due { None } else { Some(v.delta().clone()) };
                 let a4 = allocs();
                 let t4 = now();
-                let stats = a.apply(v.state(), v.delta(), &payloads).clone();
+                let stats = if due {
+                    a.apply(v.state(), v.delta(), &payloads).clone()
+                } else {
+                    Default::default()
+                };
                 let apply_us = now() - t4;
-                retention.sweep(&v, &mut payloads, || a.referenced_payload_hashes());
                 let apply_allocs = a4.zip(allocs()).map(|(a, b)| b - a);
-                a.list.consumed();
+                if due {
+                    retention.sweep(&v, &mut payloads, || a.referenced_payload_hashes());
+                    a.list.consumed();
+                }
                 let s = v.state();
                 rows.push(TxProfile {
                     seq: s.seq,
@@ -311,6 +337,20 @@ pub fn replay(
                     items: s.items.len(),
                 });
             }
+        }
+    }
+    // A group left short by the end: applied once, on its newest transaction's row.
+    if let (Some(delta), Some(row)) = (held, rows.last_mut()) {
+        take();
+        let a4 = allocs();
+        let t4 = now();
+        row.stats = a.apply(v.state(), &delta, &payloads).clone();
+        row.apply_us = now() - t4;
+        row.apply_allocs = a4.zip(allocs()).map(|(a, b)| b - a);
+        retention.sweep(&v, &mut payloads, || a.referenced_payload_hashes());
+        a.list.consumed();
+        for (p, q) in row.phases.iter_mut().zip(take()) {
+            *p += q;
         }
     }
     Ok(rows)
@@ -335,4 +375,51 @@ pub fn min_over(runs: Vec<Vec<TxProfile>>) -> Vec<TxProfile> {
         }
     }
     best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    thread_local! {
+        static TICK: Cell<f64> = const { Cell::new(0.0) };
+    }
+
+    fn tick() -> f64 {
+        TICK.with(|t| {
+            t.set(t.get() + 1.0);
+            t.get()
+        })
+    }
+
+    /// `replay_every` applies a group left short by the end record on its newest transaction
+    /// (golden-7/window2: session, three transactions, end).
+    #[test]
+    fn replay_every_applies_the_short_last_group() {
+        let data = include_bytes!("../../protocol/golden-7/window2.rs7");
+        set_clock(Some(tick));
+        // Each clock read is one tick: a row with no apply reads it twice around nothing (1),
+        // an apply's own phase timers read it many times between.
+        let applied = |every: usize| -> Vec<(i64, bool)> {
+            replay_every(data, false, &mut |_| None, every)
+                .unwrap()
+                .iter()
+                .map(|r| (r.seq, r.apply_us > 1.5))
+                .collect()
+        };
+        let one = applied(1);
+        assert_eq!(one.len(), 3);
+        assert!(one.iter().all(|r| r.1), "{one:?}");
+        let two = applied(2);
+        assert_eq!(
+            two.iter().map(|r| r.1).collect::<Vec<_>>(),
+            [false, true, true]
+        );
+        let five = applied(5);
+        assert_eq!(
+            five.iter().map(|r| r.1).collect::<Vec<_>>(),
+            [false, false, true]
+        );
+        set_clock(None);
+    }
 }

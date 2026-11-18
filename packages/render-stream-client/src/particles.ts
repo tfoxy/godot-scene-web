@@ -28,6 +28,11 @@ export interface ParticlesHost {
   particles_sync(): string;
   shader_time(): number;
   particles_set(id: number, data: Float32Array): void;
+  /** The core's scratch buffer for `floats` floats (a pointer into wasm memory), which
+   * `particles_set_scratch` then takes: no copy through the glue's allocator. Optional: a core
+   * built before them has neither, and `particles_set` copies. */
+  particles_scratch?(floats: number): number;
+  particles_set_scratch?(id: number, floats: number): void;
 }
 
 interface WireFloats {
@@ -143,8 +148,9 @@ export class GswParticles {
       );
   }
 
-  /** Sync with the accepted state, step every emitter by the host's time and upload. */
-  step(g: ParticlesHost): void {
+  /** Sync with the accepted state, step every emitter by the host's time and upload. With the
+   * core's `memory`, each emitter packs straight into the core's scratch buffer. */
+  step(g: ParticlesHost, memory?: WebAssembly.Memory): void {
     this.syncOnly(g);
     const t = g.shader_time();
     let dt = DEFAULT_FRAME;
@@ -166,10 +172,21 @@ export class GswParticles {
       this.evidence.sim_steps += sim.stats.steps - before;
       if (sim.isInactive && h.zeros) continue;
       const floats = sim.config.amount * GODOT_GPU_INSTANCE_FLOATS;
-      if (this.buf.length < floats) this.buf = new Float32Array(floats);
-      const out = this.buf.subarray(0, floats);
-      sim.pack(out);
-      g.particles_set(id, out);
+      if (
+        memory !== undefined &&
+        g.particles_scratch !== undefined &&
+        g.particles_set_scratch !== undefined
+      ) {
+        // No wasm call between the view and the pack: the pointer stays valid.
+        const ptr = g.particles_scratch(floats);
+        sim.pack(new Float32Array(memory.buffer, ptr, floats));
+        g.particles_set_scratch(id, floats);
+      } else {
+        if (this.buf.length < floats) this.buf = new Float32Array(floats);
+        const out = this.buf.subarray(0, floats);
+        sim.pack(out);
+        g.particles_set(id, out);
+      }
       h.zeros = sim.isInactive;
     }
   }

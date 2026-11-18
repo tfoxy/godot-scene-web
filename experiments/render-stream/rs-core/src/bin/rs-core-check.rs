@@ -10,7 +10,7 @@
 //!                          [--item-meta-asked <request json>|none] [--item-meta-dump <path>]
 //!   rs-core-check apply-bench <recording> --store <dir> [--repeats N] [--cover off] [--noop off] [--programs synthetic] [--max-texture-side N]
 //!   rs-core-check pick-bench <recording> --store <dir> [--seq N] [--repeats N]
-//!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred] [--clock time|allocs]
+//!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred] [--clock time|allocs] [--apply-every N]
 //!   rs-core-check walk-diff <recording>... [--store <dir>] [--digests <file>] [--cover 1 [--cover-every N]] [--cover-lists <file>] [--max-texture-side N]
 //!   rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]
 //!   rs-core-check scissors <recording> [--store <dir>]
@@ -1169,7 +1169,8 @@ fn cmd_apply_bench(args: &Args) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `profile <recording> --store <dir> [--repeats N] [--digest inline|deferred] [--clock time|allocs]` (G7o2): the GSW
+/// `profile <recording> --store <dir> [--repeats N] [--digest inline|deferred] [--clock time|allocs]
+/// [--apply-every N]` (G7o2; `--apply-every` applies once per N transactions, the rest folding in): the GSW
 /// page's per-transaction pipeline natively (`render_stream_core::prof::replay`: accept, prepare +
 /// needed, provide from the store, apply, then the deferred digest), one JSON line per
 /// transaction with each timer's and each phase's minimum over the repeats (µs) and the
@@ -1189,6 +1190,11 @@ fn cmd_profile(args: &Args) -> ExitCode {
         .unwrap_or(5)
         .max(1);
     let inline = args.get("digest") == Some("inline");
+    let apply_every = args
+        .get("apply-every")
+        .and_then(|r| r.parse::<usize>().ok())
+        .unwrap_or(1)
+        .max(1);
     let data = match std::fs::read(path) {
         Ok(d) => d,
         Err(e) => {
@@ -1227,7 +1233,7 @@ fn cmd_profile(args: &Args) -> ExitCode {
     };
     let mut runs = Vec::new();
     for _ in 0..repeats {
-        match prof::replay(&data, inline, &mut read) {
+        match prof::replay_every(&data, inline, &mut read, apply_every) {
             Ok(rows) => runs.push(rows),
             Err(e) => {
                 eprintln!("rs-core-check profile: {e}");

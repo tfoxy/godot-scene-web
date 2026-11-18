@@ -109,6 +109,9 @@ export interface GswRs {
   particles_sync(): string;
   shader_time(): number;
   particles_set(id: number, data: Float32Array): void;
+  /** The scratch buffer `particles_set_scratch` takes (optional: a core built before it). */
+  particles_scratch?(floats: number): number;
+  particles_set_scratch?(id: number, floats: number): void;
   // Client extensions (render-stream-13.md `item_meta`).
   item_meta_json(): string;
   // render-stream/15 resource hints (only a `resourceHints` client calls these).

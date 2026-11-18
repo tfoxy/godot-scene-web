@@ -70,7 +70,10 @@ export class FakeCore implements StreamCore {
     const m = JSON.parse(new TextDecoder().decode(data)) as CoreMessage;
     if (!sessionSeen && m.kind !== "session")
       throw new Error("first message is not a session");
-    if (m.kind === "transaction") this.motionSeq = m.seq;
+    if (m.kind === "transaction") {
+      this.motionSeq = m.seq;
+      this.unprovided = m.needed.length;
+    }
     return m;
   }
   /** `setMotion`: on (the loop asked), and what it answers (false: a core that cannot measure). */
@@ -116,6 +119,7 @@ export class FakeCore implements StreamCore {
   rebuildNeeded: Needed[] = [];
   rebuild(seq: number) {
     this.calls.push(`rebuild ${seq}`);
+    this.unprovided = this.rebuildNeeded.length;
     return this.rebuildNeeded;
   }
   checkFetch(): string {
@@ -134,6 +138,7 @@ export class FakeCore implements StreamCore {
   }
   provideStaged(): string | null {
     this.calls.push("provide");
+    this.unprovided = Math.max(0, this.unprovided - 1);
     return null;
   }
   takeStaged(hash: string): string | null {
@@ -143,6 +148,7 @@ export class FakeCore implements StreamCore {
   }
   deferPayload(hash: string): string | null {
     this.calls.push(`defer ${hash}`);
+    this.unprovided = Math.max(0, this.unprovided - 1);
     return null;
   }
   /** Hashes the newest accepted state does not name (`named` answers 0 for them). */
@@ -169,8 +175,20 @@ export class FakeCore implements StreamCore {
     this.calls.push(`revisit ${seq}`);
     return this.revisitResult;
   }
-  prepareApply(): void {}
+  /** How many `prepareApply` calls (one per run of the applier). */
+  prepareApplies = 0;
+  prepareApply(): void {
+    this.prepareApplies++;
+  }
+  /** Refuse an apply while the last accept's needed payloads are not all provided or deferred,
+   * as the Rust core does (its needed list and provide cursor reset at every accept). */
+  enforceProvided = false;
+  private unprovided = 0;
   apply(seq: number): void {
+    if (this.enforceProvided && this.unprovided > 0)
+      throw new Error(
+        `apply: ${this.unprovided} needed payload(s) not provided`,
+      );
     this.calls.push(`apply ${seq}`);
   }
   /** What `applyStats` answers after every apply. */

@@ -89,8 +89,9 @@ export interface RenderStreamClientOptions {
   creditWindow?: 1 | 2;
   /** The hello's credit stage, the ack the host's credit waits on; default `applied`. */
   creditStage?: CreditStage;
-  /** Where a ready transaction is applied: the next frame callback (`frame`) or its own
-   * `onmessage` while frames run (`message`, the default; the draw stays on the frame callback). */
+  /** Where a ready transaction is applied (acked `applied`): the next frame callback (`frame`) or
+   * its own `onmessage` while frames run (`message`, the default). Either way the renderer's
+   * apply work runs once per drawn frame, in the frame callback, for every transaction since. */
   applyOn?: ApplyOn;
   /** The longest, in ms, a transaction waits for the resources it needs; default 0. Past it,
    * the transaction applies without textures, meshes and shader code still loading: dependent
