@@ -170,6 +170,113 @@ def build(path, variant, code=None):
     return dict(expected=expected, image_ranges=ranges, abstract=rdata_va + av, concrete=rdata_va + cv, code_facts=code_facts)
 
 
+def macho(path, chained=False, fat=True, pointer_format=6, code=None):
+    """Stripped universal fixture; x86 uses dyld opcodes, arm64 chained pointers."""
+    import tempfile
+
+    def uleb(value):
+        out = bytearray()
+        while value >= 128:
+            out.append((value & 127) | 128)
+            value >>= 7
+        return out + bytes([value])
+
+    def thin(arch, chain):
+        with tempfile.TemporaryDirectory() as temp:
+            elfpath = Path(temp) / "source"
+            facts = build(elfpath, "elf")
+            source = calibrate.Elf(str(elfpath))
+        base = 0x100000000
+        data = bytearray(source.data[0x4000:0x5000])
+        strings = bytearray(data[:0x100])
+        strings[0] = ord("X")  # RTTI names are packed, not NUL-preceded.
+        data[:0x100] = bytes(0x100)
+        text = bytearray(source.data[0x1000:0x3000])
+        if arch == "arm64":
+            for k in range(300):
+                text[k * 16:k * 16 + 4] = bytes.fromhex("c0035fd6")  # ret
+        if code is not None:
+            code(arch, text, base + 0x1000, base + facts["concrete"] - 0x400000)
+        fixups = {}
+        for off in range(0x100, len(data), 8):
+            value = struct.unpack_from("<Q", data, off)[0]
+            if 0x400000 <= value < 0x405000:
+                value += base - 0x400000
+                if base + 0x4000 <= value < base + 0x4100:
+                    value -= 0x1000  # names live in __TEXT,__const
+                struct.pack_into("<Q", data, off, value)
+                fixups[off] = value
+        av = facts["abstract"] - 0x404000
+        for k in range(SLOT_COUNT):
+            off = av + 16 + k * 8
+            if struct.unpack_from("<Q", data, off)[0] == 0:
+                fixups[off] = None
+        link = bytearray()
+        if chain:
+            positions = sorted(fixups)
+            for k, off in enumerate(positions):
+                value = fixups[off]
+                nxt = (positions[k + 1] - off) // 4 if k + 1 < len(positions) else 0
+                word = (1 << 63) if value is None else value - (base if pointer_format == 6 else 0)
+                struct.pack_into("<Q", data, off, word | (nxt << 51))
+            # Header, starts-in-image (3 segments), starts-in-segment, import, symbols.
+            starts = struct.pack("<4I", 3, 0, 16, 0)
+            starts += struct.pack("<IHHQIH", 24, 4096, pointer_format, 0x4000, 0, 1)
+            starts += struct.pack("<H", positions[0])
+            imports = 28 + len(starts)
+            link = bytearray(struct.pack("<7I", 0, 28, imports, imports + 4, 1, 1, 0))
+            link += starts + struct.pack("<I", 1) + b"___cxa_pure_virtual\0"
+            dyld = struct.pack("<4I", 0x80000034, 16, 0x5000, len(link))
+        else:
+            rebase, bind = bytearray(b"\x11"), bytearray(b"\x11\x40___cxa_pure_virtual\0\x51")
+            for off, value in sorted(fixups.items()):
+                if value is None:
+                    bind += b"\x71" + uleb(off) + b"\x90"
+                else:
+                    rebase += b"\x21" + uleb(off) + b"\x51"
+            rebase += b"\0"
+            bind += b"\0"
+            link = rebase + bind
+            dyld = struct.pack("<12I", 0x80000022, 48, 0x5000, len(rebase),
+                               0x5000 + len(rebase), len(bind), 0, 0, 0, 0, 0, 0)
+
+        def segment(name, off, length, sections):
+            cmd = bytearray(struct.pack("<II16sQQQQIIII", 0x19, 72 + 80 * len(sections),
+                                       name.encode(), base + off, length, off, length, 7, 5 if name == "__TEXT" else 3,
+                                       len(sections), 0))
+            for sn, fo, length, flags in sections:
+                cmd += struct.pack("<16s16sQQ8I", sn.encode(), name.encode(), base + fo,
+                                   length, fo, 3, 0, 0, flags, 0, 0, 0)
+            return cmd
+
+        commands = segment("__TEXT", 0, 0x4000, [("__text", 0x1000, len(text), 0x80000400),
+                                                 ("__const", 0x3000, len(strings), 0)])
+        commands += segment("__DATA_CONST", 0x4000, len(data), [("__const", 0x4000, len(data), 0)])
+        commands += segment("__LINKEDIT", 0x5000, len(link), [])
+        uuid = bytes([1 if arch == "arm64" else 2, int(chain)]) + bytes(range(2, 16))
+        commands += struct.pack("<II16s", 0x1B, 24, uuid) + dyld
+        out = bytearray(0x5000 + len(link))
+        struct.pack_into("<8I", out, 0, 0xFEEDFACF, {"arm64": 0x0100000C, "x86_64": 0x01000007}[arch],
+                         0 if arch == "arm64" else 3, 2, 5, len(commands), 0x200000, 0)
+        out[32:32 + len(commands)] = commands
+        out[0x1000:0x3000], out[0x3000:0x3100], out[0x4000:0x5000] = text, strings, data
+        out[0x5000:] = link
+        return out
+
+    x86 = thin("x86_64", chained)
+    arm = thin("arm64", True)
+    if fat:
+        armoff = (0x1000 + len(x86) + 0xFFF) & ~0xFFF
+        out = bytearray(armoff + len(arm))
+        struct.pack_into(">II", out, 0, 0xCAFEBABE, 2)
+        struct.pack_into(">5I", out, 8, 0x01000007, 3, 0x1000, len(x86), 12)
+        struct.pack_into(">5I", out, 28, 0x0100000C, 0, armoff, len(arm), 12)
+        out[0x1000:0x1000 + len(x86)], out[armoff:] = x86, arm
+    else:
+        out = x86
+    Path(path).write_bytes(out)
+
+
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--write-pe":
         build(sys.argv[2], "pe-code")

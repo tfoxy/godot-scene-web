@@ -22,7 +22,7 @@ from this tree, so keep those buildable on their own.
 | Path                          | What it is                                                                                                                                                                                                                                                                                                                                                                               |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `capture/`                    | The capture GDExtension (C++, CMake): `RenderingServer` hooks, the mirror, codecs for every wire version, the live listener and HTTP payload server, texture decode/encode workers. `capture/test/` holds its ctest unit tests; `capture/vendor/` the vendored `gdextension_interface.h`, zlib and zstd (see `PROVENANCE.md`); `capture/tools/calibrate.py` derives calibration records. |
-| `calibration/`                | Committed Linux and Windows x86-64 calibration records, keyed by the engine binary's sha256. Records must match the exact binary; `abi/` holds engine-version ABI tables for the optional live fallback.                                                                                                                                                                                 |
+| `calibration/`                | Committed Linux and Windows x86-64 records and per-slice macOS arm64/x86-64 records. Records must match the exact engine binary or slice; `abi/` holds engine-version ABI tables for the optional live fallback.                                                                                                                                                                         |
 | `rs-core/`                    | `render-stream-core`, the shared Rust core: decode, validation, resolution, the packed draw list, plus the `rs-core-check` CLI.                                                                                                                                                                                                                                                          |
 | `rs-core-capi/`               | The core's C ABI as a staticlib, linked into the native receiver's GDExtension adapter and the web export's side module.                                                                                                                                                                                                                                                                 |
 | `rs-net/`                     | `render-stream-net`, an optional runtime-loaded Rust module for the capture: WebTransport and TLS for the live listener (patched `wtransport` vendored under `rs-net/vendor/`).                                                                                                                                                                                                          |
@@ -89,7 +89,7 @@ mise exec -- pnpm exec tsx --conditions=development $S/gate7-tool.ts gsw-bundle 
 bash $S/build-basis-transcoder.sh
 ```
 
-`scripts/calibrate.sh --check` re-derives the committed calibration record and diffs it.
+`scripts/calibrate.sh --check` re-derives the committed calibration records and diffs them.
 `scripts/prepare-textures.sh --cache <dir> (--project <dir> | --images <dir> | --list <file>)`
 fills the capture's persisted texture cache before a session runs.
 
@@ -101,6 +101,28 @@ ignored `build/` directories next to the sources). Nothing generated is committe
 `GRC_CALIBRATION=<record.json>` selects the preferred offline calibration record. Its exact engine
 identity must match; an unreadable, invalid or mismatched record refuses to arm. A committed offline
 record, with call census where the platform supports it, stays the preferred path.
+
+The offline tools accept macOS universal binaries with `--arch arm64` or `--arch x86_64`.
+Each slice's record carries its `LC_UUID`, CPU type/subtype, slice offset/size and slice sha256;
+the whole-file sha256 is informational. The reader resolves dyld rebase/bind opcodes and
+64-bit chained fixups, including pure-virtual slots bound to `___cxa_pure_virtual`.
+`scripts/fetch-macos-template.sh` verifies the cached stock Godot 4.5.1 release template,
+or extracts it from the digest-pinned export-template archive when missing. Set
+`GRC_MACOS_TEMPLATE` to override its cache path.
+
+The pinned Godot 4.5.1 macOS release template's offline census, using LLVM 20.1.8:
+
+| Count                                     | arm64 | x86_64 |
+| ----------------------------------------- | ----- | ------ |
+| RS vtable slots                           | 588   | 588    |
+| Pure slots bound to `___cxa_pure_virtual` | 548   | 548    |
+| Direct API calls/jumps                    | 0     | 0      |
+| API guards                                | 0     | 0      |
+| Indirect calls in slots 300–587           | 2327  | 1256   |
+| Indirect jumps in slots 300–587           | 488   | 3      |
+| Constructor calls                         | 1     | 1      |
+| Vtable address references                 | 3     | 3      |
+| Direct Object-prefix calls/jumps          | 6     | 6      |
 
 On Linux and Windows x86-64, when `GRC_CALIBRATION` is empty, `GRC_ABI_TABLE=<table.json>` enables a fallback that
 derives the record from the running process's Itanium RTTI and read-only main-image mappings. For

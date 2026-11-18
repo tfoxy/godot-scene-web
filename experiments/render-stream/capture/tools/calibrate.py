@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Derive a RenderingServer vtable calibration record from a Godot ELF or PE binary.
+"""Derive a RenderingServer vtable calibration record from a Godot ELF, PE or Mach-O binary.
 
 Gate -1 of docs/handoff-headless-render-stream.md. Stdlib only, read-only: the
 binary is never modified and never executed.
 
 What it does, in order:
 
-1. Parses ELF or PE headers, sections and relocations.
+1. Parses ELF, PE or Mach-O headers, sections and relocations.
 2. Finds the Itanium-ABI RTTI typeinfo name strings for `RenderingServer` and
    its concrete subclass, then the typeinfo objects that point at them, then the
    vtables that point at those typeinfo objects.
@@ -25,6 +25,7 @@ every claim against live memory before it writes anything.
 
 from __future__ import annotations
 
+from pathlib import Path
 import argparse
 from collections import Counter
 import hashlib
@@ -794,14 +795,331 @@ class Pe(Elf):
         return digest.hexdigest(), sum(size for _, size in ranges)
 
 
-def open_image(path: str) -> Elf | Pe:
+class MachO(Elf):
+    """64-bit little-endian Mach-O, with dyld pointers resolved at image bias zero."""
+
+    CPUS = {"x86_64": 0x01000007, "arm64": 0x0100000C}
+
+    def __init__(self, path: str, arch: str | None = None) -> None:
+        self.path = path
+        whole = Path(path).read_bytes()
+        self.file_sha256 = hashlib.sha256(whole).hexdigest()
+        self.slice_offset, self.slice_size = 0, len(whole)
+        magic = whole[:4]
+        if magic in (b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf"):
+            if arch is None:
+                raise CalibrationError("universal Mach-O requires --arch arm64 or x86_64")
+            if len(whole) < 8:
+                raise CalibrationError("truncated Mach-O fat header")
+            count = struct.unpack_from(">I", whole, 4)[0]
+            fmt = ">IIQQII" if magic[-1] == 0xBF else ">IIIII"
+            size = struct.calcsize(fmt)
+            if count > (len(whole) - 8) // size:
+                raise CalibrationError("truncated Mach-O fat architecture table")
+            slices = []
+            for i in range(count):
+                cpu, subtype, off, length, *_ = struct.unpack_from(fmt, whole, 8 + i * size)
+                if off < 8 + count * size or not length or off + length > len(whole):
+                    raise CalibrationError("Mach-O slice range past EOF or inside fat header")
+                if cpu == self.CPUS.get(arch):
+                    slices.append((off, length, cpu, subtype))
+            if len(slices) != 1:
+                raise CalibrationError(f"expected one Mach-O {arch} slice, got {len(slices)}")
+            self.slice_offset, self.slice_size, fat_cpu, fat_subtype = slices[0]
+        self.data = whole[self.slice_offset:self.slice_offset + self.slice_size]
+        self._range(0, 32)
+        if self.data[:4] != b"\xcf\xfa\xed\xfe":
+            raise CalibrationError("requires a 64-bit little-endian Mach-O slice")
+        _, self.cputype, self.cpusubtype, _, ncmds, sizeofcmds, flags, _ = self._unpack("<8I", 0)
+        self.arch = next((a for a, c in self.CPUS.items() if c == self.cputype), None)
+        if self.arch is None or (arch is not None and self.arch != arch):
+            raise CalibrationError(f"Mach-O cputype {hex(self.cputype)} does not match {arch}")
+        if self.cpusubtype & 0xFFFFFF != (0 if self.arch == "arm64" else 3):
+            raise CalibrationError(f"unsupported Mach-O cpusubtype {hex(self.cpusubtype)}")
+        if self.slice_offset and (fat_cpu, fat_subtype) != (self.cputype, self.cpusubtype):
+            raise CalibrationError("fat and thin Mach-O CPU identity disagree")
+        self.platform = "macos-" + self.arch
+        self.pie = bool(flags & 0x200000)
+        self._range(32, sizeofcmds)
+        self.sections, self.segments, self.symbols = [], [], {}
+        self.binds, self.bind_addends, self.relocations = {}, {}, {}
+        self.uuid = None
+        dyld, chained, symtab = None, None, None
+        pos = 32
+        for _ in range(ncmds):
+            cmd, size = self._unpack("<II", pos)
+            if size < 8 or size % 8 or pos + size > 32 + sizeofcmds:
+                raise CalibrationError("invalid Mach-O load command size")
+            if cmd == 0x19:  # LC_SEGMENT_64
+                if size < 72:
+                    raise CalibrationError("truncated LC_SEGMENT_64")
+                name, va, vs, off, fs, _, prot, ns, _ = self._unpack("<16sQQQQIIII", pos + 8)
+                if 72 + ns * 80 > size:
+                    raise CalibrationError("truncated Mach-O section table")
+                self._range(off, fs)
+                self.segments.append(dict(name=name.rstrip(b"\0").decode(), vaddr=va,
+                                          memsz=vs, offset=off, filesz=fs, flags=prot))
+                for j in range(ns):
+                    sn, sg, addr, length, fo, _, _, _, sf, _, _, _ = self._unpack("<16s16sQQ8I", pos + 72 + j * 80)
+                    # S_ZEROFILL, S_GB_ZEROFILL, S_THREAD_LOCAL_ZEROFILL have no file bytes.
+                    if sf & 0xFF in (1, 0xC, 0x12):
+                        continue
+                    self._range(fo, length)
+                    if not (va <= addr and addr + length <= va + fs and fo == off + addr - va):
+                        raise CalibrationError("Mach-O section outside its file-backed segment")
+                    self.sections.append(dict(name=sg.rstrip(b"\0").decode() + "," + sn.rstrip(b"\0").decode(),
+                                              addr=addr, size=length, offset=fo, flags=sf))
+            elif cmd == 0x1B:  # LC_UUID
+                if size != 24 or self.uuid is not None:
+                    raise CalibrationError("invalid or duplicate LC_UUID")
+                self.uuid = self.data[pos + 8:pos + 24].hex()
+            elif cmd in (0x22, 0x80000022):
+                if size != 48 or dyld is not None:
+                    raise CalibrationError("invalid or duplicate LC_DYLD_INFO")
+                dyld = self._unpack("<10I", pos + 8)
+            elif cmd == 0x80000034:
+                if size != 16 or chained is not None:
+                    raise CalibrationError("invalid or duplicate LC_DYLD_CHAINED_FIXUPS")
+                chained = self._unpack("<II", pos + 8)
+            elif cmd == 2:
+                if size != 24:
+                    raise CalibrationError("invalid LC_SYMTAB")
+                symtab = self._unpack("<4I", pos + 8)
+            pos += size
+        if pos != 32 + sizeofcmds or not self.uuid:
+            raise CalibrationError("Mach-O requires complete load commands and LC_UUID")
+        self.alloc = self.sections
+        self.exec_ranges = [(s["addr"], s["addr"] + s["size"]) for s in self.alloc
+                            if s["flags"] & 0x80000400]
+        if not self.exec_ranges:
+            raise CalibrationError("Mach-O requires executable sections")
+        bases = [s["vaddr"] for s in self.segments if s["offset"] == 0 and s["filesz"]]
+        if len(bases) != 1:
+            raise CalibrationError("Mach-O requires one image-base segment")
+        self.image_base = bases[0]
+        if dyld:
+            for off, length in zip(dyld[::2], dyld[1::2]):
+                self._range(off, length)
+            self._dyld_stream(dyld[0], dyld[1], False)
+            for off, length in ((dyld[2], dyld[3]), (dyld[4], dyld[5]), (dyld[6], dyld[7])):
+                self._dyld_stream(off, length, True)
+        if chained:
+            self._chained(*chained)
+        if symtab:
+            off, count, strings, length = symtab
+            self._range(off, count * 16)
+            self._range(strings, length)
+            for i in range(count):
+                name, kind, section, _, value = self._unpack("<IBBHQ", off + i * 16)
+                if not (kind & 0xE0) and kind & 0xE == 0xE and section and name < length:
+                    self.symbols[self._cstring(strings + name, strings + length)] = value
+
+    def _range(self, off, size):
+        if off < 0 or size < 0 or off + size > len(self.data):
+            raise CalibrationError("Mach-O range past slice EOF")
+
+    def _unpack(self, fmt, off):
+        self._range(off, struct.calcsize(fmt))
+        return struct.unpack_from(fmt, self.data, off)
+
+    def _cstring(self, off, end):
+        stop = self.data.find(b"\0", off, end)
+        if stop < 0:
+            raise CalibrationError("unterminated Mach-O string")
+        return self.data[off:stop].decode("utf-8", "strict")
+
+    def _dyld_stream(self, off, size, bind):
+        end = off + size
+        # dyld adds ULEB skips to an unsigned address; wrapped skips move backward.
+        mask64 = (1 << 64) - 1
+        seg, cursor, symbol, addend, ptrtype = None, 0, None, 0, 1
+
+        def leb(signed=False):
+            nonlocal off
+            value = shift = 0
+            while off < end and shift < 70:
+                byte = self.data[off]
+                off += 1
+                value |= (byte & 0x7F) << shift
+                shift += 7
+                if not byte & 0x80:
+                    return value - (1 << shift) if signed and byte & 0x40 else value
+            raise CalibrationError("invalid Mach-O LEB128")
+
+        def emit():
+            nonlocal cursor
+            if seg is None or seg >= len(self.segments) or ptrtype != 1:
+                raise CalibrationError("unsupported dyld pointer type or segment")
+            s = self.segments[seg]
+            if cursor + 8 > s["filesz"]:
+                raise CalibrationError(f"dyld pointer outside file-backed segment: {s['name']} cursor {hex(cursor)} filesz {hex(s['filesz'])} memsz {hex(s['memsz'])}")
+            addr = s["vaddr"] + cursor
+            if bind:
+                if not symbol:
+                    raise CalibrationError("missing dyld bind symbol")
+                self.binds[addr] = symbol
+                self.bind_addends[addr] = addend
+                self.relocations[addr] = None
+            else:
+                self.relocations[addr] = self._unpack("<Q", s["offset"] + cursor)[0]
+            cursor += 8
+
+        while off < end:
+            byte = self.data[off]
+            off += 1
+            op, imm = byte & 0xF0, byte & 0xF
+            if op == 0:
+                if not bind:
+                    break
+                seg, cursor, symbol, addend, ptrtype = None, 0, None, 0, 1
+            elif bind and op in (0x10, 0x30):  # dylib ordinal (including special)
+                pass
+            elif bind and op == 0x20:
+                leb()
+            elif bind and op == 0x40:
+                symbol = self._cstring(off, end)
+                off += len(symbol.encode()) + 1
+            elif bind and op == 0x60:
+                addend = leb(True)
+            elif op == (0x50 if bind else 0x10):
+                ptrtype = imm
+            elif op == (0x70 if bind else 0x20):
+                seg, cursor = imm, leb()
+            elif op == (0x80 if bind else 0x30):
+                cursor = (cursor + leb()) & mask64
+            elif not bind and op == 0x40:
+                cursor = (cursor + imm * 8) & mask64
+            elif not bind and op in (0x50, 0x60):
+                for _ in range(imm if op == 0x50 else leb()):
+                    emit()
+            elif op == (0x90 if bind else 0x70):
+                emit()
+                if not bind:
+                    cursor = (cursor + leb()) & mask64
+            elif bind and op == 0xA0:
+                skip = leb()
+                emit()
+                cursor = (cursor + skip) & mask64
+            elif bind and op == 0xB0:
+                emit()
+                cursor = (cursor + imm * 8) & mask64
+            elif op == (0xC0 if bind else 0x80):
+                count, skip = leb(), leb()
+                for _ in range(count):
+                    emit()
+                    cursor = (cursor + skip) & mask64
+            else:
+                raise CalibrationError(f"unsupported dyld {'bind' if bind else 'rebase'} opcode {hex(byte)}")
+
+    def _chained(self, off, size):
+        self._range(off, size)
+        end = off + size
+
+        def unpack(fmt, pos):
+            if pos < off or pos + struct.calcsize(fmt) > end:
+                raise CalibrationError("chained fixup metadata outside command range")
+            return self._unpack(fmt, pos)
+
+        version, starts, imports, symbols, count, fmt, compression = unpack("<7I", off)
+        if version or compression or fmt not in (1, 2, 3):
+            raise CalibrationError("unsupported chained fixups version/imports/symbols format")
+        names = []
+        for i in range(count):
+            pos = off + imports + i * {1: 4, 2: 8, 3: 16}[fmt]
+            value = unpack("<Q" if fmt == 3 else "<I", pos)[0]
+            nameoff = value >> (32 if fmt == 3 else 9)
+            addend = unpack("<q" if fmt == 3 else "<i", pos + (8 if fmt == 3 else 4))[0] if fmt != 1 else 0
+            if off + symbols + nameoff >= end:
+                raise CalibrationError("invalid chained import name offset")
+            names.append((self._cstring(off + symbols + nameoff, end), addend))
+        starts += off
+        nseg = unpack("<I", starts)[0]
+        if nseg > len(self.segments):
+            raise CalibrationError("chained fixups segment count exceeds load commands")
+        for i in range(nseg):
+            relative = unpack("<I", starts + 4 + i * 4)[0]
+            if not relative:
+                continue
+            pos = starts + relative
+            length, pagesize, pointer_format, segment_offset, _, pages = unpack("<IHHQIH", pos)
+            if pointer_format not in (2, 6):  # DYLD_CHAINED_PTR_64 / _64_OFFSET
+                raise CalibrationError(f"unsupported chained pointer format {pointer_format}")
+            if length < 22 + pages * 2 or pos + length > end or not pagesize:
+                raise CalibrationError("invalid chained starts-in-segment")
+            segment = self.segments[i]
+            if self.image_base + segment_offset != segment["vaddr"]:
+                raise CalibrationError("chained segment offset disagrees with load command")
+            for page in range(pages):
+                start = unpack("<H", pos + 22 + page * 2)[0]
+                if start == 0xFFFF:
+                    continue
+                starts_in_page = [start]
+                if start & 0x8000:
+                    starts_in_page = []
+                    index = start & 0x7FFF
+                    while True:
+                        if 22 + index * 2 + 2 > length:
+                            raise CalibrationError("chained multi-start index outside segment metadata")
+                        entry = unpack("<H", pos + 22 + index * 2)[0]
+                        starts_in_page.append(entry & 0x7FFF)
+                        index += 1
+                        if entry & 0x8000:
+                            break
+                for start in starts_in_page:
+                    cursor = page * pagesize + start
+                    while True:
+                        if start >= pagesize or cursor + 8 > min((page + 1) * pagesize, segment["filesz"]):
+                            raise CalibrationError("chained pointer outside page or segment")
+                        raw = self._unpack("<Q", segment["offset"] + cursor)[0]
+                        addr = segment["vaddr"] + cursor
+                        if addr in self.relocations:
+                            raise CalibrationError("duplicate chained pointer")
+                        if raw >> 63:
+                            ordinal = raw & 0xFFFFFF
+                            if ordinal >= len(names):
+                                raise CalibrationError("invalid chained bind ordinal")
+                            self.binds[addr], import_addend = names[ordinal]
+                            pointer_addend = (raw >> 24) & 0xFF
+                            self.bind_addends[addr] = import_addend + (pointer_addend - 256 if pointer_addend & 128 else pointer_addend)
+                            self.relocations[addr] = None
+                        else:
+                            target = (raw & ((1 << 36) - 1)) | (((raw >> 36) & 0xFF) << 56)
+                            self.relocations[addr] = target + (self.image_base if pointer_format == 6 else 0)
+                        delta = (raw >> 51) & 0xFFF
+                        if not delta:
+                            break
+                        cursor += delta * 4
+
+    def build_id(self):
+        return None
+
+    def read_u64(self, vaddr):
+        if vaddr in self.relocations:
+            return self.relocations[vaddr]
+        for s in self.segments:
+            if s["vaddr"] <= vaddr and vaddr + 8 <= s["vaddr"] + s["filesz"]:
+                return self._unpack("<Q", s["offset"] + vaddr - s["vaddr"])[0]
+        return None
+
+    def find_pointers_to(self, target):
+        return [addr for addr in super().find_pointers_to(target) if self.read_u64(addr) == target]
+
+    def identity(self):
+        return dict(uuid=self.uuid, cputype=self.cputype, cpusubtype=self.cpusubtype,
+                    slice_offset=self.slice_offset, slice_size=self.slice_size,
+                    sha256=hashlib.sha256(self.data).hexdigest(), file_sha256=self.file_sha256)
+
+
+def open_image(path: str, arch: str | None = None) -> Elf | Pe | MachO:
     with open(path, "rb") as handle:
         magic = handle.read(4)
     if magic == b"\x7fELF":
         return Elf(path)
     if magic[:2] == b"MZ":
         return Pe(path)
-    raise CalibrationError(f"{path}: not an ELF or PE file")
+    if magic in (b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf", b"\xcf\xfa\xed\xfe"):
+        return MachO(path, arch)
+    raise CalibrationError(f"{path}: not an ELF, PE or Mach-O file")
 
 
 def pe_identity(image: Pe) -> dict:
@@ -835,7 +1153,7 @@ def find_typeinfo(elf: Elf, class_name: str) -> tuple[int, int]:
     for vaddr in elf.find_bytes(needle):
         off = elf.vaddr_to_offset(vaddr)
         assert off is not None
-        if off > 0 and elf.data[off - 1 : off] != b"\0":
+        if not isinstance(elf, MachO) and off > 0 and elf.data[off - 1 : off] != b"\0":
             continue  # tail of a longer mangled name
         candidates.append(vaddr)
     if not candidates:
@@ -1042,7 +1360,13 @@ def sha256_file(path: str) -> str:
     return digest.hexdigest()
 
 
-def discover_placeholder(elf, slots, concrete, abstract_class):
+def discover_placeholder(elf, slots, concrete, abstract_class, address_point=None):
+    if isinstance(elf, MachO):
+        symbols = {(elf.binds.get(address_point + i * 8), elf.bind_addends.get(address_point + i * 8))
+                   for i, value in enumerate(slots) if value is None or not elf.is_code(value)}
+        if symbols != {("___cxa_pure_virtual", 0)}:
+            raise CalibrationError(f"{abstract_class}: expected uniform ___cxa_pure_virtual binds, got {symbols}")
+        return "bind", None, [value is not None and elf.is_code(value) for value in slots]
     unimplemented = {value for value in slots if value is None or not elf.is_code(value)}
     if unimplemented:
         if len(unimplemented) > 1:
@@ -1163,7 +1487,7 @@ def derive(
                 word = table["address_point"] + i * 8
                 if value and word not in elf.dir64:
                     raise CalibrationError(f"slot word at {hex(word)} is not relocated: not a pointer")
-    kind, placeholder, implemented = discover_placeholder(elf, slots, concrete["slots"], abstract_class)
+    kind, placeholder, implemented = discover_placeholder(elf, slots, concrete["slots"], abstract_class, abstract["address_point"])
     concrete_pure = [i for i, value in enumerate(concrete["slots"]) if value is None or not elf.is_code(value)]
     if concrete_pure:
         raise CalibrationError(f"{concrete_class}: unexpected non-code slots at {concrete_pure}")
@@ -1236,7 +1560,7 @@ def build_record(args: argparse.Namespace, census: bool = True) -> tuple[dict, d
     table_path = getattr(args, "abi_table", None)
     table = (load_abi_table(table_path, args.abstract_class, set(args.define)) if table_path
              else build_abi_table(args.header, args.abstract_class, set(args.define), args.version_name))
-    elf = open_image(args.binary)
+    elf = open_image(args.binary, getattr(args, "arch", None))
     derived = derive(elf, args.header, args.abstract_class, args.concrete_class, set(args.define), table)
     flavor = args.flavor
     if flavor == "auto":
@@ -1267,6 +1591,9 @@ def build_record(args: argparse.Namespace, census: bool = True) -> tuple[dict, d
             "header_sha256": table["header_sha256"],
         },
     }
+    if isinstance(elf, MachO):
+        record["engine"] = dict(version_string=record["engine"]["version_string"],
+                                **elf.identity(), platform=elf.platform, flavor=flavor, pie=elf.pie)
     if isinstance(elf, Pe):
         record["engine"] = {
             "version_string": record["engine"]["version_string"],
@@ -1280,11 +1607,13 @@ def build_record(args: argparse.Namespace, census: bool = True) -> tuple[dict, d
             "platform": elf.platform,
             "flavor": flavor,
         }
-    if isinstance(elf, Pe) or derived["placeholder_kind"] == "code":
+    if isinstance(elf, (Pe, MachO)) or derived["placeholder_kind"] == "code":
         record["rendering_server"].update(
             placeholder_kind=derived["placeholder_kind"],
             pure_placeholder=hex(derived["pure_placeholder"]) if derived["pure_placeholder"] is not None else None,
         )
+    if isinstance(elf, MachO):
+        record["rendering_server"]["pure_placeholder_symbol"] = "___cxa_pure_virtual"
     if census:
         try:
             result = call_census.run(elf, derived)
@@ -1301,7 +1630,7 @@ def build_record(args: argparse.Namespace, census: bool = True) -> tuple[dict, d
         dropped = result["dropped_families"]
         record["slots"] = {key: index for key, index in record["slots"].items()
                            if FAMILIES[key] not in dropped}
-        if isinstance(elf, Pe) or entries:
+        if isinstance(elf, (Pe, MachO)) or entries:
             calibrator = record.pop("calibrator")
             record["devirtualized_slots"] = entries
             record["dropped_families"] = dropped
@@ -1316,12 +1645,13 @@ def report_mask(args: argparse.Namespace) -> int:
     locally: the implemented-slot mask is a measurement, the Object prefix is
     not derivable from it alone.
     """
-    elf = open_image(args.binary)
+    elf = open_image(args.binary, getattr(args, "arch", None))
     _n1, abstract_ti = find_typeinfo(elf, args.abstract_class)
     _n2, concrete_ti = find_typeinfo(elf, args.concrete_class)
     abstract = find_vtable(elf, abstract_ti, args.abstract_class)
     concrete = find_vtable(elf, concrete_ti, args.concrete_class)
-    kind, placeholder, mask = discover_placeholder(elf, abstract["slots"], concrete["slots"], args.abstract_class)
+    kind, placeholder, mask = discover_placeholder(elf, abstract["slots"], concrete["slots"],
+                                                  args.abstract_class, abstract["address_point"])
     implemented = [i for i, value in enumerate(mask) if value]
     print(f"binary: {args.binary}")
     print(f"version: {engine_version_string(elf, args.version_name)}")
@@ -1394,6 +1724,11 @@ def slot_mask_checks(record: dict, image: Elf | Pe, exclude_placeholder: bool = 
         distinct = known and pure == placeholder and pure not in concrete_values
     else:
         distinct = known and not image.is_code(pure or 0)
+    if isinstance(image, MachO) or kind == "bind":
+        uniform = uniform and kind == "bind" and isinstance(image, MachO) and all(
+            image.binds.get(abstract + index * 8) == rs.get("pure_placeholder_symbol") == "___cxa_pure_virtual"
+            and image.bind_addends.get(abstract + index * 8) == 0
+            for index in record["slots"].values())
     check("hooked_slots_pure_in_abstract", uniform and distinct, f"placeholder {hex(pure or 0)}" + (" " + detail if detail else ""))
     check("hooked_slots_implemented_in_concrete", concrete_ok, detail)
     last = image.read_u64(concrete + (count - 1) * 8)
@@ -1411,7 +1746,7 @@ def devirtualized_check(record: dict, image: Elf | Pe, header: str | None,
     _, concrete_ti = find_typeinfo(image, rs["concrete_class"])
     abstract = find_vtable(image, abstract_ti, abstract_class)
     concrete = find_vtable(image, concrete_ti, rs["concrete_class"])
-    kind, placeholder, implemented = discover_placeholder(image, abstract["slots"], concrete["slots"], abstract_class)
+    kind, placeholder, implemented = discover_placeholder(image, abstract["slots"], concrete["slots"], abstract_class, abstract["address_point"])
     listed = record.get("devirtualized_slots", [])
     virtuals = parse_virtuals(header, abstract_class, defines or set())
     new_slots = [v for v in virtuals if not v["override"] and not v["destructor"]]
@@ -1466,30 +1801,37 @@ def verify_record(record: dict, image: Elf | Pe, version_name: str | None = None
         raise CalibrationError(f"unsupported calibration schema: {record.get('schema')}")
     engine = record["engine"]
     pe = isinstance(image, Pe)
-    name = "image_sha256" if pe else "exe_sha256"
-    live = image.image_sha256()[0] if pe else sha256_file(image.path)
-    expected = engine.get(name if pe else "sha256", "")
-    check(name, bool(live) and live == expected, f"live {live} record {expected}")
-    version = engine_version_string(image, version_name or engine["version_string"].split(" v", 1)[0],
-                                    allow_missing=True)
-    check("version_string", bool(version) and version == engine["version_string"], f"live '{version}' record '{engine['version_string']}'")
-    live_id = image.codeview() if pe else image.build_id()
-    expected_id = engine.get("codeview_id" if pe else "build_id")
-    if expected_id is not None:
-        id_ok = (live_id or "") == expected_id
-        detail = f"live {live_id or ''} record {expected_id}"
+    if isinstance(image, MachO):
+        identity = image.identity()
+        for key in ("sha256", "uuid", "cputype", "cpusubtype"):
+            check(key, identity[key] == engine.get(key), f"live {identity[key]} record {engine.get(key)}")
+        version = engine_version_string(image, version_name or engine["version_string"].split(" v", 1)[0], allow_missing=True)
+        check("version_string", bool(version) and version == engine["version_string"], f"live {version!r}")
     else:
-        id_ok = live_id is None
-        detail = "absent in both" if id_ok else "live binary has one, record does not"
-    if pe:
-        id_ok = id_ok and image.time_date_stamp == engine.get("time_date_stamp") and image.size_of_image == engine.get("size_of_image")
-        detail += f" time_date_stamp {image.time_date_stamp} record {engine.get('time_date_stamp')} size_of_image {image.size_of_image} record {engine.get('size_of_image')}"
-    check("codeview_id" if pe else "build_id", id_ok, detail)
-    if pe:
-        check("aslr_and_bias", image.dynamic_base == engine.get("dynamic_base") and hex(image.image_base) == engine.get("image_base"),
-              f"live dynamic_base={str(image.dynamic_base).lower()} bias 0x0 image_base {hex(image.image_base)} record dynamic_base={str(engine.get('dynamic_base')).lower()} image_base {engine.get('image_base')}")
-    else:
-        check("pie_and_bias", image.pie == engine.get("pie", False), f"live pie={str(image.pie).lower()} bias 0x0 record pie={str(engine.get('pie', False)).lower()}")
+        name = "image_sha256" if pe else "exe_sha256"
+        live = image.image_sha256()[0] if pe else sha256_file(image.path)
+        expected = engine.get(name if pe else "sha256", "")
+        check(name, bool(live) and live == expected, f"live {live} record {expected}")
+        version = engine_version_string(image, version_name or engine["version_string"].split(" v", 1)[0],
+                                        allow_missing=True)
+        check("version_string", bool(version) and version == engine["version_string"], f"live '{version}' record '{engine['version_string']}'")
+        live_id = image.codeview() if pe else image.build_id()
+        expected_id = engine.get("codeview_id" if pe else "build_id")
+        if expected_id is not None:
+            id_ok = (live_id or "") == expected_id
+            detail = f"live {live_id or ''} record {expected_id}"
+        else:
+            id_ok = live_id is None
+            detail = "absent in both" if id_ok else "live binary has one, record does not"
+        if pe:
+            id_ok = id_ok and image.time_date_stamp == engine.get("time_date_stamp") and image.size_of_image == engine.get("size_of_image")
+            detail += f" time_date_stamp {image.time_date_stamp} record {engine.get('time_date_stamp')} size_of_image {image.size_of_image} record {engine.get('size_of_image')}"
+        check("codeview_id" if pe else "build_id", id_ok, detail)
+        if pe:
+            check("aslr_and_bias", image.dynamic_base == engine.get("dynamic_base") and hex(image.image_base) == engine.get("image_base"),
+                  f"live dynamic_base={str(image.dynamic_base).lower()} bias 0x0 image_base {hex(image.image_base)} record dynamic_base={str(engine.get('dynamic_base')).lower()} image_base {engine.get('image_base')}")
+        else:
+            check("pie_and_bias", image.pie == engine.get("pie", False), f"live pie={str(image.pie).lower()} bias 0x0 record pie={str(engine.get('pie', False)).lower()}")
     check("platform", engine["platform"] == image.platform, engine["platform"])
     failure = "fingerprint-mismatch" if not all(ok for _, ok, _ in checks) else None
     if failure is None:
@@ -1514,7 +1856,8 @@ def verify_record(record: dict, image: Elf | Pe, version_name: str | None = None
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--binary", help="Godot ELF or PE binary to calibrate against")
+    parser.add_argument("--binary", help="Godot ELF, PE or Mach-O binary to calibrate against")
+    parser.add_argument("--arch", choices=["arm64", "x86_64"], help="Mach-O slice to select")
     parser.add_argument("--pe-identity", metavar="BINARY", help="print the PE file identity")
     parser.add_argument("--verify-record", metavar="RECORD", help="verify a record offline")
     source = parser.add_mutually_exclusive_group()
@@ -1578,7 +1921,7 @@ def main(argv: list[str]) -> int:
             parser.error("--binary is required")
         if args.verify_record:
             with open(args.verify_record, encoding="utf-8") as handle:
-                return verify_record(json.load(handle), open_image(args.binary), version_name=args.version_name,
+                return verify_record(json.load(handle), open_image(args.binary, args.arch), version_name=args.version_name,
                                      header=args.header,
                                      abstract_class=args.abstract_class, defines=set(args.define))
         if args.abi_table:

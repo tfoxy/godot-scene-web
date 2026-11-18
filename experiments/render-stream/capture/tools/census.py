@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Read-only census of RenderingServer calls in ELF and Itanium PE images."""
+"""Read-only census of RenderingServer calls in ELF, Itanium PE and Mach-O images."""
 
 from __future__ import annotations
 
+from pathlib import Path
 import argparse
 from collections import Counter, defaultdict
 import json
@@ -148,7 +149,145 @@ def scan(image, derived, lines):
                 refused_keys=required, verdict='refuse' if required else 'drop' if dropped else 'ok')
 
 
+def scan_macho(image, derived, lines):
+    """Resolve numeric/symbol transfers and PC-relative address computations."""
+    concrete = derived['concrete']['slots']
+    prefix = derived['prefix']
+    by_body = defaultdict(list)
+    for i, value in enumerate(concrete):
+        by_body[value].append(i)
+    wanted = derived['slots']
+    families = derived['families']
+    wanted_by_body = defaultdict(set)
+    for key, index in wanted.items():
+        if families[key] != 'probe':
+            wanted_by_body[concrete[index]].add(key)
+    symbols = image.symbols
+    constructors = {value for name, value in symbols.items() if name.startswith('__ZN22RenderingServerDefaultC')}
+    vt = derived['concrete']['vtable_vaddr']
+    vt_end = vt + 16 + len(concrete) * 8
+    direct_api, direct_prefix, guards = Counter(), Counter(), Counter()
+    hits, sites = defaultdict(Counter), defaultdict(set)
+    band = Counter(call=0, jmp=0)
+    controls = Counter(constructor_calls=0, vtable_references=0)
+    pages, window, pending = {}, [], None
+
+    def hit(target, addr, kind):
+        for key in wanted_by_body.get(target, ()):
+            hits[key][kind] += 1
+            sites[key].add(addr)
+            if len(sites[key]) > 8:
+                sites[key].remove(max(sites[key]))
+
+    def address(target, addr):
+        for index in by_body.get(target, ()):
+            if index >= prefix:
+                guards[index] += 1
+        hit(target, addr, 'guard')
+        if vt <= target < vt_end:
+            controls['vtable_references'] += 1
+
+    number = r'-?(?:0x[0-9a-f]+|[0-9]+)'
+    for addr, mn, ops in instructions(lines):
+        if pending is not None:
+            displacement, site = pending
+            address(addr + displacement, site)
+            pending = None
+        transfer = ('call' if mn in ('call', 'callq', 'bl') else
+                    'jmp' if mn in ('jmp', 'jmpq', 'b') else None)
+        conditional = (mn.startswith('j') and transfer is None) if image.arch == 'x86_64' else mn.startswith('b.')
+        if transfer or conditional:
+            token = ops.split()[0] if ops.split() else ''
+            target = symbols.get(token)
+            if re.fullmatch(r'(?:0x)?[0-9a-f]+', token):
+                target = int(token, 16)
+            if target is not None:
+                if transfer:
+                    controls['constructor_calls'] += target in constructors
+                    for index in by_body.get(target, ()):
+                        (direct_api if index >= prefix else direct_prefix)[index] += 1
+                hit(target, addr, 'jcc' if conditional else 'direct')
+        if image.arch == 'x86_64':
+            if transfer:
+                match = re.match(r'\*(' + number + r')?\(%(\w+)\)', ops)
+                if match and match[2] != 'rip':
+                    displacement = int(match[1] or '0', 0)
+                    if displacement % 8 == 0 and 300 <= displacement // 8 < len(concrete):
+                        band[transfer] += 1
+            else:
+                match = re.search(r'(' + number + r')\(%rip\)', ops)
+                if match:
+                    pending = int(match[1], 0), addr
+                # movabs/immediate function addresses are address computations too.
+                match = re.search(r'\$(' + number + r')', ops)
+                if match:
+                    address(int(match[1], 0), addr)
+        else:
+            match = re.match(r'(x\d+),\s*(.*)', ops)
+            dest = match[1] if match else None
+            old_page = dict(pages)
+            # Do not carry an adrp value across a write to its register or a branch.
+            if dest and mn not in ('str', 'stp', 'cmp', 'tst'):
+                pages.pop(dest, None)
+            if mn == 'adrp' and match:
+                page = re.search(r';\s*0x([0-9a-f]+)', ops)
+                if page:
+                    pages[dest] = int(page[1], 16)
+                else:
+                    immediate = re.fullmatch(r'#?(' + number + r')', match[2])
+                    if immediate:
+                        # llvm-objdump --macho prints a signed page displacement.
+                        pages[dest] = (addr & ~0xFFF) + int(immediate[1], 0) * 4096
+            elif mn == 'adr':
+                match = re.fullmatch(r'(x\d+),\s*#?(' + number + r')(?:\s*;\s*0x[0-9a-f]+)?\s*', ops)
+                if match:
+                    address(addr + int(match[2], 0), addr)
+            elif mn == 'add':
+                match = re.fullmatch(r'(x\d+),\s*(x\d+),\s*#(' + number + r')', ops)
+                if match and match[2] in old_page:
+                    address(old_page[match[2]] + int(match[3], 0), addr)
+            elif mn in ('blr', 'br'):
+                reg = ops.strip()
+                for pm, po in reversed(window[-6:]):
+                    load = re.fullmatch(r'(x\d+),\s*\[(x\d+),\s*#(' + number + r')\]', po)
+                    if pm == 'ldr' and load and load[1] == reg:
+                        displacement = int(load[3], 0)
+                        if displacement % 8 == 0 and 300 <= displacement // 8 < len(concrete):
+                            band['call' if mn == 'blr' else 'jmp'] += 1
+                        break
+                    if re.match(re.escape(reg) + r'(?:,|$)', po):
+                        break
+            if mn in ('b', 'bl', 'br', 'blr', 'ret') or conditional:
+                pages.clear()
+                window.clear()
+            else:
+                window.append((mn, ops))
+                window = window[-6:]
+    entries = [dict(key=key, slot=index, family=families[key],
+                    direct_calls=sum(hits[key].values()), sites=[hex(a) for a in sorted(sites[key])])
+               for key, index in wanted.items() if hits[key]]
+    refused = [entry['key'] for entry in entries if entry['family'] == 'required']
+    dropped = sorted({entry['family'] for entry in entries if entry['family'] != 'required'})
+    return dict(singleton=dict(global_vaddr=None, loads=0, vptr_loaded=0, api_calls=0),
+                band=dict(call=band['call'], jmp=band['jmp'], total=sum(band.values())),
+                guards=dict(total=sum(guards.values()), slots=len(guards)),
+                direct_api={str(k): v for k, v in sorted(direct_api.items())},
+                direct_prefix={str(k): v for k, v in sorted(direct_prefix.items())},
+                controls=dict(controls),
+                verdict_hits={key: dict(hits[key]) for key in wanted if hits[key]},
+                devirtualized_slots=entries, dropped_families=dropped,
+                refused_keys=refused, verdict='refuse' if refused else 'drop' if dropped else 'ok')
+
+
+def macho_objdump():
+    lib = Path(__file__).resolve().parents[2] / 'scripts/lib/llvm-mingw.sh'
+    result = subprocess.run(['bash', str(lib), '--ensure'], capture_output=True, text=True, check=True)
+    return str(Path(result.stdout.strip()) / 'bin/llvm-objdump')
+
+
 def toolchain(image):
+    if image.platform.startswith('macos-'):
+        return []
     values = set()
     pe = image.platform == 'windows-x86_64'
     for section in image.alloc if pe else image.sections:
@@ -166,23 +305,32 @@ def toolchain(image):
 
 
 def run(image, derived, objdump='objdump'):
+    macho = image.platform.startswith('macos-')
     try:
-        version = subprocess.run([objdump, '--version'], capture_output=True, text=True, check=True).stdout.splitlines()[0]
-        formats = subprocess.run([objdump, '-i'], capture_output=True, text=True, check=True).stdout
-        match = re.search(r'(\d+)\.(\d+)', version)
-        if not match or tuple(map(int, match.groups())) < (2, 38) or 'pei-x86-64' not in formats:
-            raise CensusError('GNU objdump >= 2.38 with pei-x86-64 is required')
-        sections = [s['name'] for s in image.sections
-                    if any(start == s['addr'] and end > start for start, end in image.exec_ranges)]
-        command = [objdump, '-d', '--no-show-raw-insn']
-        for name in sections:
-            command.extend(['-j', name])
-        command.append(image.path)
+        if macho:
+            objdump = macho_objdump()
+        version_lines = subprocess.run([objdump, '--version'], capture_output=True, text=True, check=True).stdout.splitlines()
+        version = next((line.strip() for line in version_lines if 'LLVM version' in line), '') if macho else version_lines[0]
+        if macho:
+            if 'LLVM version 20.1.8' not in version:
+                raise CensusError('pinned llvm-mingw LLVM 20.1.8 is required for Mach-O')
+            command = [objdump, '--macho', '--arch=' + image.arch, '-d', '--no-show-raw-insn', image.path]
+        else:
+            formats = subprocess.run([objdump, '-i'], capture_output=True, text=True, check=True).stdout
+            match = re.search(r'(\d+)\.(\d+)', version)
+            if not match or tuple(map(int, match.groups())) < (2, 38) or 'pei-x86-64' not in formats:
+                raise CensusError('GNU objdump >= 2.38 with pei-x86-64 is required')
+            sections = [s['name'] for s in image.sections
+                        if any(start == s['addr'] and end > start for start, end in image.exec_ranges)]
+            command = [objdump, '-d', '--no-show-raw-insn']
+            for name in sections:
+                command.extend(['-j', name])
+            command.append(image.path)
         with tempfile.TemporaryFile(mode='w+t') as errors:
             with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=errors, text=True,
                                   env=dict(os.environ, LC_ALL='C')) as process:
                 try:
-                    result = scan(image, derived, process.stdout)
+                    result = (scan_macho if macho else scan)(image, derived, process.stdout)
                 except BaseException:
                     process.terminate()
                     raise
@@ -193,7 +341,7 @@ def run(image, derived, objdump='objdump'):
     except (OSError, subprocess.SubprocessError) as exc:
         raise CensusError(f'objdump: {exc}') from exc
     return dict(schema=SCHEMA, binary=os.path.basename(image.path),
-                format='pe' if image.platform == 'windows-x86_64' else 'elf',
+                format='macho' if macho else 'pe' if image.platform == 'windows-x86_64' else 'elf',
                 objdump=version, toolchain=toolchain(image),
                 vtable=dict(slots=derived['slot_count'], prefix=derived['prefix'],
                             placeholder_kind=derived['placeholder_kind'],
@@ -213,6 +361,8 @@ def report(result):
     print(f"guards: {result['guards']['total']} in {result['guards']['slots']} slots")
     print(f"direct api: {sum(result['direct_api'].values())} in {len(result['direct_api'])} slots {result['direct_api']}")
     print(f"direct prefix: {result['direct_prefix']}")
+    if 'controls' in result:
+        print('controls: ' + json.dumps(result['controls'], sort_keys=True))
     entries = result['devirtualized_slots']
     print('wanted devirtualized: ' + (', '.join(f"{e['key']}@{e['slot']}({e['direct_calls']})" for e in entries) or 'none'))
     print('verdict hits: ' + json.dumps(result['verdict_hits'], sort_keys=True))
@@ -225,12 +375,13 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', required=True)
+    parser.add_argument('--arch', choices=['arm64', 'x86_64'])
     parser.add_argument('--header', required=True)
     parser.add_argument('--version-name', default=calibrate.DEFAULT_VERSION_NAME)
     parser.add_argument('--json', metavar='OUT')
     args = parser.parse_args(argv)
     try:
-        image = calibrate.open_image(args.binary)
+        image = calibrate.open_image(args.binary, args.arch)
         derived = calibrate.derive(image, args.header, 'RenderingServer', 'RenderingServerDefault', set())
         result = run(image, derived)
         result['version'] = calibrate.engine_version_string(image, args.version_name)

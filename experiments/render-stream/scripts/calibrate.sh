@@ -22,21 +22,28 @@ PINNED_HEADER="${GRC_HEADER:-${SIBLINGS}/godot-4.5.1-stable/servers/rendering_se
 PINNED_RECORD="${EXPERIMENT}/calibration/godot-4.5.1-stable-linux-release.json"
 PINNED_WINDOWS_BINARY="${GRC_WINDOWS_TEMPLATE:-${HOME}/.cache/godot-render-stream/templates/4.5.1-stable/windows_release_x86_64.exe}"
 PINNED_WINDOWS_RECORD="${EXPERIMENT}/calibration/godot-4.5.1-stable-windows-release.json"
+PINNED_MACOS_BINARY="${GRC_MACOS_TEMPLATE:-${HOME}/.cache/godot-render-stream/templates/4.5.1-stable/godot_macos_release.universal}"
 ARTIFACTS="${REPO}/artifacts/render-stream/calibration"
 
 bash "${HERE}/fetch-windows-template.sh"
+bash "${HERE}/fetch-macos-template.sh"
 
 if [[ "${1:-}" == "--check" ]]; then
   TEMP="$(mktemp -d)"
   trap 'rm -rf "${TEMP}"' EXIT
-  for platform in linux windows; do
+  for platform in linux windows macos-arm64 macos-x86_64; do
     BINARY="${PINNED_BINARY}"
     RECORD="${PINNED_RECORD}"
+    ARCH_ARGS=()
     if [[ "$platform" == windows ]]; then
       BINARY="${PINNED_WINDOWS_BINARY}"
       RECORD="${PINNED_WINDOWS_RECORD}"
+    elif [[ "$platform" == macos-* ]]; then
+      BINARY="${PINNED_MACOS_BINARY}"
+      RECORD="${EXPERIMENT}/calibration/godot-4.5.1-stable-${platform}-release.json"
+      ARCH_ARGS=(--arch "${platform#macos-}")
     fi
-    python3 -I "${CALIBRATE}" --binary "${BINARY}" --header "${PINNED_HEADER}" --out "${TEMP}/${platform}.json"
+    python3 -I "${CALIBRATE}" --binary "${BINARY}" "${ARCH_ARGS[@]}" --header "${PINNED_HEADER}" --out "${TEMP}/${platform}.json"
     diff -u "${RECORD}" "${TEMP}/${platform}.json"
     echo "calibration record is up to date: ${RECORD}"
   done
@@ -45,6 +52,10 @@ fi
 
 python3 -I "${CALIBRATE}" --binary "${PINNED_BINARY}" --header "${PINNED_HEADER}" --out "${PINNED_RECORD}"
 python3 -I "${CALIBRATE}" --binary "${PINNED_WINDOWS_BINARY}" --header "${PINNED_HEADER}" --out "${PINNED_WINDOWS_RECORD}"
+for arch in arm64 x86_64; do
+  python3 -I "${CALIBRATE}" --binary "${PINNED_MACOS_BINARY}" --arch "$arch" --header "${PINNED_HEADER}" \
+    --out "${EXPERIMENT}/calibration/godot-4.5.1-stable-macos-${arch}-release.json"
+done
 
 # Generalisation evidence. These records are not committed.
 mkdir -p "${ARTIFACTS}"
