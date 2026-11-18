@@ -258,6 +258,9 @@ struct Opts {
     /// `no-cover-walk`: the applier's cover walk off, so the list holds every draw and
     /// back-buffer operation (an A/B of the walk; it changes no pixel).
     no_cover_walk: bool,
+    /// `no-cover-tiles`: the cover walk's tile half off, so the root list carries no depth
+    /// tables (an A/B of the depth-tested tiles; it changes no pixel).
+    no_cover_tiles: bool,
     /// PM6a's receiver sabotage `ignore-particle-emits` on GSW: every wire emit is dropped
     /// (counted `emits_dropped`) instead of consumed.
     ignore_particle_emits: bool,
@@ -463,6 +466,8 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "rebuild-reupload" => o.rebuild_reupload = true,
                 // Not a sabotage: the cover walk off (the same pixels, more fill).
                 "no-cover-walk" => o.no_cover_walk = true,
+                // Not a sabotage either: the walk without its tile half.
+                "no-cover-tiles" => o.no_cover_tiles = true,
                 // GLJ: every texture upload copied into the draw list's byte arena (pre-GLJ), so
                 // a viewer's first apply holds a second copy of the whole texture set at once.
                 "arena-upload" => o.apply.arena_upload = true,
@@ -1477,6 +1482,7 @@ impl GswRs {
         let mut applier = Applier::new(viewport);
         applier.sabotage = self.opts.apply;
         applier.cover_walk = !self.opts.no_cover_walk;
+        applier.set_cover_tiles(!self.opts.no_cover_tiles);
         applier.viewports_enabled = !self.opts.no_viewports;
         set_max_texture_side(&mut applier, self.executor.as_ref());
         applier.ov_sabotage = self.opts.ov;
@@ -1936,6 +1942,7 @@ impl GswRs {
         let mut applier = Applier::new(viewport);
         applier.sabotage = self.opts.apply;
         applier.cover_walk = !self.opts.no_cover_walk;
+        applier.set_cover_tiles(!self.opts.no_cover_tiles);
         applier.viewports_enabled = !self.opts.no_viewports;
         set_max_texture_side(&mut applier, self.executor.as_ref());
         applier.half_instances = v.session().engine.rendering_method == "gl_compatibility";

@@ -68,6 +68,26 @@ impl CanvasItemsTestHarness {
         Ok(())
     }
 
+    /// Set the held list's depth tables (`DrawList::depth_tiles`, `DrawList::depth_draws`):
+    /// `tiles` as `x, y, w, h, level` quintuples, `draws` as `draw, level` pairs. Empty slices
+    /// clear them. A `load` replaces them with the dump's (none).
+    pub fn set_depth(&mut self, tiles: &[i32], draws: &[u32]) {
+        self.list.depth_tiles = tiles
+            .chunks_exact(5)
+            .map(|t| gsw_canvas_draw_list::DepthTile {
+                rect: [t[0], t[1], t[2], t[3]],
+                level: t[4] as u32,
+            })
+            .collect();
+        self.list.depth_draws = draws
+            .chunks_exact(2)
+            .map(|d| gsw_canvas_draw_list::DepthDraw {
+                draw: d[0],
+                level: d[1],
+            })
+            .collect();
+    }
+
     /// Mark everything dirty (after a restored context).
     pub fn mark_all(&mut self) {
         self.list.dirty.all = true;

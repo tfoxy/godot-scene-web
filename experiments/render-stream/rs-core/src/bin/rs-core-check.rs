@@ -8,7 +8,7 @@
 //!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]
 //!   rs-core-check validate <recording>... [--version 2..16] [--recover]
 //!                          [--item-meta-asked <request json>|none] [--item-meta-dump <path>]
-//!   rs-core-check apply-bench <recording> --store <dir> [--repeats N] [--cover off] [--noop off] [--programs synthetic] [--max-texture-side N]
+//!   rs-core-check apply-bench <recording> --store <dir> [--repeats N] [--cover off] [--noop off] [--tiles off] [--programs synthetic] [--max-texture-side N]
 //!   rs-core-check pick-bench <recording> --store <dir> [--seq N] [--repeats N]
 //!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred] [--clock time|allocs] [--apply-every N]
 //!   rs-core-check walk-diff <recording>... [--store <dir>] [--digests <file>] [--cover 1 [--cover-every N]] [--cover-lists <file>] [--max-texture-side N]
@@ -17,7 +17,7 @@
 //!   rs-core-check lowered <recording> --seqs 8,18,... [--store <dir>]
 //!   rs-core-check state-dump <recording> --seqs 8,18,... --out <dir>
 //!   rs-core-check fill <recording> [--store <dir>] [--seqs 8,18,...] [--every N] [--cell 8]
-//!                      [--damage <summary.json>] [--draws <dir>] [--cover off] [--noop off]
+//!                      [--damage <summary.json>] [--draws <dir>] [--cover off] [--noop off] [--tiles off]
 //!   rs-core-check motion <recording> [--store <dir>] [--why]
 //!
 //! `goldens` runs golden-2 ... golden-16 (exits non-zero on any failing check). `transcode` (W13a,
@@ -100,7 +100,7 @@ fn usage() -> ExitCode {
          rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]\n  \
          rs-core-check client-diff <recording>... [--store <dir>] [--sabotage ph2-skip-body-digest|ph2-skip-dep-texture|ph2-park-stale|ph2-skip-material-textures]\n  \
          rs-core-check draw-skip-diff <recording>... [--store <dir>] [--every N] [--sabotage ph3-drop-pending]\n  \
-         rs-core-check fill <recording> [--store <dir>] [--seqs a,b] [--every N] [--cell 8] [--damage <summary.json>] [--draws <dir>] [--cover off] [--noop off]\n  \
+         rs-core-check fill <recording> [--store <dir>] [--seqs a,b] [--every N] [--cell 8] [--damage <summary.json>] [--draws <dir>] [--cover off] [--noop off] [--tiles off]\n  \
          rs-core-check motion <recording> [--store <dir>] [--why]\n  \
          rs-core-check live-decode <coded> [--expect <recording>] [--bases keep|none] [--repeats N] [--stats <jsonl>] [--sabotage drop-base|wrong-prefix]"
     );
@@ -1066,6 +1066,7 @@ fn cmd_apply_bench(args: &Args) -> ExitCode {
         });
         a.cover_walk = args.get("cover") != Some("off");
         a.set_cover_noops(args.get("noop") != Some("off"));
+        a.set_cover_tiles(args.get("tiles") != Some("off"));
         if let Some(side) = args.get("max-texture-side").and_then(|s| s.parse().ok()) {
             a.max_texture_side = side;
         }

@@ -2,33 +2,33 @@
   "schema": "render-stream-instr-baseline/1",
   "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
   "valgrind": "valgrind-3.22.0",
-  "cpu_model": "Intel Xeon 6975P-C (one runner; cross-runner spread <= 0.003% measured at 640f9bf8; docs/remote-compute.md R4)",
+  "cpu_model": "AMD EPYC 9V74 (one runner, run 44317926301; runner types agree within 0.003% per case, measured at 640f9bf8; docs/remote-compute.md R4)",
   "repeats": 3,
   "cases": {
     "g3-inline": {
       "recording": "golden-3/inline.rs3",
-      "ir": 16813469
+      "ir": 16943404
     },
     "g4-inline": {
       "recording": "golden-4/inline.rs4",
-      "ir": 73625439
+      "ir": 74105659
     },
     "g5-inline": {
       "recording": "golden-5/inline.rs5",
-      "ir": 94194312
+      "ir": 95197000
     },
     "g6-inline": {
       "recording": "golden-6/inline.rs6",
-      "ir": 111555556
+      "ir": 113192466
     },
     "g6-snap": {
       "recording": "golden-6/snap.rs6",
-      "ir": 2786689
+      "ir": 2809038
     },
     "g7-window2": {
       "recording": "golden-7/window2.rs7",
-      "ir": 2946584
+      "ir": 2970469
     }
   },
-  "refreshed": "cover walk (draws hidden under opaque covers left out of the list): its per-applier setup and per-apply walk add g3 +1.01%, g7-window2 +1.04%, g6-snap +0.82%, g4 +0.44%, g6-inline +0.32%, g5 +0.02% over 640f9bf8's baseline. Taken deliberately: on fill-bound phones the walk removes more GPU time than the instructions cost. Values from one Xeon 6975P-C run (44149710145); runner types agree within 0.003%."
+  "refreshed": "cover walk tile half (draw parts hidden under opaque covers depth-tested out): its per-apply tile classification and memo checks add g6-inline +1.47%, g5 +1.06%, g7-window2 +0.81%, g6-snap +0.80%, g3 +0.77%, g4 +0.65% over the cover-walk baseline. Taken deliberately: on fill-bound phones the rejected fragments outweigh the instructions. Values from one AMD EPYC 9V74 run (44317926301); runner types agree within 0.003% (a Xeon 6975P-C run on them, 44341386491, read -0.00..-0.02%)."
 }

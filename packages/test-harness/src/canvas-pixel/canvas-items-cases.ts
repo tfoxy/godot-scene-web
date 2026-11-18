@@ -762,6 +762,44 @@ function stack(format: TargetFormat): ItemsCase {
   };
 }
 
+/** 8x8 straight: a transparent 1-texel frame around an opaque core with a few colours. */
+const FRAMED: Rgba[] = (() => {
+  const out: Rgba[] = [];
+  for (let y = 0; y < 8; y += 1) {
+    for (let x = 0; x < 8; x += 1) {
+      const frame = x === 0 || x === 7 || y === 0 || y === 7;
+      out.push(
+        frame ? [250, 40, 40, 0] : [30 + 25 * x, 200 - 20 * y, 120, 255],
+      );
+    }
+  }
+  return out;
+})();
+
+/** A translucent textured backdrop over the whole target, then a sprite that is opaque but for its
+ *  frame over part of it (cells [32, 96) x [32, 64) lie inside its core, [28, 100) x [12, 84)), then
+ *  a translucent quad over both: the depth-tile case (`DEPTH_TILES` in the test). */
+function depthTiles(): ItemsCase {
+  return {
+    name: "depthTiles",
+    width: 128,
+    height: 96,
+    format: "rgb10a2",
+    clear: [0.2, 0.1, 0.3, 1],
+    textures: [texture(1, 4, 4, EDGE_TEXELS), texture(2, 8, 8, FRAMED)],
+    meshes: [
+      quad(0, 0, 128, 96, {
+        texture: 1,
+        filter: "linear",
+        colors: solid([1, 1, 1, 0.75]),
+      }),
+      quad(16, 0, 96, 96, { texture: 2 }),
+      quad(40, 20, 40, 60, { colors: solid([0.1, 0.9, 0.3, 0.5]) }),
+    ],
+    frames: items1({ xform: IDENTITY, modulate: WHITE }),
+  };
+}
+
 export function buildCases(): ItemsCase[] {
   return [
     solidQuads(),
@@ -789,6 +827,7 @@ export function buildCases(): ItemsCase[] {
     stack("rgba8"),
     itemsOnlyUpdate(),
     untexturedRuns(),
+    depthTiles(),
   ];
 }
 

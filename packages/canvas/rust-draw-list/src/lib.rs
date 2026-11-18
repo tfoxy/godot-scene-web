@@ -694,6 +694,59 @@ pub struct DrawList {
     /// Each [`DRAW_INSTANCED`] draw's instance range, ascending by draw. Part of the draw
     /// table (a producer rewrites it with the draws). Not in a `PDL1` dump.
     pub instanced: Vec<InstancedDraw>,
+    /// The depth tiles ([`DepthTile`]): target rectangles a later draw overwrites. With
+    /// [`DrawList::depth_draws`] part of the draw table, and empty unless both are non-empty.
+    /// Not in a `PDL1` dump.
+    pub depth_tiles: Vec<DepthTile>,
+    /// The draws an executor may depth-test against [`DrawList::depth_tiles`], ascending by
+    /// draw ([`DepthDraw`]). Not in a `PDL1` dump.
+    pub depth_draws: Vec<DepthDraw>,
+}
+
+/// A rectangle of target pixels whose every pixel is overwritten, before anything reads it, by a
+/// draw of depth level `level` ([`DepthDraw`]): the tile pre-pass of the cover walk's tile half
+/// (`cover::tiles`). Tiles of one list never overlap.
+///
+/// The contract an executor may use, or ignore (drawing every draw in full paints the same
+/// pixels): at a pixel inside a tile of level `L`, a draw listed in [`DrawList::depth_draws`]
+/// with a level below `L` changes nothing that is ever seen, so its fragments there may be
+/// rejected. The canvas-items executor does it with a depth test: the tiles drawn first into a
+/// cleared depth buffer at `L`, then each listed draw tested at its own level, before the list's
+/// first back-buffer operation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct DepthTile {
+    /// `[x, y, w, h]` in target pixels, top-left origin, inside the target.
+    pub rect: [i32; 4],
+    /// 1 ..= [`MAX_DEPTH_LEVEL`].
+    pub level: u32,
+}
+
+/// A draw that may be depth-tested against [`DrawList::depth_tiles`] at depth level `level`:
+/// the number of covers (tile owners) at or before it in paint order. Only draws before the
+/// list's first [`DRAW_SCREEN_OPS`] and [`DRAW_TO_BACK_BUFFER`] draw are listed, of the builtin
+/// program and neither MSDF nor a group draw.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct DepthDraw {
+    /// Index in [`DrawList::draws`].
+    pub draw: u32,
+    /// 0 ..= [`MAX_DEPTH_LEVEL`] (0: below every tile).
+    pub level: u32,
+}
+
+/// The highest depth level a list uses: an executor maps level `L` to a depth value with room
+/// for `2 · (MAX_DEPTH_LEVEL + 1)` distinct steps, well inside a 16-bit depth buffer.
+pub const MAX_DEPTH_LEVEL: u32 = 1023;
+
+/// Draw `d`'s depth level in `list` ([`DrawList::depth_draws`]), or None when it is not listed
+/// (or the list has no tiles).
+pub fn depth_level(list: &DrawList, d: u32) -> Option<u32> {
+    if list.depth_tiles.is_empty() {
+        return None;
+    }
+    list.depth_draws
+        .binary_search_by_key(&d, |e| e.draw)
+        .ok()
+        .map(|i| list.depth_draws[i].level)
 }
 
 impl DrawList {
@@ -892,19 +945,20 @@ impl DrawList {
     }
 
     /// Draw calls an executor issues for this list once it merges runs of adjacent draws
-    /// ([`mergeable`] against the run's state, [`merged`]).
+    /// ([`mergeable`] against the run's state, [`merged`]) of one depth level ([`depth_level`]).
     pub fn merged_draw_count(&self) -> usize {
         let mut count = 0;
-        let mut run: Option<Draw> = None;
-        for d in &self.draws {
+        let mut run: Option<(Draw, Option<u32>)> = None;
+        for (i, d) in self.draws.iter().enumerate() {
             if d.index_count == 0 {
                 continue;
             }
+            let depth = depth_level(self, i as u32);
             run = Some(match run {
-                Some(r) if mergeable(&r, d) => merged(&r, d),
+                Some((r, rd)) if rd == depth && mergeable(&r, d) => (merged(&r, d), rd),
                 _ => {
                     count += 1;
-                    *d
+                    (*d, depth)
                 }
             });
         }
@@ -1138,6 +1192,8 @@ pub mod pdl1 {
             screen_ops: Vec::new(),
             instances: Vec::new(),
             instanced: Vec::new(),
+            depth_tiles: Vec::new(),
+            depth_draws: Vec::new(),
         })
     }
 }

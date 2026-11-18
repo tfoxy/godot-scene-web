@@ -162,6 +162,11 @@ pub struct FillReport {
     pub hidden_px: f64,
     /// Draws whose every triangle is clipped away.
     pub empty_draws: u32,
+    /// [`DrawList::depth_tiles`]: fragments the executor's depth test rejects (taken out of
+    /// their draw's class above), and the depth-only pre-pass that draws the tiles (in no class:
+    /// untextured fragments that write no colour).
+    pub depth_rejected_px: f64,
+    pub depth_prepass_px: f64,
 }
 
 impl FillReport {
@@ -401,6 +406,14 @@ pub fn account(list: &DrawList, opts: &FillOptions) -> FillReport {
             *in_back = true;
         }
     };
+    // The depth tiles, as the executor draws them before the first draw.
+    let depth = !list.depth_tiles.is_empty() && !list.depth_draws.is_empty();
+    let depth_end = crate::cover::tiles::window_end(list);
+    if depth {
+        for t in &list.depth_tiles {
+            r.depth_prepass_px += rect_px(intersect(t.rect, view));
+        }
+    }
     let mut next_op = 0usize;
     for d in 0..list.draws.len() {
         while let Some(op) = list.screen_ops.get(next_op) {
@@ -451,6 +464,28 @@ pub fn account(list: &DrawList, opts: &FillOptions) -> FillReport {
             f64::from(clip[0] + clip[2]),
             f64::from(clip[1] + clip[3]),
         ];
+        // Tiles above the draw's depth level reject its fragments there.
+        let level = if depth && d < depth_end && crate::cover::tiles::testable(list, d) {
+            crate::depth_level(list, d as u32)
+        } else {
+            None
+        };
+        let rejecting: Vec<[f64; 4]> = level.map_or_else(Vec::new, |l| {
+            list.depth_tiles
+                .iter()
+                .filter(|t| t.level > l)
+                .map(|t| intersect(t.rect, clip))
+                .filter(|q| q[2] > 0 && q[3] > 0)
+                .map(|q| {
+                    [
+                        f64::from(q[0]),
+                        f64::from(q[1]),
+                        f64::from(q[0] + q[2]),
+                        f64::from(q[1] + q[3]),
+                    ]
+                })
+                .collect()
+        });
         let mut px = 0.0;
         let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
         let mut alpha = 1.0;
@@ -466,7 +501,9 @@ pub fn account(list: &DrawList, opts: &FillOptions) -> FillReport {
                 if a <= 0.0 {
                     return;
                 }
-                px += a;
+                let rejected: f64 = rejecting.iter().map(|q| clipped_area(&t, *q)).sum();
+                r.depth_rejected_px += rejected;
+                px += a - rejected;
                 let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
                 for p in &t {
                     x0 = x0.min(p[0]);

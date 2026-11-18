@@ -325,6 +325,76 @@ describe.skipIf(!ENABLED)(
       expect(result.frames[1].stats.textureUploads).toBe(1);
     }, 120000);
 
+    // DEPTH_TILES: `depthTiles` drawn with the list's depth tables (the tile pre-pass, the
+    // backdrop depth-tested under the cover's core) must equal the same list without them, byte
+    // for byte, in both orientations and after a restored context; a tile the cover does NOT
+    // overwrite must change pixels, and only inside that tile (so the tables really reach the
+    // GPU, at the right rows).
+    it.each([
+      false,
+      true,
+    ])("depth tiles change no pixel (Godot orientation %s), and a wrong tile shows", async (godot) => {
+      const good = { tiles: [32, 32, 64, 32, 1], draws: [0, 0] };
+      const wrong = { tiles: [0, 0, 32, 32, 1], draws: [0, 0] };
+      const none = { tiles: [], draws: [] };
+      // The depth program links without a status read (settled on a later frame without
+      // KHR_parallel_shader_compile), so the first frame with tables after the executor's
+      // objects are made (creation, a restored context) may still draw untested: the same pixels
+      // either way. The second such frame must use them.
+      const runs = [
+        none,
+        good,
+        good,
+        wrong,
+        wrong,
+        none,
+        { ...good, loseFirst: true },
+        good,
+      ];
+      const result = await page.evaluate(
+        ([g, r]) => window.__gswCanvasItems.depth("depthTiles", g, r),
+        [godot, runs] as [
+          boolean,
+          { tiles: number[]; draws: number[]; loseFirst?: boolean }[],
+        ],
+      );
+      expect(result.glError).toBe(0);
+      const plain = result.targets[0];
+      const withWrong = result.targets[4];
+      const w = result.width;
+      await png(`depthTiles-godot${godot}-wrong`, withWrong, w, result.height);
+      for (const k of [1, 2, 5, 6, 7]) {
+        expect(
+          byteDiff(plain, result.targets[k], w),
+          `run ${k} (${JSON.stringify(runs[k])})`,
+        ).toMatchObject({ differingBytes: 0 });
+      }
+      expect(result.stats[2]).toMatchObject({ depthTiles: 1, depthTested: 1 });
+      expect(result.stats[7]).toMatchObject({ depthTiles: 1, depthTested: 1 });
+      expect(result.stats[5]).toMatchObject({ depthTiles: 0, depthTested: 0 });
+      expect(result.stats[4]).toMatchObject({ depthTiles: 1, depthTested: 1 });
+      // The wrong tile rejects the backdrop where the cover's frame lets it show.
+      const outside: string[] = [];
+      let inside = 0;
+      for (let p = 0; p < plain.length / 4; p += 1) {
+        const differs = [0, 1, 2, 3].some(
+          (c) => plain[4 * p + c] !== withWrong[4 * p + c],
+        );
+        if (!differs) continue;
+        const [x, y] = [p % w, Math.floor(p / w)];
+        if (x < 32 && y < 32) inside += 1;
+        else outside.push(`(${x},${y})`);
+      }
+      console.log(
+        `canvas-items depthTiles godot=${godot}: wrong tile changes ${inside} px inside, ${outside.length} outside`,
+      );
+      expect(outside).toEqual([]);
+      // The tile outside the cover's opaque core (x >= 28 and y >= 12 is inside it), less
+      // [0, 16) x [0, 12), where the backdrop samples only its alpha-0 corner texel (nothing to
+      // reject): 32·32 - 4·20 - 16·12.
+      expect(inside).toBe(32 * 32 - 4 * 20 - 16 * 12);
+    }, 120000);
+
     it("signals its fence on a later task", async () => {
       const polls = await page.evaluate(
         (name) => window.__gswCanvasItems.fence(name),

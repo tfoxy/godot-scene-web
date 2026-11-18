@@ -2449,6 +2449,7 @@ impl CoverWalk {
 }
 
 pub mod oracle;
+pub mod tiles;
 
 #[cfg(test)]
 mod tests;

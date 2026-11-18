@@ -55,14 +55,36 @@ interface RustHarness {
   read_canvas(): Uint8Array;
   poll_fence(): number;
   gl_error(): number;
+  set_depth(tiles: Int32Array, draws: Uint32Array): void;
   free(): void;
 }
 interface RustModule {
   default(options: { module_or_path: string }): Promise<unknown>;
-  CanvasItemsTestHarness: new (
-    canvas: HTMLCanvasElement,
-    sabotage: string,
-  ) => RustHarness;
+  CanvasItemsTestHarness: {
+    new (canvas: HTMLCanvasElement, sabotage: string): RustHarness;
+    with_options(
+      canvas: HTMLCanvasElement,
+      sabotage: string,
+      godotOrientation: boolean,
+    ): RustHarness;
+  };
+}
+
+/** One frame of `depthProbe`: the depth tables (`x, y, w, h, level` per tile; `draw, level` per
+ *  draw), and whether the context is lost and restored before it. */
+export interface DepthRun {
+  tiles: number[];
+  draws: number[];
+  loseFirst?: boolean;
+}
+
+export interface DepthProbeResult {
+  width: number;
+  height: number;
+  /** Per run: the target in design rows and the frame's `ExecStats`. */
+  targets: number[][];
+  stats: Record<string, number>[];
+  glError: number;
 }
 
 export interface ItemsFrame {
@@ -355,6 +377,49 @@ export async function runItemsCase(
   };
 }
 
+/** One Rust executor (in Godot's orientation or not) drawing frame 0 of case `name` once per run,
+ *  each with that run's depth tables; with `loseFirst`, after a lost and restored context and a
+ *  full re-send. */
+export async function depthProbe(
+  name: string,
+  godot: boolean,
+  runs: DepthRun[],
+): Promise<DepthProbeResult> {
+  const spec = caseByName(name);
+  const module = await rustModule();
+  const canvas = document.createElement("canvas");
+  const harness = module.CanvasItemsTestHarness.with_options(canvas, "", godot);
+  const gl = canvas.getContext("webgl2");
+  const targets: number[][] = [];
+  const stats: Record<string, number>[] = [];
+  for (const [i, run] of runs.entries()) {
+    if (run.loseFirst) {
+      const ext = gl?.getExtension("WEBGL_lose_context");
+      if (!ext) throw new Error("WEBGL_lose_context unavailable");
+      const lost = waitFor(canvas, "webglcontextlost");
+      ext.loseContext();
+      await lost;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      harness.context_state();
+      const restored = waitFor(canvas, "webglcontextrestored");
+      ext.restoreContext();
+      await restored;
+      harness.context_state();
+    }
+    if (i === 0 || run.loseFirst) {
+      uploadTextures(harness, spec);
+      harness.load(encodePdl1(spec, 0));
+    }
+    harness.set_depth(Int32Array.from(run.tiles), Uint32Array.from(run.draws));
+    stats.push(JSON.parse(harness.execute()) as Record<string, number>);
+    targets.push(Array.from(harness.read_target()));
+  }
+  const glError = harness.gl_error();
+  harness.free();
+  releaseContext(gl);
+  return { width: spec.width, height: spec.height, targets, stats, glError };
+}
+
 /** Fence polling across tasks: execute one frame, then poll on later macrotasks. */
 export async function fenceProbe(name: string): Promise<number[]> {
   const spec = caseByName(name);
@@ -385,8 +450,17 @@ declare global {
         contextLoss?: boolean,
       ): Promise<ItemsCaseResult>;
       fence(name: string): Promise<number[]>;
+      depth(
+        name: string,
+        godot: boolean,
+        runs: DepthRun[],
+      ): Promise<DepthProbeResult>;
     };
   }
 }
 
-window.__gswCanvasItems = { run: runItemsCase, fence: fenceProbe };
+window.__gswCanvasItems = {
+  run: runItemsCase,
+  fence: fenceProbe,
+  depth: depthProbe,
+};

@@ -1,6 +1,6 @@
 {
   "schema": "render-stream-gate8-cg-expected/1",
-  "doc": "Hand-derived from cg.gd and Godot 4.5.1's canvas renderer (results/p3/p3-np.md 'Engine semantics', gate5_5-design.md 'Screen texture (P3-ST)'), not measured (README.md). Regions are inclusive [x0, y0, x1, y1]. `cells[].uses` names the /10 state a cell's pixels depend on at its `steps`: canvas_group (clip_children or CanvasGroup), copy_viewport (a BackBufferCopy of the whole target) and copy_rect (a BackBufferCopy of a rect). `removes` says which uses a leg's wire or receiver loses: the /9 capture carries none, the drop-canvas-group sabotage drops canvas_group, the full-backbuffer-copy sabotage turns every rect copy into a whole-target copy. A leg must differ from the reference in every cell whose uses it removes, at those steps, and equal it everywhere else. `wire` is every item's /10 state at each checkpoint as a multiset (`commands`: whether the item has draw commands); every other item carries null for both keys. `model` pins the screen-reading cells to closed-form pixels (`invert`: 255 - the 16x16 pattern of `seed` at scale 4, cg.gd _pattern) and the HP bar's clipping.",
+  "doc": "Hand-derived from cg.gd and Godot 4.5.1's canvas renderer (results/p3/p3-np.md 'Engine semantics', gate5_5-design.md 'Screen texture (P3-ST)'), not measured (README.md). Regions are inclusive [x0, y0, x1, y1]. `cells[].uses` names the /10 state a cell's pixels depend on at its `steps`: canvas_group (clip_children or CanvasGroup), copy_viewport (a BackBufferCopy of the whole target) and copy_rect (a BackBufferCopy of a rect). `removes` says which uses a leg's wire or receiver loses: the /9 capture carries none, the drop-canvas-group sabotage drops canvas_group, the full-backbuffer-copy sabotage turns every rect copy into a whole-target copy. A leg must differ from the reference in every cell whose uses it removes, at those steps, and equal it everywhere else. `wire` is every item's /10 state at each checkpoint as a multiset (`commands`: whether the item has draw commands); every other item carries null for both keys. `model` pins the screen-reading cells to closed-form pixels (`invert`: 255 - the 16x16 pattern of `seed` at scale 4, cg.gd _pattern) and the HP bar's clipping. TILES's region holds its clip group (the only part a leg can change); its other draws lie under ALPHA0's region, which ends where TILES's begins.",
   "checkpoints": [
     { "step": 0, "applied": 1, "settle": 4 },
     { "step": 1, "applied": 14, "settle": 17 },
@@ -10,6 +10,11 @@
   "late_steps": [1, 2],
   "toggle": { "step": 2, "frame": 20, "mode": "clip_only" },
   "cells": {
+    "TILES": {
+      "region": [376, 224, 447, 359],
+      "uses": ["canvas_group"],
+      "steps": [0, 1, 2]
+    },
     "HPBAR": {
       "region": [24, 20, 287, 51],
       "uses": ["canvas_group"],
@@ -57,7 +62,7 @@
     },
     "PLAIN": { "region": [328, 136, 391, 199], "uses": [], "steps": [] },
     "COVER": { "region": [448, 128, 631, 351], "uses": [], "steps": [] },
-    "ALPHA0": { "region": [168, 232, 431, 343], "uses": [], "steps": [] }
+    "ALPHA0": { "region": [168, 232, 375, 343], "uses": [], "steps": [] }
   },
   "removes": {
     "receiver-v9": ["canvas_group", "copy_viewport", "copy_rect"],
@@ -88,9 +93,9 @@
           "blur_mipmaps": false
         },
         "commands": true,
-        "count": 3,
+        "count": 4,
         "from_step": 0,
-        "why": "HPBAR/HPLOW Mask, NESTED's inner owner"
+        "why": "HPBAR/HPLOW Mask, NESTED's inner owner, TILES's owner"
       },
       {
         "state": {
@@ -165,8 +170,8 @@
   "hooks": {
     "canvas_group_mode": "canvas_item_set_canvas_group_mode",
     "copy_to_backbuffer": "canvas_item_set_copy_to_backbuffer",
-    "calls_doc": "Calls the born capture's counters must count while armed: canvas_group_mode 15 = GROUP 4 (the CanvasGroup constructor's set_fit_margin(10), then fit_margin, clear_margin, use_mipmaps) + NESTED's group 1 (constructor) + BLEND's group 1 (constructor) + 8 clip_children setters + TGL's toggle; copy_to_backbuffer 5 = BBV 2 (constructor's default rect mode, then viewport) + BBR 3 (constructor, copy_mode, rect). Teardown may add one disabling call per CanvasGroup (~CanvasGroup), hence the slack.",
-    "canvas_group_mode_calls": 15,
+    "calls_doc": "Calls the born capture's counters must count while armed: canvas_group_mode 16 = GROUP 4 (the CanvasGroup constructor's set_fit_margin(10), then fit_margin, clear_margin, use_mipmaps) + NESTED's group 1 (constructor) + BLEND's group 1 (constructor) + 9 clip_children setters (TILES's owner the ninth) + TGL's toggle; copy_to_backbuffer 5 = BBV 2 (constructor's default rect mode, then viewport) + BBR 3 (constructor, copy_mode, rect). Teardown may add one disabling call per CanvasGroup (~CanvasGroup), hence the slack.",
+    "canvas_group_mode_calls": 16,
     "copy_to_backbuffer_calls": 5,
     "teardown_slack": 3
   },

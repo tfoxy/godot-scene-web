@@ -233,6 +233,9 @@ pub struct ExecStats {
     /// and mip chains built (`ScreenOpKind::Mipmaps`, or a copy's).
     pub screen_copies: u32,
     pub screen_mipmaps: u32,
+    /// `DrawList::depth_tiles` drawn into the depth buffer, and calls depth-tested against them.
+    pub depth_tiles: u32,
+    pub depth_tested: u32,
 }
 
 impl ExecStats {
@@ -253,7 +256,7 @@ impl ExecStats {
                 "\"indexBytes\":{},\"uploadCalls\":{},\"scissorChanges\":{},\"blendChanges\":{},",
                 "\"textureBinds\":{},\"samplerBinds\":{},\"glCalls\":{},\"restored\":{},",
                 "\"fenceIssued\":{},\"programBinds\":{},\"bindingUploads\":{},",
-                "\"screenCopies\":{},\"screenMipmaps\":{}}}"
+                "\"screenCopies\":{},\"screenMipmaps\":{},\"depthTiles\":{},\"depthTested\":{}}}"
             ),
             self.draws,
             self.draw_calls,
@@ -279,6 +282,8 @@ impl ExecStats {
             self.binding_uploads,
             self.screen_copies,
             self.screen_mipmaps,
+            self.depth_tiles,
+            self.depth_tested,
         )
     }
 }
@@ -492,6 +497,9 @@ pub struct Call {
     /// The draw whose texture and sampler the call binds: the run's first draw that is not
     /// [`DRAW_UNTEXTURED`], else `draw` (an all-untextured run, which needs no texture of its own).
     pub texture_draw: u32,
+    /// The run's depth level ([`gsw_canvas_draw_list::depth_level`]): every draw of a run has the
+    /// same; None for draws the list does not depth-test.
+    pub depth: Option<u32>,
 }
 
 /// What [`plan_calls`] counted besides the calls.
@@ -517,7 +525,7 @@ pub fn drawable(
 }
 
 /// The draw calls for `list`, in paint order, into `out` (cleared first). Adjacent drawable draws
-/// merge when [`mergeable`] allows; an empty draw neither draws nor ends a run (as
+/// of one depth level merge when [`mergeable`] allows; an empty draw neither draws nor ends a run (as
 /// [`DrawList::merged_draw_count`] counts); an undrawable one is skipped and ends the run.
 pub fn plan_calls(
     list: &DrawList,
@@ -538,8 +546,9 @@ pub fn plan_calls(
             run = None;
             continue;
         }
+        let depth = gsw_canvas_draw_list::depth_level(list, i as u32);
         run = Some(match (run, out.last_mut()) {
-            (Some(r), Some(call)) if mergeable(&r, draw) => {
+            (Some(r), Some(call)) if call.depth == depth && mergeable(&r, draw) => {
                 call.index_count += draw.index_count;
                 if r.flags & DRAW_UNTEXTURED != 0 && draw.flags & DRAW_UNTEXTURED == 0 {
                     call.texture_draw = i as u32;
@@ -553,6 +562,7 @@ pub fn plan_calls(
                     first_index: draw.first_index,
                     index_count: draw.index_count,
                     texture_draw: i as u32,
+                    depth,
                 });
                 *draw
             }
@@ -818,19 +828,22 @@ mod tests {
                     draw: 0,
                     first_index: 0,
                     index_count: 12,
-                    texture_draw: 0
+                    texture_draw: 0,
+                    depth: None,
                 },
                 Call {
                     draw: 2,
                     first_index: 12,
                     index_count: 6,
-                    texture_draw: 2
+                    texture_draw: 2,
+                    depth: None,
                 },
                 Call {
                     draw: 4,
                     first_index: 18,
                     index_count: 6,
-                    texture_draw: 4
+                    texture_draw: 4,
+                    depth: None,
                 },
             ]
         );
@@ -841,6 +854,33 @@ mod tests {
                 skipped: 0
             }
         );
+    }
+
+    #[test]
+    fn plan_never_merges_draws_of_different_depth_levels() {
+        let mut l = list(vec![draw(0, 6), draw(6, 6), draw(12, 6), draw(18, 6)], 24);
+        l.depth_tiles = vec![gsw_canvas_draw_list::DepthTile {
+            rect: [0, 0, 32, 32],
+            level: 1,
+        }];
+        // Draws 0 and 1 at level 0, draw 2 untested, draw 3 at level 0 again.
+        l.depth_draws = [0, 1, 3]
+            .map(|d| gsw_canvas_draw_list::DepthDraw { draw: d, level: 0 })
+            .to_vec();
+        let mut out = Vec::new();
+        plan_calls(&l, |_| true, |_| true, &mut out);
+        let calls: Vec<(u32, u32, Option<u32>)> = out
+            .iter()
+            .map(|c| (c.draw, c.index_count, c.depth))
+            .collect();
+        assert_eq!(calls, [(0, 12, Some(0)), (2, 6, None), (3, 6, Some(0))]);
+        assert_eq!(out.len(), l.merged_draw_count());
+        // Without tiles nothing is tested: one call.
+        l.depth_tiles.clear();
+        plan_calls(&l, |_| true, |_| true, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].depth, None);
+        assert_eq!(l.merged_draw_count(), 1);
     }
 
     #[test]
@@ -883,7 +923,8 @@ mod tests {
                 draw: 5,
                 first_index: 18,
                 index_count: 6,
-                texture_draw: 5
+                texture_draw: 5,
+                depth: None,
             }
         );
     }
@@ -934,13 +975,15 @@ mod tests {
                     draw: 0,
                     first_index: 0,
                     index_count: 3,
-                    texture_draw: 0
+                    texture_draw: 0,
+                    depth: None,
                 },
                 Call {
                     draw: 2,
                     first_index: 6,
                     index_count: 3,
-                    texture_draw: 2
+                    texture_draw: 2,
+                    depth: None,
                 }
             ]
         );
@@ -973,12 +1016,14 @@ mod tests {
                     first_index: 0,
                     index_count: 15,
                     texture_draw: 2,
+                    depth: None,
                 },
                 Call {
                     draw: 5,
                     first_index: 15,
                     index_count: 6,
                     texture_draw: 5,
+                    depth: None,
                 },
             ]
         );
@@ -1001,7 +1046,8 @@ mod tests {
                 draw: 0,
                 first_index: 0,
                 index_count: 6,
-                texture_draw: 0
+                texture_draw: 0,
+                depth: None,
             }]
         );
         assert_eq!(l.merged_draw_count(), 1);
@@ -1069,14 +1115,16 @@ mod tests {
             fence_issued: 1,
             binding_uploads: 5,
             screen_mipmaps: 7,
+            depth_tested: 9,
             ..ExecStats::default()
         };
         // The word block is read by position: a new field goes last and bumps WORDS.
-        assert_eq!(ExecStats::WORDS, 24);
+        assert_eq!(ExecStats::WORDS, 26);
+        assert_eq!(stats.as_words()[23], 7);
         assert_eq!(stats.as_words()[0], 3);
         assert_eq!(stats.as_words()[19], 1);
         assert_eq!(stats.as_words()[21], 5);
-        assert_eq!(stats.as_words()[ExecStats::WORDS - 1], 7);
+        assert_eq!(stats.as_words()[ExecStats::WORDS - 1], 9);
         assert!(stats.to_json().starts_with("{\"draws\":3,"));
     }
 

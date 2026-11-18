@@ -25,7 +25,10 @@ use std::process::ExitCode;
 /// The applier's cover walk runs as it does in a client (`--cover off` turns it off, `--noop off`
 /// only its no-op drops): the list accounted is what an executor would draw. Each line also
 /// reports `covered_draws` and `covered_ops`, what the walk left out of that transaction's list,
-/// and `noop_draws`, the draws among them that change no pixel at all.
+/// and `noop_draws`, the draws among them that change no pixel at all. `--tiles off` turns the
+/// walk's tile half off; with it on, `total_screens` excludes the fragments the executor's depth
+/// test rejects (`depth_rejected_screens`) and the depth-only tile pre-pass is reported on its own
+/// (`depth_prepass_screens`).
 /// `--damage <file>` also compares every transaction's draws with the previous one's
 /// (`fill::signature`, `fill::damage`) and writes a summary: how many transactions changed
 /// nothing, the damaged area's distribution, and the fill a redraw scissored to the damage
@@ -85,6 +88,7 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
         });
         a.cover_walk = args.get("cover") != Some("off");
         a.set_cover_noops(args.get("noop") != Some("off"));
+        a.set_cover_tiles(args.get("tiles") != Some("off"));
         let mut payloads = PayloadStore::default();
         let mut need = Vec::new();
         let mut out = std::io::stdout().lock();
@@ -399,6 +403,10 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                             "layers": {"mean": (r.layers_mean * 100.0).round() / 100.0,
                                 "p50": r.layers_p50, "p95": r.layers_p95, "max": r.layers_max},
                             "hidden_screens": (r.hidden_px / screen * 1000.0).round() / 1000.0,
+                            "depth_rejected_screens": (r.depth_rejected_px / screen * 1000.0).round() / 1000.0,
+                            "depth_prepass_screens": (r.depth_prepass_px / screen * 1000.0).round() / 1000.0,
+                            "depth_tiles": a.list.depth_tiles.len(), "depth_draws": a.list.depth_draws.len(),
+                            "tile_classified": a.stats.tile_classified,
                             "empty_draws": r.empty_draws,
                             "covered_draws": covered.0, "covered_ops": covered.1, "noop_draws": covered.2,
                             "large": large, "ops": ops,
@@ -424,6 +432,14 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                                     let mut r = a.list.instanced[i];
                                     r.draw = 0;
                                     one.instanced.push(r);
+                                }
+                                // Its depth test, if listed (the tiles stay as they are).
+                                one.depth_draws.clear();
+                                if let Some(level) =
+                                    gsw_canvas_draw_list::depth_level(&a.list, d as u32)
+                                {
+                                    one.depth_draws
+                                        .push(gsw_canvas_draw_list::DepthDraw { draw: 0, level });
                                 }
                                 let od: HashSet<u32> = if opaque_draws.contains(&(d as u32)) {
                                     [0u32].into_iter().collect()

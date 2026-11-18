@@ -46,10 +46,14 @@ struct L {
 
 impl L {
     fn new(opaque: bool) -> L {
+        L::sized(100, 50, opaque)
+    }
+
+    fn sized(width: u32, height: u32, opaque: bool) -> L {
         L {
             list: DrawList::new(Target {
-                width: 100,
-                height: 50,
+                width,
+                height,
                 opaque,
                 ..Target::default()
             }),
@@ -1362,4 +1366,457 @@ fn a_reorder_or_a_state_change_at_an_equal_count_reads_every_no_op_again() {
     l.list.draws[1].flags &= !DRAW_UNTEXTURED;
     l.list.dirty.draws = true;
     check(&mut l, [true, true, true], "a builtin no-op turned program");
+}
+
+/// Runs the tile half over `l` as it stands (every owner analysed, every hidden pixel worth a
+/// test) and leaves its tables in the list; checks that the list paints with them what it paints
+/// without (the oracle honours the depth test) and that a fresh, slack-free check stands behind
+/// them.
+fn tile(l: &mut L, facts: &Facts) -> tiles::TileWalk {
+    let mut t = tiles_walk(1);
+    tile_again(l, facts, &mut t);
+    t
+}
+
+fn tile_again(l: &mut L, facts: &Facts, t: &mut tiles::TileWalk) {
+    t.run(&l.list, facts);
+    l.list.depth_tiles.clone_from(&t.tiles);
+    l.list.depth_draws.clone_from(&t.draws);
+    let mut plain = l.list.clone();
+    plain.depth_tiles.clear();
+    plain.depth_draws.clear();
+    let (a, b) = (provenance(&plain, facts), provenance(&l.list, facts));
+    if a.mismatches(&b) != 0 {
+        let bad: Vec<(usize, usize)> = (0..a.rgb.len())
+            .filter(|&i| a.rgb[i] != b.rgb[i] || a.alpha[i] != b.alpha[i])
+            .map(|i| (i % a.width as usize, i / a.width as usize))
+            .take(12)
+            .collect();
+        panic!(
+            "the tiled list paints differently at {bad:?} ({:?} {:?})",
+            t.tiles, t.draws
+        );
+    }
+    let owners = t.owners.clone();
+    assert!(
+        tiles::TileWalk::default().verify(&l.list, &owners, facts),
+        "unverified tables {:?} {:?}",
+        t.tiles,
+        t.draws
+    );
+}
+
+/// A backdrop, then an atlas sprite (opaque but for a 2-texel frame) over part of it.
+fn backdrop_and_framed_cover(opaque: bool) -> (L, Facts) {
+    let mut l = L::sized(256, 128, opaque);
+    l.rect([0.0, 0.0, 256.0, 128.0], Blend::Mix, 0.5);
+    l.grid(
+        ID,
+        [32.0, 0.0, 160.0, 128.0],
+        1,
+        1,
+        [0.0, 0.0, 1.0, 1.0],
+        7,
+        Blend::Mix,
+        1.0,
+    );
+    let mut f = Facts::default();
+    f.opacity.insert(7, atlas(None));
+    (l, f)
+}
+
+#[test]
+fn tiles_hide_the_part_of_a_draw_a_partly_opaque_cover_overwrites() {
+    let (mut l, f) = backdrop_and_framed_cover(true);
+    // The whole-draw walk keeps everything (the cover's frame is transparent).
+    let (k, _) = walk(&l, &f);
+    assert_eq!(k, [true, true]);
+    let t = tile(&mut l, &f);
+    // The frame is 4 px wide on screen and the target edges are boundary edges: the cells
+    // [64, 128) x [32, 96) are the ones whose grown pixel centres are inside the opaque texels.
+    assert_eq!(
+        t.tiles,
+        [crate::DepthTile {
+            rect: [64, 32, 64, 64],
+            level: 1
+        }]
+    );
+    assert_eq!(t.draws, [crate::DepthDraw { draw: 0, level: 0 }]);
+    assert_eq!(t.owners, [1]);
+    assert_eq!(t.hidden_px, 64 * 64);
+    assert_eq!(l.list.merged_draw_count(), 2);
+    // The fill model takes the rejected fragments out of the backdrop.
+    let fill = crate::fill::account(&l.list, &crate::fill::FillOptions::default());
+    assert_eq!(fill.depth_rejected_px, 4096.0);
+    assert_eq!(fill.depth_prepass_px, 4096.0);
+}
+
+#[test]
+fn a_cover_drawn_before_a_draw_hides_nothing_of_it() {
+    let mut l = L::sized(256, 128, true);
+    l.grid(
+        ID,
+        [32.0, 0.0, 160.0, 128.0],
+        1,
+        1,
+        [0.0, 0.0, 1.0, 1.0],
+        7,
+        Blend::Mix,
+        1.0,
+    );
+    l.rect([0.0, 0.0, 256.0, 128.0], Blend::Mix, 0.5);
+    let mut f = Facts::default();
+    f.opacity.insert(7, atlas(None));
+    let t = tile(&mut l, &f);
+    assert!(t.tiles.is_empty() && t.draws.is_empty());
+}
+
+#[test]
+fn a_copy_between_a_draw_and_its_cover_takes_its_region_out() {
+    let (mut l, f) = backdrop_and_framed_cover(true);
+    // A copy of [100, 40, 10x10] before the cover: it reads the backdrop there, and the window
+    // ends at the draw it precedes (the cover itself here).
+    l.op(1, ScreenOpKind::Copy, [100, 40, 10, 10], false);
+    let t = tile(&mut l, &f);
+    // Cell (3, 1) = [96, 128) x [32, 64) meets the copy (runs merge along rows first).
+    let mut cells: Vec<[i32; 4]> = t.tiles.iter().map(|t| t.rect).collect();
+    cells.sort_unstable();
+    assert_eq!(cells, [[64, 32, 32, 32], [64, 64, 64, 32]]);
+    assert_eq!(t.draws, [crate::DepthDraw { draw: 0, level: 0 }]);
+    // A whole-target copy leaves nothing.
+    l.list.screen_ops[0].region = [0, 0, 256, 128];
+    l.list.depth_tiles.clear();
+    l.list.depth_draws.clear();
+    let t = tile(&mut l, &f);
+    assert!(t.tiles.is_empty());
+}
+
+#[test]
+fn only_draws_before_the_first_back_buffer_operation_are_tested() {
+    let (mut l, f) = backdrop_and_framed_cover(true);
+    // A second backdrop after a clear: past the window.
+    let d = l.rect([0.0, 0.0, 256.0, 128.0], Blend::Mix, 0.5);
+    l.op(d, ScreenOpKind::Clear, [0, 0, 0, 0], false);
+    l.grid(
+        ID,
+        [32.0, 0.0, 160.0, 128.0],
+        1,
+        1,
+        [0.0, 0.0, 1.0, 1.0],
+        7,
+        Blend::Mix,
+        1.0,
+    );
+    let t = tile(&mut l, &f);
+    // Draw 0 under both covers (its level 0; the cells' level is the last owner's, 2), and the
+    // first cover under the second (level 1); the second backdrop is not listed.
+    assert_eq!(
+        t.draws,
+        [
+            crate::DepthDraw { draw: 0, level: 0 },
+            crate::DepthDraw { draw: 1, level: 1 }
+        ]
+    );
+    assert_eq!(t.owners, [1, 3]);
+    assert!(t.tiles.iter().all(|t| t.level == 2));
+}
+
+#[test]
+fn a_cover_is_tested_under_a_later_cover_at_its_own_level() {
+    let (mut l, f) = backdrop_and_framed_cover(true);
+    // A second framed sprite over the first, shifted by 32 px.
+    l.grid(
+        ID,
+        [64.0, 0.0, 192.0, 128.0],
+        1,
+        1,
+        [0.0, 0.0, 1.0, 1.0],
+        7,
+        Blend::Mix,
+        1.0,
+    );
+    let t = tile(&mut l, &f);
+    assert_eq!(
+        t.draws,
+        [
+            crate::DepthDraw { draw: 0, level: 0 },
+            crate::DepthDraw { draw: 1, level: 1 }
+        ]
+    );
+    // [96, 160) is the second owner's (level 2), [64, 96) only the first's.
+    let mut tiles: Vec<([i32; 4], u32)> = t.tiles.iter().map(|t| (t.rect, t.level)).collect();
+    tiles.sort_unstable();
+    assert_eq!(tiles, [([64, 32, 32, 64], 1), ([96, 32, 64, 64], 2)]);
+    // Different levels never share a call.
+    assert_eq!(l.list.merged_draw_count(), 3);
+}
+
+#[test]
+fn on_an_opaque_target_a_draw_that_writes_alpha_is_never_tested() {
+    let (mut l, f) = backdrop_and_framed_cover(true);
+    l.list.draws[0].blend = Blend::Disabled as u32;
+    assert!(tile(&mut l, &f).draws.is_empty());
+    // A transparent target: every owner writes alpha 1 too.
+    let (mut l, f) = backdrop_and_framed_cover(false);
+    l.list.draws[0].blend = Blend::Disabled as u32;
+    assert_eq!(tile(&mut l, &f).draws.len(), 1);
+}
+
+#[test]
+fn a_translucent_texel_inside_a_cell_keeps_that_cell() {
+    let cells =
+        |t: &tiles::TileWalk| -> i32 { t.tiles.iter().map(|t| t.rect[2] * t.rect[3] / 1024).sum() };
+    for sampler in [0, Sampler::LINEAR] {
+        // Atlas texel (40, 40) translucent: screen [112, 114) x [80, 82), in cell [96, 128) x
+        // [64, 96) only, even grown by the slack and the linear footprint.
+        let (mut l, mut f) = backdrop_and_framed_cover(true);
+        l.list.draws[1].sampler = sampler;
+        f.opacity.insert(7, atlas(Some((40, 40))));
+        let t = tile(&mut l, &f);
+        assert_eq!(cells(&t), 3, "{sampler} {:?}", t.tiles);
+        // Texel (32, 32) sits at the corner of four cells, which the slack reaches from each.
+        let (mut l, mut f) = backdrop_and_framed_cover(true);
+        l.list.draws[1].sampler = sampler;
+        f.opacity.insert(7, atlas(Some((32, 32))));
+        assert_eq!(cells(&tile(&mut l, &f)), 0);
+    }
+}
+
+#[test]
+fn a_mesh_cover_claims_cells_across_its_interior_edges() {
+    // A 4x2 grid with wobbly interior vertices over the whole target, white: every cell inside
+    // the target edges is claimed, whatever interior edge crosses it.
+    let mut l = L::sized(256, 128, true);
+    l.rect([0.0, 0.0, 256.0, 128.0], Blend::Mix, 0.5);
+    let d = l.grid(
+        ID,
+        [-8.0, -8.0, 264.0, 136.0],
+        4,
+        2,
+        [0.0, 0.0, 1.0, 1.0],
+        WHITE_TEXTURE,
+        Blend::Mix,
+        1.0,
+    );
+    for (k, v) in l.list.vertices.iter_mut().enumerate().skip(4) {
+        let inner = (k - 4) % 5 != 0 && (k - 4) % 5 != 4 && (5..10).contains(&(k - 4));
+        if inner {
+            v.pos[0] += 3.25;
+            v.pos[1] -= 1.5;
+        }
+    }
+    // The whole-draw walk drops the backdrop outright (the mesh covers the target)...
+    let (k, _) = walk(&l, &Facts::default());
+    assert_eq!(k, [false, true]);
+    // ...and on the list it keeps there is nothing left to test; without the walk the tiles
+    // cover every cell.
+    let t = tile(&mut l, &Facts::default());
+    assert_eq!(t.owners, [d as u32]);
+    let cells: i32 = t.tiles.iter().map(|t| t.rect[2] * t.rect[3]).sum();
+    assert_eq!(cells, 256 * 128);
+}
+
+#[test]
+fn an_owner_drifting_less_than_the_slack_keeps_its_tiles_without_a_new_classification() {
+    // Every step checks the tiled list against the plain one (`tile_again`).
+    let (mut l, f) = backdrop_and_framed_cover(true);
+    let mut t = tiles_walk(1);
+    tile_again(&mut l, &f, &mut t);
+    assert_eq!(t.classified, 1);
+    let first = t.tiles.clone();
+    // A translation of the row within the slack...
+    for step in 1..=3 {
+        l.list.items[1].xform[4] = 0.3 * step as f32;
+        l.list.items[1].xform[5] = -0.25 * step as f32;
+        tile_again(&mut l, &f, &mut t);
+        assert_eq!(t.classified, 0, "step {step}");
+        assert_eq!(t.tiles, first);
+    }
+    // ...a deformation within it (a scale moving no vertex a pixel from where it was classified,
+    // vertices wobbling)...
+    l.list.items[1].xform[4] = 0.0;
+    l.list.items[1].xform[5] = 0.0;
+    l.list.items[1].xform[0] = 1.001;
+    tile_again(&mut l, &f, &mut t);
+    assert_eq!(t.classified, 0);
+    for v in &mut l.list.vertices[4..8] {
+        v.pos[0] += 0.4;
+        v.pos[1] -= 0.4;
+    }
+    tile_again(&mut l, &f, &mut t);
+    assert_eq!(t.classified, 0);
+    // ...hold; past it, classified again where it now stands.
+    for _ in 0..40 {
+        tile_again(&mut l, &f, &mut t);
+    }
+    l.list.items[1].xform[4] = 1.5;
+    tile_again(&mut l, &f, &mut t);
+    assert_eq!(t.classified, 1);
+}
+
+#[test]
+fn an_owner_classified_again_soon_gets_twice_the_slack() {
+    let (mut l, f) = backdrop_and_framed_cover(true);
+    let mut t = tiles_walk(1);
+    tile_again(&mut l, &f, &mut t);
+    // Moved past 1 px right after its classification: classified again, with 2 px of slack...
+    l.list.items[1].xform[4] = 1.25;
+    tile_again(&mut l, &f, &mut t);
+    assert_eq!(t.classified, 1);
+    tile_again(&mut l, &f, &mut t);
+    // ...so a further 1.5 px holds.
+    l.list.items[1].xform[4] = 2.75;
+    tile_again(&mut l, &f, &mut t);
+    assert_eq!(t.classified, 0);
+    assert!(!t.tiles.is_empty());
+}
+
+#[test]
+fn an_animated_owner_claims_nothing_until_it_holds_still() {
+    let (mut l, f) = backdrop_and_framed_cover(true);
+    let mut t = tiles_walk(1);
+    tile_again(&mut l, &f, &mut t);
+    for _ in 0..40 {
+        tile_again(&mut l, &f, &mut t);
+    }
+    // Moving past the slack in consecutive runs: the first move classifies, the rest back off
+    // and claim nothing...
+    for step in 1..=5 {
+        l.list.vertices[4].pos[0] += 10.0;
+        tile_again(&mut l, &f, &mut t);
+        assert_eq!(t.classified, u32::from(step == 1), "step {step}");
+        if step > 1 {
+            assert!(t.tiles.is_empty(), "step {step}");
+        }
+    }
+    // ...until it holds still for a few runs.
+    for _ in 1..tiles::STILL {
+        tile_again(&mut l, &f, &mut t);
+        assert_eq!(t.classified, 0);
+        assert!(t.tiles.is_empty());
+    }
+    tile_again(&mut l, &f, &mut t);
+    assert_eq!(t.classified, 1);
+    assert!(!t.tiles.is_empty());
+}
+
+#[test]
+fn the_oracle_sees_a_tile_the_cover_does_not_overwrite() {
+    let (mut l, f) = backdrop_and_framed_cover(true);
+    l.list.depth_tiles = vec![crate::DepthTile {
+        rect: [32, 32, 32, 32],
+        level: 1,
+    }];
+    l.list.depth_draws = vec![crate::DepthDraw { draw: 0, level: 0 }];
+    let mut plain = l.list.clone();
+    plain.depth_tiles.clear();
+    assert!(provenance(&l.list, &f).mismatches(&provenance(&plain, &f)) > 0);
+    assert!(!tiles::TileWalk::default().verify(&l.list, &[1], &f));
+}
+
+#[test]
+fn a_small_hidden_area_is_not_worth_a_test() {
+    let (mut l, f) = backdrop_and_framed_cover(true);
+    let mut t = tiles_walk(64 * 64 + 1);
+    t.run(&l.list, &f);
+    assert!(t.tiles.is_empty() && t.draws.is_empty() && t.owners.is_empty());
+    l.list.depth_tiles.clear();
+}
+
+fn tiles_walk(min_hidden_px: u32) -> tiles::TileWalk {
+    let mut t = tiles::TileWalk::default();
+    t.min_cover_area = 0;
+    t.min_hidden_px = min_hidden_px;
+    t
+}
+
+#[test]
+fn a_check_with_no_slack_never_carries_a_verdict_across_an_edge_between_cells() {
+    // A white L-shaped cover (one draw, one row): [0, 128) x [0, 128) and [0, 256) x [128, 192).
+    // Its edge x = 128 lies on a cell boundary, and with no slack the grown pixel-centre
+    // rectangles of cells [96, 128) and [128, 160) (rows [64, 96)) do not meet, so the edge passes
+    // between them: the first's inside verdict must not reach the second, outside the L.
+    let mut l = L::sized(256, 192, true);
+    l.rect([0.0, 0.0, 256.0, 192.0], Blend::Mix, 0.5);
+    l.rect([0.0, 0.0, 128.0, 128.0], Blend::Mix, 1.0);
+    l.rect([0.0, 128.0, 256.0, 192.0], Blend::Mix, 1.0);
+    let second = l.list.draws.pop().expect("three draws");
+    l.list.draws[1].index_count += second.index_count;
+    for v in &mut l.list.vertices[8..] {
+        v.item = 1;
+    }
+    let f = Facts::default();
+    l.list.depth_draws = vec![crate::DepthDraw { draw: 0, level: 0 }];
+    l.list.depth_tiles = vec![crate::DepthTile {
+        rect: [96, 64, 32, 32],
+        level: 1,
+    }];
+    assert!(tiles::TileWalk::default().verify(&l.list, &[1], &f));
+    l.list.depth_tiles[0].rect = [128, 64, 32, 32];
+    assert!(!tiles::TileWalk::default().verify(&l.list, &[1], &f));
+    // The walk's own tiles (its slack keeps neighbours connected) stay inside the L.
+    l.list.depth_tiles.clear();
+    l.list.depth_draws.clear();
+    let t = tile(&mut l, &f);
+    assert!(!t.tiles.is_empty());
+    assert!(
+        t.tiles
+            .iter()
+            .all(|t| t.rect[0] + t.rect[2] <= 128 || t.rect[1] >= 128),
+        "{:?}",
+        t.tiles
+    );
+}
+
+#[test]
+fn a_seam_between_duplicate_vertices_never_keeps_its_tiles() {
+    // Two triangles sharing their diagonal through DISTINCT vertex records at bit-identical
+    // positions: the boundary cancels the diagonal by position, so the cells across it are
+    // claimed. Separating the copies by less than the slack opens a seam there (pixel centre
+    // (64.5, 64.5) lies in neither triangle): the memo must not hold.
+    let mut l = L::sized(256, 128, true);
+    l.rect([0.0, 0.0, 256.0, 128.0], Blend::Mix, 0.5);
+    let item = l.list.items.len() as u32;
+    l.list.items.push(Item {
+        xform: ID,
+        modulate: [0.2, 0.6, 0.3, 1.0],
+        ..Item::default()
+    });
+    let base = l.list.vertices.len() as u32;
+    for p in [
+        [-8.0, -8.0],
+        [136.0, -8.0],
+        [136.0, 136.0],
+        [-8.0, -8.0],
+        [136.0, 136.0],
+        [-8.0, 136.0],
+    ] {
+        l.list.vertices.push(Vertex {
+            pos: p,
+            uv: [0.0, 0.0],
+            color: [1.0; 4],
+            item,
+        });
+    }
+    let first = l.list.indices.len() as u32;
+    l.list.indices.extend((0..6).map(|k| base + k));
+    l.list.draws.push(Draw {
+        first_index: first,
+        index_count: 6,
+        texture: WHITE_TEXTURE,
+        blend: Blend::Mix as u32,
+        flags: DRAW_UNTEXTURED,
+        ..Draw::default()
+    });
+    let f = Facts::default();
+    let mut t = tiles_walk(1);
+    tile_again(&mut l, &f, &mut t);
+    assert!(t.tiles.iter().any(|r| r.rect[0] <= 64 && r.rect[1] <= 64), "{:?}", t.tiles);
+    for (k, v) in l.list.vertices[base as usize..].iter_mut().enumerate() {
+        let d = if k < 3 { [0.75, -0.75] } else { [-0.75, 0.75] };
+        v.pos = [v.pos[0] + d[0], v.pos[1] + d[1]];
+    }
+    // `tile_again` checks the tiled list against the plain one and `verify` on run 2's tables.
+    tile_again(&mut l, &f, &mut t);
+    assert_eq!(t.classified, 1);
 }

@@ -47,6 +47,17 @@ extends Node
 ##                     `COLOR.a = threshold` overlay whose threshold is never set (0). No /10
 ##                     state. A receiver may leave out the zero-alpha draws (and the reader's copy
 ##                     while it is one of them); the pixels are the same either way.
+##   TILES   (176,224) in its own CanvasLayer BELOW every other (layer -1), so its draws come first
+##                     in the root's list, before any back-buffer work: a 256x128 backdrop, then
+##                     a sprite opaque but for a transparent 16 px frame over part of it (the 32 px
+##                     cells inside its core are what a receiver may depth-test the backdrop
+##                     against); a clip-only owner (a disc) with a child, under a second framed
+##                     sprite over its corner (a cell of that sprite meets the group's copy); a
+##                     screen reader reading the back buffer's mips (a whole-target copy), then a
+##                     third framed sprite over part of the reader. The reader's blur reads around
+##                     its own pixels, so a receiver that hid the backdrop under the third sprite
+##                     (drawn after the copy that reads it) would change the reader where it shows.
+##                     Its clip group is /10 state.
 ##
 ## The root is a plain `Node`: every CanvasItem is created in `_ready`, after the loader armed the
 ## capture in its `_enter_tree` (gate 0's rule), or before a late arm at frame 12 (RS_FIXTURE_ARM=late,
@@ -104,6 +115,7 @@ func _ready() -> void:
 	_sprite("Plain", _root, ImageTexture.create_from_image(_pattern(6)), Vector2(328, 136), 4.0)
 	_cover()
 	_alpha0()
+	_tiles()
 	print("[fixture] gate8-cg ready: quit=%d" % _quit_frame)
 
 
@@ -311,6 +323,38 @@ func _alpha0() -> void:
 	var overlay: ColorRect = _color_rect("Alpha0Overlay", Color(1, 1, 1, 1), Vector2(0, 0), Vector2(640, 360))
 	overlay.material = overlay_material
 	cell.add_child(overlay)
+
+
+## TILES: see the header. Integer positions and scales, nearest sampling: no pixel rests on a tie.
+func _tiles() -> void:
+	var layer: CanvasLayer = CanvasLayer.new()
+	layer.name = "TilesLayer"
+	layer.layer = -1
+	add_child(layer)
+	var cell: Node2D = Node2D.new()
+	cell.name = "Tiles"
+	layer.add_child(cell)
+	var framed: ImageTexture = ImageTexture.create_from_image(_framed_atlas())
+	var back: Sprite2D = _sprite("TilesBack", cell, ImageTexture.create_from_image(_pattern(15)), Vector2(176, 224), 1.0)
+	back.scale = Vector2(16, 8)
+	# Its core [252, 348) x [240, 336) holds the cells [256, 320) x [256, 320).
+	_sprite("TilesCover", cell, framed, Vector2(236, 224), 4.0)
+	var owner_sprite: Sprite2D = _sprite("TilesClip", cell, ImageTexture.create_from_image(_circle()), Vector2(376, 304), 3.0)
+	owner_sprite.clip_children = CanvasItem.CLIP_CHILDREN_ONLY
+	_sprite("TilesClipChild", owner_sprite, ImageTexture.create_from_image(_pattern(16)), Vector2(2, 2), 1.0)
+	# Core [316, 388) x [268, 340): of its cells [320, 384) x [288, 320), the right one meets the
+	# group's copy (the owner's rect [376, 424) x [304, 352)).
+	_sprite("TilesCover2", cell, framed, Vector2(304, 256), 3.0)
+	var blur: ShaderMaterial = ShaderMaterial.new()
+	var shader_resource: Resource = load("res://shaders/blur.gdshader")
+	blur.shader = shader_resource as Shader
+	var reader: ColorRect = _color_rect("TilesReader", Color(0.2, 0.5, 0.9, 1), Vector2(176, 304), Vector2(64, 48))
+	reader.material = blur
+	cell.add_child(reader)
+	# Core [204, 276) x [284, 332): the cell [224, 256) x [288, 320) inside it shows the backdrop at
+	# the reader's copy (TilesCover's frame and beyond), which the copy must read.
+	var cover3: Sprite2D = _sprite("TilesCover3", cell, framed, Vector2(192, 276), 1.0)
+	cover3.scale = Vector2(3, 2)
 
 
 ## A `cols x rows` grid of two-triangle cells over `r`. `wobble_edges`: every vertex but the

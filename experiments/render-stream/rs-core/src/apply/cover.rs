@@ -9,6 +9,11 @@
 //! the screen, has its own vertex stage, or ends on an alpha that is a uniform's multiple, which
 //! with the binding's value 0 makes its draws no-ops). Nothing on the wire or in the state
 //! changes.
+//!
+//! On the list the walk leaves, the tile half (`gsw_canvas_draw_list::cover::tiles`) then writes
+//! the root list's depth tables (`DrawList::depth_tiles`, `DrawList::depth_draws`): where a later
+//! draw overwrites only part of an earlier one, the executor depth-tests the earlier one there.
+//! Viewport surface lists get none (their executor targets have no depth buffer).
 
 use super::programs::ProgramEntry;
 use super::{residency, Applier, IdMap};
@@ -46,6 +51,9 @@ pub(super) struct CoverState {
     shown: Table,
     culled: bool,
     shown_valid: bool,
+    /// The tile half (boxed, made on first use), and whether it runs (default on).
+    tiles: Option<Box<gsw_canvas_draw_list::cover::tiles::TileWalk>>,
+    tiles_off: bool,
 }
 
 struct Facts<'a> {
@@ -123,8 +131,9 @@ impl Applier {
             self.stats.covered_draws = walk.dropped_draws;
             self.stats.covered_ops = walk.dropped_ops;
             self.stats.noop_draws = walk.noop_draws;
+            let min_area = walk.min_cover_area;
             self.cover.walk = Some(walk);
-            return false;
+            return self.cover_tiles(min_area);
         }
         if dropped {
             swap_table(&mut self.list, &mut c.full);
@@ -141,6 +150,7 @@ impl Applier {
             self.stats.covered_ops = walk.dropped_ops;
             self.stats.noop_draws = walk.noop_draws;
         }
+        let min_area = walk.min_cover_area;
         self.cover.walk = Some(walk);
         let c = &mut self.cover;
         let changed = if c.shown_valid {
@@ -153,7 +163,66 @@ impl Applier {
         if changed {
             self.list.dirty.draws = true;
         }
+        self.cover_tiles(min_area) || changed
+    }
+
+    /// The tile half over the list as it now stands: writes its depth tables (cleared when the
+    /// walk or the tiles are off, or on a surface applier). Marks the draw table dirty and returns
+    /// true when they changed.
+    fn cover_tiles(&mut self, min_area: u32) -> bool {
+        self.stats.tile_covers = 0;
+        self.stats.tile_tested = 0;
+        self.stats.tile_hidden_px = 0;
+        self.stats.tile_classified = 0;
+        let on = self.cover_walk && !self.cover.tiles_off && self.surface.is_none();
+        if !on {
+            if let Some(t) = self.cover.tiles.as_mut() {
+                t.forget();
+            }
+            let had = !self.list.depth_tiles.is_empty() || !self.list.depth_draws.is_empty();
+            self.list.depth_tiles.clear();
+            self.list.depth_draws.clear();
+            if had {
+                self.list.dirty.draws = true;
+            }
+            return had;
+        }
+        let mut tiles = self.cover.tiles.take().unwrap_or_default();
+        tiles.min_cover_area = min_area;
+        {
+            let facts = Facts {
+                resident: &self.resident,
+                applier: self,
+            };
+            tiles.run(&self.list, &facts);
+        }
+        self.stats.tile_covers = tiles.covers;
+        self.stats.tile_tested = tiles.tested;
+        self.stats.tile_hidden_px = tiles.hidden_px.min(u64::from(u32::MAX)) as u32;
+        self.stats.tile_classified = tiles.classified;
+        let changed = self.list.depth_tiles != tiles.tiles || self.list.depth_draws != tiles.draws;
+        if changed {
+            self.list.depth_tiles.clone_from(&tiles.tiles);
+            self.list.depth_draws.clone_from(&tiles.draws);
+            self.list.dirty.draws = true;
+        }
+        self.cover.tiles = Some(tiles);
         changed
+    }
+
+    /// Whether the cover walk's tile half writes depth tables into the root list (on by default;
+    /// off for A/B measurements). It changes no pixel.
+    pub fn set_cover_tiles(&mut self, on: bool) {
+        self.cover.tiles_off = !on;
+    }
+
+    /// The smallest hidden area, in target pixels, worth a depth test
+    /// (`gsw_canvas_draw_list::cover::tiles::DEFAULT_MIN_HIDDEN_PX` by default).
+    pub fn set_cover_tiles_min_hidden(&mut self, px: u32) {
+        self.cover
+            .tiles
+            .get_or_insert_with(Default::default)
+            .min_hidden_px = px;
     }
 
     /// The smallest cover the walk analyses, in target pixels
@@ -215,6 +284,13 @@ impl Applier {
         if let Some(w) = &self.cover.walk {
             walk.min_cover_area = w.min_cover_area;
             walk.drop_noops = w.drop_noops;
+        }
+        // The depth tables: what a fresh check with no slack stands behind.
+        let owners = self.cover.tiles.as_ref().map_or(&[][..], |t| &t.owners[..]);
+        if !gsw_canvas_draw_list::cover::tiles::TileWalk::default()
+            .verify(&self.list, owners, &facts)
+        {
+            return false;
         }
         if !(self.cover_walk && walk.run(&full, &facts)) {
             return !self.cover.culled;

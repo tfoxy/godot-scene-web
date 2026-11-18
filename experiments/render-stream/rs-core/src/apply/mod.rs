@@ -301,6 +301,13 @@ pub struct ApplyStats {
     /// Of `covered_draws`, the draws left out because they change no pixel at all (a zero source
     /// alpha under a blend that keeps the destination).
     pub noop_draws: u32,
+    /// The cover walk's tile half ([`Applier::set_cover_tiles`]): owners of depth tiles, draws
+    /// listed for a depth test against them, and the pixels of those draws' bounds the tiles hide.
+    pub tile_covers: u32,
+    pub tile_tested: u32,
+    pub tile_hidden_px: u32,
+    /// Owners the tile half classified afresh (the rest kept what an earlier apply found).
+    pub tile_classified: u32,
 }
 
 #[derive(Clone, PartialEq, Debug)]

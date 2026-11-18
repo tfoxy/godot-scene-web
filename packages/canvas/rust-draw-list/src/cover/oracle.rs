@@ -349,6 +349,23 @@ pub fn provenance(list: &DrawList, facts: &impl CoverFacts) -> Provenance {
     let mut sample_mips = false;
     // Per pixel of the current draw's bounds: 0 untouched, 1 touched, 2 overwritten.
     let mut state: Vec<u16> = Vec::new();
+    // The depth tiles (`DrawList::depth_tiles`) as an executor that honours them sees them: per
+    // pixel the highest tile level, valid until the depth window ends; a listed draw there leaves
+    // every pixel whose level exceeds its own untouched.
+    let depth_end = super::tiles::window_end(list);
+    let mut depth = Vec::new();
+    if !list.depth_tiles.is_empty() && !list.depth_draws.is_empty() {
+        depth = vec![0u32; w * h];
+        for t in &list.depth_tiles {
+            let r = PxRect::xywh(t.rect).intersect(&target);
+            for y in r.y0.max(0)..r.y1 {
+                for x in r.x0.max(0)..r.x1 {
+                    let i = y as usize * w + x as usize;
+                    depth[i] = depth[i].max(t.level);
+                }
+            }
+        }
+    }
     let mut next_op = 0usize;
     for d in 0..list.draws.len() {
         while let Some(op) = list.screen_ops.get(next_op) {
@@ -553,6 +570,12 @@ pub fn provenance(list: &DrawList, facts: &impl CoverFacts) -> Provenance {
         }
         let to_back = draw.flags & DRAW_TO_BACK_BUFFER != 0;
         let disabled = Blend::from_u32(draw.blend) == Some(Blend::Disabled);
+        let depth_level = if depth.is_empty() || d >= depth_end || !super::tiles::testable(list, d)
+        {
+            None
+        } else {
+            crate::depth_level(list, d as u32)
+        };
         for y in 0..bh {
             for x in 0..bw {
                 let st = state[y * bw + x];
@@ -560,6 +583,10 @@ pub fn provenance(list: &DrawList, facts: &impl CoverFacts) -> Provenance {
                     continue;
                 }
                 let i = (bounds.y0 as usize + y) * w + bounds.x0 as usize + x;
+                if depth_level.is_some_and(|l| depth[i] > l) {
+                    // Rejected by the depth test.
+                    continue;
+                }
                 let mut id = id;
                 if per_pixel_back {
                     id = mix(id, back[i]);
