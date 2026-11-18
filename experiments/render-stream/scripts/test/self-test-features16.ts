@@ -91,8 +91,9 @@ const m = buildManifest2("gsw-canvas", null, 16);
 expect(
   m.protocol === "render-stream/16" &&
     m.stream_protocols.join() === "render-stream/16" &&
-    m.evidence_runs.length === 0,
-  "the /16 manifest names only render-stream/16 and quotes no run",
+    m.evidence_runs.map((r) => r.key).join() ===
+      "g7-8@gsw,g7-vp@gsw,g7-dev-vp@gsw",
+  "the /16 manifest names only render-stream/16 and quotes VS5's closing runs",
 );
 expect(
   readFileSync(join(MANIFEST16_DIR, "gsw-canvas.json"), "utf8") ===

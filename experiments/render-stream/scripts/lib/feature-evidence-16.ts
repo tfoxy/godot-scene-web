@@ -19,12 +19,13 @@
 //                                textures transparent, `surfacesSkipped` counted; vp-client-off
 //   delivery.stream_protocol_16  the live subprotocol render-stream.16 (offered alone, no fallback)
 //
-// Evidence is named by group, fixture, leg and check, as in /8. Unlike /8's, no closing run is
-// quoted (`evidence_runs` is empty): /16's legs run in validate-increment's tiers (g7-8 and g7-vp
-// live groups), whose results are the increment's own, not a frozen evidence tree.
+// Evidence is named by group, fixture, leg and check, as in /8. The closing runs are VS5's
+// (EVIDENCE_RUNS_16): the g7-8 GSW file receivers and the g7-vp live matrix on main 5e5f08d0, and the
+// moto g31 viewports on/off sweep. Paths are relative to artifacts/.
 
 import type {
   EvidenceRef2,
+  EvidenceRun,
   FeatureEntry2,
   ReceiverKind,
 } from "./feature-evidence-7";
@@ -56,7 +57,12 @@ const NON_ROOT: FeatureEntry2 = {
   evidence: [
     ref("g7-8", "g8vp/born/receiver", "vp-reference@gsw"),
     ref("g7-8", "g8vp/born-rendered/receiver", "vp-reference@gsw"),
+    ref("g7-8", "g8vp/late/receiver", "vp-reference@gsw"),
+    ref("g7-8", "g8vp/late-rendered/receiver", "vp-reference@gsw"),
     ref("g7-vp", "g8vl/on/receiver", "vp-live@gsw"),
+    ref("g7-vp", "g8vl/late/receiver", "vp-live-late@gsw"),
+    ref("g7-vp", "g8vl/rendered/receiver", "vp-live-rendered@gsw"),
+    ref("g7-vp", "g8vl/late-rendered/receiver", "vp-live-late-rendered@gsw"),
   ],
   owner: null,
   notes:
@@ -148,3 +154,26 @@ export function receiverFeatureEntries16(kind: ReceiverKind): FeatureEntry2[] {
 }
 
 export const NEW_ENTRY_IDS_16: readonly string[] = NEW.map((e) => e.id);
+
+/** VS5's closing runs (2026-11-18); paths are relative to artifacts/. */
+export const VS5_BUILD = "5e5f08d0";
+export const EVIDENCE_RUNS_16: readonly EvidenceRun[] = [
+  {
+    key: "g7-8@gsw",
+    path: "render-stream/gate8/vs5/g7-gsw-g8vp",
+    build: VS5_BUILD,
+    note: "VS5 closing run: GSW file receivers on g8vp born, born-rendered, late and late-rendered (vp-reference 4/4 steps each), sourced from native g8vp at render-stream/gate8/vs5/native-g8vp (6/6)",
+  },
+  {
+    key: "g7-vp@gsw",
+    path: "render-stream/gate8/vs5/g7live-gsw-g7-vp",
+    build: VS5_BUILD,
+    note: "VS5 closing run: g7-vp live matrix (vp-live, vp-live-late, vp-live-rendered, vp-live-late-rendered, vp-client-off)",
+  },
+  {
+    key: "g7-dev-vp@gsw",
+    path: "vs5b/phone-fixed-1/g7v-vp-summary.json",
+    build: "29ff554c",
+    note: "VS5 moto g31 ABBA of client viewports on vs viewports:false (draw active, draw idle, vfx6; host-off arm H); 15/15 arms valid; no surface budget needed",
+  },
+];

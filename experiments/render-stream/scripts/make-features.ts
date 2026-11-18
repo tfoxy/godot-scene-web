@@ -52,6 +52,7 @@ import {
   receiverFeatureEntries8,
 } from "./lib/feature-evidence-8";
 import {
+  EVIDENCE_RUNS_16,
   MANIFEST16_FILES,
   receiverFeatureEntries16,
 } from "./lib/feature-evidence-16";
@@ -560,17 +561,19 @@ export function buildManifest2(
     engine: v1.engine,
     capture: v1.capture,
     receiver: c.receiver,
-    evidence_runs:
-      proto === 16
-        ? []
-        : (proto === 8 ? EVIDENCE_RUNS_8 : EVIDENCE_RUNS)
-            .filter((r) => r.key.endsWith(`@${short}`))
-            .map((r) => ({
-              key: r.key,
-              path: r.path,
-              build: r.build,
-              note: r.note,
-            })),
+    evidence_runs: (proto === 16
+      ? EVIDENCE_RUNS_16
+      : proto === 8
+        ? EVIDENCE_RUNS_8
+        : EVIDENCE_RUNS
+    )
+      .filter((r) => r.key.endsWith(`@${short}`))
+      .map((r) => ({
+        key: r.key,
+        path: r.path,
+        build: r.build,
+        note: r.note,
+      })),
     entries,
     limits: {
       ...v1.limits,

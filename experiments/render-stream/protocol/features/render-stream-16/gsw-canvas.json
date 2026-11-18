@@ -29,7 +29,26 @@
       "angle_backend": null
     }
   },
-  "evidence_runs": [],
+  "evidence_runs": [
+    {
+      "key": "g7-8@gsw",
+      "path": "render-stream/gate8/vs5/g7-gsw-g8vp",
+      "build": "5e5f08d0",
+      "note": "VS5 closing run: GSW file receivers on g8vp born, born-rendered, late and late-rendered (vp-reference 4/4 steps each), sourced from native g8vp at render-stream/gate8/vs5/native-g8vp (6/6)"
+    },
+    {
+      "key": "g7-vp@gsw",
+      "path": "render-stream/gate8/vs5/g7live-gsw-g7-vp",
+      "build": "5e5f08d0",
+      "note": "VS5 closing run: g7-vp live matrix (vp-live, vp-live-late, vp-live-rendered, vp-live-late-rendered, vp-client-off)"
+    },
+    {
+      "key": "g7-dev-vp@gsw",
+      "path": "vs5b/phone-fixed-1/g7v-vp-summary.json",
+      "build": "29ff554c",
+      "note": "VS5 moto g31 ABBA of client viewports on vs viewports:false (draw active, draw idle, vfx6; host-off arm H); 15/15 arms valid; no surface budget needed"
+    }
+  ],
   "entries": [
     {
       "id": "add_circle",
@@ -1723,10 +1742,45 @@
           "receiver_kind": "gsw-canvas"
         },
         {
+          "gate": "g7-8",
+          "fixture": "viewport-scene",
+          "leg": "g8vp/late/receiver",
+          "check": "vp-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8",
+          "fixture": "viewport-scene",
+          "leg": "g8vp/late-rendered/receiver",
+          "check": "vp-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
           "gate": "g7-vp",
           "fixture": "viewport-scene",
           "leg": "g8vl/on/receiver",
           "check": "vp-live@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-vp",
+          "fixture": "viewport-scene",
+          "leg": "g8vl/late/receiver",
+          "check": "vp-live-late@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-vp",
+          "fixture": "viewport-scene",
+          "leg": "g8vl/rendered/receiver",
+          "check": "vp-live-rendered@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-vp",
+          "fixture": "viewport-scene",
+          "leg": "g8vl/late-rendered/receiver",
+          "check": "vp-live-late-rendered@gsw",
           "receiver_kind": "gsw-canvas"
         }
       ],
