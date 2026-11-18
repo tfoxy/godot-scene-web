@@ -28,6 +28,8 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -51,6 +53,7 @@ import {
   openHarnessDevice,
   resolveDeviceSelection,
   watchdogVerdict,
+  withAttachedSerial,
 } from "../lib/browser-harness";
 import { probeDeviceAdb } from "../lib/device-probes";
 import { DeviceSampler, parseCpuFreqLines } from "../lib/device-sampler";
@@ -63,6 +66,7 @@ import {
   summarizeNativeBench,
 } from "../lib/gate7-bench-summary";
 import { planGate7Bench, planGate7Dev } from "../lib/gate7-dev-legs";
+import { openDeviceRig } from "../lib/gate7-device-legs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(SCRIPT_DIR, "device-fixtures");
@@ -940,6 +944,58 @@ async function main(): Promise<void> {
     runnerNoDevice.status === 2,
     runnerNoDevice.stderr.trim().split("\n").pop(),
   );
+
+  // --- 12. VS5b: the browser daemon's phone (openDeviceRig) is the one ANDROID_SERIAL names, not
+  // the table's placeholder serial (a real g31 sweep failed with `adb has no device with serial
+  // "PHONESERIAL31"`). A fake g31 under another serial, without a DevTools socket, so the open
+  // stops right after adb selected the phone.
+  {
+    const serial = "ZYFAKE0031";
+    const { bin, root } = makeFakeAdb([{ serial, fixture: "g31" }]);
+    writeFileSync(join(root, serial, "net-unix.txt"), "");
+    const pathDir = mkdtempSync(join(tmpdir(), "rs-vs5b-adb-path-"));
+    symlinkSync(bin, join(pathDir, "adb"));
+    const saved = { ...process.env };
+    process.env.PATH = `${pathDir}:${process.env.PATH ?? ""}`;
+    process.env.GATE7_LIFECYCLE_ENV = "device";
+    process.env.GATE7_DEVICE = "g31";
+    process.env.GATE7_HARNESS_PORT = "45001";
+    process.env.GATE7_HOST_PORT = "45002";
+    const open = async (): Promise<string> =>
+      openDeviceRig(() => {}).then(
+        () => "opened",
+        (e: unknown) => String(e),
+      );
+    try {
+      process.env.ANDROID_SERIAL = serial;
+      const withSerial = await open();
+      check(
+        "daemon-rig-uses-android-serial",
+        /no Chrome DevTools socket on ZYFAKE0031/.test(withSerial) &&
+          readFileSync(join(root, "calls.log"), "utf8").includes(
+            `-s ${serial} `,
+          ),
+        withSerial,
+      );
+      check(
+        "attached-serial-overrides-the-table",
+        withAttachedSerial(G31, { ANDROID_SERIAL: serial }).serial === serial &&
+          withAttachedSerial(G31, {}).serial === G31.serial,
+      );
+      delete process.env.ANDROID_SERIAL;
+      const without = await open();
+      check(
+        "daemon-rig-without-android-serial-names-the-placeholder",
+        without.includes(G31.serial) && /no device with serial/.test(without),
+        without,
+      );
+    } finally {
+      for (const k of Object.keys(process.env))
+        if (!(k in saved)) delete process.env[k];
+      Object.assign(process.env, saved);
+      rmSync(pathDir, { recursive: true, force: true });
+    }
+  }
 
   console.log(
     `\nself-test-device-harness: ${passes} passed, ${failures} failed`,

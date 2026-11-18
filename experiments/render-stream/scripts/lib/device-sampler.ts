@@ -6,7 +6,9 @@
 //     each cluster's probe CPU against `cpuinfo_max_freq`): a cap below the hardware maximum is
 //     `derated`, report-only (a MediaTek governor can cap clocks while Thermal Status stays 0);
 //   - `dumpsys meminfo <pid>` TOTAL PSS of the given processes at 0.2 Hz;
-//   - `dumpsys gfxinfo <package>` "Total GPU memory usage" (as `gpu.device.gpuMemoryBytes` is read).
+//   - `dumpsys gfxinfo <package>` "Total GPU memory usage" (as `gpu.device.gpuMemoryBytes` is read);
+//   - VS5b (`foregroundMs`): `dumpsys activity activities`' topResumedActivity, so an arm whose
+//     browser was not in front can be voided.
 
 import {
   type Adb,
@@ -96,6 +98,36 @@ export interface MeminfoSample {
   process: string | null;
   pss_kb: number | null;
   error: string | null;
+  /** VS5b: the graphics rows of the same dump (PSS kB; null when the row is absent), and the raw
+   * matched lines. On Mali, WebGL textures sit in the GPU process as graphics memory. */
+  graphics?: MeminfoGraphics;
+}
+
+export interface MeminfoGraphics {
+  graphics_kb: number | null;
+  gl_mtrack_kb: number | null;
+  egl_mtrack_kb: number | null;
+  gfx_dev_kb: number | null;
+  lines: string[];
+}
+
+/** `dumpsys meminfo <pid>`'s graphics rows: the table's `Gfx dev`, `EGL mtrack`, `GL mtrack` (their
+ * first column, Pss Total) and the App Summary's `Graphics:`. */
+export function parseMeminfoGraphics(text: string): MeminfoGraphics {
+  const lines: string[] = [];
+  const row = (re: RegExp): number | null => {
+    const m = re.exec(text);
+    if (!m) return null;
+    lines.push(m[0].trim());
+    return Number(m[1]);
+  };
+  return {
+    graphics_kb: row(/^\s*Graphics:\s+(\d+).*$/m),
+    gl_mtrack_kb: row(/^\s*GL mtrack\s+(\d+).*$/m),
+    egl_mtrack_kb: row(/^\s*EGL mtrack\s+(\d+).*$/m),
+    gfx_dev_kb: row(/^\s*Gfx dev\s+(\d+).*$/m),
+    lines,
+  };
 }
 
 /** `dumpsys meminfo <pid>`: the `** MEMINFO in pid N [name] **` header and `TOTAL PSS:`. */
@@ -110,11 +142,13 @@ export function parseMeminfoPss(text: string, pid: number): MeminfoSample {
       pss_kb: null,
       error: (text.trim().split("\n")[0] ?? "").slice(0, 200) || "no output",
     };
+  const graphics = parseMeminfoGraphics(text);
   return {
     pid: Number(header[1]),
     process: header[2],
     pss_kb: Number(pss[1]),
     error: null,
+    ...(graphics.lines.length > 0 ? { graphics } : {}),
   };
 }
 
@@ -136,6 +170,69 @@ export async function readGpuMemoryBytes(
   return parseGpuMemoryBytes(text);
 }
 
+/** VS5b: one topResumedActivity sample; `package` null when the line is absent or unparsable. */
+export type ForegroundFormat =
+  | "topResumedActivity"
+  | "mResumedActivity"
+  | "ResumedActivity";
+
+export interface ForegroundSample {
+  t_ms: number;
+  /** null: no resumed-activity line, or one that names no package (unknown, never a void). */
+  package: string | null;
+  /** `package` is the browser under test. */
+  browser: boolean;
+  /** The raw matched line, so a summary can be re-derived. */
+  line: string | null;
+  format: ForegroundFormat | null;
+}
+
+/** The foreground package from `dumpsys activity activities`: the first line of the first format
+ * present, in this order: `topResumedActivity=ActivityRecord{...}` (Android 10+ on most builds),
+ * `mResumedActivity: ActivityRecord{...}` and `ResumedActivity: ActivityRecord{...}` (the moto g31,
+ * whose dump has no topResumedActivity line). The package is the record's `<package>/<activity>`. */
+export function parseTopResumedActivity(text: string): {
+  package: string | null;
+  line: string | null;
+  format: ForegroundFormat | null;
+} {
+  const lines = text.split("\n");
+  const formats: [ForegroundFormat, RegExp][] = [
+    ["topResumedActivity", /topResumedActivity=/],
+    ["mResumedActivity", /mResumedActivity:/],
+    ["ResumedActivity", /(^|\s)ResumedActivity:/],
+  ];
+  for (const [format, re] of formats) {
+    const line = lines.find((l) => re.test(l));
+    if (line === undefined) continue;
+    const m =
+      /ActivityRecord\{\S+ u\d+ ([A-Za-z0-9_.]+)\//.exec(line) ??
+      /\s([A-Za-z0-9_.]+)\/[A-Za-z0-9_.$]+/.exec(line);
+    return { package: m ? m[1] : null, line: line.trim(), format };
+  }
+  return { package: null, line: null, format: null };
+}
+
+export async function readForeground(
+  adb: Adb,
+  pkg: string,
+  t_ms: number,
+): Promise<ForegroundSample> {
+  const text = await adb
+    .shell(
+      "dumpsys activity activities | grep -E 'topResumedActivity|ResumedActivity'",
+    )
+    .catch(() => "");
+  const top = parseTopResumedActivity(text);
+  return {
+    t_ms,
+    package: top.package,
+    browser: top.package === pkg,
+    line: top.line,
+    format: top.format,
+  };
+}
+
 export interface SamplerTimeline {
   schema: "render-stream-gate7-device-samples/1";
   started_at: string;
@@ -151,6 +248,8 @@ export interface SamplerTimeline {
     cpu_freq: CpuFreqSample[];
   }[];
   derated: boolean;
+  /** VS5b: present only when `foregroundMs` is set. */
+  foreground?: ForegroundSample[];
 }
 
 export interface DeviceSamplerOptions {
@@ -161,6 +260,10 @@ export interface DeviceSamplerOptions {
   pids: () => Promise<number[]> | number[];
   conditionsMs?: number;
   memoryMs?: number;
+  /** VS5b: one more memory sample in `stop()`, so PSS has a before and an after. */
+  closingMemory?: boolean;
+  /** VS5b: sample the foreground activity at start, at this period and in `stop()`. */
+  foregroundMs?: number;
 }
 
 /** Samples on its own timers until `stop()`; one in-flight adb call per stream, never overlapping. */
@@ -232,9 +335,34 @@ export class DeviceSampler {
     this.timeline.meminfo.push({ t_ms: t, samples });
   }
 
+  async sampleForeground(): Promise<void> {
+    const sample = await readForeground(
+      this.adb,
+      this.options.chromePackage,
+      Date.now() - this.t0,
+    );
+    if (!this.timeline.foreground) this.timeline.foreground = [];
+    this.timeline.foreground.push(sample);
+  }
+
   start(): void {
     this.track(() => this.sampleSlow());
     this.track(() => this.sampleMemory());
+    const fgMs = this.options.foregroundMs;
+    if (fgMs !== undefined) {
+      this.timeline.foreground = [];
+      this.track(() => this.sampleForeground());
+      let fgBusy = false;
+      this.timers.push(
+        setInterval(() => {
+          if (fgBusy) return;
+          fgBusy = true;
+          this.track(() =>
+            this.sampleForeground().finally(() => (fgBusy = false)),
+          );
+        }, fgMs),
+      );
+    }
     let slowBusy = false;
     let memBusy = false;
     this.timers.push(
@@ -257,6 +385,9 @@ export class DeviceSampler {
     await Promise.all([...this.inflight]);
     // One closing sample, so a short repeat still has a before and an after.
     await this.sampleSlow().catch(() => {});
+    if (this.options.closingMemory) await this.sampleMemory().catch(() => {});
+    if (this.options.foregroundMs !== undefined)
+      await this.sampleForeground().catch(() => {});
     return this.timeline;
   }
 }

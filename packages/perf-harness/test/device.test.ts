@@ -179,6 +179,28 @@ describe("parseDevtoolsSockets", () => {
   it("is empty when Chrome is not running", () => {
     expect(parseDevtoolsSockets("@logdw\n@traced")).toEqual([]);
   });
+
+  it("never offers an app's Stetho socket (a moto g31 right after a Chrome relaunch)", () => {
+    const sockets = parseDevtoolsSockets(
+      [
+        "Num       RefCount Protocol Flags    Type St Inode Path",
+        "0000000000000000: 00000002 00000000 00010000 0001 01 912345 @stetho_com.google.android.apps.messaging_devtools_remote",
+        "0000000000000000: 00000003 00000000 00000000 0001 03 41323 /dev/socket/logdw",
+      ].join("\n"),
+    );
+    expect(sockets).toEqual([]);
+  });
+
+  it("drops non-browser sockets beside Chrome's", () => {
+    const sockets = parseDevtoolsSockets(
+      [
+        "0000000000000000: 00000002 00000000 00010000 0001 01 1 @stetho_com.google.android.apps.messaging_devtools_remote",
+        "0000000000000000: 00000002 00000000 00010000 0001 01 2 @someapp_devtools_remote",
+        "0000000000000000: 00000002 00000000 00010000 0001 01 3 @chrome_devtools_remote",
+      ].join("\n"),
+    );
+    expect(sockets).toEqual(["chrome_devtools_remote"]);
+  });
 });
 
 describe("parseKeyValueLines", () => {

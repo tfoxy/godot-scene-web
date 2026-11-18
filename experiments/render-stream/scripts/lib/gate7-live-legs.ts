@@ -186,7 +186,7 @@ export interface MappedBrowserLeg {
   /** G7v: RS_RECEIVER_DEV_SAMPLE (a harness word, device legs): `light` samples the phone's
    * conditions and CPU caps every 30 s; `soak` adds renderer/GPU PSS (0.2 Hz), gfxinfo GPU memory
    * and the CDP JS heap (Q13b "Samplers"). null: none. */
-  devSample: "light" | "soak" | null;
+  devSample: "light" | "soak" | "vp" | null;
   /** G7v device startup-warm (harness words RS_RECEIVER_DEV_KEEP_TAB / RS_RECEIVER_DEV_WARM, both
    * `1`): keep this leg's tab open for the next leg / navigate the tab the previous leg kept (the
    * same browser context, so its HTTP and code caches are warm). Device only. */
@@ -253,7 +253,7 @@ export function mapBrowserLeg(
   let lifecycle: LifecycleSpec | null = null;
   let shellSabotage: "css-opacity" | null = null;
   let devProbe: "plain" | "fit" | null = null;
-  let devSample: "light" | "soak" | null = null;
+  let devSample: "light" | "soak" | "vp" | null = null;
   const devTab = { keep: false, warm: false };
   for (const [name, value] of nativeEnv) {
     if (!name.startsWith("RS_RECEIVER_")) {
@@ -297,9 +297,10 @@ export function mapBrowserLeg(
     }
     if (name === "RS_RECEIVER_DEV_SAMPLE") {
       dropped.push(name);
-      if (value !== "light" && value !== "soak")
+      // VS5b `vp`: light plus PSS and gfxinfo before and after, and the foreground activity.
+      if (value !== "light" && value !== "soak" && value !== "vp")
         throw new Error(
-          `RS_RECEIVER_DEV_SAMPLE must be light or soak (got ${JSON.stringify(value)})`,
+          `RS_RECEIVER_DEV_SAMPLE must be light, soak or vp (got ${JSON.stringify(value)})`,
         );
       devSample = value;
       continue;

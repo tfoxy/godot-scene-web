@@ -17,6 +17,7 @@ import { describe, expect, it } from "vitest";
 import {
   Adb,
   AdbError,
+  openDeviceBrowser,
   readDeviceProps,
   sampleConditions,
   selectDevice,
@@ -44,7 +45,7 @@ case "$*" in
     printf '    mDreamingLockscreen=false mDreamingSleepToken=null\\n    mAwake=true\\n'
     ;;
   *"cat /proc/net/unix")
-    printf '0000: 00000002 00000000 00010000 0001 01 41322 @chrome_devtools_remote\\n'
+    printf '%s\\n' "\${FAKE_ADB_UNIX:-0000: 00000002 00000000 00010000 0001 01 41322 @chrome_devtools_remote}"
     ;;
   *forward*|*reverse*)
     ;;
@@ -69,6 +70,27 @@ function fakeAdb(devicesLine: string): { bin: string; log: string } {
 const healthy = `${SERIAL}             device usb:1-1 product:rtwo_g model:moto_g86_5G device:rtwo transport_id:1`;
 
 describe.skipIf(process.platform === "win32")("adb wiring", () => {
+  it("refuses another browser's socket when Chrome stable's is required", async () => {
+    // A moto g31 right after a Chrome relaunch: Chrome's socket is not up yet; another browser's is.
+    const { bin, log } = fakeAdb(healthy);
+    process.env.FAKE_ADB_UNIX =
+      "0000: 00000002 00000000 00010000 0001 01 2 @webview_devtools_remote_2841";
+    try {
+      await expect(
+        openDeviceBrowser({
+          adbBin: bin,
+          serverPort: 45999,
+          devtoolsSocket: "chrome_devtools_remote",
+        }),
+      ).rejects.toThrow(
+        /no @chrome_devtools_remote .*webview_devtools_remote_2841/,
+      );
+      expect(await readFile(log, "utf8")).not.toContain("forward");
+    } finally {
+      delete process.env.FAKE_ADB_UNIX;
+    }
+  });
+
   it("selects the only connected device", async () => {
     const { bin } = fakeAdb(healthy);
     const { adb, entry } = await selectDevice({ adbBin: bin });

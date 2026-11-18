@@ -65,6 +65,30 @@
 # keep-rule CSS fit, Q13a) and, on the device, RS_RECEIVER_DEV_SAMPLE (`light`; a soak `soak`).
 # Scene and hd legs get G6c's rendered reference of the host's step-11 freeze state afterwards
 # (dev-presence); pace's step log carries its final position instead.
+#
+# VS5b (viewport-surface phone cost, run-gate7.sh G7V_LEGS=vp-<workload>): a leg `dev-vp-<workload>`
+# (no -r suffix) is one A/B sweep, gsw only, into $G6C/dev-vp-<workload>/:
+#   <workload>  draw-active | draw-idle | vfx6: fixtures/viewport-perf (RS_FIXTURE_VP_SCENE draw or
+#               vfx6, RS_FIXTURE_VP_PHASE active or idle), 1920x1080, GRC_STREAM_VERSION=16
+#   host/       ONE headless live host (GRC_VIEWPORTS=on, GRC_PUBLISH_FPS=60, --max-fps 60) that
+#               serves every A/B arm in turn and quits when the sweep touches host/quit
+#   <arm>/      for each arm of G7V_VP_ARMS (default A1,B1,B2,A2, back to back): a browser
+#               receiver at RS_RECEIVER_PROTOCOL=16, --resolution 1920x1080, receiver --max-fps 0,
+#               that stops itself RS_RECEIVER_LIVE_STOP_S=G7V_VP_STOP_S (default 32) after its
+#               session; A arms with the client's viewports on (the default), B arms with
+#               RS_RECEIVER_VIEWPORTS=off (the client's `viewports: false`): same host process,
+#               same wire. <arm>/host links to ../host, so lib/gate7v-checks.ts loadDevLeg reads
+#               the arm as a dev leg (its connection is found by stream id); dev-leg.json carries
+#               the arm, its order and its client/host viewports; identity.json the served build
+#               (lib/gate7-vp-phone.sh vp_identity_json)
+#   H/          G7V_VP_HOST_OFF=1: after the A/B arms, a reference arm on its own host
+#               (H/host, GRC_VIEWPORTS=off), client viewports on
+# On a device (G7V_ENV=device) every arm gets RS_RECEIVER_DEV_SAMPLE=vp (PSS and gfxinfo before and
+# after, topResumedActivity every 10 s) and a fresh Chrome: before it, Chrome is opened on
+# about:blank and the browser daemon restarted (lib/legs.sh gate7_daemon_restart); after it, also
+# when the receiver failed, the daemon (its page server, tabs and adb reverses) is stopped FIRST
+# and then Chrome force-stopped (<arm>/chrome-stop.json). run-gate7.sh holds the phone lock for
+# the whole sweep and force-stops Chrome again when run-gate6.sh exits.
 
 G6C_DIR_NAME="rates"
 # Q6c's rate timeline runs 30 s of game time; a host gets this long to quit.
@@ -106,6 +130,13 @@ G6C_G7R_LEGS+=(sabotage-constrained-window-overrun)
 G6C_OVERRUN_RATE_BYTES_PER_S=250000
 G6C_OVERRUN_QUIT_S=110
 G7V_PACE_DIR="$(cd "$SCENE_FIXTURE_DIR/../gate7-pace" && pwd)"
+G7V_VP_DIR="$(cd "$SCENE_FIXTURE_DIR/../viewport-perf" && pwd)"
+G7V_VP_STOP_S="${G7V_VP_STOP_S:-32}"
+G7V_VP_ARMS="${G7V_VP_ARMS:-A1,B1,B2,A2}"
+# A vp host's game-time cap (it normally quits on host/quit long before).
+G7V_VP_HOST_MAX_S="${G7V_VP_HOST_MAX_S:-1800}"
+# shellcheck source=gate7-vp-phone.sh
+source "$(dirname "${BASH_SOURCE[0]}")/gate7-vp-phone.sh"
 G7V_TIME_OFFSET_S="${G7V_TIME_OFFSET_S:-12}"
 G7V_SOAK_S="${G7V_SOAK_S:-600}"
 # The receiver's --max-fps where G6c's native receiver runs at 60: rAF-bound in a browser (Q9).
@@ -132,6 +163,12 @@ g6c_dev_leg() {
 	local probe=1 sample="" soak=0 timeout_save="$G6C_HOST_TIMEOUT_S" recv_timeout_save="$G6C_RECEIVER_TIMEOUT_S"
 	local rendered_save="$RENDERED_TIMEOUT_S" run
 	local -a host_env=() recv_env=() recv_args=()
+	case "$leg" in
+	dev-vp-*)
+		g6c_dev_vp_sweep "$leg"
+		return 0
+		;;
+	esac
 	base="${leg#dev-}"
 	run="${base##*-r}"
 	base="${base%-r[0-9]}"
@@ -220,6 +257,113 @@ g6c_dev_leg() {
 		"$leg" "$base" "$run" "$workload" "$offset" "$([ "$soak" = 1 ] && echo true || echo false)" "$G7V_SOAK_S" \
 		"$recv_fps" "${G7V_ENV:-desktop}" "${recv_env[*]}" >"$D/dev-leg.json"
 	[ "$workload" != pace ] && G6C_DEV_REFS+=("$leg:$workload")
+	G6C_HOST_TIMEOUT_S="$timeout_save"
+	G6C_RECEIVER_TIMEOUT_S="$recv_timeout_save"
+	RENDERED_TIMEOUT_S="$rendered_save"
+}
+
+# VS5b: g6c_dev_vp_host <dir> <on|off> <scene> <phase>: the sweep's live host (header "VS5b").
+g6c_dev_vp_host() {
+	local dir="$1" viewports="$2" scene="$3" phase="$4"
+	local -a env=(GRC_STREAM_VERSION=16 GRC_VIEWPORTS="$viewports" RS_FIXTURE_VP_SCENE="$scene"
+		RS_FIXTURE_QUIT_TIME="$G7V_VP_HOST_MAX_S" RS_FIXTURE_QUIT_FILE="$dir/quit")
+	[ -n "$phase" ] && env+=(RS_FIXTURE_VP_PHASE="$phase")
+	rm -f "$dir/quit"
+	G6C_HOST_TIMEOUT_S=$((G7V_VP_HOST_MAX_S + 60))
+	g6c_start_host "$dir" "$G7V_VP_DIR" 60 GRC_PUBLISH_FPS=60 "${env[@]}"
+	vp_identity_json "$GATE7_BUNDLE_DIR" "$EXTENSION" >"$dir/identity.json"
+}
+
+# g6c_dev_vp_quit_host <dir>: touches <dir>/quit (the fixture quits at its next check) and waits.
+g6c_dev_vp_quit_host() {
+	[ -n "${G6C_HOST_PID:-}" ] || return 0
+	: >"$1/quit"
+	G6C_HOST_TIMEOUT_S=60
+	g6c_finish_host "$1"
+}
+
+# g6c_dev_vp_arm <sweep dir> <arm> <order> <host dir> <workload> <host viewports>: one arm.
+g6c_dev_vp_arm() {
+	local S="$1" arm="$2" order="$3" host="$4" workload="$5" host_vp="$6" A client=on probe=1
+	local -a recv_env=()
+	A="$S/$arm"
+	mkdir -p "$A"
+	[ "$host" = "$A/host" ] || ln -sfn "../host" "$A/host"
+	case "$arm" in B*) client=off ;; esac
+	recv_env=(RS_RECEIVER_PROTOCOL=16 RS_RECEIVER_LIVE_STOP_S="$G7V_VP_STOP_S" RS_RECEIVER_RECEIVED_MAX_BYTES=1048576)
+	[ "$client" = off ] && recv_env+=(RS_RECEIVER_VIEWPORTS=off)
+	if [ "${G7V_ENV:-desktop}" = device ]; then
+		probe=fit
+		recv_env+=(RS_RECEIVER_DEV_SAMPLE=vp)
+		if [ -z "${GATE7_DAEMON_PID:-}" ]; then
+			# The daemon attaches only to Chrome's own socket: never (re)start it before that is up.
+			if ! vp_chrome_start "$A/chrome-start.log" "$arm"; then
+				echo "Chrome's @chrome_devtools_remote never appeared after the relaunch (see chrome-start.log)" >"$A/chrome-start-failed.txt"
+				echo "run-gate6: g6c: $arm: Chrome's @chrome_devtools_remote never appeared; stopping the sweep (see $A/chrome-start.log)" >&2
+				exit 1
+			fi
+			vp_event "daemon restart ($arm)"
+			gate7_daemon_restart
+		fi
+	fi
+	recv_env+=(RS_RECEIVER_DEV_PROBE="$probe")
+	vp_identity_json "$GATE7_BUNDLE_DIR" "$EXTENSION" >"$A/identity.json"
+	printf '{"leg":"%s","base":"vp-%s","run":%s,"workload":"vp-%s","arm":"%s","order":%s,"viewports_client":%s,"viewports_host":"%s","time_offset_s":0,"soak":false,"soak_s":0,"receiver_max_fps":0,"stop_after_s":%s,"env":"%s","receiver_words":"%s","started_at":"%s"}\n' \
+		"dev-vp-$workload-$arm" "$workload" "$order" "$workload" "$arm" "$order" "$([ "$client" = on ] && echo true || echo false)" \
+		"$host_vp" "$G7V_VP_STOP_S" "${G7V_ENV:-desktop}" "${recv_env[*]}" "$(date -u +%FT%T.%3NZ)" >"$A/dev-leg.json"
+	echo "run-gate6: g6c: dev-vp-$workload $arm (client viewports $client, host $host_vp, ${recv_env[*]})"
+	G6C_RECEIVER_TIMEOUT_S=$((G7V_VP_STOP_S + 150))
+	RENDERED_TIMEOUT_S=$((G7V_VP_STOP_S + 150))
+	G6C_RECEIVER_ENV=("${recv_env[@]}")
+	g6c_start_receiver "$A/receiver" "$G6C_PORT" 0 --resolution 1920x1080
+	g6c_wait_receiver "$A/receiver" "$G6C_RECEIVER_PID"
+	if [ "${G7V_ENV:-desktop}" = device ]; then
+		# The page's server and the adb reverses first, then Chrome (the phone rule).
+		gate7_daemon_stop
+		vp_chrome_stop "$A/chrome-stop.json"
+	fi
+	# The host frees the connection slot (GRC_LIVE_MAX_CONNECTIONS=1) before the next arm.
+	sleep 2
+}
+
+# g6c_dev_vp_sweep <leg>: one VS5b sweep (header "VS5b").
+g6c_dev_vp_sweep() {
+	local leg="$1" workload scene phase="" S i=0 arm timeout_save="$G6C_HOST_TIMEOUT_S"
+	local recv_timeout_save="$G6C_RECEIVER_TIMEOUT_S" rendered_save="$RENDERED_TIMEOUT_S"
+	workload="${leg#dev-vp-}"
+	case "$workload" in
+	draw-active) scene=draw phase=active ;;
+	draw-idle) scene=draw phase=idle ;;
+	vfx6) scene=vfx6 ;;
+	*)
+		echo "run-gate6: g6c: unknown vp workload $workload (draw-active, draw-idle, vfx6)" >&2
+		return 0
+		;;
+	esac
+	S="$G6C/$leg"
+	mkdir -p "$S"
+	if [ "${GATE7_LIVE_KIND:-}" != gsw ]; then
+		echo "viewport surfaces are drawn by the gsw receiver only (GATE7_LIVE_KIND=${GATE7_LIVE_KIND:-native})" >"$S/skipped.txt"
+		echo "run-gate6: g6c: $leg skipped: gsw only" >&2
+		return 0
+	fi
+	printf '{"schema":"render-stream-gate7-vp-sweep/1","leg":"%s","workload":"%s","scene":"%s","phase":"%s","arms":"%s","host_off":%s,"stop_after_s":%s,"env":"%s","credit_window":%s,"started_at":"%s"}\n' \
+		"$leg" "$workload" "$scene" "$phase" "$G7V_VP_ARMS" "$([ "${G7V_VP_HOST_OFF:-0}" = 1 ] && echo true || echo false)" \
+		"$G7V_VP_STOP_S" "${G7V_ENV:-desktop}" "${GATE7_CREDIT_WINDOW:-2}" "$(date -u +%FT%T.%3NZ)" >"$S/sweep.json"
+	echo "run-gate6: g6c: $leg sweep (arms $G7V_VP_ARMS, host-off ${G7V_VP_HOST_OFF:-0})"
+	g6c_dev_vp_host "$S/host" on "$scene" "$phase"
+	for arm in ${G7V_VP_ARMS//,/ }; do
+		i=$((i + 1))
+		g6c_dev_vp_arm "$S" "$arm" "$i" "$S/host" "$workload" on
+	done
+	g6c_dev_vp_quit_host "$S/host"
+	if [ "${G7V_VP_HOST_OFF:-0}" = 1 ]; then
+		i=$((i + 1))
+		mkdir -p "$S/H"
+		g6c_dev_vp_host "$S/H/host" off "$scene" "$phase"
+		g6c_dev_vp_arm "$S" H "$i" "$S/H/host" "$workload" off
+		g6c_dev_vp_quit_host "$S/H/host"
+	fi
 	G6C_HOST_TIMEOUT_S="$timeout_save"
 	G6C_RECEIVER_TIMEOUT_S="$recv_timeout_save"
 	RENDERED_TIMEOUT_S="$rendered_save"
@@ -647,6 +791,10 @@ run_g6c() {
 	if g6c_dev_legs | grep -q '^dev-pace'; then
 		LEG_ENV=()
 		run_headless "$G6C/import/pace-fixture" none -- mise exec -- godot --headless --path "$G7V_PACE_DIR" --import
+	fi
+	if g6c_dev_legs | grep -q '^dev-vp-'; then
+		LEG_ENV=()
+		run_headless "$G6C/import/vp-fixture" none -- mise exec -- godot --headless --path "$G7V_VP_DIR" --import
 	fi
 	# G7r: which receiver ran the legs (lib/gate7r-checks.ts reads it).
 	# G7q: a --credit-window 2 run records its window (absent at 1: the file is what it was).

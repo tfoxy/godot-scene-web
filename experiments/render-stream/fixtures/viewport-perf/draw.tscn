@@ -1,0 +1,89 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://draw.gd" id="1"]
+
+[sub_resource type="CanvasItemMaterial" id="PremulMaterial"]
+blend_mode = 4
+
+[sub_resource type="ViewportTexture" id="DrawTexture"]
+viewport_path = NodePath("MapDrawing")
+
+[sub_resource type="Shader" id="EraserShader"]
+code = "shader_type canvas_item;
+render_mode blend_sub;
+
+void fragment() {
+	COLOR = COLOR * texture(TEXTURE, UV);
+}
+"
+
+[sub_resource type="ShaderMaterial" id="EraserMaterial"]
+shader = SubResource("EraserShader")
+
+[node name="Draw" type="Node2D"]
+script = ExtResource("1")
+
+[node name="Backdrop" type="ColorRect" parent="."]
+offset_right = 1920.0
+offset_bottom = 1080.0
+mouse_filter = 2
+color = Color(0.12, 0.1, 0.16, 1)
+
+[node name="MapPane" type="ColorRect" parent="."]
+offset_left = 640.0
+offset_top = 24.0
+offset_right = 1280.0
+offset_bottom = 1056.0
+mouse_filter = 2
+color = Color(0.55, 0.48, 0.36, 1)
+
+[node name="DrawRect" type="TextureRect" parent="."]
+material = SubResource("PremulMaterial")
+offset_left = 660.0
+offset_top = 34.0
+offset_right = 1260.0
+offset_bottom = 1046.0
+mouse_filter = 2
+texture = SubResource("DrawTexture")
+expand_mode = 1
+
+[node name="MapDrawing" type="SubViewport" parent="."]
+disable_3d = true
+transparent_bg = true
+handle_input_locally = false
+size = Vector2i(960, 1620)
+render_target_update_mode = 4
+
+[node name="Stroke0" type="Line2D" parent="MapDrawing"]
+width = 8.0
+default_color = Color(0.85, 0.15, 0.1, 1)
+joint_mode = 2
+begin_cap_mode = 2
+end_cap_mode = 2
+
+[node name="Stroke1" type="Line2D" parent="MapDrawing"]
+width = 10.0
+default_color = Color(0.1, 0.35, 0.85, 0.9)
+joint_mode = 2
+begin_cap_mode = 2
+end_cap_mode = 2
+
+[node name="Stroke2" type="Line2D" parent="MapDrawing"]
+width = 6.0
+default_color = Color(0.1, 0.6, 0.25, 1)
+joint_mode = 2
+begin_cap_mode = 2
+end_cap_mode = 2
+
+[node name="Eraser" type="Line2D" parent="MapDrawing"]
+texture_repeat = 2
+material = SubResource("EraserMaterial")
+width = 40.0
+texture_mode = 1
+
+[node name="LiveStroke" type="Line2D" parent="MapDrawing"]
+width = 8.0
+default_color = Color(0.95, 0.85, 0.2, 1)
+joint_mode = 2
+begin_cap_mode = 2
+end_cap_mode = 2

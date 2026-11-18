@@ -40,6 +40,7 @@ import {
   linkTo,
   loadDeviceTable,
   openHarnessDevice,
+  withAttachedSerial,
 } from "./browser-harness";
 import { DeviceSampler, type SamplerTimeline } from "./device-sampler";
 import {
@@ -94,11 +95,13 @@ export async function openDeviceRig(
   if (!device)
     throw new Error("lifecycle: the device daemon needs GATE7_DEVICE");
   const table = loadDeviceTable();
-  const entry = table[device];
-  if (!entry)
+  const tableEntry = table[device];
+  if (!tableEntry)
     throw new Error(
       `lifecycle: GATE7_DEVICE=${device} is not in the device table (known: ${Object.keys(table).join(", ")})`,
     );
+  // ANDROID_SERIAL names the attached phone (the table's serials are placeholders).
+  const entry = withAttachedSerial(tableEntry);
   const pagePort = portOf("GATE7_HARNESS_PORT");
   const hostPort = portOf("GATE7_HOST_PORT");
   const harness = await openHarnessDevice({
@@ -311,6 +314,11 @@ export function runDeviceBrowserLeg(
   let devProbe: "plain" | "fit" | null = null;
   let devProbeReport: unknown = null;
   let devSampler: DevSamplerHandle | null = null;
+  // VS5b `vp`: the sampler is stopped (its closing PSS/gfxinfo/foreground sample taken) while the
+  // receiver tab is still open, before releaseTab(); writeEvidence then writes what it kept.
+  let devSampleMode: "light" | "soak" | "vp" | null = null;
+  let devSamplesKept: Awaited<ReturnType<DevSamplerHandle["stop"]>> | null =
+    null;
   const readDevProbe = async (): Promise<void> => {
     if (!devProbe || devProbeReport !== null) return;
     devProbeReport = await client
@@ -360,7 +368,8 @@ export function runDeviceBrowserLeg(
         `${JSON.stringify(devProbeReport ?? { schema: "render-stream-gate7-dev-probe/1", error: "no report" })}\n`,
       );
     if (!lifecycle && devProbe) {
-      const samples = devSampler ? await devSampler.stop() : null;
+      const samples =
+        devSamplesKept ?? (devSampler ? await devSampler.stop() : null);
       const conditionsAfter = await browser.conditions().catch(() => null);
       await writeFile(
         join(dir, "device.json"),
@@ -612,8 +621,10 @@ export function runDeviceBrowserLeg(
       await client.send("Page.addScriptToEvaluateOnNewDocument", {
         source: devProbeScript(mapped.devProbe),
       });
-    if (mapped.devSample)
+    if (mapped.devSample) {
+      devSampleMode = mapped.devSample;
       devSampler = await startDevSampler(rig, mapped.devSample);
+    }
     await client.send("Page.navigate", { url: navigateTo });
     if (!lc) {
       // G7v: a plain leg (no lifecycle): the desktop leg's exit poll.
@@ -639,6 +650,8 @@ export function runDeviceBrowserLeg(
       if (state && token !== "")
         state.lines = state.lines.map((l) => ({ ...l, line: scrub(l.line) }));
       await readDevProbe();
+      if (devSampleMode === "vp" && devSampler && !devSamplesKept)
+        devSamplesKept = await devSampler.stop().catch(() => null);
       await releaseTab();
       return exitCode;
     }
@@ -890,7 +903,8 @@ export async function serveDeviceBrowserDaemon(
 
 /** G7v: the phone's samplers for one g7-dev leg (Q13b "Samplers"): conditions and CPU caps every
  * 30 s; `soak` adds renderer/GPU/browser PSS every 5 s (dumpsys meminfo), gfxinfo GPU memory
- * (with the 30-s sample) and the leg tab's CDP JS heap every 10 s. Stopped when the leg ends. */
+ * (with the 30-s sample) and the leg tab's CDP JS heap every 10 s; VS5b's `vp` adds PSS at the
+ * start and the end and topResumedActivity every 10 s. Stopped when the leg ends. */
 export interface DevSamplerHandle {
   stop(): Promise<{
     device: SamplerTimeline;
@@ -900,31 +914,40 @@ export interface DevSamplerHandle {
 
 export async function startDevSampler(
   rig: DeviceRig,
-  mode: "light" | "soak",
+  mode: "light" | "soak" | "vp",
 ): Promise<DevSamplerHandle> {
   const browser = rig.harness.browser;
   const entry = rig.harness.entry;
   const chromePackage = entry.chrome_package;
-  const processInfo = await browser.client
-    .send<{ processInfo: { type: string; id: number }[] }>(
-      "SystemInfo.getProcessInfo",
-      {},
-      { flat: true, timeoutMs: 10_000 },
+  const queryIds = async (): Promise<number[]> =>
+    (
+      await browser.client
+        .send<{ processInfo: { type: string; id: number }[] }>(
+          "SystemInfo.getProcessInfo",
+          {},
+          { flat: true, timeoutMs: 10_000 },
+        )
+        .then((r) => r.processInfo ?? [])
+        .catch(() => [] as { type: string; id: number }[])
     )
-    .then((r) => r.processInfo ?? [])
-    .catch(() => [] as { type: string; id: number }[]);
-  const ids = processInfo
-    .filter(
-      (p) => p.type === "renderer" || p.type === "GPU" || p.type === "browser",
-    )
-    .map((p) => p.id)
-    .filter((pid) => pid > 0);
+      .filter(
+        (p) =>
+          p.type === "renderer" || p.type === "GPU" || p.type === "browser",
+      )
+      .map((p) => p.id)
+      .filter((pid) => pid > 0);
+  const ids = await queryIds();
+  // VS5b `vp`: light's cadence, plus renderer/GPU/browser PSS at the start and in stop(), and the
+  // foreground activity every 10 s (an arm whose browser was not in front is void).
   const sampler = new DeviceSampler(browser.adb, {
     chromePackage,
     clusters: entry.cpu_clusters,
-    pids: () => (mode === "soak" ? ids : []),
+    // `vp` re-reads the processes at each sample: the closing one must see the receiver's current
+    // renderer (a navigation can replace the one that existed at the start).
+    pids: () => (mode === "light" ? [] : mode === "vp" ? queryIds() : ids),
     conditionsMs: 30_000,
     memoryMs: mode === "soak" ? 5_000 : 3_600_000,
+    ...(mode === "vp" ? { closingMemory: true, foregroundMs: 10_000 } : {}),
   });
   sampler.start();
   const t0 = Date.now();

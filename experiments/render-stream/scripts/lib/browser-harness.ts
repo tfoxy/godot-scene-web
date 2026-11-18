@@ -1371,13 +1371,26 @@ export function resolveDeviceSelection(
     throw new HarnessUsageError(
       `--device ${deviceId} is not in the device table (known: ${Object.keys(table).join(", ")})`,
     );
-  // The committed table carries placeholder serials; the operator names the attached phone.
-  const serial = process.env.ANDROID_SERIAL;
   return {
     env,
     id: deviceId as DeviceId,
-    entry: serial ? { ...entry, serial } : entry,
+    entry: withAttachedSerial(entry),
   };
+}
+
+/**
+ * The device table's entry with the attached phone's serial. The committed table carries
+ * placeholder serials; the operator names the attached phone with ANDROID_SERIAL. Every path that
+ * opens a phone from a table entry goes through this (resolveDeviceSelection, the browser daemon's
+ * openDeviceRig, client-device-check.ts), so the entry's serial is the one adb selects and the one
+ * device-provenance compares against.
+ */
+export function withAttachedSerial(
+  entry: DeviceTableEntry,
+  env: NodeJS.ProcessEnv = process.env,
+): DeviceTableEntry {
+  const serial = env.ANDROID_SERIAL;
+  return serial ? { ...entry, serial } : entry;
 }
 
 /** What the page itself reports on a device leg, read by one `Runtime.evaluate`. */
@@ -1723,6 +1736,12 @@ export async function openHarnessDevice(
       serial: entry.serial,
       adbBin: options.adbBin,
       serverPort: options.serverPort,
+      // Chrome stable publishes exactly @chrome_devtools_remote: never attach to anything else
+      // (right after a relaunch an app's or WebView's socket may be the only one up).
+      devtoolsSocket:
+        entry.chrome_package === "com.android.chrome"
+          ? "chrome_devtools_remote"
+          : undefined,
       devtoolsPort: options.devtoolsPort,
       foregroundTimeoutMs: options.foregroundTimeoutMs,
       onProgress: progress,

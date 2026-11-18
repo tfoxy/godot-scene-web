@@ -344,6 +344,10 @@ class LiveReceiver {
   private pending: Pending | null = null;
   private fetcher: LiveFetcher | null = null;
   private endSeen = false;
+  /** VS5b RS_RECEIVER_LIVE_STOP_S: when the receiver stops taking transactions (page clock), and
+   * whether it did; nothing more of the connection is read once it has. */
+  private stopAt: number | null = null;
+  private harnessStopped = false;
   private finished = false;
   private reconnecting = false;
   private reconnectDue = false;
@@ -653,6 +657,8 @@ class LiveReceiver {
     // connection is read (receiver.gd `_begin_reconnect` runs before `_drain_packets`), so a
     // transaction the host sent on that credit is neither tapped nor acked.
     if (this.reconnectDue) return;
+    // VS5b: after RS_RECEIVER_LIVE_STOP_S nothing more is read; the receiver ends as after an end record.
+    if (this.harnessStopped) return;
     try {
       if (typeof ev.data === "string") {
         this.onHostText(ev.data);
@@ -886,6 +892,8 @@ class LiveReceiver {
     this.streamReport.stream_id = session.stream?.stream_id ?? null;
     this.streamReport.connection = session.stream?.connection ?? null;
     this.report.creditWindow = session.publication?.credit_window ?? 1;
+    if (this.L.stopAfterS !== null && this.stopAt === null)
+      this.stopAt = performance.now() + this.L.stopAfterS * 1000;
     if (!this.sessionViewportDone) {
       // receiver.gd `_adopt_presentation`: once per process.
       this.sessionViewportDone = true;
@@ -1108,6 +1116,20 @@ class LiveReceiver {
         return;
       default:
         break;
+    }
+    // VS5b: RS_RECEIVER_LIVE_STOP_S elapsed: drop what is queued and end as after an end record
+    // (a pending transaction's fetches still complete and it is applied).
+    if (this.stopAt !== null && !this.endSeen && now >= this.stopAt) {
+      this.endSeen = true;
+      this.harnessStopped = true;
+      this.queue.length = 0;
+      this.liveBlock.harness_stop = {
+        after_s: this.L.stopAfterS,
+        last_accepted_seq: this.lastAcceptedSeq,
+      };
+      log(
+        `RS_RECEIVER_LIVE_STOP_S=${this.L.stopAfterS}: stopping after seq ${this.lastAcceptedSeq}`,
+      );
     }
     // G7u: a lost context holds the loop (nothing applied or drawn, so no credit returns); the
     // callback after the restore redraws with no transaction.

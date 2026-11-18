@@ -65,6 +65,7 @@ import {
   HarnessServer,
   loadDeviceTable,
   openHarnessDevice,
+  withAttachedSerial,
 } from "./lib/browser-harness";
 import { readCpuFreqs } from "./lib/device-sampler";
 
@@ -287,8 +288,11 @@ async function main(): Promise<number> {
   const inputs = Object.keys(bundle.metafile?.inputs ?? {});
 
   const table = loadDeviceTable();
-  const entry = table[deviceId];
-  if (!entry) throw new Error(`client-device-check: no device ${deviceId}`);
+  const tableEntry = table[deviceId];
+  if (!tableEntry)
+    throw new Error(`client-device-check: no device ${deviceId}`);
+  // ANDROID_SERIAL names the attached phone (the table's serials are placeholders).
+  const entry = withAttachedSerial(tableEntry);
   const server = new HarnessServer({
     staticRoot: staticDir,
     evidenceRoot: join(dir, "evidence"),

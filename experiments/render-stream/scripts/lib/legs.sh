@@ -203,11 +203,70 @@ else:
 # (G7wf: fetch, the default, or httpclient, the web export's payload GETs; read by the daemon).
 # LIVE_RECEIVED_NAME is the live receiver's received tap: received.rs2 (/6, native) or
 # received.rs7 (/7, a browser receiver).
+# gate7_daemon_launch [append]: starts the browser daemon (gate7_daemon_dir and gate7_daemon_env
+# set by the block below) and waits for its ready file, setting GATE7_DAEMON_PORT and
+# GATE7_DAEMON_PID; exits 1 when it does not start. `append` (gate7_daemon_restart) appends to
+# daemon.log instead of truncating it.
+gate7_daemon_launch() {
+	local log="$gate7_daemon_dir/daemon.log"
+	if [ "${1:-}" = append ]; then
+		env -C "$REPO_ROOT" -u DISPLAY -u WAYLAND_DISPLAY "${GS_STRIP_ARGS[@]}" ${gate7_daemon_env[@]+"${gate7_daemon_env[@]}"} \
+			mise exec -- node --conditions=development --import tsx "$SCRIPT_DIR/gate7-tool.ts" browser-daemon \
+			--ready-file "$gate7_daemon_dir/daemon.json" --parent "$$" --kind "$GATE7_LIVE_KIND" \
+			--bundle "$GATE7_BUNDLE_DIR" --static-root "${GATE7_STATIC_ROOT:-$OUT}" \
+			>>"$log" 2>&1 &
+	else
+		env -C "$REPO_ROOT" -u DISPLAY -u WAYLAND_DISPLAY "${GS_STRIP_ARGS[@]}" ${gate7_daemon_env[@]+"${gate7_daemon_env[@]}"} \
+			mise exec -- node --conditions=development --import tsx "$SCRIPT_DIR/gate7-tool.ts" browser-daemon \
+			--ready-file "$gate7_daemon_dir/daemon.json" --parent "$$" --kind "$GATE7_LIVE_KIND" \
+			--bundle "$GATE7_BUNDLE_DIR" --static-root "${GATE7_STATIC_ROOT:-$OUT}" \
+			>"$log" 2>&1 &
+	fi
+	gate7_waited=0
+	while [ "$gate7_waited" -lt 1200 ] && [ ! -s "$gate7_daemon_dir/daemon.json" ]; do
+		sleep 0.1
+		gate7_waited=$((gate7_waited + 1))
+	done
+	GATE7_DAEMON_PORT="$(sed -n 's/^{"port":\([0-9][0-9]*\),.*$/\1/p' "$gate7_daemon_dir/daemon.json" 2>/dev/null || true)"
+	GATE7_DAEMON_PID="$(sed -n 's/^.*"pid":\([0-9][0-9]*\).*$/\1/p' "$gate7_daemon_dir/daemon.json" 2>/dev/null || true)"
+	if [ -z "$GATE7_DAEMON_PORT" ]; then
+		echo "$LEGS_LOG: the gate 7 browser daemon did not start (see $gate7_daemon_dir/daemon.log)" >&2
+		exit 1
+	fi
+	echo "$LEGS_LOG: gate 7 browser daemon on 127.0.0.1:$GATE7_DAEMON_PORT"
+}
+
+# gate7_daemon_stop: SIGTERM to the daemon (it closes its page server and, on a device, its tabs,
+# the adb reverses and forward, and restores the session settings), waiting up to 30 s for it to go.
+# VS5b's vp sweeps stop it after every device arm, before Chrome is force-stopped.
+gate7_daemon_stop() {
+	local waited=0
+	[ -n "${GATE7_DAEMON_PID:-}" ] || return 0
+	kill -TERM "$GATE7_DAEMON_PID" 2>/dev/null || true
+	while [ "$waited" -lt 300 ] && kill -0 "$GATE7_DAEMON_PID" 2>/dev/null; do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	kill -0 "$GATE7_DAEMON_PID" 2>/dev/null && kill -KILL "$GATE7_DAEMON_PID" 2>/dev/null
+	echo "$LEGS_LOG: gate 7 browser daemon $GATE7_DAEMON_PID stopped"
+	GATE7_DAEMON_PID=""
+	GATE7_DAEMON_PORT=""
+	rm -f "$gate7_daemon_dir/daemon.json"
+}
+
+# gate7_daemon_restart: a fresh daemon after gate7_daemon_stop (VS5b: a device arm's fresh
+# Chrome attach), its log appended.
+gate7_daemon_restart() {
+	[ -z "${GATE7_DAEMON_PID:-}" ] || gate7_daemon_stop
+	gate7_daemon_launch append
+}
+
 GATE7_LIVE_KIND="${GATE7_LIVE_KIND:-}"
 [ "$LEGS_LOG" = "run-gate7" ] && GATE7_LIVE_KIND=""
 LIVE_RECEIVED_NAME="received.rs2"
 GATE7_PAGE_PORT=""
 GATE7_DAEMON_PORT=""
+GATE7_DAEMON_PID=""
 if [ -n "$GATE7_LIVE_KIND" ]; then
 	case "$GATE7_LIVE_KIND" in
 	web | gsw) ;;
@@ -245,22 +304,7 @@ if [ -n "$GATE7_LIVE_KIND" ]; then
 	if [ -n "${RS_BROWSER_PROVENANCE:-}" ]; then
 		gate7_daemon_env+=(RS_BROWSER_PROVENANCE="$RS_BROWSER_PROVENANCE")
 	fi
-	env -C "$REPO_ROOT" -u DISPLAY -u WAYLAND_DISPLAY "${GS_STRIP_ARGS[@]}" ${gate7_daemon_env[@]+"${gate7_daemon_env[@]}"} \
-		mise exec -- node --conditions=development --import tsx "$SCRIPT_DIR/gate7-tool.ts" browser-daemon \
-		--ready-file "$gate7_daemon_dir/daemon.json" --parent "$$" --kind "$GATE7_LIVE_KIND" \
-		--bundle "$GATE7_BUNDLE_DIR" --static-root "${GATE7_STATIC_ROOT:-$OUT}" \
-		>"$gate7_daemon_dir/daemon.log" 2>&1 &
-	gate7_waited=0
-	while [ "$gate7_waited" -lt 1200 ] && [ ! -s "$gate7_daemon_dir/daemon.json" ]; do
-		sleep 0.1
-		gate7_waited=$((gate7_waited + 1))
-	done
-	GATE7_DAEMON_PORT="$(sed -n 's/^{"port":\([0-9][0-9]*\),.*$/\1/p' "$gate7_daemon_dir/daemon.json" 2>/dev/null || true)"
-	if [ -z "$GATE7_DAEMON_PORT" ]; then
-		echo "$LEGS_LOG: the gate 7 browser daemon did not start (see $gate7_daemon_dir/daemon.log)" >&2
-		exit 1
-	fi
-	echo "$LEGS_LOG: gate 7 browser daemon on 127.0.0.1:$GATE7_DAEMON_PORT"
+	gate7_daemon_launch
 fi
 
 # leg_env_value <NAME>: prints NAME's value in LEG_ENV (the last one); fails when absent.

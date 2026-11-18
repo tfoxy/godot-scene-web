@@ -266,6 +266,19 @@
 #             bases (sabotage-ack-on-receipt-scene, sabotage-draw-repeat-8-<workload>,
 #             sabotage-soak-leak-gl-textures-scene) run only when G7V_LEGS names them.
 #             check-gate7.ts --live --legs g7-dev judges them (lib/gate7v-checks.ts). Timing legs.
+#             VS5b, the viewport-surface phone cost: G7V_LEGS naming only vp-draw-active,
+#             vp-draw-idle and/or vp-vfx6 (with --legs g7-dev alone and --receiver gsw) runs, per
+#             credit window and workload, ONE run-gate6.sh sweep into
+#             <out>/gate6/<arm>-gsw-w<w>-<base>/ (lib/gate6c-legs.sh "VS5b"): one /16 live host
+#             of fixtures/viewport-perf serving the arms G7V_VP_ARMS (default A1,B1,B2,A2) back to
+#             back, A with the client's viewports on, B with `viewports: false`, plus with
+#             G7V_VP_HOST_OFF=1 an arm H on its own GRC_VIEWPORTS=off host. On a device
+#             (ANDROID_SERIAL required) the sweep holds the phone lock (lib/gate7-vp-phone.sh
+#             vp_phone_lock_path) from before Chrome is opened until after it is force-stopped,
+#             and on any exit stops run-gate6.sh (its host and daemon) before force-stopping
+#             Chrome. gate7-vp-summary.ts then writes <out>/g7v-vp-summary.json (per workload
+#             A1/A2/B1/B2(/H), A-vs-A and B-vs-B agreement, voided arms, build mismatches)
+#             instead of check-gate7.ts, which never sees a vp run.
 #
 # NEVER Xvfb, never a desktop window, never headed Chromium (D9, memory
 # xvfb-does-not-isolate-on-wayland): Chromium launches through scripts/lib/browser-harness.ts only,
@@ -619,6 +632,8 @@ OUT="$(realpath "$OUT")"
 # the build scripts, the harness self-test and the checker hold it shared.
 # shellcheck source=lib/quiet.sh
 source "$SCRIPT_DIR/lib/quiet.sh"
+# VS5b: the vp sweeps' phone lock, Chrome and build-identity helpers.
+source "$SCRIPT_DIR/lib/gate7-vp-phone.sh"
 QUIET_LOG="$OUT/quiet-lock.jsonl"
 QUIET_T0="$EPOCHREALTIME"
 gate7_checker() {
@@ -732,6 +747,34 @@ if [ "$LIVE" = "1" ]; then
 	if has_group g7-dev && [ "$RECEIVER" = "native" ]; then
 		echo "run-gate7: g7-dev runs browser receivers only (--receiver web|gsw)" >&2
 		exit 2
+	fi
+	# VS5b: the vp sweeps (header "Group landed (G7v)").
+	G7V_HAS_VP=0
+	case ",${G7V_LEGS:-}," in *,vp-*) G7V_HAS_VP=1 ;; esac
+	if [ "$G7V_HAS_VP" = 1 ]; then
+		if [ "${GROUPS_RUN[*]:-}" != "g7-dev" ] || [ "$RECEIVER" != gsw ]; then
+			echo "run-gate7: G7V_LEGS vp-* sweeps need --legs g7-dev alone and --receiver gsw" >&2
+			exit 2
+		fi
+		for b in ${G7V_LEGS//,/ }; do
+			case "$b" in
+			vp-draw-active | vp-draw-idle | vp-vfx6) ;;
+			*)
+				echo "run-gate7: G7V_LEGS with vp sweeps names only vp-draw-active, vp-draw-idle, vp-vfx6 (got $b)" >&2
+				exit 2
+				;;
+			esac
+		done
+		g7v_arms="${G7V_VP_ARMS:-A1,B1,B2,A2}"
+		if ! [[ ",$g7v_arms," =~ ^(,[AB][0-9]+)+,$ ]] || [[ ",$g7v_arms," != *,A* ]] || [[ ",$g7v_arms," != *,B* ]] ||
+			[ "$(tr ',' '\n' <<<"$g7v_arms" | sort | uniq -d)" != "" ]; then
+			echo "run-gate7: G7V_VP_ARMS must be distinct A<n>/B<n> arms with at least one of each (got $g7v_arms)" >&2
+			exit 2
+		fi
+		if [ "$HARNESS_ENV" = device ] && [ -z "${ANDROID_SERIAL:-}" ]; then
+			echo "run-gate7: a device vp sweep needs ANDROID_SERIAL (the phone's adb serial)" >&2
+			exit 2
+		fi
 	fi
 	if has_group g7-lc && [ "$RECEIVER" = "native" ]; then
 		echo "run-gate7: g7-lc runs browser receivers only (--receiver web|gsw)" >&2
@@ -977,6 +1020,27 @@ if [ "$LIVE" = "1" ]; then
 		mkdir -p "$OUT/gate6"
 		g7v_arm="ctl"
 		[ "$HARNESS_ENV" = device ] && g7v_arm="dev-$DEVICE"
+		# VS5b: one vp sweep (header): <kind> <bundle> <window> <base>, through
+		# lib/gate7-vp-phone.sh vp_sweep_run (the phone lock, Chrome, the cleanup order).
+		g7v_vp_sweep() {
+			local kind="$1" bundle_dir="$2" w="$3" base="$4" run_name run_dir rc
+			run_name="$g7v_arm-$kind-w$w-$base"
+			# run-gate6.sh's --out stays fresh (it refuses a directory that holds files); the
+			# wrapper's own evidence (phone lock, Chrome start and stop) is <run_dir>.sweep/.
+			run_dir="$OUT/gate6/$run_name"
+			echo "run-gate7: g7-dev vp sweep $base @$kind window $w ($HARNESS_ENV${DEVICE:+ $DEVICE}) into $run_dir" >&2
+			set +e
+			vp_sweep_run "$run_dir" "$([ "$HARNESS_ENV" = device ] && echo 1 || echo 0)" "$OUT/gate6/$run_name.log" -- \
+				env GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" GATE7_CREDIT_WINDOW="$w" \
+				GATE7_WEB_FETCH="$WEB_FETCH" GATE7_BROWSER_SPARE=after GATE7_STATIC_CACHE=1 \
+				GATE7_LIFECYCLE_ENV="$HARNESS_ENV" GATE7_DEVICE="$DEVICE" G7V_ENV="$HARNESS_ENV" \
+				G6C_LEGS="dev-$base" \
+				bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
+				--binary "$BINARY" --out "$run_dir" --legs g6c
+			rc=$?
+			set -e
+			echo "run-gate7: g7-dev vp sweep $base @$kind window $w exit=$rc (gate7-vp-summary.ts reads it)" >&2
+		}
 		g7v_runs() { # <base CSV>: every base as -r0..-r$REPEATS
 			local b r out=""
 			for b in ${1//,/ }; do
@@ -999,6 +1063,11 @@ if [ "$LIVE" = "1" ]; then
 					[ "$kind" = gsw ] && bases+=",gpu-headroom-pace,gpu-headroom-scene,gpu-headroom-hd"
 				fi
 				[ -z "${G7V_LEGS:-}" ] && [ "${G7V_SOAK_WINDOW:-}" = "$w" ] && bases+=",soak-scene"
+				# VS5b: vp bases are sweeps of their own (G7V_LEGS names only vp bases then).
+				if [ "${G7V_HAS_VP:-0}" = 1 ]; then
+					for b in ${bases//,/ }; do g7v_vp_sweep "$kind" "$bundle_dir" "$w" "$b"; done
+					continue
+				fi
 				g7v_legs=""
 				for b in ${bases//,/ }; do
 					case "$b" in
@@ -1031,6 +1100,14 @@ if [ "$LIVE" = "1" ]; then
 	# the same shape of problem.
 	if has_group g7-lc || has_group g7-k || has_group g7-dev; then
 		export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=12288"
+	fi
+	# VS5b: a vp run is judged by gate7-vp-summary.ts alone (check-gate7.ts never sees it).
+	if [ "${G7V_HAS_VP:-0}" = 1 ]; then
+		echo "run-gate7: running gate7-vp-summary.ts" >&2
+		cd "$REPO_ROOT"
+		set +e
+		mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/gate7-vp-summary.ts" --out "$OUT"
+		exit $?
 	fi
 	echo "run-gate7: running check-gate7.ts --live" >&2
 	cd "$REPO_ROOT"

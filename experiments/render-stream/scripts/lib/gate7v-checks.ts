@@ -178,7 +178,7 @@ export function quantile(values: readonly number[], q: number): number | null {
 }
 
 /** The receiver's connection: its stream id in the host's live summary, else the only one. */
-function connectionId(ev: DevLegEvidence): number | null {
+export function connectionId(ev: DevLegEvidence): number | null {
   const id = (ev.applied as { streams?: { stream_id?: string }[] } | undefined)
     ?.streams?.[0]?.stream_id;
   const conns = ev.summary?.connections ?? [];

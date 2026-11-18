@@ -1150,6 +1150,17 @@
       "reach": ["g7x:*"]
     },
     {
+      "why": "VS5b: the viewport-surface phone-cost sweeps (run-gate7.sh G7V_LEGS=vp-..., opt-in, never in a default leg): the viewport-perf fixture, the summary, the phone and identity helpers and their pure self-test (self-test-gate7-vp.ts); grouped with gate 7's device legs",
+      "paths": [
+        "experiments/render-stream/fixtures/viewport-perf/**",
+        "experiments/render-stream/scripts/gate7-vp-summary.ts",
+        "experiments/render-stream/scripts/lib/gate7-vp.ts",
+        "experiments/render-stream/scripts/lib/gate7-vp-phone.sh",
+        "experiments/render-stream/scripts/test/self-test-gate7-vp.ts"
+      ],
+      "reach": ["pure", "g7x:*"]
+    },
+    {
       "why": "repo metadata, playground and maintenance tooling: no gate leg or package test runs them (agent config, hooks, changelog, public-tree and worktree tools have separate scripts/test-* self-tests); .gitignore changes tracking, not execution",
       "paths": [
         ".gitignore",

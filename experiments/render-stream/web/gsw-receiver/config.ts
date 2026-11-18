@@ -121,6 +121,11 @@ export interface LiveConfig {
    * draws the frame this many times into the stage target, every draw but the last overwritten
    * (default 1). The headroom leg's GPU load with no GPU counter. */
   drawRepeat: number;
+  /** RS_RECEIVER_LIVE_STOP_S (VS5b, the vp sweeps of run-gate7.sh g7-dev): this many seconds after
+   * the session record the receiver stops taking transactions and ends as it does after the end
+   * record (final shot, close 1000), so receivers can follow one another on one host that keeps
+   * streaming. null (unset, the default): only the host's end record ends the stream. */
+  stopAfterS: number | null;
 }
 
 export class UsageError extends Error {}
@@ -336,6 +341,10 @@ function readLive(
       env.RS_RECEIVER_DRAW_REPEAT,
       1,
     ),
+    stopAfterS:
+      (env.RS_RECEIVER_LIVE_STOP_S ?? "").trim() === ""
+        ? null
+        : positive("RS_RECEIVER_LIVE_STOP_S", env.RS_RECEIVER_LIVE_STOP_S, 1),
   };
 }
 

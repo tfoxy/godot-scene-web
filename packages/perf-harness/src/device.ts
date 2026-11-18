@@ -266,14 +266,19 @@ export function parseLockState(text: string): LockState {
 /**
  * Abstract-socket names from `/proc/net/unix`. Chrome publishes `@chrome_devtools_remote`; Chrome
  * Beta/Dev/Canary and WebView publish suffixed variants, so the socket is DISCOVERED rather than
- * assumed — attaching to the wrong browser is a confusing way to fail.
+ * assumed — attaching to the wrong browser is a confusing way to fail. Only browser sockets count:
+ * a name must contain `chrome` or `webview`, and an app's Stetho socket
+ * (`stetho_<package>_devtools_remote`, e.g. Google Messages') never does, even if it would match.
  */
 export function parseDevtoolsSockets(procNetUnix: string): string[] {
   const names = new Set<string>();
   for (const match of procNetUnix.matchAll(
     /@([\w.-]*devtools_remote[\w.-]*)/g,
   )) {
-    names.add(match[1]);
+    const name = match[1];
+    if (name.startsWith("stetho_")) continue;
+    if (!/chrome|webview/.test(name)) continue;
+    names.add(name);
   }
   const sorted = [...names].sort();
   return sorted.sort((a, b) =>
@@ -492,6 +497,9 @@ export interface DeviceBrowserOptions {
   onProgress?: (message: string) => void;
   /** How long a freshly attached page gets to answer before it is declared backgrounded. */
   foregroundTimeoutMs?: number;
+  /** Require exactly this DevTools socket (e.g. `chrome_devtools_remote` for Chrome stable) and
+   * fail, naming the sockets present, instead of attaching to another browser's. */
+  devtoolsSocket?: string;
 }
 
 export interface DeviceBrowser extends PerfBrowser {
@@ -550,7 +558,12 @@ export async function openDeviceBrowser(
       `no Chrome DevTools socket on ${entry.serial}: nothing in /proc/net/unix matches *devtools_remote.\nOpen Chrome on the phone (the socket only exists while it runs) and make sure USB debugging is on.`,
     );
   }
-  const socket = sockets[0];
+  if (options.devtoolsSocket && !sockets.includes(options.devtoolsSocket)) {
+    throw new AdbError(
+      `no @${options.devtoolsSocket} on ${entry.serial} (browser sockets present: ${sockets.join(", ")}).\nThe browser under test is not running yet, or is another one; open it and re-run.`,
+    );
+  }
+  const socket = options.devtoolsSocket ?? sockets[0];
 
   const port = await forwardDevtools(adb, socket, devtoolsPort);
   await adb.exec(["reverse", `tcp:${serverPort}`, `tcp:${serverPort}`]);
