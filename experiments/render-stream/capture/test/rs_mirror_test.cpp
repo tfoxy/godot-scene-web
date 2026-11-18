@@ -1772,6 +1772,45 @@ void test_canvas_texture() {
         "omit-op canvas_texture_set_texture_filter drops the call");
 }
 
+// render-stream-2.md "Texture" field table and "Item-level unsupported entries": a freed canvas
+// entry carries `canvas: null`, so its tombstone names no diffuse. A draw naming it adds no derived
+// unsupported-texture (the validator reads only the wire), and its old diffuse is no longer kept
+// as a tombstone by it ("a tombstone leaves the table once nothing names it").
+void test_freed_canvas_texture_diffuse() {
+  Mirror m;
+  bind_root(&m);
+  grc::rs::PayloadCopy refused;
+  refused.status = "unsupported";
+  refused.reason = "unsupported-format";
+  refused.format = 11;  // RGBAF
+  refused.width = 4;
+  refused.height = 4;
+  refused.mipmaps_known = true;
+  m.texture_2d_create(500, refused, nullptr, 1);  // id 1 (U, unsupported)
+  m.canvas_texture_create(600, 1);                // id 2 (CT)
+  m.canvas_texture_set_channel(600, 0, 500, 1);   // DIFFUSE <- U
+  drawing_item(&m, 100, 600, 1);                  // names CT
+  Snapshot s = m.snapshot(1, 1).state;
+  check(item_entries(s) == std::vector<Entry>{{1, "canvas_item_add_texture_rect",
+                                               UnsupportedReason::UnsupportedTexture}},
+        "a draw naming a canvas texture whose diffuse is unsupported gets the derived entry");
+
+  m.free_rid(600, 2);  // CT freed while the draw still names it
+  s = m.snapshot(2, 2).state;
+  const auto *ct = texture(s, 2);
+  check(ct != nullptr && ct->status == grc::rs2::TextureStatus::Freed && !ct->has_canvas,
+        "a freed canvas texture a draw still names is a tombstone with canvas null");
+  check(item_entries(s).empty(),
+        "a draw naming a freed canvas tombstone adds no derived entry (its diffuse is off the wire)");
+
+  m.free_rid(500, 3);  // U freed: only the freed CT's old diffuse would still name it
+  s = m.snapshot(3, 3).state;
+  check(texture(s, 1) == nullptr,
+        "a freed canvas tombstone keeps no diffuse tombstone (nothing on the wire names it)");
+  check(texture(s, 2) != nullptr && texture(s, 2)->status == grc::rs2::TextureStatus::Freed,
+        "the canvas tombstone itself stays while the draw names it");
+}
+
 // On a headless host the dummy storage returns RID()
 // for every canvas_texture_create, so a CanvasTexture's draw names RID(). With the flag on, that
 // draw is a typed refusal (canvas-texture-headless), never `tex: null` (the white default).
@@ -5209,6 +5248,7 @@ int main() {
   test_texture_unsupported_copies_and_filters();
   test_texture_omit_op_and_spurious();
   test_canvas_texture();
+  test_freed_canvas_texture_diffuse();
   test_canvas_texture_headless_refusal();
   test_clear_resets_clip();
   test_clear_then_reassert_clip();

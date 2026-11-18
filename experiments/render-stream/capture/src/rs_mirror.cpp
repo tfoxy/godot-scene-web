@@ -1451,6 +1451,11 @@ void Mirror::retire_texture(std::uint32_t id) {
   // D11: a tombstone keeps its id and version; a receiver draws its commands with RID().
   texture.status = TextureStatus::Freed;
   texture.has_reason = false;
+  // render-stream-2.md "Texture" field table: a freed canvas entry's `canvas` is null on the wire,
+  // so its tombstone names no diffuse. Drop the link too: the derived unsupported-texture rule and
+  // tombstone retention read only what a receiver can see.
+  texture.has_diffuse = false;
+  texture.diffuse_id = 0;
   texture.bytes.reset();
   texture.job.reset();
   reset_basis(&texture);

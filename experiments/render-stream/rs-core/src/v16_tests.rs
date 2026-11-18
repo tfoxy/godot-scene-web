@@ -616,6 +616,39 @@ fn derived_unsupported_texture_reads_through_an_ok_proxy() {
     ok(&[t1, t2]);
 }
 
+/// render-stream-2.md "Texture" and "Item-level unsupported entries" (unchanged through /16): a
+/// freed canvas entry carries `canvas: null`, so a draw naming its tombstone derives nothing from
+/// the diffuse it had, at /13 (frozen) as at /16. The host derives from the same wire state.
+#[test]
+fn a_freed_canvas_tombstone_names_no_diffuse() {
+    let entry = "{\"op\":\"canvas_item_add_texture_rect\",\"item\":1,\"reason\":\"unsupported-texture\"}";
+    let freed_ct = "{\"id\":5,\"origin\":\"created\",\"adopted_content\":null,\"kind\":\"canvas\",\"status\":\"freed\",\"reason\":null,\"version\":1,\"hash\":null,\"format\":null,\"source_format\":null,\"width\":0,\"height\":0,\"mipmaps\":false,\"payload_bytes\":0,\"variants\":[],\"canvas\":null}";
+    for version in [13u8, 16] {
+        let at16 = version == 16;
+        let t1 = if at16 { base(1) } else { Tx::full(1) };
+        let mut textures = vec![image(1), unsupported_image(2)];
+        if at16 {
+            textures.push(vtex(3, 1));
+        }
+        textures.push(canvas_texture(5, 2));
+        let mut t1 = t1.textures(&textures).items(&[item(1, 1, 0, 5, 0)]);
+        t1.canvases = format!("[{},{}]", ROOT.replace("\"items\":[]", "\"items\":[1]"), canvas(2, false, "[]"));
+        t1.unsupported = format!("[{entry}]");
+        let session = if at16 { session(16, Some("on"), true) } else { session(13, None, true) };
+        // The canvas texture freed at the same version while the draw still names it.
+        let mut t2 = Tx::patch(2).textures(&[freed_ct.to_string()]);
+        t2.unsupported = "[]".into();
+        if let Err((e, seq)) = run_at(version, session.clone(), &[t1.clone(), t2.clone()]) {
+            panic!("/{version} seq {seq}: {e}");
+        }
+        t2.unsupported = format!("[{entry}]");
+        match run_at(version, session, &[t1, t2]) {
+            Ok(_) => panic!("/{version}: a derived entry through a freed canvas was accepted"),
+            Err((e, s)) => assert_eq!((e.code, s), ("unsupported-mismatch", 2), "/{version}: {e}"),
+        }
+    }
+}
+
 #[test]
 fn patch_rules_and_id_reuse_cover_viewports() {
     // patch-removed: absent from the base, or both removed and listed.

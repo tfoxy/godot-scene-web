@@ -1300,7 +1300,7 @@ class Mirror {
     bool has_diffuse = false;
     std::uint32_t diffuse_id = 0;
     // A non-null diffuse RID the mirror never saw created (unknown-texture);
-    // `has_diffuse` is false in that case too (nothing to name on the wire).
+    // `has_diffuse` is false in that case too (nothing to name on the wire), and once freed.
     bool diffuse_unknown = false;
     bool normal_set = false;    // a non-null normal channel is set
     bool specular_set = false;  // a non-null specular channel is set
