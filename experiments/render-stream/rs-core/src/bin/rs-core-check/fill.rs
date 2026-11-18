@@ -415,7 +415,16 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                             for (d, draw) in a.list.draws.iter().enumerate() {
                                 one.draws.clear();
                                 one.draws.push(*draw);
-                                one.instanced.retain(|_| false);
+                                one.instanced.clear();
+                                if let Ok(i) = a
+                                    .list
+                                    .instanced
+                                    .binary_search_by_key(&(d as u32), |r| r.draw)
+                                {
+                                    let mut r = a.list.instanced[i];
+                                    r.draw = 0;
+                                    one.instanced.push(r);
+                                }
                                 let od: HashSet<u32> = if opaque_draws.contains(&(d as u32)) {
                                     [0u32].into_iter().collect()
                                 } else {
