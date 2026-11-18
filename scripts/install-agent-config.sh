@@ -66,7 +66,7 @@ link() { # link <target> <linkpath>
 # worktree reaches it through a `private` link, like the shared memory store below. A real
 # directory there is never replaced; a link pointing elsewhere is repaired. Root files listed in
 # PRIVATE_ROOT_LINKS are linked in from private/ when it has them; a real file is never replaced.
-PRIVATE_ROOT_LINKS=(.codex-orchestration.toml)
+PRIVATE_ROOT_LINKS=(.codex-orchestration.toml .cold-archive.toml)
 echo "==> private companion"
 PRIVATE_MAIN="$(dirname "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)")"
 if [ "$REPO" != "$PRIVATE_MAIN" ]; then
