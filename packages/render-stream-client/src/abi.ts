@@ -119,6 +119,8 @@ export interface GswRs {
   hint_json(): string;
   /** Bit 0: the payload is in the store or staged; bit 1: the accepted state names it. */
   hint_state(hash: string): number;
+  /** The selected hinted payload as {hash, encoding, bytes}, or "". Older cores lack it. */
+  hint_select?(hash: string): string;
   /** The hinted hashes the last accepted transaction's upserted textures carry (64 hex each,
    * concatenated). */
   hint_refs(): string;

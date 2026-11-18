@@ -97,6 +97,12 @@ export interface LiveFetcherOptions {
    * `settle`: a `missing` or `temporary` GET is handed back on its own and the rest go on; a
    * `fatal` one still stops the queue. */
   failures?: "stop" | "settle";
+  /** Client retries use its loop clock and live demand/hint eligibility. Absent: settle as before. */
+  retry?: {
+    now: () => number;
+    mode: (hash: string, background: boolean) => "demand" | "prefetch" | null;
+    onRetry: () => void;
+  };
   /** Stage bodies as they arrive (absent: whole bodies through `onBody`). */
   stager?: ((hash: string, sizeHint: number) => StagingStream) | null;
   /** Streamed bytes written between two yielded tasks (default 256 KiB: a short task
@@ -128,9 +134,21 @@ export function yieldTask(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+// Three retries after the initial GET; bounded backoff avoids hammering a temporary outage.
+const TEMPORARY_RETRY_DELAYS_MS = [250, 500, 1000] as const;
+
+interface Retry {
+  result: FetchResult;
+  background: boolean;
+  due: number;
+  attempt: number;
+}
+
 /** One GET in flight. */
 interface InFlight {
   abort: AbortController;
+  /** Advisory work must never abort another GET when it fails. */
+  background: boolean;
 }
 
 export class LiveFetcher {
@@ -141,6 +159,8 @@ export class LiveFetcher {
   private done: FetchResult[] = [];
   /** Completed bodies whose `onBody` promise (a transcode) has not settled yet. */
   private staging = new Set<string>();
+  private readonly retries = new Map<string, Retry>();
+  private readonly retry: LiveFetcherOptions["retry"];
   private failed = false;
   private generation = 0;
   /** Every request's abort controller (`abort` aborts them; a reconnect's `cancel` keeps them). */
@@ -167,6 +187,7 @@ export class LiveFetcher {
     this.maxInFlight = Math.max(1, Math.floor(options.maxInFlight ?? 1));
     this.settleFailures = options.failures === "settle";
     this.stager = options.stager ?? null;
+    this.retry = options.retry;
     this.sliceBytes = Math.max(1, options.sliceBytes ?? DEFAULT_SLICE_BYTES);
     this.yieldTask = options.yieldTask ?? yieldTask;
   }
@@ -186,9 +207,40 @@ export class LiveFetcher {
     for (const h of hashes) if (!this.has(h)) this.queue.push(h);
   }
 
-  /** `hash` is queued, in flight, or completed and not yet polled. */
+  /** Starts advisory work only in a free slot after every queued demand. No background queue:
+   * the caller rechecks hint validity and its idle condition before each start. */
+  prefetch(hash: string): boolean {
+    if (
+      this.failed ||
+      this.queue.length > 0 ||
+      this.inFlight.size >= this.maxInFlight
+    )
+      return false;
+    const retry = this.retries.get(hash);
+    if (retry !== undefined) {
+      if (
+        this.retry?.mode(hash, retry.background) !== "prefetch" ||
+        this.retry.now() < retry.due
+      )
+        return false;
+      this.retries.delete(hash);
+      this.retry.onRetry();
+      this.issue(hash, retry.background, retry.attempt);
+    } else {
+      if (this.has(hash)) return false;
+      this.issue(hash, true);
+    }
+    return true;
+  }
+
+  /** `hash` is queued, waiting to retry, in flight, or completed and not yet polled. */
   has(hash: string): boolean {
-    if (this.inFlight.has(hash) || this.staging.has(hash)) return true;
+    if (
+      this.inFlight.has(hash) ||
+      this.staging.has(hash) ||
+      this.retries.has(hash)
+    )
+      return true;
     if (this.queue.includes(hash)) return true;
     for (const r of this.done) if (r.hash === hash) return true;
     return false;
@@ -210,12 +262,13 @@ export class LiveFetcher {
     return this.queue;
   }
 
-  /** Every hash queued, in flight, or completed and not yet polled (a fold queues only the
-   * others). */
+  /** Every hash queued, waiting to retry, in flight, or completed and not yet polled
+   * (a fold queues only the others). */
   requested(): Set<string> {
     const out = new Set(this.queue);
     for (const h of this.inFlight.keys()) out.add(h);
     for (const h of this.staging) out.add(h);
+    for (const h of this.retries.keys()) out.add(h);
     for (const r of this.done) out.add(r.hash);
     return out;
   }
@@ -225,12 +278,13 @@ export class LiveFetcher {
     this.queue = this.queue.filter((h) => keep.has(h));
   }
 
-  /** A request queued, in flight, or completed and not yet polled. */
+  /** A request queued, waiting to retry, in flight, or completed and not yet polled. */
   busy(): boolean {
     return (
       this.inFlight.size > 0 ||
       this.staging.size > 0 ||
       this.done.length > 0 ||
+      this.retries.size > 0 ||
       (!this.failed && this.queue.length > 0)
     );
   }
@@ -241,12 +295,14 @@ export class LiveFetcher {
   }
 
   /** Drops everything queued or in flight (a reconnect). A body being streamed stops at its next
-   * chunk and its staging buffer is freed. */
-  cancel(): void {
+   * chunk and its staging buffer is freed. A window-1 supersession can keep waiting retries,
+   * preserving their deadlines and attempt counts while the new accepted state is rebuilt. */
+  cancel(options: { keepRetries?: boolean } = {}): void {
     this.generation++;
     this.queue = [];
     this.inFlight.clear();
     this.staging.clear();
+    if (!options.keepRetries) this.retries.clear();
     this.done = [];
     this.delayUntil = -1;
   }
@@ -261,6 +317,12 @@ export class LiveFetcher {
 
   /** One rAF step: completed results (in completion order), and whether the queue is finished. */
   poll(): { results: FetchResult[]; finished: boolean } {
+    // Leaving the accepted names or hint window cancels a wait, never an in-flight GET.
+    for (const [hash, retry] of this.retries)
+      if (this.retry?.mode(hash, retry.background) == null) {
+        this.retries.delete(hash);
+        this.done.push(retry.result);
+      }
     while (
       !this.failed &&
       this.queue.length > 0 &&
@@ -272,6 +334,21 @@ export class LiveFetcher {
       const hash = this.queue.shift() as string;
       if (!this.inFlight.has(hash)) this.issue(hash);
     }
+    // Queued demands get first use of free slots, then demand retries. Hint retries are
+    // started by `prefetch`, so the loop's idle gate and hint priority order still apply.
+    for (const [hash, retry] of this.retries) {
+      if (this.inFlight.size >= this.maxInFlight) break;
+      if (
+        this.failed ||
+        this.queue.length > 0 ||
+        this.retry?.mode(hash, retry.background) !== "demand" ||
+        this.retry.now() < retry.due
+      )
+        continue;
+      this.retries.delete(hash);
+      this.retry.onRetry();
+      this.issue(hash, retry.background, retry.attempt);
+    }
     const results = this.done;
     this.done = [];
     return {
@@ -280,11 +357,12 @@ export class LiveFetcher {
         this.failed ||
         (this.inFlight.size === 0 &&
           this.staging.size === 0 &&
-          this.queue.length === 0),
+          this.queue.length === 0 &&
+          this.retries.size === 0),
     };
   }
 
-  private issue(hash: string): void {
+  private issue(hash: string, background = false, attempt = 0): void {
     const gen = this.generation;
     this.delayUntil = -1;
     const r: FetchResult = {
@@ -300,7 +378,7 @@ export class LiveFetcher {
     };
     const path = `${this.pathPrefix}${hash}`;
     const abort = new AbortController();
-    const entry: InFlight = { abort };
+    const entry: InFlight = { abort, background };
     this.inFlight.set(hash, entry);
     this.aborts.add(abort);
     // The stall timeout: restarted by every sign of progress, so it fires only after
@@ -331,11 +409,28 @@ export class LiveFetcher {
       r.error = error;
       r.outcome = outcome;
       this.inFlight.delete(hash);
-      if (error !== "" && this.settleFailures && outcome !== "fatal") {
+      if (
+        outcome === "temporary" &&
+        attempt < TEMPORARY_RETRY_DELAYS_MS.length &&
+        this.retry?.mode(hash, background) != null
+      ) {
+        this.retries.set(hash, {
+          result: r,
+          background,
+          due: this.retry.now() + TEMPORARY_RETRY_DELAYS_MS[attempt],
+          attempt: attempt + 1,
+        });
+        return;
+      }
+      if (
+        error !== "" &&
+        (entry.background || (this.settleFailures && outcome !== "fatal"))
+      ) {
         // Settled on its own: the queue goes on, the other GETs keep going.
       } else if (error !== "") {
         this.failed = true;
         this.queue = [];
+        this.retries.clear();
         // The first error ends the queue: the other GETs in flight are aborted, unseen.
         for (const [h, other] of this.inFlight) {
           this.inFlight.delete(h);

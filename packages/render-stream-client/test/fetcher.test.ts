@@ -429,6 +429,45 @@ describe("LiveFetcher staging as bodies arrive", () => {
     expect(st.open.size).toBe(0);
   });
 
+  it("retries a failed stream with a fresh staging buffer", async () => {
+    let now = 0;
+    let retried = 0;
+    const st = stager(() => null);
+    const { f, gets } = fetcher({
+      stager: st.make,
+      failures: "settle",
+      retry: {
+        now: () => now,
+        mode: () => "demand",
+        onRetry: () => retried++,
+      },
+    });
+    f.start(["a"]);
+    f.poll();
+    const first = body([new Uint8Array([9])]);
+    gets[0].resolve({ status: 200, body: null, stream: first.stream });
+    first.next();
+    await flush();
+    first.fail(new Error("link lost"));
+    await flush();
+    expect(st.log).toContain("abort a");
+    expect(st.open.size).toBe(0);
+    expect(f.poll()).toEqual({ results: [], finished: false });
+    now = 250;
+    f.poll();
+    expect(gets).toHaveLength(2);
+    expect(retried).toBe(1);
+    const second = body([new Uint8Array([1, 2])]);
+    gets[1].resolve({ status: 200, body: null, stream: second.stream });
+    second.rest();
+    await flush();
+    expect(f.poll()).toMatchObject({
+      results: [{ hash: "a", outcome: "ok", streamed: true, bytes: 2 }],
+      finished: true,
+    });
+    expect(st.log).toEqual(["begin a 0", "abort a", "begin a 0", "finish a 2"]);
+  });
+
   it("a read error is resource-unavailable and frees the staging buffer", async () => {
     const st = stager(() => null);
     const { f, gets } = fetcher({ stager: st.make });

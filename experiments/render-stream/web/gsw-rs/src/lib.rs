@@ -2745,6 +2745,27 @@ impl GswRs {
         self.item_meta_json()
     }
 
+    /// The hinted payload selected with the demand fetcher's delivery preferences, or empty
+    /// when no hint or selection is available. This does not change the accepted needed set.
+    pub fn hint_select(&self, hash_hex: &str) -> String {
+        let Some(h) = Hash::from_hex(hash_hex) else {
+            return String::new();
+        };
+        let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_ref()) else {
+            return String::new();
+        };
+        let Some((hash, encoding, bytes)) = v.hint(&h).and_then(|h| a.delivery.select_hint(h))
+        else {
+            return String::new();
+        };
+        format!(
+            "{{\"hash\":{},\"encoding\":{},\"bytes\":{}}}",
+            json_str(&hash.to_hex()),
+            json_str(encoding),
+            bytes
+        )
+    }
+
     /// What this receiver already has of a hinted `hash_hex`: bit 0, the payload is in the store
     /// or staged; bit 1, the newest accepted state already draws it (a texture with this hash is
     /// named by a command, material or canvas texture: a hint that trails its reference). A texture
@@ -2754,7 +2775,14 @@ impl GswRs {
         let Some(h) = Hash::from_hex(hash_hex) else {
             return 0;
         };
-        let held = self.payloads.has(&h) || self.stage.has(&h);
+        let selected = match (self.validator.as_ref(), self.applier.as_ref()) {
+            (Some(v), Some(a)) => v.hint(&h).and_then(|h| a.delivery.select_hint(h)),
+            _ => None,
+        };
+        let held = self.payloads.has(&h)
+            || self.stage.has(&h)
+            || selected
+                .is_some_and(|(hash, _, _)| self.payloads.has(&hash) || self.stage.has(&hash));
         let named = match (self.validator.as_ref(), self.applier.as_ref()) {
             (Some(v), Some(a)) if v.names_contains(&h) => v
                 .state()

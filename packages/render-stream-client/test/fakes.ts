@@ -342,6 +342,8 @@ export function harness(
     | "resourceHoldMs"
     | "fetchTimeoutMs"
     | "resourceHints"
+    | "prefetchMaxInFlight"
+    | "prefetchBudgetBytes"
     | "frameCap"
   > = {},
   core: FakeCore = new FakeCore(),

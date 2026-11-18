@@ -104,6 +104,30 @@ describe("createRenderStreamClient", () => {
   });
 
   it.each([
+    "prefetchMaxInFlight",
+    "prefetchBudgetBytes",
+  ] as const)("validates %s as a non-negative safe integer", (option) => {
+    const canvas = document.createElement("canvas");
+    for (const value of [
+      -1,
+      0.5,
+      Number.NaN,
+      Infinity,
+      Number.MAX_SAFE_INTEGER + 1,
+    ])
+      expect(() =>
+        createRenderStreamClient({ canvas, core, endpoint, [option]: value }),
+      ).toThrow(`${option} must be a non-negative safe integer`);
+    for (const value of [0, 1, 64 << 20])
+      createRenderStreamClient({
+        canvas,
+        core,
+        endpoint,
+        [option]: value,
+      }).dispose();
+  });
+
+  it.each([
     11, 12,
   ] as const)("refuses v2 wants on /%i at construction", (protocol) => {
     for (const field of ["instance_id", "mouse_filter"] as const) {

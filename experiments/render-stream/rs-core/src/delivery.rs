@@ -199,6 +199,39 @@ impl DeliveryPrefs {
             && (t.hash == Some(resident) || t.variants.iter().any(|v| v.hash == resident))
     }
 
+    /// Select a hinted texture with the same preferences and refusal rules as demand.
+    /// The returned byte count belongs to the selected payload, not always the decoded base.
+    pub fn select_hint(&self, h: &crate::meta::ResourceHint) -> Option<(Hash, &'static str, i64)> {
+        let t = Texture {
+            id: 0,
+            origin: crate::state::Origin::Created,
+            adopted_content: None,
+            kind: TextureKind::Image,
+            status: EntryStatus::Ok,
+            reason: None,
+            version: 1,
+            hash: Some(h.hash),
+            format: Some(h.format.clone()),
+            source_format: h.source_format.clone(),
+            width: h.width,
+            height: h.height,
+            mipmaps: h.mipmaps,
+            payload_bytes: h.payload_bytes,
+            variants: h.variants.clone(),
+            size_override: None,
+            viewport: None,
+            target: None,
+            canvas: None,
+        };
+        let s = self.select(&t)?;
+        let bytes = if s.hash == h.hash {
+            h.payload_bytes
+        } else {
+            h.variants.iter().find(|v| v.hash == s.hash)?.payload_bytes
+        };
+        Some((s.hash, s.encoding, bytes))
+    }
+
     /// D3 for one texture entry: None unless it is an `ok` image with a hash.
     pub fn select<'a>(&self, t: &'a Texture) -> Option<Selected<'a>> {
         if t.kind != TextureKind::Image || t.status != EntryStatus::Ok {
@@ -310,6 +343,33 @@ mod tests {
             format: None,
             params: Some("basisu-1.60/uastc-l1/zstd6/linear".into()),
         }
+    }
+
+    #[test]
+    fn hint_select_reuses_demand_preferences() {
+        let h = crate::meta::ResourceHint {
+            hash: Hash([1; 32]),
+            format: "RGBA8".into(),
+            source_format: None,
+            width: 4,
+            height: 4,
+            mipmaps: false,
+            payload_bytes: 64,
+            variants: vec![block("DXT1", 2)],
+            path: None,
+            cause: crate::meta::HintCause::Create,
+            priority: 0,
+        };
+        let decoded = DeliveryPrefs::parse("decoded", "s3tc").unwrap();
+        assert_eq!(decoded.select_hint(&h), Some((h.hash, "decoded", 64)));
+        let mut block = DeliveryPrefs::parse("block,decoded", "s3tc").unwrap();
+        block.bc_aligned_only = true;
+        assert_eq!(block.select_hint(&h), Some((Hash([2; 32]), "block", 10)));
+        let mut odd = h.clone();
+        odd.width = 3;
+        assert_eq!(block.select_hint(&odd), Some((h.hash, "decoded", 64)));
+        block.refuse(Hash([2; 32]));
+        assert_eq!(block.select_hint(&h), Some((h.hash, "decoded", 64)));
     }
 
     #[test]

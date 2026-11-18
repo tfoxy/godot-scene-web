@@ -538,6 +538,27 @@ describe("WasmStreamCore resource hints (render-stream/15)", () => {
     core.dispose();
   });
 
+  it("selects through the optional wasm export and tolerates an older core", () => {
+    const { core, instances } = harness();
+    core.beginConnection(15);
+    expect(core.hintSelect).toBeUndefined();
+    const g = instances[1] as (typeof instances)[number] & {
+      hint_select?: (hash: string) => string;
+    };
+    g.hint_select = vi.fn(() =>
+      JSON.stringify({ hash: vh, encoding: "block", bytes: 64 }),
+    );
+    expect(core.hintSelect?.(h1)).toEqual({
+      hash: vh,
+      encoding: "block",
+      bytes: 64,
+    });
+    expect(g.hint_select).toHaveBeenCalledWith(h1);
+    g.hint_select = () => "";
+    expect(core.hintSelect?.(h2)).toBeNull();
+    core.dispose();
+  });
+
   it("splits hint_refs into hashes", () => {
     const { core, instances } = harness();
     core.beginConnection(15);

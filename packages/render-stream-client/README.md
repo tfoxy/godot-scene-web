@@ -64,13 +64,48 @@ the client draws each into its own surface.
 | Option          | Default | Effect                                                                                                                                                                                                                                                                          |
 | --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `viewports`     | `true`  | `false` builds no surface pass: the viewport table is still applied, every viewport texture draws transparent, and `stats().surfacesSkipped` counts what the frame reached and did not build. The wire is the same, so the host needs no restart. Below /16 it changes nothing. |
-| `resourceHints` | `false` | Keeps the host's resource hints in a table (`hints()`, the `hints*` stats). At /16 it does not change the offer; the host's `GRC_RESOURCE_HINTS` decides whether it sends any. Below /16 it offers `render-stream.15`, as before.                                               |
+| `resourceHints` | `false` | Enables the hint table, idle prefetch and hint stats (see below). At /16 it does not change the offer; the host's `GRC_RESOURCE_HINTS` decides whether it sends any. Below /16 it offers `render-stream.15`, as before.                                                         |
 
 The host's own switch is `GRC_VIEWPORTS=on|off` (default on), documented with the other `GRC_*`
 variables in `experiments/render-stream/protocol/streaming-host.md`. `stats()` reports
 `surfacesRendered`, `surfacesSkipped`, `surfacesUnchanged`, `surfacesAllocated` and `surfacePixels`
 (the last apply's; all 0 on a stream with no viewport surface). Items inside a surface are not
 pickable on the client (`pick_tree` stays root-only).
+
+## Resource hint prefetch
+
+With `resourceHints: true`, the client keeps the host's hints in `hints()` and fetches their payloads
+while idle: no demand GET is queued or in flight, and no accepted transaction is waiting on
+payloads. Hints start in ascending `priority`, then arrival order. Demand GETs take priority; demand
+for a hash already being prefetched joins that GET.
+
+| Option                | Default             | Effect                                                                                                                                             |
+| --------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prefetchMaxInFlight` | `2`                 | Maximum concurrent hint GETs, capped at 3 to leave one of the four GET slots for demand. `0` disables prefetch.                                    |
+| `prefetchBudgetBytes` | `67108864` (64 MiB) | Per-connection payload byte budget for completed and in-flight hint GETs. A hint starts only if its selected payload fits in the remaining budget. |
+
+Prefetch uses the same encoding and variant selection as demand. Payloads are verified and staged
+in wasm memory, so a later transaction can use them without another GET; GPU upload waits until
+first draw. An older core without hint selection keeps the table but does not prefetch. An unhint
+prevents a new hint GET; one already in flight may finish and keep its bytes. Connection end clears
+the scheduler and its byte budget. With `resourceHints: false` (the default), no hint GETs run and
+hint stats are absent.
+
+### Hint stats
+
+On a `resourceHints` client, `stats()` includes these fields. Counters accumulate across connections;
+`hintsPending` counts current entries.
+
+| Field                                           | Meaning                                                                                                            |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `hintsReceived`, `unhintsReceived`              | Hint and unhint records received.                                                                                  |
+| `hintsPending`                                  | Hints whose payload is neither held nor already referenced by an accepted transaction.                             |
+| `hintsReferenced`, `hintsLate`, `hintsDropped`  | Hints first referenced after arrival, hints arriving after a reference, and hints dropped by the table's bound.    |
+| `hintLeadMsMin`, `hintLeadMsMax`, `hintLeadLog` | Shortest and longest hint-to-first-reference lead in ms (`null` before a reference), and the recent reference log. |
+| `hintsPrefetched`                               | Hint GETs successfully verified and staged.                                                                        |
+| `hintPrefetchBytes`                             | Payload bytes successfully prefetched, in bytes.                                                                   |
+| `hintPrefetchFailed`                            | Hint payloads whose fetching (after retries) or verification failed.                                               |
+| `getRetries`                                    | Additional GET attempts after temporary failures, for demand and hints.                                            |
 
 ## Payloads that arrive late or not at all
 
@@ -95,9 +130,14 @@ verified (SHA-256) and decoded before use.
   - `missing`: 404 or 410.
   - `temporary`: 408, 429, a 5xx status, a network error, or no progress for `fetchTimeoutMs`.
 
-  The other GETs keep going. The payload is then treated as never arriving: it is not fetched again
-  while the stream keeps naming it, and there is no timed retry. It is fetched afresh when a later
-  transaction names it again after one that did not, or after a reconnect.
+  The other GETs keep going. Only `temporary` failures are retried: at most three additional
+  attempts, after delays of 250, 500 and 1000 ms on the loop clock. Demand retries continue only
+  while the payload is still needed; prefetch retries continue only while it is still hinted and
+  obey the idle and priority rules above. `missing` and fatal failures are never retried.
+
+  A `missing` result or an exhausted temporary retry settles as unavailable: the payload is not
+  fetched again while the stream keeps naming it. It is fetched afresh when a later transaction
+  names it again after one that did not, or after a reconnect.
 
 - **Obsolete payloads.** Once the stream no longer names a payload, its queued GET is dropped. A GET
   already in flight finishes, and its body is kept only if the stream names the payload again.

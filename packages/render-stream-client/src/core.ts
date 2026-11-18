@@ -43,6 +43,13 @@ export function failWith(seq: number | null, error: string): StreamFailure {
     : new StreamFailure(seq, error.slice(0, at), error.slice(at + 2));
 }
 
+/** A hint selected with the same delivery preferences as a demand payload. */
+export interface HintSelection {
+  hash: string;
+  encoding: string;
+  bytes: number;
+}
+
 /** A payload a transaction needs, hex SHA-256 and kind (0 texture, 1 mesh, 2 shader, 3 KTX2). */
 export interface Needed {
   hash: string;
@@ -103,6 +110,8 @@ export interface StreamCore {
   /** /15: the hinted hashes the last accepted transaction's upserted textures carry. Absent:
    * the loop learns no reference of a hinted hash. */
   hintRefs?(): string[];
+  /** The demand selector's choice for a hint; null when unsupported or no longer hinted. */
+  hintSelect?(hash: string): HintSelection | null;
   /** The coding skipped transactions; the next full may jump the seq. */
   transportSkip(): void;
   /** A fresh applier over the whole resolved state (inheriting the GPU residency); returns
@@ -457,6 +466,17 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       named: (state & 2) !== 0,
     };
   }
+
+  get hintSelect(): StreamCore["hintSelect"] {
+    return typeof this.g.hint_select === "function"
+      ? this.selectHint
+      : undefined;
+  }
+
+  private readonly selectHint = (hash: string): HintSelection | null => {
+    const selected = this.g.hint_select?.(hash) ?? "";
+    return selected === "" ? null : (JSON.parse(selected) as HintSelection);
+  };
 
   hintRefs(): string[] {
     const s = this.g.hint_refs();

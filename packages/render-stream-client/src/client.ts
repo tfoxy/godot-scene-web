@@ -115,10 +115,14 @@ export interface RenderStreamClientOptions {
    * `GRC_STREAM_VERSION=15`) and keeps every hint in effect in a table, read by `hints()`, with
    * the hint fields of `stats()`. The endpoint's protocol must be 13 or later. At protocol 16 the
    * offer is `render-stream.16` either way (a /16 stream contains /15's hints; the host's
-   * `GRC_RESOURCE_HINTS` decides whether it sends any), and the option only keeps the table.
+   * `GRC_RESOURCE_HINTS` decides whether it sends any), and the option enables the table and idle prefetch.
    * Default false: no /15 offer, no table, and the offer, the hello and the core's calls are the
-   * client's without the option. Nothing is fetched ahead of a transaction yet. */
+   * client's without the option. Older cores without hint selection keep only the table. */
   resourceHints?: boolean;
+  /** Hint GETs at once (default 2). At most 3, reserving a slot for demand; 0 disables prefetch. */
+  prefetchMaxInFlight?: number;
+  /** Per-connection hint payload byte budget, completed plus in flight (default 64 MiB). */
+  prefetchBudgetBytes?: number;
   /** Draw the host's non-root viewports (render-stream/16 surfaces: a `SubViewport`'s own picture
    * shown through a `ViewportTexture`, a `SubViewportContainer`, an embedded window). Default
    * true. `false` builds no surface pass: the viewport table is still applied, every viewport
@@ -267,6 +271,13 @@ export function createRenderStreamClient(
     throw new TypeError(
       "render-stream client: resourceHints must be a boolean",
     );
+  for (const key of ["prefetchMaxInFlight", "prefetchBudgetBytes"] as const) {
+    const value = options[key];
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0))
+      throw new TypeError(
+        `render-stream client: ${key} must be a non-negative safe integer`,
+      );
+  }
   clientProtocol(endpoint.protocol, ext?.request, resourceHints);
   if (typeof (options.viewports ?? true) !== "boolean")
     throw new TypeError("render-stream client: viewports must be a boolean");
@@ -555,6 +566,8 @@ class Client implements RenderStreamClient {
       ext: this.ext,
       recorder: this.recorder,
       resourceHints: this.o.resourceHints === true,
+      prefetchMaxInFlight: this.o.prefetchMaxInFlight,
+      prefetchBudgetBytes: this.o.prefetchBudgetBytes,
       frameCap: this.frameCap,
       frameCapBounds: this.frameCapBounds,
       onSession: (m) => {

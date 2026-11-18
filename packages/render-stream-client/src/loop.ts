@@ -39,11 +39,13 @@
 //
 // Unavailable payloads: a GET settles on its own (`missing`: 404, 410; `temporary`: 408, 429,
 // 5xx, a rejected request, a stall), the other GETs and the queue go on, and the payload is
-// unavailable: deferred as above (never an older payload in its place), never fetched again while
-// the accepted state keeps naming it, with no timer retry; it is fetched afresh once a transaction
-// names it again after one that did not, or on a reconnect. After each accepted transaction the
-// loop asks the core which of the payloads it tracks (queued, in flight, deferred, unavailable) the
-// state still names (one batched call, none while it tracks nothing): a queued GET of one no longer
+// retried up to three times on temporary failure while still needed (250/500/1000 ms backoff).
+// Missing payloads and exhausted retries settle unavailable: deferred as above (never an older
+// payload in its place), never fetched again while the accepted state keeps naming it. Once a
+// transaction names it again after one that did not, or on a reconnect, it is fetched afresh.
+// After each accepted transaction the loop asks the core which tracked payloads (queued, waiting
+// to retry, in flight, deferred, unavailable) the state still names (one batched call, none while
+// it tracks nothing): a queued GET or retry of one no longer
 // named is dropped, one in flight goes on (its body is verified and kept if it is named again,
 // dropped if not; its failure is that older naming's and says nothing about a newer one), and a
 // deferred or unavailable one stops being tracked. A `fatal` GET (401, 403, another status, a
@@ -167,6 +169,14 @@ export interface RenderStreamStats {
   /** /15 resource hints (`resourceHints`). The hint fields are set by `stats()` only on a
    * `resourceHints` client. `resource_hint` records received, over every connection. */
   hintsReceived?: number;
+  /** Hint GETs verified and staged successfully (over every connection). */
+  hintsPrefetched?: number;
+  /** Payload bytes successfully prefetched, in bytes. */
+  hintPrefetchBytes?: number;
+  /** Hint payloads whose fetching (after retries) or verification failed. */
+  hintPrefetchFailed?: number;
+  /** Additional GET attempts after temporary failures (demand and hints, over every connection). */
+  getRetries?: number;
   /** `resource_unhint` records received. */
   unhintsReceived?: number;
   /** Hints in effect whose payload the client neither holds nor has seen a transaction name. */
@@ -284,8 +294,12 @@ export interface LoopOptions {
   onSession?: (session: SessionMeta) => void;
   /** The recorder (null: the pure client copies nothing). */
   recorder?: RenderStreamRecorder | null;
-  /** Offer render-stream/15 and keep its resource hints in a table (`hints`). Default false. */
+  /** Keep resource hints in a table (`hints`) and prefetch while idle. Default false. */
   resourceHints?: boolean;
+  /** Hint GETs at once, default 2; clamped below the fetch cap to reserve a demand slot. */
+  prefetchMaxInFlight?: number;
+  /** Completed plus in-flight hint payload bytes per connection, default 64 MiB. */
+  prefetchBudgetBytes?: number;
   /** The idle frame cap (frame-cap.ts); default `off`. */
   frameCap?: RenderStreamFrameCap;
   /** What still counts as ambient under the cap (frame-cap.ts defaults). */
@@ -382,7 +396,7 @@ export class StreamLoop {
   private coalesced: Queued[] = [];
   private pending: Pending | null = null;
   private fetcher: LiveFetcher | null = null;
-  private makeFetcher: (() => LiveFetcher) | null = null;
+  private makeFetcher: ((restore?: boolean) => LiveFetcher) | null = null;
   private endSeen = false;
   private rebuildDue = false;
   private connApplied = 0;
@@ -447,6 +461,15 @@ export class StreamLoop {
   private readonly cold: ColdTracker;
   /** /15 resource hints; null unless `resourceHints` (nothing hint-related runs then). */
   readonly hints: HintTable | null;
+  private readonly prefetch: {
+    active: Map<string, { hint: string; reserved: number }>;
+    attempted: Set<string>;
+    spent: number;
+    hintsPrefetched: number;
+    hintPrefetchBytes: number;
+    hintPrefetchFailed: number;
+    getRetries: number;
+  } | null;
   /** The idle frame cap; under `off` one branch per frame callback and nothing measured. */
   private readonly cap: FrameCap;
 
@@ -468,6 +491,18 @@ export class StreamLoop {
           () => cold.frames,
         )
       : null;
+    this.prefetch =
+      this.hints === null
+        ? null
+        : {
+            active: new Map(),
+            attempted: new Set(),
+            spent: 0,
+            hintsPrefetched: 0,
+            hintPrefetchBytes: 0,
+            hintPrefetchFailed: 0,
+            getRetries: 0,
+          };
     const hold = o.resourceHoldMs ?? DEFAULT_RESOURCE_HOLD_MS;
     this.resourceHoldMs = hold >= 0 ? hold : DEFAULT_RESOURCE_HOLD_MS;
     this.cap = new FrameCap(
@@ -587,7 +622,16 @@ export class StreamLoop {
   }
 
   private hintStats(h: HintTable): Partial<RenderStreamStats> {
-    return { ...h.totals, hintsPending: h.pending, hintLeadLog: h.log() };
+    const p = this.prefetch;
+    return {
+      ...h.totals,
+      hintsPending: h.pending,
+      hintLeadLog: h.log(),
+      hintsPrefetched: p?.hintsPrefetched ?? 0,
+      hintPrefetchBytes: p?.hintPrefetchBytes ?? 0,
+      hintPrefetchFailed: p?.hintPrefetchFailed ?? 0,
+      getRetries: p?.getRetries ?? 0,
+    };
   }
 
   /** Stops the loop and closes the connection (1000); the caller frees the core. Idempotent. */
@@ -837,9 +881,15 @@ export class StreamLoop {
       // Window 1: the wasm core holds ONE accepted state, so the newest supersedes the pending
       // one and is applied by a fresh applier (takeQueued's rebuild).
       this.pending = null;
-      this.fetcher?.cancel();
-      this.deferred.clear(); // their GETs went with the cancel; the rebuild needs them again
-      this.stale.clear();
+      // Hinted GETs can be joined by the rebuilt transaction; keep them and demand GETs
+      // sharing the same fetcher. Without hints, cancel other work but preserve retry bounds
+      // and deadlines; an obsolete retry must still settle as stale after the rebuild.
+      if (this.prefetch === null) {
+        this.fetcher?.cancel({ keepRetries: true });
+        for (const hash of this.stale)
+          if (!this.fetcher?.has(hash)) this.stale.delete(hash);
+      }
+      this.deferred.clear(); // The rebuilt applier needs these again (joining kept GETs).
       this.rebuildDue = true;
     }
     this.queue.push(item);
@@ -869,6 +919,7 @@ export class StreamLoop {
     conn.streamId = session.stream?.stream_id ?? "";
     // The pin rule ends with the connection; a new one re-sends the hints still in effect.
     this.hints?.clear();
+    this.clearPrefetch();
     this.o.onSession?.(session);
     this.drawnSeq = null;
     this.cap.activity(this.o.clock.now(), "session");
@@ -901,7 +952,7 @@ export class StreamLoop {
         this.recorder === null
           ? (this.o.core.stageStream?.bind(this.o.core) ?? null)
           : null;
-      this.makeFetcher = () =>
+      this.makeFetcher = (restore = false) =>
         new LiveFetcher(
           (path, signal, opts) =>
             transport.fetchResource(path, {
@@ -915,7 +966,37 @@ export class StreamLoop {
           0,
           (r) => this.stageFetched(r),
           // An unavailable payload's GET settles on its own: the others keep going.
-          { maxInFlight: FETCH_PARALLEL, stager, failures: "settle" },
+          {
+            maxInFlight: FETCH_PARALLEL,
+            stager,
+            failures: "settle",
+            retry: {
+              now: () => this.o.clock.now(),
+              mode: (hash, background) => {
+                if (restore)
+                  return this.restoreWant?.includes(hash) ? "demand" : null;
+                // An older naming's failure must settle before a new naming asks afresh.
+                if (this.wanted(hash))
+                  return this.stale.has(hash) ? null : "demand";
+                // A fold may still await an earlier joined hint while the state names it.
+                if (
+                  (!background || this.pending?.requester.has(hash)) &&
+                  !this.stale.has(hash) &&
+                  this.isNamed(hash)
+                )
+                  return "demand";
+                const hint = background
+                  ? this.prefetch?.active.get(hash)?.hint
+                  : undefined;
+                return hint !== undefined && this.hints?.has(hint)
+                  ? "prefetch"
+                  : null;
+              },
+              onRetry: () => {
+                if (this.prefetch !== null) this.prefetch.getRetries++;
+              },
+            },
+          },
         );
       this.fetcher = this.makeFetcher();
     }
@@ -996,6 +1077,7 @@ export class StreamLoop {
         (this.deferred.size > 0 || this.fetcher?.busy() === true)
       )
         this.pollDeferred();
+      if (this.prefetch !== null) this.prefetchIdle();
       // A payload that just arrived is a real change: drawn in this callback. So is the end: a
       // skipped callback that sees it would drain without ever drawing (or acking `submitted`)
       // the last applied state.
@@ -1112,6 +1194,7 @@ export class StreamLoop {
     this.diag.view = null;
     this.cold.reset();
     this.hints?.clear();
+    this.clearPrefetch();
     this.revisitDraw = false;
     this.undrawn.length = 0;
     this.applyDue = null;
@@ -1166,7 +1249,8 @@ export class StreamLoop {
       (n) =>
         !p.bodies.has(n.hash) &&
         !this.unavailable.has(n.hash) &&
-        !(fetcher?.has(n.hash) ?? false),
+        !(fetcher?.has(n.hash) ?? false) &&
+        (this.prefetch === null || !this.o.core.isStaged(n.hash)),
     );
     for (const n of misses)
       p.requester.set(n.hash, { seq: next.seq, kind: n.kind });
@@ -1228,7 +1312,11 @@ export class StreamLoop {
     // in flight (a deferred payload's, a folded one's) is not asked twice.
     const misses = item.needed
       .map((n) => n.hash)
-      .filter((h) => !this.unavailable.has(h));
+      .filter(
+        (h) =>
+          !this.unavailable.has(h) &&
+          (this.prefetch === null || !this.o.core.isStaged(h)),
+      );
     if (misses.length > 0) {
       const fetcher = this.needFetcher(item.seq, misses[0]);
       this.checkFetches(item.seq, misses);
@@ -1273,6 +1361,11 @@ export class StreamLoop {
     const p = this.pending as Pending;
     const core = this.o.core;
     const seq = p.item.seq;
+    // A hint may have staged these before the transaction existed (or between callbacks).
+    if (this.prefetch !== null)
+      for (const n of p.item.needed)
+        if (!p.bodies.has(n.hash) && core.isStaged(n.hash))
+          p.bodies.set(n.hash, null);
     const deferred = this.deferred;
     const unavailable = this.unavailable;
     /** Missing, not deferred already (a deferred one is not waited for again) and not
@@ -1283,6 +1376,7 @@ export class StreamLoop {
       p.item.needed.some((n) => waiting(n.hash)) || this.folding();
     if (outstanding() && this.fetcher !== null) {
       for (const r of this.fetcher.poll().results) {
+        if (this.prefetchResult(r)) continue;
         const t = p.requester.get(r.hash) ?? deferred.get(r.hash);
         if (!this.settle(r, t?.seq ?? seq, t?.kind ?? -1)) continue;
         p.bodies.set(r.hash, r.stage_error ?? null);
@@ -1358,9 +1452,19 @@ export class StreamLoop {
   private folding(): boolean {
     const f = this.fetcher;
     if (f === null || !this.windowTwo()) return false;
-    if (this.deferred.size === 0 && this.stale.size === 0) return f.busy();
+    if (
+      this.deferred.size === 0 &&
+      this.stale.size === 0 &&
+      (this.prefetch?.active.size ?? 0) === 0
+    )
+      return f.busy();
     for (const h of f.requested())
-      if (!this.deferred.has(h) && !this.stale.has(h)) return true;
+      if (
+        !this.deferred.has(h) &&
+        !this.stale.has(h) &&
+        (!this.prefetch?.active.has(h) || this.pending?.requester.has(h))
+      )
+        return true;
     return false;
   }
 
@@ -1374,6 +1478,7 @@ export class StreamLoop {
     const core = this.o.core;
     let arrived = false;
     for (const r of f.poll().results) {
+      if (this.prefetchResult(r)) continue;
       const t = this.deferred.get(r.hash);
       const forSeq = t?.seq ?? this.lastAppliedSeq;
       if (!this.settle(r, forSeq, t?.kind ?? -1)) continue;
@@ -1399,6 +1504,85 @@ export class StreamLoop {
       this.revisitDraw = true;
   }
 
+  /** Initial hint GETs and retries share the idle gate and hint priority order. */
+  private prefetchIdle(): void {
+    const p = this.prefetch;
+    const f = this.fetcher;
+    const hints = this.hints;
+    if (
+      p === null ||
+      f === null ||
+      hints === null ||
+      this.o.core.hintSelect === undefined ||
+      this.pending !== null ||
+      this.queue.length > 0 ||
+      this.deferred.size > 0 ||
+      this.endSeen ||
+      this.conn?.closeInfo !== null ||
+      this.ctx !== "ok"
+    )
+      return;
+    for (const h of f.requested()) if (!p.active.has(h)) return;
+    const max = Math.min(FETCH_PARALLEL - 1, this.o.prefetchMaxInFlight ?? 2);
+    const budget = this.o.prefetchBudgetBytes ?? 64 << 20;
+    if (p.active.size === 0 && (max <= 0 || p.spent >= budget)) return;
+    const activeHints = new Set(
+      [...p.active.values()].map((entry) => entry.hint),
+    );
+    for (const h of hints.entries()) {
+      if (
+        !activeHints.has(h.hash) &&
+        (h.state !== "pending" || p.active.size >= max || p.spent >= budget)
+      )
+        continue;
+      const selected = this.o.core.hintSelect?.(h.hash);
+      if (!selected) continue; // An older wasm has no selector: hints stay advisory only.
+      if (p.active.has(selected.hash)) {
+        f.prefetch(selected.hash); // A due retry uses its existing slot and byte reservation.
+        continue;
+      }
+      if (h.state !== "pending" || p.active.size >= max || p.spent >= budget)
+        continue;
+      if (this.o.core.isStaged(selected.hash)) {
+        hints.markFetched(h.hash);
+        continue;
+      }
+      if (p.attempted.has(selected.hash) || f.has(selected.hash)) continue;
+      if (selected.bytes > budget - p.spent) continue;
+      this.checkFetches(this.lastAppliedSeq, [selected.hash]);
+      if (!f.prefetch(selected.hash)) break;
+      p.active.set(selected.hash, { hint: h.hash, reserved: selected.bytes });
+      p.attempted.add(selected.hash);
+      p.spent += selected.bytes;
+    }
+  }
+
+  /** Count a hint result, keeping unused verified bytes staged until demand names them. A
+   * joined demand follows the ordinary provide/defer/failure path below the caller. */
+  private prefetchResult(r: FetchResult): boolean {
+    const p = this.prefetch;
+    const entry = p?.active.get(r.hash);
+    if (p === null || entry === undefined) return false;
+    p.active.delete(r.hash);
+    p.spent += (r.error === "" ? r.bytes : 0) - entry.reserved;
+    if (r.error === "" && !r.stage_error) {
+      p.hintsPrefetched++;
+      p.hintPrefetchBytes += r.bytes;
+      this.hints?.markFetched(entry.hint);
+    } else p.hintPrefetchFailed++;
+    if (this.wanted(r.hash)) return false;
+    this.stale.delete(r.hash);
+    return true;
+  }
+
+  private clearPrefetch(): void {
+    const p = this.prefetch;
+    if (p === null) return;
+    p.active.clear();
+    p.attempted.clear();
+    p.spent = 0;
+  }
+
   // ----------------------------------------------------------------------- unavailable payloads
 
   /** After each accepted transaction: of the payloads tracked (queued, in flight, deferred,
@@ -1412,9 +1596,16 @@ export class StreamLoop {
     const tracked: string[] = [];
     for (const h of this.deferred.keys()) tracked.push(h);
     for (const h of this.unavailable.keys()) tracked.push(h);
+    // Advisory GETs survive leaving the names, but a joined demand still needs its naming
+    // generation tracked: its old failure must not suppress a later naming.
     if (busy)
       for (const h of (f as LiveFetcher).requested())
-        if (!this.deferred.has(h) && !this.unavailable.has(h)) tracked.push(h);
+        if (
+          !this.deferred.has(h) &&
+          !this.unavailable.has(h) &&
+          (!this.prefetch?.active.has(h) || this.wanted(h))
+        )
+          tracked.push(h);
     if (tracked.length === 0) return;
     const named = this.o.core.named(tracked);
     for (let i = 0; i < tracked.length; i++)
@@ -1665,7 +1856,7 @@ export class StreamLoop {
             "resource-unavailable",
             `context restore: payload ${this.restoreWant[0]} left the store, and the session has no HTTP fetch`,
           );
-        this.restoreFetcher = this.makeFetcher();
+        this.restoreFetcher = this.makeFetcher(true);
         this.restoreFetcher.start(this.restoreWant);
       }
     }

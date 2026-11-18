@@ -1,5 +1,5 @@
 // Streaming through payloads the host cannot serve: a GET that is missing or temporarily
-// unavailable settles on its own (the queue and the other GETs go on), the payload is deferred
+// unavailable settles after bounded retries on its own (the queue and the other GETs go on), the payload is deferred
 // while the accepted state names it (never refetched meanwhile, never a failed status), and the
 // payloads the loop tracks follow the accepted names after every transaction (`core.named`).
 
@@ -42,6 +42,27 @@ function answer(
 ) {
   (t.gets[i] as { done?: boolean }).done = true;
   t.gets[i].resolve(status);
+}
+
+/** Exhaust the temporary retries before checking the existing unavailable-settlement contract. */
+async function exhaustTemporary(
+  h: ReturnType<typeof streaming>,
+  hash: string,
+  response: number | Error,
+) {
+  const t = h.last();
+  for (const delay of [250, 500, 1000]) {
+    h.clock.t += delay;
+    h.clock.frame();
+    const i = t.gets.findLastIndex((g) => name(g) === hash);
+    expect(i).toBeGreaterThanOrEqual(0);
+    if (response instanceof Error) {
+      (t.gets[i] as { done?: boolean }).done = true;
+      t.gets[i].reject(response);
+    } else answer(t, i, response);
+    await flush();
+  }
+  h.clock.frame();
 }
 
 describe("render-stream client unavailable payloads", () => {
@@ -142,7 +163,7 @@ describe("render-stream client unavailable payloads", () => {
     answer(t, 0, 200);
     answer(t, 1, 200);
     await flush();
-    h.clock.frame();
+    await exhaustTemporary(h, "p3", 503);
     expect(of(h.core.calls, /^(provide|defer|apply)/)).toEqual([
       "provide",
       "provide",
@@ -332,7 +353,8 @@ describe("render-stream client unavailable payloads", () => {
       expect(open(t)).toHaveLength(1);
       answer(t, t.gets.length - 1, k % 2 === 0 ? 404 : 500);
       await flush();
-      h.clock.frame();
+      if (k % 2 !== 0) await exhaustTemporary(h, "hh", 500);
+      else h.clock.frame();
       expect(h.loop.stats().resources?.unavailable).toBe(1);
       h.core.unnamed.add("hh");
       t.on.message(txk(++seq, []));
@@ -348,7 +370,7 @@ describe("render-stream client unavailable payloads", () => {
         loop.stale.size,
       ]).toEqual([0, 0, 0]);
     }
-    expect(t.gets).toHaveLength(8);
+    expect(t.gets).toHaveLength(20);
     const r = h.loop.stats().resources;
     expect(r).toMatchObject({
       found: 8,
@@ -398,7 +420,8 @@ describe("render-stream client unavailable payloads", () => {
     h.clock.frame();
     answer(t, 0, status);
     await flush();
-    h.clock.frame();
+    if (reason === "temporary") await exhaustTemporary(h, "aa", status);
+    else h.clock.frame();
     expect(failed(h)).toBe(false);
     expect(t.gets[1].aborted).toBe(false);
     expect(h.loop.stats().resources?.recent[0]).toMatchObject({
@@ -414,7 +437,7 @@ describe("render-stream client unavailable payloads", () => {
     h.clock.frame();
     t.gets[0].reject(new TypeError("Failed to fetch"));
     await flush();
-    h.clock.frame();
+    await exhaustTemporary(h, "aa", new TypeError("Failed to fetch"));
     expect(failed(h)).toBe(false);
     expect(t.gets[1].aborted).toBe(false);
     expect(h.loop.stats().resources?.recent[0]).toMatchObject({
@@ -434,6 +457,14 @@ describe("render-stream client unavailable payloads", () => {
     await flush();
     h.clock.frame();
     expect(failed(h)).toBe(false);
+    expect(h.loop.stats().resources?.found).toBe(0);
+    for (const delay of [250, 500, 1000]) {
+      h.clock.t += delay;
+      h.clock.frame();
+      await new Promise((r) => setTimeout(r, 30));
+      await flush();
+    }
+    h.clock.frame();
     const recent = h.loop.stats().resources?.recent ?? [];
     expect(recent.map((e) => [e.hash, e.reason])).toContainEqual([
       "aa",

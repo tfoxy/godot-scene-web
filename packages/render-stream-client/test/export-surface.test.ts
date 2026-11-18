@@ -46,6 +46,30 @@ describe("@godot-scene-web/render-stream-client export surface", () => {
 });
 
 describe("RenderStreamStats", () => {
+  it("exposes optional hint prefetch options and counters on the existing public types", () => {
+    const options: Pick<
+      client.RenderStreamClientOptions,
+      "prefetchMaxInFlight" | "prefetchBudgetBytes"
+    > = {
+      prefetchMaxInFlight: 2,
+      prefetchBudgetBytes: 64 << 20,
+    };
+    const counters: Pick<
+      client.RenderStreamStats,
+      | "hintsPrefetched"
+      | "hintPrefetchBytes"
+      | "hintPrefetchFailed"
+      | "getRetries"
+    > = {
+      hintsPrefetched: 1,
+      hintPrefetchBytes: 4,
+      hintPrefetchFailed: 0,
+      getRetries: 0,
+    };
+    expect(options.prefetchMaxInFlight).toBe(2);
+    expect(counters.hintsPrefetched).toBe(1);
+  });
+
   it("names the connection's carrier (CAR8)", () => {
     const carrier: client.RenderStreamStats["carrier"] = null;
     const named: client.RenderStreamStats["carrier"][] = [
