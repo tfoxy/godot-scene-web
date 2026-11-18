@@ -9,6 +9,10 @@ extends Node
 ## time and wrapping), so the root changes on every host frame and a receiver draws every frame
 ## even when no surface changes (the `draw` scene's idle phase).
 ##
+## Scene resources are `load()`ed in `_ready`, never `preload`ed: a preload runs while the main scene
+## loads, before the loader arms the capture, so the scenes' shaders and materials would exist
+## unseen and stream as unknown/unsupported materials (drawn without their blend modes).
+##
 ## Environment (all optional; an invalid value prints an error and quits 2):
 ##   RS_FIXTURE_VP_SCENE     `draw` (default) or `vfx6`
 ##   RS_FIXTURE_VP_PHASE     draw only: `active` (default; a stroke is drawn every frame) or `idle`
@@ -19,8 +23,8 @@ extends Node
 ##   RS_FIXTURE_STEP_LOG     absolute path: one JSONL line at `ready` and one at `final`
 ##   RS_FIXTURE_SHOT_DIR     absolute dir: step-1.png of the root at frame 120 (rendered hosts only)
 
-const DrawScene := preload("res://draw.tscn")
-const Vfx6Scene := preload("res://vfx6.tscn")
+const DRAW_SCENE_PATH := "res://draw.tscn"
+const VFX6_SCENE_PATH := "res://vfx6.tscn"
 
 const ROOT_SIZE: Vector2 = Vector2(1920, 1080)
 const QUIT_TIME_DEFAULT: float = 60.0
@@ -48,9 +52,9 @@ func _ready() -> void:
 		get_tree().quit(2)
 		return
 	if _scene_name == "vfx6":
-		_scene = Vfx6Scene.instantiate()
+		_scene = (load(VFX6_SCENE_PATH) as PackedScene).instantiate()
 	else:
-		_scene = DrawScene.instantiate()
+		_scene = (load(DRAW_SCENE_PATH) as PackedScene).instantiate()
 		_scene.set("phase", _phase)
 	add_child(_scene)
 	_heartbeat = ColorRect.new()

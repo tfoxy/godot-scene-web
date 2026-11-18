@@ -14,7 +14,9 @@ Everything is synthetic: polygons, lines and a procedural falloff texture.
 - `loader.gd`: loads `GRC_EXTENSION` in `_enter_tree` (a copy of `fixtures/gate7-pace/loader.gd`).
 - `main.tscn` / `main.gd`: a plain `Node` that instantiates the chosen scene in `_ready`, after the
   capture armed, and adds the root heartbeat (a 48x48 square moving 4 px per 1/60 s), so the root
-  changes on every host frame. It handles the environment below.
+  changes on every host frame. It handles the environment below. The scenes are `load()`ed there,
+  never `preload`ed: a preload runs before the capture arms, so their shaders and materials would
+  stream as unknown/unsupported and draw without their blend modes.
 - `draw.tscn` / `draw.gd`: the drawing surface.
 - `vfx6.tscn` / `vfx6.gd`: six effect surfaces.
 
