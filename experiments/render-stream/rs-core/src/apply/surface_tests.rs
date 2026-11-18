@@ -843,3 +843,102 @@ fn a_sampler_of_a_resized_once_surface_re_renders() {
     assert!(f2.1.contains(&6), "6 freed");
     assert!(f2.0.iter().chain(f3.iter()).any(|(v, _)| *v == 5), "5 re-renders without 6's old snapshot");
 }
+
+/// Viewport 5's item 20 under a custom-shader material whose code hash is `CODE`.
+fn shader_surface_scene() -> ResolvedState {
+    let mut s = scene();
+    s.shaders.insert(
+        41,
+        Shader {
+            id: 41,
+            origin: Origin::Created,
+            status: EntryStatus::Ok,
+            reason: None,
+            version: 1,
+            mode: Some(ShaderMode::CanvasItem),
+            source: Some(ShaderSource::Payload),
+            hash: Some(CODE),
+            payload_bytes: 64,
+            builtin: None,
+            process: None,
+            uses: Vec::new(),
+            default_textures: Vec::new(),
+        },
+    );
+    s.materials.insert(
+        40,
+        Material {
+            id: 40,
+            origin: Origin::Created,
+            status: EntryStatus::Ok,
+            reason: None,
+            version: 1,
+            shader: Some(41),
+            params: Vec::new(),
+        },
+    );
+    s.items.get_mut(&20).unwrap().material = Some(40);
+    s
+}
+
+const CODE: Hash = Hash([0x61; 32]);
+
+#[test]
+fn a_surface_item_on_a_linking_program_is_omitted_until_the_link_settles() {
+    use super::programs::{ProgramEntry, ProgramInfo};
+    let s = shader_surface_scene();
+    let d = TxDelta {
+        shaders_upserted: vec![41],
+        materials_upserted: vec![40],
+        ..full_delta(&s)
+    };
+    let mut store = PayloadStore::default();
+    store.shaders.insert(
+        CODE,
+        "shader_type canvas_item;\nvoid fragment() {}\n".into(),
+    );
+    let mut a = applier();
+    a.prepare(&s, &d);
+    a.mark_linking(CODE);
+    a.apply(&s, &d, &store);
+    {
+        let set = a.surfaces.as_ref().unwrap();
+        let surface = set.applier(5).unwrap();
+        assert!(
+            surface.list.draws.is_empty(),
+            "the surface drew a still-linking program's item (shaderless)"
+        );
+        assert!(
+            surface
+                .shortcut_totals
+                .contains_key("shader-linking-skipped")
+        );
+    }
+    a.list.consumed();
+    a.surfaces.as_mut().unwrap().consumed();
+    a.set_program(
+        CODE,
+        ProgramEntry::Ready(ProgramInfo {
+            program: 1,
+            blend: BlendMode::Mix,
+            light: LightMode::Normal,
+            uniforms: Vec::new(),
+            samplers: Vec::new(),
+            screen: None,
+            vertex: false,
+            time: false,
+            alpha: None,
+        }),
+    );
+    assert!(a.revisit(&s, &store), "the settled link was not revisited");
+    let set = a.surfaces.as_ref().unwrap();
+    let surface = set.applier(5).unwrap();
+    assert!(
+        surface
+            .list
+            .draws
+            .iter()
+            .any(|d| d.program != gsw_canvas_draw_list::BUILTIN_PROGRAM),
+        "the surface item does not draw with its program after the settle"
+    );
+}

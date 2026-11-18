@@ -18,7 +18,13 @@
 // Every case runs twice, in `executor-webgl.ts`'s y-down orientation and in Godot's
 // (`ExecOptions::godot_orientation`, the GSW receiver's), against the same expectations.
 //
-// Artifacts (never committed): `artifacts/canvas-items-pixel/program-<case>[-godot].png`.
+// J1: every case also links in the background (`begin_program`, settled by `poll_programs` one
+// animation frame later or by KHR_parallel_shader_compile): before the first poll every program is
+// pending and its draws are skipped; once settled the target meets the same expectations. A few
+// cases also lose the context while their links are pending: nothing settles while lost, the
+// restore recompiles them, and the re-sent frame meets the same expectations.
+//
+// Artifacts (never committed): `artifacts/canvas-items-pixel/program-<case>[-godot|-async|-loss].png`.
 
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
@@ -29,7 +35,10 @@ import * as esbuild from "esbuild";
 import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildProgramCases } from "../src/canvas-pixel/canvas-items-program-cases";
-import type { ProgramCaseResult } from "../src/canvas-pixel/canvas-items-program-entry";
+import type {
+  ProgramCaseResult,
+  ProgramMode,
+} from "../src/canvas-pixel/canvas-items-program-entry";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, "..", "..", "..");
@@ -129,6 +138,67 @@ describe.skipIf(!ENABLED)(
       await browser?.close();
     });
 
+    async function check(
+      name: string,
+      orientation: string,
+      mode: ProgramMode,
+    ): Promise<ProgramCaseResult> {
+      const spec = CASES.find((c) => c.name === name);
+      if (!spec) throw new Error(name);
+      const godot = orientation === "godot";
+      const result: ProgramCaseResult = await page.evaluate(
+        ([n, g, m]) => window.__gswCanvasItemsPrograms.run(n, g, m),
+        [name, godot, mode] as const,
+      );
+      const suffix =
+        (godot ? "-godot" : "") +
+        (mode === "async"
+          ? "-async"
+          : mode === "async-loss"
+            ? "-loss"
+            : mode === "async-loss-poll"
+              ? "-loss-poll"
+              : "");
+      await sharp(Buffer.from(Uint8Array.from(result.target)), {
+        raw: { width: result.width, height: result.height, channels: 4 },
+      })
+        .png()
+        .toFile(join(ARTIFACTS, `program-${name}${suffix}.png`));
+      expect(result.renderer).toMatch(/ANGLE/);
+      expect(result.renderer).not.toMatch(/swiftshader|llvmpipe/i);
+      expect(result.glError, `${name}: gl.getError()`).toBe(0);
+      expect(Object.keys(result.defineErrors).map(Number).sort()).toEqual(
+        [...(spec.failing ?? [])].sort(),
+      );
+      for (const id of spec.failing ?? [])
+        expect(result.defineErrors[id]).toMatch(/link failed|ERROR/);
+      expect(result.stats.drawsSkipped).toBe(spec.skipped ?? 0);
+      const problems: string[] = [];
+      for (const e of spec.expect) {
+        const [x0, y0, w, h] = e.rect;
+        let worst = 0;
+        let at = "";
+        for (let y = y0; y < y0 + h; y++)
+          for (let x = x0; x < x0 + w; x++) {
+            const i = (y * result.width + x) * 4;
+            for (let c = 0; c < 4; c++) {
+              const d = Math.abs(result.target[i + c] - e.rgba[c]);
+              if (d > worst) {
+                worst = d;
+                at = `(${x},${y}) got ${result.target.slice(i, i + 4).join(",")} expected ${e.rgba.join(",")}`;
+              }
+            }
+          }
+        console.log(
+          `canvas-items program ${name} (${orientation}, ${mode}): ${e.why}: max delta ${worst}${at ? ` ${at}` : ""}`,
+        );
+        if (worst > e.maxDelta)
+          problems.push(`${e.why}: max delta ${worst} > ${e.maxDelta} ${at}`);
+      }
+      expect(problems).toEqual([]);
+      return result;
+    }
+
     // Every case also in Godot's orientation (`ExecOptions::godot_orientation`, as the GSW
     // receiver draws): the same expectations, read back in design rows.
     it.each(
@@ -139,54 +209,59 @@ describe.skipIf(!ENABLED)(
     )(
       "%s (%s): every expected pixel within its delta",
       async (name, orientation) => {
-        const spec = CASES.find((c) => c.name === name);
-        if (!spec) throw new Error(name);
-        const godot = orientation === "godot";
-        const result: ProgramCaseResult = await page.evaluate(
-          ([n, g]) => window.__gswCanvasItemsPrograms.run(n, g),
-          [name, godot] as const,
-        );
-        await sharp(Buffer.from(Uint8Array.from(result.target)), {
-          raw: { width: result.width, height: result.height, channels: 4 },
-        })
-          .png()
-          .toFile(
-            join(ARTIFACTS, `program-${name}${godot ? "-godot" : ""}.png`),
-          );
-        expect(result.renderer).toMatch(/ANGLE/);
-        expect(result.renderer).not.toMatch(/swiftshader|llvmpipe/i);
-        expect(result.glError, `${name}: gl.getError()`).toBe(0);
-        expect(Object.keys(result.defineErrors).map(Number).sort()).toEqual(
-          [...(spec.failing ?? [])].sort(),
-        );
-        for (const id of spec.failing ?? [])
-          expect(result.defineErrors[id]).toMatch(/link failed|ERROR/);
-        expect(result.stats.drawsSkipped).toBe(spec.skipped ?? 0);
-        const problems: string[] = [];
-        for (const e of spec.expect) {
-          const [x0, y0, w, h] = e.rect;
-          let worst = 0;
-          let at = "";
-          for (let y = y0; y < y0 + h; y++)
-            for (let x = x0; x < x0 + w; x++) {
-              const i = (y * result.width + x) * 4;
-              for (let c = 0; c < 4; c++) {
-                const d = Math.abs(result.target[i + c] - e.rgba[c]);
-                if (d > worst) {
-                  worst = d;
-                  at = `(${x},${y}) got ${result.target.slice(i, i + 4).join(",")} expected ${e.rgba.join(",")}`;
-                }
-              }
-            }
-          console.log(
-            `canvas-items program ${name} (${orientation}): ${e.why}: max delta ${worst}${at ? ` ${at}` : ""}`,
-          );
-          if (worst > e.maxDelta)
-            problems.push(`${e.why}: max delta ${worst} > ${e.maxDelta} ${at}`);
-        }
-        expect(problems).toEqual([]);
+        await check(name, orientation, "sync");
       },
       120000,
     );
+
+    it.each(
+      CASES.map((c) => [c.name]),
+    )("%s (background link): pending and skipped before the first poll, then the same pixels", async (name) => {
+      const spec = CASES.find((c) => c.name === name);
+      if (!spec) throw new Error(name);
+      const result = await check(name, "godot", "async");
+      const ids = spec.programs.map((p) => p.id).sort();
+      expect(result.linking?.pendingBeforePoll.slice().sort()).toEqual(ids);
+      expect(result.linking?.skippedBeforePoll).toBeGreaterThanOrEqual(
+        spec.skipped ?? 0,
+      );
+      console.log(
+        `canvas-items program ${name} (background link): ${JSON.stringify(result.linking)} skipped once settled ${result.stats.drawsSkipped}`,
+      );
+      if (ids.length > 0) {
+        expect(result.linking?.polls).toBeGreaterThanOrEqual(1);
+        // Some draw names a program: before the poll, more draws were skipped than after.
+        if (spec.bindings.length > 0)
+          expect(result.linking?.skippedBeforePoll).toBeGreaterThan(
+            spec.skipped ?? 0,
+          );
+      }
+    }, 120000);
+
+    // A context lost while links are pending: the case with a failing program among them too.
+    it.each(
+      CASES.filter((c, i) => i < 3 || (c.failing?.length ?? 0) > 0).map((c) => [
+        c.name,
+      ]),
+    )("%s (background link, context lost while pending): settles after the restore", async (name) => {
+      const result = await check(name, "godot", "async-loss");
+      expect(result.linking?.settledWhileLost).toBe(0);
+      expect(result.linking?.stateWhileLost).toBe("lost");
+    }, 120000);
+
+    // A poll in the task that loses the context, before its event: the status reads fail on the
+    // dead context. The links stay pending, the restore recompiles them, and each is reported
+    // exactly once and drawn.
+    it.each(
+      CASES.filter((c) => c.programs.length > 0).map((c) => [c.name]),
+    )("%s (background link, polled as the context is lost): reported once after the restore", async (name) => {
+      const spec = CASES.find((c) => c.name === name);
+      if (!spec) throw new Error(name);
+      const result = await check(name, "godot", "async-loss-poll");
+      expect(result.linking?.settledWhileLost).toBe(0);
+      expect(result.linking?.stateWhileLost).toBe("lost");
+      const once = Object.fromEntries(spec.programs.map((p) => [p.id, 1]));
+      expect(result.linking?.reports).toEqual(once);
+    }, 120000);
   },
 );

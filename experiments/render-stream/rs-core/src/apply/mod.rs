@@ -168,6 +168,9 @@ pub enum ApplyShortcut {
     /// A material whose shader code is deferred (loading, or unavailable) with no program: what
     /// it draws is not drawn.
     ShaderUnavailable,
+    /// A material whose program is still linking ([`Applier::mark_linking`]): what it draws is
+    /// not drawn until the link settles.
+    ShaderLinking,
     /// render-stream/16 (viewport-surfaces-design.md Q5a): a clear `never` / `next_frame`
     /// surface drawn once per received frame, not per host frame: approximate.
     ViewportAccumulation,
@@ -189,6 +192,7 @@ impl ApplyShortcut {
             ApplyShortcut::TieAppendOrder => "slice-tie-append-order",
             ApplyShortcut::TextureNotResident => "texture-not-resident-skipped",
             ApplyShortcut::ShaderUnavailable => "shader-unavailable-skipped",
+            ApplyShortcut::ShaderLinking => "shader-linking-skipped",
             ApplyShortcut::ViewportAccumulation => "viewport-accumulation",
             ApplyShortcut::ViewportFeedback => "viewport-feedback",
             ApplyShortcut::ViewportTooLarge => "viewport-too-large",
@@ -775,6 +779,10 @@ pub struct Applier {
     /// unless a client defers, and then only the residency syncs' missing-payload branches and
     /// the material resolution (a deferred shader's users) read it.
     deferred: HashSet<Hash, payloads::HashBuild>,
+    /// Custom shader code hashes whose program the adapter is still linking
+    /// ([`Applier::mark_linking`]): not pending, and what their materials draw is omitted, as for
+    /// deferred code, until [`Applier::set_program`] registers the program or its refusal.
+    linking: HashSet<Hash, payloads::HashBuild>,
     /// Textures [`Applier::restore_unavailable`] took out of residency (their payload left the
     /// store and the client could not fetch it again): the next apply re-lowers what draws them,
     /// as `sync_textures`' `resized`.
@@ -1344,6 +1352,7 @@ impl Applier {
             delivery: crate::delivery::DeliveryPrefs::default(),
             kept: HashMap::default(),
             deferred: HashSet::default(),
+            linking: HashSet::default(),
             restore_resized: Vec::new(),
             stream_version: 6,
             attach: Vec::new(),
@@ -1429,13 +1438,31 @@ impl Applier {
     }
 
     /// G7s: register what draws custom shader code `hash` (its item-space program, or a typed
-    /// refusal). Takes effect at the next `apply`.
+    /// refusal). Takes effect at the next `apply` (with no transaction waiting, a
+    /// [`Applier::revisit`]); ends a [`Applier::mark_linking`].
     pub fn set_program(&mut self, hash: Hash, entry: ProgramEntry) {
-        if self.programs.get(&hash) != Some(&entry) {
+        let linked = self.linking.remove(&hash);
+        if linked || self.programs.get(&hash) != Some(&entry) {
             self.programs.insert(hash, entry);
             self.programs_dirty = true;
             self.programs_epoch += 1;
         }
+    }
+
+    /// The adapter began linking the program for custom shader code `hash` and has not read its
+    /// status (a driver links in the background): the shader is not pending any more, and a
+    /// material drawn by it draws nothing of its own (as for deferred code, never shaderless or
+    /// as its builtin) until [`Applier::set_program`] registers the program or its refusal. A
+    /// hash that already has an entry is left as it is.
+    pub fn mark_linking(&mut self, hash: Hash) {
+        if !self.programs.contains_key(&hash) {
+            self.linking.insert(hash);
+        }
+    }
+
+    /// Whether `hash`'s program is still linking ([`Applier::mark_linking`]).
+    pub fn is_linking(&self, hash: &Hash) -> bool {
+        self.linking.contains(hash)
     }
 
     pub fn program_entry(&self, hash: &Hash) -> Option<&ProgramEntry> {
@@ -1460,7 +1487,7 @@ impl Applier {
             let (Some(hash), Some(source)) = (s.hash, s.source) else {
                 continue;
             };
-            if !self.programs.contains_key(&hash) {
+            if !self.programs.contains_key(&hash) && !self.linking.contains(&hash) {
                 out.push((sid, hash, source));
             }
         }
@@ -2058,12 +2085,24 @@ impl Applier {
     /// With no transaction waiting: the deferred payloads that reached `store` since the last
     /// apply are made resident and what draws them is drawn, by an apply of an empty delta over
     /// the same state. Also after [`Applier::restore_unavailable`], to re-lower what drew the
-    /// textures it took out. False (nothing applied) when neither happened, or while a
+    /// textures it took out, and after a [`Applier::set_program`] (a link that settled draws what
+    /// its materials omitted). False (nothing applied) when none of these happened, or while a
     /// transaction is prepared (its own apply absorbs them).
     pub fn revisit(&mut self, state: &ResolvedState, store: &PayloadStore) -> bool {
-        if self.prepared
-            || (self.restore_resized.is_empty() && !self.deferred.iter().any(|h| store.has(h)))
+        if self.restore_resized.is_empty()
+            && !self.programs_dirty
+            && !self.deferred.iter().any(|h| store.has(h))
         {
+            return false;
+        }
+        self.reapply(state, store)
+    }
+
+    /// With no transaction waiting: an apply of an empty delta over the same state, whatever
+    /// changed outside a transaction (a [`Applier::revisit`]'s reasons, or emitter buffers a client
+    /// set after its simulation settled). False (nothing applied) while a transaction is prepared.
+    pub fn reapply(&mut self, state: &ResolvedState, store: &PayloadStore) -> bool {
+        if self.prepared {
             return false;
         }
         let empty = TxDelta {
@@ -3908,14 +3947,23 @@ impl Applier {
         // a live client deferred (still loading, or unavailable) and that has no program: the
         // owner's own draws (and every user inheriting the material) are omitted until the code
         // arrives and compiles; descendants with their own material, and the traversal, stay.
-        if !self.deferred.is_empty() {
+        // A program still linking omits the same draws until it is registered.
+        if !self.deferred.is_empty() || !self.linking.is_empty() {
             if let Some(h) = s.hash {
                 let by_program = s
                     .builtin
                     .as_ref()
                     .is_none_or(|b| b.particles_animation && !self.sabotage.no_flipbook);
-                if by_program && self.deferred.contains(&h) && !self.programs.contains_key(&h) {
-                    self.note(ApplyShortcut::ShaderUnavailable.as_str(), 1);
+                if by_program
+                    && (self.deferred.contains(&h) || self.linking.contains(&h))
+                    && !self.programs.contains_key(&h)
+                {
+                    let why = if self.deferred.contains(&h) {
+                        ApplyShortcut::ShaderUnavailable
+                    } else {
+                        ApplyShortcut::ShaderLinking
+                    };
+                    self.note(why.as_str(), 1);
                     return MaterialEff {
                         skip: true,
                         ..NO_MATERIAL

@@ -194,3 +194,98 @@ describe("GswParticles scratch upload", () => {
     expect(copies).toBe(1);
   });
 });
+
+describe("GswParticles burst pacing (J1)", () => {
+  it("draws a preprocessing emitter as nothing until its burst is done, then as the unpaced one", () => {
+    const pre = {
+      ...emitter(1, 20),
+      amount: 6,
+      f: { ...emitter(1, 20).f, pre_process_time: 2, lifetime: 1.5 },
+    };
+    const start = JSON.stringify({
+      ids: [1],
+      emitters: [pre],
+      materials: [material(20, 1, false)],
+    });
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const scratchHost = () => {
+      const taken: Float32Array[] = [];
+      let t = 0;
+      const msgs = [start];
+      const g: ParticlesHost = {
+        particles_sync: () => msgs.shift() ?? "",
+        shader_time: () => (t += 1 / 60),
+        particles_set: () => {
+          throw new Error("copied");
+        },
+        particles_scratch: () => 1024,
+        particles_set_scratch: (_id, floats) => {
+          taken.push(new Float32Array(memory.buffer, 1024, floats).slice());
+        },
+      };
+      return { g, taken };
+    };
+    // Every clock read is a millisecond later: a 3 ms slice is about three passes per step.
+    let clock = 0;
+    const paced = new GswParticles({ sliceMs: 3, now: () => clock++ });
+    const plain = new GswParticles();
+    const a = scratchHost();
+    const b = scratchHost();
+    let steps = 0;
+    do {
+      paced.step(a.g, memory);
+      plain.step(b.g, memory);
+      steps++;
+    } while (paced.evidence.settling_steps === steps && steps < 500);
+    // 2 s at 30 passes/s: 61 passes, a few per step.
+    expect(steps).toBeGreaterThan(10);
+    // One upload of zeros when it started settling, none while it settled, then its instances.
+    expect(a.taken).toHaveLength(2);
+    expect(a.taken[0].every((v) => v === 0)).toBe(true);
+    expect(Array.from(a.taken[1])).toEqual(Array.from(b.taken.at(-1) ?? []));
+    expect(paced.evidence.sim_steps).toBe(plain.evidence.sim_steps);
+  });
+});
+
+describe("GswParticles idle settle (J1)", () => {
+  it("finishes a burst with no step after the first and uploads the unpaced instances", () => {
+    const pre = {
+      ...emitter(1, 20),
+      amount: 6,
+      f: { ...emitter(1, 20).f, pre_process_time: 2, lifetime: 1.5 },
+    };
+    const start = JSON.stringify({
+      ids: [1],
+      emitters: [pre],
+      materials: [material(20, 1, false)],
+    });
+    const host = () => {
+      const taken: Float32Array[] = [];
+      const msgs = [start];
+      const g: ParticlesHost = {
+        particles_sync: () => msgs.shift() ?? "",
+        shader_time: () => 5,
+        particles_set: (_id, data) => {
+          taken.push(data.slice());
+        },
+      };
+      return { g, taken };
+    };
+    let clock = 0;
+    const paced = new GswParticles({ sliceMs: 3, now: () => clock++ });
+    const plain = new GswParticles();
+    const a = host();
+    const b = host();
+    paced.step(a.g);
+    plain.step(b.g);
+    expect(paced.settling).toBe(true);
+    expect(a.taken).toHaveLength(1); // zeros
+    let settles = 0;
+    while (!paced.settle(a.g) && settles < 500) settles++;
+    expect(settles).toBeGreaterThan(5);
+    expect(paced.settling).toBe(false);
+    expect(a.taken).toHaveLength(2);
+    expect(Array.from(a.taken[1])).toEqual(Array.from(b.taken[0]));
+    expect(paced.settle(a.g)).toBe(false);
+  });
+});

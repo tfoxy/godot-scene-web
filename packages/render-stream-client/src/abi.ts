@@ -74,6 +74,16 @@ export interface GswRs {
     vertexGlsl: string,
   ): number;
   refuse_program(i: number, reason: string, detail: string): number;
+  /** J1: `define_program` begins the link without reading its status, and `poll_programs`
+   * registers each program once its link settled (until then its materials' draws are omitted).
+   * Optional: a core built before it defines every program synchronously. */
+  set_async_programs?(on: boolean): void;
+  /** J1: an apply of no change over the same state, taking emitter buffers set since the last
+   * (1: applied). Optional: a core built before it. */
+  reapply?(): number;
+  /** J1: settle the begun links (once per frame callback, before its applier run): `ready |
+   * (failed << 16)`, 0 when nothing settled. */
+  poll_programs?(): number;
   // Live mode.
   rx(len: number): number;
   /** The receive buffer's current pointer (after `decode_rx`; `rx()` may have grown it). */

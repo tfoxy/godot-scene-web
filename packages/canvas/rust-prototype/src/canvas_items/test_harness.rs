@@ -111,6 +111,34 @@ impl CanvasItemsTestHarness {
             .map_err(js)
     }
 
+    /// [`CanvasItemsExecutor::begin_program`]: compile and link without reading the status
+    /// (`vertex` empty: the builtin vertex stage). The program draws once `poll_programs` settles
+    /// it.
+    pub fn begin_program(&mut self, id: u32, module: &str, vertex: &str) -> Result<(), JsValue> {
+        let vertex = (!vertex.is_empty()).then_some(vertex);
+        self.executor.begin_program(id, module, vertex).map_err(js)
+    }
+
+    /// [`CanvasItemsExecutor::poll_programs`] as JSON: `[[id, null | "<log>"], ..]`.
+    pub fn poll_programs(&mut self) -> String {
+        let done = self.executor.poll_programs();
+        let rows: Vec<serde_json::Value> = done
+            .into_iter()
+            .map(|(id, r)| serde_json::json!([id, r.err()]))
+            .collect();
+        serde_json::Value::Array(rows).to_string()
+    }
+
+    /// Whether program `id`'s link is begun and not settled.
+    pub fn program_pending(&self, id: u32) -> bool {
+        self.executor.program_pending(id)
+    }
+
+    /// Whether program `id` is registered and compiled (its draws run).
+    pub fn has_program(&self, id: u32) -> bool {
+        self.executor.has_program(id)
+    }
+
     /// Binding slot `slot` of the held list (draws name it `slot + 1`) from JSON
     /// `{"program": n, "post_modulate": [r, g, b, a], "uniforms": [{"name": s, "float": [..]} |
     /// {"name": s, "int": [..]}], "samplers": [{"name": s, "texture": n, "sampler": bits}]}`.

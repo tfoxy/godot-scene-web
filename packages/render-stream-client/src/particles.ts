@@ -10,6 +10,13 @@
 // Called once per apply (`step`), after the transactions are accepted and before `apply`: a
 // window-2 fold steps once, by the fold's whole time delta.
 //
+// J1: with a burst pacing (the client's, `CLIENT_PARTICLE_PACING`), an emitter's burst (its
+// `pre_process_time` passes when it starts, a process request) is spread over frames: each `step`
+// gives the bursts in progress `sliceMs` between them, after at least one pass each. A settling emitter is drawn as nothing (its instances zeros) until its burst is done,
+// and every setter and step it got meanwhile is replayed in order then (`GodotGpuEmitter`'s
+// `settling`), so it ends in exactly the state the frames would have left it in. A 400 s preprocess
+// (12000 passes) no longer holds one frame callback for the whole simulation.
+//
 // A material whose key comes from process shader code the client has not got is `suspended`:
 // each emitter it drives drops its simulation (its old output is never drawn again) until the code
 // arrives, and then starts a fresh one, as a new emitter would. Other emitters are untouched.
@@ -106,12 +113,33 @@ export interface ParticlesEvidence {
   seed_sets: number;
   process_requests: number;
   sim_steps: number;
+  /** J1: steps that left an emitter settling (mid-burst, drawn as nothing). */
+  settling_steps: number;
   /** Emitters with no keyed process material (nothing GSW can simulate): not drawn. */
   unsimulated: number;
   approximate_features: string[];
 }
 
 const DEFAULT_FRAME = 1 / 60;
+
+/** How `step` spreads bursts: the slice (Infinity: a burst runs to its end in one step) and the
+ * clock it is measured on. */
+export interface ParticleBurstPacing {
+  sliceMs: number;
+  now: () => number;
+}
+
+/** Every burst in one step: the harness receiver pages' default (frame-for-frame evidence). */
+export const UNPACED_PARTICLES: ParticleBurstPacing = {
+  sliceMs: Number.POSITIVE_INFINITY,
+  now: () => 0,
+};
+
+/** J1, the client's: 6 ms of one frame callback for the bursts in progress, together. */
+export const CLIENT_PARTICLE_PACING: ParticleBurstPacing = {
+  sliceMs: 6,
+  now: () => performance.now(),
+};
 
 export class GswParticles {
   private readonly held = new Map<number, Held>();
@@ -129,9 +157,14 @@ export class GswParticles {
     seed_sets: 0,
     process_requests: 0,
     sim_steps: 0,
+    settling_steps: 0,
     unsimulated: 0,
     approximate_features: [],
   };
+
+  constructor(
+    private readonly pacing: ParticleBurstPacing = UNPACED_PARTICLES,
+  ) {}
 
   /** Sync with the accepted state only (a revisit: no host time passed, so nothing steps or
    * uploads): a suspended material's emitters drop their simulation, an arrived one's are
@@ -162,32 +195,111 @@ export class GswParticles {
       } else dt = 0;
       this.lastTime = t;
     }
+    const yieldNow = this.slice();
     for (const [id, h] of this.held) {
       const sim = h.sim;
       if (!sim) continue;
       const before = sim.stats.steps;
       // The shader's TIME is the host's (turbulence reads it); without one, the sim's own sum.
-      if (Number.isFinite(t)) sim.update(dt, t);
-      else sim.update(dt);
+      sim.update(dt, Number.isFinite(t) ? t : undefined, yieldNow);
       this.evidence.sim_steps += sim.stats.steps - before;
-      if (sim.isInactive && h.zeros) continue;
-      const floats = sim.config.amount * GODOT_GPU_INSTANCE_FLOATS;
-      if (
-        memory !== undefined &&
-        g.particles_scratch !== undefined &&
-        g.particles_set_scratch !== undefined
-      ) {
-        // No wasm call between the view and the pack: the pointer stays valid.
-        const ptr = g.particles_scratch(floats);
-        sim.pack(new Float32Array(memory.buffer, ptr, floats));
-        g.particles_set_scratch(id, floats);
-      } else {
-        if (this.buf.length < floats) this.buf = new Float32Array(floats);
-        const out = this.buf.subarray(0, floats);
-        sim.pack(out);
-        g.particles_set(id, out);
+      if (sim.settling) {
+        // Mid-burst: nothing of it is drawn until the burst is done.
+        if (!h.zeros) {
+          this.upload(
+            g,
+            id,
+            sim.config.amount * GODOT_GPU_INSTANCE_FLOATS,
+            memory,
+            null,
+          );
+          h.zeros = true;
+        }
+        this.evidence.settling_steps++;
+        continue;
       }
+      if (sim.isInactive && h.zeros) continue;
+      this.upload(
+        g,
+        id,
+        sim.config.amount * GODOT_GPU_INSTANCE_FLOATS,
+        memory,
+        sim,
+      );
       h.zeros = sim.isInactive;
+    }
+  }
+
+  /** This step's yield predicate: the pacing's slice, timed from the first check (which follows
+   * a burst's first pass); none when unpaced. */
+  private slice(): (() => boolean) | undefined {
+    const { sliceMs, now } = this.pacing;
+    if (!Number.isFinite(sliceMs)) return undefined;
+    let deadline = Number.NaN;
+    return () => {
+      if (Number.isNaN(deadline)) deadline = now() + sliceMs;
+      return now() >= deadline;
+    };
+  }
+
+  /** Whether an emitter is mid-burst (drawn as nothing until `step` or `settle` finishes it). */
+  get settling(): boolean {
+    for (const h of this.held.values()) if (h.sim?.settling) return true;
+    return false;
+  }
+
+  /** J1: a frame with no applier run (no transaction, the host idle or paused): the bursts in
+   * progress continue in the same slice, with no time passing, and an emitter whose burst ends
+   * uploads its instances. True when one did: the core's `reapply` then draws it. */
+  settle(g: ParticlesHost, memory?: WebAssembly.Memory): boolean {
+    let uploaded = false;
+    const yieldNow = this.slice();
+    for (const [id, h] of this.held) {
+      const sim = h.sim;
+      if (!sim?.settling) continue;
+      const before = sim.stats.steps;
+      sim.advance(yieldNow);
+      this.evidence.sim_steps += sim.stats.steps - before;
+      if (sim.settling) continue;
+      this.upload(
+        g,
+        id,
+        sim.config.amount * GODOT_GPU_INSTANCE_FLOATS,
+        memory,
+        sim,
+      );
+      h.zeros = sim.isInactive;
+      uploaded = true;
+    }
+    return uploaded;
+  }
+
+  /** Emitter `id`'s `floats` instance floats to the core: `sim`'s packed instances, or zeros
+   * (nothing drawn) for null. With the core's `memory`, straight into its scratch buffer. */
+  private upload(
+    g: ParticlesHost,
+    id: number,
+    floats: number,
+    memory: WebAssembly.Memory | undefined,
+    sim: GodotGpuEmitter | null,
+  ): void {
+    if (
+      memory !== undefined &&
+      g.particles_scratch !== undefined &&
+      g.particles_set_scratch !== undefined
+    ) {
+      // No wasm call between the view and the pack: the pointer stays valid.
+      const ptr = g.particles_scratch(floats);
+      const out = new Float32Array(memory.buffer, ptr, floats);
+      if (sim) sim.pack(out);
+      else out.fill(0);
+      g.particles_set_scratch(id, floats);
+    } else {
+      if (this.buf.length < floats) this.buf = new Float32Array(floats);
+      const out = this.buf.subarray(0, floats);
+      if (sim) sim.pack(out);
+      else out.fill(0);
+      g.particles_set(id, out);
     }
   }
 

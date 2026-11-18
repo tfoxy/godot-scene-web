@@ -988,6 +988,14 @@ const INIT_FLOATS = 21;
  * re-derives them from its seed on every process pass) are cached by seed hash and material, so a
  * pass draws them once per particle life. The results are bit-identical to evaluating the shader
  * as written.
+ *
+ * A burst (the `pre_process_time` passes after a clear, a process request's passes) may be spread
+ * over several `update` calls: given a `yieldNow` predicate, the burst stops between two passes
+ * once it answers true (after at least one pass per call), and the emitter is `settling` until the
+ * burst is done. Every call made while settling (`configure`, `setEmitting`, `restart`,
+ * `requestProcess`, `update`) is queued and replayed in order once the burst is done, so the
+ * emitter ends in exactly the state the same calls make without the predicate. A settling
+ * emitter's particles are mid-burst: the caller draws nothing of it (not `pack`).
  */
 export class GodotGpuEmitter {
   config: GodotGpuEmitterConfig;
@@ -1006,6 +1014,25 @@ export class GodotGpuEmitter {
   private requestTime = 0;
   /** The shader's `TIME` (the renderer's total time) during this frame's process steps. */
   private time = 0;
+  /** The burst in progress: its stage (`pre_process_time`, or a process request), the passes'
+   * time left and step, and the delta of the `update` that started it (its main step follows
+   * the preprocess). */
+  private burst: {
+    stage: "pre" | "request";
+    todo: number;
+    ft: number;
+    frameDelta: number;
+  } | null = null;
+  /** The calls made while a burst settles, replayed in order once it is done. */
+  private queued: (
+    | { op: "update"; frameDelta: number; time: number | undefined }
+    | { op: "configure"; config: GodotGpuEmitterConfig }
+    | { op: "emitting"; on: boolean }
+    | { op: "restart" }
+    | { op: "request"; time: number }
+  )[] = [];
+  /** The current `update` call's yield predicate. */
+  private yieldNow: (() => boolean) | undefined = undefined;
   readonly stats: GodotGpuStats = { steps: 0, restarts: 0, processRequests: 0 };
 
   // Per-pass and per-particle scratch.
@@ -1052,6 +1079,10 @@ export class GodotGpuEmitter {
    * clears the emitter, as `particles_set_amount` does. A material is read once, when its object
    * changes: pass a new object to change one. */
   configure(config: GodotGpuEmitterConfig): void {
+    if (this.burst !== null) {
+      this.queued.push({ op: "configure", config });
+      return;
+    }
     if (config.amount !== this.config.amount) {
       this.resize(config.amount);
       this.phase = 0;
@@ -1065,19 +1096,36 @@ export class GodotGpuEmitter {
   }
 
   setEmitting(on: boolean): void {
+    if (this.burst !== null) {
+      this.queued.push({ op: "emitting", on });
+      return;
+    }
     this.emitting = on;
   }
 
   /** `particles_restart`. */
   restart(): void {
+    if (this.burst !== null) {
+      this.queued.push({ op: "restart" });
+      return;
+    }
     this.restartRequest = true;
     this.stats.restarts++;
   }
 
   /** `particles_request_process_time`. */
   requestProcess(time: number): void {
+    if (this.burst !== null) {
+      this.queued.push({ op: "request", time });
+      return;
+    }
     this.requestTime = time;
     this.stats.processRequests++;
+  }
+
+  /** A burst is in progress (see the class note): its particles are not to be drawn. */
+  get settling(): boolean {
+    return this.burst !== null;
   }
 
   /** gl_compatibility's `particles_is_inactive`: nothing is drawn. */
@@ -1103,8 +1151,42 @@ export class GodotGpuEmitter {
   }
 
   /** `update_particles` for this emitter, given the renderer's frame delta (seconds) and its
-   * total time (the shader's `TIME`; turbulence reads it), by default advanced by the delta. */
-  update(frameDelta: number, time = this.time + frameDelta): void {
+   * total time (the shader's `TIME`; turbulence reads it), by default advanced by the delta.
+   * `yieldNow` (see the class note) may stop a burst between passes; without it a burst runs
+   * to its end in this call. */
+  update(frameDelta: number, time?: number, yieldNow?: () => boolean): void {
+    this.yieldNow = yieldNow;
+    if (this.burst !== null) {
+      this.queued.push({ op: "update", frameDelta, time });
+      this.resumeBurst();
+    } else this.runUpdate(frameDelta, time ?? this.time + frameDelta);
+    this.replay();
+  }
+
+  /** Continue a burst in progress with no new step (no time passed: a frame with no update to
+   * give), then replay what was queued once it is done. Nothing happens unless `settling`. */
+  advance(yieldNow?: () => boolean): void {
+    if (this.burst === null) return;
+    this.yieldNow = yieldNow;
+    this.resumeBurst();
+    this.replay();
+  }
+
+  /** The calls made while settling, in order, once the burst is done (one may start another). */
+  private replay(): void {
+    while (this.burst === null && this.queued.length > 0) {
+      const q = this.queued.shift() as (typeof this.queued)[number];
+      if (q.op === "update")
+        this.runUpdate(q.frameDelta, q.time ?? this.time + q.frameDelta);
+      else if (q.op === "configure") this.configure(q.config);
+      else if (q.op === "emitting") this.setEmitting(q.on);
+      else if (q.op === "restart") this.restart();
+      else this.requestProcess(q.time);
+    }
+    this.yieldNow = undefined;
+  }
+
+  private runUpdate(frameDelta: number, time: number): void {
     const c = this.config;
     this.time = time;
     if (this.restartRequest) {
@@ -1129,13 +1211,22 @@ export class GodotGpuEmitter {
     }
     const fixed = c.fixedFps > 0 ? c.fixedFps : 0;
     if (this.clear && c.preProcessTime > 0) {
-      const ft = 1 / (fixed > 0 ? fixed : 30);
-      let todo = c.preProcessTime;
-      while (todo >= 0) {
-        this.process(ft);
-        todo -= ft;
-      }
+      this.burst = {
+        stage: "pre",
+        todo: c.preProcessTime,
+        ft: 1 / (fixed > 0 ? fixed : 30),
+        frameDelta,
+      };
+      this.resumeBurst();
+      return;
     }
+    this.mainStep(frameDelta);
+  }
+
+  /** The frame's own step after any preprocess, then a requested process burst. */
+  private mainStep(frameDelta: number): void {
+    const c = this.config;
+    const fixed = c.fixedFps > 0 ? c.fixedFps : 0;
     const timeScale = Math.max(c.speedScale, 0);
     if (fixed > 0) {
       const ft = 1 / fixed;
@@ -1152,14 +1243,30 @@ export class GodotGpuEmitter {
       this.process(frameDelta * timeScale);
     }
     if (this.requestTime > 0) {
-      const ft = 1 / (fixed > 0 ? fixed : 30);
-      let todo = this.requestTime;
-      while (todo >= 0) {
-        this.process(ft);
-        todo -= ft;
-      }
-      this.requestTime = 0;
+      this.burst = {
+        stage: "request",
+        todo: this.requestTime,
+        ft: 1 / (fixed > 0 ? fixed : 30),
+        frameDelta,
+      };
+      this.resumeBurst();
     }
+  }
+
+  /** The burst's passes (`while (todo >= 0)`), until it ends or `yieldNow` stops it (never
+   * before this call's first pass). */
+  private resumeBurst(): void {
+    const b = this.burst as NonNullable<typeof this.burst>;
+    let passes = 0;
+    while (b.todo >= 0) {
+      if (passes > 0 && this.yieldNow?.() === true) return;
+      this.process(b.ft);
+      b.todo -= b.ft;
+      passes++;
+    }
+    this.burst = null;
+    if (b.stage === "pre") this.mainStep(b.frameDelta);
+    else this.requestTime = 0;
   }
 
   /** `_particles_process(delta)`: one pass of the process shader over every particle. */

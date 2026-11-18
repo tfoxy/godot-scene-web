@@ -611,6 +611,30 @@ describe("render-stream client loop", () => {
     ]);
   });
 
+  it("J1: a callback that only draws a transaction applied in onmessage settles no particles (one apply per frame)", () => {
+    const h = streaming(2, { applyOn: "message", creditStage: "applied" });
+    const t = h.last();
+    t.on.message(tx(1));
+    h.clock.frame();
+    // Its payload is already staged: the run goes in onmessage, leaving 2 applied and undrawn.
+    h.core.staged.add("aa");
+    t.on.message(tx(2, ["aa"], false));
+    expect(h.core.calls).toContain("apply 2");
+    h.core.logPolls = true;
+    h.core.particleSettles = [true];
+    h.core.calls.length = 0;
+    h.clock.frame();
+    expect(h.core.calls).toEqual(["poll-programs", "draw 2"]);
+    // The next idle callback settles.
+    h.core.calls.length = 0;
+    h.clock.frame();
+    expect(h.core.calls).toEqual([
+      "poll-programs",
+      "settle-particles 2",
+      "draw 2",
+    ]);
+  });
+
   it("PH3 apply on message: past the undrawn cap, arrivals wait for the frame callback", () => {
     const h = streaming(2, { applyOn: "message", creditStage: "applied" });
     const t = h.last();

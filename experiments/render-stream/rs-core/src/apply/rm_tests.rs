@@ -170,6 +170,102 @@ fn a_deferred_shader_omits_its_material_users_but_not_independent_descendants() 
 }
 
 #[test]
+fn a_linking_program_omits_its_users_until_it_settles() {
+    // J1: the adapter linked the program without reading its status. Until the link settles
+    // nothing waits for it (it is not pending), its material's users are omitted like deferred
+    // code (never shaderless), and the settle alone (no transaction) is revisited and drawn.
+    let s = material_scene(Vec::new());
+    let d = material_delta(&s);
+    let store = code_store();
+    let mut a = applier();
+    a.prepare(&s, &d);
+    assert_eq!(a.pending_shaders_held(&s, &store).len(), 1);
+    a.mark_linking(CODE);
+    assert!(a.is_linking(&CODE));
+    assert!(
+        a.pending_shaders_held(&s, &store).is_empty(),
+        "a linking program is not pending (it would be defined twice)"
+    );
+    a.apply(&s, &d, &store);
+    let ids = drawn(&a);
+    assert!(
+        !ids.contains(&P) && !ids.contains(&C1),
+        "a linking program's users drew: {ids:?}"
+    );
+    for keep in [G, C2, Q] {
+        assert!(ids.contains(&keep), "independent item {keep} was not drawn");
+    }
+    assert!(a.shortcut_totals.contains_key("shader-linking-skipped"));
+    assert!(!a.shortcut_totals.contains_key("shader-unavailable-skipped"));
+    assert!(!a.revisit(&s, &store), "nothing settled: no revisit");
+    // The link settles between frames: the revisit draws the users with the program.
+    a.set_program(CODE, ready());
+    assert!(!a.is_linking(&CODE));
+    assert!(a.revisit(&s, &store), "the settled link was not revisited");
+    assert!(a.stats.why & Why::MATERIAL != 0);
+    let ids = drawn(&a);
+    for keep in [G, P, C1, C2, Q] {
+        assert!(
+            ids.contains(&keep),
+            "item {keep} not drawn after the link: {ids:?}"
+        );
+    }
+    assert!(a.list.draws.iter().any(|d| d.program != BUILTIN_PROGRAM));
+    assert!(!a.revisit(&s, &store), "a second revisit has nothing to do");
+}
+
+#[test]
+fn a_failed_link_draws_its_users_shaderless_and_a_prepared_transaction_takes_the_settle() {
+    let s = material_scene(Vec::new());
+    let d = material_delta(&s);
+    let store = code_store();
+    let mut a = applier();
+    a.prepare(&s, &d);
+    a.mark_linking(CODE);
+    a.apply(&s, &d, &store);
+    assert!(!drawn(&a).contains(&P));
+    // A transaction is prepared when the link fails: the revisit declines, its apply draws the
+    // users as a refused program does.
+    let empty = TxDelta {
+        seq: s.seq,
+        ..TxDelta::default()
+    };
+    a.prepare(&s, &empty);
+    a.set_program(
+        CODE,
+        ProgramEntry::Refused {
+            reason: "gsw-shader-transpile",
+            detail: "compile: link failed".into(),
+        },
+    );
+    assert!(
+        !a.revisit(&s, &store),
+        "a prepared transaction absorbs the settle"
+    );
+    a.apply(&s, &empty, &store);
+    let ids = drawn(&a);
+    assert!(
+        ids.contains(&P) && ids.contains(&C1),
+        "a failed link omitted its users: {ids:?}"
+    );
+    assert!(a.list.draws.iter().all(|d| d.program == BUILTIN_PROGRAM));
+}
+
+#[test]
+fn mark_linking_leaves_a_registered_program_alone() {
+    let s = material_scene(Vec::new());
+    let d = material_delta(&s);
+    let store = code_store();
+    let mut a = applier();
+    a.prepare(&s, &d);
+    a.set_program(CODE, ready());
+    a.mark_linking(CODE);
+    assert!(!a.is_linking(&CODE));
+    a.apply(&s, &d, &store);
+    assert!(drawn(&a).contains(&P));
+}
+
+#[test]
 fn a_refused_program_still_draws_shaderless_unlike_an_unavailable_one() {
     // Compile refusal keeps its established semantics: the native receiver's shaderless material.
     let s = material_scene(Vec::new());

@@ -19,7 +19,7 @@ import {
 import type { RenderStreamProtocol } from "./endpoint";
 import { type ExtensionCore, ITEM_ROW_STRIDE } from "./extensions";
 import type { ResourceHintRecord } from "./hints";
-import { GswParticles } from "./particles";
+import { CLIENT_PARTICLE_PACING, GswParticles } from "./particles";
 import { definePrograms, type ProgramCounts, ProgramError } from "./programs";
 
 /** A typed failure: the receiver's reason names (`host-error`, `resource-unavailable`, ...) and
@@ -154,6 +154,15 @@ export interface StreamCore {
   restoreUnavailable(hash: string): string | null;
   /** Programs for the accepted state's shaders, and the /12 particles step (before `apply`). */
   prepareApply(seq: number): void;
+  /** J1: settle the shader programs whose links run in the driver's background, once per frame
+   * callback and before its applier run. True when one settled: the next apply draws its
+   * materials (omitted until then), or with nothing accepted and unapplied a `revisit`. Absent
+   * (or a core that links synchronously): never anything to settle. */
+  pollPrograms?(): boolean;
+  /** J1: a frame callback with no applier run: particle bursts in progress continue (no host time
+   * passes), and one that ends is applied over the same state. True when that applied (the
+   * caller draws). Absent: bursts advance only with applies. */
+  settleParticles?(seq: number): boolean;
   apply(seq: number): void;
   /** What the last `apply` did to the draw list, read after it (`RenderStreamStats`). The
    * returned object may be reused by the next call. Absent: the loop reports none. */
@@ -278,7 +287,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     colorStep: 0,
   };
   private coding: LiveCoding | null = null;
-  private particles = new GswParticles();
+  private particles = new GswParticles(CLIENT_PARTICLE_PACING);
   private readonly programs: ProgramCounts = {
     defined: 0,
     refused: 0,
@@ -314,6 +323,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     private readonly inboundBytes: number,
   ) {
     this.instance = build(protocol);
+    this.instance.set_async_programs?.(true);
   }
 
   private get g(): GswRs {
@@ -335,7 +345,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       this.retireQueries();
       this.decoded = null;
       this.lastAcceptedSeq = 0;
-      this.particles = new GswParticles();
+      this.particles = new GswParticles(CLIENT_PARTICLE_PACING);
       this.programs.defined = 0;
       this.programs.refused = 0;
       this.programs.library_reads = 0;
@@ -343,6 +353,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       try {
         if (this.logRemoved) next.set_log_removed(true);
         if (this.motionOn) next.set_motion?.(true);
+        next.set_async_programs?.(true);
       } catch (e) {
         next.free();
         throw e;
@@ -389,7 +400,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       ).slice();
     }
     if (!sessionSeen) {
-      this.particles = new GswParticles();
+      this.particles = new GswParticles(CLIENT_PARTICLE_PACING);
       if (g.live_session(len, this.protocol) < 0)
         throw failWith(null, g.error());
       return { kind: "session", meta: JSON.parse(g.session_meta()) };
@@ -594,6 +605,26 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       throw e;
     }
     this.particles.step(this.g, this.memory);
+  }
+
+  pollPrograms(): boolean {
+    const g = this.instance;
+    if (g === null || g.poll_programs === undefined) return false;
+    const settled = g.poll_programs();
+    if (settled === 0) return false;
+    // A failed link was counted defined when it began: it draws shaderless, as refused.
+    const failed = settled >>> 16;
+    this.programs.defined -= failed;
+    this.programs.refused += failed;
+    return true;
+  }
+
+  settleParticles(_seq: number): boolean {
+    const g = this.instance;
+    if (g === null || g.reapply === undefined || !this.particles.settling)
+      return false;
+    if (!this.particles.settle(g, this.memory)) return false;
+    return g.reapply() > 0;
   }
 
   apply(seq: number): void {

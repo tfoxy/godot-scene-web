@@ -790,6 +790,11 @@ pub struct GswRs {
     pending: Vec<(Id, Hash, ShaderSource)>,
     /// The next executor program id (one per transpiled shader code hash).
     next_program: u32,
+    /// J1 (`set_async_programs`): `define_program` links without reading the status and
+    /// `poll_programs` registers each program once its link settled.
+    async_programs: bool,
+    /// The programs begun and not settled: executor id, code hash, metadata.
+    linking: Vec<(u32, Hash, ProgramInfo)>,
     /// `shader-param-parity` evidence: every binding's values whenever they changed.
     param_log: Vec<ParamLogEntry>,
     /// G7l live mode: the wasm-owned receive buffer one WebSocket message is copied into (Q14c
@@ -1048,6 +1053,8 @@ impl GswRs {
             typed_seen: HashSet::new(),
             pending: Vec::new(),
             next_program: 1,
+            async_programs: false,
+            linking: Vec::new(),
             param_log: Vec::new(),
             rx: Vec::new(),
             rx_offset: 0,
@@ -1198,6 +1205,27 @@ impl GswRs {
             }
         };
         let vertex = (!vertex_glsl.is_empty()).then_some(vertex_glsl);
+        if self.async_programs {
+            // J1: the link runs in the driver's background; `poll_programs` registers it.
+            return match x.begin_program(id, glsl, vertex) {
+                Ok(()) => {
+                    self.next_program += 1;
+                    a.mark_linking(hash);
+                    self.linking.push((id, hash, info));
+                    0
+                }
+                Err(log) => {
+                    a.set_program(
+                        hash,
+                        ProgramEntry::Refused {
+                            reason: "gsw-shader-transpile",
+                            detail: format!("compile: {log}").into(),
+                        },
+                    );
+                    1
+                }
+            };
+        }
         match x.define_program_with_vertex(id, glsl, vertex) {
             Ok(()) => {
                 self.next_program += 1;
@@ -1215,6 +1243,56 @@ impl GswRs {
                 1
             }
         }
+    }
+
+    /// J1: `define_program` from now on begins the link and returns at once (0: begun, as
+    /// registered), and the program is registered by the `poll_programs` call that finds its link
+    /// settled; until then the shader is not pending and what its materials draw is omitted
+    /// (`Applier::mark_linking`). The live client turns it on; file mode keeps the synchronous
+    /// definition, so a replay draws every program from its first apply.
+    pub fn set_async_programs(&mut self, on: bool) {
+        self.async_programs = on;
+    }
+
+    /// J1: settle the links `define_program` began (`CanvasItemsExecutor::poll_programs`): call
+    /// once per frame, before that frame's applier run. Each settled program is registered with
+    /// the applier (its metadata, or the typed refusal `gsw-shader-transpile` with GL's log), and
+    /// the next apply, or with none waiting a `revisit`, draws its materials. Returns
+    /// `ready | (failed << 16)`: 0 when nothing settled.
+    pub fn poll_programs(&mut self) -> i32 {
+        if self.linking.is_empty() {
+            return 0;
+        }
+        let Some(x) = self.executor.as_mut() else {
+            return 0;
+        };
+        // The executor reports every begun id exactly once (settled, failed, or recompiled by a
+        // context restore, a link polled on a lost context included), so `linking` empties.
+        let done = x.poll_programs();
+        let (mut ready, mut failed) = (0i32, 0i32);
+        for (id, result) in done {
+            let Some(k) = self.linking.iter().position(|l| l.0 == id) else {
+                continue;
+            };
+            let (_, hash, info) = self.linking.swap_remove(k);
+            let entry = match result {
+                Ok(()) => {
+                    ready += 1;
+                    ProgramEntry::Ready(info)
+                }
+                Err(log) => {
+                    failed += 1;
+                    ProgramEntry::Refused {
+                        reason: "gsw-shader-transpile",
+                        detail: format!("compile: {log}").into(),
+                    }
+                }
+            };
+            if let Some(a) = self.applier.as_mut() {
+                a.set_program(hash, entry);
+            }
+        }
+        ready.min(0xffff) | (failed.min(0x7fff) << 16)
     }
 
     /// Pending shader `i` is not drawn with its code: `reason` `gsw-shader-transpile` (the
@@ -1406,6 +1484,10 @@ impl GswRs {
         // Checked when it was set; an applier cannot refuse it.
         let _ = applier.set_hit_filters(&self.hit_filters.0, &self.hit_filters.1);
         applier.set_pick_order(self.pick_order);
+        // J1: a link begun under the previous session's applier registers with this one.
+        for (_, hash, _) in &self.linking {
+            applier.mark_linking(*hash);
+        }
         // PM3: GLES3 stores multimesh colours and custom data as half floats.
         applier.half_instances = s.engine.rendering_method == "gl_compatibility";
         // gpu_formats from this context's extensions,
@@ -1866,6 +1948,10 @@ impl GswRs {
                 applier.inherit_residency(old);
             }
         }
+        // J1: a link still settling registers with this applier when it does.
+        for (_, hash, _) in &self.linking {
+            applier.mark_linking(*hash);
+        }
         applier.prepare(v.state(), v.delta());
         self.query.gen += 1;
         // render-stream/16: a fresh applier holds no surface pass; the old ones' GL objects go.
@@ -2280,10 +2366,26 @@ impl GswRs {
     /// are made resident and what draws them re-lowered, an apply of an empty delta over the same
     /// state (no ack, no evidence row). 1 when it applied (the caller draws), else 0.
     pub fn revisit(&mut self) -> i32 {
+        self.revisit_with(false)
+    }
+
+    /// J1: with no transaction accepted and unapplied, an apply of an empty delta over the same
+    /// state that takes the emitter buffers set since the last apply (a particle simulation that
+    /// settled between transactions). 1 when it applied (the caller draws), else 0.
+    pub fn reapply(&mut self) -> i32 {
+        self.revisit_with(true)
+    }
+
+    fn revisit_with(&mut self, always: bool) -> i32 {
         let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_mut()) else {
             return 0;
         };
-        if !a.revisit(v.state(), &self.payloads) {
+        let applied = if always {
+            a.reapply(v.state(), &self.payloads)
+        } else {
+            a.revisit(v.state(), &self.payloads)
+        };
+        if !applied {
             return 0;
         }
         let st = &a.stats;

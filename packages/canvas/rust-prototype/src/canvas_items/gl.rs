@@ -336,6 +336,18 @@ struct ItemProgram {
     /// The vertex module, for a program with its own vertex stage.
     vertex: Option<String>,
     compiled: Option<CompiledItem>,
+    /// A link issued by [`CanvasItemsExecutor::begin_program`] whose status is not read yet
+    /// (`compiled` is `None` meanwhile, so its draws are skipped).
+    pending: Option<PendingLink>,
+}
+
+/// A program linked without reading its status: GL compiles and links it in the background
+/// (`KHR_parallel_shader_compile`, or the next frame's read).
+struct PendingLink {
+    program: glow::Program,
+    shaders: [glow::Shader; 2],
+    /// [`CanvasItemsExecutor::poll_programs`] calls made when the link was issued.
+    epoch: u64,
 }
 
 struct TargetObjects {
@@ -954,17 +966,55 @@ fn screen_op(
 }
 
 fn compile(gl: &glow::Context, vert: &str, frag: &str) -> Result<glow::Program, String> {
+    let (program, shaders) = start_link(gl, vert, frag)?;
+    finish_link(gl, program, shaders)
+}
+
+/// Compile both stages and link, reading no status: the driver may do the work in the
+/// background until [`finish_link`] (or `COMPLETION_STATUS_KHR`) asks.
+fn start_link(
+    gl: &glow::Context,
+    vert: &str,
+    frag: &str,
+) -> Result<(glow::Program, [glow::Shader; 2]), String> {
     unsafe {
         let program = gl.create_program()?;
-        let mut shaders = Vec::new();
-        for (kind, source) in [(glow::VERTEX_SHADER, vert), (glow::FRAGMENT_SHADER, frag)] {
-            let shader = gl.create_shader(kind)?;
+        let mut shaders = [None, None];
+        for (k, (kind, source)) in [(glow::VERTEX_SHADER, vert), (glow::FRAGMENT_SHADER, frag)]
+            .into_iter()
+            .enumerate()
+        {
+            let shader = match gl.create_shader(kind) {
+                Ok(shader) => shader,
+                Err(e) => {
+                    for s in shaders.into_iter().flatten() {
+                        gl.delete_shader(s);
+                    }
+                    gl.delete_program(program);
+                    return Err(e);
+                }
+            };
             gl.shader_source(shader, source);
             gl.compile_shader(shader);
             gl.attach_shader(program, shader);
-            shaders.push(shader);
+            shaders[k] = Some(shader);
         }
         gl.link_program(program);
+        let [Some(v), Some(f)] = shaders else {
+            unreachable!("both stages were created")
+        };
+        Ok((program, [v, f]))
+    }
+}
+
+/// Read a [`start_link`]'s status (blocking until the driver is done): the program, or GL's
+/// logs (the program deleted). The shaders are detached and deleted either way.
+fn finish_link(
+    gl: &glow::Context,
+    program: glow::Program,
+    shaders: [glow::Shader; 2],
+) -> Result<glow::Program, String> {
+    unsafe {
         let linked = gl.get_program_link_status(program);
         let mut log = String::new();
         if !linked {
@@ -1002,10 +1052,29 @@ fn compile_item(
     module: &str,
     vertex: Option<&str>,
 ) -> Result<CompiledItem, String> {
-    let program = match vertex {
-        Some(v) => compile(gl, &item_program_vertex(v), &item_program_fragment(module))?,
-        None => compile(gl, VERT, &item_program_fragment(module))?,
-    };
+    let (program, shaders) = start_item(gl, module, vertex)?;
+    finish_item(gl, program, shaders)
+}
+
+/// [`compile_item`]'s compile and link, reading no status.
+fn start_item(
+    gl: &glow::Context,
+    module: &str,
+    vertex: Option<&str>,
+) -> Result<(glow::Program, [glow::Shader; 2]), String> {
+    match vertex {
+        Some(v) => start_link(gl, &item_program_vertex(v), &item_program_fragment(module)),
+        None => start_link(gl, VERT, &item_program_fragment(module)),
+    }
+}
+
+/// [`compile_item`] after [`start_item`]: the link status, then the program's uniforms.
+fn finish_item(
+    gl: &glow::Context,
+    program: glow::Program,
+    shaders: [glow::Shader; 2],
+) -> Result<CompiledItem, String> {
+    let program = finish_link(gl, program, shaders)?;
     unsafe {
         gl.use_program(Some(program));
         // The vertex stage's tint stays straight: the fragment stage owns the order.
@@ -1367,6 +1436,10 @@ pub struct CanvasItemsExecutor {
     planned_calls: u64,
     /// Item-space programs by id ([`CanvasItemsExecutor::define_program`]).
     programs: HashMap<u32, ItemProgram>,
+    /// [`CanvasItemsExecutor::poll_programs`] calls so far.
+    poll_epoch: u64,
+    /// Pending links a restored context recompiled, for the next `poll_programs`.
+    links_restored: Vec<(u32, Result<(), String>)>,
     /// The source of every list's binding versions ([`ListObjects::binding_versions`]).
     version_counter: u64,
 }
@@ -1415,6 +1488,8 @@ impl CanvasItemsExecutor {
             frames: 0,
             planned_calls: 0,
             programs: HashMap::new(),
+            poll_epoch: 0,
+            links_restored: Vec::new(),
             version_counter: 0,
         })
     }
@@ -1457,24 +1532,170 @@ impl CanvasItemsExecutor {
                 module: module.to_string(),
                 vertex: vertex.map(str::to_string),
                 compiled: Some(compiled),
+                pending: None,
             },
-        ) && let Some(c) = old.compiled
-        {
-            unsafe { self.gl.raw.delete_program(c.program) };
+        ) {
+            self.delete_item(old);
         }
         Ok(())
     }
 
+    /// [`define_program_with_vertex`](Self::define_program_with_vertex) without waiting for the
+    /// driver: both stages are compiled and the program linked, but no status is read, so the
+    /// call does not block on the compile. The program is registered as pending: [`has_program`]
+    /// is false and its draws are skipped until a later [`poll_programs`] finds the link done.
+    /// An error here is a lost context or a GL object that could not be created; a compile or
+    /// link failure is reported by `poll_programs`.
+    ///
+    /// [`has_program`]: Self::has_program
+    /// [`poll_programs`]: Self::poll_programs
+    pub fn begin_program(
+        &mut self,
+        id: u32,
+        module: &str,
+        vertex: Option<&str>,
+    ) -> Result<(), String> {
+        if id == BUILTIN_PROGRAM {
+            return Err("program id 0 is the builtin".into());
+        }
+        if self.context_state() == ContextState::Lost {
+            return Err(ExecError::Lost.to_string());
+        }
+        let (program, shaders) = start_item(&self.gl.raw, module, vertex)?;
+        // The driver starts on the commands now, not when the frame's task ends.
+        unsafe { self.gl.raw.flush() };
+        self.cache.program = None;
+        if let Some(old) = self.programs.insert(
+            id,
+            ItemProgram {
+                module: module.to_string(),
+                vertex: vertex.map(str::to_string),
+                compiled: None,
+                pending: Some(PendingLink {
+                    program,
+                    shaders,
+                    epoch: self.poll_epoch,
+                }),
+            },
+        ) {
+            self.delete_item(old);
+        }
+        Ok(())
+    }
+
+    /// Settle the links [`begin_program`](Self::begin_program) issued, once per frame and before
+    /// that frame's definitions: with `KHR_parallel_shader_compile`, every link whose
+    /// `COMPLETION_STATUS_KHR` is true; without it, every link issued before the previous call
+    /// (the driver had a frame for it, so its status read rarely waits). Returns each settled
+    /// program: `Ok` when it is now drawn, `Err` with GL's logs when it failed (it is
+    /// unregistered, as a failed [`define_program`](Self::define_program) registers nothing).
+    /// While the context is lost nothing settles; a restored context recompiles every program,
+    /// pending ones included, and reports those here.
+    pub fn poll_programs(&mut self) -> Vec<(u32, Result<(), String>)> {
+        self.poll_epoch += 1;
+        let mut done = std::mem::take(&mut self.links_restored);
+        if !self.programs.values().any(|p| p.pending.is_some()) {
+            return done;
+        }
+        match self.context_state() {
+            ContextState::Lost => return done,
+            // The restore recompiled the pending programs (reported in `links_restored`).
+            ContextState::Restored => {
+                done.append(&mut self.links_restored);
+                return done;
+            }
+            ContextState::Ready => {}
+        }
+        let parallel = self
+            .gl
+            .raw
+            .supported_extensions()
+            .contains("KHR_parallel_shader_compile");
+        let epoch = self.poll_epoch;
+        let mut ids: Vec<u32> = self
+            .programs
+            .iter()
+            .filter(|(_, p)| {
+                p.pending
+                    .as_ref()
+                    .is_some_and(|l| parallel || l.epoch < epoch)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_unstable();
+        for id in ids {
+            let Some(p) = self.programs.get_mut(&id) else {
+                continue;
+            };
+            let Some(link) = p.pending.as_ref() else {
+                continue;
+            };
+            if parallel && !unsafe { self.gl.raw.get_program_completion_status(link.program) } {
+                continue;
+            }
+            let Some(link) = p.pending.take() else {
+                continue;
+            };
+            let epoch = link.epoch;
+            match finish_item(&self.gl.raw, link.program, link.shaders) {
+                Ok(compiled) => {
+                    p.compiled = Some(compiled);
+                    done.push((id, Ok(())));
+                }
+                // A context lost before its event (COMPLETION_STATUS_KHR reads true on a lost
+                // context too): the failure is the loss's, not the code's. The link stays
+                // pending (its handles died with the context; nothing deletes them), so the
+                // restore recompiles the program from its module and reports it then.
+                Err(_) if self.context.is_context_lost() => {
+                    p.pending = Some(PendingLink {
+                        program: link.program,
+                        shaders: link.shaders,
+                        epoch,
+                    });
+                    self.loss.mark_lost();
+                    return done;
+                }
+                Err(log) => {
+                    self.programs.remove(&id);
+                    done.push((id, Err(log)));
+                }
+            }
+        }
+        self.cache.program = None;
+        done
+    }
+
+    /// Whether item-space program `id` was begun and its link is not settled yet.
+    pub fn program_pending(&self, id: u32) -> bool {
+        self.programs.get(&id).is_some_and(|p| p.pending.is_some())
+    }
+
+    /// Delete a replaced or freed program's GL objects (none while the context is lost).
+    fn delete_item(&mut self, p: ItemProgram) {
+        if self.loss.lost() {
+            return;
+        }
+        let gl = &self.gl.raw;
+        unsafe {
+            if let Some(c) = p.compiled {
+                gl.delete_program(c.program);
+                if self.cache.program == Some(c.program) {
+                    self.cache.program = None;
+                }
+            }
+            if let Some(l) = p.pending {
+                for s in l.shaders {
+                    gl.delete_shader(s);
+                }
+                gl.delete_program(l.program);
+            }
+        }
+    }
+
     /// Forget item-space program `id`; draws naming a binding of it are skipped from now on.
     pub fn free_program(&mut self, id: u32) {
-        if let Some(p) = self.programs.remove(&id)
-            && let Some(c) = p.compiled
-            && !self.loss.lost()
-        {
-            unsafe { self.gl.raw.delete_program(c.program) };
-            if self.cache.program == Some(c.program) {
-                self.cache.program = None;
-            }
+        if let Some(p) = self.programs.remove(&id) {
+            self.delete_item(p);
         }
     }
 
@@ -1530,9 +1751,30 @@ impl CanvasItemsExecutor {
                     // Fresh list objects need `dirty.all` (ListObjects::needs_full).
                     self.objects = Some(objects);
                     // Item-space programs come back from their modules (they compiled before).
-                    for p in self.programs.values_mut() {
-                        p.compiled =
-                            compile_item(&self.gl.raw, &p.module, p.vertex.as_deref()).ok();
+                    // A pending link's objects died with the context: it is recompiled here
+                    // too, and its outcome goes to the next `poll_programs`.
+                    let mut ids: Vec<u32> = self.programs.keys().copied().collect();
+                    ids.sort_unstable();
+                    for id in ids {
+                        let Some(p) = self.programs.get_mut(&id) else {
+                            continue;
+                        };
+                        let was_pending = p.pending.take().is_some();
+                        match compile_item(&self.gl.raw, &p.module, p.vertex.as_deref()) {
+                            Ok(c) => {
+                                p.compiled = Some(c);
+                                if was_pending {
+                                    self.links_restored.push((id, Ok(())));
+                                }
+                            }
+                            Err(log) => {
+                                p.compiled = None;
+                                if was_pending {
+                                    self.programs.remove(&id);
+                                    self.links_restored.push((id, Err(log)));
+                                }
+                            }
+                        }
                     }
                     ContextState::Restored
                 }
@@ -2961,6 +3203,12 @@ impl Drop for CanvasItemsExecutor {
             for (_, p) in self.programs.drain() {
                 if let Some(c) = p.compiled {
                     gl.delete_program(c.program);
+                }
+                if let Some(l) = p.pending {
+                    for s in l.shaders {
+                        gl.delete_shader(s);
+                    }
+                    gl.delete_program(l.program);
                 }
             }
             if let Some(o) = self.objects.take() {

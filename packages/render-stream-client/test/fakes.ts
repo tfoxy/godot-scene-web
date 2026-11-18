@@ -175,6 +175,21 @@ export class FakeCore implements StreamCore {
     this.calls.push(`revisit ${seq}`);
     return this.revisitResult;
   }
+  /** J1: what the next `pollPrograms` calls answer, in order (then false); each call is logged
+   * in `calls` when `logPolls`. */
+  settles: boolean[] = [];
+  logPolls = false;
+  pollPrograms(): boolean {
+    if (this.logPolls) this.calls.push("poll-programs");
+    return this.settles.shift() ?? false;
+  }
+  /** J1: what the next `settleParticles` calls answer, in order (then false); logged when
+   * `logPolls`. */
+  particleSettles: boolean[] = [];
+  settleParticles(seq: number): boolean {
+    if (this.logPolls) this.calls.push(`settle-particles ${seq}`);
+    return this.particleSettles.shift() ?? false;
+  }
   /** How many `prepareApply` calls (one per run of the applier). */
   prepareApplies = 0;
   prepareApply(): void {

@@ -24,6 +24,10 @@ function harness(motion = true, animation = false) {
     readonly free = vi.fn();
     readonly live_reset = vi.fn();
     readonly set_log_removed = vi.fn();
+    readonly set_async_programs = vi.fn();
+    /** What `poll_programs` answers next (J1). */
+    settled = 0;
+    readonly poll_programs = vi.fn(() => this.settled);
     set_motion?: ReturnType<typeof vi.fn>;
     motion_ptr?: () => number;
     motion_len?: () => number;
@@ -112,6 +116,36 @@ function harness(motion = true, animation = false) {
 }
 
 const bytes = new Uint8Array([1, 2, 3]).buffer;
+
+describe("WasmStreamCore program links (J1)", () => {
+  it("turns the background link on for every instance it builds", () => {
+    const { core, instances } = harness();
+    expect(instances[0].set_async_programs).toHaveBeenCalledWith(true);
+    core.beginConnection(14);
+    expect(instances[1].set_async_programs).toHaveBeenCalledWith(true);
+    expect(libRs).toContain("pub fn set_async_programs(");
+    expect(libRs).toContain("pub fn poll_programs(");
+  });
+
+  it("answers whether a link settled (ready or failed)", () => {
+    const { core, instances } = harness();
+    expect(core.pollPrograms()).toBe(false);
+    instances[0].settled = 2;
+    expect(core.pollPrograms()).toBe(true);
+    instances[0].settled = 1 << 16;
+    expect(core.pollPrograms()).toBe(true);
+    instances[0].settled = 0;
+    expect(core.pollPrograms()).toBe(false);
+    expect(instances[0].poll_programs).toHaveBeenCalledTimes(4);
+  });
+
+  it("settles particles only while a burst is in progress", () => {
+    const { core } = harness();
+    // No emitter is settling: no reapply (the fake core has none either way).
+    expect(core.settleParticles(1)).toBe(false);
+    expect(libRs).toContain("pub fn reapply(");
+  });
+});
 
 describe("WasmStreamCore motion facts", () => {
   it("reads the facts block only while measuring, and keeps the measure across instances", () => {

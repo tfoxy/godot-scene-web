@@ -377,6 +377,12 @@ impl Applier {
             self.programs_epoch = root.programs_epoch;
             self.programs_dirty = true;
         }
+        // J1: a program still linking omits its materials' draws in a surface as in the root
+        // (`set_program` ends a link and moves the epoch, so the settle re-inherits both).
+        if self.linking != root.linking {
+            self.linking = root.linking.clone();
+            self.programs_dirty = true;
+        }
     }
 
     /// Bring a surface applier in line with entry `e`; a change of anything its walk reads

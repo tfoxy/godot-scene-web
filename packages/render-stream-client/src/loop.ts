@@ -457,6 +457,8 @@ export class StreamLoop {
   };
   /** A revisit drew deferred payloads in: the callback draws once with no transaction. */
   private revisitDraw = false;
+  /** Applier runs so far (J1: a callback with none may settle particle bursts). */
+  private applierRuns = 0;
   /** Missed payloads, first reference to first draw. */
   private readonly cold: ColdTracker;
   /** /15 resource hints; null unless `resourceHints` (nothing hint-related runs then). */
@@ -1065,6 +1067,10 @@ export class StreamLoop {
       this.stepContext();
     } else {
       present = this.presents(now);
+      // J1: links that settled since the last callback register before this callback's
+      // applier run, which draws their materials.
+      const linked = this.o.core.pollPrograms?.() === true;
+      const runs = this.applierRuns;
       if (this.pending !== null) {
         this.advancePending();
         if (this.pending?.stage === "ready") this.applyReady(present);
@@ -1078,6 +1084,20 @@ export class StreamLoop {
       )
         this.pollDeferred();
       if (this.prefetch !== null) this.prefetchIdle();
+      if (linked) this.programsSettled();
+      // J1: with no applier run in this callback and none waiting, particle bursts still in
+      // progress continue (a host that went idle right after the join still converges), and one
+      // that ends is applied over the same state and drawn.
+      if (
+        this.applierRuns === runs &&
+        this.undrawn.length === 0 &&
+        !this.revisitDraw &&
+        this.applyDue === null &&
+        !this.acceptedUntaken() &&
+        this.connApplied > 0 &&
+        this.o.core.settleParticles?.(this.lastAppliedSeq) === true
+      )
+        this.revisitDraw = true;
       // A payload that just arrived is a real change: drawn in this callback. So is the end: a
       // skipped callback that sees it would drain without ever drawing (or acking `submitted`)
       // the last applied state.
@@ -1583,6 +1603,14 @@ export class StreamLoop {
     p.spent = 0;
   }
 
+  /** J1: a program link settled this callback. A run due takes it in (the core's revisit
+   * declines while a transaction is prepared, and finds nothing left after an apply took it);
+   * otherwise a revisit draws the materials it omitted. Either way this callback draws. */
+  private programsSettled(): void {
+    if (this.applyDue !== null || this.o.core.revisit(this.lastAppliedSeq))
+      this.revisitDraw = true;
+  }
+
   // ----------------------------------------------------------------------- unavailable payloads
 
   /** After each accepted transaction: of the payloads tracked (queued, in flight, deferred,
@@ -1773,6 +1801,7 @@ export class StreamLoop {
   /** One run of the applier over every transaction accepted since the last (`seq` the newest):
    * programs and particles, the core's apply, its facts, then the extensions' `applied`. */
   private runApplier(seq: number): void {
+    this.applierRuns++;
     const core = this.o.core;
     core.prepareApply(seq);
     core.apply(seq);
