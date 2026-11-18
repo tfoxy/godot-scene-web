@@ -345,15 +345,17 @@ export function mapBrowserLeg(
     // basis leg asks for /9 (GSW's hello since G8kp, the web export's through receiver.gd since
     // G8ku); W11c: /10 and /11 (GSW's hello; the web export's through receiver.gd since W11e);
     // W13c: and /12, /13 (GSW's since PM5 and W13c; the web export's since PM5 and W13d);
+    // VS4: and /16 (viewport surfaces; the GSW receiver's alone: g7-vp's g8vl legs, whose
+    // RS_RECEIVER_VIEWPORTS=on|off rides along as the client's `viewports` option);
     // every other live leg speaks /7, the browsers' default.
     if (
       env.RS_RECEIVER_PROTOCOL !== undefined &&
-      !["7", "8", "9", "10", "11", "12", "13"].includes(
+      !["7", "8", "9", "10", "11", "12", "13", "16"].includes(
         env.RS_RECEIVER_PROTOCOL,
       )
     )
       throw new Error(
-        `RS_RECEIVER_PROTOCOL=${env.RS_RECEIVER_PROTOCOL}: a browser receiver speaks only render-stream/7 to /13`,
+        `RS_RECEIVER_PROTOCOL=${env.RS_RECEIVER_PROTOCOL}: a browser receiver speaks only render-stream/7 to /13 and /16`,
       );
     env.RS_RECEIVER_PROTOCOL = env.RS_RECEIVER_PROTOCOL ?? "7";
     // The native receiver forces `applied` under --headless (frame_post_draw never fires there);

@@ -12,8 +12,9 @@
 
 export type ReceiverMode = "file" | "live";
 
-/** A GSW receiver's live wire version (RS_RECEIVER_PROTOCOL): 7 to 13 (PM5 adds 12, W13c 13). */
-export type LiveProtocol = 7 | 8 | 9 | 10 | 11 | 12 | 13;
+/** A GSW receiver's live wire version (RS_RECEIVER_PROTOCOL): 7 to 13 (PM5 adds 12, W13c 13),
+ * and VS4's 16 (viewport surfaces; /14 and /15 are the render-stream client's alone). */
+export type LiveProtocol = 7 | 8 | 9 | 10 | 11 | 12 | 13 | 16;
 
 export interface ReceiverConfig {
   mode: ReceiverMode;
@@ -63,6 +64,9 @@ export interface ReceiverConfig {
    * `particles-undrawn` shortcut until PM6). W13c: or 13 (offers render-stream.13: /12 with
    * predicted mesh and multimesh blocks, un-predicted by rs-core's /13 accept path). */
   liveProtocol: LiveProtocol;
+  /** VS4: RS_RECEIVER_VIEWPORTS (`on` default, `off`): the core's `viewports` option, the client
+   * package's `viewports: false` (no surface pass is built; viewport textures draw transparent). */
+  viewports: boolean;
   canvas: [number, number] | null;
   /** Every RS_RECEIVER_* value as given, for the log. */
   raw: Record<string, string>;
@@ -410,6 +414,7 @@ export function readConfig(
     transcodeLog: env.RS_RECEIVER_TRANSCODE_LOG === "1",
     transcodeFault: transcodeFault(env.RS_RECEIVER_TRANSCODE_FAULT),
     liveProtocol: liveProtocol(env.RS_RECEIVER_PROTOCOL),
+    viewports: viewportsOption(env.RS_RECEIVER_VIEWPORTS),
     canvas: page.canvas ?? null,
     raw: Object.fromEntries(
       Object.entries(env).filter(([k]) => k.startsWith("RS_RECEIVER_")),
@@ -441,7 +446,7 @@ function liveCoding(value: string | undefined, version: number): string {
   if (version < 11) {
     if (v !== "" && v !== "off")
       throw new UsageError(
-        `RS_RECEIVER_LIVE_CODING needs RS_RECEIVER_PROTOCOL=11, 12 or 13 (got ${v} at /${version})`,
+        `RS_RECEIVER_LIVE_CODING needs RS_RECEIVER_PROTOCOL=11, 12, 13 or 16 (got ${v} at /${version})`,
       );
     return "";
   }
@@ -464,8 +469,19 @@ function liveProtocol(value: string | undefined): LiveProtocol {
   if (v === "11") return 11;
   if (v === "12") return 12;
   if (v === "13") return 13;
+  if (v === "16") return 16;
   throw new UsageError(
-    `RS_RECEIVER_PROTOCOL must be 7, 8, 9, 10, 11, 12 or 13 for a GSW receiver (got ${v})`,
+    `RS_RECEIVER_PROTOCOL must be 7, 8, 9, 10, 11, 12, 13 or 16 for a GSW receiver (got ${v})`,
+  );
+}
+
+/** VS4: RS_RECEIVER_VIEWPORTS, `on` (default) or `off`. */
+function viewportsOption(value: string | undefined): boolean {
+  const v = (value ?? "").trim();
+  if (v === "" || v === "on") return true;
+  if (v === "off") return false;
+  throw new UsageError(
+    `RS_RECEIVER_VIEWPORTS must be on or off (got ${JSON.stringify(v)})`,
   );
 }
 

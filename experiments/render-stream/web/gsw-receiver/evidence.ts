@@ -409,7 +409,8 @@ export interface Report {
     | "render-stream/10"
     | "render-stream/11"
     | "render-stream/12"
-    | "render-stream/13";
+    | "render-stream/13"
+    | "render-stream/16";
   creditWindow: number | null;
   /** G8kp: at /9, the module's `delivery_json()` (what this receiver states and selects with). */
   textureDelivery?: Record<string, unknown> | null;

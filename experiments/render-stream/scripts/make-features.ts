@@ -7,6 +7,7 @@
 //
 //   ... make-features.ts --receiver native|web-export|gsw-canvas|all [--check]   (G7z, /2)
 //   ... make-features.ts --collect [--evidence-root <dir>]                     (G7z, device targets)
+//   ... make-features.ts --protocol 16 --receiver gsw-canvas [--check]          (VS4, the one /16 manifest)
 //
 // G7z: `--receiver` writes protocol/features/render-stream-7/<kind>.json,
 // schema render-stream-features/2, from lib/feature-evidence-7.ts and collected.json (the g31
@@ -50,6 +51,10 @@ import {
   PRIMARY_BUILD_8,
   receiverFeatureEntries8,
 } from "./lib/feature-evidence-8";
+import {
+  MANIFEST16_FILES,
+  receiverFeatureEntries16,
+} from "./lib/feature-evidence-16";
 import {
   bundleShas,
   collectDeviceTargets,
@@ -354,7 +359,20 @@ export const COLLECTED8_PATH = join(MANIFEST8_DIR, "collected.json");
 export function manifest8Path(kind: ReceiverKind): string {
   return join(MANIFEST8_DIR, MANIFEST8_FILES[kind]);
 }
-export type ManifestProtocol = 7 | 8;
+// VS4: the same for render-stream/16 (lib/feature-evidence-16.ts): one file, the GSW receiver's.
+export const MANIFEST16_DIR = join(
+  EXPERIMENT_DIR,
+  "protocol",
+  "features",
+  "render-stream-16",
+);
+export function manifest16Path(kind: ReceiverKind): string {
+  const file = MANIFEST16_FILES[kind];
+  if (file === undefined)
+    throw new Error(`make-features: ${kind} does not speak render-stream/16`);
+  return join(MANIFEST16_DIR, file);
+}
+export type ManifestProtocol = 7 | 8 | 16;
 
 interface ReceiverBlock {
   id: string;
@@ -364,10 +382,11 @@ interface ReceiverBlock {
     godot_editor: string;
     web_template_sha256: string | null;
     bundle_bytes: number | null;
-    commit: string;
+    /** null at /16: no quoted run (lib/feature-evidence-16.ts). */
+    commit: string | null;
   };
   platform: {
-    runtime: string;
+    runtime: string | null;
     graphics: string | null;
     angle_backend: "vulkan" | null;
   };
@@ -388,7 +407,7 @@ export interface Collected {
 
 export interface FeatureManifest2 {
   schema: "render-stream-features/2";
-  protocol: "render-stream/7" | "render-stream/8";
+  protocol: "render-stream/7" | "render-stream/8" | "render-stream/16";
   stream_protocols: string[];
   engine: { version: string; template: string; platform: string };
   capture: { calibrator_version: number; hooks: number };
@@ -470,14 +489,35 @@ const TEXTURE_ENCODINGS_8: Record<ReceiverKind, string[]> = {
   "gsw-canvas": ["block", "uastc", "decoded"],
 };
 
+/** VS4: /16's receiver block: nothing is collected from a quoted run (there is none), so the build
+ * and platform are named as unrecorded rather than copied from /8's. */
+function receiverBlock16(kind: ReceiverKind): ReceiverBlock {
+  return {
+    id: "gsw-canvas-rs-core-wasm",
+    kind,
+    build: {
+      sha256: null,
+      godot_editor: "4.5.1-stable",
+      web_template_sha256: null,
+      bundle_bytes: null,
+      commit: null,
+    },
+    platform: { runtime: null, graphics: null, angle_backend: null },
+  };
+}
+
 export function buildManifest2(
   kind: ReceiverKind,
-  collected: Collected = readCollected(),
+  collected: Collected | null = null,
   proto: ManifestProtocol = 7,
 ): FeatureManifest2 {
   const v1 = buildManifest();
   const entries = sortedEntries2(
-    proto === 8 ? receiverFeatureEntries8(kind) : receiverFeatureEntries(kind),
+    proto === 16
+      ? receiverFeatureEntries16(kind)
+      : proto === 8
+        ? receiverFeatureEntries8(kind)
+        : receiverFeatureEntries(kind),
   );
   const problems = validateEntries2(entries);
   if (problems.length > 0)
@@ -489,26 +529,48 @@ export function buildManifest2(
       throw new Error(
         `make-features --receiver ${kind}: /1 entry ${id} missing`,
       );
-  const c = collected.receivers[kind];
+  const c =
+    proto === 16
+      ? {
+          receiver: receiverBlock16(kind),
+          webgl_compression_extensions: null,
+          device_targets: [] as DeviceTarget[],
+        }
+      : (collected ?? readCollected(proto)).receivers[kind];
   const short = SHORT_KIND[kind];
   return {
     schema: "render-stream-features/2",
-    protocol: proto === 8 ? "render-stream/8" : "render-stream/7",
+    protocol:
+      proto === 16
+        ? "render-stream/16"
+        : proto === 8
+          ? "render-stream/8"
+          : "render-stream/7",
     stream_protocols:
-      proto === 8
-        ? [
-            "render-stream/6",
-            "render-stream/7",
-            "render-stream/8",
-            "render-stream/9",
-          ]
-        : ["render-stream/6", "render-stream/7"],
+      proto === 16
+        ? ["render-stream/16"]
+        : proto === 8
+          ? [
+              "render-stream/6",
+              "render-stream/7",
+              "render-stream/8",
+              "render-stream/9",
+            ]
+          : ["render-stream/6", "render-stream/7"],
     engine: v1.engine,
     capture: v1.capture,
     receiver: c.receiver,
-    evidence_runs: (proto === 8 ? EVIDENCE_RUNS_8 : EVIDENCE_RUNS)
-      .filter((r) => r.key.endsWith(`@${short}`))
-      .map((r) => ({ key: r.key, path: r.path, build: r.build, note: r.note })),
+    evidence_runs:
+      proto === 16
+        ? []
+        : (proto === 8 ? EVIDENCE_RUNS_8 : EVIDENCE_RUNS)
+            .filter((r) => r.key.endsWith(`@${short}`))
+            .map((r) => ({
+              key: r.key,
+              path: r.path,
+              build: r.build,
+              note: r.note,
+            })),
     entries,
     limits: {
       ...v1.limits,
@@ -526,11 +588,9 @@ export function buildManifest2(
         shader_policies: v1.limits.shader_policies,
         texture_formats: [
           ...v1.limits.permitted_formats.map((f) => f.toLowerCase()),
-          ...(proto === 8 ? FLOAT_FORMATS_8 : []),
+          ...(proto >= 8 ? FLOAT_FORMATS_8 : []),
         ],
-        ...(proto === 8
-          ? { texture_encodings: TEXTURE_ENCODINGS_8[kind] }
-          : {}),
+        ...(proto >= 8 ? { texture_encodings: TEXTURE_ENCODINGS_8[kind] } : {}),
         webgl_compression_extensions: c.webgl_compression_extensions,
         device_targets: c.device_targets,
       },
@@ -726,20 +786,34 @@ async function main7(
   check: boolean,
   proto: ManifestProtocol,
 ): Promise<void> {
+  // VS4: only the GSW receiver speaks /16, so `all` is that one file.
+  const speaks = (k: ReceiverKind) => proto !== 16 || k === "gsw-canvas";
   const kinds =
     receiverArg === "all"
-      ? RECEIVER_KINDS
+      ? RECEIVER_KINDS.filter(speaks)
       : RECEIVER_KINDS.filter((k) => k === receiverArg);
   if (kinds.length === 0)
     throw new Error(
       `make-features: --receiver must be native, web-export, gsw-canvas or all (got ${receiverArg})`,
     );
-  await mkdir(proto === 8 ? MANIFEST8_DIR : MANIFEST7_DIR, { recursive: true });
+  if (!kinds.every(speaks))
+    throw new Error(
+      `make-features: --protocol 16 has a gsw-canvas manifest only (${kinds.filter((k) => !speaks(k)).join(", ")} does not speak render-stream/16)`,
+    );
+  await mkdir(
+    proto === 16 ? MANIFEST16_DIR : proto === 8 ? MANIFEST8_DIR : MANIFEST7_DIR,
+    { recursive: true },
+  );
   for (const kind of kinds) {
     const serialized = serializeManifest2(
-      buildManifest2(kind, readCollected(proto), proto),
+      buildManifest2(kind, proto === 16 ? null : readCollected(proto), proto),
     );
-    const path = proto === 8 ? manifest8Path(kind) : manifest7Path(kind);
+    const path =
+      proto === 16
+        ? manifest16Path(kind)
+        : proto === 8
+          ? manifest8Path(kind)
+          : manifest7Path(kind);
     if (check) {
       const onDisk = readFileSyncOrNull(path);
       if (onDisk !== serialized) {
@@ -761,12 +835,22 @@ async function main7(
 async function main(): Promise<void> {
   const check = process.argv.includes("--check");
   const protoArg = argValue("--protocol");
-  if (protoArg !== undefined && protoArg !== "7" && protoArg !== "8")
+  if (
+    protoArg !== undefined &&
+    protoArg !== "7" &&
+    protoArg !== "8" &&
+    protoArg !== "16"
+  )
     throw new Error(
-      `make-features: --protocol must be 7 or 8 (got ${protoArg})`,
+      `make-features: --protocol must be 7, 8 or 16 (got ${protoArg})`,
     );
-  const proto: ManifestProtocol = protoArg === "8" ? 8 : 7;
+  const proto: ManifestProtocol =
+    protoArg === "16" ? 16 : protoArg === "8" ? 8 : 7;
   if (process.argv.includes("--collect")) {
+    if (proto === 16)
+      throw new Error(
+        "make-features: --collect is for /7 and /8 (a /16 manifest quotes no run; lib/feature-evidence-16.ts)",
+      );
     const root = resolve(
       argValue("--evidence-root") ??
         (proto === 8 ? defaultEvidenceRoot8() : defaultEvidenceRoot()),

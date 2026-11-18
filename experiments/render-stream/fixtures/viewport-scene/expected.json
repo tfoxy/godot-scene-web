@@ -334,5 +334,18 @@
         "class": "exact"
       }
     ]
+  },
+  "client_off": {
+    "doc": "VS4 vp-client-off (scripts/lib/gate8-vl-checks.ts): a client built with viewports off draws every viewport texture transparent, so a region a surface feeds shows what is behind it. `differs`: the reference regions whose final pixels must differ from the on leg's (the drawing surface's strokes, the container's nested surface, the opaque surface's solid fill; at least min_differing_px pixels over the reference channel allowance). `same`: the regions and the rest of the screen that no surface feeds (the AnimatedTexture is a proxy of images, not a viewport) and must be unchanged.",
+    "differs": [
+      "draw",
+      "outer",
+      "opaque"
+    ],
+    "same": [
+      "anim",
+      "rest"
+    ],
+    "min_differing_px": 20
   }
 }

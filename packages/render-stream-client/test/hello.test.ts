@@ -166,7 +166,7 @@ describe("clientHello", () => {
 
 describe("coreStartOptions (PH2)", () => {
   it("asks the core for no record digests, at the endpoint's protocol", () => {
-    for (const protocol of [11, 12, 13, 14, 15]) {
+    for (const protocol of [11, 12, 13, 14, 15, 16]) {
       const o = JSON.parse(coreStartOptions(protocol));
       expect(o).toEqual({
         digest: "none",
@@ -179,6 +179,17 @@ describe("coreStartOptions (PH2)", () => {
     }
     // rs-gsw-wasm reads the option as the exact text `"digest":"none"` (parse_options).
     expect(coreStartOptions(12)).toContain('"digest":"none"');
+  });
+
+  it("adds viewports:false only when asked (render-stream/16 D3)", () => {
+    expect(coreStartOptions(16, true)).toBe(coreStartOptions(16));
+    expect(JSON.parse(coreStartOptions(16, false))).toEqual({
+      ...JSON.parse(coreStartOptions(16)),
+      viewports: false,
+    });
+    // rs-gsw-wasm reads the option as the exact text `"viewports":false` (parse_options).
+    expect(coreStartOptions(16, false)).toContain('"viewports":false');
+    expect(coreStartOptions(16)).not.toContain("viewports");
   });
 });
 
@@ -209,6 +220,32 @@ describe("clientProtocol and resource hints (render-stream/15)", () => {
     }
     expect(() => clientProtocol(12, null, true)).toThrow(/13/);
     expect(() => clientProtocol(11, null, true)).toThrow(/13/);
+  });
+
+  it("offers exactly /16 to a /16 endpoint: no upgrade, no fallback, hints and v2 wants included", () => {
+    expect(clientProtocol(16, null)).toBe(16);
+    expect(clientProtocol(16, null, false)).toBe(16);
+    expect(clientProtocol(16, null, true)).toBe(16);
+    expect(clientProtocol(16, v1)).toBe(16);
+    expect(clientProtocol(16, v2)).toBe(16);
+    expect(clientProtocol(16, v2, true)).toBe(16);
+    expect(() => clientProtocol(16, v1)).not.toThrow();
+  });
+
+  it("states /16 in a hello that is otherwise /15's", () => {
+    const facts = {
+      creditWindow: 2,
+      token: null,
+      backing: [640, 360],
+      css: [640, 360],
+      dprMilli: 1000,
+      gpuFormats: "none",
+      itemMeta: v2,
+    } as const;
+    const h15 = clientHello({ ...facts, protocol: 15 });
+    const h16 = clientHello({ ...facts, protocol: 16 });
+    expect(Object.keys(h16)).toEqual(Object.keys(h15));
+    expect(h16).toEqual({ ...h15, protocol: "render-stream/16" });
   });
 
   it("states /15 in a hello that is otherwise /14's, v2 fields allowed", () => {

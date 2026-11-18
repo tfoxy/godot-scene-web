@@ -231,8 +231,8 @@ struct Opts {
     /// `shader_set_code`.
     vertex_flat_varyings: bool,
     /// G8kp: `RS_RECEIVER_PROTOCOL=9` (live): offer render-stream.9 and accept a /9 session; CG1:
-    /// 10 the same for render-stream.10 (W11c: 11, PM5: 12, likewise). 0 when the options carry no
-    /// `live_protocol` (7 or 8).
+    /// 10 the same for render-stream.10 (W11c: 11, PM5: 12, VS4: 16, likewise). 0 when the options
+    /// carry no `live_protocol` (7 or 8).
     live_protocol: u8,
     /// the shell runs the KTX2 transcoder worker, so
     /// the default `texture_encodings` lists `uastc` (`block,uastc,decoded`).
@@ -358,7 +358,9 @@ fn parse_options(json: &str) -> Result<Opts, String> {
         o.gpu_format_mask = mask.split(',').map(str::to_string).collect();
     }
     o.summary_log = json.contains("\"log\":\"summary\"");
-    o.live_protocol = if json.contains("\"live_protocol\":15") {
+    o.live_protocol = if json.contains("\"live_protocol\":16") {
+        16
+    } else if json.contains("\"live_protocol\":15") {
         15
     } else if json.contains("\"live_protocol\":14") {
         14

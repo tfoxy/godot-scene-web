@@ -928,6 +928,7 @@ export const GROUP_COVERAGE_8: Record<string, readonly string[] | string> = {
   g8hint:
     "none: render-stream/15's resource hints and texture size_override are an opt-in wire version above /13 (GRC_STREAM_VERSION=15), outside the /8 manifest; g8hint judges them directly",
   g8vp: "none: render-stream/16's viewport surfaces are an opt-in wire version above /15 (GRC_STREAM_VERSION=16), outside the /8 manifest, and no receiver draws them yet; g8vp judges the capture side directly",
+  g8vl: "none: render-stream/16's viewport surfaces live (VS4: the client's `viewports` option, a /16 host and a browser receiver) are described by protocol/features/render-stream-16/gsw-canvas.json, not the /8 manifest",
   g8id14:
     "none: ID3's item_meta v2 (render-stream/14: the instance_id and mouse_filter columns, re-stamped rows) is an opt-in client-extension layer over /13 that no receiver applies, and the /8 manifest does not describe it",
   g8tag:

@@ -15,6 +15,7 @@
 
 // GRT4b: node:crypto behind the decoders' hash seam (lib/node-hash.ts), before anything decodes.
 import "./lib/node-hash";
+import { existsSync } from "node:fs";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,6 +53,7 @@ import { runG8tag } from "./lib/gate8-tag-checks";
 import { runG8tag2 } from "./lib/gate8-tag2-checks";
 import { runG8tdr } from "./lib/gate8-tdr-checks";
 import { type G8tExpected, runG8t } from "./lib/gate8-tex-checks";
+import { runG8vl, type VlExpected } from "./lib/gate8-vl-checks";
 import { runG8vp, type VpExpected } from "./lib/gate8-vp-checks";
 import { runG8w11 } from "./lib/gate8-w11-checks";
 import { runG8w11cResync } from "./lib/gate8-w11-native-checks";
@@ -97,6 +99,7 @@ const KNOWN_GROUPS = [
   "g8re",
   "g8hint",
   "g8vp",
+  "g8vl",
 ];
 
 function parseArgs(argv: string[]): { out: string } {
@@ -332,6 +335,18 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
     const g8vp = await runG8vp(out, expected);
     checks.push(...g8vp.checks);
     report.g8vp = g8vp.report;
+  }
+  if (run.includes("g8vl") && existsSync(join(out, "g8vl", "reference"))) {
+    // VS4: the viewport scene served live at /16 to a browser receiver (lib/gate8-vl-checks.ts).
+    const expected = JSON.parse(
+      await readFile(
+        join(EXPERIMENT_DIR, "fixtures", "viewport-scene", "expected.json"),
+        "utf8",
+      ),
+    ) as VlExpected;
+    const g8vl = await runG8vl(out, expected);
+    checks.push(...g8vl.checks);
+    report.g8vl = g8vl.report;
   }
   if (run.includes("g8pt")) {
     const expected = JSON.parse(

@@ -35,6 +35,7 @@
       "g7-55",
       "g7-6",
       "g7-8",
+      "g7-vp",
       "g7-lc",
       "g7-r",
       "g7-k"
@@ -111,6 +112,10 @@
           "g8w11c/native-sabotage-drop-base"
         ],
         "full_legs": null
+      },
+      "g7-vp": {
+        "legs": ["reference", "on", "client-off"],
+        "full_legs": 3
       }
     },
     "defer": ["g7-k"],
@@ -162,6 +167,7 @@
       "g7live-gsw-g7-2",
       "g7live-gsw-g7-5",
       "g7live-gsw-g7-55",
+      "g7live-gsw-g7-vp",
       "g7live-web-rust-g7-1",
       "g7live-web-rust-g7-2",
       "g7live-web-rust-g7-5",
@@ -678,6 +684,14 @@
         "experiments/render-stream/scripts/test/self-test-gate8-hint.ts"
       ],
       "reach": ["pure", "native:gate8@*"]
+    },
+    {
+      "why": "VS4's live viewport legs (viewport-surfaces-design.md Q7, run-gate7.sh group g7-vp = gate 8's g8vl): the checks, their self-test and the receiver's /16 live protocol and viewports option reach the GSW live run that serves the viewport scene to a browser receiver",
+      "paths": [
+        "experiments/render-stream/scripts/lib/gate8-vl-checks.ts",
+        "experiments/render-stream/scripts/test/self-test-gate8-vl.ts"
+      ],
+      "reach": ["pure", "g7live:g7-vp@gsw"]
     },
     {
       "why": "render-stream-16.md's gate 8 group g8vp: fixtures/viewport-scene, its checks and their self-test reach native gate 8, which runs g8vp whole (headless and rendered captures; no receiver leg yet)",

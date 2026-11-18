@@ -116,6 +116,16 @@ export const GATE7L_GATES: readonly LiveGateDef[] = [
     runnerLegs: "g8l,g8w11c",
     liveGroups: ["g8l", "g8w11c"],
   },
+  // VS4: render-stream/16 viewport surfaces live (g8vl: a /16 host, a browser receiver with the
+  // client's `viewports` on, and one with it off). Shares gate 8's live run directory with g7-8.
+  {
+    gate: "gate8",
+    group: "g7-vp",
+    checker: "check-gate8.ts",
+    runner: "run-gate8.sh",
+    runnerLegs: "g8vl",
+    liveGroups: ["g8vl"],
+  },
   // G7g: gate 6's live motion, warm, stall, reconnect and stale-coalesce legs (g6l); its
   // reference-live-frames and reference-file legs are native and run in the same runner.
   {

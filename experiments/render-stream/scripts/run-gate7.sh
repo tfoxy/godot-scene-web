@@ -140,6 +140,16 @@
 #             presentation-check (the page's canvas backing store equals presentation_size; the web
 #             half gets it too, lib/gate7-g6-checks.ts). `--live` with g7-6 runs g6l in both browsers.
 #
+# Group landed (VS4, live only):
+#   g7-vp     render-stream/16 viewport surfaces served live to a browser receiver (--live, and in
+#             practice --receiver gsw: only GSW draws surfaces; the web export and the native receiver
+#             defer /16). Runs gate 8's g8vl in the same live run directory as g7-8's g8l
+#             (<out>/gate8/live-<kind>/): a rendered file-sink reference, a live /16 host and a
+#             browser receiver at RS_RECEIVER_PROTOCOL=16 (`on`), and the same with
+#             RS_RECEIVER_VIEWPORTS=off (`client-off`, the client's `viewports: false`); judged by
+#             check-gate8.ts's vp-live and vp-client-off (lib/gate8-vl-checks.ts). It has no file
+#             half, so without --live it is a usage error.
+#
 # Group landed:
 #   g7-8      gate 8's file receiver legs (g8t, g8a, g8h, g8f, g8m, g8c, g8cg, g8w11, g8mm, g8pt; G8_FILE_LEGS below) in both
 #             browsers from one native gate 8 source (`--make-sources`: run-gate8.sh --legs
@@ -273,8 +283,8 @@ FIXTURE_DIR="$PACE_FIXTURE_DIR"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
 # The final leg-group vocabulary plus the phone groups.
-KNOWN_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-8 g7-lc g7-r g7-k g7-dev g7-bench g7-p)
-LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-8 g7-lc g7-r g7-k g7-dev g7-bench g7-p)
+KNOWN_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-8 g7-lc g7-r g7-k g7-dev g7-bench g7-p g7-vp)
+LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-8 g7-lc g7-r g7-k g7-dev g7-bench g7-p g7-vp)
 
 # G7u: each browser kind's lifecycle legs (run-gate6.sh G7U_LEGS), desktop (simulated suspension)
 # and device (real hidden/frozen). G7U_LEGS in the environment replaces every kind's list.
@@ -580,6 +590,15 @@ if [ -n "$LEGS_ARG" ]; then
 			;;
 		esac
 		GROUPS_RUN+=("$group")
+		# VS4: g7-vp has only a live half (render-stream/16 is a browser receiver's, over a live host).
+		if [ "$group" = g7-vp ] && [ "$LIVE" != 1 ]; then
+			echo "run-gate7: g7-vp is a live group: pass --live" >&2
+			exit 2
+		fi
+		if [ "$group" = g7-vp ] && [ "$RECEIVER" != gsw ]; then
+			echo "run-gate7: g7-vp runs the GSW receiver only (--receiver gsw): the web export and the native receiver do not speak render-stream/16" >&2
+			exit 2
+		fi
 	done
 fi
 
@@ -730,14 +749,14 @@ if [ "$LIVE" = "1" ]; then
 		fi
 	fi
 	LIVE_RUNS=()
-	for pair in g7-1:1:g1a,g1c,g1d g7-2:2:g2a,g2c,g2e g7-5:5:g5c,g5f g7-55:55:g55f,g55s,g55v,g55t g7-6:6:g6l g7-8:8:g8l,g8w11c; do
+	for pair in g7-1:1:g1a,g1c,g1d g7-2:2:g2a,g2c,g2e g7-5:5:g5c,g5f g7-55:55:g55f,g55s,g55v,g55t g7-6:6:g6l g7-8:8:g8l,g8w11c g7-vp:8:g8vl; do
 		group="${pair%%:*}"
 		rest="${pair#*:}"
 		has_group "$group" || continue
 		LIVE_RUNS+=("$group:$rest")
 	done
 	if [ "${#LIVE_RUNS[@]}" -eq 0 ] && ! has_group g7-r && ! has_group g7-lc && ! has_group g7-k && ! has_group g7-dev && ! has_group g7-p; then
-		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55, g7-6, g7-8, g7-lc, g7-r, g7-k, g7-dev, g7-p in --legs" >&2
+		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55, g7-6, g7-8, g7-vp, g7-lc, g7-r, g7-k, g7-dev, g7-p in --legs" >&2
 		exit 2
 	fi
 	if [ "$RECEIVER" = "native" ] && [ "${#LIVE_RUNS[@]}" -gt 0 ]; then

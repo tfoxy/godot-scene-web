@@ -53,6 +53,25 @@ while engaged), `skippedFrames` (those that presented nothing) and `frameCapWake
 the cap or kept it awake (`input`, `session`, `payload`, `motion`, `colour`, `resource`, ...): when
 the cap never engages on a scene that looks idle, it names what the scene keeps changing.
 
+## Viewport surfaces (render-stream/16)
+
+An endpoint with `protocol: 16` makes the client offer exactly `render-stream.16`: a /16 host lists
+nothing else, so there is no fallback and no upgrade rule, and the endpoint must name the version the
+host runs (`GRC_STREAM_VERSION=16`). A /16 stream carries the host's non-root viewports (a
+`SubViewport` shown through a `ViewportTexture`, a `SubViewportContainer`, an embedded window), and
+the client draws each into its own surface.
+
+| Option          | Default | Effect                                                                                                                                                                                                                                                                          |
+| --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `viewports`     | `true`  | `false` builds no surface pass: the viewport table is still applied, every viewport texture draws transparent, and `stats().surfacesSkipped` counts what the frame reached and did not build. The wire is the same, so the host needs no restart. Below /16 it changes nothing. |
+| `resourceHints` | `false` | Keeps the host's resource hints in a table (`hints()`, the `hints*` stats). At /16 it does not change the offer; the host's `GRC_RESOURCE_HINTS` decides whether it sends any. Below /16 it offers `render-stream.15`, as before.                                               |
+
+The host's own switch is `GRC_VIEWPORTS=on|off` (default on), documented with the other `GRC_*`
+variables in `experiments/render-stream/protocol/streaming-host.md`. `stats()` reports
+`surfacesRendered`, `surfacesSkipped`, `surfacesUnchanged`, `surfacesAllocated` and `surfacePixels`
+(the last apply's; all 0 on a stream with no viewport surface). Items inside a surface are not
+pickable on the client (`pick_tree` stays root-only).
+
 ## Payloads that arrive late or not at all
 
 Textures, meshes and shader code are content-addressed payloads, fetched over HTTP when a

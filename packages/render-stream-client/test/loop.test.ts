@@ -90,6 +90,42 @@ describe("render-stream client loop", () => {
     });
   });
 
+  it("stats() carries the last apply's viewport surface counts (render-stream/16), 0 without them", () => {
+    const h = streaming(2);
+    const t = h.last();
+    const zero = {
+      surfacesRendered: 0,
+      surfacesSkipped: 0,
+      surfacesUnchanged: 0,
+      surfacesAllocated: 0,
+      surfacePixels: 0,
+    };
+    expect(h.loop.stats()).toMatchObject(zero);
+    h.core.facts = {
+      structural: false,
+      why: 0,
+      backBufferItems: 0,
+      surfacesRendered: 2,
+      surfacesSkipped: 3,
+      surfacesUnchanged: 1,
+      surfacesAllocated: 4,
+      surfacePixels: 1550000,
+    };
+    t.on.message(tx(1));
+    h.clock.frame();
+    expect(h.loop.stats()).toMatchObject({
+      surfacesRendered: 2,
+      surfacesSkipped: 3,
+      surfacesUnchanged: 1,
+      surfacesAllocated: 4,
+      surfacePixels: 1550000,
+    });
+    h.core.facts = { structural: false, why: 0, backBufferItems: 0 };
+    t.on.message(tx(2));
+    h.clock.frame();
+    expect(h.loop.stats()).toMatchObject(zero);
+  });
+
   it("stats().carrier names the open connection's carrier, else null", () => {
     const h = streaming(2);
     expect(h.loop.stats().carrier).toBeNull();

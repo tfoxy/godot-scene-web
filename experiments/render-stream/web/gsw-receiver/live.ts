@@ -125,6 +125,15 @@ import { leakedGlTextureCount, leakOneIfDue } from "./gl-leak";
 import { type PayloadVerify, Perf } from "./perf";
 import { KtxStager } from "./transcode";
 
+/** VS4: the core's viewport surface counters (gsw-rs `Stats`, render-stream/16). */
+const SURFACE_STATS = [
+  "surfaces_rendered",
+  "surfaces_skipped",
+  "surfaces_unchanged",
+  "surfaces_allocated",
+  "surface_pixels",
+] as const;
+
 /** The subprotocol and hello `protocol` of a live wire version (G8g: 8 is /8's live transport;
  * G8kp: 9, render-stream-9.md "Live transport", RS_RECEIVER_PROTOCOL=9 offers only this). */
 const SUBPROTOCOL = (v: LiveProtocol) => `render-stream.${v}`;
@@ -278,6 +287,8 @@ class LiveReceiver {
   private ktx: KtxStager | null = null;
   private mem: WebAssembly.Memory | null = null;
   private stats: (() => Record<string, number>) | null = null;
+  /** VS4: the largest value of each `SURFACE_STATS` field over the run's applies. */
+  private readonly surfaceMax: Record<string, number> = {};
   private readonly perf = new Perf();
   private readonly report: Report;
   private readonly liveBlock: Record<string, unknown>;
@@ -483,6 +494,8 @@ class LiveReceiver {
             ...(this.cfg.liveProtocol >= 9
               ? { live_protocol: this.cfg.liveProtocol }
               : {}),
+            // VS4: the client's `viewports: false`, the key only when off.
+            ...(this.cfg.viewports ? {} : { viewports: false }),
             // W11c: a summary log keeps no per-transaction evidence in wasm either.
             log: this.cfg.log,
             // G8kb: the bundle carries the KTX2 transcoder worker (transcode.ts).
@@ -608,15 +621,7 @@ class LiveReceiver {
             // G8kb: GSW transcodes uastc (the module's default with the worker, Q3).
             this.cfg.textureEncodings ?? "block,uastc,decoded",
             probeGpuFormats(this.cfg.gpuFormatMask),
-            this.cfg.liveProtocol === 13
-              ? "render-stream/13"
-              : this.cfg.liveProtocol === 12
-                ? "render-stream/12"
-                : this.cfg.liveProtocol === 11
-                  ? "render-stream/11"
-                  : this.cfg.liveProtocol === 10
-                    ? "render-stream/10"
-                    : "render-stream/9",
+            `render-stream/${this.cfg.liveProtocol as 9 | 10 | 11 | 12 | 13 | 16}` as const,
             // W11c: W11t's `live_coding` offer, last (golden-11's control hello); none when off.
             this.L.liveCoding,
           )
@@ -1620,6 +1625,9 @@ class LiveReceiver {
       f.paced.drawn_ms = d1;
     }
     const st = (this.stats as () => Record<string, number>)();
+    // VS4: the largest surface counts any apply showed (the last apply alone may reach none).
+    for (const k of SURFACE_STATS)
+      this.surfaceMax[k] = Math.max(this.surfaceMax[k] ?? 0, st[k] ?? 0);
     const decodeUs = this.perfDecode.length
       ? (this.perfDecode.pop() as number)
       : 0;
@@ -2300,6 +2308,9 @@ class LiveReceiver {
       const gsw = this.liveBlock.gsw as Record<string, unknown>;
       gsw.raf_callbacks = this.rafIndex;
       gsw.first_apply = this.firstApply;
+      // VS4: the viewport surface counters (the core's stats, largest over the run), and the
+      // client option the core was built with.
+      gsw.surfaces = { viewports: this.cfg.viewports, ...this.surfaceMax };
       // W11c: W11t's coding, per connection (the live block's own key, /11 only).
       if (this.coding !== null || this.codingReports.length > 0) {
         const all = [...this.codingReports];
@@ -2318,7 +2329,7 @@ class LiveReceiver {
       }
       // W13c: the /13 accept path's evidence (the module's w13 block: predict-check failures,
       // the patches dropped awaiting their fulls) and the resyncs this page asked for them.
-      if (this.cfg.liveProtocol === 13 && g) {
+      if (this.cfg.liveProtocol >= 13 && g) {
         const ev = JSON.parse(g.evidence_json()) as {
           w13?: Record<string, unknown>;
         };

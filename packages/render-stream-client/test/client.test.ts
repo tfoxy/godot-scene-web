@@ -322,6 +322,7 @@ describe("endpoint protocol changes", () => {
     protocol: RenderStreamProtocol,
     extensions: RenderStreamExtension[] = [],
     resourceHints?: boolean,
+    viewports?: boolean,
   ) {
     vi.useFakeTimers();
     const memory = new WebAssembly.Memory({ initial: 1 });
@@ -330,7 +331,7 @@ describe("endpoint protocol changes", () => {
     const instances: GswRs[] = [];
     let refuse = false;
     class GswRs extends base.GswRs {
-      readonly options: { live_protocol: number };
+      readonly options: { live_protocol: number; viewports?: boolean };
       readonly free = vi.fn();
       readonly set_window = vi.fn();
       readonly payloads = new Set<string>();
@@ -411,6 +412,7 @@ describe("endpoint protocol changes", () => {
       transport,
       applyOn: "frame",
       ...(resourceHints !== undefined ? { resourceHints } : {}),
+      ...(viewports !== undefined ? { viewports } : {}),
       onStatus: (st) => statuses.push(st),
     });
     function open() {
@@ -473,6 +475,9 @@ describe("endpoint protocol changes", () => {
     [13, true, 15],
     [14, true, 15],
     [15, true, 15],
+    [16, undefined, 16],
+    [16, false, 16],
+    [16, true, 16],
   ] as const)("endpoint /%i with resourceHints %s offers, builds and says /%i", async (protocol, hints, spoken) => {
     const h = mount(protocol, [], hints);
     h.c.connect();
@@ -489,6 +494,49 @@ describe("endpoint protocol changes", () => {
     const st = h.c.stats();
     expect("hintsReceived" in st).toBe(hints === true);
     h.c.dispose();
+  });
+
+  it("offers exactly render-stream.16 to a /16 endpoint, v2 wants and hints included", async () => {
+    const h = mount(
+      16,
+      [{ id: "v2", wants: { fields: ["instance_id"] } }],
+      true,
+    );
+    h.c.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.connections).toHaveLength(1);
+    expect(h.connections[0]).toMatchObject({
+      sub: "render-stream.16",
+      builtFor: 16,
+    });
+    const conn = h.open();
+    const hello = JSON.parse(conn.send.mock.calls[0][0]);
+    expect(hello.protocol).toBe("render-stream/16");
+    expect(hello.item_meta.fields).toEqual(["instance_id"]);
+    expect("hintsReceived" in h.c.stats()).toBe(true);
+    h.c.dispose();
+  });
+
+  it("builds the core with viewports on unless the option says false", async () => {
+    for (const [option, built] of [
+      [undefined, undefined],
+      [true, undefined],
+      [false, false],
+    ] as const) {
+      const h = mount(16, [], undefined, option);
+      h.c.connect();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.instances[0].options.viewports).toBe(built);
+      // The offer and the hello are the same either way.
+      expect(h.connections[0].sub).toBe("render-stream.16");
+      expect(JSON.parse(h.open().send.mock.calls[0][0]).protocol).toBe(
+        "render-stream/16",
+      );
+      h.c.dispose();
+    }
+    expect(() => mount(16, [], undefined, "no" as never)).toThrow(
+      /viewports must be a boolean/,
+    );
   });
 
   it("frameCap: validated, switched at runtime, and woken by input on the canvas's document", async () => {
@@ -554,6 +602,20 @@ describe("endpoint protocol changes", () => {
       wake.mockRestore();
       setCap.mockRestore();
     }
+  });
+
+  it("leaves the 13 to 15 hints offers alone and switches /15 to /16 at the connection boundary", async () => {
+    const h = mount(15, [], true);
+    h.c.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    h.open();
+    h.c.setEndpoint({ ...endpoint, protocol: 16 });
+    expect(h.instances.map((g) => g.options.live_protocol)).toEqual([15, 16]);
+    expect(h.connections.at(-1)).toMatchObject({
+      sub: "render-stream.16",
+      builtFor: 16,
+    });
+    h.c.dispose();
   });
 
   it("refuses resourceHints below protocol 13, at creation and on setEndpoint", async () => {

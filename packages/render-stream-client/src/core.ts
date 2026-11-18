@@ -174,6 +174,13 @@ export interface CoreApplyStats {
   why: number;
   /** Items holding a canvas group or a back-buffer copy. */
   backBufferItems: number;
+  /** render-stream/16 viewport surfaces after the apply (`RenderStreamStats.surfacesRendered` and
+   * the four after it); absent from a core without them. */
+  surfacesRendered?: number;
+  surfacesSkipped?: number;
+  surfacesUnchanged?: number;
+  surfacesAllocated?: number;
+  surfacePixels?: number;
 }
 
 /** `StreamCore.motion`: one transaction's motion facts (rs-core `motion::TxMotion`). */
@@ -227,6 +234,11 @@ const STAT_ENCODING = STAT_FIELDS.indexOf("encoding");
 const STAT_STRUCTURAL = STAT_FIELDS.indexOf("structural");
 const STAT_WHY = STAT_FIELDS.indexOf("why");
 const STAT_BACK_BUFFER_ITEMS = STAT_FIELDS.indexOf("back_buffer_items");
+const STAT_SURFACES_RENDERED = STAT_FIELDS.indexOf("surfaces_rendered");
+const STAT_SURFACES_SKIPPED = STAT_FIELDS.indexOf("surfaces_skipped");
+const STAT_SURFACES_UNCHANGED = STAT_FIELDS.indexOf("surfaces_unchanged");
+const STAT_SURFACES_ALLOCATED = STAT_FIELDS.indexOf("surfaces_allocated");
+const STAT_SURFACE_PIXELS = STAT_FIELDS.indexOf("surface_pixels");
 const MOTION_SEQ = MOTION_FIELDS.indexOf("seq");
 const MOTION_CHANGES = MOTION_FIELDS.indexOf("changes");
 const MOTION_MAX_PX = MOTION_FIELDS.indexOf("max_px");
@@ -269,6 +281,11 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     structural: false,
     why: 0,
     backBufferItems: 0,
+    surfacesRendered: 0,
+    surfacesSkipped: 0,
+    surfacesUnchanged: 0,
+    surfacesAllocated: 0,
+    surfacePixels: 0,
   };
   /** The view of `query_item`'s scratch row, re-derived on a new instance or memory growth. */
   private itemView: Float64Array | null = null;
@@ -778,6 +795,11 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     out.structural = st[STAT_STRUCTURAL] !== 0;
     out.why = st[STAT_WHY];
     out.backBufferItems = st[STAT_BACK_BUFFER_ITEMS];
+    out.surfacesRendered = st[STAT_SURFACES_RENDERED];
+    out.surfacesSkipped = st[STAT_SURFACES_SKIPPED];
+    out.surfacesUnchanged = st[STAT_SURFACES_UNCHANGED];
+    out.surfacesAllocated = st[STAT_SURFACES_ALLOCATED];
+    out.surfacePixels = st[STAT_SURFACE_PIXELS];
     return out;
   }
 

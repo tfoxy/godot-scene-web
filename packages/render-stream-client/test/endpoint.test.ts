@@ -40,7 +40,7 @@ describe("validateEndpoint", () => {
     ["uppercase token", { ...ok, token: "A".repeat(64) }],
     ["short token", { ...ok, token: "a".repeat(63) }],
     ["protocol 10", { ...ok, protocol: 10 }],
-    ["protocol 16", { ...ok, protocol: 16 }],
+    ["protocol 17", { ...ok, protocol: 17 }],
     ["protocol string", { ...ok, protocol: "12" }],
     ["presentation 0", { ...ok, presentation: [0, 1] }],
     ["presentation shape", { ...ok, presentation: [1] }],
@@ -113,6 +113,10 @@ describe("validateEndpoint", () => {
     expect(validateEndpoint({ ...ok, protocol: 13 }).protocol).toBe(13);
     expect(validateEndpoint({ ...ok, protocol: 14 }).protocol).toBe(14);
     expect(validateEndpoint({ ...ok, protocol: 15 }).protocol).toBe(15);
+  });
+
+  it("accepts render-stream/16 (VS4)", () => {
+    expect(validateEndpoint({ ...ok, protocol: 16 }).protocol).toBe(16);
   });
 
   it("compares descriptors by value", () => {

@@ -112,10 +112,19 @@ export interface RenderStreamClientOptions {
   /** Ask the host for resource hints (render-stream-15.md): the client offers
    * `render-stream.15` (the one subprotocol offered, so the host must run
    * `GRC_STREAM_VERSION=15`) and keeps every hint in effect in a table, read by `hints()`, with
-   * the hint fields of `stats()`. The endpoint's protocol must be 13 or later. Default false: no
-   * /15 offer, no table, and the offer, the hello and the core's calls are the client's without
-   * the option. Nothing is fetched ahead of a transaction yet. */
+   * the hint fields of `stats()`. The endpoint's protocol must be 13 or later. At protocol 16 the
+   * offer is `render-stream.16` either way (a /16 stream contains /15's hints; the host's
+   * `GRC_RESOURCE_HINTS` decides whether it sends any), and the option only keeps the table.
+   * Default false: no /15 offer, no table, and the offer, the hello and the core's calls are the
+   * client's without the option. Nothing is fetched ahead of a transaction yet. */
   resourceHints?: boolean;
+  /** Draw the host's non-root viewports (render-stream/16 surfaces: a `SubViewport`'s own picture
+   * shown through a `ViewportTexture`, a `SubViewportContainer`, an embedded window). Default
+   * true. `false` builds no surface pass: the viewport table is still applied, every viewport
+   * texture draws transparent, and `stats().surfacesSkipped` counts the surfaces the frame reached
+   * and did not build. The wire is the same, so the host needs no restart to try either value. Only
+   * a /16 stream carries surfaces: below /16 the option changes nothing. */
+  viewports?: boolean;
   /** The idle frame cap, for battery and heat over long sessions on a GPU-bound device; change it
    * at runtime with `setFrameCap`. `off` (the default): every frame callback presents, and nothing
    * is measured. `automatic`: once nobody has interacted for `FRAME_CAP_QUIET_MS` and the stream
@@ -258,6 +267,8 @@ export function createRenderStreamClient(
       "render-stream client: resourceHints must be a boolean",
     );
   clientProtocol(endpoint.protocol, ext?.request, resourceHints);
+  if (typeof (options.viewports ?? true) !== "boolean")
+    throw new TypeError("render-stream client: viewports must be a boolean");
   checkFrameCap(options.frameCap ?? "off");
   frameCapLimits(options.frameCapBounds);
   // Absent the option there is no recorder (and no per-message copy); present, one ring.
@@ -499,7 +510,10 @@ class Client implements RenderStreamClient {
       }
       let g: GswRs;
       try {
-        g = new mod.GswRs(canvas, coreStartOptions(protocol));
+        g = new mod.GswRs(
+          canvas,
+          coreStartOptions(protocol, this.o.viewports ?? true),
+        );
       } catch (e) {
         const probe = document.createElement("canvas").getContext("webgl2");
         probe?.getExtension("WEBGL_lose_context")?.loseContext();

@@ -44,7 +44,7 @@ export function clientTextureEncodings(gpuFormats: string): string {
  * (render-stream-10.md "Live transport"); W11c: "render-stream/11" is /10's again
  * (render-stream-11.md, golden-11's control hello); PM5: "render-stream/12" is /11's (golden-12's
  * control hello); W13c: "render-stream/13" is /12's (render-stream-13.md "As built (W13a)");
- * /14 adds the v2 identity fields. */
+ * /14 adds the v2 identity fields; /15's and /16's are /14's under their own protocol string. */
 export function helloV9(
   v7: Record<string, unknown>,
   textureEncodings: string,
@@ -56,7 +56,8 @@ export function helloV9(
     | "render-stream/12"
     | "render-stream/13"
     | "render-stream/14"
-    | "render-stream/15" = "render-stream/9",
+    | "render-stream/15"
+    | "render-stream/16" = "render-stream/9",
   liveCoding = "",
 ): Record<string, unknown> {
   return {
@@ -82,7 +83,7 @@ export const CLIENT_INBOUND_BYTES = 16777216;
  * digest stays (resource payload hashes, mesh body digests, W11t's checksum, /13 `predict-check`,
  * the seq and base rules). The harness receiver keeps `inline`: its checks read the digests.
  */
-export function coreStartOptions(protocol: number): string {
+export function coreStartOptions(protocol: number, viewports = true): string {
   return JSON.stringify({
     digest: "none",
     sabotage: [],
@@ -90,6 +91,9 @@ export function coreStartOptions(protocol: number): string {
     texture_encodings: "block,decoded",
     live_protocol: protocol,
     log: "summary",
+    // render-stream/16 (viewport-surfaces-design.md D3): the key is there only when off, so every
+    // other option string is byte for byte what it was.
+    ...(viewports ? {} : { viewports: false }),
   });
 }
 
@@ -115,8 +119,11 @@ export interface ClientHelloFacts {
   } | null;
 }
 
-/** The one version offered on the transport and in the hello. A v2 request relies on /14
- * picking semantics, so it never falls back to an older protocol. `resourceHints` offers /15
+/** The one version offered on the transport and in the hello. At 16 it is 16, exactly what the
+ * endpoint names: a /16 host lists only `render-stream.16`, so nothing is upgraded or tried
+ * instead, and `resourceHints` keeps its /15 meaning (the client keeps the host's hints in a
+ * table; the host's `GRC_RESOURCE_HINTS` decides whether it sends any). Below 16, a v2 request
+ * relies on /14 picking semantics, so it never falls back to an older protocol. `resourceHints` offers /15
  * (render-stream-15.md "Who speaks /15": only a client that asks for hints), which keeps /14's
  * item_meta v2; without it a /15 endpoint is spoken to as /13, or /14 for v2 wants, which a /15
  * host also lists. One subprotocol only: the transport seam carries one, the core is built for
@@ -131,6 +138,7 @@ export function clientProtocol(
     throw new TypeError(
       "render-stream client: item_meta (an extension's wants) needs protocol 13 or later",
     );
+  if (protocol === 16) return 16;
   if (resourceHints) {
     if (protocol < 13)
       throw new TypeError(

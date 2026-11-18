@@ -126,6 +126,18 @@ export interface RenderStreamStats {
   /** Items in the last applied state holding a canvas group or a back-buffer copy. `stats()`
    * always sets it (optional as `carrier`). */
   backBufferItems?: number;
+  /** render-stream/16 viewport surfaces, as of the last apply (`stats()` always sets them;
+   * optional as `carrier`): surface passes the frame draws (`surfacesRendered`), surfaces the
+   * frame reaches that the client did not build because the client was created with
+   * `viewports: false` (`surfacesSkipped`; their viewport textures draw transparent), due surfaces
+   * kept because nothing they draw changed (`surfacesUnchanged`), render targets held
+   * (`surfacesAllocated`) and their pixels (`surfacePixels`, saturating). All 0 on a stream with
+   * no viewport surface (every protocol below /16, or a host with `GRC_VIEWPORTS=off`). */
+  surfacesRendered?: number;
+  surfacesSkipped?: number;
+  surfacesUnchanged?: number;
+  surfacesAllocated?: number;
+  surfacePixels?: number;
   /** Payloads a transaction needed that the store did not hold, drawn since the client started.
    * The cold-payload fields below are always set by `stats()` (optional as `carrier`). */
   missedPayloads?: number;
@@ -389,6 +401,13 @@ export class StreamLoop {
   private structuralApplies = 0;
   private lastApplyWhy = 0;
   private backBufferItems = 0;
+  private surfaces = {
+    rendered: 0,
+    skipped: 0,
+    unchanged: 0,
+    allocated: 0,
+    pixels: 0,
+  };
   private readonly applyTimes = new Float64Array(APPLY_RING);
   private applyCount = 0;
   private readonly rtts = new Float64Array(RTT_SAMPLES);
@@ -539,6 +558,11 @@ export class StreamLoop {
       structuralApplies: this.structuralApplies,
       lastApplyWhy: this.lastApplyWhy,
       backBufferItems: this.backBufferItems,
+      surfacesRendered: this.surfaces.rendered,
+      surfacesSkipped: this.surfaces.skipped,
+      surfacesUnchanged: this.surfaces.unchanged,
+      surfacesAllocated: this.surfaces.allocated,
+      surfacePixels: this.surfaces.pixels,
       ...this.cold.totals,
       coldPayloadLog: this.cold.log(),
       ...(this.hints !== null ? this.hintStats(this.hints) : {}),
@@ -1498,6 +1522,11 @@ export class StreamLoop {
       if (facts.structural) this.structuralApplies++;
       this.lastApplyWhy = facts.why;
       this.backBufferItems = facts.backBufferItems;
+      this.surfaces.rendered = facts.surfacesRendered ?? 0;
+      this.surfaces.skipped = facts.surfacesSkipped ?? 0;
+      this.surfaces.unchanged = facts.surfacesUnchanged ?? 0;
+      this.surfaces.allocated = facts.surfacesAllocated ?? 0;
+      this.surfaces.pixels = facts.surfacePixels ?? 0;
     }
     if (this.ext) this.ext.applied();
     const folded = this.coalesced;

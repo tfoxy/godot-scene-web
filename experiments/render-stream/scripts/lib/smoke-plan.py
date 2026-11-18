@@ -75,6 +75,9 @@ def universe(m):
             # g7-r also runs per browser kind (run-gate6.sh --legs g6c), and g7-k is browser-only.
             if r == "native" and g != "g7-r":
                 continue
+            # VS4: g7-vp (gate 8's g8vl, render-stream/16 live) is a GSW group: only GSW draws viewport surfaces.
+            if g == "g7-vp" and r != "gsw":
+                continue
             t.add(f"g7live:{g}@{r}")
     for g in u["g7x"]:
         t.add(f"g7x:{g}")

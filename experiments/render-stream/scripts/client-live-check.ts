@@ -5,7 +5,7 @@
 //
 //   tsx --conditions=development experiments/render-stream/scripts/client-live-check.ts \
 //     --dir <out> --port <page port> --ws ws://127.0.0.1:<p>/render-stream --http http://127.0.0.1:<p> \
-//     [--token-file <evidence>/live-token] [--protocol 11|12] [--window 1|2] [--credit-stage submitted|applied] [--apply-on frame|message] [--core <build-web.sh out>] \
+//     [--token-file <evidence>/live-token] [--protocol 11|12|13|14|15|16] [--viewports on|off] [--window 1|2] [--credit-stage submitted|applied] [--apply-on frame|message] [--core <build-web.sh out>] \
 //     [--mounts 5] [--first-s 20] [--cycle-s 8] [--rss-tolerance 0.15]
 //
 // Run it as bench-live-scale.sh's host-only receiver (`--receiver host-only --rx-cmd ...`), which
@@ -116,6 +116,9 @@ interface Stats {
   appliesPerSec: number;
   creditRttMsP50: number | null;
   heapBytes: number;
+  surfacesRendered?: number;
+  surfacesSkipped?: number;
+  surfacesAllocated?: number;
 }
 
 async function main(): Promise<number> {
@@ -125,7 +128,11 @@ async function main(): Promise<number> {
   const firstS = Number(a["first-s"] ?? 20);
   const cycleS = Number(a["cycle-s"] ?? 8);
   const tolerance = Number(a["rss-tolerance"] ?? 0.15);
-  const protocol = Number(a.protocol ?? 12) as 11 | 12;
+  const protocol = Number(a.protocol ?? 12) as 11 | 12 | 13 | 14 | 15 | 16;
+  // VS4: the client's `viewports` option (on is the package's default; only a /16 stream has surfaces).
+  const viewports = a.viewports ?? "on";
+  if (viewports !== "on" && viewports !== "off")
+    throw new Error("client-live-check: --viewports must be on or off");
   const creditWindow = Number(a.window ?? 2) as 1 | 2;
   // PH3: the client's pacing options (omitted: the package's defaults).
   const creditStage = a["credit-stage"] as "submitted" | "applied" | undefined;
@@ -199,6 +206,7 @@ async function main(): Promise<number> {
     origin,
     ws: a.ws,
     protocol,
+    viewports,
     credit_window: creditWindow,
     credit_stage: creditStage ?? "default",
     apply_on: applyOn ?? "default",
@@ -311,7 +319,14 @@ async function main(): Promise<number> {
           (
             window as unknown as { __rsc: { mount(o: unknown): void } }
           ).__rsc.mount(o),
-        { endpoint, core, creditWindow, creditStage, applyOn },
+        {
+          endpoint,
+          core,
+          creditWindow,
+          creditStage,
+          applyOn,
+          ...(viewports === "off" ? { viewports: false } : {}),
+        },
       );
       const until = t0 + (m === 1 ? firstS : cycleS) * 1000;
       let heapStart: number | null = null;
@@ -397,6 +412,11 @@ async function main(): Promise<number> {
         applied: last?.applied ?? 0,
         applies_per_s_last: last?.appliesPerSec ?? 0,
         credit_rtt_ms_p50: last?.creditRttMsP50 ?? null,
+        surfaces: {
+          rendered: last?.surfacesRendered ?? null,
+          skipped: last?.surfacesSkipped ?? null,
+          allocated: last?.surfacesAllocated ?? null,
+        },
         context_loss:
           m === 1
             ? {

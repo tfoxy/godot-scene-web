@@ -4,7 +4,8 @@ A reference for a product that embeds the capture in a running game (a "streamin
 process that keeps running its scene while the capture mirrors it) and for whoever operates the
 receivers in front of it. The wire is specified in `render-stream-N.md`; what each receiver
 supports is in [features/render-stream-8/](features/render-stream-8/) (`native.json`,
-`web-export.json`, `gsw-canvas.json`).
+`web-export.json`, `gsw-canvas.json`); render-stream/16, which only the GSW receiver speaks, has
+[features/render-stream-16/gsw-canvas.json](features/render-stream-16/gsw-canvas.json).
 
 Every `GRC_*` name below is read by the capture source (`capture/src/`); the pure self-test
 `scripts/test/self-test-gate8z.ts` fails if this page names a variable the source does not.
@@ -36,7 +37,9 @@ Set before the capture's GDExtension loads.
 | `GRC_CALIBRATION` | The calibration record for the exact engine binary. The hooks install only when it matches. |
 | `GRC_MODE` | `validate` (default: check the seam, publish nothing), `arm` (hook and stream now), or `standby` (load and wait for an arm). |
 | `GRC_EVIDENCE_DIR` | Where the capture writes `result.json` and its `evidence/` files. |
-| `GRC_STREAM_VERSION` | Wire version of the sinks (default `6`; `6`, `8` to `15`). Later versions are opt-in; the live listener offers the chosen version first and older ones after it. `15` adds resource hints and the texture size override ([render-stream-15.md](render-stream-15.md)). |
+| `GRC_STREAM_VERSION` | Wire version of the sinks (default `6`; `6`, `8` to `16`). Later versions are opt-in. Up to `15` the live listener offers the chosen version first and older ones after it; `16` lists only `render-stream.16` (no per-connection downgrade). `15` adds resource hints and the texture size override ([render-stream-15.md](render-stream-15.md)); `16` adds viewport surfaces ([render-stream-16.md](render-stream-16.md)). |
+| `GRC_VIEWPORTS` | `on` (default) or `off`, read at load. On, the capture mirrors non-root viewports (a `SubViewport`, a `SubViewportContainer`, an embedded window) and a `GRC_STREAM_VERSION=16` stream carries them; the session says `"viewports":"on"`, or `"unavailable"` when the calibration record lacks a hook of the viewport family (the behaviour is then the off one). `off` keeps the typed `non-root-viewport` behaviour of earlier versions and sends an empty viewport table. A client's `viewports: false` option is the receiver-side switch; the stream is the same either way, so the host needs no restart to try either. |
+| `GRC_RESOURCE_HINTS` | `on` (default) or `off`: whether a stream that speaks `/15` or later sends resource hints (when its payloads are not all inline). Moving a seat to `/16` does not force the hints' host cost; `off` sends none at `/15` or `/16`. A client keeps them in a table only with its `resourceHints` option, and ignores them otherwise. |
 | `GRC_STREAM_OUT`, `GRC_STREAM_PATCH_OUT` | File sinks: a recording with full transactions, and one with patches. |
 | `GRC_RESOURCE_STORE_DIR` | The out-of-band payload store a file sink's resources are written to. |
 | `GRC_ADOPT` | `arm`: at arm, walk the scene tree and adopt existing canvases, layers, items, textures, meshes, glyph atlases, materials and shaders, so a running game can be captured mid-session. Must arm on the main thread. |

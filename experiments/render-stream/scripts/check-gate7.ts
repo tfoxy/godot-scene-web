@@ -126,6 +126,7 @@ export const ALL_GROUPS = [
   "g7-dev",
   "g7-bench",
   "g7-p",
+  "g7-vp",
   "g7-z",
 ] as const;
 export const LANDED_GROUPS: readonly string[] = [
@@ -144,6 +145,7 @@ export const LANDED_GROUPS: readonly string[] = [
   "g7-dev",
   "g7-bench",
   "g7-p",
+  "g7-vp",
   "g7-z",
 ];
 /** G7a: the groups with gsw legs (G7b adds the web half of g7-1..g7-6 and g7-55; G7t and G7s

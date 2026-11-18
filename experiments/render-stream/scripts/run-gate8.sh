@@ -381,6 +381,14 @@
 #       fixture's own shots; then (VS3) rendered receivers on the born captures,
 #       `born/receiver` and `born-rendered/receiver` (GSW under gate 7's replay: vp-reference).
 #       Judged by lib/gate8-vp-checks.ts.
+#   g8vl (VS4, render-stream-16.md live: the same fixture served live at /16 to a browser receiver;
+#       every leg under g8vl/, never in the default run: it needs GATE7_LIVE_KIND, which
+#       `run-gate7.sh --live --legs g7-vp` sets, and without it the group only leaves
+#       g8vl/skipped.txt): `reference/capture`, the rendered /16 file-sink capture whose own Godot
+#       shots are the reference; `on/` and `client-off/`, each a headless live host (`host/`,
+#       res://born.tscn, GRC_STREAM_VERSION=16) and a browser GSW receiver at RS_RECEIVER_PROTOCOL=16
+#       (`receiver/`, final shot), `client-off` with RS_RECEIVER_VIEWPORTS=off (the client's
+#       `viewports: false`). Judged by lib/gate8-vl-checks.ts (vp-live, vp-client-off).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -402,11 +410,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re g8hint g8vp)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re g8hint g8vp g8vl)
 # GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
 # is not in the default run: g8w11 already runs the native half of those legs.
 DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re g8hint g8vp)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re g8hint g8vp)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8id14 g8tag2 g8id g8id2 g8rec1 g8htr g8tdr g8sw g8re g8hint g8vp g8vl)
 
 EXTENSION=""
 CALIBRATION=""
@@ -3643,6 +3651,13 @@ g8l_spec() {
 		G8L_VERSION=9
 		G8L_RECEIVER_ENV=(RS_RECEIVER_VARIANT_POLICY=upgrade RS_RECEIVER_TRANSCODE_LOG=1)
 		;;
+	vp)
+		# VS4 (g8vl): the viewport-scene fixture, armed at birth, served live at /16.
+		G8L_PROJECT="$G8VP_FIXTURE_DIR"
+		G8L_SCENE="res://born.tscn"
+		G8L_ENV=("${G8VP_BORN_ENV[@]}")
+		G8L_VERSION=16
+		;;
 	esac
 }
 
@@ -3694,6 +3709,8 @@ g8l_receiver() {
 	# native.json's sha256 in the hello, which the host's live-summary.json records.
 	if [ "${RS_G8_MANIFEST_HELLO:-0}" = 1 ]; then
 		local mf="$EXPERIMENT_DIR/protocol/features/render-stream-8/native.json"
+		# VS4: a /16 leg is a GSW leg and sends render-stream-16's gsw-canvas manifest.
+		[ "$G8L_VERSION" != 16 ] || mf="$EXPERIMENT_DIR/protocol/features/render-stream-16/gsw-canvas.json"
 		[ -f "$mf" ] || { echo "run-gate8: RS_G8_MANIFEST_HELLO=1: $mf missing" >&2; exit 2; }
 		LEG_ENV+=(RS_RECEIVER_MANIFEST_SHA256="$(sha256sum "$mf" | cut -d' ' -f1)")
 	fi
@@ -5282,6 +5299,8 @@ run_g8hint() {
 # loader's arm.jsonl. The headless legs exercise constructor adjacency and the node route; the
 # rendered legs (the private gamescope) bind proxies by render-target RID.
 G8VP_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/viewport-scene"
+# The directory the capture helpers write under (g8vl's reference capture lives under g8vl/).
+G8VP_DIR="$OUT/g8vp"
 G8VP_ARM_FRAME=12
 G8VP_BORN_ENV=(GRC_STREAM_VERSION=16 GRC_UNKNOWN_ITEM=skip GRC_MODE=arm RS_FIXTURE_ARM=born)
 G8VP_LATE_ENV=(GRC_STREAM_VERSION=16 GRC_UNKNOWN_ITEM=skip GRC_MODE=standby GRC_ADOPT=arm RS_FIXTURE_ARM=late
@@ -5301,7 +5320,7 @@ run_import_g8vp() {
 # run_capture_g8vp <leg> <born|late> <env word...>: a headless capture of the fixture at
 # g8vp/<leg>/capture (born: main scene res://born.tscn).
 run_capture_g8vp() {
-	local dir="$OUT/g8vp/$1/capture" arm="$2" scene=""
+	local dir="$G8VP_DIR/$1/capture" arm="$2" scene=""
 	shift 2
 	[ "$arm" = born ] && scene="res://born.tscn"
 	mkdir -p "$dir"
@@ -5313,7 +5332,7 @@ run_capture_g8vp() {
 # run_capture_rendered_g8vp <leg> <born|late> <env word...>: the same capture on the rendered host
 # (the private gamescope), with the fixture's own shots at each settle frame.
 run_capture_rendered_g8vp() {
-	local dir="$OUT/g8vp/$1/capture" arm="$2"
+	local dir="$G8VP_DIR/$1/capture" arm="$2"
 	shift 2
 	mkdir -p "$dir/evidence" "$dir/store" "$dir/shots"
 	LEG_ENV=(
@@ -5369,8 +5388,48 @@ run_g8vp() {
 	PATCH_RECORDING_NAME=recording-patch.rs8
 }
 
+# VS4: g8vl, the viewport-scene fixture live at /16 in a browser receiver (header above). The
+# reference is a rendered file-sink capture of the born fixture (its own Godot shots); `on` is the
+# default client, `client-off` the client with `viewports: false` (RS_RECEIVER_VIEWPORTS=off).
+# Both hosts are headless live hosts holding their first publish for the receiver's hello.
+run_g8vl() {
+	mkdir -p "$OUT/g8vl"
+	if [ -z "${GATE7_LIVE_KIND:-}" ]; then
+		echo "g8vl runs a /16 live receiver in a browser; run it through run-gate7.sh --live --legs g7-vp (GATE7_LIVE_KIND)" \
+			>"$OUT/g8vl/skipped.txt"
+		echo "run-gate8: g8vl skipped: no browser receiver (GATE7_LIVE_KIND is unset)" >&2
+		return 0
+	fi
+	[ -f "$OUT/g8vp/import/fixture/exit-code.txt" ] || run_import_g8vp
+	local saved_dir="$G8VP_DIR" leg d
+	G8VP_DIR="$OUT/g8vl"
+	RECORDING_NAME=recording.rs16
+	PATCH_RECORDING_NAME=recording-patch.rs16
+	echo "run-gate8: bringing up private gamescope for g8vl's rendered reference"
+	gs_start 640 360 "$OUT/gamescope-g8vl"
+	echo "run-gate8: g8vl reference (/16, armed at birth, rendered host: the Godot shots)"
+	run_capture_rendered_g8vp reference born "${G8VP_BORN_ENV[@]}"
+	for leg in on client-off; do
+		d="$OUT/g8vl/$leg"
+		G8L_RECEIVER_EXTRA_ENV=()
+		[ "$leg" = client-off ] && G8L_RECEIVER_EXTRA_ENV=(RS_RECEIVER_VIEWPORTS=off)
+		echo "run-gate8: g8vl $leg (live host at /16, browser receiver over render-stream.16)"
+		start_g8l_host "$d/host" vp
+		g8l_receiver "$d" "$LIVE_PORT"
+		finish_bg "$d/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+		LIVE_HOST_PID=""
+	done
+	G8L_RECEIVER_EXTRA_ENV=()
+	gs_teardown "$OUT/gamescope-g8vl"
+	GS_RUN_DIR=""
+	G8VP_DIR="$saved_dir"
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
+	g8vl) run_g8vl ;;
 	g8htr) run_g8htr ;;
 	g8tdr) run_g8tdr ;;
 	g8hint) run_g8hint ;;

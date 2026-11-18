@@ -33,6 +33,8 @@ const api = {
     /** PH3: the client's pacing options (undefined: the package's defaults). */
     creditStage?: "submitted" | "applied";
     applyOn?: "frame" | "message";
+    /** VS4: the client's `viewports` option (undefined: the package's default, on). */
+    viewports?: boolean;
   }) {
     if (mounted) throw new Error("already mounted");
     const mount = ++mounts;
@@ -46,6 +48,7 @@ const api = {
       creditWindow: o.creditWindow,
       creditStage: o.creditStage,
       applyOn: o.applyOn,
+      viewports: o.viewports,
       onStatus: (s) => {
         statuses.push({ ...s, t: performance.now(), mount });
         if (s.kind === "connecting" && heapAtStart[mount] === undefined) {

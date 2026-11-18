@@ -229,10 +229,20 @@ describe("WasmStreamCore session protocol", () => {
     stats[STAT_FIELDS.indexOf("structural")] = 1;
     stats[STAT_FIELDS.indexOf("why")] = 1 << 14;
     stats[STAT_FIELDS.indexOf("back_buffer_items")] = 3;
+    stats[STAT_FIELDS.indexOf("surfaces_rendered")] = 5;
+    stats[STAT_FIELDS.indexOf("surfaces_skipped")] = 6;
+    stats[STAT_FIELDS.indexOf("surfaces_unchanged")] = 7;
+    stats[STAT_FIELDS.indexOf("surfaces_allocated")] = 8;
+    stats[STAT_FIELDS.indexOf("surface_pixels")] = 9;
     expect(core.applyStats()).toEqual({
       structural: true,
       why: 1 << 14,
       backBufferItems: 3,
+      surfacesRendered: 5,
+      surfacesSkipped: 6,
+      surfacesUnchanged: 7,
+      surfacesAllocated: 8,
+      surfacePixels: 9,
     });
     // STAT_FIELDS is lib.rs `Stats`, field for field (`#[repr(C)]`, all u32).
     const block = /pub struct Stats \{([^}]*)\}/.exec(libRs)?.[1] ?? "";

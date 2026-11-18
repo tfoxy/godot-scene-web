@@ -5,7 +5,7 @@
 # keeps up.
 #
 #   bash experiments/render-stream/scripts/bench-live-scale.sh --extension EXT --receiver KIND
-#     [--window 1|2] [--protocol 8|9|10|11] [--bundle DIR] [--out DIR] [--frames N] [--binary PATH]
+#     [--window 1|2] [--protocol 8|9|10|11|12|13|14|15|16] [--bundle DIR] [--out DIR] [--frames N] [--binary PATH]
 #     [--calibration PATH] [--min-rate R] [--max-credit-rtt-ms MS] [--viewers N] [--perf]
 #     [--rx-cmd CMD] [-- NAME=value ...]
 #
@@ -81,7 +81,7 @@ done
 case "$KIND" in native | gsw | web | null | host-only) ;; *) echo "bench-live-scale: --receiver native|gsw|web|null|host-only" >&2 && exit 2 ;; esac
 [ -z "$RX_CMD" ] || [ "$KIND" = host-only ] || { echo "bench-live-scale: --rx-cmd needs --receiver host-only" >&2; exit 2; }
 case "$WINDOW" in 1 | 2) ;; *) echo "bench-live-scale: --window 1|2" >&2 && exit 2 ;; esac
-case "$PROTOCOL" in 8 | 9 | 10 | 11 | 12) ;; *) echo "bench-live-scale: --protocol 8|9|10|11|12" >&2 && exit 2 ;; esac
+case "$PROTOCOL" in 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16) ;; *) echo "bench-live-scale: --protocol 8|9|10|11|12|13|14|15|16" >&2 && exit 2 ;; esac
 case "$VIEWERS" in 1 | 2 | 3 | 4) ;; *) echo "bench-live-scale: --viewers 1..4" >&2 && exit 2 ;; esac
 case "$KIND" in native | null | host-only) ;; *) [ -d "$BUNDLE" ] || { echo "bench-live-scale: --receiver $KIND needs --bundle DIR" >&2; exit 2; } ;; esac
 [ -x "$BINARY" ] || { echo "bench-live-scale: no template at $BINARY" >&2; exit 2; }
