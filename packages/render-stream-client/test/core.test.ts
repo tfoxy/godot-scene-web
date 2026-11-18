@@ -12,8 +12,9 @@ import { WasmStreamCore } from "../src/core";
 import type { RenderStreamProtocol } from "../src/endpoint";
 import { coreStartOptions } from "../src/hello";
 
-/** `motion`: the fake core has the motion measure (a core built before it has not). */
-function harness(motion = true) {
+/** `motion`: the fake core has the motion measure (a core built before it has not); `animation`:
+ * its facts block holds the animation measures too (`motion_len`). */
+function harness(motion = true, animation = false) {
   const memory = new WebAssembly.Memory({ initial: 1 });
   const instances: FakeGswRs[] = [];
   let throws = false;
@@ -25,6 +26,7 @@ function harness(motion = true) {
     readonly set_log_removed = vi.fn();
     set_motion?: ReturnType<typeof vi.fn>;
     motion_ptr?: () => number;
+    motion_len?: () => number;
     readonly live_session = vi.fn((_len: number, protocol: number) =>
       protocol === this.options.live_protocol ? 0 : -1,
     );
@@ -41,6 +43,7 @@ function harness(motion = true) {
       if (motion) {
         this.set_motion = vi.fn();
         this.motion_ptr = () => this.ptr + 128;
+        if (animation) this.motion_len = () => 4 * MOTION_FIELDS.length;
       }
       instances.push(this);
     }
@@ -136,10 +139,44 @@ describe("WasmStreamCore motion facts", () => {
     const block = /pub struct MotionFacts \{([^}]*)\}/.exec(libRs)?.[1] ?? "";
     const fields = [...block.matchAll(/^\s*pub (\w+): (u32|f32),$/gm)];
     expect(fields.map((m) => m[1])).toEqual([...MOTION_FIELDS]);
-    expect(fields.map((m) => m[2])).toEqual(["u32", "u32", "f32", "f32"]);
+    expect(fields.map((m) => m[2])).toEqual([
+      "u32",
+      "u32",
+      "f32",
+      "f32",
+      "f32",
+      "f32",
+    ]);
     expect(libRs).toContain("pub fn set_motion(");
     expect(libRs).toContain("pub fn motion_ptr(");
+    expect(libRs).toContain("pub fn motion_len(");
     core.dispose();
+  });
+
+  it("reads the animation measures when the block holds them, and only then", () => {
+    const { core, memory, instances } = harness(true, true);
+    core.beginConnection(12);
+    core.setMotion(true);
+    const at = instances[0].ptr + 128;
+    new Uint32Array(memory.buffer, at, 2).set([7, 0]);
+    new Float32Array(memory.buffer, at + 8, 4).set([0.5, 0.25, 40, 0.75]);
+    expect(core.motion()).toEqual({
+      seq: 7,
+      changes: 0,
+      maxPx: 0.5,
+      colorStep: 0.25,
+      animPx: 40,
+      animColorStep: 0.75,
+    });
+    core.dispose();
+    // A core whose block ends after `color_step` reports no animation measures.
+    const old = harness(true, false);
+    old.core.beginConnection(12);
+    old.core.setMotion(true);
+    const o = old.instances[0].ptr + 128;
+    new Float32Array(old.memory.buffer, o + 16, 2).set([40, 0.75]);
+    expect(old.core.motion()?.animPx).toBeUndefined();
+    old.core.dispose();
   });
 
   it("answers that a core built without the measure cannot measure", () => {

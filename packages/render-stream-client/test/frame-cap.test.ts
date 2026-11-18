@@ -1,15 +1,22 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type { CoreMotion } from "../src/core";
 import {
   FRAME_CAP_QUIET_MS,
+  frameCapLimits,
+  IDLE_ANIMATION_COLOR_STEP_MAX,
+  IDLE_ANIMATION_MAX_PX,
   IDLE_COLOR_STEP_MAX,
   IDLE_MOTION_MAX_PX,
+  motionWake,
 } from "../src/frame-cap";
 import type { LoopOptions } from "../src/loop";
 import { FakeCore, flush, harness, msg, session, tx } from "./fakes";
 
 type Pacing = Pick<
   LoopOptions,
-  "creditStage" | "applyOn" | "resourceHoldMs" | "frameCap"
+  "creditStage" | "applyOn" | "resourceHoldMs" | "frameCap" | "frameCapBounds"
 >;
 
 function streaming(pacing: Pacing = { frameCap: "automatic" }, window = 2) {
@@ -172,6 +179,16 @@ describe("idle frame cap", () => {
       "viewport",
     ],
     ["a quick fade", { changes: 0, maxPx: 0, colorStep: 0.1 }, "colour"],
+    [
+      "animation that teleports",
+      { changes: 0, maxPx: 0, colorStep: 0, animPx: 2 * IDLE_ANIMATION_MAX_PX },
+      "animation",
+    ],
+    [
+      "a change the receiver did not measure",
+      { changes: 256, maxPx: 0, colorStep: 0 },
+      "unmeasured",
+    ],
   ])("wakes on the same callback for %s", (_name, facts, why) => {
     const h = streaming();
     run(h, 1, ENGAGE);
@@ -197,6 +214,66 @@ describe("idle frame cap", () => {
     };
     const drew = run(h, 1, ENGAGE + 9);
     expect(drew.slice(ENGAGE - 1)).toEqual(alternating(10));
+  });
+
+  it("counts animation up to its own bounds as ambient", () => {
+    const h = streaming();
+    h.core.motionFacts = {
+      changes: 0,
+      maxPx: 0,
+      colorStep: 0,
+      animPx: IDLE_ANIMATION_MAX_PX,
+      animColorStep: IDLE_ANIMATION_COLOR_STEP_MAX,
+    };
+    const drew = run(h, 1, ENGAGE + 9);
+    expect(drew.slice(ENGAGE - 1)).toEqual(alternating(10));
+  });
+
+  it("never wakes on animation colour by default, and does under a consumer's bound", () => {
+    const flash = { changes: 0, maxPx: 0, colorStep: 0, animColorStep: 1 };
+    const h = streaming();
+    h.core.motionFacts = flash;
+    expect(run(h, 1, ENGAGE + 9).slice(ENGAGE - 1)).toEqual(alternating(10));
+    const b = streaming({
+      frameCap: "automatic",
+      frameCapBounds: { animationColorStep: 0.5 },
+    });
+    run(b, 1, ENGAGE);
+    b.core.motionFacts = flash;
+    expect(vsync(b, ENGAGE + 1)).toBe(true);
+    expect(b.loop.stats().frameCapWake).toBe("animation colour");
+  });
+
+  it("takes new bounds at runtime, over the defaults", () => {
+    const h = streaming();
+    h.core.motionFacts = { changes: 0, maxPx: 0, colorStep: 0, animPx: 40 };
+    run(h, 1, ENGAGE + 1);
+    expect(h.loop.stats().frameCapEngaged).toBe(true);
+    // A consumer that wants its animation calmer: 40 px now wakes.
+    h.loop.setFrameCap("automatic", { animationPx: 16 });
+    run(h, ENGAGE + 2, 3);
+    expect(h.loop.stats()).toMatchObject({
+      frameCapEngaged: false,
+      frameCapWake: "animation",
+    });
+    // Omitted bounds keep the current ones; given ones replace them over the defaults.
+    h.loop.setFrameCap("automatic");
+    run(h, ENGAGE + 5, 2);
+    expect(h.loop.stats().frameCapWake).toBe("animation");
+    h.loop.setFrameCap("automatic", {});
+    const drew = run(h, ENGAGE + 7, ENGAGE + 9);
+    expect(drew.slice(ENGAGE - 1)).toEqual(alternating(10));
+  });
+
+  it("refuses a bound that is not a number at least 0", () => {
+    expect(() => frameCapLimits({ animationPx: -1 })).toThrow(TypeError);
+    expect(() => frameCapLimits({ colorStep: Number.NaN })).toThrow(TypeError);
+    expect(frameCapLimits({ animationPx: 64 })).toEqual({
+      motionPx: IDLE_MOTION_MAX_PX,
+      colorStep: IDLE_COLOR_STEP_MAX,
+      animationPx: 64,
+      animationColorStep: Number.POSITIVE_INFINITY,
+    });
   });
 
   it("never engages without motion facts (a core that cannot measure)", () => {
@@ -287,5 +364,69 @@ describe("idle frame cap", () => {
     expect(t.acks()).toContain(`submitted ${ENGAGE + 1}`);
     expect(h.loop.state).toBe("draining");
     expect(h.loop.stats().frameCapWake).toBe("end");
+  });
+});
+
+/** Motion facts that rs-core measured over 900 transactions of an idle game lobby (skeletal
+ * character and background layers, CPU particle motes, a flipbook, a pulsing UI glow; see the
+ * fixture's `about`). */
+const lobby = JSON.parse(
+  readFileSync(join(__dirname, "fixtures", "lobby-motion.json"), "utf8"),
+) as { fields: string[]; rows: (number | null)[][] };
+
+function lobbyFacts(row: (number | null)[]): Omit<CoreMotion, "seq"> {
+  const n = (v: number | null | undefined) =>
+    v === null ? Infinity : (v ?? 0);
+  return {
+    changes: n(row[0]),
+    maxPx: n(row[1]),
+    colorStep: n(row[2]),
+    animPx: n(row[3]),
+    animColorStep: n(row[4]),
+  };
+}
+
+describe("frame cap on an idle lobby", () => {
+  it("classifies at least 95% of its transactions as ambient", () => {
+    expect(lobby.fields).toEqual([
+      "changes",
+      "max_px",
+      "color_step",
+      "anim_px",
+      "anim_color",
+    ]);
+    const wakes = new Map<string, number>();
+    lobby.rows.forEach((row, k) => {
+      const why = motionWake({ seq: k + 1, ...lobbyFacts(row) }, k + 1);
+      if (why !== null) wakes.set(why, (wakes.get(why) ?? 0) + 1);
+    });
+    const woken = [...wakes.values()].reduce((a, b) => a + b, 0);
+    expect(1 - woken / lobby.rows.length).toBeGreaterThanOrEqual(0.95);
+    // Its scene content (sub-pixel drift, the glow pulse) is always ambient, and nothing it does
+    // every frame (particle buffers, version-only resource calls, the flipbook's later loops) is
+    // a change. What wakes is an animation cut, and a mesh the host switches between its static
+    // and dynamic encoding (three times in this window); animation colour never does by default.
+    for (const why of [
+      "motion",
+      "colour",
+      "unmeasured",
+      "reshape",
+      "animation colour",
+    ])
+      expect(wakes.get(why) ?? 0).toBe(0);
+    expect(wakes.get("resource") ?? 0).toBeLessThanOrEqual(3);
+  });
+
+  it("engages between the animation's cuts", () => {
+    const h = streaming();
+    let frames = 0;
+    lobby.rows.forEach((row, k) => {
+      h.core.motionFacts = lobbyFacts(row);
+      vsync(h, k + 1);
+      frames++;
+    });
+    const s = h.loop.stats();
+    expect(s.skippedFrames).toBeGreaterThan(0);
+    expect(s.cappedFrames / frames).toBeGreaterThanOrEqual(0.6);
   });
 });

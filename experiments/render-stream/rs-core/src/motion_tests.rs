@@ -412,26 +412,31 @@ fn a_dynamic_body_moves_through_its_visible_users() {
     hidden.visible = false;
     hidden.xform = [100.0, 0.0, 0.0, 100.0, 0.0, 0.0];
     let st = state(vec![a, hidden], IDENTITY);
+    let tri = |dx: f32| {
+        geometry(
+            vec![[dx, 0.0], [10.0 + dx, 0.0], [dx, 10.0]],
+            None,
+            None,
+            None,
+        )
+    };
     let mut m = TxMotion::default();
     dynamic_mesh(
         &mut m,
         &P,
         &st,
         7,
-        BodyDelta {
-            px: 0.5,
-            color: 0.0,
-            reshaped: false,
-        },
+        Some(&tri(0.0)),
+        &tri(0.5),
         [2, 3].into_iter(),
     );
-    // 0.5 local × add_mesh 0.5 × item 4; the hidden user does not count.
-    assert!((m.max_px - 1.0).abs() < 1e-6, "{}", m.max_px);
-    assert_eq!(m.changes, 0);
+    // 0.5 local × add_mesh 0.5 × item 4, as animation content; the hidden user does not count.
+    assert!((m.anim_px - 1.0).abs() < 1e-6, "{}", m.anim_px);
+    assert_eq!((m.changes, m.max_px), (0, 0.0));
     let mut m = TxMotion::default();
-    dynamic_mesh(&mut m, &P, &st, 7, BodyDelta::NEW, [3].into_iter());
+    dynamic_mesh(&mut m, &P, &st, 7, None, &tri(0.5), [3].into_iter());
     assert_eq!(m, TxMotion::default());
-    dynamic_mesh(&mut m, &P, &st, 7, BodyDelta::NEW, [2].into_iter());
+    dynamic_mesh(&mut m, &P, &st, 7, None, &tri(0.5), [2].into_iter());
     assert_eq!(m.changes, Change::RESHAPE);
 }
 
@@ -518,14 +523,17 @@ fn dynamic_bodies_report_their_displacement_only_while_measuring() {
                     if measure { bodies as usize } else { 0 }
                 );
                 let mut m = *v.motion().expect("on");
-                for &(mesh, d) in &store.dynamic.moved {
+                for (mesh, surface, old) in &store.dynamic.moved {
                     reported += 1;
-                    if !d.reshaped {
+                    let new = store.dynamic.get(*mesh).expect("held").surfaces[*surface as usize]
+                        .as_ref()
+                        .expect("body");
+                    if old.as_ref().is_some_and(|o| !body_delta(o, new).reshaped) {
                         compared += 1;
                     }
-                    dynamic_mesh(&mut m, &P, v.state(), mesh, d, v.mesh_users(mesh));
                 }
-                assert!(!m.max_px.is_nan());
+                ingested(&mut m, &P, &v, &store);
+                assert!(!m.max_px.is_nan() && !m.anim_px.is_nan());
             }
         }
         if measure {
@@ -812,11 +820,12 @@ fn fix3_a_body_s_colours_uvs_and_indices_are_seen() {
     );
     st.items.insert(2, user);
     let mut m = TxMotion::default();
-    dynamic_mesh(&mut m, &P, &st, 7, flash, [2].into_iter());
-    assert_eq!((m.changes, m.color_step), (0, 0.5));
+    let flashed = geometry(pos.clone(), col(0.5), uv(1.0), idx(2));
+    dynamic_mesh(&mut m, &P, &st, 7, Some(&base), &flashed, [2].into_iter());
+    assert_eq!((m.changes, m.anim_color), (0, 0.5));
     let mut m = TxMotion::default();
-    let swap = body_delta(&base, &geometry(pos, col(1.0), uv(0.5), idx(2)));
-    dynamic_mesh(&mut m, &P, &st, 7, swap, [2].into_iter());
+    let swapped = geometry(pos, col(1.0), uv(0.5), idx(2));
+    dynamic_mesh(&mut m, &P, &st, 7, Some(&base), &swapped, [2].into_iter());
     assert_eq!(m.changes, Change::RESHAPE);
 }
 
@@ -824,11 +833,15 @@ fn fix3_a_body_s_colours_uvs_and_indices_are_seen() {
 /// not follow: any change of its body wakes.
 #[test]
 fn fixb_a_body_drawn_by_a_multimesh_or_particles_wakes() {
-    let small = BodyDelta {
-        px: 0.01,
-        color: 0.0,
-        reshaped: false,
+    let tri = |dx: f32| {
+        geometry(
+            vec![[dx, 0.0], [10.0 + dx, 0.0], [dx, 10.0]],
+            None,
+            None,
+            None,
+        )
     };
+    let (a, b) = (tri(0.0), tri(0.01));
     let mut st = state(vec![], IDENTITY);
     st.multimeshes.insert(
         3,
@@ -849,10 +862,10 @@ fn fixb_a_body_drawn_by_a_multimesh_or_particles_wakes() {
         },
     );
     let mut m = TxMotion::default();
-    dynamic_mesh(&mut m, &P, &st, 7, small, std::iter::empty());
+    dynamic_mesh(&mut m, &P, &st, 7, Some(&a), &b, std::iter::empty());
     assert_eq!(m.changes, Change::RESHAPE);
     let mut m = TxMotion::default();
-    dynamic_mesh(&mut m, &P, &st, 8, small, std::iter::empty());
+    dynamic_mesh(&mut m, &P, &st, 8, Some(&a), &b, std::iter::empty());
     assert_eq!(m, TxMotion::default());
 }
 
@@ -885,11 +898,693 @@ fn fixb_a_body_drawn_in_a_sub_viewport_wakes() {
     st.canvases.insert(5, c);
     st.viewports.insert(7, sub_viewport(7, 5));
     let mut m = TxMotion::default();
-    let d = BodyDelta {
-        px: 0.01,
-        color: 0.0,
-        reshaped: false,
+    let tri = |dx: f32| {
+        geometry(
+            vec![[dx, 0.0], [10.0 + dx, 0.0], [dx, 10.0]],
+            None,
+            None,
+            None,
+        )
     };
-    dynamic_mesh(&mut m, &P, &st, 7, d, [2].into_iter());
+    dynamic_mesh(
+        &mut m,
+        &P,
+        &st,
+        7,
+        Some(&tri(0.0)),
+        &tri(0.01),
+        [2].into_iter(),
+    );
     assert_eq!(m.changes, Change::VIEWPORT);
+}
+
+// ---- animation content: multimesh instances, emitters, static geometry, faint and off screen
+
+fn static_mesh(id: Id, hash: u8) -> Mesh {
+    let mut m = dyn_mesh(id, 3);
+    m.surfaces[0].hash = Some(Hash([hash; 32]));
+    m.surfaces[0].body_sha256 = None;
+    m
+}
+
+/// A CPU-particles-like multimesh (2D, colours and custom data, `instances` of them) drawn by
+/// item 2 with `material` (none: the default shader), and its mesh 7.
+fn particles_scene(instances: i64, material: Option<Id>) -> ResolvedState {
+    let mut user = entry(
+        2,
+        canvas_parent(),
+        Commands {
+            list: vec![Command::Multimesh {
+                multimesh: 3,
+                tex: None,
+            }],
+            ..Commands::default()
+        },
+    );
+    user.material = material;
+    let mut st = state(vec![user], IDENTITY);
+    st.meshes.insert(7, static_mesh(7, 9));
+    st.multimeshes.insert(3, multimesh_entry(instances));
+    st
+}
+
+fn multimesh_entry(instances: i64) -> Multimesh {
+    Multimesh {
+        id: 3,
+        origin: Origin::Created,
+        status: EntryStatus::Ok,
+        reason: None,
+        version: 1,
+        mesh: Some(7),
+        format: MultimeshFormat::D2,
+        colors: true,
+        custom: true,
+        instances,
+        visible: -1,
+        custom_aabb: Some([0.0; 6]),
+        buffer_sha256: Some(Hash([1; 32])),
+    }
+}
+
+/// One instance of a 2D multimesh buffer with colours and custom data (16 floats): scale `s`
+/// at `(x, y)`, colour `c`, custom `d`.
+fn inst(s: f32, x: f32, y: f32, c: [f32; 4], d: [f32; 4]) -> Vec<f32> {
+    let mut f = vec![s, 0.0, 0.0, x, 0.0, s, 0.0, y];
+    f.extend(c);
+    f.extend(d);
+    f
+}
+
+fn instances_motion(st: &ResolvedState, old: &[f32], new: &[f32]) -> TxMotion {
+    let mut m = TxMotion::default();
+    // The mesh reaches 10 px from its origin.
+    multimesh_buffer(
+        &mut m,
+        &P,
+        st,
+        3,
+        Some(old),
+        new,
+        Some(10.0),
+        [2].into_iter(),
+    );
+    m
+}
+
+#[test]
+fn version_only_entries_change_nothing() {
+    let old = static_mesh(7, 9);
+    let mut new = old.clone();
+    new.version = 5;
+    let mut m = TxMotion::default();
+    assert!(!mesh(&mut m, Some(&old), Some(&new)));
+    assert_eq!(m, TxMotion::default());
+    let old = multimesh_entry(4);
+    let mut new = old.clone();
+    new.version = 9;
+    multimesh(&mut m, Some(&old), Some(&new));
+    assert_eq!(m, TxMotion::default());
+}
+
+#[test]
+fn a_multimesh_buffer_is_unmeasured_until_the_receiver_measures_it_and_its_config_is_a_resource() {
+    let old = multimesh_entry(4);
+    let mut buffer = old.clone();
+    buffer.version = 2;
+    buffer.buffer_sha256 = Some(Hash([2; 32]));
+    let mut m = TxMotion::default();
+    multimesh(&mut m, Some(&old), Some(&buffer));
+    assert_eq!(m.changes, Change::UNMEASURED);
+    // Amount (a reallocation), visible count, mesh, a new or freed multimesh: resource changes.
+    for change in [
+        |e: &mut Multimesh| e.instances = 5,
+        |e: &mut Multimesh| e.visible = 2,
+        |e: &mut Multimesh| e.mesh = Some(8),
+        |e: &mut Multimesh| e.status = EntryStatus::Freed,
+    ] {
+        let mut new = buffer.clone();
+        change(&mut new);
+        let mut m = TxMotion::default();
+        multimesh(&mut m, Some(&old), Some(&new));
+        assert_eq!(m.changes & Change::RESOURCE, Change::RESOURCE, "{new:?}");
+    }
+    let mut m = TxMotion::default();
+    multimesh(&mut m, None, Some(&old));
+    assert_eq!(m.changes, Change::RESOURCE);
+}
+
+#[test]
+fn ambient_particle_ticks_are_animation_within_their_drift() {
+    let st = particles_scene(2, None);
+    let white = [1.0, 1.0, 1.0, 0.8];
+    let old = [
+        inst(1.0, 100.0, 100.0, white, [0.0, 0.2, 0.0, 1.0]),
+        inst(2.0, 300.0, 200.0, white, [0.0, 0.5, 0.0, 1.0]),
+    ]
+    .concat();
+    let new = [
+        inst(1.0, 101.5, 100.0, white, [0.0, 0.21, 0.0, 1.0]),
+        inst(
+            2.02,
+            300.0,
+            202.0,
+            [1.0, 1.0, 1.0, 0.79],
+            [0.0, 0.51, 0.0, 1.0],
+        ),
+    ]
+    .concat();
+    let m = instances_motion(&st, &old, &new);
+    assert_eq!((m.changes, m.max_px, m.color_step), (0, 0.0, 0.0));
+    // 2 px of translation plus 0.02 of scale times the 10 px reach; the faster mote's 1.5 px.
+    assert!((m.anim_px - 2.2).abs() < 1e-4, "{m:?}");
+    assert!((m.anim_color - 0.01).abs() < 1e-6, "{m:?}");
+}
+
+#[test]
+fn a_faint_respawn_is_ambient_and_a_visible_pop_is_not() {
+    let st = particles_scene(1, None);
+    let faint = [1.0, 1.0, 1.0, 2.0 / 255.0];
+    // Died faded out at one end of the screen, respawned faded in at the other.
+    let m = instances_motion(
+        &st,
+        &inst(1.0, 20.0, 20.0, faint, [0.0; 4]),
+        &inst(1.0, 580.0, 780.0, faint, [0.0; 4]),
+    );
+    assert_eq!(m.anim_px, 0.0, "{m:?}");
+    assert!(m.anim_color <= FAINT_ALPHA);
+    // Respawned at full opacity: it pops in, a colour step of the whole fade.
+    let m = instances_motion(
+        &st,
+        &inst(1.0, 20.0, 20.0, faint, [0.0; 4]),
+        &inst(1.0, 580.0, 780.0, [1.0; 4], [0.0; 4]),
+    );
+    assert!(m.anim_color > 0.9, "{m:?}");
+    // What appeared lies within its 10 px reach.
+    assert!((m.anim_px - 10.0).abs() < 1e-4, "{m:?}");
+    // A zero-area (inactive) particle that becomes active and visible pops in the same way.
+    let m = instances_motion(
+        &st,
+        &inst(0.0, 0.0, 0.0, [0.0; 4], [0.0; 4]),
+        &inst(1.0, 300.0, 300.0, [1.0; 4], [0.0; 4]),
+    );
+    assert!((m.anim_px - 10.0).abs() < 1e-4, "{m:?}");
+    // Under an additive blend a dark particle reaches no pixel: it is faint at full alpha.
+    let mut st = particles_scene(1, Some(4));
+    add_builtin(&mut st, 4, BlendMode::Add, false);
+    let dark = [0.01, 0.01, 0.01, 1.0];
+    let m = instances_motion(
+        &st,
+        &inst(1.0, 20.0, 20.0, dark, [0.0; 4]),
+        &inst(1.0, 580.0, 780.0, dark, [0.0; 4]),
+    );
+    assert_eq!(m.anim_px, 0.0, "{m:?}");
+}
+
+#[test]
+fn an_off_screen_particle_moves_invisibly() {
+    let st = particles_scene(1, None);
+    let m = instances_motion(
+        &st,
+        &inst(1.0, -500.0, 100.0, [1.0; 4], [0.0; 4]),
+        &inst(1.0, -100.0, 100.0, [1.0; 4], [0.0; 4]),
+    );
+    assert_eq!((m.anim_px, m.anim_color), (0.0, 0.0));
+}
+
+#[test]
+fn custom_data_a_material_reads_and_an_unmeasurable_buffer_wake() {
+    let mut st = particles_scene(1, Some(4));
+    add_builtin(&mut st, 4, BlendMode::Mix, true);
+    let a = inst(1.0, 100.0, 100.0, [1.0; 4], [0.0, 0.0, 0.0, 1.0]);
+    let b = inst(1.0, 100.0, 100.0, [1.0; 4], [0.0, 0.0, 0.5, 1.0]);
+    assert_eq!(instances_motion(&st, &a, &b).changes, Change::RESHAPE);
+    // No material: custom data drives nothing.
+    let st = particles_scene(1, None);
+    assert_eq!(instances_motion(&st, &a, &b), TxMotion::default());
+    // Another length, no previous buffer, an unknown mesh reach.
+    let two = [a.clone(), a.clone()].concat();
+    assert_eq!(instances_motion(&st, &a, &two).changes, Change::RESHAPE);
+    let mut m = TxMotion::default();
+    multimesh_buffer(&mut m, &P, &st, 3, None, &a, Some(10.0), [2].into_iter());
+    assert_eq!(m.changes, Change::RESHAPE);
+    let mut m = TxMotion::default();
+    multimesh_buffer(&mut m, &P, &st, 3, Some(&a), &b, None, [2].into_iter());
+    assert_eq!(m.changes, Change::RESHAPE);
+}
+
+#[test]
+fn a_mesh_reach_needs_every_static_payload() {
+    let st = particles_scene(1, None);
+    let g = geometry(vec![[-3.0, -4.0], [3.0, 0.0], [0.0, 1.0]], None, None, None);
+    let held = |h: &Hash| (*h == Hash([9; 32])).then_some(&g);
+    assert_eq!(mesh_reach(&st, 7, held), Some(5.0));
+    assert_eq!(mesh_reach(&st, 7, |_| None), None);
+    assert_eq!(mesh_reach(&st, 8, held), None);
+}
+
+fn add_builtin(st: &mut ResolvedState, material: Id, blend: BlendMode, particles_animation: bool) {
+    st.shaders.insert(
+        material,
+        Shader {
+            id: material,
+            origin: Origin::Created,
+            status: EntryStatus::Ok,
+            reason: None,
+            version: 1,
+            mode: Some(ShaderMode::CanvasItem),
+            source: None,
+            hash: None,
+            payload_bytes: 0,
+            builtin: Some(Builtin {
+                blend_mode: blend,
+                light_mode: LightMode::Normal,
+                particles_animation,
+            }),
+            process: None,
+            uses: Vec::new(),
+            default_textures: Vec::new(),
+        },
+    );
+    st.materials.insert(
+        material,
+        Material {
+            id: material,
+            origin: Origin::Created,
+            status: EntryStatus::Ok,
+            reason: None,
+            version: 1,
+            shader: Some(material),
+            params: Vec::new(),
+        },
+    );
+}
+
+fn emitter() -> Particles {
+    let mut floats = vec![0.0f32; 31];
+    // An identity emission transform (basis rows, then origin).
+    floats[16] = 1.0;
+    floats[20] = 1.0;
+    floats[24] = 1.0;
+    Particles {
+        id: 5,
+        origin: Origin::Created,
+        status: EntryStatus::Ok,
+        reason: None,
+        version: 1,
+        mode: ParticlesMode::D2,
+        emitting: true,
+        amount: 16,
+        one_shot: false,
+        fixed_fps: 30,
+        interpolate: true,
+        fractional_delta: true,
+        local: false,
+        draw_order: ParticlesDrawOrder::Index,
+        transform_align: ParticlesTransformAlign::Disabled,
+        trails: false,
+        trail_poses: 0,
+        seed: 7,
+        restarts: 0,
+        emits: 0,
+        process_requests: 0,
+        process_material: Some(6),
+        draw_passes: vec![None],
+        subemitter: None,
+        floats: Some(ParticleFloats::from_wire(&floats)),
+    }
+}
+
+fn emitter_scene() -> ResolvedState {
+    let user = entry(
+        2,
+        canvas_parent(),
+        Commands {
+            list: vec![Command::Particles {
+                particles: 5,
+                tex: None,
+            }],
+            ..Commands::default()
+        },
+    );
+    let mut st = state(vec![user], IDENTITY);
+    st.particles.insert(5, emitter());
+    st
+}
+
+fn emitter_motion(st: &ResolvedState, old: &Particles, new: &Particles) -> TxMotion {
+    let mut m = TxMotion::default();
+    particles(&mut m, &P, st, Some(old), Some(new), [2].into_iter());
+    m
+}
+
+#[test]
+fn an_emitter_s_per_tick_inputs_are_ambient_and_bounded_by_its_motion() {
+    let st = emitter_scene();
+    let old = emitter();
+    let mut new = old.clone();
+    new.version = 2;
+    assert_eq!(emitter_motion(&st, &old, &new), TxMotion::default());
+    // The emitter's node drifted by 0.6 px: where new particles spawn moves by as much.
+    new.floats.as_mut().unwrap().emission_transform[9] = 0.6;
+    let m = emitter_motion(&st, &old, &new);
+    assert_eq!(m.changes, 0);
+    assert!((m.max_px - 0.6).abs() < 1e-6, "{m:?}");
+    // Its velocity moves particles unless the process material inherits none of it.
+    let mut fast = new.clone();
+    fast.floats.as_mut().unwrap().emitter_velocity = [36.0, 0.0, 0.0];
+    assert_eq!(emitter_motion(&st, &old, &fast).changes, Change::RESOURCE);
+    let mut st = st;
+    add_builtin(&mut st, 6, BlendMode::Mix, false);
+    let process = st.shaders.get_mut(&6).unwrap();
+    process.builtin = None;
+    process.process = Some(empty_process_builtin());
+    st.materials.get_mut(&6).unwrap().params = vec![Param {
+        name: "inherit_velocity_ratio".into(),
+        ty: VariantType::ALL[3],
+        value: ParamValue::Scalar(0.0),
+    }];
+    assert_eq!(emitter_motion(&st, &old, &fast).changes, 0);
+}
+
+#[test]
+fn an_emitter_s_restart_toggle_amount_config_or_arrival_wakes() {
+    let st = emitter_scene();
+    let old = emitter();
+    let changes: [fn(&mut Particles); 8] = [
+        |e| e.emitting = false,
+        |e| e.restarts = 1,
+        |e| e.amount = 32,
+        |e| e.emits = 1,
+        |e| e.seed = 8,
+        |e| e.process_material = Some(9),
+        |e| e.floats.as_mut().unwrap().lifetime = 2.0,
+        |e| e.floats.as_mut().unwrap().speed_scale = 2.0,
+    ];
+    for change in changes {
+        let mut new = old.clone();
+        change(&mut new);
+        assert_eq!(
+            emitter_motion(&st, &old, &new).changes,
+            Change::RESOURCE,
+            "{new:?}"
+        );
+    }
+    let mut m = TxMotion::default();
+    particles(&mut m, &P, &st, None, Some(&old), [2].into_iter());
+    assert_eq!(m.changes, Change::RESOURCE);
+    let mut m = TxMotion::default();
+    particles(&mut m, &P, &st, Some(&old), None, std::iter::empty());
+    assert_eq!(m.changes, Change::RESOURCE);
+}
+
+fn empty_process_builtin() -> ProcessBuiltin {
+    ProcessBuiltin {
+        emission_shape: EmissionShape::Point,
+        particle_flags: Vec::new(),
+        textures: Vec::new(),
+        color_ramp: false,
+        color_initial_ramp: false,
+        alpha_curve: false,
+        emission_curve: false,
+        velocity_limit_curve: false,
+        orbit_velocity_curve_xyz: false,
+        emission_color_texture: false,
+        sub_emitter: SubEmitterMode::ALL[0],
+        attractor: false,
+        collision: CollisionMode::ALL[0],
+        collision_scale: false,
+        turbulence: false,
+    }
+}
+
+#[test]
+fn a_static_mesh_with_new_payloads_is_measured_by_the_receiver_and_a_new_layout_is_a_resource() {
+    let old = static_mesh(7, 9);
+    let new = static_mesh(7, 10);
+    let mut m = TxMotion::default();
+    assert!(mesh(&mut m, Some(&old), Some(&new)));
+    assert_eq!(m.changes, Change::UNMEASURED);
+    let mut other = new.clone();
+    other.surfaces[0].vertex_count = 4;
+    let mut m = TxMotion::default();
+    assert!(!mesh(&mut m, Some(&old), Some(&other)));
+    assert_eq!(m.changes, Change::RESOURCE);
+}
+
+#[test]
+fn a_flipbook_is_recognised_from_its_second_loop() {
+    let mut f = MeshFrames::default();
+    let (a, b, c) = ([Hash([1; 32])], [Hash([2; 32])], [Hash([3; 32])]);
+    assert!(!f.swap(7, &a, &b));
+    assert!(!f.swap(7, &b, &c));
+    assert!(f.swap(7, &c, &a), "a returns");
+    assert!(f.swap(7, &a, &b));
+    assert!(!f.swap(8, &a, &b), "per mesh");
+    // A frame swap (other UVs) is animation once recognised, content before.
+    let mut st = state(vec![], IDENTITY);
+    st.items.insert(
+        2,
+        entry(
+            2,
+            canvas_parent(),
+            Commands {
+                list: vec![Command::Mesh {
+                    mesh: 7,
+                    tex: Some(3),
+                    transform: IDENTITY,
+                    modulate: [1.0; 4],
+                }],
+                ..Commands::default()
+            },
+        ),
+    );
+    let pos = vec![[10.0, 10.0], [50.0, 10.0], [10.0, 50.0]];
+    let uv = |u: f32| Some(vec![[u, 0.0], [u + 0.1, 0.0], [u, 0.1]]);
+    let (f0, f1) = (
+        geometry(pos.clone(), None, uv(0.0), None),
+        geometry(pos, None, uv(0.5), None),
+    );
+    let mut m = TxMotion::default();
+    geometry_change(&mut m, &P, &st, 7, Some(&f0), &f1, false, [2].into_iter());
+    assert_eq!(m.changes, Change::RESHAPE);
+    let mut m = TxMotion::default();
+    geometry_change(&mut m, &P, &st, 7, Some(&f0), &f1, true, [2].into_iter());
+    assert_eq!(m, TxMotion::default());
+}
+
+#[test]
+fn a_body_part_off_screen_or_faint_moves_invisibly_and_one_that_pops_in_is_seen() {
+    let mut st = state(vec![], IDENTITY);
+    st.items.insert(
+        2,
+        entry(
+            2,
+            canvas_parent(),
+            Commands {
+                list: vec![Command::Mesh {
+                    mesh: 7,
+                    tex: Some(3),
+                    transform: IDENTITY,
+                    modulate: [1.0; 4],
+                }],
+                ..Commands::default()
+            },
+        ),
+    );
+    let tri = |x: f32, y: f32, a: f32| {
+        geometry(
+            vec![[x, y], [x + 20.0, y], [x, y + 20.0]],
+            Some(vec![[1.0, 1.0, 1.0, a]; 3]),
+            None,
+            None,
+        )
+    };
+    let run = |a: &crate::apply::payloads::MeshGeometry,
+               b: &crate::apply::payloads::MeshGeometry| {
+        let mut m = TxMotion::default();
+        dynamic_mesh(&mut m, &P, &st, 7, Some(a), b, [2].into_iter());
+        m
+    };
+    // Parked off screen, then snapped back on screen transparent (a loop restart): invisible.
+    let m = run(&tri(100.0, 2000.0, 1.0), &tri(100.0, 100.0, 0.0));
+    assert_eq!((m.anim_px, m.anim_color), (0.0, 0.0), "{m:?}");
+    // Transparent on both sides, however far it went.
+    let m = run(&tri(10.0, 10.0, 0.0), &tri(500.0, 700.0, 0.0));
+    assert_eq!(m.anim_px, 0.0, "{m:?}");
+    // Faded in where it was within one transaction: a colour step.
+    let m = run(&tri(10.0, 10.0, 0.0), &tri(10.0, 10.0, 1.0));
+    assert_eq!(m.anim_color, 1.0, "{m:?}");
+    // Moved on screen from off it: no more than its own on-screen size.
+    let m = run(&tri(100.0, 2000.0, 1.0), &tri(100.0, 100.0, 1.0));
+    assert!((m.anim_px - 0.5 * 800f32.sqrt()).abs() < 1e-3, "{m:?}");
+    // Visible on both sides: its full displacement.
+    let m = run(&tri(100.0, 100.0, 1.0), &tri(100.0, 400.0, 1.0));
+    assert_eq!(m.anim_px, 300.0, "{m:?}");
+}
+
+#[test]
+fn an_item_s_own_colour_is_its_modulate_times_its_self_modulate() {
+    let mut old = entry(2, canvas_parent(), rect([0.0, 0.0, 10.0, 10.0]));
+    old.self_modulate = [1.0, 1.0, 1.0, 0.5];
+    let mut new = old.clone();
+    new.modulate[3] = 0.9;
+    let st = state(vec![new.clone()], IDENTITY);
+    // 0.1 of modulate alpha shows as 0.05 through a half-transparent self_modulate.
+    assert!((measure(&st, &old, &new, false).color_step - 0.05).abs() < 1e-6);
+    // With children the modulate reaches them as is.
+    old.children = vec![9];
+    new.children = vec![9];
+    assert!((measure(&st, &old, &new, false).color_step - 0.1).abs() < 1e-6);
+}
+
+// ---- gate fix round 2
+
+/// A body whose 2D positions, colours and UVs are equal but whose custom attributes (read by a
+/// canvas_item vertex shader) or skin buffer changed is not comparable as motion.
+#[test]
+fn fix5_custom_attributes_and_skin_are_not_motion() {
+    use crate::apply::payloads::{ARRAY_FORMAT_COLOR, ARRAY_FORMAT_CUSTOM0};
+    let body = |custom: u8, skin: u8| {
+        let mut g = geometry(
+            vec![[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]],
+            Some(vec![[1.0; 4]; 3]),
+            None,
+            None,
+        );
+        g.layout.format = ARRAY_FORMAT_COLOR | ARRAY_FORMAT_CUSTOM0;
+        // Per vertex: RGBA8, then CUSTOM0 as four bytes.
+        g.buffers[1] = (0..3)
+            .flat_map(|_| [255, 255, 255, 255, custom, 0, 0, 0])
+            .collect();
+        g.buffers[2] = vec![skin; 24];
+        g.layout.buffer_bytes = [0, g.buffers[1].len(), g.buffers[2].len(), 0];
+        g
+    };
+    let base = body(1, 0);
+    assert!(!body_delta(&base, &body(1, 0)).reshaped);
+    assert!(body_delta(&base, &body(2, 0)).reshaped, "CUSTOM0 changed");
+    assert!(body_delta(&base, &body(1, 9)).reshaped, "skin changed");
+    let mut st = state(vec![], IDENTITY);
+    st.items.insert(
+        2,
+        entry(
+            2,
+            canvas_parent(),
+            Commands {
+                list: vec![Command::Mesh {
+                    mesh: 7,
+                    tex: None,
+                    transform: IDENTITY,
+                    modulate: [1.0; 4],
+                }],
+                ..Commands::default()
+            },
+        ),
+    );
+    let mut m = TxMotion::default();
+    dynamic_mesh(
+        &mut m,
+        &P,
+        &st,
+        7,
+        Some(&base),
+        &body(2, 0),
+        [2].into_iter(),
+    );
+    assert_eq!(m.changes, Change::RESHAPE);
+}
+
+/// A multimesh instance's colour step is what a pixel receives: premultiplied under a material
+/// that scales by alpha.
+#[test]
+fn fix6_instance_colour_steps_are_premultiplied() {
+    let st = particles_scene(1, None);
+    let m = instances_motion(
+        &st,
+        &inst(1.0, 100.0, 100.0, [1.0, 1.0, 1.0, 0.1], [0.0; 4]),
+        &inst(1.0, 100.0, 100.0, [0.0, 0.0, 0.0, 0.1], [0.0; 4]),
+    );
+    assert!((m.anim_color - 0.1).abs() < 1e-6, "{m:?}");
+}
+
+/// A custom AABB is the item's culling rect: alone it wakes; with the geometry it moves as
+/// animation through the users.
+#[test]
+fn fix7_a_custom_aabb_change_wakes_alone_and_moves_with_its_geometry() {
+    let old = static_mesh(7, 9);
+    let mut aabb_only = old.clone();
+    aabb_only.custom_aabb = [0.0, 0.0, 0.0, 10.0, 10.0, 0.0];
+    let mut m = TxMotion::default();
+    assert!(!mesh(&mut m, Some(&old), Some(&aabb_only)));
+    assert_eq!(m.changes, Change::RESOURCE);
+    let mut st = state(vec![], IDENTITY);
+    let mut user = entry(
+        2,
+        canvas_parent(),
+        Commands {
+            list: vec![Command::Mesh {
+                mesh: 7,
+                tex: None,
+                transform: IDENTITY,
+                modulate: [1.0; 4],
+            }],
+            ..Commands::default()
+        },
+    );
+    user.xform = [2.0, 0.0, 0.0, 2.0, 0.0, 0.0];
+    st.items.insert(2, user);
+    let mut a = old.clone();
+    a.custom_aabb = [0.0, 0.0, 0.0, 10.0, 10.0, 0.0];
+    let mut b = static_mesh(7, 10);
+    b.custom_aabb = [3.0, 0.0, 0.0, 10.0, 10.0, 0.0];
+    // On screen on both sides: the item is drawn either way, nothing visible changes.
+    let mut m = TxMotion::default();
+    mesh_bounds(&mut m, &P, &st, &a, &b, [2].into_iter());
+    assert_eq!((m.changes, m.anim_px), (0, 0.0));
+    // The rect sizes a clipping item's copy: its edges moving count.
+    st.items.get_mut(&2).unwrap().clip = true;
+    let mut m = TxMotion::default();
+    mesh_bounds(&mut m, &P, &st, &a, &b, [2].into_iter());
+    assert_eq!((m.changes, m.anim_px), (0, 6.0));
+    // Under a canvas group owner: the rect merges into what the group copies, so it counts too.
+    st.items.get_mut(&2).unwrap().clip = false;
+    let mut owner = entry(5, canvas_parent(), Commands::default());
+    owner.canvas_group = Some(CanvasGroup {
+        mode: CanvasGroupMode::ALL[0],
+        clear_margin: 5.0,
+        fit_empty: false,
+        fit_margin: 0.0,
+        blur_mipmaps: false,
+    });
+    owner.children = vec![2];
+    st.items.insert(5, owner);
+    st.items.get_mut(&2).unwrap().parent = Some(Parent {
+        kind: ParentKind::Item,
+        id: 5,
+    });
+    let mut m = TxMotion::default();
+    mesh_bounds(&mut m, &P, &st, &a, &b, [2].into_iter());
+    assert_eq!((m.changes, m.anim_px), (0, 6.0));
+    st.items.get_mut(&5).unwrap().canvas_group = None;
+    // Culled after (moved off screen): what it drew vanishes.
+    let mut far = b.clone();
+    far.custom_aabb = [1000.0, 0.0, 0.0, 10.0, 10.0, 0.0];
+    let mut m = TxMotion::default();
+    mesh_bounds(&mut m, &P, &st, &a, &far, [2].into_iter());
+    assert_eq!((m.changes, m.anim_px), (0, 2000.0));
+    // Set on one side only: unbounded without the geometry's own box.
+    let mut m = TxMotion::default();
+    mesh_bounds(&mut m, &P, &st, &old, &b, [2].into_iter());
+    assert_eq!(m.changes, Change::RESOURCE);
+}
+
+/// A mesh id freed and created anew does not inherit the frames the old mesh showed.
+#[test]
+fn fix8_a_forgotten_mesh_recognises_no_frame() {
+    let mut f = MeshFrames::default();
+    let (a, b) = ([Hash([1; 32])], [Hash([2; 32])]);
+    f.swap(7, &a, &b);
+    assert!(f.swap(7, &b, &a));
+    f.forget(7);
+    assert!(!f.swap(7, &b, &a));
 }

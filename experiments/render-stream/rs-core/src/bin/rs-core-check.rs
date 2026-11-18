@@ -18,6 +18,7 @@
 //!   rs-core-check state-dump <recording> --seqs 8,18,... --out <dir>
 //!   rs-core-check fill <recording> [--store <dir>] [--seqs 8,18,...] [--every N] [--cell 8]
 //!                      [--damage <summary.json>] [--draws <dir>] [--cover off] [--noop off]
+//!   rs-core-check motion <recording> [--store <dir>] [--why]
 //!
 //! `goldens` runs golden-2 ... golden-16 (exits non-zero on any failing check). `transcode` (W13a,
 //! render-stream-13.md "Forms and transcode") converts a /12 recording to /13 or back, refusing an
@@ -100,6 +101,7 @@ fn usage() -> ExitCode {
          rs-core-check client-diff <recording>... [--store <dir>] [--sabotage ph2-skip-body-digest|ph2-skip-dep-texture|ph2-park-stale|ph2-skip-material-textures]\n  \
          rs-core-check draw-skip-diff <recording>... [--store <dir>] [--every N] [--sabotage ph3-drop-pending]\n  \
          rs-core-check fill <recording> [--store <dir>] [--seqs a,b] [--every N] [--cell 8] [--damage <summary.json>] [--draws <dir>] [--cover off] [--noop off]\n  \
+         rs-core-check motion <recording> [--store <dir>] [--why]\n  \
          rs-core-check live-decode <coded> [--expect <recording>] [--bases keep|none] [--repeats N] [--stats <jsonl>] [--sabotage drop-base|wrong-prefix]"
     );
     ExitCode::from(2)
@@ -124,6 +126,7 @@ impl Args {
                     || name == "stale"
                     || name == "roundtrip"
                     || name == "baseline"
+                    || name == "why"
                 {
                     flags.push((name.to_string(), "1".to_string()));
                 } else {
@@ -170,6 +173,7 @@ fn main() -> ExitCode {
         "lowered" => cmd_lowered(&args),
         "state-dump" => cmd_state_dump(&args),
         "fill" => cmd_fill(&args),
+        "motion" => cmd_motion(&args),
         "validate" => cmd_validate(&args),
         "live-decode" => cmd_live_decode(&args),
         "transcode" => cmd_transcode(&args),
@@ -3048,4 +3052,185 @@ fn cmd_draw_skip_diff(args: &Args) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// `motion <recording> [--store <dir>] [--why]`: replays a recording through the motion measure
+/// as the GSW page does with `set_motion(true)` (the validator's facts at commit, then
+/// `motion::ingested` over the dynamic bodies, multimesh buffers and static geometry the payload
+/// store took in), one JSON line per transaction: seq, frame, change bits, the scene's largest
+/// displacement and colour step, and the animation content's. Static mesh payloads come from the
+/// recording's inline records or the capture's `--store`. `--why` adds the resource entries that
+/// changed and how, for a scene whose transactions keep waking the frame cap.
+fn cmd_motion(args: &Args) -> ExitCode {
+    use render_stream_core::apply::geom;
+    use render_stream_core::apply::payloads::PayloadStore;
+    use render_stream_core::motion::{self, MotionParams};
+    use render_stream_core::state::ResolvedState;
+    let Some(path) = args.positional.first() else {
+        return usage();
+    };
+    let why = args.get("why").is_some();
+    let store = args.get("store").map(PathBuf::from);
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("rs-core-check motion: {path}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let num = |x: f32| if x.is_finite() { json!(x) } else { json!("inf") };
+    let run = || -> Result<(), wire::Error> {
+        let version = wire::version_of_magic(&data)
+            .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream recording"))?;
+        let spans = wire::split_records(&data, version)?;
+        let mut opts = Options::new(version);
+        opts.digest = DigestPolicy::Never;
+        let mut v = Validator::new(spans[0].bytes(&data), spans[0].offset, opts)?;
+        let s = v.session();
+        // The GSW page's presentation when its window is the declared one (lib.rs `start`).
+        let size = s.viewport.presentation_size.unwrap_or(s.viewport.logical_size);
+        let global = if size == s.viewport.logical_size {
+            geom::IDENTITY
+        } else {
+            s.host_final_xform
+        };
+        let p = MotionParams {
+            global,
+            size: [size[0] as f32, size[1] as f32],
+        };
+        v.set_motion(Some(p));
+        let mut payloads = PayloadStore::default();
+        payloads.dynamic.measure = true;
+        payloads.multimeshes.measure = true;
+        let mut prev: Option<ResolvedState> = None;
+        let out = std::io::stdout();
+        let mut w = out.lock();
+        for span in &spans[1..] {
+            let rec = span.bytes(&data);
+            match v.accept(rec, span.offset)? {
+                Accepted::Transaction => {}
+                Accepted::Resource { hash } => {
+                    if let Some(b) = v.inline_payload(&hash) {
+                        payloads.provide(b, &hash, version, false)?;
+                    }
+                    continue;
+                }
+                _ => continue,
+            }
+            payloads.accept_transaction(&v, rec)?;
+            let st = v.state();
+            // The static geometry the measure reads: what a multimesh draws, and the payloads a
+            // static mesh swapped, unless already held.
+            let mut want: Vec<render_stream_core::state::Hash> = Vec::new();
+            for (mm, _) in &payloads.multimeshes.moved {
+                let mesh = st.multimeshes.get(mm).and_then(|e| e.mesh);
+                if let Some(me) = mesh.and_then(|m| st.meshes.get(&m)) {
+                    want.extend(me.surfaces.iter().filter_map(|s| s.hash));
+                }
+            }
+            for (mesh, olds, _) in v.motion_geometry() {
+                want.extend(olds);
+                if let Some(me) = st.meshes.get(mesh) {
+                    want.extend(me.surfaces.iter().filter_map(|s| s.hash));
+                }
+            }
+            for h in want {
+                if payloads.meshes.contains_key(&h) {
+                    continue;
+                }
+                let file = |d: &PathBuf| d.join("sha256").join(format!("{}.grm", h.to_hex()));
+                if let Some(b) = store.as_ref().and_then(|d| std::fs::read(file(d)).ok()) {
+                    payloads.provide(&b, &h, version, true)?;
+                }
+            }
+            let mut m = *v.motion().expect("measuring");
+            motion::ingested(&mut m, &p, &v, &payloads);
+            let mut row = json!({
+                "seq": st.seq,
+                "frame": st.frame,
+                "changes": m.changes,
+                "max_px": num(m.max_px),
+                "color": m.color_step,
+                "anim_px": num(m.anim_px),
+                "anim_color": m.anim_color,
+            });
+            if why {
+                if let Some(o) = &prev {
+                    row["why"] = motion_why(o, st);
+                }
+                prev = Some(st.clone());
+            }
+            let _ = writeln!(w, "{row}");
+        }
+        Ok(())
+    };
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("rs-core-check motion: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `motion --why`: the resource entries that differ between two states (added, removed, or the
+/// fields that changed).
+fn motion_why(
+    o: &render_stream_core::state::ResolvedState,
+    n: &render_stream_core::state::ResolvedState,
+) -> J {
+    use render_stream_core::state::{Material, Mesh, Multimesh, Particles, Shader, Texture};
+    let mut out = serde_json::Map::new();
+    macro_rules! table {
+        ($name:literal, $f:ident, $diff:expr) => {{
+            let mut v = Vec::new();
+            for (id, e) in n.$f.iter() {
+                match o.$f.get(id) {
+                    None => v.push(json!({"id": id, "added": true})),
+                    Some(p) if p != e => v.push(json!({"id": id, "changed": $diff(p, e)})),
+                    _ => {}
+                }
+            }
+            for (id, _) in o.$f.iter() {
+                if !n.$f.contains_key(id) {
+                    v.push(json!({"id": id, "removed": true}));
+                }
+            }
+            if !v.is_empty() {
+                out.insert($name.into(), J::Array(v));
+            }
+        }};
+    }
+    // Every field but the version, as Debug text, where it differs.
+    fn fields<T: std::fmt::Debug>(a: &T, b: &T) -> J {
+        let (a, b) = (format!("{a:?}"), format!("{b:?}"));
+        let strip = |s: &str| -> String {
+            s.split(", ").filter(|f| !f.starts_with("version: ")).collect::<Vec<_>>().join(", ")
+        };
+        if strip(&a) == strip(&b) {
+            json!("version")
+        } else {
+            json!({"old": a, "new": b})
+        }
+    }
+    table!("textures", textures, fields::<Texture>);
+    table!("meshes", meshes, fields::<Mesh>);
+    table!("shaders", shaders, fields::<Shader>);
+    table!("materials", materials, fields::<Material>);
+    table!("multimeshes", multimeshes, |a: &Multimesh, b: &Multimesh| {
+        if a.buffer_sha256 != b.buffer_sha256
+            && (Multimesh { version: a.version, buffer_sha256: a.buffer_sha256, ..b.clone() }) == *a
+        {
+            json!("buffer")
+        } else {
+            fields(a, b)
+        }
+    });
+    table!("particles", particles, fields::<Particles>);
+    if o.default_texture_filter != n.default_texture_filter
+        || o.default_texture_repeat != n.default_texture_repeat
+    {
+        out.insert("defaults".into(), json!(true));
+    }
+    J::Object(out)
 }

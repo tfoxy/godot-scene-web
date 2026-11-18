@@ -183,16 +183,23 @@ export interface CoreMotion {
   /** rs-core `motion::Change` bits: 1 full, 2 structure (added, removed, reparented, reordered),
    * 4 visibility, 8 content (commands other than positions and colours), 16 appearance
    * (material, clip, a clipping custom rect, filter, groups, a changed viewport entry), 32
-   * resource (texture, shader, material, static mesh, multimesh, particles, defaults), 64 reshape (a dynamic mesh body that
-   * cannot be measured: another vertex count, other UVs or indices, or drawn by a multimesh or
-   * particles), 128 viewport (content a sub-viewport draws). 0: only positions and colours
-   * moved. */
+   * resource (texture, shader, material, a static mesh, a multimesh's or emitter's
+   * configuration, defaults), 64 reshape (a dynamic body or multimesh buffer that cannot be
+   * measured: another vertex count, other UVs or indices, drawn by a multimesh or particles,
+   * custom data a material reads), 128 viewport (content a sub-viewport draws), 256 unmeasured
+   * (a multimesh buffer or static geometry the receiver did not measure). 0: only positions and
+   * colours moved. */
   changes: number;
-  /** The largest displacement of changed visible content, in presentation px (a bound; may be
-   * `Infinity`). */
+  /** The largest displacement of changed visible scene content (items, canvases, an emitter's
+   * transform), in presentation px (a bound; may be `Infinity`). */
   maxPx: number;
-  /** The largest step of a modulate or colour channel (0..1). */
+  /** The largest step of a modulate or colour channel of the scene content (0..1). */
   colorStep: number;
+  /** The same two over animation content: dynamic mesh bodies (skeletal deformation), multimesh
+   * instances (CPU particles) and flipbook geometry. Absent from a core built before them (it
+   * counts that content in `maxPx` and `colorStep`). */
+  animPx?: number;
+  animColorStep?: number;
 }
 
 /** One payload being staged as it arrives (`StreamCore.stageStream`). After `finish` or `abort`
@@ -224,6 +231,8 @@ const MOTION_SEQ = MOTION_FIELDS.indexOf("seq");
 const MOTION_CHANGES = MOTION_FIELDS.indexOf("changes");
 const MOTION_MAX_PX = MOTION_FIELDS.indexOf("max_px");
 const MOTION_COLOR_STEP = MOTION_FIELDS.indexOf("color_step");
+const MOTION_ANIM_PX = MOTION_FIELDS.indexOf("anim_px");
+const MOTION_ANIM_COLOR = MOTION_FIELDS.indexOf("anim_color");
 
 const hex = (bytes: Uint8Array): string => {
   let s = "";
@@ -239,6 +248,8 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   private motionOn = false;
   private motionU32: Uint32Array | null = null;
   private motionF32: Float32Array | null = null;
+  /** The block holds the animation measures (`motion_len`). */
+  private motionAnim = false;
   private readonly motionOut: CoreMotion = {
     seq: 0,
     changes: 0,
@@ -611,16 +622,10 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       this.motionU32.buffer !== this.memory.buffer
     ) {
       const ptr = g.motion_ptr();
-      this.motionU32 = new Uint32Array(
-        this.memory.buffer,
-        ptr,
-        MOTION_FIELDS.length,
-      );
-      this.motionF32 = new Float32Array(
-        this.memory.buffer,
-        ptr,
-        MOTION_FIELDS.length,
-      );
+      this.motionAnim = (g.motion_len?.() ?? 0) >= 4 * MOTION_FIELDS.length;
+      const fields = this.motionAnim ? MOTION_FIELDS.length : MOTION_ANIM_PX;
+      this.motionU32 = new Uint32Array(this.memory.buffer, ptr, fields);
+      this.motionF32 = new Float32Array(this.memory.buffer, ptr, fields);
     }
     const u = this.motionU32;
     const f = this.motionF32 as Float32Array;
@@ -629,6 +634,10 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     out.changes = u[MOTION_CHANGES];
     out.maxPx = f[MOTION_MAX_PX];
     out.colorStep = f[MOTION_COLOR_STEP];
+    if (this.motionAnim) {
+      out.animPx = f[MOTION_ANIM_PX];
+      out.animColorStep = f[MOTION_ANIM_COLOR];
+    }
     return out;
   }
 

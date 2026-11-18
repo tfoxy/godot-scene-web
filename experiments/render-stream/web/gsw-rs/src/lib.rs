@@ -188,6 +188,11 @@ pub struct MotionFacts {
     pub max_px: f32,
     /// The largest modulate or colour channel step (0..1).
     pub color_step: f32,
+    /// The same two over animation content (dynamic bodies, multimesh instances, flipbook
+    /// geometry): `motion::TxMotion::anim_px`, `anim_color`. Read when `motion_len` is at least
+    /// 24.
+    pub anim_px: f32,
+    pub anim_color: f32,
 }
 
 #[derive(Clone, Default)]
@@ -1481,6 +1486,7 @@ impl GswRs {
             v.set_motion(params);
         }
         self.payloads.dynamic.measure = params.is_some();
+        self.payloads.multimeshes.measure = params.is_some();
         self.motion = MotionFacts::default();
     }
 
@@ -1593,7 +1599,9 @@ impl GswRs {
                     } else {
                         self.payloads.particles.emits_total += emits;
                     }
-                    // PM3: the transaction's multimesh buffers, by multimesh id, likewise.
+                    // PM3: the transaction's multimesh buffers, by multimesh id, likewise. The
+                    // motion measure reads this transaction's buffers only.
+                    self.payloads.multimeshes.recycle_moved();
                     if !self.payloads.multimeshes.is_empty() || !v.multimesh_buffers().is_empty() {
                         self.payloads
                             .multimeshes
@@ -1619,30 +1627,24 @@ impl GswRs {
                     a.prune_deferred(|h| v.names_contains(h));
                 }
                 if self.motion_on {
-                    // The undo log's facts, plus how far each replaced dynamic body moved on
-                    // screen through the items that draw it. No facts (measuring started at this
-                    // very commit) count as a full change: never idle by default.
+                    // The undo log's facts, plus what the receiver measures of what it just took
+                    // in (dynamic bodies, multimesh buffers, static geometry swapped in place).
+                    // No facts (measuring started at this very commit) count as a full change:
+                    // never idle by default.
                     let mut m = v.motion().copied().unwrap_or(render_stream_core::motion::TxMotion {
                         changes: render_stream_core::motion::Change::FULL,
                         ..Default::default()
                     });
                     if let Some(p) = v.motion_params() {
-                        for &(mesh, d) in &self.payloads.dynamic.moved {
-                            render_stream_core::motion::dynamic_mesh(
-                                &mut m,
-                                p,
-                                st,
-                                mesh,
-                                d,
-                                v.mesh_users(mesh),
-                            );
-                        }
+                        render_stream_core::motion::ingested(&mut m, p, v, &self.payloads);
                     }
                     self.motion = MotionFacts {
                         seq: st.seq as u32,
                         changes: m.changes,
                         max_px: m.max_px,
                         color_step: m.color_step,
+                        anim_px: m.anim_px,
+                        anim_color: m.anim_color,
                     };
                 }
                 a.prepare(st, v.delta());
@@ -3132,6 +3134,12 @@ impl GswRs {
     /// The `MotionFacts` block: the last accepted transaction's facts while `set_motion(true)`.
     pub fn motion_ptr(&self) -> *const MotionFacts {
         &self.motion
+    }
+
+    /// The `MotionFacts` block's size in bytes: 24 with the animation measures (`anim_px`,
+    /// `anim_color`). A core without this method has the first 16 only.
+    pub fn motion_len(&self) -> u32 {
+        std::mem::size_of::<MotionFacts>() as u32
     }
 
     /// D31: digest every accepted record that has none yet (the deferred policy; with inline there

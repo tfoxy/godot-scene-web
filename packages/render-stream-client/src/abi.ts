@@ -42,6 +42,9 @@ export interface GswRs {
   set_motion?(on: boolean): void;
   /** The motion facts block (`MOTION_FIELDS`) of the last accepted transaction. */
   motion_ptr?(): number;
+  /** The motion facts block's size in bytes. Optional: a core without it has only the first four
+   * fields (no animation measures). */
+  motion_len?(): number;
   digest(): number;
   poll_fence(): number;
   shot(): number;
@@ -225,6 +228,8 @@ export const MOTION_FIELDS = [
   "changes",
   "max_px",
   "color_step",
+  "anim_px",
+  "anim_color",
 ] as const;
 
 /** A reader of the stats block, its view re-derived whenever memory grew. */

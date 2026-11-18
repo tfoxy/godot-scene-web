@@ -64,9 +64,10 @@ pub struct DynamicMeshes {
     /// Measure how far each ingested body moved (`moved`); off by default (it reads every
     /// position of every body).
     pub measure: bool,
-    /// With `measure`, the last ingest's bodies: (mesh, how the body differs from the one it
-    /// replaced: [`crate::motion::body_delta`], or `BodyDelta::NEW` when the surface held none).
-    pub moved: Vec<(Id, crate::motion::BodyDelta)>,
+    /// With `measure`, the last ingest's bodies: (mesh, surface, the body it replaced, or `None`
+    /// when the surface held none), for [`crate::motion::dynamic_mesh`]. The new body is
+    /// `get(mesh)`'s. [`DynamicMeshes::recycle_moved`] returns the old ones to `spare`.
+    pub moved: Vec<(Id, u32, Option<MeshGeometry>)>,
 }
 
 impl DynamicMeshes {
@@ -77,6 +78,17 @@ impl DynamicMeshes {
         self.bodies_total = 0;
         self.body_bytes_total = 0;
         self.moved.clear();
+    }
+
+    /// Forgets the last ingest's `moved` bodies, keeping their buffers for the next decodes.
+    pub fn recycle_moved(&mut self) {
+        for (_, _, old) in self.moved.drain(..) {
+            if let Some(g) = old {
+                if self.spare.len() < 64 {
+                    self.spare.push(g);
+                }
+            }
+        }
     }
 
     /// Dynamic meshes held.
@@ -119,7 +131,7 @@ impl DynamicMeshes {
         bodies: &[BodyRef],
         record: &[u8],
     ) -> Result<u32, Error> {
-        self.moved.clear();
+        self.recycle_moved();
         for b in bodies {
             let surface = state
                 .meshes
@@ -175,19 +187,16 @@ impl DynamicMeshes {
                 m.surfaces.resize(k + 1, None);
                 m.serials.resize(k + 1, 0);
             }
-            if self.measure {
-                let d = match &m.surfaces[k] {
-                    Some(old) => crate::motion::body_delta(old, &g),
-                    None => crate::motion::BodyDelta::NEW,
-                };
-                self.moved.push((b.mesh, d));
-            }
             self.bytes += g.data_bytes();
             if let Some(old) = m.surfaces[k].replace(g) {
                 self.bytes = self.bytes.saturating_sub(old.data_bytes());
-                if self.spare.len() < 64 {
+                if self.measure {
+                    self.moved.push((b.mesh, b.surface, Some(old)));
+                } else if self.spare.len() < 64 {
                     self.spare.push(old);
                 }
+            } else if self.measure {
+                self.moved.push((b.mesh, b.surface, None));
             }
             m.serials[k] = self.serial;
         }

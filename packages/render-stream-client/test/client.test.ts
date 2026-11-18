@@ -501,6 +501,14 @@ describe("endpoint protocol changes", () => {
         frameCap: "sometimes" as never,
       }),
     ).toThrow(/frameCap must be "off" or "automatic"/);
+    expect(() =>
+      createRenderStreamClient({
+        canvas,
+        core,
+        endpoint,
+        frameCapBounds: { animationPx: "fast" as never },
+      }),
+    ).toThrow(/frameCapBounds\.animationPx/);
     const wake = vi.spyOn(StreamLoop.prototype, "wake");
     const setCap = vi.spyOn(StreamLoop.prototype, "setFrameCap");
     try {
@@ -521,7 +529,13 @@ describe("endpoint protocol changes", () => {
       h.c.wake?.();
       expect(wake).not.toHaveBeenCalled();
       h.c.setFrameCap?.("automatic");
-      expect(setCap).toHaveBeenLastCalledWith("automatic");
+      expect(setCap).toHaveBeenLastCalledWith("automatic", undefined);
+      // Bounds go to the loop as given; a bad one is refused before anything changes.
+      h.c.setFrameCap?.("automatic", { animationPx: 32 });
+      expect(setCap).toHaveBeenLastCalledWith("automatic", { animationPx: 32 });
+      expect(() => h.c.setFrameCap?.("automatic", { motionPx: -1 })).toThrow(
+        /frameCapBounds\.motionPx/,
+      );
       expect(h.c.stats().frameCap).toBe("automatic");
       for (const t of ["pointerdown", "touchstart", "keydown", "wheel"])
         document.dispatchEvent(new Event(t));

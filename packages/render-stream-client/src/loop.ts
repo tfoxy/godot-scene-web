@@ -60,7 +60,13 @@ import { failWith, StreamFailure } from "./core";
 import type { RenderStreamEndpoint } from "./endpoint";
 import type { ExtensionHost } from "./extensions";
 import { type FetchResult, LiveFetcher } from "./fetcher";
-import { FrameCap, motionWake, type RenderStreamFrameCap } from "./frame-cap";
+import {
+  FrameCap,
+  frameCapLimits,
+  motionWake,
+  type RenderStreamFrameCap,
+  type RenderStreamFrameCapBounds,
+} from "./frame-cap";
 import { clientHello, clientProtocol } from "./hello";
 import { type HintLead, HintTable } from "./hints";
 import type { RenderStreamRecorder } from "./recorder";
@@ -262,6 +268,8 @@ export interface LoopOptions {
   resourceHints?: boolean;
   /** The idle frame cap (frame-cap.ts); default `off`. */
   frameCap?: RenderStreamFrameCap;
+  /** What still counts as ambient under the cap (frame-cap.ts defaults). */
+  frameCapBounds?: RenderStreamFrameCapBounds;
 }
 
 /** The ack the host's credit waits on (render-stream-1.md hello `credit_stage`). */
@@ -432,7 +440,11 @@ export class StreamLoop {
       : null;
     const hold = o.resourceHoldMs ?? DEFAULT_RESOURCE_HOLD_MS;
     this.resourceHoldMs = hold >= 0 ? hold : DEFAULT_RESOURCE_HOLD_MS;
-    this.cap = new FrameCap(o.frameCap ?? "off", o.clock.now());
+    this.cap = new FrameCap(
+      o.frameCap ?? "off",
+      o.clock.now(),
+      frameCapLimits(o.frameCapBounds),
+    );
     if (this.cap.mode === "automatic") o.core.setMotion?.(true);
   }
 
@@ -468,11 +480,16 @@ export class StreamLoop {
     }
   }
 
-  /** The idle frame cap from now on. Switching is itself activity: the cap engages only after a
-   * quiet period. `off` stops the core's motion measure too. */
-  setFrameCap(mode: RenderStreamFrameCap): void {
+  /** The idle frame cap from now on, and its bounds when given (over the defaults; omitted, the
+   * current ones stay). Switching is itself activity: the cap engages only after a quiet period.
+   * `off` stops the core's motion measure too. */
+  setFrameCap(
+    mode: RenderStreamFrameCap,
+    bounds?: RenderStreamFrameCapBounds,
+  ): void {
     if (this.phase === "disposed") return;
-    this.cap.setMode(mode, this.o.clock.now());
+    const limits = bounds === undefined ? undefined : frameCapLimits(bounds);
+    this.cap.setMode(mode, this.o.clock.now(), limits);
     this.o.core.setMotion?.(mode === "automatic");
   }
 
@@ -753,7 +770,11 @@ export class StreamLoop {
     // The cap's measure, at receipt: a real change wakes it before the next frame callback (a
     // folded or superseded transaction counts as much as one applied alone).
     if (this.cap.mode === "automatic") {
-      const why = motionWake(this.o.core.motion?.() ?? null, m.seq);
+      const why = motionWake(
+        this.o.core.motion?.() ?? null,
+        m.seq,
+        this.cap.limits,
+      );
       if (why !== null) this.cap.activity(now, why);
     }
     // Every accepted transaction moves the names: what the loop tracks and the newest state no

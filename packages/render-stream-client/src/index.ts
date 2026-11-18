@@ -38,9 +38,12 @@ export {
 } from "./extensions";
 export {
   FRAME_CAP_QUIET_MS,
+  IDLE_ANIMATION_COLOR_STEP_MAX,
+  IDLE_ANIMATION_MAX_PX,
   IDLE_COLOR_STEP_MAX,
   IDLE_MOTION_MAX_PX,
   type RenderStreamFrameCap,
+  type RenderStreamFrameCapBounds,
 } from "./frame-cap";
 export { type ClientHelloFacts, clientHello } from "./hello";
 export type {

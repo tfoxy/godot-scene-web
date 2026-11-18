@@ -654,6 +654,9 @@ impl PayloadStore {
         v: &crate::validate::Validator,
         record: &[u8],
     ) -> Result<u32, crate::wire::Error> {
+        // The motion measure reads what this transaction ingested, never an earlier one's.
+        self.dynamic.recycle_moved();
+        self.multimeshes.recycle_moved();
         // /13: the block ranges index the reconstructed /12 record.
         let record = v.record_view(record);
         if !self.multimeshes.is_empty() || !v.multimesh_buffers().is_empty() {

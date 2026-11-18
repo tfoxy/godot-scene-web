@@ -7,8 +7,8 @@ point; `client.stats()` reports what it is doing.
 ## Idle frame cap
 
 `frameCap` trades ambient smoothness for battery and heat over long sessions on a GPU-bound device:
-presenting half the frames halves the fill. Change it at runtime with `client.setFrameCap(mode)`
-(`setFrameCap` and `wake` are optional on the `RenderStreamClient` type, so test doubles need not
+presenting half the frames halves the fill. Change it at runtime with
+`client.setFrameCap(mode, bounds?)` (`setFrameCap` and `wake` are optional on the `RenderStreamClient` type, so test doubles need not
 implement them; a created client always has both).
 
 | Value           | Behaviour                                                                                                                                                                                                                                                      |
@@ -17,13 +17,28 @@ implement them; a created client always has both).
 | `automatic`     | After `FRAME_CAP_QUIET_MS` (1.5 s) with no input and only ambient motion, the client presents every other frame callback (30 fps on a 60 Hz panel). The first frame callback after an input or a real change presents again, and the quiet period starts over. |
 
 - **Ambient motion** is judged per transaction from how far changed visible content moved on screen
-  and how much its colours stepped, not from damage area. Up to `IDLE_MOTION_MAX_PX` (1 px) of
-  displacement and `IDLE_COLOR_STEP_MAX` (4/255) of colour per transaction counts as ambient: a
-  background drifting by a fraction of a pixel, an idle pose, a slow fade. Shaders driven by time
-  are ambient too.
+  and how much its colours stepped, not from damage area. Scene content (items, canvases, an
+  emitter's transform) and animation content (the host's per-frame animation systems: skeletal
+  bodies, CPU particle instances, a looping flipbook) have separate bounds, set with the
+  `frameCapBounds` option or `setFrameCap(mode, bounds)`; a field left out takes its default:
+
+  | Bound                | Default                                    | Counts as ambient                                                   |
+  | -------------------- | ------------------------------------------ | ------------------------------------------------------------------- |
+  | `motionPx`           | `IDLE_MOTION_MAX_PX`, 1 px                 | a background drifting by a fraction of a pixel                      |
+  | `colorStep`          | `IDLE_COLOR_STEP_MAX`, 8/255               | a glow pulse whose swing takes half a second or more                |
+  | `animationPx`        | `IDLE_ANIMATION_MAX_PX`, 128 px            | an idle skeleton and background layers sweeping, motes drifting     |
+  | `animationColorStep` | `IDLE_ANIMATION_COLOR_STEP_MAX`, unbounded | slot colours cycling and flashing (set a step to make flashes wake) |
+
+  All are per transaction (presentation px; colour channels 0..1). Only what is shown counts: a
+  part or particle off screen, or faint (at most 4/255 of it reaches a pixel), on both sides of a
+  transaction moves invisibly. Shaders driven by time and a GPU emitter's own simulation are
+  ambient too.
+
 - **A real change** wakes the cap: an item added, removed, reordered, shown or hidden, a change of
-  content (new text, a sprite frame, another shape), material, clip or resource, motion or a colour
-  step past the thresholds, a payload that arrives late, a resync or a new session.
+  content (new text, a sprite frame, another shape), material, clip or resource, an emitter
+  restarted, toggled or reconfigured (amount, lifetime, process material, ...), a multimesh
+  reallocated, a flipbook frame not shown before, motion or a colour step past the thresholds, a
+  payload that arrives late, a resync or a new session.
 - **Input** wakes the cap: a pointer, touch, key or wheel event anywhere in the canvas's document.
   A consumer with its own input layer, or a gamepad, calls `client.wake()` for each input.
 - **The stream is unaffected.** Every transaction is still received, applied and acked as it

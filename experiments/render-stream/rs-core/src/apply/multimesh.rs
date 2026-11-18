@@ -31,11 +31,23 @@ pub struct MultimeshBuffers {
     /// Multimeshes first held, and dropped, since the session began (evidence).
     pub created_total: u64,
     pub freed_total: u64,
+    /// Keep the buffers each ingest replaces (`moved`), for the motion measure
+    /// ([`crate::motion::multimesh_buffer`]); off by default.
+    pub measure: bool,
+    /// With `measure`, the last ingest's buffers: (multimesh, the floats its new buffer replaced,
+    /// or `None` when none was held). The new floats are `get(id)`'s.
+    pub moved: Vec<(Id, Option<Vec<f32>>)>,
+    /// Replaced buffers' allocations, reused by the next ingest's buffers.
+    spare: Vec<Vec<f32>>,
 }
 
 impl MultimeshBuffers {
+    /// Drops every buffer and counter; `measure` is kept.
     pub fn clear(&mut self) {
-        *self = MultimeshBuffers::default();
+        *self = MultimeshBuffers {
+            measure: self.measure,
+            ..MultimeshBuffers::default()
+        };
     }
 
     /// Multimeshes held.
@@ -58,7 +70,15 @@ impl MultimeshBuffers {
 
     /// The accepted transaction's buffers (`refs`, sliced from `record`); then every multimesh
     /// the new state does not hold as `ok` is dropped.
+    /// Forgets the last ingest's `moved` buffers, keeping their allocations for the next ones.
+    pub fn recycle_moved(&mut self) {
+        for (_, old) in self.moved.drain(..) {
+            self.spare.extend(old);
+        }
+    }
+
     pub fn ingest(&mut self, state: &ResolvedState, refs: &[MmBufferRef], record: &[u8]) {
+        self.recycle_moved();
         for r in refs {
             self.serial += 1;
             let bytes = r.bytes(record);
@@ -68,6 +88,12 @@ impl MultimeshBuffers {
                 self.created_total += 1;
             }
             let e = self.map.entry(r.multimesh).or_default();
+            if self.measure {
+                let held = !e.floats.is_empty() || e.serial != 0;
+                let fresh = self.spare.pop().unwrap_or_default();
+                let old = std::mem::replace(&mut e.floats, fresh);
+                self.moved.push((r.multimesh, held.then_some(old)));
+            }
             e.floats.clear();
             e.floats.extend(
                 bytes

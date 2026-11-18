@@ -305,19 +305,26 @@ fn sorted_dedup<T: Ord>(v: &mut Vec<T>) {
 
 /// One committed transaction's motion facts from its undo log (`crate::motion`): a full
 /// transaction is all new, a patch is measured entry by entry against the resolved state.
+#[allow(clippy::too_many_arguments)]
 fn measure_motion(
     m: &mut crate::motion::TxMotion,
+    geometry: &mut Vec<(Id, Vec<Hash>, bool)>,
+    frames: &mut crate::motion::MeshFrames,
     p: &crate::motion::MotionParams,
     st: &ResolvedState,
     undo: &[Undo],
     delta: &TxDelta,
+    idx: &Index,
 ) {
     use crate::motion::{self, Change};
     m.clear();
+    geometry.clear();
     if delta.full {
         m.changes = Change::FULL;
+        frames.clear();
         return;
     }
+    frames.retain(st);
     if delta.defaults_changed {
         m.changes |= Change::RESOURCE;
     }
@@ -329,12 +336,40 @@ fn measure_motion(
             Undo::Canvas(id, prev) => {
                 motion::canvas(m, p, st, prev.as_ref(), st.canvases.get(id))
             }
-            Undo::Mesh(id, prev) => motion::mesh(m, prev.as_ref(), st.meshes.get(id)),
-            Undo::Texture(..)
-            | Undo::Shader(..)
-            | Undo::Material(..)
-            | Undo::Multimesh(..)
-            | Undo::Particles(..) => m.changes |= Change::RESOURCE,
+            Undo::Mesh(id, prev) => {
+                let new = st.meshes.get(id);
+                match (prev.as_ref(), new) {
+                    // Created anew (or freed) under this id: a reused id inherits no frames.
+                    (Some(o), Some(n)) if o.origin == n.origin && o.status == n.status => {
+                        if o.surfaces != n.surfaces {
+                            motion::mesh_bounds(m, p, st, o, n, users(&idx.mesh_users, *id));
+                        }
+                    }
+                    _ => frames.forget(*id),
+                }
+                if motion::mesh(m, prev.as_ref(), new) {
+                    let hashes = |me: Option<&Mesh>| -> Vec<Hash> {
+                        me.iter().flat_map(|me| &me.surfaces).filter_map(|s| s.hash).collect()
+                    };
+                    let old = hashes(prev.as_ref());
+                    let frame = frames.swap(*id, &old, &hashes(new));
+                    geometry.push((*id, old, frame));
+                }
+            }
+            Undo::Multimesh(id, prev) => {
+                motion::multimesh(m, prev.as_ref(), st.multimeshes.get(id))
+            }
+            Undo::Particles(id, prev) => motion::particles(
+                m,
+                p,
+                st,
+                prev.as_ref(),
+                st.particles.get(id),
+                users(&idx.pt_users, *id),
+            ),
+            Undo::Texture(..) | Undo::Shader(..) | Undo::Material(..) => {
+                m.changes |= Change::RESOURCE
+            }
             Undo::Viewport(id, prev) => motion::viewport(m, prev.as_ref(), st.viewports.get(id)),
         }
     }
@@ -755,6 +790,11 @@ pub struct Validator {
     /// The motion facts of the last accepted transaction (`set_motion`), measured from its undo log
     /// at commit; `None` (the default) measures nothing.
     motion: Option<(crate::motion::MotionParams, crate::motion::TxMotion)>,
+    /// With `motion`, the static meshes of the last accepted transaction whose payloads changed
+    /// with their layout kept, and the surface hashes they replaced (`motion_geometry`).
+    motion_geometry: Vec<(Id, Vec<Hash>, bool)>,
+    /// With `motion`, the payload sets each static mesh showed recently (flipbook frames).
+    motion_frames: crate::motion::MeshFrames,
     // ---- /13 (render-stream-13.md "As built (W13a)"); unused below /13.
     /// The prediction history (H1, H2), advanced by each accepted transaction.
     history: crate::predict::History,
@@ -1948,6 +1988,8 @@ impl Validator {
             pt_op_declared,
             cv_stable: None,
             motion: None,
+            motion_geometry: Vec::new(),
+            motion_frames: Default::default(),
             history: Default::default(),
             pred_scratch: Default::default(),
             plain_ok: false,
@@ -2016,6 +2058,8 @@ impl Validator {
     /// Off by default; on, it costs O(changed) per transaction at commit.
     pub fn set_motion(&mut self, params: Option<crate::motion::MotionParams>) {
         self.motion = params.map(|p| (p, crate::motion::TxMotion::default()));
+        self.motion_geometry.clear();
+        self.motion_frames.clear();
     }
     /// The motion params `set_motion` gave, or `None` while off.
     pub fn motion_params(&self) -> Option<&crate::motion::MotionParams> {
@@ -2027,9 +2071,20 @@ impl Validator {
     pub fn motion(&self) -> Option<&crate::motion::TxMotion> {
         self.motion.as_ref().map(|(_, m)| m)
     }
+    /// With motion on, the static meshes of the last accepted transaction that changed their
+    /// payloads and kept their layout, with the surface hashes they replaced (in surface order)
+    /// and whether the new payloads are a frame the mesh showed before (`motion::MeshFrames`):
+    /// the receiver measures their geometry (`crate::motion::ingested`).
+    pub fn motion_geometry(&self) -> &[(Id, Vec<Hash>, bool)] {
+        &self.motion_geometry
+    }
     /// The items of the newest accepted state whose commands `add_mesh` the mesh `mesh`.
     pub fn mesh_users(&self, mesh: Id) -> impl Iterator<Item = Id> + '_ {
         users(&self.idx.mesh_users, mesh)
+    }
+    /// The items of the newest accepted state whose commands `add_multimesh` the multimesh `mm`.
+    pub fn multimesh_users(&self, mm: Id) -> impl Iterator<Item = Id> + '_ {
+        users(&self.idx.mm_users, mm)
     }
     /// The verified payload of the last accepted resource record, when it carried `hash` (P3-SP:
     /// only the last one is kept; read it right after `accept` returns `Accepted::Resource`).
@@ -6675,7 +6730,8 @@ impl Validator {
         }
         self.skipping = false;
         if let Some((p, m)) = self.motion.as_mut() {
-            measure_motion(m, p, &self.state, &self.undo, &self.delta);
+            let (geometry, frames) = (&mut self.motion_geometry, &mut self.motion_frames);
+            measure_motion(m, geometry, frames, p, &self.state, &self.undo, &self.delta, &self.idx);
         }
         // Recycle the replaced items' and materials' buffers. I1: an item or canvas entry in the
         // log (an identical entry is never logged) moves the items epoch.
