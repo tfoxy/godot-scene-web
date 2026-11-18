@@ -116,6 +116,9 @@ else()
 endif()
 
 file(GLOB GRC_CALIBRATION_RECORDS "${CMAKE_CURRENT_SOURCE_DIR}/../calibration/*.json")
+# The C++ loader learns macOS slice records with the runtime Mach-O fingerprint; until then
+# they are checked only by calibrate.sh --check.
+list(FILTER GRC_CALIBRATION_RECORDS EXCLUDE REGEX "-macos-[a-z0-9_]+-release\\.json$")
 add_executable(calib_live_pe_test test/calib_live_pe_test.cpp src/calib.cpp
   ${GRC_FINGERPRINT_SOURCES} src/iface.cpp src/rs_sha256.cpp src/calib_live.cpp src/calib_derive.cpp
   $<$<NOT:$<BOOL:${GRC_WINDOWS}>>:src/pe_image.cpp>)
