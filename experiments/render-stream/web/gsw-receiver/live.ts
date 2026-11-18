@@ -85,11 +85,7 @@ import {
   provideLibrary,
 } from "../../../../packages/render-stream-client/src/programs";
 import {
-  ACCEPT_END,
-  ACCEPT_HELD,
-  ACCEPT_ITEM_META,
   ACCEPT_NEEDS_PAYLOADS,
-  ACCEPT_RESOURCE,
   failWith,
   finish,
   type GswRs,
@@ -123,6 +119,7 @@ import {
 } from "./evidence";
 import { leakedGlTextureCount, leakOneIfDue } from "./gl-leak";
 import { type PayloadVerify, Perf } from "./perf";
+import { liveRecordKind } from "./records";
 import { KtxStager } from "./transcode";
 
 /** VS4: the core's viewport surface counters (gsw-rs `Stats`, render-stream/16). */
@@ -781,15 +778,21 @@ class LiveReceiver {
       }
       throw failWith(failureSeq(buf, expected), err);
     }
-    // W13c: a patch dropped while a predict-check resync awaits its full: no apply, no ack.
-    if (code === ACCEPT_HELD) return;
-    // TAG1: an item_meta record (this receiver never asks for one): nothing to apply, no ack.
-    if (code === ACCEPT_ITEM_META) return;
-    if (code === ACCEPT_RESOURCE) {
+    // Only a transaction reaches the entry, ack and fold below (records.ts): a /15 resource_hint
+    // taken for one folded into the pending seq with an empty needed set, so it applied without
+    // its payloads. W13c's held patches, TAG1's item_meta and the hints are skipped.
+    const kind = liveRecordKind(code);
+    if (kind === null)
+      throw failWith(
+        this.lastSeqOrNull(),
+        `receiver-error: live_accept returned unknown code ${code}`,
+      );
+    if (kind === "skip") return;
+    if (kind === "resource") {
       this.inlineSinceApplied++;
       return;
     }
-    if (code === ACCEPT_END) {
+    if (kind === "end") {
       this.endSeen = true;
       this.streamReport.end_seen = true;
       this.report.endSeen = true;
