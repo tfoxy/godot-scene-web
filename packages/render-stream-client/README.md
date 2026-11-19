@@ -109,6 +109,18 @@ On a `resourceHints` client, `stats()` includes these fields. Counters accumulat
 
 ## Payloads that arrive late or not at all
 
+`fetchInWorker` defaults to `true`: WebSocket resource GETs run in one dedicated worker per
+transport, created when the socket opens before resource demand. It transfers complete bodies
+for sliced staging and refills download slots on completion without waiting for a frame.
+Set `fetchInWorker: false` to use main-thread fetching;
+unavailable worker APIs or a worker startup/message failure also select that fallback for the
+transport's lifetime, with one warning. WebTransport keeps its own resource path. Demand and
+prefetch share four wire slots. A new GET starts only with a free wire slot and less than
+64 MiB buffered for staging, with no body count limit; requests already in flight may finish
+above that byte threshold, and a single oversized body can drain without blocking the queue.
+Bodies that stop being wanted while waiting are released without staging. Ready demand bodies
+stage in request issue order before advisory bodies, without waiting for outstanding GETs.
+
 Textures, meshes and shader code are content-addressed payloads, fetched over HTTP when a
 transaction needs one the client does not hold. Up to four GETs run at once, and every body is
 verified (SHA-256) and decoded before use.

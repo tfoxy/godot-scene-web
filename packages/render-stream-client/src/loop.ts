@@ -979,7 +979,16 @@ export class StreamLoop {
           {
             maxInFlight: FETCH_PARALLEL,
             stager,
+            wanted: (hash, background) => {
+              if (restore) return this.restoreWant?.includes(hash) === true;
+              if (this.wanted(hash) || this.isNamed(hash)) return true;
+              const hint = background
+                ? this.prefetch?.active.get(hash)?.hint
+                : undefined;
+              return hint !== undefined && this.hints?.has(hint) === true;
+            },
             failures: "settle",
+            abortOnCancel: true,
             retry: {
               now: () => this.o.clock.now(),
               mode: (hash, background) => {
@@ -1592,7 +1601,12 @@ export class StreamLoop {
     const entry = p?.active.get(r.hash);
     if (p === null || entry === undefined) return false;
     p.active.delete(r.hash);
-    p.spent += (r.error === "" ? r.bytes : 0) - entry.reserved;
+    p.spent += (r.error === "" && !r.discarded ? r.bytes : 0) - entry.reserved;
+    if (r.discarded) {
+      if (this.wanted(r.hash)) return false;
+      this.stale.delete(r.hash);
+      return true;
+    }
     if (r.error === "" && !r.stage_error) {
       p.hintsPrefetched++;
       p.hintPrefetchBytes += r.bytes;
@@ -1680,6 +1694,11 @@ export class StreamLoop {
    * an older naming's failure dropped). A fatal one throws. */
   private settle(r: FetchResult, seq: number, kind: number): boolean {
     const stale = this.stale.delete(r.hash);
+    if (r.discarded) {
+      // A hash can become wanted again between releasing its body and polling its result.
+      if (this.wanted(r.hash)) this.fetcher?.extend([r.hash]);
+      return false;
+    }
     if (r.error === "") return true;
     if (r.outcome !== "missing" && r.outcome !== "temporary")
       throw failWith(seq, r.error);

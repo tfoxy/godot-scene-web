@@ -82,6 +82,9 @@ export interface RenderStreamClientOptions {
    * and the client then stays on WebSocket. `websocket`: always WebSocket. `webtransport`: never
    * falls back (a failure is `live-connect-failed`). */
   carrier?: RenderStreamCarrier;
+  /** Fetch WebSocket resources in a dedicated worker (default true). False keeps HTTP reads
+   * on the main thread. Ignored by WebTransport and custom transport factories. */
+  fetchInWorker?: boolean;
   /** Product modules, composed in this order. Default
    * `[]`: the pure client (no `item_meta` hello key, nothing loaded, one branch per frame). An
    * extension that `wants` identities needs protocol 13 or 14; v2 wants upgrade /13 to /14. */
@@ -346,7 +349,9 @@ class Client implements RenderStreamClient {
     private readonly ext: ExtensionHost | null,
     private readonly recorder: RenderStreamRecorder | null,
   ) {
-    this.carrierFactory = o.transport ?? carrierTransport(o.carrier ?? "auto");
+    this.carrierFactory =
+      o.transport ??
+      carrierTransport(o.carrier ?? "auto", { fetchInWorker: o.fetchInWorker });
     this.frameCap = o.frameCap ?? "off";
     this.frameCapBounds = o.frameCapBounds;
     this.listenInput();

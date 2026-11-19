@@ -4,6 +4,7 @@
 // data-channel transport implements the same interface; the hello, credit and records do not change.
 
 import { type RenderStreamEndpoint, webSocketUrl } from "./endpoint";
+import { ResourceWorker, type ResourceWorkerOptions } from "./resource-worker";
 
 export interface RenderStreamTransport {
   /** Which carrier this transport is; absent on a custom transport. */
@@ -31,6 +32,8 @@ export interface RenderStreamTransport {
     body: ArrayBuffer | null;
     stream?: ReadableStream<Uint8Array> | null;
     sizeHint?: number;
+    /** Complete body transferred by the HTTP worker. */
+    workerBody?: boolean;
   }>;
 }
 
@@ -49,68 +52,89 @@ export type RenderStreamTransportFactory = (
 /** The default transport: a WebSocket on the descriptor's URL offering only `subprotocol`, and
  * `fetch` under its `resourceBase` (default cache mode, so the browser's HTTP cache answers a
  * reconnect's repeated GETs; no credentials). A socket that cannot be created throws here. */
-export const webSocketTransport: RenderStreamTransportFactory = (
-  endpoint,
-  subprotocol,
-  on,
-) => {
-  const ws = new WebSocket(webSocketUrl(endpoint.url, location.href), [
-    subprotocol,
-  ]);
-  ws.binaryType = "arraybuffer";
-  ws.onopen = () => on.open();
-  ws.onmessage = (ev: MessageEvent) =>
-    on.message(ev.data as ArrayBuffer | string);
-  // Every handler is dropped once the socket closed: a socket the browser still holds must not
-  // keep the client (and its wasm instance) reachable after a dispose.
-  ws.onclose = (ev: CloseEvent) => {
-    ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
-    on.close(ev.code, ev.reason);
+export function createWebSocketTransport(
+  options: ResourceWorkerOptions = {},
+): RenderStreamTransportFactory {
+  return (endpoint, subprotocol, on) => {
+    const resources = new ResourceWorker(options);
+    const ws = new WebSocket(webSocketUrl(endpoint.url, location.href), [
+      subprotocol,
+    ]);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => {
+      resources.start();
+      on.open();
+    };
+    ws.onmessage = (ev: MessageEvent) =>
+      on.message(ev.data as ArrayBuffer | string);
+    // Every handler is dropped once the socket closed: a socket the browser still holds must not
+    // keep the client (and its wasm instance) reachable after a dispose.
+    ws.onclose = (ev: CloseEvent) => {
+      resources.close();
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+      on.close(ev.code, ev.reason);
+    };
+    ws.onerror = () => {};
+    return {
+      carrier: "websocket",
+      send(text) {
+        if (ws.readyState === WebSocket.OPEN) ws.send(text);
+      },
+      close(code, reason) {
+        resources.close();
+        // Nothing more is read once the client closes (the close event still arrives).
+        ws.onopen = null;
+        ws.onmessage = null;
+        if (ws.readyState === WebSocket.CLOSED) return;
+        try {
+          ws.close(code, reason);
+        } catch {
+          ws.close();
+        }
+      },
+      async fetchResource(path, init) {
+        const headers: Record<string, string> = {};
+        if (init.token !== null) headers.Authorization = `Bearer ${init.token}`;
+        return resources.fetch(
+          workerResourceUrl(`${endpoint.resourceBase}${path}`),
+          headers,
+          init.signal,
+          init.progress,
+          async () => {
+            const res = await fetch(`${endpoint.resourceBase}${path}`, {
+              headers,
+              signal: init.signal,
+              cache: "default",
+              credentials: "omit",
+            });
+            if (
+              init.stream === true &&
+              res.status === 200 &&
+              res.body !== null
+            ) {
+              const length = Number(res.headers.get("content-length") ?? "");
+              return {
+                status: res.status,
+                body: null,
+                stream: res.body,
+                sizeHint:
+                  Number.isSafeInteger(length) && length > 0 ? length : 0,
+              };
+            }
+            if (init.progress !== undefined && res.body !== null)
+              return {
+                status: res.status,
+                body: await readBody(res.body, init.progress),
+              };
+            return { status: res.status, body: await res.arrayBuffer() };
+          },
+        );
+      },
+    };
   };
-  ws.onerror = () => {};
-  return {
-    carrier: "websocket",
-    send(text) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(text);
-    },
-    close(code, reason) {
-      // Nothing more is read once the client closes (the close event still arrives).
-      ws.onopen = null;
-      ws.onmessage = null;
-      if (ws.readyState === WebSocket.CLOSED) return;
-      try {
-        ws.close(code, reason);
-      } catch {
-        ws.close();
-      }
-    },
-    async fetchResource(path, init) {
-      const headers: Record<string, string> = {};
-      if (init.token !== null) headers.Authorization = `Bearer ${init.token}`;
-      const res = await fetch(`${endpoint.resourceBase}${path}`, {
-        headers,
-        signal: init.signal,
-        cache: "default",
-        credentials: "omit",
-      });
-      if (init.stream === true && res.status === 200 && res.body !== null) {
-        const length = Number(res.headers.get("content-length") ?? "");
-        return {
-          status: res.status,
-          body: null,
-          stream: res.body,
-          sizeHint: Number.isSafeInteger(length) && length > 0 ? length : 0,
-        };
-      }
-      if (init.progress !== undefined && res.body !== null)
-        return {
-          status: res.status,
-          body: await readBody(res.body, init.progress),
-        };
-      return { status: res.status, body: await res.arrayBuffer() };
-    },
-  };
-};
+}
+
+export const webSocketTransport = createWebSocketTransport();
 
 // ------------------------------------------------------------------------------------------
 // Carrier selection. The WebTransport code (`./webtransport`: framing, resource streams,
@@ -156,6 +180,7 @@ export const UPLINK_STALLED = "uplink-stalled";
 
 export interface CarrierDeps {
   websocket?: RenderStreamTransportFactory;
+  fetchInWorker?: boolean;
   /** The WebTransport factory (default: `createWebTransportTransport()` from the lazily imported
    * `./webtransport`, one cache per carrier). */
   webtransport?: () => Promise<RenderStreamTransportFactory>;
@@ -178,7 +203,9 @@ export function carrierTransport(
   carrier: RenderStreamCarrier,
   deps: CarrierDeps = {},
 ): RenderStreamTransportFactory {
-  const ws = deps.websocket ?? webSocketTransport;
+  const ws =
+    deps.websocket ??
+    createWebSocketTransport({ fetchInWorker: deps.fetchInWorker });
   if (carrier === "websocket") return ws;
   let loaded: Promise<RenderStreamTransportFactory> | null = null;
   const load = () =>
@@ -281,6 +308,20 @@ export function carrierTransport(
         (current as RenderStreamTransport).fetchResource(path, init),
     };
   };
+}
+
+/** Blob workers have no page URL base; keep fetch's page-relative resolution on this thread. */
+function workerResourceUrl(url: string): string {
+  const base =
+    (typeof document === "undefined" ? undefined : document.baseURI) ??
+    (typeof location === "undefined" ? undefined : location.href);
+  if (base === undefined) return url;
+  try {
+    return new URL(url, base).href;
+  } catch {
+    // Leave invalid URLs to fetch's ordinary request-error path, without changing the fallback.
+    return url;
+  }
 }
 
 /** A whole body, `progress` called at every chunk. */
