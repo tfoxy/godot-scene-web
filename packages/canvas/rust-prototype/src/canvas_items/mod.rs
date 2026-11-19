@@ -681,44 +681,8 @@ pub fn godot_screen_transform(width: u32, height: u32) -> [f32; 16] {
 /// the cover walk reads to know which texels a reduced texture holds.
 pub use gsw_canvas_draw_list::{downscale_factor, downscaled_size};
 
-/// Reduce a straight-alpha RGBA8 image by `k` with a box filter weighted by alpha (the mean of
-/// the premultiplied texels, un-premultiplied), so transparent texels do not darken an edge. A
-/// block with no alpha at all keeps its plain colour mean. Edge blocks average the texels they
-/// have. `src` is `width * height * 4` bytes.
-pub fn downscale_rgba8(src: &[u8], width: u32, height: u32, k: u32) -> Vec<u8> {
-    let (w, h, k) = (width as usize, height as usize, k as usize);
-    let (dw, dh) = (w.div_ceil(k), h.div_ceil(k));
-    let mut out = vec![0u8; dw * dh * 4];
-    for dy in 0..dh {
-        let (y0, y1) = (dy * k, ((dy + 1) * k).min(h));
-        for dx in 0..dw {
-            let (x0, x1) = (dx * k, ((dx + 1) * k).min(w));
-            let (mut a, mut premul, mut plain) = (0u64, [0u64; 3], [0u64; 3]);
-            for y in y0..y1 {
-                let row = &src[(y * w + x0) * 4..(y * w + x1) * 4];
-                for p in row.chunks_exact(4) {
-                    let pa = u64::from(p[3]);
-                    a += pa;
-                    for c in 0..3 {
-                        premul[c] += u64::from(p[c]) * pa;
-                        plain[c] += u64::from(p[c]);
-                    }
-                }
-            }
-            let n = ((x1 - x0) * (y1 - y0)) as u64;
-            let o = &mut out[(dy * dw + dx) * 4..][..4];
-            for c in 0..3 {
-                o[c] = if a > 0 {
-                    ((premul[c] + a / 2) / a) as u8
-                } else {
-                    ((plain[c] + n / 2) / n) as u8
-                };
-            }
-            o[3] = ((a + n / 2) / n) as u8;
-        }
-    }
-    out
-}
+mod downscale;
+pub use downscale::downscale_rgba8;
 
 /// Reduce an RGBA16F image (8 bytes a texel) by `k`, keeping the first texel of each block (a
 /// half-float box filter would need f16 arithmetic for a format STS2 sends rarely).
