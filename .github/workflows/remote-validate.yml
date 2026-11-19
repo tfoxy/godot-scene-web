@@ -493,8 +493,11 @@ jobs:
           ref: ${{ inputs.sha }}
           persist-credentials: false
 
-      # Use the runner's Apple clang and SDK. rs-setup installs Linux toolchains.
-      - name: Native macOS build, ctests and binary checks
+      # Default setup installs pinned Rust, both Apple targets and the local Cargo registry.
+      # Linux toolchain features stay disabled; builds use the runner's Apple clang and SDK.
+      - uses: ./.github/actions/rs-setup
+
+      - name: Native macOS capture and net builds, tests and binary checks
         env:
           MACOS_ARCH: ${{ matrix.arch }}
         run: |

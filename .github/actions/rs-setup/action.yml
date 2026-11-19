@@ -179,6 +179,13 @@ runs:
         rustup default "$RUST_VERSION"
         rustc --version
 
+    - name: Rust Apple targets
+      if: runner.os == 'macOS'
+      shell: bash
+      env:
+        RUST_VERSION: ${{ inputs.rust-version }}
+      run: rustup target add --toolchain "$RUST_VERSION" aarch64-apple-darwin x86_64-apple-darwin
+
     - name: Rust Windows target
       if: inputs.llvm-mingw == 'true'
       shell: bash

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -54,6 +55,16 @@ def ctest_counts(path, required=()):
     return counts
 
 
+def net_test_counts(path):
+    rows = re.findall(r"^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; "
+                      r"\d+ measured; (\d+) filtered out;", path.read_text(encoding="utf-8"), re.MULTILINE)
+    counts = {key: sum(int(row[index]) for row in rows)
+              for index, key in enumerate(("passed", "failed", "ignored", "filtered_out"))}
+    if not counts["passed"] or counts["failed"] or counts["ignored"] or counts["filtered_out"]:
+        raise ValueError(f"rs-net did not pass every crate test: {counts}")
+    return counts
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True)
@@ -66,7 +77,7 @@ def main():
     scripts = repo / "experiments/render-stream/scripts"
     build = repo / "experiments/render-stream/capture/build/macos"
     bundle = build / "bundle"
-    checks, counts = [], None
+    checks, counts, net = [], None, None
 
     def check(name, argv, **kwargs):
         result = run_check(name, argv, repo, out, **kwargs)
@@ -90,11 +101,21 @@ def main():
             shutil.copyfile(build / arch / "CTestTestfile.cmake", out / f"ctest-{arch}.cmake")
         shutil.copyfile(bundle / "ctest.xml", out / "ctest.xml")
         shutil.copyfile(bundle / "build-info.txt", out / "build-info.txt")
+        check("m-net-tests", [sys.executable, "-I", str(scripts / "m-net-test.py")])
+        check("m-net-build", ["bash", str(scripts / "build-rs-net.sh"), "--target", "macos"], timeout_s=1800)
+        net = json.loads((bundle / "rs-net-build.json").read_text())
+        host_target = "aarch64-apple-darwin" if platform.machine() == "arm64" else "x86_64-apple-darwin"
+        if net["tests"] != {"target": host_target, "ran": True}:
+            raise ValueError(f"rs-net must run the host slice's crate tests: {net['tests']}")
+        net["test_counts"] = net_test_counts(out / "logs/m-net-build.log")
+        for artifact in ("rs-net-build.json", "rs-net-check.json"):
+            shutil.copyfile(bundle / artifact, out / artifact)
+        binaries.append(bundle / "librender_stream_net.dylib")
         imports = [sys.executable, "-I", str(scripts / "m-imports.py")]
         sign = [sys.executable, "-I", str(scripts / "m-sign.py")]
         check("m-imports", imports + ["--require-universal", "--json", str(out / "imports.json"),
                                      *map(str, binaries)])
-        check("m-sign", sign + ["--json", str(out / "signatures.json"), *map(str, binaries)])
+        check("m-sign", sign + ["--json", str(out / "signatures.json"), *map(str, binaries), str(bundle / "rs-net-probe")])
 
         sabotage = out / "sabotage"
         sabotage.mkdir(exist_ok=True)
@@ -118,7 +139,7 @@ def main():
         check("m-sign-sabotage-control", sign + [str(unsigned)])
         check("m-sign-sabotage-remove", ["codesign", "--remove-signature", str(unsigned)])
         check("m-sign-sabotage", sign + [str(unsigned)], expected_rc=1)
-    except (OSError, ValueError, ET.ParseError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, ET.ParseError) as exc:
         log = out / "logs/m-bundle.log"
         log.write_text(f"m-run: {exc}\n", encoding="utf-8")
         checks.append({"name": "m-bundle", "rc": 1, "wall_s": 0})
@@ -128,7 +149,7 @@ def main():
     rc = int(bool(failing))
     wall = round(time.monotonic() - start, 3)
     write_json(out / "m-run.json", {"schema": "render-stream-m-run/1", "platform": platform.platform(),
-               "arch": platform.machine(), "ctest": counts, "checks": checks, "wall_s": wall, "rc": rc})
+               "arch": platform.machine(), "ctest": counts, "net": net, "checks": checks, "wall_s": wall, "rc": rc})
     row = {"id": "macos", "phase": "setup", "rc": str(rc), "wall_s": wall,
            "lock_wait_s": 0, "lock_hold_s": 0, "lock": {}, "lock_summaries": 0,
            "skipped_by_tier": 0, "skipped_remote": [], "skipped_remote_groups": [],
@@ -147,6 +168,9 @@ def main():
                 stream.write(f"| {result['name']} | {result['rc']} | {result['wall_s']:.3f} |\n")
             if counts:
                 stream.write(f"\nctest: {counts['tests']} passed, 0 failed/skipped.\n")
+            if net and "test_counts" in net:
+                stream.write(f"\nrs-net: {net['test_counts']['passed']} passed, 0 failed/skipped "
+                             f"({net['tests']['target']}).\n")
     print(f"m-run: {sum(r['rc'] == 0 for r in checks)}/{len(checks)} checks pass", flush=True)
     return rc
 

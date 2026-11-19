@@ -573,7 +573,7 @@
       "exclusive": true
     },
     {
-      "why": "The runtime net module and its build script reach the Linux loader, crate tests and pure self-tests, plus the cross-built Windows bundle and hosted tests",
+      "why": "The runtime net module and its build script reach the Linux loader, crate tests and pure self-tests, plus the cross-built Windows bundle and native macOS net tests",
       "paths": [
         "experiments/render-stream/rs-net/**",
         "experiments/render-stream/scripts/build-rs-net.sh"
@@ -582,7 +582,8 @@
         "capture-build",
         "pure",
         "cargo:experiments/render-stream/rs-net",
-        "windows"
+        "windows",
+        "macos"
       ],
       "exclusive": true
     },

@@ -77,6 +77,10 @@ python3 -I $S/m-sign.py $S/../capture/build/macos/bundle/bin/* $S/../capture/bui
 # Optional net module (WebTransport, TLS), after build-capture.sh:
 # capture/build/librender_stream_net.so.
 bash $S/build-rs-net.sh [--no-test]
+# macOS: install both Rust Apple targets first, then build the signed universal module
+# into capture/build/macos/bundle/, with native host-slice crate tests and binary checks.
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+bash $S/build-rs-net.sh --target macos
 
 # Shared Rust core: the rs-core-check CLI and the rs-gsw-wasm module for GSW,
 # into artifacts/render-stream/rs-core/<sha>/ (latest -> newest).

@@ -435,10 +435,11 @@ def self_test(m):
                  "rs-net/Cargo.lock", "rs-net/.cargo/config.toml", "rs-net/vendor/wtransport/src/lib.rs",
                  "scripts/build-rs-net.sh"]:
         net = P("experiments/render-stream/" + path)
-        check(f"{path} reaches the Linux and Windows net checks only",
+        check(f"{path} reaches the Linux, Windows and macOS net checks only",
               not net["unmatched"] and set(net["targets"]) == {
-                  "pure", "capture-build", "cargo:experiments/render-stream/rs-net", "windows"}
-              and {"id": "windows", "kind": "windows", "phase": "setup"} in net["runs"])
+                  "pure", "capture-build", "cargo:experiments/render-stream/rs-net", "windows", "macos"}
+              and {"id": "windows", "kind": "windows", "phase": "setup"} in net["runs"]
+              and {"id": "macos", "kind": "macos", "phase": "setup"} in net["runs"])
     platform = P("experiments/render-stream/capture/src/rs_platform.h")
     check("shared capture source reaches windows in setup", "windows" in platform["targets"]
           and {"id": "windows", "kind": "windows", "phase": "setup"} in platform["runs"])
