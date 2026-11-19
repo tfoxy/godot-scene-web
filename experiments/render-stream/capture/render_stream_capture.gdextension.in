@@ -8,3 +8,4 @@ reloadable = false
 
 [libraries]
 @GRC_LIBRARY_OS@.x86_64 = "@GRC_LIBRARY_PATH@"
+@GRC_LIBRARY_EXTRA@

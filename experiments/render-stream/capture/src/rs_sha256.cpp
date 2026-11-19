@@ -7,6 +7,11 @@
 #include <immintrin.h>
 #endif
 
+#if defined(__APPLE__) && defined(__ARM_FEATURE_SHA2)
+#include <arm_neon.h>
+#endif
+
+#line 10
 namespace grc {
 
 namespace {
@@ -150,9 +155,42 @@ bool sha_ni_supported() {
 
 #endif  // __x86_64__
 
-// The one place a new path (ARMv8 SHA2 crypto extensions: vsha256hq_u32/vsha256su0q_u32, detected
-// with getauxval(AT_HWCAP) & HWCAP_SHA2) would be detected and preferred.
+#if defined(__APPLE__) && defined(__ARM_FEATURE_SHA2)
+// ACLE SHA256 intrinsics operate on ABCD/EFGH directly. Each four-round group consumes four
+// big-endian message words, then advances that vector's rolling message schedule.
+void blocks_arm_sha2(std::uint32_t state[8], const std::uint8_t *data, std::size_t blocks) {
+  uint32x4_t abcd = vld1q_u32(state);
+  uint32x4_t efgh = vld1q_u32(state + 4);
+  for (; blocks > 0; --blocks, data += 64) {
+    const uint32x4_t saved_abcd = abcd, saved_efgh = efgh;
+    uint32x4_t w[4];
+    for (int i = 0; i < 4; ++i) {
+      w[i] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data + 16 * i)));
+    }
+    for (int i = 0; i < 16; ++i) {
+      const uint32x4_t wk = vaddq_u32(w[i % 4], vld1q_u32(kK + 4 * i));
+      const uint32x4_t previous_abcd = abcd;
+      abcd = vsha256hq_u32(abcd, efgh, wk);
+      efgh = vsha256h2q_u32(efgh, previous_abcd, wk);
+      if (i < 12) {
+        w[i % 4] = vsha256su1q_u32(vsha256su0q_u32(w[i % 4], w[(i + 1) % 4]),
+                                   w[(i + 2) % 4], w[(i + 3) % 4]);
+      }
+    }
+    abcd = vaddq_u32(abcd, saved_abcd);
+    efgh = vaddq_u32(efgh, saved_efgh);
+  }
+  vst1q_u32(state, abcd);
+  vst1q_u32(state + 4, efgh);
+}
+#endif
+
+#line 155
 Sha256Path detect_default_path() {
+#if defined(__APPLE__) && defined(__ARM_FEATURE_SHA2)
+  return Sha256Path::arm_sha2;
+#endif
+#line 156
 #if defined(__x86_64__)
   if (sha_ni_supported()) {
     return Sha256Path::sha_ni;
@@ -162,6 +200,12 @@ Sha256Path detect_default_path() {
 }
 
 Sha256::BlocksFn blocks_for(Sha256Path path) {
+#if defined(__APPLE__) && defined(__ARM_FEATURE_SHA2)
+  if (path == Sha256Path::arm_sha2) {
+    return blocks_arm_sha2;
+  }
+#endif
+#line 165
 #if defined(__x86_64__)
   if (path == Sha256Path::sha_ni && sha256_path_available(Sha256Path::sha_ni)) {
     return blocks_sha_ni;
@@ -180,6 +224,15 @@ Sha256::BlocksFn default_blocks() {
 
 bool sha256_path_available(Sha256Path path) {
   switch (path) {
+#if defined(__APPLE__)
+    case Sha256Path::arm_sha2:
+#if defined(__ARM_FEATURE_SHA2)
+      return true;
+#else
+      return false;
+#endif
+#endif
+#line 183
     case Sha256Path::portable:
       return true;
     case Sha256Path::sha_ni: {
@@ -201,6 +254,11 @@ Sha256Path sha256_default_path() {
 
 const char *sha256_path_name(Sha256Path path) {
   switch (path) {
+#if defined(__APPLE__)
+    case Sha256Path::arm_sha2:
+      return "arm-sha2";
+#endif
+#line 204
     case Sha256Path::portable:
       return "portable";
     case Sha256Path::sha_ni:

@@ -2,22 +2,25 @@ cmake_minimum_required(VERSION 3.22)
 project(render_stream_capture LANGUAGES C CXX)
 
 # A RenderingServer capture
-# seam for an unmodified official Godot x86-64 template, using the vendored
+# seam for an unmodified official Godot template, using the vendored
 # GDExtension C interface and the platform C/C++ runtime.
 
 if(MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
   message(FATAL_ERROR "render_stream_capture: the MSVC C++ ABI (cl.exe, clang-cl) is not supported; build for Windows with cmake/llvm-mingw-x86_64.cmake")
 endif()
 set(GRC_WINDOWS OFF)
+set(GRC_MACOS OFF)
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   set(GRC_WINDOWS ON)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  set(GRC_MACOS ON)
 elseif(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  message(FATAL_ERROR "render_stream_capture builds for Linux x86-64, or Windows x86-64 with llvm-mingw (cmake/llvm-mingw-x86_64.cmake); got ${CMAKE_SYSTEM_NAME} ${CMAKE_CXX_COMPILER_ID}")
+  message(FATAL_ERROR "render_stream_capture builds for macOS arm64/x86-64, Linux x86-64, or Windows x86-64 with llvm-mingw (cmake/llvm-mingw-x86_64.cmake); got ${CMAKE_SYSTEM_NAME} ${CMAKE_CXX_COMPILER_ID}")
 endif()
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "render_stream_capture is 64-bit only")
 endif()
-if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+if(NOT GRC_MACOS AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
   message(FATAL_ERROR "render_stream_capture is x86-64 only (got ${CMAKE_SYSTEM_PROCESSOR})")
 endif()
 
@@ -35,6 +38,10 @@ add_compile_options("-ffile-prefix-map=${GRC_REPO_ROOT}/=")
 
 add_library(grc_warnings INTERFACE)
 target_compile_options(grc_warnings INTERFACE -Wall -Wextra -Werror)
+
+if(GRC_MACOS)
+  include(cmake/macos.cmake)
+endif()
 
 # G8kz: HTTP content coding (render-stream-2.md "HTTP (live)"). zstd 1.5.7 and zlib 1.3.1, the
 # copies Godot 4.5.1 vendors (vendor/PROVENANCE.md), built as one hidden-visibility static library
@@ -62,7 +69,27 @@ include(cmake/tests.cmake)
 if(GRC_LINUX_LIBCXX)
   include(cmake/linux-libcxx.cmake)
 endif()
+if(GRC_MACOS)
+  enable_testing()
+  grc_macos_engine_free_tests()
+  return()
+endif()
 include(cmake/platform-tests.cmake)
+
+# Exercise the Apple conversion fallback on Linux too, without changing the Linux parser path.
+if(NOT GRC_WINDOWS)
+add_executable(rs_parse_double_test test/rs_parse_double_test.cpp)
+target_include_directories(rs_parse_double_test PRIVATE src)
+target_link_libraries(rs_parse_double_test PRIVATE grc_warnings)
+grc_add_test(NAME rs_parse_double COMMAND rs_parse_double_test)
+
+# Run the Darwin fail-closed backend on Linux as well; this uses no native Apple APIs.
+add_executable(calib_fingerprint_darwin_test test/calib_fingerprint_darwin_test.cpp src/calib.cpp
+  src/calib_fingerprint_darwin.cpp src/iface.cpp src/rs_sha256.cpp)
+target_include_directories(calib_fingerprint_darwin_test PRIVATE src vendor)
+target_link_libraries(calib_fingerprint_darwin_test PRIVATE grc_warnings grc_platform)
+grc_add_test(NAME calib_fingerprint_darwin COMMAND calib_fingerprint_darwin_test)
+endif()
 
 add_executable(rs_path_logic_test test/rs_path_logic_test.cpp src/report.cpp)
 target_link_libraries(rs_path_logic_test PRIVATE grc_warnings grc_platform)
@@ -80,6 +107,8 @@ include(cmake/capture-deps.cmake)
 # Linux-only: Python PE fixture generation runs on the build host.
 if(NOT GRC_WINDOWS)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+grc_add_test(NAME m_checks COMMAND ${Python3_EXECUTABLE} -I
+  ${CMAKE_CURRENT_SOURCE_DIR}/test/m_checks_test.py)
 grc_add_test(NAME abi_table COMMAND ${Python3_EXECUTABLE} -I
   ${CMAKE_CURRENT_SOURCE_DIR}/test/abi_table_test.py)
 add_executable(pe_image_test test/pe_image_test.cpp src/pe_image.cpp src/rs_sha256.cpp)

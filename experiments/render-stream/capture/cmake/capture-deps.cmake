@@ -9,6 +9,12 @@ set(GRC_BASISU_ENC_SOURCES
   basisu_etc.cpp basisu_frontend.cpp basisu_gpu_texture.cpp basisu_kernels_sse.cpp
   basisu_opencl.cpp basisu_pvrtc1_4.cpp basisu_resample_filters.cpp basisu_resampler.cpp
   basisu_ssim.cpp basisu_uastc_enc.cpp basisu_uastc_hdr_4x4_enc.cpp jpgd.cpp pvpngreader.cpp)
+set(GRC_BASISU_SSE 1)
+if(GRC_MACOS AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+  # Keep the translation unit: its non-SSE branch defines the detect_sse41() no-op that
+  # basisu_encoder_init() calls unconditionally. Only the x86 slice gets -msse4.1 below.
+  set(GRC_BASISU_SSE 0)
+endif()
 list(TRANSFORM GRC_BASISU_ENC_SOURCES PREPEND ${GRC_BASISU_DIR}/encoder/)
 add_library(grc_basisu STATIC ${GRC_BASISU_ENC_SOURCES}
   ${GRC_BASISU_DIR}/transcoder/basisu_transcoder.cpp)
@@ -16,11 +22,13 @@ target_include_directories(grc_basisu PUBLIC src)
 target_include_directories(grc_basisu SYSTEM PUBLIC ${GRC_BASISU_DIR} vendor/zstd)
 # PUBLIC: the headers' class layouts depend on these, so the wrapper must see the same ones.
 target_compile_definitions(grc_basisu PUBLIC
-  BASISU_SUPPORT_OPENCL=0 BASISU_NO_EXR=1 BASISU_SUPPORT_SSE=1 BASISD_SUPPORT_KTX2_ZSTD=1
+  BASISU_SUPPORT_OPENCL=0 BASISU_NO_EXR=1 BASISU_SUPPORT_SSE=${GRC_BASISU_SSE} BASISD_SUPPORT_KTX2_ZSTD=1
   BASISD_SUPPORT_ATC=0 BASISD_SUPPORT_FXT1=0 BASISD_SUPPORT_PVRTC1=0 BASISD_SUPPORT_PVRTC2=0)
 target_compile_options(grc_basisu PRIVATE -w -O2)
-set_source_files_properties(${GRC_BASISU_DIR}/encoder/basisu_kernels_sse.cpp
-  PROPERTIES COMPILE_OPTIONS "-msse4.1")
+if(GRC_BASISU_SSE)
+  set_source_files_properties(${GRC_BASISU_DIR}/encoder/basisu_kernels_sse.cpp
+    PROPERTIES COMPILE_OPTIONS "-msse4.1")
+endif()
 target_link_libraries(grc_basisu PUBLIC grc_codecs Threads::Threads)
 set_target_properties(grc_basisu PROPERTIES
   POSITION_INDEPENDENT_CODE ON CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)

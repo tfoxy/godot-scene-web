@@ -1,30 +1,88 @@
 #!/usr/bin/env bash
 # Configure, build and unit-test the gate -1 capture library.
 #
-# Usage: experiments/render-stream/scripts/build-capture.sh [--target linux|windows|linux-libcxx] [cmake build type]
+# Usage: experiments/render-stream/scripts/build-capture.sh [--target linux|windows|linux-libcxx|macos] [cmake build type]
 set -euo pipefail
 
 # Measurement isolation: the build holds the machine-wide quiet lock SHARED (lib/quiet.sh), so it
 # pauses while a timing leg runs (and inside a runner's hold it nests as a no-op).
-if [ -z "${RS_QUIET_BUILD_WRAPPED:-}" ]; then
+# quiet.sh uses Linux procfs; native macOS CI builds need no workstation timing lock.
+if [ "${2:-}" != macos ] && [ -z "${RS_QUIET_BUILD_WRAPPED:-}" ]; then
 	RS_QUIET_BUILD_WRAPPED=1 exec bash "$(dirname "${BASH_SOURCE[0]}")/lib/quiet.sh" shared \
 		--label "$(basename "${BASH_SOURCE[0]}")" -- bash "${BASH_SOURCE[0]}" "$@"
 fi
 
 TARGET=linux
 if [ "${1:-}" = --target ]; then
-	[ "$#" -ge 2 ] || { echo 'build-capture: --target requires linux, windows or linux-libcxx' >&2; exit 2; }
+	[ "$#" -ge 2 ] || { echo 'build-capture: --target requires linux, windows, linux-libcxx or macos' >&2; exit 2; }
 	TARGET="$2"
 	shift 2
 fi
-if [ "$#" -gt 1 ] || [[ "${1:-}" = --* ]] || [[ "$TARGET" != linux && "$TARGET" != windows && "$TARGET" != linux-libcxx ]]; then
-	echo 'usage: build-capture.sh [--target linux|windows|linux-libcxx] [cmake build type]' >&2
+if [ "$#" -gt 1 ] || [[ "${1:-}" = --* ]] || [[ "$TARGET" != linux && "$TARGET" != windows && "$TARGET" != linux-libcxx && "$TARGET" != macos ]]; then
+	echo 'usage: build-capture.sh [--target linux|windows|linux-libcxx|macos] [cmake build type]' >&2
 	exit 2
 fi
 BUILD_TYPE="${1:-RelWithDebInfo}"
 CMAKE="${CMAKE:-/snap/bin/cmake}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CAPTURE="$(cd "${HERE}/../capture" && pwd)"
+
+if [ "$TARGET" = macos ]; then
+	if [ "$(uname -s)" != Darwin ]; then
+		echo 'build-capture: --target macos requires a macOS host with Apple clang and the Xcode SDK; cross-building is not supported' >&2
+		exit 2
+	fi
+	CMAKE="${CMAKE:-cmake}"
+	# The Linux default above is intentionally unchanged.
+	[ "$CMAKE" != /snap/bin/cmake ] || CMAKE=cmake
+	B="$CAPTURE/build/macos"
+	JOBS="$(sysctl -n hw.ncpu)"
+	for arch in arm64 x86_64; do
+		minimum=10.15
+		[ "$arch" != arm64 ] || minimum=11.0
+		"${CMAKE}" -S "$CAPTURE" -B "$B/$arch" \
+			-DCMAKE_C_COMPILER="$(xcrun --find clang)" \
+			-DCMAKE_CXX_COMPILER="$(xcrun --find clang++)" \
+			-DCMAKE_OSX_ARCHITECTURES="$arch" -DCMAKE_OSX_DEPLOYMENT_TARGET="$minimum" \
+			-DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+		"${CMAKE}" --build "$B/$arch" -j"$JOBS" -- -k
+	done
+	# Run the native slice only: an Intel runner cannot execute arm64, and a Rosetta run on an
+	# arm64 runner is not evidence for the native Intel calling convention.
+	native_arch="$(uname -m)"
+	mkdir -p "$B/bundle/bin"
+	for thin in "$B/arm64/bin/"*; do
+		name="$(basename "$thin")"
+		lipo -create "$thin" "$B/x86_64/bin/$name" -output "$B/bundle/bin/$name"
+		lipo "$B/bundle/bin/$name" -verify_arch arm64 x86_64
+		codesign -s - --force "$B/bundle/bin/$name"
+		codesign --verify --strict "$B/bundle/bin/$name"
+	done
+	# Use the native slice's expectations (including the ABI sabotage), but exercise the signed
+	# universal executables that ship in the bundle. Golden inputs remain in this checkout.
+	python3 - "$B/$native_arch/CTestTestfile.cmake" "$B/bundle/CTestTestfile.cmake" \
+		"$B/$native_arch/bin/" "$B/bundle/bin/" <<'PYCTEST'
+from pathlib import Path
+import sys
+source, destination, thin, universal = sys.argv[1:]
+Path(destination).write_text(Path(source).read_text().replace(thin, universal))
+PYCTEST
+	ctest --test-dir "$B/bundle" --output-on-failure --output-junit "$B/bundle/ctest.xml"
+	lipo -create "$B/arm64/librender_stream_capture.dylib" \
+		"$B/x86_64/librender_stream_capture.dylib" -output "$B/bundle/librender_stream_capture.dylib"
+	lipo "$B/bundle/librender_stream_capture.dylib" -verify_arch arm64 x86_64
+	codesign -s - --force "$B/bundle/librender_stream_capture.dylib"
+	codesign --verify --strict "$B/bundle/librender_stream_capture.dylib"
+	cp "$B/$native_arch/render_stream_capture.gdextension" "$B/bundle/"
+	{
+		xcodebuild -version
+		xcrun --show-sdk-version
+		xcrun clang++ --version
+		printf 'runner_image=%s\nrunner_image_version=%s\n' "${ImageOS:-local}" "${ImageVersion:-local}"
+	} >"$B/bundle/build-info.txt"
+	echo "macos bundle: $B/bundle"
+	exit 0
+fi
 
 if [ "$TARGET" = linux-libcxx ]; then
 	if ! command -v clang++-20 >/dev/null 2>&1; then

@@ -132,6 +132,7 @@ jobs:
   validate:
     name: ${{ matrix.label }}
     needs: plan
+    if: ${{ needs.plan.outputs.matrix != '[]' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
@@ -472,6 +473,51 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
+  macos:
+    name: macos-${{ matrix.arch }}
+    needs: plan
+    if: ${{ !cancelled() && contains(fromJSON(inputs.runs), 'macos') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      # Use the runner's Apple clang and SDK. rs-setup installs Linux toolchains.
+      - name: Native macOS build, ctests and binary checks
+        env:
+          MACOS_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(uname -m)" = "$MACOS_ARCH"
+          python3 -I experiments/render-stream/scripts/lib/m-run.py --repo "$GITHUB_WORKSPACE" \
+            --out "$RUNNER_TEMP/art" --label "macos-$MACOS_ARCH"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: mbundle-${{ matrix.arch }}
+          path: experiments/render-stream/capture/build/macos/bundle
+          retention-days: 1
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: job-macos-${{ matrix.arch }}
+          path: ${{ runner.temp }}/art
+          retention-days: 1
+          if-no-files-found: ignore
+
   windows:
     name: windows-win
     needs: [plan, validate]
@@ -723,6 +769,7 @@ jobs:
         windows-equiv,
         windows-live,
         windows-swap,
+        macos,
       ]
     runs-on: ubuntu-24.04
     steps:

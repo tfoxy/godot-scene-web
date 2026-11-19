@@ -50,6 +50,14 @@ struct Record {
   Color color_value{};
   bool flag = false;
   void *ret = nullptr;
+  RID texture{};
+  const Rect2 *source = nullptr;
+  const Vector2 *topleft = nullptr, *bottomright = nullptr;
+  int32_t x_axis = 0;
+  int64_t y_axis = 0;
+  Color hfa{};
+  const void *arrays[6]{};
+  int count = 0;
 };
 Record member_record, hook_record;
 
@@ -117,6 +125,38 @@ public:
     member_record.item = r;
     return xform_value(r);
   }
+  virtual void nine_patch(RID item, const Rect2 &rect, const Rect2 &source, RID texture,
+                          const Vector2 &topleft, const Vector2 &bottomright, int32_t x_axis,
+                          int32_t y_axis, bool center, const Color &color) {
+    member_record.self = this;
+    member_record.item = item;
+    member_record.rect = &rect;
+    member_record.source = &source;
+    member_record.texture = texture;
+    member_record.topleft = &topleft;
+    member_record.bottomright = &bottomright;
+    member_record.x_axis = x_axis;
+    member_record.y_axis = y_axis;
+    member_record.flag = center;
+    member_record.color = &color;
+  }
+  virtual Color hfa(Color color, float scale) {
+    member_record.self = this;
+    member_record.hfa = color;
+    member_record.scale = scale;
+    return {color.r * scale, color.g * scale, color.b * scale, color.a * scale};
+  }
+  virtual void triangle_array(RID item, const void *indices, const void *points,
+                              const void *colors, const void *uvs, const void *bones,
+                              const void *weights, RID texture, int32_t count) {
+    member_record.self = this;
+    member_record.item = item;
+    const void *arrays[] = {indices, points, colors, uvs, bones, weights};
+    std::memcpy(member_record.arrays, arrays, sizeof(arrays));
+    member_record.texture = texture;
+    member_record.count = count;
+  }
+
 };
 
 namespace {
@@ -134,6 +174,14 @@ VecFn original_vec;
 MixedFn original_mixed;
 RectFn original_rect;
 XformFn original_xform;
+using NineFn = void (*)(void *, RID, const Rect2 *, const Rect2 *, RID,
+                        const Vector2 *, const Vector2 *, int32_t, int32_t, bool, const Color *);
+using HfaFn = Color (*)(void *, Color, float);
+using TriangleFn = void (*)(void *, RID, const void *, const void *, const void *, const void *,
+                           const void *, const void *, RID, int32_t);
+NineFn original_nine;
+HfaFn original_hfa;
+TriangleFn original_triangle;
 
 RID hook_rid(void *self, uint64_t seed) {
   hook_record.self = self;
@@ -199,6 +247,48 @@ void hook_rect(void *self, RID item, const Rect2 *r, const VariantLike *v,
   original_rect(self, item, r, v, c, flag);
 }
 
+#if defined(GRC_PROBE_STACK_WIDTH)
+using StackAxis = int64_t;
+#else
+using StackAxis = int32_t;
+#endif
+// y_axis is the first stack argument on Apple arm64. Widening it moves center from sp+4 to
+// sp+8 and color from sp+8 to sp+16. Never dereference the sabotaged color pointer.
+void hook_nine(void *self, RID item, const Rect2 *rect, const Rect2 *source, RID texture,
+               const Vector2 *topleft, const Vector2 *bottomright, int32_t x_axis,
+               StackAxis y_axis, bool center, const Color *color) {
+  hook_record.self = self;
+  hook_record.item = item;
+  hook_record.rect = rect;
+  hook_record.source = source;
+  hook_record.texture = texture;
+  hook_record.topleft = topleft;
+  hook_record.bottomright = bottomright;
+  hook_record.x_axis = x_axis;
+  hook_record.y_axis = static_cast<int32_t>(y_axis);
+  hook_record.flag = center;
+  hook_record.color = color;
+  original_nine(self, item, rect, source, texture, topleft, bottomright, x_axis,
+                static_cast<int32_t>(y_axis), center, color);
+}
+Color hook_hfa(void *self, Color color, float scale) {
+  hook_record.self = self;
+  hook_record.hfa = color;
+  hook_record.scale = scale;
+  return original_hfa(self, color, scale);
+}
+void hook_triangle(void *self, RID item, const void *indices, const void *points,
+                   const void *colors, const void *uvs, const void *bones,
+                   const void *weights, RID texture, int32_t count) {
+  hook_record.self = self;
+  hook_record.item = item;
+  const void *arrays[] = {indices, points, colors, uvs, bones, weights};
+  std::memcpy(hook_record.arrays, arrays, sizeof(arrays));
+  hook_record.texture = texture;
+  hook_record.count = count;
+  original_triangle(self, item, indices, points, colors, uvs, bones, weights, texture, count);
+}
+
 GrcAbiProbe *volatile g_object = nullptr;
 __attribute__((noinline)) GrcAbiProbe *make_object() { return new GrcAbiProbe; }
 
@@ -208,7 +298,12 @@ template <typename T> std::ptrdiff_t slot(T member) {
   } p{};
   static_assert(sizeof(member) == sizeof(p));
   std::memcpy(&p, &member, sizeof(p));
+#if defined(__APPLE__) && defined(__aarch64__)
+  // Apple's ARM member-pointer representation stores the virtual bit in the adjustment.
+  return (p.adjustment & 1) && (p.adjustment >> 1) == 0 ? p.ptr / 8 : -1;
+#else
   return (p.ptr & 1) && p.adjustment == 0 ? (p.ptr - 1) / 8 : -1;
+#endif
 }
 int total = 0;
 std::set<std::string> failed;
@@ -243,11 +338,17 @@ int main(int argc, char **argv) {
   }
 #if defined(_WIN32)
   const char *abi = "win64";
+#elif defined(__APPLE__) && defined(__aarch64__)
+  const char *abi = "apple-aapcs64";
+#elif defined(__APPLE__)
+  const char *abi = "apple-x86_64";
 #else
   const char *abi = "sysv";
 #endif
 #if defined(GRC_PROBE_MSVC_ORDER)
   const char *variant = "msvc-order";
+#elif defined(GRC_PROBE_STACK_WIDTH)
+  const char *variant = "stack-width";
 #else
   const char *variant = "itanium";
 #endif
@@ -264,14 +365,19 @@ int main(int argc, char **argv) {
       slot(&GrcAbiProbe::make_rid) == 2 && slot(&GrcAbiProbe::get_color) == 3 &&
           slot(&GrcAbiProbe::get_vec) == 4 && slot(&GrcAbiProbe::mixed9) == 5 &&
           slot(&GrcAbiProbe::rect_variant) == 6 &&
-          slot(&GrcAbiProbe::get_xform) == 7,
-      "slot-index", "2,3,4,5,6,7");
+          slot(&GrcAbiProbe::get_xform) == 7 &&
+          slot(&GrcAbiProbe::nine_patch) == 8 && slot(&GrcAbiProbe::hfa) == 9 &&
+          slot(&GrcAbiProbe::triangle_array) == 10,
+      "slot-index", "2,3,4,5,6,7,8,9,10");
   original_rid = reinterpret_cast<RidFn>(live[2]);
   original_color = reinterpret_cast<ColorFn>(live[3]);
   original_vec = reinterpret_cast<VecFn>(live[4]);
   original_mixed = reinterpret_cast<MixedFn>(live[5]);
   original_rect = reinterpret_cast<RectFn>(live[6]);
   original_xform = reinterpret_cast<XformFn>(live[7]);
+  original_nine = reinterpret_cast<NineFn>(live[8]);
+  original_hfa = reinterpret_cast<HfaFn>(live[9]);
+  original_triangle = reinterpret_cast<TriangleFn>(live[10]);
   constexpr uint64_t seed = 0x5EED;
   constexpr int32_t idx = 0x11, salt = 0x22;
   constexpr float scale = -3.25f;
@@ -316,13 +422,13 @@ int main(int argc, char **argv) {
             member_record.item.id == item.id,
         "direct-xform", "free function and member agree");
 
-  // Two prefix words, two destructor slots and six method slots.
-  auto **storage = static_cast<void **>(std::calloc(2 + 8, sizeof(void *)));
+  // Two prefix words, two destructor slots and nine method slots.
+  auto **storage = static_cast<void **>(std::calloc(2 + 11, sizeof(void *)));
   if (!storage) {
     delete object;
     return 1;
   }
-  std::memcpy(storage, live - 2, (2 + 8) * sizeof(void *));
+  std::memcpy(storage, live - 2, (2 + 11) * sizeof(void *));
   void **shadow = storage + 2;
   shadow[2] = reinterpret_cast<void *>(&hook_rid);
   shadow[3] = reinterpret_cast<void *>(&hook_color);
@@ -330,6 +436,9 @@ int main(int argc, char **argv) {
   shadow[5] = reinterpret_cast<void *>(&hook_mixed);
   shadow[6] = reinterpret_cast<void *>(&hook_rect);
   shadow[7] = reinterpret_cast<void *>(&hook_xform);
+  shadow[8] = reinterpret_cast<void *>(&hook_nine);
+  shadow[9] = reinterpret_cast<void *>(&hook_hfa);
+  shadow[10] = reinterpret_cast<void *>(&hook_triangle);
   __atomic_store_n(location, shadow, __ATOMIC_RELEASE);
   member_record = {};
   hook_record = {};
@@ -394,6 +503,40 @@ int main(int argc, char **argv) {
             member_record.self == object && member_record.item.id == item.id &&
             bits(t, expected_xform),
         "hook-xform", xform_detail);
+  const Vector2 margin1{3, 4}, margin2{5, 6};
+  auto nine_matches = [&](const Record &r) {
+    return r.self == object && r.item.id == item.id && r.rect == &rect &&
+           r.source == &rect && r.texture.id == seed && r.topleft == &margin1 &&
+           r.bottomright == &margin2 && r.x_axis == 2 && r.y_axis == 1 &&
+           r.flag && r.color == &color;
+  };
+  member_record = {};
+  original_nine(object, item, &rect, &rect, RID{seed}, &margin1, &margin2, 2, 1, true, &color);
+  check(nine_matches(member_record), "direct-nine-patch", "11 args, int32/bool/pointer stack tail");
+  member_record = {};
+  hook_record = {};
+  g_object->nine_patch(item, rect, rect, RID{seed}, margin1, margin2, 2, 1, true, color);
+  check(nine_matches(hook_record) && nine_matches(member_record), "hook-nine-patch",
+        "11 args, natural-size stack packing and forwarding");
+  member_record = {};
+  hook_record = {};
+  c = g_object->hfa(color, scale);
+  const Color scaled{color.r * scale, color.g * scale, color.b * scale, color.a * scale};
+  check(hook_record.self == object && member_record.self == object &&
+        bits(hook_record.hfa, color) && bits(member_record.hfa, color) &&
+        bits(hook_record.scale, scale) && bits(member_record.scale, scale) && bits(c, scaled),
+        "hook-hfa", "Color by value in and out, forwarding");
+  const void *arrays[] = {&rect, &color, &value, &margin1, &margin2, &args};
+  member_record = {};
+  hook_record = {};
+  g_object->triangle_array(item, arrays[0], arrays[1], arrays[2], arrays[3], arrays[4], arrays[5],
+                           RID{seed}, -12345);
+  auto triangle_matches = [&](const Record &r) {
+    return r.self == object && r.item.id == item.id && r.texture.id == seed &&
+           r.count == -12345 && !std::memcmp(r.arrays, arrays, sizeof(arrays));
+  };
+  check(triangle_matches(hook_record) && triangle_matches(member_record), "hook-triangle-array",
+        "pointer/RID/int32 stack tail and forwarding");
   __atomic_store_n(location, live, __ATOMIC_RELEASE);
   delete object;
   g_object = nullptr;

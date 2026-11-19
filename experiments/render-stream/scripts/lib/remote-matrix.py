@@ -151,6 +151,9 @@ def expand(runs, run_groups=None, determinism=(), pure_shards=6, max_parallel=16
     det = list(determinism)
     jobs = []  # one per matrix entry, before leg shards: {"base": label, "entry": {...}, "est": m}
     for i in runs:
+        # macOS is a separate native matrix in the workflow, never an Ubuntu job or a repeat.
+        if i == "macos":
+            continue
         gs = rg.get(i) or [""]
         if i == "windows":
             jobs.append({"base": i, "est": expected_minutes(table, i),
@@ -237,6 +240,8 @@ def expand(runs, run_groups=None, determinism=(), pure_shards=6, max_parallel=16
         shards[e["id"]] = shards.get(e["id"], 0) + 1
     if "windows" in runs:
         shards["windows"] = shards.get("windows", 1) + 4
+    if "macos" in runs:
+        shards["macos"] = 2  # macos-15/arm64 and macos-15-intel/x86_64 must both report
     shards = {i: n for i, n in shards.items() if n > 1}
     est = {"makespan_min": round(sim(final, max_parallel), 1), "job_minutes": round(sum(j["est"] for j in final), 1),
            "longest_min": round(max([j["est"] for j in final] + [0]), 1), "max_parallel": max_parallel,
@@ -289,6 +294,9 @@ def self_test():
             fails.append(name)
 
     for det in ([], [3, 1]):
+        mac = expand(["macos"], determinism=det)
+        check(f"macos: no Ubuntu job and two expected native shards, determinism={det}",
+              mac["include"] == [] and mac["shards"] == {"macos": 2})
         win = expand(["windows"], determinism=det)
         check(f"windows: one build job and five expected shards, determinism={det}",
               len(win["include"]) == 1 and win["shards"] == {"windows": 5}
@@ -464,9 +472,12 @@ def main(argv):
             f.write("max_parallel=" + str(r["max_parallel"]) + "\n")
     if "--explain" in flags:
         e = r["estimate"]
-        print(f"remote-matrix: {len(r['include'])} jobs, {e['job_minutes']} job-min, est. makespan {e['makespan_min']} min "
+        jobs_label = "Ubuntu jobs" if "macos" in r["shards"] else "jobs"
+        print(f"remote-matrix: {len(r['include'])} {jobs_label}, {e['job_minutes']} job-min, est. makespan {e['makespan_min']} min "
               f"on {e['max_parallel']} slots, longest job {e['longest_min']} min"
               + (", leg shards " + ", ".join(f"{k} x{v}" for k, v in e["leg_shards"].items()) if e["leg_shards"] else ""))
+        if "macos" in r["shards"]:
+            print("  macos: two separate native jobs (macos-15/arm64, macos-15-intel/x86_64); durations not yet measured")
         for x in r["include"]:
             print(f"  {x['est_min']:5.1f}  {x['label']}" + (f"  (--legs {x['legs']})" if x["legs"] else ""))
     elif not a["--github-output"]:

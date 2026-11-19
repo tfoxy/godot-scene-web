@@ -56,7 +56,8 @@
       "capture-build",
       "pnpm-test",
       "bench-instr",
-      "windows"
+      "windows",
+      "macos"
     ]
   },
   "sabotage_paths": [
@@ -172,7 +173,8 @@
       "g7live-web-rust-g7-2",
       "g7live-web-rust-g7-5",
       "g7live-web-rust-g7-55",
-      "windows"
+      "windows",
+      "macos"
     ],
     "capable_doc": "G8g: gate 8's browser group g7-8 (its file legs in g7-gsw/g7-web-rust and its live g8l legs in g7live-gsw/g7live-web-rust) is remote-capable: --determinism 2,1 (run 40088061009) agreed over 12 runs, 205/205 shots and 70/70 dumps. R4: bench-instr (cachegrind Ir per golden case; load-insensitive, so not a timing run). R3: gate 7's browser correctness runs on the CI-only lavapipe renderer (lib/browser-renderer.ts): the file groups (every timing group of their native sources skipped by RS_SKIP_TIMING_GROUPS) and the live correctness groups g7-5 and g7-55 (refuse.groups keeps only live g7-1 local: GSW live-resync shots disagree across runners, see its reason. Live g7-2 became remote-capable in GRT5, df52bcff). Every -timing run (g7-6, g7-lc, g7-r, g7-k) is refused by phase, g7x by id, device legs by match; the native receiver has no live correctness run (run-gate7.sh runs g7-r only there).",
     "refuse": {
@@ -195,6 +197,36 @@
     "default_reason": "not yet remote-capable"
   },
   "rules": [
+    {
+      "why": "Native macOS toolchain, platform, Mach-O gates and engine-free regression tests",
+      "paths": [
+        "experiments/render-stream/capture/cmake/macos.cmake",
+        "experiments/render-stream/capture/cmake/macos-posix-tests.cmake",
+        "experiments/render-stream/capture/src/rs_platform_darwin.cpp",
+        "experiments/render-stream/capture/test/rs_sigpipe_test.cpp",
+        "experiments/render-stream/capture/src/rs_parse_double.h",
+        "experiments/render-stream/capture/test/m_checks_test.py",
+        "experiments/render-stream/scripts/m-*.py",
+        "experiments/render-stream/scripts/lib/m-*.py"
+      ],
+      "reach": ["capture-build", "macos"],
+      "exclusive": true
+    },
+    {
+      "why": "Shared capture code and toolchains are also built and tested natively on both macOS architectures",
+      "paths": [
+        "experiments/render-stream/capture/CMakeLists.txt",
+        "experiments/render-stream/capture/cmake/**/*.cmake",
+        "experiments/render-stream/capture/src/**",
+        "experiments/render-stream/capture/test/**",
+        "experiments/render-stream/capture/vendor/**",
+        "experiments/render-stream/capture/render_stream_capture.gdextension.in",
+        "experiments/render-stream/scripts/build-capture.sh",
+        "experiments/render-stream/scripts/lib/smoke-plan.py",
+        "experiments/render-stream/scripts/lib/remote-matrix.py"
+      ],
+      "reach": ["macos"]
+    },
     {
       "why": "Capture file-test helpers and their engine-free consumers run in ctest and the Windows manifest; production sources are mapped separately",
       "paths": [
@@ -1239,11 +1271,12 @@
       "reach": ["*"]
     },
     {
-      "why": "Godot reference project and calibration generator: test-harness/src/parity.ts runs godot/project's inspect_scene.gd, perf-harness/src/godot-text-bench.ts runs bench_text.gd, and calibrate.sh (with fetch-windows-template.sh for the stock Windows template) writes the calibration records consumed by validate-increment.sh and native runners; a narrower native/live reach is not established, so keep '*'",
+      "why": "Godot reference project and calibration generator: test-harness/src/parity.ts runs godot/project's inspect_scene.gd, perf-harness/src/godot-text-bench.ts runs bench_text.gd, and calibrate.sh (with fetch-windows-template.sh and fetch-macos-template.sh for stock templates) writes the calibration records consumed by validate-increment.sh and native runners; a narrower native/live reach is not established, so keep '*'",
       "paths": [
         "godot/project/**",
         "experiments/render-stream/scripts/calibrate.sh",
-        "experiments/render-stream/scripts/fetch-windows-template.sh"
+        "experiments/render-stream/scripts/fetch-windows-template.sh",
+        "experiments/render-stream/scripts/fetch-macos-template.sh"
       ],
       "reach": ["*"]
     },

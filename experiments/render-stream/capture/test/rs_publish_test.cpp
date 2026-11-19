@@ -29,6 +29,11 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #endif
+#ifdef __APPLE__
+#include <libproc.h>
+#include <sys/proc_info.h>
+#include <unistd.h>
+#endif
 
 #include "report.h"
 #include "rs13_predict.h"
@@ -2010,22 +2015,38 @@ void test_file_writer() {
 void check_writer_cloexec(const std::string &path) {
   struct stat target{};
   check(::stat(path.c_str(), &target) == 0, "writer file exists: " + path);
+  int matches = 0;
+  const auto check_fd = [&](int fd) {
+    struct stat info{};
+    if (::fstat(fd, &info) != 0 || info.st_dev != target.st_dev ||
+        info.st_ino != target.st_ino) return;
+    ++matches;
+    const int flags = ::fcntl(fd, F_GETFD);
+    check(flags >= 0 && (flags & FD_CLOEXEC), "writer FD_CLOEXEC: " + path);
+  };
+#ifdef __APPLE__
+  const int bytes = ::proc_pidinfo(::getpid(), PROC_PIDLISTFDS, 0, nullptr, 0);
+  check(bytes > 0, "enumerate writer descriptors");
+  if (bytes <= 0) return;
+  std::vector<proc_fdinfo> fds(static_cast<std::size_t>(bytes) / sizeof(proc_fdinfo) + 16);
+  const int used = ::proc_pidinfo(::getpid(), PROC_PIDLISTFDS, 0, fds.data(),
+                                 static_cast<int>(fds.size() * sizeof(proc_fdinfo)));
+  check(used > 0 && used % sizeof(proc_fdinfo) == 0, "read writer descriptors");
+  if (used <= 0) return;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(used) / sizeof(proc_fdinfo); ++i)
+    check_fd(fds[i].proc_fd);
+#else
   DIR *fds = ::opendir("/proc/self/fd");
   check(fds != nullptr, "enumerate writer descriptors");
   if (!fds) return;
-  int matches = 0;
   while (const auto *entry = ::readdir(fds)) {
     char *end = nullptr;
     const auto fd = std::strtol(entry->d_name, &end, 10);
     if (end == entry->d_name || *end || fd < 0) continue;
-    struct stat info{};
-    if (::fstat(static_cast<int>(fd), &info) != 0 || info.st_dev != target.st_dev ||
-        info.st_ino != target.st_ino) continue;
-    ++matches;
-    const int flags = ::fcntl(static_cast<int>(fd), F_GETFD);
-    check(flags >= 0 && (flags & FD_CLOEXEC), "writer FD_CLOEXEC: " + path);
+    check_fd(static_cast<int>(fd));
   }
   ::closedir(fds);
+#endif
   check(matches == 1, "exactly one live writer descriptor: " + path);
 }
 

@@ -1108,7 +1108,7 @@ bool command_equal_bits(const Command &a, const Command &b) {
 // keep a stale /11 digest and command list). Update the size here once it does.
 #if defined(__x86_64__) && defined(__GLIBCXX__)
 static_assert(sizeof(Command) == 328, "Command changed: update command_equal_bits, then this size");
-#elif defined(__x86_64__) && defined(_LIBCPP_VERSION) && defined(_WIN32)
+#elif defined(_LIBCPP_VERSION) && ((defined(__x86_64__) && defined(_WIN32)) || defined(__APPLE__))
 static_assert(sizeof(Command) == 320, "Command changed: update command_equal_bits, then this size");
 #endif
 
@@ -1145,7 +1145,7 @@ bool param_identical(const Param &a, const Param &b) {
 #if defined(__x86_64__) && defined(__GLIBCXX__)
 static_assert(sizeof(ItemState) == 264, "ItemState changed: update item_state_difference, then this size");
 static_assert(sizeof(CanvasState) == 80, "CanvasState changed: update canvas_state_difference, then this size");
-#elif defined(__x86_64__) && defined(_LIBCPP_VERSION) && defined(_WIN32)
+#elif defined(_LIBCPP_VERSION) && ((defined(__x86_64__) && defined(_WIN32)) || defined(__APPLE__))
 static_assert(sizeof(ItemState) == 264, "ItemState changed: update item_state_difference, then this size");
 static_assert(sizeof(CanvasState) == 80, "CanvasState changed: update canvas_state_difference, then this size");
 #endif
@@ -1159,7 +1159,7 @@ static_assert(sizeof(MeshEntry) == 96, "MeshEntry changed: update mesh_entry_dif
 static_assert(sizeof(MeshSurface) == 88, "MeshSurface changed: update mesh_entry_difference");
 static_assert(sizeof(ShaderEntry) == 160, "ShaderEntry changed: update shader_entry_difference");
 static_assert(sizeof(MaterialEntry) == 56, "MaterialEntry changed: update material_entry_difference");
-#elif defined(__x86_64__) && defined(_LIBCPP_VERSION) && defined(_WIN32)
+#elif defined(_LIBCPP_VERSION) && ((defined(__x86_64__) && defined(_WIN32)) || defined(__APPLE__))
 static_assert(sizeof(TextureEntry) == 192, "TextureEntry changed: update texture_entry_difference");
 static_assert(sizeof(TextureVariant) == 104, "TextureVariant changed: update texture_entry_difference");
 static_assert(sizeof(MeshEntry) == 96, "MeshEntry changed: update mesh_entry_difference");

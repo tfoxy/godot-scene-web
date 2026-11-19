@@ -55,8 +55,9 @@ from this tree, so keep those buildable on their own.
 
 ## Building
 
-Every build script holds the machine-wide quiet lock shared (`scripts/lib/quiet.sh`), so it waits
-while a timing measurement runs. Run them from anywhere; paths are resolved from the script.
+On Linux, every build script holds the machine-wide quiet lock shared (`scripts/lib/quiet.sh`), so
+it waits while a timing measurement runs. Native macOS builds use the hosted runner's Apple tools.
+Run them from anywhere; paths are resolved from the script.
 
 ```bash
 S=experiments/render-stream/scripts
@@ -64,6 +65,14 @@ S=experiments/render-stream/scripts
 # Capture GDExtension: configure, build and run its ctest suite.
 # Prints capture/build/render_stream_capture.gdextension.
 bash $S/build-capture.sh [Release|Debug]
+
+# macOS only: Apple clang + the Xcode SDK, separate arm64/x86_64 builds, then lipo and
+# ad-hoc signing. Builds the capture dylib and native tests. Arming refuses with
+# darwin-fingerprint-unsupported until the Mach-O identity backend is available.
+bash $S/build-capture.sh --target macos
+# Check every slice's imports (only /usr/lib/ and /System/Library/ are allowed) and signatures:
+python3 -I $S/m-imports.py --require-universal $S/../capture/build/macos/bundle/bin/* $S/../capture/build/macos/bundle/*.dylib
+python3 -I $S/m-sign.py $S/../capture/build/macos/bundle/bin/* $S/../capture/build/macos/bundle/*.dylib
 
 # Optional net module (WebTransport, TLS), after build-capture.sh:
 # capture/build/librender_stream_net.so.
@@ -165,6 +174,46 @@ committed offline record, including an offline census on supported platforms. Th
   current diff to the gates and receivers it can reach; without `--plan` it runs them.
 
 Usage, flags and environment for all of these are in [scripts/README.md](scripts/README.md).
+
+### macOS capture test selection
+
+The `macos` remote job runs the native slice of the signed universal test bundle on each
+architecture. Alongside the codec, ABI and Darwin platform tests, it runs `rs_ws`,
+`rs_carrier_set`, `rs_texture_cache` and `rs_publish`. The publisher checks writer
+`FD_CLOEXEC` through libproc on Darwin and procfs on Linux. TLS cases within `rs_ws` are
+skipped because this capture-only bundle has neither the net module nor an OpenSSL client;
+they require the separate net-module validation.
+
+`rs_sigpipe` resets loopback peers and checks that accepted and connected sockets, for both
+IPv4 and IPv6, return `EPIPE` without terminating. `rs_sigpipe_no_nosigpipe` compiles the
+Darwin backend with the test-only `GRC_TEST_NO_NOSIGPIPE` switch. Each child must terminate
+from `SIGPIPE` (shell status 141). The parent resets the signal disposition and unblocks it
+before each case, consumes the reset before sending, and checks the actual terminating signal.
+This switch is never defined for the capture library.
+
+The common CMake file's `grc_linux_only` calls describe exclusions from the Windows bundle.
+They are not Darwin capability checks. The macOS selection reviews those targets separately:
+
+| Common target(s)                                      | macOS selection and reason                                                                                    |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `abi_table`, `pe_image_test`, `calib_pe_checks_test`  | Deferred: offline PE fixtures belong to calibration validation.                                               |
+| `calib_derive`, `calib_derive_files`                  | Deferred: offline ELF/PE derivation fixtures; live Mach-O identity is not yet supported.                      |
+| `calib_fingerprint_test`                              | Linux only: ELF/procfs fault injection uses GNU linker wrapping; Darwin has its own refusal test.             |
+| `rs_publish_test`                                     | Enabled: POSIX files and golden data work on Darwin; descriptor enumeration uses libproc.                     |
+| `rs_track_test`                                       | Deferred: eligible POSIX transport suite, beyond the capture platform tests selected here.                    |
+| `rs_carrier_ext_test`                                 | Deferred: Darwin supports dlopen/RTLD_NOLOAD; consumer registration validation is separate.                   |
+| `rs_ws_echo`                                          | Deferred: helper for engine/Node interop runners, not a ctest.                                                |
+| `rs_live_test`, `rs_live_window_test`, `rs_live_host` | Deferred: live-host/session integration and interop helpers are separate from the selected platform suites.   |
+| `rs_live_coding_tool`                                 | Deferred: sh/cmp exist on Darwin; coded-recording golden comparisons are separate from platform validation.   |
+| `rs_item_meta_reentry_source`                         | Deferred: source-tree inspection, independent of the Darwin backend.                                          |
+| `rs_sha256_bench`, `rs_registry_bench`                | Deferred: benchmarks, not ctests.                                                                             |
+| `rs_texture_release_test`                             | Deferred: contains a wall-clock cost assertion unsuitable for hosted-runner correctness validation.           |
+| `rs_vtable_test`, `rs_standby_test`                   | Deferred: fake-vtable dispatch/source inspection; the native ABI convention probe runs on both architectures. |
+| `rs_basis_encode_test`                                | Enabled: engine-free encoder test, with architecture-specific SIMD selection.                                 |
+| `rs_basis_level_bench`                                | Deferred: benchmark, not a ctest.                                                                             |
+| `rs_basis_roundtrip`                                  | Deferred: requires Godot and a renderer runner; the capture tests are engine-free.                            |
+| `rs_setting_test`                                     | Enabled: Darwin supports setenv.                                                                              |
+| `rs_warm_test`, `rs_evict_test`                       | Deferred: engine-free policy suites, beyond the selected platform validation.                                 |
 
 ## Wire specs
 

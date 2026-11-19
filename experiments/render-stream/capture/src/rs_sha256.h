@@ -10,8 +10,8 @@
 // original plain C++ (~345 MB/s); `sha_ni` uses the x86 SHA extensions (sha256rnds2/msg1/msg2,
 // ~2 GB/s on Zen 3). A default-constructed Sha256 uses sha256_default_path(): sha_ni when CPUID
 // says the CPU has SHA, SSSE3 and SSE4.1, else portable, decided once per process, never failing.
-// The capture is x86-64 only (CMakeLists.txt); an ARMv8 crypto-extension path would be a third
-// Sha256Path value selected in rs_sha256.cpp's detect_default_path(), behind the same API.
+// Apple arm64 uses ARMv8 SHA2 when compiled with __ARM_FEATURE_SHA2; its results match the
+// portable path. Other builds retain their existing dispatch and baseline instruction set.
 #ifndef GRC_RS_SHA256_H
 #define GRC_RS_SHA256_H
 
@@ -25,6 +25,10 @@ namespace grc {
 enum class Sha256Path : std::uint8_t {
   portable,
   sha_ni,
+#if defined(__APPLE__)
+  arm_sha2,
+#endif
+#line 28
 };
 
 // Whether this CPU can run `path` (portable: always).

@@ -112,7 +112,7 @@ struct FdCensus {
 struct ProcessHeap { std::uint64_t allocated, committed; };
 struct TscInfo { bool invariant; double hz; };
 struct AnonReading { const char *name; std::int64_t bytes; };
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__APPLE__)
 std::optional<ProcessHeap> process_heap();
 std::optional<TscInfo> tsc_info();
 AnonReading anon_reading();
@@ -129,7 +129,7 @@ using RssSplitVisitor = void (*)(void *, const char *, std::int64_t);
 // Visits available Linux RSS fields in status-file order; Windows has no equivalent split.
 void rss_split(void *context, RssSplitVisitor visitor);
 std::optional<std::int64_t> rss_anon_bytes();
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__APPLE__)
 inline AnonReading anon_reading() { return {"rss_anon_bytes", rss_anon_bytes().value_or(-1)}; }
 #endif
 std::optional<HeapStats> heap_stats();
@@ -221,7 +221,7 @@ inline std::string parent_path(const std::string &path) {
   return slash == std::string::npos ? std::string() : path.substr(0, slash);
 }
 #endif
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__APPLE__)
 std::FILE *open_file(const std::string &utf8_path, const char *mode);
 #else
 // Set close-on-exec atomically at open, including for short-lived readers.

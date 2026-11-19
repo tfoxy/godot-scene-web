@@ -57,6 +57,8 @@
 # the run's own quiet-lock-summary.json files, unavailable rows); prints one line per run and exits
 # non-zero when any run fails. RS_VALIDATE_STUB=<script> (self-tests only) runs that script instead
 # of every runner, with the same env plus RS_VALIDATE_ID/KIND/DIR/ARGV.
+# Native macOS runs stay in the shared plan but are deferred locally on non-Darwin hosts. The
+# summary lists them in deferred[] separately from executed runs; stubs still simulate every run.
 # RS_VALIDATE_GROUPS (one gate 7 group) and RS_VALIDATE_LEGS (one leg shard: a native runner's
 # --legs, g7-8's GATE7_G8_LEGS) are the remote workflow's matrix (lib/remote-matrix.py).
 
@@ -238,6 +240,10 @@ run_one() {
 			"$SCRIPT_DIR/build-capture.sh" "$SCRIPT_DIR/wfile-linux-ref.sh" \
 			"$EXPERIMENT_DIR/capture/build-windows/wfile-linux" >"$dir/run.log" 2>&1 || rc=$?
 		;;
+	macos)
+		launch "$dir" -- python3 -I "$SCRIPT_DIR/lib/m-run.py" --repo "$REPO_ROOT" \
+			--out "$dir/run" --label "macos-$(uname -m)" >"$dir/run.log" 2>&1 || rc=$?
+		;;
 	capture-build)
 		launch "$dir" -- bash "$SCRIPT_DIR/build-capture.sh" >"$dir/run.log" 2>&1 || rc=$?
 		;;
@@ -380,15 +386,26 @@ PY
 fi
 
 mapfile -t RUNS < <(python3 -c "
-import json, sys
+import json, os, platform, sys
 p = json.load(open(sys.argv[1]))
 only = set(filter(None, sys.argv[2].split(',')))
 phase = {'setup': 0, 'native': 1, 'g7': 2, 'timing': 3}
+deferred = []
 for r in p['runs']:
     if only and r['id'] not in only:
         continue
+    if r['kind'] == 'macos' and platform.system() != 'Darwin' and not os.environ.get('RS_VALIDATE_STUB'):
+        deferred.append({'id': r['id'], 'reason': 'needs scripts/remote-validate.sh --only macos'})
+        continue
     print(f\"{phase[r['phase']]}\t{r['id']}\t{r['kind']}\t{json.dumps(r)}\")
+json.dump(deferred, open(os.path.join(os.path.dirname(sys.argv[1]), 'deferred.json'), 'w'), indent=2)
 " "$OUT/plan.json" "$ONLY")
+
+python3 - "$OUT/deferred.json" <<'PY'
+import json, sys
+for r in json.load(open(sys.argv[1])):
+    print(f"validate-increment: {r['id']} deferred: {r['reason']}")
+PY
 
 cost_block
 t_all="$EPOCHREALTIME"
@@ -404,4 +421,18 @@ for phase in 0 1 2 3; do
 	wait
 done
 
-python3 "$SCRIPT_DIR/lib/validate-summary.py" "$OUT" "$t_all" "$EPOCHREALTIME"
+summary_rc=0
+python3 "$SCRIPT_DIR/lib/validate-summary.py" "$OUT" "$t_all" "$EPOCHREALTIME" || summary_rc=$?
+# Host deferrals are local dispatcher decisions, not changes to the shared/remote plan. Keep
+# them out of the executed-run pass count and preserve any genuine runner failure above.
+python3 - "$OUT" <<'PY' || exit 2
+import json, pathlib, sys
+out = pathlib.Path(sys.argv[1])
+deferred = json.loads((out / "deferred.json").read_text())
+summary_path = out / "validate-summary.json"
+summary = json.loads(summary_path.read_text())
+summary["deferred"] = deferred
+summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+print(f"validate-increment: {len(deferred)} runs deferred to native remote validation")
+PY
+exit "$summary_rc"

@@ -2466,6 +2466,13 @@ void test_no_mmap_mprotect_imports() {
 #ifdef _WIN32
   std::puts("skip no-mmap-mprotect-imports: ELF nm inspection; PE imports are checked by w-imports");
 #else
+#ifdef __APPLE__
+  // Mach-O: Apple nm lists undefined symbols with -u (both slices of a universal binary).
+  const std::string exe_path = grc::rs::executable_path();
+  check(!exe_path.empty(), "executable path");
+  if (exe_path.empty()) return;
+  const std::string cmd = std::string("nm -u '") + exe_path + "' 2>/dev/null";
+#else
   char exe_path[4096];
   const std::ptrdiff_t n = ::readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
   check(n > 0, "readlink /proc/self/exe");
@@ -2473,6 +2480,7 @@ void test_no_mmap_mprotect_imports() {
   exe_path[n] = '\0';
 
   const std::string cmd = std::string("nm -D --undefined-only '") + exe_path + "' 2>/dev/null";
+#endif
   FILE *pipe = ::popen(cmd.c_str(), "r");
   check(pipe != nullptr, "popen(nm) for the import check");
   if (pipe == nullptr) return;

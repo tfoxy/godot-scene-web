@@ -21,6 +21,10 @@
 #include "common/xxhash.h"
 #include "rs2_codec.h"
 
+#if defined(__APPLE__)
+#include "rs_parse_double.h"
+#endif
+#line 24
 namespace grc {
 namespace rs13 {
 
@@ -244,7 +248,13 @@ class JsonReader {
         std::from_chars(start, p_, out->i);
         out->d = out->i == 0 && *start == '-' ? -0.0 : static_cast<double>(out->i);
       } else {
+#if defined(__APPLE__)
+        grc::parse_json_double(start, p_, out->d);
+#else
+#line 247
         std::from_chars(start, p_, out->d);
+#endif
+#line 248
       }
     }
     return true;
