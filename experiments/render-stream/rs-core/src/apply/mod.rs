@@ -1467,6 +1467,12 @@ impl Applier {
         }
     }
 
+    /// Cancel a held definition that no live material references. No program was begun;
+    /// clearing its omission flag lets a later use of the hash request it again.
+    pub fn cancel_linking(&mut self, hash: Hash) {
+        self.linking.remove(&hash);
+    }
+
     /// Whether `hash`'s program is still linking ([`Applier::mark_linking`]).
     pub fn is_linking(&self, hash: &Hash) -> bool {
         self.linking.contains(hash)

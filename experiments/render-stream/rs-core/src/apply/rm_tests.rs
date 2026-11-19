@@ -15,6 +15,104 @@ const MAT: Id = 40;
 const SHADER: Id = 41;
 const CODE: Hash = Hash([0x51; 32]);
 
+// Exercise the adapter's queue with the real applier in the native acceptance suite.
+#[path = "../../../web/gsw-rs/src/program_hold.rs"]
+mod program_hold;
+
+#[test]
+fn obsolete_held_shaders_are_never_defined_and_can_be_requested_again() {
+    for replaced in [false, true] {
+        let mut s = material_scene(Vec::new());
+        let mut store = code_store();
+        let mut a = applier();
+        let mut held = program_hold::HeldPrograms::default();
+        let d = material_delta(&s);
+        a.prepare(&s, &d);
+        held.hold((SHADER, CODE, ShaderSource::Payload));
+        a.mark_linking(CODE);
+        a.apply(&s, &d, &store);
+        if replaced {
+            s.shaders.get_mut(&SHADER).unwrap().hash = Some(Hash([0x52; 32]));
+        } else {
+            s.items.get_mut(&P).unwrap().material = None;
+            s.materials.remove(&MAT);
+            s.shaders.remove(&SHADER);
+        }
+        s.seq += 1;
+        let d = material_delta(&s);
+        a.prepare(&s, &d);
+        // The accepted state no longer names the old code; retention releases its bytes.
+        assert!(store.release(&CODE));
+        let pending = program_hold::pending_shaders(&mut held, &mut a, &s, &store);
+        assert!(pending.iter().all(|p| p.1 != CODE), "obsolete shader queued for definition");
+        assert_eq!(held.iter().count(), 0);
+        assert!(!a.is_linking(&CODE), "cancellation must not strand the linking hash");
+        a.apply(&s, &d, &store);
+        assert!(program_hold::pending_shaders(&mut held, &mut a, &s, &store)
+            .iter().all(|p| p.1 != CODE));
+        // The same hash can be needed again after cancellation, with newly supplied code.
+        s = material_scene(Vec::new());
+        let d = material_delta(&s);
+        a.prepare(&s, &d);
+        store = code_store();
+        assert!(program_hold::pending_shaders(&mut held, &mut a, &s, &store)
+            .iter().any(|p| p.1 == CODE));
+    }
+}
+
+#[test]
+fn needed_held_code_survives_retention_until_definition() {
+    use super::retention::Retention;
+    use crate::validate::{Options, Validator};
+
+    let data = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../protocol/golden-11/inline.rs11"),
+    ).unwrap();
+    let spans = crate::wire::split_records(&data, 11).unwrap();
+    let mut v = Validator::new(spans[0].bytes(&data), spans[0].offset, Options::new(11)).unwrap();
+    for span in &spans[1..] {
+        v.accept(span.bytes(&data), span.offset).unwrap();
+        let Some(hash) = v.released().iter().copied()
+            .find(|h| !v.names_contains(h) && !v.is_carried(h)) else { continue };
+        // Use a genuinely released hash to exercise the retention queue, with a material
+        // that still needs its held code (independently of the validator's newest names).
+        let mut s = material_scene(Vec::new());
+        s.shaders.get_mut(&SHADER).unwrap().hash = Some(hash);
+        let d = material_delta(&s);
+        let mut a = applier();
+        a.prepare(&s, &d);
+        let mut store = PayloadStore::default();
+        store.shaders.insert(hash, "shader_type canvas_item; void fragment() {}".into());
+        let mut held = program_hold::HeldPrograms::default();
+        held.hold((SHADER, hash, ShaderSource::Payload));
+        a.mark_linking(hash);
+        let mut retention = Retention::default();
+        retention.note(&v);
+        // Both the accept-time and post-apply sweeps must keep held code, as must eviction.
+        for _ in 0..2 {
+            assert_eq!(program_hold::pending_shaders(&mut held, &mut a, &s, &store).len(), 1);
+            retention.sweep(&v, &mut store, || {
+                let mut referenced = a.referenced_payload_hashes();
+                held.protect_payloads(&mut referenced);
+                referenced
+            });
+            assert!(store.shaders.contains_key(&hash));
+            let mut referenced = a.referenced_payload_hashes();
+            held.protect_payloads(&mut referenced);
+            store.evict_unreferenced(&referenced, 0);
+            assert!(store.shaders.contains_key(&hash));
+            a.apply(&s, &d, &store);
+        }
+        held.remove(hash);
+        a.set_program(hash, ready());
+        assert_eq!(retention.sweep(&v, &mut store, || a.referenced_payload_hashes()), 1);
+        assert!(!store.shaders.contains_key(&hash));
+        return;
+    }
+    panic!("fixture must release a hash");
+}
+
 fn shader(uses: Vec<ShaderUse>) -> Shader {
     Shader {
         id: SHADER,
@@ -212,6 +310,81 @@ fn a_linking_program_omits_its_users_until_it_settles() {
     }
     assert!(a.list.draws.iter().any(|d| d.program != BUILTIN_PROGRAM));
     assert!(!a.revisit(&s, &store), "a second revisit has nothing to do");
+}
+
+#[test]
+fn a_held_burst_omits_each_material_until_its_program_is_defined() {
+    let mut s = material_scene(Vec::new());
+    let template = s.items[&Q].clone();
+    s.items.clear();
+    s.shaders.clear();
+    s.materials.clear();
+    let ids: Vec<Id> = (100..114).collect();
+    let canvases: Vec<_> = s.canvases.keys().copied().collect();
+    for canvas in canvases {
+        s.canvases.get_mut(&canvas).unwrap().items = ids.clone();
+    }
+    let mut store = PayloadStore::default();
+    let mut hashes = Vec::new();
+    for (k, id) in ids.iter().enumerate() {
+        let hash = Hash([k as u8; 32]);
+        hashes.push(hash);
+        let mut sh = shader(Vec::new());
+        sh.id = 300 + k as Id;
+        sh.hash = Some(hash);
+        let mut it = template.clone();
+        it.id = *id;
+        it.draw_index = *id as i64;
+        it.material = Some(200 + k as Id);
+        s.materials.insert(it.material.unwrap(), Material {
+            id: it.material.unwrap(), origin: Origin::Created, status: EntryStatus::Ok,
+            reason: None, version: 1, shader: Some(sh.id), params: Vec::new(),
+        });
+        s.shaders.insert(sh.id, sh);
+        s.items.insert(*id, it);
+        store.shaders.insert(hash, "shader_type canvas_item; void fragment() {}".into());
+    }
+    let d = TxDelta {
+        shaders_upserted: s.shaders.keys().copied().collect(),
+        materials_upserted: s.materials.keys().copied().collect(),
+        ..full_delta(&s)
+    };
+    for apply_due in [false, true] {
+        let mut a = applier();
+        a.prepare(&s, &d);
+        assert_eq!(a.pending_shaders_held(&s, &store).len(), 14);
+        // The held state reuses the in-flight omission, before any GL link is begun.
+        for hash in &hashes {
+            a.mark_linking(*hash);
+        }
+        a.apply(&s, &d, &store);
+        assert!(drawn(&a).is_empty());
+        let (mut defined, mut revisits, mut dirty_batches) = (0, 0, 0);
+        let empty = TxDelta::default();
+        for batch in hashes.chunks(3) {
+            if apply_due {
+                a.prepare(&s, &empty);
+            }
+            for hash in batch {
+                a.set_program(*hash, ready());
+            }
+            assert!(a.programs_dirty);
+            dirty_batches += 1;
+            defined += batch.len();
+            if apply_due {
+                assert!(!a.revisit(&s, &store), "a prepared transaction absorbs the batch");
+                a.apply(&s, &empty, &store);
+            } else {
+                assert!(a.revisit(&s, &store));
+                revisits += 1;
+            }
+            assert!(!a.programs_dirty, "each batch consumes its dirty flag once");
+            assert_eq!(drawn(&a), ids[..defined]);
+            assert!(!a.revisit(&s, &store), "a batch must be consumed only once");
+        }
+        assert_eq!(dirty_batches, 5);
+        assert_eq!(revisits, if apply_due { 0 } else { 5 });
+    }
 }
 
 #[test]

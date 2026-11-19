@@ -38,6 +38,8 @@ use gsw_canvas_draw_list::{
 
 #[cfg(target_arch = "wasm32")]
 mod gl;
+#[cfg(any(target_arch = "wasm32", test))]
+mod program_poll;
 #[cfg(target_arch = "wasm32")]
 pub use gl::{gpu_families, CanvasItemsExecutor, ContextState, ExecError, FenceState};
 #[cfg(all(target_arch = "wasm32", feature = "canvas-items-test"))]

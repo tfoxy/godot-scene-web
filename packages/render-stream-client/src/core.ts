@@ -20,7 +20,12 @@ import type { RenderStreamProtocol } from "./endpoint";
 import { type ExtensionCore, ITEM_ROW_STRIDE } from "./extensions";
 import type { ResourceHintRecord } from "./hints";
 import { CLIENT_PARTICLE_PACING, GswParticles } from "./particles";
-import { definePrograms, type ProgramCounts, ProgramError } from "./programs";
+import {
+  definePrograms,
+  LIVE_PROGRAM_BUDGET,
+  type ProgramCounts,
+  ProgramError,
+} from "./programs";
 
 /** A typed failure: the receiver's reason names (`host-error`, `resource-unavailable`, ...) and
  * the wasm's own codes, with the seq it happened at when there is one. */
@@ -288,6 +293,9 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   };
   private coding: LiveCoding | null = null;
   private particles = new GswParticles(CLIENT_PARTICLE_PACING);
+  private programsHeld = false;
+  /** Accept exposes the next state's shaders before its payloads are ready for apply. */
+  private transactionPending = false;
   private readonly programs: ProgramCounts = {
     defined: 0,
     refused: 0,
@@ -333,6 +341,8 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   }
 
   beginConnection(protocol = this.protocol): void {
+    this.programsHeld = false;
+    this.transactionPending = false;
     if (this.disposed) throw new Error("the stream core is disposed");
     this.coding?.free();
     this.coding = null;
@@ -433,6 +443,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     }
     if (code === ACCEPT_RESOURCE) return { kind: "resource" };
     if (code === ACCEPT_END) return { kind: "end" };
+    this.transactionPending = true;
     const st = this.stats();
     const seq = st[STAT_SEQ];
     this.lastAcceptedSeq = seq;
@@ -572,12 +583,21 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     // Shader code that arrived compiles before the apply that draws its materials; a process
     // shader's arrival re-creates its emitters, which the next apply steps (no host time passed
     // here, so nothing is stepped or uploaded).
-    try {
-      definePrograms(this.g, this.programs);
-    } catch (e) {
-      if (e instanceof ProgramError)
-        throw new StreamFailure(seq, e.reason, e.message);
-      throw e;
+    // A prepared transaction may still be fetching shader code; prepareApply defines it once
+    // its payloads are provided or deferred. The wasm revisit declines while it is prepared.
+    if (!this.transactionPending) {
+      try {
+        this.programsHeld = definePrograms(
+          this.g,
+          this.programs,
+          undefined,
+          LIVE_PROGRAM_BUDGET,
+        );
+      } catch (e) {
+        if (e instanceof ProgramError)
+          throw new StreamFailure(seq, e.reason, e.message);
+        throw e;
+      }
     }
     this.particles.syncOnly(this.g);
     return this.g.revisit() > 0;
@@ -598,7 +618,12 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
 
   prepareApply(seq: number): void {
     try {
-      definePrograms(this.g, this.programs);
+      this.programsHeld = definePrograms(
+        this.g,
+        this.programs,
+        undefined,
+        LIVE_PROGRAM_BUDGET,
+      );
     } catch (e) {
       if (e instanceof ProgramError)
         throw new StreamFailure(seq, e.reason, e.message);
@@ -609,9 +634,26 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
 
   pollPrograms(): boolean {
     const g = this.instance;
-    if (g === null || g.poll_programs === undefined) return false;
-    const settled = g.poll_programs();
-    if (settled === 0) return false;
+    if (g === null) return false;
+    const before = this.programs.defined + this.programs.refused;
+    if (this.programsHeld && !this.transactionPending) {
+      try {
+        this.programsHeld = definePrograms(
+          g,
+          this.programs,
+          undefined,
+          LIVE_PROGRAM_BUDGET,
+        );
+      } catch (e) {
+        if (e instanceof ProgramError)
+          throw new StreamFailure(this.lastAcceptedSeq, e.reason, e.message);
+        throw e;
+      }
+    }
+    const settled = g.poll_programs?.() ?? 0;
+    // A held slice can define or refuse synchronously, with no GL link reporting a settle.
+    if (settled === 0)
+      return this.programs.defined + this.programs.refused !== before;
     // A failed link was counted defined when it began: it draws shaderless, as refused.
     const failed = settled >>> 16;
     this.programs.defined -= failed;
@@ -628,6 +670,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   }
 
   apply(seq: number): void {
+    this.transactionPending = false;
     if (this.g.apply() < 0) throw failWith(seq, this.g.error());
   }
 
@@ -649,6 +692,8 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
 
   reset(keepPayloads: boolean): void {
     this.instance?.live_reset(keepPayloads);
+    this.programsHeld = false;
+    this.transactionPending = false;
     this.lastAcceptedSeq = 0;
   }
 

@@ -22,6 +22,7 @@ use super::{
     gl_scissor, gl_scissor_y_up, godot_screen_transform, item_program_fragment,
     item_program_vertex, item_rows_for, item_upload_rects, msdf_fragment, plan_calls,
     SurfacePass,
+    program_poll::{link_ready, poll_links},
 };
 use crate::present::{
     ContextAttributes,
@@ -37,6 +38,14 @@ use gsw_canvas_draw_list::{
 };
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::ops::ControlFlow;
+use wasm_bindgen::prelude::wasm_bindgen;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = performance, js_name = now)]
+    fn performance_now() -> f64;
+}
 
 /// The default-texture ids beside [`WHITE_TEXTURE`], in `Objects::defaults` order.
 const DEFAULT_TEXTURE_IDS: [u32; 4] =
@@ -381,12 +390,15 @@ struct ItemProgram {
 }
 
 /// A program linked without reading its status: GL compiles and links it in the background
-/// (`KHR_parallel_shader_compile`, or the next frame's read).
+/// (`KHR_parallel_shader_compile`, or a fence after the link commands).
 struct PendingLink {
     program: glow::Program,
     shaders: [glow::Shader; 2],
     /// [`CanvasItemsExecutor::poll_programs`] calls made when the link was issued.
     epoch: u64,
+    /// Signalled once the GPU process has issued the link commands. The driver's compile can
+    /// still be pending, so a status read can overrun the poll's budget.
+    fence: Option<glow::Fence>,
 }
 
 struct TargetObjects {
@@ -403,12 +415,13 @@ struct TargetObjects {
 
 /// The depth pre-pass program's link.
 enum DepthProgram {
-    /// Linked, status not read; `polled` once a frame asked (without
-    /// `KHR_parallel_shader_compile` the next frame reads the status, as `poll_programs` does).
+    /// Linked, status not read; the same completion/fence gate as item programs.
+    /// `polled` is the fallback when no fence could be created.
     Pending {
         program: glow::Program,
         shaders: [glow::Shader; 2],
         polled: bool,
+        fence: Option<glow::Fence>,
     },
     Ready(glow::Program),
     /// The link failed: lists draw without their depth tables (the same pixels).
@@ -1354,6 +1367,7 @@ impl Objects {
                 program: depth_program,
                 shaders: depth_shaders,
                 polled: false,
+                fence: gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0).ok(),
             };
             let depth_vertex_array = gl.create_vertex_array()?;
             let depth_buffer = gl.create_buffer()?;
@@ -1651,6 +1665,7 @@ impl CanvasItemsExecutor {
             return Err(ExecError::Lost.to_string());
         }
         let (program, shaders) = start_item(&self.gl.raw, module, vertex)?;
+        let fence = unsafe { self.gl.raw.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0).ok() };
         // The driver starts on the commands now, not when the frame's task ends.
         unsafe { self.gl.raw.flush() };
         self.cache.program = None;
@@ -1664,6 +1679,7 @@ impl CanvasItemsExecutor {
                     program,
                     shaders,
                     epoch: self.poll_epoch,
+                    fence,
                 }),
             },
         ) {
@@ -1673,63 +1689,49 @@ impl CanvasItemsExecutor {
     }
 
     /// Settle the links [`begin_program`](Self::begin_program) issued, once per frame and before
-    /// that frame's definitions: with `KHR_parallel_shader_compile`, every link whose
-    /// `COMPLETION_STATUS_KHR` is true; without it, every link issued before the previous call
-    /// (the driver had a frame for it, so its status read rarely waits). Returns each settled
+    /// that frame's definitions: in id order, starting another settle only while the poll has
+    /// spent less than 8 ms. Always settle at least one ready link; a status read can overrun.
+    /// Readiness is `COMPLETION_STATUS_KHR` with the extension, otherwise a signalled fence after the link
+    /// commands (only if fence creation failed, the epoch fallback). Returns each settled
     /// program: `Ok` when it is now drawn, `Err` with GL's logs when it failed (it is
     /// unregistered, as a failed [`define_program`](Self::define_program) registers nothing).
     /// While the context is lost nothing settles; a restored context recompiles every program,
     /// pending ones included, and reports those here.
     pub fn poll_programs(&mut self) -> Vec<(u32, Result<(), String>)> {
+        let started = performance_now();
         self.poll_epoch += 1;
-        let mut done = std::mem::take(&mut self.links_restored);
-        if !self.programs.values().any(|p| p.pending.is_some()) {
-            return done;
+        if self.context.is_context_lost() {
+            self.loss.mark_lost();
         }
-        match self.context_state() {
-            ContextState::Lost => return done,
-            // The restore recompiled the pending programs (reported in `links_restored`).
-            ContextState::Restored => {
-                done.append(&mut self.links_restored);
-                return done;
-            }
-            ContextState::Ready => {}
-        }
+        let context_ready = self.context_state() != ContextState::Lost;
         let parallel = self
             .gl
             .raw
             .supported_extensions()
             .contains("KHR_parallel_shader_compile");
         let epoch = self.poll_epoch;
-        let mut ids: Vec<u32> = self
-            .programs
-            .iter()
-            .filter(|(_, p)| {
-                p.pending
-                    .as_ref()
-                    .is_some_and(|l| parallel || l.epoch < epoch)
-            })
-            .map(|(id, _)| *id)
-            .collect();
-        ids.sort_unstable();
-        for id in ids {
+        let ids: Vec<_> = self.programs.iter()
+            .filter_map(|(id, p)| p.pending.is_some().then_some(*id)).collect();
+        let done = poll_links(context_ready, &mut self.links_restored, ids.into_iter(),
+            || performance_now() - started, |id| {
             let Some(p) = self.programs.get_mut(&id) else {
-                continue;
+                return ControlFlow::Continue(None);
             };
             let Some(link) = p.pending.as_ref() else {
-                continue;
+                return ControlFlow::Continue(None);
             };
-            if parallel && !unsafe { self.gl.raw.get_program_completion_status(link.program) } {
-                continue;
+            if !link_ready(
+                parallel.then(|| unsafe { self.gl.raw.get_program_completion_status(link.program) }),
+                || link.fence.map(|f| unsafe { self.gl.raw.get_sync_status(f) == glow::SIGNALED }),
+                link.epoch < epoch,
+            ) {
+                return ControlFlow::Continue(None);
             }
-            let Some(link) = p.pending.take() else {
-                continue;
-            };
-            let epoch = link.epoch;
-            match finish_item(&self.gl.raw, link.program, link.shaders) {
+            let link = p.pending.take().unwrap();
+            let result = match finish_item(&self.gl.raw, link.program, link.shaders) {
                 Ok(compiled) => {
                     p.compiled = Some(compiled);
-                    done.push((id, Ok(())));
+                    Ok(())
                 }
                 // A context lost before its event (COMPLETION_STATUS_KHR reads true on a lost
                 // context too): the failure is the loss's, not the code's. The link stays
@@ -1739,17 +1741,24 @@ impl CanvasItemsExecutor {
                     p.pending = Some(PendingLink {
                         program: link.program,
                         shaders: link.shaders,
-                        epoch,
+                        epoch: link.epoch,
+                        fence: None,
                     });
                     self.loss.mark_lost();
-                    return done;
+                    return ControlFlow::Break(());
                 }
                 Err(log) => {
                     self.programs.remove(&id);
-                    done.push((id, Err(log)));
+                    Err(log)
+                }
+            };
+            if !self.context.is_context_lost() {
+                if let Some(fence) = link.fence {
+                    unsafe { self.gl.raw.delete_sync(fence) };
                 }
             }
-        }
+            ControlFlow::Continue(Some(result))
+        });
         self.cache.program = None;
         done
     }
@@ -1761,7 +1770,7 @@ impl CanvasItemsExecutor {
 
     /// Delete a replaced or freed program's GL objects (none while the context is lost).
     fn delete_item(&mut self, p: ItemProgram) {
-        if self.loss.lost() {
+        if self.loss.lost() || self.context.is_context_lost() {
             return;
         }
         let gl = &self.gl.raw;
@@ -1773,6 +1782,9 @@ impl CanvasItemsExecutor {
                 }
             }
             if let Some(l) = p.pending {
+                if let Some(fence) = l.fence {
+                    gl.delete_sync(fence);
+                }
                 for s in l.shaders {
                     gl.delete_shader(s);
                 }
@@ -2605,39 +2617,41 @@ impl CanvasItemsExecutor {
         Ok(())
     }
 
-    /// Whether the depth pre-pass program has linked, settling its link if the driver is done
-    /// (`COMPLETION_STATUS_KHR`, or the status read a frame after the first ask): never blocks on
-    /// the compile. Until then lists draw without their depth tables, which paints the same
+    /// Whether the depth pre-pass program has linked, settling its link after the readiness gate
+    /// (`COMPLETION_STATUS_KHR`, or a signalled fence after the link commands). A fence orders
+    /// the status read after issue but can still leave it waiting on the driver's compile.
+    /// Until then lists draw without their depth tables, which paints the same
     /// pixels (the tables only reject what a later draw overwrites). A failed link, or one read on
     /// a context lost meanwhile (the restore makes new objects and a new link), stays unused.
     fn depth_program_ready(&mut self) -> bool {
         let Some(objects) = self.objects.as_mut() else {
             return false;
         };
-        let DepthProgram::Pending { polled, .. } = &mut objects.depth_program else {
+        let DepthProgram::Pending { program, polled, fence, .. } = &mut objects.depth_program else {
             return matches!(objects.depth_program, DepthProgram::Ready(_));
         };
-        let parallel = self
-            .gl
-            .raw
-            .supported_extensions()
-            .contains("KHR_parallel_shader_compile");
-        if !parallel && !*polled {
-            *polled = true;
+        let parallel = self.gl.raw.supported_extensions().contains("KHR_parallel_shader_compile");
+        let ready = link_ready(
+            parallel.then(|| unsafe { self.gl.raw.get_program_completion_status(*program) }),
+            || fence.map(|f| unsafe { self.gl.raw.get_sync_status(f) == glow::SIGNALED }),
+            *polled,
+        );
+        *polled = true;
+        if !ready {
             return false;
         }
-        let DepthProgram::Pending {
-            program, shaders, ..
-        } = std::mem::replace(&mut objects.depth_program, DepthProgram::Failed)
+        let DepthProgram::Pending { program, shaders, fence, .. } =
+            std::mem::replace(&mut objects.depth_program, DepthProgram::Failed)
         else {
             return false;
         };
-        if parallel && !unsafe { self.gl.raw.get_program_completion_status(program) } {
-            objects.depth_program = DepthProgram::Pending {
-                program,
-                shaders,
-                polled: true,
-            };
+        // A lost context invalidates the handles; never delete its fence.
+        if !self.context.is_context_lost() {
+            if let Some(fence) = fence {
+                unsafe { self.gl.raw.delete_sync(fence) };
+            }
+        } else {
+            self.loss.mark_lost();
             return false;
         }
         match finish_link(&self.gl.raw, program, shaders) {
@@ -3465,7 +3479,7 @@ impl CanvasItemsExecutor {
 
 impl Drop for CanvasItemsExecutor {
     fn drop(&mut self) {
-        if self.loss.lost() {
+        if self.loss.lost() || self.context.is_context_lost() {
             return;
         }
         let gl = &self.gl.raw;
@@ -3481,6 +3495,9 @@ impl Drop for CanvasItemsExecutor {
                     gl.delete_program(c.program);
                 }
                 if let Some(l) = p.pending {
+                    if let Some(fence) = l.fence {
+                        gl.delete_sync(fence);
+                    }
                     for s in l.shaders {
                         gl.delete_shader(s);
                     }
@@ -3494,8 +3511,11 @@ impl Drop for CanvasItemsExecutor {
                 gl.delete_vertex_array(o.present_vertex_array);
                 match o.depth_program {
                     DepthProgram::Pending {
-                        program, shaders, ..
+                        program, shaders, fence, ..
                     } => {
+                        if let Some(fence) = fence {
+                            gl.delete_sync(fence);
+                        }
                         for s in shaders {
                             gl.delete_shader(s);
                         }

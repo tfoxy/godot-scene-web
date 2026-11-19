@@ -17,6 +17,9 @@
 //! Nothing decoded crosses the boundary: no meta, no command objects, no draw list, no JSON per
 //! frame.
 
+mod program_hold;
+use program_hold::HeldPrograms;
+
 use godot_scene_web_rust_prototype::canvas_items::{
     CanvasItemsExecutor, ContextState, ExecError, ExecOptions, ExecStats, FenceState, Sabotage,
     SurfacePass,
@@ -793,6 +796,8 @@ pub struct GswRs {
     typed_seen: HashSet<&'static str>,
     /// G7s: the custom shaders the accepted transaction names that have no program yet.
     pending: Vec<(Id, Hash, ShaderSource)>,
+    /// Shaders a budgeted client has not defined yet (omitted via `mark_linking`).
+    held: HeldPrograms<Hash, ShaderSource>,
     /// The next executor program id (one per transpiled shader code hash).
     next_program: u32,
     /// J1 (`set_async_programs`): `define_program` links without reading the status and
@@ -1057,6 +1062,7 @@ impl GswRs {
             prev_unsupported: HashSet::new(),
             typed_seen: HashSet::new(),
             pending: Vec::new(),
+            held: HeldPrograms::default(),
             next_program: 1,
             async_programs: false,
             linking: Vec::new(),
@@ -1118,13 +1124,33 @@ impl GswRs {
     /// After `accept` (and every `provide`): the custom shaders the transaction's named materials
     /// name that have no program yet (`Applier::pending_shaders_held`: not one whose code a live
     /// client deferred and the store does not hold yet). Each must be answered with
-    /// `define_program` or `refuse_program` before `apply`. Returns their count.
+    /// `define_program`, `refuse_program`, or `hold_program` before `apply`. Held entries follow
+    /// the applier's pending list until defined, refused, no longer referenced, or reset.
+    /// Returns their count.
     pub fn pending_shaders(&mut self) -> u32 {
-        self.pending = match (self.validator.as_ref(), self.applier.as_ref()) {
-            (Some(v), Some(a)) => a.pending_shaders_held(v.state(), &self.payloads),
+        self.pending = match (self.validator.as_ref(), self.applier.as_mut()) {
+            (Some(v), Some(a)) => program_hold::pending_shaders(
+                &mut self.held, a, v.state(), &self.payloads,
+            ),
             _ => Vec::new(),
         };
         self.pending.len() as u32
+    }
+
+    /// A shader this call's budget did not reach: its materials are omitted, as for a link in
+    /// flight, until a later call defines it. Pending indices stay stable for this snapshot.
+    pub fn hold_program(&mut self, i: u32) -> i32 {
+        let Some(entry) = self.pending.get(i as usize).copied() else {
+            self.error = format!("hold_program: no pending shader {i}");
+            return -1;
+        };
+        let Some(a) = self.applier.as_mut() else {
+            self.error = "hold_program before start".into();
+            return -1;
+        };
+        self.held.hold(entry);
+        a.mark_linking(entry.1);
+        0
     }
 
     pub fn pending_hash(&self, i: u32) -> String {
@@ -1209,6 +1235,7 @@ impl GswRs {
                 return -1;
             }
         };
+        self.held.remove(hash);
         let vertex = (!vertex_glsl.is_empty()).then_some(vertex_glsl);
         if self.async_programs {
             // J1: the link runs in the driver's background; `poll_programs` registers it.
@@ -1326,6 +1353,7 @@ impl GswRs {
                 detail: detail.into(),
             },
         );
+        self.held.remove(hash);
         0
     }
 
@@ -1379,6 +1407,7 @@ impl GswRs {
         self.prev_unsupported.clear();
         self.typed_seen.clear();
         self.pending.clear();
+        self.held.clear();
         self.param_log.clear();
         0
     }
@@ -1492,6 +1521,9 @@ impl GswRs {
         applier.set_pick_order(self.pick_order);
         // J1: a link begun under the previous session's applier registers with this one.
         for (_, hash, _) in &self.linking {
+            applier.mark_linking(*hash);
+        }
+        for (_, hash, _) in self.held.iter() {
             applier.mark_linking(*hash);
         }
         // PM3: GLES3 stores multimesh colours and custom data as half floats.
@@ -1711,8 +1743,13 @@ impl GswRs {
                     if !self.opts.ignore_released {
                         self.retention.note(v);
                         let shown = &*a;
+                        let held = &self.held;
                         self.retention
-                            .sweep(v, &mut self.payloads, || shown.referenced_payload_hashes());
+                            .sweep(v, &mut self.payloads, || {
+                                let mut referenced = shown.referenced_payload_hashes();
+                                held.protect_payloads(&mut referenced);
+                                referenced
+                            });
                     }
                 }
                 // A deferred payload the newest state names no longer is waited for by nothing:
@@ -1959,6 +1996,9 @@ impl GswRs {
         for (_, hash, _) in &self.linking {
             applier.mark_linking(*hash);
         }
+        for (_, hash, _) in self.held.iter() {
+            applier.mark_linking(*hash);
+        }
         applier.prepare(v.state(), v.delta());
         self.query.gen += 1;
         // render-stream/16: a fresh applier holds no surface pass; the old ones' GL objects go.
@@ -2030,6 +2070,7 @@ impl GswRs {
         self.first_tx = true;
         self.prev_unsupported.clear();
         self.pending.clear();
+        self.held.clear();
         self.spans.clear();
         self.data.clear();
         self.rx_offset = 0;
@@ -2560,7 +2601,9 @@ impl GswRs {
         };
         let gl: std::collections::HashSet<_> = a.resident_texture_hashes().collect();
         let gl_bytes = self.payloads.bytes_of(&gl);
-        let pinned = self.payloads.bytes_of(&a.referenced_payload_hashes());
+        let mut referenced = a.referenced_payload_hashes();
+        self.held.protect_payloads(&mut referenced);
+        let pinned = self.payloads.bytes_of(&referenced);
         (gl_bytes, pinned)
     }
 
@@ -2597,8 +2640,13 @@ impl GswRs {
         // W11c: the display moved to S_n, so what only the old display held leaves now.
         if !self.opts.ignore_released {
             let shown = &*a;
+            let held = &self.held;
             self.retention
-                .sweep(v, &mut self.payloads, || shown.referenced_payload_hashes());
+                .sweep(v, &mut self.payloads, || {
+                    let mut referenced = shown.referenced_payload_hashes();
+                    held.protect_payloads(&mut referenced);
+                    referenced
+                });
         }
         let mut dynamic_sha = None;
         if self.version >= 11 {
@@ -2650,7 +2698,9 @@ impl GswRs {
             if let Some(budget) = self.opts.memory_budget_bytes {
                 // D29 amendment: the budget counts the store's payload bytes plus the GL textures
                 // the resident textures hold; only the store's unreferenced entries can go.
-                let referenced = a.referenced_payload_hashes();
+                let mut referenced = a.referenced_payload_hashes();
+                // Budgeted definitions still need this code after the apply's cache sweep.
+                self.held.protect_payloads(&mut referenced);
                 let gl: std::collections::HashSet<_> = a.resident_texture_hashes().collect();
                 let store_budget = budget.saturating_sub(self.payloads.bytes_of(&gl));
                 let evicted = self.payloads.evict_unreferenced(&referenced, store_budget);

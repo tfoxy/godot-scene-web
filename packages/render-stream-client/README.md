@@ -162,3 +162,18 @@ status.
 The object stays the same until something changes, so polling it is cheap.
 
 `stats().deferredPayloads` counts payloads still loading that the drawn frame went without.
+
+## Shader readiness
+
+Live mode defines pending custom shaders in slices of 4 ms or three programs per call,
+always attempting at least one. Shaders beyond the slice stay held: their materials' draws
+are omitted until a later frame defines and links them. Held shaders progress even when
+no transaction arrives. A reset clears the held list.
+
+Program links settle only after their completion signal (or a signalled WebGL fence when
+parallel shader compilation is unavailable). Each poll starts another settle only while
+its 8 ms budget remains, always settling at least one ready program. A status read already
+in progress can overrun the budget. Pending materials stay omitted; a failed link uses
+the existing shaderless refusal behavior. File replay
+defines every shader before its first apply. Older wasm builds without `hold_program` keep
+unbudgeted definition.

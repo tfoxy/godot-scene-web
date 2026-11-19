@@ -10,8 +10,10 @@ const FRAME: Pick<LoopOptions, "creditStage" | "applyOn"> = {
   applyOn: "frame",
 };
 
-function streaming() {
-  const h = harness(2, FRAME);
+function streaming(
+  pacing: Pick<LoopOptions, "creditStage" | "applyOn"> = FRAME,
+) {
+  const h = harness(2, pacing);
   h.loop.connect();
   h.last().on.open();
   h.last().on.message(session(2));
@@ -84,6 +86,33 @@ describe("program links settling between frames (J1)", () => {
     expect(h.core.calls.indexOf("poll-programs")).toBeLessThan(
       h.core.calls.indexOf("apply 2"),
     );
+  });
+
+  it.each([
+    false,
+    true,
+  ])("a settle burst revisits only idle frames (apply due: %s)", (applyDue) => {
+    // Empty transactions accepted on message leave their apply due until the draw.
+    const h = streaming({ creditStage: "submitted", applyOn: "message" });
+    const t = h.last();
+    t.on.message(tx(1));
+    h.clock.frame();
+    h.core.calls.length = 0;
+    // A fourteen-program burst settles as 3, 3, 3, 3, 2 on five callbacks.
+    h.core.settles = [true, true, true, true, true];
+    for (let i = 0; i < 5; i++) {
+      if (applyDue) t.on.message(tx(i + 2, [], false));
+      h.clock.frame();
+    }
+    const calls = (prefix: string) =>
+      h.core.calls.filter((c) => c.startsWith(prefix));
+    expect(calls("poll-programs")).toHaveLength(5);
+    expect(calls("apply ")).toHaveLength(applyDue ? 5 : 0);
+    expect(calls("revisit ")).toHaveLength(applyDue ? 0 : 5);
+    expect(calls("draw ")).toHaveLength(5);
+    h.clock.frame();
+    expect(calls("revisit ")).toHaveLength(applyDue ? 0 : 5);
+    expect(calls("draw ")).toHaveLength(5);
   });
 
   it("an idle host: a particle burst settles from the frame callback and is drawn, acking nothing", () => {

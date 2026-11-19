@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import libRs from "../../../experiments/render-stream/web/gsw-rs/src/lib.rs?raw";
 import {
+  ACCEPT_NEEDS_PAYLOADS,
   ACCEPT_RESOURCE_HINT,
   ACCEPT_RESOURCE_UNHINT,
   type GswRs,
@@ -11,6 +12,8 @@ import {
 import { WasmStreamCore } from "../src/core";
 import type { RenderStreamProtocol } from "../src/endpoint";
 import { coreStartOptions } from "../src/hello";
+import { flush, harness as loopHarness, msg, session, tx } from "./fakes";
+import { programHost } from "./program-host";
 
 /** `motion`: the fake core has the motion measure (a core built before it has not); `animation`:
  * its facts block holds the animation measures too (`motion_len`). */
@@ -137,6 +140,249 @@ describe("WasmStreamCore program links (J1)", () => {
     instances[0].settled = 0;
     expect(core.pollPrograms()).toBe(false);
     expect(instances[0].poll_programs).toHaveBeenCalledTimes(4);
+  });
+
+  it("progresses held shaders without a transaction and clears them on reset", () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      const { core, instances } = harness();
+      const host = programHost(14);
+      const g = instances[0];
+      Object.assign(g, host, {
+        particles_sync: () => "",
+        particles_buffers: () => "",
+        shader_time: () => Number.NaN,
+        revisit: () => 0,
+      });
+      core.revisit(1);
+      expect(host.states.filter((s) => s === "held")).toHaveLength(11);
+      for (let i = 0; i < 5; i++) core.pollPrograms();
+      expect(host.states.every((s) => s === "ready")).toBe(true);
+      // A second burst starts, then reset drops every held shader.
+      host.states.fill("pending");
+      core.revisit(2);
+      expect(host.states.filter((s) => s === "held")).toHaveLength(11);
+      core.reset(true);
+      expect(core.pollPrograms()).toBe(false);
+      expect(host.states.every((s) => s === "reset")).toBe(true);
+      expect(libRs).toContain("pub fn hold_program(");
+      expect(libRs.match(/self\.held\.clear\(\);/g)).toHaveLength(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it.each([
+    "transpiler refusal",
+    "compile failure",
+    "withheld code",
+    "definition",
+  ])("notifies the idle loop after held shader progress (%s)", (result) => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    const h = loopHarness(2, { creditStage: "submitted", applyOn: "frame" });
+    try {
+      const { core, instances } = harness();
+      const host = programHost(4);
+      Object.assign(instances[0], host, {
+        pending_code: () =>
+          result === "withheld code"
+            ? undefined
+            : result === "transpiler refusal"
+              ? "shader_type canvas_item; uniform uint bits; void fragment() {}"
+              : host.pending_code(),
+        pending_withheld: () => result === "withheld code",
+        define_program: (i: number) => {
+          if (result === "compile failure") {
+            host.refuse_program(i);
+            return 1;
+          }
+          return host.define_program(i);
+        },
+        // Isolate synchronous held progress: no GL link reports a settle.
+        poll_programs: () => 0,
+        particles_sync: () => "",
+        particles_buffers: () => "",
+        shader_time: () => Number.NaN,
+        revisit: () => 1,
+      });
+      h.core.prepareApply = () => core.prepareApply(1);
+      h.core.pollPrograms = () => core.pollPrograms();
+      h.core.revisit = (seq) => {
+        h.core.calls.push(`revisit ${seq}`);
+        return core.revisit(seq);
+      };
+      h.loop.connect();
+      const t = h.last();
+      t.on.open();
+      t.on.message(session(2));
+      t.on.message(tx(1));
+      h.clock.frame();
+      expect(host.states[3]).toBe("held");
+      const acks = t.acks().length;
+      h.core.calls.length = 0;
+      h.clock.frame();
+      expect(host.states[3]).toBe(
+        result === "definition" ? "linking" : "refused",
+      );
+      expect([...h.core.calls]).toEqual(["revisit 1", "draw 1"]);
+      expect(t.acks()).toHaveLength(acks);
+      h.core.calls.length = 0;
+      h.clock.frame();
+      expect(h.core.calls).toEqual([]);
+    } finally {
+      h.loop.dispose();
+      clock.mockRestore();
+    }
+  });
+
+  it.each([
+    false,
+    true,
+  ])("waits for shader payloads before held progress (links settle: %s)", async (settleLinks) => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    const h = loopHarness(2, {
+      creditStage: "submitted",
+      applyOn: "frame",
+      resourceHoldMs: 1000,
+    });
+    try {
+      const { core, instances, memory } = harness();
+      const g = instances[0];
+      const host = programHost(5);
+      host.states[4] = "later";
+      const hash = "aa".repeat(32);
+      let provided = false;
+      let prepared = false;
+      let acceptedSeq = 0;
+      const define = vi.fn(host.define_program);
+      const refuse = vi.fn(host.refuse_program);
+      const poll = vi.fn(() => (settleLinks ? host.poll_programs() : 0));
+      const revisit = vi.fn(() => (prepared ? 0 : 1));
+      Object.assign(g, host, {
+        pending_code: (i: number) =>
+          host.pending_shader_id(i) === 4n && !provided
+            ? undefined
+            : host.pending_code(),
+        define_program: define,
+        refuse_program: refuse,
+        poll_programs: poll,
+        particles_sync: () => "",
+        particles_buffers: () => "",
+        shader_time: () => Number.NaN,
+        revisit,
+        apply: () => {
+          prepared = false;
+          return 0;
+        },
+        needed_count: () => 1,
+        needed_ptr: () => 1024,
+        needed_kinds_ptr: () => 1056,
+      });
+      new Uint8Array(memory.buffer, 1024, 32).fill(0xaa);
+      new Uint8Array(memory.buffer, 1056, 1)[0] = 3;
+      const receive = h.core.receive.bind(h.core);
+      h.core.receive = (data, seen, copy) => {
+        const m = receive(data, seen, copy);
+        if (m.kind === "transaction") {
+          prepared = true;
+          acceptedSeq = m.seq;
+          if (m.seq === 2) host.states[4] = "pending";
+          g.code = m.needed.length === 0 ? 0 : ACCEPT_NEEDS_PAYLOADS;
+          const stats = new Uint32Array(
+            memory.buffer,
+            g.ptr,
+            STAT_FIELDS.length,
+          );
+          stats[STAT_FIELDS.indexOf("seq")] = m.seq;
+          stats[STAT_FIELDS.indexOf("frame")] = m.frame;
+          stats[STAT_FIELDS.indexOf("encoding")] = m.full ? 0 : 1;
+          expect(core.receive(data, true)).toEqual(m);
+        }
+        return m;
+      };
+      h.core.prepareApply = () => core.prepareApply(acceptedSeq);
+      const apply = h.core.apply.bind(h.core);
+      h.core.apply = (seq) => {
+        core.apply(seq);
+        apply(seq);
+      };
+      h.core.pollPrograms = () => core.pollPrograms();
+      h.core.revisit = (seq) => core.revisit(seq);
+      const provide = h.core.provideStaged.bind(h.core);
+      h.core.provideStaged = () => {
+        provided = true;
+        return provide();
+      };
+      h.loop.connect();
+      const t = h.last();
+      t.on.open();
+      t.on.message(session(2));
+      t.on.message(tx(1));
+      h.clock.frame();
+      expect(host.states.slice(3)).toEqual(["held", "later"]);
+      expect(define).toHaveBeenCalledTimes(3);
+      t.on.message(
+        msg({
+          kind: "transaction",
+          seq: 2,
+          frame: 2,
+          full: false,
+          needed: [{ hash, kind: 3 }],
+        }),
+      );
+      h.core.calls.length = 0;
+      poll.mockClear();
+      // The hold has not expired: neither the old held shader nor the new one may compile.
+      for (let i = 0; i < 3; i++) h.clock.frame();
+      expect(h.statuses.filter((s) => s.kind === "failed")).toEqual([]);
+      expect(t.closed).toBeNull();
+      expect(t.gets).toHaveLength(1);
+      expect(host.states.slice(3)).toEqual(["held", "pending"]);
+      expect(define).toHaveBeenCalledTimes(3);
+      expect(refuse).not.toHaveBeenCalled();
+      expect(poll).toHaveBeenCalledTimes(3);
+      expect(revisit).toHaveBeenCalledTimes(settleLinks ? 1 : 0);
+      expect(h.core.calls).toEqual([]);
+      t.gets[0].resolve(200);
+      await flush();
+      h.clock.frame();
+      expect(host.states.slice(3)).toEqual(["linking", "linking"]);
+      expect(define).toHaveBeenCalledTimes(5);
+      expect(refuse).not.toHaveBeenCalled();
+      expect(h.core.calls).toEqual([
+        `stage ${hash}`,
+        "provide",
+        "apply 2",
+        "draw 2",
+      ]);
+      expect(h.statuses.filter((s) => s.kind === "failed")).toEqual([]);
+      expect(t.closed).toBeNull();
+    } finally {
+      h.loop.dispose();
+      clock.mockRestore();
+    }
+  });
+
+  it.each([
+    "reset",
+    "beginConnection",
+  ] as const)("clears the accepted transaction guard on %s", (transition) => {
+    const { core, instances } = harness();
+    const host = programHost(1);
+    Object.assign(instances[0], host, {
+      particles_sync: () => "",
+      particles_buffers: () => "",
+      shader_time: () => Number.NaN,
+      revisit: () => 0,
+    });
+    core.receive(bytes, true);
+    core.revisit(1);
+    expect(host.states).toEqual(["pending"]);
+    if (transition === "reset") core.reset(true);
+    else core.beginConnection();
+    host.states[0] = "pending";
+    core.revisit(1);
+    expect(host.states).toEqual(["linking"]);
   });
 
   it("settles particles only while a burst is in progress", () => {

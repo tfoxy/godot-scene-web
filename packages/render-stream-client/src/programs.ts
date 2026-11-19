@@ -32,6 +32,7 @@ export interface ProgramHost {
     vertexGlsl: string,
   ): number;
   refuse_program(i: number, reason: string, detail: string): number;
+  hold_program?(i: number): number;
   error(): string;
 }
 
@@ -132,16 +133,35 @@ function pendingIndex(g: ProgramHost, hash: string): number {
   return -1;
 }
 
-/** Step 2 (synchronous): transpile and define every pending shader whose code is held, in
- * order; a `withheld` one with no code left is refused `shader-withheld`. */
+export const LIVE_PROGRAM_BUDGET = { ms: 4, max: 3 } as const;
+
+/** Step 2: transpile and define pending shaders, holding the rest when the optional budget is
+ * spent. At least one is attempted. Older wasm without `hold_program` defines them all.
+ * Returns whether shaders were held for a later call. */
 export function definePrograms(
   g: ProgramHost,
   out: ProgramCounts,
   log: (line: string) => void = () => {},
-): void {
+  budget?: { ms: number; max: number },
+): boolean {
+  const limit = g.hold_program === undefined ? undefined : budget;
+  const start = limit === undefined ? 0 : performance.now();
+  let attempted = 0;
   for (let guard = 2 * g.pending_shaders() + 1; guard > 0; guard--) {
     const n = g.pending_shaders();
-    if (n === 0) return;
+    if (n === 0) return false;
+    if (
+      limit !== undefined &&
+      attempted > 0 &&
+      (attempted >= limit.max || performance.now() - start >= limit.ms)
+    ) {
+      for (let i = 0; i < n; i++) {
+        if (g.hold_program?.(i) === -1)
+          throw new ProgramError("receiver-error", g.error());
+      }
+      return true;
+    }
+    attempted++;
     const i = 0;
     const label = `shader ${g.pending_shader_id(i)} (${g.pending_hash(i)})`;
     const code = g.pending_code(i);
@@ -179,4 +199,5 @@ export function definePrograms(
       out.refused++;
     } else out.defined++;
   }
+  return false;
 }

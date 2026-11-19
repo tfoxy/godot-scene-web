@@ -74,6 +74,9 @@ export interface GswRs {
     vertexGlsl: string,
   ): number;
   refuse_program(i: number, reason: string, detail: string): number;
+  /** Hold a shader this call's define budget did not reach; its materials stay omitted.
+   * Optional: older cores define every pending shader in the same call. */
+  hold_program?(i: number): number;
   /** J1: `define_program` begins the link without reading its status, and `poll_programs`
    * registers each program once its link settled (until then its materials' draws are omitted).
    * Optional: a core built before it defines every program synchronously. */
