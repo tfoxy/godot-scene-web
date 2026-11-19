@@ -67,8 +67,8 @@ S=experiments/render-stream/scripts
 bash $S/build-capture.sh [Release|Debug]
 
 # macOS only: Apple clang + the Xcode SDK, separate arm64/x86_64 builds, then lipo and
-# ad-hoc signing. Builds the capture dylib and native tests. Arming refuses with
-# darwin-fingerprint-unsupported until the Mach-O identity backend is available.
+# ad-hoc signing. Builds the capture dylib and native tests, including running-slice
+# fingerprint checks and live calibration derivation from the main image.
 bash $S/build-capture.sh --target macos
 # Check every slice's imports (only /usr/lib/ and /System/Library/ are allowed) and signatures:
 python3 -I $S/m-imports.py --require-universal $S/../capture/build/macos/bundle/bin/* $S/../capture/build/macos/bundle/*.dylib
@@ -119,6 +119,9 @@ The offline tools accept macOS universal binaries with `--arch arm64` or `--arch
 Each slice's record carries its `LC_UUID`, CPU type/subtype, slice offset/size and slice sha256;
 the whole-file sha256 is informational. The reader resolves dyld rebase/bind opcodes and
 64-bit chained fixups, including pure-virtual slots bound to `___cxa_pure_virtual`.
+At runtime, the capture verifies the running slice's UUID and CPU identity from dyld's main-image
+header and hashes that slice from the executable file. The load bias is dyld's slide; pure slots
+must hold the address resolved by `dlsym(RTLD_DEFAULT, "__cxa_pure_virtual")`.
 `scripts/fetch-macos-template.sh` verifies the cached stock Godot 4.5.1 release template,
 or extracts it from the digest-pinned export-template archive when missing. Set
 `GRC_MACOS_TEMPLATE` to override its cache path.
@@ -137,21 +140,25 @@ The pinned Godot 4.5.1 macOS release template's offline census, using LLVM 20.1.
 | Vtable address references                 | 3     | 3      |
 | Direct Object-prefix calls/jumps          | 6     | 6      |
 
-On Linux and Windows x86-64, when `GRC_CALIBRATION` is empty, `GRC_ABI_TABLE=<table.json>` enables a fallback that
-derives the record from the running process's Itanium RTTI and read-only main-image mappings. For
+On Linux and Windows x86-64 and macOS arm64/x86-64, when `GRC_CALIBRATION` is empty,
+`GRC_ABI_TABLE=<table.json>` enables a fallback that derives the record from the running process's
+Itanium RTTI and constant main-image data. The memory reader never writes or changes protection. For
 Godot 4.5.1 use `calibration/abi/godot-4.5.1-rendering-server.json`. Derivation requires the concrete
 and base type names, a unique abstract vtable and a complete match of the header's virtual-slot
 pattern. It then runs the same live slot-mask and behavioural checks and hook plan as the record
 path. Any derivation failure refuses with `derive-failed` and its detail; no engine memory is
 written before all checks pass. A set `GRC_CALIBRATION` always takes priority over `GRC_ABI_TABLE`.
-A dynamically linked PIE engine whose pure slots resolve outside the executable is unsupported by live
+A Linux dynamically linked PIE engine whose pure slots resolve outside the executable is unsupported by live
 derivation and refuses with `derive-failed`.
 
 `result.json` and `calibration-check.json` report `calibration_source: "record"` or `"derived"`.
 Derived mode reports `derive_census: "not-run"` and includes a passing informational check with that
 name and detail: runtime derivation does not disassemble the executable or run a call census.
 The derived record omits `devirtualized_slots` and `dropped_families` on Linux and writes empty
-arrays on Windows. Windows reads sections from the loaded main module's PE headers and requires
+arrays on Windows and macOS. The macOS reader uses dyld's mapped segments and constant sections,
+including `__DATA,__const` when its parent segment is writable. Its derived record leaves the
+informational whole-file hash empty; the verified slice hash identifies the engine.
+Windows reads sections from the loaded main module's PE headers and requires
 Itanium RTTI; MSVC layouts refuse. The Windows record carries both the PE image hash and the
 whole-file hash; deriving it requires the executable file to remain readable.
 With `GRC_EVIDENCE_DIR` set, a successful derivation writes `derived-calibration.json` in the same

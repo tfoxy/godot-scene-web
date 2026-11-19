@@ -107,13 +107,13 @@ void synthetic() {
 }
 
 bool file_record(const std::string &abi, const std::string &binary, const std::string &brand,
-                 const std::string &flavor, std::string *record, std::string *error) {
+                 const std::string &flavor, std::string *record, std::string *error, uint32_t cpu = 0) {
   grc::AbiTable t;
   grc::CalibFileReader reader;
   grc::Calibration c;
   uint64_t cv = 0;
   std::vector<grc::CheckResult> checks;
-  if (!grc::load_abi_table(abi, &t, error) || !reader.open(binary, error) ||
+  if (!grc::load_abi_table(abi, &t, error) || !reader.open(binary, error, cpu) ||
       !reader.concrete_vptr(&cv, error) || !reader.engine_identity(brand, flavor, &c, error) ||
       !grc::derive_calibration(reader, cv, t, &c, &checks, error)) return false;
   *record = grc::serialize_derived_calibration(c, t);
@@ -167,9 +167,9 @@ void parity(const char *abi) {
 }  // namespace
 
 int main(int argc, char **argv) {
-  if (argc == 7 && std::string(argv[1]) == "--file") {
+  if ((argc == 7 || argc == 8) && std::string(argv[1]) == "--file") {
     std::string record, error;
-    if (!file_record(argv[2], argv[3], argv[4], argv[5], &record, &error)) {
+    if (!file_record(argv[2], argv[3], argv[4], argv[5], &record, &error, argc == 8 ? std::strtoul(argv[7], nullptr, 0) : 0)) {
       std::fprintf(stderr, "derive: %s\n", error.c_str()); return 2;
     }
     // argv[6] keeps the invocation explicit about record output versus test mode.

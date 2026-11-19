@@ -27,6 +27,9 @@ struct Calibration {
   int64_t time_date_stamp = 0, size_of_image = 0;
   uint64_t image_base = 0;
   bool dynamic_base = false;
+  std::string uuid, file_sha256;
+  uint32_t cputype = 0, cpusubtype = 0;
+  uint64_t slice_offset = 0, slice_size = 0;
 
   uint64_t abstract_vtable_vaddr = 0;
   uint64_t concrete_vtable_vaddr = 0;
@@ -37,6 +40,7 @@ struct Calibration {
   int64_t anchors_matched = 0;
   std::string placeholder_kind = "null";
   uint64_t pure_placeholder = 0;
+  std::string pure_placeholder_symbol;
   std::vector<std::string> dropped_families;
   std::vector<std::string> devirtualized_slots;
 
@@ -70,6 +74,7 @@ struct LiveVtableFacts {
   uint64_t expected_vptr = 0;
   uint64_t abstract_address_point = 0;
   uint64_t pure_placeholder = 0;
+  std::string pure_placeholder_symbol;
   bool pure_placeholder_known = false;
 };
 

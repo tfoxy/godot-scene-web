@@ -4,6 +4,10 @@
 #include <cstring>
 #include <algorithm>
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -19,7 +23,11 @@
 
 namespace grc {
 CalibLiveReader::CalibLiveReader(const ProcessFingerprint &fp) : bias_(fp.load_bias) {
-#if !defined(_WIN32)
+#if defined(__APPLE__)
+  const auto *h = reinterpret_cast<const mach_header_64 *>(_dyld_get_image_header(0));
+  if (!h || h->magic != MH_MAGIC_64) { error_ = "cannot locate Mach-O main image"; return; }
+  init_macho(fp, reinterpret_cast<const uint8_t *>(h), sizeof(*h) + size_t(h->sizeofcmds));
+#elif !defined(_WIN32)
   if (fp.platform != "linux-x86_64") { error_ = "unsupported live reader platform"; return; }
   for (const auto &line : fp.exe_maps) {
     unsigned long long begin = 0, end = 0;
@@ -46,6 +54,9 @@ CalibLiveReader::CalibLiveReader(const ProcessFingerprint &fp) : bias_(fp.load_b
 }
 CalibLiveReader::CalibLiveReader(const ProcessFingerprint &fp, const uint8_t *base, size_t header_bytes)
     : bias_(fp.load_bias) {
+  if (fp.platform == "macos-arm64" || fp.platform == "macos-x86_64") {
+    init_macho(fp, base, header_bytes); return;
+  }
   if (fp.platform != "windows-x86_64") { error_ = "unsupported PE live reader platform"; return; }
   if (!base) { error_ = "null PE main-image mapping"; return; }
   PeHeaders h; std::string error;
@@ -117,15 +128,62 @@ CalibLiveReader::CalibLiveReader(const ProcessFingerprint &fp, const uint8_t *ba
   }
   if (readonly_.empty()) error_ = "no readable read-only PE main-image sections";
 }
+void CalibLiveReader::init_macho(const ProcessFingerprint &fp, const uint8_t *base, size_t header_bytes) {
+  MachoHeaders h;
+  if (!macho_parse_headers(base, header_bytes, fp.cputype, &h, &error_, true)) return;
+  if (h.uuid != fp.uuid || h.cputype != fp.cputype || h.cpusubtype != fp.cpusubtype || h.pie != fp.pie ||
+      fp.platform != (h.cputype == macho_arm64 ? "macos-arm64" : "macos-x86_64")) {
+    error_ = "mapped Mach-O identity differs from process fingerprint"; return;
+  }
+  if (h.image_base + bias_ != reinterpret_cast<uint64_t>(base)) {
+    error_ = "mapped Mach-O load bias differs from process fingerprint"; return;
+  }
+  if (!fp.bind_pure_virtual) { error_ = "missing Mach-O pure-virtual bind address"; return; }
+  // Validate every range before exposing it. The dyld slide is signed; unsigned
+  // addition also handles a negative slide, but a segment must never wrap.
+  for (const auto &s : h.segments) {
+    if (!s.size || !(s.protection & 1)) continue;
+    const uint64_t lo = s.addr + bias_;
+    if (lo > UINT64_MAX - s.size) { error_ = "mapped Mach-O segment overflow"; return; }
+    for (const auto &other : h.segments) {
+      if (&s != &other && other.size && (other.protection & 1) &&
+          s.addr < other.addr + other.size && other.addr < s.addr + s.size) {
+        error_ = "mapped Mach-O segments overlap"; return;
+      }
+    }
+  }
+  for (const auto &s : h.segments) {
+    if (!s.size || !(s.protection & 1)) continue;
+    const uint64_t lo = s.addr + bias_;
+    readable_.emplace_back(lo, lo + s.size);
+    if (s.protection & 4) executable_.emplace_back(lo, lo + s.size);
+    for (const auto &section : h.sections) {
+      if (section.addr < s.addr || section.addr - s.addr > s.size ||
+          section.size > s.size - (section.addr - s.addr) || (section.flags & 0x80000400)) continue;
+      // __DATA,__const carries x86_64 RTTI despite its writable parent segment.
+      // These are scan ranges only: this reader never changes memory or protection.
+      if (!(s.protection & 2) || s.name == "__DATA_CONST" || s.name == "__AUTH_CONST" ||
+          section.name == "__DATA,__const")
+        readonly_.emplace_back(section.addr + bias_, section.addr + bias_ + section.size);
+    }
+  }
+  macho_ = true;
+  pure_virtual_ = fp.bind_pure_virtual;
+  if (readonly_.empty()) error_ = "no Mach-O constant sections to scan";
+}
 CalibWord CalibLiveReader::read_u64(uint64_t address) const {
   for (auto [lo, hi] : readable_) {
     if (address >= lo && address <= hi && hi - address >= sizeof(uint64_t)) {
       uint64_t bits = 0;
       std::memcpy(&bits, reinterpret_cast<const void *>(address), sizeof(bits));
+      if (macho_ && bits == pure_virtual_) return {CalibWord::unresolved, 0};
       return {CalibWord::value, bits};
     }
   }
   return {};
+}
+bool CalibLiveReader::is_pure_bind(uint64_t address) const {
+  return macho_ && read_u64(address).kind == CalibWord::unresolved;
 }
 bool CalibLiveReader::is_exec(uint64_t address) const {
   for (auto [lo, hi] : executable_) if (address >= lo && address < hi) return true;
@@ -142,10 +200,14 @@ bool derive_live_calibration(const AbiTable &table, const ProcessFingerprint &fp
     return false;
   };
   const bool pe = fp.platform == "windows-x86_64";
+  const bool macho = fp.platform == "macos-arm64" || fp.platform == "macos-x86_64";
 #if !defined(_WIN32)
   if (pe) return fail("PE live derivation requires Windows main-image mappings");
 #endif
-  if (fp.platform != "linux-x86_64" && !pe) return fail("unsupported live engine platform");
+#if !defined(__APPLE__)
+  if (macho) return fail("Mach-O live derivation requires Darwin main-image mappings");
+#endif
+  if (fp.platform != "linux-x86_64" && !pe && !macho) return fail("unsupported live engine platform");
   if ((pe ? fp.image_sha256.empty() : fp.exe_sha256.empty()) || fp.version_string.empty())
     return fail("incomplete live engine identity");
   CalibLiveReader reader(fp);
@@ -158,6 +220,11 @@ bool derive_live_calibration(const AbiTable &table, const ProcessFingerprint &fp
   Calibration identity;
   identity.version_string = fp.version_string;
   identity.sha256 = fp.exe_sha256;
+  if (macho) {
+    identity.uuid = fp.uuid;
+    identity.cputype = fp.cputype; identity.cpusubtype = fp.cpusubtype;
+    identity.slice_offset = fp.slice_offset; identity.slice_size = fp.slice_size;
+  }
   if (pe) {
     // The PE fingerprint hashes headers + executable sections + .rdata. The
     // record also carries the whole-file hash; compute it only for derivation.

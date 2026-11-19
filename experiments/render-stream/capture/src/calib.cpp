@@ -362,6 +362,20 @@ bool load_calibration(const std::string &path, Calibration *out, std::string *er
             *error = "build_id is neither a string nor null";
             return false;
           }
+        } else if (sub == "uuid" || sub == "file_sha256") {
+          if (!parser.read_string(sub == "uuid" ? &out->uuid : &out->file_sha256)) {
+            *error = sub + " is not a string"; return false;
+          }
+        } else if (sub == "cputype" || sub == "cpusubtype" || sub == "slice_offset" || sub == "slice_size") {
+          int64_t value = 0;
+          if (!parser.read_integer(&value) || value < 0 ||
+              ((sub == "cputype" || sub == "cpusubtype") && value > 0xffffffffLL)) {
+            *error = sub + " is not an unsigned integer"; return false;
+          }
+          if (sub == "cputype") out->cputype = value;
+          if (sub == "cpusubtype") out->cpusubtype = value;
+          if (sub == "slice_offset") out->slice_offset = value;
+          if (sub == "slice_size") out->slice_size = value;
         } else if (sub == "image_sha256") {
           if (!parser.read_string(&out->image_sha256)) { *error = "image_sha256 is not a string"; return false; }
         } else if (sub == "codeview_id") {
@@ -419,8 +433,13 @@ bool load_calibration(const std::string &path, Calibration *out, std::string *er
           }
         } else if (sub == "placeholder_kind") {
           if (!parser.read_string(&out->placeholder_kind) ||
-              (out->placeholder_kind != "null" && out->placeholder_kind != "code")) {
+              (out->placeholder_kind != "null" && out->placeholder_kind != "code" &&
+               out->placeholder_kind != "bind")) {
             *error = "invalid placeholder_kind"; return false;
+          }
+        } else if (sub == "pure_placeholder_symbol") {
+          if (!parser.read_string(&out->pure_placeholder_symbol)) {
+            *error = "pure_placeholder_symbol is not a string"; return false;
           }
         } else if (sub == "pure_placeholder") {
           if (!parser.read_null()) {
@@ -530,6 +549,29 @@ bool check_fingerprint(const Calibration &calib, const ProcessFingerprint &fp,
                        std::vector<CheckResult> *checks) {
   bool ok = true;
 
+  if (fp.platform == "macos-arm64" || fp.platform == "macos-x86_64") {
+    const bool sha_ok = !fp.exe_sha256.empty() && fp.exe_sha256 == calib.sha256;
+    record(checks, "slice_sha256", sha_ok, "live " + fp.exe_sha256 + " record " + calib.sha256);
+    const bool uuid_ok = !fp.uuid.empty() && fp.uuid == calib.uuid;
+    record(checks, "uuid", uuid_ok, "live " + fp.uuid + " record " + calib.uuid);
+    const bool cpu_ok = fp.cputype == calib.cputype && fp.cpusubtype == calib.cpusubtype;
+    record(checks, "cpu", cpu_ok, "live " + std::to_string(fp.cputype) + ":" + std::to_string(fp.cpusubtype) +
+           " record " + std::to_string(calib.cputype) + ":" + std::to_string(calib.cpusubtype));
+    const bool slice_ok = fp.slice_offset == calib.slice_offset && fp.slice_size != 0 &&
+                          fp.slice_size == calib.slice_size;
+    record(checks, "slice_extent", slice_ok, "live " + std::to_string(fp.slice_offset) + "+" +
+           std::to_string(fp.slice_size) + " record " + std::to_string(calib.slice_offset) + "+" +
+           std::to_string(calib.slice_size));
+    const bool version_ok = !fp.version_string.empty() && fp.version_string == calib.version_string;
+    record(checks, "version_string", version_ok, "live '" + fp.version_string + "' record '" + calib.version_string + "'");
+    const bool pie_ok = fp.pie == calib.pie && (calib.pie || fp.load_bias == 0);
+    record(checks, "pie_and_bias", pie_ok, "dyld slide " + format_hex(fp.load_bias));
+    const bool platform_ok = fp.platform == calib.platform &&
+        fp.cputype == (fp.platform == "macos-arm64" ? 0x0100000cu : 0x01000007u);
+    record(checks, "platform", platform_ok, calib.platform);
+    return sha_ok && uuid_ok && cpu_ok && slice_ok && version_ok && pie_ok && platform_ok;
+  }
+
   if (fp.platform == "windows-x86_64") {
     const bool sha_ok = !fp.image_sha256.empty() && fp.image_sha256 == calib.image_sha256;
     record(checks, "image_sha256", sha_ok, "live " + fp.image_sha256 + " record " + calib.image_sha256);
@@ -635,7 +677,8 @@ bool check_slot_mask(const Calibration &calib, const ProcessFingerprint &fp,
   for (const auto &entry : calib.anchors) {
     const uint64_t value = reinterpret_cast<uint64_t>(abstract[entry.second]);
     if (value != 0 && fp.in_exec_range(value) &&
-        (calib.placeholder_kind != "code" || value != calib.pure_placeholder + fp.load_bias)) {
+        (calib.placeholder_kind != "code" || value != calib.pure_placeholder + fp.load_bias) &&
+        (calib.placeholder_kind != "bind" || value != fp.bind_pure_virtual)) {
       ++matched;
     } else if (anchor_detail.empty()) {
       anchor_detail = entry.first + "@" + std::to_string(entry.second) + " = " + format_hex(value);
@@ -678,9 +721,12 @@ bool check_slot_mask(const Calibration &calib, const ProcessFingerprint &fp,
   // match the record and must never implement a concrete slot.
   bool pure_distinct =
       facts->pure_placeholder_known && !fp.in_exec_range(facts->pure_placeholder);
-  if (calib.placeholder_kind == "code") {
-    pure_distinct = facts->pure_placeholder_known &&
-                    facts->pure_placeholder == calib.pure_placeholder + fp.load_bias;
+  if (calib.placeholder_kind == "code" || calib.placeholder_kind == "bind") {
+    const uint64_t expected = calib.placeholder_kind == "bind" ? fp.bind_pure_virtual :
+                                                               calib.pure_placeholder + fp.load_bias;
+    pure_distinct = expected && facts->pure_placeholder_known && facts->pure_placeholder == expected;
+    if (calib.placeholder_kind == "bind")
+      pure_distinct = pure_distinct && calib.pure_placeholder_symbol == "___cxa_pure_virtual";
     for (int64_t i = 0; i < calib.slot_count; ++i) {
       pure_distinct = pure_distinct &&
                       facts->pure_placeholder != reinterpret_cast<uint64_t>(concrete[i]);

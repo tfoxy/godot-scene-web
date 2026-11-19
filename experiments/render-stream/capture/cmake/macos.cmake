@@ -114,14 +114,30 @@ function(grc_macos_engine_free_tests)
 
   include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/macos-posix-tests.cmake)
 
-  grc_macos_test(calib_fingerprint_darwin test/calib_fingerprint_darwin_test.cpp
-    src/calib.cpp src/calib_fingerprint_darwin.cpp src/iface.cpp src/rs_sha256.cpp)
-  target_link_libraries(calib_fingerprint_darwin_test PRIVATE grc_platform)
+  add_executable(calib_macho_self_test test/calib_macho_self_test.cpp src/calib.cpp
+    src/calib_fingerprint_darwin.cpp src/calib_live.cpp src/calib_derive.cpp
+    src/macho_image.cpp src/pe_image.cpp src/iface.cpp src/rs_sha256.cpp)
+  target_include_directories(calib_macho_self_test PRIVATE src vendor)
+  target_link_libraries(calib_macho_self_test PRIVATE grc_warnings grc_platform)
+  set_target_properties(calib_macho_self_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+  grc_sign_macho(calib_macho_self_test)
+  # The bundle runner replaces the thin executable paths with signed universal
+  # paths before ctest. Generate identity after that final lipo/codesign step.
+  set(identity "$<TARGET_FILE_DIR:calib_macho_self_test>/../calib_macho_self_test.identity")
+  grc_add_test(NAME calib_macho_identity COMMAND ${Python3_EXECUTABLE} -I
+    ${CMAKE_CURRENT_SOURCE_DIR}/test/calib_macho_identity.py
+    $<TARGET_FILE:calib_macho_self_test> ${CMAKE_OSX_ARCHITECTURES} ${identity})
+  set_tests_properties(calib_macho_identity PROPERTIES FIXTURES_SETUP macho_identity)
+  grc_add_test(NAME calib_macho_self COMMAND calib_macho_self_test ${identity}.json)
+  grc_add_test(NAME calib_macho_self_identity_sabotage COMMAND calib_macho_self_test
+    ${identity}.bad.json --expect-identity-mismatch)
+  set_tests_properties(calib_macho_self calib_macho_self_identity_sabotage PROPERTIES
+    FIXTURES_REQUIRED macho_identity)
 
   include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/capture-sources.cmake)
   list(REMOVE_ITEM GRC_CAPTURE_SOURCES src/rs_platform_posix.cpp src/calib_fingerprint_posix.cpp)
   list(APPEND GRC_CAPTURE_SOURCES src/calib_fingerprint_darwin.cpp src/calib_live.cpp
-    src/calib_derive.cpp src/pe_image.cpp)
+    src/calib_derive.cpp src/macho_image.cpp src/pe_image.cpp)
   add_library(render_stream_capture SHARED ${GRC_CAPTURE_SOURCES})
   target_include_directories(render_stream_capture PRIVATE src vendor ${GRC_INJECT_GEN})
   add_dependencies(render_stream_capture grc_inject_script)
@@ -136,5 +152,5 @@ function(grc_macos_engine_free_tests)
   set(GRC_LIBRARY_PATH "librender_stream_capture.dylib")
   set(GRC_LIBRARY_EXTRA "macos.arm64 = \"${GRC_LIBRARY_PATH}\"\n")
   configure_file(render_stream_capture.gdextension.in render_stream_capture.gdextension @ONLY)
-  message(STATUS "macOS: capture dylib and native tests; arming refuses until Mach-O fingerprinting is available")
+  message(STATUS "macOS: capture dylib and native tests with per-slice Mach-O identity and live derivation")
 endfunction()

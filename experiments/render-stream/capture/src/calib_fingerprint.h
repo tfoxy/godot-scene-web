@@ -15,6 +15,10 @@ struct ProcessFingerprint {
   uint32_t time_date_stamp = 0, size_of_image = 0;
   uint64_t image_base = 0;
   bool dynamic_base = false;
+  std::string uuid;
+  uint32_t cputype = 0, cpusubtype = 0;
+  uint64_t slice_offset = 0, slice_size = 0;
+  uint64_t bind_pure_virtual = 0;
   std::string exe_path;
   std::string exe_sha256;
   std::string build_id;  // empty when the running binary has no GNU build-id

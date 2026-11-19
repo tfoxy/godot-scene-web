@@ -225,7 +225,15 @@ bool derive_calibration(const CalibMemoryReader &m, uint64_t cv, const AbiTable 
   std::string kind = "null";
   uint64_t placeholder = 0;
   if (nulls.size() > 1) return refuse("pure-virtual slots are not uniform");
-  if (nulls.empty()) {
+  if (m.uses_bind_placeholder()) {
+    kind = "bind";
+    bool found = false;
+    for (size_t i = 0; i < a.size(); ++i) if (!executable(a[i])) {
+      if (!m.is_pure_bind(av + i * 8)) return refuse("expected uniform ___cxa_pure_virtual binds");
+      found = true;
+    }
+    if (!found) return refuse("no pure-virtual bind placeholder");
+  } else if (nulls.empty()) {
     kind = "code";
     std::set<uint64_t> concrete;
     for (auto w : c) concrete.insert(w.bits);
@@ -262,6 +270,7 @@ bool derive_calibration(const CalibMemoryReader &m, uint64_t cv, const AbiTable 
   result.object_prefix = prefix;
   result.slot_count = a.size();
   result.placeholder_kind = kind;
+  result.pure_placeholder_symbol = kind == "bind" ? "___cxa_pure_virtual" : "";
   if (placeholder && placeholder < m.load_bias()) return refuse("placeholder precedes load bias");
   result.pure_placeholder = placeholder ? placeholder - m.load_bias() : 0;
   result.slots.clear(); result.anchors.clear();
@@ -281,7 +290,7 @@ bool derive_calibration(const CalibMemoryReader &m, uint64_t cv, const AbiTable 
   return true;
 }
 
-bool CalibFileReader::open(const std::string &path, std::string *error) {
+bool CalibFileReader::open(const std::string &path, std::string *error, uint32_t cpu) {
   *this = {};
   path_ = path;
   rs::File file(rs::open_file(path, "rb"));
@@ -308,6 +317,29 @@ bool CalibFileReader::open(const std::string &path, std::string *error) {
     if (!range(off, size, n) || addr > UINT64_MAX - size) return false;
     sections_.push_back({addr, off, size, exec, ro}); return true;
   };
+  if (le(d, 4) == 0xfeedfacf || le(d, 4) == 0xbebafeca || le(d, 4) == 0xbfbafeca) {
+    macho_ = true;
+    if (!macho_parse_headers(d, n, cpu, &macho_headers_, error)) return false;
+    const auto &h = macho_headers_;
+    pie_ = h.pie;
+    if (!macho_read_fixups(d + h.slice_offset, h.slice_size, h, &macho_fixups_, error)) return false;
+    for (const auto &section : h.sections) {
+      const bool exec = section.flags & 0x80000400;
+      bool ro = false;
+      for (const auto &segment : h.segments) {
+        if (section.addr >= segment.addr && range(section.addr - segment.addr, section.size, segment.size)) {
+          ro = !exec && ((segment.protection & 3) == 1 || segment.name == "__DATA_CONST" ||
+                        segment.name == "__AUTH_CONST" || section.name == "__DATA,__const");
+          break;
+        }
+      }
+      if (!add(section.addr, h.slice_offset + section.offset, section.size, exec, ro))
+        return fail(error, "invalid Mach-O section range");
+    }
+    for (const auto &[addr, fixup] : macho_fixups_)
+      relocations_[addr] = {fixup.symbol.empty() ? CalibWord::value : CalibWord::unresolved, fixup.value};
+    return true;
+  }
   if (pe_) {
     PeHeaders h;
     if (!pe_parse_headers(d, n, &h, error)) return false;
@@ -426,6 +458,10 @@ std::vector<std::pair<uint64_t, uint64_t>> CalibFileReader::readonly_ranges() co
 bool CalibFileReader::is_pointer_word(uint64_t addr, uint64_t bits) const {
   return !pe_ || !bits || dir64_.count(addr);
 }
+bool CalibFileReader::is_pure_bind(uint64_t address) const {
+  const auto it = macho_fixups_.find(address);
+  return it != macho_fixups_.end() && it->second.symbol == "___cxa_pure_virtual" && !it->second.addend;
+}
 bool CalibFileReader::concrete_vptr(uint64_t *out, std::string *error) const {
   std::set<uint64_t> typeinfos;
   // Bootstrap without any recorded addresses: scan name pointers, then RTTI references.
@@ -464,6 +500,14 @@ bool CalibFileReader::engine_identity(const std::string &version_name, const std
   c.sha256 = sha256_hex(bytes_.data(), bytes_.size());
   c.build_id = build_id_; c.build_id_present = !build_id_.empty(); c.pie = pie_;
   c.platform = pe_ ? "windows-x86_64" : "linux-x86_64";
+  if (macho_) {
+    const auto &h = macho_headers_;
+    c.uuid = h.uuid; c.cputype = h.cputype; c.cpusubtype = h.cpusubtype;
+    c.slice_offset = h.slice_offset; c.slice_size = h.slice_size;
+    c.file_sha256 = c.sha256;
+    c.sha256 = sha256_hex(bytes_.data() + h.slice_offset, h.slice_size);
+    c.platform = h.cputype == macho_arm64 ? "macos-arm64" : "macos-x86_64";
+  }
   if (pe_) {
     PeHeaders h;
     if (!pe_parse_headers(bytes_.data(), bytes_.size(), &h, error)) return false;
@@ -484,8 +528,18 @@ std::string serialize_derived_calibration(const Calibration &c, const AbiTable &
   s << "{\n  \"schema\": \"render-stream-calibration/1\",\n  \"engine\": {\n";
   str("version_string", c.version_string);
   const bool pe = c.platform == "windows-x86_64";
-  if (!pe) s << "    \"build_id\": " << (c.build_id_present ? quote(c.build_id) : "null") << ",\n";
+  const bool macho = c.platform == "macos-arm64" || c.platform == "macos-x86_64";
+  if (macho) {
+    str("uuid", c.uuid);
+    s << "    \"cputype\": " << c.cputype << ",\n"
+      << "    \"cpusubtype\": " << c.cpusubtype << ",\n"
+      << "    \"slice_offset\": " << c.slice_offset << ",\n"
+      << "    \"slice_size\": " << c.slice_size << ",\n";
+  }
+
+  if (!pe && !macho) s << "    \"build_id\": " << (c.build_id_present ? quote(c.build_id) : "null") << ",\n";
   str("sha256", c.sha256);
+  if (macho) str("file_sha256", c.file_sha256);
   if (pe) {
     str("image_sha256", c.image_sha256);
     s << "    \"codeview_id\": " << (c.codeview_id_present ? quote(c.codeview_id) : "null") << ",\n"
@@ -505,9 +559,10 @@ std::string serialize_derived_calibration(const Calibration &c, const AbiTable &
     << "    \"slot_count\": " << c.slot_count << ",\n"
     << "    \"anchors_total\": " << c.anchors_total << ",\n"
     << "    \"anchors_matched\": " << c.anchors_matched;
-  if (pe || c.placeholder_kind == "code")
+  if (pe || macho || c.placeholder_kind == "code")
     s << ",\n    \"placeholder_kind\": " << quote(c.placeholder_kind)
       << ",\n    \"pure_placeholder\": " << (c.pure_placeholder ? quote(hex(c.pure_placeholder)) : "null");
+  if (macho) s << ",\n    \"pure_placeholder_symbol\": " << quote(c.pure_placeholder_symbol);
   s << "\n  },\n";
   auto map = [&](const char *key, const auto &entries) {
     s << "  " << quote(key) << ": {";
@@ -516,7 +571,7 @@ std::string serialize_derived_calibration(const Calibration &c, const AbiTable &
     s << "\n  },\n";
   };
   map("slots", c.slots); map("anchors", c.anchors);
-  if (pe) s << "  \"devirtualized_slots\": [],\n  \"dropped_families\": [],\n";
+  if (pe || macho) s << "  \"devirtualized_slots\": [],\n  \"dropped_families\": [],\n";
   s << "  \"calibrator\": {\n    \"version\": \"9\",\n    \"header_sha256\": " << quote(table.header_sha256) << "\n  }\n}\n";
   return s.str();
 }

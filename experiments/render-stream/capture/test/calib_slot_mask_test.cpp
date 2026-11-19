@@ -138,6 +138,13 @@ int main(int argc, char **argv) {
       check(c.image_sha256.size() == 64 && c.image_base != 0 && c.dynamic_base &&
             c.size_of_image > 0 && c.time_date_stamp > 0 && !c.codeview_id_present,
             "committed PE identity fields");
+    } else if (c.platform == "macos-arm64" || c.platform == "macos-x86_64") {
+      check(c.uuid.size() == 32 && c.sha256.size() == 64 && c.file_sha256.size() == 64 &&
+            c.cputype == (c.platform == "macos-arm64" ? 0x0100000cu : 0x01000007u) &&
+            c.cpusubtype == (c.platform == "macos-arm64" ? 0u : 3u) &&
+            c.slice_size > 0 && c.slice_offset > 0 && c.pie &&
+            c.placeholder_kind == "bind" && c.pure_placeholder == 0 &&
+            c.pure_placeholder_symbol == "___cxa_pure_virtual", "committed Mach-O identity fields");
     } else check(c.placeholder_kind == "null" && c.devirtualized_slots.empty(), "ELF optional defaults");
   }
   const std::string path = "calib-slot-mask-" + std::to_string(rs::process_id()) + ".json";
@@ -163,7 +170,8 @@ int main(int argc, char **argv) {
         parsed.devirtualized_slots == std::vector<std::string>{"mesh_create"}, "parse placeholder and dropped keys");
   rs::remove_file(path);
   g_iface.global_get_singleton = singleton;
-  for (bool is_code : {false, true}) {
+  for (const std::string kind : {"null", "code", "bind"}) {
+    const bool is_code = kind != "null";
     std::array<void *, 42> abstract{}, concrete{};
     concrete.fill(reinterpret_cast<void *>(&code));
     abstract.fill(is_code ? reinterpret_cast<void *>(&pure) : nullptr);
@@ -174,8 +182,13 @@ int main(int argc, char **argv) {
     fp.load_bias = 0x1000;
     fp.exec_ranges = {{reinterpret_cast<uint64_t>(&code), reinterpret_cast<uint64_t>(&code) + 1},
                       {reinterpret_cast<uint64_t>(&pure), reinterpret_cast<uint64_t>(&pure) + 1}};
-    c.placeholder_kind = is_code ? "code" : "null";
+    c.placeholder_kind = kind;
     c.pure_placeholder = reinterpret_cast<uint64_t>(&pure) - fp.load_bias;
+    if (kind == "bind") {
+      c.pure_placeholder = 0;
+      c.pure_placeholder_symbol = "___cxa_pure_virtual";
+      fp.bind_pure_virtual = reinterpret_cast<uint64_t>(&pure);
+    }
     for (int i = 0; i < 17; ++i) {
       abstract[i * 2] = reinterpret_cast<void *>(&code);
       if (i >= 6) abstract[i * 2 + 1] = reinterpret_cast<void *>(&code);
@@ -187,7 +200,7 @@ int main(int argc, char **argv) {
     void *vptr = concrete.data(); object = &vptr;
     LiveVtableFacts facts;
     std::vector<CheckResult> checks;
-    check(check_slot_mask(c, fp, &facts, &checks), is_code ? "code placeholder passes" : "null placeholder passes");
+    check(check_slot_mask(c, fp, &facts, &checks), (kind + " placeholder passes").c_str());
     if (!is_code) {
       for (const auto &r : checks) std::printf("null %s %d %s\n", r.name.c_str(), r.ok, r.detail.c_str());
     }
@@ -205,10 +218,11 @@ int main(int argc, char **argv) {
       check(!check_slot_mask(c, fp, &facts, &checks) &&
             !find(checks, "hooked_slots_pure_in_abstract").ok, "placeholder excluded from every concrete slot");
       concrete[40] = reinterpret_cast<void *>(&code);
-      ++c.pure_placeholder;
+      if (kind == "bind") ++fp.bind_pure_virtual;
+      else ++c.pure_placeholder;
       facts = {}; checks.clear();
       check(!check_slot_mask(c, fp, &facts, &checks) &&
-            !find(checks, "hooked_slots_pure_in_abstract").ok, "placeholder must equal recorded value plus bias");
+            !find(checks, "hooked_slots_pure_in_abstract").ok, "placeholder must equal recorded or resolved value");
     }
   }
 #if !defined(_WIN32)
