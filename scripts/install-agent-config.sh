@@ -43,7 +43,7 @@ REPO="$PWD"
 
 # Skills owned by sibling repos, linked in when that sibling is checked out next to this one.
 # Paths are relative to $REPO.
-EXTRA_SKILLS=()
+EXTRA_SKILLS=(../spirectl/skills/spirectl)
 
 DO_USER=0
 for arg in "$@"; do
