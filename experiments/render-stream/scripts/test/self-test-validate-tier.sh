@@ -38,6 +38,8 @@ check() {
 	fi
 }
 
+check "RTC drivers, SafariDriver, LAN and page helpers" "node --experimental-vm-modules --test '$SCRIPT_DIR/../rtc/helpers.test.mjs' '$SCRIPT_DIR/../rtc/safari.test.mjs' '$SCRIPT_DIR/../rtc/drivers.test.mjs' >'$TMP/rtc-node.log' 2>&1"
+check "RTC hosted artifacts fail closed" "python3 -I '$SCRIPT_DIR/test/self-test-rtc.py' >'$TMP/rtc-artifacts.log' 2>&1"
 check "smoke-plan.py --self-test" "python3 '$SCRIPT_DIR/lib/smoke-plan.py' --self-test --map '$SCRIPT_DIR/smoke-map.json' >'$TMP/plan-st.log' 2>&1"
 check "libcxx driver stub legs" "bash '$SCRIPT_DIR/test/self-test-libcxx-control.sh' >'$TMP/libcxx-driver.log' 2>&1"
 check "libcxx-verdict.py --self-test" "python3 '$SCRIPT_DIR/lib/libcxx-verdict.py' --self-test >'$TMP/libcxx-st.log' 2>&1"
@@ -95,6 +97,15 @@ STUB_Q="$Q" STUB_TIMES="$TMP/times.txt" STUB_FOREIGN="$TMP/foreign" RS_VALIDATE_
 vrc=$?
 check "the stubbed milestone sweep passes (rc 0)" "[ $vrc = 0 ]"
 [ "$vrc" = 0 ] || tail -20 "$TMP/validate.log"
+
+check "rtc is a runnable local kind with its own output directory" "python3 - '$OUT' <<'PYRTC'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+row = next(r for r in json.loads((p / 'validate-summary.json').read_text())['runs'] if r['id'] == 'rtc')
+assert row['rc'] == '0'
+command = (p / 'rtc/command.txt').read_text()
+assert 'rtc-run.py' in command and '--out' in command and '/rtc/run' in command
+PYRTC"
 
 check "the cost block lists the timing runs with estimates, the lock status and the load before they start" \
 	"grep -q 'LOCAL TIMING about to run' '$TMP/validate.log' && grep -q 'g7live-gsw-timing .*est idle wall 2300 s' '$TMP/validate.log' && grep -q 'native-rust-gate6 .*unknown' '$TMP/validate.log' && grep -q '  uptime:' '$TMP/validate.log' && grep -q 'quiet lock:' '$TMP/validate.log'"

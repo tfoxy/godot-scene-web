@@ -413,3 +413,6 @@ static TLS: GrcNetTlsV1 = GrcNetTlsV1 {
 pub extern "C" fn grc_net_tls_v1() -> *const GrcNetTlsV1 {
     &TLS
 }
+
+#[cfg(feature = "rtc")]
+pub mod rtc;

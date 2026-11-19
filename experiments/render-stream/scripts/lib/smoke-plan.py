@@ -240,6 +240,8 @@ def runs(targets, m, sabotage, tier="smoke"):
         out.append({"id": "windows", "kind": "windows"})
     if "macos" in targets:
         out.append({"id": "macos", "kind": "macos"})
+    if "rtc" in targets:
+        out.append({"id": "rtc", "kind": "rtc"})
     if "libcxx-control" in targets:
         out.append({"id": "libcxx-control", "kind": "libcxx", "phase": "native"})
     for c in u["cargo"]:
@@ -437,9 +439,18 @@ def self_test(m):
         net = P("experiments/render-stream/" + path)
         check(f"{path} reaches the Linux, Windows and macOS net checks only",
               not net["unmatched"] and set(net["targets"]) == {
-                  "pure", "capture-build", "cargo:experiments/render-stream/rs-net", "windows", "macos"}
+                  "pure", "capture-build", "cargo:experiments/render-stream/rs-net", "windows", "macos", "rtc"}
               and {"id": "windows", "kind": "windows", "phase": "setup"} in net["runs"]
               and {"id": "macos", "kind": "macos", "phase": "setup"} in net["runs"])
+    for path in ("rs-net/src/rtc/mod.rs", "rs-net/src/bin/rs-net-rtc-probe.rs",
+                 "rs-net/vendor/str0m-rust-crypto/src/lib.rs", "rtc/page/index.html",
+                 "rtc/run-browsers.ts", "scripts/rtc-g0.sh", "scripts/rtc-sizes.py", "scripts/lib/rtc-run.py",
+                 "scripts/lib/remote-merge-rtc.py", "scripts/test/self-test-rtc.py"):
+        rtc = P("experiments/render-stream/" + path)
+        check(f"{path} reaches rtc without rendered capture/platform gates",
+              not rtc["unmatched"] and "rtc" in rtc["targets"]
+              and set(rtc["targets"]) <= {"pure", "rtc", "cargo:experiments/render-stream/rs-net"}
+              and {"id": "rtc", "kind": "rtc", "phase": "setup"} in rtc["runs"])
     for name in ("lib/m1-driver.py", "lib/m1-bundle.py", "m-runtime-test.py", "lib/mfile-driver.py",
                  "lib/mfile-bundle.py", "lib/m-equiv.py", "mfile-linux-ref.sh", "m-file-test.py", "lib/mlive-driver.py", "lib/mlive-bundle.py",
                  "fetch-cft-macos.py", "test/self-test-mlive-driver.ts"):

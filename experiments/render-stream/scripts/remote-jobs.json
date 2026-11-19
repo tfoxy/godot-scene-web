@@ -83,6 +83,8 @@
     ["pure", 8.3]
   ],
   "minutes": {
+    "rtc": 8.0,
+    "rtc-macos": 18.0,
     "bench-instr": 2.0,
     "capture-build": 9.6,
     "cargo-decode-proto-rs": 1.0,

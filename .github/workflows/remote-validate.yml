@@ -189,6 +189,10 @@ jobs:
           # cargo-gsw-rs checks the crate for wasm32 (it has no host-runnable test)
           wasm-bindgen: ${{ matrix.id == 'toolchain-smoke' || matrix.id == 'cargo-gsw-rs' || startsWith(matrix.id, 'g7') || matrix.id == 'native-rust-gate8' || matrix.id == 'windows' }}
 
+      - name: Install pinned RTC browsers
+        if: matrix.id == 'rtc'
+        run: pnpm exec playwright install --with-deps chromium webkit
+
       - name: Record setup time
         run: |
           mkdir -p "$RUNNER_TEMP/art"
@@ -342,6 +346,7 @@ jobs:
           art="$RUNNER_TEMP/art"
           mkdir -p "$art"
           [ -f "$RUNNER_TEMP/v/validate-summary.json" ] && cp "$RUNNER_TEMP/v/validate-summary.json" "$art/"
+          [ -f "$RUNNER_TEMP/v/rtc/run/rtc-linux.json" ] && cp "$RUNNER_TEMP/v/rtc/run/rtc-linux.json" "$art/"
           [ -f "$RUNNER_TEMP/v/$ID/run/libcxx-control.json" ] && cp "$RUNNER_TEMP/v/$ID/run/libcxx-control.json" "$art/"
           [ -f "$RUNNER_TEMP/v/$ID/run/provenance.json" ] && cp "$RUNNER_TEMP/v/$ID/run/provenance.json" "$art/libcxx-provenance.json"
           [ -d "$RUNNER_TEMP/v/$ID/run/comparisons" ] && cp -r "$RUNNER_TEMP/v/$ID/run/comparisons" "$art/libcxx-comparisons"
@@ -470,6 +475,41 @@ jobs:
         with:
           name: det-${{ matrix.label }}
           path: ${{ runner.temp }}/det
+          retention-days: 1
+          if-no-files-found: ignore
+
+  rtc-macos:
+    needs: plan
+    if: ${{ !cancelled() && contains(fromJSON(inputs.runs), 'rtc') }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/rs-setup
+      - name: Desktop Safari, iPhone 13 Simulator and Apple cdylib sizes
+        run: |
+          python3 -I experiments/render-stream/scripts/lib/rtc-run.py --out "$RUNNER_TEMP/rtc" --summary
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: job-rtc-macos
+          path: |
+            ${{ runner.temp }}/rtc/validate-summary.json
+            ${{ runner.temp }}/rtc/rtc-macos.json
+          retention-days: 1
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: rtc-macos-failure
+          path: |
+            ${{ runner.temp }}/rtc/*.log
+            ${{ runner.temp }}/rtc/*.jsonl
+            ${{ runner.temp }}/rtc/browsers.json
+            ${{ runner.temp }}/rtc/safari-diagnostics/
           retention-days: 1
           if-no-files-found: ignore
 
@@ -980,6 +1020,7 @@ jobs:
         windows-equiv,
         windows-live,
         windows-swap,
+        rtc-macos,
         macos-bundle,
         macos,
         macos-equiv,
@@ -1034,6 +1075,9 @@ jobs:
           rc=0
           python3 experiments/render-stream/scripts/lib/validate-summary.py --merge --out merged \
             --expect "$(cat expect.txt)" --remote-json remote.json jobs/*/ || rc=$?
+          # Required RTC platform artifacts carry browser phases and Apple sizes into the row.
+          python3 -I experiments/render-stream/scripts/lib/remote-merge-rtc.py \
+            --summary merged/validate-summary.json --jobs jobs
           cp jobs/*/toolchain-hashes.json merged/ 2>/dev/null || true
           # the check-id census: per run id, the union of its jobs' checks (lib/check-census.py)
           python3 -I experiments/render-stream/scripts/lib/check-census.py --merge --out merged/checks.json jobs/*/checks-*.json || true

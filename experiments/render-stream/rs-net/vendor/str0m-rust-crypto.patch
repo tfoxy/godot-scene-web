@@ -1,0 +1,16 @@
+--- a/str0m-rust-crypto-0.7.0/Cargo.toml
++++ b/str0m-rust-crypto/Cargo.toml
+@@ -46 +45,0 @@
+-    "rcgen",
+--- a/str0m-rust-crypto-0.7.0/src/dtls.rs
++++ b/str0m-rust-crypto/src/dtls.rs
+@@ -20,7 +20,2 @@
+-        // Use dimpl's rcgen-based certificate generation (with RustCrypto backend)
+-        dimpl::certificate::generate_self_signed_certificate()
+-            .ok()
+-            .map(|cert| DtlsCert {
+-                certificate: cert.certificate,
+-                private_key: cert.private_key,
+-            })
++        // The embedding application supplies its persistent certificate.
++        None

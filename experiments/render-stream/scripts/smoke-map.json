@@ -57,7 +57,8 @@
       "pnpm-test",
       "bench-instr",
       "windows",
-      "macos"
+      "macos",
+      "rtc"
     ]
   },
   "sabotage_paths": [
@@ -174,7 +175,8 @@
       "g7live-web-rust-g7-5",
       "g7live-web-rust-g7-55",
       "windows",
-      "macos"
+      "macos",
+      "rtc"
     ],
     "capable_doc": "G8g: gate 8's browser group g7-8 (its file legs in g7-gsw/g7-web-rust and its live g8l legs in g7live-gsw/g7live-web-rust) is remote-capable: --determinism 2,1 (run 40088061009) agreed over 12 runs, 205/205 shots and 70/70 dumps. R4: bench-instr (cachegrind Ir per golden case; load-insensitive, so not a timing run). R3: gate 7's browser correctness runs on the CI-only lavapipe renderer (lib/browser-renderer.ts): the file groups (every timing group of their native sources skipped by RS_SKIP_TIMING_GROUPS) and the live correctness groups g7-5 and g7-55 (refuse.groups keeps only live g7-1 local: GSW live-resync shots disagree across runners, see its reason. Live g7-2 became remote-capable in GRT5, df52bcff). Every -timing run (g7-6, g7-lc, g7-r, g7-k) is refused by phase, g7x by id, device legs by match; the native receiver has no live correctness run (run-gate7.sh runs g7-r only there).",
     "refuse": {
@@ -197,6 +199,30 @@
     "default_reason": "not yet remote-capable"
   },
   "rules": [
+    {
+      "why": "Opt-in RTC engine and crypto backend reach the RTC probe and feature-enabled Rust tests",
+      "paths": [
+        "experiments/render-stream/rs-net/src/rtc/**",
+        "experiments/render-stream/rs-net/src/bin/rs-net-rtc-probe.rs",
+        "experiments/render-stream/rs-net/vendor/str0m-rust-crypto/**",
+        "experiments/render-stream/rs-net/vendor/str0m-rust-crypto.patch",
+        "experiments/render-stream/rs-net/vendor/RENDER-STREAM-RTC-PATCH.md"
+      ],
+      "reach": ["pure", "cargo:experiments/render-stream/rs-net", "rtc"],
+      "exclusive": true
+    },
+    {
+      "why": "RTC browser, native Safari, size and artifact harness checks",
+      "paths": [
+        "experiments/render-stream/rtc/**",
+        "experiments/render-stream/scripts/rtc-*",
+        "experiments/render-stream/scripts/lib/rtc-*",
+        "experiments/render-stream/scripts/lib/remote-merge-rtc.py",
+        "experiments/render-stream/scripts/test/self-test-rtc*"
+      ],
+      "reach": ["pure", "rtc"],
+      "exclusive": true
+    },
     {
       "why": "macOS live driver, fixture/core bundle and pinned CfT fetcher; Linux and Windows carriers are unchanged",
       "paths": [
@@ -610,7 +636,7 @@
       "exclusive": true
     },
     {
-      "why": "The runtime net module and its build script reach the Linux loader, crate tests and pure self-tests, plus the cross-built Windows bundle and native macOS net tests",
+      "why": "The runtime net module and its build script reach the Linux loader, crate tests and pure self-tests, plus the cross-built Windows bundle, native macOS net tests and RTC interop",
       "paths": [
         "experiments/render-stream/rs-net/**",
         "experiments/render-stream/scripts/build-rs-net.sh"
@@ -620,7 +646,8 @@
         "pure",
         "cargo:experiments/render-stream/rs-net",
         "windows",
-        "macos"
+        "macos",
+        "rtc"
       ],
       "exclusive": true
     },

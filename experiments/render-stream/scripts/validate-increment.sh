@@ -245,6 +245,9 @@ run_one() {
 		launch "$dir" -- python3 -I "$SCRIPT_DIR/lib/m-run.py" --repo "$REPO_ROOT" \
 			--out "$dir/run" --label "macos-$(uname -m)" >"$dir/run.log" 2>&1 || rc=$?
 		;;
+	rtc)
+		launch "$dir" -- python3 -I "$SCRIPT_DIR/lib/rtc-run.py" --out "$dir/run" >"$dir/run.log" 2>&1 || rc=$?
+		;;
 	capture-build)
 		launch "$dir" -- bash "$SCRIPT_DIR/build-capture.sh" >"$dir/run.log" 2>&1 || rc=$?
 		;;

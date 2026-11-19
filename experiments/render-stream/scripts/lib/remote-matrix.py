@@ -155,7 +155,7 @@ def expand(runs, run_groups=None, determinism=(), pure_shards=6, max_parallel=16
         if i == "macos":
             continue
         gs = rg.get(i) or [""]
-        if i == "windows":
+        if i in ("windows", "rtc"):
             jobs.append({"base": i, "est": expected_minutes(table, i),
                          "entry": {"id": i, "shard": "", "legs": "", "label": i}})
         elif det:
@@ -242,6 +242,8 @@ def expand(runs, run_groups=None, determinism=(), pure_shards=6, max_parallel=16
         shards["windows"] = shards.get("windows", 1) + 4
     if "macos" in runs:
         shards["macos"] = 7  # two native, two live, two swap slices and the Ubuntu equivalence judge
+    if "rtc" in runs:
+        shards["rtc"] = 2  # one Linux matrix job and one native macOS/Safari job
     shards = {i: n for i, n in shards.items() if n > 1}
     est = {"makespan_min": round(sim(final, max_parallel), 1), "job_minutes": round(sum(j["est"] for j in final), 1),
            "longest_min": round(max([j["est"] for j in final] + [0]), 1), "max_parallel": max_parallel,
@@ -294,6 +296,9 @@ def self_test():
             fails.append(name)
 
     for det in ([], [3, 1]):
+        rtc = expand(["rtc"], determinism=det)
+        check(f"rtc: one Linux job and two required platform artifacts, determinism={det}",
+              len(rtc["include"]) == 1 and rtc["include"][0]["id"] == "rtc" and rtc["shards"] == {"rtc": 2})
         mac = expand(["macos"], determinism=det)
         check(f"macos: no matrix Ubuntu job and seven expected shards, determinism={det}",
               mac["include"] == [] and mac["shards"] == {"macos": 7})
