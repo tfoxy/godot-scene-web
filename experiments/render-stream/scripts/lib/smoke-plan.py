@@ -441,7 +441,8 @@ def self_test(m):
               and {"id": "windows", "kind": "windows", "phase": "setup"} in net["runs"]
               and {"id": "macos", "kind": "macos", "phase": "setup"} in net["runs"])
     for name in ("lib/m1-driver.py", "lib/m1-bundle.py", "m-runtime-test.py", "lib/mfile-driver.py",
-                 "lib/mfile-bundle.py", "lib/m-equiv.py", "mfile-linux-ref.sh", "m-file-test.py"):
+                 "lib/mfile-bundle.py", "lib/m-equiv.py", "mfile-linux-ref.sh", "m-file-test.py", "lib/mlive-driver.py", "lib/mlive-bundle.py",
+                 "fetch-cft-macos.py", "test/self-test-mlive-driver.ts"):
         runtime = P("experiments/render-stream/scripts/" + name)
         check(f"{name} reaches the macOS runtime and pure checks only",
               not runtime["unmatched"] and set(runtime["targets"]) == {"pure", "macos"})

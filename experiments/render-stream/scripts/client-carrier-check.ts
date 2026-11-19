@@ -275,12 +275,16 @@ async function main(): Promise<number> {
           : null,
       };
     });
-    report.browser = {
-      variant: process.platform === "win32" ? "cdp-swiftshader" : "linux-d9",
+    const browserReport = {
+      variant:
+        process.platform === "win32" || process.platform === "darwin"
+          ? "cdp-swiftshader"
+          : "linux-d9",
       product_version: launched.browser.version(),
       webgl_renderer: prov.renderer,
       ...browserFacts,
     };
+    report.browser = browserReport;
     if (process.platform === "win32")
       check(
         "browser-version",
@@ -290,6 +294,21 @@ async function main(): Promise<number> {
           )?.[1] === EXPECTED_CHROMIUM_VERSION.split(".")[0],
         `product ${launched.browser.version()}, UA ${browserFacts.userAgent}`,
       );
+    if (process.platform === "darwin") {
+      const session = await launched.browser.newBrowserCDPSession();
+      try {
+        const version = await session.send("Browser.getVersion");
+        report.browser = { ...browserReport, cdp: version };
+        check(
+          "browser-version",
+          version.product === `Chrome/${EXPECTED_CHROMIUM_VERSION}`,
+          `CDP product ${version.product}`,
+        );
+        check("browser-provenance", prov.ok, prov.reasons.join("; "));
+      } finally {
+        await session.detach();
+      }
+    }
     await probe.close();
 
     // The sabotages first: they hold a connection only for a moment.

@@ -198,6 +198,16 @@
   },
   "rules": [
     {
+      "why": "macOS live driver, fixture/core bundle and pinned CfT fetcher; Linux and Windows carriers are unchanged",
+      "paths": [
+        "experiments/render-stream/scripts/lib/mlive-*.py",
+        "experiments/render-stream/scripts/fetch-cft-macos.py",
+        "experiments/render-stream/scripts/test/self-test-mlive-driver.ts"
+      ],
+      "reach": ["pure", "macos"],
+      "exclusive": true
+    },
+    {
       "why": "The macOS runtime shares the Windows launcher and gate -1 fixture",
       "paths": [
         "experiments/render-stream/scripts/lib/w1-driver.py",

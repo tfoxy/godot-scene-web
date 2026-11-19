@@ -205,6 +205,21 @@ SHA-256 identity, respectively; neither changes the running template. Darwin val
 13 calibration checks). Each job uses its native stock record, with no Rosetta fallback.
 Passing and failing runtime evidence is retained under the job artifact's `m1/` directory.
 
+The two `macos-live` jobs use the native capture and net dylibs with the stock template,
+a separate imported tag-scene fixture and the GSW client core. Each uses Chrome for
+Testing 148.0.7778.96 (`mac-arm64` or `mac-x64`) with SwiftShader and verifies the full
+browser version over CDP. `fetch-cft-macos.py` checks both the official zip and inner
+executable SHA-256 before extraction. A missing or mismatched pin fails closed.
+
+The default live run covers ws, WebTransport through `auto`, and the wrong-hash and
+no-WebTransport fallbacks. Negative tests reject a wrong hash and a wrong token.
+Every page must end and its recording must match the host tap byte for byte. Live
+legs have no retry. Evidence, including a validation summary on launch failure, is
+retained in `job-macos-live-<arch>`. A separate host checks a late join after the
+first page applies 30 transactions. Another host runs the checker's opt-in wss
+leg with a per-run certificate and SPKI pin. Its private key stays outside the
+uploaded artifact tree and is removed on success or failure.
+
 For a local Linux control, build the capture, then run:
 
 ```sh

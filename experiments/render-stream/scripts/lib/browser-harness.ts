@@ -114,12 +114,13 @@ export const WINDOWS_LAUNCH_ARGS = [
 
 if (
   process.platform !== "win32" &&
+  process.platform !== "darwin" &&
   process.env.RS_PINNED_CHROMIUM_EXE !== undefined
 )
   throw new Error("browser-harness: RS_PINNED_CHROMIUM_EXE is Windows-only");
 
 export const BROWSER_LAUNCH_ARGS: readonly string[] =
-  process.platform === "win32"
+  process.platform === "win32" || process.platform === "darwin"
     ? WINDOWS_LAUNCH_ARGS
     : launchArgsFor(D9_LAUNCH_ARGS, CI_RENDERER_ALLOWANCE);
 
@@ -149,6 +150,25 @@ export const EXPECTED_CHROMIUM_SHA256 =
   "adc1c21ceed5c2a67184766376fe816ac03e556cc0ca3f782e8212235fe05c6f";
 export const EXPECTED_CHROMIUM_SHA256_WIN64 =
   "290fa7018fda22c52ada5eddb0113baf3ebc41fd0fde6085eddb19793606c635";
+// Inner launcher digests; fetch-cft-macos.py also verifies the complete app archive.
+export const EXPECTED_CHROMIUM_SHA256_MACOS = {
+  arm64: "2447c7bdea8e8ad38b52594f1ba53e18821c05445e8a07ad1cf3b0f23931d89d",
+  x64: "efd53a32bd47d83a21c040be74714ad3ec6f254e746d439012b096ab33325c9c",
+} as const;
+
+function macosChromiumPin(): string {
+  if (process.arch !== "arm64" && process.arch !== "x64")
+    throw new Error(
+      `browser-harness: unsupported macOS architecture ${process.arch}`,
+    );
+  const pin = EXPECTED_CHROMIUM_SHA256_MACOS[process.arch];
+  if (!/^[a-f0-9]{64}$/.test(pin))
+    throw new Error(
+      `browser-harness: unmeasured macOS CfT ${process.arch} executable sha256`,
+    );
+  return pin;
+}
+
 export const EXPECTED_CHROMIUM_VERSION = "148.0.7778.96";
 
 /**
@@ -173,7 +193,7 @@ export const PRIVATE_BROWSERS_DIR =
 export interface PinnedChromium {
   executablePath: string;
   /** private: the repo-private copy; seeded: copied there now; shared: Playwright's cache. */
-  source: "private" | "seeded" | "shared" | "windows";
+  source: "private" | "seeded" | "shared" | "windows" | "macos";
   privatePath: string;
   sharedPath: string;
 }
@@ -182,6 +202,23 @@ let pinnedChromium: PinnedChromium | undefined;
 
 /** The pinned Chromium to launch (header above; memoized per process). */
 export function resolvePinnedChromium(): PinnedChromium {
+  if (process.platform === "darwin") {
+    const executablePath = process.env.RS_PINNED_CHROMIUM_EXE;
+    if (!executablePath)
+      throw new Error("browser-harness: macOS requires RS_PINNED_CHROMIUM_EXE");
+    const expected = macosChromiumPin();
+    const digest = sha256File(executablePath);
+    if (digest !== expected)
+      throw new Error(
+        `browser-harness: macOS binary sha256 ${digest} != expected ${expected} for ${executablePath}`,
+      );
+    return {
+      executablePath,
+      source: "macos",
+      privatePath: executablePath,
+      sharedPath: executablePath,
+    };
+  }
   if (process.platform === "win32") {
     const executablePath = process.env.RS_PINNED_CHROMIUM_EXE;
     if (!executablePath)
@@ -447,14 +484,23 @@ export async function checkBrowserProvenance(
   } else if (!renderer) {
     reasons.push("WEBGL_debug_renderer_info reported no renderer string");
   } else {
-    const refusal = rendererRefusal(renderer, allowance);
+    const refusal =
+      process.platform === "darwin"
+        ? /ANGLE/i.test(renderer) && /SwiftShader/i.test(renderer)
+          ? null
+          : `macOS renderer "${renderer}" is not ANGLE SwiftShader`
+        : rendererRefusal(renderer, allowance);
     if (refusal) reasons.push(refusal);
   }
 
   const binarySha256 = sha256File(launched.executablePath);
-  if (binarySha256 !== EXPECTED_CHROMIUM_SHA256) {
+  const expectedSha256 =
+    process.platform === "darwin"
+      ? macosChromiumPin()
+      : EXPECTED_CHROMIUM_SHA256;
+  if (binarySha256 !== expectedSha256) {
     reasons.push(
-      `binary sha256 ${binarySha256} != recorded ${EXPECTED_CHROMIUM_SHA256} for ${launched.executablePath}`,
+      `binary sha256 ${binarySha256} != recorded ${expectedSha256} for ${launched.executablePath}`,
     );
   }
 
