@@ -209,6 +209,22 @@ pub fn replay_every(
     read: &mut dyn FnMut(&crate::state::Hash) -> Option<Vec<u8>>,
     apply_every: usize,
 ) -> Result<Vec<TxProfile>, crate::wire::Error> {
+    replay_every_with_programs(data, inline_digest, read, apply_every, |_, _, _| Ok(()))
+}
+
+/// [`replay_every`] with native diagnostic program registration before each apply. Registration
+/// is outside the apply timer and allocation count, as compilation is in a client.
+pub fn replay_every_with_programs(
+    data: &[u8],
+    inline_digest: bool,
+    read: &mut dyn FnMut(&crate::state::Hash) -> Option<Vec<u8>>,
+    apply_every: usize,
+    mut programs: impl FnMut(
+        &mut crate::apply::Applier,
+        &crate::state::ResolvedState,
+        &crate::apply::payloads::PayloadStore,
+    ) -> Result<(), crate::wire::Error>,
+) -> Result<Vec<TxProfile>, crate::wire::Error> {
     let apply_every = apply_every.max(1);
     let mut tx_count = 0usize;
     // The newest transaction's delta while its group waits for its apply (the end record, or the
@@ -305,6 +321,9 @@ pub fn replay_every(
                 tx_count += 1;
                 let due = tx_count % apply_every == 0;
                 held = if due { None } else { Some(v.delta().clone()) };
+                if due {
+                    programs(&mut a, v.state(), &payloads)?;
+                }
                 let a4 = allocs();
                 let t4 = now();
                 let stats = if due {
@@ -342,6 +361,7 @@ pub fn replay_every(
     // A group left short by the end: applied once, on its newest transaction's row.
     if let (Some(delta), Some(row)) = (held, rows.last_mut()) {
         take();
+        programs(&mut a, v.state(), &payloads)?;
         let a4 = allocs();
         let t4 = now();
         row.stats = a.apply(v.state(), &delta, &payloads).clone();
@@ -421,5 +441,17 @@ mod tests {
             [false, false, true]
         );
         set_clock(None);
+    }
+
+    #[test]
+    fn programs_are_registered_for_each_apply_including_the_short_group() {
+        let data = include_bytes!("../../protocol/golden-7/window2.rs7");
+        let mut seqs = Vec::new();
+        replay_every_with_programs(data, false, &mut |_| None, 2, |_, state, _| {
+            seqs.push(state.seq);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(seqs, [2, 3]);
     }
 }

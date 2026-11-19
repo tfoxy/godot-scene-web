@@ -10,7 +10,8 @@
 //!                          [--item-meta-asked <request json>|none] [--item-meta-dump <path>]
 //!   rs-core-check apply-bench <recording> --store <dir> [--repeats N] [--cover off] [--noop off] [--tiles off] [--programs synthetic] [--max-texture-side N]
 //!   rs-core-check pick-bench <recording> --store <dir> [--seq N] [--repeats N]
-//!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred] [--clock time|allocs] [--apply-every N]
+//!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred] [--clock time|allocs] [--apply-every N] [--programs synthetic]
+//!   rs-core-check apply-digests <recording> --store <dir> [--apply-every N] [--programs synthetic|unregistered]
 //!   rs-core-check walk-diff <recording>... [--store <dir>] [--digests <file>] [--cover 1 [--cover-every N]] [--cover-lists <file>] [--max-texture-side N]
 //!   rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]
 //!   rs-core-check scissors <recording> [--store <dir>]
@@ -65,6 +66,8 @@ use std::time::Instant;
 #[path = "rs-core-check/fill.rs"]
 mod fill_cmd;
 use fill_cmd::cmd_fill;
+#[path = "rs-core-check/apply_digests.rs"]
+mod apply_digests;
 
 /// G7o3: the system allocator, counting allocations (`profile` reports them per transaction).
 struct Counting;
@@ -96,6 +99,7 @@ fn usage() -> ExitCode {
          rs-core-check transcode --roundtrip <recording.rs12>...\n  \
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
          rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]\n  \
+         rs-core-check apply-digests <recording> --store <dir> [--apply-every N] [--programs synthetic|unregistered]\n  \
          rs-core-check validate <recording>... [--version 2..16] [--item-meta-asked <json>|none] [--item-meta-dump <path>]\n  \
          rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]\n  \
          rs-core-check client-diff <recording>... [--store <dir>] [--sabotage ph2-skip-body-digest|ph2-skip-dep-texture|ph2-park-stale|ph2-skip-material-textures]\n  \
@@ -165,6 +169,7 @@ fn main() -> ExitCode {
         "apply-bench" => cmd_apply_bench(&args),
         "pick-bench" => cmd_pick_bench(&args),
         "profile" => cmd_profile(&args),
+        "apply-digests" => apply_digests::cmd(&args),
         "walk-diff" => cmd_walk_diff(&args),
         "material-diff" => cmd_material_diff(&args),
         "client-diff" => cmd_client_diff(&args),
@@ -1234,7 +1239,14 @@ fn cmd_profile(args: &Args) -> ExitCode {
     };
     let mut runs = Vec::new();
     for _ in 0..repeats {
-        match prof::replay_every(&data, inline, &mut read, apply_every) {
+        let mut next = 1;
+        let mut programs = |a: &mut render_stream_core::apply::Applier, state: &_, payloads: &_| {
+            if args.get("programs") == Some("synthetic") {
+                fill_cmd::register_synthetic_programs(a, state, payloads, &mut next, None)?;
+            }
+            Ok(())
+        };
+        match prof::replay_every_with_programs(&data, inline, &mut read, apply_every, &mut programs) {
             Ok(rows) => runs.push(rows),
             Err(e) => {
                 eprintln!("rs-core-check profile: {e}");
