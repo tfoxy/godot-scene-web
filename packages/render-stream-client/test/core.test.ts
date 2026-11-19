@@ -12,12 +12,17 @@ import {
 import { WasmStreamCore } from "../src/core";
 import type { RenderStreamProtocol } from "../src/endpoint";
 import { coreStartOptions } from "../src/hello";
+import type { ParticleBurstPacing } from "../src/particles";
 import { flush, harness as loopHarness, msg, session, tx } from "./fakes";
 import { programHost } from "./program-host";
 
 /** `motion`: the fake core has the motion measure (a core built before it has not); `animation`:
  * its facts block holds the animation measures too (`motion_len`). */
-function harness(motion = true, animation = false) {
+function harness(
+  motion = true,
+  animation = false,
+  pacing?: ParticleBurstPacing,
+) {
   const memory = new WebAssembly.Memory({ initial: 1 });
   const instances: FakeGswRs[] = [];
   let throws = false;
@@ -105,7 +110,15 @@ function harness(motion = true, animation = false) {
   const build = vi.fn(
     (p: RenderStreamProtocol) => new mod.GswRs(canvas, coreStartOptions(p)),
   );
-  const core = new WasmStreamCore(mod, memory, build, 12, "zstd", 16777216);
+  const core = new WasmStreamCore(
+    mod,
+    memory,
+    build,
+    12,
+    "zstd",
+    16777216,
+    pacing,
+  );
   return {
     core,
     memory,
@@ -854,5 +867,201 @@ describe("WasmStreamCore resource hints (render-stream/15)", () => {
     expect(code("ACCEPT_RESOURCE_HINT")).toBe(ACCEPT_RESOURCE_HINT);
     expect(code("ACCEPT_RESOURCE_UNHINT")).toBe(ACCEPT_RESOURCE_UNHINT);
     expect(libRs).toContain('json.contains("\\"live_protocol\\":15")');
+  });
+});
+
+describe("WasmStreamCore idle particle lifecycle", () => {
+  function settling() {
+    const tasks = new Set<() => void>();
+    let clock = 0;
+    const h = harness(true, false, {
+      sliceMs: 6,
+      now: () => clock++,
+      idle: {
+        sliceMs: 8,
+        schedule: (run) => {
+          tasks.add(run);
+          return () => tasks.delete(run);
+        },
+      },
+    });
+    const reapply = vi.fn(() => 1);
+    const uploads = vi.fn();
+    let first = true;
+    Object.assign(h.instances[0], {
+      pending_shaders: () => 0,
+      shader_time: () => 1,
+      particles_set: uploads,
+      reapply,
+      particles_sync: () => {
+        if (!first) return "";
+        first = false;
+        return JSON.stringify({
+          ids: [1],
+          emitters: [
+            {
+              id: 1,
+              version: 1,
+              material: 20,
+              amount: 40,
+              emitting: true,
+              one_shot: false,
+              fixed_fps: 30,
+              fractional_delta: true,
+              local: true,
+              draw_order: "index",
+              seed: 7,
+              restarts: 0,
+              process_requests: 0,
+              f: {
+                amount_ratio: 1,
+                lifetime: 2,
+                pre_process_time: 2,
+                explosiveness: 0,
+                randomness: 0,
+                speed_scale: 1,
+                interp_to_end: 0,
+                request_process_time: 0,
+                emission_transform: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+                emitter_velocity: [0, 0, 0],
+              },
+            },
+          ],
+          materials: [
+            {
+              id: 20,
+              version: 1,
+              builtin: {
+                emission_shape: "point",
+                particle_flags: ["disable_z"],
+                sub_emitter: "disabled",
+                attractor: false,
+                collision: "disabled",
+                turbulence: false,
+              },
+              uniforms: {},
+              curves: {},
+            },
+          ],
+        });
+      },
+    });
+    h.core.prepareApply(1);
+    expect(tasks.size).toBe(1);
+    return { ...h, tasks, reapply, uploads };
+  }
+
+  it("leaves idle uploads for reapply in the next frame, with no GL work in the task", () => {
+    const h = settling();
+    let chunks = 0;
+    while (h.tasks.size) {
+      const run = [...h.tasks][0];
+      h.tasks.delete(run);
+      run();
+      expect(++chunks).toBeLessThan(2000);
+    }
+    expect(h.uploads).toHaveBeenCalledTimes(2); // zeros, then finished instances
+    expect(h.reapply).not.toHaveBeenCalled();
+    expect(h.core.settleParticles(1)).toBe(true);
+    expect(h.reapply).toHaveBeenCalledOnce();
+    expect(h.core.settleParticles(1)).toBe(false);
+    h.core.dispose();
+  });
+
+  it("draws held-program progress before an idle particle upload without stepping time twice", () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    const h = settling();
+    const loop = loopHarness(2, {
+      creditStage: "submitted",
+      applyOn: "frame",
+    });
+    try {
+      loop.loop.connect();
+      const t = loop.last();
+      t.on.open();
+      t.on.message(session(2));
+      t.on.message(tx(1));
+      loop.clock.frame();
+      const acks = t.acks().length;
+      const prepares = loop.core.prepareApplies;
+      const host = programHost(14);
+      const g = h.instances[0];
+      Object.assign(g, host, { revisit: () => 1 });
+      h.core.revisit(1);
+      expect(host.states.filter((state) => state === "held")).toHaveLength(11);
+      const time = vi.spyOn(g as unknown as GswRs, "shader_time");
+      loop.core.pollPrograms = () => h.core.pollPrograms();
+      loop.core.revisit = (seq) => h.core.revisit(seq);
+      const settle = vi.fn((seq: number) => h.core.settleParticles(seq));
+      loop.core.settleParticles = settle;
+
+      let chunks = 0;
+      while (h.tasks.size) {
+        const run = [...h.tasks][0];
+        h.tasks.delete(run);
+        run();
+        expect(++chunks).toBeLessThan(2000);
+      }
+      expect(h.uploads).toHaveBeenCalledTimes(2);
+      expect(h.reapply).not.toHaveBeenCalled();
+      for (let i = 0; i < 5; i++) {
+        loop.core.calls.length = 0;
+        loop.clock.frame();
+        expect(loop.core.calls).toEqual(["draw 1"]);
+        expect(settle).not.toHaveBeenCalled();
+        expect(h.reapply).not.toHaveBeenCalled();
+      }
+      expect(host.states.every((state) => state === "ready")).toBe(true);
+      // The upload remains ready across shader revisits; the next idle frame consumes it once.
+      loop.core.calls.length = 0;
+      loop.clock.frame();
+      expect(loop.core.calls).toEqual(["draw 1"]);
+      expect(h.reapply).toHaveBeenCalledOnce();
+      loop.core.calls.length = 0;
+      loop.clock.frame();
+      expect(loop.core.calls).toEqual([]);
+      expect(h.reapply).toHaveBeenCalledOnce();
+      expect(time).not.toHaveBeenCalled();
+      expect(loop.core.prepareApplies).toBe(prepares);
+      expect(t.acks()).toHaveLength(acks);
+    } finally {
+      loop.loop.dispose();
+      h.core.dispose();
+      clock.mockRestore();
+    }
+  });
+
+  it.each([
+    "dispose",
+    "reset",
+    "session",
+    "rebuild",
+  ])("cancels before %s releases the simulation", (action) => {
+    const h = settling();
+    const late = [...h.tasks][0];
+    if (action === "dispose") h.core.dispose();
+    else if (action === "reset") h.core.reset(true);
+    else if (action === "session") h.core.receive(bytes, false);
+    else h.core.beginConnection(14);
+    expect(h.tasks.size).toBe(0);
+    late();
+    expect(h.uploads).toHaveBeenCalledOnce();
+    expect(h.reapply).not.toHaveBeenCalled();
+    h.core.dispose();
+  });
+
+  it("cancels on context loss and restarts off-frame work after the restored frame", () => {
+    const h = settling();
+    const late = [...h.tasks][0];
+    h.core.pauseParticles(true);
+    expect(h.tasks.size).toBe(0);
+    h.core.pauseParticles(false);
+    expect(h.core.settleParticles(1)).toBe(false);
+    expect(h.tasks.size).toBe(1);
+    const current = [...h.tasks][0];
+    late();
+    expect([...h.tasks]).toEqual([current]);
+    h.core.dispose();
+    expect(h.tasks.size).toBe(0);
   });
 });

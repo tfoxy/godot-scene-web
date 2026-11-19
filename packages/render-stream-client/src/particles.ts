@@ -15,7 +15,8 @@
 // gives the bursts in progress `sliceMs` between them, after at least one pass each. A settling emitter is drawn as nothing (its instances zeros) until its burst is done,
 // and every setter and step it got meanwhile is replayed in order then (`GodotGpuEmitter`'s
 // `settling`), so it ends in exactly the state the frames would have left it in. A 400 s preprocess
-// (12000 passes) no longer holds one frame callback for the whole simulation.
+// (12000 passes) uses both frame slices and off-frame macrotasks. Skip-ahead reduces work;
+// every burst, including its clock-only planning, still observes the slice deadline.
 //
 // A material whose key comes from process shader code the client has not got is `suspended`:
 // each emitter it drives drops its simulation (its old output is never drawn again) until the code
@@ -127,6 +128,9 @@ const DEFAULT_FRAME = 1 / 60;
 export interface ParticleBurstPacing {
   sliceMs: number;
   now: () => number;
+  /** Optional off-frame work. The scheduler must enqueue a macrotask, never call inline.
+   * Its return value cancels a pending callback. Omitted for deterministic harness runs. */
+  idle?: { sliceMs: number; schedule: (run: () => void) => () => void };
 }
 
 /** Every burst in one step: the harness receiver pages' default (frame-for-frame evidence). */
@@ -135,10 +139,27 @@ export const UNPACED_PARTICLES: ParticleBurstPacing = {
   now: () => 0,
 };
 
-/** J1, the client's: 6 ms of one frame callback for the bursts in progress, together. */
+/** A macrotask ping, with no persistent channel after completion or cancellation. */
+function scheduleParticleChunk(run: () => void): () => void {
+  const channel = new MessageChannel();
+  const cancel = () => {
+    channel.port1.onmessage = null;
+    channel.port1.close();
+    channel.port2.close();
+  };
+  channel.port1.onmessage = () => {
+    cancel();
+    run();
+  };
+  channel.port2.postMessage(null);
+  return cancel;
+}
+
+/** The client's: 6 ms per frame, plus 8 ms macrotasks while a burst is settling. */
 export const CLIENT_PARTICLE_PACING: ParticleBurstPacing = {
   sliceMs: 6,
   now: () => performance.now(),
+  idle: { sliceMs: 8, schedule: scheduleParticleChunk },
 };
 
 export class GswParticles {
@@ -147,6 +168,14 @@ export class GswParticles {
     number,
     { wire: WireMaterial; material: GodotProcessMaterial | null }
   >();
+  private cancelIdle: (() => void) | null = null;
+  private idlePaused = false;
+  private idleGeneration = 0;
+  private disposed = false;
+  private readonly page = typeof document === "undefined" ? null : document;
+  private readonly onVisibilityChange = () => {
+    if (this.page?.hidden) this.stopIdle();
+  };
   private lastTime = Number.NaN;
   private buf = new Float32Array(0);
   private readonly features = new Set<string>();
@@ -164,7 +193,54 @@ export class GswParticles {
 
   constructor(
     private readonly pacing: ParticleBurstPacing = UNPACED_PARTICLES,
+    private readonly onIdleUpload: () => void = () => {},
   ) {}
+
+  /** Context loss suspends off-frame work; the next frame after restore schedules it again. */
+  pauseIdle(paused: boolean): void {
+    this.idlePaused = paused;
+    if (paused) this.stopIdle();
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.stopIdle();
+  }
+
+  private stopIdle(): void {
+    this.idleGeneration++;
+    this.cancelIdle?.();
+    this.cancelIdle = null;
+    this.page?.removeEventListener("visibilitychange", this.onVisibilityChange);
+  }
+
+  private scheduleIdle(g: ParticlesHost, memory?: WebAssembly.Memory): void {
+    const idle = this.pacing.idle;
+    if (!this.settling || this.page?.hidden) this.stopIdle();
+    if (
+      !idle ||
+      this.cancelIdle ||
+      this.disposed ||
+      this.idlePaused ||
+      this.page?.hidden ||
+      !this.settling
+    )
+      return;
+    const generation = this.idleGeneration;
+    // Hiding cancels work without clearing the independent context-loss pause. Showing does
+    // not schedule anything: the next frame's step/settle starts off-frame work again.
+    this.page?.addEventListener("visibilitychange", this.onVisibilityChange);
+    this.cancelIdle = idle.schedule(() => {
+      if (generation !== this.idleGeneration) return;
+      this.cancelIdle = null;
+      if (this.disposed || this.idlePaused || this.page?.hidden) {
+        this.stopIdle();
+        return;
+      }
+      if (this.settleChunk(g, memory, idle.sliceMs)) this.onIdleUpload();
+      this.scheduleIdle(g, memory);
+    });
+  }
 
   /** Sync with the accepted state only (a revisit: no host time passed, so nothing steps or
    * uploads): a suspended material's emitters drop their simulation, an arrived one's are
@@ -179,6 +255,7 @@ export class GswParticles {
           materials: WireMaterial[];
         },
       );
+    if (!this.settling) this.stopIdle();
   }
 
   /** Sync with the accepted state, step every emitter by the host's time and upload. With the
@@ -228,18 +305,27 @@ export class GswParticles {
       );
       h.zeros = sim.isInactive;
     }
+    this.scheduleIdle(g, memory);
   }
 
-  /** This step's yield predicate: the pacing's slice, timed from the first check (which follows
-   * a burst's first pass); none when unpaced. */
-  private slice(): (() => boolean) | undefined {
-    const { sliceMs, now } = this.pacing;
+  /** Share one deadline across all emitters, including the first work unit. */
+  private slice(sliceMs = this.pacing.sliceMs): (() => boolean) | undefined {
     if (!Number.isFinite(sliceMs)) return undefined;
-    let deadline = Number.NaN;
-    return () => {
-      if (Number.isNaN(deadline)) deadline = now() + sliceMs;
-      return now() >= deadline;
-    };
+    const deadline = this.pacing.now() + sliceMs;
+    return () => this.pacing.now() >= deadline;
+  }
+
+  /** Planned shader work remaining; null while any settling emitter is still planning or
+   * using the conservative full path. No burst means zero. */
+  get burstParticlePassesRemaining(): number | null {
+    let remaining = 0;
+    for (const h of this.held.values()) {
+      if (!h.sim?.settling) continue;
+      const work = h.sim.stats.burstParticlePassesRemaining;
+      if (work === null) return null;
+      remaining += work;
+    }
+    return remaining;
   }
 
   /** Whether an emitter is mid-burst (drawn as nothing until `step` or `settle` finishes it). */
@@ -252,11 +338,22 @@ export class GswParticles {
    * progress continue in the same slice, with no time passing, and an emitter whose burst ends
    * uploads its instances. True when one did: the core's `reapply` then draws it. */
   settle(g: ParticlesHost, memory?: WebAssembly.Memory): boolean {
+    const uploaded = this.settleChunk(g, memory, this.pacing.sliceMs);
+    this.scheduleIdle(g, memory);
+    return uploaded;
+  }
+
+  private settleChunk(
+    g: ParticlesHost,
+    memory: WebAssembly.Memory | undefined,
+    sliceMs: number,
+  ): boolean {
     let uploaded = false;
-    const yieldNow = this.slice();
+    const yieldNow = this.slice(sliceMs);
     for (const [id, h] of this.held) {
       const sim = h.sim;
       if (!sim?.settling) continue;
+      if (yieldNow?.()) break;
       const before = sim.stats.steps;
       sim.advance(yieldNow);
       this.evidence.sim_steps += sim.stats.steps - before;

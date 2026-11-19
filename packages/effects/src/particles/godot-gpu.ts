@@ -28,6 +28,8 @@
 // runs every frame for every emitter, so it allocates nothing and reads the material through
 // fields resolved once per configuration; it is bit-identical to the shader as written (same
 // float64 operations, same operand order), which `test/particles-godot-gpu-digest.test.ts` pins.
+// Bursts retain every emitter clock step but may skip particle lives overwritten by a restart.
+// Clock planning and particle shading both honor the caller's cooperative yield predicate.
 
 /** A sampled curve or gradient texture: `width` x `height` texels of RGBA floats, row-major. */
 export interface GodotCurveTexture {
@@ -941,6 +943,9 @@ export interface GodotGpuStats {
   steps: number;
   restarts: number;
   processRequests: number;
+  /** Shader particle-passes still planned for this burst; null while planning or on the
+   * full fallback path, zero when settled. Clock-only planning also obeys the yield budget. */
+  burstParticlePassesRemaining: number | null;
 }
 
 /** Features the material or emitter uses that this port does not model (see the file header). */
@@ -989,11 +994,17 @@ const INIT_FLOATS = 21;
  * pass draws them once per particle life. The results are bit-identical to evaluating the shader
  * as written.
  *
- * A burst (the `pre_process_time` passes after a clear, a process request's passes) may be spread
- * over several `update` calls: given a `yieldNow` predicate, the burst stops between two passes
- * once it answers true (after at least one pass per call), and the emitter is `settling` until the
- * burst is done. Every call made while settling (`configure`, `setEmitting`, `restart`,
- * `requestProcess`, `update`) is queued and replayed in order once the burst is done, so the
+ * A burst (the `pre_process_time` passes after a clear, a process request's passes) can skip
+ * overwritten lives when its restart phases are in range and each pass is shorter than a life:
+ * every emitter clock operation runs, but each particle is shaded only from its last restart
+ * (or from the start if it never restarts). START overwrites all modeled particle state, so
+ * earlier lives cannot affect the final instances. TIME stays the update's shader time.
+ *
+ * Every burst may be spread over several `update` calls: given a `yieldNow` predicate,
+ * planning stops between clock passes, skip-ahead shading between particle-passes, and the
+ * full fallback between emitter passes once it answers true (after at least one work unit).
+ * The emitter stays `settling` through the burst and any paced queue replay. Every call made
+ * while settling (`configure`, `setEmitting`, `restart`, `requestProcess`, `update`) is queued and replayed in order once the burst is done, so the
  * emitter ends in exactly the state the same calls make without the predicate. A settling
  * emitter's particles are mid-burst: the caller draws nothing of it (not `pack`).
  */
@@ -1024,6 +1035,7 @@ export class GodotGpuEmitter {
     frameDelta: number;
   } | null = null;
   /** The calls made while a burst settles, replayed in order once it is done. */
+  private replaying = false;
   private queued: (
     | { op: "update"; frameDelta: number; time: number | undefined }
     | { op: "configure"; config: GodotGpuEmitterConfig }
@@ -1033,7 +1045,21 @@ export class GodotGpuEmitter {
   )[] = [];
   /** The current `update` call's yield predicate. */
   private yieldNow: (() => boolean) | undefined = undefined;
-  readonly stats: GodotGpuStats = { steps: 0, restarts: 0, processRequests: 0 };
+  private skip: {
+    from: Float64Array;
+    scanTodo: number;
+    pass: number;
+    index: number;
+    prevPhase: number;
+    scanning: boolean;
+    restoreClock: () => void;
+  } | null = null;
+  readonly stats: GodotGpuStats = {
+    steps: 0,
+    restarts: 0,
+    processRequests: 0,
+    burstParticlePassesRemaining: 0,
+  };
 
   // Per-pass and per-particle scratch.
   private readonly seed = { v: 0 };
@@ -1079,7 +1105,7 @@ export class GodotGpuEmitter {
    * clears the emitter, as `particles_set_amount` does. A material is read once, when its object
    * changes: pass a new object to change one. */
   configure(config: GodotGpuEmitterConfig): void {
-    if (this.burst !== null) {
+    if (this.burst !== null || (!this.replaying && this.queued.length > 0)) {
       this.queued.push({ op: "configure", config });
       return;
     }
@@ -1096,7 +1122,7 @@ export class GodotGpuEmitter {
   }
 
   setEmitting(on: boolean): void {
-    if (this.burst !== null) {
+    if (this.burst !== null || (!this.replaying && this.queued.length > 0)) {
       this.queued.push({ op: "emitting", on });
       return;
     }
@@ -1105,7 +1131,7 @@ export class GodotGpuEmitter {
 
   /** `particles_restart`. */
   restart(): void {
-    if (this.burst !== null) {
+    if (this.burst !== null || (!this.replaying && this.queued.length > 0)) {
       this.queued.push({ op: "restart" });
       return;
     }
@@ -1115,7 +1141,7 @@ export class GodotGpuEmitter {
 
   /** `particles_request_process_time`. */
   requestProcess(time: number): void {
-    if (this.burst !== null) {
+    if (this.burst !== null || (!this.replaying && this.queued.length > 0)) {
       this.queued.push({ op: "request", time });
       return;
     }
@@ -1125,7 +1151,7 @@ export class GodotGpuEmitter {
 
   /** A burst is in progress (see the class note): its particles are not to be drawn. */
   get settling(): boolean {
-    return this.burst !== null;
+    return this.burst !== null || this.queued.length > 0;
   }
 
   /** gl_compatibility's `particles_is_inactive`: nothing is drawn. */
@@ -1152,36 +1178,45 @@ export class GodotGpuEmitter {
 
   /** `update_particles` for this emitter, given the renderer's frame delta (seconds) and its
    * total time (the shader's `TIME`; turbulence reads it), by default advanced by the delta.
-   * `yieldNow` (see the class note) may stop a burst between passes; without it a burst runs
+   * `yieldNow` (see the class note) may stop planning or shading at a work-unit boundary; without it a burst runs
    * to its end in this call. */
   update(frameDelta: number, time?: number, yieldNow?: () => boolean): void {
+    const replayOnly = this.burst === null && this.queued.length > 0;
     this.yieldNow = yieldNow;
-    if (this.burst !== null) {
+    if (this.settling) {
       this.queued.push({ op: "update", frameDelta, time });
-      this.resumeBurst();
+      if (this.burst !== null) this.resumeBurst();
     } else this.runUpdate(frameDelta, time ?? this.time + frameDelta);
-    this.replay();
+    this.replay(replayOnly);
   }
 
   /** Continue a burst in progress with no new step (no time passed: a frame with no update to
    * give), then replay what was queued once it is done. Nothing happens unless `settling`. */
   advance(yieldNow?: () => boolean): void {
-    if (this.burst === null) return;
+    if (!this.settling) return;
+    const replayOnly = this.burst === null;
     this.yieldNow = yieldNow;
-    this.resumeBurst();
-    this.replay();
+    if (this.burst !== null) this.resumeBurst();
+    this.replay(replayOnly);
   }
 
   /** The calls made while settling, in order, once the burst is done (one may start another). */
-  private replay(): void {
+  private replay(allowOne = false): void {
     while (this.burst === null && this.queued.length > 0) {
+      if (!allowOne && this.yieldNow?.() === true) break;
+      allowOne = false;
       const q = this.queued.shift() as (typeof this.queued)[number];
-      if (q.op === "update")
-        this.runUpdate(q.frameDelta, q.time ?? this.time + q.frameDelta);
-      else if (q.op === "configure") this.configure(q.config);
-      else if (q.op === "emitting") this.setEmitting(q.on);
-      else if (q.op === "restart") this.restart();
-      else this.requestProcess(q.time);
+      this.replaying = true;
+      try {
+        if (q.op === "update")
+          this.runUpdate(q.frameDelta, q.time ?? this.time + q.frameDelta);
+        else if (q.op === "configure") this.configure(q.config);
+        else if (q.op === "emitting") this.setEmitting(q.on);
+        else if (q.op === "restart") this.restart();
+        else this.requestProcess(q.time);
+      } finally {
+        this.replaying = false;
+      }
     }
     this.yieldNow = undefined;
   }
@@ -1211,6 +1246,7 @@ export class GodotGpuEmitter {
     }
     const fixed = c.fixedFps > 0 ? c.fixedFps : 0;
     if (this.clear && c.preProcessTime > 0) {
+      this.stats.burstParticlePassesRemaining = null;
       this.burst = {
         stage: "pre",
         todo: c.preProcessTime,
@@ -1243,6 +1279,7 @@ export class GodotGpuEmitter {
       this.process(frameDelta * timeScale);
     }
     if (this.requestTime > 0) {
+      this.stats.burstParticlePassesRemaining = null;
       this.burst = {
         stage: "request",
         todo: this.requestTime,
@@ -1257,20 +1294,191 @@ export class GodotGpuEmitter {
    * before this call's first pass). */
   private resumeBurst(): void {
     const b = this.burst as NonNullable<typeof this.burst>;
-    let passes = 0;
-    while (b.todo >= 0) {
-      if (passes > 0 && this.yieldNow?.() === true) return;
-      this.process(b.ft);
-      b.todo -= b.ft;
-      passes++;
+    if (!this.trySkipBurst()) {
+      let passes = 0;
+      while (b.todo >= 0) {
+        if (passes > 0 && this.yieldNow?.() === true) return;
+        this.process(b.ft);
+        b.todo -= b.ft;
+        passes++;
+      }
     }
+    if (b.todo >= 0) return;
+    this.skip = null;
+    this.stats.burstParticlePassesRemaining = 0;
     this.burst = null;
     if (b.stage === "pre") this.mainStep(b.frameDelta);
     else this.requestTime = 0;
   }
 
-  /** `_particles_process(delta)`: one pass of the process shader over every particle. */
-  private process(delta: number): void {
+  /** The proof needs a restart phase in [0, 1) and a pass shorter than one life. START
+   * replaces every particle attribute in all modeled materials; there are no inter-particle
+   * inputs. Unmodeled interactions are ignored by both paths, as by gl_compatibility. */
+  private canSkipBurst(): boolean {
+    const b = this.burst as NonNullable<typeof this.burst>;
+    const c = this.config;
+    return (
+      Number.isFinite(b.todo) &&
+      Number.isFinite(b.ft) &&
+      b.ft > 0 &&
+      b.todo - b.ft < b.todo &&
+      Number.isFinite(c.lifetime) &&
+      c.lifetime > b.ft &&
+      this.phase + b.ft / c.lifetime > this.phase &&
+      this.phase >= 0 &&
+      this.phase < 1 &&
+      Number.isSafeInteger(this.cycle) &&
+      this.cycle >= 0 &&
+      Number.isSafeInteger(
+        this.cycle + Math.ceil((b.todo + b.ft) / c.lifetime) + 2,
+      ) &&
+      c.randomness >= 0 &&
+      c.randomness <= 1 &&
+      c.explosiveness >= 0 &&
+      c.explosiveness <= 1
+    );
+  }
+
+  /** Keep every clock operation, but shade only at and after each particle's last restart.
+   * A clock-only sweep records restarts, testing only particle slots intersecting the phase
+   * interval of that pass. The shader predicate still decides the exact restart, including its
+   * cycle-dependent randomness. Scratch is one pass index per particle, independent of burst
+   * duration; one-shot and already-dead particles retain their final life's state too. */
+  private trySkipBurst(): boolean {
+    const b = this.burst as NonNullable<typeof this.burst>;
+    if (this.skip === null) {
+      if (!this.canSkipBurst()) return false;
+      const phase = this.phase;
+      const cycle = this.cycle;
+      const clear = this.clear;
+      const emitting = this.emitting;
+      const steps = this.stats.steps;
+      this.skip = {
+        // Zero means simulate from the start if the particle never restarts in this burst.
+        from: new Float64Array(this.particles.length),
+        scanTodo: b.todo,
+        pass: 0,
+        index: -1,
+        prevPhase: phase,
+        scanning: true,
+        restoreClock: () => {
+          this.phase = phase;
+          this.cycle = cycle;
+          this.clear = clear;
+          this.emitting = emitting;
+          this.stats.steps = steps;
+        },
+      };
+    }
+    const s = this.skip;
+    const c = this.config;
+    const total = this.particles.length;
+    const from = s.from;
+    let worked = false;
+    const shouldYield = () => worked && this.yieldNow?.() === true;
+    const spread = 1 - c.explosiveness;
+    const record = (first: number, last: number) => {
+      const systemPhase = this.phase;
+      for (let index = first; index <= last; index++) {
+        // The shade restart predicate, in the same operand order. Fractional delta is
+        // evaluated by shade itself when the selected restart is actually simulated.
+        let restartPhase = index / total;
+        if (c.randomness > 0) {
+          let seed = this.cycle >>> 0;
+          if (restartPhase >= systemPhase) seed = (seed - 1) >>> 0;
+          seed = Math.imul(seed, total) >>> 0;
+          seed = (seed + index) >>> 0;
+          const random = (godotParticleHash(seed) % 65536) / 65536;
+          restartPhase += (c.randomness * random * 1) / total;
+        }
+        restartPhase *= 1 - c.explosiveness;
+        if (
+          systemPhase > s.prevPhase
+            ? restartPhase >= s.prevPhase && restartPhase < systemPhase
+            : restartPhase >= s.prevPhase || restartPhase < systemPhase
+        )
+          from[index] = s.pass;
+      }
+    };
+    // Slot i contains restartPhase in [i * spread / total, (i + 1) * spread / total].
+    // Include a neighbor at each bound so rounding here cannot discard a shader match.
+    const interval = (lo: number, hi: number) => {
+      const first = Math.max(0, Math.floor((lo / spread) * total) - 1);
+      const last = Math.min(total - 1, Math.floor((hi / spread) * total) + 1);
+      record(first, last);
+    };
+    while (s.scanning && s.scanTodo >= 0) {
+      if (shouldYield()) return true;
+      s.prevPhase = this.processClock(b.ft);
+      // Planning is not a simulated pass; keep the public counter monotonic across yields.
+      this.stats.steps--;
+      const systemPhase = this.phase;
+      if (this.emitting) {
+        if (spread === 0) {
+          if (systemPhase <= s.prevPhase || s.prevPhase === 0)
+            record(0, total - 1);
+        } else if (systemPhase > s.prevPhase)
+          interval(s.prevPhase, systemPhase);
+        else {
+          interval(s.prevPhase, 1);
+          interval(0, systemPhase);
+        }
+      }
+      this.clear = false;
+      s.scanTodo -= b.ft;
+      s.pass++;
+      worked = true;
+    }
+    if (s.scanning) {
+      this.stats.burstParticlePassesRemaining = from.reduce(
+        (sum, first) => sum + s.pass - first,
+        0,
+      );
+      s.restoreClock();
+      s.scanning = false;
+      s.pass = 0;
+    }
+    while (b.todo >= 0) {
+      if (s.index === -1) {
+        if (shouldYield()) return true;
+        s.prevPhase = this.processClock(b.ft);
+        const emission = c.localCoords ? IDENTITY : c.emissionTransform;
+        const vp = this.mat.velocityPivot;
+        xf(emission, vp[0], vp[1], vp[2], 1, this.pivot);
+        s.index = 0;
+        worked = true;
+      }
+      while (s.index < total) {
+        if (s.pass < from[s.index]) {
+          s.index++;
+          continue;
+        }
+        if (shouldYield()) return true;
+        this.shade(
+          this.particles[s.index],
+          s.index,
+          total,
+          b.ft,
+          this.phase,
+          s.prevPhase,
+          c.localCoords ? IDENTITY : c.emissionTransform,
+          c.lifetime > 0 ? c.lifetime : 1,
+        );
+        this.stats.burstParticlePassesRemaining =
+          (this.stats.burstParticlePassesRemaining as number) - 1;
+        s.index++;
+        worked = true;
+      }
+      this.clear = false;
+      b.todo -= b.ft;
+      s.pass++;
+      s.index = -1;
+    }
+    return true;
+  }
+
+  /** The emitter-only part of `_particles_process`, shared by full and clock-only passes. */
+  private processClock(delta: number): number {
     const c = this.config;
     this.stats.steps++;
     const lifetime = c.lifetime > 0 ? c.lifetime : 1;
@@ -1280,15 +1488,24 @@ export class GodotGpuEmitter {
       if (c.oneShot) this.emitting = false;
       this.cycle++;
     }
-    const systemPhase = newPhase;
     const prevPhase = this.phase;
     this.phase = newPhase;
+    return prevPhase;
+  }
+
+  /** `_particles_process(delta)`: one pass of the process shader over selected particles. */
+  private process(delta: number, from?: Float64Array, pass = 0): void {
+    const c = this.config;
+    const prevPhase = this.processClock(delta);
+    const systemPhase = this.phase;
+    const lifetime = c.lifetime > 0 ? c.lifetime : 1;
     const emission = c.localCoords ? IDENTITY : c.emissionTransform;
     const vp = this.mat.velocityPivot;
     xf(emission, vp[0], vp[1], vp[2], 1, this.pivot);
     const particles = this.particles;
     const total = particles.length;
     for (let index = 0; index < total; index++) {
+      if (from && pass < from[index]) continue;
       this.shade(
         particles[index],
         index,

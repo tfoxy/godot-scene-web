@@ -1,7 +1,7 @@
 // J1: shader programs whose links settle in the background. The loop polls the core once per frame
 // callback, before that callback's applier run; a settle with nothing accepted is revisited and drawn
 // (no ack, no credit); with a transaction waiting, that transaction's run takes it.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LoopOptions } from "../src/loop";
 import { harness, session, tx } from "./fakes";
 
@@ -181,4 +181,16 @@ describe("program links settling between frames (J1)", () => {
       "draw 1",
     ]);
   });
+});
+
+it("suspends idle particle scheduling on loss and disposal, and releases it on restore", () => {
+  const h = streaming();
+  const pause = vi.fn();
+  Reflect.set(h.core, "pauseParticles", pause);
+  h.loop.contextLost();
+  expect(pause).toHaveBeenLastCalledWith(true);
+  h.loop.contextRestored();
+  expect(pause).toHaveBeenLastCalledWith(false);
+  h.loop.dispose();
+  expect(pause.mock.calls).toEqual([[true], [false], [true]]);
 });

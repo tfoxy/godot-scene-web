@@ -569,6 +569,7 @@ export class StreamLoop {
   contextLost(): void {
     if (this.phase === "disposed") return;
     this.ctx = "lost";
+    this.o.core.pauseParticles?.(true);
     this.restoreFetcher?.abort();
     this.restoreFetcher = null;
     this.restoreWant = null;
@@ -579,6 +580,7 @@ export class StreamLoop {
   contextRestored(): void {
     if (this.phase === "disposed" || this.ctx === "ok") return;
     this.ctx = "restoring";
+    this.o.core.pauseParticles?.(false);
     this.cap.activity(this.o.clock.now(), "restore");
   }
 
@@ -643,6 +645,7 @@ export class StreamLoop {
     this.restoreFetcher?.abort();
     this.restoreFetcher = null;
     this.phase = "disposed";
+    this.o.core.pauseParticles?.(true);
     this.stopFrames();
   }
 

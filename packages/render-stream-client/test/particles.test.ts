@@ -2,7 +2,7 @@
 // drop their simulation (never drawn from the old output) and start a fresh one when the code
 // arrives; other emitters are untouched.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GswParticles, type ParticlesHost } from "../src/particles";
 
 const builtin = {
@@ -196,11 +196,43 @@ describe("GswParticles scratch upload", () => {
 });
 
 describe("GswParticles burst pacing (J1)", () => {
+  it("keeps eligible long preprocess paced until its planned work completes", () => {
+    const pre = {
+      ...emitter(1, 20),
+      amount: 40,
+      fixed_fps: 30,
+      f: { ...emitter(1, 20).f, pre_process_time: 400, lifetime: 2 },
+    };
+    const start = JSON.stringify({
+      ids: [1],
+      emitters: [pre],
+      materials: [material(20, 1, false)],
+    });
+    let clock = 0;
+    const now = () => clock++;
+    const paced = new GswParticles({ sliceMs: 3, now });
+    const { g, sets } = host([start]);
+    paced.step(g);
+    expect(paced.settling).toBe(true);
+    expect(paced.evidence.settling_steps).toBe(1);
+    expect(sets).toEqual([1]);
+    while (paced.settling) paced.settle(g);
+    expect(paced.burstParticlePassesRemaining).toBe(0);
+    expect(sets).toEqual([1, 1]);
+    expect(paced.evidence.sim_steps).toBe(12000);
+  });
+
   it("draws a preprocessing emitter as nothing until its burst is done, then as the unpaced one", () => {
     const pre = {
       ...emitter(1, 20),
       amount: 6,
-      f: { ...emitter(1, 20).f, pre_process_time: 2, lifetime: 1.5 },
+      // Out-of-range restart randomness selects the conservative pacing fallback.
+      f: {
+        ...emitter(1, 20).f,
+        pre_process_time: 2,
+        lifetime: 1.5,
+        randomness: 1.1,
+      },
     };
     const start = JSON.stringify({
       ids: [1],
@@ -252,7 +284,12 @@ describe("GswParticles idle settle (J1)", () => {
     const pre = {
       ...emitter(1, 20),
       amount: 6,
-      f: { ...emitter(1, 20).f, pre_process_time: 2, lifetime: 1.5 },
+      f: {
+        ...emitter(1, 20).f,
+        pre_process_time: 2,
+        lifetime: 1.5,
+        randomness: 1.1,
+      },
     };
     const start = JSON.stringify({
       ids: [1],
@@ -287,5 +324,211 @@ describe("GswParticles idle settle (J1)", () => {
     expect(a.taken).toHaveLength(2);
     expect(Array.from(a.taken[1])).toEqual(Array.from(b.taken[0]));
     expect(paced.settle(a.g)).toBe(false);
+  });
+});
+
+describe("GswParticles off-frame chunks", () => {
+  function idleHarness() {
+    const pre = {
+      ...emitter(1, 20),
+      amount: 40,
+      fixed_fps: 30,
+      f: { ...emitter(1, 20).f, pre_process_time: 2, lifetime: 2 },
+    };
+    const start = JSON.stringify({
+      ids: [1],
+      emitters: [pre],
+      materials: [material(20, 1, false)],
+    });
+    const a = host([start]);
+    const b = host([start]);
+    const plain = new GswParticles();
+    const pending = new Set<() => void>();
+    let clock = 0;
+    const uploaded = vi.fn();
+    const paced = new GswParticles(
+      {
+        sliceMs: 6,
+        now: () => clock,
+        idle: {
+          sliceMs: 8,
+          schedule: (run) => {
+            pending.add(run);
+            return () => pending.delete(run);
+          },
+        },
+      },
+      uploaded,
+    );
+    // Load the simulation before stepping so each clock/shader unit has a deterministic cost.
+    paced.syncOnly(a.g);
+    const held = Reflect.get(paced, "held") as Map<number, { sim: object }>;
+    const sim = held.get(1)!.sim;
+    const methods = sim as {
+      processClock(delta: number): number;
+      shade(...args: unknown[]): void;
+    };
+    const clockStep = methods.processClock.bind(sim);
+    vi.spyOn(methods, "processClock").mockImplementation((dt) => {
+      clock++;
+      return clockStep(dt);
+    });
+    const shade = methods.shade.bind(sim);
+    vi.spyOn(methods, "shade").mockImplementation((...args) => {
+      // Burst shaders cost one unit; ordinary frame passes are charged by processClock.
+      if (Reflect.get(sim, "burst") !== null) clock++;
+      shade(...args);
+    });
+    const update = vi.spyOn(
+      Reflect.get(sim, "constructor").prototype,
+      "update",
+    );
+    const run = () => {
+      expect(pending.size).toBe(1);
+      const task = [...pending][0];
+      pending.delete(task);
+      const before = clock;
+      task();
+      expect(clock - before).toBeLessThanOrEqual(8);
+    };
+    return {
+      paced,
+      plain,
+      a,
+      b,
+      pending,
+      run,
+      uploaded,
+      update,
+      sim,
+      clock: () => clock,
+    };
+  }
+
+  it("converges a paused stream using bounded macrotasks and stops when settled", () => {
+    const h = idleHarness();
+    h.paced.step(h.a.g);
+    h.plain.step(h.b.g);
+    expect(h.clock()).toBeLessThanOrEqual(6);
+    expect(h.paced.settling).toBe(true);
+    expect(h.uploaded).not.toHaveBeenCalled(); // Scheduling never advances inside step.
+    const updates = h.update.mock.calls.length;
+    let chunks = 0;
+    while (h.pending.size) {
+      h.run();
+      chunks++;
+      expect(chunks).toBeLessThan(1000);
+    }
+    expect(h.paced.settling).toBe(false);
+    expect(h.uploaded).toHaveBeenCalledOnce();
+    expect(h.update.mock.calls.length).toBe(updates);
+    expect(h.paced.evidence.sim_steps).toBe(h.plain.evidence.sim_steps);
+    expect(h.paced.burstParticlePassesRemaining).toBe(0);
+    expect(h.a.sets).toEqual([1, 1]);
+    h.update.mockRestore();
+  });
+
+  it("interleaves frame updates and idle advances without double-stepping", () => {
+    const h = idleHarness();
+    for (let frame = 0; frame < 3; frame++) {
+      h.paced.step(h.a.g);
+      h.plain.step(h.b.g);
+      if (h.pending.size) h.run();
+    }
+    // Three updates each for paced and plain, irrespective of how many idle chunks ran.
+    expect(h.update).toHaveBeenCalledTimes(6);
+    while (h.pending.size) h.run();
+    expect(h.update).toHaveBeenCalledTimes(6);
+    expect(h.paced.evidence.sim_steps).toBe(h.plain.evidence.sim_steps);
+    h.update.mockRestore();
+  });
+
+  it("cancels on dispose, even if a cancelled callback is delivered", () => {
+    const h = idleHarness();
+    h.paced.step(h.a.g);
+    const late = [...h.pending][0];
+    const before = h.clock();
+    h.paced.dispose();
+    expect(h.pending.size).toBe(0);
+    late();
+    expect(h.clock()).toBe(before);
+    expect(h.uploaded).not.toHaveBeenCalled();
+    h.update.mockRestore();
+  });
+
+  it("cancels on context loss and resumes after restore", () => {
+    const h = idleHarness();
+    h.paced.step(h.a.g);
+    h.paced.pauseIdle(true);
+    expect(h.pending.size).toBe(0);
+    const before = h.clock();
+    h.paced.pauseIdle(false);
+    expect(h.clock()).toBe(before);
+    h.paced.settle(h.a.g);
+    while (h.pending.size) h.run();
+    expect(h.paced.settling).toBe(false);
+    h.update.mockRestore();
+  });
+
+  it("does no idle work while hidden and resumes from a visible frame", () => {
+    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    const h = idleHarness();
+    try {
+      h.paced.step(h.a.g);
+      h.plain.step(h.b.g);
+      const late = [...h.pending][0];
+      const before = h.clock();
+      hidden.mockReturnValue(true);
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(h.pending.size).toBe(0);
+      // Context restoration must not resume work on a hidden page.
+      h.paced.pauseIdle(true);
+      h.paced.pauseIdle(false);
+      for (let dispatch = 0; dispatch < 100; dispatch++) late();
+      expect(h.clock()).toBe(before);
+      expect(h.pending.size).toBe(0);
+      expect(h.uploaded).not.toHaveBeenCalled();
+      expect(h.paced.settling).toBe(true);
+
+      hidden.mockReturnValue(false);
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(h.clock()).toBe(before);
+      expect(h.pending.size).toBe(0); // Wait until the client presents another frame.
+      h.paced.settle(h.a.g);
+      expect(h.pending.size).toBe(1);
+      const resumed = [...h.pending];
+      late();
+      expect([...h.pending]).toEqual(resumed);
+      while (h.pending.size) h.run();
+      expect(h.paced.settling).toBe(false);
+      expect(h.paced.evidence.sim_steps).toBe(h.plain.evidence.sim_steps);
+      expect(h.update).toHaveBeenCalledTimes(2); // Idle chunks never add frame updates.
+    } finally {
+      h.paced.dispose();
+      h.update.mockRestore();
+      hidden.mockRestore();
+    }
+  });
+
+  it("never schedules idle work when a burst starts on a hidden page", () => {
+    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    const h = idleHarness();
+    try {
+      h.paced.step(h.a.g);
+      expect(h.paced.settling).toBe(true);
+      expect(h.pending.size).toBe(0);
+      h.paced.pauseIdle(true);
+      hidden.mockReturnValue(false);
+      document.dispatchEvent(new Event("visibilitychange"));
+      h.paced.settle(h.a.g);
+      expect(h.pending.size).toBe(0); // Visibility cannot clear the context-loss pause.
+      h.paced.pauseIdle(false);
+      h.paced.settle(h.a.g);
+      expect(h.pending.size).toBe(1);
+    } finally {
+      h.paced.dispose();
+      h.update.mockRestore();
+      hidden.mockRestore();
+    }
   });
 });

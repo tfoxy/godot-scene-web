@@ -19,7 +19,11 @@ import {
 import type { RenderStreamProtocol } from "./endpoint";
 import { type ExtensionCore, ITEM_ROW_STRIDE } from "./extensions";
 import type { ResourceHintRecord } from "./hints";
-import { CLIENT_PARTICLE_PACING, GswParticles } from "./particles";
+import {
+  CLIENT_PARTICLE_PACING,
+  GswParticles,
+  type ParticleBurstPacing,
+} from "./particles";
 import {
   definePrograms,
   LIVE_PROGRAM_BUDGET,
@@ -168,6 +172,8 @@ export interface StreamCore {
    * passes), and one that ends is applied over the same state. True when that applied (the
    * caller draws). Absent: bursts advance only with applies. */
   settleParticles?(seq: number): boolean;
+  /** Suspend off-frame particle work during context loss. */
+  pauseParticles?(paused: boolean): void;
   apply(seq: number): void;
   /** What the last `apply` did to the draw list, read after it (`RenderStreamStats`). The
    * returned object may be reused by the next call. Absent: the loop reports none. */
@@ -292,7 +298,9 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     colorStep: 0,
   };
   private coding: LiveCoding | null = null;
-  private particles = new GswParticles(CLIENT_PARTICLE_PACING);
+  private particles: GswParticles;
+  private particleUploadReady = false;
+  private particleIdlePaused = false;
   private programsHeld = false;
   /** Accept exposes the next state's shaders before its payloads are ready for apply. */
   private transactionPending = false;
@@ -329,7 +337,9 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     private protocol: RenderStreamProtocol,
     private readonly liveCoding: string,
     private readonly inboundBytes: number,
+    private readonly particlePacing: ParticleBurstPacing = CLIENT_PARTICLE_PACING,
   ) {
+    this.particles = this.makeParticles();
     this.instance = build(protocol);
     this.instance.set_async_programs?.(true);
   }
@@ -347,6 +357,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     this.coding?.free();
     this.coding = null;
     if (this.instance === null || protocol !== this.protocol) {
+      this.resetParticles();
       const old = this.instance;
       this.instance = null;
       old?.free();
@@ -355,7 +366,6 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       this.retireQueries();
       this.decoded = null;
       this.lastAcceptedSeq = 0;
-      this.particles = new GswParticles(CLIENT_PARTICLE_PACING);
       this.programs.defined = 0;
       this.programs.refused = 0;
       this.programs.library_reads = 0;
@@ -410,7 +420,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       ).slice();
     }
     if (!sessionSeen) {
-      this.particles = new GswParticles(CLIENT_PARTICLE_PACING);
+      this.resetParticles();
       if (g.live_session(len, this.protocol) < 0)
         throw failWith(null, g.error());
       return { kind: "session", meta: JSON.parse(g.session_meta()) };
@@ -630,6 +640,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       throw e;
     }
     this.particles.step(this.g, this.memory);
+    this.particleUploadReady = false;
   }
 
   pollPrograms(): boolean {
@@ -661,11 +672,33 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     return true;
   }
 
+  private makeParticles(): GswParticles {
+    const particles = new GswParticles(this.particlePacing, () => {
+      // Uploads happen off-frame; reapply and GL draws stay on the frame callback.
+      this.particleUploadReady = true;
+    });
+    particles.pauseIdle(this.particleIdlePaused);
+    return particles;
+  }
+
+  private resetParticles(): void {
+    this.particles.dispose();
+    this.particleUploadReady = false;
+    this.particles = this.makeParticles();
+  }
+
+  pauseParticles(paused: boolean): void {
+    this.particleIdlePaused = paused;
+    this.particles.pauseIdle(paused);
+  }
+
   settleParticles(_seq: number): boolean {
     const g = this.instance;
-    if (g === null || g.reapply === undefined || !this.particles.settling)
-      return false;
-    if (!this.particles.settle(g, this.memory)) return false;
+    if (g === null || g.reapply === undefined) return false;
+    const uploaded =
+      this.particles.settling && this.particles.settle(g, this.memory);
+    if (!uploaded && !this.particleUploadReady) return false;
+    this.particleUploadReady = false;
     return g.reapply() > 0;
   }
 
@@ -691,6 +724,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   }
 
   reset(keepPayloads: boolean): void {
+    this.resetParticles();
     this.instance?.live_reset(keepPayloads);
     this.programsHeld = false;
     this.transactionPending = false;
@@ -864,6 +898,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.particles.dispose();
     this.coding?.free();
     this.coding = null;
     this.instance?.free();

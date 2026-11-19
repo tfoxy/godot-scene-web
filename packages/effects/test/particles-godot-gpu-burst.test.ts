@@ -1,7 +1,7 @@
 // J1: a burst (the preprocess after a clear, a process request) spread over `update` calls by a
 // yield predicate ends in exactly the state the same calls make without one: every call made while
 // the emitter settles is queued and replayed in order. Compared on the packed instances, bit for bit.
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   GODOT_GPU_INSTANCE_FLOATS,
   GodotGpuEmitter,
@@ -88,6 +88,15 @@ function script(): Call[] {
 }
 
 describe("Godot GPU particles: bursts spread over updates (J1)", () => {
+  // Keep the full path's queue/replay contract covered even for otherwise eligible configs.
+  beforeEach(() => {
+    vi.spyOn(
+      GodotGpuEmitter.prototype as unknown as { trySkipBurst(): boolean },
+      "trySkipBurst",
+    ).mockReturnValue(false);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
   it("ends bit-identical to the unspread run, whatever the slice", () => {
     for (const fixedFps of [0, 30]) {
       for (const n of [1, 2, 7, 40]) {
@@ -118,9 +127,15 @@ describe("Godot GPU particles: bursts spread over updates (J1)", () => {
     expect(spread.settling).toBe(true);
     // 3 s at 30 passes/s is 91 passes; one pass per update while the predicate says yield.
     let updates = 1;
-    while (spread.settling) {
+    while (spread.settling && updates < 120) {
       spread.update(1 / 60, 1 + updates / 60, () => true);
       updates++;
+    }
+    // Bounded replay can consume one queued update per yield. Stop adding frames so it drains.
+    let advances = 0;
+    while (spread.settling) {
+      spread.advance(() => true);
+      expect(++advances).toBeLessThan(1000);
     }
     expect(updates).toBeGreaterThan(80);
     for (let i = 0; i < updates; i++) plain.update(1 / 60, 1 + i / 60);
