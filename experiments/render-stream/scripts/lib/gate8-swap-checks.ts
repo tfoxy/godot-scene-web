@@ -29,9 +29,9 @@ import {
 
 // ------------------------------------------------------------------------------- the bounds
 
-/** Allocator in-use heap swap minus control at every idle sample, MiB. */
+/** Linux/Windows allocator in-use heap swap minus control at every idle sample, MiB. */
 export const HEAP_IN_USE_BOUND_MIB = { short: 1, cycle: 1 };
-/** Least-squares growth of the RssAnon difference after the first cycle, MiB per cycle. */
+/** Least-squares growth after cycle 1: RssAnon, private bytes or macOS in-use heap, MiB/cycle. */
 export const RSS_SLOPE_MB = { short: 0.5, cycle: 0.5 };
 /** swap-cycle-standby-cpu: the F1 bound idle-parity uses, a fraction of the control idle phase's
  * median per-frame CPU. */
@@ -43,7 +43,7 @@ export const RSS_NOTES =
 
 // ------------------------------------------------------------------------------- the evidence
 
-export type SwapPlatform = "linux" | "windows";
+export type SwapPlatform = "linux" | "windows" | "macos";
 
 export interface SwapAccounting {
   platform?: SwapPlatform;
@@ -377,7 +377,11 @@ function platformEvidence(leg: SwapLeg): string[] {
   const problems: string[] = [];
   const platforms = new Set<SwapPlatform>();
   const inspect = (label: string, a: SwapAccounting) => {
-    if (a.platform !== "linux" && a.platform !== "windows")
+    if (
+      a.platform !== "linux" &&
+      a.platform !== "windows" &&
+      a.platform !== "macos"
+    )
       problems.push(`${label}: invalid platform ${a.platform ?? "missing"}`);
     else platforms.add(a.platform);
   };
@@ -525,19 +529,20 @@ export interface RssPair {
   malloc_hblkhd: RssComponent;
 }
 
-/** Pair idle samples by cycle: bound in-use heap and anon growth after the first cycle. */
+/** Pair idle samples by cycle and apply the platform's heap and residency rules. */
 export function judgeRss(
   swap: SwapLeg,
   control: SwapLeg,
   n: number,
   bound: number,
   slopeBound: number,
-): Judged & { pairs: RssPair[] | WindowsRssPair[]; slope: number | null } {
+): Judged & { pairs: RssPair[] | PrivateHeapRssPair[]; slope: number | null } {
   if (
-    swap.rows[0]?.platform === "windows" &&
-    control.rows[0]?.platform === "windows"
+    (swap.rows[0]?.platform === "windows" ||
+      swap.rows[0]?.platform === "macos") &&
+    swap.rows[0]?.platform === control.rows[0]?.platform
   )
-    return judgeWindowsRss(swap, control, n, bound, slopeBound);
+    return judgePrivateHeapRss(swap, control, n, bound, slopeBound);
   const rule: string[] = [];
   const evidence = pairEvidence(swap, control);
   const pairs: RssPair[] = [];
@@ -631,7 +636,7 @@ export function judgeRss(
   };
 }
 
-export interface WindowsRssPair {
+export interface PrivateHeapRssPair {
   cycle: number;
   private_bytes: RssComponent;
   process_heap_allocated: RssComponent;
@@ -639,16 +644,17 @@ export interface WindowsRssPair {
   process_heap_committed: RssComponent;
 }
 
-function judgeWindowsRss(
+function judgePrivateHeapRss(
   swap: SwapLeg,
   control: SwapLeg,
   n: number,
   bound: number,
   slopeBound: number,
-): Judged & { pairs: WindowsRssPair[]; slope: number | null } {
+): Judged & { pairs: PrivateHeapRssPair[]; slope: number | null } {
+  const macos = swap.rows[0]?.platform === "macos";
   const rule: string[] = [];
   const evidence = pairEvidence(swap, control);
-  const pairs: WindowsRssPair[] = [];
+  const pairs: PrivateHeapRssPair[] = [];
   for (let k = 1; k <= n; k++) {
     const s = idleRows(swap).find((r) => r.cycle === k);
     const c = idleRows(control).find((r) => r.cycle === k);
@@ -693,13 +699,30 @@ function judgeWindowsRss(
         process_heap_committed: committed,
       });
   }
-  for (const p of pairs)
-    if (p.process_heap_allocated.diff_mb > bound)
-      rule.push(
-        `cycle ${p.cycle}: process_heap.allocated_bytes delta ${p.process_heap_allocated.diff_mb.toFixed(2)} MiB (bound ${bound})`,
-      );
+  if (!macos)
+    for (const p of pairs)
+      if (p.process_heap_allocated.diff_mb > bound)
+        rule.push(
+          `cycle ${p.cycle}: process_heap.allocated_bytes delta ${p.process_heap_allocated.diff_mb.toFixed(2)} MiB (bound ${bound})`,
+        );
   let sl: number | null = null;
   const later = pairs.filter((p) => p.cycle >= 2);
+  let heapSlope: number | null = null;
+  if (macos) {
+    if (later.length >= 2) {
+      heapSlope = slope(
+        later.map((p) => p.cycle),
+        later.map((p) => p.process_heap_allocated.diff_mb),
+      );
+      if (heapSlope > slopeBound)
+        rule.push(
+          `process_heap.allocated_bytes slope over cycles 2-${n}: ${heapSlope.toFixed(2)} MiB/cycle (bound ${slopeBound})`,
+        );
+    } else
+      rule.push(
+        `cannot judge process_heap.allocated_bytes slope over cycles 2-${n}: fewer than two pairs after cycle 1`,
+      );
+  }
   // Heap decommit makes short private-byte slopes noisy; wait for four pairs before judging.
   const judgeSlope = later.length >= 4;
   if (later.length >= 2) {
@@ -712,12 +735,18 @@ function judgeWindowsRss(
         `private_bytes slope over cycles 2-${n}: ${sl.toFixed(2)} MiB/cycle (bound ${slopeBound})`,
       );
   }
+  const heapDeltas = pairs
+    .map((p) => p.process_heap_allocated.diff_mb.toFixed(3))
+    .join(", ");
+  const heapDetail = macos
+    ? `macOS process_heap.allocated_bytes deltas ${heapDeltas} MiB (absolute offset unbounded: one-time allocator residency accepted as debt; slope over cycles 2-${n}: ${heapSlope === null ? "cannot judge" : heapSlope.toFixed(2)} MiB/cycle (bound ${slopeBound}))`
+    : `Process heap allocated deltas ${heapDeltas} MiB (bound ${bound})`;
   return {
     rule,
     evidence,
     pairs,
-    slope: sl,
-    detail: `Process heap allocated deltas ${pairs.map((p) => p.process_heap_allocated.diff_mb.toFixed(3)).join(", ")} MiB (bound ${bound}); private_bytes deltas ${pairs.map((p) => p.private_bytes.diff_mb.toFixed(2)).join(", ")} MiB (absolute offset unbounded; slope over cycles 2-${n}: ${sl === null ? "n/a" : sl.toFixed(2)} MiB/cycle${judgeSlope ? ` (bound ${slopeBound})` : ", not judged: needs >= 4 pairs"}); rss_bytes deltas ${pairs.map((p) => p.rss.diff_mb.toFixed(2)).join(", ")} MiB; process_heap.committed_bytes deltas ${pairs.map((p) => p.process_heap_committed.diff_mb.toFixed(2)).join(", ")} MiB (reported without bounds)`,
+    slope: macos ? heapSlope : sl,
+    detail: `${heapDetail}; private_bytes${macos ? " (phys_footprint)" : ""} deltas ${pairs.map((p) => p.private_bytes.diff_mb.toFixed(2)).join(", ")} MiB (absolute offset unbounded; slope over cycles 2-${n}: ${sl === null ? "n/a" : sl.toFixed(2)} MiB/cycle${judgeSlope ? ` (bound ${slopeBound})` : ", not judged: needs >= 4 pairs"}); rss_bytes deltas ${pairs.map((p) => p.rss.diff_mb.toFixed(2)).join(", ")} MiB; process_heap.committed_bytes deltas ${pairs.map((p) => p.process_heap_committed.diff_mb.toFixed(2)).join(", ")} MiB (reported without bounds)`,
   };
 }
 
@@ -774,9 +803,15 @@ export function judgeCpu(
   const evidence = pairEvidence(swap, control);
   if (
     swap.rows[0]?.platform === "windows" ||
-    control.rows[0]?.platform === "windows"
+    control.rows[0]?.platform === "windows" ||
+    swap.rows[0]?.platform === "macos" ||
+    control.rows[0]?.platform === "macos"
   ) {
-    const detail = "no per-frame main-thread CPU source on Windows (WLS-b)";
+    const detail =
+      swap.rows[0]?.platform === "macos" ||
+      control.rows[0]?.platform === "macos"
+        ? "no per-frame main-thread CPU source on macOS"
+        : "no per-frame main-thread CPU source on Windows (WLS-b)";
     evidence.push(detail);
     return { rule, evidence, detail, deltas: [] };
   }
@@ -912,7 +947,10 @@ export async function runG8sw(
 
   const shortSwap = await load("short/swap", "swap", SHORT_N);
   const shortControl = await load("short/control", "control", SHORT_N);
-  if (shortSwap.rows[0]?.platform === "windows")
+  if (shortSwap.rows[0]?.platform === "macos")
+    report.bounds.notes =
+      "macOS process_heap.allocated_bytes swap minus control growth over cycles 2..n is bounded at 0.5 MiB/cycle with at least two pairs after cycle 1; fewer pairs cannot judge and fail the rule. The absolute heap offset is unbounded: one-time allocator residency accepted as debt; private_bytes (phys_footprint) growth after cycle 1 is bounded at 0.5 MiB/cycle only with >= 4 pairs after cycle 1, otherwise reported without judgment. The absolute private_bytes offset, rss_bytes and process heap committed bytes are reported without bounds";
+  else if (shortSwap.rows[0]?.platform === "windows")
     report.bounds.notes =
       "Process heap allocated swap minus control is bounded at 1 MiB per idle sample; private_bytes growth after cycle 1 is bounded at 0.5 MiB/cycle only with >= 4 pairs after cycle 1, otherwise reported without judgment. The absolute private_bytes offset, rss_bytes and process heap committed bytes are reported without bounds";
   if (shortSwap.rows[0]?.platform !== shortControl.rows[0]?.platform) {
@@ -1103,7 +1141,11 @@ export async function runG8sw(
         "cycle/swap",
         rssFor("cycle/swap", cycleSwap, cycleControl, CYCLE_N, "cycle"),
       ]);
-    checks.push(fromJudged("swap-cycle-rss", report.bounds.notes, judged));
+    const rssCheck = fromJudged("swap-cycle-rss", report.bounds.notes, judged);
+    // Preserve the unbounded offsets even when the macOS growth rule fails.
+    if (shortSwap.rows[0]?.platform === "macos" && !rssCheck.passed)
+      rssCheck.detail += ` | ${judged.map(([name, j]) => `${name}: ${j.detail}`).join(" | ")}`;
+    checks.push(rssCheck);
   }
 
   // --- swap-cycle-standby-cpu --------------------------------------------------------------
@@ -1121,8 +1163,9 @@ export async function runG8sw(
       "LS3 (fork F1): on the cycle legs, per cycle, the swap run's idle-phase median hooked-block cost (params + churn, per frame, from frames.csv over the phase's process frames) plus its callback ns a frame, minus the control's, is within 1% of the control idle phase's median per-frame main-thread CPU; the short legs report the same numbers unjudged, as does the whole-frame CPU of every phase";
     const short = cpuFor("short/swap", shortSwap, shortControl, SHORT_N);
     if (
-      shortSwap.rows[0]?.platform === "windows" &&
-      shortControl.rows[0]?.platform === "windows"
+      (shortSwap.rows[0]?.platform === "windows" ||
+        shortSwap.rows[0]?.platform === "macos") &&
+      shortSwap.rows[0]?.platform === shortControl.rows[0]?.platform
     ) {
       checks.push({
         id: "swap-cycle-standby-cpu",

@@ -226,7 +226,10 @@
         "experiments/render-stream/scripts/lib/mfile-*.py",
         "experiments/render-stream/scripts/lib/m-equiv.py",
         "experiments/render-stream/scripts/mfile-linux-ref.sh",
-        "experiments/render-stream/scripts/m-file-test.py"
+        "experiments/render-stream/scripts/m-file-test.py",
+        "experiments/render-stream/scripts/lib/mswap-*.py",
+        "experiments/render-stream/scripts/m-swap-test.py",
+        "experiments/render-stream/scripts/test/self-test-mswap-driver.ts"
       ],
       "reach": ["pure", "macos"],
       "exclusive": true
@@ -783,13 +786,13 @@
       "reach": ["native:gate8@*"]
     },
     {
-      "why": "The portable swap driver and bundle run the short swap legs on Windows, with a pure driver and environment drift self-test",
+      "why": "The portable swap driver runs the short swap legs on Windows and macOS, with pure driver and environment drift self-tests",
       "paths": [
         "experiments/render-stream/scripts/lib/wswap-driver.py",
         "experiments/render-stream/scripts/lib/wswap-bundle.py",
         "experiments/render-stream/scripts/test/self-test-wswap-driver.ts"
       ],
-      "reach": ["pure", "windows"]
+      "reach": ["pure", "windows", "macos"]
     },
     {
       "why": "LS3's gate 8 group g8sw (live-swap-design.md Q3): the swap-cycle checks (accounting, threads, sockets, RSS, standby CPU, four GRC_REARM_FAULT sabotages) and their pure self-test reach native gate 8, which runs g8sw whole. The capture sources it exercises (the disarm release, GRC_SWAP_CYCLE) are shared capture files and still reach '*'",
@@ -798,7 +801,7 @@
         "experiments/render-stream/scripts/lib/gate8-swap-checks.ts",
         "experiments/render-stream/scripts/test/self-test-gate8-swap.ts"
       ],
-      "reach": ["pure", "native:gate8@*", "windows"]
+      "reach": ["pure", "native:gate8@*", "windows", "macos"]
     },
     {
       "why": "REC1's client recorder legs (results/p3/rec1.md): gate 8's g8rec1 group drives web/client-record-check/ (the client package with the recorder on) through scripts/client-record-check.ts against a live tag-scene host with a tap, judged by lib/gate8-rec1-checks.ts",

@@ -22,13 +22,13 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
-def run_check(name, argv, repo, out, expected_rc=0, timeout_s=300):
+def run_check(name, argv, repo, out, expected_rc=0, timeout_s=300, env=None):
     start = time.monotonic()
     log = out / "logs" / (name + ".log")
     with log.open("wb") as stream:
         try:
             rc = subprocess.run(argv, cwd=repo, stdout=stream, stderr=subprocess.STDOUT,
-                                timeout=timeout_s).returncode
+                                timeout=timeout_s, env={**os.environ, **(env or {})}).returncode
         except (OSError, subprocess.TimeoutExpired) as exc:
             rc = 124 if isinstance(exc, subprocess.TimeoutExpired) else 2
             stream.write(f"m-run: {exc}\n".encode())
@@ -81,8 +81,44 @@ def net_test_counts(path):
     return counts
 
 
+def read_swap_manifest(bundle):
+    manifest = json.loads((bundle / "mswap/manifest.json").read_text(encoding="utf-8"))
+    expected = [{"name": "mswap", "exe": "mswap/mswap-driver.py", "interpreter": "python",
+                 "args": ["--config", "mswap/mswap-{arch}.json"], "env": {}, "timeout_s": 1500}]
+    if manifest.get("schema") != "render-stream-m-manifest/1" or manifest.get("tests") != expected:
+        raise ValueError("swap manifest must contain exactly one Python mswap entry with timeout_s 1500")
+    return manifest
+
+
+def run_swap(check, repo, out, runtime_bundle):
+    if runtime_bundle is None:
+        raise ValueError("--suite swap requires --runtime-bundle")
+    runtime = runtime_bundle.resolve()
+    manifest = read_swap_manifest(runtime)
+    scripts = repo / "experiments/render-stream/scripts"
+    native = repo / "experiments/render-stream/capture/build/macos/bundle"
+    check("m-build", ["bash", str(scripts / "build-capture.sh"), "--target", "macos"], timeout_s=1800)
+    dylib = native / "librender_stream_capture.dylib"
+    shutil.copy2(dylib, runtime / "m1/ext/librender_stream_capture.dylib")
+    config = json.loads((runtime / f"m1/m1-{platform.machine()}.json").read_text())
+    template = runtime / "m1" / config["template"]
+    template.chmod(0o755)
+    # Only the locally built capture is signed; the stock template stays byte-for-byte intact.
+    check("m-imports", [sys.executable, "-I", str(scripts / "m-imports.py"),
+          "--require-universal", "--json", str(out / "imports.json"), str(dylib)])
+    check("m-sign", [sys.executable, "-I", str(scripts / "m-sign.py"),
+          "--json", str(out / "signatures.json"), str(runtime / "m1/ext/librender_stream_capture.dylib")])
+    for test in manifest["tests"]:
+        argv = [sys.executable, "-I", "-B", str(runtime / test["exe"]),
+                "--config", str(runtime / test["args"][1].format(arch=platform.machine())),
+                "--repo", str(repo)]
+        check(test["name"], argv, timeout_s=test["timeout_s"],
+              env={"M_RUN_ARTIFACT_DIR": str(out / "artifacts" / test["name"])})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--suite", choices=("capture", "swap"), default="capture")
     parser.add_argument("--repo", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--label", required=True)
@@ -113,90 +149,98 @@ def main():
     try:
         if platform.system() != "Darwin" or platform.machine() not in ("arm64", "x86_64"):
             raise ValueError("m-run requires a native arm64 or x86_64 macOS runner")
-        check("m-build", ["bash", str(scripts / "build-capture.sh"), "--target", "macos"], timeout_s=1800)
-        counts = ctest_counts(bundle / "ctest.xml", required=POSIX_CTESTS)
-        binaries = sorted((bundle / "bin").glob("*"))
-        if not binaries or not (bundle / "bin/abi_convention_probe").is_file():
-            raise ValueError("universal test bundle is missing the ABI convention probe")
-        dylib = bundle / "librender_stream_capture.dylib"
-        if not dylib.is_file():
-            raise ValueError("universal capture dylib is missing")
-        binaries.append(dylib)
-        for arch in ("arm64", "x86_64"):
-            shutil.copyfile(build / arch / "CTestTestfile.cmake", out / f"ctest-{arch}.cmake")
-        shutil.copyfile(bundle / "ctest.xml", out / "ctest.xml")
-        shutil.copyfile(bundle / "build-info.txt", out / "build-info.txt")
-        check("m-net-tests", [sys.executable, "-I", str(scripts / "m-net-test.py")])
-        check("m-net-build", ["bash", str(scripts / "build-rs-net.sh"), "--target", "macos"], timeout_s=1800)
-        net = json.loads((bundle / "rs-net-build.json").read_text())
-        host_target = "aarch64-apple-darwin" if platform.machine() == "arm64" else "x86_64-apple-darwin"
-        if net["tests"] != {"target": host_target, "ran": True}:
-            raise ValueError(f"rs-net must run the host slice's crate tests: {net['tests']}")
-        net["test_counts"] = net_test_counts(out / "logs/m-net-build.log")
-        for artifact in ("rs-net-build.json", "rs-net-check.json"):
-            shutil.copyfile(bundle / artifact, out / artifact)
-        binaries.append(bundle / "librender_stream_net.dylib")
-        imports = [sys.executable, "-I", str(scripts / "m-imports.py")]
-        sign = [sys.executable, "-I", str(scripts / "m-sign.py")]
-        check("m-imports", imports + ["--require-universal", "--json", str(out / "imports.json"),
-                                     *map(str, binaries)])
-        check("m-sign", sign + ["--json", str(out / "signatures.json"), *map(str, binaries), str(bundle / "rs-net-probe")])
+        if args.suite == "swap":
+            run_swap(check, repo, out, args.runtime_bundle)
+        else:
+            check("m-build", ["bash", str(scripts / "build-capture.sh"), "--target", "macos"], timeout_s=1800)
+            counts = ctest_counts(bundle / "ctest.xml", required=POSIX_CTESTS)
+            binaries = sorted((bundle / "bin").glob("*"))
+            if not binaries or not (bundle / "bin/abi_convention_probe").is_file():
+                raise ValueError("universal test bundle is missing the ABI convention probe")
+            dylib = bundle / "librender_stream_capture.dylib"
+            if not dylib.is_file():
+                raise ValueError("universal capture dylib is missing")
+            binaries.append(dylib)
+            for arch in ("arm64", "x86_64"):
+                shutil.copyfile(build / arch / "CTestTestfile.cmake", out / f"ctest-{arch}.cmake")
+            shutil.copyfile(bundle / "ctest.xml", out / "ctest.xml")
+            shutil.copyfile(bundle / "build-info.txt", out / "build-info.txt")
+            check("m-net-tests", [sys.executable, "-I", str(scripts / "m-net-test.py")])
+            check("m-net-build", ["bash", str(scripts / "build-rs-net.sh"), "--target", "macos"], timeout_s=1800)
+            net = json.loads((bundle / "rs-net-build.json").read_text())
+            host_target = "aarch64-apple-darwin" if platform.machine() == "arm64" else "x86_64-apple-darwin"
+            if net["tests"] != {"target": host_target, "ran": True}:
+                raise ValueError(f"rs-net must run the host slice's crate tests: {net['tests']}")
+            net["test_counts"] = net_test_counts(out / "logs/m-net-build.log")
+            for artifact in ("rs-net-build.json", "rs-net-check.json"):
+                shutil.copyfile(bundle / artifact, out / artifact)
+            binaries.append(bundle / "librender_stream_net.dylib")
+            imports = [sys.executable, "-I", str(scripts / "m-imports.py")]
+            sign = [sys.executable, "-I", str(scripts / "m-sign.py")]
+            check("m-imports", imports + ["--require-universal", "--json", str(out / "imports.json"),
+                                         *map(str, binaries)])
+            check("m-sign", sign + ["--json", str(out / "signatures.json"), *map(str, binaries), str(bundle / "rs-net-probe")])
 
-        if args.runtime_bundle:
-            runtime = args.runtime_bundle.resolve() / "m1"
-            config = runtime / f"m1-{platform.machine()}.json"
-            # The template is used byte-for-byte. Only restore mode lost by artifact transport.
-            template = runtime / "godot_macos_release.universal"
-            template.chmod(0o755)
-            shutil.copy2(dylib, runtime / "ext/librender_stream_capture.dylib")
-            check("m-runtime-tests", [sys.executable, "-I", "-B", str(scripts / "m-runtime-test.py")])
-            for leg in ("control", "validate", "arm", "refuse-shift", "refuse-image"):
-                check("m1-" + leg, [sys.executable, "-I", "-B", str(runtime / "m1-driver.py"),
-                      "--config", str(config), "--leg", leg], timeout_s=240)
-            files = args.runtime_bundle.resolve() / "mfile"
-            file_command = [sys.executable, "-I", "-B", str(files / "mfile-driver.py"),
-                            "--config", str(files / f"mfile-{platform.machine()}.json")]
-            for rep in ("a", "b"):
-                for gate in ("gate0", "gate1", "gate2", "gate8"):
-                    check(f"mfile-{gate}-{rep}", file_command + ["--gate", gate, "--rep", rep,
-                          "--out", str(out / "mfile")], timeout_s=900)
-            check("mfile-negative", file_command + ["--gate", "gate8", "--rep", "a",
-                  "--sabotage", "decode-off", "--out", str(out / "mfile-negative")], timeout_s=900)
+            if args.runtime_bundle:
+                runtime = args.runtime_bundle.resolve() / "m1"
+                config = runtime / f"m1-{platform.machine()}.json"
+                # The template is used byte-for-byte. Only restore mode lost by artifact transport.
+                template = runtime / "godot_macos_release.universal"
+                template.chmod(0o755)
+                shutil.copy2(dylib, runtime / "ext/librender_stream_capture.dylib")
+                check("m-runtime-tests", [sys.executable, "-I", "-B", str(scripts / "m-runtime-test.py")])
+                for leg in ("control", "validate", "arm", "refuse-shift", "refuse-image"):
+                    check("m1-" + leg, [sys.executable, "-I", "-B", str(runtime / "m1-driver.py"),
+                          "--config", str(config), "--leg", leg], timeout_s=240)
+                files = args.runtime_bundle.resolve() / "mfile"
+                file_command = [sys.executable, "-I", "-B", str(files / "mfile-driver.py"),
+                                "--config", str(files / f"mfile-{platform.machine()}.json")]
+                for rep in ("a", "b"):
+                    for gate in ("gate0", "gate1", "gate2", "gate8"):
+                        check(f"mfile-{gate}-{rep}", file_command + ["--gate", gate, "--rep", rep,
+                              "--out", str(out / "mfile")], timeout_s=900)
+                check("mfile-negative", file_command + ["--gate", "gate8", "--rep", "a",
+                      "--sabotage", "decode-off", "--out", str(out / "mfile-negative")], timeout_s=900)
 
-        sabotage = out / "sabotage"
-        sabotage.mkdir(exist_ok=True)
-        (sabotage / "dependency.c").write_text("int external_value(void) { return 42; }\n")
-        (sabotage / "host.c").write_text("int external_value(void); int main(void) { return external_value() != 42; }\n")
-        dependency = sabotage / "non-system.dylib"
-        host = sabotage / "non-system-host"
-        check("m-imports-sabotage-library", ["xcrun", "clang", "-dynamiclib", str(sabotage / "dependency.c"),
-              "-Wl,-install_name," + str(dependency), "-o", str(dependency)])
-        check("m-imports-sabotage-host", ["xcrun", "clang", str(sabotage / "host.c"),
-              str(dependency), "-o", str(host)])
-        check("m-imports-sabotage", imports + ["--json", str(out / "imports-sabotage.json"), str(host)], expected_rc=1)
-        rejected = json.loads((out / "imports-sabotage.json").read_text())
-        if rejected["binaries"][0]["slices"][0]["disallowed"] != [str(dependency)]:
-            raise ValueError("import sabotage did not identify the non-system dylib")
+            sabotage = out / "sabotage"
+            sabotage.mkdir(exist_ok=True)
+            (sabotage / "dependency.c").write_text("int external_value(void) { return 42; }\n")
+            (sabotage / "host.c").write_text("int external_value(void); int main(void) { return external_value() != 42; }\n")
+            dependency = sabotage / "non-system.dylib"
+            host = sabotage / "non-system-host"
+            check("m-imports-sabotage-library", ["xcrun", "clang", "-dynamiclib", str(sabotage / "dependency.c"),
+                  "-Wl,-install_name," + str(dependency), "-o", str(dependency)])
+            check("m-imports-sabotage-host", ["xcrun", "clang", str(sabotage / "host.c"),
+                  str(dependency), "-o", str(host)])
+            check("m-imports-sabotage", imports + ["--json", str(out / "imports-sabotage.json"), str(host)], expected_rc=1)
+            rejected = json.loads((out / "imports-sabotage.json").read_text())
+            if rejected["binaries"][0]["slices"][0]["disallowed"] != [str(dependency)]:
+                raise ValueError("import sabotage did not identify the non-system dylib")
 
-        unsigned = sabotage / "unsigned-arm64"
-        check("m-sign-sabotage-thin", ["lipo", str(bundle / "bin/abi_convention_probe"),
-              "-thin", "arm64", "-output", str(unsigned)])
-        # Establish that the copy is valid before changing exactly its signature.
-        check("m-sign-sabotage-control", sign + [str(unsigned)])
-        check("m-sign-sabotage-remove", ["codesign", "--remove-signature", str(unsigned)])
-        check("m-sign-sabotage", sign + [str(unsigned)], expected_rc=1)
+            unsigned = sabotage / "unsigned-arm64"
+            check("m-sign-sabotage-thin", ["lipo", str(bundle / "bin/abi_convention_probe"),
+                  "-thin", "arm64", "-output", str(unsigned)])
+            # Establish that the copy is valid before changing exactly its signature.
+            check("m-sign-sabotage-control", sign + [str(unsigned)])
+            check("m-sign-sabotage-remove", ["codesign", "--remove-signature", str(unsigned)])
+            check("m-sign-sabotage", sign + [str(unsigned)], expected_rc=1)
     except (OSError, ValueError, KeyError, TypeError, ET.ParseError) as exc:
         log = out / "logs/m-bundle.log"
         log.write_text(f"m-run: {exc}\n", encoding="utf-8")
         checks.append({"name": "m-bundle", "rc": 1, "wall_s": 0})
         print(log.read_text(), end="", file=sys.stderr)
 
+    groups = {}
+    if args.suite == "swap":
+        swap = [r for r in checks if r["name"] == "mswap"]
+        groups["m-swap"] = {"passed": sum(r["rc"] == 0 for r in swap), "total": len(swap)}
+        print(f"gate M: m-swap {groups['m-swap']['passed']}/{groups['m-swap']['total']}", flush=True)
     failing = [r["name"] for r in checks if r["rc"]]
     rc = int(bool(failing))
     wall = round(time.monotonic() - start, 3)
     write_json(out / "m-run.json", {"schema": "render-stream-m-run/1", "platform": platform.platform(),
                "arch": platform.machine(), "ctest": counts, "ctest_retries": retries,
-               "net": net, "checks": checks, "wall_s": wall, "rc": rc})
+               "net": net, "checks": checks, "groups": groups, "wall_s": wall, "rc": rc})
     row = {"id": "macos", "phase": "setup", "rc": str(rc), "wall_s": wall,
            "lock_wait_s": 0, "lock_hold_s": 0, "lock": {}, "lock_summaries": 0,
            "skipped_by_tier": 0, "skipped_remote": [], "skipped_remote_groups": [],

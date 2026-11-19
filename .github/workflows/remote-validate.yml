@@ -499,6 +499,8 @@ jobs:
           python3 -I -B experiments/render-stream/scripts/lib/m1-bundle.py --target macos --out "$RUNNER_TEMP/mruntime"
           python3 -I -B experiments/render-stream/scripts/lib/mfile-bundle.py --target macos --out "$RUNNER_TEMP/mruntime"
           python3 -I -B experiments/render-stream/scripts/lib/mlive-bundle.py --out "$RUNNER_TEMP/mruntime"
+          python3 -I -B experiments/render-stream/scripts/m-swap-test.py
+          python3 -I -B experiments/render-stream/scripts/lib/mswap-bundle.py --target macos --out "$RUNNER_TEMP/mruntime"
 
       - name: Record Linux file-sink references twice
         run: bash experiments/render-stream/scripts/mfile-linux-ref.sh --out "$RUNNER_TEMP/mfile-linux"
@@ -571,6 +573,51 @@ jobs:
           path: ${{ runner.temp }}/art
           retention-days: 1
           if-no-files-found: ignore
+
+  macos-swap:
+    name: macos-swap-${{ matrix.arch }}
+    needs: [plan, macos-bundle]
+    if: ${{ !cancelled() && contains(fromJSON(inputs.runs), 'macos') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      # Default setup supplies pinned node/pnpm and the native capture build's Rust targets.
+      - uses: ./.github/actions/rs-setup
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: mruntime
+          path: ${{ runner.temp }}/mruntime
+
+      - name: Native macOS swap cycles
+        env:
+          MACOS_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(uname -m)" = "$MACOS_ARCH"
+          python3 -I -B experiments/render-stream/scripts/lib/m-run.py --suite swap \
+            --repo "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/art" \
+            --label "macos-swap-$MACOS_ARCH" --runtime-bundle "$RUNNER_TEMP/mruntime"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: job-macos-swap-${{ matrix.arch }}
+          path: ${{ runner.temp }}/art
+          retention-days: 1
+          if-no-files-found: error
 
   macos-live:
     name: macos-live-${{ matrix.arch }}
@@ -937,6 +984,7 @@ jobs:
         macos,
         macos-equiv,
         macos-live,
+        macos-swap,
       ]
     runs-on: ubuntu-24.04
     steps:

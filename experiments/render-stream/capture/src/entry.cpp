@@ -6149,6 +6149,8 @@ void fd_census(JsonWriter *json) {
 void accounting_fields(JsonWriter *json) {
 #if defined(_WIN32)
   json->field("platform", std::string("windows"));
+#elif defined(__APPLE__)
+  json->field("platform", std::string("macos"));
 #else
   json->field("platform", std::string("linux"));
 #endif
@@ -6205,10 +6207,12 @@ void accounting_fields(JsonWriter *json) {
   rs::rss_split(json, [](void *context, const char *name, int64_t bytes) {
     static_cast<JsonWriter *>(context)->field(name, bytes);
   });
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__APPLE__)
   if (const auto bytes = rs::private_bytes()) {
     json->field("private_bytes", static_cast<int64_t>(*bytes));
   }
+#endif
+#if defined(_WIN32)
   if (const auto tsc = rs::tsc_info()) {
     json->field("tsc_invariant", tsc->invariant);
     json->field("tsc_hz", static_cast<int64_t>(tsc->hz));
@@ -6218,7 +6222,7 @@ void accounting_fields(JsonWriter *json) {
   fd_census(json);
   // Test-only allocator evidence: separate live allocations from free arena pages and mmap.
   if (env_string("GRC_TEST_MEMORY_ACCOUNTING") == "1") {
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__APPLE__)
     if (const auto heap = rs::process_heap()) {
       json->key("process_heap").object_begin();
       json->field("allocated_bytes", static_cast<int64_t>(heap->allocated));

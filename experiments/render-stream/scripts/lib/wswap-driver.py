@@ -7,6 +7,7 @@ import json
 import math
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import sys
@@ -43,7 +44,7 @@ def quit_frames(leg):
 
 
 def leg_env(base, config, directory, leg):
-    """run_capture + G8SW_ENV, with only the two procfs CPU words omitted on Windows."""
+    """run_capture + G8SW_ENV, with the two procfs CPU words omitted on Windows and macOS."""
     quit = str(quit_frames(leg))
     words = {
         'GRC_EXTENSION': str(base / config['extension']),
@@ -74,9 +75,13 @@ def leg_env(base, config, directory, leg):
         words['GRC_TEXTURE_WORKERS'] = '2'
     elif leg.startswith('sabotage-'):
         words['GRC_REARM_FAULT'] = leg.removeprefix('sabotage-')
-    if config['target'] == 'windows':
+    if config['target'] in ('windows', 'macos'):
         del words['RS_SCALE_CPU_REPORT']
         del words['RS_SCALE_FRAME_LOG']
+    if config['target'] == 'macos':
+        # The macOS counterpart of MALLOC_MMAP_THRESHOLD_: the nano allocator keeps per-CPU blocks
+        # that malloc_zone_statistics counts as in use, so pin the scalable zone for the heap readings.
+        words['MallocNanoZone'] = '0'
     return words
 
 
@@ -145,7 +150,7 @@ def summary_problems(summary):
             or any(not isinstance(c, dict) or c.get('verdict') != 'pass'
                    or not isinstance(c.get('detail'), str) for c in checks)):
         problems.append('summary/checks')
-    if summary.get('platform') not in ('linux', 'windows'):
+    if summary.get('platform') not in ('linux', 'windows', 'macos'):
         problems.append('summary/platform')
     digest = summary.get('template_sha256', '')
     if not isinstance(digest, str) or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
@@ -179,7 +184,7 @@ def diagnostics(directory, failures):
     print('checker output (last 64 KiB):\n' + text(directory / 'checker.log')[-65536:])
 
 
-def run_leg(base, config, directory, leg, repo):
+def run_leg(base, config, directory, leg, repo, label='wswap'):
     run = directory / 'g8sw/short' / leg
     (run / 'evidence').mkdir(parents=True)
     project = run / 'project'
@@ -211,7 +216,7 @@ def run_leg(base, config, directory, leg, repo):
     wall = round(time.monotonic() - start, 3)
     (run / 'exit-code.txt').write_text(str(code), encoding='utf-8')
     write_json(run / 'leg.json', {'exit': code, 'wall_s': wall})
-    print(f'wswap leg {leg}: exit={code} wall_s={wall}', flush=True)
+    print(f'{label} leg {leg}: exit={code} wall_s={wall}', flush=True)
     # Save the shared mirror scan before dropping the potentially large recording and stores.
     pnpm = shutil.which('pnpm')
     if not pnpm:
@@ -227,23 +232,26 @@ def run_leg(base, config, directory, leg, repo):
             path.unlink()
 
 
-def main():
+def main(label='wswap', repo_env='WSWAP_REPO_ROOT', artifact_env='W_RUN_ARTIFACT_DIR'):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True, type=Path)
-    parser.add_argument('--repo', type=Path, default=os.environ.get('WSWAP_REPO_ROOT', Path.cwd()))
-    parser.add_argument('--expect-platform', choices=('linux', 'windows'))
+    parser.add_argument('--repo', type=Path, default=os.environ.get(repo_env, Path.cwd()))
+    parser.add_argument('--expect-platform', choices=('linux', 'windows', 'macos'))
     parser.add_argument('--evaluate-only', type=Path)
     args = parser.parse_args()
     config = read_json(args.config)
     if not isinstance(config, dict):
         raise ValueError('missing or invalid config')
+    if not args.evaluate_only and config['target'] == 'macos':
+        if platform.system() != 'Darwin' or platform.machine() != config['arch']:
+            raise ValueError('swap requires the native macOS slice matching its stock record')
     expected = args.expect_platform or config['target']
     if expected != config['target']:
         raise ValueError('expected platform differs from bundle target')
-    directory = (args.evaluate_only or Path(os.environ.get('W_RUN_ARTIFACT_DIR', str(args.config.parent / 'runs')))).resolve()
+    directory = (args.evaluate_only or Path(os.environ.get(artifact_env, str(args.config.parent / 'runs')))).resolve()
     repo = args.repo.resolve()
     if not args.evaluate_only and not (repo / 'experiments/render-stream/scripts/check-g8sw.ts').is_file():
-        raise ValueError('checker missing: use --repo or WSWAP_REPO_ROOT for the source checkout')
+        raise ValueError(f'checker missing: use --repo or {repo_env} for the source checkout')
     if args.evaluate_only:
         code = read_json(directory / 'checker-exit.json', -1)
     else:
@@ -255,7 +263,7 @@ def main():
             raise ValueError('template sha256 differs from pin')
         for leg in LEGS:
             try:
-                run_leg(base, config, directory, leg, repo)
+                run_leg(base, config, directory, leg, repo, label=label)
             except (OSError, ValueError, subprocess.SubprocessError):
                 diagnostics(directory, [(leg + '/launch', False, 'launch failed')])
                 raise
@@ -269,20 +277,20 @@ def main():
                                    '--expect-platform', expected, '--json', str(directory / 'checker.json')],
                                   cwd=repo, stdout=log, stderr=subprocess.STDOUT, timeout=120).returncode
         write_json(directory / 'checker-exit.json', code)
-        write_json(directory / 'wswap-summary.json', make_summary(directory, config))
+        write_json(directory / (label + '-summary.json'), make_summary(directory, config))
     checks = evaluate(directory, code)
-    summary = read_json(directory / 'wswap-summary.json')
+    summary = read_json(directory / (label + '-summary.json'))
     checks.extend((p, False, 'missing or invalid success evidence') for p in summary_problems(summary))
     if isinstance(summary, dict) and summary.get('platform') != expected:
         checks.append(('summary/platform', False, f'expected {expected}, got {summary.get("platform")}'))
     for c in read_json(directory / 'checker.json', {}).get('checks', []):
-        print(f"wswap check {c.get('id')}: {'PASS' if c.get('passed') is True else 'FAIL'} {c.get('detail', '')}", flush=True)
+        print(f"{label} check {c.get('id')}: {'PASS' if c.get('passed') is True else 'FAIL'} {c.get('detail', '')}", flush=True)
     failed = [c for c in checks if not c[1]]
     for name, _, detail in failed:
         print(f'FAIL {name}: {detail}', flush=True)
     if failed:
         diagnostics(directory, failed)
-    print(f'wswap: {len(checks) - len(failed)} harness checks passed, {len(failed)} failed; 9 swap checks requested', flush=True)
+    print(f'{label}: {len(checks) - len(failed)} harness checks passed, {len(failed)} failed; 9 swap checks requested', flush=True)
     return int(bool(failed))
 
 

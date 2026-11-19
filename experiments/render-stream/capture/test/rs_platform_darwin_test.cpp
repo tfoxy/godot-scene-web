@@ -155,14 +155,27 @@ void memory_cases() {
   const auto heap = rs::process_heap();
   check(heap && heap->allocated > 0 && heap->allocated == native.size_in_use &&
             heap->committed == native.size_allocated, "process heap uses existing byte fields");
-  check(!rs::private_bytes() && !rs::rss_anon_bytes() && !rs::heap_stats() && !rs::tsc_info(),
+  count = TASK_VM_INFO_COUNT;
+  const auto footprint_before = ::task_info(::mach_task_self(), TASK_VM_INFO,
+      reinterpret_cast<task_info_t>(&before), &count);
+  const auto footprint = rs::private_bytes();
+  const auto anon = rs::anon_reading();
+  count = TASK_VM_INFO_COUNT;
+  const auto footprint_after = ::task_info(::mach_task_self(), TASK_VM_INFO,
+      reinterpret_cast<task_info_t>(&after), &count);
+  check(footprint_before == KERN_SUCCESS && footprint_after == KERN_SUCCESS && footprint &&
+            *footprint > 0 && *footprint >= std::min(before.phys_footprint, after.phys_footprint) &&
+            *footprint <= std::max(before.phys_footprint, after.phys_footprint),
+        "private bytes uses phys_footprint");
+  check(!rs::rss_anon_bytes() && !rs::heap_stats() && !rs::tsc_info(),
         "unavailable metrics stay absent");
   int visits = 0;
   rs::rss_split(&visits, [](void *value, const char *, std::int64_t) { ++*static_cast<int *>(value); });
   check(visits == 0, "no Linux RSS split");
-  const auto anon = rs::anon_reading();
-  check(std::strcmp(anon.name, "private_bytes") == 0 && anon.bytes == -1,
-        "unavailable anonymous reading");
+  check(std::strcmp(anon.name, "private_bytes") == 0 && anon.bytes > 0 &&
+            static_cast<std::uint64_t>(anon.bytes) >= std::min(before.phys_footprint, after.phys_footprint) &&
+            static_cast<std::uint64_t>(anon.bytes) <= std::max(before.phys_footprint, after.phys_footprint),
+        "anonymous reading uses phys_footprint");
   check(!rs::dump_memory_info("unused"), "no Linux allocator dump");
 }
 } // namespace

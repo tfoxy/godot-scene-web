@@ -220,24 +220,25 @@ class PlanningTests(unittest.TestCase):
         self.assertIn({"id": "macos", "kind": "macos", "phase": "setup"}, plan["runs"])
         self.assertIn("macos", mapping["remote"]["capable"])
 
-    def test_macos_is_two_native_and_two_live_jobs_plus_equivalence(self):
+    def test_macos_is_two_native_two_live_and_two_swap_jobs_plus_equivalence(self):
         for det in ([], [3, 1]):
             with self.subTest(determinism=det):
                 plan = matrix.expand(["macos"], determinism=det, table={})
                 self.assertEqual(plan["include"], [])
-                self.assertEqual(plan["shards"], {"macos": 5})
+                self.assertEqual(plan["shards"], {"macos": 7})
                 mixed = matrix.expand(["macos", "capture-build"], determinism=det, table={})
                 self.assertTrue(mixed["include"])
                 self.assertTrue(all(job["id"] == "capture-build" for job in mixed["include"]))
-                self.assertEqual(mixed["shards"]["macos"], 5)
+                self.assertEqual(mixed["shards"]["macos"], 7)
 
-    def test_merge_requires_both_native_and_live_architectures_and_equivalence(self):
+    def test_merge_requires_native_live_and_swap_architectures_and_equivalence(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             remote = root / "remote.json"
             remote.write_text(json.dumps({"shards": matrix.expand(["macos"], table={})["shards"]}))
             jobs = []
-            for name in ("arm64", "x86_64", "live-arm64", "live-x86_64", "equivalence"):
+            for name in ("arm64", "x86_64", "live-arm64", "live-x86_64", "swap-arm64", "swap-x86_64",
+                         "equivalence"):
                 job = root / name
                 job.mkdir()
                 row = {"id": "macos", "phase": "setup", "rc": "0", "wall_s": 12,
@@ -259,7 +260,7 @@ class PlanningTests(unittest.TestCase):
                     self.assertEqual(summary["runs"][0]["rc"], expected_row_rc)
                     self.assertEqual(summary["failed"], expected_rc)
                     if not expected_rc:
-                        self.assertEqual(len(summary["runs"][0]["shards"]), 5)
+                        self.assertEqual(len(summary["runs"][0]["shards"]), 7)
 
 
 class SignatureAndRunnerTests(unittest.TestCase):

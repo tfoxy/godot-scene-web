@@ -390,6 +390,37 @@ assert sys.argv[2] == "1" and s["base"] is None and s["sabotage"] is None
 assert s["skipped_targets"] == 0 and s["runs"][0]["rc"] == "missing"
 PYTEST
 
+# Use the real planner's counts: a hosted job can die before uploading any summary.
+for spec in macos:7 windows:5; do
+	id="${spec%:*}"; total="${spec#*:}"
+	mkdir -p "$TMP/$id-jobs"
+	python3 -I -B "$ROOT/experiments/render-stream/scripts/lib/remote-matrix.py" --runs "[\"$id\"]" >"$TMP/$id-jobs/remote.json"
+	jobs=()
+	for ((n=1; n<=total; n++)); do
+		job="$TMP/$id-jobs/job-$n"
+		mkdir -p "$job"
+		mk "$job" "$id" setup 0 1
+		jobs+=("$job")
+		# macOS: both swap jobs missing, one missing, all present; Windows: one missing, all present.
+		if { [ "$id" = macos ] && [ "$n" -ge 5 ]; } || [ "$n" -ge "$((total-1))" ]; then
+			python3 "$VS" --merge --out "$TMP/$id-merged-$n" --expect "$id" \
+				--remote-json "$TMP/$id-jobs/remote.json" "${jobs[@]}" >/dev/null 2>&1; rc=$?
+			check "$id: $n/$total planned summaries merge as missing until all jobs report" python3 - "$TMP/$id-merged-$n/validate-summary.json" "$rc" "$id" "$n" "$total" <<'PYTEST'
+import json, sys
+s = json.load(open(sys.argv[1]))
+run_id, received, total = sys.argv[3], int(sys.argv[4]), int(sys.argv[5])
+missing = received < total
+assert sys.argv[2] == str(int(missing)), (received, total, sys.argv[2])
+assert s["failed"] == int(missing) and len(s["runs"]) == 1
+r = s["runs"][0]
+assert r["id"] == run_id and r["rc"] == ("missing" if missing else "0"), r
+assert len(r["shards"]) == received
+assert s["remote"]["shards"][run_id] == total
+PYTEST
+		fi
+	done
+done
+
 # ---- pure shards: the fold in --merge ------------------------------------------------------------------------------------------------
 mkdir -p "$TMP/sh"
 mks() { # mks <dir> <rc> <wall> <failing-json> <lock-hold>
@@ -602,6 +633,30 @@ with tempfile.TemporaryDirectory() as tmp:
             d = art / 'libcxx-gates' / label / gate
             assert json.loads((d / 'tier-verdict.json').read_text()) == {'verdict': 'fail'}
             assert (d / 'runner.log').read_text().splitlines() == [f'runner line {i}' for i in range(50, 450)]
+PYTEST
+check "macOS swap runs both native arches under the macos run and merges their summaries" python3 - "$ROOT/.github/workflows/remote-validate.yml" <<'PYTEST'
+import sys, yaml
+w = yaml.safe_load(open(sys.argv[1]))
+j = w['jobs']['macos-swap']
+assert j['needs'] == ['plan', 'macos-bundle']
+assert "contains(fromJSON(inputs.runs), 'macos')" in j['if']
+assert j['runs-on'] == '${{ matrix.runner }}' and j['timeout-minutes'] <= 35
+assert j['strategy']['fail-fast'] is False
+assert j['strategy']['matrix']['include'] == [
+    {'runner': 'macos-15', 'arch': 'arm64'}, {'runner': 'macos-15-intel', 'arch': 'x86_64'}]
+steps = j['steps']
+assert any(s.get('uses', '').endswith('rs-setup') for s in steps)
+assert any(s.get('with', {}).get('name') == 'mruntime' for s in steps)
+run = next(s for s in steps if '--suite swap' in s.get('run', ''))
+assert run['env']['MACOS_ARCH'] == '${{ matrix.arch }}'
+assert 'uname -m' in run['run'] and 'lib/m-run.py' in run['run']
+assert '--runtime-bundle "$RUNNER_TEMP/mruntime"' in run['run']
+artifact = next(s for s in steps if s.get('with', {}).get('name') == 'job-macos-swap-${{ matrix.arch }}')
+assert artifact['if'] == 'always()' and artifact['with']['path'] == '${{ runner.temp }}/art'
+assert 'macos-swap' in w['jobs']['merge']['needs']
+prepare = '\n'.join(s.get('run', '') for s in w['jobs']['macos-bundle']['steps'])
+assert 'lib/mswap-bundle.py --target macos --out "$RUNNER_TEMP/mruntime"' in prepare
+assert 'scripts/m-swap-test.py' in prepare
 PYTEST
 check "Windows job runs only the bundle, with sparse checkout and no setup or build" python3 - "$ROOT/.github/workflows/remote-validate.yml" <<'PYTEST'
 import sys, yaml

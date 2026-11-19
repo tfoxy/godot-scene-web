@@ -349,19 +349,21 @@ function rewriteJson(
   );
 }
 
-function windowsTree(dir: string) {
+function windowsTree(dir: string, platform: "windows" | "macos" = "windows") {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
-    if (entry.isDirectory()) windowsTree(path);
+    if (entry.isDirectory()) windowsTree(path, platform);
     else if (
       entry.name === "swap-cycle.jsonl" ||
       entry.name === "teardown.json"
     )
       rewriteJson(path, (r) => {
-        r.platform = "windows";
-        r.handles_total = 100;
-        delete r.fds_total;
-        delete r.sockets;
+        r.platform = platform;
+        if (platform === "windows") {
+          r.handles_total = 100;
+          delete r.fds_total;
+          delete r.sockets;
+        }
         if (r.malloc) {
           const heap = r.malloc as { uordblks: number; fordblks: number };
           r.process_heap = {
@@ -857,6 +859,160 @@ try {
       "pair mismatch names platform",
     );
   }
+  for (const [platform, name, deltas, pass] of [
+    ["macos", "resident-offset", [4.1, 4.1, 4.09], true],
+    ["macos", "first-cycle-growth", [2.73, 4.01, 4.01], true],
+    ["macos", "heap-slope-bound", [1, 1.5, 2], true],
+    ["macos", "heap-growth", [1, 2, 3], false],
+    ["macos", "retained-bodies", [164.68, 308.81, 450], false],
+    ["windows", "resident-offset", [4.1, 4.1, 4.09], false],
+  ] as const) {
+    const { root, g } = build(`${platform}-${name}`, {
+      short: { inUse: (k) => 120 + deltas[k - 1] },
+      cycle: false,
+    });
+    windowsTree(g, platform);
+    const { m, r } = await verdict(root);
+    ok(passes(m, "swap-cycle-rss") === pass, `${platform} ${name} RSS verdict`);
+    const detail = m.get("swap-cycle-rss")?.detail ?? "";
+    if (platform === "macos") {
+      ok(detail.includes(deltas[0].toFixed(3)), "macOS reports the offset");
+      ok(
+        detail.includes("one-time allocator residency accepted as debt"),
+        "macOS reports unbounded allocator residency debt",
+      );
+      ok(
+        detail.includes("process_heap.allocated_bytes") &&
+          detail.includes("slope over cycles 2-3"),
+        "macOS detail names the heap growth rule",
+      );
+      ok(
+        r.report.bounds.notes.includes("macOS") &&
+          r.report.bounds.notes.includes("0.5 MiB/cycle"),
+        "macOS notes describe the slope rule",
+      );
+      if (name === "heap-growth")
+        ok(
+          detail.includes("1.00 MiB/cycle"),
+          "macOS reports the failing slope",
+        );
+      if (name === "first-cycle-growth")
+        ok(
+          detail.includes("0.00 MiB/cycle"),
+          "macOS excludes cycle 1 from slope",
+        );
+    } else
+      ok(
+        detail.includes(
+          "process_heap.allocated_bytes delta 4.10 MiB (bound 1)",
+        ),
+        "Windows keeps the absolute heap bound",
+      );
+  }
+  {
+    const { g } = build("macos-heap-least-squares");
+    const n = 5;
+    writeLeg(join(g, "short/swap"), {
+      kind: "swap",
+      n,
+      inUse: (k) => 120 + [999, 1, 2, 1, 1][k - 1],
+    });
+    writeLeg(join(g, "short/control"), { kind: "control", n });
+    windowsTree(g, "macos");
+    const swap = await loadLeg(join(g, "short/swap"), "swap", n);
+    const control = await loadLeg(join(g, "short/control"), "control", n);
+    const j = judgeRss(swap, control, n, 1, 0.5);
+    ok(
+      j.rule.length === 0 && j.evidence.length === 0,
+      "macOS accepts a large first-cycle offset without a later heap trend",
+    );
+    ok(
+      j.slope !== null && Math.abs(j.slope + 0.1) < 1e-9,
+      "macOS reports the least-squares heap slope over every pair after cycle 1",
+    );
+  }
+  for (const n of [1, 2]) {
+    const { g } = build(`macos-heap-cannot-judge-${n}`);
+    writeLeg(join(g, "short/swap"), { kind: "swap", n });
+    writeLeg(join(g, "short/control"), { kind: "control", n });
+    windowsTree(g, "macos");
+    const swap = await loadLeg(join(g, "short/swap"), "swap", n);
+    const control = await loadLeg(join(g, "short/control"), "control", n);
+    const j = judgeRss(swap, control, n, 1, 0.5);
+    ok(j.evidence.length === 0, "macOS short pair evidence is complete");
+    ok(
+      j.rule.some((r) => r.includes("cannot judge")),
+      `macOS ${n} cycles cannot judge the heap slope`,
+    );
+  }
+  {
+    const { root, g } = build("macos-honest", {
+      sabotage: {
+        "keep-served": { inUse: (k) => 120 + [164.68, 308.81, 450][k - 1] },
+      },
+    });
+    windowsTree(g, "macos");
+    const { m } = await verdict(root);
+    for (const id of IDS.filter((id) => id !== "swap-cycle-standby-cpu"))
+      ok(passes(m, id), `macOS passes ${id}: ${m.get(id)?.detail}`);
+    const swap = await loadLeg(join(g, "short/swap"), "swap", SHORT);
+    const control = await loadLeg(join(g, "short/control"), "control", SHORT);
+    ok(
+      judgeRss(swap, control, SHORT, 1, 0.5).evidence.length === 0,
+      "macOS private/process-heap pair has complete evidence",
+    );
+    rewriteJson(join(g, "short/swap/evidence/swap-cycle.jsonl"), (row) => {
+      const heap = row.process_heap as { allocated_bytes: number };
+      heap.allocated_bytes += 2 * MB;
+    });
+    const grown = await verdict(root);
+    ok(
+      passes(grown.m, "swap-cycle-rss") &&
+        grown.m
+          .get("swap-cycle-rss")
+          ?.detail?.includes(
+            "2.000, 2.000, 2.000 MiB (absolute offset unbounded",
+          ),
+      "macOS 2 MiB constant allocated delta passes the slope rule",
+    );
+    ok(
+      m
+        .get("sabotage-keep-served-caught")
+        ?.detail?.includes(
+          "swap-cycle-rss fails: process_heap.allocated_bytes slope",
+        ),
+      "macOS keep-served is caught by heap growth as well as accounting",
+    );
+    const sabotagePath = join(
+      g,
+      "short/sabotage-keep-served/evidence/swap-cycle.jsonl",
+    );
+    const retained = readFileSync(sabotagePath, "utf8");
+    rewriteJson(sabotagePath, (row) => {
+      (row.process_heap as { allocated_bytes: number }).allocated_bytes =
+        (120 + 4.1) * MB;
+    });
+    const accountingOnly = await verdict(root);
+    ok(
+      !passes(accountingOnly.m, "sabotage-keep-served-caught") &&
+        accountingOnly.m
+          .get("sabotage-keep-served-caught")
+          ?.detail?.includes("swap-cycle-rss did not fail on the sabotage leg"),
+      "macOS keep-served still requires an RSS rule violation",
+    );
+    writeFileSync(sabotagePath, retained);
+    rewriteJson(
+      join(g, "short/sabotage-keep-served/evidence/swap-cycle.jsonl"),
+      (row) => {
+        delete row.process_heap;
+      },
+    );
+    const missing = await verdict(root);
+    ok(
+      !passes(missing.m, "sabotage-keep-served-caught"),
+      "macOS missing heap evidence cannot catch keep-served",
+    );
+  }
   {
     const { root, g } = build("windows-honest");
     windowsTree(g);
@@ -926,6 +1082,7 @@ try {
     const cli = (
       platform: string,
       checks = IDS.filter((id) => id !== "swap-cycle-standby-cpu").join(","),
+      evidenceRoot = root,
     ) =>
       spawnSync(
         process.execPath,
@@ -935,7 +1092,7 @@ try {
           "--conditions=development",
           join(import.meta.dirname, "../check-g8sw.ts"),
           "--out",
-          root,
+          evidenceRoot,
           "--checks",
           checks,
           "--expect-platform",
@@ -955,6 +1112,26 @@ try {
       "CLI rejects absent named check",
     );
     ok(cli("windows", "").status !== 0, "CLI rejects empty check selection");
+    const macos = build("macos-cli", {
+      sabotage: { "keep-served": { inUse: (k) => 120 + 160 * k } },
+    });
+    windowsTree(macos.g, "macos");
+    const mac = cli("macos", undefined, macos.root);
+    ok(
+      mac.status === 0,
+      `CLI accepts macOS and all nine checks: ${mac.stdout}${mac.stderr}`,
+    );
+    const wrongMac = cli("windows", undefined, macos.root);
+    ok(
+      wrongMac.status !== 0 &&
+        `${wrongMac.stdout}${wrongMac.stderr}`.includes("expected windows"),
+      "CLI rejects macOS evidence when Windows is expected",
+    );
+    const unsupported = cli("darwin");
+    ok(
+      unsupported.status !== 0 && unsupported.stderr.includes("usage:"),
+      "CLI rejects unsupported platform names",
+    );
   }
   {
     const { root, g } = build("windows-control-no-heap");
@@ -1006,36 +1183,44 @@ try {
       "Windows keep-served needs swap-cycle-rss to fail too",
     );
   }
-  for (const n of [4, 5]) {
-    const { g } = build(`windows-private-slope-${n - 1}-pairs`);
-    writeLeg(join(g, "short/swap"), {
-      kind: "swap",
-      n,
-      rssAnon: (k) => 180 + 1.6 * k,
-    });
-    writeLeg(join(g, "short/control"), { kind: "control", n });
-    windowsTree(g);
-    const swap = await loadLeg(join(g, "short/swap"), "swap", n);
-    const control = await loadLeg(join(g, "short/control"), "control", n);
-    const j = judgeRss(swap, control, n, 1, 0.5);
-    ok(
-      j.evidence.length === 0,
-      `Windows ${n - 1}-pair slope has complete evidence`,
-    );
-    if (n === 5) {
+  for (const platform of ["windows", "macos"] as const) {
+    for (const n of [4, 5]) {
+      const { g } = build(`${platform}-private-slope-${n - 1}-pairs`);
+      writeLeg(join(g, "short/swap"), {
+        kind: "swap",
+        n,
+        rssAnon: (k) => 180 + 1.6 * k,
+      });
+      writeLeg(join(g, "short/control"), { kind: "control", n });
+      windowsTree(g, platform);
+      const swap = await loadLeg(join(g, "short/swap"), "swap", n);
+      const control = await loadLeg(join(g, "short/control"), "control", n);
+      const j = judgeRss(swap, control, n, 1, 0.5);
       ok(
-        j.rule.some((r) =>
-          r.includes("private_bytes slope over cycles 2-5: 1.60"),
-        ),
-        "Windows four-pair slope over the bound fails",
+        j.evidence.length === 0,
+        `${platform} ${n - 1}-pair slope has complete evidence`,
       );
-      ok(!j.detail.includes("not judged"), "Windows four-pair slope is judged");
-    } else {
-      ok(j.rule.length === 0, "Windows three-pair slope is reported only");
-      ok(
-        j.detail.includes("not judged: needs >= 4 pairs"),
-        "Windows three-pair detail explains the minimum",
-      );
+      if (n === 5) {
+        ok(
+          j.rule.some((r) =>
+            r.includes("private_bytes slope over cycles 2-5: 1.60"),
+          ),
+          `${platform} four-pair slope over the bound fails`,
+        );
+        ok(
+          !j.detail.includes("not judged"),
+          `${platform} four-pair slope is judged`,
+        );
+      } else {
+        ok(
+          j.rule.length === 0,
+          `${platform} three-pair slope is reported only`,
+        );
+        ok(
+          j.detail.includes("not judged: needs >= 4 pairs"),
+          `${platform} three-pair detail explains the minimum`,
+        );
+      }
     }
   }
   {

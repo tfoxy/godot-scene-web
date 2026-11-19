@@ -26,10 +26,10 @@ async function main() {
   if (
     !values.out ||
     ids.length === 0 ||
-    (expected !== "linux" && expected !== "windows")
+    (expected !== "linux" && expected !== "windows" && expected !== "macos")
   )
     throw new Error(
-      "usage: check-g8sw.ts --out <root> --checks <id,...> --expect-platform linux|windows [--json <file>]",
+      "usage: check-g8sw.ts --out <root> --checks <id,...> --expect-platform linux|windows|macos [--json <file>]",
     );
   const root = resolve(values.out);
   const result = await runG8sw(root);

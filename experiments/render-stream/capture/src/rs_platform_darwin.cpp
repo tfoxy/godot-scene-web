@@ -451,8 +451,11 @@ std::uint64_t rss_bytes() {
   const auto info = memory_info();
   return info ? info->resident_size : 0;
 }
-// Darwin has no equivalent to Windows private committed bytes or the Linux RSS split.
-std::optional<std::uint64_t> private_bytes() { return std::nullopt; }
+// The footprint includes dirty anonymous and compressed pages, unlike resident_size.
+std::optional<std::uint64_t> private_bytes() {
+  const auto info = memory_info();
+  return info ? std::optional<std::uint64_t>(info->phys_footprint) : std::nullopt;
+}
 void rss_split(void *, RssSplitVisitor) {}
 std::optional<std::int64_t> rss_anon_bytes() { return std::nullopt; }
 std::optional<HeapStats> heap_stats() { return std::nullopt; }
@@ -462,7 +465,10 @@ std::optional<ProcessHeap> process_heap() {
   return ProcessHeap{heap.size_in_use, heap.size_allocated};
 }
 std::optional<TscInfo> tsc_info() { return std::nullopt; }
-AnonReading anon_reading() { return {"private_bytes", -1}; }
+AnonReading anon_reading() {
+  const auto bytes = private_bytes();
+  return {"private_bytes", bytes ? static_cast<std::int64_t>(*bytes) : -1};
+}
 bool heap_trim() {
   return ::malloc_zone_pressure_relief(nullptr, 0) != 0;
 }
