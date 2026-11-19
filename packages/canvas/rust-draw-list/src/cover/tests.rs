@@ -1820,3 +1820,75 @@ fn a_seam_between_duplicate_vertices_never_keeps_its_tiles() {
     tile_again(&mut l, &f, &mut t);
     assert_eq!(t.classified, 1);
 }
+
+#[test]
+fn binding_range_proofs_use_the_same_blend_rules_and_recheck_without_dirt() {
+    struct Ranges(bool);
+    impl CoverFacts for Ranges {
+        fn opacity(&self, _: u32) -> Option<&Opacity> {
+            None
+        }
+        fn program(&self, _: u32) -> ProgramFacts {
+            ProgramFacts {
+                reads_screen: false,
+                vertex_stage: false,
+                alpha: None,
+            }
+        }
+        fn alpha_zero(&self, _: u32) -> bool {
+            self.0
+        }
+    }
+    for opaque in [false, true] {
+        for blend in [
+            Blend::Mix,
+            Blend::Add,
+            Blend::Sub,
+            Blend::PremulAlpha,
+            Blend::Mul,
+            Blend::Disabled,
+        ] {
+            let mut l = L::new(opaque);
+            l.list.bindings.push(threshold_binding(0.5));
+            let p = l.rect([0.0, 0.0, 100.0, 50.0], blend, 1.0);
+            l.list.draws[p].program = 1;
+            let mut w = CoverWalk::default();
+            let drops = matches!(blend, Blend::Mix | Blend::Add | Blend::Sub);
+            assert_eq!(
+                noop(&l.list, p, &Ranges(true)),
+                drops,
+                "{blend:?} opaque {opaque}"
+            );
+            w.run(&l.list, &Ranges(true));
+            assert_eq!(w.keep_draw, [!drops]);
+            let mut culled = l.list.clone();
+            w.compact(
+                &l.list.draws,
+                &l.list.screen_ops,
+                &l.list.instanced,
+                &mut culled.draws,
+                &mut culled.screen_ops,
+                &mut culled.instanced,
+            );
+            assert_eq!(
+                provenance(&l.list, &Ranges(true)).mismatches(&provenance(&culled, &Ranges(true))),
+                0,
+                "{blend:?} opaque {opaque}"
+            );
+            if drops {
+                assert!(
+                    provenance(&l.list, &Ranges(false))
+                        .mismatches(&provenance(&culled, &Ranges(false)))
+                        > 0
+                );
+            }
+            l.list.consumed();
+            // Format-only changes need not change the binding or any draw-list dirty range.
+            w.run(&l.list, &Ranges(false));
+            assert_eq!(w.keep_draw, [true]);
+            l.list.consumed();
+            w.run(&l.list, &Ranges(true));
+            assert_eq!(w.keep_draw, [!drops]);
+        }
+    }
+}

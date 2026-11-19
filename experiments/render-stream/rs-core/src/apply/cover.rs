@@ -7,7 +7,8 @@
 //! The walk reads the frame's final rows, vertices and instances, the uploaded textures' opaque
 //! texels ([`super::residency::Resident::opacity`]) and each binding's program (whether it samples
 //! the screen, has its own vertex stage, or ends on an alpha that is a uniform's multiple, which
-//! with the binding's value 0 makes its draws no-ops). Nothing on the wire or in the state
+//! with the binding's value 0 makes its draws no-ops, or a zero alpha proven from the current
+//! binding's uniform values and sampler formats). Nothing on the wire or in the state
 //! changes.
 //!
 //! On the list the walk leaves, the tile half (`gsw_canvas_draw_list::cover::tiles`) then writes
@@ -54,6 +55,8 @@ pub(super) struct CoverState {
     /// The tile half (boxed, made on first use), and whether it runs (default on).
     tiles: Option<Box<gsw_canvas_draw_list::cover::tiles::TileWalk>>,
     tiles_off: bool,
+    pub(super) alpha_ranges: super::programs::alpha_range::Cache,
+    pub(super) alpha_zero: Vec<bool>,
 }
 
 struct Facts<'a> {
@@ -78,6 +81,15 @@ impl CoverFacts for Facts<'_> {
             },
             _ => ProgramFacts::UNKNOWN,
         }
+    }
+
+    fn alpha_zero(&self, slot: u32) -> bool {
+        self.applier
+            .cover
+            .alpha_zero
+            .get(slot as usize)
+            .copied()
+            .unwrap_or(false)
     }
 
     fn max_texture_side(&self) -> u32 {

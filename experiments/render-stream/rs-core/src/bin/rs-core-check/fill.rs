@@ -627,7 +627,7 @@ pub(crate) fn register_synthetic_programs(
         if let Some(u) = shader_use.as_deref_mut() {
             u.insert(hash, (screen, time));
         }
-        let mut meta = synthetic_meta(state, sid, &hash);
+        let mut meta = synthetic_meta(state, sid, &hash, &code);
         meta["vertexStage"] = J::Bool(false);
         meta["time"] = J::Bool(time);
         if screen {
@@ -645,22 +645,6 @@ pub(crate) fn register_synthetic_programs(
                 meta["blend"] = J::String(blend.into());
             }
         }
-        // A final alpha that is a uniform's multiple: the uniform declared as the code declares
-        // it when no material sets it (unset: its default), so its draws are what a client's are.
-        let alpha = render_stream_core::apply::programs::alpha_uniform(&code);
-        if let Some(a) = &alpha {
-            let uniforms = meta["uniforms"].as_array_mut().expect("synthetic uniforms");
-            if !uniforms.iter().any(|u| u["name"] == *a.name) {
-                let n = usize::from(a.components);
-                let mut unset = vec![0.0; n];
-                if let Some(d) = a.default {
-                    unset[0] = d;
-                }
-                let ty = ["float", "vec2", "vec3", "vec4"][n - 1];
-                uniforms.push(json!({"name": &*a.name, "type": ty, "components": n,
-                    "instance": a.instance, "integer": false, "unset": unset}));
-            }
-        }
         // The id follows the code, not the order shaders arrive in, so appliers replaying the same
         // recording side by side (`walk-diff --cover`) name every program alike.
         let id = u32::from_le_bytes([hash.0[0], hash.0[1], hash.0[2], hash.0[3] & 0x7f]).max(1);
@@ -671,4 +655,158 @@ pub(crate) fn register_synthetic_programs(
         a.set_program(hash, ProgramEntry::Ready(info));
     }
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use render_stream_core::apply::payloads::PayloadStore;
+    use render_stream_core::apply::{Applier, Viewport};
+    use render_stream_core::state::*;
+
+    #[test]
+    fn synthetic_replay_unset_threshold_changes_and_resets() {
+        for instance in [false, true] {
+            for default in [0.0, 0.5] {
+                replay_threshold(instance, default);
+            }
+        }
+    }
+
+    fn replay_threshold(instance: bool, default: f64) {
+        let mut code = include_str!("../../apply/fixtures/transition.gdshader").to_string();
+        code = code.replace(
+            "uniform float threshold : hint_range(0,1);",
+            &format!(
+                "{}uniform float threshold = {default:?};",
+                if instance { "instance " } else { "" }
+            ),
+        );
+        let data = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../protocol/golden-11/inline.rs11"),
+        )
+        .unwrap();
+        let spans = wire::split_records(&data, 11).unwrap();
+        let mut v =
+            Validator::new(spans[0].bytes(&data), spans[0].offset, Options::new(11)).unwrap();
+        for span in &spans[1..] {
+            v.accept(span.bytes(&data), span.offset).unwrap();
+        }
+        let mut state = v.state().clone();
+        let hash = Hash([0x71; 32]);
+        let shader = 9001;
+        let material = 9002;
+        state.shaders.clear();
+        state.materials.clear();
+        state.shaders.insert(
+            shader,
+            Shader {
+                id: shader,
+                origin: Origin::Created,
+                status: EntryStatus::Ok,
+                reason: None,
+                version: 1,
+                mode: Some(ShaderMode::CanvasItem),
+                source: Some(ShaderSource::Payload),
+                hash: Some(hash),
+                payload_bytes: 0,
+                builtin: None,
+                process: None,
+                uses: Vec::new(),
+                default_textures: Vec::new(),
+            },
+        );
+        state.materials.insert(
+            material,
+            Material {
+                id: material,
+                origin: Origin::Created,
+                status: EntryStatus::Ok,
+                reason: None,
+                version: 1,
+                shader: Some(shader),
+                params: vec![Param {
+                    name: "transitionTex".into(),
+                    ty: VariantType::Rid,
+                    value: ParamValue::Tex(0),
+                }],
+            },
+        );
+        for id in state.items.keys().copied().collect::<Vec<_>>() {
+            let item = state.items.get_mut(&id).unwrap();
+            item.material = Some(material);
+            item.use_parent_material = false;
+        }
+        let mut payloads = PayloadStore::default();
+        payloads.shaders.insert(hash, code);
+        let mut a = Applier::new(Viewport {
+            width: 640,
+            height: 360,
+            clear: [0.0, 0.0, 0.0, 1.0],
+            global_xform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            cull_mask: u32::MAX,
+            format: gsw_canvas_draw_list::Format::Rgb10A2,
+        });
+        let mut next = 1;
+        for (threshold, live) in [
+            (None, default != 0.0),
+            (Some(0.5), true),
+            (None, default != 0.0),
+        ] {
+            state
+                .materials
+                .get_mut(&material)
+                .unwrap()
+                .params
+                .retain(|p| &*p.name != "threshold");
+            if let Some(t) = threshold {
+                state
+                    .materials
+                    .get_mut(&material)
+                    .unwrap()
+                    .params
+                    .push(Param {
+                        name: "threshold".into(),
+                        ty: VariantType::Float,
+                        value: ParamValue::Scalar(t),
+                    });
+            }
+            if instance {
+                let params = state.materials[&material]
+                    .params
+                    .iter()
+                    .filter(|p| &*p.name == "threshold")
+                    .cloned()
+                    .collect::<Vec<_>>();
+                state
+                    .materials
+                    .get_mut(&material)
+                    .unwrap()
+                    .params
+                    .retain(|p| &*p.name != "threshold");
+                for id in state.items.keys().copied().collect::<Vec<_>>() {
+                    state.items.get_mut(&id).unwrap().instance_params = params.clone();
+                }
+            }
+            let d = TxDelta {
+                full: next == 1,
+                materials_upserted: vec![material],
+                items_upserted: if instance {
+                    state.items.keys().copied().collect()
+                } else {
+                    Vec::new()
+                },
+                ..TxDelta::default()
+            };
+            a.prepare(&state, &d);
+            register_synthetic_programs(&mut a, &state, &payloads, &mut next, None).unwrap();
+            a.apply(&state, &d, &payloads);
+            assert!(!a.assembled_draws().is_empty(), "fixture must draw");
+            assert_eq!(!a.list.draws.is_empty(), live, "threshold {threshold:?}");
+            a.list.consumed();
+        }
+        assert_eq!(next, 2, "uniform updates reuse the registered program");
+    }
 }

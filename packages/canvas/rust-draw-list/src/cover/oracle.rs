@@ -132,7 +132,7 @@ fn triangles(list: &DrawList, d: usize, silent: &[bool]) -> Vec<Tri> {
 /// interpolated vertex alpha times the flat modulate alpha (of the triangle's last vertex's row;
 /// all three rows are asked), its colour premultiplied by it except under premultiplied alpha
 /// outside a group draw; a program's alpha is its own times its post-modulate alpha, the former
-/// known only as a uniform's value ([`super::ProgramFacts::alpha`]).
+/// known as a uniform's value or a binding range proof.
 fn silent(list: &DrawList, d: usize, facts: &impl CoverFacts, t: &[u32]) -> bool {
     let draw = &list.draws[d];
     let group = draw.program == BUILTIN_PROGRAM
@@ -152,7 +152,8 @@ fn silent(list: &DrawList, d: usize, facts: &impl CoverFacts, t: &[u32]) -> bool
                 crate::UniformValue::Int(_) => None,
             }
         });
-        return premultiplied && (b.post_modulate[3] == 0.0 || own == Some(0.0));
+        return premultiplied
+            && (b.post_modulate[3] == 0.0 || own == Some(0.0) || facts.alpha_zero(draw.program - 1));
     }
     let mut vs = Vec::with_capacity(3);
     let mut mods = Vec::with_capacity(3);

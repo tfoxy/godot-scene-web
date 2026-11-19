@@ -9,6 +9,9 @@
 //! material storage converts a `Variant` (drivers/gles3/storage/material_storage.cpp:49-349,
 //! 717-794).
 
+#[path = "alpha_range.rs"]
+pub(super) mod alpha_range;
+
 use crate::state::{BlendMode, LightMode, Param, ParamValue};
 use gsw_canvas_draw_list::cover::AlphaUniform;
 use gsw_canvas_draw_list::{
@@ -510,6 +513,109 @@ pub struct AlphaRef {
     pub instance: bool,
 }
 
+/// Numeric declarations for offline synthetic programs, independent of current material values.
+/// This accepts the transpiler's literal defaults and Godot's unset source-colour alpha. A
+/// declaration whose type/default cannot be represented is omitted; range proofs require every
+/// numeric declaration to have a binding, so such an omission cannot prove a no-op.
+pub fn synthetic_uniforms(code: &str) -> Vec<UniformDecl> {
+    let Some(t) = tokens(code) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    for (i, token) in t.iter().enumerate() {
+        match token {
+            Tok::Punct("{") => depth += 1,
+            Tok::Punct("}") => depth -= 1,
+            Tok::Word("uniform") if depth == 0 => {
+                let end = t[i + 1..].iter().position(|x| *x == Tok::Punct(";"));
+                let Some(end) = end else { continue };
+                let mut decl = &t[i + 1..i + 1 + end];
+                if matches!(decl.first(), Some(Tok::Word("lowp" | "mediump" | "highp"))) {
+                    decl = &decl[1..];
+                }
+                let [Tok::Word(ty), Tok::Word(name), rest @ ..] = decl else {
+                    continue;
+                };
+                let (kind, n) = match *ty {
+                    "bool" => (UniformKind::Bool, 1),
+                    "int" => (UniformKind::Int, 1),
+                    "ivec2" => (UniformKind::Int, 2),
+                    "ivec3" => (UniformKind::Int, 3),
+                    "ivec4" => (UniformKind::Int, 4),
+                    _ => match float_components(ty) {
+                        Some(n) => (UniformKind::Float, usize::from(n)),
+                        None => continue,
+                    },
+                };
+                if rest.first() == Some(&Tok::Punct("[")) {
+                    continue;
+                }
+                if i > 0 && t[i - 1] == Tok::Word("global") {
+                    continue;
+                }
+                let instance = i > 0 && t[i - 1] == Tok::Word("instance");
+                let source_color = rest.contains(&Tok::Word("source_color"));
+                let unset = if let Some(eq) = rest.iter().position(|x| *x == Tok::Punct("=")) {
+                    let mut value = &rest[eq + 1..];
+                    let constructor =
+                        matches!(value, [Tok::Word(c), Tok::Punct("("), ..] if c == ty);
+                    if constructor {
+                        if value.last() != Some(&Tok::Punct(")")) {
+                            continue;
+                        }
+                        value = &value[2..value.len() - 1];
+                    } else if n != 1 {
+                        continue;
+                    }
+                    let mut values = Vec::new();
+                    for arg in value.split(|x| *x == Tok::Punct(",")) {
+                        let number = match arg {
+                            [Tok::Word("true")] => Some(1.0),
+                            [Tok::Word("false")] => Some(0.0),
+                            [Tok::Num(x)] | [Tok::Punct("+"), Tok::Num(x)] => x.parse::<f64>().ok(),
+                            [Tok::Punct("-"), Tok::Num(x)] => x.parse::<f64>().ok().map(|v| -v),
+                            _ => None,
+                        };
+                        let Some(number) = number.filter(|v| v.is_finite()) else {
+                            break;
+                        };
+                        values.push(number);
+                    }
+                    // Reject the whole default if any argument was unsupported.
+                    let count = value.split(|x| *x == Tok::Punct(",")).count();
+                    if values.len() != count {
+                        continue;
+                    }
+                    if constructor && values.len() == 1 {
+                        values.resize(n, values[0]);
+                    }
+                    if values.len() != n {
+                        continue;
+                    }
+                    values
+                } else {
+                    let mut values = vec![0.0; n];
+                    if *ty == "vec4" && source_color {
+                        values[3] = 1.0;
+                    }
+                    values
+                };
+                out.push(UniformDecl {
+                    name: (*name).into(),
+                    kind,
+                    components: n as u32,
+                    array: None,
+                    instance,
+                    unset,
+                });
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// One token of shader code: an identifier or keyword, a number, or one punctuator (`*=`, `==`
 /// and the other two-character operators kept whole).
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -969,6 +1075,53 @@ pub fn param<'p>(params: &'p [Param], name: &str) -> Option<&'p Param> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn synthetic_declarations_preserve_defaults_and_refuse_unknown_defaults() {
+        let u = super::synthetic_uniforms(
+            r#"
+                shader_type canvas_item;
+                uniform float threshold;
+                instance uniform vec3 scale = vec3(1.0, -2.0, 3.0);
+                uniform vec4 tint : source_color;
+                uniform bool enabled = true;
+                uniform int index = -2;
+                uniform float live = 0.5;
+                uniform vec2 repeat_value = vec2(0.25);
+                uniform float unsupported = mystery(0.0);
+                uniform float expression = 1.0 + 2.0;
+                uniform float array_value[2];
+                void fragment() { if (true) { COLOR.a = threshold; } }
+            "#,
+        );
+        assert_eq!(
+            u.iter().map(|u| &*u.name).collect::<Vec<_>>(),
+            [
+                "threshold",
+                "scale",
+                "tint",
+                "enabled",
+                "index",
+                "live",
+                "repeat_value"
+            ]
+        );
+        assert_eq!(
+            u.iter().map(|u| u.unset.clone()).collect::<Vec<_>>(),
+            [
+                vec![0.0],
+                vec![1.0, -2.0, 3.0],
+                vec![0.0, 0.0, 0.0, 1.0],
+                vec![1.0],
+                vec![-2.0],
+                vec![0.5],
+                vec![0.25, 0.25]
+            ]
+        );
+        assert!(u[1].instance);
+        assert_eq!(u[3].kind, super::UniformKind::Bool);
+        assert_eq!(u[4].kind, super::UniformKind::Int);
+    }
+
     use super::*;
     use crate::state::VariantType;
 

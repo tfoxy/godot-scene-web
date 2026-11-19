@@ -317,7 +317,7 @@ impl Applier {
             self.stats.why |= Why::OVERRIDE;
             self.walk(state);
             self.assemble(state);
-            self.refresh_bindings(state, &TxDelta::default(), &[]);
+            self.refresh_bindings(state, &TxDelta::default(), &[], payloads);
             self.write_instances(state, payloads);
             self.expected_calls = Some(self.list.merged_draw_count() as u32);
             Refresh::Walked

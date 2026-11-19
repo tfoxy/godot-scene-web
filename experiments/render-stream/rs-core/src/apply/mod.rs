@@ -3181,7 +3181,7 @@ impl Applier {
             }
         }
         let t = prof::start();
-        self.refresh_bindings(state, delta, &resized);
+        self.refresh_bindings(state, delta, &resized, payloads);
         prof::add(prof::BINDINGS, t);
         self.write_instances(state, payloads);
         self.first = false;
@@ -3362,7 +3362,13 @@ impl Applier {
     /// one that reads a texture the transaction upserted or removed or whose residency changed
     /// (`resized`, which `sync_textures` fills for every resident image or placeholder that
     /// appeared, went or changed kind or size).
-    fn refresh_bindings(&mut self, state: &ResolvedState, delta: &TxDelta, resized: &[Id]) {
+    fn refresh_bindings(
+        &mut self,
+        state: &ResolvedState,
+        delta: &TxDelta,
+        resized: &[Id],
+        payloads: &PayloadStore,
+    ) {
         let all = self.first
             || self.always_refresh_bindings
             || std::mem::take(&mut self.programs_changed)
@@ -3383,10 +3389,12 @@ impl Applier {
         if self.binding_inputs.len() < self.binding_keys.len() {
             self.binding_inputs.resize(self.binding_keys.len(), None);
         }
+        self.cover.alpha_zero.resize(self.binding_keys.len(), false);
         let mut live = 0u32;
         for slot in 0..self.binding_keys.len() as u32 {
             let Some(key) = self.binding_keys[slot as usize] else {
                 self.binding_inputs[slot as usize] = None;
+                self.cover.alpha_zero[slot as usize] = false;
                 continue;
             };
             live += 1;
@@ -3409,9 +3417,34 @@ impl Applier {
             }
             let Some(ProgramEntry::Ready(info)) = self.programs.get(&key.hash) else {
                 self.binding_inputs[slot as usize] = Some((key, Vec::new()));
+                self.cover.alpha_zero[slot as usize] = false;
                 continue;
             };
             let (binding, texs) = self.binding_of(state, &key, info);
+            // Named sampler formats are binding facts. TEXTURE varies per draw, so the
+            // evaluator leaves it unbounded; no pixel data is read for this proof.
+            let formats: Vec<_> = binding
+                .samplers
+                .iter()
+                .map(|s| {
+                    let format = if gsw_canvas_draw_list::default_texture_texel(s.texture).is_some() {
+                        Some("RGBA8".to_string())
+                    } else {
+                        self.resident.get(&s.texture).and_then(|r| match r.kind {
+                            TextureKind::Placeholder => Some("RGBA8".to_string()),
+                            TextureKind::Image => Some(r.format.clone()),
+                            _ => None,
+                        })
+                    };
+                    (s.name.to_string(), format)
+                })
+                .collect();
+            self.cover.alpha_zero[slot as usize] = self.cover.alpha_ranges.prove(
+                key.hash,
+                payloads.shaders.get(&key.hash).map(String::as_str),
+                &binding,
+                &formats,
+            );
             self.binding_inputs[slot as usize] = Some((key, texs));
             if self.list.set_binding(slot, binding) {
                 self.bindings_changed.push(slot);

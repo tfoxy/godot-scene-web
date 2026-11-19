@@ -737,3 +737,113 @@ fn a_zero_modulate_item_leaves_the_list_until_its_alpha_rises() {
         a.list.consumed();
     }
 }
+
+/// A binding's interval proof follows material uniforms, sampler formats and code identity.
+#[test]
+fn range_zero_binding_becomes_live_after_each_input_changes() {
+    let code = include_str!("fixtures/transition.gdshader");
+    let mut s = material_scene(Vec::new());
+    let (tex_state, mut store, texture_hash) = tex_scene();
+    s.textures = tex_state.textures;
+    store.shaders.insert(CODE, code.into());
+    let info = ProgramInfo::from_meta_json(1, r#"{"blend":"mix","lightMode":"normal","uniforms":[{"name":"threshold","type":"float","components":1,"instance":false,"integer":false,"unset":[0]}],"samplers":[{"name":"transitionTex","filter":"linear","repeat":false}]}"#).unwrap().with_code(code);
+    assert!(
+        info.alpha.is_none(),
+        "the product recognizer cannot prove this shader"
+    );
+    let threshold = |s: &mut ResolvedState, v| {
+        set_threshold(s, v);
+        s.materials.get_mut(&MAT).unwrap().params.push(Param {
+            name: "transitionTex".into(),
+            ty: VariantType::Rid,
+            value: ParamValue::Tex(5),
+        });
+    };
+    threshold(&mut s, None);
+    let mut d = material_delta(&s);
+    d.textures_upserted = vec![5];
+    let mut a = applier();
+    a.set_program(CODE, ProgramEntry::Ready(info.clone()));
+    let check =
+        |a: &mut Applier, s: &ResolvedState, d: &TxDelta, store: &PayloadStore, live: usize| {
+            a.prepare(s, d);
+            a.apply(s, d, store);
+            assert_eq!(
+                a.assembled_draws()
+                    .iter()
+                    .filter(|d| d.program != BUILTIN_PROGRAM)
+                    .count(),
+                2
+            );
+            assert_eq!(
+                a.list
+                    .draws
+                    .iter()
+                    .filter(|d| d.program != BUILTIN_PROGRAM)
+                    .count(),
+                live
+            );
+            assert_eq!(a.stats.noop_draws, (2 - live) as u32);
+            assert!(a.cover_recheck(), "incremental and fresh walks agree");
+            a.list.consumed();
+        };
+    check(&mut a, &s, &d, &store, 0);
+    check(&mut a, &s, &TxDelta::default(), &store, 0);
+    for (v, live) in [(0.5, 2), (0.0, 0), (0.08, 0), (0.09, 2), (0.0, 0)] {
+        threshold(&mut s, Some(v));
+        check(
+            &mut a,
+            &s,
+            &TxDelta {
+                materials_upserted: vec![MAT],
+                ..TxDelta::default()
+            },
+            &store,
+            live,
+        );
+    }
+    // The id and dimensions stay the same: the format alone invalidates the proof.
+    let float_hash = Hash([8; 32]);
+    store.textures.insert(
+        float_hash,
+        payloads::texture_rgba16f("RGBAH", 8, 8, &vec![0; 8 * 8 * 8])
+            .unwrap()
+            .unwrap(),
+    );
+    for (hash, format, live) in [(float_hash, "RGBAH", 2), (texture_hash, "RGBA8", 0)] {
+        let t = s.textures.get_mut(&5).unwrap();
+        t.hash = Some(hash);
+        t.format = Some(format.into());
+        t.version += 1;
+        check(
+            &mut a,
+            &s,
+            &TxDelta {
+                textures_upserted: vec![5],
+                ..TxDelta::default()
+            },
+            &store,
+            live,
+        );
+    }
+    // New program code with identical binding values must not inherit a cached zero.
+    let hash = Hash([9; 32]);
+    store
+        .shaders
+        .insert(hash, "void fragment() { COLOR.a = 1.0; }".into());
+    s.shaders.get_mut(&SHADER).unwrap().hash = Some(hash);
+    a.set_program(
+        hash,
+        ProgramEntry::Ready(info.with_code("void fragment() { COLOR.a = 1.0; }")),
+    );
+    check(
+        &mut a,
+        &s,
+        &TxDelta {
+            shaders_upserted: vec![SHADER],
+            ..TxDelta::default()
+        },
+        &store,
+        2,
+    );
+}

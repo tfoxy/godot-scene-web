@@ -62,7 +62,8 @@
 //!   coverage or the back buffer's alpha), so every vertex colour alpha 0, or one item row whose
 //!   modulate alpha is 0, makes it 0. An item-space program's is its own `COLOR.a` times its
 //!   binding's `post_modulate` alpha: a post-modulate alpha of 0, or a program whose final alpha
-//!   is a uniform's value times something ([`ProgramFacts::alpha`]) with that value 0.
+//!   is a uniform's value times something ([`ProgramFacts::alpha`]) with that value 0, or whose
+//!   current uniforms and sampler formats prove that alpha is zero ([`CoverFacts::alpha_zero`]).
 //! - Its colour is then 0 where the executor premultiplies it ([`crate::premultiplies`]: mix, add
 //!   and sub; every group draw), being multiplied by that alpha. A premultiplied-alpha draw's
 //!   colour is its content's, so it is 0 only with every vertex colour or the row's modulate all
@@ -170,6 +171,7 @@ fn noop_state(list: &DrawList, d: usize, facts: &impl CoverFacts) -> NoopState {
             return NONE;
         };
         let alpha0 = b.post_modulate[3] == 0.0
+            || facts.alpha_zero(draw.program - 1)
             || facts.program(draw.program - 1).alpha.is_some_and(|a| {
                 matches!(
                     b.uniforms.get(usize::from(a.uniform)).map(|u| &u.value),
@@ -225,6 +227,11 @@ pub trait CoverFacts {
     fn opacity(&self, texture: u32) -> Option<&Opacity>;
     /// Binding slot `slot` (0-based): its program's facts.
     fn program(&self, slot: u32) -> ProgramFacts;
+    /// The binding's current uniforms and sampler formats prove final `COLOR.a` is zero.
+    /// This says nothing about premultiplied colour: [`noop`] still applies the blend rules.
+    fn alpha_zero(&self, _slot: u32) -> bool {
+        false
+    }
     /// The executor's largest texture side (`MAX_TEXTURE_SIZE`): a texture over it is held
     /// reduced ([`crate::downscale_factor`]). 0: no limit.
     fn max_texture_side(&self) -> u32 {

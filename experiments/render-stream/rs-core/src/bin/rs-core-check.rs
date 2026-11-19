@@ -1725,10 +1725,16 @@ fn cmd_material_diff(args: &Args) -> ExitCode {
                         inc.prepare(v.state(), v.delta());
                         oracle.prepare(v.state(), v.delta());
                         // The adapter's part: every newly named shader gets a program. Natively
-                        // there is no transpiler, so it is a synthetic one whose uniforms and
-                        // samplers are its materials' parameters and its items' instance ones.
+                        // there is no transpiler: numeric uniforms come from declarations,
+                        // and samplers from material and instance parameters.
                         for (sid, hash, _) in inc.pending_shaders(v.state()) {
-                            let info = synthetic_program(v.state(), sid, &hash, programs);
+                            let info = synthetic_program(
+                                v.state(),
+                                sid,
+                                &hash,
+                                programs,
+                                payloads.shaders.get(&hash).map(String::as_str).unwrap_or(""),
+                            );
                             programs += 1;
                             inc.set_program(hash, ProgramEntry::Ready(info.clone()));
                             oracle.set_program(hash, ProgramEntry::Ready(info));
@@ -2028,7 +2034,13 @@ fn cmd_client_diff(args: &Args) -> ExitCode {
                             s.applier.prepare(s.v.state(), s.v.delta());
                         }
                         for (sid, hash, _) in h.applier.pending_shaders(h.v.state()) {
-                            let info = synthetic_program(h.v.state(), sid, &hash, programs);
+                            let info = synthetic_program(
+                                h.v.state(),
+                                sid,
+                                &hash,
+                                programs,
+                                h.payloads.shaders.get(&hash).map(String::as_str).unwrap_or(""),
+                            );
                             programs += 1;
                             h.applier.set_program(hash, ProgramEntry::Ready(info.clone()));
                             c.applier.set_program(hash, ProgramEntry::Ready(info));
@@ -2136,16 +2148,17 @@ fn cmd_client_diff(args: &Args) -> ExitCode {
 }
 
 /// MRA (`material-diff`): a stand-in for the transpiler's program of shader `sid`: a uniform per
-/// scalar or 2-4 component parameter of the `ok` materials on it (instance uniforms from the
-/// instance parameters of the items drawing them), a sampler per texture parameter, and its own
+/// numeric declaration in the shader code, a sampler per texture parameter of its `ok`
+/// materials (including item instance parameters), and its own
 /// vertex stage for odd hashes (so its binding reads its canvas transform).
 fn synthetic_program(
     state: &render_stream_core::state::ResolvedState,
     sid: render_stream_core::state::Id,
     hash: &render_stream_core::state::Hash,
     program: u32,
+    code: &str,
 ) -> render_stream_core::apply::programs::ProgramInfo {
-    let meta = synthetic_meta(state, sid, hash);
+    let meta = synthetic_meta(state, sid, hash, code);
     render_stream_core::apply::programs::ProgramInfo::from_meta_json(program, &meta.to_string())
         .expect("a synthetic program's metadata parses")
 }
@@ -2155,31 +2168,18 @@ fn synthetic_meta(
     state: &render_stream_core::state::ResolvedState,
     sid: render_stream_core::state::Id,
     hash: &render_stream_core::state::Hash,
+    code: &str,
 ) -> J {
-    use render_stream_core::state::{EntryStatus, Param, ParamValue, VariantType};
+    use render_stream_core::state::{EntryStatus, Param, ParamValue};
     let mut seen = std::collections::BTreeSet::new();
     let (mut uniforms, mut samplers) = (Vec::new(), Vec::new());
-    let mut add = |p: &Param, instance: bool| {
+    let mut add = |p: &Param| {
         if !seen.insert(p.name.to_string()) {
             return;
         }
-        let (ty, n) = match (&p.value, p.ty) {
-            (ParamValue::Tex(_), _) => {
-                samplers.push(json!({"name": &*p.name, "filter": "linear", "repeat": false}));
-                return;
-            }
-            (ParamValue::Scalar(_), VariantType::Bool) => ("bool", 1),
-            (ParamValue::Scalar(_), VariantType::Int) => ("int", 1),
-            (ParamValue::Scalar(_), _) => ("float", 1),
-            (ParamValue::Flat(v), _) if (2..=4).contains(&v.len()) => {
-                (["vec2", "vec3", "vec4"][v.len() - 2], v.len())
-            }
-            _ => return,
-        };
-        uniforms.push(
-            json!({"name": &*p.name, "type": ty, "components": n, "instance": instance,
-            "integer": false, "unset": vec![0.0; n]}),
-        );
+        if matches!(p.value, ParamValue::Tex(_)) {
+            samplers.push(json!({"name": &*p.name, "filter": "linear", "repeat": false}));
+        }
     };
     let mats: Vec<_> = state
         .materials
@@ -2188,15 +2188,29 @@ fn synthetic_meta(
         .collect();
     for m in &mats {
         for p in &m.params {
-            add(p, false);
+            add(p);
         }
     }
     for it in state.items.values() {
         if it.material.is_some_and(|m| mats.iter().any(|x| x.id == m)) {
             for p in &it.instance_params {
-                add(p, true);
+                add(p);
             }
         }
+    }
+    for u in render_stream_core::apply::programs::synthetic_uniforms(code) {
+        let ty = match u.kind {
+            render_stream_core::apply::programs::UniformKind::Bool => "bool",
+            render_stream_core::apply::programs::UniformKind::Int => {
+                ["int", "ivec2", "ivec3", "ivec4"][u.components as usize - 1]
+            }
+            render_stream_core::apply::programs::UniformKind::Float => {
+                ["float", "vec2", "vec3", "vec4"][u.components as usize - 1]
+            }
+        };
+        uniforms.push(json!({"name": &*u.name, "type": ty, "components": u.components,
+            "instance": u.instance, "integer": u.kind != render_stream_core::apply::programs::UniformKind::Float,
+            "unset": u.unset}));
     }
     json!({"blend": "mix", "lightMode": "normal", "uniforms": uniforms,
         "samplers": samplers, "screenTexture": null, "vertexStage": hash.0[0] & 1 == 1,
@@ -2991,7 +3005,13 @@ fn cmd_draw_skip_diff(args: &Args) -> ExitCode {
                             s.applier.prepare(s.v.state(), s.v.delta());
                         }
                         for (sid, hash, _) in o.applier.pending_shaders(o.v.state()) {
-                            let info = synthetic_program(o.v.state(), sid, &hash, programs);
+                            let info = synthetic_program(
+                                o.v.state(),
+                                sid,
+                                &hash,
+                                programs,
+                                o.payloads.shaders.get(&hash).map(String::as_str).unwrap_or(""),
+                            );
                             programs += 1;
                             o.applier
                                 .set_program(hash, ProgramEntry::Ready(info.clone()));
