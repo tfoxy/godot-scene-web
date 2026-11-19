@@ -241,7 +241,7 @@ def expand(runs, run_groups=None, determinism=(), pure_shards=6, max_parallel=16
     if "windows" in runs:
         shards["windows"] = shards.get("windows", 1) + 4
     if "macos" in runs:
-        shards["macos"] = 2  # macos-15/arm64 and macos-15-intel/x86_64 must both report
+        shards["macos"] = 3  # two native slices and the Ubuntu macos-equiv judge must report
     shards = {i: n for i, n in shards.items() if n > 1}
     est = {"makespan_min": round(sim(final, max_parallel), 1), "job_minutes": round(sum(j["est"] for j in final), 1),
            "longest_min": round(max([j["est"] for j in final] + [0]), 1), "max_parallel": max_parallel,
@@ -295,8 +295,8 @@ def self_test():
 
     for det in ([], [3, 1]):
         mac = expand(["macos"], determinism=det)
-        check(f"macos: no Ubuntu job and two expected native shards, determinism={det}",
-              mac["include"] == [] and mac["shards"] == {"macos": 2})
+        check(f"macos: no matrix Ubuntu job and three expected shards, determinism={det}",
+              mac["include"] == [] and mac["shards"] == {"macos": 3})
         win = expand(["windows"], determinism=det)
         check(f"windows: one build job and five expected shards, determinism={det}",
               len(win["include"]) == 1 and win["shards"] == {"windows": 5}
@@ -477,7 +477,7 @@ def main(argv):
               f"on {e['max_parallel']} slots, longest job {e['longest_min']} min"
               + (", leg shards " + ", ".join(f"{k} x{v}" for k, v in e["leg_shards"].items()) if e["leg_shards"] else ""))
         if "macos" in r["shards"]:
-            print("  macos: two separate native jobs (macos-15/arm64, macos-15-intel/x86_64); durations not yet measured")
+            print("  macos: Ubuntu macos-bundle prepares imports and Linux references; two native m-1/m-file jobs (macos-15/arm64, macos-15-intel/x86_64), then Ubuntu macos-equiv; durations not yet measured")
         for x in r["include"]:
             print(f"  {x['est_min']:5.1f}  {x['label']}" + (f"  (--legs {x['legs']})" if x["legs"] else ""))
     elif not a["--github-output"]:

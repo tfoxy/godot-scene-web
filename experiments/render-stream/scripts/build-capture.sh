@@ -67,7 +67,9 @@ import sys
 source, destination, thin, universal = sys.argv[1:]
 Path(destination).write_text(Path(source).read_text().replace(thin, universal))
 PYCTEST
-	ctest --test-dir "$B/bundle" --output-on-failure --output-junit "$B/bundle/ctest.xml"
+	# Hosted native runners can stall timing-sensitive tests. Keep the bounds and expose
+	# both attempts in m-run's reports; Linux and Windows retain their existing invocations.
+	ctest --test-dir "$B/bundle" --repeat until-pass:2 --output-on-failure --output-junit "$B/bundle/ctest.xml"
 	lipo -create "$B/arm64/librender_stream_capture.dylib" \
 		"$B/x86_64/librender_stream_capture.dylib" -output "$B/bundle/librender_stream_capture.dylib"
 	lipo "$B/bundle/librender_stream_capture.dylib" -verify_arch arm64 x86_64

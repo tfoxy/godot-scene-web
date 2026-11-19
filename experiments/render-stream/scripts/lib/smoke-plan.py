@@ -440,6 +440,20 @@ def self_test(m):
                   "pure", "capture-build", "cargo:experiments/render-stream/rs-net", "windows", "macos"}
               and {"id": "windows", "kind": "windows", "phase": "setup"} in net["runs"]
               and {"id": "macos", "kind": "macos", "phase": "setup"} in net["runs"])
+    for name in ("lib/m1-driver.py", "lib/m1-bundle.py", "m-runtime-test.py", "lib/mfile-driver.py",
+                 "lib/mfile-bundle.py", "lib/m-equiv.py", "mfile-linux-ref.sh", "m-file-test.py"):
+        runtime = P("experiments/render-stream/scripts/" + name)
+        check(f"{name} reaches the macOS runtime and pure checks only",
+              not runtime["unmatched"] and set(runtime["targets"]) == {"pure", "macos"})
+    launcher = P("experiments/render-stream/scripts/lib/w1-driver.py")
+    check("the shared stock-template launcher reaches Windows and macOS",
+          not launcher["unmatched"] and set(launcher["targets"]) == {"pure", "windows", "macos"})
+    for name in ("wfile-driver.py", "wfile-legs.json", "w-equiv.py"):
+        shared = P("experiments/render-stream/scripts/lib/" + name)
+        check(f"shared {name} reaches Windows and macOS",
+              not shared["unmatched"] and set(shared["targets"]) == {"pure", "windows", "macos"})
+    spike = P("experiments/render-stream/fixtures/spike/main.gd")
+    check("the shared gate -1 fixture also reaches macOS", "macos" in spike["targets"])
     platform = P("experiments/render-stream/capture/src/rs_platform.h")
     check("shared capture source reaches windows in setup", "windows" in platform["targets"]
           and {"id": "windows", "kind": "windows", "phase": "setup"} in platform["runs"])

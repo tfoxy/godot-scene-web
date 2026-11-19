@@ -55,6 +55,22 @@ def ctest_counts(path, required=()):
     return counts
 
 
+def ctest_retries(path):
+    # JUnit retains the final result only. CTest's output keeps each attempt, including
+    # the failed first attempt of a recovered test and tests that exhaust both attempts.
+    try:
+        output = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return []
+    attempts = {}
+    for name, status, wall in re.findall(
+            r"^\s*(?:\d+/\d+\s+)?Test\s+#\d+:\s+(\S+)\s+\.{2,}\s*(.*?)\s+(\d+(?:\.\d+)?)\s+sec\s*$",
+            output, re.MULTILINE):
+        attempts.setdefault(name, []).append({"status": status, "wall_s": float(wall)})
+    return [{"name": name, "attempts": rows, "recovered": rows[-1]["status"] == "Passed"}
+            for name, rows in attempts.items() if len(rows) > 1]
+
+
 def net_test_counts(path):
     rows = re.findall(r"^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; "
                       r"\d+ measured; (\d+) filtered out;", path.read_text(encoding="utf-8"), re.MULTILINE)
@@ -70,6 +86,7 @@ def main():
     parser.add_argument("--repo", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--label", required=True)
+    parser.add_argument("--runtime-bundle", type=Path, help="Ubuntu-prepared stock template and imported fixture")
     args = parser.parse_args()
     start = time.monotonic()
     repo, out = Path(args.repo).resolve(), Path(args.out).resolve()
@@ -78,10 +95,18 @@ def main():
     build = repo / "experiments/render-stream/capture/build/macos"
     bundle = build / "bundle"
     checks, counts, net = [], None, None
+    retries = []
 
     def check(name, argv, **kwargs):
+        nonlocal retries
         result = run_check(name, argv, repo, out, **kwargs)
         checks.append(result)
+        if name == "m-build":
+            retries = ctest_retries(out / "logs/m-build.log")
+        if name.startswith("m1-") and args.runtime_bundle:
+            source = args.runtime_bundle.resolve() / "m1/runs" / name.removeprefix("m1-")
+            if source.is_dir():
+                shutil.copytree(source, out / "m1" / name.removeprefix("m1-"), dirs_exist_ok=True)
         if result["rc"]:
             raise ValueError(f"{name} failed")
 
@@ -117,6 +142,27 @@ def main():
                                      *map(str, binaries)])
         check("m-sign", sign + ["--json", str(out / "signatures.json"), *map(str, binaries), str(bundle / "rs-net-probe")])
 
+        if args.runtime_bundle:
+            runtime = args.runtime_bundle.resolve() / "m1"
+            config = runtime / f"m1-{platform.machine()}.json"
+            # The template is used byte-for-byte. Only restore mode lost by artifact transport.
+            template = runtime / "godot_macos_release.universal"
+            template.chmod(0o755)
+            shutil.copy2(dylib, runtime / "ext/librender_stream_capture.dylib")
+            check("m-runtime-tests", [sys.executable, "-I", "-B", str(scripts / "m-runtime-test.py")])
+            for leg in ("control", "validate", "arm", "refuse-shift", "refuse-image"):
+                check("m1-" + leg, [sys.executable, "-I", "-B", str(runtime / "m1-driver.py"),
+                      "--config", str(config), "--leg", leg], timeout_s=240)
+            files = args.runtime_bundle.resolve() / "mfile"
+            file_command = [sys.executable, "-I", "-B", str(files / "mfile-driver.py"),
+                            "--config", str(files / f"mfile-{platform.machine()}.json")]
+            for rep in ("a", "b"):
+                for gate in ("gate0", "gate1", "gate2", "gate8"):
+                    check(f"mfile-{gate}-{rep}", file_command + ["--gate", gate, "--rep", rep,
+                          "--out", str(out / "mfile")], timeout_s=900)
+            check("mfile-negative", file_command + ["--gate", "gate8", "--rep", "a",
+                  "--sabotage", "decode-off", "--out", str(out / "mfile-negative")], timeout_s=900)
+
         sabotage = out / "sabotage"
         sabotage.mkdir(exist_ok=True)
         (sabotage / "dependency.c").write_text("int external_value(void) { return 42; }\n")
@@ -149,11 +195,13 @@ def main():
     rc = int(bool(failing))
     wall = round(time.monotonic() - start, 3)
     write_json(out / "m-run.json", {"schema": "render-stream-m-run/1", "platform": platform.platform(),
-               "arch": platform.machine(), "ctest": counts, "net": net, "checks": checks, "wall_s": wall, "rc": rc})
+               "arch": platform.machine(), "ctest": counts, "ctest_retries": retries,
+               "net": net, "checks": checks, "wall_s": wall, "rc": rc})
     row = {"id": "macos", "phase": "setup", "rc": str(rc), "wall_s": wall,
            "lock_wait_s": 0, "lock_hold_s": 0, "lock": {}, "lock_summaries": 0,
            "skipped_by_tier": 0, "skipped_remote": [], "skipped_remote_groups": [],
-           "unavailable": [], "known_flakes": [], "failing": [args.label + ":" + name for name in failing]}
+           "unavailable": [], "known_flakes": [args.label + ":ctest:" + r["name"] for r in retries if r["recovered"]],
+           "ctest_retries": retries, "failing": [args.label + ":" + name for name in failing]}
     write_json(out / "validate-summary.json", {"schema": "render-stream-validate-summary/2",
                "partial": True, "wall_s": wall, "runs": [row], "failed": rc})
     for name in failing:
@@ -168,6 +216,11 @@ def main():
                 stream.write(f"| {result['name']} | {result['rc']} | {result['wall_s']:.3f} |\n")
             if counts:
                 stream.write(f"\nctest: {counts['tests']} passed, 0 failed/skipped.\n")
+            if retries:
+                stream.write("\n| Retried ctest | Attempts (status, wall s) | Recovered |\n| --- | --- | --- |\n")
+                for retry in retries:
+                    attempts = "; ".join(f"{a['status']} ({a['wall_s']:.3f})" for a in retry["attempts"])
+                    stream.write(f"| {retry['name']} | {attempts} | {retry['recovered']} |\n")
             if net and "test_counts" in net:
                 stream.write(f"\nrs-net: {net['test_counts']['passed']} passed, 0 failed/skipped "
                              f"({net['tests']['target']}).\n")

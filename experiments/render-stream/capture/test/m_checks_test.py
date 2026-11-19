@@ -220,25 +220,25 @@ class PlanningTests(unittest.TestCase):
         self.assertIn({"id": "macos", "kind": "macos", "phase": "setup"}, plan["runs"])
         self.assertIn("macos", mapping["remote"]["capable"])
 
-    def test_macos_is_two_native_jobs_without_ubuntu_or_determinism_jobs(self):
+    def test_macos_is_two_native_jobs_plus_equivalence_without_generic_ubuntu_jobs(self):
         for det in ([], [3, 1]):
             with self.subTest(determinism=det):
                 plan = matrix.expand(["macos"], determinism=det, table={})
                 self.assertEqual(plan["include"], [])
-                self.assertEqual(plan["shards"], {"macos": 2})
+                self.assertEqual(plan["shards"], {"macos": 3})
                 mixed = matrix.expand(["macos", "capture-build"], determinism=det, table={})
                 self.assertTrue(mixed["include"])
                 self.assertTrue(all(job["id"] == "capture-build" for job in mixed["include"]))
-                self.assertEqual(mixed["shards"]["macos"], 2)
+                self.assertEqual(mixed["shards"]["macos"], 3)
 
-    def test_merge_requires_both_architecture_summaries(self):
+    def test_merge_requires_both_architectures_and_equivalence_summary(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             remote = root / "remote.json"
             remote.write_text(json.dumps({"shards": matrix.expand(["macos"], table={})["shards"]}))
             jobs = []
-            for arch in ("arm64", "x86_64"):
-                job = root / arch
+            for name in ("arm64", "x86_64", "equivalence"):
+                job = root / name
                 job.mkdir()
                 row = {"id": "macos", "phase": "setup", "rc": "0", "wall_s": 12,
                        "lock_wait_s": 0, "lock_hold_s": 0, "lock": {}, "lock_summaries": 0,
@@ -246,8 +246,9 @@ class PlanningTests(unittest.TestCase):
                        "unavailable": [], "known_flakes": [], "failing": []}
                 (job / "validate-summary.json").write_text(json.dumps({"partial": True, "runs": [row]}))
                 jobs.append(str(job))
-            for selected, expected_rc, expected_row_rc in ((jobs, 0, "0"), (jobs[:1], 1, "missing"),
-                    (jobs[1:], 1, "missing"), ([], 1, "missing")):
+            selections = [(jobs, 0, "0"), ([], 1, "missing")]
+            selections.extend((jobs[:i] + jobs[i + 1:], 1, "missing") for i in range(len(jobs)))
+            for selected, expected_rc, expected_row_rc in selections:
                 with self.subTest(jobs=selected):
                     result = subprocess.run([sys.executable, "-I", str(SCRIPTS / "lib/validate-summary.py"),
                         "--merge", "--out", str(root / "merged"), "--expect", "macos", "--remote-json",
@@ -258,7 +259,7 @@ class PlanningTests(unittest.TestCase):
                     self.assertEqual(summary["runs"][0]["rc"], expected_row_rc)
                     self.assertEqual(summary["failed"], expected_rc)
                     if not expected_rc:
-                        self.assertEqual(len(summary["runs"][0]["shards"]), 2)
+                        self.assertEqual(len(summary["runs"][0]["shards"]), 3)
 
 
 class SignatureAndRunnerTests(unittest.TestCase):

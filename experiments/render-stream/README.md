@@ -188,6 +188,64 @@ Usage, flags and environment for all of these are in [scripts/README.md](scripts
 
 ### macOS capture test selection
 
+Native macOS ctests use `--repeat until-pass:2`. A failed test gets one retry with
+the same bounds. `m-run.json`, `validate-summary.json` and the job summary list every
+retried test and both attempts' statuses and durations, including exhausted retries.
+Recovered tests also appear under `known_flakes`; final ctest failures still fail the job.
+
+The Ubuntu `macos-bundle` job prepares the digest-pinned universal release template,
+both committed per-slice records and the gate −1 fixture's editor import. Each native
+macOS job attaches its signed universal capture dylib and runs `lib/m1-driver.py` through
+`lib/m-run.py --runtime-bundle`: control, validate, arm, refuse-shift and refuse-image.
+The template runs directly with `--headless --path`, without patching or re-signing it.
+The arm leg requires ColorRect and Label capture and disarm while the process is running.
+The negative tests shift the record's prefix/slots by one and change the record's slice
+SHA-256 identity, respectively; neither changes the running template. Darwin validates
+15 calibration checks plus `hook_plan` (the Linux/Windows fingerprint sequences have
+13 calibration checks). Each job uses its native stock record, with no Rosetta fallback.
+Passing and failing runtime evidence is retained under the job artifact's `m1/` directory.
+
+For a local Linux control, build the capture, then run:
+
+```sh
+python3 -I -B $S/lib/m1-bundle.py --target linux --out "$PWD/.local/mruntime"
+for leg in control validate arm refuse-shift refuse-image; do
+  python3 -I -B "$PWD/.local/mruntime/m1/m1-driver.py" \
+    --config "$PWD/.local/mruntime/m1/m1.json" --leg "$leg" || break
+done
+```
+
+The same bundle also carries the Windows file-sink leg table and its imported gate 0,
+g1a, g2a and g8t fixtures. `lib/mfile-driver.py` reuses the Windows driver for Linux and
+each native macOS slice. All 22 headless capture legs run twice; the g8 workers legs
+`gate8/workers/capture` and `gate8/workers/sabotage-publish-before-ready/capture` are
+excluded because publication follows worker-thread wall-clock readiness. Rendered,
+receiver and decode-cost legs remain outside this file-sink comparison.
+
+The Ubuntu `macos-bundle` job records both Linux references. The required Ubuntu
+`macos-equiv` job uses `cmp-rec.ts` to compare both repeats on each native slice and
+all four Linux/macOS repeat pairs. Every expected recording must be present, with
+no extra recordings. Resource-store bytes and fixture step schedules must agree.
+Missing native artifacts fail the gate. Both sinks from a separate macOS
+`GRC_TEXTURE_DECODE=off` negative test must differ in decoded content from Linux's
+engine-decode captures; missing or corrupt recordings do not count as detection.
+
+The comparison uses the existing Windows masks, with no additional macOS mask:
+
+| Mask                                                                   | Reason                                                                              |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Session `session_id` and `stream.stream_id`                            | Each capture creates fresh run identifiers.                                         |
+| Session `engine.sha256` (cross-platform pairs only)                    | The pinned Linux executable and native macOS slices have distinct identities.       |
+| End timing statistics (`encode_ns_total`, `snapshot_ns_total`)         | These measure elapsed execution time.                                               |
+| End byte accounting allowed by `cmp-rec.ts` for session length changes | Different identity lengths may change accounting, without changing content records. |
+
+Every other differing record retains its index and field paths in `m-equiv.json`
+and the failing evidence. A content difference requires investigation; do not add a
+mask for it. Run `mfile-linux-ref.sh --out <absolute-output>` for local Linux repeats.
+Use `mfile-driver.py --check-against-runner <gate-output>` with an imported bundle's
+config and `--gate` to check the leg table's environment and arguments against the
+corresponding gate runner.
+
 The `macos` remote job runs the native slice of the signed universal test bundle on each
 architecture. Alongside the codec, ABI and Darwin platform tests, it runs `rs_ws`,
 `rs_carrier_set`, `rs_texture_cache` and `rs_publish`. The publisher checks writer

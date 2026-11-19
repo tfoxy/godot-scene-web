@@ -198,6 +198,30 @@
   },
   "rules": [
     {
+      "why": "The macOS runtime shares the Windows launcher and gate -1 fixture",
+      "paths": [
+        "experiments/render-stream/scripts/lib/w1-driver.py",
+        "experiments/render-stream/scripts/lib/wfile-driver.py",
+        "experiments/render-stream/scripts/lib/wfile-legs.json",
+        "experiments/render-stream/scripts/lib/w-equiv.py",
+        "experiments/render-stream/fixtures/spike/**"
+      ],
+      "reach": ["macos"]
+    },
+    {
+      "why": "Portable stock-template runtime bundle and five headless macOS legs",
+      "paths": [
+        "experiments/render-stream/scripts/lib/m1-*.py",
+        "experiments/render-stream/scripts/m-runtime-test.py",
+        "experiments/render-stream/scripts/lib/mfile-*.py",
+        "experiments/render-stream/scripts/lib/m-equiv.py",
+        "experiments/render-stream/scripts/mfile-linux-ref.sh",
+        "experiments/render-stream/scripts/m-file-test.py"
+      ],
+      "reach": ["pure", "macos"],
+      "exclusive": true
+    },
+    {
       "why": "Native macOS toolchain, platform, Mach-O gates and engine-free regression tests",
       "paths": [
         "experiments/render-stream/capture/cmake/macos.cmake",
