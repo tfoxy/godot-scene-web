@@ -48,6 +48,7 @@ fn replay(
     data: &[u8],
     every: usize,
     synthetic: bool,
+    group_scissor: bool,
     read: &mut dyn FnMut(&render_stream_core::state::Hash) -> Option<Vec<u8>>,
 ) -> Result<Vec<(i64, Option<String>)>, Error> {
     let version = wire::version_of_magic(data)
@@ -71,6 +72,7 @@ fn replay(
         cull_mask: vp.canvas_cull_mask as u32,
         format: gsw_canvas_draw_list::Format::Rgb10A2,
     });
+    a.set_group_scissor(group_scissor);
     let mut payloads = PayloadStore::default();
     let mut retention = Retention::default();
     let mut need = Vec::new();
@@ -158,7 +160,7 @@ pub(super) fn cmd(args: &Args) -> ExitCode {
                 .find_map(|ext| std::fs::read(dir.join(format!("{}.{ext}", h.to_hex()))).ok())
         };
         let mut out = std::io::BufWriter::new(std::io::stdout().lock());
-        for (seq, digest) in replay(&data, every, synthetic, &mut read)? {
+        for (seq, digest) in replay(&data, every, synthetic, args.get("group-scissor") != Some("off"), &mut read)? {
             writeln!(out, "{seq} {}", digest.as_deref().unwrap_or("pending"))
                 .map_err(|e| Error::new("io", e.to_string()))?;
         }
@@ -180,12 +182,12 @@ mod tests {
     #[test]
     fn merged_digest_includes_the_final_short_group() {
         let data = include_bytes!("../../../../protocol/golden-7/window2.rs7");
-        let rows = replay(data, 2, true, &mut |_| None).unwrap();
+        let rows = replay(data, 2, true, true, &mut |_| None).unwrap();
         assert_eq!(rows.len(), 3);
         assert!(rows[0].1.is_none());
         assert!(rows[1].1.is_some());
         assert!(rows[2].1.is_some());
-        assert_eq!(rows, replay(data, 2, true, &mut |_| None).unwrap());
+        assert_eq!(rows, replay(data, 2, true, true, &mut |_| None).unwrap());
     }
 
     #[test]

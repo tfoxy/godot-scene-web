@@ -2455,6 +2455,7 @@ impl CoverWalk {
     }
 }
 
+pub mod groups;
 pub mod oracle;
 pub mod tiles;
 

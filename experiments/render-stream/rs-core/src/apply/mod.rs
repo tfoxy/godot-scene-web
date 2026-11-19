@@ -597,6 +597,8 @@ struct Emit {
     group: u32,
     /// A clip-and-draw owner's plain pass into its own group.
     pre: bool,
+    opens_group: bool,
+    closes_group: bool,
 }
 
 /// `Rect2::grow`.
@@ -4298,6 +4300,7 @@ impl Applier {
                 // one is open): a clip group copies its rect (a clip-and-draw owner then draws
                 // plainly into it), a transparent one clears the back buffer.
                 let mut pre_owner: Option<u32> = None;
+                let mut opens_group = false;
                 if let (Some(owner), None) = (a.group_start, open) {
                     if let Some(g) = self.groups.get(&owner) {
                         if g.group.mode == CanvasGroupMode::Transparent {
@@ -4311,6 +4314,7 @@ impl Applier {
                         }
                         backbuffer_copy = false;
                         open = Some(owner);
+                        opens_group = true;
                     }
                 }
                 if let Some(at) = pre_owner {
@@ -4320,6 +4324,8 @@ impl Applier {
                         flags: DRAW_TO_BACK_BUFFER,
                         group: 0,
                         pre: true,
+                        opens_group: true,
+                        closes_group: false,
                     });
                 }
                 let ops_mid = ops.len() as u32;
@@ -4330,7 +4336,8 @@ impl Applier {
                         .is_some_and(|g| g.mode != CanvasGroupMode::ClipAndDraw);
                 // The owner closes its group and draws through its group program.
                 let mut group = 0u32;
-                if open == Some(a.item) {
+                let closes_group = open == Some(a.item);
+                if closes_group {
                     if let Some(g) = self.groups.get(&a.item) {
                         if g.group.blur_mipmaps {
                             let region = back_buffer_region(&g.global_rect, vw, vh);
@@ -4377,12 +4384,22 @@ impl Applier {
                     flags: to_back_buffer | group,
                     group,
                     pre: false,
+                    opens_group: opens_group && pre_owner.is_none(),
+                    closes_group,
                 });
             }
         }
         // The draws, each operation run before the next non-empty draw.
         let mut pending: Vec<ScreenOp> = Vec::new();
+        let mut emit_starts = if self.groups.is_empty() {
+            Vec::new()
+        } else {
+            Vec::with_capacity(emits.len() + 1)
+        };
         for e in &emits {
+            if !self.groups.is_empty() {
+                emit_starts.push(self.list.draws.len());
+            }
             pending.extend_from_slice(&ops[e.ops.0 as usize..e.ops.1 as usize]);
             if e.at == u32::MAX {
                 continue;
@@ -4562,6 +4579,24 @@ impl Applier {
                         written: 0,
                     });
                     instances += li.count;
+                }
+            }
+        }
+        if !self.groups.is_empty() {
+            emit_starts.push(self.list.draws.len());
+        }
+        self.cover.group_ranges.clear();
+        let mut group_start = None;
+        for (i, e) in emits.iter().enumerate().filter(|_| !self.groups.is_empty()) {
+            if e.opens_group {
+                group_start = Some(emit_starts[i]);
+            }
+            if e.closes_group {
+                if let Some(first) = group_start.take() {
+                    self.cover.group_ranges.push(gsw_canvas_draw_list::cover::groups::GroupRange {
+                        first,
+                        composite: emit_starts[i]..emit_starts[i + 1],
+                    });
                 }
             }
         }

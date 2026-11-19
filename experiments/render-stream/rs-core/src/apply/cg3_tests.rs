@@ -272,7 +272,7 @@ fn a_state_only_mode_change_rewalks() {
     let st = a.apply(&s, &delta, &PayloadStore::default()).clone();
     assert!(st.structural);
     assert_eq!(a.list.screen_ops.len(), 1);
-    assert_eq!(a.list.draws[1].flags & !DRAW_UNTEXTURED, DRAW_GROUP_CLIP);
+    assert_eq!(a.list.draws[1].flags & !(DRAW_UNTEXTURED | DRAW_SCISSOR), DRAW_GROUP_CLIP);
 }
 
 #[test]
@@ -284,4 +284,59 @@ fn a_clip_only_owner_without_an_open_group_draws_nothing() {
     let mut a = Applier::new(viewport());
     a.apply(&s, &full_delta(&s), &PayloadStore::default());
     assert!(a.list.draws.is_empty());
+}
+
+
+#[test]
+fn group_scissors_survive_cover_compaction_and_row_only_updates() {
+    let mut s = hp_bar();
+    // No screen readers follow; the later explicit copy remains untouched.
+    let mut on = Applier::new(viewport());
+    let mut off = Applier::new(viewport());
+    off.set_group_scissor(false);
+    let store = PayloadStore::default();
+    for step in 0..4 {
+        let delta = if step == 0 { full_delta(&s) } else {
+            s.items.get_mut(&2).unwrap().xform[4] = step as f32;
+            TxDelta { items_upserted: vec![2], ..TxDelta::default() }
+        };
+        on.apply(&s, &delta, &store);
+        off.apply(&s, &delta, &store);
+        assert!(on.cover_recheck());
+        assert!(off.cover_recheck());
+        assert_eq!(on.list.draws.len(), off.list.draws.len());
+        assert_eq!(on.list.screen_ops.len(), off.list.screen_ops.len());
+        assert_eq!(on.list.screen_ops[0].region, [9 + step, 3, 22, 12]);
+        assert_ne!(on.list.screen_ops[0].region, off.list.screen_ops[0].region);
+        assert!(on.list.draws.iter().filter(|d| d.flags & DRAW_TO_BACK_BUFFER != 0)
+            .all(|d| d.flags & DRAW_SCISSOR != 0));
+        on.list.consumed();
+        off.list.consumed();
+    }
+    on.set_group_scissor(false);
+    on.apply(&s, &TxDelta::default(), &store);
+    off.apply(&s, &TxDelta::default(), &store);
+    assert_eq!(on.list.draws, off.list.draws);
+    assert_eq!(on.list.screen_ops, off.list.screen_ops);
+}
+
+#[test]
+fn clip_and_draw_pre_owner_and_all_composite_draws_share_the_group_scissor() {
+    let mut owner = item(2, ON_ROOT, rect_cmds([20.0, 8.0, 8.0, 8.0]));
+    owner.commands.list.push(Command::Rect {
+        aa: false, rect: [28.0, 8.0, 8.0, 8.0], color: [1.0; 4],
+    });
+    owner.canvas_group = Some(group(CanvasGroupMode::ClipAndDraw));
+    owner.children = vec![3];
+    let mut child_commands = rect_cmds([0.0, 0.0, 60.0, 30.0]);
+    if let Command::Rect { color, .. } = &mut child_commands.list[0] { color[3] = 0.5; }
+    let child = item(3, under(2), child_commands);
+    let s = state_with(vec![owner, child]);
+    let mut a = Applier::new(viewport());
+    a.apply(&s, &full_delta(&s), &PayloadStore::default());
+    assert!(a.cover_recheck());
+    assert_eq!(a.list.screen_ops[0].region, [19, 7, 18, 10]);
+    assert!(a.list.draws.iter().any(|d| d.flags & DRAW_TO_BACK_BUFFER != 0));
+    assert!(a.list.draws.iter().filter(|d| d.flags & DRAW_GROUP_CLIP != 0).count() >= 1);
+    assert!(a.list.draws.iter().all(|d| d.flags & DRAW_SCISSOR != 0 && d.scissor == [19, 7, 18, 10]));
 }

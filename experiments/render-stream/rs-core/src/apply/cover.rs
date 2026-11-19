@@ -57,6 +57,9 @@ pub(super) struct CoverState {
     tiles_off: bool,
     pub(super) alpha_ranges: super::programs::alpha_range::Cache,
     pub(super) alpha_zero: Vec<bool>,
+    groups: gsw_canvas_draw_list::cover::groups::GroupWalk,
+    pub(super) group_ranges: Vec<gsw_canvas_draw_list::cover::groups::GroupRange>,
+    pub(super) groups_off: bool,
 }
 
 struct Facts<'a> {
@@ -103,6 +106,7 @@ impl Applier {
     /// culled one is kept as what the executor last saw.
     pub(super) fn cover_unswap(&mut self) {
         let c = &mut self.cover;
+        c.groups.restore(&mut self.list);
         if c.culled {
             swap_table(&mut self.list, &mut c.full);
             std::mem::swap(&mut c.full, &mut c.shown);
@@ -116,6 +120,18 @@ impl Applier {
     /// draw table dirty when what the executor reads changed; returns whether it did.
     pub(super) fn cull_covered(&mut self) -> bool {
         self.cover_unswap();
+        let mut groups = std::mem::take(&mut self.cover.groups);
+        let facts = Facts {
+            resident: &self.resident,
+            applier: self,
+        };
+        groups.prepare(
+            &self.list,
+            &self.cover.group_ranges,
+            &facts,
+            self.cover_walk && !self.cover.groups_off,
+        );
+        self.cover.groups = groups;
         let mut walk = self.cover.walk.take().unwrap_or_default();
         let dropped = if self.cover_walk {
             let facts = Facts {
@@ -145,7 +161,7 @@ impl Applier {
             self.stats.noop_draws = walk.noop_draws;
             let min_area = walk.min_cover_area;
             self.cover.walk = Some(walk);
-            return self.cover_tiles(min_area);
+            return self.finish_cover(min_area);
         }
         if dropped {
             swap_table(&mut self.list, &mut c.full);
@@ -175,7 +191,24 @@ impl Applier {
         if changed {
             self.list.dirty.draws = true;
         }
-        self.cover_tiles(min_area) || changed
+        self.finish_cover(min_area) || changed
+    }
+
+    fn finish_cover(&mut self, min_area: u32) -> bool {
+        let tiles_changed = self.cover_tiles(min_area);
+        let c = &mut self.cover;
+        let mapping = if c.culled {
+            c.walk
+                .as_ref()
+                .map(|w| (w.keep_draw.as_slice(), w.keep_op.as_slice()))
+        } else {
+            None
+        };
+        let changed = c.groups.apply_compacted(&mut self.list, mapping);
+        if changed {
+            self.list.dirty.draws = true;
+        }
+        changed || tiles_changed
     }
 
     /// The tile half over the list as it now stands: writes its depth tables (cleared when the
@@ -220,6 +253,12 @@ impl Applier {
         }
         self.cover.tiles = Some(tiles);
         changed
+    }
+
+    /// Whether canvas-group draws and copies are restricted to the composite's bounds.
+    /// On by default; disabling this exact optimization is useful for diagnostics.
+    pub fn set_group_scissor(&mut self, on: bool) {
+        self.cover.groups_off = !on;
     }
 
     /// Whether the cover walk's tile half writes depth tables into the root list (on by default;
@@ -282,7 +321,9 @@ impl Applier {
     /// walk that remembers nothing makes of the assembled table, i.e. whether what the applier's
     /// walk kept across applies changed no answer.
     pub fn cover_recheck(&self) -> bool {
-        let mut full = self.list.clone();
+        let mut plain = self.list.clone();
+        self.cover.groups.restore_copy(&mut plain);
+        let mut full = plain.clone();
         if self.cover.culled {
             full.draws.clone_from(&self.cover.full.draws);
             full.screen_ops.clone_from(&self.cover.full.ops);
@@ -300,7 +341,7 @@ impl Applier {
         // The depth tables: what a fresh check with no slack stands behind.
         let owners = self.cover.tiles.as_ref().map_or(&[][..], |t| &t.owners[..]);
         if !gsw_canvas_draw_list::cover::tiles::TileWalk::default()
-            .verify(&self.list, owners, &facts)
+            .verify(&plain, owners, &facts)
         {
             return false;
         }
@@ -316,6 +357,6 @@ impl Applier {
             &mut t.ops,
             &mut t.instanced,
         );
-        self.cover.culled && same_table(&self.list, &t)
+        self.cover.culled && same_table(&plain, &t)
     }
 }

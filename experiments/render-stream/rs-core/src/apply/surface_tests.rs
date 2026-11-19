@@ -177,6 +177,57 @@ fn applier() -> Applier {
     })
 }
 
+#[test]
+fn surface_groups_inherit_scissor_option_on_creation_and_update() {
+    let mut s = scene();
+    let owner = s.items.get_mut(&20).unwrap();
+    owner.commands = rect([8.0, 4.0, 8.0, 4.0]);
+    owner.children = vec![21];
+    owner.canvas_group = Some(CanvasGroup {
+        mode: CanvasGroupMode::ClipOnly,
+        clear_margin: 5.0,
+        fit_empty: false,
+        fit_margin: 0.0,
+        blur_mipmaps: false,
+    });
+    s.items.insert(
+        21,
+        item(
+            21,
+            Parent {
+                kind: ParentKind::Item,
+                id: 20,
+            },
+            rect([0.0, 0.0, 30.0, 16.0]),
+        ),
+    );
+    let mut a = applier();
+    for (step, on) in [false, true, false].into_iter().enumerate() {
+        a.set_group_scissor(on);
+        s.items.get_mut(&20).unwrap().xform[4] = step as f32;
+        let delta = if step == 0 {
+            full_delta(&s)
+        } else {
+            TxDelta {
+                items_upserted: vec![20],
+                ..TxDelta::default()
+            }
+        };
+        a.apply(&s, &delta, &PayloadStore::default());
+        let pass = a.surfaces.as_ref().unwrap().applier(5).unwrap();
+        assert!(!pass.list.screen_ops.is_empty());
+        assert_eq!(
+            pass.list.draws.iter().any(|d| d.flags & DRAW_SCISSOR != 0),
+            on
+        );
+        if on {
+            assert_eq!(pass.list.screen_ops[0].region, [8, 3, 10, 6]);
+        }
+        a.list.consumed();
+        a.surfaces.as_mut().unwrap().consumed();
+    }
+}
+
 /// One frame: apply, then what the executor would run (surface ids and clears, frees), then
 /// consume every list as `draw` does.
 fn frame(a: &mut Applier, s: &ResolvedState, d: &TxDelta) -> (Vec<(u32, bool)>, Vec<u32>) {

@@ -1072,6 +1072,7 @@ fn cmd_apply_bench(args: &Args) -> ExitCode {
         a.cover_walk = args.get("cover") != Some("off");
         a.set_cover_noops(args.get("noop") != Some("off"));
         a.set_cover_tiles(args.get("tiles") != Some("off"));
+        a.set_group_scissor(args.get("group-scissor") != Some("off"));
         if let Some(side) = args.get("max-texture-side").and_then(|s| s.parse().ok()) {
             a.max_texture_side = side;
         }
@@ -1241,6 +1242,7 @@ fn cmd_profile(args: &Args) -> ExitCode {
     for _ in 0..repeats {
         let mut next = 1;
         let mut programs = |a: &mut render_stream_core::apply::Applier, state: &_, payloads: &_| {
+            a.set_group_scissor(args.get("group-scissor") != Some("off"));
             if args.get("programs") == Some("synthetic") {
                 fill_cmd::register_synthetic_programs(a, state, payloads, &mut next, None)?;
             }
