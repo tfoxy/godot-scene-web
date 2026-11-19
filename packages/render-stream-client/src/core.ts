@@ -192,6 +192,8 @@ export interface StreamCore {
   /** A fresh session on the next message (a reconnect); payloads kept when `keepPayloads`. */
   reset(keepPayloads: boolean): void;
   heapBytes(): number;
+  /** Custom shader counters, absent on cores that do not report them. */
+  programCounts?(): Readonly<ProgramCounts>;
   dispose(): void;
 }
 
@@ -308,6 +310,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     defined: 0,
     refused: 0,
     library_reads: 0,
+    identical_glsl: 0,
   };
   private lastAcceptedSeq = 0;
   private statsView: Uint32Array | null = null;
@@ -369,6 +372,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       this.programs.defined = 0;
       this.programs.refused = 0;
       this.programs.library_reads = 0;
+      this.programs.identical_glsl = 0;
       const next = this.build(protocol);
       try {
         if (this.logRemoved) next.set_log_removed(true);
@@ -733,6 +737,10 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
 
   heapBytes(): number {
     return this.instance === null ? 0 : this.memory.buffer.byteLength;
+  }
+
+  programCounts(): Readonly<ProgramCounts> {
+    return { ...this.programs };
   }
 
   // The recorder's one copy per received message, made only when asked (`copyDecoded`).

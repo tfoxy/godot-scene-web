@@ -54,6 +54,7 @@ import {
   POINTER_TARGET_SOURCE,
   type PointerTargetSource,
 } from "./pointer-targets";
+import { scheduleTranspilerWarmup } from "./programs";
 import {
   createRecorder,
   type RecorderOptions,
@@ -390,6 +391,7 @@ class Client implements RenderStreamClient {
     }
     if (this.loading !== null) return;
     this.status({ kind: "connecting" });
+    scheduleTranspilerWarmup();
     this.loading = this.load().catch((e: unknown) => {
       this.loading = null;
       this.loadAbort = null;

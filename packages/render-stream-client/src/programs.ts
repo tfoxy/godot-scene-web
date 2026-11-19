@@ -16,6 +16,34 @@ import {
   UnsupportedShaderError,
 } from "@godot-scene-web/effects/shaders";
 
+// One warm-up per loaded client module. A real transpile makes it unnecessary, even if its
+// shader is refused; a definePrograms call with nothing pending (every apply) does not. No host or wasm instance is passed to the idle callback.
+let warmupScheduled = false;
+let transpilerUsed = false;
+
+export function scheduleTranspilerWarmup(): void {
+  if (warmupScheduled || transpilerUsed) return;
+  warmupScheduled = true;
+  const warm = () => {
+    if (transpilerUsed) return;
+    transpilerUsed = true;
+    try {
+      transpileGodotItemShader(`shader_type canvas_item;
+        uniform float strength = 0.5;
+        uniform vec4 tint : source_color = vec4(1.0);
+        void fragment() {
+          vec4 texel = texture(TEXTURE, UV);
+          COLOR = mix(texel, texel * tint, strength + sin(TIME) * 0.1);
+        }`);
+    } catch {
+      // Opportunistic JIT warm-up must never affect client startup or error reporting.
+    }
+  };
+  if (typeof globalThis.requestIdleCallback === "function")
+    globalThis.requestIdleCallback(warm);
+  else globalThis.setTimeout(warm, 0);
+}
+
 /** The part of `rs-gsw-wasm`'s `GswRs` this module drives (web/gsw-rs/src/lib.rs). */
 export interface ProgramHost {
   pending_shaders(): number;
@@ -40,6 +68,44 @@ export interface ProgramCounts {
   defined: number;
   refused: number;
   library_reads: number;
+  /** Distinct code hashes defined with the same fragment and vertex GLSL as an earlier one.
+   * Measurement only; metadata (including uniform defaults) is not compared. Optional for
+   * callers supplying the older counter shape; definitions initialize it to zero. */
+  identical_glsl?: number;
+}
+
+// The host owns the program lifetime. Tracking survives slices and reconnects that retain it,
+// and is collected with the host when the wasm instance is replaced.
+const glslDefinitions = new WeakMap<
+  ProgramHost,
+  { codes: Set<string>; sources: Map<number, Set<string>> }
+>();
+
+function countIdenticalGlsl(
+  g: ProgramHost,
+  out: ProgramCounts,
+  codeHash: string,
+  glsl: string,
+  vertexGlsl: string,
+): void {
+  let seen = glslDefinitions.get(g);
+  if (seen === undefined) {
+    seen = { codes: new Set(), sources: new Map() };
+    glslDefinitions.set(g, seen);
+  }
+  if (seen.codes.has(codeHash)) return;
+  seen.codes.add(codeHash);
+  // Hash both stages once. Check the complete strings inside each bucket so a hash collision
+  // cannot count different GLSL as identical. The length keeps the stage boundary unambiguous.
+  const source = `${vertexGlsl.length}:${vertexGlsl}${glsl}`;
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < source.length; i++)
+    hash = Math.imul(hash ^ source.charCodeAt(i), 0x01000193);
+  const bucket = seen.sources.get(hash);
+  if (bucket === undefined) seen.sources.set(hash, new Set([source]));
+  else if (bucket.has(source))
+    out.identical_glsl = (out.identical_glsl ?? 0) + 1;
+  else bucket.add(source);
 }
 
 export class ProgramError extends Error {
@@ -59,7 +125,12 @@ export async function resolvePrograms(
   library: string | null,
   log: (line: string) => void = () => {},
 ): Promise<ProgramCounts> {
-  const out: ProgramCounts = { defined: 0, refused: 0, library_reads: 0 };
+  const out: ProgramCounts = {
+    defined: 0,
+    refused: 0,
+    library_reads: 0,
+    identical_glsl: 0,
+  };
   await provideLibrary(g, mem, library, out);
   definePrograms(g, out, log);
   return out;
@@ -144,6 +215,7 @@ export function definePrograms(
   log: (line: string) => void = () => {},
   budget?: { ms: number; max: number },
 ): boolean {
+  out.identical_glsl ??= 0;
   const limit = g.hold_program === undefined ? undefined : budget;
   const start = limit === undefined ? 0 : performance.now();
   let attempted = 0;
@@ -163,7 +235,8 @@ export function definePrograms(
     }
     attempted++;
     const i = 0;
-    const label = `shader ${g.pending_shader_id(i)} (${g.pending_hash(i)})`;
+    const codeHash = g.pending_hash(i);
+    const label = `shader ${g.pending_shader_id(i)} (${codeHash})`;
     const code = g.pending_code(i);
     if (code === undefined) {
       if (g.pending_withheld(i)) {
@@ -182,6 +255,7 @@ export function definePrograms(
     }
     let transpiled: ReturnType<typeof transpileGodotItemShader>;
     try {
+      transpilerUsed = true;
       transpiled = transpileGodotItemShader(code);
     } catch (e) {
       if (!(e instanceof UnsupportedShaderError)) throw e;
@@ -197,7 +271,10 @@ export function definePrograms(
     if (r === 1) {
       log(`${label} did not compile`);
       out.refused++;
-    } else out.defined++;
+    } else {
+      out.defined++;
+      countIdenticalGlsl(g, out, codeHash, glsl, vertexGlsl ?? "");
+    }
   }
   return false;
 }

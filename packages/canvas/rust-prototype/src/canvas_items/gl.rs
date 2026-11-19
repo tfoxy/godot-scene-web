@@ -23,6 +23,7 @@ use super::{
     item_program_vertex, item_rows_for, item_upload_rects, msdf_fragment, plan_calls,
     SurfacePass,
     program_poll::{link_ready, poll_links},
+    item_shaders::{ItemShaders, LinkShaders, ShaderApi},
 };
 use crate::present::{
     ContextAttributes,
@@ -393,7 +394,7 @@ struct ItemProgram {
 /// (`KHR_parallel_shader_compile`, or a fence after the link commands).
 struct PendingLink {
     program: glow::Program,
-    shaders: [glow::Shader; 2],
+    shaders: LinkShaders<glow::Shader>,
     /// [`CanvasItemsExecutor::poll_programs`] calls made when the link was issued.
     epoch: u64,
     /// Signalled once the GPU process has issued the link commands. The driver's compile can
@@ -1048,6 +1049,47 @@ fn screen_op(
     set_viewport(gl, cache, screen.width, screen.height);
 }
 
+impl ShaderApi for glow::Context {
+    type Shader = glow::Shader;
+    type Program = glow::Program;
+
+    fn compile_stage(&self, vertex: bool, source: &str) -> Result<glow::Shader, String> {
+        unsafe {
+            let shader = self.create_shader(if vertex { glow::VERTEX_SHADER } else { glow::FRAGMENT_SHADER })?;
+            self.shader_source(shader, source);
+            self.compile_shader(shader);
+            Ok(shader)
+        }
+    }
+    fn new_program(&self) -> Result<glow::Program, String> {
+        unsafe { self.create_program() }
+    }
+    fn attach(&self, program: glow::Program, shader: glow::Shader) {
+        unsafe { self.attach_shader(program, shader) }
+    }
+    fn link(&self, program: glow::Program) {
+        unsafe { self.link_program(program) }
+    }
+    fn linked(&self, program: glow::Program) -> bool {
+        unsafe { self.get_program_link_status(program) }
+    }
+    fn program_log(&self, program: glow::Program) -> String {
+        unsafe { self.get_program_info_log(program) }
+    }
+    fn shader_log(&self, shader: glow::Shader) -> String {
+        unsafe { self.get_shader_info_log(shader) }
+    }
+    fn detach(&self, program: glow::Program, shader: glow::Shader) {
+        unsafe { self.detach_shader(program, shader) }
+    }
+    fn delete_stage(&self, shader: glow::Shader) {
+        unsafe { self.delete_shader(shader) }
+    }
+    fn delete_link(&self, program: glow::Program) {
+        unsafe { self.delete_program(program) }
+    }
+}
+
 fn compile(gl: &glow::Context, vert: &str, frag: &str) -> Result<glow::Program, String> {
     let (program, shaders) = start_link(gl, vert, frag)?;
     finish_link(gl, program, shaders)
@@ -1134,9 +1176,10 @@ fn compile_item(
     gl: &glow::Context,
     module: &str,
     vertex: Option<&str>,
+    shared: &mut ItemShaders<glow::Shader>,
 ) -> Result<CompiledItem, String> {
-    let (program, shaders) = start_item(gl, module, vertex)?;
-    finish_item(gl, program, shaders)
+    let (program, shaders) = start_item(gl, module, vertex, shared)?;
+    finish_item(gl, program, shaders, shared)
 }
 
 /// [`compile_item`]'s compile and link, reading no status.
@@ -1144,20 +1187,20 @@ fn start_item(
     gl: &glow::Context,
     module: &str,
     vertex: Option<&str>,
-) -> Result<(glow::Program, [glow::Shader; 2]), String> {
-    match vertex {
-        Some(v) => start_link(gl, &item_program_vertex(v), &item_program_fragment(module)),
-        None => start_link(gl, VERT, &item_program_fragment(module)),
-    }
+    shared: &mut ItemShaders<glow::Shader>,
+) -> Result<(glow::Program, LinkShaders<glow::Shader>), String> {
+    let vertex = vertex.map(item_program_vertex);
+    shared.start(gl, vertex.as_deref(), VERT, &item_program_fragment(module))
 }
 
 /// [`compile_item`] after [`start_item`]: the link status, then the program's uniforms.
 fn finish_item(
     gl: &glow::Context,
     program: glow::Program,
-    shaders: [glow::Shader; 2],
+    shaders: LinkShaders<glow::Shader>,
+    shared: &mut ItemShaders<glow::Shader>,
 ) -> Result<CompiledItem, String> {
-    let program = finish_link(gl, program, shaders)?;
+    let program = shared.finish(gl, program, shaders)?;
     unsafe {
         gl.use_program(Some(program));
         // The vertex stage's tint stays straight: the fragment stage owns the order.
@@ -1539,6 +1582,8 @@ pub struct CanvasItemsExecutor {
     planned_calls: u64,
     /// Item-space programs by id ([`CanvasItemsExecutor::define_program`]).
     programs: HashMap<u32, ItemProgram>,
+    /// One builtin vertex shader per live context, shared only by item programs.
+    item_shaders: ItemShaders<glow::Shader>,
     /// [`CanvasItemsExecutor::poll_programs`] calls so far.
     poll_epoch: u64,
     /// Pending links a restored context recompiled, for the next `poll_programs`.
@@ -1591,6 +1636,7 @@ impl CanvasItemsExecutor {
             frames: 0,
             planned_calls: 0,
             programs: HashMap::new(),
+            item_shaders: ItemShaders::default(),
             poll_epoch: 0,
             links_restored: Vec::new(),
             version_counter: 0,
@@ -1626,7 +1672,7 @@ impl CanvasItemsExecutor {
         if self.context_state() == ContextState::Lost {
             return Err(ExecError::Lost.to_string());
         }
-        let compiled = compile_item(&self.gl.raw, module, vertex);
+        let compiled = compile_item(&self.gl.raw, module, vertex, &mut self.item_shaders);
         self.cache.program = None;
         let compiled = compiled?;
         if let Some(old) = self.programs.insert(
@@ -1664,7 +1710,7 @@ impl CanvasItemsExecutor {
         if self.context_state() == ContextState::Lost {
             return Err(ExecError::Lost.to_string());
         }
-        let (program, shaders) = start_item(&self.gl.raw, module, vertex)?;
+        let (program, shaders) = start_item(&self.gl.raw, module, vertex, &mut self.item_shaders)?;
         let fence = unsafe { self.gl.raw.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0).ok() };
         // The driver starts on the commands now, not when the frame's task ends.
         unsafe { self.gl.raw.flush() };
@@ -1728,7 +1774,7 @@ impl CanvasItemsExecutor {
                 return ControlFlow::Continue(None);
             }
             let link = p.pending.take().unwrap();
-            let result = match finish_item(&self.gl.raw, link.program, link.shaders) {
+            let result = match finish_item(&self.gl.raw, link.program, link.shaders, &mut self.item_shaders) {
                 Ok(compiled) => {
                     p.compiled = Some(compiled);
                     Ok(())
@@ -1785,9 +1831,7 @@ impl CanvasItemsExecutor {
                 if let Some(fence) = l.fence {
                     gl.delete_sync(fence);
                 }
-                for s in l.shaders {
-                    gl.delete_shader(s);
-                }
+                self.item_shaders.discard(gl, l.program, l.shaders);
                 gl.delete_program(l.program);
             }
         }
@@ -1845,6 +1889,7 @@ impl CanvasItemsExecutor {
             self.target_unit_stale = false;
             self.fence = None;
             self.objects = None;
+            self.item_shaders.forget_context();
             self.cache = Cache::default();
             self.gl = Gl::new(glow::Context::from_webgl2_context(self.context.clone()));
             return match Objects::create(&self.gl.raw) {
@@ -1861,7 +1906,7 @@ impl CanvasItemsExecutor {
                             continue;
                         };
                         let was_pending = p.pending.take().is_some();
-                        match compile_item(&self.gl.raw, &p.module, p.vertex.as_deref()) {
+                        match compile_item(&self.gl.raw, &p.module, p.vertex.as_deref(), &mut self.item_shaders) {
                             Ok(c) => {
                                 p.compiled = Some(c);
                                 if was_pending {
@@ -3498,12 +3543,11 @@ impl Drop for CanvasItemsExecutor {
                     if let Some(fence) = l.fence {
                         gl.delete_sync(fence);
                     }
-                    for s in l.shaders {
-                        gl.delete_shader(s);
-                    }
+                    self.item_shaders.discard(gl, l.program, l.shaders);
                     gl.delete_program(l.program);
                 }
             }
+            self.item_shaders.delete(gl);
             if let Some(o) = self.objects.take() {
                 gl.delete_program(o.program);
                 gl.delete_program(o.msdf.program);

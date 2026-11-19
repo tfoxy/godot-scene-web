@@ -79,6 +79,7 @@ import {
 } from "./frame-cap";
 import { clientHello, clientProtocol } from "./hello";
 import { type HintLead, HintTable } from "./hints";
+import type { ProgramCounts } from "./programs";
 import type { RenderStreamRecorder } from "./recorder";
 import type {
   RenderStreamTransport,
@@ -116,6 +117,9 @@ export interface RenderStreamStats {
   creditRttMsP50: number | null;
   /** The wasm instance's memory (0 after dispose). */
   heapBytes: number;
+  /** Custom shader counters for the current wasm instance (kept across reconnects). Defined
+   * includes links still pending; refused includes transpile and compile failures. */
+  programs?: Readonly<ProgramCounts>;
   /** The open connection's carrier, or null while not connected (or on a custom transport
    * that does not name one). `stats()` always sets it; it is optional so that code building a
    * `RenderStreamStats` of its own (a consumer's test double) need not. */
@@ -600,6 +604,7 @@ export class StreamLoop {
       appliesPerSec: perSec,
       creditRttMsP50: p50,
       heapBytes: this.o.core.heapBytes(),
+      programs: this.o.core.programCounts?.(),
       carrier:
         this.conn?.opened && this.conn.closeInfo === null
           ? (this.conn.transport?.carrier ?? null)

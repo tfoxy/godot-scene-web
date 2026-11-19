@@ -155,6 +155,58 @@ describe("WasmStreamCore program links (J1)", () => {
     expect(instances[0].poll_programs).toHaveBeenCalledTimes(4);
   });
 
+  it("exposes program counters through stats and resets them with a new wasm instance", () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    const { core, instances } = harness();
+    const h = loopHarness();
+    Object.assign(h.core, { programCounts: () => core.programCounts() });
+    const attach = (count: number) => {
+      const host = programHost(count);
+      Object.assign(instances.at(-1) as object, host, {
+        particles_sync: () => "",
+        particles_buffers: () => "",
+        shader_time: () => Number.NaN,
+        revisit: () => 0,
+      });
+      return host;
+    };
+    try {
+      const host = attach(2);
+      core.revisit(1);
+      const snapshot = h.loop.stats().programs;
+      expect(snapshot).toEqual({
+        defined: 2,
+        refused: 0,
+        library_reads: 0,
+        identical_glsl: 1,
+      });
+      core.beginConnection();
+      expect(h.loop.stats().programs).toEqual(snapshot);
+      // The same code hashes can be defined again after reset; they are not new identities.
+      core.reset(true);
+      host.states.fill("pending");
+      core.revisit(2);
+      expect(h.loop.stats().programs).toMatchObject({
+        defined: 4,
+        identical_glsl: 1,
+      });
+      expect(snapshot?.defined).toBe(2);
+      core.beginConnection(14);
+      attach(1);
+      core.revisit(3);
+      expect(h.loop.stats().programs).toEqual({
+        defined: 1,
+        refused: 0,
+        library_reads: 0,
+        identical_glsl: 0,
+      });
+    } finally {
+      h.loop.dispose();
+      core.dispose();
+      clock.mockRestore();
+    }
+  });
+
   it("progresses held shaders without a transaction and clears them on reset", () => {
     const clock = vi.spyOn(performance, "now").mockReturnValue(0);
     try {

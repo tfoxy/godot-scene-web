@@ -165,6 +165,8 @@ The object stays the same until something changes, so polling it is cheap.
 
 ## Shader readiness
 
+`stats().programs` reports `defined`, `refused`, `library_reads`, and `identical_glsl`: distinct code hashes defined with byte-identical fragment and vertex GLSL to an earlier program, without deduplicating programs or comparing uniform defaults; counters reset when the wasm instance is replaced.
+
 Live mode defines pending custom shaders in slices of 4 ms or three programs per call,
 always attempting at least one. Shaders beyond the slice stay held: their materials' draws
 are omitted until a later frame defines and links them. Held shaders progress even when

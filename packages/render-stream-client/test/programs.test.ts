@@ -16,6 +16,41 @@ const counts = (): ProgramCounts => ({
 afterEach(() => vi.restoreAllMocks());
 
 describe("budgeted shader definitions", () => {
+  it("counts distinct hashes with identical GLSL across slices without deduplicating definitions", () => {
+    const g = programHost(7);
+    const out = counts();
+    const hashes = ["a", "b", "b", "c", "d", "e", "f"];
+    const codes = [
+      "shader_type canvas_item; uniform float strength = 0.2; void fragment() { COLOR *= strength; }",
+      "shader_type canvas_item; uniform float strength = 0.8; void fragment() { COLOR *= strength; }",
+      "shader_type canvas_item; uniform float strength = 0.8; void fragment() { COLOR *= strength; }",
+      "shader_type canvas_item; uniform float strength = 0.2; void vertex() { VERTEX.x += 1.0; } void fragment() { COLOR *= strength; }",
+      "shader_type canvas_item; uniform float strength = 0.2; void fragment() { COLOR += strength; }",
+      "shader_type spatial;",
+      "shader_type canvas_item; uniform float strength = 0.8; void fragment() { COLOR *= strength; }",
+    ];
+    g.pending_hash = (i) => hashes[Number(g.pending_shader_id(i))];
+    g.pending_code = () => codes[Number(g.pending_shader_id(0))];
+    const define = vi.fn<ProgramHost["define_program"]>(g.define_program);
+    g.define_program = define;
+    expect(definePrograms(g, out, undefined, { ms: Infinity, max: 1 })).toBe(
+      true,
+    );
+    expect(out).toMatchObject({ defined: 1, identical_glsl: 0 });
+    definePrograms(g, out);
+    expect(out).toMatchObject({ defined: 6, refused: 1, identical_glsl: 2 });
+    expect(define).toHaveBeenCalledTimes(6);
+    const args = define.mock.calls;
+    expect(args[0][1]).toBe(args[1][1]);
+    expect(args[0][2]).not.toBe(args[1][2]); // Uniform defaults remain distinct metadata.
+    expect(args[3][1]).toBe(args[0][1]);
+    expect(args[3][3]).not.toBe(args[0][3]); // A different vertex stage is not identical.
+    expect(args[4][1]).not.toBe(args[0][1]);
+    const other = counts();
+    definePrograms(programHost(1), other);
+    expect(other).toMatchObject({ defined: 1, identical_glsl: 0 });
+  });
+
   it("defines a burst of 14 in slices of at most three, keeping the rest held", () => {
     vi.spyOn(performance, "now").mockReturnValue(0);
     const g = programHost(14);
@@ -32,7 +67,12 @@ describe("budgeted shader definitions", () => {
       expect(g.states).not.toContain("pending");
     }
     expect(batches).toEqual([3, 3, 3, 3, 2]);
-    expect(out).toEqual({ defined: 14, refused: 0, library_reads: 0 });
+    expect(out).toEqual({
+      defined: 14,
+      refused: 0,
+      library_reads: 0,
+      identical_glsl: 13,
+    });
   });
 
   it("stops after the time budget, always attempting at least one", () => {
