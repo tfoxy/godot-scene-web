@@ -199,13 +199,13 @@ runs:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
-        key: cargo-registry-${{ runner.os }}-${{ hashFiles('experiments/render-stream/*/Cargo.lock', 'experiments/render-stream/web/*/Cargo.lock') }}
+        key: cargo-registry-${{ runner.os }}-${{ hashFiles('experiments/render-stream/*/Cargo.lock', 'experiments/render-stream/web/*/Cargo.lock', 'packages/canvas/rust-prototype/Cargo.lock') }}
         restore-keys: cargo-registry-${{ runner.os }}-
 
     - name: cargo fetch
       shell: bash
       run: |
-        for lock in experiments/render-stream/*/Cargo.lock experiments/render-stream/web/*/Cargo.lock; do
+        for lock in experiments/render-stream/*/Cargo.lock experiments/render-stream/web/*/Cargo.lock packages/canvas/rust-prototype/Cargo.lock; do
           [ -f "$lock" ] || continue
           (cd "$(dirname "$lock")" && cargo fetch --locked)
         done

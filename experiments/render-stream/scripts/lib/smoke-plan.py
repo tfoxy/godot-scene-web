@@ -505,6 +505,11 @@ def self_test(m):
         t in ("pure", "cargo:experiments/render-stream/web/gsw-rs", "g7x:g7-dev", "g7x:g7-bench") or t.endswith("@gsw")
         or t.startswith("native:gate8@")
         for t in j["targets"]) and any(t.startswith("native:gate8@") for t in j["targets"]))
+    canvas = P("packages/canvas/rust-prototype/src/lib.rs")
+    check("rust-prototype changes select cargo-gsw-rs and its crate run",
+          "cargo:experiments/render-stream/web/gsw-rs" in canvas["targets"] and
+          {"id": "cargo-gsw-rs", "kind": "cargo", "crate": "experiments/render-stream/web/gsw-rs",
+           "phase": "setup"} in canvas["runs"])
     k = P("experiments/render-stream/results/grt.md", ms=True)
     check("--milestone runs everything with sabotage", set(k["targets"]) == uni and k["sabotage"]["run"])
     kinds = [r["kind"] for r in f["runs"]]

@@ -684,7 +684,7 @@
         "packages/canvas/rust-draw-list/**",
         "packages/canvas/rust-prototype/**"
       ],
-      "reach": ["native:gate8@*"]
+      "reach": ["native:gate8@*", "cargo:experiments/render-stream/web/gsw-rs"]
     },
     {
       "why": "packages: the toolkit's own suite too",

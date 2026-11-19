@@ -80,6 +80,7 @@ FAST_FRAMES=""
 FAST_FPS=240
 while [ $# -gt 0 ]; do
 	case "$1" in
+	--help|-h) sed -n '2,38p' "$0"; exit 0 ;;
 	--base) BASE="$2" && BASE_SET=1 && shift 2 ;;
 	--timing-jobs) TIMING_JOBS="$2" && shift 2 ;;
 	--out) OUT="$2" && shift 2 ;;
@@ -252,9 +253,12 @@ run_one() {
 		crate="$(field crate)"
 		cmd="cargo test --offline --release"
 		# web/gsw-rs is wasm-only (its executor is cfg(target_arch = "wasm32")) and has no host-runnable
-		# test: a native cargo test cannot compile it (GRT5). The real check is that it, with its
-		# tests, builds for the target it ships on.
-		case "$crate" in */web/gsw-rs) cmd="cargo check --offline --release --target wasm32-unknown-unknown --all-targets" ;; esac
+		# test: check the target it ships on, then test the native canvas-items crate it links.
+		case "$crate" in
+		*/web/gsw-rs)
+			cmd="cargo check --offline --release --target wasm32-unknown-unknown --all-targets && cd '$REPO_ROOT/packages/canvas/rust-prototype' && cargo test --offline --release --features canvas-items --lib"
+			;;
+		esac
 		launch "$dir" -- bash "$Q" shared --label "validate:cargo:$(basename "$crate")" -- \
 			bash -c "cd '$REPO_ROOT/$crate' && $cmd" >"$dir/run.log" 2>&1 || rc=$?
 		;;
