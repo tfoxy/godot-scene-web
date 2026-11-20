@@ -1,7 +1,8 @@
 //! Restrict a canvas group's work to pixels its composite can show. This runs on the assembled
 //! table, applying its edits after cover compaction. It changes only scissors and copy regions; clears
-//! retain their full-target semantics. Group ranges come from the producer's group bookkeeping,
-//! including owners with custom materials (which cannot themselves be optimized here).
+//! retain their full-target semantics. Disjoint Copy groups may then share a back-buffer pass.
+//! Group ranges come from the producer's group bookkeeping, including owners with custom materials
+//! (which cannot themselves be optimized here).
 
 use super::{CoverFacts, PxRect, FAR};
 use crate::{
@@ -9,6 +10,8 @@ use crate::{
     DRAW_GROUP_COMPOSITE, DRAW_INSTANCED, DRAW_SCISSOR, DRAW_TO_BACK_BUFFER,
 };
 use std::ops::Range;
+
+mod merge;
 
 /// One non-nested back-buffer group, in the producer's assembled draw table. The composite can
 /// contain several draws. Nested owners drawn plainly inside an open group are not separate
@@ -19,6 +22,17 @@ pub struct GroupRange {
     pub first: usize,
     /// All draws of the owner that close the group, excluding its pre-owner back-buffer pass.
     pub composite: Range<usize>,
+}
+
+/// Per-group work after compaction and merging. Children remain contiguous, but another group's
+/// children may now stand between these children and their composite. Retain these separate ranges
+/// for consumers that attach per-group work to a shared back-buffer pass.
+#[derive(Clone, Debug)]
+pub struct GroupWork {
+    pub back_buffer: Range<usize>,
+    pub composite: Range<usize>,
+    /// The scissor gate's proven region; unknown groups have no region.
+    pub rect: Option<PxRect>,
 }
 
 #[derive(Default)]
@@ -135,6 +149,8 @@ pub struct GroupWalk {
     next_draws: Vec<Patch<Draw>>,
     next_ops: Vec<Patch<ScreenOp>>,
     applied: bool,
+    work: Vec<GroupWork>,
+    merger: merge::MergeWalk,
 }
 
 fn xywh(r: PxRect) -> [i32; 4] {
@@ -146,6 +162,7 @@ impl GroupWalk {
         if !self.applied {
             return;
         }
+        self.merger.restore(list);
         for p in &self.draws {
             list.draws[p.at] = p.before;
         }
@@ -169,6 +186,12 @@ impl GroupWalk {
         );
         self.next_draws.clear();
         self.next_ops.clear();
+        self.work.clear();
+        self.work.extend(groups.iter().map(|g| GroupWork {
+            back_buffer: g.first..g.composite.start,
+            composite: g.composite.clone(),
+            rect: None,
+        }));
         self.geometry.resize_with(groups.len(), Geometry::default);
         if !on {
             return;
@@ -271,6 +294,7 @@ impl GroupWalk {
                 continue;
             }
             let visible = bbox.intersect(&target).intersect(&region);
+            self.work[i].rect = Some(visible);
             for at in g.first..g.composite.end {
                 let before = list.draws[at];
                 let rect = if before.flags & DRAW_SCISSOR != 0 {
@@ -310,7 +334,7 @@ impl GroupWalk {
         list: &mut DrawList,
         kept: Option<(&[bool], &[bool])>,
     ) -> bool {
-        if self.next_draws.is_empty() && self.next_ops.is_empty() {
+        if self.work.is_empty() && self.next_draws.is_empty() && self.next_ops.is_empty() {
             return self.apply(list);
         }
         fn mapping(kept: &[bool]) -> Vec<Option<usize>> {
@@ -330,6 +354,17 @@ impl GroupWalk {
         let (draw_map, op_map) = kept
             .map(|(d, o)| (mapping(d), mapping(o)))
             .unwrap_or_default();
+        if let Some((kept, _)) = kept {
+            let mut prefix = Vec::with_capacity(kept.len() + 1);
+            prefix.push(0);
+            for &keep in kept {
+                prefix.push(prefix.last().unwrap() + usize::from(keep));
+            }
+            for g in &mut self.work {
+                g.back_buffer = prefix[g.back_buffer.start]..prefix[g.back_buffer.end];
+                g.composite = prefix[g.composite.start]..prefix[g.composite.end];
+            }
+        }
         self.next_draws.retain_mut(|p| {
             if kept.is_some() {
                 let Some(at) = draw_map.get(p.at).copied().flatten() else {
@@ -367,6 +402,7 @@ impl GroupWalk {
     /// Restore only the edited fields in a clone for diagnostics without changing this memo.
     pub fn restore_copy(&self, list: &mut DrawList) {
         if self.applied {
+            self.merger.restore_copy(list);
             for p in &self.draws {
                 list.draws[p.at] = p.before;
             }
@@ -374,6 +410,28 @@ impl GroupWalk {
                 list.screen_ops[p.at] = p.before;
             }
         }
+    }
+
+    /// Hoist disjoint Copy groups after the first group's children. Call after scissoring and
+    /// compaction. The prefix before the first back-buffer operation stays fixed, including
+    /// every index the target depth window tests.
+    pub fn merge(&mut self, list: &mut DrawList, facts: &impl CoverFacts, on: bool) -> bool {
+        self.merger.run(list, &mut self.work, facts, on)
+    }
+
+    pub fn work(&self) -> &[GroupWork] {
+        &self.work
+    }
+
+    /// Undo only the permutation in a diagnostic clone, keeping the group scissors.
+    pub fn restore_merge_copy(&self, list: &mut DrawList) {
+        self.merger.restore_copy(list);
+    }
+
+    /// Check every draw field and remapped operation/instance index against the input table.
+    /// This checks the forward permutation independently of the patches used to restore it.
+    pub fn check_merge(&self, before: &DrawList, after: &DrawList) -> bool {
+        self.merger.check_permutation(before, after)
     }
 
     pub fn apply(&mut self, list: &mut DrawList) -> bool {

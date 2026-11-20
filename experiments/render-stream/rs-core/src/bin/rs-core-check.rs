@@ -12,6 +12,7 @@
 //!   rs-core-check pick-bench <recording> --store <dir> [--seq N] [--repeats N]
 //!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred] [--clock time|allocs] [--apply-every N] [--programs synthetic]
 //!   rs-core-check apply-digests <recording> --store <dir> [--apply-every N] [--programs synthetic|unregistered]
+//!                              [--group-merge on|off|undo|verify] (undo hashes the unpermuted list)
 //!   rs-core-check walk-diff <recording>... [--store <dir>] [--digests <file>] [--cover 1 [--cover-every N]] [--cover-lists <file>] [--max-texture-side N]
 //!   rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]
 //!   rs-core-check scissors <recording> [--store <dir>]
@@ -1073,6 +1074,7 @@ fn cmd_apply_bench(args: &Args) -> ExitCode {
         a.set_cover_noops(args.get("noop") != Some("off"));
         a.set_cover_tiles(args.get("tiles") != Some("off"));
         a.set_group_scissor(args.get("group-scissor") != Some("off"));
+        a.set_group_merge(args.get("group-merge") != Some("off"));
         if let Some(side) = args.get("max-texture-side").and_then(|s| s.parse().ok()) {
             a.max_texture_side = side;
         }
@@ -1243,6 +1245,7 @@ fn cmd_profile(args: &Args) -> ExitCode {
         let mut next = 1;
         let mut programs = |a: &mut render_stream_core::apply::Applier, state: &_, payloads: &_| {
             a.set_group_scissor(args.get("group-scissor") != Some("off"));
+            a.set_group_merge(args.get("group-merge") != Some("off"));
             if args.get("programs") == Some("synthetic") {
                 fill_cmd::register_synthetic_programs(a, state, payloads, &mut next, None)?;
             }

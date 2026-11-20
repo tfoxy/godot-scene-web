@@ -40,6 +40,21 @@ fn same_table(list: &DrawList, t: &Table) -> bool {
     list.draws == t.draws && list.screen_ops == t.ops && list.instanced == t.instanced
 }
 
+// Match the whole-list diagnostic contract without allocating its potentially large Debug string.
+fn group_check_digest(list: &DrawList) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    struct Writer(Sha256);
+    impl std::fmt::Write for Writer {
+        fn write_str(&mut self, value: &str) -> std::fmt::Result {
+            self.0.update(value.as_bytes());
+            Ok(())
+        }
+    }
+    let mut writer = Writer(Sha256::new());
+    std::fmt::Write::write_fmt(&mut writer, format_args!("{list:?}")).unwrap();
+    writer.0.finalize().into()
+}
+
 /// The cover walk's state between applies.
 #[derive(Default)]
 pub(super) struct CoverState {
@@ -60,6 +75,10 @@ pub(super) struct CoverState {
     groups: gsw_canvas_draw_list::cover::groups::GroupWalk,
     pub(super) group_ranges: Vec<gsw_canvas_draw_list::cover::groups::GroupRange>,
     pub(super) groups_off: bool,
+    pub(super) group_merge_off: bool,
+    pub(super) group_merge_check: bool,
+    /// Diagnostic input table, before either group optimization, for the next restore.
+    group_restore_check: Option<Table>,
 }
 
 struct Facts<'a> {
@@ -107,6 +126,12 @@ impl Applier {
     pub(super) fn cover_unswap(&mut self) {
         let c = &mut self.cover;
         c.groups.restore(&mut self.list);
+        if let Some(expected) = c.group_restore_check.take() {
+            assert!(
+                same_table(&self.list, &expected),
+                "group restore changed the next apply's input"
+            );
+        }
         if c.culled {
             swap_table(&mut self.list, &mut c.full);
             std::mem::swap(&mut c.full, &mut c.shown);
@@ -195,6 +220,8 @@ impl Applier {
     }
 
     fn finish_cover(&mut self, min_area: u32) -> bool {
+        // Depth tests name only the prefix before the first back-buffer operation. Merging
+        // leaves that prefix untouched, so retain the original owner/copy analysis and indices.
         let tiles_changed = self.cover_tiles(min_area);
         let c = &mut self.cover;
         let mapping = if c.culled {
@@ -204,7 +231,42 @@ impl Applier {
         } else {
             None
         };
-        let changed = c.groups.apply_compacted(&mut self.list, mapping);
+        if c.group_merge_check {
+            c.group_restore_check = Some(Table {
+                draws: self.list.draws.clone(),
+                ops: self.list.screen_ops.clone(),
+                instanced: self.list.instanced.clone(),
+            });
+        }
+        let mut changed = c.groups.apply_compacted(&mut self.list, mapping);
+        let mut groups = std::mem::take(&mut self.cover.groups);
+        let mut list = std::mem::take(&mut self.list);
+        let facts = Facts {
+            resident: &self.resident,
+            applier: self,
+        };
+        let original = self.cover.group_merge_check.then(|| group_check_digest(&list));
+        changed |= groups.merge(
+            &mut list,
+            &facts,
+            self.cover_walk && !self.cover.group_merge_off,
+        );
+        if let Some(original) = original {
+            let mut plain = list.clone();
+            groups.restore_merge_copy(&mut plain);
+            assert_eq!(original, group_check_digest(&plain), "group restore changed list fields");
+            assert!(
+                groups.check_merge(&plain, &list),
+                "group merge changed more than order and indices"
+            );
+            groups.restore_copy(&mut plain);
+            assert!(
+                same_table(&plain, self.cover.group_restore_check.as_ref().unwrap()),
+                "group restore changed the compacted input table"
+            );
+        }
+        self.list = list;
+        self.cover.groups = groups;
         if changed {
             self.list.dirty.draws = true;
         }
@@ -253,6 +315,24 @@ impl Applier {
         }
         self.cover.tiles = Some(tiles);
         changed
+    }
+
+    /// Whether disjoint, scissored Copy groups share a back-buffer pass (default on).
+    pub fn set_group_merge(&mut self, on: bool) {
+        self.cover.group_merge_off = !on;
+    }
+
+    /// Opt-in exhaustive diagnostics: check each merge and the next apply's restored input.
+    /// The normal rendering path does not clone or hash lists for this check.
+    pub fn set_group_merge_check(&mut self, on: bool) {
+        self.cover.group_merge_check = on;
+    }
+
+    /// Diagnostic copy with just the group permutation undone.
+    pub fn unmerged_list(&self) -> DrawList {
+        let mut list = self.list.clone();
+        self.cover.groups.restore_merge_copy(&mut list);
+        list
     }
 
     /// Whether canvas-group draws and copies are restricted to the composite's bounds.

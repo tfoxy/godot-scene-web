@@ -293,6 +293,7 @@ fn group_scissors_survive_cover_compaction_and_row_only_updates() {
     // No screen readers follow; the later explicit copy remains untouched.
     let mut on = Applier::new(viewport());
     let mut off = Applier::new(viewport());
+    on.set_group_merge_check(true);
     off.set_group_scissor(false);
     let store = PayloadStore::default();
     for step in 0..4 {
@@ -339,4 +340,54 @@ fn clip_and_draw_pre_owner_and_all_composite_draws_share_the_group_scissor() {
     assert!(a.list.draws.iter().any(|d| d.flags & DRAW_TO_BACK_BUFFER != 0));
     assert!(a.list.draws.iter().filter(|d| d.flags & DRAW_GROUP_CLIP != 0).count() >= 1);
     assert!(a.list.draws.iter().all(|d| d.flags & DRAW_SCISSOR != 0 && d.scissor == [19, 7, 18, 10]));
+}
+
+
+#[test]
+fn disjoint_groups_merge_after_compaction_and_restore_across_row_updates() {
+    let mut items = vec![
+        item(1, ON_ROOT, rect_cmds([0.0, 0.0, 64.0, 32.0])),
+        item(2, ON_ROOT, rect_cmds([0.0, 0.0, 64.0, 32.0])),
+    ];
+    for (owner_id, x) in [(3, 4.0), (5, 24.0), (7, 44.0)] {
+        let mut owner = item(owner_id, ON_ROOT, rect_cmds([x, 8.0, 8.0, 8.0]));
+        owner.canvas_group = Some(group(CanvasGroupMode::ClipAndDraw));
+        owner.children = vec![owner_id + 1];
+        let mut child = item(owner_id + 1, under(owner_id), rect_cmds([0.0, 0.0, 64.0, 32.0]));
+        child.modulate[3] = 0.5;
+        items.extend([owner, child]);
+    }
+    let mut state = state_with(items);
+    let mut on = Applier::new(viewport());
+    let mut off = Applier::new(viewport());
+    off.set_group_merge(false);
+    on.set_cover_min_area(1);
+    off.set_cover_min_area(1);
+    let payloads = PayloadStore::default();
+    for step in 0..5 {
+        let delta = if step == 0 { full_delta(&state) } else {
+            // The last update overlaps the last two composites and splits the run.
+            state.items.get_mut(&7).unwrap().xform[4] = if step == 4 { -20.0 } else { step as f32 };
+            TxDelta { items_upserted: vec![7], ..TxDelta::default() }
+        };
+        on.apply(&state, &delta, &payloads);
+        off.apply(&state, &delta, &payloads);
+        assert!(on.stats.covered_draws > 0, "exercise cover compaction");
+        assert!(on.cover_recheck());
+        let plain = on.unmerged_list();
+        assert_eq!(plain.draws, off.list.draws);
+        assert_eq!(plain.screen_ops, off.list.screen_ops);
+        assert_eq!(plain.instanced, off.list.instanced);
+        assert_eq!(on.list.depth_tiles, off.list.depth_tiles);
+        assert_eq!(on.list.depth_draws, off.list.depth_draws);
+        let fill = gsw_canvas_draw_list::fill::account(&on.list, &Default::default());
+        assert_eq!(fill.back_buffer_passes, if step == 4 { 2 } else { 1 });
+        on.list.consumed();
+        off.list.consumed();
+    }
+    on.set_group_merge(false);
+    on.apply(&state, &TxDelta::default(), &payloads);
+    off.apply(&state, &TxDelta::default(), &payloads);
+    assert_eq!(on.list.draws, off.list.draws);
+    assert_eq!(on.list.screen_ops, off.list.screen_ops);
 }

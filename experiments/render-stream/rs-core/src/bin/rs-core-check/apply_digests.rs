@@ -1,4 +1,9 @@
 //! Whole executor output, before consumption, at a selectable apply cadence.
+//! `--group-merge undo` restores only the group permutation before hashing, so its output can be
+//! compared with `--group-merge off` to detect changes beyond reordered copies, children and indices.
+//! `--group-merge verify` also checks every merge against its exact pre-merge input, including all
+//! list fields and the next apply's restored table. This does not rely on independent replay runs
+//! having identical binding-slot allocation or dirty-range insertion order.
 
 use super::{fill_cmd, list_digest, usage, Args};
 use render_stream_core::apply::{
@@ -13,11 +18,18 @@ use std::process::ExitCode;
 // The list's Debug digest includes ALL buffers, dirty ranges, bindings, upload bytes, screen
 // operations, instances and depth tables. Also retain the pre-cover draws and cover decisions.
 // Surface pass order, clears and frees are executor inputs too. No timings enter this digest.
-fn output_digest(a: &Applier) -> String {
+fn output_digest(a: &Applier, undo_merge: bool) -> String {
     use sha2::{Digest, Sha256};
-    fn add(h: &mut Sha256, a: &Applier) {
-        h.update(list_digest(&a.list).0);
-        h.update(format!("{:?}", a.assembled_draws()));
+    fn add(h: &mut Sha256, a: &Applier, undo_merge: bool) {
+        let plain = undo_merge.then(|| a.unmerged_list());
+        let list = plain.as_ref().unwrap_or(&a.list);
+        h.update(list_digest(list).0);
+        let assembled = if undo_merge && a.assembled_draws() == a.list.draws {
+            &list.draws
+        } else {
+            a.assembled_draws()
+        };
+        h.update(format!("{assembled:?}"));
         let s = &a.stats;
         h.update(format!(
             "{} {} {} {} {} {} {}",
@@ -36,11 +48,11 @@ fn output_digest(a: &Applier) -> String {
         for (list, clear) in set.passes() {
             h.update(format!("pass {} {clear}", list.target.surface));
             let pass = set.applier(list.target.surface).expect("surface pass");
-            add(&mut h, pass);
+            add(&mut h, pass, undo_merge);
         }
     }
     h.update(b"root");
-    add(&mut h, a);
+    add(&mut h, a, undo_merge);
     format!("{:x}", h.finalize())
 }
 
@@ -49,6 +61,7 @@ fn replay(
     every: usize,
     synthetic: bool,
     group_scissor: bool,
+    group_merge: &str,
     read: &mut dyn FnMut(&render_stream_core::state::Hash) -> Option<Vec<u8>>,
 ) -> Result<Vec<(i64, Option<String>)>, Error> {
     let version = wire::version_of_magic(data)
@@ -73,6 +86,8 @@ fn replay(
         format: gsw_canvas_draw_list::Format::Rgb10A2,
     });
     a.set_group_scissor(group_scissor);
+    a.set_group_merge(group_merge != "off");
+    a.set_group_merge_check(group_merge == "verify");
     let mut payloads = PayloadStore::default();
     let mut retention = Retention::default();
     let mut need = Vec::new();
@@ -89,7 +104,7 @@ fn replay(
             fill_cmd::register_synthetic_programs(a, v.state(), payloads, &mut programs, None)?;
         }
         a.apply(v.state(), delta, payloads);
-        let digest = output_digest(a);
+        let digest = output_digest(a, matches!(group_merge, "undo" | "verify"));
         retention.sweep(v, payloads, || a.referenced_payload_hashes());
         a.list.consumed();
         if let Some(set) = a.surfaces.as_mut() {
@@ -146,6 +161,10 @@ pub(super) fn cmd(args: &Args) -> ExitCode {
         Ok(n) if n > 0 => n,
         _ => return usage(),
     };
+    let group_merge = match args.get("group-merge").unwrap_or("on") {
+        mode @ ("on" | "off" | "undo" | "verify") => mode,
+        _ => return usage(),
+    };
     let synthetic = match args.get("programs").unwrap_or("synthetic") {
         "synthetic" => true,
         "unregistered" => false,
@@ -160,7 +179,16 @@ pub(super) fn cmd(args: &Args) -> ExitCode {
                 .find_map(|ext| std::fs::read(dir.join(format!("{}.{ext}", h.to_hex()))).ok())
         };
         let mut out = std::io::BufWriter::new(std::io::stdout().lock());
-        for (seq, digest) in replay(&data, every, synthetic, args.get("group-scissor") != Some("off"), &mut read)? {
+        let rows = replay(
+            &data, every, synthetic, args.get("group-scissor") != Some("off"), group_merge, &mut read,
+        )?;
+        if group_merge == "verify" {
+            eprintln!(
+                "verified {} applies / {} transactions: whole list, permutation, restore",
+                rows.iter().filter(|(_, digest)| digest.is_some()).count(), rows.len()
+            );
+        }
+        for (seq, digest) in rows {
             writeln!(out, "{seq} {}", digest.as_deref().unwrap_or("pending"))
                 .map_err(|e| Error::new("io", e.to_string()))?;
         }
@@ -182,12 +210,12 @@ mod tests {
     #[test]
     fn merged_digest_includes_the_final_short_group() {
         let data = include_bytes!("../../../../protocol/golden-7/window2.rs7");
-        let rows = replay(data, 2, true, true, &mut |_| None).unwrap();
+        let rows = replay(data, 2, true, true, "on", &mut |_| None).unwrap();
         assert_eq!(rows.len(), 3);
         assert!(rows[0].1.is_none());
         assert!(rows[1].1.is_some());
         assert!(rows[2].1.is_some());
-        assert_eq!(rows, replay(data, 2, true, true, &mut |_| None).unwrap());
+        assert_eq!(rows, replay(data, 2, true, true, "on", &mut |_| None).unwrap());
     }
 
     #[test]
@@ -200,18 +228,18 @@ mod tests {
             cull_mask: 1,
             format: gsw_canvas_draw_list::Format::Rgb10A2,
         });
-        let original = output_digest(&a);
+        let original = output_digest(&a, false);
         a.list
             .depth_tiles
             .push(gsw_canvas_draw_list::DepthTile::default());
-        assert_ne!(original, output_digest(&a));
+        assert_ne!(original, output_digest(&a, false));
         a.list.depth_tiles.clear();
         a.stats.covered_draws += 1;
-        assert_ne!(original, output_digest(&a));
+        assert_ne!(original, output_digest(&a, false));
         a.stats.covered_draws = 0;
         a.list
             .instances
             .push(gsw_canvas_draw_list::Instance::default());
-        assert_ne!(original, output_digest(&a));
+        assert_ne!(original, output_digest(&a, false));
     }
 }

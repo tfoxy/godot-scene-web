@@ -90,6 +90,7 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
         a.set_cover_noops(args.get("noop") != Some("off"));
         a.set_cover_tiles(args.get("tiles") != Some("off"));
         a.set_group_scissor(args.get("group-scissor") != Some("off"));
+        a.set_group_merge(args.get("group-merge") != Some("off"));
         let mut payloads = PayloadStore::default();
         let mut need = Vec::new();
         let mut out = std::io::stdout().lock();
