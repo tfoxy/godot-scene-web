@@ -38,7 +38,7 @@ check() {
 	fi
 }
 
-check "RTC drivers, SafariDriver, LAN and page helpers" "node --experimental-vm-modules --test '$SCRIPT_DIR/../rtc/helpers.test.mjs' '$SCRIPT_DIR/../rtc/safari.test.mjs' '$SCRIPT_DIR/../rtc/drivers.test.mjs' >'$TMP/rtc-node.log' 2>&1"
+check "RTC drivers, SafariDriver, LAN and page helpers" "node --experimental-vm-modules --test '$SCRIPT_DIR/../rtc/'*.test.mjs >'$TMP/rtc-node.log' 2>&1"
 check "RTC hosted artifacts fail closed" "python3 -I '$SCRIPT_DIR/test/self-test-rtc.py' >'$TMP/rtc-artifacts.log' 2>&1"
 check "smoke-plan.py --self-test" "python3 '$SCRIPT_DIR/lib/smoke-plan.py' --self-test --map '$SCRIPT_DIR/smoke-map.json' >'$TMP/plan-st.log' 2>&1"
 check "libcxx driver stub legs" "bash '$SCRIPT_DIR/test/self-test-libcxx-control.sh' >'$TMP/libcxx-driver.log' 2>&1"

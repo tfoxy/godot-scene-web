@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { buildPage } from "./build-page.mjs";
 import { startProbe } from "./probe.mjs";
 import { errorDetails, runPage, selectSimulator } from "./safari.mjs";
 import {
@@ -28,6 +29,7 @@ let ok = true,
 let probe: Awaited<ReturnType<typeof startProbe>> | undefined;
 let server: Awaited<ReturnType<typeof serve>> | undefined;
 try {
+  await buildPage();
   probe = await startProbe(
     values.ip,
     resolve(dirname(out), "cert"),

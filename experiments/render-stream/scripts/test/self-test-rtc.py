@@ -31,7 +31,8 @@ spec.loader.exec_module(size_runner)
 def artifact(host):
     labels = (["chromium", "webkit"] if host == "linux" else ["safari", "iphone-safari"])
     value = {"ok": True, "platform": host, "browser": {"ok": True, "persistence": True,
-             "results": {label + suffix: {"ok": True, "phases": {"connect": {"ok": True}}}
+             "results": {label + suffix: {"ok": True, "phases": {"connect": {"ok": True},
+                         "workerFetch": {"ok": True, "controlled": True, "workerFetchIntercepted": True}}}
                          for label in labels for suffix in ["", "-negative"]}}}
     if host == "macos":
         value["sizes"] = {"targets": {target: {"default_bytes": 100, "rtc_bytes": 200, "delta_bytes": 100}
@@ -40,6 +41,24 @@ def artifact(host):
 
 
 class Hosted(unittest.TestCase):
+    def test_worker_fetch_false_is_recorded_but_missing_or_untyped_is_failure(self):
+        for host in ["linux", "macos"]:
+            browser = artifact(host)["browser"]
+            labels = list(browser["results"])
+            for label in labels:
+                phase = browser["results"][label]["phases"]["workerFetch"]
+                phase.update(controlled=False, workerFetchIntercepted=False, error="unavailable")
+            self.assertTrue(runner.result_ok(browser, labels))
+            for label in labels:
+                if label.endswith("-negative"):
+                    continue
+                phase = browser["results"][label]["phases"].pop("workerFetch")
+                self.assertFalse(runner.result_ok(browser, labels))
+                browser["results"][label]["phases"]["workerFetch"] = phase
+                phase["controlled"] = "false"
+                self.assertFalse(runner.result_ok(browser, labels))
+                phase["controlled"] = False
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { type Browser, chromium, webkit } from "@playwright/test";
 import { quietAcquire } from "../scripts/lib/quiet-lock";
+import { buildPage } from "./build-page.mjs";
 import { startProbe } from "./probe.mjs";
 import { serve } from "./serve.mjs";
 
@@ -59,6 +60,7 @@ const build = spawnSync(
 if (build.status !== 0) throw Error("probe build failed");
 const started = Date.now();
 const cert = resolve(dirname(out), "cert");
+await buildPage();
 let probe = await startProbe(values.ip, cert, `${out}.first-probe.jsonl`);
 const originalFingerprint = probe.discovery.fp;
 await probe.stop();

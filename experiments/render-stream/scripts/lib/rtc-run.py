@@ -24,7 +24,16 @@ def read(path):
 def result_ok(browser, labels):
     return (isinstance(browser, dict) and browser.get("ok") is True
             and browser.get("persistence") is True
-            and all(browser.get("results", {}).get(label, {}).get("ok") is True for label in labels))
+            and all(browser.get("results", {}).get(label, {}).get("ok") is True for label in labels)
+            and all(worker_fetch_recorded(browser.get("results", {}).get(label, {}))
+                    for label in labels if not label.endswith("-negative")))
+
+
+def worker_fetch_recorded(page):
+    """False is a browser capability result; a missing measurement is a harness failure."""
+    phase = page.get("phases", {}).get("workerFetch", {})
+    return (phase.get("ok") is True and type(phase.get("controlled")) is bool
+            and type(phase.get("workerFetchIntercepted")) is bool)
 
 
 def row(result):

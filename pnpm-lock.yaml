@@ -123,6 +123,8 @@ importers:
 
   packages/core: {}
 
+  packages/direct-peer: {}
+
   packages/effects: {}
 
   packages/hb-gpu:

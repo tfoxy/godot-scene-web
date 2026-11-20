@@ -99,6 +99,11 @@ async function drive(
         };
       },
     },
+    "./build-page.mjs": {
+      async buildPage() {
+        events.push("build-page");
+      },
+    },
     "./probe.mjs": {
       async startProbe() {
         return {
@@ -109,6 +114,7 @@ async function drive(
     },
     "./serve.mjs": {
       async serve() {
+        events.push("serve");
         return {
           server: { close: (done) => done() },
           url: "http://localhost:8000",
@@ -319,4 +325,12 @@ test("diagnostic failures preserve page errors and allow later sessions to run",
   );
   assert.match(result.diagnostics["iphone-safari"].error, /diagnostics failed/);
   assert.ok(events.includes("simctl delete stub-udid"));
+});
+
+test("both browser drivers build the package page before serving", async () => {
+  for (const file of ["run-browsers.ts", "run-safari.ts"]) {
+    const { events } = await drive(file, "darwin");
+    assert.ok(events.indexOf("build-page") >= 0);
+    assert.ok(events.indexOf("build-page") < events.indexOf("serve"));
+  }
 });

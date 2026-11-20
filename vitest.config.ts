@@ -8,6 +8,10 @@ export default defineConfig({
   resolve: {
     conditions: ["development"],
     alias: {
+      "@godot-scene-web/direct-peer": new URL(
+        "./packages/direct-peer/src/index.ts",
+        import.meta.url,
+      ).pathname,
       "@godot-scene-web/core": new URL(
         "./packages/core/src/index.ts",
         import.meta.url,

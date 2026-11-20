@@ -212,8 +212,9 @@
       "exclusive": true
     },
     {
-      "why": "RTC browser, native Safari, size and artifact harness checks",
+      "why": "Direct-peer package, RTC browser, native Safari, size and artifact harness checks",
       "paths": [
+        "packages/direct-peer/**",
         "experiments/render-stream/rtc/**",
         "experiments/render-stream/scripts/rtc-*",
         "experiments/render-stream/scripts/lib/rtc-*",

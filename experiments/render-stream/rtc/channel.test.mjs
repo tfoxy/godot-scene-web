@@ -3,13 +3,10 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import vm from "node:vm";
 
-const page = await readFile(
-  new URL("./page/index.html", import.meta.url),
-  "utf8",
-);
+const page = await readFile(new URL("./page/main.js", import.meta.url), "utf8");
 const source = page.slice(
-  page.indexOf("function channel(pc)"),
-  page.indexOf("async function open(pc)"),
+  page.indexOf("function channel(dc, createdMs)"),
+  page.indexOf("async function open(peer)"),
 );
 
 function setup(trace, closeTimeout = false) {
@@ -33,8 +30,7 @@ function setup(trace, closeTimeout = false) {
         : promise,
   });
   vm.runInContext(source, scope);
-  const ch = scope.channel({ createDataChannel: () => dc });
-  dc.onopen();
+  const ch = scope.channel(dc, clock++);
   return { ch, dc, result };
 }
 
