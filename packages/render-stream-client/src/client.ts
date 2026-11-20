@@ -169,6 +169,9 @@ export interface RenderStreamClientOptions {
    * CPU particles stay live. Frozen one-shots retire on the next apply/present after their
    * burst window; no timer forces a redraw. Change at runtime with `setStaticParticles`. */
   staticParticles?: boolean;
+  /** Pin material TIME to the first carried shader time after enabling. Default false.
+   * Particle simulation keeps its carried clock. Change with `setStaticShaders`. */
+  staticShaders?: boolean;
   /** How much motion per transaction still counts as ambient under `frameCap` (each field
    * optional, defaults: scene content `IDLE_MOTION_MAX_PX` 1 px and `IDLE_COLOR_STEP_MAX` 8/255,
    * animation content `IDLE_ANIMATION_MAX_PX` 128 px and `IDLE_ANIMATION_COLOR_STEP_MAX`
@@ -236,6 +239,8 @@ export interface RenderStreamClient {
   /** Warm and hold GPU emitters, or restart them in live mode. Always present on created clients;
    * optional so existing consumer test doubles remain compatible. */
   setStaticParticles?(on: boolean): void;
+  /** Switch the material TIME pin at runtime. */
+  setStaticShaders?(on: boolean): void;
 }
 
 /** The events that count as input for the frame cap, listened to on the canvas's document. */
@@ -313,6 +318,10 @@ export function createRenderStreamClient(
     throw new TypeError(
       "render-stream client: transparentClear must be a boolean",
     );
+  if (typeof (options.staticShaders ?? false) !== "boolean")
+    throw new TypeError(
+      "render-stream client: staticShaders must be a boolean",
+    );
   if (typeof (options.staticParticles ?? false) !== "boolean")
     throw new TypeError(
       "render-stream client: staticParticles must be a boolean",
@@ -368,6 +377,7 @@ class Client implements RenderStreamClient {
   /** The frame cap in effect (the loop's, once there is one). */
   private frameCap: RenderStreamFrameCap;
   private staticParticles: boolean;
+  private staticShaders: boolean;
   /** Its bounds (the loop's, once there is one). */
   private frameCapBounds: RenderStreamFrameCapBounds | undefined;
   /** The document the wake listeners are on (null: none, the cap is off). */
@@ -387,6 +397,7 @@ class Client implements RenderStreamClient {
       carrierTransport(o.carrier ?? "auto", { fetchInWorker: o.fetchInWorker });
     this.frameCap = o.frameCap ?? "off";
     this.staticParticles = o.staticParticles ?? false;
+    this.staticShaders = o.staticShaders ?? false;
     this.frameCapBounds = o.frameCapBounds;
     this.listenInput();
   }
@@ -402,6 +413,17 @@ class Client implements RenderStreamClient {
     if (bounds !== undefined) this.frameCapBounds = { ...bounds };
     this.listenInput();
     this.loop?.setFrameCap(mode, bounds);
+  }
+
+  setStaticShaders(on: boolean): void {
+    if (typeof on !== "boolean")
+      throw new TypeError(
+        "render-stream client: staticShaders must be a boolean",
+      );
+    if (this.disposed || this.staticShaders === on) return;
+    this.staticShaders = on;
+    this.core?.setStaticShaders(on);
+    this.loop?.wake();
   }
 
   setStaticParticles(on: boolean): void {
@@ -608,6 +630,7 @@ class Client implements RenderStreamClient {
       CLIENT_INBOUND_BYTES,
     );
     this.core.setStaticParticles(this.staticParticles);
+    this.core.setStaticShaders(this.staticShaders);
     this.ext?.bind(this.core);
     // This can precede the session's executor: create its context with the same attributes.
     const gl = canvas.getContext("webgl2", CONTEXT_ATTRIBUTES);

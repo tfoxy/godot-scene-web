@@ -16,6 +16,7 @@ async function replay(input: {
   recording: string;
   payloads?: Record<string, string>;
   staticParticles?: boolean;
+  staticShaders?: boolean;
   transparentClear?: boolean;
 }) {
   const moduleUrl = "/rust/rs_gsw_wasm.js";
@@ -42,6 +43,7 @@ async function replay(input: {
   new Uint8Array(memory.buffer, ptr, data.length).set(data);
   const count = check(g.load(data.length));
   check(g.start());
+  g.set_static_shaders?.(input.staticShaders ?? false);
   const particles = new GswParticles(
     undefined,
     undefined,

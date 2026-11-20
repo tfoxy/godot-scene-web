@@ -183,13 +183,15 @@ export interface StreamCore {
    * (or a core that links synchronously): never anything to settle. */
   pollPrograms?(): boolean;
   /** J1: a frame callback with no applier run: particle bursts in progress continue (no host time
-   * passes), and one that ends is applied over the same state. True when that applied (the
-   * caller draws). Absent: bursts advance only with applies. */
+   * passes), and one that ends is applied over the same state, as is a shader-pin toggle.
+   * True when that applied (the caller draws). Absent: bursts advance only with applies. */
   settleParticles?(seq: number): boolean;
   /** Suspend off-frame particle work during context loss. */
   pauseParticles?(paused: boolean): void;
   /** Restart GPU emitters in the selected client simulation mode. */
   setStaticParticles?(on: boolean): void;
+  /** Pin material TIME while particle simulation keeps the carried clock. */
+  setStaticShaders?(on: boolean): void;
   apply(seq: number): void;
   /** What the last `apply` did to the draw list, read after it (`RenderStreamStats`). The
    * returned object may be reused by the next call. Absent: the loop reports none. */
@@ -318,6 +320,8 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   private coding: LiveCoding | null = null;
   private particles: GswParticles;
   private staticParticles = false;
+  private staticShaders = false;
+  private staticShadersDirty = false;
   private particleUploadReady = false;
   private particleIdlePaused = false;
   private programsHeld = false;
@@ -362,6 +366,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     this.particles = this.makeParticles();
     this.instance = build(protocol);
     this.instance.set_async_programs?.(true);
+    this.instance.set_static_shaders?.(this.staticShaders);
   }
 
   private get g(): GswRs {
@@ -395,6 +400,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
         if (this.logRemoved) next.set_log_removed(true);
         if (this.motionOn) next.set_motion?.(true);
         next.set_async_programs?.(true);
+        next.set_static_shaders?.(this.staticShaders);
       } catch (e) {
         next.free();
         throw e;
@@ -775,6 +781,12 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     this.particles = this.makeParticles();
   }
 
+  setStaticShaders(on: boolean): void {
+    if (this.staticShaders !== on) this.staticShadersDirty = true;
+    this.staticShaders = on;
+    this.instance?.set_static_shaders?.(on);
+  }
+
   setStaticParticles(on: boolean): void {
     this.staticParticles = on;
     this.particles.setStaticParticles(on);
@@ -790,14 +802,18 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     if (g === null || g.reapply === undefined) return false;
     const uploaded =
       this.particles.settling && this.particles.settle(g, this.memory);
-    if (!uploaded && !this.particleUploadReady) return false;
+    if (!uploaded && !this.particleUploadReady && !this.staticShadersDirty)
+      return false;
     this.particleUploadReady = false;
-    return g.reapply() > 0;
+    const applied = g.reapply() > 0;
+    if (applied) this.staticShadersDirty = false;
+    return applied;
   }
 
   apply(seq: number): void {
     this.transactionPending = false;
     if (this.g.apply() < 0) throw failWith(seq, this.g.error());
+    this.staticShadersDirty = false;
   }
 
   draw(seq: number): void {

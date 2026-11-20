@@ -350,6 +350,7 @@ describe("endpoint protocol changes", () => {
     viewports?: boolean,
     staticParticles?: boolean,
     transparentClear?: boolean,
+    staticShaders?: boolean,
   ) {
     vi.useFakeTimers();
     const memory = new WebAssembly.Memory({ initial: 1 });
@@ -365,6 +366,8 @@ describe("endpoint protocol changes", () => {
       };
       readonly free = vi.fn();
       readonly set_window = vi.fn();
+      set_static_shaders: ((on: boolean) => void) | undefined = vi.fn();
+      readonly reapply = vi.fn(() => 1);
       readonly payloads = new Set<string>();
       readonly live_reset = vi.fn((keep: boolean) => {
         if (!keep) this.payloads.clear();
@@ -444,6 +447,7 @@ describe("endpoint protocol changes", () => {
       applyOn: "frame",
       ...(resourceHints !== undefined ? { resourceHints } : {}),
       ...(staticParticles !== undefined ? { staticParticles } : {}),
+      ...(staticShaders !== undefined ? { staticShaders } : {}),
       ...(viewports !== undefined ? { viewports } : {}),
       ...(transparentClear !== undefined ? { transparentClear } : {}),
       onStatus: (st) => statuses.push(st),
@@ -594,6 +598,98 @@ describe("endpoint protocol changes", () => {
     expect(() =>
       mount(13, [], undefined, undefined, undefined, "yes" as never),
     ).toThrow(/transparentClear must be a boolean/);
+  });
+
+  it("staticShaders defaults off, validates and forwards creation and runtime toggles", async () => {
+    const set = vi.spyOn(WasmStreamCore.prototype, "setStaticShaders");
+    try {
+      for (const on of [undefined, false, true]) {
+        const h = mount(13, [], undefined, undefined, undefined, undefined, on);
+        h.c.connect();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(set).toHaveBeenLastCalledWith(on ?? false);
+        expect(h.instances[0].set_static_shaders).toHaveBeenLastCalledWith(
+          on ?? false,
+        );
+        expect(typeof h.c.setStaticShaders).toBe("function");
+        expect(() => h.c.setStaticShaders?.("yes" as never)).toThrow(
+          /staticShaders must be a boolean/,
+        );
+        h.c.setStaticShaders?.(true);
+        expect(h.instances[0].set_static_shaders).toHaveBeenLastCalledWith(
+          true,
+        );
+        h.c.setStaticShaders?.(false);
+        expect(h.instances[0].set_static_shaders).toHaveBeenLastCalledWith(
+          false,
+        );
+        h.c.dispose();
+        const calls = set.mock.calls.length;
+        h.c.setStaticShaders?.(true);
+        expect(set).toHaveBeenCalledTimes(calls);
+      }
+      expect(() =>
+        mount(
+          13,
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          "no" as never,
+        ),
+      ).toThrow(/staticShaders must be a boolean/);
+    } finally {
+      set.mockRestore();
+    }
+  });
+
+  it("staticShaders persists before connection and through replacement wasm instances", async () => {
+    const h = mount(13);
+    h.c.setStaticShaders?.(true);
+    h.c.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.instances[0].set_static_shaders).toHaveBeenLastCalledWith(true);
+    h.c.setEndpoint({ ...endpoint, protocol: 14 });
+    expect(h.instances).toHaveLength(2);
+    expect(h.instances[1].set_static_shaders).toHaveBeenLastCalledWith(true);
+    h.c.setStaticShaders?.(false);
+    h.c.setEndpoint({ ...endpoint, protocol: 13 });
+    expect(h.instances[2].set_static_shaders).toHaveBeenLastCalledWith(false);
+    h.c.dispose();
+  });
+
+  it("reapplies shader toggles on frame settling, retries pending work, and tolerates older glue", async () => {
+    const h = mount(13);
+    const settle = WasmStreamCore.prototype.settleParticles;
+    const apply = WasmStreamCore.prototype.apply;
+    const cores: WasmStreamCore[] = [];
+    const originalSet = WasmStreamCore.prototype.setStaticShaders;
+    const set = vi
+      .spyOn(WasmStreamCore.prototype, "setStaticShaders")
+      .mockImplementation(function (this: WasmStreamCore, on: boolean) {
+        cores.push(this);
+        originalSet.call(this, on);
+      });
+    h.c.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    const c = cores[0];
+    const g = h.instances[0];
+    expect(settle.call(c, 1)).toBe(false);
+    h.c.setStaticShaders?.(true);
+    g.reapply.mockReturnValueOnce(0);
+    expect(settle.call(c, 1)).toBe(false);
+    expect(settle.call(c, 1)).toBe(true);
+    expect(settle.call(c, 1)).toBe(false);
+    h.c.setStaticShaders?.(false);
+    expect(settle.call(c, 1)).toBe(true);
+    g.set_static_shaders = undefined;
+    expect(() => h.c.setStaticShaders?.(true)).not.toThrow();
+    // A host apply also consumes the pending toggle, avoiding an extra reapply.
+    apply.call(c, 1);
+    expect(settle.call(c, 1)).toBe(false);
+    h.c.dispose();
+    set.mockRestore();
   });
 
   it("staticParticles reaches the core at creation, runtime, and after a protocol rebuild", async () => {

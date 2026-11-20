@@ -756,6 +756,8 @@ struct Spare {
 /// The applier: owns the packed list it fills.
 pub struct Applier {
     pub list: DrawList,
+    /// Client-owned TIME pin; absent keeps the carried clock. No TIME reader still uses 0.
+    pub pinned_shader_time: Option<f32>,
     /// G7o4: `list.merged_draw_count()` as of the last `assemble`.
     expected_calls: Option<u32>,
     viewport: Viewport,
@@ -1349,6 +1351,7 @@ impl Applier {
         };
         Applier {
             list: DrawList::new(target),
+            pinned_shader_time: None,
             expected_calls: None,
             viewport,
             items: IdMap::default(),
@@ -2453,7 +2456,9 @@ impl Applier {
         self.list.shader_time = if self.sabotage.shader_time_frozen {
             0.0
         } else {
-            state.shader_time.unwrap_or(0.0) as f32
+            state.shader_time.map_or(0.0, |time| {
+                self.pinned_shader_time.unwrap_or(time as f32)
+            })
         };
         // G7q: every transaction prepared since the last apply, merged (one: the caller's).
         let merged = self.merged.take();
@@ -4938,5 +4943,72 @@ fn upload_pixels(list: &mut DrawList, id: Id, px: &TexturePixels, arena: bool) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod static_shader_tests {
+    use super::*;
+
+    fn applier() -> Applier {
+        Applier::new(Viewport {
+            width: 64,
+            height: 32,
+            clear: [0.0; 4],
+            global_xform: geom::IDENTITY,
+            cull_mask: u32::MAX,
+            format: gsw_canvas_draw_list::Format::Rgb10A2,
+        })
+    }
+
+    #[test]
+    fn shader_time_pin_rounds_holds_clears_and_survives_rebuild() {
+        let mut state = ResolvedState::empty(10);
+        let store = PayloadStore::default();
+        let delta = TxDelta::default();
+        let mut a = applier();
+        let first = 1.234567890123_f64;
+        state.shader_time = Some(first);
+        a.apply(&state, &delta, &store);
+        let pin = a.list.shader_time;
+        assert_eq!(pin.to_bits(), (first as f32).to_bits());
+        a.pinned_shader_time = Some(pin);
+        state.shader_time = Some(9.87654321);
+        a.apply(&state, &delta, &store);
+        assert_eq!(a.list.shader_time.to_bits(), pin.to_bits());
+        let mut rebuilt = applier();
+        rebuilt.pinned_shader_time = Some(pin);
+        rebuilt.apply(&state, &delta, &store);
+        assert_eq!(rebuilt.list.shader_time.to_bits(), pin.to_bits());
+        rebuilt.pinned_shader_time = None;
+        rebuilt.apply(&state, &delta, &store);
+        assert_eq!(
+            rebuilt.list.shader_time.to_bits(),
+            (9.87654321_f64 as f32).to_bits()
+        );
+        state.shader_time = Some(-0.0);
+        rebuilt.apply(&state, &delta, &store);
+        assert_eq!(rebuilt.list.shader_time.to_bits(), (-0.0_f32).to_bits());
+    }
+
+    #[test]
+    fn shader_time_absent_keeps_zero_and_preserves_pin_and_sabotage() {
+        let mut state = ResolvedState::empty(10);
+        let store = PayloadStore::default();
+        let delta = TxDelta::default();
+        let mut a = applier();
+        a.apply(&state, &delta, &store);
+        assert_eq!(a.list.shader_time.to_bits(), 0.0_f32.to_bits());
+        assert_eq!(a.pinned_shader_time, None);
+        a.pinned_shader_time = Some(3.5);
+        a.apply(&state, &delta, &store);
+        assert_eq!(a.list.shader_time.to_bits(), 0.0_f32.to_bits());
+        assert_eq!(a.pinned_shader_time, Some(3.5));
+        state.shader_time = Some(7.0);
+        assert!(a.reapply(&state, &store));
+        assert_eq!(a.list.shader_time.to_bits(), 3.5_f32.to_bits());
+        a.sabotage.shader_time_frozen = true;
+        a.apply(&state, &delta, &store);
+        assert_eq!(a.list.shader_time.to_bits(), 0.0_f32.to_bits());
     }
 }

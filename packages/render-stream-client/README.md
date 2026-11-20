@@ -29,6 +29,18 @@ simulation or redraws. A one-shot retires after `lifetime * (2 - explosiveness)`
 sight emitting, checked on the next apply or presentation. If nothing else redraws, retirement can
 appear late; there is no expiry timer. The host and wire are unchanged.
 
+## Static shaders
+
+`staticShaders: true` pins every material shader's `TIME` to the first carried shader time applied
+while enabled, rounded to float32. It defaults to `false`. Transactions without a TIME reader keep
+0.0 and do not capture a pin. Particle simulation continues to use the carried host clock.
+
+`client.setStaticShaders(on)` switches at runtime and re-applies within the next frame callback, after
+any transaction already applied has been drawn, without waiting for a host transaction. Disabling resumes the carried time; enabling again captures a fresh
+pin. The pin survives a coding resync within one wasm core; a new core may capture a fresh value.
+The setter is optional on `RenderStreamClient` for test doubles; created clients always have it.
+Older wasm glue without this optional export ignores the option. The host and wire are unchanged.
+
 ## Idle frame cap
 
 `frameCap` trades ambient smoothness for battery and heat over long sessions on a GPU-bound device:

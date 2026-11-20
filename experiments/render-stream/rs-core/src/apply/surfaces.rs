@@ -365,6 +365,7 @@ impl Applier {
     /// The options a surface applier takes from the root, and its programs.
     fn inherit_options(&mut self, root: &Applier) {
         self.sabotage = root.sabotage;
+        self.pinned_shader_time = root.pinned_shader_time;
         self.delivery = root.delivery.clone();
         self.stream_version = root.stream_version;
         self.half_instances = root.half_instances;
@@ -834,6 +835,33 @@ impl SurfaceSet {
                 self.stats.allocated += 1;
                 self.stats.allocated_pixels += u64::from(w) * u64::from(h);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod static_shader_tests {
+    use super::*;
+
+    #[test]
+    fn surface_inherits_shader_time_pin_on_creation_and_toggle() {
+        let viewport = Viewport {
+            width: 64,
+            height: 32,
+            clear: [0.0; 4],
+            global_xform: geom::IDENTITY,
+            cull_mask: u32::MAX,
+            format: gsw_canvas_draw_list::Format::Rgb10A2,
+        };
+        let mut root = Applier::new(viewport);
+        let mut surface = Applier::new(viewport);
+        let mut state = ResolvedState::empty(16);
+        state.shader_time = Some(9.0);
+        for pin in [Some(1.25_f32), Some(3.5), None] {
+            root.pinned_shader_time = pin;
+            surface.inherit_options(&root);
+            surface.apply(&state, &TxDelta::default(), &PayloadStore::default());
+            assert_eq!(surface.list.shader_time.to_bits(), pin.unwrap_or(9.0).to_bits());
         }
     }
 }

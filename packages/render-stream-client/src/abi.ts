@@ -86,6 +86,8 @@ export interface GswRs {
    * registers each program once its link settled (until then its materials' draws are omitted).
    * Optional: a core built before it defines every program synchronously. */
   set_async_programs?(on: boolean): void;
+  /** Pin material TIME; optional so older glue ignores the client option. */
+  set_static_shaders?(on: boolean): void;
   /** J1: an apply of no change over the same state, taking emitter buffers set since the last
    * (1: applied). Optional: a core built before it. */
   reapply?(): number;

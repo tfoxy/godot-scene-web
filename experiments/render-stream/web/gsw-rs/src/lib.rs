@@ -765,6 +765,8 @@ pub struct GswRs {
     spans: Vec<RecordSpan>,
     validator: Option<Validator>,
     applier: Option<Applier>,
+    static_shaders: bool,
+    pinned_shader_time: Option<f32>,
     executor: Option<CanvasItemsExecutor>,
     /// G8kp: what this receiver states and selects with (`delivery_json`), set at `start`.
     delivery: DeliveryReport,
@@ -1056,6 +1058,8 @@ impl GswRs {
             spans: Vec::new(),
             validator: None,
             applier: None,
+            static_shaders: false,
+            pinned_shader_time: None,
             executor: None,
             delivery: DeliveryReport::default(),
             payloads: PayloadStore::default(),
@@ -1311,6 +1315,15 @@ impl GswRs {
     /// definition, so a replay draws every program from its first apply.
     pub fn set_async_programs(&mut self, on: bool) {
         self.async_programs = on;
+    }
+
+    /// Pin material TIME on the first apply carrying it. The pin belongs to this core,
+    /// so a coding resync can rebuild its applier without choosing a new phase.
+    pub fn set_static_shaders(&mut self, on: bool) {
+        if self.static_shaders != on {
+            self.static_shaders = on;
+            self.pinned_shader_time = None;
+        }
     }
 
     /// J1: settle the links `define_program` began (`CanvasItemsExecutor::poll_programs`): call
@@ -2484,6 +2497,7 @@ impl GswRs {
         let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_mut()) else {
             return 0;
         };
+        a.pinned_shader_time = self.pinned_shader_time;
         let applied = if always {
             a.reapply(v.state(), &self.payloads)
         } else {
@@ -2491,6 +2505,9 @@ impl GswRs {
         };
         if !applied {
             return 0;
+        }
+        if self.static_shaders && self.pinned_shader_time.is_none() {
+            self.pinned_shader_time = v.state().shader_time.map(|time| time as f32);
         }
         let st = &a.stats;
         self.stats.lowered_draws = st.lowered_draws;
@@ -2692,7 +2709,11 @@ impl GswRs {
         };
         // A deferred payload that reached the store since (`defer_payload`) is drawn by this apply.
         a.absorb_deferred(v.state(), &self.payloads);
+        a.pinned_shader_time = self.pinned_shader_time;
         let st = a.apply(v.state(), v.delta(), &self.payloads).clone();
+        if self.static_shaders && self.pinned_shader_time.is_none() {
+            self.pinned_shader_time = v.state().shader_time.map(|time| time as f32);
+        }
         // W11c: the display moved to S_n, so what only the old display held leaves now.
         if !self.opts.ignore_released {
             let shown = &*a;
