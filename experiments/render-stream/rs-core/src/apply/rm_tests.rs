@@ -847,3 +847,57 @@ fn range_zero_binding_becomes_live_after_each_input_changes() {
         2,
     );
 }
+
+#[test]
+fn binding_release_and_reuse_ignore_hash_seed() {
+    let mut s = material_scene(Vec::new());
+    let commands = s.items[&P].commands.clone();
+    let material = s.materials[&MAT].clone();
+    let ids: Vec<_> = s.items.keys().copied().collect();
+    for &id in &ids {
+        let mid = MAT + id;
+        s.materials.insert(mid, Material { id: mid, ..material.clone() });
+        let item = s.items.get_mut(&id).unwrap();
+        item.material = Some(mid);
+        item.use_parent_material = false;
+        item.commands = commands.clone();
+    }
+    let store = code_store();
+    let mut a = applier();
+    let mut b = applier();
+    for applier in [&mut a, &mut b] {
+        applier.set_program(CODE, ready());
+        applier.apply(&s, &material_delta(&s), &store);
+    }
+    assert_eq!(a.binding_slots.len(), ids.len());
+    assert_eq!(format!("{:?}", a.list), format!("{:?}", b.list));
+
+    // RandomState seeds each map independently. Explicitly find a different iteration order
+    // so the regression exercises the bug rather than occasionally choosing the same order.
+    let order = |a: &Applier| a.binding_slots.keys().copied().collect::<Vec<_>>();
+    for _ in 0..128 {
+        if order(&a) != order(&b) {
+            break;
+        }
+        b.binding_slots = a.binding_slots.iter().map(|(&k, &v)| (k, v)).collect();
+    }
+    assert_ne!(order(&a), order(&b), "need differently seeded binding maps");
+
+    // Release all keys in one transaction, then reuse every freed slot in another walk.
+    // Both the release report/dirty ranges and the later draw-slot assignment must agree.
+    for material in [None, Some(())] {
+        for &id in &ids {
+            s.items.get_mut(&id).unwrap().material = material.map(|_| MAT + id);
+        }
+        s.seq += 1;
+        let delta = TxDelta { items_upserted: ids.clone(), ..TxDelta::default() };
+        for applier in [&mut a, &mut b] {
+            applier.list.consumed();
+            applier.apply(&s, &delta, &store);
+        }
+        assert_eq!(a.bindings_changed, b.bindings_changed);
+        assert_eq!(a.free_slots, b.free_slots);
+        assert_eq!(a.binding_keys, b.binding_keys);
+        assert_eq!(format!("{:?}", a.list), format!("{:?}", b.list));
+    }
+}

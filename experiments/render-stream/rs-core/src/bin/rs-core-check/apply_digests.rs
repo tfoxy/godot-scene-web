@@ -2,8 +2,9 @@
 //! `--group-merge undo` restores only the group permutation before hashing, so its output can be
 //! compared with `--group-merge off` to detect changes beyond reordered copies, children and indices.
 //! `--group-merge verify` also checks every merge against its exact pre-merge input, including all
-//! list fields and the next apply's restored table. This does not rely on independent replay runs
-//! having identical binding-slot allocation or dirty-range insertion order.
+//! list fields and the next apply's restored table. Independent processes replaying the same
+//! recording at the same cadence must produce identical digests, including binding slots and
+//! dirty-range order. The merge check also compares variants within each apply.
 
 use super::{fill_cmd, list_digest, usage, Args};
 use render_stream_core::apply::{

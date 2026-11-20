@@ -3298,14 +3298,16 @@ impl Applier {
                 .retain(|id, _| groups.get(id).is_some_and(|g| g.synth));
             self.vertex_holes += 4 * (before - self.group_quads.len()) as u32;
         }
-        // Binding slots no attached item uses any more are released.
-        let gone: Vec<BindingKey> = self
+        // Release unused bindings by slot: this orders dirty ranges, change reports and the
+        // free-slot stack independently of the binding map's per-process hash seed.
+        let mut gone: Vec<(u32, BindingKey)> = self
             .binding_slots
-            .keys()
-            .filter(|k| !self.walk_keys.contains(k))
-            .copied()
+            .iter()
+            .filter(|(k, _)| !self.walk_keys.contains(k))
+            .map(|(&key, &slot)| (slot, key))
             .collect();
-        for key in gone {
+        gone.sort_unstable_by_key(|(slot, _)| *slot);
+        for (_, key) in gone {
             if let Some(slot) = self.binding_slots.remove(&key) {
                 self.binding_keys[slot as usize] = None;
                 self.list.set_binding(slot, Binding::default());
