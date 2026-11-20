@@ -67,6 +67,19 @@ import {
   type RenderStreamTransportFactory,
 } from "./transport";
 
+// Match canvas_items/gl.rs CONTEXT_ATTRIBUTES: the first getContext fixes these,
+// even when the session has not created the executor yet. RGBA8 blits require a
+// single-sampled default framebuffer.
+const CONTEXT_ATTRIBUTES: WebGLContextAttributes = {
+  alpha: true,
+  antialias: false,
+  depth: false,
+  stencil: false,
+  premultipliedAlpha: true,
+  preserveDrawingBuffer: false,
+  desynchronized: false,
+};
+
 export interface RenderStreamClientOptions {
   canvas: HTMLCanvasElement;
   core: RenderStreamCore;
@@ -524,7 +537,7 @@ class Client implements RenderStreamClient {
     this.core?.dispose();
     this.core = null;
     canvas
-      .getContext("webgl2")
+      .getContext("webgl2", CONTEXT_ATTRIBUTES)
       ?.getExtension("WEBGL_lose_context")
       ?.loseContext();
   }
@@ -570,7 +583,9 @@ class Client implements RenderStreamClient {
           ),
         );
       } catch (e) {
-        const probe = document.createElement("canvas").getContext("webgl2");
+        const probe = document
+          .createElement("canvas")
+          .getContext("webgl2", CONTEXT_ATTRIBUTES);
         probe?.getExtension("WEBGL_lose_context")?.loseContext();
         if (probe === null)
           throw new NoWebgl2("this browser gives no WebGL2 context");
@@ -594,8 +609,8 @@ class Client implements RenderStreamClient {
     );
     this.core.setStaticParticles(this.staticParticles);
     this.ext?.bind(this.core);
-    // The module's own context (getContext returns the one it created).
-    const gl = canvas.getContext("webgl2");
+    // This can precede the session's executor: create its context with the same attributes.
+    const gl = canvas.getContext("webgl2", CONTEXT_ATTRIBUTES);
     const gpuFormats = gpuFormatsOf(gl?.getSupportedExtensions() ?? [], null);
     canvas.addEventListener("webglcontextlost", this.onLost);
     canvas.addEventListener("webglcontextrestored", this.onRestored);
