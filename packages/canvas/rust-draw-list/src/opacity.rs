@@ -27,6 +27,7 @@ pub struct Opacity {
     all: std::sync::OnceLock<bool>,
     /// [`Opacity::id`].
     id: u64,
+    nonzero: Option<crate::alpha::AlphaTable>,
 }
 
 /// The texels it describes (the identity and whether the table is built yet are not).
@@ -49,6 +50,7 @@ impl Clone for Opacity {
             any: self.any.clone(),
             all: self.all.clone(),
             id: self.id,
+            nonzero: self.nonzero.clone(),
         }
     }
 }
@@ -92,6 +94,7 @@ impl Opacity {
             any: std::sync::OnceLock::new(),
             all: std::sync::OnceLock::new(),
             id: next_id(),
+            nonzero: crate::alpha::AlphaTable::from_rgba8(width, height, rgba),
         }
     }
 
@@ -102,11 +105,18 @@ impl Opacity {
             width,
             height,
             kind: std::sync::OnceLock::new(),
-            src: std::sync::Mutex::new(Some(rgba)),
+            src: std::sync::Mutex::new(Some(rgba.clone())),
             any: std::sync::OnceLock::new(),
             all: std::sync::OnceLock::new(),
             id: next_id(),
+            nonzero: crate::alpha::AlphaTable::from_rgba8(width, height, &rgba),
         }
+    }
+
+    /// Positive-alpha facts of this same RGBA8 revision, built once with the upload. The
+    /// compact table retains no pixel buffer in addition to the lazy opacity input.
+    pub fn nonzero(&self) -> Option<&crate::alpha::AlphaTable> {
+        self.nonzero.as_ref()
     }
 
     fn src_bytes(&self) -> Option<crate::SharedBytes> {

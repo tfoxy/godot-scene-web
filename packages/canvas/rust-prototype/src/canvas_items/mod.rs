@@ -39,6 +39,8 @@ use gsw_canvas_draw_list::{
 #[cfg(target_arch = "wasm32")]
 mod gl;
 #[cfg(any(target_arch = "wasm32", test))]
+mod group_depth;
+#[cfg(any(target_arch = "wasm32", test))]
 mod program_poll;
 #[cfg(any(target_arch = "wasm32", test))]
 mod item_shaders;
@@ -237,7 +239,7 @@ pub struct ExecStats {
     /// and mip chains built (`ScreenOpKind::Mipmaps`, or a copy's).
     pub screen_copies: u32,
     pub screen_mipmaps: u32,
-    /// `DrawList::depth_tiles` drawn into the depth buffer, and calls depth-tested against them.
+    /// Target tiles and dead group cells drawn into depth buffers, and calls tested against them.
     pub depth_tiles: u32,
     pub depth_tested: u32,
 }
@@ -541,6 +543,7 @@ pub fn plan_calls(
     let mut counts = PlanCounts::default();
     // The current run's state (`merged`): its texture and sampler are its first textured draw's.
     let mut run: Option<Draw> = None;
+    let mut group = None;
     for (i, draw) in list.draws.iter().enumerate() {
         if draw.index_count == 0 {
             continue;
@@ -551,6 +554,12 @@ pub fn plan_calls(
             continue;
         }
         let depth = gsw_canvas_draw_list::depth_level(list, i as u32);
+        // A merged call must stay inside one fact range: its first draw selects depth testing.
+        let next_group = list.group_cells.iter().position(|g| g.draws.contains(&i));
+        if group != next_group {
+            run = None;
+            group = next_group;
+        }
         run = Some(match (run, out.last_mut()) {
             (Some(r), Some(call)) if call.depth == depth && mergeable(&r, draw) => {
                 call.index_count += draw.index_count;

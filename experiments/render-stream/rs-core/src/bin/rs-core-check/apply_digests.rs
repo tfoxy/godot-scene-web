@@ -19,11 +19,24 @@ use std::process::ExitCode;
 // operations, instances and depth tables. Also retain the pre-cover draws and cover decisions.
 // Surface pass order, clears and frees are executor inputs too. No timings enter this digest.
 fn output_digest(a: &Applier, undo_merge: bool) -> String {
+    output_digest_mode(a, undo_merge, false)
+}
+
+fn output_digest_mode(a: &Applier, undo_merge: bool, legacy_groups: bool) -> String {
     use sha2::{Digest, Sha256};
-    fn add(h: &mut Sha256, a: &Applier, undo_merge: bool) {
+    fn add(h: &mut Sha256, a: &Applier, undo_merge: bool, legacy_groups: bool) {
         let plain = undo_merge.then(|| a.unmerged_list());
         let list = plain.as_ref().unwrap_or(&a.list);
-        h.update(list_digest(list).0);
+        if legacy_groups {
+            // Compatibility oracle for output predating the optional group-cell field.
+            let mut text = format!("{list:?}");
+            let at = text.rfind(", group_cells: ").expect("last DrawList field");
+            text.truncate(at);
+            text.push_str(" }");
+            h.update(Sha256::digest(text.as_bytes()));
+        } else {
+            h.update(list_digest(list).0);
+        }
         let assembled = if undo_merge && a.assembled_draws() == a.list.draws {
             &list.draws
         } else {
@@ -48,11 +61,11 @@ fn output_digest(a: &Applier, undo_merge: bool) -> String {
         for (list, clear) in set.passes() {
             h.update(format!("pass {} {clear}", list.target.surface));
             let pass = set.applier(list.target.surface).expect("surface pass");
-            add(&mut h, pass, undo_merge);
+            add(&mut h, pass, undo_merge, legacy_groups);
         }
     }
     h.update(b"root");
-    add(&mut h, a, undo_merge);
+    add(&mut h, a, undo_merge, legacy_groups);
     format!("{:x}", h.finalize())
 }
 
@@ -62,6 +75,7 @@ fn replay(
     synthetic: bool,
     group_scissor: bool,
     group_merge: &str,
+    legacy_groups: bool,
     read: &mut dyn FnMut(&render_stream_core::state::Hash) -> Option<Vec<u8>>,
 ) -> Result<Vec<(i64, Option<String>)>, Error> {
     let version = wire::version_of_magic(data)
@@ -104,7 +118,7 @@ fn replay(
             fill_cmd::register_synthetic_programs(a, v.state(), payloads, &mut programs, None)?;
         }
         a.apply(v.state(), delta, payloads);
-        let digest = output_digest(a, matches!(group_merge, "undo" | "verify"));
+        let digest = output_digest_mode(a, matches!(group_merge, "undo" | "verify"), legacy_groups);
         retention.sweep(v, payloads, || a.referenced_payload_hashes());
         a.list.consumed();
         if let Some(set) = a.surfaces.as_mut() {
@@ -180,7 +194,7 @@ pub(super) fn cmd(args: &Args) -> ExitCode {
         };
         let mut out = std::io::BufWriter::new(std::io::stdout().lock());
         let rows = replay(
-            &data, every, synthetic, args.get("group-scissor") != Some("off"), group_merge, &mut read,
+            &data, every, synthetic, args.get("group-scissor") != Some("off"), group_merge, args.get("group-cells") == Some("omit"), &mut read,
         )?;
         if group_merge == "verify" {
             eprintln!(
@@ -210,12 +224,12 @@ mod tests {
     #[test]
     fn merged_digest_includes_the_final_short_group() {
         let data = include_bytes!("../../../../protocol/golden-7/window2.rs7");
-        let rows = replay(data, 2, true, true, "on", &mut |_| None).unwrap();
+        let rows = replay(data, 2, true, true, "on", false, &mut |_| None).unwrap();
         assert_eq!(rows.len(), 3);
         assert!(rows[0].1.is_none());
         assert!(rows[1].1.is_some());
         assert!(rows[2].1.is_some());
-        assert_eq!(rows, replay(data, 2, true, true, "on", &mut |_| None).unwrap());
+        assert_eq!(rows, replay(data, 2, true, true, "on", false, &mut |_| None).unwrap());
     }
 
     #[test]
@@ -234,6 +248,9 @@ mod tests {
             .push(gsw_canvas_draw_list::DepthTile::default());
         assert_ne!(original, output_digest(&a, false));
         a.list.depth_tiles.clear();
+        a.list.group_cells.push(gsw_canvas_draw_list::GroupCells::default());
+        assert_ne!(original, output_digest(&a, false));
+        a.list.group_cells.clear();
         a.stats.covered_draws += 1;
         assert_ne!(original, output_digest(&a, false));
         a.stats.covered_draws = 0;

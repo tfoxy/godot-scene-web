@@ -8,6 +8,20 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+fn group_owner_textures(
+    merged: &gsw_canvas_draw_list::DrawList,
+    unmerged: &gsw_canvas_draw_list::DrawList,
+) -> Vec<Option<u32>> {
+    // Restoring the permutation preserves group order; only unmerged ranges end at
+    // their own composite. Keep the caller's reported ranges in merged coordinates.
+    merged
+        .group_cells
+        .iter()
+        .zip(&unmerged.group_cells)
+        .map(|(_, g)| unmerged.draws.get(g.draws.end).map(|d| d.texture))
+        .collect()
+}
+
 /// `fill <recording> [--store <dir>] [--seqs a,b,...] [--every N] [--cell 8] [--damage <file>]`:
 /// replays every transaction through the applier (natively, no GL) and, after each listed seq
 /// (or every Nth transaction, default every one), prints one JSON line of
@@ -28,7 +42,9 @@ use std::process::ExitCode;
 /// and `noop_draws`, the draws among them that change no pixel at all. `--tiles off` turns the
 /// walk's tile half off; with it on, `total_screens` excludes the fragments the executor's depth
 /// test rejects (`depth_rejected_screens`) and the depth-only tile pre-pass is reported on its own
-/// (`depth_prepass_screens`).
+/// (`depth_prepass_screens`). Gated group cells also subtract rejected back-buffer fragments,
+/// split by builtin, program and instanced draws in `group_rejected_screens`; use
+/// `--group-cells off` to account only C0 scissors and ordinary cover tiles.
 /// `--damage <file>` also compares every transaction's draws with the previous one's
 /// (`fill::signature`, `fill::damage`) and writes a summary: how many transactions changed
 /// nothing, the damaged area's distribution, and the fill a redraw scissored to the damage
@@ -91,6 +107,7 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
         a.set_cover_tiles(args.get("tiles") != Some("off"));
         a.set_group_scissor(args.get("group-scissor") != Some("off"));
         a.set_group_merge(args.get("group-merge") != Some("off"));
+        a.set_group_cells(args.get("group-cells") != Some("off"));
         let mut payloads = PayloadStore::default();
         let mut need = Vec::new();
         let mut out = std::io::stdout().lock();
@@ -394,6 +411,11 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                                     "screens": (o.px / screen * 1000.0).round() / 1000.0})
                             })
                             .collect();
+                        let owner_textures = if a.list.group_cells.is_empty() {
+                            Vec::new()
+                        } else {
+                            group_owner_textures(&a.list, &a.unmerged_list())
+                        };
                         let line = json!({
                             "seq": seq, "target": [r.width, r.height],
                             "draws": a.list.draws.len(), "triangles": a.list.indices.len() / 3,
@@ -405,6 +427,17 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                             "layers": {"mean": (r.layers_mean * 100.0).round() / 100.0,
                                 "p50": r.layers_p50, "p95": r.layers_p95, "max": r.layers_max},
                             "hidden_screens": (r.hidden_px / screen * 1000.0).round() / 1000.0,
+                            "group_rejected_screens": {
+                                "builtin": r.group_rejected_px[0] / screen,
+                                "program": r.group_rejected_px[1] / screen,
+                                "instanced": r.group_rejected_px[2] / screen,
+                            },
+                            "group_cells": a.list.group_cells.iter().map(|g| g.rects.len()).sum::<usize>(),
+                            "groups": a.list.group_cells.iter().zip(owner_textures).map(|(g, owner)| json!({
+                                "draws": [g.draws.start, g.draws.end],
+                                "rects": g.rects.len(),
+                                "owner_texture": owner,
+                            })).collect::<Vec<_>>(),
                             "depth_rejected_screens": (r.depth_rejected_px / screen * 1000.0).round() / 1000.0,
                             "depth_prepass_screens": (r.depth_prepass_px / screen * 1000.0).round() / 1000.0,
                             "depth_tiles": a.list.depth_tiles.len(), "depth_draws": a.list.depth_draws.len(),
@@ -435,6 +468,12 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                                     r.draw = 0;
                                     one.instanced.push(r);
                                 }
+                                // A one-draw view needs the same range remapping as depth draws.
+                                one.group_cells = a.list.group_cells.iter()
+                                    .filter(|g| g.draws.contains(&d))
+                                    .map(|g| gsw_canvas_draw_list::GroupCells {
+                                        draws: 0..1, rects: g.rects.clone(),
+                                    }).collect();
                                 // Its depth test, if listed (the tiles stay as they are).
                                 one.depth_draws.clear();
                                 if let Some(level) =
@@ -514,6 +553,7 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                                 let line = json!({
                                     "draw": d, "class": class.name(),
                                     "screens": (px / screen * 10000.0).round() / 10000.0,
+                                    "group_rejected_screens": r1.group_rejected_px.iter().sum::<f64>() / screen,
                                     "bounds": r1.large.first().map(|x| x.bounds),
                                     "blend": draw.blend, "texture": draw.texture, "program": draw.program,
                                     "flags": draw.flags, "tris": draw.index_count / 3,
@@ -666,6 +706,101 @@ mod tests {
     use render_stream_core::apply::payloads::PayloadStore;
     use render_stream_core::apply::{Applier, Viewport};
     use render_stream_core::state::*;
+
+    #[test]
+    fn merged_groups_report_their_own_owner_textures() {
+        use gsw_canvas_draw_list::cover::{
+            groups::{GroupRange, GroupWalk},
+            CoverFacts, ProgramFacts,
+        };
+        use gsw_canvas_draw_list::{
+            opacity::Opacity, Draw, DrawList, Item, ScreenOp, ScreenOpKind, Vertex,
+            DRAW_GROUP_CLIP, DRAW_SCREEN_OPS, DRAW_TO_BACK_BUFFER,
+        };
+
+        struct Facts([Opacity; 2]);
+        impl CoverFacts for Facts {
+            fn opacity(&self, id: u32) -> Option<&Opacity> {
+                id.checked_sub(1).and_then(|i| self.0.get(i as usize))
+            }
+            fn program(&self, _: u32) -> ProgramFacts {
+                ProgramFacts::UNKNOWN
+            }
+        }
+        let facts = Facts(std::array::from_fn(|_| {
+            Opacity::from_rgba8(16, 16, &[0; 16 * 16 * 4])
+        }));
+        let mut list = DrawList::default();
+        list.target.width = 128;
+        list.target.height = 32;
+        list.items.push(Item {
+            xform: [1., 0., 0., 1., 0., 0.],
+            modulate: [1.; 4],
+            ..Item::default()
+        });
+        let mut groups = Vec::new();
+        for (owner, x) in [(1, 0.), (2, 80.)] {
+            let base = list.vertices.len() as u32;
+            for uv in [[0., 0.], [1., 0.], [1., 1.], [0., 1.]] {
+                list.vertices.push(Vertex {
+                    pos: [x + uv[0] * 48., uv[1] * 32.],
+                    uv,
+                    color: [1.; 4],
+                    ..Vertex::default()
+                });
+            }
+            let first_index = list.indices.len() as u32;
+            list.indices.extend([0, 1, 2, 0, 2, 3].map(|i| i + base));
+            let first = list.draws.len();
+            let draw = Draw {
+                first_index,
+                index_count: 6,
+                texture: owner,
+                ..Draw::default()
+            };
+            list.draws.push(Draw {
+                flags: DRAW_TO_BACK_BUFFER | DRAW_SCREEN_OPS,
+                ..draw
+            });
+            list.draws.push(Draw {
+                flags: DRAW_GROUP_CLIP,
+                ..draw
+            });
+            groups.push(GroupRange {
+                first,
+                composite: first + 1..first + 2,
+            });
+            list.screen_ops.push(ScreenOp {
+                before: first as u32,
+                kind: ScreenOpKind::Copy,
+                region: [0, 0, 128, 32],
+                mipmaps: false,
+                sample_mips: false,
+            });
+        }
+        let mut walk = GroupWalk::default();
+        walk.prepare(&list, &groups, &facts, true);
+        walk.apply(&mut list);
+        let plain = list.clone();
+        assert_eq!(plain.group_cells.len(), 2);
+        assert!(walk.merge(&mut list, &facts, true));
+        assert!(walk.check_merge(&plain, &list));
+        // The gate walk visits groups backwards, so the cell table is in B/A order.
+        assert_eq!(list.group_cells[1].draws, 0..1);
+        assert_eq!(list.group_cells[0].draws, 1..2);
+        let mut restored = list.clone();
+        walk.restore_merge_copy(&mut restored);
+        assert_eq!(restored.group_cells, plain.group_cells);
+        let owners = group_owner_textures(&list, &restored);
+        assert_eq!(owners, [Some(2), Some(1)]);
+        let mut by_draw = list.group_cells.iter().zip(owners).collect::<Vec<_>>();
+        by_draw.sort_by_key(|(g, _)| g.draws.start);
+        assert_eq!(
+            by_draw.iter().map(|(_, owner)| *owner).collect::<Vec<_>>(),
+            [Some(1), Some(2)]
+        );
+        assert_eq!(group_owner_textures(&plain, &plain), [Some(2), Some(1)]);
+    }
 
     #[test]
     fn synthetic_replay_unset_threshold_changes_and_resets() {

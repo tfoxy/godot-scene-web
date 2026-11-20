@@ -22,6 +22,7 @@ use super::{
     gl_scissor, gl_scissor_y_up, godot_screen_transform, item_program_fragment,
     item_program_vertex, item_rows_for, item_upload_rects, msdf_fragment, plan_calls,
     SurfacePass,
+    group_depth::{GroupDepth, depth_ndc},
     program_poll::{link_ready, poll_links},
     item_shaders::{ItemShaders, LinkShaders, ShaderApi},
 };
@@ -32,7 +33,7 @@ use crate::present::{
 use glow::HasContext;
 use gsw_canvas_draw_list::{
     ANISOTROPY_TEXTURE, BLACK_TEXTURE, BUILTIN_PROGRAM, Binding, Blend, CompressedFormat,
-    DepthTile, MAX_DEPTH_LEVEL, DRAW_GROUP_CLIP, DRAW_GROUP_COMPOSITE, DRAW_INSTANCED, DRAW_MSDF, DRAW_SCISSOR,
+    DepthTile, DRAW_GROUP_CLIP, DRAW_GROUP_COMPOSITE, DRAW_INSTANCED, DRAW_MSDF, DRAW_SCISSOR,
     DRAW_TO_BACK_BUFFER, DRAW_UNTEXTURED, Draw, DrawList, Format, Instance, NORMAL_TEXTURE,
     ROOT_SURFACE, SCREEN_TEXTURE, Sampler, ScreenOp, ScreenOpKind, TRANSPARENT_TEXTURE, Target, TextureOp,
     UniformValue, Vertex, WHITE_TEXTURE, default_texture_texel, premultiplies,
@@ -184,16 +185,6 @@ out vec4 fragColor;
 void main() {
   fragColor = vec4(0.0);
 }"#;
-
-/// The window depth of tile level `level` (`2·level` steps of `1 / (2·(MAX_DEPTH_LEVEL + 1))`)
-/// and of a draw tested at `level` (`2·level + 1` steps), in NDC. A tested draw passes `GREATER`
-/// exactly where every tile is at its level or below; the half-step gap is 32 steps of a 16-bit
-/// depth buffer, so rounding never decides.
-fn depth_ndc(level: u32, draw: bool) -> f32 {
-    let steps = 2 * level.min(MAX_DEPTH_LEVEL) + u32::from(draw);
-    let window = f64::from(steps) / f64::from(2 * (MAX_DEPTH_LEVEL + 1));
-    (2.0 * window - 1.0) as f32
-}
 
 /// Why an `execute` (or a shot) did nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -591,6 +582,8 @@ impl ListObjects {
 /// (the smallest no smaller than about 32 px), each half the previous (floor, at least 1), sampled
 /// linear / linear-mipmap-linear / clamp-to-edge, with MAX_LEVEL 0 until a mip chain is built.
 struct ScreenObjects {
+    /// Optional transient depth for dead group cells; recreated with this back buffer.
+    depth: Option<glow::Renderbuffer>,
     texture: glow::Texture,
     framebuffer: glow::Framebuffer,
     width: u32,
@@ -731,6 +724,9 @@ const UNIT_SCREEN_PASS: u32 = 15;
 
 fn delete_screen(gl: &glow::Context, screen: ScreenObjects) {
     unsafe {
+        if let Some(depth) = screen.depth {
+            gl.delete_renderbuffer(depth);
+        }
         gl.delete_framebuffer(screen.framebuffer);
         gl.delete_texture(screen.texture);
         gl.delete_sampler(screen.sampler);
@@ -832,6 +828,7 @@ fn ensure_screen<'o>(
                 mode: None,
             };
             *screen = Some(ScreenObjects {
+                depth: None,
                 texture,
                 framebuffer,
                 width: target.width,
@@ -847,6 +844,29 @@ fn ensure_screen<'o>(
                 attached: u32::MAX,
                 group,
             });
+            let made = screen.as_mut().unwrap();
+            bind_draw_framebuffer(gl, cache, Some(framebuffer));
+            attach_screen_level(gl, made, 0);
+            // Failure keeps the colour-only back buffer usable; cells are optional facts.
+            if let Ok(depth) = c.create_renderbuffer() {
+                c.bind_renderbuffer(glow::RENDERBUFFER, Some(depth));
+                c.renderbuffer_storage(
+                    glow::RENDERBUFFER, glow::DEPTH_COMPONENT16,
+                    target.width as i32, target.height as i32,
+                );
+                c.bind_renderbuffer(glow::RENDERBUFFER, None);
+                c.framebuffer_renderbuffer(
+                    glow::DRAW_FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::RENDERBUFFER, Some(depth),
+                );
+                if c.check_framebuffer_status(glow::DRAW_FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE {
+                    made.depth = Some(depth);
+                } else {
+                    c.framebuffer_renderbuffer(
+                        glow::DRAW_FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::RENDERBUFFER, None,
+                    );
+                    c.delete_renderbuffer(depth);
+                }
+            }
         }
     }
     screen.as_mut()
@@ -864,6 +884,12 @@ fn attach_screen_level(gl: &Gl, screen: &mut ScreenObjects, level: u32) {
                 level as i32,
             )
         };
+        unsafe {
+            gl.c().framebuffer_renderbuffer(
+                glow::DRAW_FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::RENDERBUFFER,
+                if level == 0 { screen.depth } else { None },
+            );
+        }
         screen.attached = level;
     }
 }
@@ -2066,7 +2092,9 @@ impl CanvasItemsExecutor {
             .as_ref()
             .is_some_and(|o| o.active == ROOT_SURFACE);
         let depth = tables && root && clear && self.depth_program_ready() && self.ensure_depth();
-        self.draw(list, &calls, clear, depth, stats);
+        // Group cells use the independent back-buffer depth attachment, including on surfaces.
+        let group_depth = !list.group_cells.is_empty() && self.depth_program_ready();
+        self.draw(list, &calls, clear, depth, group_depth, stats);
         self.calls = calls;
         if let Some(o) = self.objects.as_mut() {
             o.list.needs_full = false;
@@ -2945,6 +2973,7 @@ impl CanvasItemsExecutor {
         calls: &[Call],
         clear: bool,
         depth: bool,
+        group_depth_ready: bool,
         stats: &mut ExecStats,
     ) {
         let Some(objects) = self.objects.as_ref() else {
@@ -3020,6 +3049,8 @@ impl CanvasItemsExecutor {
 
         // The next screen operation to run (operations precede the draw they name).
         let mut next_op = 0usize;
+        let mut group_depth = GroupDepth::default();
+        let mut back_depth_live = None;
         for call in calls.iter() {
             // The back-buffer operations GLES3 makes before this call's first draw (those of a
             // draw `plan_calls` skipped run here too, in order).
@@ -3033,6 +3064,11 @@ impl CanvasItemsExecutor {
                     end_depth(gl, cache, target_fb);
                     depth_live = false;
                     tested = false;
+                }
+                if group_depth.operation(op) {
+                    if let Some(fb) = back_depth_live.take() {
+                        end_depth(gl, cache, fb);
+                    }
                 }
                 screen_op(gl, cache, objects, op, godot, stats);
                 next_op += 1;
@@ -3066,7 +3102,27 @@ impl CanvasItemsExecutor {
                 };
                 bind_draw_framebuffer(gl, cache, Some(bb.framebuffer));
                 attach_screen_level(gl, bb, 0);
+                let fb = bb.framebuffer;
+                let supported = group_depth_ready && bb.depth.is_some();
+                if let Some(tiles) = group_depth.begin(list, call.draw as usize, supported) {
+                    // Full depth clear at pass start, independent of the previous draw's scissor.
+                    set_scissor_enabled(gl, cache, false);
+                    if !cache.clear_depth {
+                        unsafe { gl.c().clear_depth_f32(0.0) };
+                        cache.clear_depth = true;
+                    }
+                    set_depth_mask(gl, cache, true);
+                    unsafe { gl.c().clear(glow::DEPTH_BUFFER_BIT) };
+                    depth_prepass(gl, cache, objects, tiles, width, height, godot);
+                    bind_vertex_array(gl, cache, objects.list.vertex_array);
+                    stats.depth_tiles += tiles.len() as u32;
+                    back_depth_live = Some(fb);
+                }
             } else {
+                if let Some(fb) = back_depth_live.take() {
+                    end_depth(gl, cache, fb);
+                }
+                group_depth.end();
                 bind_draw_framebuffer(gl, cache, Some(target_fb));
             }
             let group_mode = if draw.program != BUILTIN_PROGRAM {
@@ -3334,15 +3390,26 @@ impl CanvasItemsExecutor {
                 && group_mode == 0
                 && !to_back_buffer;
             let level = call.depth.filter(|_| test);
-            if depth_live {
-                set_depth_test(gl, cache, level.is_some());
+            let group_test = to_back_buffer && back_depth_live.is_some()
+                && group_depth.tests(call.draw as usize);
+            if depth_live || back_depth_live.is_some() {
+                set_depth_test(gl, cache, level.is_some() || group_test);
             }
-            if let Some(level) = level {
-                let z = depth_ndc(level, true);
+            // Item-space and MSDF vertices already use NDC z=0. Builtin vertices must use the
+            // same value here, regardless of a previous target depth level. Dead cells sit at
+            // the top tile level, and all tested draws leave the depth buffer unchanged.
+            let z = if group_test && draw.program == BUILTIN_PROGRAM && !msdf && group_mode == 0 {
+                Some(0.0)
+            } else {
+                level.map(|level| depth_ndc(level, true))
+            };
+            if let Some(z) = z {
                 if cache.u_depth != Some((objects.program, z.to_bits())) {
                     unsafe { gl.c().uniform_1_f32(objects.u_depth.as_ref(), z) };
                     cache.u_depth = Some((objects.program, z.to_bits()));
                 }
+            }
+            if level.is_some() || group_test {
                 stats.depth_tested += 1;
             }
             set_blend(gl, cache, blend, opaque, stats);
@@ -3438,6 +3505,9 @@ impl CanvasItemsExecutor {
                 )
             };
             stats.draw_calls += 1;
+        }
+        if let Some(fb) = back_depth_live {
+            end_depth(gl, cache, fb);
         }
         if depth_live {
             end_depth(gl, cache, target_fb);

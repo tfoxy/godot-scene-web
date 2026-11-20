@@ -12,6 +12,7 @@ pub(super) struct MergeWalk {
     draws: Vec<Patch<Draw>>,
     ops: Vec<Patch<ScreenOp>>,
     instances: Vec<Patch<InstancedDraw>>,
+    cells: Vec<Patch<std::ops::Range<usize>>>,
     applied: bool,
 }
 
@@ -20,7 +21,8 @@ impl MergeWalk {
         if !self.applied {
             return before.draws == after.draws
                 && before.screen_ops == after.screen_ops
-                && before.instanced == after.instanced;
+                && before.instanced == after.instanced
+                && before.group_cells == after.group_cells;
         }
         if self.order.len() != before.draws.len() || after.draws.len() != before.draws.len() {
             return false;
@@ -64,7 +66,24 @@ impl MergeWalk {
             inst.draw = at as u32;
         }
         instances.sort_by_key(|inst| inst.draw);
-        ops == after.screen_ops && instances == after.instanced
+        let mut cells = before.group_cells.clone();
+        for cell in &mut cells {
+            let range = cell.draws.clone();
+            let Some(&start) = inverse.get(range.start) else {
+                return false;
+            };
+            if range.is_empty()
+                || range.end > self.order.len()
+                || range
+                    .clone()
+                    .enumerate()
+                    .any(|(offset, old)| inverse[old] != start + offset)
+            {
+                return false;
+            }
+            cell.draws = start..start + range.len();
+        }
+        ops == after.screen_ops && instances == after.instanced && cells == after.group_cells
     }
 
     pub fn restore_copy(&self, list: &mut DrawList) {
@@ -77,6 +96,9 @@ impl MergeWalk {
             }
             for p in &self.instances {
                 list.instanced[p.at] = p.before;
+            }
+            for p in &self.cells {
+                list.group_cells[p.at].draws = p.before.clone();
             }
         }
     }
@@ -97,6 +119,7 @@ impl MergeWalk {
         self.draws.clear();
         self.ops.clear();
         self.instances.clear();
+        self.cells.clear();
         let mut order = Vec::new();
         let mut cursor = 0;
         if on {
@@ -177,6 +200,17 @@ impl MergeWalk {
             let before = list.instanced[at];
             if before != after {
                 self.instances.push(Patch { at, before, after });
+            }
+        }
+        // Each range names one group's contiguous children, which move as one block. Keep
+        // only range patches: the rectangles and the classifier's verified memo stay intact.
+        for (at, cell) in list.group_cells.iter_mut().enumerate() {
+            let before = cell.draws.clone();
+            let start = inverse[before.start];
+            let after = start..start + before.len();
+            if before != after {
+                cell.draws = after.clone();
+                self.cells.push(Patch { at, before, after });
             }
         }
         for g in groups {

@@ -72,7 +72,7 @@ pub(super) struct CoverState {
     tiles_off: bool,
     pub(super) alpha_ranges: super::programs::alpha_range::Cache,
     pub(super) alpha_zero: Vec<bool>,
-    groups: gsw_canvas_draw_list::cover::groups::GroupWalk,
+    pub(super) groups: gsw_canvas_draw_list::cover::groups::GroupWalk,
     pub(super) group_ranges: Vec<gsw_canvas_draw_list::cover::groups::GroupRange>,
     pub(super) groups_off: bool,
     pub(super) group_merge_off: bool,
@@ -333,6 +333,11 @@ impl Applier {
         let mut list = self.list.clone();
         self.cover.groups.restore_merge_copy(&mut list);
         list
+    }
+
+    /// Whether gated clip groups expose dead owner-alpha cells (on by default).
+    pub fn set_group_cells(&mut self, on: bool) {
+        self.cover.groups.cells_off = !on;
     }
 
     /// Whether canvas-group draws and copies are restricted to the composite's bounds.

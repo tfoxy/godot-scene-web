@@ -701,6 +701,22 @@ pub struct DrawList {
     /// The draws an executor may depth-test against [`DrawList::depth_tiles`], ascending by
     /// draw ([`DepthDraw`]). Not in a `PDL1` dump.
     pub depth_draws: Vec<DepthDraw>,
+    /// Dead back-buffer cells per canvas group. Optional facts an executor may use or ignore:
+    /// rejecting these fragments produces exactly the same target pixels. Not in a PDL1 dump.
+    pub group_cells: Vec<GroupCells>,
+}
+
+/// Non-overlapping dead rectangles of one gated clip group, inside its copy/scissor region.
+/// Only the back-buffer draws in `draws` may reject fragments there; the closing composite
+/// and target draws must never test against these cells. The owner's composite samples zero
+/// alpha there, or has no triangle there, and no later screen reader observes the leftovers.
+/// An executor may ignore these facts and draw the full group without changing any pixel.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct GroupCells {
+    /// Half-open indices in DrawList::draws, including the pre-owner, excluding the composite.
+    pub draws: std::ops::Range<usize>,
+    /// [x, y, width, height] in target pixels, top-left origin, coalesced from 16-pixel cells.
+    pub rects: Vec<[i32; 4]>,
 }
 
 /// A rectangle of target pixels whose every pixel is overwritten, before anything reads it, by a
@@ -999,6 +1015,7 @@ pub fn merged(run: &Draw, next: &Draw) -> Draw {
     out
 }
 
+pub mod alpha;
 pub mod cover;
 pub mod opacity;
 
@@ -1194,6 +1211,7 @@ pub mod pdl1 {
             instanced: Vec::new(),
             depth_tiles: Vec::new(),
             depth_draws: Vec::new(),
+            group_cells: Vec::new(),
         })
     }
 }

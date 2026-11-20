@@ -166,6 +166,9 @@ pub struct FillReport {
     /// their draw's class above), and the depth-only pre-pass that draws the tiles (in no class:
     /// untextured fragments that write no colour).
     pub depth_rejected_px: f64,
+    /// Dead group-cell rejected fragments: builtin, item-space program, instanced. Also
+    /// included in depth_rejected_px; excluded from colour fill. Independent of shader cost.
+    pub group_rejected_px: [f64; 3],
     pub depth_prepass_px: f64,
 }
 
@@ -409,6 +412,11 @@ pub fn account(list: &DrawList, opts: &FillOptions) -> FillReport {
     // The depth tiles, as the executor draws them before the first draw.
     let depth = !list.depth_tiles.is_empty() && !list.depth_draws.is_empty();
     let depth_end = crate::cover::tiles::window_end(list);
+    for group in &list.group_cells {
+        for &rect in &group.rects {
+            r.depth_prepass_px += rect_px(intersect(rect, view));
+        }
+    }
     if depth {
         for t in &list.depth_tiles {
             r.depth_prepass_px += rect_px(intersect(t.rect, view));
@@ -470,7 +478,7 @@ pub fn account(list: &DrawList, opts: &FillOptions) -> FillReport {
         } else {
             None
         };
-        let rejecting: Vec<[f64; 4]> = level.map_or_else(Vec::new, |l| {
+        let mut rejecting: Vec<[f64; 4]> = level.map_or_else(Vec::new, |l| {
             list.depth_tiles
                 .iter()
                 .filter(|t| t.level > l)
@@ -486,6 +494,24 @@ pub fn account(list: &DrawList, opts: &FillOptions) -> FillReport {
                 })
                 .collect()
         });
+        if to_back {
+            for group in &list.group_cells {
+                if !group.draws.contains(&d) {
+                    continue;
+                }
+                for &rect in &group.rects {
+                    let q = intersect(rect, clip);
+                    if q[2] > 0 && q[3] > 0 {
+                        rejecting.push([
+                            q[0] as f64,
+                            q[1] as f64,
+                            (q[0] + q[2]) as f64,
+                            (q[1] + q[3]) as f64,
+                        ]);
+                    }
+                }
+            }
+        }
         let mut px = 0.0;
         let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
         let mut alpha = 1.0;
@@ -503,6 +529,16 @@ pub fn account(list: &DrawList, opts: &FillOptions) -> FillReport {
                 }
                 let rejected: f64 = rejecting.iter().map(|q| clipped_area(&t, *q)).sum();
                 r.depth_rejected_px += rejected;
+                if to_back {
+                    let kind = if draw.flags & DRAW_INSTANCED != 0 {
+                        2
+                    } else if draw.program != BUILTIN_PROGRAM {
+                        1
+                    } else {
+                        0
+                    };
+                    r.group_rejected_px[kind] += rejected;
+                }
                 px += a - rejected;
                 let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
                 for p in &t {

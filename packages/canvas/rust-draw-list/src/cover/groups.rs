@@ -1,8 +1,8 @@
 //! Restrict a canvas group's work to pixels its composite can show. This runs on the assembled
-//! table, applying its edits after cover compaction. It changes only scissors and copy regions; clears
-//! retain their full-target semantics. Disjoint Copy groups may then share a back-buffer pass.
-//! Group ranges come from the producer's group bookkeeping, including owners with custom materials
-//! (which cannot themselves be optimized here).
+//! table, applying its edits after cover compaction. It changes scissors and copy regions and
+//! exposes optional dead-alpha cells; clears retain their full-target semantics. Disjoint Copy
+//! groups may share a back-buffer pass. Group ranges come from the producer's group bookkeeping,
+//! including owners with custom materials (which cannot themselves be optimized here).
 
 use super::{CoverFacts, PxRect, FAR};
 use crate::{
@@ -12,6 +12,7 @@ use crate::{
 use std::ops::Range;
 
 mod merge;
+mod cells;
 
 /// One non-nested back-buffer group, in the producer's assembled draw table. The composite can
 /// contain several draws. Nested owners drawn plainly inside an open group are not separate
@@ -144,6 +145,8 @@ struct Patch<T> {
 #[derive(Default)]
 pub struct GroupWalk {
     geometry: Vec<Geometry>,
+    cells: cells::Cells,
+    next_cells: Vec<crate::GroupCells>,
     draws: Vec<Patch<Draw>>,
     ops: Vec<Patch<ScreenOp>>,
     next_draws: Vec<Patch<Draw>>,
@@ -151,6 +154,8 @@ pub struct GroupWalk {
     applied: bool,
     work: Vec<GroupWork>,
     merger: merge::MergeWalk,
+    /// Diagnostics may disable only the dead-cell facts, retaining C0 scissors.
+    pub cells_off: bool,
 }
 
 fn xywh(r: PxRect) -> [i32; 4] {
@@ -192,8 +197,11 @@ impl GroupWalk {
             composite: g.composite.clone(),
             rect: None,
         }));
+        self.next_cells.clear();
+        self.cells.begin();
         self.geometry.resize_with(groups.len(), Geometry::default);
         if !on {
+            self.cells.finish();
             return;
         }
         let target = PxRect::xywh([0, 0, list.target.width as i32, list.target.height as i32]);
@@ -295,6 +303,11 @@ impl GroupWalk {
             }
             let visible = bbox.intersect(&target).intersect(&region);
             self.work[i].rect = Some(visible);
+            if !self.cells_off {
+                if let Some(cells) = self.cells.prepare(list, g, visible, facts) {
+                    self.next_cells.push(cells);
+                }
+            }
             for at in g.first..g.composite.end {
                 let before = list.draws[at];
                 let rect = if before.flags & DRAW_SCISSOR != 0 {
@@ -325,16 +338,18 @@ impl GroupWalk {
                 }
             }
         }
+        self.cells.finish();
     }
 
     /// Apply the prepared edits after optional cover compaction. Only scissor state and Copy
-    /// regions are transferred: compaction's operation flags and draw ordering remain intact.
+    /// regions are transferred, and cell ranges remapped: compaction's operation flags and draw
+    /// ordering remain intact.
     pub fn apply_compacted(
         &mut self,
         list: &mut DrawList,
         kept: Option<(&[bool], &[bool])>,
     ) -> bool {
-        if self.work.is_empty() && self.next_draws.is_empty() && self.next_ops.is_empty() {
+        if kept.is_none() {
             return self.apply(list);
         }
         fn mapping(kept: &[bool]) -> Vec<Option<usize>> {
@@ -365,6 +380,24 @@ impl GroupWalk {
                 g.composite = prefix[g.composite.start]..prefix[g.composite.end];
             }
         }
+        self.next_cells.retain_mut(|c| {
+            let start = c
+                .draws
+                .clone()
+                .find_map(|d| draw_map.get(d).copied().flatten());
+            let end = c
+                .draws
+                .clone()
+                .rev()
+                .find_map(|d| draw_map.get(d).copied().flatten());
+            match (start, end) {
+                (Some(start), Some(end)) => {
+                    c.draws = start..end + 1;
+                    true
+                }
+                _ => false,
+            }
+        });
         self.next_draws.retain_mut(|p| {
             if kept.is_some() {
                 let Some(at) = draw_map.get(p.at).copied().flatten() else {
@@ -435,7 +468,10 @@ impl GroupWalk {
     }
 
     pub fn apply(&mut self, list: &mut DrawList) -> bool {
+        // Cell facts are read directly each execution, independently of draw-buffer uploads.
+        // Changing only these optional facts must not dirty the ordinary draw table.
         let changed = self.draws != self.next_draws || self.ops != self.next_ops;
+        list.group_cells.clone_from(&self.next_cells);
         std::mem::swap(&mut self.draws, &mut self.next_draws);
         std::mem::swap(&mut self.ops, &mut self.next_ops);
         for p in &self.draws {

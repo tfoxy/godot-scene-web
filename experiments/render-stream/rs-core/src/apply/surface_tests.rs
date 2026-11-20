@@ -228,6 +228,65 @@ fn surface_groups_inherit_scissor_option_on_creation_and_update() {
     }
 }
 
+#[test]
+fn surface_groups_inherit_cells_option_on_creation_and_update() {
+    let mut s = scene();
+    s.viewports.get_mut(&5).unwrap().size = [128, 64];
+    let owner = s.items.get_mut(&20).unwrap();
+    owner.commands = tex_rect(300, [0.0, 0.0, 128.0, 64.0]);
+    owner.children = vec![21];
+    owner.canvas_group = Some(CanvasGroup {
+        mode: CanvasGroupMode::ClipOnly,
+        clear_margin: 5.0,
+        fit_empty: false,
+        fit_margin: 0.0,
+        blur_mipmaps: false,
+    });
+    s.items.insert(
+        21,
+        item(
+            21,
+            Parent {
+                kind: ParentKind::Item,
+                id: 20,
+            },
+            rect([0.0, 0.0, 128.0, 64.0]),
+        ),
+    );
+    let (mut t, mut px) = image(300, 1, 255);
+    t.width = 128;
+    t.height = 64;
+    t.payload_bytes = 128 * 64 * 4;
+    let mut rgba = vec![255; t.payload_bytes as usize];
+    for y in 0..64 {
+        for x in 32..96 {
+            rgba[(y * 128 + x) * 4 + 3] = 0;
+        }
+    }
+    px.width = 128;
+    px.height = 64;
+    px.data_len = rgba.len();
+    px.rgba = rgba.into();
+    let mut store = PayloadStore::default();
+    store.textures.insert(t.hash.unwrap(), px.with_opacity());
+    s.textures.insert(300, t);
+    let mut a = applier();
+    for (step, on) in [false, true, false].into_iter().enumerate() {
+        a.set_group_cells(on);
+        let delta = if step == 0 {
+            full_delta(&s)
+        } else {
+            TxDelta::default()
+        };
+        a.apply(&s, &delta, &store);
+        let pass = a.surfaces.as_ref().unwrap().applier(5).unwrap();
+        assert!(pass.list.draws.iter().any(|d| d.flags & DRAW_GROUP_CLIP != 0));
+        assert_eq!(pass.list.group_cells.is_empty(), !on, "step {step}, cells on: {on}");
+        a.list.consumed();
+        a.surfaces.as_mut().unwrap().consumed();
+    }
+}
+
 /// One frame: apply, then what the executor would run (surface ids and clears, frees), then
 /// consume every list as `draw` does.
 fn frame(a: &mut Applier, s: &ResolvedState, d: &TxDelta) -> (Vec<(u32, bool)>, Vec<u32>) {

@@ -372,6 +372,7 @@ impl Applier {
         self.cover.groups_off = root.cover.groups_off;
         self.cover.group_merge_off = root.cover.group_merge_off;
         self.cover.group_merge_check = root.cover.group_merge_check;
+        self.cover.groups.cells_off = root.cover.groups.cells_off;
         // Diagnostics (`rs-core-check walk-diff`): an oracle root's surfaces walk every apply too.
         self.always_walk = root.always_walk;
         self.max_texture_side = root.max_texture_side;
