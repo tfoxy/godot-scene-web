@@ -9,13 +9,15 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate8-ct-spine.ts
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
-
 import { type G8ctspExpected, runG8ctsp } from "../lib/gate8-ct-spine-checks";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let assertions = 0;
 let failures = 0;
@@ -49,7 +51,7 @@ const LEGS = [
 const SHOT_LEGS = ["reference", "late/receiver", "late/receiver-patch"];
 const CLEAR = [51, 51, 102];
 const INK = [200, 80, 30];
-const root = mkdtempSync(join(tmpdir(), "self-test-ct-spine-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "self-test-ct-spine-"));
 
 function put(out: string, rel: string, content: string): void {
   const p = join(out, "g8ctsp", rel);
@@ -198,7 +200,7 @@ expect(
   "a cell without a region fails",
 );
 
-rmSync(root, { recursive: true, force: true });
+removeSelfTestTempDir(root);
 console.log(
   `\nself-test-gate8-ct-spine: ${assertions - failures}/${assertions} assertions passed`,
 );

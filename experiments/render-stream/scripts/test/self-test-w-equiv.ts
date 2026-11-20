@@ -4,18 +4,21 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const tool = join(root, "experiments/render-stream/scripts/lib/w-equiv.py");
 mkdirSync(join(root, ".local"), { recursive: true });
-const scratch = mkdtempSync(join(root, ".local/w-equiv-test-"));
+const scratch = makeSelfTestTempDir(join(root, ".local/w-equiv-test-"));
 const gates = ["gate0", "gate1", "gate2", "gate8"];
 const legs = gates.map((gate) => ({
   gate,
@@ -81,7 +84,7 @@ function run(
   rc = expected ? 1 : 0,
   verify?: (out: string, stdout: string) => boolean,
 ) {
-  const dir = mkdtempSync(join(scratch, "case-"));
+  const dir = makeSelfTestTempDir(join(scratch, "case-"));
   const c: Context = {
     dir,
     linux: join(dir, "linux"),
@@ -369,6 +372,6 @@ run("info is never judged", "", (c) => {
   });
   put(join(c.windows, "a/gate1/capture/root.jsonl"), "different");
 });
-rmSync(scratch, { recursive: true, force: true });
+removeSelfTestTempDir(scratch);
 console.log(`self-test-w-equiv: ${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

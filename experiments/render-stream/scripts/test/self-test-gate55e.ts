@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for gate 5.5e: the g55e evaluators of lib/gate55e-checks.ts on the committed
 // fixtures/gate55-shader/expected.json and on render-stream/5 wire states synthesized from its
 // oracle views (what the reference's material oracle must read back), each with a passing and a
@@ -25,18 +26,10 @@
 //
 // Exits non-zero if any assertion fails.
 
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import { rastersOf } from "../lib/gate5-checks";
 import type { Wire5, Wire5Tx } from "../lib/gate55-wire";
 import { asGate5, refusedView } from "../lib/gate55c-checks";
@@ -53,6 +46,10 @@ import {
   residentShaderVersions,
   viewExpected,
 } from "../lib/gate55e-checks";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
@@ -723,7 +720,7 @@ const oracle = oracleOf(e);
   );
 }
 
-const tierRoot = await mkdtemp(join(tmpdir(), "gate55e-tier-"));
+const tierRoot = makeSelfTestTempDir(join(tmpdir(), "gate55e-tier-"));
 try {
   for (const sabotage of ["freeze", "omit-param", "perturb-shader"]) {
     const leg = `sabotage-shader-${sabotage}`;
@@ -814,7 +811,7 @@ try {
     }
   }
 } finally {
-  await rm(tierRoot, { recursive: true, force: true });
+  removeSelfTestTempDir(tierRoot);
 }
 
 console.log(

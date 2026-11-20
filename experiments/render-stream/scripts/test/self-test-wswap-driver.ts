@@ -1,12 +1,15 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Pure swap-driver guards: synthetic evidence and parsed runner env, no engine launch.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+// Pure swap-driver guards: synthetic evidence and parsed runner env, no engine launch.
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
-const root = mkdtempSync(join(tmpdir(), "wswap-guards-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "wswap-guards-"));
 let passed = 0;
 let failed = 0;
 try {
@@ -210,7 +213,7 @@ print(json.dumps(results))
     }
   }
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  removeSelfTestTempDir(root);
 }
 console.log(`self-test-wswap-driver: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

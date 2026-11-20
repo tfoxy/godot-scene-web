@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for gate 2 group g2f (lib/gate2f-checks.ts, the opt-in headless CanvasTexture shim). Proves every g2f check can fail
 // as well as pass, on small fabricated evidence (JSON files, stdout logs and PNGs synthesized from
 // fixtures/gate2/expected.json; object-literal captures where a check reads no files).
@@ -8,11 +9,10 @@
 //
 // Exits non-zero if any assertion fails.
 
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import {
   type Gate2Expected,
   gate2Regions,
@@ -39,6 +39,10 @@ import {
   SHIM_INDEX_BASE,
   SHIM_TAG,
 } from "../lib/gate2f-checks";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 import { shotPng, writeBytes, writeJson, writeText } from "./gate2b-fixture";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -568,7 +572,7 @@ async function main(): Promise<void> {
   const expected = JSON.parse(
     await readFile(EXPECTED_PATH, "utf8"),
   ) as Gate2Expected;
-  const root = await mkdtemp(join(tmpdir(), "self-test-gate2f-"));
+  const root = makeSelfTestTempDir(join(tmpdir(), "self-test-gate2f-"));
   try {
     pure();
     await privateRids(root);
@@ -578,7 +582,7 @@ async function main(): Promise<void> {
     await receiverVsReference(root, expected);
     wire(expected);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    removeSelfTestTempDir(root);
   }
   console.log(
     `self-test-gate2f: ${passes}/${passes + failures} assertions passed`,

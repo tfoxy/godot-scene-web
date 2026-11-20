@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for the gate 3 checker (lib/gate3-checks.ts, lib/gate3-expected.ts and
 // lib/clip-derive.ts, group g3a). Proves that every check can fail as well as pass.
 //
@@ -22,11 +23,10 @@
 //
 // Exits non-zero if any assertion fails.
 
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import {
   type DeriveInput,
   deriveClipRects,
@@ -47,6 +47,10 @@ import {
   synthesizeGate3,
 } from "../lib/gate3-expected";
 import type { Gate3xExpected } from "../lib/gate3x-expected";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 import {
   buildFullTreeWithG3d,
   type CaptureOptions,
@@ -1363,7 +1367,7 @@ async function main(): Promise<void> {
   deriveCases();
   synthesisCases();
   selfConsistentCases();
-  const root = await mkdtemp(join(tmpdir(), "self-test-gate3-"));
+  const root = makeSelfTestTempDir(join(tmpdir(), "self-test-gate3-"));
   try {
     await scenarios(root);
     const xform = JSON.parse(
@@ -1374,7 +1378,7 @@ async function main(): Promise<void> {
     ) as Gate3xExpected;
     await gate3xCases(assert, xform, root);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    removeSelfTestTempDir(root);
   }
   console.log(
     `\nself-test-gate3: ${assertions - failures}/${assertions} assertions passed`,

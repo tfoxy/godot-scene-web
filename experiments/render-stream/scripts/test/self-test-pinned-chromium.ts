@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for GRT's pinned-Chromium resolution (lib/browser-harness.ts resolvePinnedChromium):
 // never launches a browser and never downloads one. Each case runs the resolver in a child process
 // (Playwright reads PLAYWRIGHT_BROWSERS_PATH when it loads) against a scratch private directory.
@@ -16,14 +17,16 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
-  rmSync,
   truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const self = fileURLToPath(import.meta.url);
 if (process.argv[2] === "--child") {
@@ -45,7 +48,7 @@ const check = (name: string, ok: boolean, detail = ""): void => {
     `${ok ? "PASS" : "FAIL"} ${name}${!ok && detail ? ` -- ${detail}` : ""}`,
   );
 };
-const root = mkdtempSync(join(tmpdir(), "self-test-pinned-chromium-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "self-test-pinned-chromium-"));
 const child = (env: Record<string, string>) => {
   const r = spawnSync(
     process.execPath,
@@ -124,6 +127,6 @@ if (probe.error) {
     alone.error ?? "",
   );
 }
-rmSync(root, { recursive: true, force: true });
+removeSelfTestTempDir(root);
 console.log(`self-test-pinned-chromium: ${passes} passed, ${failures} failed`);
 process.exit(failures === 0 ? 0 : 1);

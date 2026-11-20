@@ -1,6 +1,7 @@
 // Fabricated evidence verifies fail-closed checks; live legs exercise the public client separately.
+
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PICKED } from "../lib/gate8-id-checks";
@@ -11,6 +12,10 @@ import {
   runG8id2,
   TAG1_HELLO,
 } from "../lib/gate8-id2-checks";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const points = Array.from({ length: 384 }, (_, i) => PICKED[i % PICKED.length]);
 const oracle = [
@@ -53,7 +58,7 @@ async function run(
   edit?: (data: Record<string, ReturnType<typeof report>>) => void,
   skip = false,
 ) {
-  const dir = mkdtempSync(join(tmpdir(), "self-test-gate8-id2-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "self-test-gate8-id2-"));
   try {
     const data = Object.fromEntries(
       ["pick", "restamp", "pure", "tag1", "sabotage-ignore-host-filter"].map(
@@ -79,7 +84,7 @@ async function run(
     }
     return await runG8id2(dir);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeSelfTestTempDir(dir);
   }
 }
 const good = await run();

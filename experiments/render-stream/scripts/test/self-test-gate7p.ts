@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for G7p (lib/gate7p-checks.ts, lib/gate7p-device.ts, render-stream-report/2 in
 // lib/render-stream-report.ts), driven with synthetic values only. Each check has a passing case and
 // the failing case a sabotage would produce:
@@ -21,12 +22,10 @@
 //  6. after-window-shots: bandedFinalState passes an identical shot, and fails a shot of a frame before
 //     step 11 and one with a pixel beyond Q7's band.
 
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
-
 import {
   covFindings,
   deviceRowProblems,
@@ -42,6 +41,10 @@ import {
   type ReportRepeat,
   validate,
 } from "../lib/render-stream-report";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let failures = 0;
 function expect(name: string, ok: boolean, detail = ""): void {
@@ -712,7 +715,7 @@ expect(
   ) === null,
 );
 
-const tmp = await mkdtemp(join(tmpdir(), "g7p-self-"));
+const tmp = makeSelfTestTempDir(join(tmpdir(), "g7p-self-"));
 try {
   const b64 = (o: unknown) =>
     Buffer.from(JSON.stringify(o)).toString("base64url");
@@ -898,7 +901,7 @@ try {
     ),
   );
 } finally {
-  await rm(tmp, { recursive: true, force: true });
+  removeSelfTestTempDir(tmp);
 }
 
 if (failures > 0) {

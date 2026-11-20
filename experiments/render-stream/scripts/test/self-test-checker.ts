@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for the Gate -1 checker (lib/gate-minus1-checks.ts): proves the harness can actually
 // CATCH a failure, not just report "pass" on whatever it is handed. Builds a fabricated evidence
 // tree per scenario (a "good" tree that should pass everything it covers, then one perturbation
@@ -8,11 +9,10 @@
 //
 // Exits non-zero if ANY scenario's actual verdict doesn't match what it was built to prove.
 
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
 import {
   type Criterion,
@@ -31,6 +31,10 @@ import {
   checkValidateAndRefusals,
   type ExpectedWithDrawPaths,
 } from "../lib/gate-minus1-checks";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 type ExpectedJson = ExpectedWithDrawPaths;
 
@@ -1153,7 +1157,7 @@ async function main(): Promise<void> {
   let checkedCriteria = 0;
 
   for (const scenario of scenarios) {
-    const dir = await mkdtemp(join(tmpdir(), "gate-minus1-self-test-"));
+    const dir = makeSelfTestTempDir(join(tmpdir(), "gate-minus1-self-test-"));
     try {
       await scenario.build(dir, expected);
       const results = await scenario.run(dir, expected);
@@ -1181,7 +1185,7 @@ async function main(): Promise<void> {
         }
       }
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      removeSelfTestTempDir(dir);
     }
   }
 

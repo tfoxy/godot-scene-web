@@ -5,13 +5,16 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const tool = join(
@@ -19,7 +22,7 @@ const tool = join(
   "experiments/render-stream/scripts/lib/wfile-driver.py",
 );
 mkdirSync(join(root, ".local"), { recursive: true });
-const scratch = mkdtempSync(join(root, ".local/wfile-judge-"));
+const scratch = makeSelfTestTempDir(join(root, ".local/wfile-judge-"));
 let passed = 0;
 let failed = 0;
 function recording(version: number, last = "end", first: unknown = "session") {
@@ -63,7 +66,7 @@ function run(
 ) {
   const s = sample(version);
   mutate?.(s);
-  const dir = mkdtempSync(join(scratch, "case-"));
+  const dir = makeSelfTestTempDir(join(scratch, "case-"));
   const leg = join(dir, "a/gate0/capture");
   mkdirSync(join(leg, "evidence"), { recursive: true });
   writeFileSync(join(leg, "stdout.txt"), s.stdout);
@@ -511,6 +514,6 @@ launchTest(
   [],
   "missing or empty import",
 );
-rmSync(scratch, { recursive: true, force: true });
+removeSelfTestTempDir(scratch);
 console.log(`self-test-wfile-driver: ${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

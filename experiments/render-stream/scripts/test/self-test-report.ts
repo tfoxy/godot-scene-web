@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for G6t's measurement tooling: the
 // render-stream-report/1 schema and validator (../lib/render-stream-report.ts), the throttle
 // proxy (../throttle-proxy.ts), the /proc sampler (../lib/proc-sampler.ts), provenance helpers
@@ -27,13 +28,12 @@
 // Exits non-zero if any assertion fails.
 
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, connect as netConnect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { setImmediate as settle } from "node:timers/promises";
-
 import {
   analyzeParamBytesPerFrame,
   analyzeResourceDeltas,
@@ -54,6 +54,10 @@ import {
   type ReportRepeat,
   validate,
 } from "../lib/render-stream-report";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 import { buildReport } from "../report-gate6";
 import {
   DirectionShaper,
@@ -1099,12 +1103,12 @@ async function main(): Promise<void> {
   await throttleProxyBackpressureCase();
   await procSamplerCase();
 
-  const tmpDir = await mkdtemp(join(tmpdir(), "rs-g6t-selftest-"));
+  const tmpDir = makeSelfTestTempDir(join(tmpdir(), "rs-g6t-selftest-"));
   try {
     await provenanceCases(tmpDir);
     await buildReportCase(tmpDir);
   } finally {
-    await rm(tmpDir, { recursive: true, force: true });
+    removeSelfTestTempDir(tmpDir);
   }
 
   console.log(

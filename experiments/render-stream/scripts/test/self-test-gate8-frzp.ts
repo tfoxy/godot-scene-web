@@ -18,13 +18,16 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate8-frzp.ts
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
 import type { G8aCheck } from "../lib/gate8-adopt-checks";
 import { type PtPixels, runG8ptFrzp } from "../lib/gate8-pt-receiver-checks";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let failures = 0;
 function expect(ok: boolean, what: string, detail?: unknown): void {
@@ -99,7 +102,7 @@ interface Tree {
 }
 const roots: string[] = [];
 async function run(t: Tree): Promise<Record<string, G8aCheck>> {
-  const g = mkdtempSync(join(tmpdir(), "self-test-gate8-frzp-"));
+  const g = makeSelfTestTempDir(join(tmpdir(), "self-test-gate8-frzp-"));
   roots.push(g);
   await writeLeg(g, "reference", t.reference, true);
   await writeLeg(g, "frzp/receiver", t.receiver, false);
@@ -191,7 +194,7 @@ const good: Tree = {
   );
 }
 
-for (const r of roots) rmSync(r, { recursive: true, force: true });
+for (const r of roots) removeSelfTestTempDir(r);
 if (failures > 0) {
   console.error(`self-test-gate8-frzp: ${failures} failure(s)`);
   process.exit(1);

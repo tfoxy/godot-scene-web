@@ -14,12 +14,15 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-wide-tolerance.ts
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
 import { wideCompositionCheck } from "../lib/gate7-g6-checks";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 import { WIDE_PM1_MAX_FRACTION, widePm1Problems } from "../lib/wide-tolerance";
 
 let failures = 0;
@@ -116,7 +119,7 @@ const roots: string[] = [];
 async function run(
   v: Variant = {},
 ): Promise<{ passed: boolean; detail: string }> {
-  const root = mkdtempSync(join(tmpdir(), "self-test-wide-tolerance-"));
+  const root = makeSelfTestTempDir(join(tmpdir(), "self-test-wide-tolerance-"));
   roots.push(root);
   const source = join(root, "source");
   const browser = join(root, "browser");
@@ -230,7 +233,7 @@ async function run(
   expect(!r.passed, "bad: no shot files fails", r.detail);
 }
 
-for (const r of roots) rmSync(r, { recursive: true, force: true });
+for (const r of roots) removeSelfTestTempDir(r);
 if (failures > 0) {
   console.error(`self-test-wide-tolerance: ${failures} failure(s)`);
   process.exit(1);

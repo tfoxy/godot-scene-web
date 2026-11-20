@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for gate 8's g8mm checks (lib/gate8-mm-checks.ts, PM1) on synthetic hook logs, fixture
 // logs and recordings resolved through render-stream-2.ts (applyTransaction), against the real
 // fixtures/gate8-mm/expected.json.
@@ -37,12 +38,11 @@
 //
 // Exits non-zero if any assertion fails.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import {
   censusProblems,
   type FixtureMmLine,
@@ -81,6 +81,10 @@ import {
   type TransactionMeta,
   type TransactionMultimesh,
 } from "../lib/render-stream-2";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXPECTED_PATH = resolve(
@@ -1381,7 +1385,7 @@ async function main(): Promise<void> {
   //     late checks fail (no crash, no pass), mm-expected passes on the real expected.json and
   //     fails on an emptied one.
   {
-    const root = mkdtempSync(join(tmpdir(), "self-test-gate8-mm-"));
+    const root = makeSelfTestTempDir(join(tmpdir(), "self-test-gate8-mm-"));
     try {
       for (const leg of [
         "deferred/capture",
@@ -1437,7 +1441,7 @@ async function main(): Promise<void> {
         "10: mm-expected fails on empty cells/checkpoints",
       );
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeSelfTestTempDir(root);
     }
   }
 

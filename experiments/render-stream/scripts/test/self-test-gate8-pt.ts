@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for gate 8's g8pt checks (lib/gate8-pt-checks.ts, PM5) on synthetic hook logs and
 // recordings resolved through render-stream-2.ts (applyTransaction), against the real
 // fixtures/gate8-pt/expected.json.
@@ -33,12 +34,11 @@
 //
 // Exits non-zero if any assertion fails.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import type { G8mmExpected } from "../lib/gate8-mm-checks";
 import {
   builtinDiffs,
@@ -104,6 +104,10 @@ import type {
   TransactionParticles,
 } from "../lib/render-stream-2";
 import { decodeShaderPayload } from "../lib/render-stream-shader";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXPECTED_PATH = resolve(
@@ -2243,7 +2247,9 @@ async function main(): Promise<void> {
       "reference",
     ];
     const drive = async (omit: string | null) => {
-      const root = mkdtempSync(join(tmpdir(), "self-test-gate8-pt-late-"));
+      const root = makeSelfTestTempDir(
+        join(tmpdir(), "self-test-gate8-pt-late-"),
+      );
       for (const l of legs) {
         mkdirSync(join(root, l), { recursive: true });
         if (l !== omit) writeFileSync(join(root, l, "exit-code.txt"), "0\n");
@@ -2281,7 +2287,7 @@ async function main(): Promise<void> {
           {},
         );
       } finally {
-        rmSync(root, { recursive: true, force: true });
+        removeSelfTestTempDir(root);
       }
       return checks;
     };
@@ -2309,7 +2315,9 @@ async function main(): Promise<void> {
   // 10. A sink a validator found missing is a named problem (ptc-validate, w11's sabotage checks),
   // not a silent skip behind the sinks that exist.
   {
-    const root = mkdtempSync(join(tmpdir(), "self-test-gate8-pt-sinks-"));
+    const root = makeSelfTestTempDir(
+      join(tmpdir(), "self-test-gate8-pt-sinks-"),
+    );
     try {
       const put = (rel: string, c: string) => {
         mkdirSync(dirname(join(root, rel)), { recursive: true });
@@ -2374,13 +2382,15 @@ async function main(): Promise<void> {
         kc?.detail,
       );
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeSelfTestTempDir(root);
     }
   }
 
   // 11. runG8ptReceivers: a receiver leg that did not run fails lifecycle and replay (not skipped).
   {
-    const root = mkdtempSync(join(tmpdir(), "self-test-gate8-pt-recv-"));
+    const root = makeSelfTestTempDir(
+      join(tmpdir(), "self-test-gate8-pt-recv-"),
+    );
     try {
       for (const l of ["reference", "receiver", "receiver-patch"]) {
         mkdirSync(join(root, l), { recursive: true });
@@ -2405,7 +2415,7 @@ async function main(): Promise<void> {
         );
       }
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeSelfTestTempDir(root);
     }
   }
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for G7b's pure pieces (never a browser or a Godot run):
 //
 //  1. classifyShot (lib/gate7b-adapters.ts): identical pixels; a pair one 10-bit value reads back
@@ -17,14 +18,7 @@
 //     draw-during-wait sabotage that changes no shot, and a missing applied.json fail; a run the
 //     smoke tier skipped is skipped-by-tier, and no probed leg makes no rows.
 
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readlinkSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
@@ -45,6 +39,10 @@ import {
   waitProbeChecks,
   waitProbeIds,
 } from "../lib/gate7b-adapters";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let failures = 0;
 function expect(name: string, ok: boolean, detail = ""): void {
@@ -142,7 +140,7 @@ function expect(name: string, ok: boolean, detail = ""): void {
 }
 
 // 2 and 3: a synthetic source run.
-const root = mkdtempSync(join(tmpdir(), "g7b-selftest-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "g7b-selftest-"));
 try {
   const src = join(root, "source");
   const tmpl = "/x/linux_release.x86_64";
@@ -304,7 +302,7 @@ try {
     legs.groups_run.join(","),
   );
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  removeSelfTestTempDir(root);
 }
 
 // SWO: the CI lavapipe particle flake (lib/gate7-web-flakes.ts) is typed only on its evidence.
@@ -581,7 +579,7 @@ try {
 
 // 5. WRP's wait probe.
 {
-  const root = mkdtempSync(join(tmpdir(), "self-test-gate7b-wrp-"));
+  const root = makeSelfTestTempDir(join(tmpdir(), "self-test-gate7b-wrp-"));
   // A leg dir: applied.json (status, transactions with process frames, seq 4 fetching after a
   // `wait`-frame gap) and two 2x2 shots of colour `c`.
   const leg = async (
@@ -723,7 +721,7 @@ try {
         "g8pt/sabotage-draw-during-wait/deferred-cmbt/receiver",
       ]),
   );
-  rmSync(root, { recursive: true, force: true });
+  removeSelfTestTempDir(root);
 }
 
 console.log(

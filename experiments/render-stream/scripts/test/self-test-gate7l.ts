@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for G7l's pure pieces (never a browser, a host or a Godot run):
 //
 //  1. mapBrowserLeg (lib/gate7-live-legs.ts) maps a native live leg's words for a browser:
@@ -27,17 +28,10 @@
 //     httpclient run, and fetchImplProblems (fetch-impl@web) passes a leg that ran the requested
 //     mechanism, fails one that ran the other or recorded none, and skips a leg with no `live`.
 
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import { summarizeRecording } from "../lib/gate0-checks";
 import { receivedFileName } from "../lib/gate1-live-checks";
 import type { HookLine } from "../lib/gate2b-checks";
@@ -58,6 +52,10 @@ import {
   webPageEnv,
 } from "../lib/gate7-live-legs";
 import { wireVersionOf } from "../lib/render-stream-2";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const PROTOCOL = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -250,7 +248,7 @@ expect(
 );
 
 // 3. receivedFileName
-const tmp = mkdtempSync(join(tmpdir(), "g7l-selftest-"));
+const tmp = makeSelfTestTempDir(join(tmpdir(), "g7l-selftest-"));
 try {
   mkdirSync(join(tmp, "a"));
   mkdirSync(join(tmp, "b"));
@@ -265,7 +263,7 @@ try {
       receivedFileName(join(tmp, "b"), 2) === "received-2.rs2",
   );
 } finally {
-  rmSync(tmp, { recursive: true, force: true });
+  removeSelfTestTempDir(tmp);
 }
 
 // 4. getsVsFetches
@@ -435,7 +433,7 @@ expect(
 );
 
 // 8. G7gd: the web export's bundle must be a Rust-core build.
-const coreRoot = mkdtempSync(join(tmpdir(), "self-test-gate7gd-"));
+const coreRoot = makeSelfTestTempDir(join(tmpdir(), "self-test-gate7gd-"));
 const bundleOf = (core: string | undefined): string => {
   const dir = join(coreRoot, `bundle-${core ?? "none"}`);
   mkdirSync(dir, { recursive: true });
@@ -548,7 +546,7 @@ const webGets = [{ source: "http" }, { source: "http" }, { source: "cache" }];
       !gone.judged,
   );
 }
-rmSync(coreRoot, { recursive: true, force: true });
+removeSelfTestTempDir(coreRoot);
 
 console.log(
   failures === 0

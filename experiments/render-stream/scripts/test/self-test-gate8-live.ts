@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for G8g's pieces that need no engine or browser: lib/reverse-proxy.ts (D14's proxy),
 // lib/gate8-live-checks.ts (g8l) on missing evidence, and lib/gate7-gsw-g8.ts's band regions, each
 // with a passing and a failing case.
@@ -18,12 +19,11 @@
 //
 // Exits non-zero if any assertion fails.
 
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { gate8BandRegions } from "../lib/gate7-gsw-g8";
 import { runG8l } from "../lib/gate8-live-checks";
 import {
@@ -31,6 +31,20 @@ import {
   type ProxyLogLine,
   upstreamHeaders,
 } from "../lib/reverse-proxy";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
+
+const tempRoots: string[] = [];
+function tempDir(prefix: string): string {
+  const root = makeSelfTestTempDir(prefix);
+  tempRoots.push(root);
+  return root;
+}
+process.once("exit", () => {
+  for (const root of tempRoots) removeSelfTestTempDir(root);
+});
 
 let assertions = 0;
 let failures = 0;
@@ -144,10 +158,7 @@ async function main(): Promise<void> {
       );
     });
     const upPort = await listen(upstream);
-    const log = join(
-      mkdtempSync(join(tmpdir(), "g8g-proxy-")),
-      "requests.jsonl",
-    );
+    const log = join(tempDir(join(tmpdir(), "g8g-proxy-")), "requests.jsonl");
     const { server, stats } = createReverseProxy({
       targetHost: "127.0.0.1",
       targetPort: upPort,
@@ -216,7 +227,7 @@ async function main(): Promise<void> {
 
   // 3.
   {
-    const empty = mkdtempSync(join(tmpdir(), "g8g-empty-"));
+    const empty = tempDir(join(tmpdir(), "g8g-empty-"));
     const { checks } = await runG8l(empty);
     assert(
       checks.length >= 6 * 4 + 1,
@@ -234,7 +245,7 @@ async function main(): Promise<void> {
 
   // 4.
   {
-    const tracks = mkdtempSync(join(tmpdir(), "g8g-tracks-only-"));
+    const tracks = tempDir(join(tmpdir(), "g8g-tracks-only-"));
     writeFileSync(
       join(tracks, "legs.json"),
       JSON.stringify({ g8l_only: ["trk", "inject"] }),
@@ -271,7 +282,7 @@ async function main(): Promise<void> {
       }
       assert(rejected, `invalid g8l_only ${JSON.stringify(only)} is rejected`);
     }
-    const missing = mkdtempSync(join(tmpdir(), "g8g-missing-selection-"));
+    const missing = tempDir(join(tmpdir(), "g8g-missing-selection-"));
     writeFileSync(
       join(missing, "legs.json"),
       JSON.stringify({ g8l_only: ["trk", "inject"] }),

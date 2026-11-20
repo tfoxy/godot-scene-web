@@ -4,20 +4,23 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const tool = fileURLToPath(new URL("../lib/w-run.py", import.meta.url));
 const scratchRoot = fileURLToPath(
   new URL("../../../../.local/", import.meta.url),
 );
 mkdirSync(scratchRoot, { recursive: true });
-const scratch = mkdtempSync(join(scratchRoot, "w-run-"));
+const scratch = makeSelfTestTempDir(join(scratchRoot, "w-run-"));
 const bundle = join(scratch, "bundle");
 mkdirSync(join(bundle, "bin"), { recursive: true });
 let passed = 0;
@@ -1066,7 +1069,7 @@ if os.environ.get("WSWAP_TEST_FAIL"):
     );
   }
 } finally {
-  rmSync(scratch, { recursive: true, force: true });
+  removeSelfTestTempDir(scratch);
 }
 console.log(`self-test-w-run: ${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

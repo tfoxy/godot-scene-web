@@ -1,21 +1,19 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 import { spawnSync } from "node:child_process";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const tool = fileURLToPath(new URL("../w-imports.py", import.meta.url));
 const scratchRoot = fileURLToPath(
   new URL("../../../../.local/", import.meta.url),
 );
 mkdirSync(scratchRoot, { recursive: true });
-const scratch = mkdtempSync(join(scratchRoot, "w-imports-"));
+const scratch = makeSelfTestTempDir(join(scratchRoot, "w-imports-"));
 let passed = 0;
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -301,7 +299,7 @@ try {
     disagree.text,
   );
 } finally {
-  rmSync(scratch, { recursive: true, force: true });
+  removeSelfTestTempDir(scratch);
 }
 console.log(`self-test-w-imports: ${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

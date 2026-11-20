@@ -13,15 +13,12 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate8-vp.ts
 
-import "../lib/node-hash";
 import {
-  copyFileSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
+import "../lib/node-hash";
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -963,7 +960,7 @@ function legFacts(
 }
 
 // ------------------------------------------------------------------------------- the leg reader + vp-validate
-const tmp = mkdtempSync(join(tmpdir(), "self-test-gate8-vp-"));
+const tmp = makeSelfTestTempDir(join(tmpdir(), "self-test-gate8-vp-"));
 try {
   const g = join(tmp, "g8vp");
   const put = (leg: string, golden: string, name: string, arm?: object[]) => {
@@ -1062,7 +1059,9 @@ try {
     partial.checks.every((c) => !c.passed),
     `every check fails on a partial tree (${partial.checks.filter((c) => c.passed).map((c) => c.id)})`,
   );
-  const empty = mkdtempSync(join(tmpdir(), "self-test-gate8-vp-empty-"));
+  const empty = makeSelfTestTempDir(
+    join(tmpdir(), "self-test-gate8-vp-empty-"),
+  );
   try {
     const r = await runG8vp(empty, ex);
     expect(
@@ -1070,10 +1069,10 @@ try {
       "every check fails on an empty tree",
     );
   } finally {
-    rmSync(empty, { recursive: true, force: true });
+    removeSelfTestTempDir(empty);
   }
 } finally {
-  rmSync(tmp, { recursive: true, force: true });
+  removeSelfTestTempDir(tmp);
 }
 
 // VS3 vp-reference: regionDiff judges each region by its class, the rest exactly

@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for the gate 0 checker (lib/gate0-checks.ts). Proves that every check can fail as
 // well as pass, and that classifyLeg yields all five classes with the specified precedence.
 //
@@ -21,11 +22,10 @@
 //
 // Exits non-zero if any assertion fails.
 
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
 import {
   CLASS_PRECEDENCE,
@@ -55,6 +55,10 @@ import {
   synthesizePreexistingReference,
 } from "../lib/gate0-expected";
 import { validateRecording } from "../lib/render-stream-2";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 import {
   encodeRs2Recording,
   HUE_STRIP_HASH,
@@ -1508,7 +1512,7 @@ const scenarios: Scenario[] = [
 ];
 
 async function runScenarios(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "gate0-self-test-"));
+  const root = makeSelfTestTempDir(join(tmpdir(), "gate0-self-test-"));
   try {
     const templateProjects = await writeProjects(join(root, "template"));
     const template = join(root, "template", "out");
@@ -1587,7 +1591,7 @@ async function runScenarios(): Promise<void> {
       }
     }
   } finally {
-    await rm(root, { recursive: true, force: true });
+    removeSelfTestTempDir(root);
   }
 }
 

@@ -9,19 +9,17 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate8-tag2.ts
 
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { transformSync } from "esbuild";
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
 import { runG8tag2, tag2QuietWindow } from "../lib/gate8-tag2-checks";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let failures = 0;
 let assertions = 0;
@@ -249,7 +247,7 @@ function good(): Tree {
 }
 
 async function write(t: Tree): Promise<string> {
-  const root = mkdtempSync(join(tmpdir(), "self-test-gate8-tag2-"));
+  const root = makeSelfTestTempDir(join(tmpdir(), "self-test-gate8-tag2-"));
   const put = (p: string, c: string | Buffer) => {
     mkdirSync(dirname(p), { recursive: true });
     writeFileSync(p, c);
@@ -277,7 +275,7 @@ async function run(t: Tree) {
   try {
     return await runG8tag2(root);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeSelfTestTempDir(root);
   }
 }
 

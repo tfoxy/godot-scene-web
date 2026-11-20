@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for gate 8's g8res checks (lib/gate8-res-checks.ts, LATE-RES), against the real
 // fixtures/gate8-res/expected.json.
 //
@@ -27,17 +28,10 @@
 //
 // Exits non-zero if any assertion fails.
 
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import {
   type CaptureResult,
   freedCounts,
@@ -49,6 +43,10 @@ import {
   resFreeProblems,
   runG8res,
 } from "../lib/gate8-res-checks";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const expected = JSON.parse(
@@ -630,7 +628,7 @@ async function main(): Promise<void> {
     return r;
   };
   const mk = (setup: (root: string) => void): string => {
-    const root = mkdtempSync(join(tmpdir(), "self-test-gate8-res-"));
+    const root = makeSelfTestTempDir(join(tmpdir(), "self-test-gate8-res-"));
     setup(root);
     return root;
   };
@@ -651,7 +649,7 @@ async function main(): Promise<void> {
       const { checks } = await runG8res(root, expected);
       return (id: string) => checks.find((c) => c.id === id);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeSelfTestTempDir(root);
     }
   };
 

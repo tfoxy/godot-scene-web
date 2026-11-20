@@ -9,12 +9,10 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate8-ct-late.ts
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
-
 import {
   adoptedDiffuses,
   adoptNamedProblems,
@@ -30,6 +28,10 @@ import {
   runG8ctl,
 } from "../lib/gate8-ct-late-checks";
 import type { ResolvedRecording } from "../lib/render-stream-2";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let assertions = 0;
 let failures = 0;
@@ -678,7 +680,7 @@ expect(
 );
 
 // ---- filesystem: runG8ctl ---------------------------------------------------------------------
-const root = mkdtempSync(join(tmpdir(), "self-test-ct-late-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "self-test-ct-late-"));
 function put(out: string, rel: string, content: string | Buffer): void {
   const p = join(out, "g8ctl", rel);
   mkdirSync(dirname(p), { recursive: true });
@@ -879,7 +881,7 @@ expect(
   "referenceProblems passes on the good tree",
 );
 
-rmSync(root, { recursive: true, force: true });
+removeSelfTestTempDir(root);
 console.log(
   `\nself-test-gate8-ct-late: ${assertions - failures}/${assertions} assertions passed`,
 );

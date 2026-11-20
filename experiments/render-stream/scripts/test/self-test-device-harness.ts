@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // G7d self-test (Checks and Sabotage): the device harness, dry-run
 // with no phone. A fake `adb` binary (written here, driven by scripts/test/device-fixtures/<id>/:
 // the g31's recorded adb excerpts and the g86's synthesized ones) and a fake DevTools
@@ -25,10 +26,8 @@ import {
   chmodSync,
   cpSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -36,7 +35,6 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import {
   AdbError,
   selectDevice,
@@ -67,6 +65,20 @@ import {
 } from "../lib/gate7-bench-summary";
 import { planGate7Bench, planGate7Dev } from "../lib/gate7-dev-legs";
 import { openDeviceRig } from "../lib/gate7-device-legs";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
+
+const tempRoots: string[] = [];
+function tempDir(prefix: string): string {
+  const root = makeSelfTestTempDir(prefix);
+  tempRoots.push(root);
+  return root;
+}
+process.once("exit", () => {
+  for (const root of tempRoots) removeSelfTestTempDir(root);
+});
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(SCRIPT_DIR, "device-fixtures");
@@ -149,7 +161,7 @@ interface FakePhone {
 }
 
 function makeFakeAdb(phones: FakePhone[]): { bin: string; root: string } {
-  const root = mkdtempSync(join(tmpdir(), "rs-g7d-fake-adb-"));
+  const root = tempDir(join(tmpdir(), "rs-g7d-fake-adb-"));
   const bin = join(root, "adb");
   writeFileSync(bin, FAKE_ADB);
   chmodSync(bin, 0o755);
@@ -856,7 +868,7 @@ async function main(): Promise<void> {
       { cwd: REPO_ROOT, encoding: "utf8" },
     );
   const inputsPath = join(
-    mkdtempSync(join(tmpdir(), "rs-g7d-inputs-")),
+    tempDir(join(tmpdir(), "rs-g7d-inputs-")),
     "inputs.json",
   );
   writeFileSync(
@@ -902,7 +914,7 @@ async function main(): Promise<void> {
     nativeOnDevice.stderr.trim().split("\n").pop(),
   );
   const runner = join(SCRIPT_DIR, "..", "run-gate7.sh");
-  const planOut = mkdtempSync(join(tmpdir(), "rs-g7d-plan-"));
+  const planOut = tempDir(join(tmpdir(), "rs-g7d-plan-"));
   const plan = spawnSync(
     "bash",
     [runner, "--legs", "g7-dev", "--plan-only", "--out", join(planOut, "p")],
@@ -953,7 +965,7 @@ async function main(): Promise<void> {
     const serial = "ZYFAKE0031";
     const { bin, root } = makeFakeAdb([{ serial, fixture: "g31" }]);
     writeFileSync(join(root, serial, "net-unix.txt"), "");
-    const pathDir = mkdtempSync(join(tmpdir(), "rs-vs5b-adb-path-"));
+    const pathDir = tempDir(join(tmpdir(), "rs-vs5b-adb-path-"));
     symlinkSync(bin, join(pathDir, "adb"));
     const saved = { ...process.env };
     process.env.PATH = `${pathDir}:${process.env.PATH ?? ""}`;
@@ -993,7 +1005,7 @@ async function main(): Promise<void> {
       for (const k of Object.keys(process.env))
         if (!(k in saved)) delete process.env[k];
       Object.assign(process.env, saved);
-      rmSync(pathDir, { recursive: true, force: true });
+      removeSelfTestTempDir(pathDir);
     }
   }
 

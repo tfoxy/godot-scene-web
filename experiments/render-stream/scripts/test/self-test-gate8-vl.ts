@@ -12,14 +12,12 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate8-vl.ts
 
-import "../lib/node-hash";
 import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
+import "../lib/node-hash";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -280,7 +278,7 @@ const offShot = shot(bare);
 }
 
 // --- the group, on an empty and a written tree -----------------------------------------------------
-const tmp = mkdtempSync(join(tmpdir(), "self-test-gate8-vl-"));
+const tmp = makeSelfTestTempDir(join(tmpdir(), "self-test-gate8-vl-"));
 async function png(
   path: string,
   s: { data: Uint8Array; width: number; height: number },
@@ -430,7 +428,7 @@ try {
     `a late-rendered host with no RID-bound proxy fails vp-live-late-rendered only (${failed(norid)})`,
   );
 } finally {
-  rmSync(tmp, { recursive: true, force: true });
+  removeSelfTestTempDir(tmp);
 }
 
 if (failures > 0) {

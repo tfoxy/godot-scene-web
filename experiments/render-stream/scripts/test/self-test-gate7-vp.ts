@@ -8,17 +8,14 @@ import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import {
   parseMeminfoPss,
   parseTopResumedActivity,
@@ -34,6 +31,10 @@ import {
   pssTotals,
   summarizeSweep,
 } from "../lib/gate7-vp";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const SCRIPTS = join(dirname(fileURLToPath(import.meta.url)), "..");
 let failures = 0;
@@ -495,7 +496,7 @@ function writeSweep(
   return dir;
 }
 
-const root = mkdtempSync(join(tmpdir(), "self-test-gate7-vp-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "self-test-gate7-vp-"));
 try {
   const abba = (o: Partial<Record<string, Partial<ArmSpec>>> = {}): ArmSpec[] =>
     ["A1", "B1", "B2", "A2"].map((arm) => ({ arm, ...(o[arm] ?? {}) }));
@@ -689,7 +690,7 @@ try {
       ex.admissible === false,
   );
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  removeSelfTestTempDir(root);
 }
 
 // --- PSS totals (F2: a missing renderer is never summed away) ---------------------------------
@@ -748,7 +749,7 @@ expect(
 // writes into the child's --out fails here as it failed on the phone.
 const GUARD = 'if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then';
 function sweepWrapper(opts: { childRc?: number; socket?: boolean | "stetho" }) {
-  const tmp = mkdtempSync(join(tmpdir(), "self-test-gate7-vp-wrap-"));
+  const tmp = makeSelfTestTempDir(join(tmpdir(), "self-test-gate7-vp-wrap-"));
   const runDir = join(tmp, "gate6", "dev-g31-gsw-w2-vp-vfx6");
   const script = `
 set -u
@@ -794,7 +795,7 @@ if flock -n ${JSON.stringify(join(tmp, "phone.lock"))} true; then echo AFTER_FRE
       .map((l) => l.replace(/^\S+ /, "")),
     adb: read(join(tmp, "adb.log")).split("\n").filter(Boolean),
   };
-  rmSync(tmp, { recursive: true, force: true });
+  removeSelfTestTempDir(tmp);
   return out;
 }
 const ok = sweepWrapper({});
@@ -872,7 +873,9 @@ expect(
 // it never took. A holder keeps G7V_PHONE_LOCK; the sweep is started in its own process group,
 // TERMed once it waits, and the fake adb log and events.log are read.
 {
-  const tmp = mkdtempSync(join(tmpdir(), "self-test-gate7-vp-lockwait-"));
+  const tmp = makeSelfTestTempDir(
+    join(tmpdir(), "self-test-gate7-vp-lockwait-"),
+  );
   const lock = join(tmp, "phone.lock");
   const runDir = join(tmp, "gate6", "dev-g31-gsw-w2-vp-vfx6");
   const sweep = join(tmp, "sweep.sh");
@@ -911,7 +914,7 @@ echo done
   const waited = read(join(tmp, "sweep.err")).includes(
     "waiting for the phone lock",
   );
-  rmSync(tmp, { recursive: true, force: true });
+  removeSelfTestTempDir(tmp);
   expect(
     "wrapper (D1): TERM while waiting for a held phone lock: no Chrome force-stop, no adb at all, no lock taken or released",
     waited &&

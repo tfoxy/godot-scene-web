@@ -20,7 +20,7 @@
 //
 // Exits non-zero if any assertion fails.
 
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -69,6 +69,10 @@ import {
   G1C_EXPECTATIONS,
 } from "../lib/gate1-live-checks";
 import { splitRecords, validateRecording } from "../lib/render-stream-2";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 import {
   encodeRs2Recording,
   HUE_STRIP_HASH,
@@ -4253,7 +4257,7 @@ const g1dScenarios: Scenario[] = [
 scenarios.push(...liveScenarios, ...g1dScenarios);
 
 async function runScenarios(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "gate1-self-test-"));
+  const root = makeSelfTestTempDir(join(tmpdir(), "gate1-self-test-"));
   try {
     const templateProjects = await writeProjects(join(root, "template"));
     await buildGoodTree(join(root, "template", "out"), templateProjects);
@@ -4272,51 +4276,55 @@ async function runScenarios(): Promise<void> {
     for (const [index, scenario] of scenarios.entries()) {
       if (!inShard(index)) continue; // RS_SELF_TEST_SHARD: another shard runs this scenario
       const caseRoot = join(root, `case-${index}`);
-      await cp(join(root, "template"), caseRoot, { recursive: true });
-      const projects = projectsUnder(caseRoot);
-      const out = join(caseRoot, "out");
-      await writeTraceStrace(out, projects);
-      await writeLiveTrace(join(out, "live-headless"), projects);
-      if (scenario.mutate) await scenario.mutate(out, projects);
-      const ctx: Gate1Context = {
-        expected: scenario.expected ? scenario.expected(EXPECTED) : EXPECTED,
-        ...projects,
-        now: new Date(0),
-      };
-      const report = await runGate1(out, ctx);
-      const byId = new Map(report.checks.map((c) => [c.id, c]));
-      for (const [id, want] of Object.entries(scenario.checks ?? {})) {
-        const got = byId.get(id);
-        assert(
-          `${scenario.name}: ${id} ${want ? "passes" : "fails"}`,
-          got?.passed === want,
-          got ? got.detail : "check not produced",
-        );
+      try {
+        await cp(join(root, "template"), caseRoot, { recursive: true });
+        const projects = projectsUnder(caseRoot);
+        const out = join(caseRoot, "out");
+        await writeTraceStrace(out, projects);
+        await writeLiveTrace(join(out, "live-headless"), projects);
+        if (scenario.mutate) await scenario.mutate(out, projects);
+        const ctx: Gate1Context = {
+          expected: scenario.expected ? scenario.expected(EXPECTED) : EXPECTED,
+          ...projects,
+          now: new Date(0),
+        };
+        const report = await runGate1(out, ctx);
+        const byId = new Map(report.checks.map((c) => [c.id, c]));
+        for (const [id, want] of Object.entries(scenario.checks ?? {})) {
+          const got = byId.get(id);
+          assert(
+            `${scenario.name}: ${id} ${want ? "passes" : "fails"}`,
+            got?.passed === want,
+            got ? got.detail : "check not produced",
+          );
+        }
+        for (const [leg, want] of Object.entries(scenario.classes ?? {})) {
+          const got = report.legs[leg]?.result_class;
+          assert(
+            `${scenario.name}: ${leg} is ${want}`,
+            got === want,
+            `got ${got} (${report.legs[leg]?.reasons.slice(0, 3).join(" | ")})`,
+          );
+        }
+        if (scenario.gatePassed !== undefined) {
+          assert(
+            `${scenario.name}: gate_passed ${scenario.gatePassed}`,
+            report.gate_passed === scenario.gatePassed,
+          );
+        }
+        if (scenario.checks && Object.values(scenario.checks).some((v) => !v)) {
+          assert(
+            `${scenario.name}: gate_passed false`,
+            report.gate_passed === false,
+          );
+        }
+        scenario.report?.(report);
+      } finally {
+        removeSelfTestTempDir(caseRoot);
       }
-      for (const [leg, want] of Object.entries(scenario.classes ?? {})) {
-        const got = report.legs[leg]?.result_class;
-        assert(
-          `${scenario.name}: ${leg} is ${want}`,
-          got === want,
-          `got ${got} (${report.legs[leg]?.reasons.slice(0, 3).join(" | ")})`,
-        );
-      }
-      if (scenario.gatePassed !== undefined) {
-        assert(
-          `${scenario.name}: gate_passed ${scenario.gatePassed}`,
-          report.gate_passed === scenario.gatePassed,
-        );
-      }
-      if (scenario.checks && Object.values(scenario.checks).some((v) => !v)) {
-        assert(
-          `${scenario.name}: gate_passed false`,
-          report.gate_passed === false,
-        );
-      }
-      scenario.report?.(report);
     }
   } finally {
-    await rm(root, { recursive: true, force: true });
+    removeSelfTestTempDir(root);
   }
 }
 

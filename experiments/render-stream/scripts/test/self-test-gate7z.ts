@@ -5,7 +5,7 @@
 // check, plus feature-evidence-7.ts's invariants. Needs no evidence tree, so it runs anywhere.
 
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -18,6 +18,10 @@ import {
   validateEntries2,
 } from "../lib/feature-evidence-7";
 import { type G7zCheck, type Manifest2, runGate7z } from "../lib/gate7z-checks";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 import {
   buildManifest2,
   manifest7Path,
@@ -70,7 +74,7 @@ for (const k of RECEIVER_KINDS)
   );
 
 // --- a synthetic evidence root ------------------------------------------------------------
-const root = mkdtempSync(join(tmpdir(), "self-test-gate7z-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "self-test-gate7z-"));
 const mdir = join(root, "manifests");
 mkdirSync(mdir);
 const manifests = new Map<ReceiverKind, Manifest2>();
@@ -431,7 +435,7 @@ expect(
   c.get("manifest-device-target@native")?.ok === false,
 );
 
-rmSync(root, { recursive: true, force: true });
+removeSelfTestTempDir(root);
 void manifest7Path;
 console.log(
   failures === 0

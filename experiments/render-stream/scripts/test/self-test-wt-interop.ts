@@ -24,18 +24,17 @@
 // Builds the module and the probe first (scripts/build-rs-net.sh --no-test; a no-op when fresh).
 // Usage: mise exec -- pnpm exec tsx --conditions=development \
 //          experiments/render-stream/scripts/test/self-test-wt-interop.ts [--keep]
+
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import {
-  existsSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-} from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 import { trackPayloadsMatch } from "../lib/wt-track-order";
 
 const RS = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -261,7 +260,7 @@ function tapByCarrier(dir: string): Map<string, Buffer> {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function honest(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "wt-interop-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "wt-interop-"));
   try {
     const host = await startHost(dir);
     ok(
@@ -340,7 +339,7 @@ async function honest(): Promise<void> {
       `measure: wt connect ${pr.summary?.connect_ms?.toFixed(2)} ms, first message ${pr.summary?.first_message_ms?.toFixed(2)} ms after connect start`,
     );
   } finally {
-    if (!keep) rmSync(dir, { recursive: true, force: true });
+    if (!keep) removeSelfTestTempDir(dir);
     else console.log(`kept ${dir}`);
   }
 }
@@ -391,7 +390,7 @@ interface TrackRec {
 }
 
 async function trackLeg(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "wt-interop-trk-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "wt-interop-trk-"));
   const out = join(dir, "track-out.jsonl");
   try {
     const host = await startHost(dir, {}, [
@@ -520,11 +519,11 @@ async function trackLeg(): Promise<void> {
       "live-carriers.json counts the view connection only",
     );
   } finally {
-    if (!keep) rmSync(dir, { recursive: true, force: true });
+    if (!keep) removeSelfTestTempDir(dir);
     else console.log(`kept ${dir}`);
   }
   // Sabotage: tracks off. The same probe is refused at CONNECT; live-tracks.json is not written.
-  const off = mkdtempSync(join(tmpdir(), "wt-interop-trk-off-"));
+  const off = makeSelfTestTempDir(join(tmpdir(), "wt-interop-trk-off-"));
   try {
     const host = await startHost(off);
     const pr = await probe(
@@ -546,7 +545,7 @@ async function trackLeg(): Promise<void> {
       "no live-tracks.json with tracks off",
     );
   } finally {
-    rmSync(off, { recursive: true, force: true });
+    removeSelfTestTempDir(off);
   }
 }
 
@@ -557,7 +556,7 @@ async function sabotage(
   wrongCert = false,
   extra: string[] = [],
 ): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "wt-interop-sab-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "wt-interop-sab-"));
   try {
     const host = await startHost(dir, env, extra);
     const wt = probe(
@@ -574,7 +573,7 @@ async function sabotage(
       `sabotage ${name} fails its check`,
     );
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeSelfTestTempDir(dir);
   }
 }
 
@@ -609,7 +608,7 @@ async function main(): Promise<void> {
     (pr.summary?.texts ?? []).some((t) => t.includes('"unauthorized"')) &&
     pr.summary?.close?.code === 1008;
   {
-    const dir = mkdtempSync(join(tmpdir(), "wt-interop-auth-"));
+    const dir = makeSelfTestTempDir(join(tmpdir(), "wt-interop-auth-"));
     try {
       const host = await startHost(dir, {}, [`--token=${"ab".repeat(32)}`]);
       const pr = await probe(host, join(dir, "probe")).done;
@@ -620,7 +619,7 @@ async function main(): Promise<void> {
         `a null hello token: the error text, then close 1008 (${JSON.stringify(pr.summary?.close)})`,
       );
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      removeSelfTestTempDir(dir);
     }
   }
   // Without the drain the session is closed at once, ahead of the queued text: no capsule ever.

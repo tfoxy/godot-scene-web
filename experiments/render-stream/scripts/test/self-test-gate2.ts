@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for the gate 2 checker (lib/gate2-checks.ts, lib/gate2b-checks.ts, gate2c-checks.ts,
 // gate2e-checks.ts and lib/gate2-expected.ts, groups g2a-g2e). Proves that every check can fail as
 // well as pass.
@@ -24,7 +25,6 @@ import {
   appendFile,
   cp,
   mkdir,
-  mkdtemp,
   readdir,
   readFile,
   rm,
@@ -57,6 +57,10 @@ import {
 import { type HookLine, textureLogDivergence } from "../lib/gate2b-checks";
 import { checkCorruptCodedBody } from "../lib/gate2e-checks";
 import type { ResolvedRecording } from "../lib/render-stream-2";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 import {
   buildModel,
   buildTree,
@@ -901,7 +905,7 @@ async function main(): Promise<void> {
   await textureLog16Cases();
 
   // Missing evidence from a launched leg stays a real failure, byte for byte.
-  const tierRoot = await mkdtemp(join(tmpdir(), "gate2-tier-"));
+  const tierRoot = makeSelfTestTempDir(join(tmpdir(), "gate2-tier-"));
   try {
     const leg = join(tierRoot, "sabotage-corrupt-coded-body");
     const broken = await checkCorruptCodedBody(tierRoot);
@@ -963,7 +967,7 @@ async function main(): Promise<void> {
       launched.detail,
     );
   } finally {
-    await rm(tierRoot, { recursive: true, force: true });
+    removeSelfTestTempDir(tierRoot);
   }
 
   const MAIN: Model = buildModel(EXPECTED, { quit: CAPTURE_QUIT });
@@ -995,7 +999,7 @@ async function main(): Promise<void> {
     MAIN.stores.map((c) => c.name).join(","),
   );
 
-  const root = await mkdtemp(join(tmpdir(), "self-test-gate2-"));
+  const root = makeSelfTestTempDir(join(tmpdir(), "self-test-gate2-"));
   try {
     const good = join(root, "good");
     await buildTree(good, EXPECTED);
@@ -2795,7 +2799,7 @@ async function main(): Promise<void> {
       );
     }
   } finally {
-    await rm(root, { recursive: true, force: true });
+    removeSelfTestTempDir(root);
   }
 
   console.log(

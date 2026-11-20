@@ -423,6 +423,7 @@
         "experiments/render-stream/scripts/lib/hc-shadow-scan.py",
         "experiments/render-stream/scripts/lib/remote-matrix.py",
         "experiments/render-stream/scripts/lib/check-census.py",
+        "experiments/render-stream/scripts/lib/self-test-temp.ts",
         "experiments/render-stream/scripts/test/**"
       ],
       "reach": ["pure"]

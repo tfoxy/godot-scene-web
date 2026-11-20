@@ -10,13 +10,7 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate8-hint.ts
 
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,6 +32,10 @@ import {
   runG8hint,
 } from "../lib/gate8-hint-checks";
 import type { ResolvedTexture, ResourceHintMeta } from "../lib/render-stream-2";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = join(SCRIPT_DIR, "..", "..");
@@ -456,7 +454,7 @@ const passing = (p: Record<string, string[]>) =>
 }
 
 // --- edge diff and the empty tree ----------------------------------------------------------------------
-const root = mkdtempSync(join(tmpdir(), "self-test-gate8-hint-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "self-test-gate8-hint-"));
 try {
   const png = async (path: string, mark: [number, number] | null) => {
     const w = 64;
@@ -518,7 +516,7 @@ try {
     "empty tree: a check passed",
   );
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  removeSelfTestTempDir(root);
 }
 
 if (failures > 0) {

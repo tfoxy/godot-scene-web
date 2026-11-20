@@ -10,20 +10,18 @@
 //      (faults["release-unknown"] == 1, host still exits 0) and the honest "faults {}" check fails.
 // Usage: mise exec -- pnpm exec tsx --conditions=development \
 //          experiments/render-stream/scripts/test/self-test-carrier-ext.ts [--keep]
+
 import { type ChildProcess, spawn } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const RS = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const HOST = join(RS, "capture/build/rs_live_host");
@@ -227,7 +225,7 @@ async function scenario(
   body: (dir: string) => Promise<void>,
 ): Promise<void> {
   console.log(`-- ${name}`);
-  const dir = mkdtempSync(join(root, "s-"));
+  const dir = makeSelfTestTempDir(join(root, "s-"));
   try {
     await body(dir);
   } catch (e) {
@@ -410,7 +408,7 @@ async function main(): Promise<void> {
     );
     process.exit(1);
   }
-  root = mkdtempSync(join(tmpdir(), "carrier-ext-"));
+  root = makeSelfTestTempDir(join(tmpdir(), "carrier-ext-"));
   try {
     await scenario("1 honest, next to ws", honest);
     await scenario("2 admission total (D6)", admission);
@@ -418,7 +416,7 @@ async function main(): Promise<void> {
     await scenario("4 unregistered carrier", unregistered);
     await scenario("5 sabotage double-release", sabotage);
   } finally {
-    if (failed === 0 && !keep) rmSync(root, { recursive: true, force: true });
+    if (failed === 0 && !keep) removeSelfTestTempDir(root);
     else console.log(`kept ${root}`);
   }
   console.log(

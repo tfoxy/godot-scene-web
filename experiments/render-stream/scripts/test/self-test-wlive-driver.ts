@@ -1,16 +1,20 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Pure Windows live-harness guards. No browser launch or download. Child imports simulate each
-// OS so the Windows resolver can be checked on Linux, without accessing Playwright's cache.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+// Pure Windows live-harness guards. No browser launch or download. Child imports simulate each
+// OS so the Windows resolver can be checked on Linux, without accessing Playwright's cache.
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const harness = fileURLToPath(
   new URL("../lib/browser-harness.ts", import.meta.url),
 );
-const root = mkdtempSync(join(tmpdir(), "wlive-guards-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "wlive-guards-"));
 let passed = 0;
 let failed = 0;
 const check = (name: string, ok: boolean) => {
@@ -197,7 +201,7 @@ print(json.dumps(results))
     for (const [name, ok] of JSON.parse(judge.stdout) as [string, boolean][])
       check(name, ok);
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  removeSelfTestTempDir(root);
 }
 console.log(`self-test-wlive-driver: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

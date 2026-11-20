@@ -1,19 +1,17 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 import { spawnSync } from "node:child_process";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const tool = join(root, "experiments/render-stream/scripts/lib/w1-driver.py");
 mkdirSync(join(root, ".local"), { recursive: true });
-const scratch = mkdtempSync(join(root, ".local/w1-judge-"));
+const scratch = makeSelfTestTempDir(join(root, ".local/w1-judge-"));
 const expected = JSON.parse(
   readFileSync(
     join(root, "experiments/render-stream/fixtures/spike/expected.json"),
@@ -105,7 +103,7 @@ for (const target of ["linux", "windows"]) {
   ) {
     const s = sample(leg);
     mutate?.(s);
-    const dir = mkdtempSync(join(scratch, "leg-"));
+    const dir = makeSelfTestTempDir(join(scratch, "leg-"));
     mkdirSync(join(dir, "evidence"));
     writeFileSync(join(dir, "stdout.txt"), s.stdout);
     writeFileSync(join(dir, "exit-code.txt"), s.exit);
@@ -339,5 +337,5 @@ for (const target of ["linux", "windows"]) {
     run(name, leg, mutate, [want]);
 }
 console.log(`w1-driver self-test: ${passed} passed, ${failed} failed`);
-if (!failed) rmSync(scratch, { recursive: true, force: true });
+if (!failed) removeSelfTestTempDir(scratch);
 process.exitCode = failed ? 1 : 0;

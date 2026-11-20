@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for lib/remote-determinism.ts: fabricated run directories
 // prove that identical runs agree (volatile ids, paths and timestamps masked; a float spelled two
 // ways is one value), and that each kind of disagreement is caught and reported: one changed pixel
@@ -8,10 +9,9 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-remote-determinism.ts
 
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
 import { canonicalEqual } from "../lib/gate1-checks";
 import { pckContentDigest } from "../lib/godot-pck";
@@ -24,6 +24,10 @@ import {
   mask,
   maskDump,
 } from "../lib/remote-determinism";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let failures = 0;
 function expect(cond: boolean, what: string) {
@@ -136,7 +140,7 @@ async function makeRun(dir: string, s: RunSpec) {
   }
 }
 
-const tmp = await mkdtemp(join(tmpdir(), "rs-determinism-"));
+const tmp = makeSelfTestTempDir(join(tmpdir(), "rs-determinism-"));
 try {
   let n = 0;
   async function scenario(specs: Partial<RunSpec>[]) {
@@ -659,7 +663,7 @@ try {
     );
   }
 } finally {
-  await rm(tmp, { recursive: true, force: true });
+  removeSelfTestTempDir(tmp);
 }
 
 if (failures) {

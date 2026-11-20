@@ -1,14 +1,18 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Engine-free macOS live guards; platform simulation never launches a browser.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXPECTED_CHROMIUM_SHA256_MACOS } from "../lib/browser-harness";
+// Engine-free macOS live guards; platform simulation never launches a browser.
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
-const root = mkdtempSync(join(tmpdir(), "mlive-guards-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "mlive-guards-"));
 let passed = 0;
 let failed = 0;
 const check = (name: string, ok: boolean) => {
@@ -354,7 +358,7 @@ print(json.dumps(results))
     for (const [name, ok] of JSON.parse(judge.stdout) as [string, boolean][])
       check(name, ok);
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  removeSelfTestTempDir(root);
 }
 console.log(`self-test-mlive-driver: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

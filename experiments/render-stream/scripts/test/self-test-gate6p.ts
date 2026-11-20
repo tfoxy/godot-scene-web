@@ -11,10 +11,9 @@
 //     unavailable with wall-rate.json's own reason. Both repeats validate inside a minimal
 //     render-stream-report/1 scenario.
 
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import {
   G6P_DELTAS_SCENARIO,
   G6P_SCENARIOS,
@@ -25,6 +24,10 @@ import {
   type ReportRepeat,
   validate,
 } from "../lib/render-stream-report";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 import { slopeFramesPerSecond } from "../sample-rate";
 import type { SelfTestHooks } from "./self-test-gate6l";
 
@@ -268,7 +271,7 @@ export async function selfTestGate6p(hooks: SelfTestHooks): Promise<void> {
   );
 
   // 3. unarmedRepeatOf.
-  const dir = await mkdtemp(join(tmpdir(), "rs-g6p-selftest-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "rs-g6p-selftest-"));
   try {
     const hostDir = join(dir, "measured", "host");
     await mkdir(hostDir, { recursive: true });
@@ -329,6 +332,6 @@ export async function selfTestGate6p(hooks: SelfTestHooks): Promise<void> {
         !!missing.rates.host_frame.reason,
     );
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    removeSelfTestTempDir(dir);
   }
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for the gate 4 checker (lib/gate4-checks.ts and lib/gate4-expected.ts, group g4a).
 // Proves that every check can fail as well as pass.
 //
@@ -21,18 +22,10 @@
 // Exits non-zero if any assertion fails.
 
 import { createHash } from "node:crypto";
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import type {
   RecordingSummary,
   Transaction,
@@ -91,6 +84,10 @@ import {
   type ResolvedItem,
   type ResolvedTexture,
 } from "../lib/render-stream-2";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 import { gate4cCases } from "./gate4c-cases";
 import { gate4eCases } from "./gate4e-cases";
 import { gate4fCases } from "./gate4f-cases";
@@ -1229,7 +1226,7 @@ function synthesizeTextCases(): void {
 }
 
 async function fileCases(w: World): Promise<void> {
-  const dir = await mkdtemp(join(tmpdir(), "gate4-selftest-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "gate4-selftest-"));
   try {
     await mkdir(join(dir, "reference", "oracle"), { recursive: true });
     await writeFile(
@@ -1251,7 +1248,7 @@ async function fileCases(w: World): Promise<void> {
     const missing = await loadOracle(dir, "nowhere");
     assert("loadOracle reports a missing log", missing.problem === "missing");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    removeSelfTestTempDir(dir);
   }
 }
 
@@ -1262,7 +1259,7 @@ async function main(): Promise<void> {
       "utf8",
     ),
   ) as Gate4Expected;
-  const tierRoot = await mkdtemp(join(tmpdir(), "gate4-tier-"));
+  const tierRoot = makeSelfTestTempDir(join(tmpdir(), "gate4-tier-"));
   try {
     for (const [variant, consumed] of [
       ["layout", layoutConsumed],
@@ -1330,7 +1327,7 @@ async function main(): Promise<void> {
       }
     }
   } finally {
-    await rm(tierRoot, { recursive: true, force: true });
+    removeSelfTestTempDir(tierRoot);
   }
   grt1Cases();
   appendOnlyCases();

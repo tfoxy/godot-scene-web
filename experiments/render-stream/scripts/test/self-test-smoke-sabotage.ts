@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for the smoke tier's unrun sabotage leg in gate 7's web checker (lib/gate7-adapters.ts
 // cssOpacitySabotageCheck, the part of checkGate0Web that reads the sabotage-css-opacity leg):
 //  1. a leg dir holding skipped-by-tier.txt (no exit-code.txt) is reported as a failing check whose
@@ -7,12 +8,15 @@
 //  2. a leg that ran (exit-code.txt present, no marker) keeps the old verdict exactly: the problems
 //     joined as before, `exit N` included.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { cssOpacitySabotageCheck } from "../lib/gate7-adapters";
 import type { WebLegSpec } from "../lib/gate7-web-legs";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let failures = 0;
 function check(name: string, ok: boolean, extra = ""): void {
@@ -22,7 +26,7 @@ function check(name: string, ok: boolean, extra = ""): void {
   }
 }
 
-const root = mkdtempSync(join(tmpdir(), "smoke-sab-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "smoke-sab-"));
 const spec = (leg: string): WebLegSpec =>
   ({ leg, webDir: join(root, leg) }) as unknown as WebLegSpec;
 const honest = spec("receiver");
@@ -55,7 +59,7 @@ check(
   ran.detail,
 );
 
-rmSync(root, { recursive: true, force: true });
+removeSelfTestTempDir(root);
 console.log(
   failures === 0
     ? "self-test-smoke-sabotage: all checks correct"

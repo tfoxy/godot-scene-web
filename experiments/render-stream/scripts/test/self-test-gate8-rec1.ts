@@ -10,10 +10,14 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate8-rec1.ts
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runG8rec1 } from "../lib/gate8-rec1-checks";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let failures = 0;
 let assertions = 0;
@@ -49,7 +53,7 @@ const good = (): Tree => ({
 });
 
 function run(t: Tree) {
-  const root = mkdtempSync(join(tmpdir(), "self-test-gate8-rec1-"));
+  const root = makeSelfTestTempDir(join(tmpdir(), "self-test-gate8-rec1-"));
   const put = (rel: string, c: string | Buffer) => {
     const p = join(root, "live", rel);
     mkdirSync(dirname(p), { recursive: true });
@@ -60,9 +64,7 @@ function run(t: Tree) {
   if (t.recording !== null) put("page/recording.rs13", t.recording);
   if (t.tap !== null) put("host/tap/stream-1.rs2", t.tap);
   for (const m of t.markers) put(m, "host not listening\n");
-  return runG8rec1(root).finally(() =>
-    rmSync(root, { recursive: true, force: true }),
-  );
+  return runG8rec1(root).finally(() => removeSelfTestTempDir(root));
 }
 
 const IDS = [

@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for P3-GX's `linkTo` (lib/browser-harness.ts): a browser receiver leg serves the
 // bundle it was given, even from a static root an earlier leg already linked a bundle into.
 //
@@ -20,11 +21,14 @@
 // Exits non-zero if any assertion fails.
 
 import { existsSync, readlinkSync, realpathSync, symlinkSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-
 import { HarnessServer, linkTo } from "../lib/browser-harness";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let assertions = 0;
 let failures = 0;
@@ -49,7 +53,7 @@ async function fakeBundle(dir: string, name: string): Promise<string> {
 }
 
 async function main(): Promise<void> {
-  const base = await mkdtemp(join(tmpdir(), "rs-bundle-link-"));
+  const base = makeSelfTestTempDir(join(tmpdir(), "rs-bundle-link-"));
   try {
     const a = await fakeBundle(join(base, "bundles", "a"), "a");
     const b = await fakeBundle(join(base, "bundles", "b"), "b");
@@ -130,7 +134,7 @@ async function main(): Promise<void> {
       await server.stop();
     }
   } finally {
-    await rm(base, { recursive: true, force: true });
+    removeSelfTestTempDir(base);
   }
   console.log(
     `self-test-bundle-link: ${assertions - failures}/${assertions} assertions passed`,

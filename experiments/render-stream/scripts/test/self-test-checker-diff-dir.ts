@@ -12,10 +12,8 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -25,6 +23,10 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { compareRgbaBuffers } from "../../../../packages/test-harness/src/image-diff";
 import { checkerDiffDir } from "../lib/gate0-checks";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let fails = 0;
 const check = (name: string, ok: boolean) => {
@@ -32,7 +34,7 @@ const check = (name: string, ok: boolean) => {
   if (!ok) fails++;
 };
 
-const tmp = mkdtempSync(join(tmpdir(), "rs-diff-dir-"));
+const tmp = makeSelfTestTempDir(join(tmpdir(), "rs-diff-dir-"));
 const walk = (d: string): string[] =>
   readdirSync(d).flatMap((e) => {
     const p = join(d, e);
@@ -144,7 +146,7 @@ try {
   try {
     setMode(join(tmp, "cache"), 0o644, 0o755);
   } catch {}
-  rmSync(tmp, { recursive: true, force: true });
+  removeSelfTestTempDir(tmp);
 }
 
 console.log(

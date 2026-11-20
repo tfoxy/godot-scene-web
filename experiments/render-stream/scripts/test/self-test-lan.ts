@@ -16,19 +16,18 @@
 // Builds the net module and the probe first (scripts/build-rs-net.sh --no-test; a no-op if fresh).
 // Usage: mise exec -- pnpm exec tsx --conditions=development \
 //          experiments/render-stream/scripts/test/self-test-lan.ts [--keep]
+
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import {
-  existsSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-} from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { request } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const RS = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const HOST = join(RS, "capture/build/rs_live_host");
@@ -470,7 +469,7 @@ async function refusalMatrix(): Promise<void> {
 }
 
 async function lanWs(lan: string): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "lan-ws-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "lan-ws-"));
   try {
     const host = await startHost(dir, LAN_ENV, [`--token=${TOKEN}`], false);
     ok(host.wsPort > 0, `ws bound 0.0.0.0, port ${host.wsPort}`);
@@ -544,13 +543,13 @@ async function lanWs(lan: string): Promise<void> {
       "this host writes no live.json (exposure is never recorded there)",
     );
   } finally {
-    if (!keep) rmSync(dir, { recursive: true, force: true });
+    if (!keep) removeSelfTestTempDir(dir);
     else console.log(`kept ${dir}`);
   }
 }
 
 async function lanWt(lan: string): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "lan-wt-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "lan-wt-"));
   try {
     const host = await startHost(
       dir,
@@ -592,13 +591,13 @@ async function lanWt(lan: string): Promise<void> {
       `wt: udp, self-signed, 0.0.0.0 (got ${JSON.stringify(wtc)})`,
     );
   } finally {
-    if (!keep) rmSync(dir, { recursive: true, force: true });
+    if (!keep) removeSelfTestTempDir(dir);
     else console.log(`kept ${dir}`);
   }
 }
 
 async function defaultRecordsLoopback(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "lan-default-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "lan-default-"));
   try {
     const host = await startHost(dir, {}, [], false);
     const c = wsClient("127.0.0.1", host.wsPort, null);
@@ -613,7 +612,7 @@ async function defaultRecordsLoopback(): Promise<void> {
       `default: expose loopback on 127.0.0.1 (got ${j.expose}, ${j.carriers[0].address})`,
     );
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeSelfTestTempDir(dir);
   }
 }
 

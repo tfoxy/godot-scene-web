@@ -3,11 +3,14 @@
 //
 //   pnpm exec tsx --conditions=development experiments/render-stream/scripts/test/self-test-web-legs-shards.ts
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { dependsOnEarlier, legShards } from "../lib/gate7-web-legs";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let fails = 0;
 const check = (name: string, ok: boolean) => {
@@ -28,7 +31,7 @@ try {
 }
 check("a bad value is refused", threw);
 
-const root = mkdtempSync(join(tmpdir(), "grt2b-web-legs-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "grt2b-web-legs-"));
 try {
   const leg = (name: string, env: string[]) => {
     const dir = join(root, name);
@@ -66,7 +69,7 @@ try {
     !dependsOnEarlier({ nativeDir: join(root, "none") }),
   );
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  removeSelfTestTempDir(root);
 }
 
 console.log(

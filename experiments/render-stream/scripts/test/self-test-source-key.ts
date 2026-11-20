@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for GRT's input-keyed source validity and source cache (as
 // amended). Pure: a scratch git repository with the source roots' layout, a fake capture library,
 // template and calibration -- never a Godot run.
@@ -20,7 +21,6 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -30,12 +30,15 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import {
   currentBuildProvenance,
   type SourceProvenance,
   sourceProvenanceProblems,
 } from "../lib/gate7-adapters";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const SCRIPTS = join(dirname(fileURLToPath(import.meta.url)), "..");
 let passes = 0;
@@ -48,7 +51,7 @@ function check(name: string, ok: boolean, detail = ""): void {
   );
 }
 
-const root = mkdtempSync(join(tmpdir(), "self-test-source-key-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "self-test-source-key-"));
 const rs = join(root, "experiments/render-stream");
 const put = (rel: string, text: string): void => {
   mkdirSync(dirname(join(root, rel)), { recursive: true });
@@ -347,6 +350,6 @@ expectRefused(
   spawnSync("chmod", ["-R", "u+w", cache]);
 }
 chmodSync(root, 0o755);
-rmSync(root, { recursive: true, force: true });
+removeSelfTestTempDir(root);
 console.log(`self-test-source-key: ${passes} passed, ${failures} failed`);
 process.exit(failures === 0 ? 0 : 1);

@@ -1,12 +1,8 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Synthetic g8sw evidence: the honest legs pass every check, each fault fails the check it must,
-// missing and skipped evidence fails or is excused as the runner's markers say, and each sabotage
-// check is not vacuous (a sabotage leg the rule does not fail is itself a failure).
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -28,10 +24,17 @@ import {
   slope,
   type WarmCaptureEvidence,
 } from "../lib/gate8-swap-checks";
+// Synthetic g8sw evidence: the honest legs pass every check, each fault fails the check it must,
+// missing and skipped evidence fails or is excused as the runner's markers say, and each sabotage
+// check is not vacuous (a sabotage leg the rule does not fail is itself a failure).
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const scratch = join(import.meta.dirname, "../../../../.local");
 mkdirSync(scratch, { recursive: true });
-const out = mkdtempSync(join(scratch, "self-test-gate8-swap-"));
+const out = makeSelfTestTempDir(join(scratch, "self-test-gate8-swap-"));
 let assertions = 0;
 const ok = (cond: unknown, msg: string) => {
   assertions++;
@@ -1314,5 +1317,5 @@ try {
   console.log(`cases: ${cases.join(", ")}`);
   console.log(`self-test-gate8-swap: ${assertions} assertions passed`);
 } finally {
-  rmSync(out, { recursive: true, force: true });
+  removeSelfTestTempDir(out);
 }

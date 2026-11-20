@@ -1,11 +1,11 @@
 // Exercise the real build script's install with fake build tools. Both copies finish before
 // either rename, deterministically exposing a shared temporary destination.
+
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import {
   copyFileSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -14,8 +14,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
-const dir = mkdtempSync(join(tmpdir(), "rs-net-install-"));
+const dir = makeSelfTestTempDir(join(tmpdir(), "rs-net-install-"));
 try {
   for (const sub of ["scripts", "rs-net/target/release", "bin", "barrier"])
     mkdirSync(join(dir, sub), { recursive: true });
@@ -208,5 +212,5 @@ head -c ${executable.length} "$4" > "$3"`,
   }
   console.log("self-test-rs-net-install: 14 passed, 0 failed");
 } finally {
-  rmSync(dir, { recursive: true, force: true });
+  removeSelfTestTempDir(dir);
 }

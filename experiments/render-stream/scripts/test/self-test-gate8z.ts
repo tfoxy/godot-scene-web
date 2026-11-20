@@ -10,7 +10,6 @@ import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -20,7 +19,6 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import {
   RECEIVER_KINDS,
   type ReceiverKind,
@@ -37,6 +35,10 @@ import {
   receiverFeatureEntries8,
 } from "../lib/feature-evidence-8";
 import { type G7zCheck, type Manifest2, runGate7z } from "../lib/gate7z-checks";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 import {
   buildManifest2,
   manifest8Path,
@@ -184,7 +186,7 @@ if (existsSync(handoff)) {
 }
 
 // --- a synthetic evidence root ------------------------------------------------------------
-const root = mkdtempSync(join(tmpdir(), "self-test-gate8z-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "self-test-gate8z-"));
 const mdir = join(root, "manifests");
 mkdirSync(mdir);
 const collected = readCollected(8);
@@ -382,7 +384,7 @@ if (helloRun && carried) {
   rmSync(cp);
 }
 
-rmSync(root, { recursive: true, force: true });
+removeSelfTestTempDir(root);
 void manifest8Path;
 console.log(
   failures === 0

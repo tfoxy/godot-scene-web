@@ -3,7 +3,6 @@ import {
   closeSync,
   ftruncateSync,
   mkdirSync,
-  mkdtempSync,
   openSync,
   readFileSync,
   rmSync,
@@ -21,6 +20,10 @@ import {
   scaleMirrorProblems,
 } from "../lib/gate8-scale-checks";
 import { MAGIC_V13 } from "../lib/render-stream-2";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 function stream(reason?: string): Uint8Array {
   const meta = Buffer.from(
@@ -65,7 +68,7 @@ assert.ok(
 assert.ok(
   tagBurstProblems(burst.map((r) => ({ ...r, slot: "2000" }))).length > 0,
 );
-const root = mkdtempSync(join(tmpdir(), "scale-selftest-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "scale-selftest-"));
 try {
   // Keep the old in-memory scanner as the oracle, including truncated framing.
   const samples = [
@@ -186,6 +189,6 @@ try {
   writeFileSync(join(idle, "env.txt"), `${listenerEnv}GRC_LIVE_TAP_DIR=\n`);
   assert.equal(runScaleMirrorChecks(root)[0].passed, false);
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  removeSelfTestTempDir(root);
 }
 console.log("self-test-gate8-scale: 105 passed, 0 failed");

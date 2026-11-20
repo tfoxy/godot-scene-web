@@ -38,20 +38,18 @@
 // The default run does the honest pass and all six; `--only honest|<sabotage>` runs one.
 // Usage: mise exec -- pnpm exec tsx --conditions=development \
 //          experiments/render-stream/scripts/test/self-test-tracks.ts [--only X] [--keep]
+
 import { type ChildProcess, spawn } from "node:child_process";
-import {
-  existsSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-} from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-
 import { type Closed, RawTrack } from "../lib/raw-track-client";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 import {
   mintTrackCap,
   mintTrackCapFor,
@@ -273,7 +271,7 @@ async function mainPass(
       `  [${label}] ${ok ? "ok  " : "FAIL"} ${name}${why ? ` (${why})` : ""}`,
     );
   };
-  const dir = mkdtempSync(join(tmpdir(), "rs-tracks-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "rs-tracks-"));
   const out = join(dir, "track-out.jsonl");
   const host = await startHost(
     dir,
@@ -546,7 +544,7 @@ async function mainPass(
       `opened=${opened} closed=${closed}`,
     );
   }
-  if (!keep) rmSync(dir, { recursive: true, force: true });
+  if (!keep) removeSelfTestTempDir(dir);
   else console.log(`  [${label}] kept ${dir}`);
   return r;
 }
@@ -572,7 +570,7 @@ async function capsPass(
       `  [${label}] ${ok ? "ok  " : "FAIL"} ${name}${why ? ` (${why})` : ""}`,
     );
   };
-  const dir = mkdtempSync(join(tmpdir(), "rs-tracks-caps-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "rs-tracks-caps-"));
   const out = join(dir, "track-out.jsonl");
   const host = await startHost(
     dir,
@@ -713,14 +711,14 @@ async function capsPass(
       JSON.stringify(refused),
     );
   }
-  if (!keep) rmSync(dir, { recursive: true, force: true });
+  if (!keep) removeSelfTestTempDir(dir);
   else console.log(`  [${label}] kept ${dir}`);
   return r;
 }
 
 async function noReceiverPass(): Promise<Results> {
   const r: Results = new Map();
-  const dir = mkdtempSync(join(tmpdir(), "rs-tracks-nr-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "rs-tracks-nr-"));
   const host = await startHost(dir, [
     "--tracks=input",
     "--track-receiver=none",
@@ -741,7 +739,7 @@ async function noReceiverPass(): Promise<Results> {
   } finally {
     await stopHost(host);
   }
-  rmSync(dir, { recursive: true, force: true });
+  removeSelfTestTempDir(dir);
   return r;
 }
 
@@ -757,7 +755,7 @@ async function upgradeResponse(
 
 async function purePathPass(): Promise<Results> {
   const r: Results = new Map();
-  const dir = mkdtempSync(join(tmpdir(), "rs-tracks-off-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "rs-tracks-off-"));
   const host = await startHost(dir, []);
   let track = "";
   let unknown = "";
@@ -768,7 +766,7 @@ async function purePathPass(): Promise<Results> {
     await stopHost(host);
   }
   const files = readdirSync(dir);
-  const onDir = mkdtempSync(join(tmpdir(), "rs-tracks-on-"));
+  const onDir = makeSelfTestTempDir(join(tmpdir(), "rs-tracks-on-"));
   const on = await startHost(onDir, ["--tracks=input"]);
   await stopHost(on);
   const keysOff = Object.keys(
@@ -786,8 +784,8 @@ async function purePathPass(): Promise<Results> {
     `  [pure-path] ${ok ? "ok  " : "FAIL"} pure-path (${JSON.stringify(track.split("\r\n")[0])}, files ${files.join(",")})`,
   );
   r.set("pure-path", ok);
-  rmSync(dir, { recursive: true, force: true });
-  rmSync(onDir, { recursive: true, force: true });
+  removeSelfTestTempDir(dir);
+  removeSelfTestTempDir(onDir);
   return r;
 }
 

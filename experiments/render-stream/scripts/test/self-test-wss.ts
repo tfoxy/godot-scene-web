@@ -1,4 +1,14 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { request as httpsRequest, type RequestOptions } from "node:https";
+import { connect as netConnect } from "node:net";
+import { networkInterfaces, tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { createInterface } from "node:readline";
+import { type TLSSocket, connect as tlsConnect } from "node:tls";
+import { fileURLToPath } from "node:url";
 // wss on the built-in `ws` carrier, a pure self-test:
 // no Godot, no browser. It builds the net module (scripts/build-rs-net.sh --no-test; a no-op when
 // fresh), makes a throwaway test CA and leaf with the `openssl` CLI (scripts/lib/test-pki.ts), and
@@ -26,22 +36,10 @@
 //
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-wss.ts [--keep]
-import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import {
-  existsSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-} from "node:fs";
-import { request as httpsRequest, type RequestOptions } from "node:https";
-import { connect as netConnect } from "node:net";
-import { networkInterfaces, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { createInterface } from "node:readline";
-import { type TLSSocket, connect as tlsConnect } from "node:tls";
-import { fileURLToPath } from "node:url";
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 import { makeTestPki, type TestPki } from "../lib/test-pki";
 
 const RS = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -531,7 +529,7 @@ async function refusals(pki: TestPki): Promise<void> {
 }
 
 async function loopback(pki: TestPki): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "wss-loop-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "wss-loop-"));
   try {
     const host = await startHost(
       dir,
@@ -662,12 +660,12 @@ async function loopback(pki: TestPki): Promise<void> {
       `measure: wss upgrade opened in ${openMs.toFixed(1)} ms; connect + TLS 1.3 handshake ${handshakeMs.toFixed(2)} ms (Node client, mean of ${n})`,
     );
   } finally {
-    if (!keep) rmSync(dir, { recursive: true, force: true });
+    if (!keep) removeSelfTestTempDir(dir);
   }
 }
 
 async function lan(pki: TestPki, addr: string): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "wss-lan-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "wss-lan-"));
   try {
     const host = await startHost(
       dir,
@@ -733,13 +731,13 @@ async function lan(pki: TestPki, addr: string): Promise<void> {
       `live-carriers.json: ws lan_plaintext ${ws.lan_plaintext} without GRC_LIVE_LAN_PLAINTEXT`,
     );
   } finally {
-    if (!keep) rmSync(dir, { recursive: true, force: true });
+    if (!keep) removeSelfTestTempDir(dir);
   }
 }
 
 /** D12: GRC_LIVE_LAN_PLAINTEXT=allow serves a plain-http LAN page's ws and GETs beside wss. */
 async function lanPlaintext(pki: TestPki, addr: string): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "wss-lan-plain-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "wss-lan-plain-"));
   try {
     const host = await startHost(
       dir,
@@ -810,7 +808,7 @@ async function lanPlaintext(pki: TestPki, addr: string): Promise<void> {
       `live-carriers.json: ws lan_plaintext ${ws.lan_plaintext}, tls ${ws.tls}`,
     );
   } finally {
-    if (!keep) rmSync(dir, { recursive: true, force: true });
+    if (!keep) removeSelfTestTempDir(dir);
   }
 }
 

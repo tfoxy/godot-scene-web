@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for g7-8's group shards (run-gate7.sh GATE7_G8_LEGS; lib/gate7-gsw-g8.ts gate8Lists):
 //
 //   mise exec -- pnpm exec tsx --conditions=development \
@@ -19,11 +20,10 @@
 // Exits non-zero if any assertion fails.
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import {
   GSW_LEGS,
   GSW_NOT_APPLICABLE,
@@ -45,6 +45,10 @@ import {
   gate8SourceGroups,
 } from "../lib/gate7-gsw-g8";
 import { GATE8_FILE_GROUPS } from "../lib/gate7b-adapters";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUN_GATE7 = resolve(HERE, "..", "run-gate7.sh");
@@ -142,7 +146,7 @@ const full: Gate8Lists = {
     same(GSW_RECEIVER_CHECKS.gate8, GATE8_RECEIVER_CHECKS),
     "GSW_RECEIVER_CHECKS.gate8 is GATE8_RECEIVER_CHECKS",
   );
-  const dir = mkdtempSync(join(tmpdir(), "g7-g8-shard-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "g7-g8-shard-"));
   try {
     assert(gate8SourceGroups(dir) === null, "no legs.json: null");
     assert(
@@ -181,7 +185,7 @@ const full: Gate8Lists = {
       "another gate: its full table whatever the source",
     );
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeSelfTestTempDir(dir);
   }
 }
 

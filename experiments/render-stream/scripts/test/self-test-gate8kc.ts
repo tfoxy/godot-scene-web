@@ -19,22 +19,19 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate8kc.ts
 
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-
 import {
   DECODE_PARAMS_ID,
   foldIndex,
   runG8kc,
   UASTC_PARAMS_ID,
 } from "../lib/gate8-cache-checks";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let failures = 0;
 function expect(ok: boolean, what: string): void {
@@ -245,7 +242,7 @@ function preparedUastc(root: string, encodes: number) {
 }
 
 function tree(mutate?: (root: string) => void): string {
-  const root = mkdtempSync(join(tmpdir(), "self-test-gate8kc-"));
+  const root = makeSelfTestTempDir(join(tmpdir(), "self-test-gate8kc-"));
   write(root, "import/fixture/exit-code.txt", "0\n");
   write(root, "oracle/exit-code.txt", "0\n");
   write(root, "oracle/oracle.json", {
@@ -584,7 +581,7 @@ await run(
   );
 }
 
-for (const r of roots) rmSync(r, { recursive: true, force: true });
+for (const r of roots) removeSelfTestTempDir(r);
 if (failures > 0) {
   console.error(`self-test-gate8kc: ${failures} failure(s)`);
   process.exit(1);

@@ -1,12 +1,16 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Every tracked path must match a smoke-map rule. The planner still escalates an
-// unmatched diff to every target; this pure check prevents gaps from accumulating.
-// --paths-from FILE appends synthetic paths to exercise the failure without git add.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+// Every tracked path must match a smoke-map rule. The planner still escalates an
+// unmatched diff to every target; this pure check prevents gaps from accumulating.
+// --paths-from FILE appends synthetic paths to exercise the failure without git add.
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const repo = fileURLToPath(new URL("../../../../", import.meta.url));
 const scripts = fileURLToPath(new URL("../", import.meta.url));
@@ -19,7 +23,7 @@ const tracked = execFileSync("git", ["-C", repo, "ls-files"], {
   encoding: "utf8",
 });
 const extra = args.length === 2 ? readFileSync(args[1], "utf8") : "";
-const scratch = mkdtempSync(join(tmpdir(), "smoke-map-coverage-"));
+const scratch = makeSelfTestTempDir(join(tmpdir(), "smoke-map-coverage-"));
 try {
   const paths = join(scratch, "paths.txt");
   writeFileSync(paths, `${tracked}\n${extra}`);
@@ -49,5 +53,5 @@ try {
     );
   }
 } finally {
-  rmSync(scratch, { recursive: true, force: true });
+  removeSelfTestTempDir(scratch);
 }

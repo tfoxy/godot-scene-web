@@ -1,13 +1,17 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Synthetic evidence exercises each API assertion, including sabotage non-vacuity.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   admissionProblems,
   quitPendingProblems,
   runApiChecks,
 } from "../lib/gate8-api-checks";
+// Synthetic evidence exercises each API assertion, including sabotage non-vacuity.
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 // R12 and R12c are accepted calls (re-arm after disarmed or arm_failed, and its cancel).
 const expectedRefusals: Record<string, [number, string, string]> = {
@@ -30,7 +34,7 @@ const expectedRefusals: Record<string, [number, string, string]> = {
 
 const scratch = join(import.meta.dirname, "../../../../.local");
 mkdirSync(scratch, { recursive: true });
-const out = mkdtempSync(join(scratch, "self-test-gate8-api-"));
+const out = makeSelfTestTempDir(join(scratch, "self-test-gate8-api-"));
 let assertions = 0;
 const state = {
   state: "standby",
@@ -1147,5 +1151,5 @@ try {
   assertions++;
   console.log(`self-test-gate8-api: ${assertions} passed, 0 failed`);
 } finally {
-  rmSync(out, { recursive: true, force: true });
+  removeSelfTestTempDir(out);
 }

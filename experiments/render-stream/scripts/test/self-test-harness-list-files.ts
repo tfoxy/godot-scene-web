@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for WX's `listFiles` (lib/browser-harness.ts), the static server's `GET <dir>/?list`
 // that the web export's staged store reads (RS_RECEIVER_WEB_STORE=staged):
 //
@@ -14,11 +15,14 @@
 // Exits non-zero if any assertion fails.
 
 import { readdirSync, statSync, symlinkSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { HarnessServer, listFiles } from "../lib/browser-harness";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let assertions = 0;
 let failures = 0;
@@ -51,7 +55,7 @@ async function main(): Promise<void> {
   const n = i >= 0 ? Number(process.argv[i + 1]) : 260000;
   if (!Number.isInteger(n) || n < 250000)
     throw new Error(`--files must be an integer >= 250000 (got ${n})`);
-  const base = await mkdtemp(join(tmpdir(), "rs-list-files-"));
+  const base = makeSelfTestTempDir(join(tmpdir(), "rs-list-files-"));
   try {
     const store = join(base, "static", "store");
     const flat = join(store, "sha256");
@@ -122,7 +126,7 @@ async function main(): Promise<void> {
       `3: control: the pre-WX spread throws RangeError at ${n} entries (got ${threw || "no error"})`,
     );
   } finally {
-    await rm(base, { recursive: true, force: true });
+    removeSelfTestTempDir(base);
   }
   console.log(
     `self-test-harness-list-files: ${assertions - failures}/${assertions} assertions passed (${n} files)`,

@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for gate 5.5d: the g55d evaluators of lib/gate55d-checks.ts on the committed
 // fixtures/gate55-cim/expected.json and on a hook log, render-stream/5 wire (full and patch sinks),
 // applied.json and state dumps synthesized from its CimSim calls (`rs_material_calls`), each with
@@ -26,18 +27,10 @@
 // Exits non-zero if any assertion fails.
 
 import { createHash } from "node:crypto";
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import type { Checkpoint, Classification } from "../lib/gate0-checks";
 import { evaluateLegClass5 } from "../lib/gate5d-checks";
 import type { Wire5, Wire5Tx } from "../lib/gate55-wire";
@@ -64,6 +57,10 @@ import {
   replayMaterialLog,
   stepWindow,
 } from "../lib/gate55d-checks";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "../..");
@@ -1058,7 +1055,7 @@ for (const key of [
   head.writeUInt32LE(meta.length, 8);
   const payload = Buffer.concat([head, Buffer.from(meta), Buffer.from(code)]);
   const hash = createHash("sha256").update(payload).digest("hex");
-  const dir = await mkdtemp(join(tmpdir(), "self-test-gate55d-"));
+  const dir = makeSelfTestTempDir(join(tmpdir(), "self-test-gate55d-"));
   try {
     await mkdir(join(dir, "sha256"));
     await writeFile(join(dir, "sha256", `${hash}.grp`), payload);
@@ -1116,11 +1113,11 @@ for (const key of [
       "index.jsonl line",
     );
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    removeSelfTestTempDir(dir);
   }
 }
 
-const tierRoot = await mkdtemp(join(tmpdir(), "gate55d-tier-"));
+const tierRoot = makeSelfTestTempDir(join(tmpdir(), "gate55d-tier-"));
 try {
   for (const sab of G55D_SABOTAGES) {
     const variant = sab.variant === "base" ? "cim" : "cim-modulate";
@@ -1229,7 +1226,7 @@ try {
     sourceProblems.join("; "),
   );
 } finally {
-  await rm(tierRoot, { recursive: true, force: true });
+  removeSelfTestTempDir(tierRoot);
 }
 
 console.log(

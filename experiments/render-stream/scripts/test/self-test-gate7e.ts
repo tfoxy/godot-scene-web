@@ -1,4 +1,5 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Self-test for G7e's pure pieces (never a browser or a Godot run):
 //
 //  1. listPck (lib/godot-pck.ts) reads a synthetic format-3 .pck directory exactly, and refuses a
@@ -12,13 +13,7 @@
 //     `receiver`, `cache` and `display_server` are ignored, and any other difference is found.
 //  4. buildGate0View: receiver legs link to the web legs, everything else to the source.
 
-import {
-  mkdirSync,
-  mkdtempSync,
-  readlinkSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, readlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -28,6 +23,10 @@ import {
 } from "../lib/gate7-adapters";
 import { mapNativeLeg } from "../lib/gate7-web-legs";
 import { listPck } from "../lib/godot-pck";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let failures = 0;
 function expect(name: string, ok: boolean, detail = ""): void {
@@ -123,7 +122,7 @@ function pck(paths: string[], flags = 2, magic = 0x43504447): Uint8Array {
 }
 
 // 2. mapNativeLeg.
-const root = mkdtempSync(join(tmpdir(), "g7e-selftest-"));
+const root = makeSelfTestTempDir(join(tmpdir(), "g7e-selftest-"));
 try {
   const out = join(root, "g7");
   const source = join(root, "src");
@@ -336,7 +335,7 @@ try {
   }
   expect("view: the source's result.json is not carried", !resultLinked);
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  removeSelfTestTempDir(root);
 }
 
 console.log(

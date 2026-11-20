@@ -9,7 +9,7 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate8-id.ts
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -23,8 +23,11 @@ import {
   poolTransitionProblem,
   runG8id,
 } from "../lib/gate8-id-checks";
-
 import { MAGIC_V13 } from "../lib/render-stream-2";
+import {
+  makeSelfTestTempDir,
+  removeSelfTestTempDir,
+} from "../lib/self-test-temp";
 
 let failures = 0;
 let assertions = 0;
@@ -207,12 +210,12 @@ const IDS = [
 ];
 
 async function run(tree: Tree) {
-  const root = mkdtempSync(join(tmpdir(), "self-test-gate8-id-"));
+  const root = makeSelfTestTempDir(join(tmpdir(), "self-test-gate8-id-"));
   try {
     write(root, tree);
     return await runG8id(root);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeSelfTestTempDir(root);
   }
 }
 
