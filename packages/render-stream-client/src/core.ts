@@ -30,6 +30,13 @@ import {
   type ProgramCounts,
   ProgramError,
 } from "./programs";
+import {
+  StagingCounters,
+  type StagingKind,
+  type StagingSample,
+  type StagingStats,
+  stagingSample,
+} from "./staging";
 
 /** A typed failure: the receiver's reason names (`host-error`, `resource-unavailable`, ...) and
  * the wasm's own codes, with the seq it happened at when there is one. */
@@ -129,11 +136,18 @@ export interface StreamCore {
   /** W11c `inline-fetch-zero`: "" when a GET of `hash` is allowed, else the refusal. */
   checkFetch(hash: string): string;
   /** A fetched body, verified and decoded on arrival; the refusal, or null. */
-  stage(hash: string, bytes: Uint8Array): string | null;
+  stage(hash: string, bytes: Uint8Array, sample?: StagingSample): string | null;
+  stagingStats?(): StagingStats;
   /** A fetched body staged as it arrives, each chunk hashed when written, with no copy of
    * the whole body; `sizeHint` (its `Content-Length`, 0 when unknown) sizes the buffer only.
-   * Absent: the fetcher stages whole bodies through `stage`. */
-  stageStream?(hash: string, sizeHint: number): StagingStream;
+   * `workerDigest` is only for exclusively owned bytes hashed before worker transfer; the
+   * requested `hash` remains independent. Absent: whole bodies through `stage`. */
+  stageStream?(
+    hash: string,
+    sizeHint: number,
+    sample?: StagingSample,
+    workerDigest?: string,
+  ): StagingStream;
   isStaged(hash: string): boolean;
   /** The next needed payload from the stage into the store; the refusal, or null. */
   provideStaged(): string | null;
@@ -535,20 +549,71 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     return this.g.check_fetch(hash);
   }
 
-  stage(hash: string, bytes: Uint8Array): string | null {
-    const ptr = this.g.alloc_payload(bytes.length);
-    new Uint8Array(this.memory.buffer, ptr, bytes.length).set(bytes);
-    return this.g.stage_payload(bytes.length, hash) < 0 ? this.g.error() : null;
+  private readonly staging = new StagingCounters();
+
+  stagingStats(): StagingStats {
+    return this.staging.snapshot();
   }
 
-  stageStream(hash: string, sizeHint: number): StagingStream {
+  private recordStaging(
+    hash: string,
+    sample: StagingSample,
+    staged = true,
+  ): void {
+    const info = (staged ? this.g.staged_info?.(hash).split(",") : null) ?? [
+      "other",
+      "0",
+    ];
+    sample.bytesOut = Number(info[1]);
+    this.staging.record(info[0] as StagingKind, sample);
+  }
+
+  stage(
+    hash: string,
+    bytes: Uint8Array,
+    sample = stagingSample(),
+  ): string | null {
+    sample.digestPath = "wasm";
+    const ptr = this.g.alloc_payload(bytes.length);
+    let t = performance.now();
+    new Uint8Array(this.memory.buffer, ptr, bytes.length).set(bytes);
+    sample.copyMs += performance.now() - t;
+    sample.bytesIn += bytes.length;
+    t = performance.now();
+    const result = this.g.stage_payload(bytes.length, hash);
+    // Whole-body staging includes its hash in this export's finish time.
+    sample.finishMs += performance.now() - t;
+    this.recordStaging(hash, sample, result >= 0);
+    return result < 0 ? this.g.error() : null;
+  }
+
+  stageStream(
+    hash: string,
+    sizeHint: number,
+    sample = stagingSample(),
+    workerDigest?: string,
+  ): StagingStream {
     const g = this.g;
-    const id = g.stream_begin(hash, Math.max(0, Math.floor(sizeHint)) >>> 0);
+    const hint = Math.max(0, Math.floor(sizeHint)) >>> 0;
+    if (workerDigest === undefined || !g.stream_begin_hashed)
+      sample.digestPath = "wasm";
+    // Only the buffered worker path supplies a digest; network streams keep hashing in wasm.
+    const id =
+      workerDigest === undefined || !g.stream_begin_hashed
+        ? g.stream_begin(hash, hint)
+        : g.stream_begin_hashed(hash, workerDigest, hint);
     let refused = id < 0 ? g.error() : null;
     let open = id > 0;
     // A reconnect that rebuilt the instance (or a dispose) dropped the stream with it.
     const live = (): boolean => open && this.instance === g;
     const memory = this.memory;
+    let recorded = false;
+    const record = (staged = false) => {
+      if (recorded) return;
+      recorded = true;
+      if (this.instance === g) this.recordStaging(hash, sample, staged);
+      else this.staging.record("other", sample);
+    };
     return {
       write(chunk) {
         if (!live() || chunk.length === 0) return;
@@ -559,20 +624,32 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
           return;
         }
         // The view is taken after the reservation, which may have grown the memory.
+        let t = performance.now();
         new Uint8Array(memory.buffer, ptr, chunk.length).set(chunk);
+        sample.copyMs += performance.now() - t;
+        sample.bytesIn += chunk.length;
+        t = performance.now();
         g.stream_commit(id, chunk.length);
+        sample.commitMs += performance.now() - t;
       },
       finish() {
-        if (!live())
+        if (!live()) {
+          record();
           return (
             refused ?? "resource-unavailable: the payload stream was dropped"
           );
+        }
         open = false;
-        return g.stream_finish(id) < 0 ? g.error() : null;
+        const t = performance.now();
+        const result = g.stream_finish(id);
+        sample.finishMs += performance.now() - t;
+        record(result >= 0);
+        return result < 0 ? g.error() : null;
       },
       abort() {
         if (live()) g.stream_abort(id);
         open = false;
+        record();
       },
     };
   }

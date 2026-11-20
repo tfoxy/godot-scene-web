@@ -2199,6 +2199,28 @@ impl GswRs {
         id as i32
     }
 
+    /// A worker-owned body, hashed before transferring exclusive ownership to the caller.
+    /// Its chunks must be exactly those bytes. The digest is checked against the main thread's
+    /// requested hash at finish, through the same refusal and staging counters as a wasm hash.
+    /// The `skip-payload-hash` sabotage takes the plain stream path and ignores the digest.
+    pub fn stream_begin_hashed(&mut self, hash_hex: &str, digest_hex: &str, size_hint: usize) -> i32 {
+        if self.opts.skip_payload_hash {
+            return self.stream_begin(hash_hex, size_hint);
+        }
+        let Some(digest) = Hash::from_hex(digest_hex) else {
+            self.error = "resource-hash: worker digest is not a sha256 hex name".into();
+            self.verify.refused += 1;
+            return -1;
+        };
+        let id = self.stream_begin(hash_hex, 0);
+        if id > 0 {
+            let hash = *self.streams[&(id as u32)].expected();
+            self.streams.insert(id as u32,
+                PayloadStream::with_digest(hash, self.version, digest, size_hint));
+        }
+        id
+    }
+
     /// Room for the next `len` bytes of stream `id`, written by the caller through a view of
     /// the memory taken after this call. 0 when `id` is not open (aborted, or a reset dropped it).
     pub fn stream_chunk_ptr(&mut self, id: u32, len: usize) -> *mut u8 {
@@ -2251,6 +2273,13 @@ impl GswRs {
     /// The payload streams open now (the shell's leak check).
     pub fn stream_count(&self) -> u32 {
         self.streams.len() as u32
+    }
+
+    /// Diagnostic kind and decoded residency bytes for a staged payload.
+    pub fn staged_info(&self, hash_hex: &str) -> String {
+        let (kind, bytes) = Hash::from_hex(hash_hex)
+            .map_or(("other", 0), |h| self.stage.info(&h));
+        format!("{kind},{bytes}")
     }
 
     /// Whether `hash_hex` is staged (verified, not yet provided).

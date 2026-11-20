@@ -1,10 +1,14 @@
 // WasmStreamCore's staging stream over the wasm ABI (a view taken after every reservation, so a
 // memory growth between chunks is harmless), and the WebSocket transport's opt-in body stream.
 
+import { createHash } from "node:crypto";
+import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GswRs, GswRsModule } from "../src/abi";
 import { WasmStreamCore } from "../src/core";
 import { LiveFetcher } from "../src/fetcher";
+import { RESOURCE_WORKER_SOURCE } from "../src/resource-worker";
+import { stagingSample } from "../src/staging";
 import { webSocketTransport } from "../src/transport";
 import { flush } from "./fakes";
 
@@ -14,7 +18,7 @@ function wasmFake() {
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 512 });
   const streams = new Map<
     number,
-    { hash: string; hint: number; ptr: number; got: number[] }
+    { hash: string; hint: number; ptr: number; got: number[]; digest?: string }
   >();
   const finished: { hash: string; bytes: number[]; hint: number }[] = [];
   let next = 0;
@@ -27,6 +31,17 @@ function wasmFake() {
       }
       streams.set(++next, { hash, hint, ptr: 0, got: [] });
       return next;
+    },
+    stream_begin_hashed(hash: string, digest: string, hint: number) {
+      const id = this.stream_begin(hash, hint);
+      if (id > 0) {
+        const s = streams.get(id);
+        if (s) s.digest = digest;
+      }
+      return id;
+    },
+    live_reset() {
+      streams.clear();
     },
     stream_chunk_ptr(id: number, len: number) {
       const s = streams.get(id);
@@ -50,7 +65,7 @@ function wasmFake() {
         return -1;
       }
       finished.push({ hash: s.hash, bytes: s.got, hint: s.hint });
-      if (s.got.includes(0xee)) {
+      if (s.digest !== undefined ? s.digest !== s.hash : s.got.includes(0xee)) {
         err = "resource-hash: payload sha256 x disagrees with the wire's y";
         return -1;
       }
@@ -62,6 +77,7 @@ function wasmFake() {
     stream_count() {
       return streams.size;
     },
+    staged_info: (_hash: string) => "other,0",
     error() {
       return err;
     },
@@ -83,6 +99,232 @@ function wasmFake() {
 const HASH = "ab".repeat(32);
 
 describe("WasmStreamCore.stageStream", () => {
+  it.each([
+    false,
+    true,
+  ])("passes the main-requested hash separately from the worker digest (mismatch %s)", (mismatch) => {
+    const w = wasmFake();
+    const hashed = vi.spyOn(w.g, "stream_begin_hashed");
+    const digest = mismatch ? "cd".repeat(32) : HASH;
+    const stream = w.core.stageStream(HASH, 2, undefined, digest);
+    stream.write(Uint8Array.of(1, 2));
+    expect(hashed).toHaveBeenCalledWith(HASH, digest, 2);
+    expect(stream.finish()).toBe(
+      mismatch
+        ? "resource-hash: payload sha256 x disagrees with the wire's y"
+        : null,
+    );
+    expect(w.g.stream_count()).toBe(0);
+  });
+
+  it("keeps wasm hashing without a worker digest or with an older wasm core", () => {
+    const w = wasmFake();
+    const hashed = vi.spyOn(w.g, "stream_begin_hashed");
+    const begin = vi.spyOn(w.g, "stream_begin");
+    w.core.stageStream(HASH, 1).abort();
+    expect(hashed).not.toHaveBeenCalled();
+    expect(begin).toHaveBeenCalledOnce();
+    Object.assign(w.g, { stream_begin_hashed: undefined });
+    const sample = stagingSample();
+    sample.digestPath = "native";
+    const s = w.core.stageStream(HASH, 1, sample, HASH);
+    s.write(Uint8Array.of(1));
+    expect(s.finish()).toBeNull();
+    expect(begin).toHaveBeenCalledTimes(2);
+    expect(w.core.stagingStats().other.wasmPayloads).toBe(2);
+    expect(w.core.stagingStats().other.nativePayloads).toBe(0);
+  });
+
+  it.each([
+    "abort",
+    "reset",
+  ])("releases a worker-hashed stream on %s without staging", (action) => {
+    const w = wasmFake();
+    const s = w.core.stageStream(HASH, 2, undefined, HASH);
+    s.write(Uint8Array.of(1));
+    expect(w.g.stream_count()).toBe(1);
+    if (action === "abort") s.abort();
+    else w.core.reset(true);
+    s.write(Uint8Array.of(2));
+    expect(s.finish()).toContain("resource-unavailable");
+    expect(w.g.stream_count()).toBe(0);
+    expect(w.finished).toEqual([]);
+  });
+
+  it.each([
+    false,
+    true,
+  ])("stages only bytes transferred and hashed by the production worker (perturbed %s)", async (perturbed) => {
+    const good = Uint8Array.of(1, 2, 3, 4);
+    const hash = createHash("sha256").update(good).digest("hex");
+    const body = good.slice();
+    if (perturbed) body[3] ^= 1;
+    let transferred!: ArrayBuffer;
+    let response!: {
+      status: number;
+      body: ArrayBuffer;
+      digest: string;
+      digestPath: "js-incremental";
+    };
+    const self = {
+      onmessage: null as ((event: { data: unknown }) => Promise<void>) | null,
+      postMessage(m: { type: string }, transfer?: ArrayBuffer[]) {
+        if (m.type === "body") {
+          transferred = transfer?.[0] as ArrayBuffer;
+          response = structuredClone(m, {
+            transfer,
+          }) as unknown as typeof response;
+        }
+      },
+    };
+    runInNewContext(RESOURCE_WORKER_SOURCE, {
+      self,
+      performance,
+      AbortController,
+      Uint8Array,
+      fetch: async () => new Response(body),
+    });
+    await self.onmessage?.({ data: { type: "fetch", id: 1, url: "/body" } });
+    expect(transferred.byteLength).toBe(0);
+    const w = wasmFake();
+    const hashed = vi.spyOn(w.g, "stream_begin_hashed");
+    const f = new LiveFetcher(
+      async () => ({
+        ...response,
+        workerBody: true,
+        workerDigest: response.digest,
+        workerDigestPath: response.digestPath,
+      }),
+      "/r/",
+      1000,
+      0,
+      null,
+      {
+        stager: w.core.stageStream.bind(w.core),
+        sliceBytes: 2,
+        yieldTask: async () => {},
+      },
+    );
+    f.start([hash]);
+    f.poll();
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    const [result] = f.poll().results;
+    expect(hashed).toHaveBeenCalledWith(hash, response.digest, 0);
+    expect(result.stage_error).toBe(
+      perturbed
+        ? "resource-hash: payload sha256 x disagrees with the wire's y"
+        : null,
+    );
+    expect(w.finished[0].bytes).toEqual(Array.from(body));
+    expect(w.g.stream_count()).toBe(0);
+    expect(w.core.stagingStats().other.bytesInSum).toBe(body.length);
+    expect(w.core.stagingStats().other.jsIncrementalPayloads).toBe(1);
+    expect(w.core.stagingStats().other.wasmPayloads).toBe(0);
+    f.abort();
+  });
+
+  it("adds staging totals and per-payload maxima by kind without counting yielded time", () => {
+    const w = wasmFake();
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now++);
+    try {
+      const kinds = [
+        "rgba8Texture",
+        "otherTexture",
+        "mesh",
+        "shader",
+        "other",
+      ] as const;
+      for (const kind of kinds) {
+        w.g.staged_info = () => `${kind},8`;
+        for (const n of [2, 3]) {
+          const sample = stagingSample();
+          sample.workerMessageMs = n;
+          sample.sliceMs = n * 2;
+          const stream = w.core.stageStream(HASH, n, sample);
+          stream.write(new Uint8Array(n));
+          now += 1000; // Time yielded to other tasks is excluded.
+          stream.write(Uint8Array.of(9));
+          expect(stream.finish()).toBeNull();
+        }
+      }
+      for (const row of Object.values(w.core.stagingStats())) {
+        expect(row).toEqual({
+          payloads: 2,
+          nativePayloads: 0,
+          jsIncrementalPayloads: 0,
+          wasmPayloads: 2,
+          copyMsSum: 4,
+          copyMsMax: 2,
+          commitMsSum: 4,
+          commitMsMax: 2,
+          finishMsSum: 2,
+          finishMsMax: 1,
+          workerMessageMsSum: 5,
+          workerMessageMsMax: 3,
+          workerHashMsSum: 0,
+          workerHashMsMax: 0,
+          nativeHashMsSum: 0,
+          nativeHashMsMax: 0,
+          jsIncrementalHashMsSum: 0,
+          jsIncrementalHashMsMax: 0,
+          sliceMsSum: 10,
+          sliceMsMax: 6,
+          bytesInSum: 7,
+          bytesInMax: 4,
+          bytesOutSum: 16,
+          bytesOutMax: 8,
+        });
+      }
+      const snapshot = w.core.stagingStats();
+      snapshot.mesh.bytesInSum = -1;
+      expect(w.core.stagingStats().mesh.bytesInSum).toBe(7);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+  it("counts each digest path once through the worker response and staging pipeline", async () => {
+    const w = wasmFake();
+    const f = new LiveFetcher(
+      async (path) => ({
+        status: 200,
+        body: Uint8Array.of(1, 2).buffer,
+        workerBody: true,
+        workerDigest: HASH,
+        workerHashMs: path.endsWith("native") ? 7 : 11,
+        workerDigestPath: path.endsWith("native") ? "native" : "js-incremental",
+      }),
+      "/",
+      1000,
+      0,
+      null,
+      {
+        stager: w.core.stageStream.bind(w.core),
+        yieldTask: async () => {},
+      },
+    );
+    for (const path of ["native", "js", "js-again"]) {
+      f.start([path]);
+      f.poll();
+      for (let i = 0; i < 30; i++) await Promise.resolve();
+      expect(f.poll().results).toHaveLength(1);
+    }
+    w.core.stageStream(HASH, 0).finish();
+    const row = w.core.stagingStats().other;
+    expect(row.nativePayloads).toBe(1);
+    expect(row.jsIncrementalPayloads).toBe(2);
+    expect(row.workerHashMsSum).toBe(29);
+    expect(row.workerHashMsMax).toBe(11);
+    expect(row.nativeHashMsSum).toBe(7);
+    expect(row.nativeHashMsMax).toBe(7);
+    expect(row.jsIncrementalHashMsSum).toBe(22);
+    expect(row.jsIncrementalHashMsMax).toBe(11);
+    expect(row.wasmPayloads).toBe(1);
+    expect(row.payloads).toBe(
+      row.nativePayloads + row.jsIncrementalPayloads + row.wasmPayloads,
+    );
+    f.abort();
+  });
   it("writes every chunk through a view taken after its reservation, across memory growth", () => {
     const w = wasmFake();
     const s = w.core.stageStream(HASH, 9);

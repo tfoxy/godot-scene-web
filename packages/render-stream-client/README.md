@@ -109,12 +109,15 @@ On a `resourceHints` client, `stats()` includes these fields. Counters accumulat
 
 ## Payloads that arrive late or not at all
 
-`fetchInWorker` defaults to `true`: WebSocket resource GETs run in one dedicated worker per
-transport, created when the socket opens before resource demand. It transfers complete bodies
-for sliced staging and refills download slots on completion without waiting for a frame.
-Set `fetchInWorker: false` to use main-thread fetching;
-unavailable worker APIs or a worker startup/message failure also select that fallback for the
-transport's lifetime, with one warning. WebTransport keeps its own resource path. Demand and
+`fetchInWorker` defaults to `true`: WebSocket resource GETs run in a small pool of dedicated
+workers per transport, one per wire slot, created on first demand. Each worker hashes the body
+it fetched (a native SHA-256 when the page has `crypto.subtle`, otherwise an incremental one as
+chunks arrive) and transfers it with its digest; staging accepts that digest only for the hash it
+requested and skips the wasm hash, so the main thread only copies the bytes. Download slots refill
+on completion without waiting for a frame. Set `fetchInWorker: false` to use main-thread fetching;
+unavailable worker APIs or a worker that fails before it starts also select that fallback for the
+transport's lifetime, with one warning. A worker that fails later is retired alone, and only its
+request falls back. WebTransport keeps its own resource path. Demand and
 prefetch share four wire slots. A new GET starts only with a free wire slot and less than
 64 MiB buffered for staging, with no body count limit; requests already in flight may finish
 above that byte threshold, and a single oversized body can drain without blocking the queue.

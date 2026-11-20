@@ -81,6 +81,8 @@ import { clientHello, clientProtocol } from "./hello";
 import { type HintLead, HintTable } from "./hints";
 import type { ProgramCounts } from "./programs";
 import type { RenderStreamRecorder } from "./recorder";
+import { FETCH_PARALLEL } from "./resource-limits";
+import type { StagingStats } from "./staging";
 import type {
   RenderStreamTransport,
   RenderStreamTransportFactory,
@@ -108,6 +110,8 @@ export type RenderStreamStatus =
   | { kind: "ended" };
 
 export interface RenderStreamStats {
+  /** Main-thread payload staging totals and per-payload maxima, by decoded kind. */
+  staging?: StagingStats;
   /** Transactions applied (folded ones included) by this client, over all its connections. */
   applied: number;
   /** Applies (drawn frames) over the last second. */
@@ -336,9 +340,6 @@ export const DEFAULT_RESOURCE_HOLD_MS = 0;
 /** Backoff before reconnect attempt n (1-based): 1, 2, 4, 8 s, then 10 s. */
 export const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 10000] as const;
 const CLOSE_WAIT_MS = 2000;
-/** Resource GETs in flight at once. The host serves at most 8 HTTP connections and a seat
- * may have 2 viewers, so 4 each never queues behind the other viewer. */
-const FETCH_PARALLEL = 4;
 const RTT_SAMPLES = 64;
 const APPLY_RING = 256;
 
@@ -604,6 +605,7 @@ export class StreamLoop {
       appliesPerSec: perSec,
       creditRttMsP50: p50,
       heapBytes: this.o.core.heapBytes(),
+      staging: this.o.core.stagingStats?.(),
       programs: this.o.core.programCounts?.(),
       carrier:
         this.conn?.opened && this.conn.closeInfo === null
@@ -1387,7 +1389,7 @@ export class StreamLoop {
     // The recorder keeps the fetched body (before wasm takes ownership and it is dropped).
     this.recorder?.resource(r.hash, r.data);
     const t0 = this.o.clock.now();
-    r.stage_error = this.o.core.stage(r.hash, r.data);
+    r.stage_error = this.o.core.stage(r.hash, r.data, r.staging);
     this.cold.staged(r.hash, this.o.clock.now() - t0);
     r.data = null; // in wasm now
   }

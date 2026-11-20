@@ -1,7 +1,11 @@
 // @vitest-environment node
+import { createHash, webcrypto } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
+import { build } from "esbuild";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LiveFetcher } from "../src/fetcher";
+import { FETCH_PARALLEL } from "../src/resource-limits";
 import { RESOURCE_WORKER_SOURCE } from "../src/resource-worker";
 import { createWebSocketTransport } from "../src/transport";
 
@@ -41,7 +45,14 @@ function setup(
   resourceBase = "http://localhost/r",
 ) {
   const worker = new FakeWorker();
-  const createWorker = vi.fn(() => worker as unknown as Worker);
+  const workers: FakeWorker[] = [];
+  let initializeWorker: ((worker: FakeWorker) => void) | undefined;
+  const createWorker = vi.fn(() => {
+    const next = workers.length === 0 ? worker : new FakeWorker();
+    workers.push(next);
+    initializeWorker?.(next);
+    return next as unknown as Worker;
+  });
   const fetch = vi.fn(async () => new Response(Uint8Array.of(7, 8)));
   let socket!: FakeSocket;
   vi.stubGlobal(
@@ -62,7 +73,22 @@ function setup(
   );
   const request = (signal = new AbortController().signal) =>
     t.fetchResource("/a", { token: "secret", signal });
-  return { t, worker, fetch, createWorker, request, socket };
+  return {
+    t,
+    worker,
+    workers,
+    fetch,
+    createWorker,
+    request,
+    socket,
+    allMessages: () =>
+      workers.flatMap((w) => w.messages).sort((a, b) => a.id - b.id),
+    runWorkers: (
+      fetch: (url: string, init: RequestInit) => Promise<Response>,
+    ) => {
+      initializeWorker = (w) => runWorkerScript(w, fetch);
+    },
+  };
 }
 
 /** Run the production worker source behind the transport's Worker seam. */
@@ -79,6 +105,7 @@ function runWorkerScript(
   runInNewContext(RESOURCE_WORKER_SOURCE, {
     self,
     fetch,
+    performance,
     AbortController,
     Uint8Array,
   });
@@ -96,46 +123,209 @@ afterEach(() => {
 });
 
 describe("worker resource GETs", () => {
-  it("creates the worker on socket open before demand, reuses it, and closes it without a GET", () => {
+  it("counts main-thread progress and body message work without counting the wait", async () => {
     const s = setup();
-    expect(s.createWorker).not.toHaveBeenCalled();
-    s.socket.onopen?.();
-    expect(s.createWorker).toHaveBeenCalledOnce();
-    expect(s.worker.messages).toEqual([]);
-    s.socket.onopen?.();
-    expect(s.createWorker).toHaveBeenCalledOnce();
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now++);
+    const response = s.request();
+    const id = s.worker.messages[0].id;
+    s.worker.reply({ type: "progress", id, bytes: 0 });
+    now += 1000;
+    s.worker.reply({ type: "progress", id, bytes: 4 });
+    now += 1000;
+    s.worker.reply({
+      type: "body",
+      id,
+      status: 200,
+      body: new ArrayBuffer(4),
+      hashMs: 17,
+    });
+    expect(await response).toMatchObject({
+      workerMessageMs: 3,
+      workerHashMs: 17,
+    });
     s.t.close(1000, "done");
-    expect(s.worker.terminate).toHaveBeenCalledOnce();
+  });
+  it("creates workers only on demand, bounds the pool, and reuses idle workers", async () => {
+    const s = setup();
+    s.socket.onopen?.();
+    expect(s.createWorker).not.toHaveBeenCalled();
+    const pending = Array.from({ length: FETCH_PARALLEL + 1 }, () =>
+      s.request(),
+    );
+    expect(s.workers).toHaveLength(FETCH_PARALLEL);
+    for (const w of s.workers) expect(w.messages).toHaveLength(1);
+    const idle = s.workers[1];
+    idle.reply({ type: "body", id: 2, status: 200, body: new ArrayBuffer(0) });
+    await pending[1];
+    expect(idle.messages.map((m) => m.id)).toEqual([2, FETCH_PARALLEL + 1]);
+    expect(s.createWorker).toHaveBeenCalledTimes(FETCH_PARALLEL);
+    const settled = Promise.allSettled(pending);
+    s.t.close(1000, "done");
+    expect((await settled).filter((r) => r.status === "rejected")).toHaveLength(
+      FETCH_PARALLEL,
+    );
+    for (const w of s.workers) expect(w.terminate).toHaveBeenCalledOnce();
+  });
+
+  it("routes aborts to the owning worker and cancels queued requests locally", async () => {
+    const s = setup();
+    const aborts = Array.from(
+      { length: FETCH_PARALLEL + 1 },
+      () => new AbortController(),
+    );
+    const pending = aborts.map((a) => s.request(a.signal));
+    const settled = Promise.allSettled(pending);
+    aborts[FETCH_PARALLEL].abort();
+    expect(s.allMessages().filter((m) => m.type === "abort")).toEqual([]);
+    aborts[1].abort();
+    expect(s.workers[1].messages.at(-1)).toEqual({ type: "abort", id: 2 });
+    for (const [i, w] of s.workers.entries())
+      if (i !== 1) expect(w.messages).toHaveLength(1);
+    s.t.close(1000, "done");
+    expect((await settled).every((r) => r.status === "rejected")).toBe(true);
   });
 
   it.each([
-    "creation",
-    "first error",
-    "malformed message",
-    "disabled",
-  ])("keeps eager startup fallback sticky after %s, before demand", async (failure) => {
-    const broken = vi.fn(() => {
+    "error",
+    "messageerror",
+    "malformed",
+  ] as const)("isolates a ready worker's %s and keeps healthy and queued fetches in workers", async (failure) => {
+    const s = setup();
+    const pending = Array.from({ length: FETCH_PARALLEL + 1 }, () =>
+      s.request(),
+    );
+    const original = [...s.workers];
+    for (const w of original) w.reply({ type: "ready" });
+    const failed = original[1];
+    if (failure === "malformed") failed.reply({ type: "unknown" });
+    else if (failure === "error")
+      failed.onerror?.call(failed as unknown as Worker, {} as ErrorEvent);
+    else
+      failed.onmessageerror?.call(
+        failed as unknown as Worker,
+        {} as MessageEvent,
+      );
+
+    expect(failed.terminate).toHaveBeenCalledOnce();
+    expect(failed.onmessage).toBeNull();
+    expect(failed.onerror).toBeNull();
+    expect(failed.onmessageerror).toBeNull();
+    for (const [i, w] of original.entries()) {
+      if (i === 1) continue;
+      expect(w.terminate).not.toHaveBeenCalled();
+      w.reply({
+        type: "body",
+        id: i + 1,
+        status: 200,
+        body: Uint8Array.of(i + 1).buffer,
+      });
+    }
+    expect(s.fetch).toHaveBeenCalledOnce();
+    expect(s.createWorker).toHaveBeenCalledTimes(FETCH_PARALLEL + 1);
+    const replacement = s.workers[FETCH_PARALLEL];
+    expect(replacement.messages).toEqual([
+      expect.objectContaining({ type: "fetch", id: FETCH_PARALLEL + 1 }),
+    ]);
+    replacement.reply({ type: "ready" });
+    replacement.reply({
+      type: "body",
+      id: FETCH_PARALLEL + 1,
+      status: 200,
+      body: Uint8Array.of(5).buffer,
+    });
+    const responses = await Promise.all(pending);
+    for (const [i, response] of responses.entries()) {
+      expect(
+        Array.from(new Uint8Array(response.body ?? new ArrayBuffer(0))),
+      ).toEqual(i === 1 ? [7, 8] : [i + 1]);
+    }
+
+    const later = s.request();
+    const owner = s.workers.find((w) =>
+      w.messages.some((m) => m.id === FETCH_PARALLEL + 2),
+    );
+    expect(owner).toBeDefined();
+    expect(owner).not.toBe(failed);
+    owner?.reply({
+      type: "body",
+      id: FETCH_PARALLEL + 2,
+      status: 200,
+      body: new ArrayBuffer(0),
+    });
+    await later;
+    expect(s.fetch).toHaveBeenCalledOnce();
+    expect(console.warn).not.toHaveBeenCalled();
+    s.t.close(1000, "done");
+    for (const w of s.workers) expect(w.terminate).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "error",
+    "messageerror",
+    "malformed",
+  ] as const)("disables the pool and falls back all requests on %s before ready", async (failure) => {
+    const s = setup();
+    const pending = Array.from({ length: FETCH_PARALLEL + 1 }, () =>
+      s.request(),
+    );
+    for (const [i, w] of s.workers.entries())
+      if (i !== 1) w.reply({ type: "ready" });
+    const failed = s.workers[1];
+    if (failure === "malformed") failed.reply(null);
+    else if (failure === "error")
+      failed.onerror?.call(failed as unknown as Worker, {} as ErrorEvent);
+    else
+      failed.onmessageerror?.call(
+        failed as unknown as Worker,
+        {} as MessageEvent,
+      );
+    await Promise.all(pending);
+    await s.request();
+    expect(s.fetch).toHaveBeenCalledTimes(FETCH_PARALLEL + 2);
+    expect(s.createWorker).toHaveBeenCalledTimes(FETCH_PARALLEL);
+    for (const w of s.workers) expect(w.terminate).toHaveBeenCalledOnce();
+    expect(console.warn).toHaveBeenCalledOnce();
+    s.t.close(1000, "done");
+  });
+
+  it("keeps the pool disabled after createWorker throws", async () => {
+    const createWorker = vi.fn(() => {
       throw new Error("blocked");
     });
-    const s = setup(
-      failure === "creation"
-        ? { createWorker: broken }
-        : failure === "disabled"
-          ? { fetchInWorker: false }
-          : {},
-    );
-    s.socket.onopen?.();
-    if (failure === "first error")
-      s.worker.onerror?.call(s.worker as unknown as Worker, {} as ErrorEvent);
-    if (failure === "malformed message") s.worker.reply(null);
-    expect(console.warn).toHaveBeenCalledTimes(failure === "disabled" ? 0 : 1);
+    const s = setup({ createWorker });
     await s.request();
     await s.request();
+    expect(createWorker).toHaveBeenCalledOnce();
     expect(s.fetch).toHaveBeenCalledTimes(2);
-    expect(s.worker.messages).toEqual([]);
-    if (failure === "creation") expect(broken).toHaveBeenCalledOnce();
-    if (failure === "disabled") expect(s.createWorker).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      "render-stream: resource worker unavailable; using main-thread fetch",
+    );
     s.t.close(1000, "done");
+  });
+
+  it("a reconnect closes the old pool and lazily creates a fresh one", async () => {
+    const old = setup();
+    const requests = Array.from({ length: FETCH_PARALLEL }, () =>
+      old.request(),
+    );
+    const settled = Promise.allSettled(requests);
+    old.socket.onclose?.({ code: 1006, reason: "reconnect" });
+    expect((await settled).every((r) => r.status === "rejected")).toBe(true);
+    for (const w of old.workers) expect(w.terminate).toHaveBeenCalledOnce();
+    const fresh = setup();
+    fresh.socket.onopen?.();
+    expect(fresh.workers).toHaveLength(0);
+    const body = fresh.request();
+    fresh.worker.reply({
+      type: "body",
+      id: 1,
+      status: 200,
+      body: new ArrayBuffer(0),
+    });
+    await body;
+    expect(fresh.workers).toHaveLength(1);
+    fresh.t.close(1000, "done");
   });
 
   it.each([
@@ -157,7 +347,11 @@ describe("worker resource GETs", () => {
       absolute,
       expect.objectContaining({ cache: "default", credentials: "omit" }),
     );
-    expect(response).toMatchObject({ status: 200, workerBody: true });
+    expect(response).toMatchObject({
+      status: 200,
+      workerBody: true,
+      workerDigestPath: "js-incremental",
+    });
     expect(s.fetch).not.toHaveBeenCalled();
     s.t.close(1000, "done");
   });
@@ -286,7 +480,7 @@ describe("worker resource GETs", () => {
         }),
       );
     });
-    runWorkerScript(s.worker, workerFetch);
+    s.runWorkers(workerFetch);
     const onBody = vi.fn();
     const f = new LiveFetcher(
       (path, signal) => s.t.fetchResource(path, { token: null, signal }),
@@ -307,7 +501,10 @@ describe("worker resource GETs", () => {
     expect(workerFetch).toHaveBeenCalledTimes(12);
     expect(peak).toBe(4);
     expect(
-      s.worker.messages.filter((m) => m.type === "abort").map((m) => m.id),
+      s
+        .allMessages()
+        .filter((m) => m.type === "abort")
+        .map((m) => m.id),
     ).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     // A reply already queued by a superseded request must not stage under its new generation.
     s.worker.reply({
@@ -353,7 +550,7 @@ describe("worker resource GETs", () => {
     await tick();
     f.cancel({ keepRetries: true });
     await tick();
-    expect(s.worker.messages.filter((m) => m.type === "abort")).toEqual([
+    expect(s.allMessages().filter((m) => m.type === "abort")).toEqual([
       { type: "abort", id: 2 },
     ]);
     expect([...f.requested()]).toEqual(["retry"]);
@@ -362,7 +559,7 @@ describe("worker resource GETs", () => {
       now = due - 1;
       f.cancel({ keepRetries: true });
       f.poll();
-      expect(s.worker.messages.filter((m) => m.type === "fetch")).toHaveLength(
+      expect(s.allMessages().filter((m) => m.type === "fetch")).toHaveLength(
         index + 2,
       );
       now = due;
@@ -584,6 +781,8 @@ describe("worker resource GETs", () => {
       7, 8,
     ]);
     await s.request();
+    expect(r.workerDigest).toBeUndefined();
+    expect(r.workerBody).toBeUndefined();
     expect(s.fetch).toHaveBeenCalledTimes(2);
     expect(s.fetch).toHaveBeenCalledWith(
       "http://localhost/r/a",
@@ -638,6 +837,292 @@ describe("worker resource GETs", () => {
 });
 
 describe("self-contained worker source", () => {
+  it.each([
+    false,
+    true,
+  ])("hashes fallback chunks on arrival and releases an aborted stream (%s)", async (abort) => {
+    const bytes = Uint8Array.from({ length: 257 }, (_, i) => i);
+    const updates: number[] = [];
+    const messages: {
+      type: string;
+      id?: number;
+      digest?: string;
+      body?: ArrayBuffer;
+    }[] = [];
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    let cancelled = false;
+    const self = {
+      onmessage: null as ((event: { data: unknown }) => Promise<void>) | null,
+      postMessage(m: (typeof messages)[number], transfer?: ArrayBuffer[]) {
+        messages.push(structuredClone(m, { transfer }));
+      },
+    };
+    const context = {
+      self,
+      performance,
+      AbortController,
+      Uint8Array,
+      onUpdate: (n: number) => updates.push(n),
+      fetch: async (_url: string, init: RequestInit) =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              stream = c;
+              init.signal?.addEventListener(
+                "abort",
+                () => c.error(new Error("aborted")),
+                { once: true },
+              );
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+        ),
+    };
+    runInNewContext(
+      `${RESOURCE_WORKER_SOURCE}
+      const update = Sha256.prototype.update;
+      Sha256.prototype.update = function(bytes) { onUpdate(bytes.length); return update.call(this, bytes); };
+    `,
+      context,
+    );
+    const pending = self.onmessage?.({
+      data: { type: "fetch", id: 1, url: "/body" },
+    });
+    await tick();
+    stream.enqueue(bytes.subarray(0, 65));
+    await tick();
+    expect(updates).toEqual([65]);
+    expect(messages.some((m) => m.type === "body")).toBe(false);
+    if (abort) {
+      await self.onmessage?.({ data: { type: "abort", id: 1 } });
+    } else {
+      stream.enqueue(bytes.subarray(65));
+      stream.close();
+    }
+    await pending;
+    expect(cancelled).toBe(false);
+    expect(runInNewContext("requests.size", context)).toBe(0);
+    const body = messages.find((m) => m.type === "body");
+    if (abort) {
+      expect(body).toBeUndefined();
+      expect(messages.some((m) => m.type === "error")).toBe(false);
+      expect(updates).toEqual([65]);
+    } else {
+      expect(updates).toEqual([65, 192]);
+      expect(body?.digest).toBe(
+        createHash("sha256").update(bytes).digest("hex"),
+      );
+      expect(new Uint8Array(body?.body ?? new ArrayBuffer(0))).toEqual(bytes);
+    }
+    expect(() => stream.desiredSize).not.toThrow();
+  });
+
+  it("keeps the SHA fallback self-contained after bundling and minification", async () => {
+    const bundled = await build({
+      entryPoints: [
+        fileURLToPath(new URL("../src/resource-worker.ts", import.meta.url)),
+      ],
+      bundle: true,
+      minify: true,
+      write: false,
+      format: "iife",
+      globalName: "ResourceModule",
+      target: "es2022",
+    });
+    const source = runInNewContext(
+      `${bundled.outputFiles[0].text}; ResourceModule.RESOURCE_WORKER_SOURCE`,
+    );
+    let reply!: { digest: string };
+    const self = {
+      onmessage: null as ((event: { data: unknown }) => Promise<void>) | null,
+      postMessage(m: { type: string; digest: string }) {
+        if (m.type === "body") reply = m;
+      },
+    };
+    runInNewContext(source, {
+      self,
+      performance,
+      AbortController,
+      Uint8Array,
+      fetch: async () => new Response(Uint8Array.of(1, 2, 3)),
+    });
+    await self.onmessage?.({ data: { type: "fetch", id: 1, url: "/body" } });
+    expect(reply.digest).toBe(
+      createHash("sha256")
+        .update(Uint8Array.of(1, 2, 3))
+        .digest("hex"),
+    );
+  });
+
+  it.each([
+    ["native", true, 200, 1],
+    ["fallback", true, 200, 4],
+    ["native rejects", true, 200, 2],
+    ["fallback", false, 200, 3],
+    ["fallback", true, 404, 0],
+  ] as const)("times hash work for %s (stream %s, status %s), excluding reads", async (mode, streamed, status, expectedMs) => {
+    let now = 0;
+    const clock = { now: () => now++ };
+    const messages: { type: string; hashMs?: number; digestPath?: string }[] =
+      [];
+    const self = {
+      onmessage: null as ((event: { data: unknown }) => Promise<void>) | null,
+      postMessage(m: (typeof messages)[number]) {
+        messages.push(m);
+      },
+    };
+    runInNewContext(RESOURCE_WORKER_SOURCE, {
+      self,
+      performance: clock,
+      AbortController,
+      Uint8Array,
+      crypto:
+        mode === "fallback"
+          ? undefined
+          : {
+              subtle: {
+                digest: () =>
+                  mode === "native rejects"
+                    ? Promise.reject(new Error("unavailable"))
+                    : Promise.resolve(new ArrayBuffer(32)),
+              },
+            },
+      fetch: async () => ({
+        status,
+        headers: new Headers(),
+        body: streamed
+          ? {
+              getReader: () => {
+                let chunk = 0;
+                return {
+                  read: async () => {
+                    now += 1000;
+                    return chunk++ < 2
+                      ? { done: false, value: Uint8Array.of(chunk) }
+                      : { done: true };
+                  },
+                  releaseLock() {},
+                };
+              },
+            }
+          : null,
+        arrayBuffer: async () => {
+          now += 1000;
+          return Uint8Array.of(1, 2).buffer;
+        },
+      }),
+    });
+    await self.onmessage?.({ data: { type: "fetch", id: 1, url: "/body" } });
+    expect(messages.find((m) => m.type === "body")).toMatchObject({
+      hashMs: expectedMs,
+    });
+  });
+
+  it("drops a body if abort arrives while the native digest is pending", async () => {
+    let resolveDigest!: (value: ArrayBuffer) => void;
+    let hashing!: () => void;
+    const started = new Promise<void>((resolve) => {
+      hashing = resolve;
+    });
+    const messages: { type: string; id?: number }[] = [];
+    const self = {
+      onmessage: null as ((event: { data: unknown }) => Promise<void>) | null,
+      postMessage(m: (typeof messages)[number]) {
+        messages.push(m);
+      },
+    };
+    runInNewContext(RESOURCE_WORKER_SOURCE, {
+      self,
+      performance,
+      AbortController,
+      Uint8Array,
+      crypto: {
+        subtle: {
+          digest: () =>
+            new Promise<ArrayBuffer>((resolve) => {
+              resolveDigest = resolve;
+              hashing();
+            }),
+        },
+      },
+      fetch: async () => new Response(Uint8Array.of(1, 2, 3)),
+    });
+    const pending = self.onmessage?.({
+      data: { type: "fetch", id: 1, url: "/body" },
+    });
+    await started;
+    await self.onmessage?.({ data: { type: "abort", id: 1 } });
+    resolveDigest(new ArrayBuffer(32));
+    await pending;
+    expect(
+      messages.filter((m) => m.id === 1).every((m) => m.type === "progress"),
+    ).toBe(true);
+  });
+
+  it.each([
+    "native",
+    "fallback",
+    "native rejects",
+  ])("hashes the exact transferred body using %s, including a perturbed body", async (mode) => {
+    for (const bytes of [Uint8Array.of(1, 2, 3), Uint8Array.of(1, 2, 4)]) {
+      const digest = vi.fn(
+        (...args: Parameters<typeof webcrypto.subtle.digest>) =>
+          mode === "native rejects"
+            ? Promise.reject(new Error("unavailable"))
+            : webcrypto.subtle.digest(...args),
+      );
+      const messages: {
+        type: string;
+        digest?: string;
+        digestPath?: string;
+        body?: ArrayBuffer;
+      }[] = [];
+      const transferred: ArrayBuffer[] = [];
+      const self = {
+        onmessage: null as ((event: { data: unknown }) => Promise<void>) | null,
+        postMessage(
+          message: (typeof messages)[number],
+          transfer?: ArrayBuffer[],
+        ) {
+          messages.push(structuredClone(message, { transfer }));
+          transferred.push(...(transfer ?? []));
+        },
+      };
+      runInNewContext(RESOURCE_WORKER_SOURCE, {
+        self,
+        performance,
+        AbortController,
+        Uint8Array,
+        crypto: mode === "fallback" ? undefined : { subtle: { digest } },
+        fetch: async () =>
+          new Response(
+            new ReadableStream({
+              start(c) {
+                c.enqueue(bytes.subarray(0, 1));
+                c.enqueue(bytes.subarray(1));
+                c.close();
+              },
+            }),
+          ),
+      });
+      await self.onmessage?.({ data: { type: "fetch", id: 1, url: "/body" } });
+      const body = messages.find((m) => m.type === "body");
+      expect(body?.digest).toBe(
+        createHash("sha256").update(bytes).digest("hex"),
+      );
+      expect(body?.digestPath).toBe(
+        mode === "native" ? "native" : "js-incremental",
+      );
+      expect(
+        Array.from(new Uint8Array(body?.body ?? new ArrayBuffer(0))),
+      ).toEqual(Array.from(bytes));
+      expect(transferred[0].byteLength).toBe(0);
+      expect(digest).toHaveBeenCalledTimes(mode === "fallback" ? 0 : 1);
+    }
+  });
+
   it("reads and reports progress, transfers the body and honors abort messages", async () => {
     const messages: {
       type: string;
@@ -677,6 +1162,7 @@ describe("self-contained worker source", () => {
     runInNewContext(RESOURCE_WORKER_SOURCE, {
       self,
       fetch,
+      performance,
       AbortController,
       Uint8Array,
     });

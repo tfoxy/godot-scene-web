@@ -15,11 +15,16 @@ export interface GswRs {
   provide(len: number): number;
   /** Verify and decode a payload on arrival / provide the next needed one from there. */
   stage_payload(len: number, hash: string): number;
+  /** Kind and decoded residency bytes, comma separated; absent on older cores. */
+  staged_info?(hash: string): string;
   provide_staged(): number;
   /** A payload staged as its body arrives, piece by piece, in its own buffer: begin (the id,
    * or -1), per piece a pointer then a commit (hashed there), then finish (verify, decode,
    * stage; -1 on a refusal) or abort. `stream_count` is the streams open. */
   stream_begin(hash: string, sizeHint: number): number;
+  /** The worker hashed the exact, exclusively owned body these chunks come from. Rust still
+   * checks the digest against the main thread's requested hash at finish. Older cores hash. */
+  stream_begin_hashed?(hash: string, digest: string, sizeHint: number): number;
   stream_chunk_ptr(id: number, len: number): number;
   stream_commit(id: number, len: number): number;
   stream_finish(id: number): number;

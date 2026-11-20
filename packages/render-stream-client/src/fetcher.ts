@@ -36,6 +36,7 @@
 
 import type { StagingStream } from "./core";
 import { ResourceWorkerError } from "./resource-worker";
+import { type DigestPath, type StagingSample, stagingSample } from "./staging";
 
 /** One GET's answer: its status, its body, and (the harness's evidence) its kept headers. With
  * `stream` asked, a 200 may carry `stream` (and `sizeHint`, its `Content-Length` or 0) instead
@@ -48,6 +49,12 @@ export interface ResourceResponse {
   sizeHint?: number;
   /** A complete body transferred by the HTTP worker; its wire slot can be released now. */
   workerBody?: boolean;
+  workerMessageMs?: number;
+  /** Worker hash duration, excluding network reads; native digest includes its async wait. */
+  workerHashMs?: number;
+  /** SHA-256 of the worker-owned body, computed before ownership was transferred. */
+  workerDigest?: string;
+  workerDigestPath?: Exclude<DigestPath, "wasm">;
 }
 
 /** `GET <path>`, aborted through `signal` (the fetcher's stall timeout, or `abort`).
@@ -60,6 +67,7 @@ export type ResourceRequest = (
 ) => Promise<ResourceResponse>;
 
 export interface FetchResult {
+  staging?: StagingSample;
   hash: string;
   status: number | null;
   bytes: number;
@@ -115,7 +123,14 @@ export interface LiveFetcherOptions {
   /** Whether a buffered worker body is still useful before staging (default: true). */
   wanted?: (hash: string, background: boolean) => boolean;
   /** Stage bodies as they arrive (absent: whole bodies through `onBody`). */
-  stager?: ((hash: string, sizeHint: number) => StagingStream) | null;
+  stager?:
+    | ((
+        hash: string,
+        sizeHint: number,
+        sample?: StagingSample,
+        workerDigest?: string,
+      ) => StagingStream)
+    | null;
   /** Streamed bytes written between two yielded tasks (default 256 KiB: a short task
    * even on a phone). */
   sliceBytes?: number;
@@ -168,6 +183,7 @@ interface InFlight {
 }
 
 interface BufferedBody {
+  workerDigest?: string;
   entry: InFlight;
   result: FetchResult;
   body: ArrayBuffer | null;
@@ -569,6 +585,10 @@ export class LiveFetcher {
           return;
         }
         fromWorker = res.workerBody === true;
+        r.staging = stagingSample();
+        r.staging.workerMessageMs = res.workerMessageMs ?? 0;
+        r.staging.workerHashMs = res.workerHashMs ?? 0;
+        r.staging.digestPath = res.workerDigestPath;
         progress();
         r.status = res.status;
         if (res.headers) r.headers = res.headers;
@@ -596,6 +616,7 @@ export class LiveFetcher {
             result: r,
             body,
             sizeHint: res.sizeHint ?? 0,
+            workerDigest: res.workerDigest,
             started: false,
             current,
             settle,
@@ -689,24 +710,42 @@ export class LiveFetcher {
   }
 
   private async bufferInto(job: BufferedBody): Promise<boolean> {
-    const sink = this.stager?.(job.result.hash, job.sizeHint) as StagingStream;
+    const sample = job.result.staging ?? stagingSample();
+    const sink = this.stager?.(
+      job.result.hash,
+      job.sizeHint,
+      sample,
+      job.workerDigest,
+    ) as StagingStream;
     let finished = false;
+    let t = performance.now();
     try {
       let at = 0;
       while (job.body !== null && at < job.body.byteLength) {
         if (!job.current() || job.entry.abort.signal.aborted) return false;
         const n = Math.min(this.sliceBytes, job.body.byteLength - at);
-        sink.write(new Uint8Array(job.body, at, n));
+        const chunk = new Uint8Array(job.body, at, n);
+        sample.sliceMs += performance.now() - t;
+        sink.write(chunk);
+        t = performance.now();
         at += n;
-        if (at < job.body.byteLength) await this.yieldTask();
+        if (at < job.body.byteLength) {
+          sample.sliceMs += performance.now() - t;
+          await this.yieldTask();
+          t = performance.now();
+        }
       }
       if (!job.current() || job.entry.abort.signal.aborted) return false;
       job.result.streamed = true;
+      sample.sliceMs += performance.now() - t;
       job.result.stage_error = sink.finish();
       finished = true;
       return true;
     } finally {
-      if (!finished) sink.abort();
+      if (!finished) {
+        sample.sliceMs += performance.now() - t;
+        sink.abort();
+      }
     }
   }
 
@@ -723,7 +762,8 @@ export class LiveFetcher {
     signal: AbortSignal,
   ): Promise<boolean> {
     const stager = this.stager as NonNullable<LiveFetcherOptions["stager"]>;
-    const sink = stager(r.hash, sizeHint);
+    const sample = r.staging ?? stagingSample();
+    const sink = stager(r.hash, sizeHint, sample);
     const reader = stream.getReader();
     const stop = abortRead(reader, signal);
     let finished = false;
@@ -747,13 +787,17 @@ export class LiveFetcher {
               return false;
             }
           }
+          let t = performance.now();
           const n = Math.min(value.length - at, this.sliceBytes - sinceYield);
-          sink.write(
-            at === 0 && n === value.length ? value : value.subarray(at, at + n),
-          );
+          const chunk =
+            at === 0 && n === value.length ? value : value.subarray(at, at + n);
+          sample.sliceMs += performance.now() - t;
+          sink.write(chunk);
+          t = performance.now();
           at += n;
           sinceYield += n;
           r.bytes += n;
+          sample.sliceMs += performance.now() - t;
         }
       }
       finished = true;

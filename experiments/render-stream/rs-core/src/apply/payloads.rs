@@ -957,6 +957,7 @@ pub struct PayloadStream {
     version: u8,
     verify: bool,
     hasher: Option<sha2::Sha256>,
+    external_digest: Option<Hash>,
     buf: Vec<u8>,
     header: Vec<u8>,
     split: StreamSplit,
@@ -972,11 +973,24 @@ impl PayloadStream {
             version,
             verify,
             hasher: verify.then(sha2::Sha256::new),
+            external_digest: None,
             buf: Vec::with_capacity(size_hint.min(STREAM_HINT_MAX)),
             header: Vec::new(),
             split: StreamSplit::Undecided,
             total: 0,
         }
+    }
+
+    /// The adapter hashed the exact bytes it will write and owns them exclusively until finish.
+    /// The digest is still checked against `expected`; callers must not substitute the requested
+    /// hash for the computed digest. This preserves verification without hashing twice.
+    pub fn with_digest(expected: Hash, version: u8, digest: Hash, size_hint: usize) -> Self {
+        // Only a matching worker digest replaces chunk hashing. A mismatch follows the normal
+        // stream lifetime and refusal accounting, and is rejected before decoding at finish.
+        let mut stream = Self::new(expected, version, digest != expected, size_hint);
+        stream.verify = true;
+        stream.external_digest = Some(digest);
+        stream
     }
 
     pub fn expected(&self) -> &Hash {
@@ -1067,6 +1081,9 @@ impl PayloadStream {
         use crate::prof;
         use sha2::Digest;
         let t = prof::start();
+        if let Some(digest) = self.external_digest {
+            check_hash(digest, &self.expected)?;
+        }
         if let Some(h) = self.hasher {
             let mut out = [0u8; 32];
             out.copy_from_slice(&h.finalize());
@@ -1144,6 +1161,20 @@ pub struct Staged {
 }
 
 impl PayloadStage {
+    /// Staged kind and decoded residency bytes; diagnostic only, never provides a payload.
+    pub fn info(&self, hash: &Hash) -> (&'static str, u64) {
+        let Some(s) = self.staged.get(hash) else {
+            return ("other", 0);
+        };
+        let kind = match &s.decoded {
+            Decoded::Texture(t) if t.format == "RGBA8" => "rgba8Texture",
+            Decoded::Texture(_) => "otherTexture",
+            Decoded::Mesh(_) => "mesh",
+            Decoded::Shader(_) => "shader",
+        };
+        (kind, decoded_bytes(&s.decoded))
+    }
+
     /// Verify `bytes` against `expected` and decode them; on success hold the result until
     /// `take`. A refused payload leaves nothing staged under `expected`.
     pub fn stage(
@@ -1745,6 +1776,47 @@ mod tests {
         let s = stage.take(&hash).unwrap();
         assert!(!s.verified);
         assert_eq!(s.bytes, bad.len());
+    }
+
+    #[test]
+    fn worker_digest_staging_matches_wasm_hash_and_refuses_the_same_corruption() {
+        let payloads: &[(&[u8], u8)] = &[
+            (&grt1_any("RGBA8", 2, 1, false, &[1, 2, 3, 4, 5, 6, 7, 8]), 2),
+            (include_bytes!("../../../protocol/golden-10/payloads/mesh1-a.grm"), 10),
+            (include_bytes!("../../../protocol/golden-10/payloads/shader2-tint-v1.grp"), 10),
+            (include_bytes!("../../../protocol/golden-10/payloads/dxt5-16x16-mips.grt"), 10),
+            (include_bytes!("../../../protocol/golden-10/payloads/mip16.grt"), 10),
+        ];
+        for &(bytes, version) in payloads {
+            let expected = crate::wire::sha256(bytes);
+            let mut stage = PayloadStage::default();
+            let mut stream = PayloadStream::with_digest(expected, version, expected, bytes.len());
+            assert!(stream.hasher.is_none(), "worker-hashed chunks do no wasm hash work");
+            for chunk in bytes.chunks(7) { stream.write(chunk); }
+            stage.stage_stream(stream).unwrap();
+            let staged = stage.take(&expected).unwrap();
+            assert!(staged.verified);
+            assert_eq!(staged.bytes, bytes.len());
+            let normal = streamed(bytes, &expected, version, true, 7, bytes.len()).unwrap().0;
+            assert_eq!(format!("{:?}", staged.decoded), format!("{normal:?}"));
+            // A changed body carries its own computed digest, never the requested hash.
+            let mut bad = bytes.to_vec();
+            let last = bad.len() - 1;
+            bad[last] ^= 1;
+            let actual = crate::wire::sha256(&bad);
+            for (body, digest) in [(&bad[..], actual), (bytes, actual)] {
+                stage.stage(bytes, &expected, version, true).unwrap();
+                let before = stage.refused_count;
+                let mut stream = PayloadStream::with_digest(expected, version, digest, body.len());
+                assert!(stream.hasher.is_some(), "mismatches never bypass wasm hashing");
+                stream.write(body);
+                let err = stage.stage_stream(stream).unwrap_err();
+                let wasm_err = verify_decode(&bad, &expected, version, true).unwrap_err();
+                assert_eq!((err.code, err.detail), (wasm_err.code, wasm_err.detail));
+                assert_eq!(stage.refused_count, before + 1);
+                assert!(!stage.has(&expected));
+            }
+        }
     }
 
     /// The unmipmapped RGBA8 path moves the streamed data buffer into the texture (no copy), and

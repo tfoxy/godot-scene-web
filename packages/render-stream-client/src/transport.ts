@@ -61,10 +61,7 @@ export function createWebSocketTransport(
       subprotocol,
     ]);
     ws.binaryType = "arraybuffer";
-    ws.onopen = () => {
-      resources.start();
-      on.open();
-    };
+    ws.onopen = () => on.open();
     ws.onmessage = (ev: MessageEvent) =>
       on.message(ev.data as ArrayBuffer | string);
     // Every handler is dropped once the socket closed: a socket the browser still holds must not
