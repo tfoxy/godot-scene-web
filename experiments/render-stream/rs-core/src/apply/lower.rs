@@ -187,7 +187,8 @@ pub struct Lowered {
     /// rect rule (the caller applies `custom_rect`).
     pub rect: Rect,
     pub shortcuts: Vec<(Shortcut, u32)>,
-    /// Wire texture ids whose size the UVs depend on (re-lower when one changes size).
+    /// Wire texture ids whose availability or size the draws depend on (including canvas
+    /// diffuse and one-hop proxy target dependencies, added by the applier).
     pub texture_deps: Vec<Id>,
     /// Wire mesh ids whose geometry was used (re-lower when one changes version).
     pub mesh_deps: Vec<Id>,

@@ -125,6 +125,9 @@ pub struct ApplySabotage {
     /// arena instead of shared with the payload store, as before GLJ, so a frame that uploads the
     /// whole texture set (a viewer's first apply) holds a second copy of it at once.
     pub arena_upload: bool,
+    /// `canvas-texture-deps-dropped`: omit diffuse and proxy target dependencies, so textures
+    /// lowered before their images arrive keep drawing white or remain skipped.
+    pub canvas_texture_deps_dropped: bool,
     /// The sabotages that act on the lowering (G7t: `drop-msdf`, `ignore-set-transform`,
     /// `ignore-clip-ignore`, `ignore-nine-patch-axis`, `polygon-winding`).
     pub lower: lower::LowerSabotage,
@@ -1835,8 +1838,47 @@ impl Applier {
     ) -> (Lowered, TexSizes, Vec<(Id, i64)>) {
         let t = prof::start();
         let spare = std::mem::take(&mut self.spare);
-        let lowered =
+        let mut lowered =
             lower::lower_reusing(&it.commands, tables, self.sabotage.lower, spare.lowered);
+        // Availability and UV scale depend on a canvas texture's diffuse and a proxy's target.
+        // Keep those dependencies before payloads exist, following a diffuse proxy one hop just
+        // as TableView::drawable does, so image arrivals re-lower the named items.
+        if !self.sabotage.canvas_texture_deps_dropped {
+            for i in 0..lowered.texture_deps.len() {
+                let Some(texture) = tables
+                    .state
+                    .textures
+                    .get(&lowered.texture_deps[i])
+                    .filter(|t| t.status == EntryStatus::Ok)
+                else {
+                    continue;
+                };
+                let Some(sampled) = (match texture.kind {
+                    TextureKind::Canvas => texture.canvas.as_ref().and_then(|c| c.diffuse),
+                    TextureKind::Proxy => Some(texture.id),
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                if !lowered.texture_deps.contains(&sampled) {
+                    lowered.texture_deps.push(sampled);
+                }
+                if let Some(target) = tables
+                    .state
+                    .textures
+                    .get(&sampled)
+                    .filter(|t| t.kind == TextureKind::Proxy && t.status == EntryStatus::Ok)
+                    .and_then(|t| t.target)
+                    .and_then(|id| tables.state.textures.get(&id))
+                    .filter(|t| !matches!(t.kind, TextureKind::Proxy | TextureKind::Canvas))
+                    .map(|t| t.id)
+                {
+                    if !lowered.texture_deps.contains(&target) {
+                        lowered.texture_deps.push(target);
+                    }
+                }
+            }
+        }
         prof::add(prof::LOWER, t);
         for (s, n) in &lowered.shortcuts {
             *self.shortcut_totals.entry(s.as_str()).or_insert(0) += u64::from(*n);

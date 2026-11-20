@@ -509,3 +509,252 @@ fn mesh_residency_writes_the_native_census_rows() {
     let (drawn, _) = st.drawn(5, &store).unwrap();
     assert_eq!(drawn[0].colors.as_ref().unwrap()[0][0], 51.0 / 255.0);
 }
+
+/// The mesh and its canvas texture never change; only the diffuse payload arrives late.
+fn canvas_texture_mesh_scene() -> (ResolvedState, PayloadStore) {
+    let mut state = mesh_state(&[(1, 3)]);
+    let item = state.items.get_mut(&9).unwrap();
+    item.parent = Some(Parent {
+        kind: ParentKind::Canvas,
+        id: 1,
+    });
+    let Command::Mesh { tex, .. } = &mut item.commands.list[0] else {
+        unreachable!();
+    };
+    *tex = Some(10);
+    state.canvases.insert(
+        1,
+        Canvas {
+            id: 1,
+            origin: Origin::RootQuery,
+            root: true,
+            attached: true,
+            layer: 0,
+            sublayer: 0,
+            items: vec![9],
+            xform: geom::IDENTITY,
+            modulate: [1.0; 4],
+        },
+    );
+    let image = Texture {
+        id: 11,
+        origin: Origin::Created,
+        adopted_content: None,
+        kind: TextureKind::Image,
+        status: EntryStatus::Ok,
+        reason: None,
+        version: 1,
+        hash: Some(hash(2)),
+        format: Some("RGBA8".into()),
+        source_format: None,
+        width: 16,
+        height: 16,
+        mipmaps: false,
+        payload_bytes: 16 * 16 * 4,
+        variants: Vec::new(),
+        size_override: None,
+        viewport: None,
+        target: None,
+        canvas: None,
+    };
+    state.textures.insert(
+        10,
+        Texture {
+            id: 10,
+            kind: TextureKind::Canvas,
+            hash: None,
+            format: None,
+            width: 0,
+            height: 0,
+            payload_bytes: 0,
+            canvas: Some(CanvasTexture {
+                diffuse: Some(11),
+                filter: Filter::Default,
+                repeat: Repeat::Default,
+            }),
+            ..image.clone()
+        },
+    );
+    state.textures.insert(11, image);
+    let mut store = PayloadStore::default();
+    store
+        .meshes
+        .insert(hash(1), surface(&[[0.0, 0.0], [8.0, 0.0], [0.0, 8.0]], 255));
+    (state, store)
+}
+
+fn canvas_texture_applier() -> super::Applier {
+    super::Applier::new(super::Viewport {
+        width: 64,
+        height: 32,
+        clear: [0.0, 0.0, 0.0, 1.0],
+        global_xform: geom::IDENTITY,
+        cull_mask: u32::MAX,
+        format: gsw_canvas_draw_list::Format::Rgb10A2,
+    })
+}
+
+fn provide_canvas_diffuse(store: &mut PayloadStore) {
+    store.textures.insert(
+        hash(2),
+        super::payloads::TexturePixels {
+            width: 16,
+            height: 16,
+            rgba: vec![255; 16 * 16 * 4].into(),
+            format: "RGBA8".into(),
+            mipmaps: false,
+            data_len: 16 * 16 * 4,
+            compressed: None,
+            half: None,
+            floats: None,
+            opacity: None,
+        },
+    );
+}
+
+fn canvas_texture_proxy_mesh_scene() -> (ResolvedState, PayloadStore) {
+    let (mut state, store) = canvas_texture_mesh_scene();
+    let proxy = Texture {
+        id: 12,
+        kind: TextureKind::Proxy,
+        target: Some(11),
+        canvas: None,
+        ..state.textures[&10].clone()
+    };
+    state.textures.insert(12, proxy);
+    state
+        .textures
+        .get_mut(&10)
+        .unwrap()
+        .canvas
+        .as_mut()
+        .unwrap()
+        .diffuse = Some(12);
+    (state, store)
+}
+
+fn assert_canvas_texture_mesh_heals(
+    sabotage: bool,
+    full_scan: bool,
+    scene: (ResolvedState, PayloadStore),
+) {
+    let (state, mut store) = scene;
+    let mut applier = canvas_texture_applier();
+    applier.sabotage.canvas_texture_deps_dropped = sabotage;
+    applier.always_scan_dependencies = full_scan;
+    applier.defer(hash(2));
+    applier.apply(&state, &TxDelta::default(), &store);
+    assert_eq!(applier.items[&9].lowered.draws[0].tex, lower::TexRef::White);
+    assert_eq!(applier.list.draws.len(), 1);
+    assert_eq!(
+        applier.list.draws[0].texture,
+        gsw_canvas_draw_list::WHITE_TEXTURE
+    );
+    applier.list.consumed();
+
+    provide_canvas_diffuse(&mut store);
+    assert!(applier.revisit(&state, &store));
+    let stats = applier.stats.clone();
+    assert_eq!(stats.texture_uploads, 1);
+    assert_eq!(
+        applier.items[&9].lowered.draws[0].tex,
+        lower::TexRef::Wire(10),
+        "late canvas diffuse payload must replace the white lowering"
+    );
+    assert_eq!(stats.relowered, 1);
+    assert_eq!(applier.list.draws.len(), 1);
+    assert_eq!(applier.list.draws[0].texture, 11);
+    applier.list.consumed();
+    assert!(!applier.revisit(&state, &store));
+}
+
+#[test]
+fn canvas_texture_mesh_heals_when_only_diffuse_payload_arrives() {
+    assert_canvas_texture_mesh_heals(false, false, canvas_texture_mesh_scene());
+    assert_canvas_texture_mesh_heals(false, true, canvas_texture_mesh_scene());
+}
+
+#[test]
+#[should_panic(expected = "late canvas diffuse payload must replace the white lowering")]
+fn canvas_texture_deps_dropped_sabotage_is_caught() {
+    assert_canvas_texture_mesh_heals(true, false, canvas_texture_mesh_scene());
+}
+
+#[test]
+fn canvas_texture_proxy_mesh_heals_when_only_target_payload_arrives() {
+    assert_canvas_texture_mesh_heals(false, false, canvas_texture_proxy_mesh_scene());
+    assert_canvas_texture_mesh_heals(false, true, canvas_texture_proxy_mesh_scene());
+}
+
+#[test]
+#[should_panic(expected = "late canvas diffuse payload must replace the white lowering")]
+fn canvas_texture_proxy_deps_dropped_sabotage_is_caught() {
+    assert_canvas_texture_mesh_heals(true, false, canvas_texture_proxy_mesh_scene());
+}
+
+fn assert_direct_proxy_mesh_heals(sabotage: bool, full_scan: bool) {
+    let (mut state, mut store) = canvas_texture_proxy_mesh_scene();
+    let Command::Mesh { tex, .. } = &mut state.items.get_mut(&9).unwrap().commands.list[0] else {
+        unreachable!();
+    };
+    *tex = Some(12);
+    let mut applier = canvas_texture_applier();
+    applier.sabotage.canvas_texture_deps_dropped = sabotage;
+    applier.always_scan_dependencies = full_scan;
+    applier.defer(hash(2));
+    applier.apply(&state, &TxDelta::default(), &store);
+    assert!(applier.items[&9].lowered.draws.is_empty());
+    assert!(applier.list.draws.is_empty());
+    applier.list.consumed();
+
+    provide_canvas_diffuse(&mut store);
+    assert!(applier.revisit(&state, &store));
+    assert_eq!(applier.stats.texture_uploads, 1);
+    assert_eq!(
+        applier.stats.relowered, 1,
+        "late proxy target payload must re-lower the mesh"
+    );
+    assert_eq!(
+        applier.items[&9].lowered.draws[0].tex,
+        lower::TexRef::Wire(12)
+    );
+    assert_eq!(applier.list.draws.len(), 1);
+    assert_eq!(applier.list.draws[0].texture, 11);
+    applier.list.consumed();
+    assert!(!applier.revisit(&state, &store));
+}
+
+#[test]
+fn direct_proxy_mesh_heals_when_only_target_payload_arrives() {
+    assert_direct_proxy_mesh_heals(false, false);
+    assert_direct_proxy_mesh_heals(false, true);
+}
+
+#[test]
+#[should_panic(expected = "late proxy target payload must re-lower the mesh")]
+fn direct_proxy_deps_dropped_sabotage_is_caught() {
+    assert_direct_proxy_mesh_heals(true, false);
+}
+
+#[test]
+fn canvas_texture_payload_present_keeps_draw_bytes_identical() {
+    let (state, mut store) = canvas_texture_mesh_scene();
+    provide_canvas_diffuse(&mut store);
+    let mut applier = canvas_texture_applier();
+    let mut before = canvas_texture_applier();
+    before.sabotage.canvas_texture_deps_dropped = true;
+    for _ in 0..2 {
+        applier.apply(&state, &TxDelta::default(), &store);
+        before.apply(&state, &TxDelta::default(), &store);
+        assert_eq!(applier.list.draws.len(), 1);
+        assert_eq!(applier.list.draws[0].texture, 11);
+        assert_eq!(applier.list.draws, before.list.draws);
+        assert_eq!(applier.paint_digest(), before.paint_digest());
+        assert_eq!(
+            gsw_canvas_draw_list::pdl1::encode(&applier.list),
+            gsw_canvas_draw_list::pdl1::encode(&before.list)
+        );
+        applier.list.consumed();
+        before.list.consumed();
+    }
+}
