@@ -31,9 +31,11 @@ import {
 } from "@godot-scene-web/canvas";
 import {
   type Blend,
+  buildDamageCases,
   caseByName,
   encodePdl1,
   type ItemsCase,
+  quad,
   tintOf,
 } from "./canvas-items-cases";
 
@@ -42,6 +44,13 @@ interface RustHarness {
   load(pdl: Uint8Array): void;
   update(pdl: Uint8Array): void;
   mark_all(): void;
+  set_damage(on: boolean): void;
+  set_sabotage(name: string): void;
+  alias_surface(texture: number, surface: number): void;
+  execute_surface(surface: number, pdl: Uint8Array): string;
+  execute_freed(freed: Uint32Array): string;
+  free_all_surfaces(): void;
+  set_replay_tables(json: string): void;
   upload_texture(
     id: number,
     width: number,
@@ -299,6 +308,7 @@ export async function runItemsCase(
   name: string,
   sabotage: string,
   contextLoss = false,
+  damage = false,
 ): Promise<ItemsCaseResult> {
   const spec = caseByName(name);
   const module = await rustModule();
@@ -306,6 +316,7 @@ export async function runItemsCase(
 
   const canvas = document.createElement("canvas");
   const harness = new module.CanvasItemsTestHarness(canvas, sabotage);
+  harness.set_damage(damage);
   const frames: ItemsFrame[] = [];
   let loss: ItemsCaseResult["loss"];
   spec.frames.forEach((_, frame) => {
@@ -375,6 +386,197 @@ export async function runItemsCase(
     renderer: ts.renderer,
     loss,
   };
+}
+
+export async function damageSequence(
+  name: string,
+  damage: boolean,
+  sabotage = "",
+  godot = false,
+  format: "rgba8" | "rgb10a2" = "rgba8",
+) {
+  const spec = buildDamageCases().find((c) => c.name === name);
+  if (!spec) throw new Error(`unknown damage case ${name}`);
+  spec.format = format;
+  const module = await rustModule();
+  const canvas = document.createElement("canvas");
+  const harness = module.CanvasItemsTestHarness.with_options(
+    canvas,
+    sabotage,
+    godot,
+  );
+  harness.set_damage(damage);
+  const frames = spec.frames.map((_, frame) => {
+    const pdl = encodePdl1(spec, frame);
+    if (frame === 0) {
+      uploadTextures(harness, spec);
+      harness.load(pdl);
+    } else harness.update(pdl);
+    harness.set_replay_tables(JSON.stringify(spec));
+    if (spec.depth)
+      harness.set_depth(
+        Int32Array.from(spec.depth.tiles),
+        Uint32Array.from(spec.depth.draws),
+      );
+    return rustFrame(harness);
+  });
+  const glError = harness.gl_error();
+  harness.free();
+  releaseContext(canvas.getContext("webgl2"));
+  return { frames, glError };
+}
+
+let damageHarness: RustHarness | null = null;
+let damageCanvas: HTMLCanvasElement | null = null;
+
+/** Leave a real canvas on the page so Playwright can inspect the compositor across tasks. */
+export async function damageStart(): Promise<void> {
+  const spec = caseByName("texturedMesh");
+  const module = await rustModule();
+  const canvas = document.createElement("canvas");
+  canvas.id = "damage-canvas";
+  document.body.append(canvas);
+  const harness = new module.CanvasItemsTestHarness(canvas, "");
+  harness.set_damage(true);
+  uploadTextures(harness, spec);
+  harness.load(encodePdl1(spec, 0));
+  harness.execute();
+  damageHarness = harness;
+  damageCanvas = canvas;
+}
+
+export function damageNext(textureChange: boolean): Record<string, number> {
+  const spec = caseByName("texturedMesh");
+  const harness = damageHarness;
+  if (!harness) throw new Error("damageStart must run first");
+  harness.update(encodePdl1(spec, 0));
+  if (textureChange) {
+    const t = spec.textures[0];
+    harness.upload_texture(
+      t.id,
+      t.width,
+      t.height,
+      new Uint8Array(t.rgba.length).fill(255),
+    );
+  }
+  return JSON.parse(harness.execute()) as Record<string, number>;
+}
+
+export function damageEnd(): void {
+  damageHarness?.free();
+  releaseContext(damageCanvas?.getContext("webgl2") ?? null);
+  damageCanvas?.remove();
+  damageHarness = null;
+  damageCanvas = null;
+}
+
+interface DamageInvalidationResult {
+  before: number[];
+  after: number[];
+  canvas: number[];
+  expected: number[];
+  stats: Record<string, number>;
+  repeatStats: Record<string, number>;
+  steadyStats?: Record<string, number>;
+  glError: number;
+}
+
+function damageInvalidationSpec(): ItemsCase {
+  return {
+    name: "damage-invalidation",
+    width: 32,
+    height: 32,
+    format: "rgba8",
+    clear: [0, 0, 0, 0],
+    textures: [],
+    meshes: [quad(0, 0, 32, 32, { texture: 40 })],
+    frames: [[{ xform: [1, 0, 0, 1, 0, 0], modulate: [1, 1, 1, 1] }]],
+  };
+}
+
+export async function damageSurfaceFree(
+  all: boolean,
+): Promise<DamageInvalidationResult> {
+  const spec = damageInvalidationSpec();
+  const module = await rustModule();
+  const canvas = document.createElement("canvas");
+  const harness = new module.CanvasItemsTestHarness(canvas, "");
+  try {
+    harness.set_damage(true);
+    harness.load(encodePdl1(spec, 0));
+    harness.alias_surface(40, 7);
+    harness.execute_surface(
+      7,
+      encodePdl1({ ...spec, clear: [1, 0, 0, 1], meshes: [] }, 0),
+    );
+    const before = Array.from(harness.read_target());
+    const steadyStats = JSON.parse(harness.execute());
+    const free = () => {
+      if (all) {
+        harness.free_all_surfaces();
+        return JSON.parse(harness.execute());
+      }
+      return JSON.parse(harness.execute_freed(new Uint32Array([7])));
+    };
+    const stats = free();
+    const after = Array.from(harness.read_target());
+    const presented = Array.from(harness.read_canvas());
+    return {
+      before,
+      after,
+      canvas: presented,
+      expected: new Array(before.length).fill(0),
+      stats,
+      repeatStats: free(),
+      steadyStats,
+      glError: harness.gl_error(),
+    };
+  } finally {
+    harness.free();
+    releaseContext(canvas.getContext("webgl2"));
+  }
+}
+
+export async function damageSabotageTransition(): Promise<DamageInvalidationResult> {
+  const spec = damageInvalidationSpec();
+  const red = [1, 0, 0, 1] as const;
+  const green = [0, 1, 0, 1] as const;
+  spec.meshes = [
+    quad(0, 0, 16, 32, {
+      scissor: [0, 0, 16, 32],
+      colors: [red, red, red, red],
+    }),
+    quad(16, 0, 16, 32, {
+      scissor: [16, 0, 16, 32],
+      colors: [green, green, green, green],
+    }),
+  ];
+  const expected = runTypeScript(spec).frames[0].target;
+  const module = await rustModule();
+  const canvas = document.createElement("canvas");
+  const harness = new module.CanvasItemsTestHarness(canvas, "drop-draws");
+  try {
+    harness.set_damage(true);
+    harness.load(encodePdl1(spec, 0));
+    harness.execute();
+    const before = Array.from(harness.read_target());
+    harness.set_sabotage("");
+    const stats = JSON.parse(harness.execute());
+    const after = Array.from(harness.read_target());
+    const presented = Array.from(harness.read_canvas());
+    return {
+      before,
+      after,
+      canvas: presented,
+      expected,
+      stats,
+      repeatStats: JSON.parse(harness.execute()),
+      glError: harness.gl_error(),
+    };
+  } finally {
+    harness.free();
+    releaseContext(canvas.getContext("webgl2"));
+  }
 }
 
 /** One Rust executor (in Godot's orientation or not) drawing frame 0 of case `name` once per run,
@@ -448,7 +650,14 @@ declare global {
         name: string,
         sabotage: string,
         contextLoss?: boolean,
+        damage?: boolean,
       ): Promise<ItemsCaseResult>;
+      damageSequence: typeof damageSequence;
+      damageStart: typeof damageStart;
+      damageNext: typeof damageNext;
+      damageEnd: typeof damageEnd;
+      damageSurfaceFree: typeof damageSurfaceFree;
+      damageSabotageTransition: typeof damageSabotageTransition;
       fence(name: string): Promise<number[]>;
       depth(
         name: string,
@@ -461,6 +670,12 @@ declare global {
 
 window.__gswCanvasItems = {
   run: runItemsCase,
+  damageSequence,
+  damageStart,
+  damageNext,
+  damageEnd,
+  damageSurfaceFree,
+  damageSabotageTransition,
   fence: fenceProbe,
   depth: depthProbe,
 };

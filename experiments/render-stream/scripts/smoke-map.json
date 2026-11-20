@@ -732,6 +732,14 @@
       ]
     },
     {
+      "why": "Damage oracle replays recordings by hand on the browser harness; its bounded stream decoder has a pure self-test.",
+      "paths": [
+        "experiments/render-stream/scripts/damage-oracle.ts",
+        "experiments/render-stream/scripts/lib/self-test-damage-oracle.ts"
+      ],
+      "reach": ["pure", "cargo:experiments/render-stream/web/gsw-rs"]
+    },
+    {
       "why": "the GSW canvas receiver (page, wasm crate) and the packages it renders with",
       "paths": ["experiments/render-stream/web/**", "packages/**"],
       "reach": [

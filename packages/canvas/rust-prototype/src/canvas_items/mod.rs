@@ -152,6 +152,10 @@ pub enum Sabotage {
     /// their median. Wherever the channels disagree (every edge the field colours with two of the
     /// three channels) coverage drops, and it never rises, so only drawn ink changes.
     MsdfNoMedian,
+    /// Test-only: retain stale colour under partial replay.
+    DamageNoScissorClear,
+    /// Test-only: skip all back-buffer producers and screen operations during partial replay.
+    DamageSkipBackProducers,
 }
 
 impl Sabotage {
@@ -164,6 +168,8 @@ impl Sabotage {
             "stale-item-row" => Ok(Some(Sabotage::StaleItemRow)),
             "premultiplied-upload" => Ok(Some(Sabotage::PremultipliedUpload)),
             "msdf-no-median" => Ok(Some(Sabotage::MsdfNoMedian)),
+            "damage-no-scissor-clear" => Ok(Some(Sabotage::DamageNoScissorClear)),
+            "damage-skip-back-producers" => Ok(Some(Sabotage::DamageSkipBackProducers)),
             other => Err(format!("unknown canvas-items sabotage {other:?}")),
         }
     }
@@ -182,6 +188,8 @@ pub struct SurfacePass<'a> {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExecOptions {
+    /// Plan and execute retained damage, including partial redraws.
+    pub damage: bool,
     pub sabotage: Option<Sabotage>,
     /// Draw the target the way Godot's GLES3 renderer draws a 2D render target: design y up the
     /// GL window (row 0 at the bottom is design row 0), through `screen_transform` exactly as
@@ -242,6 +250,20 @@ pub struct ExecStats {
     /// Target tiles and dead group cells drawn into depth buffers, and calls tested against them.
     pub depth_tiles: u32,
     pub depth_tested: u32,
+    /// Full-redraw calls planned (zero when the frame is skipped).
+    pub planned_calls: u32,
+    /// 0 off, 1 full, 2 partial executed, 3 skip.
+    pub damage_mode: u32,
+    /// Planner reason index + 1; executor invalidation reasons start at 100.
+    pub damage_reason: u32,
+    pub damage_regions: u32,
+    pub damage_permille: u32,
+    pub damage_changed: u32,
+    pub damage_us: u32,
+    /// Calls actually issued across partial replay regions.
+    pub damage_calls: u32,
+    /// Back-buffer operations omitted because no replayed reader consumes their output.
+    pub damage_ops_skipped: u32,
 }
 
 impl ExecStats {
@@ -250,6 +272,15 @@ impl ExecStats {
     pub fn as_words(&self) -> &[u32; Self::WORDS] {
         // SAFETY: `#[repr(C)]` of u32 fields only: no padding, size 4·WORDS, alignment 4.
         unsafe { &*(self as *const ExecStats as *const [u32; Self::WORDS]) }
+    }
+
+    /// Whether this frame violates the receiver's expected draw-call count.
+    pub fn parity_violation(&self, expected: u32) -> bool {
+        // Partial replay can issue each planned call once per region, so only Off/Full
+        // compare issued calls. The partial-vs-full pixel oracle checks partial replay.
+        self.damage_mode != 3
+            && (self.planned_calls != expected
+                || (self.damage_mode <= 1 && self.draw_calls != self.planned_calls))
     }
 
     /// The counters as a JSON object (evidence and tests; not for the frame path).
@@ -262,7 +293,8 @@ impl ExecStats {
                 "\"indexBytes\":{},\"uploadCalls\":{},\"scissorChanges\":{},\"blendChanges\":{},",
                 "\"textureBinds\":{},\"samplerBinds\":{},\"glCalls\":{},\"restored\":{},",
                 "\"fenceIssued\":{},\"programBinds\":{},\"bindingUploads\":{},",
-                "\"screenCopies\":{},\"screenMipmaps\":{},\"depthTiles\":{},\"depthTested\":{}}}"
+                "\"screenCopies\":{},\"screenMipmaps\":{},\"depthTiles\":{},\"depthTested\":{},\"plannedCalls\":{},\"damageMode\":{},\"damageReason\":{},",
+                "\"damageRegions\":{},\"damagePermille\":{},\"damageChanged\":{},\"damageUs\":{},\"damageCalls\":{},\"damageOpsSkipped\":{}}}"
             ),
             self.draws,
             self.draw_calls,
@@ -290,6 +322,16 @@ impl ExecStats {
             self.screen_mipmaps,
             self.depth_tiles,
             self.depth_tested,
+            self.planned_calls,
+            self.damage_mode,
+            self.damage_reason,
+            self.damage_regions,
+            self.damage_permille,
+            self.damage_changed,
+            self.damage_us,
+            self.damage_calls,
+            self.damage_ops_skipped,
+
         )
     }
 }
@@ -506,6 +548,8 @@ pub struct Call {
     /// The run's depth level ([`gsw_canvas_draw_list::depth_level`]): every draw of a run has the
     /// same; None for draws the list does not depth-test.
     pub depth: Option<u32>,
+    /// Union of the run's draw bounds in design rows, top-left `[x, y, w, h]`.
+    pub bounds: [i32; 4],
 }
 
 /// What [`plan_calls`] counted besides the calls.
@@ -576,12 +620,84 @@ pub fn plan_calls(
                     index_count: draw.index_count,
                     texture_draw: i as u32,
                     depth,
+                    bounds: [0; 4],
                 });
                 *draw
             }
         });
     }
     counts
+}
+
+/// Fill bounds after planning once, independently of replay regions.
+pub fn call_bounds(list: &DrawList, calls: &mut [Call], facts: &impl gsw_canvas_draw_list::cover::CoverFacts) {
+    use gsw_canvas_draw_list::cover::{PxRect, draw_bounds};
+    for call in calls {
+        let mut bounds = PxRect::EMPTY;
+        let mut left = call.index_count;
+        for d in call.draw as usize..list.draws.len() {
+            if left == 0 { break; }
+            let draw = &list.draws[d];
+            let b = draw_bounds(list, d, facts);
+            if !b.is_empty() {
+                bounds = if bounds.is_empty() { b } else { PxRect {
+                    x0: bounds.x0.min(b.x0), y0: bounds.y0.min(b.y0),
+                    x1: bounds.x1.max(b.x1), y1: bounds.y1.max(b.y1),
+                }};
+            }
+            left -= draw.index_count;
+        }
+        call.bounds = [bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0];
+    }
+}
+
+/// Screen operations and back-buffer producers needed by replayed readers, in plan order.
+/// The back buffer is not retained across frames for correctness: the damage planner sends a
+/// reader to Full unless an earlier Clear/Copy in this frame covers its footprint. Therefore
+/// an omitted operation's output is never read. A Clear starts a new dependency interval.
+pub fn partial_back_work(list: &DrawList, calls: &[Call], regions: &[[i32; 4]]) -> (Vec<bool>, Vec<bool>) {
+    use gsw_canvas_draw_list::{DRAW_TO_BACK_BUFFER, DRAW_GROUP_CLIP, DRAW_GROUP_COMPOSITE, SCREEN_TEXTURE, ScreenOpKind, cover::PxRect};
+    let mut ops = vec![false; list.screen_ops.len()];
+    let mut producers = vec![false; calls.len()];
+    let mut live = false;
+    let mut next = calls.len();
+    let visit = |i: usize, live: &mut bool, producers: &mut [bool]| {
+        let call = &calls[i];
+        let draw = &list.draws[call.draw as usize];
+        if draw.flags & DRAW_TO_BACK_BUFFER != 0 {
+            producers[i] = *live;
+        } else {
+            let reader = if draw.program == BUILTIN_PROGRAM {
+                draw.flags & (DRAW_GROUP_CLIP | DRAW_GROUP_COMPOSITE) != 0
+            } else {
+                list.bindings.get(draw.program as usize - 1).is_some_and(|b|
+                    b.samplers.iter().any(|s| s.texture == SCREEN_TEXTURE))
+            };
+            *live |= reader && regions.iter().any(|&r| PxRect::xywh(call.bounds).intersects(&PxRect::xywh(r)));
+        }
+    };
+    for (i, op) in list.screen_ops.iter().enumerate().rev() {
+        while next > 0 && calls[next-1].draw >= op.before {
+            next -= 1;
+            visit(next, &mut live, &mut producers);
+        }
+        ops[i] = live;
+        if op.kind == ScreenOpKind::Clear { live = false; }
+    }
+    while next > 0 { next -= 1; visit(next, &mut live, &mut producers); }
+    (ops, producers)
+}
+
+/// Intersect design-row scissors. `None` means unscissored; an empty box skips the issue.
+pub fn effective_scissor(draw_scissor: Option<[i32; 4]>, region: Option<[i32; 4]>) -> Option<[i32; 4]> {
+    match (draw_scissor, region) {
+        (Some(a), Some(b)) => {
+            let r = gsw_canvas_draw_list::cover::PxRect::xywh(a)
+                .intersect(&gsw_canvas_draw_list::cover::PxRect::xywh(b));
+            Some([r.x0, r.y0, r.x1.saturating_sub(r.x0).max(0), r.y1.saturating_sub(r.y0).max(0)])
+        }
+        (a, b) => a.or(b),
+    }
 }
 
 /// One `texSubImage2D` of item rows: texel rectangle `x, y, width, 1·height` holding items
@@ -765,6 +881,65 @@ mod tests {
     use super::*;
     use gsw_canvas_draw_list::{DRAW_SCISSOR, Sampler};
 
+    fn parity_drop_draws(damage_mode: u32) {
+        let mut stats = ExecStats {
+            damage_mode,
+            planned_calls: 2,
+            draw_calls: 2,
+            ..ExecStats::default()
+        };
+        assert!(!stats.parity_violation(2));
+        // DropDraws omits the second call without changing the plan.
+        stats.draw_calls = 1;
+        stats.calls_dropped = 1;
+        assert!(stats.parity_violation(2));
+    }
+
+    #[test]
+    fn parity_drop_draws_with_damage_off_is_a_violation() {
+        parity_drop_draws(0);
+    }
+
+    #[test]
+    fn parity_drop_draws_with_full_damage_is_a_violation() {
+        parity_drop_draws(1);
+    }
+
+    #[test]
+    fn parity_skip_does_not_count_as_a_violation() {
+        let stats = ExecStats {
+            damage_mode: 3,
+            ..ExecStats::default()
+        };
+        assert!(!stats.parity_violation(2));
+    }
+
+    #[test]
+    fn parity_partial_replay_may_issue_a_different_call_count() {
+        for draw_calls in [1, 2, 4] {
+            let stats = ExecStats {
+                damage_mode: 2,
+                planned_calls: 2,
+                draw_calls,
+                ..ExecStats::default()
+            };
+            assert!(!stats.parity_violation(2));
+        }
+    }
+
+    #[test]
+    fn parity_planned_count_must_match_expected_except_on_skip() {
+        for damage_mode in 0..=2 {
+            let stats = ExecStats {
+                damage_mode,
+                planned_calls: 1,
+                draw_calls: 1,
+                ..ExecStats::default()
+            };
+            assert!(stats.parity_violation(2));
+        }
+    }
+
     fn draw(first: u32, count: u32) -> Draw {
         Draw {
             first_index: first,
@@ -807,6 +982,7 @@ mod tests {
                     index_count: 12,
                     texture_draw: 0,
                     depth: None,
+                    bounds: [0; 4],
                 },
                 Call {
                     draw: 2,
@@ -814,6 +990,7 @@ mod tests {
                     index_count: 6,
                     texture_draw: 2,
                     depth: None,
+                    bounds: [0; 4],
                 },
                 Call {
                     draw: 4,
@@ -821,6 +998,7 @@ mod tests {
                     index_count: 6,
                     texture_draw: 4,
                     depth: None,
+                    bounds: [0; 4],
                 },
             ]
         );
@@ -902,6 +1080,7 @@ mod tests {
                 index_count: 6,
                 texture_draw: 5,
                 depth: None,
+                    bounds: [0; 4],
             }
         );
     }
@@ -954,6 +1133,7 @@ mod tests {
                     index_count: 3,
                     texture_draw: 0,
                     depth: None,
+                    bounds: [0; 4],
                 },
                 Call {
                     draw: 2,
@@ -961,6 +1141,7 @@ mod tests {
                     index_count: 3,
                     texture_draw: 2,
                     depth: None,
+                    bounds: [0; 4],
                 }
             ]
         );
@@ -994,6 +1175,7 @@ mod tests {
                     index_count: 15,
                     texture_draw: 2,
                     depth: None,
+                    bounds: [0; 4],
                 },
                 Call {
                     draw: 5,
@@ -1001,6 +1183,7 @@ mod tests {
                     index_count: 6,
                     texture_draw: 5,
                     depth: None,
+                    bounds: [0; 4],
                 },
             ]
         );
@@ -1025,6 +1208,7 @@ mod tests {
                 index_count: 6,
                 texture_draw: 0,
                 depth: None,
+                    bounds: [0; 4],
             }]
         );
         assert_eq!(l.merged_draw_count(), 1);
@@ -1086,6 +1270,71 @@ mod tests {
     }
 
     #[test]
+    fn replay_scissor_intersects_without_changing_full_scissors() {
+        let own = [4, 8, 20, 30];
+        assert_eq!(effective_scissor(Some(own), None), Some(own));
+        assert_eq!(effective_scissor(None, None), None);
+        assert_eq!(effective_scissor(None, Some(own)), Some(own));
+        assert_eq!(effective_scissor(Some(own), Some([16, 0, 24, 20])), Some([16, 8, 8, 12]));
+        assert_eq!(effective_scissor(Some(own), Some([24, 8, 4, 4])), Some([24, 8, 0, 4]));
+        assert_eq!(effective_scissor(Some([i32::MAX-2, 0, 20, 4]), Some([0, 0, 8, 4])), Some([i32::MAX-2, 0, 0, 4]));
+    }
+
+    #[test]
+    fn replay_bounds_include_every_draw_in_a_merged_run() {
+        use gsw_canvas_draw_list::{Item, Vertex, cover::{CoverFacts, ProgramFacts, draw_bounds}};
+        struct Facts;
+        impl CoverFacts for Facts {
+            fn opacity(&self, _: u32) -> Option<&gsw_canvas_draw_list::opacity::Opacity> { None }
+            fn program(&self, _: u32) -> ProgramFacts { ProgramFacts::UNKNOWN }
+        }
+        let mut l = list(vec![draw(0, 3), draw(3, 3)], 6);
+        l.target.width = 128; l.target.height = 128;
+        l.items.push(Item { xform: [1.0,0.0,0.0,1.0,0.0,0.0], ..Item::default() });
+        l.vertices = [[4.0,8.0], [16.0,8.0], [4.0,16.0], [80.0,80.0], [96.0,80.0], [80.0,96.0]]
+            .map(|pos| Vertex { pos, ..Vertex::default() }).to_vec();
+        l.indices = (0..6).collect();
+        let mut calls = Vec::new();
+        plan_calls(&l, |_| true, |_| true, &mut calls);
+        assert_eq!(calls.len(), 1);
+        call_bounds(&l, &mut calls, &Facts);
+        let a = draw_bounds(&l, 0, &Facts); let b = draw_bounds(&l, 1, &Facts);
+        assert_eq!(calls[0].bounds, [a.x0, a.y0, b.x1-a.x0, b.y1-a.y0]);
+        l.draws[0].program = 1;
+        plan_calls(&l, |_| true, |_| true, &mut calls);
+        call_bounds(&l, &mut calls, &Facts);
+        assert_eq!(calls[0].bounds, [0, 0, 128, 128]);
+    }
+
+    #[test]
+    fn partial_back_work_follows_readers_until_clear_in_event_order() {
+        use gsw_canvas_draw_list::{DRAW_TO_BACK_BUFFER, DRAW_GROUP_COMPOSITE, ScreenOp, ScreenOpKind, Binding, SamplerUniform, SCREEN_TEXTURE};
+        let mut l = list(vec![draw(0,3); 6], 18);
+        for (i, d) in l.draws.iter_mut().enumerate() { d.first_index = i as u32*3; }
+        l.draws[0].flags = DRAW_TO_BACK_BUFFER;
+        l.draws[1].flags = DRAW_GROUP_COMPOSITE;
+        l.draws[2].flags = DRAW_TO_BACK_BUFFER;
+        l.draws[3].program = 1;
+        l.draws[4].flags = DRAW_TO_BACK_BUFFER; // no following reader
+        l.bindings.push(Binding { samplers: vec![SamplerUniform { name: "screen".into(), texture: SCREEN_TEXTURE, sampler: 0 }], ..Binding::default() });
+        let op = |before, kind| ScreenOp { before, kind, region: [0,0,128,128], mipmaps: false, sample_mips: false };
+        l.screen_ops = vec![op(0,ScreenOpKind::Clear), op(0,ScreenOpKind::Copy), op(1,ScreenOpKind::Mipmaps),
+            op(2,ScreenOpKind::Clear), op(4,ScreenOpKind::Clear), op(6,ScreenOpKind::Copy)];
+        // Explicit calls isolate the event ordering (screen-op boundaries prevent merged runs).
+        let calls: Vec<_> = (0..6).map(|i| Call { draw: i, first_index: i*3, index_count: 3,
+            texture_draw: i, depth: None, bounds: if i < 2 { [0,0,32,32] } else { [64,64,32,32] } }).collect();
+        let (ops, producers) = partial_back_work(&l, &calls, &[[0,0,32,32]]);
+        assert_eq!(ops, [true,true,true,false,false,false]);
+        assert_eq!(producers, [true,false,false,false,false,false]);
+        let (ops, producers) = partial_back_work(&l, &calls, &[[64,64,32,32]]);
+        assert_eq!(ops, [false,false,false,true,false,false]);
+        assert_eq!(producers, [false,false,true,false,false,false]);
+        let (ops, producers) = partial_back_work(&l, &calls, &[]);
+        assert!(ops.iter().all(|&needed| !needed));
+        assert!(producers.iter().all(|&needed| !needed));
+    }
+
+    #[test]
     fn stats_are_a_flat_word_block() {
         let stats = ExecStats {
             draws: 3,
@@ -1093,15 +1342,24 @@ mod tests {
             binding_uploads: 5,
             screen_mipmaps: 7,
             depth_tested: 9,
+            planned_calls: 11,
+            damage_mode: 2,
+            damage_reason: 4,
+            damage_regions: 6,
+            damage_permille: 80,
+            damage_changed: 10,
+            damage_us: 12,
+            damage_calls: 13,
+            damage_ops_skipped: 14,
             ..ExecStats::default()
         };
         // The word block is read by position: a new field goes last and bumps WORDS.
-        assert_eq!(ExecStats::WORDS, 26);
+        assert_eq!(ExecStats::WORDS, 35);
         assert_eq!(stats.as_words()[23], 7);
         assert_eq!(stats.as_words()[0], 3);
         assert_eq!(stats.as_words()[19], 1);
         assert_eq!(stats.as_words()[21], 5);
-        assert_eq!(stats.as_words()[ExecStats::WORDS - 1], 9);
+        assert_eq!(&stats.as_words()[25..], &[9, 11, 2, 4, 6, 80, 10, 12, 13, 14]);
         assert!(stats.to_json().starts_with("{\"draws\":3,"));
     }
 

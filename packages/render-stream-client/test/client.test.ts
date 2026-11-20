@@ -351,6 +351,7 @@ describe("endpoint protocol changes", () => {
     staticParticles?: boolean,
     transparentClear?: boolean,
     staticShaders?: boolean,
+    damageRedraw?: boolean,
   ) {
     vi.useFakeTimers();
     const memory = new WebAssembly.Memory({ initial: 1 });
@@ -448,6 +449,7 @@ describe("endpoint protocol changes", () => {
       ...(resourceHints !== undefined ? { resourceHints } : {}),
       ...(staticParticles !== undefined ? { staticParticles } : {}),
       ...(staticShaders !== undefined ? { staticShaders } : {}),
+      ...(damageRedraw !== undefined ? { damageRedraw } : {}),
       ...(viewports !== undefined ? { viewports } : {}),
       ...(transparentClear !== undefined ? { transparentClear } : {}),
       onStatus: (st) => statuses.push(st),
@@ -690,6 +692,56 @@ describe("endpoint protocol changes", () => {
     expect(settle.call(c, 1)).toBe(false);
     h.c.dispose();
     set.mockRestore();
+  });
+
+  it("damageRedraw validates and reaches creation, runtime and protocol rebuilds", async () => {
+    const set = vi.spyOn(WasmStreamCore.prototype, "setDamageRedraw");
+    try {
+      for (const on of [undefined, false, true]) {
+        const h = mount(
+          13,
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          on,
+        );
+        h.c.connect();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(set).toHaveBeenLastCalledWith(on ?? false);
+        expect(h.instances[0].options.damage_redraw).toBe(
+          on ? true : undefined,
+        );
+        h.c.setDamageRedraw?.(true);
+        expect(set).toHaveBeenLastCalledWith(true);
+        h.c.setEndpoint({ ...endpoint, protocol: 14 });
+        h.c.setDamageRedraw?.(false);
+        expect(set).toHaveBeenLastCalledWith(false);
+        expect(() => h.c.setDamageRedraw?.("yes" as never)).toThrow(
+          /damageRedraw must be a boolean/,
+        );
+        h.c.dispose();
+        const calls = set.mock.calls.length;
+        h.c.setDamageRedraw?.(true);
+        expect(set).toHaveBeenCalledTimes(calls);
+      }
+      expect(() =>
+        mount(
+          13,
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          "no" as never,
+        ),
+      ).toThrow(/damageRedraw must be a boolean/);
+    } finally {
+      set.mockRestore();
+    }
   });
 
   it("staticParticles reaches the core at creation, runtime, and after a protocol rebuild", async () => {

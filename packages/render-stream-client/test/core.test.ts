@@ -33,6 +33,7 @@ function harness(
     readonly live_reset = vi.fn();
     readonly set_log_removed = vi.fn();
     readonly set_async_programs = vi.fn();
+    readonly set_damage_redraw = vi.fn();
     /** What `poll_programs` answers next (J1). */
     settled = 0;
     readonly poll_programs = vi.fn(() => this.settled);
@@ -455,6 +456,19 @@ describe("WasmStreamCore program links (J1)", () => {
     // No emitter is settling: no reapply (the fake core has none either way).
     expect(core.settleParticles(1)).toBe(false);
     expect(libRs).toContain("pub fn reapply(");
+  });
+});
+
+describe("WasmStreamCore damage redraw", () => {
+  it("forwards toggles to wasm and retains the option after a protocol rebuild", () => {
+    const { core, instances } = harness();
+    core.setDamageRedraw(true);
+    expect(instances[0].set_damage_redraw).toHaveBeenLastCalledWith(true);
+    core.beginConnection(14);
+    expect(instances[1].set_damage_redraw).toHaveBeenLastCalledWith(true);
+    core.setDamageRedraw(false);
+    expect(instances[1].set_damage_redraw).toHaveBeenLastCalledWith(false);
+    core.dispose();
   });
 });
 

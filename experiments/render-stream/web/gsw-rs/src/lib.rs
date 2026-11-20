@@ -17,6 +17,7 @@
 //! Nothing decoded crosses the boundary: no meta, no command objects, no draw list, no JSON per
 //! frame.
 
+mod damage_oracle;
 mod program_hold;
 use program_hold::HeldPrograms;
 
@@ -411,6 +412,7 @@ fn parse_options(json: &str) -> Result<Opts, String> {
     };
     o.transcoder = json.contains("\"transcoder\":true");
     o.no_viewports = json.contains("\"viewports\":false");
+    o.exec.damage = json.contains("\"damage_redraw\":true");
     o.transparent_clear = json.contains("\"transparent_clear\":true");
     o.variant_policy = match find_str(json, "variant_policy").as_deref() {
         None | Some("") => None,
@@ -768,6 +770,7 @@ pub struct GswRs {
     static_shaders: bool,
     pinned_shader_time: Option<f32>,
     executor: Option<CanvasItemsExecutor>,
+    oracle: Option<damage_oracle::Oracle>,
     /// G8kp: what this receiver states and selects with (`delivery_json`), set at `start`.
     delivery: DeliveryReport,
     payloads: PayloadStore,
@@ -1061,6 +1064,7 @@ impl GswRs {
             static_shaders: false,
             pinned_shader_time: None,
             executor: None,
+            oracle: None,
             delivery: DeliveryReport::default(),
             payloads: PayloadStore::default(),
             retention: Retention::default(),
@@ -1114,6 +1118,43 @@ impl GswRs {
             motion_on: false,
             motion: MotionFacts::default(),
         })
+    }
+
+    /// Test tool: attach an independent full-redraw executor before starting a session.
+    pub fn enable_damage_oracle(&mut self, canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
+        if self.executor.is_some() || self.oracle.is_some() {
+            return Err(JsValue::from_str("enable_damage_oracle must precede start"));
+        }
+        let mut options = self.opts.exec;
+        options.damage = false;
+        options.sabotage = None;
+        self.oracle = Some(damage_oracle::Oracle::new(canvas, options).map_err(|e| JsValue::from_str(&e))?);
+        self.set_damage_redraw(true);
+        Ok(())
+    }
+
+    /// Execute history outside the comparison window without including it in the report.
+    pub fn damage_oracle_compare(&mut self, on: bool) {
+        if let Some(o) = self.oracle.as_mut() { o.compare = on; }
+    }
+
+    pub fn damage_oracle_json(&self) -> String {
+        self.oracle.as_ref().map_or_else(|| "null".into(), |o| o.json())
+    }
+
+    /// First mismatching target, RGBA8 top down; retained even after later frames execute.
+    pub fn damage_oracle_shot(&self, shadow: bool) -> *const u8 {
+        self.oracle.as_ref().map_or(std::ptr::null(), |o| o.shot(shadow))
+    }
+
+    /// Toggle retained damage planning; the next enabled frame redraws in full.
+    pub fn set_damage_redraw(&mut self, on: bool) {
+        self.opts.exec.damage = on;
+        if let Some(x) = self.executor.as_mut() {
+            let mut options = x.options();
+            options.damage = on;
+            x.set_options(options);
+        }
     }
 
     /// G7g: the window this receiver presents into (receiver.gd's root window: the native leg's
@@ -1268,9 +1309,28 @@ impl GswRs {
         };
         self.held.remove(hash);
         let vertex = (!vertex_glsl.is_empty()).then_some(vertex_glsl);
+        let primary = if self.async_programs {
+            x.begin_program(id, glsl, vertex)
+        } else {
+            x.define_program_with_vertex(id, glsl, vertex)
+        };
+        let shadow = self.oracle.as_mut().map(|o| {
+            if self.async_programs {
+                o.executor.begin_program(id, glsl, vertex)
+            } else {
+                o.executor.define_program_with_vertex(id, glsl, vertex)
+            }
+        });
+        // A shared refusal follows the primary's typed refusal path, as in poll_programs.
+        if primary.is_ok() {
+            if let Some(Err(log)) = shadow {
+                self.error = format!("oracle program {id}: {log}");
+                return -1;
+            }
+        }
         if self.async_programs {
             // J1: the link runs in the driver's background; `poll_programs` registers it.
-            return match x.begin_program(id, glsl, vertex) {
+            return match primary {
                 Ok(()) => {
                     self.next_program += 1;
                     a.mark_linking(hash);
@@ -1289,7 +1349,7 @@ impl GswRs {
                 }
             };
         }
-        match x.define_program_with_vertex(id, glsl, vertex) {
+        match primary {
             Ok(()) => {
                 self.next_program += 1;
                 a.set_program(hash, ProgramEntry::Ready(info));
@@ -1340,7 +1400,23 @@ impl GswRs {
         };
         // The executor reports every begun id exactly once (settled, failed, or recompiled by a
         // context restore, a link polled on a lost context included), so `linking` empties.
-        let done = x.poll_programs();
+        let mut done = x.poll_programs();
+        if let Some(o) = self.oracle.as_mut() {
+            o.primary_links.extend(done);
+            o.shadow_links.extend(o.executor.poll_programs());
+            done = Vec::new();
+            for (id, primary) in std::mem::take(&mut o.primary_links) {
+                if let Some(shadow) = o.shadow_links.remove(&id) {
+                    if primary.is_ok() && shadow.is_err() {
+                        self.error = format!("oracle program {id}: {shadow:?}");
+                        return -1;
+                    }
+                    done.push((id, primary));
+                } else {
+                    o.primary_links.push((id, primary));
+                }
+            }
+        }
         let (mut ready, mut failed) = (0i32, 0i32);
         for (id, result) in done {
             let Some(k) = self.linking.iter().position(|l| l.0 == id) else {
@@ -1628,6 +1704,7 @@ impl GswRs {
         if let Some(x) = self.executor.as_mut() {
             x.free_all_surfaces();
         }
+        if let Some(o) = self.oracle.as_mut() { o.executor.free_all_surfaces(); }
         self.applier = Some(applier);
         self.viewport = Some(viewport);
         self.stats.stream = self.stream_index;
@@ -2923,6 +3000,13 @@ impl GswRs {
         }
         match result {
             Ok(es) => {
+                if let Some(o) = self.oracle.as_mut() {
+                    if let Err(e) = execute_lists(&mut o.executor, a, self.opts.transparent_clear)
+                        .and_then(|_| o.observe(x, &es, self.stats.frame, self.stats.seq, a.viewport().width, a.viewport().height)) {
+                        self.error = format!("damage oracle: {e:?}");
+                        return -1;
+                    }
+                }
                 a.list.consumed();
                 if let Some(set) = a.surfaces.as_mut() {
                     set.consumed();
@@ -2937,11 +3021,11 @@ impl GswRs {
                 self.stats.index_bytes = es.index_bytes;
                 self.totals.draw_calls += u64::from(es.draw_calls);
                 self.totals.texture_uploads += u64::from(es.texture_uploads);
-                // draw-count-parity: executed calls = lowered draws - typed skips - merges, over
+                // draw-count-parity: planned calls = lowered draws - typed skips - merges, over
                 // the lists this execution ran (the root's and its surface passes'), counted
-                // before they are consumed.
+                // before they are consumed. Skip frames plan no calls and retain the prior picture.
                 self.stats.expected_calls = expected;
-                if es.draw_calls != expected {
+                if es.parity_violation(expected) {
                     self.stats.parity_violations += 1;
                     self.totals.parity_violations += 1;
                 }

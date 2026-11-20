@@ -853,3 +853,137 @@ export function changedItems(spec: ItemsCase, frame: number): number {
   }
   return changed;
 }
+
+/** Geometry plus tables used only by the Rust full/partial replay oracle. */
+export interface DamageCase extends ItemsCase {
+  flags: number[];
+  ops: number[][];
+  instanceDraw?: number;
+  depth?: { tiles: number[]; draws: number[] };
+}
+
+export function buildDamageCases(): DamageCase[] {
+  const SCREEN_OPS = 8,
+    TO_BACK = 16,
+    GROUP_CLIP = 32,
+    GROUP_COMPOSITE = 64,
+    INSTANCED = 128;
+  const make = (name: string): DamageCase => {
+    const meshes = [
+      quad(0, 0, 512, 256, { item: 0, colors: solid([0.2, 0.4, 0.7, 0.4]) }),
+      quad(40, 40, 16, 16, { item: 1, colors: solid([1, 0.2, 0.1, 0.6]) }),
+      quad(20, 20, 108, 70, { item: 2, colors: solid([0.2, 1, 0.3, 0.3]) }),
+    ];
+    // Enough disjoint admitted draws that the planner's replay budget permits partial frames.
+    for (let i = 0; i < 24; i++)
+      meshes.push(
+        quad(200 + (i % 8) * 16, 110 + Math.floor(i / 8) * 16, 12, 12, {
+          item: i + 3,
+          colors: solid([0.3, 0.4, 0.8, 0.5]),
+        }),
+      );
+    const items = Array.from({ length: meshes.length }, () => ({
+      xform: IDENTITY,
+      modulate: WHITE,
+    }));
+    return {
+      name,
+      width: 512,
+      height: 256,
+      format: "rgba8",
+      clear: [0.2, 0.1, 0.3, 0.25],
+      textures: [],
+      meshes,
+      flags: meshes.map(() => 0),
+      ops: [],
+      frames: [
+        items,
+        items.map((v, i) =>
+          i === 1 ? { ...v, xform: [1, 0, 0, 1, 16, 0] } : v,
+        ),
+        items.map((v, i) =>
+          i === 1 ? { ...v, xform: [1, 0, 0, 1, 0, 16] } : v,
+        ),
+      ],
+    };
+  };
+  const blend = make("damage-blend");
+  const distant = make("damage-distant");
+  distant.meshes = distant.meshes.map((m, i) =>
+    i === 2
+      ? quad(400, 180, 16, 16, { item: 2, colors: solid([0, 1, 1, 0.5]) })
+      : m,
+  );
+  distant.frames = distant.frames.map((items, f) =>
+    items.map((v, i) =>
+      i === 2 ? { ...v, xform: [1, 0, 0, 1, f * 8, 0] } : v,
+    ),
+  );
+  const scissor = make("damage-scissor");
+  scissor.meshes = scissor.meshes.map((m, i) =>
+    i === 2 ? { ...m, scissor: [48, 24, 65, 64] } : m,
+  );
+  const msdf = make("damage-msdf");
+  msdf.textures = [texture(1, 4, 4, EDGE_TEXELS)];
+  msdf.meshes = msdf.meshes.map((m, i) =>
+    i === 2 ? { ...m, texture: 1, msdf: [4, 0], filter: "linear" } : m,
+  );
+  const instanced = make("damage-instanced");
+  instanced.flags[1] = INSTANCED;
+  instanced.instanceDraw = 1;
+  const depth = make("damage-depth");
+  // A later opaque cover makes the earlier backdrop's tested tile safe on every frame.
+  depth.meshes = depth.meshes.map((m, i) =>
+    i === 3 ? quad(200, 110, 32, 32, { item: 3 }) : m,
+  );
+  depth.depth = { tiles: [208, 112, 16, 16, 0], draws: [0, 0] };
+  const group = (name: string, clip: boolean, two: boolean): DamageCase => {
+    const c = make(name);
+    const meshes = [...c.meshes];
+    meshes[2] = quad(32, 32, 64, 64, {
+      item: 2,
+      colors: solid([1, 1, 1, 0.7]),
+    });
+    c.meshes = meshes;
+    c.flags[1] = SCREEN_OPS | (clip ? 0 : TO_BACK);
+    c.flags[2] = clip ? GROUP_CLIP : GROUP_COMPOSITE;
+    c.ops = [[1, clip ? 0 : 1, 28, 28, 72, 72, 0, 0]];
+    if (two) {
+      meshes.push(
+        quad(368, 176, 16, 16, {
+          item: meshes.length,
+          colors: solid([0.1, 0.8, 1, 0.6]),
+        }),
+      );
+      meshes.push(
+        quad(352, 160, 64, 64, {
+          item: meshes.length,
+          colors: solid([1, 1, 1, 0.7]),
+        }),
+      );
+      c.flags.push(SCREEN_OPS | TO_BACK, GROUP_COMPOSITE);
+      c.ops.push([meshes.length - 2, 1, 348, 156, 72, 72, 0, 0]);
+      c.frames = c.frames.map((items, f) => [
+        ...items,
+        { xform: [1, 0, 0, 1, f === 2 ? 8 : 0, 0], modulate: WHITE },
+        { xform: IDENTITY, modulate: WHITE },
+      ]);
+      // Only the first group changes in f1; only the second changes in f2.
+      c.frames = c.frames.map((items, f) =>
+        f === 2 ? items.map((v, i) => (i === 1 ? c.frames[1][1] : v)) : items,
+      );
+    }
+    return c;
+  };
+  return [
+    blend,
+    distant,
+    scissor,
+    msdf,
+    group("damage-clip", true, false),
+    group("damage-transparent", false, false),
+    depth,
+    instanced,
+    group("damage-two-groups", false, true),
+  ];
+}

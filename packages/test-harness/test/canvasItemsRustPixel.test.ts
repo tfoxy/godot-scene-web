@@ -25,7 +25,7 @@
 // Artifacts (never committed): `artifacts/canvas-items-pixel/<case>-f<frame>-{rust,ts}.png`.
 
 import { execFileSync } from "node:child_process";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Browser, chromium, type Page } from "@playwright/test";
@@ -34,6 +34,7 @@ import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   buildCases,
+  buildDamageCases,
   caseByName,
   changedItems,
   expectedDrawCalls,
@@ -307,6 +308,212 @@ describe.skipIf(!ENABLED)(
         },
       );
       expect(shared.ok).toBe(true);
+    }, 120000);
+
+    it.each(CASES)("damage enabled: %s stays byte-identical", async (name) => {
+      const result = await page.evaluate(
+        (n) => window.__gswCanvasItems.run(n, "", false, true),
+        name,
+      );
+      for (const v of judge(name, result)) {
+        expect(v.shot.differingBytes).toBe(0);
+        expect(v.canvas.differingBytes).toBe(0);
+        expect(v.readback.differingBytes).toBe(0);
+      }
+      for (const frame of result.frames)
+        if (frame.stats.damageMode !== 3)
+          expect(frame.stats.plannedCalls).toBe(
+            expectedDrawCalls(caseByName(name)),
+          );
+      expect(result.frames[0].stats.damageMode).toBe(1);
+    }, 120000);
+
+    it.each(
+      buildDamageCases().flatMap((c) =>
+        [false, true].flatMap((godot) =>
+          (["rgba8", "rgb10a2"] as const).map((format) => ({
+            name: c.name,
+            godot,
+            format,
+          })),
+        ),
+      ),
+    )("partial replay $name orientation=$godot format=$format", async ({
+      name,
+      godot,
+      format,
+    }) => {
+      const compared = await page.evaluate(
+        async ({ name, godot, format }) => {
+          const full = await window.__gswCanvasItems.damageSequence(
+            name,
+            false,
+            "",
+            godot,
+            format,
+          );
+          const partial = await window.__gswCanvasItems.damageSequence(
+            name,
+            true,
+            "",
+            godot,
+            format,
+          );
+          const diff = (a: number[], b: number[]) => {
+            let bytes = 0;
+            let first = "";
+            for (let k = 0; k < a.length; k++)
+              if (a[k] !== b[k]) {
+                bytes++;
+                if (!first) first = `byte ${k}: ${a[k]} vs ${b[k]}`;
+              }
+            return { differingBytes: bytes, first };
+          };
+          return {
+            errors: [full.glError, partial.glError],
+            frames: partial.frames.map((frame, i) => ({
+              target: diff(full.frames[i].target, frame.target),
+              canvas: diff(full.frames[i].canvas, frame.canvas),
+              stats: frame.stats,
+              fullStats: full.frames[i].stats,
+            })),
+          };
+        },
+        { name, godot, format },
+      );
+      await writeFile(
+        join(ARTIFACTS, `${name}-${godot}-${format}-damage.json`),
+        JSON.stringify(compared),
+      );
+      expect(compared.errors).toEqual([0, 0]);
+      for (const [i, frame] of compared.frames.entries()) {
+        expect(frame.target, `${name} f${i} target`).toMatchObject({
+          differingBytes: 0,
+        });
+        expect(frame.canvas, `${name} f${i} canvas`).toMatchObject({
+          differingBytes: 0,
+        });
+        expect(frame.stats.damageMode, `${name} f${i}`).toBe(i === 0 ? 1 : 2);
+        expect(frame.stats.plannedCalls).toBe(frame.fullStats.plannedCalls);
+        if (i > 0) {
+          expect(frame.stats.damageCalls).toBe(frame.stats.drawCalls);
+          expect(frame.stats.damageCalls).toBeGreaterThan(0);
+          if (name === "damage-two-groups") {
+            expect(frame.stats.damageOpsSkipped).toBe(1);
+            expect(frame.stats.screenCopies).toBe(1);
+            expect(frame.fullStats.screenCopies).toBe(2);
+          }
+          if (name === "damage-distant")
+            expect(frame.stats.damageRegions).toBeGreaterThanOrEqual(2);
+        }
+      }
+    }, 120000);
+
+    it("partial replay clear sabotage changes blended mover pixels", async () => {
+      const result = await page.evaluate(async () => {
+        const full = await window.__gswCanvasItems.damageSequence(
+          "damage-blend",
+          false,
+        );
+        const broken = await window.__gswCanvasItems.damageSequence(
+          "damage-blend",
+          true,
+          "damage-no-scissor-clear",
+        );
+        return {
+          mode: broken.frames[1].stats.damageMode,
+          differingBytes: broken.frames[1].target.reduce(
+            (n, b, i) => n + Number(b !== full.frames[1].target[i]),
+            0,
+          ),
+        };
+      });
+      expect(result.mode).toBe(2);
+      expect(result.differingBytes).toBeGreaterThan(0);
+    }, 120000);
+
+    it("identical damage frame skips draw, blit and fence and retains the canvas", async () => {
+      await page.evaluate(() => window.__gswCanvasItems.damageStart());
+      try {
+        const canvas = page.locator("#damage-canvas");
+        const first = await canvas.screenshot();
+        const stats = await page.evaluate(() =>
+          window.__gswCanvasItems.damageNext(false),
+        );
+        const second = await canvas.screenshot();
+        expect(stats.damageMode).toBe(3);
+        expect(stats.drawCalls).toBe(0);
+        expect(stats.plannedCalls).toBe(0);
+        expect(stats.fenceIssued).toBe(0);
+        expect(second).toEqual(first);
+      } finally {
+        await page.evaluate(() => window.__gswCanvasItems.damageEnd());
+      }
+    }, 120000);
+
+    it("texture-op-only damage redraws a referenced texture", async () => {
+      await page.evaluate(() => window.__gswCanvasItems.damageStart());
+      try {
+        const canvas = page.locator("#damage-canvas");
+        const first = await canvas.screenshot();
+        const stats = await page.evaluate(() =>
+          window.__gswCanvasItems.damageNext(true),
+        );
+        const second = await canvas.screenshot();
+        expect([1, 2]).toContain(stats.damageMode);
+        expect(stats.drawCalls).toBeGreaterThan(0);
+        expect(stats.textureUploads).toBe(1);
+        expect(second).not.toEqual(first);
+      } finally {
+        await page.evaluate(() => window.__gswCanvasItems.damageEnd());
+      }
+    }, 120000);
+
+    it.each([
+      false,
+      true,
+    ])("damage invalidation: freeing a sampled surface (all=%s) removes its colour", async (all) => {
+      const result = await page.evaluate(
+        (freeAll) => window.__gswCanvasItems.damageSurfaceFree(freeAll),
+        all,
+      );
+      expect(result.glError).toBe(0);
+      expect(result.before.slice(0, 4)).toEqual([255, 0, 0, 255]);
+      expect(result.steadyStats?.damageMode).toBe(3);
+      expect(byteDiff(result.expected, result.after, 32).differingBytes).toBe(
+        0,
+      );
+      expect(byteDiff(result.expected, result.canvas, 32).differingBytes).toBe(
+        0,
+      );
+      expect(result.stats).toMatchObject({
+        damageMode: 1,
+        damageReason: 100,
+        drawCalls: 1,
+      });
+      expect(result.repeatStats.damageMode).toBe(3);
+    }, 120000);
+
+    it("damage invalidation: disabling DropDraws redraws every call", async () => {
+      const result = await page.evaluate(() =>
+        window.__gswCanvasItems.damageSabotageTransition(),
+      );
+      expect(result.glError).toBe(0);
+      expect(
+        byteDiff(result.expected, result.before, 32).differingBytes,
+      ).toBeGreaterThan(0);
+      expect(byteDiff(result.expected, result.after, 32).differingBytes).toBe(
+        0,
+      );
+      expect(byteDiff(result.expected, result.canvas, 32).differingBytes).toBe(
+        0,
+      );
+      expect(result.stats).toMatchObject({
+        damageMode: 1,
+        damageReason: 104,
+        drawCalls: 2,
+      });
+      expect(result.repeatStats.damageMode).toBe(3);
     }, 120000);
 
     it("recovers from a lost context: refuses while lost, re-creates on restore, needs a full re-send", async () => {

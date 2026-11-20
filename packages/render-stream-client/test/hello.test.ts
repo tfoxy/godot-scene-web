@@ -165,6 +165,15 @@ describe("clientHello", () => {
 });
 
 describe("coreStartOptions (PH2)", () => {
+  it("damage redraw is opt-in and composes with transparent clear", () => {
+    expect(coreStartOptions(16, true, false, false)).toBe(coreStartOptions(16));
+    expect(JSON.parse(coreStartOptions(16, false, true, true))).toMatchObject({
+      damage_redraw: true,
+      transparent_clear: true,
+      viewports: false,
+    });
+  });
+
   it("keeps the default options identical and adds transparent_clear only when enabled", () => {
     for (const protocol of [12, 13, 16]) {
       for (const viewports of [true, false]) {

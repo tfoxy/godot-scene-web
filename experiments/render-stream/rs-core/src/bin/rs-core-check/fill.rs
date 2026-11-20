@@ -45,10 +45,10 @@ fn group_owner_textures(
 /// (`depth_prepass_screens`). Gated group cells also subtract rejected back-buffer fragments,
 /// split by builtin, program and instanced draws in `group_rejected_screens`; use
 /// `--group-cells off` to account only C0 scissors and ordinary cover tiles.
-/// `--damage <file>` also compares every transaction's draws with the previous one's
-/// (`fill::signature`, `fill::damage`) and writes a summary: how many transactions changed
-/// nothing, the damaged area's distribution, and the fill a redraw scissored to the damage
-/// rectangle would cost.
+/// `--damage <file>` plans exact redraw regions, once per `--damage-every N` transactions
+/// (default 1), against the last planned execution. Its summary includes plan fractions, full
+/// reasons and their top five draw/op triggers, region/area/call distributions, structural changes
+/// and scissored fill costs. `--pin-time` holds shader time at the first planned frame for hashing.
 pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
     use gsw_canvas_draw_list::fill::{self, Class, FillOptions};
     use gsw_canvas_draw_list::TextureOp;
@@ -70,6 +70,16 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
         .max(1);
     let cell: u32 = args.get("cell").and_then(|s| s.parse().ok()).unwrap_or(8);
     let damage_out = args.get("damage").map(PathBuf::from);
+    let damage_every = match args.get("damage-every") {
+        None => 1,
+        Some(v) => match v.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                eprintln!("rs-core-check fill: --damage-every must be a positive integer");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
     let draws_dir = args.get("draws").map(PathBuf::from);
     let run = || -> Result<(), wire::Error> {
         let data = std::fs::read(path)
@@ -118,21 +128,14 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
         // Per RGBA8 texture id: (width, height, alpha plane).
         let mut alpha: HashMap<u32, (u32, u32, Vec<u8>)> = HashMap::new();
         let mut revisions: HashMap<u32, u32> = HashMap::new();
-        let mut prev_sig: Option<Vec<fill::DrawSig>> = None;
         let mut n = 0usize;
-        // Damage summary accumulators.
-        let (mut txs, mut unchanged) = (0u64, 0u64);
-        let mut frac_rect: Vec<f64> = Vec::new();
-        let mut frac_cells: Vec<f64> = Vec::new();
-        let mut full_total: Vec<f64> = Vec::new();
-        let mut clip_total: Vec<f64> = Vec::new();
-        let mut changed_draws: Vec<u32> = Vec::new();
-        // The same with TIME-reading programs held still, and the changed draws covering most of
-        // the target (which alone make the damage rectangle the whole target).
-        let mut prev_sig_still: Option<Vec<fill::DrawSig>> = None;
-        let mut frac_rect_still: Vec<f64> = Vec::new();
-        let mut big_changed: Vec<f64> = Vec::new();
-        let mut big_names: HashMap<String, u64> = HashMap::new();
+        let mut damage = DamageRun::new(damage_every, args.get("pin-time").is_some());
+        // `--damage-from`/`--damage-to`: count only plans whose transaction seq falls in the
+        // window (every plan still runs and commits, so the reference list stays continuous).
+        damage.window = (
+            args.get("damage-from").and_then(|s| s.parse().ok()),
+            args.get("damage-to").and_then(|s| s.parse().ok()),
+        );
         for span in &spans[1..] {
             match v.accept(span.bytes(&data), span.offset)? {
                 Accepted::Resource { hash } => {
@@ -210,13 +213,11 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                         }
                     }
                     let slots = a.list.bindings.len();
-                    let (mut screen_slots, mut time_slots) =
-                        (vec![false; slots], vec![false; slots]);
+                    let mut screen_slots = vec![false; slots];
                     for k in 0..slots {
                         if let Some(key) = a.binding_key(k as u32) {
-                            if let Some(&(sc, t)) = shader_use.get(&key.hash) {
+                            if let Some(&(sc, _)) = shader_use.get(&key.hash) {
                                 screen_slots[k] = sc;
-                                time_slots[k] = t;
                             }
                         }
                     }
@@ -300,77 +301,13 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                         ..FillOptions::default()
                     };
                     if damage_out.is_some() {
-                        let sig = fill::signature(&a.list, &revisions, &time_slots);
-                        if let Some(prev) = prev_sig.as_ref() {
-                            let (w, h) = (a.list.target.width, a.list.target.height);
-                            let d = fill::damage(prev, &sig, w, h, 32);
-                            let screen = f64::from(w) * f64::from(h);
-                            txs += 1;
-                            changed_draws.push(d.changed);
-                            if d.changed == 0 {
-                                unchanged += 1;
-                                frac_rect.push(0.0);
-                                frac_cells.push(0.0);
-                                clip_total.push(0.0);
-                            } else {
-                                let r = d.rect.unwrap_or([0, 0, 0, 0]);
-                                frac_rect.push(f64::from(r[2]) * f64::from(r[3]) / screen);
-                                frac_cells.push(d.cells_px / screen);
-                                let clipped = fill::account(
-                                    &a.list,
-                                    &FillOptions {
-                                        clip: Some(r),
-                                        cell: 16,
-                                        ..opts.clone()
-                                    },
-                                );
-                                clip_total.push(clipped.total() / screen);
-                            }
-                            full_total.push(
-                                fill::account(
-                                    &a.list,
-                                    &FillOptions {
-                                        cell: 16,
-                                        ..opts.clone()
-                                    },
-                                )
-                                .total()
-                                    / screen,
-                            );
-                        }
-                        let still = fill::signature(&a.list, &revisions, &[]);
-                        if let (Some(prev), Some(prev_full)) =
-                            (prev_sig_still.as_ref(), prev_sig.as_ref())
-                        {
-                            let (w, h) = (a.list.target.width, a.list.target.height);
-                            let screen = f64::from(w) * f64::from(h);
-                            let d = fill::damage(prev, &still, w, h, 32);
-                            let r = d.rect.unwrap_or([0, 0, 0, 0]);
-                            frac_rect_still.push(f64::from(r[2]) * f64::from(r[3]) / screen);
-                            // Big changed draws of the real signature, by paint index.
-                            let mut count: HashMap<u64, i32> = HashMap::new();
-                            for x in prev_full {
-                                *count.entry(x.hash).or_default() += 1;
-                            }
-                            let mut big = 0.0;
-                            for (k, x) in sig.iter().enumerate() {
-                                let n = count.entry(x.hash).or_default();
-                                if *n > 0 {
-                                    *n -= 1;
-                                    continue;
-                                }
-                                let b = x.bounds;
-                                let area = f64::from((b[2] - b[0]).max(0.0))
-                                    * f64::from((b[3] - b[1]).max(0.0));
-                                if area >= 0.5 * screen {
-                                    big += 1.0;
-                                    *big_names.entry(format!("sig#{k}")).or_default() += 1;
-                                }
-                            }
-                            big_changed.push(big);
-                        }
-                        prev_sig_still = Some(still);
-                        prev_sig = Some(sig);
+                        let facts = FillDamageFacts {
+                            revisions: &revisions,
+                            applier: &a,
+                        };
+                        damage.counting = damage.window.0.is_none_or(|f: i64| seq >= f)
+                            && damage.window.1.is_none_or(|t: i64| seq <= t);
+                        damage.observe(&a.list, &facts, &opts);
                     }
                     let want = match &seqs {
                         Some(list) => list.contains(&seq),
@@ -469,11 +406,16 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                                     one.instanced.push(r);
                                 }
                                 // A one-draw view needs the same range remapping as depth draws.
-                                one.group_cells = a.list.group_cells.iter()
+                                one.group_cells = a
+                                    .list
+                                    .group_cells
+                                    .iter()
                                     .filter(|g| g.draws.contains(&d))
                                     .map(|g| gsw_canvas_draw_list::GroupCells {
-                                        draws: 0..1, rects: g.rects.clone(),
-                                    }).collect();
+                                        draws: 0..1,
+                                        rects: g.rects.clone(),
+                                    })
+                                    .collect();
                                 // Its depth test, if listed (the tiles stay as they are).
                                 one.depth_draws.clear();
                                 if let Some(level) =
@@ -571,41 +513,7 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
             }
         }
         if let Some(p) = damage_out.as_ref() {
-            let q = |v: &mut Vec<f64>, f: f64| -> f64 {
-                if v.is_empty() {
-                    return 0.0;
-                }
-                v.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
-                let x = v[((v.len() as f64 * f) as usize).min(v.len() - 1)];
-                (x * 1000.0).round() / 1000.0
-            };
-            let mean = |v: &[f64]| -> f64 {
-                if v.is_empty() {
-                    0.0
-                } else {
-                    (v.iter().sum::<f64>() / v.len() as f64 * 1000.0).round() / 1000.0
-                }
-            };
-            let mut cd: Vec<f64> = changed_draws.iter().map(|&c| f64::from(c)).collect();
-            let mut big_v: Vec<(&String, &u64)> = big_names.iter().collect();
-            big_v.sort_by(|a, b| b.1.cmp(a.1));
-            let big_top: Vec<J> = big_v
-                .into_iter()
-                .take(12)
-                .map(|(k, n)| json!([k, n]))
-                .collect();
-            let summary = json!({
-                "transactions": txs, "unchanged": unchanged,
-                "changed_draws": {"mean": mean(&cd), "p50": q(&mut cd, 0.5), "p95": q(&mut cd, 0.95)},
-                "damage_rect_screens": {"mean": mean(&frac_rect), "p50": q(&mut frac_rect, 0.5), "p95": q(&mut frac_rect, 0.95)},
-                "damage_cells_screens": {"mean": mean(&frac_cells), "p50": q(&mut frac_cells, 0.5), "p95": q(&mut frac_cells, 0.95)},
-                "fill_full_screens": {"mean": mean(&full_total), "p50": q(&mut full_total, 0.5)},
-                "fill_damage_rect_screens": {"mean": mean(&clip_total), "p50": q(&mut clip_total, 0.5), "p95": q(&mut clip_total, 0.95)},
-                "damage_rect_screens_time_still": {"mean": mean(&frac_rect_still), "p50": q(&mut frac_rect_still, 0.5), "p95": q(&mut frac_rect_still, 0.95)},
-                "big_changed_per_tx": mean(&big_changed),
-                "big_changed_by_paint_index": big_top,
-            });
-            std::fs::write(p, format!("{summary:#}\n"))
+            std::fs::write(p, format!("{:#}\n", damage.report()))
                 .map_err(|e| wire::Error::new("io", e.to_string()))?;
         }
         Ok(())
@@ -617,6 +525,243 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The synthetic program object is immutable for a code hash, so it never needs a relink
+/// revision. Texture revisions include every upload, free and surface alias across skipped draws.
+struct FillDamageFacts<'a> {
+    revisions: &'a std::collections::HashMap<u32, u32>,
+    applier: &'a render_stream_core::apply::Applier,
+}
+impl FillDamageFacts<'_> {
+    fn info(&self, slot: u32) -> Option<&render_stream_core::apply::programs::ProgramInfo> {
+        use render_stream_core::apply::programs::ProgramEntry;
+        let key = self.applier.binding_key(slot)?;
+        match self.applier.program_entry(&key.hash)? {
+            ProgramEntry::Ready(info) => Some(info),
+            _ => None,
+        }
+    }
+}
+impl gsw_canvas_draw_list::damage::DamageFacts for FillDamageFacts<'_> {
+    fn texture_revision(&self, id: u32) -> u32 {
+        self.revisions.get(&id).copied().unwrap_or(0)
+    }
+    fn program(&self, slot: u32) -> gsw_canvas_draw_list::cover::ProgramFacts {
+        use gsw_canvas_draw_list::cover::ProgramFacts;
+        self.info(slot)
+            .map_or(ProgramFacts::UNKNOWN, |p| ProgramFacts {
+                reads_screen: p.screen.is_some(),
+                vertex_stage: p.vertex,
+                alpha: p.alpha,
+            })
+    }
+    fn reads_time(&self, slot: u32) -> bool {
+        self.info(slot).is_some_and(|p| p.time)
+    }
+    fn admitted(&self, _: &gsw_canvas_draw_list::DrawList, _: usize) -> bool {
+        true
+    }
+}
+
+struct DamageRun {
+    planner: gsw_canvas_draw_list::damage::Planner,
+    every: usize,
+    pin_time: bool,
+    pinned_time: Option<f32>,
+    triggers: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<gsw_canvas_draw_list::damage::FullTrigger, usize>,
+    >,
+    transactions: usize,
+    counts: [usize; 3], // Skip, Full, Partial.
+    reasons: std::collections::BTreeMap<String, usize>,
+    structural: usize,
+    regions: Vec<f64>,
+    area: Vec<f64>,
+    calls: Vec<f64>,
+    changed_old: Vec<f64>,
+    changed_new: Vec<f64>,
+    changed: Vec<f64>,
+    full_fill: Vec<f64>,
+    planned_fill: Vec<f64>,
+    partial_fill: Vec<f64>,
+    history_reads: usize,
+    window: (Option<i64>, Option<i64>),
+    counting: bool,
+}
+impl DamageRun {
+    fn new(every: usize, pin_time: bool) -> Self {
+        Self {
+            planner: gsw_canvas_draw_list::damage::Planner::new(),
+            every,
+            pin_time,
+            pinned_time: None,
+            triggers: Default::default(),
+            transactions: 0,
+            counts: [0; 3],
+            reasons: Default::default(),
+            structural: 0,
+            regions: Vec::new(),
+            area: Vec::new(),
+            calls: Vec::new(),
+            changed_old: Vec::new(),
+            changed_new: Vec::new(),
+            changed: Vec::new(),
+            full_fill: Vec::new(),
+            planned_fill: Vec::new(),
+            partial_fill: Vec::new(),
+            history_reads: 0,
+            window: (None, None),
+            counting: true,
+        }
+    }
+    fn observe(
+        &mut self,
+        list: &gsw_canvas_draw_list::DrawList,
+        facts: &impl gsw_canvas_draw_list::damage::DamageFacts,
+        opts: &gsw_canvas_draw_list::fill::FillOptions,
+    ) -> Option<gsw_canvas_draw_list::damage::Plan> {
+        use gsw_canvas_draw_list::{
+            damage::{Plan, PlanOptions},
+            fill,
+        };
+        let serial = self.transactions;
+        self.transactions += 1;
+        if !serial.is_multiple_of(self.every) {
+            return None;
+        }
+        let mut pinned;
+        let list = if self.pin_time {
+            pinned = list.clone();
+            pinned.shader_time = *self.pinned_time.get_or_insert(list.shader_time);
+            &pinned
+        } else {
+            list
+        };
+        let (plan, stats) = self.planner.plan(list, facts, &PlanOptions::default());
+        if !self.counting {
+            self.planner.commit();
+            return Some(plan);
+        }
+        self.structural += usize::from(stats.structural);
+        self.history_reads += stats.history_reads;
+        self.regions.push(stats.region_count as f64);
+        self.area.push(f64::from(stats.area_permille));
+        self.calls.push(if stats.admitted_draws == 0 {
+            0.
+        } else {
+            stats.replayed_draws as f64 / stats.admitted_draws as f64
+        });
+        self.changed_old.push(stats.changed_old as f64);
+        self.changed_new.push(stats.changed_new as f64);
+        self.changed
+            .push((stats.changed_old + stats.changed_new) as f64);
+        let screen = (f64::from(list.target.width) * f64::from(list.target.height)).max(1.);
+        // Keep the diagnostic's existing coarse grid for fill accounting; the planner's own
+        // cell size is independent of this accounting grid and of --every's output cadence.
+        let opts = fill::FillOptions {
+            cell: 16,
+            ..opts.clone()
+        };
+        let full = fill::account(list, &opts).total() / screen;
+        self.full_fill.push(full);
+        let cost = match &plan {
+            Plan::Skip => {
+                self.counts[0] += 1;
+                0.
+            }
+            Plan::Full(reason) => {
+                self.counts[1] += 1;
+                let reason = format!("{reason:?}");
+                *self.reasons.entry(reason.clone()).or_default() += 1;
+                for trigger in &stats.full_triggers {
+                    *self
+                        .triggers
+                        .entry(reason.clone())
+                        .or_default()
+                        .entry(trigger.clone())
+                        .or_default() += 1;
+                }
+                full
+            }
+            Plan::Partial {
+                regions,
+                back_regions,
+            } => {
+                self.counts[2] += 1;
+                let cost = fill::account_partial(list, &opts, regions, back_regions)
+                    .iter()
+                    .sum::<f64>()
+                    / screen;
+                self.partial_fill.push(cost);
+                cost
+            }
+        };
+        self.planned_fill.push(cost);
+        self.planner.commit();
+        Some(plan)
+    }
+    fn top_triggers(&self, reason: &str) -> Vec<J> {
+        let mut entries: Vec<_> = self
+            .triggers
+            .get(reason)
+            .into_iter()
+            .flat_map(|m| m.iter())
+            .collect();
+        entries.sort_by(|(a, ac), (b, bc)| bc.cmp(ac).then_with(|| a.cmp(b)));
+        entries
+            .into_iter()
+            .take(5)
+            .map(|(t, count)| {
+                json!({
+                    "draw": t.draw, "op": t.op, "program_slot": t.program_slot,
+                    "bounds": t.bounds, "count": count,
+                })
+            })
+            .collect()
+    }
+    fn report(&self) -> J {
+        let frames = self.counts.iter().sum::<usize>();
+        let fraction = |n| {
+            if frames == 0 {
+                0.
+            } else {
+                n as f64 / frames as f64
+            }
+        };
+        json!({
+            "transactions": self.transactions, "damage_every": self.every, "frames": frames,
+            "plan_counts": {"skip": self.counts[0], "full": self.counts[1], "partial": self.counts[2]},
+            "plan_fractions": {"skip": fraction(self.counts[0]), "full": fraction(self.counts[1]), "partial": fraction(self.counts[2])},
+            "full_reasons": self.reasons,
+            "pin_time": self.pin_time, "pinned_shader_time": self.pinned_time,
+            "full_triggers": {
+                "ScreenReader": self.top_triggers("ScreenReader"),
+                "HistoryRead": self.top_triggers("HistoryRead"),
+            },
+            "region_count": distribution(&self.regions),
+            "area_permille": distribution(&self.area),
+            "replayed_admitted_ratio": distribution(&self.calls),
+            "structural_change_frames": self.structural,
+            "changed_draws": distribution(&self.changed),
+            "changed_old_draws": distribution(&self.changed_old),
+            "changed_new_draws": distribution(&self.changed_new),
+            "history_reads": self.history_reads,
+            "fill_full_screens": distribution(&self.full_fill),
+            "fill_planned_screens": distribution(&self.planned_fill),
+            "fill_partial_screens": distribution(&self.partial_fill),
+        })
+    }
+}
+fn distribution(values: &[f64]) -> J {
+    if values.is_empty() {
+        return json!({"mean": 0., "p50": 0., "p95": 0.});
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let q = |f: f64| sorted[((sorted.len() as f64 * f) as usize).min(sorted.len() - 1)];
+    json!({"mean": values.iter().sum::<f64>() / values.len() as f64, "p50": q(0.5), "p95": q(0.95)})
 }
 
 /// `fill --draws`: per draw, sums of its screen positions, uvs, vertex colours and item modulates
@@ -699,13 +844,374 @@ pub(crate) fn register_synthetic_programs(
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use render_stream_core::apply::payloads::PayloadStore;
     use render_stream_core::apply::{Applier, Viewport};
     use render_stream_core::state::*;
+
+    #[test]
+    fn damage_cli_samples_transactions_and_writes_planner_summary() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let out = root.join(format!(
+            "../../../.local/damage-summary-{}.json",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+        let args = Args {
+            positional: vec![root
+                .join("../protocol/golden-13/full.rs13")
+                .display()
+                .to_string()],
+            flags: vec![
+                ("damage".into(), out.display().to_string()),
+                ("damage-every".into(), "3".into()),
+                ("seqs".into(), "-999".into()),
+            ],
+        };
+        assert_eq!(cmd_fill(&args), ExitCode::SUCCESS);
+        let report: J = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+        std::fs::remove_file(out).unwrap();
+        let transactions = report["transactions"].as_u64().expect("transaction count");
+        assert!(
+            transactions > 3,
+            "fixture must span multiple planned frames"
+        );
+        assert_eq!(report["damage_every"], 3);
+        assert_eq!(report["frames"], transactions.div_ceil(3));
+        let counts = &report["plan_counts"];
+        assert_eq!(
+            counts["skip"].as_u64().unwrap()
+                + counts["full"].as_u64().unwrap()
+                + counts["partial"].as_u64().unwrap(),
+            report["frames"].as_u64().unwrap()
+        );
+        assert_eq!(report["full_reasons"]["First"], 1);
+        for metric in [
+            "region_count",
+            "area_permille",
+            "replayed_admitted_ratio",
+            "changed_draws",
+            "fill_planned_screens",
+            "fill_partial_screens",
+        ] {
+            for stat in ["mean", "p50", "p95"] {
+                assert!(
+                    report[metric][stat].as_f64().unwrap().is_finite(),
+                    "{metric}.{stat}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn damage_cli_rejects_zero_cadence() {
+        let args = Args {
+            positional: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../protocol/golden-13/full.rs13")
+                .display()
+                .to_string()],
+            flags: vec![
+                ("damage-every".into(), "0".into()),
+                ("seqs".into(), "-999".into()),
+            ],
+        };
+        assert_eq!(cmd_fill(&args), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn damage_cadence_keeps_last_executed_list_and_sums_scissored_fill() {
+        use gsw_canvas_draw_list::{
+            cover::ProgramFacts,
+            damage::{DamageFacts, Plan},
+            fill::{self, FillOptions},
+            Draw, DrawList, Item, Vertex,
+        };
+        struct Facts;
+        impl DamageFacts for Facts {
+            fn texture_revision(&self, _: u32) -> u32 {
+                0
+            }
+            fn program(&self, _: u32) -> ProgramFacts {
+                ProgramFacts::UNKNOWN
+            }
+            fn reads_time(&self, _: u32) -> bool {
+                false
+            }
+            fn admitted(&self, _: &DrawList, _: usize) -> bool {
+                true
+            }
+        }
+        let mut list = DrawList::default();
+        list.target.width = 256;
+        list.target.height = 256;
+        for x in [8., 72., 136., 200.] {
+            let item = list.items.len() as u32;
+            list.items.push(Item {
+                xform: [1., 0., 0., 1., 0., 0.],
+                modulate: [1.; 4],
+                ..Item::default()
+            });
+            let base = list.vertices.len() as u32;
+            for pos in [[x, 8.], [x + 8., 8.], [x + 8., 16.], [x, 16.]] {
+                list.vertices.push(Vertex {
+                    pos,
+                    item,
+                    color: [1.; 4],
+                    ..Vertex::default()
+                });
+            }
+            let first_index = list.indices.len() as u32;
+            list.indices
+                .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+            list.draws.push(Draw {
+                first_index,
+                index_count: 6,
+                ..Draw::default()
+            });
+        }
+        let opts = FillOptions {
+            cell: 16,
+            ..FillOptions::default()
+        };
+        let mut run = DamageRun::new(3, false);
+        assert!(matches!(
+            run.observe(&list, &Facts, &opts),
+            Some(Plan::Full(_))
+        ));
+        list.items[0].xform[4] = 16.;
+        assert_eq!(run.observe(&list, &Facts, &opts), None);
+        list.items[0].xform[4] = 0.;
+        assert_eq!(run.observe(&list, &Facts, &opts), None);
+        assert_eq!(run.observe(&list, &Facts, &opts), Some(Plan::Skip));
+        assert_eq!(run.observe(&list, &Facts, &opts), None);
+        assert_eq!(run.observe(&list, &Facts, &opts), None);
+        list.items[0].xform[4] = 8.;
+        let Some(Plan::Partial { regions, .. }) = run.observe(&list, &Facts, &opts) else {
+            panic!("one moved draw must permit partial redraw");
+        };
+        let expected: f64 = regions
+            .iter()
+            .map(|r| {
+                fill::account(
+                    &list,
+                    &FillOptions {
+                        clip: Some(*r),
+                        ..opts.clone()
+                    },
+                )
+                .total()
+                    / 65536.
+            })
+            .sum();
+        let report = run.report();
+        assert_eq!(
+            report["plan_counts"],
+            json!({"full": 1, "skip": 1, "partial": 1})
+        );
+        assert_eq!(
+            report["fill_partial_screens"]["mean"].as_f64().unwrap(),
+            expected
+        );
+        assert!(expected > 0. && expected < report["fill_full_screens"]["mean"].as_f64().unwrap());
+    }
+
+    struct TimeFacts;
+    impl gsw_canvas_draw_list::damage::DamageFacts for TimeFacts {
+        fn texture_revision(&self, _: u32) -> u32 {
+            0
+        }
+        fn program(&self, _: u32) -> gsw_canvas_draw_list::cover::ProgramFacts {
+            gsw_canvas_draw_list::cover::ProgramFacts {
+                reads_screen: false,
+                vertex_stage: false,
+                alpha: None,
+            }
+        }
+        fn reads_time(&self, _: u32) -> bool {
+            true
+        }
+        fn admitted(&self, _: &gsw_canvas_draw_list::DrawList, _: usize) -> bool {
+            true
+        }
+    }
+    fn damage_quad(l: &mut gsw_canvas_draw_list::DrawList, r: [f32; 4]) {
+        use gsw_canvas_draw_list::{Draw, Item, Vertex};
+        let item = l.items.len() as u32;
+        l.items.push(Item {
+            xform: [1., 0., 0., 1., 0., 0.],
+            modulate: [1.; 4],
+            ..Item::default()
+        });
+        let b = l.vertices.len() as u32;
+        for pos in [
+            [r[0], r[1]],
+            [r[0] + r[2], r[1]],
+            [r[0] + r[2], r[1] + r[3]],
+            [r[0], r[1] + r[3]],
+        ] {
+            l.vertices.push(Vertex {
+                pos,
+                color: [1.; 4],
+                item,
+                ..Vertex::default()
+            });
+        }
+        let first_index = l.indices.len() as u32;
+        l.indices.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
+        l.draws.push(Draw {
+            first_index,
+            index_count: 6,
+            ..Draw::default()
+        });
+    }
+
+    #[test]
+    fn damage_pin_time_uses_first_planned_frame_without_mutating_input() {
+        use gsw_canvas_draw_list::{damage::Plan, fill::FillOptions, Binding, DrawList};
+        let mut l = DrawList::default();
+        l.target.width = 256;
+        l.target.height = 256;
+        for x in [8., 72., 136., 200.] {
+            damage_quad(&mut l, [x, 8., 8., 8.]);
+        }
+        l.draws[0].program = 1;
+        l.bindings.push(Binding {
+            program: 1,
+            post_modulate: [1.; 4],
+            uniforms: vec![],
+            samplers: vec![],
+        });
+        l.shader_time = 12.;
+        let mut pinned = DamageRun::new(3, true);
+        let mut live = DamageRun::new(3, false);
+        let opts = FillOptions::default();
+        pinned.observe(&l, &TimeFacts, &opts);
+        live.observe(&l, &TimeFacts, &opts);
+        for time in [13., 14.] {
+            l.shader_time = time;
+            assert_eq!(pinned.observe(&l, &TimeFacts, &opts), None);
+            assert_eq!(live.observe(&l, &TimeFacts, &opts), None);
+        }
+        l.shader_time = 15.;
+        assert_eq!(pinned.observe(&l, &TimeFacts, &opts), Some(Plan::Skip));
+        assert!(matches!(
+            live.observe(&l, &TimeFacts, &opts),
+            Some(Plan::Partial { .. })
+        ));
+        assert_eq!(l.shader_time, 15.);
+        assert_eq!(pinned.report()["pinned_shader_time"], 12.);
+        let raw: Vec<_> = ["recording", "--pin-time", "--damage", "out.json"]
+            .map(String::from)
+            .to_vec();
+        let args = Args::parse(&raw).expect("boolean pin flag needs no argument");
+        assert_eq!(args.get("pin-time"), Some("1"));
+        assert_eq!(args.get("damage"), Some("out.json"));
+    }
+
+    #[test]
+    fn damage_partial_fill_reports_target_and_back_work_once() {
+        use gsw_canvas_draw_list::{
+            damage::Plan, fill::FillOptions, DrawList, ScreenOp, ScreenOpKind,
+            DRAW_GROUP_COMPOSITE, DRAW_SCREEN_OPS, DRAW_TO_BACK_BUFFER,
+        };
+        let mut l = DrawList::default();
+        l.target.width = 128;
+        l.target.height = 128;
+        damage_quad(&mut l, [96., 96., 8., 8.]);
+        damage_quad(&mut l, [0., 0., 128., 128.]);
+        l.draws[1].flags |= DRAW_TO_BACK_BUFFER | DRAW_SCREEN_OPS;
+        damage_quad(&mut l, [96., 96., 8., 8.]);
+        l.draws[2].flags |= DRAW_GROUP_COMPOSITE;
+        for r in [[8., 8., 8., 8.], [48., 8., 8., 8.], [8., 48., 8., 8.]] {
+            damage_quad(&mut l, r);
+        }
+        l.screen_ops.push(ScreenOp {
+            before: 1,
+            kind: ScreenOpKind::Clear,
+            region: [0; 4],
+            mipmaps: false,
+            sample_mips: false,
+        });
+        let mut run = DamageRun::new(1, false);
+        let opts = FillOptions::default();
+        run.observe(&l, &TimeFacts, &opts);
+        l.items[0].modulate[0] = 0.5;
+        let Some(Plan::Partial {
+            regions,
+            back_regions,
+        }) = run.observe(&l, &TimeFacts, &opts)
+        else {
+            panic!("expected partial plan");
+        };
+        assert_eq!(regions, vec![[96, 96, 32, 32]]);
+        assert_eq!(back_regions, vec![[64, 64, 64, 64]]);
+        // Clear/present: 2*1024; target quads: 2*64; producer: 4096; back clear: 16384.
+        assert_eq!(
+            run.report()["fill_partial_screens"]["mean"],
+            22656. / 16384.
+        );
+        assert_eq!(run.planned_fill[1], 22656. / 16384.);
+    }
+
+    #[test]
+    fn damage_reason_triggers_are_counted_and_limited_to_five() {
+        use gsw_canvas_draw_list::damage::FullTrigger;
+        let mut run = DamageRun::new(1, false);
+        for draw in 0..7 {
+            let t = FullTrigger {
+                draw,
+                op: None,
+                program_slot: Some(draw as u32),
+                bounds: [draw as i32, 0, 8, 8],
+            };
+            run.triggers
+                .entry("ScreenReader".into())
+                .or_default()
+                .insert(t, draw + 1);
+        }
+        let top = run.top_triggers("ScreenReader");
+        assert_eq!(top.len(), 5);
+        assert_eq!(
+            top[0],
+            json!({"draw":6,"op":null,"program_slot":6,"bounds":[6,0,8,8],"count":7})
+        );
+        assert_eq!(top[4]["draw"], 2);
+        assert!(run.top_triggers("HistoryRead").is_empty());
+    }
+
+    #[test]
+    fn damage_history_trigger_report_aggregates_executed_frames() {
+        use gsw_canvas_draw_list::{
+            damage::{FullReason, Plan},
+            fill::FillOptions,
+            DrawList, DRAW_GROUP_COMPOSITE,
+        };
+        let mut l = DrawList::default();
+        l.target.width = 128;
+        l.target.height = 128;
+        damage_quad(&mut l, [8., 8., 8., 8.]);
+        l.draws[0].flags |= DRAW_GROUP_COMPOSITE;
+        let mut run = DamageRun::new(1, false);
+        let opts = FillOptions::default();
+        assert_eq!(
+            run.observe(&l, &TimeFacts, &opts),
+            Some(Plan::Full(FullReason::First))
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                run.observe(&l, &TimeFacts, &opts),
+                Some(Plan::Full(FullReason::HistoryRead))
+            );
+        }
+        assert_eq!(
+            run.report()["full_triggers"]["HistoryRead"],
+            json!([
+                {"draw":0, "op":null, "program_slot":null, "bounds":[8,8,8,8], "count":2}
+            ])
+        );
+    }
 
     #[test]
     fn merged_groups_report_their_own_owner_textures() {

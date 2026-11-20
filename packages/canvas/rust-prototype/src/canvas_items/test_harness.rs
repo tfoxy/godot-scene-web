@@ -2,8 +2,10 @@
 //! for `packages/test-harness/test/canvasItemsRustPixel.test.ts` (byte-identical against the
 //! TypeScript executor). Lists arrive as `PDL1` dumps; texture uploads beside them. Never enable
 //! this feature in a module that ships: these exports would land in it.
-use super::{CanvasItemsExecutor, ExecOptions, FenceState, Sabotage, replace_marking_changes};
-use gsw_canvas_draw_list::{DrawList, pdl1};
+use super::{
+    CanvasItemsExecutor, ExecOptions, FenceState, Sabotage, SurfacePass, replace_marking_changes,
+};
+use gsw_canvas_draw_list::{DrawList, TextureOp, pdl1};
 use wasm_bindgen::prelude::*;
 
 fn js(error: impl std::fmt::Display) -> JsValue {
@@ -41,6 +43,7 @@ impl CanvasItemsTestHarness {
             ExecOptions {
                 sabotage,
                 godot_orientation,
+                ..ExecOptions::default()
             },
         )
         .map_err(js)?;
@@ -48,6 +51,51 @@ impl CanvasItemsTestHarness {
             executor,
             list: DrawList::default(),
         })
+    }
+
+    pub fn set_damage(&mut self, on: bool) {
+        let mut options = self.executor.options();
+        options.damage = on;
+        self.executor.set_options(options);
+    }
+
+    pub fn set_sabotage(&mut self, name: &str) -> Result<(), JsValue> {
+        let mut options = self.executor.options();
+        options.sabotage = Sabotage::parse(name).map_err(js)?;
+        self.executor.set_options(options);
+        Ok(())
+    }
+
+    pub fn alias_surface(&mut self, texture: u32, surface: u32) {
+        self.list.texture_ops.push(TextureOp::Surface {
+            id: texture,
+            surface,
+        });
+    }
+
+    /// Draw one surface pass before the held root, consuming the root on success.
+    pub fn execute_surface(&mut self, surface: u32, pdl: &[u8]) -> Result<String, JsValue> {
+        let mut list = pdl1::decode(pdl).map_err(js)?;
+        list.target.surface = surface;
+        let pass = SurfacePass { list: &list, clear: true };
+        let stats = self.executor
+            .execute_frame(&self.list, &[pass], &[])
+            .map_err(js)?;
+        self.list.consumed();
+        Ok(stats.to_json())
+    }
+
+    /// Free the named surfaces and draw the unchanged held root.
+    pub fn execute_freed(&mut self, freed: &[u32]) -> Result<String, JsValue> {
+        let stats = self.executor
+            .execute_frame(&self.list, &[], freed)
+            .map_err(js)?;
+        self.list.consumed();
+        Ok(stats.to_json())
+    }
+
+    pub fn free_all_surfaces(&mut self) {
+        self.executor.free_all_surfaces();
     }
 
     /// Replace the list with a `PDL1` dump, everything dirty. Queued texture ops are kept.
@@ -86,6 +134,37 @@ impl CanvasItemsTestHarness {
                 level: d[1],
             })
             .collect();
+    }
+
+    /// Test-only replay tables alongside the PDL1 geometry (which has no screen operations).
+    pub fn set_replay_tables(&mut self, json: &str) -> Result<(), JsValue> {
+        use gsw_canvas_draw_list::{ScreenOp, ScreenOpKind, Instance, InstancedDraw};
+        let v: serde_json::Value = serde_json::from_str(json).map_err(js)?;
+        if let Some(flags) = v["flags"].as_array() {
+            for (draw, flags) in self.list.draws.iter_mut().zip(flags) {
+                draw.flags |= flags.as_u64().unwrap_or(0) as u32;
+            }
+        }
+        self.list.screen_ops.clear();
+        if let Some(ops) = v["ops"].as_array() {
+            for op in ops {
+                let n = |i: usize| op[i].as_i64().unwrap_or(0) as i32;
+                self.list.screen_ops.push(ScreenOp {
+                    before: n(0) as u32,
+                    kind: match n(1) { 0 => ScreenOpKind::Copy, 1 => ScreenOpKind::Clear, _ => ScreenOpKind::Mipmaps },
+                    region: [n(2), n(3), n(4), n(5)], mipmaps: n(6) != 0, sample_mips: n(7) != 0,
+                });
+            }
+        }
+        if let Some(draw) = v["instanceDraw"].as_u64() {
+            self.list.instances = vec![Instance::IDENTITY, Instance {
+                xform: [1.0, 0.0, 0.0, 20.0, 0.0, 1.0, 0.0, 0.0],
+                ..Instance::IDENTITY
+            }];
+            self.list.instanced = vec![InstancedDraw { draw: draw as u32, first: 0, count: 2 }];
+            self.list.dirty.instances.add(0, 2);
+        }
+        Ok(())
     }
 
     /// Mark everything dirty (after a restored context).

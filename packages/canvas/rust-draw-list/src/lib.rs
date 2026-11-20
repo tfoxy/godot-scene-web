@@ -1017,6 +1017,7 @@ pub fn merged(run: &Draw, next: &Draw) -> Draw {
 
 pub mod alpha;
 pub mod cover;
+pub mod damage;
 pub mod opacity;
 
 /// `PDL1`: a byte dump of one frame's list for tests and evidence. Never on the frame path. It

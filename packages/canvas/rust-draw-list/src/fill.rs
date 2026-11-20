@@ -12,15 +12,13 @@
 //! the target to the back buffer (a copy, a clear, a mip chain or an open group's draws) ends the
 //! target's pass, and the next target draw starts a new one that must load the target's tiles
 //! again. A coarse coverage grid gives the layers per pixel and the fragments a later opaque draw
-//! hides. [`signature`] and [`damage`] compare two lists for the area a damage-limited redraw
-//! would have to repaint.
+//! hides. [`crate::damage`] plans the regions an exact partial redraw must repaint.
 
 use crate::{
     Blend, DrawList, ScreenOpKind, BUILTIN_PROGRAM, DRAW_GROUP_CLIP, DRAW_GROUP_COMPOSITE,
     DRAW_INSTANCED, DRAW_MSDF, DRAW_SCISSOR, DRAW_TO_BACK_BUFFER, DRAW_UNTEXTURED, SCREEN_TEXTURE,
     WHITE_TEXTURE,
 };
-use std::collections::HashMap;
 
 /// What one pass is, for [`FillReport::px`] and [`FillReport::count`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -372,6 +370,63 @@ fn class_of(list: &DrawList, d: usize, opts: &FillOptions) -> Class {
     }
 }
 
+/// Account a partial replay by class, in device pixels. Target draws, clear and present use
+/// `regions`; back-buffer producer draws use `back_regions`. Screen operations disable the draw
+/// scissor in the executor, so copies, whole back-buffer clears and mip chains are counted once
+/// at their full operation extents. Region sets must each be disjoint, as a damage plan guarantees.
+pub fn account_partial(
+    list: &DrawList,
+    opts: &FillOptions,
+    regions: &[[i32; 4]],
+    back_regions: &[[i32; 4]],
+) -> [f64; CLASSES] {
+    let mut px = [0.; CLASSES];
+    if regions.is_empty() {
+        return px;
+    }
+    let full = account(
+        list,
+        &FillOptions {
+            clip: None,
+            ..opts.clone()
+        },
+    );
+    for class in [Class::Copy, Class::BackBufferClear, Class::Mipmaps] {
+        px[class as usize] = full.px[class as usize];
+    }
+    for region in regions {
+        let report = account(
+            list,
+            &FillOptions {
+                clip: Some(*region),
+                ..opts.clone()
+            },
+        );
+        for class in [
+            Class::Clear,
+            Class::Opaque,
+            Class::Blended,
+            Class::ScreenReader,
+            Class::Program,
+            Class::GroupComposite,
+            Class::Present,
+        ] {
+            px[class as usize] += report.px[class as usize];
+        }
+    }
+    for region in back_regions {
+        let report = account(
+            list,
+            &FillOptions {
+                clip: Some(*region),
+                ..opts.clone()
+            },
+        );
+        px[Class::ToBackBuffer as usize] += report.px[Class::ToBackBuffer as usize];
+    }
+    px
+}
+
 /// Counts what executing `list` touches (see the module docs).
 pub fn account(list: &DrawList, opts: &FillOptions) -> FillReport {
     let (w, h) = (list.target.width, list.target.height);
@@ -648,242 +703,6 @@ pub fn account(list: &DrawList, opts: &FillOptions) -> FillReport {
     r
 }
 
-/// One draw's identity for [`damage`]: a hash of everything that decides its pixels (its state,
-/// its screen-space vertices, colours and uvs, its item modulate, its binding's values, its
-/// textures' revisions and, when its program reads the time, the shader time) and its bounds.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct DrawSig {
-    pub hash: u64,
-    /// `[x0, y0, x1, y1]`, unclipped by the scissor but clipped to the target; empty when the
-    /// draw has no area.
-    pub bounds: [f32; 4],
-}
-
-/// FNV-1a over 64-bit words.
-struct Fnv(u64);
-impl Fnv {
-    fn new() -> Self {
-        Fnv(0xcbf2_9ce4_8422_2325)
-    }
-    fn u(&mut self, v: u64) {
-        for b in v.to_le_bytes() {
-            self.0 ^= u64::from(b);
-            self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
-        }
-    }
-    fn f(&mut self, v: f32) {
-        self.u(u64::from(v.to_bits()));
-    }
-}
-
-/// Every draw's [`DrawSig`] in paint order, plus one per screen operation (hashed with the
-/// draw it precedes). `revisions` maps texture ids to a counter the caller bumps on every
-/// upload; `time_slots` names the binding slots whose program reads the time.
-pub fn signature(
-    list: &DrawList,
-    revisions: &HashMap<u32, u32>,
-    time_slots: &[bool],
-) -> Vec<DrawSig> {
-    let (w, h) = (list.target.width as f32, list.target.height as f32);
-    let mut out = Vec::with_capacity(list.draws.len() + list.screen_ops.len());
-    let mut next_op = 0usize;
-    for (d, draw) in list.draws.iter().enumerate() {
-        while let Some(op) = list.screen_ops.get(next_op) {
-            if op.before as usize > d {
-                break;
-            }
-            next_op += 1;
-            let mut f = Fnv::new();
-            f.u(0x5c);
-            f.u(op.kind as u64);
-            for v in op.region {
-                f.u(v as u64);
-            }
-            f.u(u64::from(op.mipmaps) | u64::from(op.sample_mips) << 1);
-            let r = op.region;
-            out.push(DrawSig {
-                hash: f.0,
-                bounds: [
-                    r[0] as f32,
-                    r[1] as f32,
-                    (r[0] + r[2]) as f32,
-                    (r[1] + r[3]) as f32,
-                ],
-            });
-        }
-        let mut f = Fnv::new();
-        f.u(u64::from(draw.texture));
-        f.u(u64::from(
-            revisions.get(&draw.texture).copied().unwrap_or(0),
-        ));
-        f.u(u64::from(draw.sampler));
-        f.u(u64::from(draw.blend));
-        f.u(u64::from(draw.program));
-        f.u(u64::from(draw.flags));
-        if draw.flags & DRAW_SCISSOR != 0 {
-            for v in draw.scissor {
-                f.u(v as u64);
-            }
-        }
-        f.f(draw.msdf[0]);
-        f.f(draw.msdf[1]);
-        if draw.program != BUILTIN_PROGRAM {
-            let slot = (draw.program - 1) as usize;
-            if let Some(b) = list.bindings.get(slot) {
-                f.u(u64::from(b.program));
-                for c in b.post_modulate {
-                    f.f(c);
-                }
-                for u in &b.uniforms {
-                    match &u.value {
-                        crate::UniformValue::Float(v) => v.iter().for_each(|x| f.f(*x)),
-                        crate::UniformValue::Int(v) => v.iter().for_each(|x| f.u(*x as u64)),
-                    }
-                }
-                for s in &b.samplers {
-                    f.u(u64::from(s.texture));
-                    f.u(u64::from(revisions.get(&s.texture).copied().unwrap_or(0)));
-                }
-            }
-            if time_slots.get(slot).copied().unwrap_or(false) {
-                f.f(list.shader_time);
-            }
-        }
-        let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
-        let mut any = false;
-        for_each_triangle(list, d, |t, item| {
-            any = true;
-            for p in &t {
-                f.u(p[0].to_bits());
-                f.u(p[1].to_bits());
-                bounds = [
-                    bounds[0].min(p[0] as f32),
-                    bounds[1].min(p[1] as f32),
-                    bounds[2].max(p[0] as f32),
-                    bounds[3].max(p[1] as f32),
-                ];
-            }
-            if let Some(it) = list.items.get(item as usize) {
-                it.modulate.iter().for_each(|c| f.f(*c));
-            }
-        });
-        // Colours and uvs of the indexed vertices.
-        let first = draw.first_index as usize;
-        let end = (first + draw.index_count as usize).min(list.indices.len());
-        for &i in &list.indices[first..end] {
-            if let Some(v) = list.vertices.get(i as usize) {
-                v.uv.iter().chain(v.color.iter()).for_each(|c| f.f(*c));
-            }
-        }
-        if draw.flags & DRAW_SCISSOR != 0 {
-            let s = draw.scissor;
-            bounds = [
-                bounds[0].max(s[0] as f32),
-                bounds[1].max(s[1] as f32),
-                bounds[2].min((s[0] + s[2]) as f32),
-                bounds[3].min((s[1] + s[3]) as f32),
-            ];
-        }
-        bounds = [
-            bounds[0].max(0.0),
-            bounds[1].max(0.0),
-            bounds[2].min(w),
-            bounds[3].min(h),
-        ];
-        if !any || bounds[2] <= bounds[0] || bounds[3] <= bounds[1] {
-            bounds = [0.0; 4];
-        }
-        out.push(DrawSig { hash: f.0, bounds });
-    }
-    out
-}
-
-/// What changed between two frames' signatures.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Damage {
-    /// Draws (and operations) present in only one of the two frames.
-    pub changed: u32,
-    /// The union rectangle of their bounds, `[x, y, w, h]` (integer, outward), or `None`.
-    pub rect: Option<[i32; 4]>,
-    /// Pixels of the grid cells their bounds touch (a multi-rectangle damage region).
-    pub cells_px: f64,
-}
-
-/// The draws one of `a` and `b` has and the other lacks (a multiset difference of hashes), with
-/// their bounds unioned.
-pub fn damage(a: &[DrawSig], b: &[DrawSig], width: u32, height: u32, cell: u32) -> Damage {
-    let mut count: HashMap<u64, i32> = HashMap::new();
-    for s in a {
-        *count.entry(s.hash).or_default() += 1;
-    }
-    for s in b {
-        *count.entry(s.hash).or_default() -= 1;
-    }
-    let cell = if cell == 0 { 32 } else { cell };
-    let (gw, gh) = (
-        width.div_ceil(cell) as usize,
-        height.div_ceil(cell) as usize,
-    );
-    let mut cells = vec![false; gw * gh];
-    let mut out = Damage::default();
-    let mut u = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
-    let mut take = |s: &DrawSig, out: &mut Damage| {
-        out.changed += 1;
-        let b = s.bounds;
-        if b[2] <= b[0] || b[3] <= b[1] {
-            return;
-        }
-        u = [
-            u[0].min(b[0]),
-            u[1].min(b[1]),
-            u[2].max(b[2]),
-            u[3].max(b[3]),
-        ];
-        let c = cell as f32;
-        let (x0, y0) = ((b[0] / c) as usize, (b[1] / c) as usize);
-        let (x1, y1) = (
-            (((b[2] / c).ceil() as usize).min(gw)),
-            (((b[3] / c).ceil() as usize).min(gh)),
-        );
-        for gy in y0..y1 {
-            for gx in x0..x1 {
-                cells[gy * gw + gx] = true;
-            }
-        }
-    };
-    let mut left = count.clone();
-    for s in a {
-        let n = left.get_mut(&s.hash).expect("counted");
-        if *n > 0 {
-            *n -= 1;
-            take(s, &mut out);
-        }
-    }
-    for s in b {
-        let n = left.get_mut(&s.hash).expect("counted");
-        if *n < 0 {
-            *n += 1;
-            take(s, &mut out);
-        }
-    }
-    if u[2] > u[0] && u[3] > u[1] {
-        let (x0, y0) = (u[0].floor() as i32, u[1].floor() as i32);
-        let (x1, y1) = (u[2].ceil() as i32, u[3].ceil() as i32);
-        out.rect = Some([x0, y0, x1 - x0, y1 - y0]);
-    }
-    let c = f64::from(cell);
-    for gy in 0..gh {
-        for gx in 0..gw {
-            if cells[gy * gw + gx] {
-                let cw = (c).min(f64::from(width) - gx as f64 * c);
-                let ch = (c).min(f64::from(height) - gy as f64 * c);
-                out.cells_px += cw * ch;
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1017,65 +836,5 @@ mod tests {
         );
         assert_eq!(r.px[Class::Clear as usize], 100.0);
         assert_eq!(r.px[Class::GroupComposite as usize], 0.0);
-    }
-
-    #[test]
-    fn damage_is_the_changed_draws() {
-        let a = list(&[
-            ([0.0, 0.0, 100.0, 50.0], 0, 1.0),
-            ([10.0, 10.0, 5.0, 5.0], 0, 1.0),
-        ]);
-        let mut b = a.clone();
-        let none = HashMap::new();
-        let same = damage(
-            &signature(&a, &none, &[]),
-            &signature(&b, &none, &[]),
-            100,
-            50,
-            32,
-        );
-        assert_eq!(same, Damage::default());
-        // Move the small quad by 10 px: its old and new bounds.
-        b.items[1].xform[4] = 10.0;
-        let d = damage(
-            &signature(&a, &none, &[]),
-            &signature(&b, &none, &[]),
-            100,
-            50,
-            32,
-        );
-        assert_eq!(d.changed, 2);
-        assert_eq!(d.rect, Some([10, 10, 15, 5]));
-        assert_eq!(d.cells_px, 32.0 * 32.0);
-        // A texture revision damages its draws.
-        let mut rev = HashMap::new();
-        rev.insert(WHITE_TEXTURE, 1);
-        let d = damage(
-            &signature(&a, &none, &[]),
-            &signature(&a, &rev, &[]),
-            100,
-            50,
-            32,
-        );
-        assert_eq!(d.changed, 4);
-        // A draw through a time-reading program slot changes with the shader time only.
-        let mut p = a.clone();
-        p.bindings.push(crate::Binding {
-            program: 7,
-            post_modulate: [1.0; 4],
-            uniforms: Vec::new(),
-            samplers: Vec::new(),
-        });
-        p.draws[1].program = 1;
-        let mut q = p.clone();
-        q.shader_time = 1.5;
-        let sig = |l: &DrawList, t: &[bool]| signature(l, &none, t);
-        assert_eq!(
-            damage(&sig(&p, &[false]), &sig(&q, &[false]), 100, 50, 32).changed,
-            0
-        );
-        let d = damage(&sig(&p, &[true]), &sig(&q, &[true]), 100, 50, 32);
-        assert_eq!(d.changed, 2);
-        assert_eq!(d.rect, Some([10, 10, 5, 5]));
     }
 }

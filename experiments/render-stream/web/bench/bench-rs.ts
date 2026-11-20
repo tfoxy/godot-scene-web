@@ -3,6 +3,7 @@
 // render-stream core and the canvas-items executor in ONE wasm module), one transaction per rAF,
 // exactly as web/bench/bench.ts replays it through the TypeScript decoder (`gsw-ts`).
 //
+// ?mode=oracle: streamed partial/full pixel comparison, driven by scripts/damage-oracle.ts.
 // ?mode=bench&arm=gsw-rs|gsw-rs-inline|gsw-rs-base&input=<url>&store=<dir url>&name=<input>
 //   &nonce=<leg nonce>&warmup=1&repeats=1[&shot-frames=10,60,...][&sabotage=drop-draws,...][&prof=1]
 // `gsw-rs-base` (G7o2) is `gsw-rs` on a second build (gate7-bench.ts --rs-build-base, served at
@@ -57,7 +58,7 @@ declare global {
 }
 
 /** The wasm-bindgen surface of `rs-gsw-wasm` (experiments/render-stream/web/gsw-rs/src/lib.rs). */
-interface GswRs extends ProgramHost {
+export interface GswRs extends ProgramHost {
   alloc_recording(len: number): number;
   load(len: number): number;
   reset(): number;
@@ -83,7 +84,7 @@ interface GswRs extends ProgramHost {
   free(): void;
 }
 
-interface GswRsModule {
+export interface GswRsModule {
   default(init: {
     module_or_path: BufferSource;
   }): Promise<{ memory: WebAssembly.Memory }>;
@@ -639,7 +640,12 @@ async function runBench(): Promise<void> {
   });
 }
 
-runBench().catch((e: unknown) => {
+(params.get("mode") === "idle"
+  ? Promise.resolve()
+  : params.get("mode") === "oracle"
+    ? import("./oracle").then(({ runOracle }) => runOracle())
+    : runBench()
+).catch((e: unknown) => {
   const message = e instanceof Error ? e.message : String(e);
   setState({ state: "error", detail: message, error: message });
 });

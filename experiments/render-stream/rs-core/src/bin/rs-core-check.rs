@@ -19,7 +19,7 @@
 //!   rs-core-check lowered <recording> --seqs 8,18,... [--store <dir>]
 //!   rs-core-check state-dump <recording> --seqs 8,18,... --out <dir>
 //!   rs-core-check fill <recording> [--store <dir>] [--seqs 8,18,...] [--every N] [--cell 8]
-//!                      [--damage <summary.json>] [--draws <dir>] [--cover off] [--noop off] [--tiles off]
+//!                      [--damage <summary.json>] [--damage-every N] [--pin-time] [--draws <dir>] [--cover off] [--noop off] [--tiles off]
 //!   rs-core-check motion <recording> [--store <dir>] [--why]
 //!
 //! `goldens` runs golden-2 ... golden-16 (exits non-zero on any failing check). `transcode` (W13a,
@@ -105,7 +105,7 @@ fn usage() -> ExitCode {
          rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]\n  \
          rs-core-check client-diff <recording>... [--store <dir>] [--sabotage ph2-skip-body-digest|ph2-skip-dep-texture|ph2-park-stale|ph2-skip-material-textures]\n  \
          rs-core-check draw-skip-diff <recording>... [--store <dir>] [--every N] [--sabotage ph3-drop-pending]\n  \
-         rs-core-check fill <recording> [--store <dir>] [--seqs a,b] [--every N] [--cell 8] [--damage <summary.json>] [--draws <dir>] [--cover off] [--noop off] [--tiles off] [--group-cells off]\n  \
+         rs-core-check fill <recording> [--store <dir>] [--seqs a,b] [--every N] [--cell 8] [--damage <summary.json>] [--damage-every N] [--pin-time] [--draws <dir>] [--cover off] [--noop off] [--tiles off] [--group-cells off]\n  \
          rs-core-check motion <recording> [--store <dir>] [--why]\n  \
          rs-core-check live-decode <coded> [--expect <recording>] [--bases keep|none] [--repeats N] [--stats <jsonl>] [--sabotage drop-base|wrong-prefix]"
     );
@@ -132,6 +132,7 @@ impl Args {
                     || name == "roundtrip"
                     || name == "baseline"
                     || name == "why"
+                    || name == "pin-time"
                 {
                     flags.push((name.to_string(), "1".to_string()));
                 } else {

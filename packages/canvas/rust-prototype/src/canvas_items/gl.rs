@@ -21,7 +21,7 @@ use super::{
     downscale_factor, downscale_rgba8, downscale_texels_nearest, downscaled_size, gl_enum,
     gl_scissor, gl_scissor_y_up, godot_screen_transform, item_program_fragment,
     item_program_vertex, item_rows_for, item_upload_rects, msdf_fragment, plan_calls,
-    SurfacePass,
+    SurfacePass, drawable, call_bounds, effective_scissor, partial_back_work,
     group_depth::{GroupDepth, depth_ndc},
     program_poll::{link_ready, poll_links},
     item_shaders::{ItemShaders, LinkShaders, ShaderApi},
@@ -32,12 +32,13 @@ use crate::present::{
 };
 use glow::HasContext;
 use gsw_canvas_draw_list::{
-    ANISOTROPY_TEXTURE, BLACK_TEXTURE, BUILTIN_PROGRAM, Binding, Blend, CompressedFormat,
+    ANISOTROPY_TEXTURE, BLACK_TEXTURE, BUILTIN_PROGRAM, Blend, CompressedFormat,
     DepthTile, DRAW_GROUP_CLIP, DRAW_GROUP_COMPOSITE, DRAW_INSTANCED, DRAW_MSDF, DRAW_SCISSOR,
     DRAW_TO_BACK_BUFFER, DRAW_UNTEXTURED, Draw, DrawList, Format, Instance, NORMAL_TEXTURE,
     ROOT_SURFACE, SCREEN_TEXTURE, Sampler, ScreenOp, ScreenOpKind, TRANSPARENT_TEXTURE, Target, TextureOp,
     UniformValue, Vertex, WHITE_TEXTURE, default_texture_texel, premultiplies,
 };
+use gsw_canvas_draw_list::{damage::{DamageFacts, Plan, PlanOptions, Planner}, cover::ProgramFacts};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -1583,6 +1584,58 @@ fn allocate_items(gl: &glow::Context, rows: u32) {
     }
 }
 
+/// Admission and shader facts shared by full call planning and damage snapshots.
+struct FrameFacts<'a> {
+    list: &'a DrawList,
+    textures: &'a HashMap<u32, glow::Texture>,
+    aliases: &'a HashMap<u32, u32>,
+    programs: &'a HashMap<u32, ItemProgram>,
+    texture_revisions: &'a HashMap<u32, u32>,
+    program_revisions: &'a HashMap<u32, u32>,
+}
+impl FrameFacts<'_> {
+    fn known_texture(&self, id: u32) -> bool {
+        id == WHITE_TEXTURE || DEFAULT_TEXTURE_IDS.contains(&id)
+            || self.textures.contains_key(&id) || self.aliases.contains_key(&id)
+    }
+    fn known_binding(&self, program: u32) -> bool {
+        self.list.bindings.get(program as usize - 1).is_some_and(|b| {
+            self.programs.get(&b.program).is_some_and(|p| p.compiled.is_some())
+                && b.samplers.iter().all(|s| s.texture == SCREEN_TEXTURE || self.known_texture(s.texture))
+        })
+    }
+    fn item_program(&self, slot: u32) -> Option<&ItemProgram> {
+        let binding = self.list.bindings.get(slot as usize)?;
+        self.programs.get(&binding.program).filter(|p| p.compiled.is_some())
+    }
+}
+impl gsw_canvas_draw_list::cover::CoverFacts for FrameFacts<'_> {
+    fn opacity(&self, _: u32) -> Option<&gsw_canvas_draw_list::opacity::Opacity> { None }
+    fn program(&self, slot: u32) -> ProgramFacts { DamageFacts::program(self, slot) }
+}
+impl DamageFacts for FrameFacts<'_> {
+    fn texture_revision(&self, id: u32) -> u32 {
+        self.texture_revisions.get(&id).copied().unwrap_or(0)
+    }
+    fn program(&self, slot: u32) -> ProgramFacts {
+        let Some(p) = self.item_program(slot) else { return ProgramFacts::UNKNOWN; };
+        ProgramFacts {
+            reads_screen: self.list.bindings[slot as usize].samplers.iter().any(|s| s.texture == SCREEN_TEXTURE),
+            vertex_stage: p.vertex.is_some(),
+            alpha: None,
+        }
+    }
+    fn reads_time(&self, slot: u32) -> bool {
+        self.item_program(slot).and_then(|p| p.compiled.as_ref()).is_none_or(|p| p.u_time.is_some())
+    }
+    fn program_revision(&self, slot: u32) -> u32 {
+        self.list.bindings.get(slot as usize).and_then(|b| self.program_revisions.get(&b.program)).copied().unwrap_or(0)
+    }
+    fn admitted(&self, list: &DrawList, d: usize) -> bool {
+        drawable(&list.draws[d], list.indices.len(), |id| self.known_texture(id), |p| self.known_binding(p))
+    }
+}
+
 /// The executor. See the module note.
 pub struct CanvasItemsExecutor {
     canvas: web_sys::HtmlCanvasElement,
@@ -1590,6 +1643,11 @@ pub struct CanvasItemsExecutor {
     gl: Gl,
     loss: LossWatch,
     options: ExecOptions,
+    planner: Planner,
+    damage_reason: u32,
+    damage_history_reads: u32,
+    texture_revisions: HashMap<u32, u32>,
+    program_revisions: HashMap<u32, u32>,
     objects: Option<Objects>,
     cache: Cache,
     textures: HashMap<u32, glow::Texture>,
@@ -1651,6 +1709,11 @@ impl CanvasItemsExecutor {
             gl: Gl::new(raw),
             loss,
             options,
+            planner: Planner::new(),
+            damage_reason: if options.damage { 105 } else { 0 },
+            damage_history_reads: 0,
+            texture_revisions: HashMap::new(),
+            program_revisions: HashMap::new(),
             objects: Some(objects),
             cache: Cache::default(),
             textures: HashMap::new(),
@@ -1701,6 +1764,8 @@ impl CanvasItemsExecutor {
         let compiled = compile_item(&self.gl.raw, module, vertex, &mut self.item_shaders);
         self.cache.program = None;
         let compiled = compiled?;
+        let revision = self.program_revisions.entry(id).or_default();
+        *revision = revision.wrapping_add(1);
         if let Some(old) = self.programs.insert(
             id,
             ItemProgram {
@@ -1741,6 +1806,8 @@ impl CanvasItemsExecutor {
         // The driver starts on the commands now, not when the frame's task ends.
         unsafe { self.gl.raw.flush() };
         self.cache.program = None;
+        let revision = self.program_revisions.entry(id).or_default();
+        *revision = revision.wrapping_add(1);
         if let Some(old) = self.programs.insert(
             id,
             ItemProgram {
@@ -1863,8 +1930,15 @@ impl CanvasItemsExecutor {
         }
     }
 
+    /// History-dependent reads found in the last root damage snapshot.
+    pub fn damage_history_reads(&self) -> u32 {
+        self.damage_history_reads
+    }
+
     /// Forget item-space program `id`; draws naming a binding of it are skipped from now on.
     pub fn free_program(&mut self, id: u32) {
+        let revision = self.program_revisions.entry(id).or_default();
+        *revision = revision.wrapping_add(1);
         if let Some(p) = self.programs.remove(&id) {
             self.delete_item(p);
         }
@@ -1880,6 +1954,18 @@ impl CanvasItemsExecutor {
     }
 
     pub fn set_options(&mut self, options: ExecOptions) {
+        if self.options.damage != options.damage {
+            self.planner.invalidate();
+            self.damage_reason = 105;
+        }
+        if self.options.godot_orientation != options.godot_orientation {
+            self.planner.invalidate();
+            self.damage_reason = 103;
+        }
+        if self.options.sabotage != options.sabotage {
+            self.planner.invalidate();
+            self.damage_reason = 104;
+        }
         self.options = options;
     }
 
@@ -1909,6 +1995,8 @@ impl CanvasItemsExecutor {
             if !self.loss.take_restored() {
                 return ContextState::Lost;
             }
+            if self.options.damage { self.planner.invalidate(); }
+            self.damage_reason = 101;
             // Every handle belongs to the dead context: forget them without calling GL.
             self.textures.clear();
             self.surface_aliases.clear();
@@ -1984,6 +2072,22 @@ impl CanvasItemsExecutor {
         surfaces: &[SurfacePass<'_>],
         freed: &[u32],
     ) -> Result<ExecStats, ExecError> {
+        let result = self.execute_frame_inner(root, surfaces, freed);
+        if result.is_err() && self.options.damage {
+            self.planner.invalidate();
+        } else if self.options.damage {
+            self.planner.commit();
+            self.damage_reason = 0;
+        }
+        result
+    }
+
+    fn execute_frame_inner(
+        &mut self,
+        root: &DrawList,
+        surfaces: &[SurfacePass<'_>],
+        freed: &[u32],
+    ) -> Result<ExecStats, ExecError> {
         let mut stats = ExecStats {
             draws: root.draws.len() as u32,
             ..ExecStats::default()
@@ -2024,7 +2128,7 @@ impl CanvasItemsExecutor {
             stats.draws += pass.list.draws.len() as u32;
             let result = self.activate(pass.list.target.surface).and_then(|()| {
                 self.ensure_target(&pass.list.target, false)?;
-                self.run_list(pass.list, pass.clear, &mut stats);
+                self.run_list(pass.list, pass.clear, None, &mut stats);
                 Ok(())
             });
             if let Err(e) = result {
@@ -2037,7 +2141,44 @@ impl CanvasItemsExecutor {
             self.activate(ROOT_SURFACE)?;
         }
         self.ensure_target(&root.target, true)?;
-        self.run_list(root, true, &mut stats);
+        let mut partial = None;
+        if self.options.damage {
+            let reason = if !surfaces.is_empty() { 100 }
+                else if stats.restored != 0 { 101 }
+                else if self.options.sabotage.is_some_and(|s| !matches!(s, Sabotage::DamageNoScissorClear | Sabotage::DamageSkipBackProducers)) { 104 }
+                else { self.damage_reason };
+            if reason != 0 { self.planner.invalidate(); }
+            let started = performance_now();
+            let facts = FrameFacts {
+                list: root, textures: &self.textures, aliases: &self.surface_aliases,
+                programs: &self.programs, texture_revisions: &self.texture_revisions,
+                program_revisions: &self.program_revisions,
+            };
+            let (plan, planned) = self.planner.plan(root, &facts, &PlanOptions::default());
+            self.damage_history_reads = planned.history_reads as u32;
+            stats.damage_us = ((performance_now() - started) * 1000.0) as u32;
+            stats.damage_regions = planned.region_count as u32;
+            stats.damage_permille = planned.area_permille;
+            stats.damage_changed = (planned.changed_old + planned.changed_new) as u32;
+            stats.damage_mode = match plan {
+                Plan::Skip => 3, Plan::Full(_) => 1, Plan::Partial { .. } => 2,
+            };
+            stats.damage_reason = match plan {
+                Plan::Full(r) => if reason != 0 { reason } else { r as u32 + 1 },
+                _ => 0,
+            };
+            if let Plan::Partial { regions, back_regions } = &plan {
+                partial = Some((regions.clone(), back_regions.clone()));
+            }
+            if matches!(plan, Plan::Skip) {
+                self.upload(root, &mut stats);
+                self.version_bindings(root);
+                if let Some(o) = self.objects.as_mut() { o.list.needs_full = false; }
+                stats.gl_calls = self.gl.calls.get();
+                return Ok(stats);
+            }
+        }
+        self.run_list(root, true, partial.as_ref().map(|(r, b)| (r.as_slice(), b.as_slice())), &mut stats);
         self.blit(root.target.format);
         if self.fence.is_none()
             && let Ok(fence) =
@@ -2051,38 +2192,24 @@ impl CanvasItemsExecutor {
     }
 
     /// Upload the active list's dirty ranges, plan its calls and draw them into its target.
-    fn run_list(&mut self, list: &DrawList, clear: bool, stats: &mut ExecStats) {
+    fn run_list(&mut self, list: &DrawList, clear: bool, partial: Option<(&[[i32; 4]], &[[i32; 4]])>, stats: &mut ExecStats) {
         self.upload(list, stats);
         self.version_bindings(list);
         let mut calls = std::mem::take(&mut self.calls);
         let counts = {
-            let textures = &self.textures;
-            let aliases = &self.surface_aliases;
-            let programs = &self.programs;
-            let known_texture = |id: u32| {
-                id == WHITE_TEXTURE
-                    || DEFAULT_TEXTURE_IDS.contains(&id)
-                    || textures.contains_key(&id)
-                    || aliases.contains_key(&id)
+            let facts = FrameFacts {
+                list, textures: &self.textures, aliases: &self.surface_aliases,
+                programs: &self.programs, texture_revisions: &self.texture_revisions,
+                program_revisions: &self.program_revisions,
             };
-            plan_calls(
-                list,
-                known_texture,
-                |program: u32| {
-                    list.bindings
-                        .get(program as usize - 1)
-                        .is_some_and(|b: &Binding| {
-                            programs
-                                .get(&b.program)
-                                .is_some_and(|p| p.compiled.is_some())
-                                && b.samplers
-                                    .iter()
-                                    .all(|s| s.texture == SCREEN_TEXTURE || known_texture(s.texture))
-                        })
-                },
-                &mut calls,
-            )
+            let counts = plan_calls(list, |id| facts.known_texture(id), |p| facts.known_binding(p), &mut calls);
+            // Bounds only feed the partial region loop; a Full or damage-off frame skips the walk.
+            if partial.is_some() {
+                call_bounds(list, &mut calls, &facts);
+            }
+            counts
         };
+        stats.planned_calls += calls.len() as u32;
         stats.draws_merged += counts.merged;
         stats.draws_skipped += counts.skipped;
         // The depth tables: the root list only, on a cleared target that takes a depth buffer.
@@ -2094,7 +2221,7 @@ impl CanvasItemsExecutor {
         let depth = tables && root && clear && self.depth_program_ready() && self.ensure_depth();
         // Group cells use the independent back-buffer depth attachment, including on surfaces.
         let group_depth = !list.group_cells.is_empty() && self.depth_program_ready();
-        self.draw(list, &calls, clear, depth, group_depth, stats);
+        self.draw(list, &calls, clear, depth, group_depth, partial, stats);
         self.calls = calls;
         if let Some(o) = self.objects.as_mut() {
             o.list.needs_full = false;
@@ -2145,11 +2272,13 @@ impl CanvasItemsExecutor {
             return;
         };
         let mut any = false;
+        let mut target_deleted = false;
         for surface in freed {
             if *surface == ROOT_SURFACE || *surface == objects.active {
                 continue;
             }
             if let Some(l) = objects.parked.remove(surface) {
+                target_deleted |= l.target.is_some();
                 l.delete(&self.gl.raw);
                 any = true;
             }
@@ -2157,6 +2286,11 @@ impl CanvasItemsExecutor {
         if any {
             // Deleted handles may sit in the cache: forget everything it holds.
             self.cache = Cache::default();
+        }
+        if target_deleted && self.options.damage {
+            // Root aliases now sample transparent, even if the root draw list is unchanged.
+            self.planner.invalidate();
+            self.damage_reason = 100;
         }
     }
 
@@ -2430,6 +2564,13 @@ impl CanvasItemsExecutor {
 
     fn texture_ops(&mut self, list: &DrawList, stats: &mut ExecStats) {
         for op in &list.texture_ops {
+            let id = match *op {
+                TextureOp::Upload { id, .. } | TextureOp::UploadHalf { id, .. }
+                | TextureOp::UploadCompressed { id, .. } | TextureOp::Free { id }
+                | TextureOp::Surface { id, .. } => id,
+            };
+            let revision = self.texture_revisions.entry(id).or_default();
+            *revision = revision.wrapping_add(1);
             match *op {
                 TextureOp::Upload { id, width, height, .. } => {
                     let texture = match self.textures.get(&id) {
@@ -2603,6 +2744,10 @@ impl CanvasItemsExecutor {
             && t.format == target.format
         {
             return Ok(());
+        }
+        if root && self.options.damage {
+            self.planner.invalidate();
+            self.damage_reason = 102;
         }
         let gl = &self.gl;
         if let Some(old) = objects.list.target.take() {
@@ -2974,6 +3119,7 @@ impl CanvasItemsExecutor {
         clear: bool,
         depth: bool,
         group_depth_ready: bool,
+        partial: Option<(&[[i32; 4]], &[[i32; 4]])>,
         stats: &mut ExecStats,
     ) {
         let Some(objects) = self.objects.as_ref() else {
@@ -3005,16 +3151,27 @@ impl CanvasItemsExecutor {
                 unsafe { gl.c().clear_color(clear[0], clear[1], clear[2], clear[3]) };
                 cache.clear_color = Some(bits);
             }
-            let mut mask = glow::COLOR_BUFFER_BIT;
             if has_depth {
                 if !cache.clear_depth {
                     unsafe { gl.c().clear_depth_f32(0.0) };
                     cache.clear_depth = true;
                 }
                 set_depth_mask(gl, cache, true);
-                mask |= glow::DEPTH_BUFFER_BIT;
             }
-            unsafe { gl.c().clear(mask) };
+            if let Some((regions, _)) = partial {
+                if sabotage != Some(Sabotage::DamageNoScissorClear) {
+                    for &region in regions {
+                        apply_scissor(gl, cache, Some(region), height, godot, stats);
+                        unsafe { gl.c().clear(glow::COLOR_BUFFER_BIT) };
+                    }
+                }
+                // Depth initialization and prepasses always cover the full attachment.
+                set_scissor_enabled(gl, cache, false);
+                if has_depth { unsafe { gl.c().clear(glow::DEPTH_BUFFER_BIT) }; }
+            } else {
+                let mask = glow::COLOR_BUFFER_BIT | if has_depth { glow::DEPTH_BUFFER_BIT } else { 0 };
+                unsafe { gl.c().clear(mask) };
+            }
         }
         // The depth tiles, before any draw (see DepthTile): depth only, at their levels.
         let mut depth_live = has_depth;
@@ -3051,7 +3208,10 @@ impl CanvasItemsExecutor {
         let mut next_op = 0usize;
         let mut group_depth = GroupDepth::default();
         let mut back_depth_live = None;
-        for call in calls.iter() {
+        let skip_back_producers = partial.is_some()
+            && sabotage == Some(Sabotage::DamageSkipBackProducers);
+        let back_work = partial.map(|(regions, _)| partial_back_work(list, calls, regions));
+        for (call_index, call) in calls.iter().enumerate() {
             // The back-buffer operations GLES3 makes before this call's first draw (those of a
             // draw `plan_calls` skipped run here too, in order).
             let mut ran_ops = false;
@@ -3070,9 +3230,13 @@ impl CanvasItemsExecutor {
                         end_depth(gl, cache, fb);
                     }
                 }
-                screen_op(gl, cache, objects, op, godot, stats);
+                if !skip_back_producers && back_work.as_ref().is_none_or(|(ops, _)| ops[next_op]) {
+                    screen_op(gl, cache, objects, op, godot, stats);
+                    ran_ops = true;
+                } else {
+                    stats.damage_ops_skipped += 1;
+                }
                 next_op += 1;
-                ran_ops = true;
             }
             if ran_ops {
                 bind_vertex_array(gl, cache, objects.list.vertex_array);
@@ -3094,6 +3258,7 @@ impl CanvasItemsExecutor {
                 depth_live = false;
                 tested = false;
             }
+            if to_back_buffer && (skip_back_producers || back_work.as_ref().is_some_and(|(_, producers)| !producers[call_index])) { continue; }
             if to_back_buffer {
                 let Some(bb) = objects.list.screen.as_mut() else {
                     // No back buffer (a target of 40 px or less): GLES3 has none to draw into.
@@ -3364,24 +3529,6 @@ impl CanvasItemsExecutor {
                     }
                 }
             }
-            if draw.flags & DRAW_SCISSOR != 0 {
-                set_scissor_enabled(gl, cache, true);
-                let scissor = if godot {
-                    gl_scissor_y_up(draw.scissor)
-                } else {
-                    gl_scissor(draw.scissor, height)
-                };
-                if cache.scissor != Some(scissor) {
-                    unsafe {
-                        gl.c()
-                            .scissor(scissor[0], scissor[1], scissor[2], scissor[3])
-                    };
-                    cache.scissor = Some(scissor);
-                    stats.scissor_changes += 1;
-                }
-            } else {
-                set_scissor_enabled(gl, cache, false);
-            }
             // A listed draw of the builtin program: depth-tested at its level while the tiles
             // hold; every other draw untested.
             let test = tested
@@ -3450,7 +3597,7 @@ impl CanvasItemsExecutor {
                     stats.sampler_binds += 1;
                 }
             }
-            if draw.flags & DRAW_INSTANCED != 0 {
+            let instance_count = if draw.flags & DRAW_INSTANCED != 0 {
                 // Godot's TYPE_MULTIMESH call (rasterizer_canvas_gles3.cpp:1478-1513): the
                 // instance attributes from the range's first instance, divisor 1, then
                 // `glDrawElementsInstanced`; the identity constants again after it.
@@ -3481,30 +3628,36 @@ impl CanvasItemsExecutor {
                         );
                         gl.c().vertex_attrib_divisor(location, 1);
                     }
-                    gl.c().draw_elements_instanced(
-                        glow::TRIANGLES,
-                        call.index_count as i32,
-                        glow::UNSIGNED_INT,
-                        (call.first_index * 4) as i32,
-                        range.count as i32,
-                    );
+                }
+                Some(range.count)
+            } else { None };
+            let own = (draw.flags & DRAW_SCISSOR != 0).then_some(draw.scissor);
+            if let Some((regions, back_regions)) = partial {
+                let regions = if to_back_buffer { back_regions } else { regions };
+                for &region in regions {
+                    if !gsw_canvas_draw_list::cover::PxRect::xywh(call.bounds)
+                        .intersects(&gsw_canvas_draw_list::cover::PxRect::xywh(region)) { continue; }
+                    let rect = effective_scissor(own, Some(region));
+                    if rect.is_some_and(|r| r[2] <= 0 || r[3] <= 0) { continue; }
+                    apply_scissor(gl, cache, rect, height, godot, stats);
+                    issue_call(gl, call, instance_count);
+                    stats.draw_calls += 1;
+                    stats.damage_calls += 1;
+                }
+            } else {
+                // Preserve Full's issue count even for a draw with an empty own scissor.
+                apply_scissor(gl, cache, effective_scissor(own, None), height, godot, stats);
+                issue_call(gl, call, instance_count);
+                stats.draw_calls += 1;
+            }
+            if instance_count.is_some() {
+                unsafe {
                     for k in 0..INSTANCE_ATTRIBUTES {
                         gl.c().disable_vertex_attrib_array(INSTANCE_ATTRIBUTES + k);
                     }
                 }
                 identity_instance(gl.c());
-                stats.draw_calls += 1;
-                continue;
             }
-            unsafe {
-                gl.c().draw_elements(
-                    glow::TRIANGLES,
-                    call.index_count as i32,
-                    glow::UNSIGNED_INT,
-                    (call.first_index * 4) as i32,
-                )
-            };
-            stats.draw_calls += 1;
         }
         if let Some(fb) = back_depth_live {
             end_depth(gl, cache, fb);
@@ -3846,6 +3999,31 @@ fn depth_prepass(
     set_color_mask(gl, cache, true);
     set_depth_mask(gl, cache, false);
     set_depth_test(gl, cache, false);
+}
+
+/// State is prepared once per call; only scissor and the issue vary by replay region.
+fn issue_call(gl: &Gl, call: &Call, instances: Option<u32>) {
+    unsafe {
+        if let Some(count) = instances {
+            gl.c().draw_elements_instanced(glow::TRIANGLES, call.index_count as i32,
+                glow::UNSIGNED_INT, (call.first_index * 4) as i32, count as i32);
+        } else {
+            gl.c().draw_elements(glow::TRIANGLES, call.index_count as i32,
+                glow::UNSIGNED_INT, (call.first_index * 4) as i32);
+        }
+    }
+}
+
+fn apply_scissor(gl: &Gl, cache: &mut Cache, rect: Option<[i32; 4]>, height: u32, godot: bool, stats: &mut ExecStats) {
+    let Some(rect) = rect else { set_scissor_enabled(gl, cache, false); return; };
+
+    set_scissor_enabled(gl, cache, true);
+    let rect = if godot { gl_scissor_y_up(rect) } else { gl_scissor(rect, height) };
+    if cache.scissor != Some(rect) {
+        unsafe { gl.c().scissor(rect[0], rect[1], rect[2], rect[3]) };
+        cache.scissor = Some(rect);
+        stats.scissor_changes += 1;
+    }
 }
 
 fn set_scissor_enabled(gl: &Gl, cache: &mut Cache, enabled: bool) {

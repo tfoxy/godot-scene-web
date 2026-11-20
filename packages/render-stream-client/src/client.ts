@@ -172,6 +172,8 @@ export interface RenderStreamClientOptions {
   /** Pin material TIME to the first carried shader time after enabling. Default false.
    * Particle simulation keeps its carried clock. Change with `setStaticShaders`. */
   staticShaders?: boolean;
+  /** Retain unchanged canvas frames. Defaults to false. */
+  damageRedraw?: boolean;
   /** How much motion per transaction still counts as ambient under `frameCap` (each field
    * optional, defaults: scene content `IDLE_MOTION_MAX_PX` 1 px and `IDLE_COLOR_STEP_MAX` 8/255,
    * animation content `IDLE_ANIMATION_MAX_PX` 128 px and `IDLE_ANIMATION_COLOR_STEP_MAX`
@@ -241,6 +243,7 @@ export interface RenderStreamClient {
   setStaticParticles?(on: boolean): void;
   /** Switch the material TIME pin at runtime. */
   setStaticShaders?(on: boolean): void;
+  setDamageRedraw?(on: boolean): void;
 }
 
 /** The events that count as input for the frame cap, listened to on the canvas's document. */
@@ -322,6 +325,8 @@ export function createRenderStreamClient(
     throw new TypeError(
       "render-stream client: staticShaders must be a boolean",
     );
+  if (typeof (options.damageRedraw ?? false) !== "boolean")
+    throw new TypeError("render-stream client: damageRedraw must be a boolean");
   if (typeof (options.staticParticles ?? false) !== "boolean")
     throw new TypeError(
       "render-stream client: staticParticles must be a boolean",
@@ -378,6 +383,7 @@ class Client implements RenderStreamClient {
   private frameCap: RenderStreamFrameCap;
   private staticParticles: boolean;
   private staticShaders: boolean;
+  private damageRedraw: boolean;
   /** Its bounds (the loop's, once there is one). */
   private frameCapBounds: RenderStreamFrameCapBounds | undefined;
   /** The document the wake listeners are on (null: none, the cap is off). */
@@ -398,6 +404,7 @@ class Client implements RenderStreamClient {
     this.frameCap = o.frameCap ?? "off";
     this.staticParticles = o.staticParticles ?? false;
     this.staticShaders = o.staticShaders ?? false;
+    this.damageRedraw = o.damageRedraw ?? false;
     this.frameCapBounds = o.frameCapBounds;
     this.listenInput();
   }
@@ -424,6 +431,16 @@ class Client implements RenderStreamClient {
     this.staticShaders = on;
     this.core?.setStaticShaders(on);
     this.loop?.wake();
+  }
+
+  setDamageRedraw(on: boolean): void {
+    if (typeof on !== "boolean")
+      throw new TypeError(
+        "render-stream client: damageRedraw must be a boolean",
+      );
+    if (this.disposed || this.damageRedraw === on) return;
+    this.damageRedraw = on;
+    this.core?.setDamageRedraw(on);
   }
 
   setStaticParticles(on: boolean): void {
@@ -602,6 +619,7 @@ class Client implements RenderStreamClient {
             protocol,
             this.o.viewports ?? true,
             this.o.transparentClear ?? false,
+            this.damageRedraw,
           ),
         );
       } catch (e) {
@@ -631,6 +649,7 @@ class Client implements RenderStreamClient {
     );
     this.core.setStaticParticles(this.staticParticles);
     this.core.setStaticShaders(this.staticShaders);
+    this.core.setDamageRedraw(this.damageRedraw);
     this.ext?.bind(this.core);
     // This can precede the session's executor: create its context with the same attributes.
     const gl = canvas.getContext("webgl2", CONTEXT_ATTRIBUTES);

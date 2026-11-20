@@ -192,6 +192,7 @@ export interface StreamCore {
   setStaticParticles?(on: boolean): void;
   /** Pin material TIME while particle simulation keeps the carried clock. */
   setStaticShaders?(on: boolean): void;
+  setDamageRedraw?(on: boolean): void;
   apply(seq: number): void;
   /** What the last `apply` did to the draw list, read after it (`RenderStreamStats`). The
    * returned object may be reused by the next call. Absent: the loop reports none. */
@@ -322,6 +323,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   private staticParticles = false;
   private staticShaders = false;
   private staticShadersDirty = false;
+  private damageRedraw = false;
   private particleUploadReady = false;
   private particleIdlePaused = false;
   private programsHeld = false;
@@ -399,6 +401,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       try {
         if (this.logRemoved) next.set_log_removed(true);
         if (this.motionOn) next.set_motion?.(true);
+        next.set_damage_redraw?.(this.damageRedraw);
         next.set_async_programs?.(true);
         next.set_static_shaders?.(this.staticShaders);
       } catch (e) {
@@ -785,6 +788,11 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     if (this.staticShaders !== on) this.staticShadersDirty = true;
     this.staticShaders = on;
     this.instance?.set_static_shaders?.(on);
+  }
+
+  setDamageRedraw(on: boolean): void {
+    this.damageRedraw = on;
+    this.instance?.set_damage_redraw?.(on);
   }
 
   setStaticParticles(on: boolean): void {

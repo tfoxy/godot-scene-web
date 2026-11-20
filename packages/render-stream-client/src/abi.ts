@@ -45,6 +45,7 @@ export interface GswRs {
   /** Measure each accepted transaction's motion (`motion_ptr`), or stop. Optional: a core built
    * before it has neither method, and the client then reads no motion facts. */
   set_motion?(on: boolean): void;
+  set_damage_redraw?(on: boolean): void;
   /** The motion facts block (`MOTION_FIELDS`) of the last accepted transaction. */
   motion_ptr?(): number;
   /** The motion facts block's size in bytes. Optional: a core without it has only the first four

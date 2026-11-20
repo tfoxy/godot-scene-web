@@ -87,6 +87,7 @@ export function coreStartOptions(
   protocol: number,
   viewports = true,
   transparentClear = false,
+  damageRedraw = false,
 ): string {
   return JSON.stringify({
     digest: "none",
@@ -99,6 +100,7 @@ export function coreStartOptions(
     // other option string is byte for byte what it was.
     ...(viewports ? {} : { viewports: false }),
     ...(transparentClear ? { transparent_clear: true } : {}),
+    ...(damageRedraw ? { damage_redraw: true } : {}),
   });
 }
 
