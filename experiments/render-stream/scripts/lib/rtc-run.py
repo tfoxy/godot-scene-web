@@ -38,6 +38,32 @@ def row(result):
             "unavailable": [], "known_flakes": [], "failing": [] if result["ok"] else failures or ["RTC platform leg failed; see browser results"]}
 
 
+def probe_evidence(out):
+    """Keep handshake observations in the success artifact, without repeated channel churn."""
+    logs = []
+    milestones = {"first-stun", "ice-connected", "dtls-connected", "sctp-up", "channel-open"}
+    for path in sorted(out.glob("*probe.jsonl")):
+        record = {"log": path.name, "milestones": [], "counts": {}, "invalid_lines": 0}
+        seen = set()
+        with path.open() as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                    detail = event.get("detail", event)
+                    name = detail.get("event")
+                    if not name:
+                        continue
+                    record["counts"][name] = record["counts"].get(name, 0) + 1
+                    key = (event.get("source"), name)
+                    if name in milestones and key not in seen:
+                        seen.add(key)
+                        record["milestones"].append(event)
+                except (ValueError, AttributeError, TypeError):
+                    record["invalid_lines"] += 1
+        logs.append(record)
+    return logs
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
@@ -74,6 +100,8 @@ def main():
         return rc == 0
 
     for previous in list(out.glob("*.quiet.jsonl")) + list(out.glob("quiet-lock*.json*")):
+        previous.unlink()
+    for previous in out.glob("*probe.jsonl"):
         previous.unlink()
     for name in ["browsers.json", "sizes.json"]:
         (out / name).unlink(missing_ok=True)
@@ -112,6 +140,9 @@ def main():
                 result["ok"] = False
         locks = read(out / "quiet-lock-summary.json") or {}
         result["lock_wait_s"] = sum(m.get("wait_s_total", 0) for m in locks.get("modes", {}).values())
+        # rtc-<host>.json is uploaded on success and failure by the existing workflow.
+        # Browser results already include every page phase's timing and status.
+        result["probe_events"] = probe_evidence(out)
         result["wall_s"] = round(time.monotonic() - start, 3)
         (out / f"rtc-{host}.json").write_text(json.dumps(result, indent=2) + "\n")
         if args.summary:

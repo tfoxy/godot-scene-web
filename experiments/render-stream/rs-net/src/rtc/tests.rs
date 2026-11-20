@@ -5,6 +5,10 @@ use std::time::Duration;
 use str0m::channel::ChannelConfig;
 use str0m::ice::TransId;
 
+#[cfg(feature = "rtc-diagnostics")]
+#[path = "loss_tests.rs"]
+mod loss_tests;
+
 struct TempDir(PathBuf);
 impl TempDir {
     fn new() -> Self {
@@ -420,5 +424,126 @@ fn invalid_get_chunk_replies_error_then_closes_only_channel() {
             "error"
         );
         assert_eq!(p.engine.peer_count(), 1);
+    }
+}
+/// Diagnostic for a large send window, with immediate datagram delivery and no periodic poll.
+/// Run separately with RS_RTC_SEND_BUFFER so the process-wide budget is fixed before any peer.
+#[test]
+#[cfg(feature = "rtc-diagnostics")]
+fn large_window_get_uses_only_protocol_deadlines() {
+    for chunk in [16_384, 65_536] {
+        let mut p = Pair::new();
+        let start = p.now;
+        let id = p.create(LABEL);
+        let mut requested = false;
+        let mut datagrams = 0_u64;
+        let mut deadlines = 0_u64;
+        let mut last_report = 0;
+        p.client.handle_input(Input::Timeout(p.now)).unwrap();
+        for _ in 0..1_000_000 {
+            let mut activity = false;
+            let client_deadline = loop {
+                match p.client.poll_output().unwrap() {
+                    Output::Transmit(tx) => {
+                        p.engine.receive(p.now, remote(), &tx.contents).unwrap();
+                        datagrams += 1;
+                        activity = true;
+                        break None;
+                    }
+                    Output::Event(Event::ChannelOpen(open, _)) => p.opened.push(open),
+                    Output::Event(Event::ChannelData(data)) => p.messages.push(data),
+                    Output::Event(_) => {}
+                    Output::Timeout(deadline) => break Some(deadline),
+                }
+            };
+            let engine_deadline = loop {
+                match p.engine.poll_output() {
+                    EngineOutput::Transmit(tx) => {
+                        p.client
+                            .handle_input(Input::Receive(
+                                p.now,
+                                Receive::new(Protocol::Udp, local(), remote(), &tx.contents)
+                                    .unwrap(),
+                            ))
+                            .unwrap();
+                        datagrams += 1;
+                        activity = true;
+                        break None;
+                    }
+                    EngineOutput::Event(event) => {
+                        assert_ne!(event["event"], "peer-error", "{event}");
+                    }
+                    EngineOutput::Timeout(deadline) => break deadline,
+                }
+            };
+            if !requested && p.opened.contains(&id) {
+                p.send(
+                    id,
+                    false,
+                    json!({"t":"get","n":8_388_608,"c":chunk})
+                        .to_string()
+                        .as_bytes(),
+                );
+                requested = true;
+                activity = true;
+            }
+            let delivered: usize = p
+                .messages
+                .iter()
+                .filter(|m| m.binary)
+                .map(|m| m.data.len())
+                .sum();
+            if delivered >= last_report + 1_048_576 || (!activity && requested) {
+                let peer = p.engine.peers.get_mut(&remote()).unwrap();
+                let buffered: usize = peer
+                    .channels
+                    .keys()
+                    .map(|id| peer.rtc.channel(*id).unwrap().buffered_amount())
+                    .sum();
+                eprintln!("budget={} chunk={} virtual_ms={} datagrams={} deadlines={} generated={} delivered={} buffered={}",
+                    send_budget(), chunk, p.now.duration_since(start).as_millis(), datagrams, deadlines,
+                    peer.generated_get_bytes, delivered, buffered);
+                last_report = delivered;
+            }
+            if p.messages.iter().any(|m| !m.binary) {
+                assert_eq!(delivered, 8_388_608);
+                for (index, byte) in p
+                    .messages
+                    .iter()
+                    .filter(|m| m.binary)
+                    .flat_map(|m| &m.data)
+                    .enumerate()
+                {
+                    assert_eq!(*byte, (index & 255) as u8);
+                }
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&p.messages.last().unwrap().data).unwrap(),
+                    json!({"t":"end","n":8_388_608})
+                );
+                break;
+            }
+            assert!(
+                p.now.duration_since(start) < Duration::from_secs(20),
+                "transfer stalled: delivered={delivered}, budget={}, chunk={chunk}",
+                send_budget()
+            );
+            if activity {
+                continue;
+            }
+            let next = client_deadline
+                .into_iter()
+                .chain(engine_deadline)
+                .min()
+                .expect("live protocol deadline");
+            assert!(next >= p.now, "deadline went backwards");
+            p.now = next;
+            deadlines += 1;
+            p.client.handle_input(Input::Timeout(p.now)).unwrap();
+            p.engine.timeout(p.now);
+        }
+        assert!(
+            p.messages.iter().any(|m| !m.binary),
+            "pump did not complete"
+        );
     }
 }

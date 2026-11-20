@@ -1,6 +1,9 @@
 //! Sans-IO ICE-lite endpoint. Authentication precedes peer allocation; there is no SDP input.
 
+mod host;
 mod identity;
+mod milestones;
+pub use host::grc_net_rtc_v1;
 pub use identity::{credentials, Identity};
 
 use std::collections::{HashMap, VecDeque};
@@ -8,6 +11,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
 
+use milestones::SctpTrace;
 use serde_json::{json, Value};
 use str0m::channel::{ChannelData, ChannelId};
 use str0m::crypto::{CryptoProvider, Fingerprint};
@@ -56,6 +60,14 @@ pub fn classify(data: &[u8]) -> DatagramKind {
 }
 
 pub fn allowed_ip(ip: IpAddr) -> bool {
+    // A host may report an IPv4 sender through an IPv6 dual-stack socket.
+    let ip = match ip {
+        IpAddr::V6(ip) => ip
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(ip)),
+        ip => ip,
+    };
     !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast()
 }
 
@@ -75,6 +87,7 @@ pub struct Engine {
 
 struct Peer {
     rtc: Rtc,
+    trace: SctpTrace,
     deadline: Option<Instant>,
     channels: HashMap<ChannelId, Channel>,
     opened: u64,
@@ -147,6 +160,7 @@ impl Engine {
                 source,
                 Peer {
                     rtc,
+                    trace: SctpTrace::default(),
                     deadline: None,
                     channels: HashMap::new(),
                     opened: 0,
@@ -156,7 +170,7 @@ impl Engine {
                 },
             );
             self.events
-                .push_back(json!({"event":"peer-created", "source":source.to_string()}));
+                .push_back(json!({"event":"first-stun", "source":source.to_string()}));
         }
         let Ok(receive) = Receive::new(Protocol::Udp, source, self.local, data) else {
             return Ok(());
@@ -224,7 +238,12 @@ impl Engine {
             }
             peer.pump();
             loop {
-                match peer.rtc.poll_output() {
+                let (output, sctp_up) = peer.trace.observe(|| peer.rtc.poll_output());
+                if sctp_up {
+                    self.events
+                        .push_back(json!({"event":"sctp-up", "source":source.to_string()}));
+                }
+                match output {
                     Ok(Output::Transmit(transmit)) => return EngineOutput::Transmit(transmit),
                     Ok(Output::Timeout(deadline)) => {
                         peer.deadline = Some(deadline);
@@ -232,9 +251,9 @@ impl Engine {
                     }
                     Ok(Output::Event(event)) => {
                         if let Some(event) = peer.event(event, peers) {
-                            return EngineOutput::Event(
-                                json!({"source":source.to_string(), "detail":event}),
-                            );
+                            self.events
+                                .push_back(json!({"source":source.to_string(), "detail":event}));
+                            return EngineOutput::Event(self.events.pop_front().unwrap());
                         }
                         peer.pump();
                     }
@@ -295,9 +314,11 @@ impl Peer {
                 if state == IceConnectionState::Disconnected {
                     self.rtc.disconnect();
                 }
-                Some(json!({"event":"ice-state", "state":format!("{state:?}")}))
+                Some(
+                    json!({"event":if matches!(state, IceConnectionState::Connected | IceConnectionState::Completed) { "ice-connected" } else { "ice-state" }, "state":format!("{state:?}")}),
+                )
             }
-            Event::Connected => Some(json!({"event":"connected"})),
+            Event::Connected => Some(json!({"event":"dtls-connected"})),
             Event::ChannelBufferedAmountLow(_) => None,
             _ => None,
         }

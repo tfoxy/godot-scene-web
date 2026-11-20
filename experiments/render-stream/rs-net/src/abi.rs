@@ -198,3 +198,77 @@ pub unsafe fn write_error(error: *mut c_char, cap: usize, msg: &str) {
     let dst = std::slice::from_raw_parts_mut(error, cap);
     fill_c_array(dst, msg);
 }
+
+/// Socket-free RTC ABI; field order is pinned against grc_net_rtc.h.
+#[cfg(feature = "rtc")]
+pub use rtc::*;
+#[cfg(feature = "rtc")]
+mod rtc {
+    use super::*;
+
+    pub const GRC_NET_RTC_ABI_VERSION: u32 = 1;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct GrcRtcAddr {
+        pub family: u8,
+        pub _r: u8,
+        pub port: u16,
+        pub addr: [u8; 16],
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GrcRtcCallbacksV1 {
+        pub abi: u32,
+        pub user: *mut c_void,
+        pub transmit:
+            Option<unsafe extern "C" fn(*mut c_void, *const GrcRtcAddr, *const u8, usize)>,
+        pub peer: Option<unsafe extern "C" fn(*mut c_void, u32, c_int, *const GrcRtcAddr)>,
+        pub dc_open: Option<unsafe extern "C" fn(*mut c_void, u32, u32, *const c_char, usize)>,
+        pub dc_message:
+            Option<unsafe extern "C" fn(*mut c_void, u32, u32, c_int, *const u8, usize)>,
+        pub dc_low: Option<unsafe extern "C" fn(*mut c_void, u32, u32)>,
+        pub dc_closed: Option<unsafe extern "C" fn(*mut c_void, u32, u32)>,
+        pub log: Option<unsafe extern "C" fn(*mut c_void, c_int, *const c_char, usize)>,
+    }
+
+    #[repr(C)]
+    pub struct GrcRtcConfigV1 {
+        pub cert_der: *const u8,
+        pub cert_len: usize,
+        pub key_pkcs8: *const u8,
+        pub key_len: usize,
+        pub ice_ufrag: *const c_char,
+        pub ice_pwd: *const c_char,
+        pub local_candidate: GrcRtcAddr,
+        pub max_peers: u32,
+        pub recv_max_message: u32,
+        pub dc_low_threshold: u32,
+        pub sctp_send_budget: u32,
+    }
+
+    #[repr(C)]
+    pub struct GrcRtcV1 {
+        pub abi: u32,
+        pub create: unsafe extern "C" fn(
+            *const GrcRtcConfigV1,
+            *const GrcRtcCallbacksV1,
+            *mut *mut c_void,
+            *mut c_char,
+            usize,
+        ) -> c_int,
+        pub input: unsafe extern "C" fn(
+            *mut c_void,
+            *const GrcRtcAddr,
+            *const GrcRtcAddr,
+            *const u8,
+            usize,
+        ) -> c_int,
+        pub send: unsafe extern "C" fn(*mut c_void, u32, u32, c_int, *const u8, usize) -> c_int,
+        pub buffered: unsafe extern "C" fn(*mut c_void, u32, u32) -> u64,
+        pub close_dc: unsafe extern "C" fn(*mut c_void, u32, u32),
+        pub close_peer: unsafe extern "C" fn(*mut c_void, u32),
+        pub destroy: unsafe extern "C" fn(*mut c_void),
+    }
+}

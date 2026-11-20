@@ -4,8 +4,8 @@
 # patched wtransport is vendored in rs-net/vendor/), installed as
 # capture/build/librender_stream_net.so -- beside librender_stream_capture.so, where the capture
 # looks for it when GRC_LIVE_CARRIERS lists `wt` or GRC_LIVE_TLS_CERT is set (wss, CAR4; else
-# GRC_LIVE_NET_MODULE). It exports grc_net_module_v1 and grc_net_tls_v1, nothing else. Also builds the
-# wtransport probe client rs-net/target/release/rs-net-probe (scripts/test/self-test-wt-interop.ts)
+# GRC_LIVE_NET_MODULE). It exports grc_net_module_v1, grc_net_tls_v1 and grc_net_rtc_v1,
+# nothing else. Also builds the wtransport probe client rs-net/target/release/rs-net-probe (scripts/test/self-test-wt-interop.ts)
 # and, unless --no-test, runs the crate's tests (a wtransport client against an in-crate fake host).
 #
 # Usage: experiments/render-stream/scripts/build-rs-net.sh [--target linux|windows|macos] [--no-test]
@@ -69,7 +69,7 @@ if [ "$target" = macos ]; then
     minimum=10.15
     [ "$triple" != aarch64-apple-darwin ] || minimum=11.0
     SDKROOT="$sdk" MACOSX_DEPLOYMENT_TARGET="$minimum" \
-      cargo build --offline --locked --release --target "$triple" --manifest-path "$NET/Cargo.toml"
+      cargo build --offline --locked --release --features rtc --target "$triple" --manifest-path "$NET/Cargo.toml"
   done
   case "$(uname -m)" in
     arm64) host_triple=aarch64-apple-darwin; minimum=11.0 ;;
@@ -78,7 +78,7 @@ if [ "$target" = macos ]; then
   esac
   if [ "$test" = 1 ]; then
     SDKROOT="$sdk" MACOSX_DEPLOYMENT_TARGET="$minimum" \
-      cargo test --offline --locked --release --target "$host_triple" --manifest-path "$NET/Cargo.toml"
+      cargo test --offline --locked --release --features rtc --target "$host_triple" --manifest-path "$NET/Cargo.toml"
   fi
   install_tmp="$(mktemp "$OUT/librender_stream_net.dylib.XXXXXX")"
   trap 'rm -f "${install_tmp}"' EXIT
@@ -134,19 +134,21 @@ if [ "$target" = windows ]; then
   # Keep the cross flags local to this invocation. -static also covers llvm-mingw's unwind and
   # compiler runtime; the PE import gate below proves that no runtime DLL escaped the link.
   export CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-static'
-  cargo build --offline --locked --release --target "$triple" --manifest-path "$NET/Cargo.toml"
-  cargo test --offline --locked --release --no-run --target "$triple" \
+  cargo build --offline --locked --release --features rtc --target "$triple" --manifest-path "$NET/Cargo.toml"
+  cargo test --offline --locked --release --features rtc --no-run --target "$triple" \
     --manifest-path "$NET/Cargo.toml" --message-format=json >"$OUT/test-artifacts.jsonl"
   lib="$NET/target/$triple/release/render_stream_net.dll"
-  python3 -I "$HERE/w-imports.py" --objdump "$LLVM_MINGW_ROOT/bin/llvm-objdump" \
-    --expect-exports grc_net_module_v1,grc_net_tls_v1 --json "$OUT/w-imports.json" "$lib"
   install_tmp="$(mktemp "$OUT/render_stream_net.dll.XXXXXX")"
   trap 'rm -f "${install_tmp}"' EXIT
-  cp "$lib" "$install_tmp"
+  # Remove COFF symbol tables as well as debug data from the shipped copy, preserving exports.
+  "$LLVM_MINGW_ROOT/bin/llvm-strip" --strip-all -o "$install_tmp" "$lib"
+  python3 -I "$HERE/w-imports.py" --objdump "$LLVM_MINGW_ROOT/bin/llvm-objdump" \
+    --expect-exports grc_net_module_v1,grc_net_rtc_v1,grc_net_tls_v1 --json "$OUT/w-imports.json" "$install_tmp"
   mv -f "$install_tmp" "$OUT/render_stream_net.dll"
   llvm_mingw_record "$OUT/toolchain.json"
-  python3 -I - "$OUT" "$triple" "$(rustc --version)" "$(cargo --version)" "$manifest_template" <<'PYWINDOWS'
-import hashlib, json, shutil, sys
+  python3 -I - "$OUT" "$triple" "$(rustc --version)" "$(cargo --version)" "$manifest_template" \
+    "$LLVM_MINGW_ROOT/bin/llvm-strip" <<'PYWINDOWS'
+import hashlib, json, subprocess, sys
 from pathlib import Path
 out = Path(sys.argv[1])
 tests = {}
@@ -177,21 +179,23 @@ if sys.argv[5]:
     test_dir.mkdir(exist_ok=True)
     for test in report["tests"]:
         dest = test_dir / Path(test["path"]).name
-        shutil.copyfile(test["path"], dest)
+        # --strip-debug alone leaves Rust's large COFF symbol tables in these static harnesses.
+        # Strip only the installed copy; keep Cargo's original available for local diagnostics.
+        subprocess.run([sys.argv[6], "--strip-all", "-o", str(dest), test["path"]], check=True)
         manifest["tests"].append(dict(name="rs-net-" + test["name"],
             exe=dest.relative_to(template.parent).as_posix(), args=[], env={}))
     manifest["imports_only"].append(dict(exe=library.relative_to(template.parent).as_posix(),
         why="Runtime-loaded net module.",
-        expect_exports=["grc_net_module_v1", "grc_net_tls_v1"]))
+        expect_exports=["grc_net_module_v1", "grc_net_rtc_v1", "grc_net_tls_v1"]))
     (template.parent / "w-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 print(json.dumps(report, indent=2))
 PYWINDOWS
   exit 0
 fi
 
-cargo build --offline --locked --release --manifest-path "${NET}/Cargo.toml"
+cargo build --offline --locked --release --features rtc --manifest-path "${NET}/Cargo.toml"
 if [ "${test}" = 1 ]; then
-  cargo test --offline --locked --release --manifest-path "${NET}/Cargo.toml"
+  cargo test --offline --locked --release --features rtc --manifest-path "${NET}/Cargo.toml"
 fi
 
 lib="${NET}/target/release/librender_stream_net.so"
@@ -204,7 +208,7 @@ for sym in ${exported}; do
     *) echo "build-rs-net: the module exports ${sym} (only grc_net_* allowed): ${exported}" >&2; exit 1 ;;
   esac
 done
-if [ "${exported}" != "grc_net_module_v1 grc_net_tls_v1 " ]; then
+if [ "${exported}" != "grc_net_module_v1 grc_net_rtc_v1 grc_net_tls_v1 " ]; then
   echo "build-rs-net: unexpected export list: ${exported}" >&2
   exit 1
 fi

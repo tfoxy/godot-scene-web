@@ -565,7 +565,9 @@ jobs:
     needs: [plan, macos-bundle]
     if: ${{ !cancelled() && contains(fromJSON(inputs.runs), 'macos') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    # The Intel runner builds and tests the capture and net crates natively, RTC stack included;
+    # that leg alone runs 35-47 min, so 45 left no headroom.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -619,7 +621,8 @@ jobs:
     needs: [plan, macos-bundle]
     if: ${{ !cancelled() && contains(fromJSON(inputs.runs), 'macos') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 35
+    # The Intel swap leg builds the capture and net crates natively too and runs 31-33 min.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

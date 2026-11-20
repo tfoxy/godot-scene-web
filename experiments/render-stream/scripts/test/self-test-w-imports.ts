@@ -112,7 +112,7 @@ function run(...args: string[]) {
 try {
   const prng = run(binary("rust-prng.dll", pe(["BCRYPTPRIMITIVES.dll"])));
   check("rust-std-process-prng", prng.rc === 0, prng.text);
-  const symbols = ["grc_net_module_v1", "grc_net_tls_v1"];
+  const symbols = ["grc_net_module_v1", "grc_net_rtc_v1", "grc_net_tls_v1"];
   const expectExports = ["--expect-exports", symbols.join(",")];
   const exportsReport = join(scratch, "exports.json");
   const exportsMatch = run(

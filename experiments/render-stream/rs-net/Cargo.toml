@@ -13,6 +13,9 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = []
 rtc-size-probe = ["rtc"]
+# Long-running SCTP diagnostics (set RS_RTC_SEND_BUFFER; run with --nocapture); kept out of the
+# shipped test run so platform gates see every built test pass.
+rtc-diagnostics = ["rtc"]
 rtc = ["dep:str0m", "dep:str0m-rust-crypto", "dep:base64", "dep:serde_json"]
 
 [dependencies]
@@ -31,6 +34,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 # rs-net-lockstep --trace (CAR10): quinn's frame-level trace events. Already in the tree through
 # quinn (same version, Cargo.lock); naming it adds no crate.
 tracing = "0.1"
+log = "0.4"
 
 [dev-dependencies]
 flate2 = "1"

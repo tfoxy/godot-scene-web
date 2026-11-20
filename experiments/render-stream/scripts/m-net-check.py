@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 
-EXPECTED = ["grc_net_module_v1", "grc_net_tls_v1"]
+EXPECTED = ["grc_net_module_v1", "grc_net_rtc_v1", "grc_net_tls_v1"]
 IDENTITY = "@rpath/librender_stream_net.dylib"
 
 

@@ -7,14 +7,50 @@ use std::time::Instant;
 use render_stream_net::rtc::{credentials, Engine, EngineOutput, Identity};
 use serde_json::json;
 
+struct RecoveryLog(Instant);
+impl log::Log for RecoveryLog {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.target().starts_with("sctp_proto")
+    }
+    fn log(&self, record: &log::Record<'_>) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let message = record.args().to_string();
+        if [
+            "(FR)", "(RTO)", "retrans", "RTO", "rto", "rwnd=0", "RECONFIG", "reset", "RESET",
+        ]
+        .iter()
+        .any(|needle| message.contains(needle))
+        {
+            eprintln!(
+                "{}",
+                json!({"event":"sctp-recovery", "tMs":self.0.elapsed().as_millis() as u64,
+                "message":message})
+            );
+        }
+    }
+    fn flush(&self) {}
+}
+
 fn main() {
-    if let Err(error) = run() {
-        eprintln!("{}", json!({"event":"fatal", "error":error.to_string()}));
+    let started = Instant::now();
+    // Opt-in protocol diagnostics; the ordinary benchmark has no process-wide logger.
+    if std::env::var_os("RS_RTC_SCTP_TRACE").is_some() {
+        static LOGGER: std::sync::OnceLock<RecoveryLog> = std::sync::OnceLock::new();
+        log::set_logger(LOGGER.get_or_init(|| RecoveryLog(started))).unwrap();
+        log::set_max_level(log::LevelFilter::Trace);
+    }
+    if let Err(error) = run(started) {
+        eprintln!(
+            "{}",
+            json!({"event":"fatal", "error":error.to_string(), "tMs":started.elapsed().as_millis() as u64})
+        );
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+fn run(started: Instant) -> Result<(), Box<dyn std::error::Error>> {
     let mut bind = None;
     let mut cert_dir = None;
     let mut log_events = true;
@@ -68,7 +104,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 EngineOutput::Transmit(tx) => {
                     socket.send_to(&tx.contents, tx.destination)?;
                 }
-                EngineOutput::Event(event) => {
+                EngineOutput::Event(mut event) => {
+                    event["tMs"] = json!(started.elapsed().as_millis() as u64);
                     if log_events {
                         eprintln!("{event}");
                     }

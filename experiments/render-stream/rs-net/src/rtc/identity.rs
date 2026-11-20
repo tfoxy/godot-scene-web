@@ -51,7 +51,7 @@ impl Identity {
         Ok(Self::from_der(certificate, private_key))
     }
 
-    fn valid_pair(certificate: &[u8], private_key: &[u8]) -> bool {
+    pub(super) fn valid_pair(certificate: &[u8], private_key: &[u8]) -> bool {
         if wtransport::tls::Certificate::from_der(certificate.to_vec()).is_err() {
             return false;
         }

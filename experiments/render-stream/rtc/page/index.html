@@ -115,10 +115,28 @@
     function channel(pc) {
       const dc = pc.createDataChannel("couch-tunnel/1");
       dc.binaryType = "arraybuffer";
+      // Optional per-channel evidence uses milliseconds since page navigation.
+      const trace =
+        query.get("trace") === "1"
+          ? { createdMs: performance.now(), messages: 0, bytes: 0 }
+          : undefined;
+      if (trace) {
+        result.channels ??= [];
+        result.channels.push(trace);
+      }
       const messages = [],
         waiters = [];
       let failure;
       dc.onmessage = (event) => {
+        if (trace) {
+          trace.lastMessageMs = performance.now();
+          trace.messages++;
+          trace.bytes +=
+            typeof event.data === "string"
+              ? new TextEncoder().encode(event.data).length
+              : event.data.byteLength;
+          if (typeof event.data === "string") trace.lastText = event.data;
+        }
         const next = waiters.shift();
         if (next) next.resolve(event.data);
         else messages.push(event.data);
@@ -129,12 +147,19 @@
       };
       const closed = new Promise((resolve) => {
         dc.onclose = () => {
+          if (trace) trace.closeEventMs = performance.now();
           fail(Error("channel closed"));
           resolve();
         };
       });
       const opened = new Promise((resolve, reject) => {
-        dc.onopen = resolve;
+        dc.onopen = () => {
+          if (trace) {
+            trace.id = dc.id;
+            trace.openMs = performance.now();
+          }
+          resolve();
+        };
         dc.onerror = () => {
           const e = Error("channel error");
           reject(e);
@@ -160,8 +185,17 @@
             "message",
           ),
         close: async () => {
+          if (trace) trace.closeRequestMs = performance.now();
           dc.close();
-          await timeout(closed, 10000, "close");
+          try {
+            await timeout(closed, 10000, "close");
+          } catch (error) {
+            if (trace) {
+              trace.closeTimeoutMs = performance.now();
+              trace.readyState = dc.readyState;
+            }
+            throw error;
+          }
         },
       };
     }

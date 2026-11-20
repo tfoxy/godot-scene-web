@@ -35,7 +35,7 @@ def measure(targets, out):
         elif "apple" in target:
             env["MACOSX_DEPLOYMENT_TARGET"] = "11.0" if target.startswith("aarch64") else "10.15"
         row = {}
-        for feature in [None, "rtc-size-probe"]:
+        for feature in [None, "rtc"]:
             label = "rtc" if feature else "default"
             log = out.with_name(f"sizes-{target}-{label}.log")
             command = ["cargo", "build", "--offline", "--locked", "--release", "--lib", "--target", target, "--manifest-path", str(NET / "Cargo.toml")]

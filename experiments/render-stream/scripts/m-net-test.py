@@ -228,7 +228,7 @@ class Gates(unittest.TestCase):
             return SimpleNamespace(verify=lambda *args: self.signature)
         with patch.object(check, "sibling", side_effect=sibling), \
              patch.object(check.subprocess, "check_output",
-                          side_effect=exports or ["_grc_net_module_v1\n_grc_net_tls_v1\n"] * 2) as nm:
+                          side_effect=exports or ["_grc_net_module_v1\n_grc_net_rtc_v1\n_grc_net_tls_v1\n"] * 2) as nm:
             result = check.inspect(Path("net.dylib"))
         self.assertEqual(nm.call_count, 2)
         self.assertEqual([call.args[0][2] for call in nm.call_args_list], ["arm64", "x86_64"])
@@ -253,13 +253,14 @@ class Gates(unittest.TestCase):
             self.inspect()
 
     def test_missing_or_extra_exports_on_either_slice_are_rejected(self):
-        honest = "_grc_net_module_v1\n_grc_net_tls_v1\n"
+        honest = "_grc_net_module_v1\n_grc_net_rtc_v1\n_grc_net_tls_v1\n"
         for index in (0, 1):
-            for bad in ("_grc_net_module_v1\n", honest + "_accidental_export\n"):
+            missing = [honest.replace(symbol + "\n", "") for symbol in honest.splitlines()]
+            for bad in (*missing, honest + "_accidental_export\n"):
                 with self.subTest(index=index, exports=bad):
                     exports = [honest, honest]
                     exports[index] = bad
-                    with self.assertRaisesRegex(ValueError, "expected exports"):
+                    with self.assertRaisesRegex(ValueError, ("arm64", "x86_64")[index] + ": expected exports"):
                         self.inspect(exports)
 
     def test_invalid_signature_is_rejected(self):

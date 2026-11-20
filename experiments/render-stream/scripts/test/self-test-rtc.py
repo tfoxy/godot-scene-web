@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -129,6 +130,23 @@ class Hosted(unittest.TestCase):
         self.assertEqual(json.loads((out / "validate-summary.json").read_text())["runs"][0]["rc"], "missing")
 
 
+class ProbeEvidence(unittest.TestCase):
+    def test_handshake_logs_keep_timestamps_and_collapse_repeated_channel_events(self):
+        with tempfile.TemporaryDirectory() as temp:
+            out = Path(temp)
+            events = [
+                {"event":"first-stun", "source":"192.0.2.2:42", "tMs":1},
+                {"source":"192.0.2.2:42", "detail":{"event":"dtls-connected"}, "tMs":3},
+                {"event":"sctp-up", "source":"192.0.2.2:42", "tMs":4},
+                *[{"source":"192.0.2.2:42", "detail":{"event":"channel-open"}, "tMs":n} for n in [5, 6]],
+            ]
+            (out / "browsers.json.probe.jsonl").write_text("\n".join(map(json.dumps, events))+"\nbroken\n")
+            evidence = runner.probe_evidence(out)
+            self.assertEqual(len(evidence), 1)
+            self.assertEqual([e["tMs"] for e in evidence[0]["milestones"]], [1, 3, 4, 5])
+            self.assertEqual(evidence[0]["counts"]["channel-open"], 2)
+            self.assertEqual(evidence[0]["invalid_lines"], 1)
+
 class DarwinRunner(unittest.TestCase):
     def run_host(self, failure=None, host="Darwin"):
         with tempfile.TemporaryDirectory() as temp:
@@ -148,6 +166,8 @@ class DarwinRunner(unittest.TestCase):
                 if "--out" in command:
                     dest = Path(command[command.index("--out") + 1])
                     dest.write_text(json.dumps(artifact("macos")["sizes" if any(arg.endswith("rtc-sizes.py") for arg in command) else "browser"]))
+                    if dest.name == "browsers.json":
+                        (out / "browsers.json.probe.jsonl").write_text(json.dumps({"event":"sctp-up","source":"192.0.2.2:42","tMs":123})+"\n")
                 return subprocess.CompletedProcess(command, 0)
 
             with patch.object(runner.platform, "system", return_value=host), \
@@ -163,6 +183,7 @@ class DarwinRunner(unittest.TestCase):
         self.assertEqual(rc, 0, result)
         self.assertEqual(summary["failed"], 0)
         self.assertEqual(result["lock_wait_s"], 0)
+        self.assertEqual(result["probe_events"][0]["milestones"][0]["tMs"], 123)
         self.assertTrue(any(command[:2] == ["cargo", "test"] for command in commands))
         self.assertTrue(any(command[:2] == ["cargo", "build"] for command in commands))
         self.assertFalse(any("quiet.sh" in arg for command in commands for arg in command))
@@ -176,6 +197,7 @@ class DarwinRunner(unittest.TestCase):
         self.assertEqual(rc, 1)
         failed = next(c for c in result["commands"] if c["name"] == "feature-tests")
         self.assertEqual(failed["rc"], 7)
+        self.assertEqual(result["probe_events"][0]["milestones"][0]["event"], "sctp-up")
         self.assertIn("exit status 7", failed["error"])
         self.assertIn("BASHPID: unbound variable", failed["log_tail"])
         self.assertTrue(failed["log"].endswith("feature-tests.log"))
@@ -202,6 +224,8 @@ class DarwinRunner(unittest.TestCase):
                     target = effective[effective.index("--target") + 1]
                     library = root / "target" / target / "release/librender_stream_net.dylib"
                     library.parent.mkdir(parents=True, exist_ok=True)
+                    if "--features" in command:
+                        self.assertEqual(command[command.index("--features") + 1], "rtc")
                     library.write_bytes(b"rtc" if "--features" in command else b"base")
                 return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -244,6 +268,32 @@ class DarwinRunner(unittest.TestCase):
             result = subprocess.run(["bash", str(script), "probe", "--ip", "10.0.0.4"],
                                     env=dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}"), capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class ShippedExports(unittest.TestCase):
+    def test_macos_requires_exact_three_exports_in_each_slice(self):
+        spec = importlib.util.spec_from_file_location("net_check", SCRIPTS / "m-net-check.py")
+        checker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(checker)
+        symbols = ["_grc_net_module_v1", "_grc_net_rtc_v1", "_grc_net_tls_v1"]
+        def sibling(name):
+            if name == "m-imports":
+                return SimpleNamespace(inspect=lambda *_: {"slices": [
+                    {"arch": arch, "identity": checker.IDENTITY, "disallowed": []}
+                    for arch in ["arm64", "x86_64"]]})
+            return SimpleNamespace(verify=lambda *_: {"rc": 0})
+        with patch.object(checker, "sibling", side_effect=sibling):
+            with patch.object(checker.subprocess, "check_output", return_value="\n".join(symbols)):
+                result = checker.inspect(Path("net.dylib"))
+                for image in result["slices"]:
+                    self.assertEqual(image["exports"], [s[1:] for s in symbols])
+            for arch in ["arm64", "x86_64"]:
+                for bad in [symbols[::2], symbols + ["_extra"]]:
+                    def nm(argv, **_):
+                        return "\n".join(bad if arch in argv else symbols)
+                    with patch.object(checker.subprocess, "check_output", side_effect=nm):
+                        with self.assertRaisesRegex(ValueError, arch + ": expected exports"):
+                            checker.inspect(Path("net.dylib"))
 
 
 if __name__ == "__main__":

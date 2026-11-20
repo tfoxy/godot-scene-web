@@ -20,6 +20,8 @@ const { values } = parseArgs({
     // Chromium only: CDP CPU slowdown factor, to tell a CPU-bound receiver from a window-bound one.
     "cpu-throttle": { type: "string" },
     "no-negative": { type: "boolean", default: false },
+    // Keep per-channel close evidence in the page result for a diagnostic run.
+    trace: { type: "boolean", default: false },
   },
 });
 if (!values.ip) throw Error("--ip <non-loopback LAN IPv4> is required");
@@ -108,6 +110,7 @@ try {
             `${probe.discovery.ip}:${probe.discovery.port}`,
           );
           target.searchParams.set("f", probe.discovery.fp);
+          if (values.trace) target.searchParams.set("trace", "1");
           for (const key of ["seq", "conc", "get", "skip"] as const)
             if (values[key] !== undefined)
               target.searchParams.set(key, values[key]!);

@@ -640,7 +640,7 @@ w = yaml.safe_load(open(sys.argv[1]))
 j = w['jobs']['macos-swap']
 assert j['needs'] == ['plan', 'macos-bundle']
 assert "contains(fromJSON(inputs.runs), 'macos')" in j['if']
-assert j['runs-on'] == '${{ matrix.runner }}' and j['timeout-minutes'] <= 35
+assert j['runs-on'] == '${{ matrix.runner }}' and j['timeout-minutes'] <= 45
 assert j['strategy']['fail-fast'] is False
 assert j['strategy']['matrix']['include'] == [
     {'runner': 'macos-15', 'arch': 'arm64'}, {'runner': 'macos-15-intel', 'arch': 'x86_64'}]

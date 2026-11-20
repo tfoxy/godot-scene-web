@@ -31,14 +31,15 @@ try {
   probe = await startProbe(
     values.ip,
     resolve(dirname(out), "cert"),
-    `${out}.probe.jsonl`,
+    `${out}.first-probe.jsonl`,
   );
   const fp = probe.discovery.fp;
   await probe.stop();
   probe = await startProbe(
     values.ip,
     resolve(dirname(out), "cert"),
-    `${out}.restart.jsonl`,
+    // The active probe's log: rtc-run.py keeps its handshake milestones.
+    `${out}.probe.jsonl`,
   );
   if (fp !== probe.discovery.fp)
     throw Error("fingerprint changed across restart");
