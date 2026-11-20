@@ -42,11 +42,6 @@
       "development": "./src/msdf-generator-worker-runtime.ts",
       "types": "./dist/msdf-generator-worker-runtime.d.ts",
       "import": "./dist/msdf-generator-worker-runtime.js"
-    },
-    "./pixi": {
-      "development": "./src/pixi-renderer.ts",
-      "types": "./dist/pixi-renderer.d.ts",
-      "import": "./dist/pixi-renderer.js"
     }
   },
   "main": "./dist/index.js",
@@ -64,7 +59,6 @@
     "@godot-scene-web/canvas-effects": "workspace:*",
     "@godot-scene-web/core": "workspace:*",
     "@godot-scene-web/effects": "workspace:*",
-    "@godot-scene-web/hb-gpu": "workspace:*",
-    "pixi.js": "8.21.0"
+    "@godot-scene-web/hb-gpu": "workspace:*"
   }
 }

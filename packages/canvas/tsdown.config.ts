@@ -5,7 +5,6 @@ export default defineConfig({
   entry: [
     "src/index.ts",
     "src/glyph-pass-hbgpu.ts",
-    "src/pixi-renderer.ts",
     "src/rust-prototype-scene.ts",
     "src/msdf-generator.ts",
     "src/msdf-generator-worker-runtime.ts",

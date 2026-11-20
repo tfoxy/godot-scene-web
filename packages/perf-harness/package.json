@@ -33,7 +33,6 @@
   },
   "dependencies": {
     "@godot-scene-web/canvas": "workspace:*",
-    "@godot-scene-web/core": "workspace:*",
     "@godot-scene-web/effects": "workspace:*",
     "@godot-scene-web/hb-gpu": "workspace:*",
     "@godot-scene-web/html": "workspace:*",

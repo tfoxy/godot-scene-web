@@ -5,7 +5,6 @@ import {
   createQuadView,
 } from "../../src/draw-list";
 import { createCanvasExecutor } from "../../src/executor-webgl";
-import { createPixiDrawListRenderer } from "../../src/pixi-renderer";
 import { createCanvasStage } from "../../src/present";
 import { createRetainedRangeCache } from "../../src/retained-range-cache";
 import {
@@ -22,7 +21,6 @@ import { createTextureCache } from "../../src/textures";
 const root = window as unknown as { proof?: Record<string, unknown> };
 const rustCanvas = document.querySelector<HTMLCanvasElement>("#rust")!;
 const retainedCanvas = document.querySelector<HTMLCanvasElement>("#retained")!;
-const pixiCanvas = document.querySelector<HTMLCanvasElement>("#pixi")!;
 const enc = new TextEncoder();
 const wasm = await import("/rust_prototype.js");
 await wasm.default();
@@ -404,64 +402,6 @@ function retainedStep(change: boolean) {
   };
 }
 
-const pixi = await createPixiDrawListRenderer({
-  canvas: pixiCanvas,
-  width: 64,
-  height: 64,
-  designWidth: 64,
-  designHeight: 64,
-  textureUrl: () => null,
-});
-const pixiRenderer = pixi.app.renderer as any;
-const originalPixiRender = pixiRenderer.render.bind(pixiRenderer);
-let lastPixiRoot: any;
-pixiRenderer.render = (container: any, ...rest: unknown[]) => {
-  lastPixiRoot = container;
-  return originalPixiRender(container, ...rest);
-};
-const pixiList = createDrawList<string>();
-const left = createQuadView();
-left.w = 32;
-left.h = 64;
-left.r = 1;
-left.g = left.b = 0;
-const right = createQuadView();
-right.w = 32;
-right.h = 64;
-right.m[4] = 32;
-right.r = right.b = 0;
-right.g = 1;
-pixiList.pushQuad(left);
-pixiList.pushQuad(right);
-const pixiPlan = {
-  primitives: [
-    { id: "left", index: 0, parentId: "group" },
-    { id: "right", index: 1, parentId: "group" },
-  ],
-  groups: [
-    {
-      id: "group",
-      firstIndex: 0,
-      endIndex: 2,
-      transform: [1, 0, 0, 1, 0, 0],
-      cacheAsTexture: true,
-    },
-  ],
-};
-function pixiStep(kind: string) {
-  const result =
-    kind === "initial"
-      ? pixi.admitScene(pixiList, [], pixiPlan)
-      : kind === "warm"
-        ? pixi.presentScene()
-        : pixi.patchScene({ primitives: [{ id: "left", tint: 0x0000ff }] });
-  const group = lastPixiRoot?.children?.[0];
-  return {
-    result,
-    stats: { ...pixi.stats },
-    cached: !!group?.renderGroup?.isCachedAsTexture,
-  };
-}
 // Damage present exactness: two renderers receive the same randomized scene,
 // patch and upload sequence; one redraws only the damage, one redraws whole.
 // 349x209 over a 100x60 design: a fractional 3.49 device scale, so bounds round on fractional pixels.
@@ -1376,7 +1316,6 @@ root.proof = {
   rustSteps,
   contextLoss,
   retainedStep,
-  pixiStep,
   damageStep,
   damagePlan,
   presentModes: presentParity.map((p) => p.id),

@@ -83,7 +83,7 @@ try {
       await route.fulfill({
         status: 200,
         contentType: "text/html",
-        body: `<!doctype html><style>html,body{margin:0;background:#000}canvas{display:inline-block;vertical-align:top}</style><canvas id="rust" width="64" height="64"></canvas><canvas id="retained" width="64" height="64"></canvas><canvas id="pixi" width="64" height="64"></canvas><canvas id="damageOn" width="349" height="209"></canvas><canvas id="damageOff" width="349" height="209"></canvas><div id="modes"></div><script type="module" src="/proof.js"></script>`,
+        body: `<!doctype html><style>html,body{margin:0;background:#000}canvas{display:inline-block;vertical-align:top}</style><canvas id="rust" width="64" height="64"></canvas><canvas id="retained" width="64" height="64"></canvas><canvas id="damageOn" width="349" height="209"></canvas><canvas id="damageOff" width="349" height="209"></canvas><div id="modes"></div><script type="module" src="/proof.js"></script>`,
       });
   });
   await page.goto(`http://rust-proof.test/${query ? `?${query}` : ""}`, {
@@ -632,27 +632,6 @@ try {
     results["retained-changed"].result.textureRevision >
       results["retained-warm"].result.textureRevision,
   );
-  for (const name of ["initial", "warm", "patch"]) {
-    const result = await page.evaluate(
-      (name) => window.proof.pixiStep(name),
-      name,
-    );
-    const captureResult = await capture("pixi", `pixi-${name}`, [
-      [16, 32],
-      [48, 32],
-    ]);
-    assert.equal(result.result.presented, true, JSON.stringify(result));
-    const [left, right] = captureResult.pixels;
-    if (name === "patch")
-      assert.ok(left[2] > 245 && left[0] < 10, JSON.stringify(captureResult));
-    else
-      assert.ok(left[0] > 245 && left[2] < 10, JSON.stringify(captureResult));
-    assert.ok(right[1] > 245 && right[0] < 10, JSON.stringify(captureResult));
-    results[`pixi-${name}`] = { result, ...captureResult };
-  }
-  assert.equal(results["pixi-initial"].result.cached, true);
-  assert.equal(results["pixi-warm"].result.cached, true);
-  assert.equal(results["pixi-patch"].result.cached, false);
   const receipt = {
     evidenceDir,
     faultInjection,

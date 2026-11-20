@@ -253,8 +253,8 @@ export interface PolylineView {
  * Optional per-vertex colours ({@link TexturedMeshView.hasVertexColors}) are the
  * `colors` array of Godot's `draw_polygon`, `draw_primitive` and
  * `canvas_item_add_triangle_array`, which is what a `StyleBoxFlat` border or an
- * anti-aliased feather arrives as. The WebGL executor honours them; the Pixi
- * renderer (`./pixi`) draws the mesh without them.
+ * anti-aliased feather arrives as. The WebGL executor honours these per-vertex
+ * colours when it draws the mesh.
  */
 export interface TexturedMeshView {
   /** Godot `Transform2D` mapping local vertex positions into design space. */

@@ -321,7 +321,7 @@ It requires Playwright Chromium.
 For the source integration gate, run
 `mise exec -- node packages/canvas/rust-prototype/scripts/test-integration-browser.mjs`
 after the WebAssembly build. It bundles the current canvas TypeScript source,
-drives Rust, retained WebGL and Pixi in Chromium, and writes 12 screenshots plus
+drives Rust and retained WebGL in Chromium, and writes 9 screenshots plus
 an artifact hash and pixel receipt under ignored `.sts2/rust-webgl-integration/`.
 
 To check GPU validation rollback with the optional test feature, use a separate
