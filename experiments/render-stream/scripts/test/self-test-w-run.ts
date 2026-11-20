@@ -1,6 +1,7 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -465,6 +466,14 @@ print(json.dumps(results))
   };
   const templatePath = join(build, "w-capture-manifest.json");
   writeFileSync(templatePath, JSON.stringify(template));
+  // The producer strips each installed test harness with llvm-strip; this stand-in copies the file unchanged.
+  const fakeStrip = join(build, "fake-llvm-strip");
+  writeFileSync(
+    fakeStrip,
+    "#!/usr/bin/env python3\nimport shutil, sys\nargs = sys.argv[1:]\n" +
+      "shutil.copyfile(args[-1], args[args.index('-o') + 1])\n",
+  );
+  chmodSync(fakeStrip, 0o755);
   function produceManifest() {
     return spawnSync(
       "python3",
@@ -477,6 +486,7 @@ print(json.dumps(results))
         "synthetic-rustc",
         "synthetic-cargo",
         templatePath,
+        fakeStrip,
       ],
       { encoding: "utf8" },
     );
