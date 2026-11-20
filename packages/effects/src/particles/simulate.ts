@@ -459,6 +459,17 @@ export function preprocessParticles(state: ParticleSystemState): void {
 const STATIC_WARM_ONESHOT_FRACTION = 0.4;
 const STATIC_WARM_REPEAT_FRACTION = 1;
 
+/** Representative frozen-frame time, shared by the CPU and GPU simulators. */
+export function staticWarmSeconds(
+  cfg: Pick<ParticleConfig, "preprocess" | "lifetime" | "oneShot">,
+): number {
+  if (cfg.preprocess > 0) return Math.min(cfg.preprocess, cfg.lifetime * 2);
+  return (
+    cfg.lifetime *
+    (cfg.oneShot ? STATIC_WARM_ONESHOT_FRACTION : STATIC_WARM_REPEAT_FRACTION)
+  );
+}
+
 /**
  * Warm a system to a representative FROZEN state for the runtime's static/particles mode. Reuses the authored
  * `preprocess` (an ambient emitter with preprocess>0 reaches its steady drift — identical to `preprocessParticles`),
@@ -471,13 +482,7 @@ const STATIC_WARM_REPEAT_FRACTION = 1;
  */
 export function warmStaticParticles(state: ParticleSystemState): void {
   const cfg = state.config;
-  if (cfg.preprocess > 0) {
-    preprocessParticles(state);
-    return;
-  }
-  const warm =
-    cfg.lifetime *
-    (cfg.oneShot ? STATIC_WARM_ONESHOT_FRACTION : STATIC_WARM_REPEAT_FRACTION);
+  const warm = staticWarmSeconds(cfg);
   const stepHz = cfg.fixedFps > 0 ? cfg.fixedFps : 30;
   simulateParticles(state, warm, Math.ceil(warm * stepHz) + 2);
   // Drop the sub-step remainder so the frozen state is clean (nothing left to fast-forward if sim resumes).
@@ -499,7 +504,9 @@ export function warmStaticParticles(state: ParticleSystemState): void {
  * `speedScale` is deliberately NOT folded in, for the same reason: the mod's law does not either, and a
  * disagreement would be worse than the (rare, small) inaccuracy of a re-timed burst.
  */
-export function oneShotBurstSeconds(cfg: ParticleConfig): number {
+export function oneShotBurstSeconds(
+  cfg: Pick<ParticleConfig, "lifetime" | "explosiveness">,
+): number {
   return cfg.lifetime * (2 - cfg.explosiveness);
 }
 
@@ -521,7 +528,10 @@ export function oneShotBurstSeconds(cfg: ParticleConfig): number {
  * outlives its own window — i.e. one nothing ever turned off — is dropped.
  */
 export function staticOneShotExpired(
-  cfg: ParticleConfig,
+  cfg: Pick<
+    ParticleConfig,
+    "oneShot" | "emitting" | "lifetime" | "explosiveness"
+  >,
   secondsSinceFirstEmitting: number,
 ): boolean {
   if (!cfg.oneShot || !cfg.emitting) return false;

@@ -1003,6 +1003,31 @@ describe("WasmStreamCore idle particle lifecycle", () => {
     return { ...h, tasks, reapply, uploads };
   }
 
+  it("static warms settle once and then stop causing idle reapply or upload", () => {
+    const h = settling();
+    h.core.setStaticParticles(true);
+    expect(h.tasks.size).toBe(0); // cancels the old live warm
+    h.core.settleParticles(1);
+    let chunks = 0;
+    while (h.tasks.size) {
+      const run = [...h.tasks][0];
+      h.tasks.delete(run);
+      run();
+      expect(++chunks).toBeLessThan(2000);
+    }
+    expect(h.core.settleParticles(1)).toBe(true);
+    const uploads = h.uploads.mock.calls.length;
+    const applies = h.reapply.mock.calls.length;
+    for (let i = 0; i < 10; i++) {
+      h.core.prepareApply(1);
+      expect(h.core.settleParticles(1)).toBe(false);
+    }
+    expect(h.uploads).toHaveBeenCalledTimes(uploads);
+    expect(h.reapply).toHaveBeenCalledTimes(applies);
+    expect(h.tasks.size).toBe(0);
+    h.core.dispose();
+  });
+
   it("leaves idle uploads for reapply in the next frame, with no GL work in the task", () => {
     const h = settling();
     let chunks = 0;

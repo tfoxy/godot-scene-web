@@ -2,8 +2,18 @@
 // drop their simulation (never drawn from the old output) and start a fresh one when the code
 // arrives; other emitters are untouched.
 
+import {
+  GodotGpuEmitter,
+  type GodotGpuEmitterConfig,
+  staticWarmSeconds,
+} from "@godot-scene-web/effects/particles";
 import { describe, expect, it, vi } from "vitest";
-import { GswParticles, type ParticlesHost } from "../src/particles";
+import {
+  GswParticles,
+  type ParticlesHost,
+  UNPACED_PARTICLES,
+} from "../src/particles";
+import baseGolden from "./fixtures/particles-base.json";
 
 const builtin = {
   emission_shape: "point",
@@ -530,5 +540,470 @@ describe("GswParticles off-frame chunks", () => {
       h.update.mockRestore();
       hidden.mockRestore();
     }
+  });
+});
+
+describe("GswParticles static mode", () => {
+  function setup(
+    oneShot = false,
+    preprocess = 0,
+    paced = false,
+    on = true,
+    sabotage: "static-steps-anyway" | "static-never-expires" | null = null,
+    initiallyEmitting = true,
+  ) {
+    const e = emitter(1, 20);
+    e.one_shot = oneShot;
+    e.emitting = initiallyEmitting;
+    e.fixed_fps = 30;
+    e.f.pre_process_time = preprocess;
+    const m = material(20, 1, false);
+    m.uniforms = {
+      gravity: [0, 20, 0],
+      initial_linear_velocity_min: 30,
+    } as typeof m.uniforms;
+    const messages = [
+      JSON.stringify({ ids: [1], emitters: [e], materials: [m] }),
+    ];
+    const taken: Float32Array[] = [];
+    let time = 0;
+    let clock = 0;
+    const pending = new Set<() => void>();
+    const pacing = paced
+      ? {
+          sliceMs: 3,
+          now: () => clock++,
+          idle: {
+            sliceMs: 3,
+            schedule: (run: () => void) => {
+              pending.add(run);
+              return () => {
+                pending.delete(run);
+              };
+            },
+          },
+        }
+      : UNPACED_PARTICLES;
+    const p = new GswParticles(
+      pacing,
+      () => {},
+      on,
+      () => time,
+      sabotage,
+    );
+    const g: ParticlesHost = {
+      particles_sync: () => messages.shift() ?? "",
+      shader_time: () => time,
+      particles_set: (_id, data) => taken.push(data.slice()),
+    };
+    const config: GodotGpuEmitterConfig = {
+      emitting: true,
+      amount: e.amount,
+      amountRatio: 1,
+      lifetime: 1,
+      oneShot,
+      preProcessTime: preprocess,
+      explosiveness: 0,
+      randomness: 0,
+      speedScale: 1,
+      fixedFps: 30,
+      interpolate: false,
+      fractionalDelta: false,
+      localCoords: false,
+      drawOrder: "index",
+      interpToEnd: 0,
+      emissionTransform: e.f.emission_transform,
+      emitterVelocity: e.f.emitter_velocity,
+      seed: e.seed,
+      material: {
+        emissionShape: "point",
+        flags: ["disable_z"],
+        uniforms: m.uniforms,
+        curves: {},
+      },
+    };
+    return {
+      p,
+      g,
+      taken,
+      pending,
+      config,
+      send: (emitters: unknown[], materials: unknown[]) => {
+        messages.push(JSON.stringify({ ids: [1], emitters, materials }));
+      },
+      time: (t: number) => {
+        time = t;
+      },
+      change: (over: Partial<typeof e>) => {
+        Object.assign(e, over);
+        e.version++;
+        messages.push(
+          JSON.stringify({ ids: [1], emitters: [e], materials: [] }),
+        );
+      },
+    };
+  }
+
+  function assertHeld(h: ReturnType<typeof setup>) {
+    h.p.step(h.g);
+    const steps = h.p.evidence.sim_steps;
+    expect(h.taken[0].some((v) => v !== 0)).toBe(true);
+    for (const t of [0.1, 1, 10]) {
+      h.time(t);
+      h.p.step(h.g);
+      expect(h.p.settle(h.g)).toBe(false);
+    }
+    expect(h.taken).toHaveLength(1);
+    expect(h.p.evidence.sim_steps).toBe(steps);
+    expect(h.p.settling).toBe(false);
+  }
+
+  it("holds a constant uploaded buffer and does no further simulation or uploads", () => {
+    assertHeld(setup());
+  });
+
+  it("the static-steps-anyway sabotage fails the held-buffer acceptance", () => {
+    expect(() =>
+      assertHeld(setup(false, 0, false, true, "static-steps-anyway")),
+    ).toThrow();
+  });
+
+  function assertExpired(h: ReturnType<typeof setup>) {
+    h.p.step(h.g);
+    h.time(2);
+    h.p.step(h.g);
+    expect(h.taken.at(-1)!.every((v) => v === 0)).toBe(true);
+    expect(h.taken).toHaveLength(2);
+  }
+
+  it("the static-never-expires sabotage fails the expiry acceptance", () => {
+    assertExpired(setup(true));
+    expect(() =>
+      assertExpired(setup(true, 0, false, true, "static-never-expires")),
+    ).toThrow();
+  });
+
+  it.each([
+    [false, 0],
+    [true, 0],
+    [false, 100],
+    [true, 0.2],
+  ] as const)("matches the GPU emitter warmed by the shared time (oneShot=%s, preprocess=%s)", (oneShot, preprocess) => {
+    const h = setup(oneShot, preprocess);
+    h.p.step(h.g);
+    const sim = new GodotGpuEmitter({
+      ...h.config,
+      preProcessTime: staticWarmSeconds({
+        preprocess,
+        lifetime: h.config.lifetime,
+        oneShot,
+      }),
+    });
+    sim.update(0, 0);
+    const expected = new Float32Array(h.config.amount * 16);
+    sim.pack(expected);
+    expect(h.taken).toEqual([expected]);
+  });
+
+  it.each([
+    0, 1,
+  ])("retires a one-shot after its burst window (explosiveness=%s)", (explosiveness) => {
+    const h = setup(true);
+    h.change({ f: { ...emitter(1, 20).f, explosiveness } });
+    h.p.step(h.g);
+    h.p.step(h.g);
+    const count = h.taken.length;
+    h.time(2 - explosiveness - 0.001);
+    h.p.step(h.g);
+    expect(h.taken).toHaveLength(count);
+    h.time(2 - explosiveness);
+    h.p.step(h.g);
+    expect(h.taken).toHaveLength(count + 1);
+    expect(h.taken.at(-1)!.every((v) => v === 0)).toBe(true);
+    h.time(10);
+    h.p.step(h.g);
+    expect(h.taken).toHaveLength(count + 1);
+  });
+
+  it("observes expiry on a present without a new transaction, with no expiry task", () => {
+    const h = setup(true);
+    h.p.step(h.g);
+    h.time(5);
+    expect(h.pending.size).toBe(0);
+    expect(h.taken).toHaveLength(1);
+    expect(h.p.expire(h.g)).toBe(true);
+    expect(h.taken[1].every((v) => v === 0)).toBe(true);
+    expect(h.p.expire(h.g)).toBe(false);
+  });
+
+  it("re-warms a restarted one-shot and gives it a fresh expiry window", () => {
+    const h = setup(true);
+    h.p.step(h.g);
+    const warm = h.taken[0];
+    h.time(3);
+    h.p.step(h.g);
+    h.change({ restarts: 1 });
+    h.p.step(h.g);
+    expect(h.taken).toHaveLength(3);
+    expect(h.taken[2]).toEqual(warm);
+    h.time(4.99);
+    h.p.step(h.g);
+    expect(h.taken).toHaveLength(3);
+    h.time(5);
+    h.p.step(h.g);
+    expect(h.taken[3].every((v) => v === 0)).toBe(true);
+  });
+
+  it.each([
+    "start",
+    "restart",
+  ])("expires after a %s while the material is suspended", (edge) => {
+    const h = setup(true, 0, false, true, null, edge === "restart");
+    h.p.step(h.g);
+    h.send([], [material(20, 2, true)]);
+    h.p.step(h.g);
+    h.time(1);
+    h.change({ emitting: true, restarts: edge === "restart" ? 1 : 0 });
+    h.p.step(h.g);
+    h.time(1.1);
+    h.send([], [material(20, 2, false)]);
+    h.p.step(h.g);
+    expect(h.taken.at(-1)!.some((v) => v !== 0)).toBe(true);
+    const count = h.taken.length;
+    h.time(2.999);
+    h.p.step(h.g);
+    expect(h.taken).toHaveLength(count);
+    h.time(3);
+    h.p.step(h.g);
+    expect(h.taken).toHaveLength(count + 1);
+    expect(h.taken.at(-1)!.every((v) => v === 0)).toBe(true);
+  });
+
+  it("holds across per-frame emission transforms and velocities, then restarts with current inputs", () => {
+    const h = setup();
+    h.p.step(h.g);
+    const steps = h.p.evidence.sim_steps;
+    const f = emitter(1, 20).f;
+    for (let frame = 1; frame <= 30; frame++) {
+      f.emission_transform[9] = frame * 2;
+      h.change({ f: structuredClone(f) });
+      h.time(frame / 60);
+      h.p.step(h.g);
+      f.emitter_velocity[0] = frame;
+      h.change({ f: structuredClone(f) });
+      h.p.step(h.g);
+      expect(h.p.evidence.sim_steps).toBe(steps);
+      expect(h.taken).toHaveLength(1);
+      expect(h.p.settling).toBe(false);
+    }
+    h.change({ restarts: 1 });
+    h.p.step(h.g);
+    const expected = setup();
+    expected.change({ f });
+    expected.p.step(expected.g);
+    expected.p.step(expected.g);
+    expect(h.taken.at(-1)).toEqual(expected.taken.at(-1));
+  });
+
+  it.each([
+    false,
+    true,
+  ])("holds across operation-only updates and still re-warms on restart (paced=%s)", (paced) => {
+    const h = setup(false, 0, paced);
+    const finishWarm = () => {
+      let chunks = 0;
+      while (h.pending.size) {
+        const task = [...h.pending][0];
+        h.pending.delete(task);
+        task();
+        expect(++chunks).toBeLessThan(1000);
+      }
+      expect(h.p.settling).toBe(false);
+    };
+    h.p.step(h.g);
+    finishWarm();
+    const steps = h.p.evidence.sim_steps;
+    const uploads = h.taken.length;
+    const warm = h.taken.at(-1);
+    const assertUnchanged = () => {
+      expect(h.p.evidence.sim_steps).toBe(steps);
+      expect(h.taken).toHaveLength(uploads);
+      expect(h.p.settling).toBe(false);
+      expect(h.pending.size).toBe(0);
+    };
+    for (let counter = 1; counter <= 30; counter++) {
+      h.change({ emits: counter });
+      h.time(counter / 60);
+      h.p.step(h.g);
+      assertUnchanged();
+    }
+    for (let counter = 1; counter <= 30; counter++) {
+      h.change({
+        process_requests: counter,
+        f: { ...emitter(1, 20).f, request_process_time: counter / 10 },
+      });
+      h.time((30 + counter) / 60);
+      h.p.step(h.g);
+      assertUnchanged();
+      expect(h.p.evidence.process_requests).toBe(counter);
+    }
+    // Repeated counter values are adopted, so they are not counted again on a version bump.
+    h.change({});
+    h.p.step(h.g);
+    assertUnchanged();
+    expect(h.p.evidence.process_requests).toBe(30);
+    h.change({ restarts: 1 });
+    h.p.step(h.g);
+    finishWarm();
+    expect(h.p.evidence.restarts).toBe(1);
+    expect(h.p.evidence.sim_steps).toBeGreaterThan(steps);
+    expect(h.taken.length).toBeGreaterThan(uploads);
+    expect(h.taken.at(-1)).toEqual(warm);
+    h.p.dispose();
+  });
+
+  it("still replays process requests in live mode", () => {
+    const h = setup(false, 0, false, false);
+    const request = vi.spyOn(GodotGpuEmitter.prototype, "requestProcess");
+    try {
+      h.p.step(h.g);
+      h.change({
+        process_requests: 1,
+        f: { ...emitter(1, 20).f, request_process_time: 0.75 },
+      });
+      h.p.step(h.g);
+      expect(request).toHaveBeenCalledExactlyOnceWith(0.75);
+      expect(h.p.evidence.process_requests).toBe(1);
+    } finally {
+      request.mockRestore();
+      h.p.dispose();
+    }
+  });
+
+  it("turns on for current emitters and resumes live simulation from a fresh start", () => {
+    const h = setup(false, 0, false, false);
+    h.p.step(h.g);
+    h.time(0.5);
+    h.p.step(h.g);
+    h.p.setStaticParticles(true);
+    expect(h.p.settle(h.g)).toBe(true);
+    const warm = setup();
+    warm.p.step(warm.g);
+    expect(h.taken.at(-1)).toEqual(warm.taken[0]);
+    h.p.setStaticParticles(false);
+    expect(h.p.settle(h.g)).toBe(true);
+    const fresh = setup(false, 0, false, false);
+    fresh.p.step(fresh.g);
+    expect(h.taken.at(-1)).toEqual(fresh.taken[0]);
+    h.time(0.6);
+    h.p.step(h.g);
+    h.time(0.7);
+    h.p.step(h.g);
+    expect(h.taken.at(-1)).not.toEqual(fresh.taken[0]);
+  });
+
+  it("paces a long static warm and finishes it off-frame, then parks", () => {
+    const h = setup(false, 400, true);
+    h.change({
+      f: { ...emitter(1, 20).f, lifetime: 400, pre_process_time: 400 },
+    });
+    h.p.step(h.g);
+    h.p.step(h.g);
+    expect(h.p.settling).toBe(true);
+    expect(h.taken[0].every((v) => v === 0)).toBe(true);
+    let chunks = 0;
+    while (h.pending.size) {
+      const task = [...h.pending][0];
+      h.pending.delete(task);
+      task();
+      expect(++chunks).toBeLessThan(50000);
+    }
+    expect(chunks).toBeGreaterThan(10);
+    expect(h.p.settling).toBe(false);
+    expect(h.taken.at(-1)!.some((v) => v !== 0)).toBe(true);
+    const steps = h.p.evidence.sim_steps;
+    h.time(10);
+    h.p.step(h.g);
+    expect(h.p.evidence.sim_steps).toBe(steps);
+    expect(h.pending.size).toBe(0);
+  });
+
+  it("re-warms on reconfiguration and clears an emitter stopped by the host", () => {
+    const h = setup();
+    h.p.step(h.g);
+    const first = h.taken[0];
+    h.change({ seed: 100 });
+    h.p.step(h.g);
+    expect(h.taken).toHaveLength(2);
+    expect(h.taken[1]).not.toEqual(first);
+    h.change({ emitting: false });
+    h.p.step(h.g);
+    expect(h.taken[2].every((v) => v === 0)).toBe(true);
+    h.change({ emitting: true });
+    h.p.step(h.g);
+    expect(h.taken[3]).toEqual(h.taken[1]);
+  });
+
+  it("does not renew the first-sight expiry window when static mode turns on", () => {
+    const h = setup(true, 0, false, false);
+    h.p.step(h.g);
+    h.time(3);
+    h.p.setStaticParticles(true);
+    h.p.step(h.g);
+    expect(h.taken.at(-1)!.every((v) => v === 0)).toBe(true);
+    expect(h.p.settling).toBe(false);
+  });
+
+  // Recorded gate8-pt inputs and FNV-1a of each upload from the pre-option implementation.
+  // The recording digest and source commit pin the golden's provenance independently of this class.
+  // Changes overlay the initial emitter (including its float fields), never the preceding step.
+  // drawCalls retains the per-step executor observations; this unit test covers the upload boundary.
+  it.each([
+    undefined,
+    false,
+  ])("matches recorded PM6b instance bytes from the base (staticParticles=%s)", (on) => {
+    const p = new GswParticles(undefined, undefined, on);
+    let uploadCount = 0;
+    for (const frame of baseGolden.frames) {
+      const uploads: number[][] = [];
+      const message =
+        frame === baseGolden.frames[0]
+          ? baseGolden.initial
+          : {
+              ids: baseGolden.initial.ids,
+              materials: [],
+              emitters: frame.changes.map((change) => {
+                const initial = baseGolden.initial.emitters.find(
+                  (e) => e.id === change.id,
+                )!;
+                return {
+                  ...initial,
+                  ...change,
+                  f: { ...initial.f, ...change.f },
+                };
+              }),
+            };
+      p.step({
+        particles_sync: () => JSON.stringify(message),
+        shader_time: () => frame.time,
+        particles_set: (id, data) => {
+          let hash = 0x811c9dc5;
+          const bytes = new Uint8Array(
+            data.buffer,
+            data.byteOffset,
+            data.byteLength,
+          );
+          for (const byte of bytes)
+            hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+          uploads.push([id, data.length, hash]);
+        },
+      });
+      expect(uploads).toEqual(frame.uploads);
+      uploadCount += uploads.length;
+    }
+    expect(baseGolden.base).toBe("b456d2b366174bcda053cf5f29e770bbfdafdd9a");
+    expect(baseGolden.frames).toHaveLength(120);
+    expect(uploadCount).toBe(1063);
+    p.dispose();
   });
 });

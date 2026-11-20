@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ACCEPT_END } from "../src/abi";
+import { WasmStreamCore } from "../src/core";
 import type { RenderStreamProtocol } from "../src/endpoint";
 import type { RenderStreamExtension } from "../src/extensions";
 import {
@@ -347,6 +348,8 @@ describe("endpoint protocol changes", () => {
     extensions: RenderStreamExtension[] = [],
     resourceHints?: boolean,
     viewports?: boolean,
+    staticParticles?: boolean,
+    transparentClear?: boolean,
   ) {
     vi.useFakeTimers();
     const memory = new WebAssembly.Memory({ initial: 1 });
@@ -355,7 +358,11 @@ describe("endpoint protocol changes", () => {
     const instances: GswRs[] = [];
     let refuse = false;
     class GswRs extends base.GswRs {
-      readonly options: { live_protocol: number; viewports?: boolean };
+      readonly options: {
+        live_protocol: number;
+        viewports?: boolean;
+        transparent_clear?: boolean;
+      };
       readonly free = vi.fn();
       readonly set_window = vi.fn();
       readonly payloads = new Set<string>();
@@ -436,7 +443,9 @@ describe("endpoint protocol changes", () => {
       transport,
       applyOn: "frame",
       ...(resourceHints !== undefined ? { resourceHints } : {}),
+      ...(staticParticles !== undefined ? { staticParticles } : {}),
       ...(viewports !== undefined ? { viewports } : {}),
+      ...(transparentClear !== undefined ? { transparentClear } : {}),
       onStatus: (st) => statuses.push(st),
     });
     function open() {
@@ -561,6 +570,57 @@ describe("endpoint protocol changes", () => {
     expect(() => mount(16, [], undefined, "no" as never)).toThrow(
       /viewports must be a boolean/,
     );
+  });
+
+  it("passes transparentClear only when enabled, including after a protocol rebuild", async () => {
+    let defaultHello: unknown;
+    for (const option of [undefined, false, true]) {
+      const h = mount(13, [], undefined, undefined, undefined, option);
+      h.c.connect();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.instances[0].options.transparent_clear).toBe(
+        option ? true : undefined,
+      );
+      expect(h.connections[0].sub).toBe("render-stream.13");
+      const hello = JSON.parse(h.open().send.mock.calls[0][0]);
+      if (option === undefined) defaultHello = hello;
+      else expect(hello).toEqual(defaultHello);
+      h.c.setEndpoint({ ...endpoint, protocol: 16 });
+      expect(h.instances[1].options.transparent_clear).toBe(
+        option ? true : undefined,
+      );
+      h.c.dispose();
+    }
+    expect(() =>
+      mount(13, [], undefined, undefined, undefined, "yes" as never),
+    ).toThrow(/transparentClear must be a boolean/);
+  });
+
+  it("staticParticles reaches the core at creation, runtime, and after a protocol rebuild", async () => {
+    const set = vi.spyOn(WasmStreamCore.prototype, "setStaticParticles");
+    try {
+      for (const on of [undefined, false, true]) {
+        const h = mount(13, [], undefined, undefined, on);
+        h.c.connect();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(set).toHaveBeenLastCalledWith(on ?? false);
+        expect(typeof h.c.setStaticParticles).toBe("function");
+        h.c.setStaticParticles?.(true);
+        expect(set).toHaveBeenLastCalledWith(true);
+        h.c.setEndpoint({ ...endpoint, protocol: 14 });
+        h.c.setStaticParticles?.(false);
+        expect(set).toHaveBeenLastCalledWith(false);
+        h.c.dispose();
+        const calls = set.mock.calls.length;
+        h.c.setStaticParticles?.(true);
+        expect(set).toHaveBeenCalledTimes(calls);
+      }
+      expect(() => mount(13, [], undefined, undefined, "no" as never)).toThrow(
+        /staticParticles must be a boolean/,
+      );
+    } finally {
+      set.mockRestore();
+    }
   });
 
   it("frameCap: validated, switched at runtime, and woken by input on the canvas's document", async () => {

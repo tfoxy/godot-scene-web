@@ -134,6 +134,10 @@ export interface RenderStreamClientOptions {
    * and did not build. The wire is the same, so the host needs no restart to try either value. Only
    * a /16 stream carries surfaces: below /16 the option changes nothing. */
   viewports?: boolean;
+  /** Clear the stream canvas to transparent so the page can show an underlay. Default false:
+   * use the host's clear colour. Applies to the root canvas only; viewport surfaces keep their
+   * host clears. Uses the executor's alpha-enabled, premultiplied WebGL context. */
+  transparentClear?: boolean;
   /** The idle frame cap, for battery and heat over long sessions on a GPU-bound device; change it
    * at runtime with `setFrameCap`. `off` (the default): every frame callback presents, and nothing
    * is measured. `automatic`: once nobody has interacted for `FRAME_CAP_QUIET_MS` and the stream
@@ -148,6 +152,10 @@ export interface RenderStreamClientOptions {
    * is paced by the presented frames, as it always is at that stage). A core built without the
    * motion measure never engages the cap. */
   frameCap?: RenderStreamFrameCap;
+  /** Warm GPU particles once to a representative frame and hold them. Default false.
+   * CPU particles stay live. Frozen one-shots retire on the next apply/present after their
+   * burst window; no timer forces a redraw. Change at runtime with `setStaticParticles`. */
+  staticParticles?: boolean;
   /** How much motion per transaction still counts as ambient under `frameCap` (each field
    * optional, defaults: scene content `IDLE_MOTION_MAX_PX` 1 px and `IDLE_COLOR_STEP_MAX` 8/255,
    * animation content `IDLE_ANIMATION_MAX_PX` 128 px and `IDLE_ANIMATION_COLOR_STEP_MAX`
@@ -212,6 +220,9 @@ export interface RenderStreamClient {
    * period starts over. Cheap enough to call on every input event; nothing under `off`. Always
    * there on a created client (optional as `setFrameCap`). */
   wake?(): void;
+  /** Warm and hold GPU emitters, or restart them in live mode. Always present on created clients;
+   * optional so existing consumer test doubles remain compatible. */
+  setStaticParticles?(on: boolean): void;
 }
 
 /** The events that count as input for the frame cap, listened to on the canvas's document. */
@@ -285,6 +296,14 @@ export function createRenderStreamClient(
   clientProtocol(endpoint.protocol, ext?.request, resourceHints);
   if (typeof (options.viewports ?? true) !== "boolean")
     throw new TypeError("render-stream client: viewports must be a boolean");
+  if (typeof (options.transparentClear ?? false) !== "boolean")
+    throw new TypeError(
+      "render-stream client: transparentClear must be a boolean",
+    );
+  if (typeof (options.staticParticles ?? false) !== "boolean")
+    throw new TypeError(
+      "render-stream client: staticParticles must be a boolean",
+    );
   checkFrameCap(options.frameCap ?? "off");
   frameCapLimits(options.frameCapBounds);
   // Absent the option there is no recorder (and no per-message copy); present, one ring.
@@ -335,6 +354,7 @@ class Client implements RenderStreamClient {
   private readonly onRestored = () => this.loop?.contextRestored();
   /** The frame cap in effect (the loop's, once there is one). */
   private frameCap: RenderStreamFrameCap;
+  private staticParticles: boolean;
   /** Its bounds (the loop's, once there is one). */
   private frameCapBounds: RenderStreamFrameCapBounds | undefined;
   /** The document the wake listeners are on (null: none, the cap is off). */
@@ -353,6 +373,7 @@ class Client implements RenderStreamClient {
       o.transport ??
       carrierTransport(o.carrier ?? "auto", { fetchInWorker: o.fetchInWorker });
     this.frameCap = o.frameCap ?? "off";
+    this.staticParticles = o.staticParticles ?? false;
     this.frameCapBounds = o.frameCapBounds;
     this.listenInput();
   }
@@ -368,6 +389,17 @@ class Client implements RenderStreamClient {
     if (bounds !== undefined) this.frameCapBounds = { ...bounds };
     this.listenInput();
     this.loop?.setFrameCap(mode, bounds);
+  }
+
+  setStaticParticles(on: boolean): void {
+    if (typeof on !== "boolean")
+      throw new TypeError(
+        "render-stream client: staticParticles must be a boolean",
+      );
+    if (this.disposed || this.staticParticles === on) return;
+    this.staticParticles = on;
+    this.core?.setStaticParticles(on);
+    this.loop?.wake();
   }
 
   wake(): void {
@@ -531,7 +563,11 @@ class Client implements RenderStreamClient {
       try {
         g = new mod.GswRs(
           canvas,
-          coreStartOptions(protocol, this.o.viewports ?? true),
+          coreStartOptions(
+            protocol,
+            this.o.viewports ?? true,
+            this.o.transparentClear ?? false,
+          ),
         );
       } catch (e) {
         const probe = document.createElement("canvas").getContext("webgl2");
@@ -556,6 +592,7 @@ class Client implements RenderStreamClient {
       CLIENT_LIVE_CODING,
       CLIENT_INBOUND_BYTES,
     );
+    this.core.setStaticParticles(this.staticParticles);
     this.ext?.bind(this.core);
     // The module's own context (getContext returns the one it created).
     const gl = canvas.getContext("webgl2");

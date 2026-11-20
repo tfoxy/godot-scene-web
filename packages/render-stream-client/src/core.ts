@@ -188,6 +188,8 @@ export interface StreamCore {
   settleParticles?(seq: number): boolean;
   /** Suspend off-frame particle work during context loss. */
   pauseParticles?(paused: boolean): void;
+  /** Restart GPU emitters in the selected client simulation mode. */
+  setStaticParticles?(on: boolean): void;
   apply(seq: number): void;
   /** What the last `apply` did to the draw list, read after it (`RenderStreamStats`). The
    * returned object may be reused by the next call. Absent: the loop reports none. */
@@ -315,6 +317,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   };
   private coding: LiveCoding | null = null;
   private particles: GswParticles;
+  private staticParticles = false;
   private particleUploadReady = false;
   private particleIdlePaused = false;
   private programsHeld = false;
@@ -754,10 +757,14 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   }
 
   private makeParticles(): GswParticles {
-    const particles = new GswParticles(this.particlePacing, () => {
-      // Uploads happen off-frame; reapply and GL draws stay on the frame callback.
-      this.particleUploadReady = true;
-    });
+    const particles = new GswParticles(
+      this.particlePacing,
+      () => {
+        // Uploads happen off-frame; reapply and GL draws stay on the frame callback.
+        this.particleUploadReady = true;
+      },
+      this.staticParticles,
+    );
     particles.pauseIdle(this.particleIdlePaused);
     return particles;
   }
@@ -766,6 +773,11 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     this.particles.dispose();
     this.particleUploadReady = false;
     this.particles = this.makeParticles();
+  }
+
+  setStaticParticles(on: boolean): void {
+    this.staticParticles = on;
+    this.particles.setStaticParticles(on);
   }
 
   pauseParticles(paused: boolean): void {
@@ -789,10 +801,12 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   }
 
   draw(seq: number): void {
+    if (this.particles.expire(this.g, this.memory)) this.g.reapply?.();
     if (this.g.draw() < 0) throw failWith(seq, this.g.error());
   }
 
   redraw(seq: number): "ok" | "lost" {
+    if (this.particles.expire(this.g, this.memory)) this.g.reapply?.();
     if (this.g.draw() >= 0) return "ok";
     const err = this.g.error();
     if (/lost/i.test(err)) return "lost";

@@ -165,6 +165,19 @@ describe("clientHello", () => {
 });
 
 describe("coreStartOptions (PH2)", () => {
+  it("keeps the default options identical and adds transparent_clear only when enabled", () => {
+    for (const protocol of [12, 13, 16]) {
+      for (const viewports of [true, false]) {
+        const original = coreStartOptions(protocol, viewports);
+        expect(coreStartOptions(protocol, viewports, false)).toBe(original);
+        expect(original).not.toContain("transparent_clear");
+        expect(coreStartOptions(protocol, viewports, true)).toBe(
+          `${original.replace('"rgb10a2"', '"rgba8"').slice(0, -1)},"transparent_clear":true}`,
+        );
+      }
+    }
+  });
+
   it("asks the core for no record digests, at the endpoint's protocol", () => {
     for (const protocol of [11, 12, 13, 14, 15, 16]) {
       const o = JSON.parse(coreStartOptions(protocol));

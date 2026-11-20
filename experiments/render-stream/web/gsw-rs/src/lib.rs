@@ -24,7 +24,7 @@ use godot_scene_web_rust_prototype::canvas_items::{
     CanvasItemsExecutor, ContextState, ExecError, ExecOptions, ExecStats, FenceState, Sabotage,
     SurfacePass,
 };
-use gsw_canvas_draw_list::Format;
+use gsw_canvas_draw_list::{Format, Target};
 use gsw_canvas_draw_list::{Binding, UniformValue};
 use render_stream_core::apply::geom::{self, Xform};
 use render_stream_core::apply::material_residency::MaterialCounts;
@@ -78,8 +78,18 @@ fn expected_calls(a: &Applier) -> u32 {
 
 /// One frame of the applier's lists: its surface passes (render-stream/16; none without a
 /// viewport, which is exactly `execute` of the root) and the root.
-fn execute_lists(x: &mut CanvasItemsExecutor, a: &Applier) -> Result<ExecStats, ExecError> {
-    match a.surfaces.as_ref() {
+fn execute_lists(
+    x: &mut CanvasItemsExecutor,
+    a: &mut Applier,
+    transparent_clear: bool,
+) -> Result<ExecStats, ExecError> {
+    // Only the executor sees the override. Keep the retained host target intact, including on
+    // context-loss/error returns; non-root viewport passes keep their own clears and blending.
+    let host_target = a.list.target;
+    if transparent_clear {
+        a.list.target = client_root_target(host_target, true);
+    }
+    let result = match a.surfaces.as_ref() {
         None => x.execute(&a.list),
         Some(set) => {
             let passes: Vec<SurfacePass<'_>> = set
@@ -88,7 +98,21 @@ fn execute_lists(x: &mut CanvasItemsExecutor, a: &Applier) -> Result<ExecStats, 
                 .collect();
             x.execute_frame(&a.list, &passes, set.freed())
         }
+    };
+    if transparent_clear {
+        a.list.target = host_target;
     }
+    result
+}
+
+fn client_root_target(mut target: Target, transparent_clear: bool) -> Target {
+    if transparent_clear {
+        target.clear[3] = 0.0;
+        // Opaque targets preserve destination alpha on blends. The canvas must accumulate coverage
+        // over its transparent clear so the page can composite the executor's premultiplied output.
+        target.opaque = false;
+    }
+    target
 }
 
 fn set_max_texture_side(applier: &mut Applier, executor: Option<&CanvasItemsExecutor>) {
@@ -282,6 +306,8 @@ struct Opts {
     /// (`"viewports":false`): the viewport table is applied, no surface pass is built, and every
     /// viewport texture samples transparent (stat `surfaces_skipped`).
     no_viewports: bool,
+    /// Client-only root clear override; neither the session nor offscreen surfaces change.
+    transparent_clear: bool,
 }
 
 /// G8kb: every `uastc` variant hash of the state's textures (the KTX2 payloads).
@@ -385,6 +411,7 @@ fn parse_options(json: &str) -> Result<Opts, String> {
     };
     o.transcoder = json.contains("\"transcoder\":true");
     o.no_viewports = json.contains("\"viewports\":false");
+    o.transparent_clear = json.contains("\"transparent_clear\":true");
     o.variant_policy = match find_str(json, "variant_policy").as_deref() {
         None | Some("") => None,
         Some("keep") => Some(false),
@@ -2853,7 +2880,7 @@ impl GswRs {
         let t = prof::start();
         self.last_upload_bytes = a.list.queued_texture_bytes();
         let mut expected = expected_calls(a);
-        let mut result = execute_lists(x, a);
+        let mut result = execute_lists(x, a, self.opts.transparent_clear);
         // A restored context (D14, D29): every GL object is new, so the list goes again with
         // `dirty.all` and every resident texture re-queued from the payload store. A list that
         // already carried `dirty.all` executes on the new objects (`restored == 1`) without its
@@ -2869,7 +2896,7 @@ impl GswRs {
             self.totals.restores += 1;
             self.last_restore_draw = true;
             expected = expected_calls(a);
-            result = execute_lists(x, a);
+            result = execute_lists(x, a, self.opts.transparent_clear);
         } else {
             self.last_restore_draw = false;
         }

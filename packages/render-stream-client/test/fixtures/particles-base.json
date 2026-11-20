@@ -1,0 +1,4205 @@
+{
+  "base": "b456d2b366174bcda053cf5f29e770bbfdafdd9a",
+  "recordingSha256": "a6d943725ff0ae9a858c05228d7637a014b796dcafda56ac9c99aa21ea0ed7c1",
+  "uploadFields": ["emitterId", "floatCount", "fnv1a32"],
+  "initial": {
+    "ids": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    "emitters": [
+      {
+        "id": 1,
+        "version": 20,
+        "emitting": true,
+        "amount": 3,
+        "one_shot": false,
+        "fixed_fps": 30,
+        "interpolate": true,
+        "fractional_delta": true,
+        "local": true,
+        "draw_order": "lifetime",
+        "trails": false,
+        "seed": 1001,
+        "restarts": 1,
+        "emits": 0,
+        "process_requests": 0,
+        "material": 1,
+        "f": {
+          "amount_ratio": 1,
+          "lifetime": 1,
+          "pre_process_time": 0,
+          "explosiveness": 0,
+          "randomness": 0,
+          "speed_scale": 1,
+          "interp_to_end": 0,
+          "request_process_time": 0,
+          "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 106, 60, 0],
+          "emitter_velocity": [0, 0, 0]
+        }
+      },
+      {
+        "id": 2,
+        "version": 20,
+        "emitting": true,
+        "amount": 5,
+        "one_shot": false,
+        "fixed_fps": 30,
+        "interpolate": true,
+        "fractional_delta": true,
+        "local": false,
+        "draw_order": "lifetime",
+        "trails": false,
+        "seed": 1002,
+        "restarts": 1,
+        "emits": 0,
+        "process_requests": 0,
+        "material": 2,
+        "f": {
+          "amount_ratio": 1,
+          "lifetime": 1,
+          "pre_process_time": 0,
+          "explosiveness": 0,
+          "randomness": 0,
+          "speed_scale": 1,
+          "interp_to_end": 0,
+          "request_process_time": 0,
+          "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 262, 60, 0],
+          "emitter_velocity": [0, 0, 0]
+        }
+      },
+      {
+        "id": 3,
+        "version": 20,
+        "emitting": true,
+        "amount": 6,
+        "one_shot": false,
+        "fixed_fps": 30,
+        "interpolate": true,
+        "fractional_delta": true,
+        "local": true,
+        "draw_order": "lifetime",
+        "trails": false,
+        "seed": 1003,
+        "restarts": 1,
+        "emits": 0,
+        "process_requests": 0,
+        "material": 3,
+        "f": {
+          "amount_ratio": 1,
+          "lifetime": 1,
+          "pre_process_time": 0,
+          "explosiveness": 0,
+          "randomness": 0,
+          "speed_scale": 1,
+          "interp_to_end": 0,
+          "request_process_time": 0,
+          "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 533, 60, 0],
+          "emitter_velocity": [0, 0, 0]
+        }
+      },
+      {
+        "id": 4,
+        "version": 23,
+        "emitting": false,
+        "amount": 7,
+        "one_shot": true,
+        "fixed_fps": 30,
+        "interpolate": true,
+        "fractional_delta": true,
+        "local": true,
+        "draw_order": "lifetime",
+        "trails": false,
+        "seed": 1004,
+        "restarts": 1,
+        "emits": 0,
+        "process_requests": 0,
+        "material": 4,
+        "f": {
+          "amount_ratio": 1,
+          "lifetime": 1,
+          "pre_process_time": 0,
+          "explosiveness": 1,
+          "randomness": 0,
+          "speed_scale": 1,
+          "interp_to_end": 0,
+          "request_process_time": 0,
+          "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 106, 180, 0],
+          "emitter_velocity": [0, 0, 0]
+        }
+      },
+      {
+        "id": 5,
+        "version": 21,
+        "emitting": true,
+        "amount": 9,
+        "one_shot": false,
+        "fixed_fps": 30,
+        "interpolate": true,
+        "fractional_delta": true,
+        "local": true,
+        "draw_order": "lifetime",
+        "trails": false,
+        "seed": 1005,
+        "restarts": 1,
+        "emits": 0,
+        "process_requests": 0,
+        "material": 5,
+        "f": {
+          "amount_ratio": 1,
+          "lifetime": 1,
+          "pre_process_time": 0,
+          "explosiveness": 0,
+          "randomness": 0,
+          "speed_scale": 1,
+          "interp_to_end": 0,
+          "request_process_time": 0,
+          "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 320, 180, 0],
+          "emitter_velocity": [0, 0, 0]
+        }
+      },
+      {
+        "id": 6,
+        "version": 20,
+        "emitting": true,
+        "amount": 10,
+        "one_shot": false,
+        "fixed_fps": 30,
+        "interpolate": true,
+        "fractional_delta": true,
+        "local": true,
+        "draw_order": "lifetime",
+        "trails": false,
+        "seed": 1006,
+        "restarts": 1,
+        "emits": 0,
+        "process_requests": 0,
+        "material": 7,
+        "f": {
+          "amount_ratio": 1,
+          "lifetime": 1,
+          "pre_process_time": 0,
+          "explosiveness": 0,
+          "randomness": 0,
+          "speed_scale": 1,
+          "interp_to_end": 0,
+          "request_process_time": 0,
+          "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 533, 180, 0],
+          "emitter_velocity": [0, 0, 0]
+        }
+      },
+      {
+        "id": 7,
+        "version": 20,
+        "emitting": true,
+        "amount": 11,
+        "one_shot": false,
+        "fixed_fps": 30,
+        "interpolate": true,
+        "fractional_delta": true,
+        "local": true,
+        "draw_order": "lifetime",
+        "trails": false,
+        "seed": 1007,
+        "restarts": 1,
+        "emits": 0,
+        "process_requests": 0,
+        "material": 8,
+        "f": {
+          "amount_ratio": 1,
+          "lifetime": 1,
+          "pre_process_time": 0,
+          "explosiveness": 0,
+          "randomness": 0,
+          "speed_scale": 1,
+          "interp_to_end": 0,
+          "request_process_time": 0,
+          "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 106, 300, 0],
+          "emitter_velocity": [0, 0, 0]
+        }
+      },
+      {
+        "id": 8,
+        "version": 21,
+        "emitting": true,
+        "amount": 12,
+        "one_shot": false,
+        "fixed_fps": 30,
+        "interpolate": true,
+        "fractional_delta": true,
+        "local": true,
+        "draw_order": "lifetime",
+        "trails": false,
+        "seed": 1008,
+        "restarts": 1,
+        "emits": 0,
+        "process_requests": 0,
+        "material": 9,
+        "f": {
+          "amount_ratio": 1,
+          "lifetime": 1,
+          "pre_process_time": 0,
+          "explosiveness": 0,
+          "randomness": 0,
+          "speed_scale": 1,
+          "interp_to_end": 0,
+          "request_process_time": 0,
+          "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 320, 300, 0],
+          "emitter_velocity": [0, 0, 0]
+        }
+      },
+      {
+        "id": 9,
+        "version": 21,
+        "emitting": false,
+        "amount": 2,
+        "one_shot": false,
+        "fixed_fps": 30,
+        "interpolate": true,
+        "fractional_delta": true,
+        "local": true,
+        "draw_order": "lifetime",
+        "trails": false,
+        "seed": 1009,
+        "restarts": 1,
+        "emits": 0,
+        "process_requests": 0,
+        "material": 10,
+        "f": {
+          "amount_ratio": 1,
+          "lifetime": 1,
+          "pre_process_time": 0,
+          "explosiveness": 0,
+          "randomness": 0,
+          "speed_scale": 1,
+          "interp_to_end": 0,
+          "request_process_time": 0,
+          "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 320, 300, 0],
+          "emitter_velocity": [0, 0, 0]
+        }
+      },
+      {
+        "id": 10,
+        "version": 23,
+        "emitting": true,
+        "amount": 13,
+        "one_shot": false,
+        "fixed_fps": 30,
+        "interpolate": true,
+        "fractional_delta": true,
+        "local": true,
+        "draw_order": "lifetime",
+        "trails": true,
+        "seed": 1010,
+        "restarts": 1,
+        "emits": 0,
+        "process_requests": 0,
+        "material": 11,
+        "f": {
+          "amount_ratio": 1,
+          "lifetime": 1,
+          "pre_process_time": 0,
+          "explosiveness": 0,
+          "randomness": 0,
+          "speed_scale": 1,
+          "interp_to_end": 0,
+          "request_process_time": 0,
+          "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 533, 300, 0],
+          "emitter_velocity": [0, 0, 0]
+        }
+      }
+    ],
+    "materials": [
+      {
+        "id": 1,
+        "version": 72,
+        "builtin": {
+          "emission_shape": "box",
+          "particle_flags": ["disable_z"],
+          "sub_emitter": "disabled",
+          "attractor": true,
+          "collision": "disabled",
+          "turbulence": false
+        },
+        "uniforms": {
+          "angular_velocity_max": 0,
+          "angular_velocity_min": 0,
+          "anim_offset_max": 0,
+          "anim_offset_min": 0,
+          "anim_speed_max": 0,
+          "anim_speed_min": 0,
+          "collision_bounce": 0,
+          "collision_friction": 0,
+          "color_value": [1, 1, 1, 1],
+          "damping_max": 0,
+          "damping_min": 0,
+          "direction": [1, 0, 0],
+          "directional_velocity_max": 1,
+          "directional_velocity_min": 1,
+          "emission_box_extents": [40, 20, 0],
+          "emission_ring_axis": [0, 0, 1],
+          "emission_ring_cone_angle": 90,
+          "emission_ring_height": 1,
+          "emission_ring_inner_radius": 0,
+          "emission_ring_radius": 1,
+          "emission_shape_offset": [0, 0, 0],
+          "emission_shape_scale": [1, 1, 1],
+          "emission_sphere_radius": 1,
+          "flatness": 0,
+          "gravity": [0, 20, 0],
+          "hue_variation_max": 0,
+          "hue_variation_min": 0,
+          "initial_angle_max": 0,
+          "initial_angle_min": 0,
+          "initial_linear_velocity_max": 60,
+          "initial_linear_velocity_min": 30,
+          "lifetime_randomness": 0,
+          "linear_accel_max": 0,
+          "linear_accel_min": 0,
+          "orbit_velocity_max": 0,
+          "orbit_velocity_min": 0,
+          "radial_accel_max": 0,
+          "radial_accel_min": 0,
+          "scale_max": 3,
+          "scale_min": 3,
+          "spread": 30,
+          "sub_emitter_amount_at_collision": 1,
+          "sub_emitter_amount_at_end": 1,
+          "sub_emitter_amount_at_start": 1,
+          "sub_emitter_frequency": 0.25,
+          "sub_emitter_keep_velocity": 0,
+          "tangent_accel_max": 0,
+          "tangent_accel_min": 0,
+          "turbulence_enabled": 0,
+          "turbulence_influence_max": 0.10000000149011612,
+          "turbulence_influence_min": 0.10000000149011612,
+          "turbulence_initial_displacement_max": 0,
+          "turbulence_initial_displacement_min": 0,
+          "turbulence_noise_scale": -0.10398507118225098,
+          "turbulence_noise_speed": [0, 0, 0],
+          "turbulence_noise_speed_random": 0.20000000298023224,
+          "turbulence_noise_strength": 1
+        },
+        "curves": {}
+      },
+      {
+        "id": 2,
+        "version": 72,
+        "builtin": {
+          "emission_shape": "sphere",
+          "particle_flags": ["disable_z"],
+          "sub_emitter": "disabled",
+          "attractor": true,
+          "collision": "disabled",
+          "turbulence": false
+        },
+        "uniforms": {
+          "angular_velocity_max": 0,
+          "angular_velocity_min": 0,
+          "anim_offset_max": 0,
+          "anim_offset_min": 0,
+          "anim_speed_max": 0,
+          "anim_speed_min": 0,
+          "collision_bounce": 0,
+          "collision_friction": 0,
+          "color_value": [1, 1, 1, 1],
+          "damping_max": 0,
+          "damping_min": 0,
+          "direction": [1, 0, 0],
+          "directional_velocity_max": 1,
+          "directional_velocity_min": 1,
+          "emission_box_extents": [1, 1, 1],
+          "emission_ring_axis": [0, 0, 1],
+          "emission_ring_cone_angle": 90,
+          "emission_ring_height": 1,
+          "emission_ring_inner_radius": 0,
+          "emission_ring_radius": 1,
+          "emission_shape_offset": [0, 0, 0],
+          "emission_shape_scale": [1, 1, 1],
+          "emission_sphere_radius": 15,
+          "flatness": 0,
+          "gravity": [0, 20, 0],
+          "hue_variation_max": 0,
+          "hue_variation_min": 0,
+          "initial_angle_max": 0,
+          "initial_angle_min": 0,
+          "initial_linear_velocity_max": 60,
+          "initial_linear_velocity_min": 30,
+          "lifetime_randomness": 0,
+          "linear_accel_max": 0,
+          "linear_accel_min": 0,
+          "orbit_velocity_max": 0,
+          "orbit_velocity_min": 0,
+          "radial_accel_max": 0,
+          "radial_accel_min": 0,
+          "scale_max": 3,
+          "scale_min": 3,
+          "spread": 30,
+          "sub_emitter_amount_at_collision": 1,
+          "sub_emitter_amount_at_end": 1,
+          "sub_emitter_amount_at_start": 1,
+          "sub_emitter_frequency": 0.25,
+          "sub_emitter_keep_velocity": 0,
+          "tangent_accel_max": 0,
+          "tangent_accel_min": 0,
+          "turbulence_enabled": 0,
+          "turbulence_influence_max": 0.10000000149011612,
+          "turbulence_influence_min": 0.10000000149011612,
+          "turbulence_initial_displacement_max": 0,
+          "turbulence_initial_displacement_min": 0,
+          "turbulence_noise_scale": -0.10398507118225098,
+          "turbulence_noise_speed": [0, 0, 0],
+          "turbulence_noise_speed_random": 0.20000000298023224,
+          "turbulence_noise_strength": 1
+        },
+        "curves": {}
+      },
+      {
+        "id": 3,
+        "version": 75,
+        "builtin": {
+          "emission_shape": "ring",
+          "particle_flags": ["disable_z"],
+          "sub_emitter": "disabled",
+          "attractor": true,
+          "collision": "disabled",
+          "turbulence": false
+        },
+        "uniforms": {
+          "angular_velocity_max": 0,
+          "angular_velocity_min": 0,
+          "anim_offset_max": 0,
+          "anim_offset_min": 0,
+          "anim_speed_max": 0,
+          "anim_speed_min": 0,
+          "collision_bounce": 0,
+          "collision_friction": 0,
+          "color_value": [1, 1, 1, 1],
+          "damping_max": 0,
+          "damping_min": 0,
+          "direction": [1, 0, 0],
+          "directional_velocity_max": 1,
+          "directional_velocity_min": 1,
+          "emission_box_extents": [1, 1, 1],
+          "emission_ring_axis": [0, 0, 1],
+          "emission_ring_cone_angle": 90,
+          "emission_ring_height": 0,
+          "emission_ring_inner_radius": 20,
+          "emission_ring_radius": 30,
+          "emission_shape_offset": [0, 0, 0],
+          "emission_shape_scale": [1, 1, 1],
+          "emission_sphere_radius": 1,
+          "flatness": 0,
+          "gravity": [0, 20, 0],
+          "hue_variation_max": 0,
+          "hue_variation_min": 0,
+          "initial_angle_max": 0,
+          "initial_angle_min": 0,
+          "initial_linear_velocity_max": 60,
+          "initial_linear_velocity_min": 30,
+          "lifetime_randomness": 0,
+          "linear_accel_max": 0,
+          "linear_accel_min": 0,
+          "orbit_velocity_max": 0,
+          "orbit_velocity_min": 0,
+          "radial_accel_max": 0,
+          "radial_accel_min": 0,
+          "scale_max": 3,
+          "scale_min": 3,
+          "spread": 30,
+          "sub_emitter_amount_at_collision": 1,
+          "sub_emitter_amount_at_end": 1,
+          "sub_emitter_amount_at_start": 1,
+          "sub_emitter_frequency": 0.25,
+          "sub_emitter_keep_velocity": 0,
+          "tangent_accel_max": 0,
+          "tangent_accel_min": 0,
+          "turbulence_enabled": 0,
+          "turbulence_influence_max": 0.10000000149011612,
+          "turbulence_influence_min": 0.10000000149011612,
+          "turbulence_initial_displacement_max": 0,
+          "turbulence_initial_displacement_min": 0,
+          "turbulence_noise_scale": -0.10398507118225098,
+          "turbulence_noise_speed": [0, 0, 0],
+          "turbulence_noise_speed_random": 0.20000000298023224,
+          "turbulence_noise_strength": 1
+        },
+        "curves": {}
+      },
+      {
+        "id": 4,
+        "version": 71,
+        "builtin": {
+          "emission_shape": "point",
+          "particle_flags": ["disable_z"],
+          "sub_emitter": "disabled",
+          "attractor": true,
+          "collision": "disabled",
+          "turbulence": false
+        },
+        "uniforms": {
+          "angular_velocity_max": 0,
+          "angular_velocity_min": 0,
+          "anim_offset_max": 0,
+          "anim_offset_min": 0,
+          "anim_speed_max": 0,
+          "anim_speed_min": 0,
+          "collision_bounce": 0,
+          "collision_friction": 0,
+          "color_value": [1, 1, 1, 1],
+          "damping_max": 0,
+          "damping_min": 0,
+          "direction": [1, 0, 0],
+          "directional_velocity_max": 1,
+          "directional_velocity_min": 1,
+          "emission_box_extents": [1, 1, 1],
+          "emission_ring_axis": [0, 0, 1],
+          "emission_ring_cone_angle": 90,
+          "emission_ring_height": 1,
+          "emission_ring_inner_radius": 0,
+          "emission_ring_radius": 1,
+          "emission_shape_offset": [0, 0, 0],
+          "emission_shape_scale": [1, 1, 1],
+          "emission_sphere_radius": 1,
+          "flatness": 0,
+          "gravity": [0, 20, 0],
+          "hue_variation_max": 0,
+          "hue_variation_min": 0,
+          "initial_angle_max": 0,
+          "initial_angle_min": 0,
+          "initial_linear_velocity_max": 60,
+          "initial_linear_velocity_min": 30,
+          "lifetime_randomness": 0,
+          "linear_accel_max": 0,
+          "linear_accel_min": 0,
+          "orbit_velocity_max": 0,
+          "orbit_velocity_min": 0,
+          "radial_accel_max": 0,
+          "radial_accel_min": 0,
+          "scale_max": 3,
+          "scale_min": 3,
+          "spread": 30,
+          "sub_emitter_amount_at_collision": 1,
+          "sub_emitter_amount_at_end": 1,
+          "sub_emitter_amount_at_start": 1,
+          "sub_emitter_frequency": 0.25,
+          "sub_emitter_keep_velocity": 0,
+          "tangent_accel_max": 0,
+          "tangent_accel_min": 0,
+          "turbulence_enabled": 0,
+          "turbulence_influence_max": 0.10000000149011612,
+          "turbulence_influence_min": 0.10000000149011612,
+          "turbulence_initial_displacement_max": 0,
+          "turbulence_initial_displacement_min": 0,
+          "turbulence_noise_scale": -0.10398507118225098,
+          "turbulence_noise_speed": [0, 0, 0],
+          "turbulence_noise_speed_random": 0.20000000298023224,
+          "turbulence_noise_strength": 1
+        },
+        "curves": {}
+      },
+      {
+        "id": 5,
+        "version": 74,
+        "builtin": {
+          "emission_shape": "point",
+          "particle_flags": ["disable_z"],
+          "sub_emitter": "disabled",
+          "attractor": true,
+          "collision": "disabled",
+          "turbulence": false
+        },
+        "uniforms": {
+          "angular_velocity_max": 0,
+          "angular_velocity_min": 0,
+          "anim_offset_max": 0,
+          "anim_offset_min": 0,
+          "anim_speed_max": 1,
+          "anim_speed_min": 1,
+          "collision_bounce": 0,
+          "collision_friction": 0,
+          "color_value": [1, 1, 1, 1],
+          "damping_max": 0,
+          "damping_min": 0,
+          "direction": [1, 0, 0],
+          "directional_velocity_max": 1,
+          "directional_velocity_min": 1,
+          "emission_box_extents": [1, 1, 1],
+          "emission_ring_axis": [0, 0, 1],
+          "emission_ring_cone_angle": 90,
+          "emission_ring_height": 1,
+          "emission_ring_inner_radius": 0,
+          "emission_ring_radius": 1,
+          "emission_shape_offset": [0, 0, 0],
+          "emission_shape_scale": [1, 1, 1],
+          "emission_sphere_radius": 1,
+          "flatness": 0,
+          "gravity": [0, 20, 0],
+          "hue_variation_max": 0,
+          "hue_variation_min": 0,
+          "initial_angle_max": 0,
+          "initial_angle_min": 0,
+          "initial_linear_velocity_max": 60,
+          "initial_linear_velocity_min": 30,
+          "lifetime_randomness": 0,
+          "linear_accel_max": 0,
+          "linear_accel_min": 0,
+          "orbit_velocity_max": 0,
+          "orbit_velocity_min": 0,
+          "radial_accel_max": 0,
+          "radial_accel_min": 0,
+          "scale_max": 3,
+          "scale_min": 3,
+          "spread": 30,
+          "sub_emitter_amount_at_collision": 1,
+          "sub_emitter_amount_at_end": 1,
+          "sub_emitter_amount_at_start": 1,
+          "sub_emitter_frequency": 0.25,
+          "sub_emitter_keep_velocity": 0,
+          "tangent_accel_max": 0,
+          "tangent_accel_min": 0,
+          "turbulence_enabled": 0,
+          "turbulence_influence_max": 0.10000000149011612,
+          "turbulence_influence_min": 0.10000000149011612,
+          "turbulence_initial_displacement_max": 0,
+          "turbulence_initial_displacement_min": 0,
+          "turbulence_noise_scale": -0.10398507118225098,
+          "turbulence_noise_speed": [0, 0, 0],
+          "turbulence_noise_speed_random": 0.20000000298023224,
+          "turbulence_noise_strength": 1
+        },
+        "curves": {}
+      },
+      {
+        "id": 7,
+        "version": 73,
+        "builtin": {
+          "emission_shape": "point",
+          "particle_flags": ["disable_z"],
+          "sub_emitter": "disabled",
+          "attractor": true,
+          "collision": "disabled",
+          "turbulence": false
+        },
+        "uniforms": {
+          "angular_velocity_max": 0,
+          "angular_velocity_min": 0,
+          "anim_offset_max": 0,
+          "anim_offset_min": 0,
+          "anim_speed_max": 0,
+          "anim_speed_min": 0,
+          "collision_bounce": 0,
+          "collision_friction": 0,
+          "color_value": [1, 1, 1, 1],
+          "damping_max": 0,
+          "damping_min": 0,
+          "direction": [1, 0, 0],
+          "directional_velocity_max": 1,
+          "directional_velocity_min": 1,
+          "emission_box_extents": [1, 1, 1],
+          "emission_ring_axis": [0, 0, 1],
+          "emission_ring_cone_angle": 90,
+          "emission_ring_height": 1,
+          "emission_ring_inner_radius": 0,
+          "emission_ring_radius": 1,
+          "emission_shape_offset": [0, 0, 0],
+          "emission_shape_scale": [1, 1, 1],
+          "emission_sphere_radius": 1,
+          "flatness": 0,
+          "gravity": [0, 20, 0],
+          "hue_variation_max": 0,
+          "hue_variation_min": 0,
+          "initial_angle_max": 0,
+          "initial_angle_min": 0,
+          "initial_linear_velocity_max": 60,
+          "initial_linear_velocity_min": 30,
+          "lifetime_randomness": 0,
+          "linear_accel_max": 0,
+          "linear_accel_min": 0,
+          "orbit_velocity_max": 0,
+          "orbit_velocity_min": 0,
+          "radial_accel_max": 0,
+          "radial_accel_min": 0,
+          "scale_max": 3,
+          "scale_min": 3,
+          "spread": 30,
+          "sub_emitter_amount_at_collision": 1,
+          "sub_emitter_amount_at_end": 1,
+          "sub_emitter_amount_at_start": 1,
+          "sub_emitter_frequency": 0.25,
+          "sub_emitter_keep_velocity": 0,
+          "tangent_accel_max": 0,
+          "tangent_accel_min": 0,
+          "turbulence_enabled": 0,
+          "turbulence_influence_max": 0.10000000149011612,
+          "turbulence_influence_min": 0.10000000149011612,
+          "turbulence_initial_displacement_max": 0,
+          "turbulence_initial_displacement_min": 0,
+          "turbulence_noise_scale": -0.10398507118225098,
+          "turbulence_noise_speed": [0, 0, 0],
+          "turbulence_noise_speed_random": 0.20000000298023224,
+          "turbulence_noise_strength": 1
+        },
+        "curves": {
+          "color_ramp": {
+            "width": 64,
+            "height": 1,
+            "data": [
+              1, 0.8999999761581421, 0.20000000298023224, 1, 0.9984126687049866,
+              0.8873015642166138, 0.2063492089509964, 0.9841269850730896,
+              0.9968253970146179, 0.8746031522750854, 0.21269841492176056,
+              0.9682539701461792, 0.9952380657196045, 0.8619047403335571,
+              0.21904762089252472, 0.9523809552192688, 0.9936507940292358,
+              0.8492063283920288, 0.22539682686328888, 0.9365079402923584,
+              0.9920634627342224, 0.8365079164505005, 0.23174604773521423,
+              0.920634925365448, 0.9904761910438538, 0.8238095045089722,
+              0.2380952537059784, 0.9047619104385376, 0.9888888597488403,
+              0.8111110925674438, 0.24444445967674255, 0.8888888955116272,
+              0.9873015880584717, 0.7984126806259155, 0.2507936656475067,
+              0.8730158805847168, 0.9857142567634583, 0.7857142686843872,
+              0.2571428716182709, 0.8571428656578064, 0.9841269850730896,
+              0.7730158567428589, 0.26349207758903503, 0.841269850730896,
+              0.9825396537780762, 0.7603174448013306, 0.2698412835597992,
+              0.8253968358039856, 0.9809523820877075, 0.7476190328598022,
+              0.27619048953056335, 0.8095238208770752, 0.9793650507926941,
+              0.7349206209182739, 0.2825396955013275, 0.7936508059501648,
+              0.9777777791023254, 0.7222222089767456, 0.2888889014720917,
+              0.7777777910232544, 0.976190447807312, 0.7095237970352173,
+              0.29523810744285583, 0.761904776096344, 0.9746031761169434,
+              0.696825385093689, 0.30158731341362, 0.7460317611694336,
+              0.9730158448219299, 0.6841269731521606, 0.30793651938438416,
+              0.7301586866378784, 0.9714285731315613, 0.6714285612106323,
+              0.3142857253551483, 0.7142857313156128, 0.9698412418365479,
+              0.658730149269104, 0.3206349313259125, 0.6984126567840576,
+              0.9682539701461792, 0.6460317373275757, 0.326984167098999,
+              0.682539701461792, 0.9666666388511658, 0.6333333253860474,
+              0.3333333730697632, 0.6666666269302368, 0.9650793671607971,
+              0.620634913444519, 0.33968257904052734, 0.6507936716079712,
+              0.9634920358657837, 0.6079365015029907, 0.3460317850112915,
+              0.634920597076416, 0.961904764175415, 0.5952380895614624,
+              0.35238099098205566, 0.6190476417541504, 0.9603174328804016,
+              0.5825396776199341, 0.3587301969528198, 0.6031745672225952,
+              0.958730161190033, 0.5698412656784058, 0.365079402923584,
+              0.5873016119003296, 0.9571428298950195, 0.5571428537368774,
+              0.37142860889434814, 0.5714285373687744, 0.9555555582046509,
+              0.5444444417953491, 0.3777778148651123, 0.5555555820465088,
+              0.9539682269096375, 0.5317460298538208, 0.38412702083587646,
+              0.5396825075149536, 0.9523809552192688, 0.5190476179122925,
+              0.3904762268066406, 0.523809552192688, 0.9507936239242554,
+              0.5063492059707642, 0.3968254327774048, 0.5079364776611328,
+              0.9492063522338867, 0.49365076422691345, 0.40317463874816895,
+              0.4920634627342224, 0.9476190209388733, 0.48095235228538513,
+              0.4095238447189331, 0.476190447807312, 0.9460317492485046,
+              0.4682539403438568, 0.41587305068969727, 0.4603174328804016,
+              0.9444444179534912, 0.4555555284023285, 0.4222222566604614,
+              0.4444444179534912, 0.9428571462631226, 0.44285711646080017,
+              0.4285714626312256, 0.4285714030265808, 0.9412698149681091,
+              0.43015870451927185, 0.43492066860198975, 0.4126983880996704,
+              0.9396825432777405, 0.41746029257774353, 0.4412698745727539,
+              0.39682537317276, 0.938095211982727, 0.4047618806362152,
+              0.44761908054351807, 0.3809523582458496, 0.9365079402923584,
+              0.3920634984970093, 0.4539682865142822, 0.3650793433189392,
+              0.934920608997345, 0.37936508655548096, 0.4603174924850464,
+              0.3492063283920288, 0.9333333373069763, 0.36666667461395264,
+              0.46666669845581055, 0.3333333134651184, 0.9317460060119629,
+              0.3539682626724243, 0.4730159044265747, 0.317460298538208,
+              0.9301587343215942, 0.341269850730896, 0.47936511039733887,
+              0.3015872836112976, 0.9285714030265808, 0.3285714387893677,
+              0.485714316368103, 0.2857142686843872, 0.9269841313362122,
+              0.31587302684783936, 0.4920635223388672, 0.2698412537574768,
+              0.9253968000411987, 0.30317461490631104, 0.49841272830963135,
+              0.2539682388305664, 0.9238095283508301, 0.2904762029647827,
+              0.5047619342803955, 0.238095223903656, 0.9222221970558167,
+              0.2777777910232544, 0.5111111402511597, 0.2222222089767456,
+              0.920634925365448, 0.2650793790817261, 0.5174603462219238,
+              0.2063491940498352, 0.9190475940704346, 0.25238096714019775,
+              0.523809552192688, 0.1904761791229248, 0.9174603223800659,
+              0.23968255519866943, 0.5301587581634521, 0.1746031641960144,
+              0.9158729910850525, 0.2269841432571411, 0.5365079641342163,
+              0.158730149269104, 0.9142856597900391, 0.2142857313156128,
+              0.5428571701049805, 0.1428571343421936, 0.9126983880996704,
+              0.20158731937408447, 0.5492063760757446, 0.1269841194152832,
+              0.9111111164093018, 0.18888890743255615, 0.5555555820465088,
+              0.1111111044883728, 0.9095237851142883, 0.17619049549102783,
+              0.561904788017273, 0.0952380895614624, 0.9079364538192749,
+              0.1634920835494995, 0.5682539939880371, 0.079365074634552,
+              0.9063491821289062, 0.1507936716079712, 0.5746031999588013,
+              0.0634920597076416, 0.9047619104385376, 0.13809525966644287,
+              0.5809524059295654, 0.0476190447807312, 0.9031745791435242,
+              0.12539684772491455, 0.5873016119003296, 0.0317460298538208,
+              0.9015872478485107, 0.11269843578338623, 0.5936508178710938,
+              0.0158730149269104, 0.8999999761581421, 0.10000000149011612,
+              0.6000000238418579, 0
+            ]
+          },
+          "scale_curve": {
+            "width": 64,
+            "height": 1,
+            "data": [
+              1, 1, 1, 1, 0.9994012117385864, 0.9994012117385864,
+              0.9994012117385864, 1, 0.9978303909301758, 0.9978303909301758,
+              0.9978303909301758, 1, 0.9951626658439636, 0.9951626658439636,
+              0.9951626658439636, 1, 0.991546630859375, 0.991546630859375,
+              0.991546630859375, 1, 0.986944317817688, 0.986944317817688,
+              0.986944317817688, 1, 0.9814229607582092, 0.9814229607582092,
+              0.9814229607582092, 1, 0.9750205278396606, 0.9750205278396606,
+              0.9750205278396606, 1, 0.9677331447601318, 0.9677331447601318,
+              0.9677331447601318, 1, 0.9596646428108215, 0.9596646428108215,
+              0.9596646428108215, 1, 0.9507511854171753, 0.9507511854171753,
+              0.9507511854171753, 1, 0.9411463737487793, 0.9411463737487793,
+              0.9411463737487793, 1, 0.9307507872581482, 0.9307507872581482,
+              0.9307507872581482, 1, 0.9197237491607666, 0.9197237491607666,
+              0.9197237491607666, 1, 0.9080060124397278, 0.9080060124397278,
+              0.9080060124397278, 1, 0.8956961631774902, 0.8956961631774902,
+              0.8956961631774902, 1, 0.8827909827232361, 0.8827909827232361,
+              0.8827909827232361, 1, 0.8693376779556274, 0.8693376779556274,
+              0.8693376779556274, 1, 0.8553791046142578, 0.8553791046142578,
+              0.8553791046142578, 1, 0.8409221172332764, 0.8409221172332764,
+              0.8409221172332764, 1, 0.8260446190834045, 0.8260446190834045,
+              0.8260446190834045, 1, 0.8107236623764038, 0.8107236623764038,
+              0.8107236623764038, 1, 0.7950570583343506, 0.7950570583343506,
+              0.7950570583343506, 1, 0.7790160179138184, 0.7790160179138184,
+              0.7790160179138184, 1, 0.7626891732215881, 0.7626891732215881,
+              0.7626891732215881, 1, 0.7460731267929077, 0.7460731267929077,
+              0.7460731267929077, 1, 0.7292255163192749, 0.7292255163192749,
+              0.7292255163192749, 1, 0.7121687531471252, 0.7121687531471252,
+              0.7121687531471252, 1, 0.6949402093887329, 0.6949402093887329,
+              0.6949402093887329, 1, 0.677577018737793, 0.677577018737793,
+              0.677577018737793, 1, 0.6601070761680603, 0.6601070761680603,
+              0.6601070761680603, 1, 0.6425720453262329, 0.6425720453262329,
+              0.6425720453262329, 1, 0.625, 0.625, 0.625, 1, 0.6074280142784119,
+              0.6074280142784119, 0.6074280142784119, 1, 0.5898929238319397,
+              0.5898929238319397, 0.5898929238319397, 1, 0.5724228024482727,
+              0.5724228024482727, 0.5724228024482727, 1, 0.5550597906112671,
+              0.5550597906112671, 0.5550597906112671, 1, 0.53783118724823,
+              0.53783118724823, 0.53783118724823, 1, 0.5207744240760803,
+              0.5207744240760803, 0.5207744240760803, 1, 0.5039269328117371,
+              0.5039269328117371, 0.5039269328117371, 1, 0.48731085658073425,
+              0.48731085658073425, 0.48731085658073425, 1, 0.4709840416908264,
+              0.4709840416908264, 0.4709840416908264, 1, 0.45494288206100464,
+              0.45494288206100464, 0.45494288206100464, 1, 0.4392763674259186,
+              0.4392763674259186, 0.4392763674259186, 1, 0.4239553213119507,
+              0.4239553213119507, 0.4239553213119507, 1, 0.40907782316207886,
+              0.40907782316207886, 0.40907782316207886, 1, 0.3946208953857422,
+              0.3946208953857422, 0.3946208953857422, 1, 0.38066238164901733,
+              0.38066238164901733, 0.38066238164901733, 1, 0.36720919609069824,
+              0.36720919609069824, 0.36720919609069824, 1, 0.35430386662483215,
+              0.35430386662483215, 0.35430386662483215, 1, 0.34199395775794983,
+              0.34199395775794983, 0.34199395775794983, 1, 0.33027634024620056,
+              0.33027634024620056, 0.33027634024620056, 1, 0.3192492127418518,
+              0.3192492127418518, 0.3192492127418518, 1, 0.30885353684425354,
+              0.30885353684425354, 0.30885353684425354, 1, 0.2992488443851471,
+              0.2992488443851471, 0.2992488443851471, 1, 0.2903352379798889,
+              0.2903352379798889, 0.2903352379798889, 1, 0.2822668254375458,
+              0.2822668254375458, 0.2822668254375458, 1, 0.27497950196266174,
+              0.27497950196266174, 0.27497950196266174, 1, 0.2685770094394684,
+              0.2685770094394684, 0.2685770094394684, 1, 0.26305559277534485,
+              0.26305559277534485, 0.26305559277534485, 1, 0.2584533095359802,
+              0.2584533095359802, 0.2584533095359802, 1, 0.25483736395835876,
+              0.25483736395835876, 0.25483736395835876, 1, 0.2521696388721466,
+              0.2521696388721466, 0.2521696388721466, 1, 0.2505987286567688,
+              0.2505987286567688, 0.2505987286567688, 1
+            ]
+          }
+        }
+      },
+      {
+        "id": 8,
+        "version": 74,
+        "builtin": {
+          "emission_shape": "point",
+          "particle_flags": ["disable_z"],
+          "sub_emitter": "disabled",
+          "attractor": true,
+          "collision": "disabled",
+          "turbulence": true
+        },
+        "uniforms": {
+          "angular_velocity_max": 0,
+          "angular_velocity_min": 0,
+          "anim_offset_max": 0,
+          "anim_offset_min": 0,
+          "anim_speed_max": 0,
+          "anim_speed_min": 0,
+          "collision_bounce": 0,
+          "collision_friction": 0,
+          "color_value": [1, 1, 1, 1],
+          "damping_max": 0,
+          "damping_min": 0,
+          "direction": [1, 0, 0],
+          "directional_velocity_max": 1,
+          "directional_velocity_min": 1,
+          "emission_box_extents": [1, 1, 1],
+          "emission_ring_axis": [0, 0, 1],
+          "emission_ring_cone_angle": 90,
+          "emission_ring_height": 1,
+          "emission_ring_inner_radius": 0,
+          "emission_ring_radius": 1,
+          "emission_shape_offset": [0, 0, 0],
+          "emission_shape_scale": [1, 1, 1],
+          "emission_sphere_radius": 1,
+          "flatness": 0,
+          "gravity": [0, 20, 0],
+          "hue_variation_max": 0,
+          "hue_variation_min": 0,
+          "initial_angle_max": 0,
+          "initial_angle_min": 0,
+          "initial_linear_velocity_max": 60,
+          "initial_linear_velocity_min": 30,
+          "lifetime_randomness": 0,
+          "linear_accel_max": 0,
+          "linear_accel_min": 0,
+          "orbit_velocity_max": 0,
+          "orbit_velocity_min": 0,
+          "radial_accel_max": 0,
+          "radial_accel_min": 0,
+          "scale_max": 3,
+          "scale_min": 3,
+          "spread": 30,
+          "sub_emitter_amount_at_collision": 1,
+          "sub_emitter_amount_at_end": 1,
+          "sub_emitter_amount_at_start": 1,
+          "sub_emitter_frequency": 0.25,
+          "sub_emitter_keep_velocity": 0,
+          "tangent_accel_max": 0,
+          "tangent_accel_min": 0,
+          "turbulence_enabled": 1,
+          "turbulence_influence_max": 0.10000000149011612,
+          "turbulence_influence_min": 0.10000000149011612,
+          "turbulence_initial_displacement_max": 0,
+          "turbulence_initial_displacement_min": 0,
+          "turbulence_noise_scale": -0.8189170360565186,
+          "turbulence_noise_speed": [0, 0, 0],
+          "turbulence_noise_speed_random": 0.20000000298023224,
+          "turbulence_noise_strength": 2
+        },
+        "curves": {}
+      },
+      {
+        "id": 9,
+        "version": 72,
+        "builtin": {
+          "emission_shape": "point",
+          "particle_flags": ["disable_z"],
+          "sub_emitter": "at_end",
+          "attractor": true,
+          "collision": "disabled",
+          "turbulence": false
+        },
+        "uniforms": {
+          "angular_velocity_max": 0,
+          "angular_velocity_min": 0,
+          "anim_offset_max": 0,
+          "anim_offset_min": 0,
+          "anim_speed_max": 0,
+          "anim_speed_min": 0,
+          "collision_bounce": 0,
+          "collision_friction": 0,
+          "color_value": [1, 1, 1, 1],
+          "damping_max": 0,
+          "damping_min": 0,
+          "direction": [1, 0, 0],
+          "directional_velocity_max": 1,
+          "directional_velocity_min": 1,
+          "emission_box_extents": [1, 1, 1],
+          "emission_ring_axis": [0, 0, 1],
+          "emission_ring_cone_angle": 90,
+          "emission_ring_height": 1,
+          "emission_ring_inner_radius": 0,
+          "emission_ring_radius": 1,
+          "emission_shape_offset": [0, 0, 0],
+          "emission_shape_scale": [1, 1, 1],
+          "emission_sphere_radius": 1,
+          "flatness": 0,
+          "gravity": [0, 20, 0],
+          "hue_variation_max": 0,
+          "hue_variation_min": 0,
+          "initial_angle_max": 0,
+          "initial_angle_min": 0,
+          "initial_linear_velocity_max": 60,
+          "initial_linear_velocity_min": 30,
+          "lifetime_randomness": 0,
+          "linear_accel_max": 0,
+          "linear_accel_min": 0,
+          "orbit_velocity_max": 0,
+          "orbit_velocity_min": 0,
+          "radial_accel_max": 0,
+          "radial_accel_min": 0,
+          "scale_max": 3,
+          "scale_min": 3,
+          "spread": 30,
+          "sub_emitter_amount_at_collision": 1,
+          "sub_emitter_amount_at_end": 1,
+          "sub_emitter_amount_at_start": 1,
+          "sub_emitter_frequency": 0.25,
+          "sub_emitter_keep_velocity": 0,
+          "tangent_accel_max": 0,
+          "tangent_accel_min": 0,
+          "turbulence_enabled": 0,
+          "turbulence_influence_max": 0.10000000149011612,
+          "turbulence_influence_min": 0.10000000149011612,
+          "turbulence_initial_displacement_max": 0,
+          "turbulence_initial_displacement_min": 0,
+          "turbulence_noise_scale": -0.10398507118225098,
+          "turbulence_noise_speed": [0, 0, 0],
+          "turbulence_noise_speed_random": 0.20000000298023224,
+          "turbulence_noise_strength": 1
+        },
+        "curves": {}
+      },
+      {
+        "id": 10,
+        "version": 71,
+        "builtin": {
+          "emission_shape": "point",
+          "particle_flags": ["disable_z"],
+          "sub_emitter": "disabled",
+          "attractor": true,
+          "collision": "disabled",
+          "turbulence": false
+        },
+        "uniforms": {
+          "angular_velocity_max": 0,
+          "angular_velocity_min": 0,
+          "anim_offset_max": 0,
+          "anim_offset_min": 0,
+          "anim_speed_max": 0,
+          "anim_speed_min": 0,
+          "collision_bounce": 0,
+          "collision_friction": 0,
+          "color_value": [1, 1, 1, 1],
+          "damping_max": 0,
+          "damping_min": 0,
+          "direction": [1, 0, 0],
+          "directional_velocity_max": 1,
+          "directional_velocity_min": 1,
+          "emission_box_extents": [1, 1, 1],
+          "emission_ring_axis": [0, 0, 1],
+          "emission_ring_cone_angle": 90,
+          "emission_ring_height": 1,
+          "emission_ring_inner_radius": 0,
+          "emission_ring_radius": 1,
+          "emission_shape_offset": [0, 0, 0],
+          "emission_shape_scale": [1, 1, 1],
+          "emission_sphere_radius": 1,
+          "flatness": 0,
+          "gravity": [0, 20, 0],
+          "hue_variation_max": 0,
+          "hue_variation_min": 0,
+          "initial_angle_max": 0,
+          "initial_angle_min": 0,
+          "initial_linear_velocity_max": 60,
+          "initial_linear_velocity_min": 30,
+          "lifetime_randomness": 0,
+          "linear_accel_max": 0,
+          "linear_accel_min": 0,
+          "orbit_velocity_max": 0,
+          "orbit_velocity_min": 0,
+          "radial_accel_max": 0,
+          "radial_accel_min": 0,
+          "scale_max": 3,
+          "scale_min": 3,
+          "spread": 30,
+          "sub_emitter_amount_at_collision": 1,
+          "sub_emitter_amount_at_end": 1,
+          "sub_emitter_amount_at_start": 1,
+          "sub_emitter_frequency": 0.25,
+          "sub_emitter_keep_velocity": 0,
+          "tangent_accel_max": 0,
+          "tangent_accel_min": 0,
+          "turbulence_enabled": 0,
+          "turbulence_influence_max": 0.10000000149011612,
+          "turbulence_influence_min": 0.10000000149011612,
+          "turbulence_initial_displacement_max": 0,
+          "turbulence_initial_displacement_min": 0,
+          "turbulence_noise_scale": -0.10398507118225098,
+          "turbulence_noise_speed": [0, 0, 0],
+          "turbulence_noise_speed_random": 0.20000000298023224,
+          "turbulence_noise_strength": 1
+        },
+        "curves": {}
+      },
+      {
+        "id": 11,
+        "version": 71,
+        "builtin": {
+          "emission_shape": "point",
+          "particle_flags": ["disable_z"],
+          "sub_emitter": "disabled",
+          "attractor": true,
+          "collision": "disabled",
+          "turbulence": false
+        },
+        "uniforms": {
+          "angular_velocity_max": 0,
+          "angular_velocity_min": 0,
+          "anim_offset_max": 0,
+          "anim_offset_min": 0,
+          "anim_speed_max": 0,
+          "anim_speed_min": 0,
+          "collision_bounce": 0,
+          "collision_friction": 0,
+          "color_value": [1, 1, 1, 1],
+          "damping_max": 0,
+          "damping_min": 0,
+          "direction": [1, 0, 0],
+          "directional_velocity_max": 1,
+          "directional_velocity_min": 1,
+          "emission_box_extents": [1, 1, 1],
+          "emission_ring_axis": [0, 0, 1],
+          "emission_ring_cone_angle": 90,
+          "emission_ring_height": 1,
+          "emission_ring_inner_radius": 0,
+          "emission_ring_radius": 1,
+          "emission_shape_offset": [0, 0, 0],
+          "emission_shape_scale": [1, 1, 1],
+          "emission_sphere_radius": 1,
+          "flatness": 0,
+          "gravity": [0, 20, 0],
+          "hue_variation_max": 0,
+          "hue_variation_min": 0,
+          "initial_angle_max": 0,
+          "initial_angle_min": 0,
+          "initial_linear_velocity_max": 60,
+          "initial_linear_velocity_min": 30,
+          "lifetime_randomness": 0,
+          "linear_accel_max": 0,
+          "linear_accel_min": 0,
+          "orbit_velocity_max": 0,
+          "orbit_velocity_min": 0,
+          "radial_accel_max": 0,
+          "radial_accel_min": 0,
+          "scale_max": 3,
+          "scale_min": 3,
+          "spread": 30,
+          "sub_emitter_amount_at_collision": 1,
+          "sub_emitter_amount_at_end": 1,
+          "sub_emitter_amount_at_start": 1,
+          "sub_emitter_frequency": 0.25,
+          "sub_emitter_keep_velocity": 0,
+          "tangent_accel_max": 0,
+          "tangent_accel_min": 0,
+          "turbulence_enabled": 0,
+          "turbulence_influence_max": 0.10000000149011612,
+          "turbulence_influence_min": 0.10000000149011612,
+          "turbulence_initial_displacement_max": 0,
+          "turbulence_initial_displacement_min": 0,
+          "turbulence_noise_scale": -0.10398507118225098,
+          "turbulence_noise_speed": [0, 0, 0],
+          "turbulence_noise_speed_random": 0.20000000298023224,
+          "turbulence_noise_strength": 1
+        },
+        "curves": {}
+      }
+    ]
+  },
+  "frames": [
+    {
+      "time": 0.016666666666666666,
+      "changes": [],
+      "uploads": [
+        [1, 48, 1973486789],
+        [2, 80, 2545393349],
+        [3, 96, 635595717],
+        [4, 112, 773994693],
+        [5, 144, 551604933],
+        [6, 160, 1163894725],
+        [7, 176, 1475570885],
+        [8, 192, 4120656325],
+        [9, 32, 2813671365],
+        [10, 208, 3143239365]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.03333333333333333,
+      "changes": [
+        {
+          "id": 2,
+          "version": 22,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 264, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1973486789],
+        [2, 80, 2545393349],
+        [3, 96, 635595717],
+        [5, 144, 551604933],
+        [6, 160, 1163894725],
+        [7, 176, 1475570885],
+        [8, 192, 4120656325],
+        [10, 208, 3143239365]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.05,
+      "changes": [
+        {
+          "id": 2,
+          "version": 23,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 266, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2874412437],
+        [2, 80, 3922339445],
+        [3, 96, 29331948],
+        [5, 144, 2238928048],
+        [6, 160, 1962395432],
+        [7, 176, 2793273211],
+        [8, 192, 3348795519],
+        [10, 208, 2150331801]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.06666666666666667,
+      "changes": [
+        {
+          "id": 2,
+          "version": 24,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 268, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3238152112],
+        [2, 80, 2915358280],
+        [3, 96, 4124900161],
+        [5, 144, 2312677149],
+        [6, 160, 1679735651],
+        [7, 176, 726674818],
+        [8, 192, 2073533806],
+        [10, 208, 3677315279]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.08333333333333333,
+      "changes": [
+        {
+          "id": 2,
+          "version": 25,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 270, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3459592695],
+        [2, 80, 3431145871],
+        [3, 96, 968638598],
+        [5, 144, 3222336019],
+        [6, 160, 1958694219],
+        [7, 176, 2125440511],
+        [8, 192, 3912468657],
+        [10, 208, 3969087047]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.09999999999999999,
+      "changes": [
+        {
+          "id": 2,
+          "version": 26,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 272, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 271825630],
+        [2, 80, 2042230333],
+        [3, 96, 1050655301],
+        [5, 144, 67064739],
+        [6, 160, 3305509365],
+        [7, 176, 3194566725],
+        [8, 192, 1198743048],
+        [10, 208, 3033280683]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.11666666666666665,
+      "changes": [
+        {
+          "id": 2,
+          "version": 27,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 274, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3703067772],
+        [2, 80, 451913174],
+        [3, 96, 1201691272],
+        [5, 144, 1226204777],
+        [6, 160, 450331275],
+        [7, 176, 1349141859],
+        [8, 192, 3296818142],
+        [10, 208, 1675170935]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.13333333333333333,
+      "changes": [
+        {
+          "id": 2,
+          "version": 28,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 276, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1415463776],
+        [2, 80, 3508873912],
+        [3, 96, 1424462607],
+        [5, 144, 318426882],
+        [6, 160, 2909310416],
+        [7, 176, 1286005667],
+        [8, 192, 3326226761],
+        [10, 208, 217609183]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.15,
+      "changes": [
+        {
+          "id": 2,
+          "version": 29,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 278, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1711566336],
+        [2, 80, 3217329109],
+        [3, 96, 2106385198],
+        [5, 144, 2056248809],
+        [6, 160, 1851263684],
+        [7, 176, 1985748090],
+        [8, 192, 4246430372],
+        [10, 208, 3755314685]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.16666666666666666,
+      "changes": [
+        {
+          "id": 2,
+          "version": 30,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 280, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1425746873],
+        [2, 80, 2478580090],
+        [3, 96, 2867111329],
+        [5, 144, 4181983783],
+        [6, 160, 3829112389],
+        [7, 176, 4078016153],
+        [8, 192, 3749978144],
+        [10, 208, 1752854491]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.18333333333333332,
+      "changes": [
+        {
+          "id": 2,
+          "version": 31,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 282, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2715717228],
+        [2, 80, 904854438],
+        [3, 96, 2994003481],
+        [5, 144, 1091157495],
+        [6, 160, 1988474578],
+        [7, 176, 218248245],
+        [8, 192, 1972744878],
+        [10, 208, 1355790565]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.19999999999999998,
+      "changes": [
+        {
+          "id": 2,
+          "version": 32,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 284, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 4208641167],
+        [2, 80, 1649866430],
+        [3, 96, 3122545015],
+        [5, 144, 2554956745],
+        [6, 160, 258552020],
+        [7, 176, 3705357904],
+        [8, 192, 3075956585],
+        [10, 208, 584378887]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.21666666666666665,
+      "changes": [
+        {
+          "id": 2,
+          "version": 33,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 286, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3217341370],
+        [2, 80, 4227090317],
+        [3, 96, 100390469],
+        [5, 144, 724762963],
+        [6, 160, 3486178597],
+        [7, 176, 3537487414],
+        [8, 192, 423140178],
+        [10, 208, 2200931284]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.2333333333333333,
+      "changes": [
+        {
+          "id": 2,
+          "version": 34,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 288, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2532950935],
+        [2, 80, 1172647393],
+        [3, 96, 3798451399],
+        [5, 144, 358107680],
+        [6, 160, 3459932871],
+        [7, 176, 360400380],
+        [8, 192, 29870783],
+        [10, 208, 2586219107]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.24999999999999997,
+      "changes": [
+        {
+          "id": 2,
+          "version": 35,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 290, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2454654761],
+        [2, 80, 2288693910],
+        [3, 96, 502732965],
+        [5, 144, 1035062339],
+        [6, 160, 2857450111],
+        [7, 176, 696257894],
+        [8, 192, 2868018887],
+        [10, 208, 1537777815]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.26666666666666666,
+      "changes": [
+        {
+          "id": 2,
+          "version": 36,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 292, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3124232606],
+        [2, 80, 3218096270],
+        [3, 96, 3828160332],
+        [5, 144, 2145559462],
+        [6, 160, 2638615056],
+        [7, 176, 3348336207],
+        [8, 192, 540427287],
+        [10, 208, 2367308344]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.2833333333333333,
+      "changes": [
+        {
+          "id": 2,
+          "version": 37,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 294, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1062684383],
+        [2, 80, 399735715],
+        [3, 96, 3003132414],
+        [5, 144, 4016063340],
+        [6, 160, 3957321386],
+        [7, 176, 167625913],
+        [8, 192, 4274882776],
+        [10, 208, 3844634539]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.3,
+      "changes": [
+        {
+          "id": 2,
+          "version": 38,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 296, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3539144806],
+        [2, 80, 1661880874],
+        [3, 96, 171231792],
+        [5, 144, 3221751102],
+        [6, 160, 3880267943],
+        [7, 176, 1836327872],
+        [8, 192, 1874978654],
+        [10, 208, 2237297827]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.31666666666666665,
+      "changes": [
+        {
+          "id": 2,
+          "version": 39,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 298, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1351398203],
+        [2, 80, 2544067836],
+        [3, 96, 191805401],
+        [5, 144, 1855749870],
+        [6, 160, 2226808470],
+        [7, 176, 1791363234],
+        [8, 192, 487727469],
+        [10, 208, 1515202217]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.3333333333333333,
+      "changes": [
+        {
+          "id": 1,
+          "version": 22,
+          "emits": 2
+        },
+        {
+          "id": 2,
+          "version": 40,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 300, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        },
+        {
+          "id": 3,
+          "version": 21,
+          "process_requests": 1,
+          "f": {
+            "request_process_time": 0.5
+          }
+        },
+        {
+          "id": 4,
+          "version": 25,
+          "emitting": true,
+          "restarts": 2
+        }
+      ],
+      "uploads": [
+        [1, 48, 3133794817],
+        [2, 80, 2153505295],
+        [3, 96, 4071749474],
+        [4, 112, 773994693],
+        [5, 144, 3853666336],
+        [6, 160, 1390172888],
+        [7, 176, 3581050006],
+        [8, 192, 876633970],
+        [10, 208, 1106990162]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.35,
+      "changes": [
+        {
+          "id": 2,
+          "version": 41,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 302, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2015059071],
+        [2, 80, 3423550664],
+        [3, 96, 160586010],
+        [4, 112, 773994693],
+        [5, 144, 2918991051],
+        [6, 160, 4240700253],
+        [7, 176, 1562972543],
+        [8, 192, 1029162054],
+        [10, 208, 1315177470]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.36666666666666664,
+      "changes": [
+        {
+          "id": 2,
+          "version": 42,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 304, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2124828701],
+        [2, 80, 2531305754],
+        [3, 96, 798808977],
+        [4, 112, 1053853954],
+        [5, 144, 80579355],
+        [6, 160, 2393627496],
+        [7, 176, 146040240],
+        [8, 192, 1082162281],
+        [10, 208, 3454560465]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.3833333333333333,
+      "changes": [
+        {
+          "id": 2,
+          "version": 43,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 306, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2000913006],
+        [2, 80, 1364850571],
+        [3, 96, 840947330],
+        [4, 112, 2108173663],
+        [5, 144, 1098351248],
+        [6, 160, 2640854870],
+        [7, 176, 1542834106],
+        [8, 192, 3351334678],
+        [10, 208, 3133952997]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.39999999999999997,
+      "changes": [
+        {
+          "id": 2,
+          "version": 44,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 308, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3551125940],
+        [2, 80, 575766535],
+        [3, 96, 4226200591],
+        [4, 112, 896652054],
+        [5, 144, 914563360],
+        [6, 160, 3797810521],
+        [7, 176, 2185585721],
+        [8, 192, 1763671676],
+        [10, 208, 2337513004]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.41666666666666663,
+      "changes": [
+        {
+          "id": 2,
+          "version": 45,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 310, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2976856163],
+        [2, 80, 741349348],
+        [3, 96, 1822693770],
+        [4, 112, 3332333805],
+        [5, 144, 2387739121],
+        [6, 160, 2954346011],
+        [7, 176, 3358812981],
+        [8, 192, 2629645535],
+        [10, 208, 1111965055]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.4333333333333333,
+      "changes": [
+        {
+          "id": 2,
+          "version": 46,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 312, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 473516592],
+        [2, 80, 4208999646],
+        [3, 96, 2812814918],
+        [4, 112, 1789236748],
+        [5, 144, 3643935196],
+        [6, 160, 1137305946],
+        [7, 176, 3694316033],
+        [8, 192, 4085863980],
+        [10, 208, 578256364]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.44999999999999996,
+      "changes": [
+        {
+          "id": 2,
+          "version": 47,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 314, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2352645705],
+        [2, 80, 997377731],
+        [3, 96, 878382621],
+        [4, 112, 4119178711],
+        [5, 144, 3645605139],
+        [6, 160, 3526985573],
+        [7, 176, 2689634296],
+        [8, 192, 645463709],
+        [10, 208, 512748284]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.4666666666666666,
+      "changes": [
+        {
+          "id": 2,
+          "version": 48,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 316, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2959927520],
+        [2, 80, 3001308705],
+        [3, 96, 3653250300],
+        [4, 112, 3729514258],
+        [5, 144, 1874433996],
+        [6, 160, 3509799634],
+        [7, 176, 2753502055],
+        [8, 192, 608939931],
+        [10, 208, 2659356377]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.4833333333333333,
+      "changes": [
+        {
+          "id": 2,
+          "version": 49,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 318, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 4178170911],
+        [2, 80, 59003681],
+        [3, 96, 1084249768],
+        [4, 112, 4248480568],
+        [5, 144, 3110075929],
+        [6, 160, 2663179252],
+        [7, 176, 4223171651],
+        [8, 192, 2965175056],
+        [10, 208, 1304658504]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.49999999999999994,
+      "changes": [
+        {
+          "id": 2,
+          "version": 50,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 260, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1798295746],
+        [2, 80, 1815756716],
+        [3, 96, 2213996907],
+        [4, 112, 4090742918],
+        [5, 144, 3212516235],
+        [6, 160, 2182576852],
+        [7, 176, 2562131951],
+        [8, 192, 4009247559],
+        [10, 208, 2163584671]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.5166666666666666,
+      "changes": [
+        {
+          "id": 2,
+          "version": 52,
+          "f": {
+            "emitter_velocity": [-3479.999755859375, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 4256136448],
+        [2, 80, 1896552058],
+        [3, 96, 3969298331],
+        [4, 112, 3500838141],
+        [5, 144, 4059581821],
+        [6, 160, 118868426],
+        [7, 176, 3668578920],
+        [8, 192, 677856464],
+        [10, 208, 381020712]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.5333333333333333,
+      "changes": [
+        {
+          "id": 2,
+          "version": 54,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 264, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3890540291],
+        [2, 80, 1417798104],
+        [3, 96, 3833563508],
+        [4, 112, 1625662234],
+        [5, 144, 1767478349],
+        [6, 160, 733752955],
+        [7, 176, 97630374],
+        [8, 192, 2035345859],
+        [10, 208, 388828417]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.55,
+      "changes": [
+        {
+          "id": 2,
+          "version": 55,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 266, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2303164206],
+        [2, 80, 2406992561],
+        [3, 96, 1533151905],
+        [4, 112, 3928732283],
+        [5, 144, 380765433],
+        [6, 160, 3465891789],
+        [7, 176, 1761260416],
+        [8, 192, 1130963948],
+        [10, 208, 1602172006]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.5666666666666668,
+      "changes": [
+        {
+          "id": 2,
+          "version": 56,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 268, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 577391155],
+        [2, 80, 3785327807],
+        [3, 96, 609476348],
+        [4, 112, 2908837566],
+        [5, 144, 1120996037],
+        [6, 160, 3314090117],
+        [7, 176, 2288236115],
+        [8, 192, 2563005818],
+        [10, 208, 2722963675]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.5833333333333335,
+      "changes": [
+        {
+          "id": 2,
+          "version": 57,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 270, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1767142828],
+        [2, 80, 4151481714],
+        [3, 96, 896083172],
+        [4, 112, 4088413986],
+        [5, 144, 392133233],
+        [6, 160, 3881777907],
+        [7, 176, 1099800010],
+        [8, 192, 674750307],
+        [10, 208, 3939681895]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.6000000000000002,
+      "changes": [
+        {
+          "id": 2,
+          "version": 58,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 272, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1695974597],
+        [2, 80, 580198302],
+        [3, 96, 2187382496],
+        [4, 112, 3643183175],
+        [5, 144, 2334415752],
+        [6, 160, 2591707740],
+        [7, 176, 2238245690],
+        [8, 192, 1678260515],
+        [10, 208, 1853652918]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.6166666666666669,
+      "changes": [
+        {
+          "id": 2,
+          "version": 59,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 274, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 952579962],
+        [2, 80, 1773395258],
+        [3, 96, 612480845],
+        [4, 112, 260945670],
+        [5, 144, 11852954],
+        [6, 160, 2631750837],
+        [7, 176, 2341530131],
+        [8, 192, 824639634],
+        [10, 208, 2011778784]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.6333333333333336,
+      "changes": [
+        {
+          "id": 2,
+          "version": 60,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 276, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1688483734],
+        [2, 80, 2619039749],
+        [3, 96, 1615283108],
+        [4, 112, 947117949],
+        [5, 144, 3158661248],
+        [6, 160, 1148161279],
+        [7, 176, 806375855],
+        [8, 192, 292053442],
+        [10, 208, 2655543938]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.6500000000000004,
+      "changes": [
+        {
+          "id": 2,
+          "version": 61,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 278, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2054225715],
+        [2, 80, 3238143813],
+        [3, 96, 747824591],
+        [4, 112, 811339977],
+        [5, 144, 1545638803],
+        [6, 160, 3725839283],
+        [7, 176, 1300947944],
+        [8, 192, 1553230761],
+        [10, 208, 2499448500]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.6666666666666671,
+      "changes": [
+        {
+          "id": 1,
+          "version": 24,
+          "emits": 4
+        },
+        {
+          "id": 2,
+          "version": 62,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 280, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        },
+        {
+          "id": 3,
+          "version": 22,
+          "seed": 2003,
+          "process_requests": 1,
+          "f": {
+            "request_process_time": 0.5
+          }
+        },
+        {
+          "id": 4,
+          "version": 26,
+          "emitting": true,
+          "restarts": 3
+        }
+      ],
+      "uploads": [
+        [1, 48, 2290816751],
+        [2, 80, 579211954],
+        [3, 96, 4102010523],
+        [4, 112, 2160029319],
+        [5, 144, 1616686035],
+        [6, 160, 3219764346],
+        [7, 176, 18587018],
+        [8, 192, 343155509],
+        [10, 208, 1244941262]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.6833333333333338,
+      "changes": [
+        {
+          "id": 2,
+          "version": 63,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 282, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 617260665],
+        [2, 80, 2031242197],
+        [3, 96, 1956964829],
+        [4, 112, 1735338406],
+        [5, 144, 308289931],
+        [6, 160, 2449780852],
+        [7, 176, 2880665965],
+        [8, 192, 1291490779],
+        [10, 208, 1784446958]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.7000000000000005,
+      "changes": [
+        {
+          "id": 2,
+          "version": 64,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 284, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1422201228],
+        [2, 80, 2342997505],
+        [3, 96, 2782463002],
+        [4, 112, 1053853954],
+        [5, 144, 1420865801],
+        [6, 160, 1358263187],
+        [7, 176, 2664698352],
+        [8, 192, 3390543463],
+        [10, 208, 2049181992]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.7166666666666672,
+      "changes": [
+        {
+          "id": 2,
+          "version": 65,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 286, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3698303343],
+        [2, 80, 3440730514],
+        [3, 96, 4121757581],
+        [4, 112, 265783750],
+        [5, 144, 3326532213],
+        [6, 160, 3808431617],
+        [7, 176, 3551008317],
+        [8, 192, 2089541895],
+        [10, 208, 3022370493]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.733333333333334,
+      "changes": [
+        {
+          "id": 2,
+          "version": 66,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 288, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2391336902],
+        [2, 80, 3814159283],
+        [3, 96, 3520492918],
+        [4, 112, 896652054],
+        [5, 144, 2869507138],
+        [6, 160, 1460392565],
+        [7, 176, 2578868909],
+        [8, 192, 2619972587],
+        [10, 208, 1366206233]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.7500000000000007,
+      "changes": [
+        {
+          "id": 2,
+          "version": 67,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 290, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 874103281],
+        [2, 80, 2597981379],
+        [3, 96, 3913703044],
+        [4, 112, 2527085750],
+        [5, 144, 571690764],
+        [6, 160, 2014197987],
+        [7, 176, 1227988432],
+        [8, 192, 4157159811],
+        [10, 208, 2631706471]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.7666666666666674,
+      "changes": [
+        {
+          "id": 2,
+          "version": 68,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 292, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2073230577],
+        [2, 80, 3390629006],
+        [3, 96, 1616995850],
+        [4, 112, 1789236748],
+        [5, 144, 1478054399],
+        [6, 160, 1768481922],
+        [7, 176, 2662368264],
+        [8, 192, 532489398],
+        [10, 208, 2989237246]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.7833333333333341,
+      "changes": [
+        {
+          "id": 2,
+          "version": 69,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 294, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3182815537],
+        [2, 80, 2477006717],
+        [3, 96, 1378760198],
+        [4, 112, 1103265980],
+        [5, 144, 1056549956],
+        [6, 160, 2290994682],
+        [7, 176, 2986725187],
+        [8, 192, 731938162],
+        [10, 208, 389352040]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.8000000000000008,
+      "changes": [
+        {
+          "id": 2,
+          "version": 70,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 296, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3721605575],
+        [2, 80, 2670299256],
+        [3, 96, 2633760042],
+        [4, 112, 3729514258],
+        [5, 144, 1199865049],
+        [6, 160, 3889476925],
+        [7, 176, 2698964694],
+        [8, 192, 4130191697],
+        [10, 208, 3750589964]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.8166666666666675,
+      "changes": [
+        {
+          "id": 2,
+          "version": 71,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 298, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 4107875252],
+        [2, 80, 2245990312],
+        [3, 96, 999830558],
+        [4, 112, 3183290447],
+        [5, 144, 708952660],
+        [6, 160, 825960829],
+        [7, 176, 3439931549],
+        [8, 192, 1720600634],
+        [10, 208, 1847098007]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.8333333333333343,
+      "changes": [
+        {
+          "id": 2,
+          "version": 72,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 300, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2893156623],
+        [2, 80, 4155957703],
+        [3, 96, 2795184203],
+        [4, 112, 4090742918],
+        [5, 144, 1533300282],
+        [6, 160, 1070330290],
+        [7, 176, 3187766887],
+        [8, 192, 1979781305],
+        [10, 208, 3381192394]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.850000000000001,
+      "changes": [
+        {
+          "id": 2,
+          "version": 73,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 302, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1603322004],
+        [2, 80, 3010133256],
+        [3, 96, 3906222794],
+        [4, 112, 3497649090],
+        [5, 144, 2491467203],
+        [6, 160, 2626117581],
+        [7, 176, 4016047766],
+        [8, 192, 3513607293],
+        [10, 208, 3729622920]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.8666666666666677,
+      "changes": [
+        {
+          "id": 2,
+          "version": 74,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 304, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1375621145],
+        [2, 80, 1395629768],
+        [3, 96, 304326647],
+        [4, 112, 1625662234],
+        [5, 144, 3984934949],
+        [6, 160, 626686515],
+        [7, 176, 3517166818],
+        [8, 192, 815838701],
+        [10, 208, 168452794]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.8833333333333344,
+      "changes": [
+        {
+          "id": 2,
+          "version": 75,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 306, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2186459113],
+        [2, 80, 995906560],
+        [3, 96, 2858731074],
+        [4, 112, 3928732283],
+        [5, 144, 4052731826],
+        [6, 160, 503172047],
+        [7, 176, 2539477202],
+        [8, 192, 408400903],
+        [10, 208, 3525065310]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.9000000000000011,
+      "changes": [
+        {
+          "id": 2,
+          "version": 76,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 308, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 732679314],
+        [2, 80, 1625378576],
+        [3, 96, 1141778480],
+        [4, 112, 2908837566],
+        [5, 144, 2209428231],
+        [6, 160, 3437336081],
+        [7, 176, 910768378],
+        [8, 192, 349104666],
+        [10, 208, 1798778402]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.9166666666666679,
+      "changes": [
+        {
+          "id": 2,
+          "version": 77,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 310, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2125036810],
+        [2, 80, 3997049861],
+        [3, 96, 2040581522],
+        [4, 112, 4088413986],
+        [5, 144, 3770699637],
+        [6, 160, 1253258963],
+        [7, 176, 637427564],
+        [8, 192, 3268483181],
+        [10, 208, 1306666406]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.9333333333333346,
+      "changes": [
+        {
+          "id": 2,
+          "version": 78,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 312, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2365278536],
+        [2, 80, 586918212],
+        [3, 96, 889617259],
+        [4, 112, 3643183175],
+        [5, 144, 4118775320],
+        [6, 160, 485265759],
+        [7, 176, 2845516220],
+        [8, 192, 244089722],
+        [10, 208, 4249629672]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.9500000000000013,
+      "changes": [
+        {
+          "id": 2,
+          "version": 79,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 314, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1944619171],
+        [2, 80, 3894035955],
+        [3, 96, 50984383],
+        [4, 112, 260945670],
+        [5, 144, 3735640468],
+        [6, 160, 402950390],
+        [7, 176, 4251465503],
+        [8, 192, 2876204279],
+        [10, 208, 1539309411]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.966666666666668,
+      "changes": [
+        {
+          "id": 2,
+          "version": 80,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 316, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 4142604764],
+        [2, 80, 1675067760],
+        [3, 96, 3386985640],
+        [4, 112, 947117949],
+        [5, 144, 2029344274],
+        [6, 160, 1575574161],
+        [7, 176, 1076673874],
+        [8, 192, 2626149078],
+        [10, 208, 2155498617]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 0.9833333333333347,
+      "changes": [
+        {
+          "id": 2,
+          "version": 81,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 318, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3657116801],
+        [2, 80, 2844822583],
+        [3, 96, 3211624000],
+        [4, 112, 811339977],
+        [5, 144, 3438234486],
+        [6, 160, 859835416],
+        [7, 176, 2338081815],
+        [8, 192, 75857704],
+        [10, 208, 2903476397]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.0000000000000013,
+      "changes": [
+        {
+          "id": 2,
+          "version": 82,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 260, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1534834621],
+        [2, 80, 2942094660],
+        [3, 96, 2016951229],
+        [4, 112, 4153832535],
+        [5, 144, 367842405],
+        [6, 160, 301570759],
+        [7, 176, 1641652555],
+        [8, 192, 780459750],
+        [10, 208, 1617829673]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.016666666666668,
+      "changes": [
+        {
+          "id": 2,
+          "version": 84,
+          "f": {
+            "emitter_velocity": [-3479.999755859375, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3424529160],
+        [2, 80, 3735813244],
+        [3, 96, 816367095],
+        [4, 112, 3677438592],
+        [5, 144, 2506512822],
+        [6, 160, 3292980379],
+        [7, 176, 630696604],
+        [8, 192, 1638265136],
+        [10, 208, 102873286]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.0333333333333345,
+      "changes": [
+        {
+          "id": 2,
+          "version": 86,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 264, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 485509949],
+        [2, 80, 1317617736],
+        [3, 96, 3878994564],
+        [4, 112, 365576177],
+        [5, 144, 2592198541],
+        [6, 160, 696127846],
+        [7, 176, 2036207647],
+        [8, 192, 3042878635],
+        [10, 208, 815382300]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.0500000000000012,
+      "changes": [
+        {
+          "id": 2,
+          "version": 87,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 266, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 579648142],
+        [2, 80, 620450565],
+        [3, 96, 2494063022],
+        [4, 112, 1575696707],
+        [5, 144, 519700486],
+        [6, 160, 2270213094],
+        [7, 176, 3817964925],
+        [8, 192, 2314771755],
+        [10, 208, 2225691407]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.0666666666666678,
+      "changes": [
+        {
+          "id": 2,
+          "version": 88,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 268, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3258096275],
+        [2, 80, 1026157442],
+        [3, 96, 667381463],
+        [4, 112, 451030394],
+        [5, 144, 3514429346],
+        [6, 160, 1552378835],
+        [7, 176, 1887975801],
+        [8, 192, 661246458],
+        [10, 208, 4005169500]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.0833333333333344,
+      "changes": [
+        {
+          "id": 2,
+          "version": 89,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 270, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2818630914],
+        [2, 80, 3475896585],
+        [3, 96, 2201555217],
+        [4, 112, 1278619537],
+        [5, 144, 449964956],
+        [6, 160, 2672307801],
+        [7, 176, 1688606335],
+        [8, 192, 2651072008],
+        [10, 208, 3645312935]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.100000000000001,
+      "changes": [
+        {
+          "id": 2,
+          "version": 90,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 272, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 4251205008],
+        [2, 80, 1370109063],
+        [3, 96, 3382504204],
+        [4, 112, 2011975459],
+        [5, 144, 1730310715],
+        [6, 160, 2744959153],
+        [7, 176, 2503357950],
+        [8, 192, 2978848505],
+        [10, 208, 1985030055]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.1166666666666676,
+      "changes": [
+        {
+          "id": 2,
+          "version": 91,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 274, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2937812298],
+        [2, 80, 3757933560],
+        [3, 96, 858067266],
+        [4, 112, 2498065994],
+        [5, 144, 851881766],
+        [6, 160, 882749484],
+        [7, 176, 4131301981],
+        [8, 192, 1970296414],
+        [10, 208, 2253053290]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.1333333333333342,
+      "changes": [
+        {
+          "id": 2,
+          "version": 92,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 276, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1117375650],
+        [2, 80, 3515312129],
+        [3, 96, 2708229476],
+        [4, 112, 1741645735],
+        [5, 144, 3776502895],
+        [6, 160, 2131397917],
+        [7, 176, 131761697],
+        [8, 192, 2880581274],
+        [10, 208, 3303210745]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.1500000000000008,
+      "changes": [
+        {
+          "id": 2,
+          "version": 93,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 278, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 742903858],
+        [2, 80, 1401941041],
+        [3, 96, 1793630721],
+        [4, 112, 889762620],
+        [5, 144, 975788685],
+        [6, 160, 2166565706],
+        [7, 176, 1998549682],
+        [8, 192, 1544903684],
+        [10, 208, 145223410]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.1666666666666674,
+      "changes": [
+        {
+          "id": 2,
+          "version": 94,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 280, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 4288105892],
+        [2, 80, 3318332618],
+        [3, 96, 1671602664],
+        [4, 112, 2383425292],
+        [5, 144, 1987779723],
+        [6, 160, 3133719257],
+        [7, 176, 2414723137],
+        [8, 192, 3599364220],
+        [10, 208, 753480084]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.183333333333334,
+      "changes": [
+        {
+          "id": 2,
+          "version": 95,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 282, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2327657905],
+        [2, 80, 2493985082],
+        [3, 96, 3286753322],
+        [4, 112, 1728136701],
+        [5, 144, 839397349],
+        [6, 160, 1640358833],
+        [7, 176, 3033007821],
+        [8, 192, 3621777433],
+        [10, 208, 3523085696]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.2000000000000006,
+      "changes": [
+        {
+          "id": 2,
+          "version": 96,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 284, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1572790726],
+        [2, 80, 4173688669],
+        [3, 96, 321630225],
+        [4, 112, 3023282381],
+        [5, 144, 2653638332],
+        [6, 160, 1295594409],
+        [7, 176, 276115210],
+        [8, 192, 2480509271],
+        [10, 208, 357428329]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.2166666666666672,
+      "changes": [
+        {
+          "id": 2,
+          "version": 97,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 286, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 871147827],
+        [2, 80, 3013680528],
+        [3, 96, 4057343668],
+        [4, 112, 2296154540],
+        [5, 144, 480144739],
+        [6, 160, 1024487397],
+        [7, 176, 426032445],
+        [8, 192, 662057029],
+        [10, 208, 1648544441]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.2333333333333338,
+      "changes": [
+        {
+          "id": 2,
+          "version": 98,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 288, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1431794209],
+        [2, 80, 304640274],
+        [3, 96, 2836854315],
+        [4, 112, 2031919261],
+        [5, 144, 2114513010],
+        [6, 160, 1806699608],
+        [7, 176, 1679486295],
+        [8, 192, 3451718008],
+        [10, 208, 2518157861]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.2500000000000004,
+      "changes": [
+        {
+          "id": 2,
+          "version": 99,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 290, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3731239396],
+        [2, 80, 2380491682],
+        [3, 96, 2580355498],
+        [4, 112, 1519758142],
+        [5, 144, 2167389581],
+        [6, 160, 1250671583],
+        [7, 176, 939767733],
+        [8, 192, 1894849762],
+        [10, 208, 4059334753]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.266666666666667,
+      "changes": [
+        {
+          "id": 2,
+          "version": 100,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 292, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3924586919],
+        [2, 80, 3562501796],
+        [3, 96, 3147038500],
+        [4, 112, 2286902456],
+        [5, 144, 3700070037],
+        [6, 160, 4002693258],
+        [7, 176, 430026598],
+        [8, 192, 3381533268],
+        [10, 208, 1695534109]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.2833333333333337,
+      "changes": [
+        {
+          "id": 2,
+          "version": 101,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 294, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3575364150],
+        [2, 80, 1709539300],
+        [3, 96, 698376050],
+        [4, 112, 3650255699],
+        [5, 144, 2375909840],
+        [6, 160, 2522572592],
+        [7, 176, 1669734626],
+        [8, 192, 1405058369],
+        [10, 208, 4286060961]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.3000000000000003,
+      "changes": [
+        {
+          "id": 2,
+          "version": 102,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 296, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1476703429],
+        [2, 80, 3034715946],
+        [3, 96, 3351896297],
+        [4, 112, 554517159],
+        [5, 144, 1707444413],
+        [6, 160, 2226247346],
+        [7, 176, 1069885028],
+        [8, 192, 495108173],
+        [10, 208, 2112551911]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.3166666666666669,
+      "changes": [
+        {
+          "id": 2,
+          "version": 103,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 298, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 705042069],
+        [2, 80, 2536377663],
+        [3, 96, 3097893045],
+        [4, 112, 1139663895],
+        [5, 144, 276713010],
+        [6, 160, 3102344229],
+        [7, 176, 4023404503],
+        [8, 192, 3647829683],
+        [10, 208, 1043817058]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.3333333333333335,
+      "changes": [
+        {
+          "id": 2,
+          "version": 104,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 300, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3638201322],
+        [2, 80, 736439611],
+        [3, 96, 821426241],
+        [4, 112, 2176886067],
+        [5, 144, 3122872020],
+        [6, 160, 2968354258],
+        [7, 176, 809458731],
+        [8, 192, 564354746],
+        [10, 208, 1580476270]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.35,
+      "changes": [
+        {
+          "id": 2,
+          "version": 105,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 302, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 785128913],
+        [2, 80, 1229275168],
+        [3, 96, 999440290],
+        [4, 112, 3300654134],
+        [5, 144, 992266384],
+        [6, 160, 1311859879],
+        [7, 176, 3994715060],
+        [8, 192, 353538365],
+        [10, 208, 142491953]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.3666666666666667,
+      "changes": [
+        {
+          "id": 2,
+          "version": 106,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 304, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 810454528],
+        [2, 80, 1761753465],
+        [3, 96, 866811407],
+        [4, 112, 639735818],
+        [5, 144, 562868905],
+        [6, 160, 3724429311],
+        [7, 176, 818557848],
+        [8, 192, 2521607120],
+        [10, 208, 62071986]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.3833333333333333,
+      "changes": [
+        {
+          "id": 2,
+          "version": 107,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 306, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1579015005],
+        [2, 80, 3449903268],
+        [3, 96, 845946462],
+        [4, 112, 460069187],
+        [5, 144, 3308264080],
+        [6, 160, 1019414380],
+        [7, 176, 1228456023],
+        [8, 192, 2065588916],
+        [10, 208, 105968719]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.4,
+      "changes": [
+        {
+          "id": 2,
+          "version": 108,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 308, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3917851484],
+        [2, 80, 2200402598],
+        [3, 96, 3470887766],
+        [4, 112, 3167545096],
+        [5, 144, 1777148947],
+        [6, 160, 2388965954],
+        [7, 176, 3224677935],
+        [8, 192, 3476375348],
+        [10, 208, 461517428]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.4166666666666665,
+      "changes": [
+        {
+          "id": 2,
+          "version": 109,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 310, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1644342190],
+        [2, 80, 979531746],
+        [3, 96, 3866894166],
+        [4, 112, 1253519718],
+        [5, 144, 1912180134],
+        [6, 160, 112992467],
+        [7, 176, 819921604],
+        [8, 192, 3625572323],
+        [10, 208, 1477756380]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.4333333333333331,
+      "changes": [
+        {
+          "id": 2,
+          "version": 110,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 312, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1995538273],
+        [2, 80, 2961315657],
+        [3, 96, 1973802596],
+        [4, 112, 2152613309],
+        [5, 144, 3246016584],
+        [6, 160, 1608009697],
+        [7, 176, 3737563854],
+        [8, 192, 4078242405],
+        [10, 208, 1058481909]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.4499999999999997,
+      "changes": [
+        {
+          "id": 2,
+          "version": 111,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 314, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1575223579],
+        [2, 80, 2385680217],
+        [3, 96, 1406255641],
+        [4, 112, 137463038],
+        [5, 144, 639730048],
+        [6, 160, 4183652518],
+        [7, 176, 3941480242],
+        [8, 192, 3514485856],
+        [10, 208, 2166669415]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.4666666666666663,
+      "changes": [
+        {
+          "id": 2,
+          "version": 112,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 316, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3834800168],
+        [2, 80, 1013106996],
+        [3, 96, 3086208636],
+        [4, 112, 4248038850],
+        [5, 144, 1742615656],
+        [6, 160, 1426536533],
+        [7, 176, 378621749],
+        [8, 192, 603426910],
+        [10, 208, 2910745510]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.483333333333333,
+      "changes": [
+        {
+          "id": 2,
+          "version": 113,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 318, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 720455049],
+        [2, 80, 1057549193],
+        [3, 96, 3581749418],
+        [4, 112, 3117014671],
+        [5, 144, 3240347559],
+        [6, 160, 4048690784],
+        [7, 176, 3542141372],
+        [8, 192, 2800205036],
+        [10, 208, 3744215684]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.4999999999999996,
+      "changes": [
+        {
+          "id": 2,
+          "version": 114,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 260, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 916966655],
+        [2, 80, 298879015],
+        [3, 96, 698865058],
+        [4, 112, 1867482583],
+        [5, 144, 2673099361],
+        [6, 160, 262852126],
+        [7, 176, 3087782304],
+        [8, 192, 4238608881],
+        [10, 208, 3126542870]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.5166666666666662,
+      "changes": [
+        {
+          "id": 2,
+          "version": 116,
+          "f": {
+            "emitter_velocity": [-3479.999755859375, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 4084469729],
+        [2, 80, 2993640542],
+        [3, 96, 2004281403],
+        [4, 112, 3173267548],
+        [5, 144, 1609263547],
+        [6, 160, 1889500091],
+        [7, 176, 2012310545],
+        [8, 192, 1373840356],
+        [10, 208, 1263067083]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.5333333333333328,
+      "changes": [
+        {
+          "id": 2,
+          "version": 118,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 264, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 4289269065],
+        [2, 80, 1824987751],
+        [3, 96, 2077500073],
+        [4, 112, 2518920125],
+        [5, 144, 1056394724],
+        [6, 160, 1067230282],
+        [7, 176, 2525318873],
+        [8, 192, 1106932113],
+        [10, 208, 321982137]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.5499999999999994,
+      "changes": [
+        {
+          "id": 2,
+          "version": 119,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 266, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2653961745],
+        [2, 80, 3456880363],
+        [3, 96, 3026759208],
+        [4, 112, 3621166481],
+        [5, 144, 1476428874],
+        [6, 160, 391672461],
+        [7, 176, 1596727161],
+        [8, 192, 1927177028],
+        [10, 208, 3354613757]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.566666666666666,
+      "changes": [
+        {
+          "id": 2,
+          "version": 120,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 268, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1219519856],
+        [2, 80, 1519468273],
+        [3, 96, 1956225616],
+        [4, 112, 1515844084],
+        [5, 144, 1497302986],
+        [6, 160, 2794759398],
+        [7, 176, 2613998455],
+        [8, 192, 2749944171],
+        [10, 208, 1129965045]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.5833333333333326,
+      "changes": [
+        {
+          "id": 2,
+          "version": 121,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 270, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 624966145],
+        [2, 80, 3975176576],
+        [3, 96, 3222509464],
+        [4, 112, 2730893403],
+        [5, 144, 3854237193],
+        [6, 160, 3706449643],
+        [7, 176, 2382888255],
+        [8, 192, 1865695006],
+        [10, 208, 1830055665]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.5999999999999992,
+      "changes": [
+        {
+          "id": 2,
+          "version": 122,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 272, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3378824257],
+        [2, 80, 608127893],
+        [3, 96, 2386084225],
+        [4, 112, 3777465598],
+        [5, 144, 3238590950],
+        [6, 160, 3783465018],
+        [7, 176, 3724070038],
+        [8, 192, 3716683909],
+        [10, 208, 3616430213]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.6166666666666658,
+      "changes": [
+        {
+          "id": 2,
+          "version": 123,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 274, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 960421329],
+        [2, 80, 1837528786],
+        [3, 96, 596087315],
+        [4, 112, 1800068375],
+        [5, 144, 418189443],
+        [6, 160, 1110591068],
+        [7, 176, 676049453],
+        [8, 192, 1866509896],
+        [10, 208, 2936264036]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.6333333333333324,
+      "changes": [
+        {
+          "id": 2,
+          "version": 124,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 276, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3221144110],
+        [2, 80, 3348624677],
+        [3, 96, 1983630577],
+        [4, 112, 1554699447],
+        [5, 144, 1959338395],
+        [6, 160, 3747812927],
+        [7, 176, 2103046682],
+        [8, 192, 2503460628],
+        [10, 208, 2229611577]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.649999999999999,
+      "changes": [
+        {
+          "id": 2,
+          "version": 125,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 278, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2594471532],
+        [2, 80, 4012508195],
+        [3, 96, 2818693265],
+        [4, 112, 2717721271],
+        [5, 144, 3586089747],
+        [6, 160, 2803794995],
+        [7, 176, 2512139980],
+        [8, 192, 371828841],
+        [10, 208, 268364272]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.6666666666666656,
+      "changes": [
+        {
+          "id": 2,
+          "version": 126,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 280, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3110084600],
+        [2, 80, 2117690968],
+        [3, 96, 2939492643],
+        [4, 112, 4232638322],
+        [5, 144, 2551103117],
+        [6, 160, 3832444368],
+        [7, 176, 682246643],
+        [8, 192, 681390808],
+        [10, 208, 4029516997]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.6833333333333322,
+      "changes": [
+        {
+          "id": 2,
+          "version": 127,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 282, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2110748625],
+        [2, 80, 290939831],
+        [3, 96, 2359210485],
+        [4, 112, 1815806018],
+        [5, 144, 259608083],
+        [6, 160, 2279351710],
+        [7, 176, 2777796247],
+        [8, 192, 2481845591],
+        [10, 208, 1105709376]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.6999999999999988,
+      "changes": [
+        {
+          "id": 2,
+          "version": 128,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 284, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2536409096],
+        [2, 80, 2831007668],
+        [3, 96, 2602087379],
+        [4, 112, 773994693],
+        [5, 144, 1642989631],
+        [6, 160, 2200126637],
+        [7, 176, 1999750736],
+        [8, 192, 4175768074],
+        [10, 208, 377918003]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.7166666666666655,
+      "changes": [
+        {
+          "id": 2,
+          "version": 129,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 286, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1599308258],
+        [2, 80, 3655792750],
+        [3, 96, 852959497],
+        [4, 112, 773994693],
+        [5, 144, 889076041],
+        [6, 160, 4213819531],
+        [7, 176, 48709008],
+        [8, 192, 4159470005],
+        [10, 208, 1542665769]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.733333333333332,
+      "changes": [
+        {
+          "id": 2,
+          "version": 130,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 288, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2690536293],
+        [2, 80, 2556173896],
+        [3, 96, 3965952947],
+        [4, 112, 773994693],
+        [5, 144, 3384708629],
+        [6, 160, 2090025585],
+        [7, 176, 2868799820],
+        [8, 192, 450000873],
+        [10, 208, 170118347]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.7499999999999987,
+      "changes": [
+        {
+          "id": 2,
+          "version": 131,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 290, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3917786432],
+        [2, 80, 1244166183],
+        [3, 96, 155775253],
+        [4, 112, 773994693],
+        [5, 144, 3321774785],
+        [6, 160, 1617146982],
+        [7, 176, 3771019176],
+        [8, 192, 4219387414],
+        [10, 208, 1412118428]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.7666666666666653,
+      "changes": [
+        {
+          "id": 2,
+          "version": 132,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 292, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2438754828],
+        [2, 80, 1790494387],
+        [3, 96, 3976779929],
+        [4, 112, 773994693],
+        [5, 144, 1004536332],
+        [6, 160, 2609901127],
+        [7, 176, 774526844],
+        [8, 192, 2584948221],
+        [10, 208, 877617319]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.7833333333333319,
+      "changes": [
+        {
+          "id": 2,
+          "version": 133,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 294, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 1911202120],
+        [2, 80, 2823527906],
+        [3, 96, 2779601088],
+        [4, 112, 773994693],
+        [5, 144, 3090210968],
+        [6, 160, 1339296155],
+        [7, 176, 3938315908],
+        [8, 192, 3811642086],
+        [10, 208, 1264194977]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.7999999999999985,
+      "changes": [
+        {
+          "id": 2,
+          "version": 134,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 296, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3827179597],
+        [2, 80, 4085682178],
+        [3, 96, 2016574343],
+        [4, 112, 773994693],
+        [5, 144, 1718397162],
+        [6, 160, 3690258903],
+        [7, 176, 2493796386],
+        [8, 192, 1770406430],
+        [10, 208, 3753663189]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.816666666666665,
+      "changes": [
+        {
+          "id": 2,
+          "version": 135,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 298, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 4143098153],
+        [2, 80, 3536843925],
+        [3, 96, 3374517155],
+        [4, 112, 773994693],
+        [5, 144, 4112423567],
+        [6, 160, 305557035],
+        [7, 176, 861689978],
+        [8, 192, 2723480365],
+        [10, 208, 501841745]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.8333333333333317,
+      "changes": [
+        {
+          "id": 2,
+          "version": 136,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 300, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2994492746],
+        [2, 80, 179165064],
+        [3, 96, 2017270639],
+        [4, 112, 773994693],
+        [5, 144, 324327808],
+        [6, 160, 1426241465],
+        [7, 176, 2603927100],
+        [8, 192, 3873054852],
+        [10, 208, 1766975326]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.8499999999999983,
+      "changes": [
+        {
+          "id": 2,
+          "version": 137,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 302, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2226301306],
+        [2, 80, 4210003764],
+        [3, 96, 995037077],
+        [4, 112, 773994693],
+        [5, 144, 1102261223],
+        [6, 160, 3237140941],
+        [7, 176, 4041851838],
+        [8, 192, 2446932971],
+        [10, 208, 188105548]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.866666666666665,
+      "changes": [
+        {
+          "id": 2,
+          "version": 138,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 304, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 257988553],
+        [2, 80, 1489435339],
+        [3, 96, 978529922],
+        [4, 112, 773994693],
+        [5, 144, 863022637],
+        [6, 160, 1299739260],
+        [7, 176, 1431617069],
+        [8, 192, 3997008433],
+        [10, 208, 184143139]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.8833333333333315,
+      "changes": [
+        {
+          "id": 2,
+          "version": 139,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 306, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 2263524290],
+        [2, 80, 2645420439],
+        [3, 96, 2673945078],
+        [4, 112, 773994693],
+        [5, 144, 3147249537],
+        [6, 160, 1112339586],
+        [7, 176, 2523112249],
+        [8, 192, 2952302529],
+        [10, 208, 1400865001]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.8999999999999981,
+      "changes": [
+        {
+          "id": 2,
+          "version": 140,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 308, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3142760857],
+        [2, 80, 2364478103],
+        [3, 96, 3819934319],
+        [4, 112, 773994693],
+        [5, 144, 4114624733],
+        [6, 160, 3946387418],
+        [7, 176, 2286648288],
+        [8, 192, 1327739142],
+        [10, 208, 3453448707]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.9166666666666647,
+      "changes": [
+        {
+          "id": 2,
+          "version": 141,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 310, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 411653195],
+        [2, 80, 2472084178],
+        [3, 96, 956816715],
+        [4, 112, 773994693],
+        [5, 144, 3531595184],
+        [6, 160, 511527702],
+        [7, 176, 4175527735],
+        [8, 192, 4230083952],
+        [10, 208, 2355324561]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.9333333333333313,
+      "changes": [
+        {
+          "id": 2,
+          "version": 142,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 312, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 4262368639],
+        [2, 80, 565963944],
+        [3, 96, 2150521951],
+        [4, 112, 773994693],
+        [5, 144, 3038460550],
+        [6, 160, 3067930250],
+        [7, 176, 781551517],
+        [8, 192, 3528325727],
+        [10, 208, 4205706239]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.949999999999998,
+      "changes": [
+        {
+          "id": 2,
+          "version": 143,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 314, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 855672300],
+        [2, 80, 1652219779],
+        [3, 96, 3165558483],
+        [4, 112, 773994693],
+        [5, 144, 2261024833],
+        [6, 160, 2061250389],
+        [7, 176, 1306774089],
+        [8, 192, 204769892],
+        [10, 208, 198360725]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.9666666666666646,
+      "changes": [
+        {
+          "id": 2,
+          "version": 144,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 316, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 57495074],
+        [2, 80, 656834897],
+        [3, 96, 2180826982],
+        [4, 112, 773994693],
+        [5, 144, 1832481141],
+        [6, 160, 1940808127],
+        [7, 176, 1712798749],
+        [8, 192, 3307122915],
+        [10, 208, 10491922]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.9833333333333312,
+      "changes": [
+        {
+          "id": 2,
+          "version": 145,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 318, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 3145401453],
+        [2, 80, 1238986045],
+        [3, 96, 850227368],
+        [4, 112, 773994693],
+        [5, 144, 4238011201],
+        [6, 160, 3077794],
+        [7, 176, 1288305027],
+        [8, 192, 1120081982],
+        [10, 208, 4262278084]
+      ],
+      "drawCalls": 10
+    },
+    {
+      "time": 1.9999999999999978,
+      "changes": [
+        {
+          "id": 2,
+          "version": 146,
+          "f": {
+            "emission_transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 260, 60, 0],
+            "emitter_velocity": [119.99999237060547, 0, 0]
+          }
+        }
+      ],
+      "uploads": [
+        [1, 48, 576531000],
+        [2, 80, 3586414176],
+        [3, 96, 2693924149],
+        [4, 112, 773994693],
+        [5, 144, 2601851142],
+        [6, 160, 3228192298],
+        [7, 176, 2511230676],
+        [8, 192, 3076566437],
+        [10, 208, 2618977134]
+      ],
+      "drawCalls": 10
+    }
+  ]
+}

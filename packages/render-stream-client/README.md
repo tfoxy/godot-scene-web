@@ -4,6 +4,31 @@ A browser client for a render-stream host: it connects, applies the stream's tra
 wasm core, draws them on a WebGL2 canvas and returns credit. `createRenderStreamClient` is the entry
 point; `client.stats()` reports what it is doing.
 
+## Transparent clear
+
+`transparentClear: true` clears the stream canvas to alpha 0, allowing the page to composite an
+underlay beneath it. Set it when creating the client. The default is `false`, which keeps the
+host's clear colour and blending unchanged. The executor uses an alpha-enabled, premultiplied
+WebGL2 context and an RGBA8 root target for 8-bit alpha coverage. Only the root canvas changes; non-root viewport surfaces keep their host clears.
+The option does not change the wire or require a host restart.
+
+## Static GPU particles
+
+`staticParticles: true` warms each GPU emitter to a representative frame, uploads it once, and
+holds it until a restart or reconfiguration. Per-frame emission transforms and velocities update
+future spawn inputs without warming or uploading the held frame. The default is `false`. CPU
+particles remain live.
+The warm uses the authored preprocess, capped at twice the lifetime; without preprocess it uses
+0.4 lifetimes for a one-shot and one lifetime for a repeating emitter. Long warms use the normal
+paced settling slices and draw nothing until ready.
+
+`client.setStaticParticles(on)` switches at runtime: enabling warms current emitters, and disabling
+starts fresh live simulations. A created client always has this method; it is optional on the
+`RenderStreamClient` interface for consumer test doubles. Frozen emitters do not schedule further
+simulation or redraws. A one-shot retires after `lifetime * (2 - explosiveness)` seconds from first
+sight emitting, checked on the next apply or presentation. If nothing else redraws, retirement can
+appear late; there is no expiry timer. The host and wire are unchanged.
+
 ## Idle frame cap
 
 `frameCap` trades ambient smoothness for battery and heat over long sessions on a GPU-bound device:

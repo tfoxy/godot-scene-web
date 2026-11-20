@@ -83,17 +83,22 @@ export const CLIENT_INBOUND_BYTES = 16777216;
  * digest stays (resource payload hashes, mesh body digests, W11t's checksum, /13 `predict-check`,
  * the seq and base rules). The harness receiver keeps `inline`: its checks read the digests.
  */
-export function coreStartOptions(protocol: number, viewports = true): string {
+export function coreStartOptions(
+  protocol: number,
+  viewports = true,
+  transparentClear = false,
+): string {
   return JSON.stringify({
     digest: "none",
     sabotage: [],
-    format: "rgb10a2",
+    format: transparentClear ? "rgba8" : "rgb10a2",
     texture_encodings: "block,decoded",
     live_protocol: protocol,
     log: "summary",
     // render-stream/16 (viewport-surfaces-design.md D3): the key is there only when off, so every
     // other option string is byte for byte what it was.
     ...(viewports ? {} : { viewports: false }),
+    ...(transparentClear ? { transparent_clear: true } : {}),
   });
 }
 

@@ -18,6 +18,11 @@
 // (12000 passes) uses both frame slices and off-frame macrotasks. Skip-ahead reduces work;
 // every burst, including its clock-only planning, still observes the slice deadline.
 //
+// Opt-in static particles replace the initial preprocess with the shared representative warm
+// time, using the same settling slices. Once uploaded they neither step nor schedule redraws;
+// restarts and reconfiguration warm a fresh simulation. One-shots expire on an existing apply
+// or present, with no timer (so an otherwise idle canvas can show the tail late).
+//
 // A material whose key comes from process shader code the client has not got is `suspended`:
 // each emitter it drives drops its simulation (its old output is never drawn again) until the code
 // arrives, and then starts a fresh one, as a new emitter would. Other emitters are untouched.
@@ -29,6 +34,8 @@ import {
   type GodotGpuEmitterConfig,
   type GodotProcessMaterial,
   godotGpuApproximateFeatures,
+  staticOneShotExpired,
+  staticWarmSeconds,
 } from "@godot-scene-web/effects/particles";
 
 /** The wasm module's particles surface (`GswRs`). */
@@ -104,6 +111,10 @@ interface Held {
   seed: number;
   /** The last upload was the inactive emitter's zeros (nothing to re-send). */
   zeros: boolean;
+  warmPending: boolean;
+  frozen: boolean;
+  expired: boolean;
+  firstEmitting: number | null;
 }
 
 /** applied.json `w11.particles`, the shell's half (the wasm adds the draw and emit counters). */
@@ -194,7 +205,84 @@ export class GswParticles {
   constructor(
     private readonly pacing: ParticleBurstPacing = UNPACED_PARTICLES,
     private readonly onIdleUpload: () => void = () => {},
+    private staticParticles = false,
+    private readonly seconds: () => number = () => performance.now() / 1000,
+    /** Harness-only faults: production callers leave this unset. */
+    private readonly sabotage:
+      | "static-steps-anyway"
+      | "static-never-expires"
+      | null = null,
   ) {}
+
+  /** A mode change starts fresh simulations; pending warms use the normal settling slices. */
+  setStaticParticles(on: boolean): void {
+    if (on === this.staticParticles || this.disposed) return;
+    this.staticParticles = on;
+    this.stopIdle();
+    this.lastTime = Number.NaN;
+    for (const h of this.held.values()) {
+      const material = this.material(h.wire.material);
+      const cfg = material ? this.config(h.wire, material) : null;
+      if (h.sim && cfg) {
+        this.resetSimulation(h, cfg);
+        h.warmPending = true;
+      }
+    }
+  }
+
+  private resetSimulation(
+    h: Held,
+    cfg: GodotGpuEmitterConfig,
+  ): GodotGpuEmitter {
+    // Use the GPU simulator's preprocess burst, including its yield deadlines. The authored
+    // preprocess is replaced, not added: both simulators share the bounded static time policy.
+    h.sim = new GodotGpuEmitter(
+      this.staticParticles
+        ? {
+            ...cfg,
+            preProcessTime: staticWarmSeconds({
+              preprocess: cfg.preProcessTime,
+              lifetime: cfg.lifetime,
+              oneShot: cfg.oneShot,
+            }),
+          }
+        : cfg,
+    );
+    h.warmPending = this.staticParticles;
+    h.frozen = false;
+    h.expired = false;
+    h.zeros = false;
+    return h.sim;
+  }
+
+  /** Expiry is observed only on an apply or a present that happens anyway. With no other
+   * redraw a one-shot can remain visible late; there is deliberately no expiry timer. */
+  expire(g: ParticlesHost, memory?: WebAssembly.Memory): boolean {
+    if (!this.staticParticles || this.sabotage === "static-never-expires")
+      return false;
+    let uploaded = false;
+    for (const [id, h] of this.held) {
+      if (!h.sim || h.expired || h.firstEmitting === null) continue;
+      if (!staticOneShotExpired(h.sim.config, this.seconds() - h.firstEmitting))
+        continue;
+      h.expired = true;
+      h.warmPending = false;
+      h.frozen = true;
+      if (!h.zeros) {
+        this.upload(
+          g,
+          id,
+          h.sim.config.amount * GODOT_GPU_INSTANCE_FLOATS,
+          memory,
+          null,
+        );
+        h.zeros = true;
+        uploaded = true;
+      }
+    }
+    if (!this.settling) this.stopIdle();
+    return uploaded;
+  }
 
   /** Context loss suspends off-frame work; the next frame after restore schedules it again. */
   pauseIdle(paused: boolean): void {
@@ -262,6 +350,7 @@ export class GswParticles {
    * core's `memory`, each emitter packs straight into the core's scratch buffer. */
   step(g: ParticlesHost, memory?: WebAssembly.Memory): void {
     this.syncOnly(g);
+    this.expire(g, memory);
     const t = g.shader_time();
     let dt = DEFAULT_FRAME;
     if (Number.isFinite(t)) {
@@ -275,10 +364,23 @@ export class GswParticles {
     const yieldNow = this.slice();
     for (const [id, h] of this.held) {
       const sim = h.sim;
-      if (!sim) continue;
+      if (
+        !sim ||
+        (this.staticParticles &&
+          (h.expired || (h.frozen && this.sabotage !== "static-steps-anyway")))
+      )
+        continue;
       const before = sim.stats.steps;
       // The shader's TIME is the host's (turbulence reads it); without one, the sim's own sum.
-      sim.update(dt, Number.isFinite(t) ? t : undefined, yieldNow);
+      if (this.staticParticles && this.sabotage !== "static-steps-anyway") {
+        if (h.warmPending) {
+          h.warmPending = false;
+          sim.update(0, Number.isFinite(t) ? t : undefined, yieldNow);
+        } else sim.advance(yieldNow);
+      } else {
+        h.warmPending = false;
+        sim.update(dt, Number.isFinite(t) ? t : undefined, yieldNow);
+      }
       this.evidence.sim_steps += sim.stats.steps - before;
       if (sim.settling) {
         // Mid-burst: nothing of it is drawn until the burst is done.
@@ -295,6 +397,7 @@ export class GswParticles {
         this.evidence.settling_steps++;
         continue;
       }
+      h.frozen = this.staticParticles;
       if (sim.isInactive && h.zeros) continue;
       this.upload(
         g,
@@ -320,7 +423,7 @@ export class GswParticles {
   get burstParticlePassesRemaining(): number | null {
     let remaining = 0;
     for (const h of this.held.values()) {
-      if (!h.sim?.settling) continue;
+      if (h.expired || !h.sim?.settling) continue;
       const work = h.sim.stats.burstParticlePassesRemaining;
       if (work === null) return null;
       remaining += work;
@@ -330,7 +433,8 @@ export class GswParticles {
 
   /** Whether an emitter is mid-burst (drawn as nothing until `step` or `settle` finishes it). */
   get settling(): boolean {
-    for (const h of this.held.values()) if (h.sim?.settling) return true;
+    for (const h of this.held.values())
+      if (!h.expired && (h.warmPending || h.sim?.settling)) return true;
     return false;
   }
 
@@ -352,12 +456,28 @@ export class GswParticles {
     const yieldNow = this.slice(sliceMs);
     for (const [id, h] of this.held) {
       const sim = h.sim;
-      if (!sim?.settling) continue;
+      if (h.expired || !sim || (!h.warmPending && !sim.settling)) continue;
       if (yieldNow?.()) break;
       const before = sim.stats.steps;
-      sim.advance(yieldNow);
+      if (h.warmPending) {
+        h.warmPending = false;
+        sim.update(0, g.shader_time(), yieldNow);
+      } else sim.advance(yieldNow);
       this.evidence.sim_steps += sim.stats.steps - before;
-      if (sim.settling) continue;
+      if (sim.settling) {
+        if (!h.zeros) {
+          this.upload(
+            g,
+            id,
+            sim.config.amount * GODOT_GPU_INSTANCE_FLOATS,
+            memory,
+            null,
+          );
+          h.zeros = true;
+          uploaded = true;
+        }
+        continue;
+      }
       this.upload(
         g,
         id,
@@ -366,6 +486,7 @@ export class GswParticles {
         sim,
       );
       h.zeros = sim.isInactive;
+      h.frozen = this.staticParticles;
       uploaded = true;
     }
     return uploaded;
@@ -507,6 +628,10 @@ export class GswParticles {
         emitting: e.emitting,
         seed: e.seed,
         zeros: false,
+        warmPending: false,
+        frozen: false,
+        expired: false,
+        firstEmitting: e.emitting ? this.seconds() : null,
       };
       this.held.set(e.id, h);
       if (!cfg) {
@@ -516,12 +641,19 @@ export class GswParticles {
       this.make(h, cfg, e);
       return;
     }
+    // Track wire edges even while there is no simulation (suspended/missing material or
+    // floats). A material-only arrival must retain the original one-shot burst window.
+    const previous = h.wire;
+    if (e.restarts !== previous.restarts || (e.emitting && !previous.emitting))
+      h.firstEmitting = this.seconds();
+    else if (!e.emitting) h.firstEmitting = null;
     h.wire = e;
     if (this.suspended(e.material)) {
       // Its old simulated output goes (the wasm dropped the buffer); the code's arrival makes a
       // fresh simulation.
       if (h.sim) this.evidence.particles_freed++;
       h.sim = null;
+      h.warmPending = false;
       h.zeros = false;
       return;
     }
@@ -530,7 +662,19 @@ export class GswParticles {
       this.make(h, cfg, e);
       return;
     }
-    h.sim.configure(cfg);
+    if (this.staticParticles) {
+      if (
+        cfg.material === h.sim.config.material &&
+        sameStaticShape(previous, e)
+      ) {
+        // Node motion changes future spawn inputs, not the held representative frame. Preserve
+        // the substituted warm time, including when configure is queued during settling.
+        h.sim.configure({
+          ...cfg,
+          preProcessTime: h.sim.config.preProcessTime,
+        });
+      } else this.resetSimulation(h, cfg);
+    } else h.sim.configure(cfg);
     if (e.emitting !== h.emitting) {
       h.sim.setEmitting(e.emitting);
       h.emitting = e.emitting;
@@ -548,7 +692,7 @@ export class GswParticles {
       this.evidence.restarts++;
     }
     if (e.process_requests !== h.processRequests && e.f) {
-      h.sim.requestProcess(e.f.request_process_time);
+      if (!this.staticParticles) h.sim.requestProcess(e.f.request_process_time);
       h.processRequests = e.process_requests;
       this.evidence.process_requests++;
     }
@@ -556,14 +700,13 @@ export class GswParticles {
   }
 
   private make(h: Held, cfg: GodotGpuEmitterConfig, e: WireEmitter): void {
-    h.sim = new GodotGpuEmitter(cfg);
-    h.zeros = false;
+    const sim = this.resetSimulation(h, cfg);
     this.evidence.particles_created++;
     this.evidence.seed_sets++;
     // A new emitter restarts once when the host's ever did (PM6a rule 4); it adopts the request
     // counter (a joiner never replays an old request).
     if (e.restarts > 0) {
-      h.sim.restart();
+      sim.restart();
       this.evidence.restarts++;
     }
     h.restarts = e.restarts;
@@ -572,4 +715,26 @@ export class GswParticles {
     h.seed = e.seed;
     for (const f of godotGpuApproximateFeatures(cfg)) this.features.add(f);
   }
+}
+
+/** Version, spawn motion and emission/process requests do not reconfigure a held static
+ * simulation. Restart counters and all other settings still take the fresh-warm path. */
+function sameStaticShape(a: WireEmitter, b: WireEmitter): boolean {
+  const shape = ({
+    version: _version,
+    emits: _emits,
+    process_requests: _requests,
+    f,
+    ...rest
+  }: WireEmitter) => {
+    if (!f) return rest;
+    const {
+      emission_transform: _transform,
+      emitter_velocity: _velocity,
+      request_process_time: _requestTime,
+      ...floats
+    } = f;
+    return { ...rest, f: floats };
+  };
+  return JSON.stringify(shape(a)) === JSON.stringify(shape(b));
 }

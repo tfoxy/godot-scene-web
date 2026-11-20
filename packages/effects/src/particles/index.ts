@@ -39,6 +39,7 @@ export {
   preprocessParticles,
   simulateParticles,
   staticOneShotExpired,
+  staticWarmSeconds,
   warmStaticParticles,
 } from "./simulate";
 export type { Particle, ParticleSystemState } from "./state";
