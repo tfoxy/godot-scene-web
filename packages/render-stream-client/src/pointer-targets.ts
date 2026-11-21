@@ -106,6 +106,7 @@ export function coreItemQuery(
     | "queryItem"
     | "itemVisible"
     | "queryChildren"
+    | "queryControlRect"
     | "querySubtreeRect"
     | "hitTest"
   > | null,
@@ -126,6 +127,12 @@ export function coreItemQuery(
       const f = item(id);
       if (f.length === 0 || f[9] === 0) return null;
       return { x: f[10], y: f[11], w: f[12], h: f[13] };
+    },
+    controlRect: (id) => {
+      const r = core()?.queryControlRect(id);
+      return r && r.length === 4
+        ? { x: r[0], y: r[1], w: r[2], h: r[3] }
+        : null;
     },
     subtreeRect: (id) => {
       const r = core()?.querySubtreeRect(id);

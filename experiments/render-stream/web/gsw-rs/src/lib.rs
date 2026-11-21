@@ -3218,8 +3218,8 @@ impl GswRs {
             .unwrap_or_default()
     }
 
-    /// TAG2 (§3.2): the client's override table, whole (packed: an id each, 12 floats each:
-    /// 6 affine, 4 modulate, 1 visible, 1 frozen).
+    /// TAG2 (§3.2): the client's override table, whole (packed: an id each, 16 floats each:
+    /// 6 affine, 4 modulate, 1 visible, 1 frozen, 4 clip outsets).
     /// 0, or -1 (`error`: `override-table`). Composed at the next apply, or `refresh_overrides`.
     pub fn set_overrides(&mut self, ids: &[u32], vals: &[f32]) -> i32 {
         let Some(a) = self.applier.as_mut() else {
@@ -3335,10 +3335,10 @@ impl GswRs {
     }
 
     /// I1: a number that changes whenever an item query (`query_item`, `item_visible`,
-    /// `query_children`, `query_subtree_rect`) may answer differently: an accepted transaction
-    /// changed an item or a canvas, an apply created, freed or re-lowered an item record, or the
-    /// state or applier was replaced. A transaction that changes no item (a static scene's new
-    /// seq) keeps it. Only grows; f64 (exact far past any session's count).
+    /// `query_children`, `query_control_rect`, `query_subtree_rect`) may answer differently: an
+    /// accepted transaction changed an item or a canvas, an apply created, freed or re-lowered
+    /// an item record, or the state or applier was replaced. A transaction that changes no item
+    /// (a static scene's new seq) keeps it. Only grows; f64 (exact far past any session's count).
     pub fn query_epoch(&mut self) -> f64 {
         let q = &mut self.query;
         let now = (
@@ -3351,6 +3351,17 @@ impl GswRs {
             q.epoch += 1;
         }
         q.epoch as f64
+    }
+
+    /// `ItemQuery.controlRect`: global presentation px, before overrides; `[x, y, w, h]`,
+    /// or empty when the item has no Control box.
+    pub fn query_control_rect(&self, id: u32) -> Vec<f64> {
+        let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_ref()) else {
+            return Vec::new();
+        };
+        a.query_control_rect(v.state(), id)
+            .map(|r| r.iter().map(|x| f64::from(*x)).collect())
+            .unwrap_or_default()
     }
 
     /// TAG2 `ItemQuery.subtreeRect`: `[x, y, w, h]`, or empty.

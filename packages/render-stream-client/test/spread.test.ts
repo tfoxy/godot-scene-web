@@ -228,6 +228,9 @@ class TreeCore implements ExtensionCore {
       r ? 10 : 0,
     ]);
   }
+  queryControlRect(): ArrayLike<number> {
+    return [];
+  }
   querySubtreeRect(): ArrayLike<number> {
     return [];
   }
@@ -441,6 +444,7 @@ describe("createSpreadExtension through the extension host", () => {
       children: (id) => q.children(id),
       transform: (id) => q.transform(id),
       rect: (id) => q.rect(id),
+      controlRect: (id) => q.controlRect(id),
       subtreeRect: (id) => q.subtreeRect(id),
       visible: (id) => q.visible(id),
       meta: (id) => q.meta(id),

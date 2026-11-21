@@ -156,6 +156,7 @@ export interface GswRs {
   hint_refs(): string;
   set_log_removed(on: boolean): void;
   take_removed(): Uint32Array;
+  /** Whole override table, 16 floats per id; last four are clip outsets (L/T/R/B). */
   set_overrides(ids: Uint32Array, vals: Float32Array): number;
   refresh_overrides(): number;
   /** 1 when the item's row was written at `query_item_ptr()` (14 f64), 0 for no such item. */
@@ -171,6 +172,7 @@ export interface GswRs {
   items_visible(n: number): number;
   /** Moves whenever an item query may answer differently. */
   query_epoch(): number;
+  query_control_rect(id: number): Float64Array;
   query_subtree_rect(id: number): Float64Array;
   query_children(id: number): Uint32Array;
   // Pointer mapping.
@@ -358,6 +360,7 @@ export const CLIENT_CORE_METHODS = [
   "query_items",
   "items_visible",
   "query_epoch",
+  "query_control_rect",
   "query_subtree_rect",
   "query_children",
   "hit_test",

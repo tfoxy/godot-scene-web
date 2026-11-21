@@ -102,12 +102,12 @@ fn synthetic_overrides(a: &mut Applier, state: &render_stream_core::state::Resol
     ids.sort_unstable();
     ids.dedup();
     ids.truncate(32);
-    let mut vals = Vec::with_capacity(ids.len() * 12);
+    let mut vals = Vec::with_capacity(ids.len() * render_stream_core::apply::overrides::OVERRIDE_FLOATS);
     for (i, &id) in ids.iter().enumerate() {
         let d = ((state.seq * 7 + id as i64).rem_euclid(9) - 4) as f32;
         let alpha = if applies % 2 == 0 { 1.0 } else { 0.5 };
         let visible = if i == 0 && (applies / 50) % 2 != 0 { 0.0 } else { 1.0 };
-        vals.extend_from_slice(&[1.0, 0.0, 0.0, 1.0, d, d, 1.0, 1.0, 1.0, alpha, visible, 0.0]);
+        vals.extend_from_slice(&[1.0, 0.0, 0.0, 1.0, d, d, 1.0, 1.0, 1.0, alpha, visible, 0.0, 0.0, 0.0, 0.0, 0.0]);
     }
     a.set_overrides(&ids, &vals).map_err(|e| Error::new("override-table", e))
 }

@@ -4,6 +4,19 @@ A browser client for a render-stream host: it connects, applies the stream's tra
 wasm core, draws them on a WebGL2 canvas and returns credit. `createRenderStreamClient` is the entry
 point; `client.stats()` reports what it is doing.
 
+## Extension clip outsets
+
+`overrides.set(id, { clipOutset: [left, top, right, bottom] })` widens the clip that
+this item imposes on its children. The four edges are nonnegative presentation pixels,
+applied to the transformed clip box before intersecting it with the ancestor clip.
+Set the override on the item with `clip_contents`; it has no effect on a non-clipping
+item. Omitted or zero edges preserve the existing clip.
+
+`set` replaces the entire override, so include any transform, modulate, visibility or
+freeze values you want to keep. Transform helpers and `freeze` preserve `clipOutset`;
+`get` returns all four edges. Rebuild the wasm core and glue together with the client:
+the client-side override row now has 16 floats. The stream wire format is unchanged.
+
 ## Transparent clear
 
 `transparentClear: true` clears the stream canvas to alpha 0, allowing the page to composite an

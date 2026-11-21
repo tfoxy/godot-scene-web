@@ -673,6 +673,7 @@ fn overrides_move_and_hide_the_tree_pick_as_drawn() {
     vals.extend_from_slice(&[1.0, 0.0, 0.0, 1.0, 200.0, 0.0]);
     vals.extend_from_slice(&[1.0; 4]);
     vals.extend_from_slice(&[1.0, 0.0]);
+    vals.extend_from_slice(&[0.0; 4]);
     b.set_overrides(&[CARD], &vals).unwrap();
     b.refresh_overrides(&s, &PayloadStore::default());
     assert_eq!(b.pick(&s, 350.0, 180.0), Some(HITBOX));

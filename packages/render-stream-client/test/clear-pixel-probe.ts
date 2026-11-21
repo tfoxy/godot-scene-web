@@ -9,6 +9,7 @@ declare global {
 async function replay(input: {
   recording: string;
   transparentClear?: boolean;
+  clipOutset?: readonly [number, number, number, number];
 }) {
   const bytes = Uint8Array.from(atob(input.recording), (c) => c.charCodeAt(0));
   const sessionEnd = 12 + new DataView(bytes.buffer).getUint32(8, true);
@@ -34,6 +35,15 @@ async function replay(input: {
         protocol: 12,
       },
       transparentClear: input.transparentClear,
+      extensions: input.clipOutset
+        ? [
+            {
+              id: "clip",
+              beforeDraw: (f) =>
+                f.overrides.set(1, { clipOutset: input.clipOutset! }),
+            },
+          ]
+        : [],
       creditStage: "submitted",
       onStatus: (status) => {
         if (status.kind === "failed") reject(new Error(status.detail));
@@ -93,6 +103,8 @@ async function replay(input: {
       ).join(""),
       clear: pixel(8, 8),
       half: pixel(1, 1),
+      horizontalBand: pixel(3, 1),
+      verticalBand: pixel(1, 3),
     };
   } finally {
     client?.dispose();

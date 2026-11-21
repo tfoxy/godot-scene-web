@@ -16,7 +16,7 @@ const root = fileURLToPath(new URL("../../..", import.meta.url));
 const enabled = process.env.GSW_STREAM_CLEAR_PIXEL === "1";
 
 /** A resource-free rectangle over the unchanged golden session's host clear colour. */
-async function recording(version = 6): Promise<string> {
+async function recording(version = 6, clip = false): Promise<string> {
   const dir = join(
     root,
     `experiments/render-stream/protocol/golden-${version}`,
@@ -43,6 +43,38 @@ async function recording(version = 6): Promise<string> {
     canvas_f32: [1, 0, 0, 1, 0, 0, 1, 1, 1, 1],
     cmd_f32: [0, 0, 4, 4, 1, 0.5, 0.25, 0.5],
   };
+  if (clip) {
+    const parent = tx.items[0];
+    const child = structuredClone(parent);
+    child.id = 2;
+    child.parent = { kind: "item", id: 1 };
+    parent.children = [2];
+    parent.clip = true;
+    parent.custom_rect = true;
+    parent.commands = [];
+    tx.items.push(child);
+    floats.item_f32 = [
+      1,
+      0,
+      0,
+      1,
+      0,
+      0,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      0,
+      0,
+      2,
+      2,
+      ...floats.item_f32!,
+    ];
+  }
   const blocks = tx.blocks.map((b: { name: string; count: number }) => {
     const values = floats[b.name] ?? [];
     b.count = values.length;
@@ -231,6 +263,29 @@ it.skipIf(!enabled)(
       expect(liveOn.clear).toEqual([0, 0, 0, 0]);
       expect(liveOn.half).toEqual(on.half);
       expect(Math.abs(liveOn.half[3] / 255 - 0.5)).toBeLessThanOrEqual(1 / 255);
+      // A real wasm/executor draw through the extension host: widen only the child x band.
+      const clippedData = await recording(12, true);
+      const clipRun = (
+        clipOutset?: readonly [number, number, number, number],
+      ) =>
+        page.evaluate((input) => window.productionClearProbe(input), {
+          recording: clippedData,
+          transparentClear: true,
+          clipOutset,
+        });
+      const clipped = await clipRun();
+      const zero = await clipRun([0, 0, 0, 0]);
+      const widened = await clipRun([0, 0, 2, 0]);
+      expect(zero.pixelsSha256).toBe(clipped.pixelsSha256);
+      expect(clipped.horizontalBand).toEqual([0, 0, 0, 0]);
+      expect(widened.horizontalBand).toEqual(widened.half);
+      expect(widened.horizontalBand[3]).toBeGreaterThan(0);
+      expect(widened.verticalBand).toEqual([0, 0, 0, 0]);
+      expect(widened.glError).toBe(0);
+      console.log(
+        "clipOutset pixels:",
+        JSON.stringify({ clipped, zero, widened }),
+      );
     } finally {
       await browser.close();
     }

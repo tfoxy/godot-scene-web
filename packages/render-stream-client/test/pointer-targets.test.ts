@@ -37,6 +37,7 @@ function query(metas: Record<number, ItemMeta> = {}): ItemQuery {
     children: () => new Uint32Array(0),
     transform: (id) => xf[id] ?? null,
     rect: () => null,
+    controlRect: () => null,
     subtreeRect: () => null,
     visible: () => true,
     meta: (id) => metas[id] ?? null,
@@ -207,12 +208,15 @@ describe("pointerTargetResolver", () => {
         id === 3 ? [-1, 1, 1, 1, 0, 0, 1, 100, 50, 0, 0, 0, 0, 0] : [],
       itemVisible: (id: number) => id === 3,
       queryChildren: () => new Uint32Array(0),
+      queryControlRect: (id: number) => (id === 3 ? [100, 50, 40, 20] : []),
       querySubtreeRect: () => [],
       hitTest: () => 3,
     }));
     expect(q.parent(3)).toBeNull();
     expect(q.transform(3)).toEqual([1, 0, 0, 1, 100, 50]);
     expect(q.meta(3)).toBeNull();
+    expect(q.controlRect(3)).toEqual({ x: 100, y: 50, w: 40, h: 20 });
+    expect(q.controlRect(99)).toBeNull();
     expect(resolverFor(source(q))(60, 30)).toEqual({
       key: 3,
       identity: { item: 3 },

@@ -3765,6 +3765,11 @@ impl Applier {
                 content_rect
             };
             let global = geom::xform_rect(&draw_xf, &rect);
+            let global = if ov {
+                self.overrides.get(&id).map_or(global, |o| o.outset_clip(global))
+            } else {
+                global
+            };
             let vp = [
                 0.0,
                 0.0,

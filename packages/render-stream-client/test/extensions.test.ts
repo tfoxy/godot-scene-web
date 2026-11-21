@@ -73,6 +73,9 @@ class ExtCore extends FakeCore implements ExtensionCore {
     const y = id >= 2 ? 20 : 0;
     return [parent, 1, 1, 1, 0, 0, 1, x, y, 1, x, y, 4, 4];
   }
+  queryControlRect(id: number): ArrayLike<number> {
+    return id === 2 ? [10, 20, 12, 8] : [];
+  }
   querySubtreeRect(): ArrayLike<number> {
     return [0, 0, 14, 24];
   }
@@ -386,7 +389,7 @@ describe("render-stream client extensions (TAG2)", () => {
     ]);
     expect(h.core.tables[0]).toEqual({
       ids: [2],
-      vals: [1, 0, 0, 1, 0, -119, 1, 1, 1, 1, 1, 0],
+      vals: [1, 0, 0, 1, 0, -119, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
     });
     t.on.message(tx(2));
     h.clock.frame();
@@ -493,10 +496,40 @@ describe("render-stream client extensions (TAG2)", () => {
       modulate: [1, 1, 1, 1],
       visible: false,
       frozen: false,
+      clipOutset: [0, 0, 0, 0],
     });
     expect(() => o.translate(1, Number.NaN, 0)).toThrow(/non-finite/);
     o.clearAll();
     expect(o.size).toBe(0);
+  });
+
+  it("clipOutset packs four edges per 16-float row and set replaces it", () => {
+    const h = setup([
+      {
+        id: "clip",
+        beforeDraw: (f) => {
+          f.overrides.set(2, { clipOutset: [3, 5, 7, 11] });
+          f.overrides.translate(2, 10, 20);
+          f.overrides.freeze(2, true);
+          f.overrides.set(3, {});
+        },
+      },
+    ]);
+    h.last().on.message(tx(1));
+    h.clock.frame();
+    expect(h.ext.overrides.get(2)?.clipOutset).toEqual([3, 5, 7, 11]);
+    expect(h.core.tables[0]).toEqual({
+      ids: [2, 3],
+      vals: [
+        1, 0, 0, 1, 10, 20, 1, 1, 1, 1, 1, 1, 3, 5, 7, 11, 1, 0, 0, 1, 0, 0, 1,
+        1, 1, 1, 1, 0, 0, 0, 0, 0,
+      ],
+    });
+    h.ext.overrides.set(2, {});
+    expect(h.ext.overrides.get(2)?.clipOutset).toEqual([0, 0, 0, 0]);
+    expect(() =>
+      h.ext.overrides.set(2, { clipOutset: [0, 0, Infinity, 0] }),
+    ).toThrow(/non-finite/);
   });
 
   it("freeze sets the frozen flag and packs it as the 12th value", () => {
@@ -510,11 +543,12 @@ describe("render-stream client extensions (TAG2)", () => {
       modulate: [1, 1, 1, 1],
       visible: true,
       frozen: true,
+      clipOutset: [0, 0, 0, 0],
     });
     o.freeze(2, false);
     expect(o.get(2)?.frozen).toBe(false);
-    // The packed table carries 12 floats: 6 affine (identity), 4 modulate (white), 1 visible,
-    // 1 frozen.
+    // The packed table carries 16 floats: 6 affine (identity), 4 modulate (white), 1 visible,
+    // 1 frozen, 4 clip outsets.
     const h = setup([
       { id: "f", beforeDraw: (f) => f.overrides.freeze(2, true) },
     ]);
@@ -523,7 +557,7 @@ describe("render-stream client extensions (TAG2)", () => {
     h.clock.frame();
     expect(h.core.tables[0]).toEqual({
       ids: [2],
-      vals: [1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1],
+      vals: [1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
     });
   });
 
@@ -1040,6 +1074,18 @@ describe("render-stream client extensions (TAG2)", () => {
 });
 
 describe("render-stream client item queries (I1/I2)", () => {
+  it("controlRect reads the core's Control box independently of command bounds", () => {
+    const host = new ExtensionHost([]);
+    expect(host.query.controlRect(2)).toBeNull();
+    host.bind(new ExtCore());
+    expect(host.query.controlRect(2)).toEqual({ x: 10, y: 20, w: 12, h: 8 });
+    expect(host.query.rect(2)).toEqual({ x: 10, y: 20, w: 4, h: 4 });
+    expect(host.query.controlRect(3)).toBeNull();
+    expect(host.query.controlRect(99)).toBeNull();
+    host.bind(null);
+    expect(host.query.controlRect(2)).toBeNull();
+  });
+
   /** The public calls alone, over the same core: what any hand-made `ItemQuery` gives. */
   function plain(core: ExtCore): ItemQuery {
     const host = new ExtensionHost([]);
@@ -1050,6 +1096,7 @@ describe("render-stream client item queries (I1/I2)", () => {
       children: q.children,
       transform: q.transform,
       rect: q.rect,
+      controlRect: q.controlRect,
       subtreeRect: q.subtreeRect,
       visible: q.visible,
       meta: q.meta,

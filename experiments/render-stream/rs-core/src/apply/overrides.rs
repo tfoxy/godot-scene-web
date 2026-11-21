@@ -17,8 +17,8 @@ use crate::state::{Canvas, Id, ParentKind, ResolvedState, TxDelta};
 
 /// Floats per item in [`Applier::set_overrides`]' packed table: 6 affine (Godot's column order:
 /// x axis, y axis, origin), 4 modulate, 1 visible (0 hides the subtree), 1 frozen (FRZ-HOOK: hold
-/// the subtree's records across transactions).
-pub const OVERRIDE_FLOATS: usize = 12;
+/// the subtree's records across transactions), 4 clip outsets (left, top, right, bottom).
+pub const OVERRIDE_FLOATS: usize = 16;
 
 /// HIT1 [`Applier::set_hit_filters`]: the node takes pointer input (`mouse_filter` STOP or PASS).
 pub const HIT_INPUT: u8 = 1;
@@ -120,6 +120,19 @@ pub struct Override {
     /// Frozen subtree: hold the subtree. `apply` keeps the records of items whose nearest
     /// frozen ancestor has this flag, skipping their upserts and removals.
     pub frozen: bool,
+    /// Screen-space clip growth [left, top, right, bottom], before ancestor intersection.
+    pub clip_outset: [f32; 4],
+}
+
+impl Override {
+    /// Enlarge an already transformed clip box; zero preserves the original rect exactly.
+    pub(super) fn outset_clip(&self, rect: Rect) -> Rect {
+        if self.clip_outset == [0.0; 4] {
+            return rect;
+        }
+        let [l, t, r, b] = self.clip_outset;
+        [rect[0] - l, rect[1] - t, rect[2] + l + r, rect[3] + t + b]
+    }
 }
 
 /// TAG2 sabotages (each must fail its check).
@@ -228,6 +241,7 @@ impl Applier {
                 modulate: [v[6], v[7], v[8], v[9]],
                 visible: v[10] != 0.0,
                 frozen: v[11] != 0.0,
+                clip_outset: [v[12], v[13], v[14], v[15]],
             };
             if next.insert(id, o).is_some() {
                 return Err(format!("override-table: item {id} is listed twice"));
@@ -237,7 +251,7 @@ impl Applier {
             match self.overrides.get(id) {
                 Some(old) if old == o => {}
                 Some(old) => {
-                    self.ov_walk |= old.visible != o.visible;
+                    self.ov_walk |= old.visible != o.visible || old.clip_outset != o.clip_outset;
                     self.ov_changed.push(*id);
                     if old.frozen != o.frozen {
                         self.frozen_dirty = true;
@@ -247,7 +261,7 @@ impl Applier {
                     }
                 }
                 None => {
-                    self.ov_walk |= !o.visible;
+                    self.ov_walk |= !o.visible || o.clip_outset != [0.0; 4];
                     self.ov_changed.push(*id);
                     if o.frozen {
                         self.frozen_dirty = true;
@@ -257,7 +271,7 @@ impl Applier {
         }
         for (id, old) in &self.overrides {
             if !next.contains_key(id) {
-                self.ov_walk |= !old.visible;
+                self.ov_walk |= !old.visible || old.clip_outset != [0.0; 4];
                 self.ov_changed.push(*id);
                 if old.frozen {
                     self.frozen_dirty = true;
@@ -598,6 +612,18 @@ impl Applier {
         Some(geom::xform_rect(draw, &rec.lowered.rect))
     }
 
+    /// The global presentation-space AABB of the item's Control box, before any override.
+    /// A custom rect can be present without its flag (as in `pick_rect`); drawing commands
+    /// alone do not supply a Control box.
+    pub fn query_control_rect(&self, state: &ResolvedState, id: Id) -> Option<Rect> {
+        let it = state.items.get(&id)?;
+        if !it.custom_rect && it.custom_rect_rect == [0.0; 4] {
+            return None;
+        }
+        let (_, draw, _) = self.game_xforms(state, id)?;
+        Some(geom::xform_rect(&draw, &it.custom_rect_rect))
+    }
+
     /// The union of the game's own-command rects of `id` and its visible descendants.
     pub fn query_subtree_rect(&self, state: &ResolvedState, id: Id) -> Option<Rect> {
         let (final_xf, draw, _) = self.game_xforms(state, id)?;
@@ -674,6 +700,7 @@ impl Applier {
             if !a.emit || a.parked {
                 return None;
             }
+            // The draw walk already applied clip outsets and intersected ancestor clips.
             if let Some(s) = a.scissor {
                 let (sx, sy) = (s[0] as f32, s[1] as f32);
                 if x < sx || y < sy || x >= sx + s[2] as f32 || y >= sy + s[3] as f32 {
@@ -808,9 +835,15 @@ impl Applier {
                         };
                         stack.push(PickVisit::Leave(id, own_xf));
                         if it.clip && !self.ov_sabotage.pick_no_clip {
-                            let inside = self
-                                .pick_rect(id, it)
-                                .is_some_and(|r| contains_local(&own_xf, &r, p));
+                            let inside = self.pick_rect(id, it).is_some_and(|r| {
+                                match self.overrides.get(&id) {
+                                    Some(o) if o.clip_outset != [0.0; 4] => {
+                                        let clip = o.outset_clip(geom::xform_rect(&own_xf, &r));
+                                        contains_local(&geom::IDENTITY, &clip, p)
+                                    }
+                                    _ => contains_local(&own_xf, &r, p),
+                                }
+                            });
                             if !inside {
                                 continue;
                             }

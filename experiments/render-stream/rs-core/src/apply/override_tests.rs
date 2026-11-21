@@ -127,6 +127,7 @@ fn table(id: Id, xf: Xform, modulate: [f32; 4], visible: bool) -> (Vec<u32>, Vec
     v.extend_from_slice(&modulate);
     v.push(if visible { 1.0 } else { 0.0 });
     v.push(0.0); // frozen
+    v.extend_from_slice(&[0.0; 4]); // clip outsets
     (vec![id], v)
 }
 
@@ -243,6 +244,7 @@ fn identity_overrides_paint_nothing_new() {
         vals.extend_from_slice(&[1.0; 4]);
         vals.push(1.0);
         vals.push(0.0); // frozen
+        vals.extend_from_slice(&[0.0; 4]); // clip outsets
     }
     b.set_overrides(&ids, &vals).unwrap();
     b.apply(&s, &full_delta(&s), &store);
@@ -354,6 +356,55 @@ fn removed_items_leave_the_table_and_reach_the_log() {
     assert_eq!(b.take_removed(), vec![P, C1, C2]);
     assert!(b.take_removed().is_empty());
     assert_eq!(b.overrides().count(), 0);
+}
+
+#[test]
+fn control_rect_reads_the_layout_box_before_overrides() {
+    let store = PayloadStore::default();
+    let mut s = base();
+    let p = s.items.get_mut(&P).unwrap();
+    p.custom_rect = true;
+    p.custom_rect_rect = [0.0, 0.0, 20.0, 20.0];
+    s.items.get_mut(&C1).unwrap().commands.list = vec![Command::Rect {
+        aa: false,
+        rect: [-12.0, -13.0, 50.0, 50.0],
+        color: [1.0; 4],
+    }];
+    let mut b = applier();
+    b.viewport.global_xform = [2.0, 0.0, 0.0, 2.0, 1.0, 2.0];
+    b.apply(&s, &full_delta(&s), &store);
+    let control = Some([31.0, 402.0, 40.0, 40.0]);
+    let subtree = Some([11.0, 382.0, 100.0, 100.0]);
+    assert_eq!(b.query_item(&s, P).unwrap().rect, None);
+    assert_eq!(b.query_control_rect(&s, P), control);
+    assert_eq!(b.query_subtree_rect(&s, P), subtree);
+
+    let (ids, vals) = table(P, scale_about(1.2, 1.2, 15.0, 200.0), TINT, true);
+    b.set_overrides(&ids, &vals).unwrap();
+    b.refresh_overrides(&s, &store);
+    assert_eq!(b.query_control_rect(&s, P), control);
+    assert_eq!(b.query_subtree_rect(&s, P), subtree);
+}
+
+#[test]
+fn control_rect_uses_custom_rect_presence_and_the_game_draw_transform() {
+    let mut s = base();
+    let mut b = applier();
+    assert_eq!(b.query_control_rect(&s, 99), None);
+    assert_eq!(b.query_control_rect(&s, C1), None); // Draw commands alone are not a Control box.
+    assert_eq!(b.query_control_rect(&s, P), None);
+    let p = s.items.get_mut(&P).unwrap();
+    // Controls can carry a box without the custom_rect flag, just as in pick_rect.
+    p.custom_rect_rect = [0.0, 0.0, 20.0, 10.0];
+    p.xform = [0.0, 1.0, -1.0, 0.0, 5.0, 0.0];
+    assert_eq!(b.query_control_rect(&s, P), Some([5.0, 200.0, 10.0, 20.0]));
+    s.items.get_mut(&P).unwrap().use_identity_transform = true;
+    b.viewport.global_xform = [2.0, 0.0, 0.0, 3.0, 4.0, 5.0];
+    assert_eq!(b.query_control_rect(&s, P), Some([4.0, 5.0, 40.0, 30.0]));
+    let p = s.items.get_mut(&P).unwrap();
+    p.custom_rect = true;
+    p.custom_rect_rect = [0.0; 4];
+    assert_eq!(b.query_control_rect(&s, P), Some([4.0, 5.0, 0.0, 0.0]));
 }
 
 #[test]
@@ -666,6 +717,7 @@ fn frozen_table(id: Id) -> (Vec<u32>, Vec<f32>) {
     v.extend_from_slice(&[1.0; 4]);
     v.push(1.0); // visible
     v.push(1.0); // frozen
+    v.extend_from_slice(&[0.0; 4]); // clip outsets
     (vec![id], v)
 }
 
@@ -1248,4 +1300,140 @@ fn deferred_cover_restoration_schedules_and_disabling_settles() {
     assert!(a.cover_recheck());
     a.apply(&s, &full_delta_tex(&s), &store);
     assert!(!a.cover_due(), "eager mode is restored");
+}
+
+#[test]
+fn clip_outset_widens_screen_clip_and_both_pick_orders() {
+    use super::overrides::PickOrder;
+    let store = PayloadStore::default();
+    let mut s = base();
+    // Ancestor bounds x to [10, 135), y to [200, 300).
+    let g = s.items.get_mut(&G).unwrap();
+    g.commands.list.clear();
+    g.clip = true;
+    g.custom_rect = true;
+    g.custom_rect_rect = [0.0, 0.0, 125.0, 100.0];
+    let p = s.items.get_mut(&P).unwrap();
+    p.clip = true;
+    p.custom_rect = true;
+    p.custom_rect_rect = [0.0, 0.0, 100.0, 50.0];
+    p.children = vec![C1];
+    let c = s.items.get_mut(&C1).unwrap();
+    c.xform = geom::IDENTITY;
+    c.children = vec![C2];
+    c.commands.list.clear();
+    let d = s.items.get_mut(&C2).unwrap();
+    d.parent = Some(in_item(C1));
+    d.commands.list = vec![Command::Rect {
+        aa: false,
+        rect: [-20.0, -20.0, 160.0, 100.0],
+        color: [1.0; 4],
+    }];
+    s.items.remove(&Q);
+    s.canvases.get_mut(&CANVAS).unwrap().items = vec![G];
+    let mut b = applier();
+    let mut vals = vec![
+        1.2, 0.0, 0.0, 1.2, -3.0, -40.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    ];
+    // Scale child about parent's top-left; parent clip stays [15, 200, 100, 50].
+    b.set_overrides(&[C1], &vals).unwrap();
+    b.apply(&s, &full_delta(&s), &store);
+    b.set_hit_filters(&[C2], &[HIT_INPUT]).unwrap();
+    let check = |b: &mut Applier, x, y, want| {
+        assert_eq!(b.hit_test(x, y), want, "drawn hit at ({x}, {y})");
+        for order in [PickOrder::Drawn, PickOrder::Tree] {
+            b.set_pick_order(order);
+            assert_eq!(b.pick(&s, x, y), want, "{order:?} at ({x}, {y})");
+        }
+    };
+    check(&mut b, 110.0, 225.0, Some(C2));
+    check(&mut b, 120.0, 225.0, None);
+    check(&mut b, 12.0, 225.0, None);
+    assert_eq!(b.list.draws[0].scissor, [15, 200, 100, 50]);
+    vals.extend_from_slice(&[
+        1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 10.0, 0.0, 30.0, 0.0,
+    ]);
+    b.set_overrides(&[C1, P], &vals).unwrap();
+    assert_eq!(b.refresh_overrides(&s, &store), Refresh::Walked);
+    assert_eq!(b.list.draws[0].scissor, [10, 200, 125, 50]);
+    check(&mut b, 120.0, 225.0, Some(C2));
+    check(&mut b, 12.0, 225.0, Some(C2));
+    check(&mut b, 136.0, 225.0, None); // ancestor still bounds right edge
+    check(&mut b, 120.0, 251.0, None); // vertical edge remains cropped
+
+    // An outset-only edit must recompute the scissor.
+    vals[28..32].fill(0.0);
+    b.set_overrides(&[C1, P], &vals).unwrap();
+    assert_eq!(b.refresh_overrides(&s, &store), Refresh::Walked);
+    check(&mut b, 120.0, 225.0, None);
+    assert_eq!(b.list.draws[0].scissor, [15, 200, 100, 50]);
+}
+
+#[test]
+fn clip_outset_uses_presentation_edges_and_revives_a_culled_clipper() {
+    let store = PayloadStore::default();
+    let mut s = base();
+    // P's screen box is [30, 200, 20, 20]; local edges must not scale the outsets.
+    let p = s.items.get_mut(&P).unwrap();
+    p.clip = true;
+    p.custom_rect = true;
+    p.custom_rect_rect = [0.0, 0.0, 10.0, 10.0];
+    p.xform = [2.0, 0.0, 0.0, 2.0, 20.0, 0.0];
+    p.children = vec![C1];
+    let c = s.items.get_mut(&C1).unwrap();
+    c.xform = geom::IDENTITY;
+    c.commands.list = vec![Command::Rect {
+        aa: false,
+        rect: [-100.0, -100.0, 300.0, 300.0],
+        color: [1.0; 4],
+    }];
+    s.items.remove(&C2);
+    s.items.remove(&Q);
+    s.items.get_mut(&G).unwrap().commands.list.clear();
+    s.canvases.get_mut(&CANVAS).unwrap().items = vec![G];
+    let mut b = applier();
+    b.apply(&s, &full_delta(&s), &store);
+    let unchanged = b.paint_digest();
+    let (ids, mut vals) = table(P, geom::IDENTITY, [1.0; 4], true);
+    b.set_overrides(&ids, &vals).unwrap();
+    b.refresh_overrides(&s, &store);
+    assert_eq!(
+        b.paint_digest(),
+        unchanged,
+        "zero outset changes no draw bits"
+    );
+    vals[12..].copy_from_slice(&[3.0, 5.0, 7.0, 11.0]);
+    b.set_overrides(&ids, &vals).unwrap();
+    assert_eq!(b.refresh_overrides(&s, &store), Refresh::Walked);
+    assert_eq!(b.list.draws[0].scissor, [27, 195, 30, 36]);
+    // The same values on a non-clipping child have no effect.
+    let digest = b.paint_digest();
+    let mut both = vals.clone();
+    both.extend_from_slice(&vals);
+    b.set_overrides(&[P, C1], &both).unwrap();
+    b.refresh_overrides(&s, &store);
+    assert_eq!(b.paint_digest(), digest);
+    b.set_overrides(&[], &[]).unwrap();
+    assert_eq!(b.refresh_overrides(&s, &store), Refresh::Walked);
+    assert_eq!(b.paint_digest(), unchanged);
+    // Clip has no intersection with viewport, so move_subtree would skip this unwalked item.
+    s.items.get_mut(&P).unwrap().xform[4] = -50.0;
+    b.apply(&s, &full_delta(&s), &store);
+    assert!(b.list.draws.is_empty());
+    vals[12..].copy_from_slice(&[0.0, 0.0, 50.0, 0.0]);
+    b.set_overrides(&ids, &vals).unwrap();
+    assert_eq!(b.refresh_overrides(&s, &store), Refresh::Walked);
+    assert_eq!(b.list.draws[0].scissor, [0, 200, 30, 20]);
+    assert_eq!(b.hit_test(10.0, 210.0), Some(C1));
+    // A prepared transaction must consume an outset-only change too.
+    let delta = TxDelta {
+        seq: 2,
+        ..TxDelta::default()
+    };
+    b.prepare(&s, &delta);
+    vals[14] = 0.0;
+    b.set_overrides(&ids, &vals).unwrap();
+    assert_eq!(b.refresh_overrides(&s, &store), Refresh::Deferred);
+    b.apply(&s, &delta, &store);
+    assert!(b.list.draws.is_empty());
 }

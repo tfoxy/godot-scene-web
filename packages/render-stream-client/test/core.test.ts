@@ -699,6 +699,7 @@ describe("WasmStreamCore session protocol", () => {
     expect(instances[0].live_reset).not.toHaveBeenCalled();
     expect(core.queryItem(7)).toHaveLength(0);
     expect(core.itemVisible(7)).toBe(false);
+    expect(core.queryControlRect(7)).toEqual([]);
     expect(core.querySubtreeRect(7)).toEqual([]);
     expect(core.queryChildren(7)).toEqual(new Uint32Array(0));
     expect(core.hitTest(1, 1)).toBeNull();
@@ -721,6 +722,18 @@ describe("WasmStreamCore session protocol", () => {
 });
 
 describe("WasmStreamCore item queries (I1/I2)", () => {
+  it("forwards Control box queries to wasm without reading the item row", () => {
+    const { core, instances } = harness();
+    const query = vi.fn((id: number) =>
+      Float64Array.from(id === 7 ? [10, 20, 30, 40] : []),
+    );
+    Object.assign(instances[0], { query_control_rect: query });
+    expect([...core.queryControlRect(7)]).toEqual([10, 20, 30, 40]);
+    expect([...core.queryControlRect(99)]).toEqual([]);
+    expect(query.mock.calls).toEqual([[7], [99]]);
+    core.dispose();
+  });
+
   const ROW = 14;
   const rows: Record<number, number[]> = {
     5: [-1, 1, 1, 1, 0, 0, 1, 7, 8, 1, 7, 8, 2, 3],

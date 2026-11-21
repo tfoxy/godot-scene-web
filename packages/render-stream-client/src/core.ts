@@ -990,6 +990,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     return this.g.take_removed();
   }
 
+  /** Whole override table, 16 floats per id; last four are clip outsets (L/T/R/B). */
   setOverrides(ids: Uint32Array, vals: Float32Array): void {
     if (this.g.set_overrides(ids, vals) < 0)
       throw failWith(this.seqOrNull(), this.g.error());
@@ -1051,6 +1052,10 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     const e = this.epochBase + (g === null ? 0 : g.query_epoch());
     this.epochLast = e;
     return e;
+  }
+
+  queryControlRect(id: number): ArrayLike<number> {
+    return this.instance?.query_control_rect(id) ?? [];
   }
 
   querySubtreeRect(id: number): ArrayLike<number> {

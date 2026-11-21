@@ -325,7 +325,7 @@ fn an_override_on_a_group_walks_and_one_beside_it_does_not() {
     let s = lobby();
     let mut t = Trio::new(&s);
     // A shifted, opaque, visible, unfrozen override (`OVERRIDE_FLOATS`).
-    let shift = [1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0];
+    let shift = [1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     for (id, walked) in [(MOVER, false), (MASKED, true)] {
         for x in [&mut t.scoped, &mut t.before, &mut t.oracle] {
             x.set_overrides(&[id as u32], &shift).unwrap();

@@ -125,6 +125,10 @@ export interface OverrideValues {
   /** Hold the subtree. `apply` keeps its records and skips its upserts
    * and removals until it is cleared. */
   frozen?: boolean;
+  /** Enlarge this item's child clip in presentation px: [left, top, right, bottom].
+   * Values are expected to be >= 0. Applied after transforming its clip box, before
+   * intersecting the ancestor clip. Has no effect on an item that does not clip. */
+  clipOutset?: readonly [number, number, number, number];
 }
 
 /** Retained: an override stays until changed or cleared. Overrides of an item and its ancestors
@@ -132,15 +136,15 @@ export interface OverrideValues {
  * writes the child's entry relative to what the ancestors already apply. Writing the values an item
  * already has changes nothing.
  *
- * Single ownership per id: the table holds ONE entry per item (transform, modulate, visible and
- * frozen together), and `set`, `translate`, `scaleAbout`, `setGlobal`, `freeze` and `clear` all
- * replace or remove values another module may have written on the same id (`set` and `clear`
- * replace all four). Modules sharing a client must write disjoint ids (or one module composes the
+ * Single ownership per id: the table holds ONE entry per item (transform, modulate, visible,
+ * frozen and clipOutset together), and `set`, `translate`, `scaleAbout`, `setGlobal`, `freeze`
+ * and `clear` all replace or remove values another module may have written on the same id (`set` and `clear`
+ * replace all values). Modules sharing a client must write disjoint ids (or one module composes the
  * others' wishes). When two modules' `beforeDraw` change the same id, the host logs one
  * `console.warn` per module pair. */
 export interface OverrideTable {
   /** Replaces the item's whole override with these values (absent ones: identity, white,
-   * visible, not frozen). */
+   * visible, not frozen, zero clip outset). */
   set(id: number, o: OverrideValues): void;
   /** FRZ-HOOK: set or clear the item's `frozen` flag, leaving the other values as they are. */
   freeze(id: number, on: boolean): void;
@@ -174,6 +178,10 @@ export interface ItemQuery {
   transform(id: number): Affine2D | null;
   /** The global AABB of the item's own commands, presentation px (null: it draws nothing). */
   rect(id: number): Rect | null;
+  /** The global AABB of the Control's laid-out box, presentation px, before overrides.
+   * Null for an unknown item or one without a Control box; independent of drawing commands
+   * and descendant bounds. */
+  controlRect(id: number): Rect | null;
   subtreeRect(id: number): Rect | null;
   /** Effective visibility: the item and its ancestors visible, on an attached canvas. */
   visible(id: number): boolean;
@@ -307,9 +315,9 @@ export function queryItemRows(
 }
 
 /**
- * A number that changes whenever `parent`, `children`, `transform`, `rect`, `subtreeRect` or
- * `visible` may answer differently: an applied or accepted transaction changed an item or a
- * canvas, or the session changed. A transaction that changes no item (a static scene still gets a
+ * A number that changes whenever `parent`, `children`, `transform`, `rect`, `controlRect`,
+ * `subtreeRect` or `visible` may answer differently: an applied or accepted transaction changed an
+ * item or a canvas, or the session changed. A transaction that changes no item (a static scene still gets a
  * new `seq` every frame) keeps it, so a module may keep what it computed from the query while the
  * epoch holds. `meta` and `hitTest` are not covered. Null for a query that has no epoch (any
  * `ItemQuery` but the client's own): treat every frame as changed.
@@ -324,7 +332,8 @@ export interface ExtensionCore {
   itemMetaJson(): string;
   setLogRemoved(on: boolean): void;
   takeRemoved(): Uint32Array;
-  /** The whole table: ids and 12 floats each (6 affine, 4 modulate, 1 visible, 1 frozen). */
+  /** The whole table: ids and 16 floats each (6 affine, 4 modulate, 1 visible,
+   * 1 frozen, 4 clip outsets in left/top/right/bottom order). */
   setOverrides(ids: Uint32Array, vals: Float32Array): void;
   /** Compose a changed table now (0 clean, 1 deferred to the pending apply, 2 moved, 3 walked). */
   refreshOverrides(): number;
@@ -340,6 +349,8 @@ export interface ExtensionCore {
   itemsVisible(ids: ArrayLike<number>, out: Uint8Array): void;
   /** Moves whenever an item query may answer differently; equal values, equal answers. */
   queryEpoch(): number;
+  /** The Control box as `[x, y, w, h]` in presentation px before overrides, or empty. */
+  queryControlRect(id: number): ArrayLike<number>;
   querySubtreeRect(id: number): ArrayLike<number>;
   queryChildren(id: number): Uint32Array;
   /** The topmost drawn item under a presentation-space point, or null. */
@@ -415,6 +426,7 @@ interface Entry {
   modulate: RGBA;
   visible: boolean;
   frozen: boolean;
+  clipOutset: readonly [number, number, number, number];
 }
 
 const same = (a: readonly number[], b: readonly number[]): boolean => {
@@ -444,7 +456,7 @@ class Table implements OverrideTable {
   }
 
   private put(id: number, e: Entry): void {
-    if (!finite(e.xform) || !finite(e.modulate))
+    if (!finite(e.xform) || !finite(e.modulate) || !finite(e.clipOutset))
       throw new TypeError(
         `render-stream override: item ${id} has a non-finite value`,
       );
@@ -454,7 +466,8 @@ class Table implements OverrideTable {
       old.visible === e.visible &&
       old.frozen === e.frozen &&
       same(old.xform, e.xform) &&
-      same(old.modulate, e.modulate)
+      same(old.modulate, e.modulate) &&
+      same(old.clipOutset, e.clipOutset)
     )
       return;
     if (this.owners !== null) this.own(id);
@@ -489,6 +502,7 @@ class Table implements OverrideTable {
       modulate: o.modulate ? ([...o.modulate] as RGBA) : WHITE,
       visible: o.visible ?? true,
       frozen: o.frozen ?? false,
+      clipOutset: o.clipOutset ? [...o.clipOutset] : [0, 0, 0, 0],
     });
   }
 
@@ -499,6 +513,7 @@ class Table implements OverrideTable {
       modulate: old?.modulate ?? WHITE,
       visible: old?.visible ?? true,
       frozen: on,
+      clipOutset: old?.clipOutset ?? [0, 0, 0, 0],
     });
   }
 
@@ -509,6 +524,7 @@ class Table implements OverrideTable {
       modulate: old?.modulate ?? WHITE,
       visible: old?.visible ?? true,
       frozen: old?.frozen ?? false,
+      clipOutset: old?.clipOutset ?? [0, 0, 0, 0],
     });
   }
 
@@ -539,6 +555,7 @@ class Table implements OverrideTable {
           modulate: e.modulate,
           visible: e.visible,
           frozen: e.frozen,
+          clipOutset: e.clipOutset,
         }
       : null;
   }
@@ -578,14 +595,15 @@ class Table implements OverrideTable {
 
   pack(): [Uint32Array, Float32Array] {
     const ids = new Uint32Array(this.entries.size);
-    const vals = new Float32Array(this.entries.size * 12);
+    const vals = new Float32Array(this.entries.size * 16);
     let k = 0;
     for (const [id, e] of this.entries) {
       ids[k] = id;
-      vals.set(e.xform, k * 12);
-      vals.set(e.modulate, k * 12 + 6);
-      vals[k * 12 + 10] = e.visible ? 1 : 0;
-      vals[k * 12 + 11] = e.frozen ? 1 : 0;
+      vals.set(e.xform, k * 16);
+      vals.set(e.modulate, k * 16 + 6);
+      vals[k * 16 + 10] = e.visible ? 1 : 0;
+      vals[k * 16 + 11] = e.frozen ? 1 : 0;
+      vals.set(e.clipOutset, k * 16 + 12);
       k++;
     }
     return [ids, vals];
@@ -667,6 +685,12 @@ export class ExtensionHost {
         const f = this.item(id);
         if (f.length === 0 || f[9] === 0) return null;
         return { x: f[10], y: f[11], w: f[12], h: f[13] };
+      },
+      controlRect: (id) => {
+        const r = this.core?.queryControlRect(id);
+        return r && r.length === 4
+          ? { x: r[0], y: r[1], w: r[2], h: r[3] }
+          : null;
       },
       subtreeRect: (id) => {
         const r = this.core?.querySubtreeRect(id);
