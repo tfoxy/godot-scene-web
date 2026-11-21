@@ -1,4 +1,5 @@
 #include "rs_capture_api.h"
+#include "rs_hook_admission.h"
 
 #include <atomic>
 #include <cstdio>
@@ -173,6 +174,139 @@ void test_lifecycle() {
   check(boundaries.disarm({{"reason", std::string(64, 'x')}, {"linger_ms", 10000}}) == 0,
       "disarm inclusive bounds");
 }
+void test_attachment() {
+  Api api;
+  api.loaded(State::Standby);
+  int stops = 0, starts = 0;
+  auto stop = [&] {
+    ++stops;
+    check(api.attachment() == Attachment::Detaching && !api.can_arm(), "detaching admission closed");
+    check(api.arm() == 3 && api.last_refusal() == "capture-detached", "arm during detach refused");
+    check(api.attach() == 44 && api.detach() == 44, "reentrant transitions busy");
+    return true;
+  };
+  auto start = [&] {
+    ++starts;
+    check(api.attachment() == Attachment::Attaching && !api.can_arm(), "attaching admission closed");
+    return true;
+  };
+  check(api.attach({}, start) == 0 && starts == 0, "attached idempotence");
+  check(api.detach({}, stop) == 0 && stops == 1 && api.attachment() == Attachment::Detached,
+      "detach completes synchronously");
+  check(!api.can_arm() && api.arm() == 3 && api.last_refusal() == "capture-detached",
+      "arm while detached refused");
+  check(std::get<std::string>(api.state().at("attachment_state").data) == "detached" &&
+      api.phase() == State::Standby, "attachment and stream state separate");
+  check(api.detach({}, stop) == 0 && stops == 1, "detached idempotence");
+  check(api.attach({{"bad", 1}}, start) == 31 && starts == 0, "attach rejects options");
+  check(api.attach({}, start) == 0 && starts == 1 && api.can_arm(), "attach completes synchronously");
+  check(api.detach({{"bad", 1}}, stop) == 31 && stops == 1, "detach rejects options");
+  api.arm(); api.arm_point(); api.armed({}); api.take_signals();
+  check(api.detach({}, stop) == 44 && api.last_refusal() == "detach-while-armed" && stops == 1,
+      "detach while armed refuses without teardown");
+  api.stream_ended("budget");
+  check(api.detach({}, stop) == 44, "ended stream still needs disarm");
+  api.disarm();
+  check(api.detach({}, stop) == 44, "pending teardown busy");
+  api.disarm_point(); api.disarmed(0); api.take_signals();
+  check(api.detach({}, stop) == 0 && api.attach({}, start) == 0 && starts == 2 && stops == 2,
+      "second full lifecycle");
+  std::thread offmain([&] {
+    check(api.detach() == 2 && api.last_refusal() == "not-main-thread", "off-main detach");
+    check(api.attach() == 2 && api.last_refusal() == "not-main-thread", "off-main attach");
+  });
+  offmain.join();
+  check(api.detach({}, [] { return false; }) == 2 && api.attachment() == Attachment::Refused &&
+      !api.can_arm(), "failed teardown cannot report detached");
+  check(api.detach() == 0, "refused detach can retry cleanup");
+  check(api.attach({}, [] { return false; }) == 2 && api.attachment() == Attachment::Refused,
+      "failed rebuild cannot report attached");
+}
+void test_attachment_admission() {
+  grc::HookAdmission admission;
+  std::atomic<bool> entered{false}, release{false};
+  std::thread standby([&] {
+    grc::HookAdmission::Reader reader(admission);
+    check(bool(reader), "standby reader admitted");
+    entered.store(true, std::memory_order_release);
+    while (!release.load(std::memory_order_acquire)) std::this_thread::yield();
+  });
+  while (!entered.load(std::memory_order_acquire)) std::this_thread::yield();
+  admission.close();
+  check(!admission.drained(), "detach waits for standby reader");
+  {
+    grc::HookAdmission::Reader delayed(admission);
+    check(!delayed, "cached thunk cannot enter closed attachment");
+  }
+  release.store(true, std::memory_order_release);
+  standby.join();
+  check(admission.drained(), "all admitted standby work drained");
+  admission.close();
+  check(admission.drained(), "shutdown while detached is idempotent");
+  admission.open();
+  { grc::HookAdmission::Reader reattached(admission); check(bool(reattached), "fresh admission"); }
+  admission.close();
+  check(admission.drained(), "shutdown after reattach drains");
+}
+void test_attachment_shutdown() {
+  {
+    Api api;
+    api.loaded(State::Standby);
+    int cleanups = 0;
+    const auto cleanup = [&] { ++cleanups; return true; };
+    check(api.detach({}, cleanup) == 0, "shutdown detached setup");
+    check(api.shutdown(cleanup) && api.shutdown(cleanup) && cleanups == 1,
+        "shutdown while detached does not release twice");
+    check(api.attachment() == Attachment::Detached && !api.can_arm(), "shutdown stays detached");
+    check(api.attach({}, cleanup) == 2 && cleanups == 1 &&
+        api.last_refusal() == "capture-shutdown", "shutdown cannot reattach");
+    check(api.arm() == 2 && api.disarm() == 2 && api.detach() == 2,
+        "shutdown refuses stream and attachment calls");
+  }
+  {
+    Api api;
+    api.loaded(State::Standby);
+    grc::HookAdmission admission;
+    TeardownThread worker;
+    std::atomic<bool> release{false}, joined{false};
+    worker.run([&] {
+      while (!release.load(std::memory_order_acquire)) std::this_thread::yield();
+      joined.store(true, std::memory_order_release);
+    });
+    int cleanups = 0;
+    check(api.detach({}, [&] {
+      ++cleanups;
+      admission.close();
+      check(api.shutdown([&] { ++cleanups; return true; }), "shutdown during detach");
+      check(api.attachment() == Attachment::Detaching && !api.can_arm(),
+          "shutdown leaves in-progress cleanup owned by detach");
+      check(api.attach() == 2 && api.arm() == 2, "shutdown cannot interrupt teardown");
+      release.store(true, std::memory_order_release);
+      worker.join();
+      return admission.drained() && joined.load(std::memory_order_acquire);
+    }) == 0, "detaching shutdown joins worker before detached");
+    check(api.attachment() == Attachment::Detached && cleanups == 1 &&
+        api.shutdown([&] { ++cleanups; return true; }) && cleanups == 1,
+        "shutdown and deinitialize after detaching remain idempotent");
+  }
+  {
+    Api api;
+    api.loaded(State::Standby);
+    api.arm(); api.arm_point(); api.armed({});
+    int cleanups = 0;
+    check(api.shutdown([&] {
+      ++cleanups;
+      check(api.attachment() == Attachment::Detaching && !api.can_arm(),
+          "armed shutdown closes attachment admission");
+      return true;
+    }) && cleanups == 1 && api.attachment() == Attachment::Detached,
+        "engine shutdown can clean an armed capture");
+    bool offmain = true;
+    std::thread thread([&] { offmain = api.shutdown({}); });
+    thread.join();
+    check(!offmain, "off-main shutdown refused");
+  }
+}
 void test_teardown() {
   {
     TeardownThread thread;
@@ -226,6 +360,9 @@ int main() {
   test_refusals();
   test_lifecycle();
   test_teardown();
+  test_attachment();
+  test_attachment_admission();
+  test_attachment_shutdown();
   std::printf("rs_capture_api_test: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

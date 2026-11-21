@@ -263,3 +263,12 @@ void hooks_set_test_inflight_delay_ms(uint32_t ms, bool materialize = false, boo
 uint64_t hooks_total_calls();
 
 }  // namespace grc
+
+namespace grc {
+void hooks_attachment_release();
+void hooks_attachment_close();
+bool hooks_attachment_drained();
+void hooks_attachment_open();
+void hooks_attachment_reset();
+uint64_t hooks_entries();
+}  // namespace grc

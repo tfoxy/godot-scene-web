@@ -101,7 +101,7 @@ Value::Object options(GDExtensionConstVariantPtr v) {
   return out;
 }
 struct Method { const char *name; bool state; };
-Method methods[] = {{"arm", false}, {"disarm", false}, {"state", true}};
+Method methods[] = {{"arm", false}, {"disarm", false}, {"detach", false}, {"attach", false}, {"state", true}};
 void call(void *data, GDExtensionClassInstancePtr,
           const GDExtensionConstVariantPtr *args, GDExtensionInt argc,
           GDExtensionVariantPtr ret, GDExtensionCallError *error) {

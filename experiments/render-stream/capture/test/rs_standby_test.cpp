@@ -78,7 +78,7 @@ void census(const char *path) {
   while (std::getline(file, line)) {
     lines.push_back(line);
   }
-  // kSpecs entries: {kId, "method_name", as_ptr(&hook_fn)}, possibly over two lines.
+  // kSpecs entries wrap every hook with attachment admission, possibly over two lines.
   std::string all;
   for (const std::string &l : lines) {
     all += l + "\n";
@@ -90,7 +90,7 @@ void census(const char *path) {
     return;
   }
   const std::string table = all.substr(start, end - start);
-  const std::regex entry("\\{k[A-Za-z0-9]+,\\s*\"([a-z0-9_]+)\",\\s*as_ptr\\(&(hook_[a-z0-9_]+)\\)\\}");
+  const std::regex entry(R"spec(\{k[A-Za-z0-9]+,\s*"([a-z0-9_]+)",\s*as_ptr\(&AttachmentThunk<k[A-Za-z0-9]+,\s*&(hook_[a-z0-9_]+)>::call\)\})spec");
   std::map<std::string, std::string> specs;  // method name -> hook function
   for (std::sregex_iterator it(table.begin(), table.end(), entry), stop; it != stop; ++it) {
     specs[(*it)[1].str()] = (*it)[2].str();

@@ -1015,6 +1015,13 @@ target_include_directories(rs_variant_test PRIVATE src vendor)
 target_link_libraries(rs_variant_test PRIVATE grc_warnings)
 grc_add_test(NAME rs_variant COMMAND rs_variant_test)
 
+add_executable(rs_shader_clock_test
+  test/rs_shader_clock_test.cpp src/rs_shader_clock.cpp src/rs_variant.cpp src/iface.cpp)
+target_include_directories(rs_shader_clock_test PRIVATE src vendor)
+target_link_libraries(rs_shader_clock_test PRIVATE grc_warnings grc_platform)
+grc_add_test(NAME rs_shader_clock COMMAND rs_shader_clock_test)
+grc_add_test(NAME rs_shader_clock_unavailable COMMAND rs_shader_clock_test --unavailable)
+
 # G8kv: the basisu wrapper, on synthetic images: encode, validate the KTX2 against the render-stream/9
 # ktx2 profile in C++, thread safety of the one-time init. The Godot-transcoder round trip and the
 # TS validator run from scripts/test/g8kv-roundtrip.sh (ctest label "engine" is not used: it needs godot).

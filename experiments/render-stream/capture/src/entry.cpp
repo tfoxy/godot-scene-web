@@ -508,6 +508,7 @@ struct ItemMetaState {
   rs::item_meta::Request file;  // the file sinks' grant (empty: no records in recordings)
   uint64_t hub_version = ~uint64_t{0};
   bool on = false;
+  std::FILE *log = nullptr;
   rs::item_meta::Host host;
 };
 ItemMetaState g_meta;
@@ -814,6 +815,7 @@ int64_t stream_transactions() {
 }
 
 State g_state;
+bool g_frame_registered = true;
 
 void log_line(const std::string &text) {
   std::fprintf(stdout, "[grc] %s\n", text.c_str());
@@ -2024,7 +2026,8 @@ void item_meta_configure() {
   g_meta.host.configure_v2(v2);
   const std::string log_path = env_string("GRC_ITEM_META_LOG");
   if (g_meta.grant != 0 && !log_path.empty()) {
-    std::FILE *log = grc::rs::open_file(log_path, "w");  // closed at exit (a test knob)
+    std::FILE *log = grc::rs::open_file(log_path, "w");
+    g_meta.log = log;
     if (log == nullptr) {
       log_line("item_meta: cannot open GRC_ITEM_META_LOG " + log_path);
     }
@@ -5935,7 +5938,7 @@ bool attempt(const char *phase) {
           rs::standby_hook_under(g_state.plan.planned[i], g_state.standby_fault);
     }
     std::string arm_error;
-    const bool built =
+    const bool built = g_state.shadow.built() ||
         g_state.shadow.build(g_state.facts.singleton, static_cast<size_t>(g_state.calib.slot_count),
                              g_state.plan.replacements, &arm_error);
     if (built && !g_state.shadow.publish(ShadowVtable::Table::Standby)) {
@@ -6750,6 +6753,7 @@ bool api_validate(const rs::Settings &settings, std::string *detail) {
 
 cap::Value::Object api_state() {
   if (std::this_thread::get_id() != g_api_main) return g_api->state();
+  if (std::this_thread::get_id() != g_api_main) return g_api->state();
   const auto stats = rs::registry_stats();
   cap::Value::Object registry;
   // VS2: the viewport family only when viewports are live (registry_reported_families).
@@ -6758,7 +6762,22 @@ cap::Value::Object api_state() {
     registry[rs::registry_family_name(static_cast<rs::RegistryFamily>(i))] =
         cap::Value::Object{{"entries", std::int64_t(stats.family[i].entries)}};
   }
-  return g_api->state(g_state.frames_total, std::move(registry));
+  auto snapshot = g_api->state(g_state.frames_total, std::move(registry));
+  snapshot["frame_callback_registered"] = g_frame_registered;
+  snapshot["engine_table"] = g_state.shadow.published() == ShadowVtable::Table::Engine;
+  snapshot["hook_calls"] = std::int64_t(hooks_total_calls());
+  snapshot["hook_entries"] = std::int64_t(hooks_entries());
+  snapshot["frame_callbacks"] = std::int64_t(g_state.frames_total);
+  snapshot["texture_workers_running"] = rs::texture_worker_pool().running();
+  snapshot["hub_active"] = g_live.hub != nullptr;
+  snapshot["listener_active"] = g_live.carriers != nullptr;
+  const auto threads = rs::thread_census();
+  if (threads && threads->named) {
+    std::int64_t own = 0;
+    for (const auto &[name, count] : *threads->named) own += count;
+    snapshot["capture_threads"] = own;
+  }
+  return snapshot;
 }
 void api_json_value(JsonWriter &j, const cap::Value &v) {
   if (auto p = std::get_if<std::string>(&v.data)) j.string(*p);
@@ -6797,9 +6816,105 @@ void api_evidence() {
   api_json_value(j, snapshot);
   emit_load("capture-api.json", j.take());
 }
+void on_startup();
+void on_shutdown();
+void on_frame();
+void attachment_callbacks(bool frame) {
+  GDExtensionMainLoopCallbacks callbacks = {};
+  callbacks.startup_func = on_startup;
+  callbacks.shutdown_func = on_shutdown;
+  callbacks.frame_func = frame ? on_frame : nullptr;
+  g_iface.register_main_loop_callbacks(g_iface.library, &callbacks);
+  g_frame_registered = frame;
+}
+
+bool attachment_detach() {
+  // No new thunk may touch attachment data, even if its vptr was fetched before restoration.
+  hooks_attachment_close();
+  if (g_state.shadow.built() && !g_state.shadow.publish(ShadowVtable::Table::Engine)) return false;
+  if (g_state.pump_connected) {
+    rs::predraw_pump_disconnect();
+    g_state.pump_connected = false;
+  }
+  while (!hooks_attachment_drained()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  api_teardown_finish_blocking();
+  stream_finish(rs2::EndReason::Disarm);
+  rs::adopt_warm_cancel();
+  rs::texture_worker_pool().stop();
+  encoders_finish();
+  rs::adopt_resources_end();  // also disconnect a failed arm's node-map signals
+  resources_finish();
+  hints_finish();
+  g_live.close_async = false;
+  live_linger(true);
+  if (g_live.carriers != nullptr) g_live.carriers->stop();
+  arm_release();
+  for (auto &r : live::carrier_registry().close()) r.vtable.destroy(r.vtable.self);
+  rs::registry_configure(false, rs::RegistryFault::None);
+  rs::registry_names_release();
+  rs::hold_set_active(false);
+  rs::canvas_texture_shim().configure(rs::CanvasTextureShimMode::Off, g_state.display_server);
+  rs::particles_shim().configure(rs::ParticlesShimMode::Off);
+  hooks_release_placeholder_drop();
+  hooks_reset_texture_cache_notes();
+  hooks_attachment_release();
+  g_meta.host.set_log(nullptr);
+  if (g_meta.log != nullptr) std::fclose(g_meta.log);
+  g_meta.log = nullptr;
+  g_meta = ItemMetaState();
+  perf_finish();
+  attachment_callbacks(false);
+  return true;
+}
+
+bool attachment_attach() {
+  // The immutable tables belong to this process's RenderingServer, never a fresh singleton.
+  if (g_state.shadow.built() &&
+      (singleton_object("RenderingServer") != g_state.facts.singleton ||
+       !g_state.shadow.publish(ShadowVtable::Table::Engine))) return false;
+  State fresh;
+  fresh.shadow = g_state.shadow;
+  fresh.calibration_path = g_state.calibration_path;
+  fresh.abi_table_path = g_state.abi_table_path;
+  fresh.calibration_source = g_state.calibration_source;
+  fresh.evidence_dir = g_rearm.evidence_root;
+  fresh.evidence_ready = g_state.evidence_ready;
+  fresh.validation_log_error = g_state.validation_log_error;
+  fresh.mode = "standby";
+  fresh.disarm_after_frames = g_state.disarm_after_frames;
+  g_state = std::move(fresh);
+  auto *net = g_live.net_module;
+  const auto listen = g_live.listen;
+  g_stream = Stream();
+  g_live = Live();
+  g_live.net_module = net;  // D8: loaded once and never unloaded.
+  g_live.listen = listen;
+  g_stream.path = g_rearm.stream_out;
+  g_stream.patch_path = g_rearm.patch_out;
+  g_meta.on = false;
+  g_meta.configured = false;
+  g_perf = Perf();
+  g_hc_shadow_budget.clear();
+  g_viewports = ViewportsState();
+  rs::shader_clock_reset_attachment();
+  hooks_attachment_reset();
+  live::carrier_registry().reopen();
+  // Admission remains closed throughout rebuilding and calibration.
+  attempt("attach");
+  if (!g_state.standby || g_state.shadow.published() != ShadowVtable::Table::Standby) {
+    attachment_detach();
+    return false;
+  }
+  hooks_attachment_open();
+  attachment_callbacks(true);
+  return true;
+}
+
 cap::Value api_invoke(const std::string &method, const cap::Value::Object &options) {
   cap::Value result;
   if (method == "state") result = api_state();
+  else if (method == "detach") result = g_api->detach(options, attachment_detach);
+  else if (method == "attach") result = g_api->attach(options, attachment_attach);
   else if (method == "arm") result = g_api->arm(options, api_validate);
   else result = g_api->disarm(options);
   if (std::this_thread::get_id() == g_api_main) {
@@ -7001,36 +7116,39 @@ void rearm_kept_release() {
 void on_shutdown() {
   g_root_finalized = true;  // SceneTree::finalize deletes root before shutdown_func runs.
   log_line("shutdown: root-finalized");
-  api_teardown_finish_blocking();
-  stream_finish(rs2::EndReason::Shutdown);
-  rs::adopt_warm_cancel();
-  rs::texture_worker_pool().stop();  // G8kw: also when the stream never opened after the pool ran
-  live_linger(true);  // a linger still running after a disarm ends here
-  do_disarm("shutdown");
-  emit_load("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
-  emit_registry();
-  if (rs::texture_cache().enabled()) {
-    emit("texture-cache.json", hooks_texture_cache_json());  // G8kc
-  }
-  emit_canvas_texture_shim();
-  emit_headless_texture_release();
-  if (g_state.htr_mode == rs::TextureReleaseMode::Always) {
-    auto &evict = rs::evict_stats();
-    evict.queue = rs::evict_queue().counts();
-    emit_load("evict.json", rs::evict_json(evict, true, g_state.frames_total, read_rss_bytes(),
-                                         rs::anon_reading()));
-    log_line("evict: released=" + std::to_string(evict.released) +
-             " bytes=" + std::to_string(evict.released_bytes) +
-             " pending=" + std::to_string(evict.queue.pending) +
-             " parked=" + std::to_string(evict.queue.parked) +
-             " drain_us_max=" + std::to_string(evict.drain_us_max));
-  }
-  if (g_state.hold_configured) emit_hold(true);
-  emit_load("result.json", result_json());
-  rearm_kept_release();
-  log_line("shutdown: frames_total=" + std::to_string(g_state.frames_total) +
-           " frames_armed=" + std::to_string(g_state.frames_armed) + " intercepted=" +
-           std::to_string(hooks_total_calls()));
+  g_api->shutdown([] {
+    api_teardown_finish_blocking();
+    stream_finish(rs2::EndReason::Shutdown);
+    rs::adopt_warm_cancel();
+    rs::texture_worker_pool().stop();  // G8kw: also when the stream never opened after the pool ran
+    live_linger(true);  // a linger still running after a disarm ends here
+    do_disarm("shutdown");
+    emit_load("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
+    emit_registry();
+    if (rs::texture_cache().enabled()) {
+      emit("texture-cache.json", hooks_texture_cache_json());  // G8kc
+    }
+    emit_canvas_texture_shim();
+    emit_headless_texture_release();
+    if (g_state.htr_mode == rs::TextureReleaseMode::Always) {
+      auto &evict = rs::evict_stats();
+      evict.queue = rs::evict_queue().counts();
+      emit_load("evict.json", rs::evict_json(evict, true, g_state.frames_total, read_rss_bytes(),
+                                           rs::anon_reading()));
+      log_line("evict: released=" + std::to_string(evict.released) +
+               " bytes=" + std::to_string(evict.released_bytes) +
+               " pending=" + std::to_string(evict.queue.pending) +
+               " parked=" + std::to_string(evict.queue.parked) +
+               " drain_us_max=" + std::to_string(evict.drain_us_max));
+    }
+    if (g_state.hold_configured) emit_hold(true);
+    emit_load("result.json", result_json());
+    rearm_kept_release();
+    log_line("shutdown: frames_total=" + std::to_string(g_state.frames_total) +
+             " frames_armed=" + std::to_string(g_state.frames_armed) + " intercepted=" +
+             std::to_string(hooks_total_calls()));
+    return attachment_detach();
+  });
 }
 
 // GRC_LOW_PROCESSOR_SLEEP_USEC=<usec> sets
@@ -7170,22 +7288,25 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   if (level != GDEXTENSION_INITIALIZATION_SCENE) {
     return;
   }
-  api_teardown_finish_blocking();
-  // The shutdown callback normally gets here first; this is the backstop for an
-  // unload that happens without it.
-  stream_finish(rs2::EndReason::Shutdown);
-  rs::adopt_warm_cancel();
-  rs::texture_worker_pool().stop();  // G8kw: no worker (or engine Image) outlives the extension
-  live_linger(true);
-  do_disarm("deinitialize");
-  rearm_kept_release();
-  rs::registry_names_release();  // LS0: the parameter names' StringName keepalives go before the engine does
-  rs::registry_holds_release();
-  hooks_release_placeholder_drop();  // HTR
-  // CAR6: a capture that never armed still owns its registrations; each gets its one destroy().
-  for (live::RegisteredCarrier &r : live::carrier_registry().close()) {
-    r.vtable.destroy(r.vtable.self);
-  }
+  g_api->shutdown([] {
+    api_teardown_finish_blocking();
+    // The shutdown callback normally gets here first; this is the backstop for an
+    // unload that happens without it.
+    stream_finish(rs2::EndReason::Shutdown);
+    rs::adopt_warm_cancel();
+    rs::texture_worker_pool().stop();  // G8kw: no worker (or engine Image) outlives the extension
+    live_linger(true);
+    do_disarm("deinitialize");
+    rearm_kept_release();
+    rs::registry_names_release();  // LS0: the parameter names' StringName keepalives go before the engine does
+    rs::registry_holds_release();
+    hooks_release_placeholder_drop();  // HTR
+    // CAR6: a capture that never armed still owns its registrations; each gets its one destroy().
+    for (live::RegisteredCarrier &r : live::carrier_registry().close()) {
+      r.vtable.destroy(r.vtable.self);
+    }
+    return attachment_detach();
+  });
   api_evidence();
   cap::gd_capture_unregister();
   live::gd_carrier_class_unregister();

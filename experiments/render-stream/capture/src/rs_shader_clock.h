@@ -59,6 +59,9 @@ struct ShaderClock {
 // The process-wide clock.
 ShaderClock &shader_clock();
 
+// Start a fresh attachment without invalidating the process-cached binds or project settings.
+void shader_clock_reset_attachment();
+
 // One frame callback (every iteration, armed or not). Returns false when the clock is unavailable.
 bool shader_clock_tick();
 

@@ -32,6 +32,8 @@ struct Value {
 };
 enum class State { Loading, Standby, Arming, Armed, Ended, Disarming, Refused };
 const char *state_name(State state);
+enum class Attachment { Attached, Detaching, Detached, Attaching, Refused };
+const char *attachment_name(Attachment state);
 struct Signal {
   std::string name;
   Value::Array args;
@@ -47,12 +49,21 @@ class Api {
  public:
   using Validator = std::function<bool(const Settings &, std::string *)>;
   explicit Api(std::thread::id main = std::this_thread::get_id()) : main_(main) {}
+  // The transition callback runs synchronously on main. False leaves admission refused.
+  using Transition = std::function<bool()>;
+  int detach(const Value::Object &options = {}, const Transition &teardown = {});
+  int attach(const Value::Object &options = {}, const Transition &rebuild = {});
+  // Engine shutdown is terminal. A synchronous detach already on the stack owns cleanup.
+  bool shutdown(const Transition &cleanup);
+  Attachment attachment() const { return attachment_; }
   int arm(const Value::Object &options = {}, const Validator &validate = {});
   int disarm(const Value::Object &options = {});
   Value::Object state(std::uint64_t frame = 0, Value::Object registry = {}) const;
   std::string last_refusal() const;
   bool called() const { return called_.load(std::memory_order_relaxed); }
-  bool can_arm() const { return state_ == State::Standby; }
+  bool can_arm() const {
+    return !shutting_down_ && attachment_ == Attachment::Attached && state_ == State::Standby;
+  }
   State phase() const { return state_; }
   std::uint64_t arm_count() const { return arm_count_; }
   const std::string &last_reason() const { return last_reason_; }
@@ -85,6 +96,8 @@ class Api {
   mutable std::atomic<bool> called_{false};
   std::atomic<bool> any_{false};
   std::vector<Signal> signals_;
+  Attachment attachment_ = Attachment::Attached;
+  bool shutting_down_ = false;
   State state_ = State::Loading;
   std::uint64_t arm_count_ = 0;
   std::int64_t clients_ = 0;

@@ -1335,7 +1335,13 @@
         "experiments/render-stream/scripts/lib/compose-g7p.sh",
         "experiments/render-stream/scripts/lib/live-log-schema.py",
         "experiments/render-stream/scripts/profile-decode.ts",
-        "experiments/render-stream/scripts/profile-rs-core-wasm.mjs"
+        "experiments/render-stream/scripts/profile-rs-core-wasm.mjs",
+        "experiments/render-stream/scripts/letterbox-pilot.ts",
+        "experiments/render-stream/scripts/run-letterbox-pilot.sh",
+        "experiments/render-stream/scripts/probe-capture-attach.sh",
+        "experiments/render-stream/scripts/lib/attach-probe.gd",
+        "experiments/render-stream/scripts/lib/resident-attach-probe.gd",
+        "experiments/render-stream/scripts/lib/check-attach-resident.py"
       ],
       "reach": ["none"],
       "exclusive": true

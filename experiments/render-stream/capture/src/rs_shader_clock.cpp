@@ -92,6 +92,21 @@ bool draw_source() { return g_clock.draw_hooked && !g_clock.tree_delta_fault; }
 
 ShaderClock &shader_clock() { return g_clock; }
 
+void shader_clock_reset_attachment() {
+  // resolve() and the renderer cache project facts for the process lifetime. Keep their
+  // rollover and availability in sync while starting new attachment accounting.
+  g_clock.total = 0.0;
+  g_clock.last_drawn = -1;
+  g_clock.start_drawn = -1;
+  g_clock.start_process_frames = -1;
+  g_clock.start_draws = 0;
+  g_clock.ticks = 0;
+  g_clock.advanced = 0;
+  g_clock.draw_hooked = false;
+  g_clock.draws = 0;
+  g_clock.later_missed = 0;
+}
+
 bool shader_clock_tick() {
   if (!resolve()) {
     return false;

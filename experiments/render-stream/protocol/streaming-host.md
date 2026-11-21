@@ -26,6 +26,47 @@ host that streams must not:
 `Texture2D.get_image()` and `is_pixel_opaque()` on a released texture see the placeholder, as they
 would under any evictor.
 
+## Resident attachment lifecycle
+
+`Engine.get_singleton("RenderStreamCapture")` exposes `attach(options: Dictionary = {}) -> int`,
+`detach(options: Dictionary = {}) -> int` and `state() -> Dictionary`. Call them on the main thread.
+Both options dictionaries must be empty. The singleton and library remain resident after detach;
+use these methods for repeated streaming sessions in one process.
+
+Attachment and streaming are separate states. Loading in `GRC_MODE=standby` starts attached.
+`arm()` starts a stream; `disarm()` ends it and returns to attached standby. To stop capture work,
+wait for `disarmed`, then call `detach()`. On the next request,
+call `attach()`, then `arm()`. An attach does not arm automatically. Each new arm is a new stream;
+receivers connect using its new `armed` information.
+
+`detach()` is synchronous: success means the engine's table is restored, hook admission is closed,
+the registry is stopped and cleared, capture workers have joined, the live hub and listeners are
+closed, and the capture frame callback is unregistered. A detached host executes no capture hooks
+or frame callbacks. The dormant singleton still accepts explicit control calls. The net module,
+if loaded, stays mapped; detach does not unload it.
+
+`attach()` synchronously rebuilds capture state and restores standby interception and the frame
+callback. Resources created or changed while detached were not tracked; a host that needs existing
+scene content must enable `GRC_ADOPT=arm`, subject to the same adoption support as a late load.
+Consumer carriers destroyed by detach must be registered again before arming.
+
+`state()["attachment_state"]` is `attached`, `detaching`, `detached`, `attaching` or `refused`.
+It is independent of `state()["state"]`, the stream phase; after a successful detach the stream
+phase can still read `standby`, while `can_arm` is false. A failed teardown or rebuild sets the
+attachment state to `refused`; rejected calls leave it unchanged.
+The attach/detach transitions are synchronous and have no completion signal: inspect their return
+code and, on failure, `state()["last_refusal"]`.
+
+| Code | Meaning for `attach()` / `detach()` |
+| ---- | ---------------------------------- |
+| `0` | Completed successfully. Attaching while already attached or detaching while already detached is idempotent. |
+| `2` | `not-main-thread`, `capture-shutdown`, `attach-failed` or `detach-failed`. Engine shutdown is terminal; it cannot be followed by re-attach. |
+| `31` | Nonempty options dictionary: `attach-config-invalid` or `detach-config-invalid`. |
+| `44` | `busy` when the current attachment or stream state cannot accept the transition; detach also reports `detach-while-armed` for an armed or ended stream. Disarm and wait for standby before detaching. |
+
+`arm()` while `attachment_state != attached` returns `3` with `last_refusal: capture-detached`.
+After engine shutdown, `arm()` and `disarm()` return `2` with `last_refusal: capture-shutdown`.
+
 ## Capture environment
 
 Set before the capture's GDExtension loads.

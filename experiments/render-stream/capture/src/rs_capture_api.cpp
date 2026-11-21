@@ -19,6 +19,63 @@ const char *state_name(State state) {
   }
   return "refused";
 }
+const char *attachment_name(Attachment state) {
+  switch (state) {
+    case Attachment::Attached: return "attached";
+    case Attachment::Detaching: return "detaching";
+    case Attachment::Detached: return "detached";
+    case Attachment::Attaching: return "attaching";
+    case Attachment::Refused: return "refused";
+  }
+  return "refused";
+}
+int Api::detach(const Value::Object &options, const Transition &teardown) {
+  if (std::this_thread::get_id() != main_) return refuse(2, "not-main-thread");
+  if (shutting_down_) return refuse(2, "capture-shutdown");
+  called_.store(true, std::memory_order_relaxed);
+  if (!options.empty()) return refuse(31, "detach-config-invalid");
+  if (attachment_ == Attachment::Detached) return 0;
+  if (attachment_ == Attachment::Detaching || attachment_ == Attachment::Attaching)
+    return refuse(44, "busy");
+  if (state_ == State::Armed || state_ == State::Ended)
+    return refuse(44, "detach-while-armed");
+  if (state_ == State::Arming || state_ == State::Disarming || state_ == State::Loading)
+    return refuse(44, "busy");
+  attachment_ = Attachment::Detaching;
+  if (teardown && !teardown()) {
+    attachment_ = Attachment::Refused;
+    return refuse(2, "detach-failed");
+  }
+  attachment_ = Attachment::Detached;
+  return 0;
+}
+int Api::attach(const Value::Object &options, const Transition &rebuild) {
+  if (std::this_thread::get_id() != main_) return refuse(2, "not-main-thread");
+  if (shutting_down_) return refuse(2, "capture-shutdown");
+  called_.store(true, std::memory_order_relaxed);
+  if (!options.empty()) return refuse(31, "attach-config-invalid");
+  if (attachment_ == Attachment::Attached) return 0;
+  if (attachment_ != Attachment::Detached) return refuse(44, "busy");
+  attachment_ = Attachment::Attaching;
+  if (rebuild && !rebuild()) {
+    attachment_ = Attachment::Refused;
+    return refuse(2, "attach-failed");
+  }
+  if (shutting_down_) return refuse(2, "capture-shutdown");
+  state_ = State::Standby;
+  attachment_ = Attachment::Attached;
+  return 0;
+}
+bool Api::shutdown(const Transition &cleanup) {
+  if (std::this_thread::get_id() != main_) return false;
+  if (shutting_down_) return attachment_ != Attachment::Refused;
+  shutting_down_ = true;
+  if (attachment_ == Attachment::Detached || attachment_ == Attachment::Detaching) return true;
+  attachment_ = Attachment::Detaching;
+  const bool ok = !cleanup || cleanup();
+  attachment_ = ok ? Attachment::Detached : Attachment::Refused;
+  return ok;
+}
 int Api::refuse(int code, const char *reason) {
   std::lock_guard<std::mutex> lock(mu_);
   last_refusal_ = reason;
@@ -30,7 +87,9 @@ std::string Api::last_refusal() const {
 }
 int Api::arm(const Value::Object &options, const Validator &validate) {
   if (std::this_thread::get_id() != main_) return refuse(2, "not-main-thread");
+  if (shutting_down_) return refuse(2, "capture-shutdown");
   called_.store(true, std::memory_order_relaxed);
+  if (attachment_ != Attachment::Attached) return refuse(3, "capture-detached");
   if (state_ == State::Refused) return refuse(2, "capture-refused");
   if (state_ != State::Standby) return refuse(44, "busy");
   Settings settings;
@@ -59,6 +118,7 @@ int Api::arm(const Value::Object &options, const Validator &validate) {
 }
 int Api::disarm(const Value::Object &options) {
   if (std::this_thread::get_id() != main_) return refuse(2, "not-main-thread");
+  if (shutting_down_) return refuse(2, "capture-shutdown");
   called_.store(true, std::memory_order_relaxed);
   if (state_ == State::Disarming) return refuse(44, "busy");
   if (state_ == State::Loading || state_ == State::Standby || state_ == State::Refused)
@@ -90,7 +150,8 @@ int Api::disarm(const Value::Object &options) {
 Value::Object Api::state(std::uint64_t frame, Value::Object registry) const {
   if (std::this_thread::get_id() != main_) return {{"error", "not-main-thread"}};
   called_.store(true, std::memory_order_relaxed);
-  Value::Object out{{"state", state_name(state_)}, {"arm_count", std::int64_t(arm_count_)},
+  Value::Object out{{"attachment_state", attachment_name(attachment_)},
+                    {"state", state_name(state_)}, {"arm_count", std::int64_t(arm_count_)},
                     {"can_arm", can_arm()}, {"clients", clients_}, {"last_reason", last_reason_},
                     {"last_refusal", last_refusal()}, {"frame", std::int64_t(frame)},
                     {"registry", std::move(registry)}};
