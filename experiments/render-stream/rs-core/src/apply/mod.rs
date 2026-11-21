@@ -1735,7 +1735,7 @@ impl Applier {
             }
         }
         // A cover whose pixels could not be re-uploaded no longer hides anything.
-        if self.cull_covered() {
+        if self.request_cover(false) {
             self.expected_calls = Some(self.list.merged_draw_count() as u32);
         }
     }
@@ -2094,7 +2094,7 @@ impl Applier {
         }
         // A cover drawing from a freed texture draws nothing until the next apply: what it hid
         // must be in the list meanwhile.
-        if !ids.is_empty() && self.cull_covered() {
+        if !ids.is_empty() && self.request_cover(false) {
             self.expected_calls = Some(self.list.merged_draw_count() as u32);
         }
         ids.len()
@@ -3238,19 +3238,33 @@ impl Applier {
         self.kept = kept;
         // The frame's rows, vertices and instances are final: the cover walk reads them, and the
         // dirty ranges (before they are merged across gaps) for what it remembers.
-        let culled_changed = self.cull_covered();
-        self.coalesce_dirty();
+        let culled_changed = self.request_cover(assembled);
+        if !self.cover.deferred {
+            self.coalesce_dirty();
+        }
         self.stats.vertex_count = self.list.vertices.len() as u32;
         self.stats.index_count = self.list.indices.len() as u32;
-        self.stats.emitted_draws = self.list.draws.len() as u32;
-        // G7o4: only `assemble` and the cover walk write the draws, so the merged count is kept
-        // until one of them changes them.
-        if assembled || culled_changed || self.expected_calls.is_none() {
-            self.expected_calls = Some(self.list.merged_draw_count() as u32);
+        if !self.cover.deferred {
+            self.stats.emitted_draws = self.list.draws.len() as u32;
+            // G7o4: only `assemble` and the cover walk write the draws, so the merged count is kept
+            // until one of them changes them.
+            if assembled || culled_changed || self.expected_calls.is_none() {
+                self.expected_calls = Some(self.list.merged_draw_count() as u32);
+            }
+            self.stats.expected_calls = self.expected_calls.unwrap_or(0);
         }
-        self.stats.expected_calls = self.expected_calls.unwrap_or(0);
         // render-stream/16: the surfaces this frame reaches (nothing without a viewport).
         if self.surface.is_none() && (self.surfaces.is_some() || !state.viewports.is_empty()) {
+            // The assembled table is a superset of the covered table. Only a non-empty
+            // sampled set needs an early settle to compute the exact surface closure.
+            if self.cover_due() {
+                self.cover_unswap();
+                let mut sampled = Vec::new();
+                surfaces::sampled(&self.list, &self.surface_aliases, &mut sampled);
+                if !sampled.is_empty() {
+                    self.settle_cover();
+                }
+            }
             // Each surface applier's apply adds to the same phases as the root's.
             self.apply_surfaces(state, delta, payloads);
         }

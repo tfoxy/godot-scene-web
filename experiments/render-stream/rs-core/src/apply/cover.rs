@@ -1,6 +1,7 @@
-//! The applier's side of the cover walk (`gsw_canvas_draw_list::cover`): after every apply the
+//! The applier's side of the cover walk (`gsw_canvas_draw_list::cover`): when cover settles the
 //! assembled draw table is walked back to front and the list the executor reads holds only what
-//! can still change a pixel. The assembled table is kept beside it, so a transaction that moves
+//! can still change a pixel. Cover is eager by default, or deferred until execution by opt-in.
+//! The assembled table is kept beside it, so a transaction that moves
 //! rows only (a cover drifting by a fraction of a pixel, a modulate fading) walks again without
 //! re-assembling.
 //!
@@ -58,6 +59,9 @@ fn group_check_digest(list: &DrawList) -> [u8; 32] {
 /// The cover walk's state between applies.
 #[derive(Default)]
 pub(super) struct CoverState {
+    pub(super) deferred: bool,
+    pub(super) due: bool,
+    assembled: bool,
     /// Boxed (made on first use): [`Applier::cull_covered`] takes it out of the applier for
     /// every walk.
     walk: Option<Box<gsw_canvas_draw_list::cover::CoverWalk>>,
@@ -137,6 +141,47 @@ impl Applier {
             std::mem::swap(&mut c.full, &mut c.shown);
             c.culled = false;
             c.shown_valid = true;
+        }
+    }
+
+    /// Defer root cover work until the caller is ready to execute the list. Surface appliers
+    /// keep the eager default. Pending dirt must remain available until `settle_cover` runs.
+    pub fn set_deferred_cover(&mut self, on: bool) {
+        if !on {
+            self.settle_cover();
+        }
+        self.cover.deferred = on;
+    }
+
+    /// Whether the list still needs cover work before it can be executed or consumed.
+    pub fn cover_due(&self) -> bool {
+        self.cover.due
+    }
+
+    /// Settle the accumulated apply/override dirt before execution. The cover memos must read
+    /// the uncoalesced union of all changes since their previous run.
+    pub fn settle_cover(&mut self) -> bool {
+        if !self.cover.due {
+            return false;
+        }
+        let changed = self.cull_covered();
+        self.coalesce_dirty();
+        self.stats.emitted_draws = self.list.draws.len() as u32;
+        if std::mem::take(&mut self.cover.assembled) || changed || self.expected_calls.is_none() {
+            self.expected_calls = Some(self.list.merged_draw_count() as u32);
+        }
+        self.stats.expected_calls = self.expected_calls.unwrap_or(0);
+        self.cover.due = false;
+        true
+    }
+
+    pub(super) fn request_cover(&mut self, assembled: bool) -> bool {
+        if self.cover.deferred {
+            self.cover.due = true;
+            self.cover.assembled |= assembled;
+            false
+        } else {
+            self.cull_covered()
         }
     }
 

@@ -1159,3 +1159,93 @@ fn i1_bench_two_thousand_queries() {
         acc
     });
 }
+
+#[test]
+fn deferred_cover_settles_apply_and_redraw_dirt_before_consumption() {
+    let s = base();
+    let store = PayloadStore::default();
+    let mut eager = applier();
+    let mut deferred = applier();
+    deferred.set_deferred_cover(true);
+    for a in [&mut eager, &mut deferred] {
+        a.apply(&s, &full_delta(&s), &store);
+    }
+    assert!(!eager.cover_due());
+    assert!(deferred.cover_due());
+    assert!(deferred.settle_cover());
+    assert!(!deferred.settle_cover(), "a settled list does no more cover work");
+    assert_eq!(format!("{:?}", eager.list), format!("{:?}", deferred.list));
+    assert_eq!(eager.expected_calls(), deferred.expected_calls());
+    for a in [&mut eager, &mut deferred] {
+        a.list.consumed();
+    }
+    for (xf, visible) in [(LIFT, true), (geom::IDENTITY, false), (geom::IDENTITY, true)] {
+        let (ids, vals) = table(P, xf, TINT, visible);
+        for a in [&mut eager, &mut deferred] {
+            a.set_overrides(&ids, &vals).unwrap();
+            a.refresh_overrides(&s, &store);
+        }
+        assert!(deferred.cover_due(), "redraw refresh must schedule cover without apply");
+        deferred.settle_cover();
+        assert!(deferred.cover_recheck());
+        assert_eq!(eager.paint_digest(), deferred.paint_digest());
+        assert_eq!(eager.expected_calls(), deferred.expected_calls());
+        assert_eq!(deferred.stats.emitted_draws, deferred.list.draws.len() as u32);
+        for a in [&mut eager, &mut deferred] {
+            a.list.consumed();
+        }
+    }
+}
+
+#[test]
+fn deferred_cover_keeps_dirt_from_two_applies_and_refresh() {
+    let mut s = base();
+    let store = PayloadStore::default();
+    let mut a = applier();
+    a.set_deferred_cover(true);
+    a.apply(&s, &full_delta(&s), &store);
+    a.settle_cover();
+    a.list.consumed();
+    for id in [C1, Q] {
+        s.items.get_mut(&id).unwrap().xform[4] += 3.0;
+        a.apply(&s, &TxDelta { items_upserted: vec![id], ..TxDelta::default() }, &store);
+    }
+    let dirt = a.list.dirty.items.clone();
+    assert!(!dirt.is_empty());
+    let (ids, vals) = table(P, LIFT, TINT, true);
+    a.set_overrides(&ids, &vals).unwrap();
+    assert_eq!(a.refresh_overrides(&s, &store), Refresh::Moved);
+    assert!(a.cover_due());
+    assert!(
+        dirt.as_slice().iter().all(|&(start, end)| a.list.dirty.items.as_slice().iter()
+            .any(|&(lo, hi)| lo <= start && hi >= end)),
+        "refresh lost apply dirt"
+    );
+    a.settle_cover();
+    assert!(a.cover_recheck());
+    let mut fresh = applier();
+    fresh.set_overrides(&ids, &vals).unwrap();
+    fresh.apply(&s, &full_delta(&s), &store);
+    assert_eq!(a.paint_digest(), fresh.paint_digest());
+}
+
+#[test]
+fn deferred_cover_restoration_schedules_and_disabling_settles() {
+    let (s, store, hash) = tex_scene();
+    let mut a = applier();
+    a.set_deferred_cover(true);
+    a.apply(&s, &full_delta_tex(&s), &store);
+    a.settle_cover();
+    a.list.consumed();
+    a.context_restored(&store);
+    assert!(a.cover_due());
+    a.settle_cover();
+    assert!(a.cover_recheck());
+    a.restore_unavailable(hash);
+    assert!(a.cover_due());
+    a.set_deferred_cover(false);
+    assert!(!a.cover_due());
+    assert!(a.cover_recheck());
+    a.apply(&s, &full_delta_tex(&s), &store);
+    assert!(!a.cover_due(), "eager mode is restored");
+}

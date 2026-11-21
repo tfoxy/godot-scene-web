@@ -8,7 +8,7 @@
 
 use super::{fill_cmd, list_digest, usage, Args};
 use render_stream_core::apply::{
-    geom, payloads::PayloadStore, retention::Retention, Applier, Viewport,
+    geom, overrides::Refresh, payloads::PayloadStore, retention::Retention, Applier, Viewport,
 };
 use render_stream_core::validate::{Accepted, DigestPolicy, Options, Validator};
 use render_stream_core::wire::{self, Error};
@@ -20,14 +20,24 @@ use std::process::ExitCode;
 // operations, instances and depth tables. Also retain the pre-cover draws and cover decisions.
 // Surface pass order, clears and frees are executor inputs too. No timings enter this digest.
 fn output_digest(a: &Applier, undo_merge: bool) -> String {
-    output_digest_mode(a, undo_merge, false)
+    output_digest_mode(a, undo_merge, false, false)
 }
 
-fn output_digest_mode(a: &Applier, undo_merge: bool, legacy_groups: bool) -> String {
+fn output_digest_mode(a: &Applier, undo_merge: bool, legacy_groups: bool, loose: bool) -> String {
     use sha2::{Digest, Sha256};
-    fn add(h: &mut Sha256, a: &Applier, undo_merge: bool, legacy_groups: bool) {
+    fn add(h: &mut Sha256, a: &Applier, undo_merge: bool, legacy_groups: bool, loose: bool) {
         let plain = undo_merge.then(|| a.unmerged_list());
         let list = plain.as_ref().unwrap_or(&a.list);
+        let mut reduced;
+        let list = if loose {
+            reduced = list.clone();
+            reduced.depth_tiles.clear();
+            reduced.depth_draws.clear();
+            reduced.dirty.draws = false;
+            &reduced
+        } else {
+            list
+        };
         if legacy_groups {
             // Compatibility oracle for output predating the optional group-cell field.
             let mut text = format!("{list:?}");
@@ -45,6 +55,9 @@ fn output_digest_mode(a: &Applier, undo_merge: bool, legacy_groups: bool) -> Str
         };
         h.update(format!("{assembled:?}"));
         let s = &a.stats;
+        if loose {
+            h.update(format!("{} {} {} {}", s.covers, s.covered_draws, s.covered_ops, s.noop_draws));
+        } else {
         h.update(format!(
             "{} {} {} {} {} {} {}",
             s.covers,
@@ -55,6 +68,7 @@ fn output_digest_mode(a: &Applier, undo_merge: bool, legacy_groups: bool) -> Str
             s.tile_tested,
             s.tile_hidden_px
         ));
+        }
     }
     let mut h = Sha256::new();
     if let Some(set) = &a.surfaces {
@@ -62,12 +76,40 @@ fn output_digest_mode(a: &Applier, undo_merge: bool, legacy_groups: bool) -> Str
         for (list, clear) in set.passes() {
             h.update(format!("pass {} {clear}", list.target.surface));
             let pass = set.applier(list.target.surface).expect("surface pass");
-            add(&mut h, pass, undo_merge, legacy_groups);
+            add(&mut h, pass, undo_merge, legacy_groups, loose);
         }
     }
     h.update(b"root");
-    add(&mut h, a, undo_merge, legacy_groups);
+    add(&mut h, a, undo_merge, legacy_groups, loose);
     format!("{:x}", h.finalize())
+}
+
+#[derive(Clone, Copy, Default)]
+struct ReplayOptions<'a> {
+    deferred_cover: bool,
+    settle_skips_refresh: bool,
+    overrides: bool,
+    digest: &'a str,
+    recheck_every: usize,
+}
+
+/// Select game-visible drawn items so neither cover nor a previous override changes the driver.
+fn synthetic_overrides(a: &mut Applier, state: &render_stream_core::state::ResolvedState, applies: usize) -> Result<(), Error> {
+    let mut ids: Vec<_> = a.lowered_items().into_iter()
+        .filter(|(id, lowered)| id % 17 == 0 && !lowered.draws.is_empty()
+            && a.query_item(state, *id).is_some_and(|q| q.visible))
+        .map(|(id, _)| id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids.truncate(32);
+    let mut vals = Vec::with_capacity(ids.len() * 12);
+    for (i, &id) in ids.iter().enumerate() {
+        let d = ((state.seq * 7 + id as i64).rem_euclid(9) - 4) as f32;
+        let alpha = if applies % 2 == 0 { 1.0 } else { 0.5 };
+        let visible = if i == 0 && (applies / 50) % 2 != 0 { 0.0 } else { 1.0 };
+        vals.extend_from_slice(&[1.0, 0.0, 0.0, 1.0, d, d, 1.0, 1.0, 1.0, alpha, visible, 0.0]);
+    }
+    a.set_overrides(&ids, &vals).map_err(|e| Error::new("override-table", e))
 }
 
 fn replay(
@@ -77,6 +119,7 @@ fn replay(
     group_scissor: bool,
     group_merge: &str,
     legacy_groups: bool,
+    options: ReplayOptions<'_>,
     read: &mut dyn FnMut(&render_stream_core::state::Hash) -> Option<Vec<u8>>,
 ) -> Result<Vec<(i64, Option<String>)>, Error> {
     let version = wire::version_of_magic(data)
@@ -100,6 +143,8 @@ fn replay(
         cull_mask: vp.canvas_cull_mask as u32,
         format: gsw_canvas_draw_list::Format::Rgb10A2,
     });
+    a.set_deferred_cover(options.deferred_cover);
+    a.ov_sabotage.settle_skips_refresh = options.settle_skips_refresh;
     a.set_group_scissor(group_scissor);
     a.set_group_merge(group_merge != "off");
     a.set_group_merge_check(group_merge == "verify");
@@ -109,6 +154,9 @@ fn replay(
     let mut rows = Vec::new();
     let mut programs = 1;
     let mut held = None;
+    let mut applies = 0usize;
+    let mut refreshes = [0usize; 4];
+    let mut early_settles = 0usize;
     let mut apply = |a: &mut Applier,
                      v: &Validator,
                      payloads: &mut PayloadStore,
@@ -119,7 +167,22 @@ fn replay(
             fill_cmd::register_synthetic_programs(a, v.state(), payloads, &mut programs, None)?;
         }
         a.apply(v.state(), delta, payloads);
-        let digest = output_digest_mode(a, matches!(group_merge, "undo" | "verify"), legacy_groups);
+        applies += 1;
+        early_settles += usize::from(options.deferred_cover && !a.cover_due());
+        if options.overrides {
+            synthetic_overrides(a, v.state(), applies)?;
+            let r = a.refresh_overrides(v.state(), payloads);
+            refreshes[match r { Refresh::Clean => 0, Refresh::Moved => 1, Refresh::Walked => 2, Refresh::Deferred => 3 }] += 1;
+        }
+        a.settle_cover();
+        if options.recheck_every > 0 && applies % options.recheck_every == 0 && !a.cover_recheck() {
+            return Err(Error::new("cover-recheck", format!("mismatch at seq {} (apply {applies})", v.state().seq)));
+        }
+        let digest = if options.digest == "off" {
+            String::new()
+        } else {
+            output_digest_mode(a, matches!(group_merge, "undo" | "verify"), legacy_groups, options.digest == "loose")
+        };
         retention.sweep(v, payloads, || a.referenced_payload_hashes());
         a.list.consumed();
         if let Some(set) = a.surfaces.as_mut() {
@@ -165,6 +228,12 @@ fn replay(
         rows.last_mut().expect("held transaction").1 =
             Some(apply(&mut a, &v, &mut payloads, &mut retention, &delta)?);
     }
+    if options.deferred_cover {
+        eprintln!("cover: early_settles={early_settles} applies={applies}");
+    }
+    if options.overrides {
+        eprintln!("overrides: Clean={} Moved={} Walked={} Deferred={}", refreshes[0], refreshes[1], refreshes[2], refreshes[3]);
+    }
     Ok(rows)
 }
 
@@ -185,6 +254,29 @@ pub(super) fn cmd(args: &Args) -> ExitCode {
         "unregistered" => false,
         _ => return usage(),
     };
+    let deferred_cover = match args.get("cover").unwrap_or("eager") {
+        "eager" => false,
+        "deferred" => true,
+        _ => return usage(),
+    };
+    let settle_skips_refresh = match args.get("sabotage") {
+        None => false,
+        Some("settle_skips_refresh") => true,
+        _ => return usage(),
+    };
+    let overrides = match args.get("overrides").unwrap_or("off") {
+        "off" => false,
+        "synthetic" => true,
+        _ => return usage(),
+    };
+    let digest = match args.get("digest").unwrap_or("full") {
+        mode @ ("full" | "loose" | "off") => mode,
+        _ => return usage(),
+    };
+    let recheck_every = match args.get("recheck-every").unwrap_or("0").parse::<usize>() {
+        Ok(n) => n,
+        _ => return usage(),
+    };
     let run = || -> Result<(), Error> {
         let data = std::fs::read(path).map_err(|e| Error::new("io", e.to_string()))?;
         let mut read = |h: &render_stream_core::state::Hash| {
@@ -195,7 +287,7 @@ pub(super) fn cmd(args: &Args) -> ExitCode {
         };
         let mut out = std::io::BufWriter::new(std::io::stdout().lock());
         let rows = replay(
-            &data, every, synthetic, args.get("group-scissor") != Some("off"), group_merge, args.get("group-cells") == Some("omit"), &mut read,
+            &data, every, synthetic, args.get("group-scissor") != Some("off"), group_merge, args.get("group-cells") == Some("omit"), ReplayOptions { deferred_cover, settle_skips_refresh, overrides, digest, recheck_every }, &mut read,
         )?;
         if group_merge == "verify" {
             eprintln!(
@@ -203,7 +295,7 @@ pub(super) fn cmd(args: &Args) -> ExitCode {
                 rows.iter().filter(|(_, digest)| digest.is_some()).count(), rows.len()
             );
         }
-        for (seq, digest) in rows {
+        for (seq, digest) in rows.into_iter().filter(|_| digest != "off") {
             writeln!(out, "{seq} {}", digest.as_deref().unwrap_or("pending"))
                 .map_err(|e| Error::new("io", e.to_string()))?;
         }
@@ -225,12 +317,29 @@ mod tests {
     #[test]
     fn merged_digest_includes_the_final_short_group() {
         let data = include_bytes!("../../../../protocol/golden-7/window2.rs7");
-        let rows = replay(data, 2, true, true, "on", false, &mut |_| None).unwrap();
+        let rows = replay(data, 2, true, true, "on", false, ReplayOptions::default(), &mut |_| None).unwrap();
         assert_eq!(rows.len(), 3);
         assert!(rows[0].1.is_none());
         assert!(rows[1].1.is_some());
         assert!(rows[2].1.is_some());
-        assert_eq!(rows, replay(data, 2, true, true, "on", false, &mut |_| None).unwrap());
+        assert_eq!(rows, replay(data, 2, true, true, "on", false, ReplayOptions::default(), &mut |_| None).unwrap());
+    }
+
+    #[test]
+    fn loose_digest_omits_only_depth_and_tile_outputs() {
+        let mut a = Applier::new(Viewport {
+            width: 1, height: 1, clear: [0.0; 4], global_xform: geom::IDENTITY,
+            cull_mask: 1, format: gsw_canvas_draw_list::Format::Rgb10A2,
+        });
+        let loose = output_digest_mode(&a, false, false, true);
+        let full = output_digest(&a, false);
+        a.list.depth_tiles.push(gsw_canvas_draw_list::DepthTile::default());
+        a.list.dirty.draws = !a.list.dirty.draws;
+        a.stats.tile_tested += 1;
+        assert_eq!(loose, output_digest_mode(&a, false, false, true));
+        assert_ne!(full, output_digest(&a, false));
+        a.list.instances.push(gsw_canvas_draw_list::Instance::default());
+        assert_ne!(loose, output_digest_mode(&a, false, false, true));
     }
 
     #[test]

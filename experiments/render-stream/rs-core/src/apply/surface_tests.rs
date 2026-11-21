@@ -1052,3 +1052,25 @@ fn a_surface_item_on_a_linking_program_is_omitted_until_the_link_settles() {
         "the surface item does not draw with its program after the settle"
     );
 }
+
+#[test]
+fn deferred_cover_settles_early_only_for_a_sampled_surface() {
+    for sampled in [true, false] {
+        let mut s = scene();
+        if !sampled {
+            s.items.get_mut(&10).unwrap().commands = rect([0.0, 0.0, 4.0, 4.0]);
+        }
+        let mut a = applier();
+        a.set_deferred_cover(true);
+        a.apply(&s, &full_delta(&s), &PayloadStore::default());
+        assert_eq!(a.cover_due(), !sampled);
+        if sampled {
+            let pass = a.surfaces.as_ref().unwrap().applier(5).unwrap();
+            assert!(!pass.cover.deferred, "surface appliers stay eager");
+            assert!(!pass.cover_due());
+            assert!(pass.cover_recheck());
+        }
+        a.settle_cover();
+        assert!(a.cover_recheck());
+    }
+}

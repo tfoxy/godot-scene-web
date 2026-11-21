@@ -125,6 +125,8 @@ pub struct Override {
 /// TAG2 sabotages (each must fail its check).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OverrideSabotage {
+    /// Forget refresh dirt in deferred mode: the next draw reads a stale cover result.
+    pub settle_skips_refresh: bool,
     /// `override-no-inherit`: the override reaches the item's own row only (`write_row`'s
     /// composition): its children, cull and clip stay where the game put them.
     pub no_inherit: bool,
@@ -313,30 +315,43 @@ impl Applier {
                 }
             }
         }
+        let mut assembled = false;
         let result = if walk {
             self.stats.why |= Why::OVERRIDE;
             self.walk(state);
             self.assemble(state);
+            assembled = true;
             self.refresh_bindings(state, &TxDelta::default(), &[], payloads);
             self.write_instances(state, payloads);
-            self.expected_calls = Some(self.list.merged_draw_count() as u32);
+            if !self.cover.deferred {
+                self.expected_calls = Some(self.list.merged_draw_count() as u32);
+            }
             Refresh::Walked
         } else {
             if std::mem::take(&mut self.move_attach) {
                 self.assemble(state);
+                assembled = true;
                 self.write_instances(state, payloads);
-                self.expected_calls = Some(self.list.merged_draw_count() as u32);
+                if !self.cover.deferred {
+                    self.expected_calls = Some(self.list.merged_draw_count() as u32);
+                }
             }
             Refresh::Moved
         };
         // The cover walk reads the rows this refresh moved: what it left out may show now.
-        if self.cull_covered() {
+        if self.request_cover(assembled) {
             self.expected_calls = Some(self.list.merged_draw_count() as u32);
         }
         if let Some(saved) = saved_dirty {
             self.list.dirty.items = saved;
         }
-        self.coalesce_dirty();
+        if self.cover.deferred {
+            if self.ov_sabotage.settle_skips_refresh {
+                self.cover.due = false;
+            }
+        } else {
+            self.coalesce_dirty();
+        }
         result
     }
 

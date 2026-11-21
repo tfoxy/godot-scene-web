@@ -1628,6 +1628,7 @@ impl GswRs {
             )?);
         }
         let mut applier = Applier::new(viewport);
+        applier.set_deferred_cover(true);
         applier.sabotage = self.opts.apply;
         applier.cover_walk = !self.opts.no_cover_walk;
         applier.set_cover_tiles(!self.opts.no_cover_tiles);
@@ -2097,6 +2098,7 @@ impl GswRs {
             return -1;
         };
         let mut applier = Applier::new(viewport);
+        applier.set_deferred_cover(true);
         applier.sabotage = self.opts.apply;
         applier.cover_walk = !self.opts.no_cover_walk;
         applier.set_cover_tiles(!self.opts.no_cover_tiles);
@@ -2978,6 +2980,10 @@ impl GswRs {
             self.error = "draw before start".into();
             return -1;
         };
+        a.settle_cover();
+        self.stats.set_expected(a);
+        self.stats.emitted_draws = a.stats.emitted_draws;
+        self.stats.draws = a.stats.emitted_draws;
         let t = prof::start();
         self.last_upload_bytes = a.list.queued_texture_bytes();
         let mut expected = expected_calls(a);
@@ -2991,6 +2997,10 @@ impl GswRs {
             || x.context_state() == ContextState::Restored
         {
             a.context_restored(&self.payloads);
+            a.settle_cover();
+            self.stats.set_expected(a);
+            self.stats.emitted_draws = a.stats.emitted_draws;
+            self.stats.draws = a.stats.emitted_draws;
             let (arena, shared) = a.list.queued_texture_bytes();
             self.last_upload_bytes.0 += arena;
             self.last_upload_bytes.1 += shared;
@@ -3010,7 +3020,9 @@ impl GswRs {
                         return -1;
                     }
                 }
+                debug_assert!(!a.cover_due());
                 a.list.consumed();
+                debug_assert!(!a.cover_due());
                 if let Some(set) = a.surfaces.as_mut() {
                     set.consumed();
                 }
