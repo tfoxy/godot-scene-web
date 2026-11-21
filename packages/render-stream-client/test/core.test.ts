@@ -8,6 +8,7 @@ import {
   type GswRsModule,
   MOTION_FIELDS,
   STAT_FIELDS,
+  statsReader,
 } from "../src/abi";
 import { WasmStreamCore } from "../src/core";
 import type { RenderStreamProtocol } from "../src/endpoint";
@@ -40,6 +41,7 @@ function harness(
     set_motion?: ReturnType<typeof vi.fn>;
     motion_ptr?: () => number;
     motion_len?: () => number;
+    stats_len?: () => number = () => 4 * STAT_FIELDS.length;
     readonly live_session = vi.fn((_len: number, protocol: number) =>
       protocol === this.options.live_protocol ? 0 : -1,
     );
@@ -608,6 +610,7 @@ describe("WasmStreamCore session protocol", () => {
     const fields = [...block.matchAll(/^\s*pub (\w+): u32,$/gm)].map(
       (m) => m[1],
     );
+    expect(libRs).toContain("pub fn stats_len(");
     expect(fields).toEqual([...STAT_FIELDS]);
     expect(block.match(/^\s*pub /gm)).toHaveLength(STAT_FIELDS.length);
     core.dispose();
@@ -1154,5 +1157,55 @@ describe("WasmStreamCore idle particle lifecycle", () => {
     expect([...h.tasks]).toEqual([current]);
     h.core.dispose();
     expect(h.tasks.size).toBe(0);
+  });
+});
+
+describe("damage diagnostics", () => {
+  it.each([
+    undefined,
+    33 * 4,
+    36 * 4,
+  ])("omits incomplete damage samples with a stats byte length of %s", (len) => {
+    const { core, memory, instances } = harness();
+    core.beginConnection(12);
+    const g = instances[0];
+    g.stats_len = len === undefined ? undefined : () => len;
+    // An older core owns only the 33-word prefix. The adjacent allocation is nonzero.
+    const st = new Uint32Array(memory.buffer, g.ptr, STAT_FIELDS.length);
+    st[STAT_FIELDS.indexOf("surface_pixels")] = 1234;
+    st.set([3, 123456789, 4000, 99], 33);
+    expect(core.damageStats()).toBeUndefined();
+    expect(core.applyStats().surfacePixels).toBe(1234);
+    const read = statsReader(g as unknown as GswRs, memory);
+    expect(read().surface_pixels).toBe(1234);
+    expect(read()).not.toHaveProperty("damage_regions");
+    if (len === undefined || len === 33 * 4)
+      expect(read()).not.toHaveProperty("damage_mode");
+    memory.grow(1);
+    expect(core.damageStats()).toBeUndefined();
+    expect(read()).not.toHaveProperty("damage_regions");
+  });
+
+  it("reads the successful draw's fields without allocating another result", () => {
+    const { core, memory, instances } = harness();
+    core.beginConnection(12);
+    const write = (us: number) => {
+      const st = new Uint32Array(
+        memory.buffer,
+        instances[0].ptr,
+        STAT_FIELDS.length,
+      );
+      st[STAT_FIELDS.indexOf("damage_mode")] = 2;
+      st[STAT_FIELDS.indexOf("damage_us")] = us;
+      st[STAT_FIELDS.indexOf("damage_permille")] = 256;
+      st[STAT_FIELDS.indexOf("damage_regions")] = 8;
+    };
+    write(120);
+    const first = core.damageStats();
+    expect(first).toEqual({ mode: 2, us: 120, permille: 256, regions: 8 });
+    memory.grow(1);
+    write(80);
+    expect(core.damageStats()).toBe(first);
+    expect(first?.us).toBe(80);
   });
 });

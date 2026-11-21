@@ -161,6 +161,7 @@ fn moved_item_damages_old_and_new_only() {
     let f = Facts::default();
     let mut p = seed(&l, &f);
     l.items[0].xform[4] = 24.;
+    l.dirty.items.add(0, 1);
     let (plan, s) = p.plan(&l, &f, &opts());
     let r = partial(plan);
     assert_eq!(r, vec![[8, 8, 8, 8], [32, 8, 8, 8]]);
@@ -296,6 +297,7 @@ fn t_shaped_damage_preserves_clean_corners() {
     quad(&mut l, [16., 16., 8., 16.]);
     let f = Facts::default();
     let mut p = seed(&l, &f);
+    l.dirty.items.add(0, l.items.len() as u32);
     for row in &mut l.items {
         row.modulate[0] = 0.5;
     }
@@ -311,6 +313,7 @@ fn too_many_regions_use_union() {
     quad(&mut l, [32., 32., 8., 8.]);
     let f = Facts::default();
     let mut p = seed(&l, &f);
+    l.dirty.items.add(0, l.items.len() as u32);
     for row in &mut l.items {
         row.modulate[0] = 0.5;
     }
@@ -336,6 +339,7 @@ fn area_threshold_is_full() {
     let f = Facts::default();
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     assert_eq!(
         p.plan(
             &l,
@@ -356,6 +360,7 @@ fn calls_threshold_is_full() {
     let f = Facts::default();
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     assert_eq!(
         p.plan(
             &l,
@@ -389,6 +394,7 @@ fn uncommitted_plan_does_not_advance_reference() {
     let f = Facts::default();
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     let first = p.plan(&l, &f, &opts()).0;
     assert_eq!(p.plan(&l, &f, &opts()).0, first);
     p.commit();
@@ -449,6 +455,7 @@ fn instanced_content_is_hashed_but_storage_offsets_are_not() {
     l.instanced[0].first = 1;
     assert_eq!(p.plan(&l, &f, &opts()).0, Plan::Skip);
     l.instances[1].custom[0] = 1.;
+    l.dirty.instances.add(1, 2);
     assert_eq!(partial(p.plan(&l, &f, &opts()).0), vec![[8, 8, 8, 8]]);
 }
 #[test]
@@ -495,6 +502,7 @@ fn vertex_stage_bounds_use_the_scissor() {
     };
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     assert_eq!(partial(p.plan(&l, &f, &opts()).0), vec![[32, 32, 16, 16]]);
 }
 #[test]
@@ -528,6 +536,7 @@ fn clip_copy_expands_changed_source_to_region_and_reader() {
     let f = Facts::default();
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     let r = partial(p.plan(&l, &f, &opts()).0);
     assert!(covers(&r, [0, 0, 32, 32]));
     assert!(covers(&r, [40, 8, 8, 8]));
@@ -542,6 +551,7 @@ fn change_far_from_copy_does_not_expand() {
     let f = Facts::default();
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     assert_eq!(partial(p.plan(&l, &f, &opts()).0), vec![[96, 96, 8, 8]]);
 }
 #[test]
@@ -555,6 +565,7 @@ fn transparent_child_change_damages_composite_and_dilates_back_regions() {
     let f = Facts::default();
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     let (plan, s) = p.plan(&l, &f, &opts());
     assert_eq!(
         plan,
@@ -589,6 +600,7 @@ fn mipmap_reader_expands_region_and_reader() {
         let f = Facts::default();
         let mut p = seed(&l, &f);
         l.items[0].modulate[0] = 0.5;
+        l.dirty.items.add(0, 1);
         let r = partial(p.plan(&l, &f, &opts()).0);
         assert!(covers(&r, [0, 0, 32, 32]));
         assert!(covers(&r, [48, 48, 8, 8]));
@@ -605,6 +617,7 @@ fn mipmap_without_sampling_does_not_expand() {
     let f = Facts::default();
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     assert_eq!(partial(p.plan(&l, &f, &opts()).0), vec![[8, 8, 8, 8]]);
 }
 #[test]
@@ -632,6 +645,7 @@ fn item_screen_reader_intersection_is_full_otherwise_partial() {
         };
         let mut p = seed(&l, &f);
         l.items[0].modulate[0] = 0.5;
+        l.dirty.items.add(0, 1);
         let plan = p.plan(&l, &f, &opts()).0;
         if near {
             assert_eq!(plan, Plan::Full(FullReason::ScreenReader));
@@ -689,6 +703,7 @@ fn two_copy_chain_expands_to_fixed_point() {
     let f = Facts::default();
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     let r = partial(p.plan(&l, &f, &opts()).0);
     assert!(covers(&r, [32, 0, 16, 24]));
     assert!(covers(&r, [64, 8, 8, 8]));
@@ -703,6 +718,7 @@ fn unmatched_producer_damages_its_bounds_but_clear_does_not() {
     let f = Facts::default();
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     l.screen_ops[0].region = [8, 8, 8, 8];
     assert_eq!(partial(p.plan(&l, &f, &opts()).0), vec![[8, 8, 8, 8]]);
 }
@@ -717,6 +733,7 @@ fn clear_resets_back_input_hash_before_reader() {
     let f = Facts::default();
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     // The producer itself is conservatively damaged, but Clear keeps the reader matched.
     let (plan, stats) = p.plan(&l, &f, &opts());
     assert_eq!(partial(plan), vec![[8, 8, 8, 8]]);
@@ -740,7 +757,9 @@ fn union_fallback_rechecks_screen_readers() {
     };
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     l.items[1].modulate[0] = 0.5;
+    l.dirty.items.add(1, 2);
     assert!(matches!(p.plan(&l, &f, &opts()).0, Plan::Partial { .. }));
     assert_eq!(
         p.plan(
@@ -768,6 +787,7 @@ fn skipped_reader_does_not_force_full_or_read_history() {
     };
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     let (plan, s) = p.plan(&l, &f, &opts());
     assert!(matches!(plan, Plan::Partial { .. }));
     assert_eq!(s.history_reads, 0);
@@ -785,6 +805,7 @@ fn back_draw_bounds_do_not_certify_fresh_history_pixels() {
     let f = Facts::default();
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     assert!(matches!(p.plan(&l, &f, &opts()).0, Plan::Partial { .. }));
     p.commit();
     // The partial frame clears the back buffer, but repaints its white quad only around
@@ -792,11 +813,13 @@ fn back_draw_bounds_do_not_certify_fresh_history_pixels() {
     let mut next = list();
     quad(&mut next, [96., 96., 8., 8.]);
     next.items[0].modulate[0] = 0.5;
+    next.dirty.items.add(0, 1);
     quad(&mut next, [8., 8., 24., 24.]);
     // Only the upper-left triangle is drawn (x + y <= 40). Its bounds contain the
     // lower-right reader, but none of that reader's pixels are freshly written.
     let first = next.draws[1].first_index as usize;
     next.indices[first..first + 3].copy_from_slice(&[4, 5, 7]);
+    next.dirty.indices.add(first as u32, first as u32 + 3);
     next.draws[1].index_count = 3;
     next.draws[1].flags |= DRAW_TO_BACK_BUFFER;
     quad(&mut next, [24., 24., 4., 4.]);
@@ -897,6 +920,7 @@ fn mipmap_input_signature_survives_a_level_zero_clear() {
     };
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     assert_eq!(
         p.plan(&l, &f, &opts()).0,
         Plan::Full(FullReason::ScreenReader)
@@ -922,7 +946,9 @@ fn regression_copy_moved_across_target_draw() {
     quad(&mut l, [96., 96., 8., 8.]);
     bind(&mut l, 2);
     l.items[0].modulate = [1., 0., 0., 1.];
+    l.dirty.items.add(0, 1);
     l.items[1].modulate = [0., 0., 1., 1.];
+    l.dirty.items.add(1, 2);
     op(&mut l, 1, ScreenOpKind::Copy, [0, 0, 128, 128]);
     let facts = screen_facts();
     let mut p = seed(&l, &facts);
@@ -943,7 +969,9 @@ fn regression_target_draw_moved_across_fixed_copy() {
     quad(&mut l, [96., 96., 8., 8.]);
     bind(&mut l, 2);
     l.items[0].modulate = [1., 0., 0., 1.];
+    l.dirty.items.add(0, 1);
     l.items[1].modulate = [0., 0., 1., 1.];
+    l.dirty.items.add(1, 2);
     op(&mut l, 1, ScreenOpKind::Copy, [0, 0, 128, 128]);
     let facts = screen_facts();
     let mut p = seed(&l, &facts);
@@ -970,6 +998,7 @@ fn regression_disjoint_copy_keeps_earlier_copy_reader() {
     let facts = screen_facts();
     let mut p = seed(&l, &facts);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     assert_eq!(
         p.plan(&l, &facts, &PlanOptions::default()).0,
         Plan::Full(FullReason::ScreenReader)
@@ -992,6 +1021,7 @@ fn regression_partial_fill_uses_dilated_back_regions() {
     let facts = Facts::default();
     let mut p = seed(&l, &facts);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     let Plan::Partial {
         regions,
         back_regions,
@@ -1021,6 +1051,7 @@ fn disjoint_mipmap_regions_keep_earlier_dependencies() {
     let f = screen_facts();
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     assert_eq!(
         p.plan(&l, &f, &opts()).0,
         Plan::Full(FullReason::ScreenReader)
@@ -1038,6 +1069,7 @@ fn clear_ends_earlier_copy_dependencies() {
     let f = screen_facts();
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     assert_eq!(partial(p.plan(&l, &f, &opts()).0), vec![[8, 8, 8, 8]]);
 }
 
@@ -1067,6 +1099,7 @@ fn full_fallback_reports_reader_and_mipmap_triggers() {
     let f = screen_facts();
     let mut p = seed(&l, &f);
     l.items[0].modulate[0] = 0.5;
+    l.dirty.items.add(0, 1);
     let (plan, stats) = p.plan(&l, &f, &opts());
     assert_eq!(plan, Plan::Full(FullReason::ScreenReader));
     assert_eq!(
@@ -1231,6 +1264,7 @@ fn regression_region_overflow_merges_nearest_pairs() {
     }
     let f = Facts::default();
     let mut p = seed(&l, &f);
+    l.dirty.items.add(0, l.items.len() as u32);
     for item in &mut l.items {
         item.modulate[0] = 0.5;
     }
@@ -1264,6 +1298,7 @@ fn regression_region_overflow_target_crossing_runs() {
     }
     let f = Facts::default();
     let mut p = seed(&l, &f);
+    l.dirty.items.add(0, l.items.len() as u32);
     for item in &mut l.items {
         item.modulate[0] = 0.5;
     }
@@ -1308,11 +1343,13 @@ fn regression_region_overflow_back_crossing_runs() {
             let d = quad(&mut l, r.map(|v| v as f32));
             l.draws[d].flags |= flags;
             l.items[d].modulate[3] = 0.5;
+            l.dirty.items.add(d as u32, d as u32 + 1);
         }
     }
     op(&mut l, 0, ScreenOpKind::Clear, [0; 4]);
     let f = Facts::default();
     let mut p = seed(&l, &f);
+    l.dirty.items.add(0, 3);
     for item in &mut l.items[..3] {
         item.modulate[0] = 0.5;
     }
@@ -1392,4 +1429,125 @@ fn random_region_masks_are_disjoint_and_cover_marked_cells() {
             }
         }
     }
+}
+
+// Each case changes content while leaving all other invalidation predicates false.
+fn cache_case(edit: impl FnOnce(&mut DrawList)) {
+    let mut l = list();
+    quad(&mut l, [8., 8., 8., 8.]);
+    l.draws[0].flags |= DRAW_INSTANCED;
+    l.instanced.push(InstancedDraw {
+        draw: 0,
+        first: 0,
+        count: 1,
+    });
+    l.instances.push(Instance::default());
+    let f = Facts::default();
+    let mut p = Planner::new();
+    let mut naive = Planner::new();
+    assert_eq!(
+        p.plan(&l, &f, &opts()).0,
+        naive.plan_naive(&l, &f, &opts()).0
+    );
+    let before = p.content.draws[0].hash.0;
+    p.commit();
+    naive.commit();
+    l.consumed();
+    edit(&mut l);
+    let got = p.plan(&l, &f, &opts());
+    let want = naive.plan_naive(&l, &f, &opts());
+    assert_eq!(got, want);
+    assert_ne!(
+        p.content.draws[0].hash.0, before,
+        "changed geometry must be rehashed"
+    );
+}
+#[test]
+fn cache_dirty_all() {
+    cache_case(|l| {
+        l.vertices[0].uv[0] = 0.5;
+        l.dirty.all = true;
+    });
+}
+#[test]
+fn cache_draw_struct_without_dirty_draws() {
+    cache_case(|l| {
+        l.draws[0].texture = 42;
+    });
+}
+#[test]
+fn cache_index_range() {
+    cache_case(|l| {
+        l.indices[1] = 3;
+        l.dirty.indices.add(1, 2);
+    });
+}
+#[test]
+fn cache_vertex_span() {
+    cache_case(|l| {
+        l.vertices[2].uv[0] = 0.5;
+        l.dirty.vertices.add(2, 3);
+    });
+}
+#[test]
+fn cache_item_span() {
+    cache_case(|l| {
+        l.items[0].modulate[0] = 0.5;
+        l.dirty.items.add(0, 1);
+    });
+}
+#[test]
+fn cache_instance_range() {
+    cache_case(|l| {
+        l.instances[0].custom[0] = 0.5;
+        l.dirty.instances.add(0, 1);
+    });
+}
+#[test]
+fn cache_instance_descriptor() {
+    cache_case(|l| {
+        l.instanced[0].count = 0;
+    });
+}
+#[test]
+fn cache_retains_clean_draws_despite_dirty_draw_table() {
+    let mut l = list();
+    quad(&mut l, [8., 8., 8., 8.]);
+    let f = Facts::default();
+    let mut p = Planner::new();
+    p.plan(&l, &f, &opts());
+    p.commit();
+    l.consumed();
+    let before = p.content.draws[0].hash.0;
+    // Deliberately omit a dirty range to prove dirty.draws alone does not walk geometry.
+    l.vertices[0].uv[0] = 0.5;
+    l.dirty.draws = true;
+    assert_eq!(p.plan(&l, &f, &opts()).0, Plan::Skip);
+    assert_eq!(p.content.draws[0].hash.0, before);
+    p.invalidate();
+    p.plan(&l, &f, &opts());
+    assert_ne!(p.content.draws[0].hash.0, before);
+}
+#[test]
+fn cache_accumulated_dirty_and_bounds_match_naive() {
+    let mut l = list();
+    quad(&mut l, [8., 8., 8., 8.]);
+    let f = Facts::default();
+    let mut p = Planner::new();
+    let mut naive = Planner::new();
+    p.plan(&l, &f, &opts());
+    naive.plan_naive(&l, &f, &opts());
+    p.commit();
+    naive.commit();
+    l.consumed();
+    // Two applies before execution retain both pending ranges.
+    l.items[0].xform[4] = 32.;
+    l.dirty.items.add(0, 1);
+    l.vertices[0].uv[0] = 0.5;
+    l.dirty.vertices.add(0, 1);
+    assert_eq!(p.plan(&l, &f, &opts()), naive.plan_naive(&l, &f, &opts()));
+    assert_eq!(
+        p.draw_bounds(0),
+        cover::draw_bounds(&l, 0, &BoundsFacts(&f))
+    );
 }

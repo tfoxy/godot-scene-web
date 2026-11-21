@@ -186,6 +186,11 @@ pub struct Stats {
     pub surfaces_unchanged: u32,
     pub surfaces_allocated: u32,
     pub surface_pixels: u32,
+    /// Last successful execution's damage plan and planning cost (microseconds).
+    pub damage_mode: u32,
+    pub damage_us: u32,
+    pub damage_permille: u32,
+    pub damage_regions: u32,
 }
 
 impl Stats {
@@ -3027,6 +3032,10 @@ impl GswRs {
                     set.consumed();
                 }
                 self.last_exec = es;
+                self.stats.damage_mode = es.damage_mode;
+                self.stats.damage_us = es.damage_us;
+                self.stats.damage_permille = es.damage_permille;
+                self.stats.damage_regions = es.damage_regions;
                 self.stats.executed_calls = es.draw_calls;
                 self.stats.merged_draws = es.draws_merged;
                 self.stats.texture_uploads = es.texture_uploads;
@@ -3514,6 +3523,11 @@ impl GswRs {
 
     pub fn stats_ptr(&self) -> *const Stats {
         &self.stats
+    }
+
+    /// Stats block size in bytes. Clients must bound their view before reading newer fields.
+    pub fn stats_len(&self) -> u32 {
+        std::mem::size_of::<Stats>() as u32
     }
 
     /// Measure each accepted transaction's motion (`motion_ptr`), or stop. Off by default: it

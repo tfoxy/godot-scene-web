@@ -110,6 +110,13 @@ export type RenderStreamStatus =
   | { kind: "ended" };
 
 export interface RenderStreamStats {
+  /** Draws in the last second (up to 256), by damage mode: off, full, partial, skip. */
+  damageModeCounts?: readonly [number, number, number, number];
+  /** Medians over those draws, or null before one: planning microseconds, damaged target
+   * permille, and redraw region count. Sampling uses preallocated rings. */
+  damageUsP50?: number | null;
+  damagePermilleP50?: number | null;
+  damageRegionsP50?: number | null;
   /** Main-thread payload staging totals and per-payload maxima, by decoded kind. */
   staging?: StagingStats;
   /** Transactions applied (folded ones included) by this client, over all its connections. */
@@ -438,6 +445,12 @@ export class StreamLoop {
     allocated: 0,
     pixels: 0,
   };
+  private readonly damageTimes = new Float64Array(APPLY_RING);
+  private readonly damageModes = new Uint32Array(APPLY_RING);
+  private readonly damageUs = new Uint32Array(APPLY_RING);
+  private readonly damagePermille = new Uint32Array(APPLY_RING);
+  private readonly damageRegions = new Uint32Array(APPLY_RING);
+  private damageCount = 0;
   private readonly applyTimes = new Float64Array(APPLY_RING);
   private applyCount = 0;
   private readonly rtts = new Float64Array(RTT_SAMPLES);
@@ -601,6 +614,7 @@ export class StreamLoop {
       p50 = sorted[(m - 1) >> 1];
     }
     return {
+      ...this.damageStats(now),
       applied: this.applied,
       appliesPerSec: perSec,
       creditRttMsP50: p50,
@@ -629,6 +643,43 @@ export class StreamLoop {
       cappedFrames: this.cap.cappedFrames,
       skippedFrames: this.cap.skippedFrames,
       frameCapWake: this.cap.wake,
+    };
+  }
+
+  private sampleDamage(now: number): void {
+    const d = this.o.core.damageStats?.();
+    if (d === undefined) return;
+    const i = this.damageCount++ % APPLY_RING;
+    this.damageTimes[i] = now;
+    this.damageModes[i] = d.mode;
+    this.damageUs[i] = d.us;
+    this.damagePermille[i] = d.permille;
+    this.damageRegions[i] = d.regions;
+  }
+
+  private damageStats(now: number): Partial<RenderStreamStats> {
+    const counts: [number, number, number, number] = [0, 0, 0, 0];
+    const us: number[] = [],
+      permille: number[] = [],
+      regions: number[] = [];
+    for (let i = 0; i < Math.min(this.damageCount, APPLY_RING); i++) {
+      if (now - this.damageTimes[i] > 1000) continue;
+      const mode = this.damageModes[i];
+      if (mode <= 3) counts[mode]++;
+      us.push(this.damageUs[i]);
+      permille.push(this.damagePermille[i]);
+      regions.push(this.damageRegions[i]);
+    }
+    const median = (v: number[]): number | null => {
+      if (v.length === 0) return null;
+      v.sort((a, b) => a - b);
+      return v[(v.length - 1) >> 1];
+    };
+    return {
+      damageModeCounts: counts,
+      damageUsP50: median(us),
+      damagePermilleP50: median(permille),
+      damageRegionsP50: median(regions),
     };
   }
 
@@ -1883,10 +1934,12 @@ export class StreamLoop {
   private drawCore(seq: number): void {
     if (!this.cold.pending) {
       this.o.core.draw(seq);
+      this.sampleDamage(this.o.clock.now());
       return;
     }
     const start = this.o.clock.now();
     this.o.core.draw(seq);
+    this.sampleDamage(this.o.clock.now());
     this.cold.drew(start);
   }
 
@@ -1976,6 +2029,7 @@ export class StreamLoop {
       this.restoreWant = null;
       return;
     }
+    this.sampleDamage(this.o.clock.now());
     if (this.cold.pending) this.cold.drew(redrawAt);
     this.restoreWant = null;
     this.ctx = "ok";

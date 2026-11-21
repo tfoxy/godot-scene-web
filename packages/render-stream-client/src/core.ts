@@ -15,6 +15,7 @@ import {
   type LiveCoding,
   MOTION_FIELDS,
   STAT_FIELDS,
+  statsWords,
 } from "./abi";
 import type { RenderStreamProtocol } from "./endpoint";
 import { type ExtensionCore, ITEM_ROW_STRIDE } from "./extensions";
@@ -197,6 +198,8 @@ export interface StreamCore {
   /** What the last `apply` did to the draw list, read after it (`RenderStreamStats`). The
    * returned object may be reused by the next call. Absent: the loop reports none. */
   applyStats?(): CoreApplyStats;
+  /** Last successful draw's damage diagnostics, if supported; the object may be reused. */
+  damageStats?(): Readonly<CoreDamageStats> | undefined;
   /** Measure each accepted transaction's motion (`motion`), or stop; kept across connections.
    * Returns whether the core can (a core built before the measure cannot). Absent: it cannot. */
   setMotion?(on: boolean): boolean;
@@ -214,6 +217,13 @@ export interface StreamCore {
   /** Custom shader counters, absent on cores that do not report them. */
   programCounts?(): Readonly<ProgramCounts>;
   dispose(): void;
+}
+
+export interface CoreDamageStats {
+  mode: number;
+  us: number;
+  permille: number;
+  regions: number;
 }
 
 /** `StreamCore.applyStats`: the core's apply diagnostics (lib.rs `Stats`). */
@@ -289,6 +299,10 @@ const STAT_SURFACES_SKIPPED = STAT_FIELDS.indexOf("surfaces_skipped");
 const STAT_SURFACES_UNCHANGED = STAT_FIELDS.indexOf("surfaces_unchanged");
 const STAT_SURFACES_ALLOCATED = STAT_FIELDS.indexOf("surfaces_allocated");
 const STAT_SURFACE_PIXELS = STAT_FIELDS.indexOf("surface_pixels");
+const STAT_DAMAGE_MODE = STAT_FIELDS.indexOf("damage_mode");
+const STAT_DAMAGE_US = STAT_FIELDS.indexOf("damage_us");
+const STAT_DAMAGE_PERMILLE = STAT_FIELDS.indexOf("damage_permille");
+const STAT_DAMAGE_REGIONS = STAT_FIELDS.indexOf("damage_regions");
 const MOTION_SEQ = MOTION_FIELDS.indexOf("seq");
 const MOTION_CHANGES = MOTION_FIELDS.indexOf("changes");
 const MOTION_MAX_PX = MOTION_FIELDS.indexOf("max_px");
@@ -337,6 +351,12 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   };
   private lastAcceptedSeq = 0;
   private statsView: Uint32Array | null = null;
+  private readonly damage: CoreDamageStats = {
+    mode: 0,
+    us: 0,
+    permille: 0,
+    regions: 0,
+  };
   private readonly applied: CoreApplyStats = {
     structural: false,
     why: 0,
@@ -1043,6 +1063,17 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     return this.lastAcceptedSeq > 0 ? this.lastAcceptedSeq : null;
   }
 
+  damageStats(): Readonly<CoreDamageStats> | undefined {
+    const st = this.stats();
+    if (st.length <= STAT_DAMAGE_REGIONS) return undefined;
+    const out = this.damage;
+    out.mode = st[STAT_DAMAGE_MODE];
+    out.us = st[STAT_DAMAGE_US];
+    out.permille = st[STAT_DAMAGE_PERMILLE];
+    out.regions = st[STAT_DAMAGE_REGIONS];
+    return out;
+  }
+
   applyStats(): CoreApplyStats {
     const st = this.stats();
     const out = this.applied;
@@ -1063,7 +1094,7 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
       this.statsView = new Uint32Array(
         this.memory.buffer,
         this.g.stats_ptr(),
-        STAT_FIELDS.length,
+        statsWords(this.g),
       );
     return this.statsView;
   }

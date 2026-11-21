@@ -157,6 +157,10 @@ describe("createRenderStreamClient", () => {
     a.connect();
     expect(statuses).toEqual([]);
     expect(a.stats()).toEqual({
+      damageModeCounts: [0, 0, 0, 0],
+      damageUsP50: null,
+      damagePermilleP50: null,
+      damageRegionsP50: null,
       applied: 0,
       appliesPerSec: 0,
       creditRttMsP50: null,

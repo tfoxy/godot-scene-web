@@ -368,8 +368,12 @@ fn plan_inner(
 }
 
 /// Fill bounds after planning once, independently of replay regions.
-pub fn call_bounds(list: &DrawList, calls: &mut [Call], facts: &impl crate::cover::CoverFacts) {
-    use crate::cover::{PxRect, draw_bounds};
+pub fn call_bounds(
+    list: &DrawList,
+    calls: &mut [Call],
+    bounds_for_draw: impl Fn(usize) -> crate::cover::PxRect,
+) {
+    use crate::cover::PxRect;
     for call in calls {
         let mut bounds = PxRect::EMPTY;
         let mut left = call.index_count;
@@ -378,7 +382,7 @@ pub fn call_bounds(list: &DrawList, calls: &mut [Call], facts: &impl crate::cove
                 break;
             }
             let draw = &list.draws[d];
-            let b = draw_bounds(list, d, facts);
+            let b = bounds_for_draw(d);
             if !b.is_empty() {
                 bounds = if bounds.is_empty() {
                     b

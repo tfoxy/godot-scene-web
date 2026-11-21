@@ -1,4 +1,4 @@
-use super::{back, cover, BoundsFacts, DamageFacts};
+use super::{back, cover, BoundsFacts, ContentCache, DamageFacts};
 use crate::cover::PxRect;
 use crate::{
     DrawList, UniformValue, BUILTIN_PROGRAM, DRAW_INSTANCED, DRAW_SCISSOR, DRAW_SCREEN_OPS,
@@ -38,7 +38,7 @@ pub(super) struct Snapshot {
     pub back: back::Analysis,
 }
 
-pub(super) fn draw_hash(list: &DrawList, d: usize, facts: &impl DamageFacts) -> Hash {
+fn naive_draw_hash(list: &DrawList, d: usize, facts: &impl DamageFacts) -> Hash {
     let draw = &list.draws[d];
     let mut h = Hash::new();
     h.word(0xd0);
@@ -136,10 +136,68 @@ pub(super) fn draw_hash(list: &DrawList, d: usize, facts: &impl DamageFacts) -> 
     h
 }
 
-pub(super) fn snapshot(list: &DrawList, facts: &impl DamageFacts) -> Snapshot {
+fn draw_hash(list: &DrawList, d: usize, facts: &impl DamageFacts, mut h: Hash) -> Hash {
+    let draw = &list.draws[d];
+    h.word(u64::from(facts.texture_revision(draw.texture)));
+    h.word(u64::from(facts.admitted(list, d)));
+    if draw.program != BUILTIN_PROGRAM {
+        let slot = draw.program - 1;
+        let p = facts.program(slot);
+        h.word(u64::from(p.reads_screen));
+        h.word(u64::from(p.vertex_stage));
+        h.word(u64::from(facts.program_revision(slot)));
+        if let Some(b) = list.bindings.get(slot as usize) {
+            h.word(1);
+            h.word(u64::from(b.program));
+            h.bytes(bytemuck::cast_slice(&b.post_modulate));
+            h.word(b.uniforms.len() as u64);
+            for u in &b.uniforms {
+                h.bytes(u.name.as_bytes());
+                match &u.value {
+                    UniformValue::Float(v) => {
+                        h.word(0);
+                        h.bytes(bytemuck::cast_slice(v));
+                    }
+                    UniformValue::Int(v) => {
+                        h.word(1);
+                        h.bytes(bytemuck::cast_slice(v));
+                    }
+                }
+            }
+            h.word(b.samplers.len() as u64);
+            for s in &b.samplers {
+                h.bytes(s.name.as_bytes());
+                h.word(u64::from(s.texture));
+                h.word(u64::from(facts.texture_revision(s.texture)));
+                h.word(u64::from(s.sampler));
+            }
+        } else {
+            h.word(0);
+        }
+        h.word(u64::from(facts.reads_time(slot)));
+        if facts.reads_time(slot) {
+            h.word(u64::from(list.shader_time.to_bits()));
+        }
+    }
+    h
+}
+
+pub(super) fn snapshot(
+    list: &DrawList,
+    facts: &impl DamageFacts,
+    mut cache: Option<&mut ContentCache>,
+) -> Snapshot {
     let t = list.target;
+    if let Some(c) = cache.as_deref_mut() {
+        c.update(list);
+    }
     let bounds: Vec<_> = (0..list.draws.len())
-        .map(|d| cover::draw_bounds(list, d, &BoundsFacts(facts)))
+        .map(|d| {
+            cache.as_ref().map_or_else(
+                || cover::draw_bounds(list, d, &BoundsFacts(facts)),
+                |c| c.draws[d].bounds(facts),
+            )
+        })
         .collect();
     let mut draws = Vec::new();
     let mut bb = Hash::new();
@@ -197,7 +255,10 @@ pub(super) fn snapshot(list: &DrawList, facts: &impl DamageFacts) -> Snapshot {
                 mips.word(bb.0);
             }
         }
-        let mut h = draw_hash(list, d, facts);
+        let mut h = cache.as_ref().map_or_else(
+            || naive_draw_hash(list, d, facts),
+            |c| draw_hash(list, d, facts, c.draws[d].hash),
+        );
         if draw.flags & crate::DRAW_TO_BACK_BUFFER != 0 {
             bb.word(0xbb);
             bb.word(h.0);

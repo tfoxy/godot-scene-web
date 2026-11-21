@@ -817,3 +817,53 @@ describe("render-stream client loop", () => {
     expect(new Set(at("received")).size).toBe(2);
   });
 });
+
+describe("rolling damage diagnostics", () => {
+  it("counts successful draws and reports medians over the last second", () => {
+    const h = streaming();
+    const d = { mode: 1, us: 200, permille: 1000, regions: 1 };
+    Object.assign(h.core, { damageStats: () => d });
+    expect(h.loop.stats()).toMatchObject({
+      damageModeCounts: [0, 0, 0, 0],
+      damageUsP50: null,
+    });
+    for (let seq = 1; seq <= 3; seq++) {
+      d.mode = seq;
+      d.us = [200, 40, 0][seq - 1];
+      d.permille = [1000, 256, 0][seq - 1];
+      d.regions = [1, 8, 0][seq - 1];
+      h.last().on.message(tx(seq));
+      h.clock.frame();
+    }
+    expect(h.loop.stats()).toMatchObject({
+      damageModeCounts: [0, 1, 1, 1],
+      damageUsP50: 40,
+      damagePermilleP50: 256,
+      damageRegionsP50: 1,
+    });
+    h.clock.t += 1001;
+    expect(h.loop.stats()).toMatchObject({
+      damageModeCounts: [0, 0, 0, 0],
+      damageUsP50: null,
+      damagePermilleP50: null,
+      damageRegionsP50: null,
+    });
+    h.loop.dispose();
+  });
+
+  it("keeps a bounded ring when more than 256 draws fit the window", () => {
+    const h = streaming();
+    Object.assign(h.core, {
+      damageStats: () => ({ mode: 2, us: 5, permille: 25, regions: 4 }),
+    });
+    for (let seq = 1; seq <= 300; seq++) {
+      h.last().on.message(tx(seq));
+      h.clock.frame(1);
+    }
+    expect(h.loop.stats()).toMatchObject({
+      damageModeCounts: [0, 0, 256, 0],
+      damageUsP50: 5,
+    });
+    h.loop.dispose();
+  });
+});

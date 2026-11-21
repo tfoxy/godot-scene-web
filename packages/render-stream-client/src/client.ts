@@ -355,6 +355,10 @@ function checkFrameCap(mode: unknown): asserts mode is RenderStreamFrameCap {
 const NO_HINTS: readonly HintEntry[] = Object.freeze([]);
 
 const EMPTY_STATS: RenderStreamStats = Object.freeze({
+  damageModeCounts: Object.freeze([0, 0, 0, 0] as const),
+  damageUsP50: null,
+  damagePermilleP50: null,
+  damageRegionsP50: null,
   applied: 0,
   appliesPerSec: 0,
   creditRttMsP50: null,

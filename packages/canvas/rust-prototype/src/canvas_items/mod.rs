@@ -1198,6 +1198,12 @@ mod tests {
             fn opacity(&self, _: u32) -> Option<&gsw_canvas_draw_list::opacity::Opacity> { None }
             fn program(&self, _: u32) -> ProgramFacts { ProgramFacts::UNKNOWN }
         }
+        impl gsw_canvas_draw_list::damage::DamageFacts for Facts {
+            fn texture_revision(&self, _: u32) -> u32 { 0 }
+            fn program(&self, _: u32) -> ProgramFacts { ProgramFacts::UNKNOWN }
+            fn reads_time(&self, _: u32) -> bool { false }
+            fn admitted(&self, _: &DrawList, _: usize) -> bool { true }
+        }
         let mut l = list(vec![draw(0, 3), draw(3, 3)], 6);
         l.target.width = 128; l.target.height = 128;
         l.items.push(Item { xform: [1.0,0.0,0.0,1.0,0.0,0.0], ..Item::default() });
@@ -1207,12 +1213,15 @@ mod tests {
         let mut calls = Vec::new();
         plan_calls(&l, |_| true, |_| true, &mut calls);
         assert_eq!(calls.len(), 1);
-        call_bounds(&l, &mut calls, &Facts);
+        let mut planner = gsw_canvas_draw_list::damage::Planner::new();
+        planner.plan(&l, &Facts, &gsw_canvas_draw_list::damage::PlanOptions::default());
+        call_bounds(&l, &mut calls, |d| planner.draw_bounds(d));
         let a = draw_bounds(&l, 0, &Facts); let b = draw_bounds(&l, 1, &Facts);
         assert_eq!(calls[0].bounds, [a.x0, a.y0, b.x1-a.x0, b.y1-a.y0]);
         l.draws[0].program = 1;
         plan_calls(&l, |_| true, |_| true, &mut calls);
-        call_bounds(&l, &mut calls, &Facts);
+        planner.plan(&l, &Facts, &gsw_canvas_draw_list::damage::PlanOptions::default());
+        call_bounds(&l, &mut calls, |d| planner.draw_bounds(d));
         assert_eq!(calls[0].bounds, [0, 0, 128, 128]);
     }
 

@@ -8,9 +8,11 @@ use crate::cover::{self, CoverFacts, ProgramFacts, PxRect};
 use crate::DrawList;
 
 mod back;
+mod content;
 mod diff;
 mod mask;
 mod signature;
+use content::ContentCache;
 use mask::Mask;
 use signature::{snapshot, Snapshot};
 
@@ -113,6 +115,8 @@ pub struct Planner {
     previous: Option<Snapshot>,
     pending: Option<Snapshot>,
     invalidated: bool,
+    content: ContentCache,
+    diff: diff::Scratch,
 }
 
 impl Planner {
@@ -126,7 +130,27 @@ impl Planner {
         facts: &impl DamageFacts,
         opts: &PlanOptions,
     ) -> (Plan, PlanStats) {
-        let next = snapshot(list, facts);
+        let next = snapshot(list, facts, Some(&mut self.content));
+        self.plan_snapshot(list, opts, next, false)
+    }
+
+    /// Reference implementation for diagnostic comparisons; always walks all geometry.
+    pub fn plan_naive(
+        &mut self,
+        list: &DrawList,
+        facts: &impl DamageFacts,
+        opts: &PlanOptions,
+    ) -> (Plan, PlanStats) {
+        self.plan_snapshot(list, opts, snapshot(list, facts, None), true)
+    }
+
+    fn plan_snapshot(
+        &mut self,
+        list: &DrawList,
+        opts: &PlanOptions,
+        next: Snapshot,
+        naive: bool,
+    ) -> (Plan, PlanStats) {
         let mut stats = PlanStats {
             admitted_draws: next.replay.iter().filter(|(_, admitted)| *admitted).count(),
             history_reads: next.back.history_reads,
@@ -135,17 +159,23 @@ impl Planner {
         };
         let mut damage = Mask::new(list.target.width, list.target.height, opts.cell);
         if let Some(old) = &self.previous {
-            let (a, b) = diff::unmatched(&old.draws, &next.draws);
+            let reference;
+            let (a, b) = if naive {
+                reference = diff::unmatched(&old.draws, &next.draws);
+                (reference.0.as_slice(), reference.1.as_slice())
+            } else {
+                self.diff.unmatched(&old.draws, &next.draws)
+            };
             stats.changed_old_ops = a.iter().filter(|&&i| old.draws[i].is_op).count();
             stats.changed_new_ops = b.iter().filter(|&&i| next.draws[i].is_op).count();
             stats.changed_old = a.len() - stats.changed_old_ops;
             stats.changed_new = b.len() - stats.changed_new_ops;
             stats.matched = next.draw_count - stats.changed_new;
             stats.structural = old.draw_count != next.draw_count || !a.is_empty() || !b.is_empty();
-            for i in a {
+            for &i in a {
                 damage.add(old.draws[i].bounds);
             }
-            for i in b {
+            for &i in b {
                 damage.add(next.draws[i].bounds);
             }
         } else {
@@ -223,6 +253,20 @@ impl Planner {
         (plan, stats)
     }
 
+    /// Bounds from the last planned snapshot, indexed by draw. Valid until the next plan.
+    pub fn draw_bounds(&self, d: usize) -> crate::cover::PxRect {
+        self.pending
+            .as_ref()
+            .or(self.previous.as_ref())
+            .and_then(|s| s.replay.get(d))
+            .map_or(crate::cover::PxRect::EMPTY, |r| r.0)
+    }
+
+    /// Forget geometry when an external consumer cleared dirty ranges between plans.
+    pub fn clear_content_cache(&mut self) {
+        self.content = ContentCache::default();
+    }
+
     /// Call only after the most recently planned frame was successfully executed or skipped.
     pub fn commit(&mut self) {
         if let Some(next) = self.pending.take() {
@@ -233,6 +277,7 @@ impl Planner {
 
     /// Discard pending and executed references after failed execution or target/context changes.
     pub fn invalidate(&mut self) {
+        self.clear_content_cache();
         self.previous = None;
         self.pending = None;
         self.invalidated = true;

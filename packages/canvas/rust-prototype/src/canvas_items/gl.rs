@@ -2205,7 +2205,7 @@ impl CanvasItemsExecutor {
             let counts = plan_calls(list, |id| facts.known_texture(id), |p| facts.known_binding(p), &mut calls);
             // Bounds only feed the partial region loop; a Full or damage-off frame skips the walk.
             if partial.is_some() {
-                call_bounds(list, &mut calls, &facts);
+                call_bounds(list, &mut calls, |d| self.planner.draw_bounds(d));
             }
             counts
         };

@@ -132,6 +132,7 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
         let mut damage = DamageRun::new(damage_every, args.get("pin-time").is_some());
         // `--damage-from`/`--damage-to`: count only plans whose transaction seq falls in the
         // window (every plan still runs and commits, so the reference list stays continuous).
+        damage.naive = args.get("damage-compare-naive").map(|_| Default::default());
         damage.window = (
             args.get("damage-from").and_then(|s| s.parse().ok()),
             args.get("damage-to").and_then(|s| s.parse().ok()),
@@ -508,7 +509,15 @@ pub(crate) fn cmd_fill(args: &Args) -> ExitCode {
                             }
                         }
                     }
+                    // Model upload consumption only on planned frames. Texture operations are
+                    // accounted above on every apply, so release their payloads independently.
+                    let pending = damage_out.is_some()
+                        && !(damage.transactions - 1).is_multiple_of(damage.every);
+                    let dirty = pending.then(|| std::mem::take(&mut a.list.dirty));
                     a.list.consumed();
+                    if let Some(dirty) = dirty {
+                        a.list.dirty = dirty;
+                    }
                 }
             }
         }
@@ -566,6 +575,8 @@ impl gsw_canvas_draw_list::damage::DamageFacts for FillDamageFacts<'_> {
 
 struct DamageRun {
     planner: gsw_canvas_draw_list::damage::Planner,
+    naive: Option<gsw_canvas_draw_list::damage::Planner>,
+    plan_us: Vec<f64>,
     every: usize,
     pin_time: bool,
     pinned_time: Option<f32>,
@@ -594,6 +605,8 @@ impl DamageRun {
     fn new(every: usize, pin_time: bool) -> Self {
         Self {
             planner: gsw_canvas_draw_list::damage::Planner::new(),
+            naive: None,
+            plan_us: Vec::new(),
             every,
             pin_time,
             pinned_time: None,
@@ -639,11 +652,22 @@ impl DamageRun {
         } else {
             list
         };
+        let started = std::time::Instant::now();
         let (plan, stats) = self.planner.plan(list, facts, &PlanOptions::default());
+        let plan_us = started.elapsed().as_secs_f64() * 1_000_000.;
+        if let Some(naive) = self.naive.as_mut() {
+            let (reference, _) = naive.plan_naive(list, facts, &PlanOptions::default());
+            assert_eq!(
+                plan, reference,
+                "damage Plan difference at transaction {serial}"
+            );
+            naive.commit();
+        }
         if !self.counting {
             self.planner.commit();
             return Some(plan);
         }
+        self.plan_us.push(plan_us);
         self.structural += usize::from(stats.structural);
         self.history_reads += stats.history_reads;
         self.regions.push(stats.region_count as f64);
@@ -740,6 +764,7 @@ impl DamageRun {
                 "ScreenReader": self.top_triggers("ScreenReader"),
                 "HistoryRead": self.top_triggers("HistoryRead"),
             },
+            "plan_us": distribution(&self.plan_us),
             "region_count": distribution(&self.regions),
             "area_permille": distribution(&self.area),
             "replayed_admitted_ratio": distribution(&self.calls),
@@ -976,18 +1001,22 @@ mod tests {
             ..FillOptions::default()
         };
         let mut run = DamageRun::new(3, false);
+        run.naive = Some(Default::default());
         assert!(matches!(
             run.observe(&list, &Facts, &opts),
             Some(Plan::Full(_))
         ));
         list.items[0].xform[4] = 16.;
+        list.dirty.items.add(0, 1);
         assert_eq!(run.observe(&list, &Facts, &opts), None);
         list.items[0].xform[4] = 0.;
+        list.dirty.items.add(0, 1);
         assert_eq!(run.observe(&list, &Facts, &opts), None);
         assert_eq!(run.observe(&list, &Facts, &opts), Some(Plan::Skip));
         assert_eq!(run.observe(&list, &Facts, &opts), None);
         assert_eq!(run.observe(&list, &Facts, &opts), None);
         list.items[0].xform[4] = 8.;
+        list.dirty.items.add(0, 1);
         let Some(Plan::Partial { regions, .. }) = run.observe(&list, &Facts, &opts) else {
             panic!("one moved draw must permit partial redraw");
         };
@@ -1006,6 +1035,8 @@ mod tests {
             })
             .sum();
         let report = run.report();
+        assert_eq!(run.plan_us.len(), 3);
+        assert!(report["plan_us"]["p50"].as_f64().unwrap() > 0.);
         assert_eq!(
             report["plan_counts"],
             json!({"full": 1, "skip": 1, "partial": 1})
@@ -1138,6 +1169,7 @@ mod tests {
         let opts = FillOptions::default();
         run.observe(&l, &TimeFacts, &opts);
         l.items[0].modulate[0] = 0.5;
+        l.dirty.items.add(0, 1);
         let Some(Plan::Partial {
             regions,
             back_regions,

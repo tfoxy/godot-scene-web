@@ -317,9 +317,9 @@ export class FakeClock implements LoopClock {
   pendingFrames(): number {
     return this.frames.size;
   }
-  /** One frame callback (16.7 ms later). */
-  frame(): void {
-    this.t += 16.7;
+  /** One frame callback (16.7 ms later by default). */
+  frame(ms = 16.7): void {
+    this.t += ms;
     const due = [...this.frames.values()];
     this.frames.clear();
     for (const cb of due) cb(this.t);

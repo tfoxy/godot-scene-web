@@ -42,6 +42,8 @@ export interface GswRs {
    * (copied by apply) and from the payload store's own bytes (shared). */
   last_upload_bytes_json(): string;
   stats_ptr(): number;
+  /** Stats block size in bytes. Absent on older cores, which expose only the 33-word prefix. */
+  stats_len?(): number;
   /** Measure each accepted transaction's motion (`motion_ptr`), or stop. Optional: a core built
    * before it has neither method, and the client then reads no motion facts. */
   set_motion?(on: boolean): void;
@@ -246,6 +248,10 @@ export const STAT_FIELDS = [
   "surfaces_unchanged",
   "surfaces_allocated",
   "surface_pixels",
+  "damage_mode",
+  "damage_us",
+  "damage_permille",
+  "damage_regions",
 ] as const;
 export type StatName = (typeof STAT_FIELDS)[number];
 
@@ -260,22 +266,28 @@ export const MOTION_FIELDS = [
   "anim_color",
 ] as const;
 
-/** A reader of the stats block, its view re-derived whenever memory grew. */
+/** Bound a stats view to both this client's schema and the core's allocation. */
+export function statsWords(g: GswRs): number {
+  return Math.max(
+    0,
+    Math.min(STAT_FIELDS.length, Math.floor((g.stats_len?.() ?? 33 * 4) / 4)),
+  );
+}
+
+/** A reader of the available stats fields, its view re-derived whenever memory grew. */
 export function statsReader(
   g: GswRs,
   mem: WebAssembly.Memory,
-): () => Record<StatName, number> {
+): () => Record<string, number> {
   let view: Uint32Array | null = null;
   let buffer: ArrayBuffer | null = null;
   return () => {
     if (buffer !== mem.buffer || !view) {
       buffer = mem.buffer;
-      view = new Uint32Array(mem.buffer, g.stats_ptr(), STAT_FIELDS.length);
+      view = new Uint32Array(mem.buffer, g.stats_ptr(), statsWords(g));
     }
-    const out = {} as Record<StatName, number>;
-    STAT_FIELDS.forEach((k, i) => {
-      out[k] = (view as Uint32Array)[i];
-    });
+    const out: Record<string, number> = {};
+    for (let i = 0; i < view.length; i++) out[STAT_FIELDS[i]] = view[i];
     return out;
   };
 }
